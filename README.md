@@ -4,8 +4,8 @@ Rust daemon + browser SPA that hosts several Claude Code sessions over one
 monorepo. Built from `orchestrator-spec.md`; the design comes from
 `orchestrator-ui.html`.
 
-Steps 1-4 of the spec's build order are implemented. Diff viewer, PR poller,
-review queue and `/green` are not.
+Steps 1-8 of the spec's build order are implemented. The editable diff pane
+(step 9) and `/green` (step 10) are not.
 
 ## Run
 
@@ -43,6 +43,19 @@ under `web/` needs a `cargo build` before it takes effect.
   --porcelain=v2` reconcile on `Stop` and at most once per 30s while working.
 - **Restart recovery** — session records persist; previously live sessions come
   back `Archived`, orphaned pids are reaped.
+- **Diff viewer** — read-only, two-dot against the merge-base commit. File list
+  from `--numstat` first, hunks per file, word-level highlighting from a token
+  LCS computed server-side, split/unified, folds that expand by widening `-U`.
+- **PR poller** — one GraphQL search per 5 minutes for your own open PRs on
+  upstream. Rollup read off the head commit, outdated threads excluded, capped
+  thread pages rendered `50+`, stacks detected by `baseRefName`.
+- **Review queue** — acme's own `mise run reviews --json` on an offset timer,
+  degrading to `unavailable` rather than to an empty queue.
+- **`/resolve`** — worktree pinned to the PR's head branch, skill invocation
+  typed into the pty once `SessionStart` lands.
+- **Test capabilities** — per-suite trust and isolation from config, lockfile
+  drift by content hash, an autoload probe, host↔container path mapping.
+  Reports only; nothing runs.
 
 ## What the spec got wrong
 
@@ -83,6 +96,18 @@ One more, from using it rather than reading it:
   removed outright; one that exits non-zero keeps its buffer and code, which is
   the case the rule was written for.
 
+## What the capability probe found
+
+Pointed at the `dfafdf` worktree, the §7 rule 4 autoload probe reports every PHP
+suite as `Untrusted`: `vendor` there is a plain symlink to main's, so composer's
+`$baseDir` resolves to the main checkout and a suite run in the worktree would
+load main's `src/`.
+
+§7's "current state (post-WIP)" table says Unit and Integration are `Verified`
+in a worktree, on the basis that worktrees get a real `vendor/` with copied
+autoload files. That is not true of this checkout. Either the WIP is not in this
+tree yet, or it has regressed — which is exactly what §7 says the probe is for.
+
 ## Layout
 
 ```
@@ -95,7 +120,11 @@ src/
   ring.rs       scrollback
   hooks.rs      hook receiver and the generated settings file
   spawn.rs      session/worktree/process spawning, health parsing
+  diff.rs       numstat, hunk parsing, word-level LCS
   git.rs        status parsing, refs, unpushed, worktree ops
+  github.rs     token resolution, GraphQL, PR model, stacks
+  reviews.rs    `mise run reviews --json`, degraded states
+  capability.rs suites, trust, dep drift, autoload probe, path mapping
   worktree.rs   teardown preflight, archive, removal
   store.rs      session record persistence, orphan reaping
   api.rs        HTTP surface and the origin/token guards
@@ -120,6 +149,12 @@ web/            SPA (vanilla, xterm.js vendored)
   silently.
 - Managed processes do not autostart. Flip `autostart` in config if you want
   `docker compose up` on daemon start.
+- **GitHub auth** resolves in order: `ORCHD_GITHUB_TOKEN`, a `0600`
+  `github_token_file`, then `gh auth token`. §6 wants read scopes only
+  (`pull_requests`, `checks`, `contents`, `metadata`); gh's token carries write,
+  so falling back to it logs a warning rather than passing quietly. GraphQL goes
+  out through `curl` with the token on stdin, which keeps an HTTP+TLS stack (and
+  its C toolchain) out of the build and the token out of the process table.
 - Bound to `127.0.0.1` only, with Origin/Host validation and a per-start token
   on every mutating route. Hook endpoints are exempt from the token but confined
   to their own prefix and can only ever update state.

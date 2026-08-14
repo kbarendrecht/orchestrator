@@ -1,4 +1,5 @@
 mod api;
+mod capability;
 mod config;
 mod diff;
 mod git;
@@ -107,6 +108,7 @@ async fn main() -> Result<()> {
         .route("/api/workspace/:id/shell", post(api::new_shell))
         .route("/api/workspace/:id/reconcile", post(api::reconcile))
         .route("/api/workspace/:id/preflight", get(api::preflight))
+        .route("/api/workspace/:id/capabilities", get(api::capabilities))
         .route("/api/workspace/:id/archive", post(api::archive_workspace))
         .route("/api/workspace/:id/teardown", post(api::teardown))
         .route(
