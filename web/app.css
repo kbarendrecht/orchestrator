@@ -318,3 +318,10 @@ button.ctx-btn:hover{color:var(--text)}
 .rvrow .fc{font-family:var(--mono);font-size:9.5px;color:var(--ghost);flex:0 0 22px;text-align:right}
 .rvrow .why{font-family:var(--mono);font-size:9.5px;color:var(--faint-solid);
   flex:0 1 auto;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+.pract{
+  font-family:var(--mono);font-size:9.5px;color:var(--attn);
+  padding:1px 6px;border:1px solid var(--line);border-radius:2px;flex:0 0 auto;
+}
+.pract:hover:not(:disabled){background:var(--raised);border-color:var(--attn)}
+.pract:disabled{color:var(--ghost);cursor:default}

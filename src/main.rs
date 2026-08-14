@@ -114,6 +114,7 @@ async fn main() -> Result<()> {
             post(api::restart_process),
         )
         .route("/api/process/:id/close", post(api::close_process))
+        .route("/api/pr/:number/resolve", post(api::resolve_pr))
         .route("/ws/events", get(ws::events))
         .route("/ws/pty", get(ws::pty))
         // Hook endpoints live under their own prefix and are treated as

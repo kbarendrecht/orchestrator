@@ -335,7 +335,28 @@ function prGroup() {
     if (p.is_draft) why.push('draft');
     if (why.length) row.appendChild(el('span', 'link', why[0]));
 
-    if (p.session) {
+    // Never automatic: review responses are your voice (§8).
+    if (p.unresolved > 0 || p.unresolved_capped || p.changes_requested) {
+      const b = el('button', 'pract', 'resolve');
+      b.title = p.session
+        ? 'Take me to the session already on this branch'
+        : 'Start a session on this PR and run /resolve';
+      b.onclick = async (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        b.disabled = true;
+        try {
+          const r = await call(`/api/pr/${p.number}/resolve`);
+          pendingSelect = r.session;
+          toast(`/resolve ${p.number}`);
+        } catch (e) {
+          toast(e.message, true);
+        } finally {
+          b.disabled = false;
+        }
+      };
+      row.appendChild(b);
+    } else if (p.session) {
       row.appendChild(el('span', 'jump', 'jump'));
       row.onclick = (ev) => { ev.preventDefault(); select(p.session); };
     }
