@@ -325,3 +325,27 @@ button.ctx-btn:hover{color:var(--text)}
 }
 .pract:hover:not(:disabled){background:var(--raised);border-color:var(--attn)}
 .pract:disabled{color:var(--ghost);cursor:default}
+
+/* ---------- capability report (§7) ---------- */
+.modal{position:fixed;inset:0;background:rgba(0,0,0,.62);z-index:60;display:none;
+  align-items:center;justify-content:center}
+.modal.on{display:flex}
+.modal-box{width:min(760px,90vw);max-height:80vh;background:var(--surface);
+  border:1px solid var(--line);border-radius:4px;display:flex;flex-direction:column}
+.modal-head{display:flex;align-items:center;gap:12px;padding:11px 15px;
+  border-bottom:1px solid var(--line)}
+.modal-head .head-btn{margin-left:auto}
+.modal-body{overflow-y:auto;padding:8px 15px 16px}
+.capline{display:flex;gap:12px;padding:3px 0;font-family:var(--mono);font-size:11px}
+.capkey{flex:0 0 130px;color:var(--faint-solid)}
+.capval{color:var(--text);min-width:0;word-break:break-word}
+.capval.ok{color:var(--ok)}.capval.bad{color:var(--bad)}.capval.dim{color:var(--dim)}
+.capgroup{padding:14px 0 6px}
+.caprow{display:flex;align-items:center;gap:9px;padding:4px 0;font-family:var(--mono);font-size:11px}
+.capsuite{flex:0 0 96px;color:var(--text)}
+.captrust{font-size:9.5px}
+.captrust.ok{color:var(--ok)}.captrust.blocked{color:var(--attn)}.captrust.build{color:var(--bad)}
+.capiso{margin-left:auto;font-size:9.5px;color:var(--faint-solid)}
+.capcmd{font-family:var(--mono);font-size:10px;color:var(--faint-solid);
+  padding:0 0 4px 15px;word-break:break-all}
+.capnote{font-family:var(--mono);font-size:10px;color:var(--attn);padding:0 0 6px 15px}

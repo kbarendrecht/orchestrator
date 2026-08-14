@@ -445,3 +445,35 @@ pub async fn resolve_pr(
     let id = spawn::spawn_skill_session(&app, number, &pr.head_ref, "resolve").await?;
     Ok(Json(json!({ "session": id })))
 }
+
+// ---------------------------------------------------------------------------
+// Test capabilities (§7) — reporting only
+// ---------------------------------------------------------------------------
+
+/// What could be run here and how far it can be trusted.
+///
+/// Nothing acts on this: §10 puts `/green` behind step 8 being correct for a
+/// week on real PRs, so the registry reports and stops.
+pub async fn capabilities(
+    State(app): State<Arc<AppState>>,
+    Path(workspace): Path<String>,
+) -> ApiResult<crate::capability::CapabilityReport> {
+    let (path, is_main) = {
+        let inner = app.inner.read().await;
+        let w = inner
+            .workspaces
+            .get(&workspace)
+            .ok_or_else(|| anyhow::anyhow!("unknown workspace {workspace}"))?;
+        (w.path.clone(), w.is_main())
+    };
+    let cfg = app.cfg.capabilities.clone();
+    let main = app.cfg.main_checkout.clone();
+    let ws = workspace.clone();
+    // Shells out to php, so it does not belong on the async runtime.
+    let report = tokio::task::spawn_blocking(move || {
+        crate::capability::report(&cfg, &ws, &path, &main, is_main)
+    })
+    .await
+    .map_err(|e| anyhow::anyhow!("capability probe failed: {e}"))?;
+    Ok(Json(report))
+}

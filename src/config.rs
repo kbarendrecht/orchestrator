@@ -38,6 +38,10 @@ pub struct Config {
     /// but must not hang the poller forever.
     #[serde(default = "default_review_timeout")]
     pub review_timeout_seconds: u64,
+    /// Test capabilities per suite. Config rather than hardcoded, because the
+    /// table has already changed once (§7 rule 6).
+    #[serde(default)]
+    pub capabilities: crate::capability::CapabilityConfig,
     /// Whether sessions the daemon spawns write transcripts.
     ///
     /// This is decided here rather than inherited, because inheriting makes the
@@ -184,6 +188,7 @@ impl Config {
             github_token_file: None,
             poll_seconds: default_poll_seconds(),
             review_timeout_seconds: default_review_timeout(),
+            capabilities: Default::default(),
             persist_transcripts: default_persist(),
         }
     }
