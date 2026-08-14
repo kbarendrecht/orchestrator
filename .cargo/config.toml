@@ -1,4 +1,0 @@
-# No system C toolchain on this box, so zig stands in as the linker.
-# Swap this out once build-essential is installed.
-[target.x86_64-unknown-linux-gnu]
-linker = "tools/zigcc"

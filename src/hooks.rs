@@ -535,7 +535,7 @@ mod tests {
             dir.display()
         ))
         .unwrap();
-        let app = AppState::new(cfg, "t".into());
+        let app = AppState::new(cfg, "t".into(), crate::window::Chrome::None);
 
         let spawned =
             PtyHandle::spawn(&["cat".to_string()], Path::new("/tmp"), &[], &[], (24, 80)).unwrap();

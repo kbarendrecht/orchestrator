@@ -4,9 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>orchd — session board</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&family=Martian+Mono:wght@600;700&display=swap" rel="stylesheet">
+<!-- Fonts are @font-face'd from app.css against the daemon's own /vendor/fonts. -->
 <link rel="stylesheet" href="/vendor/xterm.css">
 <link rel="stylesheet" href="/app.css">
 </head>
@@ -41,6 +39,15 @@
     <span class="eyebrow" id="filestitle">Changed files</span>
     <button class="ctx-btn" id="basebtn" style="margin-left:auto"></button>
     <button class="ctx-btn" id="refreshbtn" title="Re-read git status">&#8635;</button>
+
+    <!-- Frameless-window controls. Present in the markup always, revealed by
+         `data-chrome="custom"` on the body; macOS keeps its real traffic
+         lights instead and never shows these. -->
+    <div class="wctl" id="wctl">
+      <button class="wctl-btn" data-cmd="minimize" title="Minimise" aria-label="Minimise"></button>
+      <button class="wctl-btn" data-cmd="toggle-maximize" title="Maximise" aria-label="Maximise"></button>
+      <button class="wctl-btn close" data-cmd="close" title="Close" aria-label="Close"></button>
+    </div>
   </div>
 
   <!-- ============ RAIL ============ -->
@@ -108,9 +115,23 @@
 
 </div>
 
+<!-- Resize hot-zones. A frameless window has no WM border to grab, so these
+     invisible strips put one back. Hidden unless the daemon says we are
+     frameless; macOS keeps its decorations and needs none of this. -->
+<div class="resizers" id="resizers">
+  <div class="rz rz-n"  data-edge="north"></div>
+  <div class="rz rz-s"  data-edge="south"></div>
+  <div class="rz rz-e"  data-edge="east"></div>
+  <div class="rz rz-w"  data-edge="west"></div>
+  <div class="rz rz-ne" data-edge="north-east"></div>
+  <div class="rz rz-nw" data-edge="north-west"></div>
+  <div class="rz rz-se" data-edge="south-east"></div>
+  <div class="rz rz-sw" data-edge="south-west"></div>
+</div>
+
 <div class="toast" id="toast"></div>
 
-<script>window.__ORCH__ = { token: "__ORCH_TOKEN__" };</script>
+<script>window.__ORCH__ = { token: "__ORCH_TOKEN__", chrome: "__ORCH_CHROME__" };</script>
 <script src="/vendor/xterm.js"></script>
 <script src="/vendor/addon-fit.js"></script>
 <script src="/vendor/addon-webgl.js"></script>

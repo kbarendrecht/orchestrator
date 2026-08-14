@@ -251,6 +251,47 @@ pub async fn restart_process(
     Ok(Json(json!({ "process": id })))
 }
 
+/// Drive the window the daemon is displayed in.
+///
+/// A mutating route, so it carries the token like every other one — which is
+/// the point of doing this over HTTP instead of Tauri's IPC: the SPA's origin
+/// is a localhost URL on a port chosen at bind time, and granting IPC to
+/// `http://127.0.0.1:*` would hand window control to anything else that
+/// managed to get itself loaded there.
+pub async fn window_cmd(
+    State(app): State<Arc<AppState>>,
+    Path(cmd): Path<String>,
+) -> ApiResult<serde_json::Value> {
+    let cmd: crate::window::WindowCmd = serde_json::from_value(json!(cmd))
+        .map_err(|_| ApiError(anyhow::anyhow!("no such window command: {cmd}")))?;
+    dispatch_window(&app, cmd).await
+}
+
+/// Resize takes an edge, so it gets its own route rather than bending the
+/// command enum into something that serialises from a single word.
+pub async fn window_resize(
+    State(app): State<Arc<AppState>>,
+    Path(edge): Path<String>,
+) -> ApiResult<serde_json::Value> {
+    let edge: crate::window::ResizeEdge = serde_json::from_value(json!(edge))
+        .map_err(|_| ApiError(anyhow::anyhow!("no such window edge: {edge}")))?;
+    dispatch_window(&app, crate::window::WindowCmd::StartResize(edge)).await
+}
+
+async fn dispatch_window(
+    app: &Arc<AppState>,
+    cmd: crate::window::WindowCmd,
+) -> ApiResult<serde_json::Value> {
+    let control = app.window.read().await.clone();
+    let Some(control) = control else {
+        // Running in a browser tab. The tab has its own chrome; this is not an
+        // error worth a toast, but it is not a success either.
+        return Err(ApiError(anyhow::anyhow!("no native window attached")));
+    };
+    control.dispatch(cmd)?;
+    Ok(Json(json!({ "ok": true })))
+}
+
 pub async fn close_process(
     State(app): State<Arc<AppState>>,
     Path(proc_id): Path<String>,

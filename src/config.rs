@@ -132,6 +132,29 @@ impl Config {
     }
 
     /// Load config, writing a default one on first run so there is something to edit.
+    /// The config, if there is a usable one already.
+    ///
+    /// Usable means more than present: a config naming a checkout that has been
+    /// moved or deleted is worse than none, because the failure surfaces later
+    /// and further from the cause. The desktop app asks this before starting
+    /// and shows a folder picker when the answer is `None`.
+    pub fn existing() -> Option<Self> {
+        let path = Self::path().ok()?;
+        let raw = std::fs::read_to_string(&path).ok()?;
+        let cfg: Config = serde_json::from_str(&raw)
+            .map_err(|e| tracing::warn!("ignoring unparseable {}: {e}", path.display()))
+            .ok()?;
+        if !cfg.main_checkout.join(".git").exists() {
+            tracing::warn!(
+                "{} names {}, which is not a git checkout",
+                path.display(),
+                cfg.main_checkout.display()
+            );
+            return None;
+        }
+        Some(cfg)
+    }
+
     pub fn load_or_init(main_checkout: Option<PathBuf>) -> Result<Self> {
         let path = Self::path()?;
         if path.exists() {
@@ -140,7 +163,16 @@ impl Config {
             let mut cfg: Config = serde_json::from_str(&raw)
                 .with_context(|| format!("parsing {}", path.display()))?;
             if let Some(main) = main_checkout {
-                cfg.main_checkout = main;
+                // Remember it. The desktop app reaches here when the recorded
+                // checkout has moved and you have just pointed at the new one
+                // in a dialog; being asked again on every launch would be the
+                // app forgetting an answer you already gave.
+                if cfg.main_checkout != main {
+                    cfg.main_checkout = main;
+                    if let Err(e) = std::fs::write(&path, serde_json::to_string_pretty(&cfg)?) {
+                        tracing::warn!("could not record the new checkout in {}: {e}", path.display());
+                    }
+                }
             }
             return Ok(cfg);
         }
