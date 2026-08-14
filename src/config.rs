@@ -21,6 +21,19 @@ pub struct Config {
     /// Upstream ref the diff and worktree bases resolve against.
     #[serde(default = "default_upstream")]
     pub upstream_ref: String,
+    /// Remote the PRs live on. Fork workflow: PRs are opened against upstream
+    /// while head refs live on origin (§6).
+    #[serde(default = "default_upstream_remote")]
+    pub upstream_remote: String,
+    /// `owner/name` override; derived from the upstream remote when absent.
+    #[serde(default)]
+    pub repo: Option<String>,
+    /// A `0600` file holding a read-only GitHub token, outside the repo.
+    #[serde(default)]
+    pub github_token_file: Option<PathBuf>,
+    /// 288 queries/day is negligible against 5000 points/hour (§6).
+    #[serde(default = "default_poll_seconds")]
+    pub poll_seconds: u64,
     /// Whether sessions the daemon spawns write transcripts.
     ///
     /// This is decided here rather than inherited, because inheriting makes the
@@ -71,6 +84,14 @@ fn default_upstream() -> String {
 
 fn default_persist() -> bool {
     true
+}
+
+fn default_upstream_remote() -> String {
+    "upstream".to_string()
+}
+
+fn default_poll_seconds() -> u64 {
+    300
 }
 
 impl Config {
@@ -150,6 +171,10 @@ impl Config {
             ],
             worktree_processes: vec![],
             upstream_ref: default_upstream(),
+            upstream_remote: default_upstream_remote(),
+            repo: None,
+            github_token_file: None,
+            poll_seconds: default_poll_seconds(),
             persist_transcripts: default_persist(),
         }
     }

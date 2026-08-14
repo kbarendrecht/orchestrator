@@ -255,8 +255,92 @@ function renderRail() {
     appendSessions(wtGroup, w);
   }
   rail.appendChild(wtGroup);
+  rail.appendChild(prGroup());
 
   renderWaitbar();
+}
+
+
+/** Dot colour for a PR, sharing the session legend so one key covers both (§9). */
+function prDot(p) {
+  if (p.session) return 'auto';           // a session is holding it
+  if (p.is_draft) return 'idle';
+  if (p.unresolved > 0 || p.changes_requested) return 'blocked';
+  if (p.checks === 'failing' || p.mergeable === 'CONFLICTING') return 'build';
+  if (p.checks === 'passing') return 'ok';
+  return 'idle';
+}
+
+let showPrs = true;
+
+function prGroup() {
+  const prs = snap.prs || [];
+  const group = el('div', 'ws prblock');
+
+  const head = el('button', 'prgroup-head');
+  head.setAttribute('aria-expanded', String(showPrs));
+  head.appendChild(el('span', 'caretr', '›'));
+  head.appendChild(el('span', 'eyebrow', 'PRs'));
+
+  // The summary sits where the detail already is, rather than duplicated at
+  // the top of the rail (§9).
+  const count = el('span', 'prcount');
+  if (snap.pr_error) {
+    count.appendChild(el('b', 'f', 'unavailable'));
+    head.title = snap.pr_error;
+  } else {
+    const needs = prs.filter((p) => p.unresolved > 0 || p.changes_requested).length;
+    const failing = prs.filter(
+      (p) => p.checks === 'failing' || p.mergeable === 'CONFLICTING').length;
+    const bits = [`${prs.length}`];
+    if (needs) bits.push(`${needs} needs you`);
+    if (failing) bits.push(`${failing} failing`);
+    count.appendChild(el('b', null, bits.join(' · ')));
+    if (needs) count.querySelector('b').classList.add('n');
+  }
+  head.appendChild(count);
+  head.onclick = () => { showPrs = !showPrs; renderRail(); };
+  group.appendChild(head);
+
+  if (!showPrs) return group;
+
+  if (snap.pr_error) {
+    const e = el('div', 'railbtn', snap.pr_error.slice(0, 120));
+    e.style.color = 'var(--bad)';
+    group.appendChild(e);
+    return group;
+  }
+  if (!prs.length) {
+    group.appendChild(el('div', 'railbtn', 'none open'));
+    return group;
+  }
+
+  for (const p of prs) {
+    // Rows for PRs that already have a session are dimmed and jump to it (§9).
+    const row = el('a', 'prrow' + (p.session ? ' linked' : ''));
+    row.href = p.url || '#';
+    row.appendChild(el('span', 'dot ' + prDot(p)));
+    row.appendChild(el('span', 'num', `#${p.number}`));
+    row.appendChild(el('span', 'ttl', p.title));
+
+    const why = [];
+    // An under-count would silently hide work, so a capped page reads as 50+.
+    if (p.unresolved) why.push(`${p.unresolved}${p.unresolved_capped ? '+' : ''} unresolved`);
+    else if (p.unresolved_capped) why.push('50+ threads');
+    if (p.changes_requested) why.push('changes requested');
+    if (p.mergeable === 'CONFLICTING') why.push('conflicts');
+    else if (p.checks === 'failing') why.push('checks failing');
+    if (p.children && p.children.length) why.push(`${p.children.length} stacked`);
+    if (p.is_draft) why.push('draft');
+    if (why.length) row.appendChild(el('span', 'link', why[0]));
+
+    if (p.session) {
+      row.appendChild(el('span', 'jump', 'jump'));
+      row.onclick = (ev) => { ev.preventDefault(); select(p.session); };
+    }
+    group.appendChild(row);
+  }
+  return group;
 }
 
 function groupFor(w, label) {
@@ -401,7 +485,18 @@ function renderContext() {
   $('ctxdot').className = 'dot ' + (s ? dotClass(s) : 'idle');
   $('ctxname').textContent = s ? (s.title || wsId) : (wsId || 'no session');
   $('ctxbranch').textContent = w ? (w.branches[0] || '') : '';
-  $('ctxstate').textContent = s ? stateLabel(s) : '';
+  const pr = wsId ? prForWorkspace(wsId) : null;
+  const bits = [];
+  if (s) bits.push(stateLabel(s));
+  if (pr) {
+    const state = pr.unresolved ? `${pr.unresolved} unresolved`
+      : pr.mergeable === 'CONFLICTING' ? 'conflicted'
+        : pr.checks === 'failing' ? 'checks failing'
+          : pr.checks === 'pending' ? 'checks running'
+            : pr.is_draft ? 'draft' : 'clean';
+    bits.push(`#${pr.number} ${state}`);
+  }
+  $('ctxstate').textContent = bits.join(' · ');
   $('killbtn').style.display = s && s.alive ? '' : 'none';
 
   if (wsId) {
@@ -586,17 +681,19 @@ function renderFiles() {
     : `${total} changed`;
 }
 
-/** Filled in by the PR poller; until then nothing maps to a PR base. */
-function prForWorkspace() {
-  return null;
+/** The PR whose head ref this workspace holds, if any. */
+function prForWorkspace(wsId) {
+  return (snap.prs || []).find((p) => p.workspace === wsId) || null;
 }
 
 // ---------------------------------------------------------------------------
 // Diff (§5)
 // ---------------------------------------------------------------------------
 
+// Kept short: the right header also carries the title and the refresh control,
+// and a long label wraps it onto two lines.
 const BASES = [
-  ['upstream', 'vs upstream/develop'],
+  ['upstream', 'vs develop'],
   ['head', 'vs HEAD'],
   ['pr_base', 'vs PR base'],
 ];
