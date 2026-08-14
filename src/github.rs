@@ -167,6 +167,10 @@ pub struct Pr {
     pub mergeable: String,
     pub merge_state: String,
     pub checks: Checks,
+    /// Head commit. `/green` amends and rebases, so this moves on every
+    /// internal attempt — it is an identity for "has the branch changed since
+    /// the skill gave up", not a provenance record (§8).
+    pub head_sha: Option<String>,
     pub unresolved: u32,
     /// True when `reviewThreads` had another page, so `unresolved` is a floor.
     /// Rendered as `50+` rather than `50`, so an under-count cannot silently
@@ -217,7 +221,7 @@ fn query_for(owner: &str, name: &str) -> String {
         mergeable
         mergeStateStatus
         headRepositoryOwner {{ login }}
-        commits(last: 1) {{ nodes {{ commit {{ statusCheckRollup {{ state }} }} }} }}
+        commits(last: 1) {{ nodes {{ commit {{ oid statusCheckRollup {{ state }} }} }} }}
         reviewThreads(first: {PAGE}) {{
           pageInfo {{ hasNextPage }}
           nodes {{ isResolved isOutdated }}
@@ -311,6 +315,10 @@ fn parse_pr(n: &Value) -> Option<Pr> {
             .unwrap_or("UNKNOWN")
             .to_string(),
         checks,
+        head_sha: n
+            .pointer("/commits/nodes/0/commit/oid")
+            .and_then(|s| s.as_str())
+            .map(|s| s.to_string()),
         unresolved,
         unresolved_capped: capped,
         changes_requested,
@@ -436,6 +444,7 @@ mod tests {
             mergeable: "MERGEABLE".into(),
             merge_state: "CLEAN".into(),
             checks: Checks::Passing,
+            head_sha: None,
             unresolved: 0,
             unresolved_capped: false,
             changes_requested: false,

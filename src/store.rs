@@ -69,6 +69,49 @@ fn path() -> Result<PathBuf> {
     Ok(Config::config_dir()?.join("sessions.json"))
 }
 
+fn automation_path() -> Result<PathBuf> {
+    Ok(Config::config_dir()?.join("automation.json"))
+}
+
+/// §8 says SQLite; a JSON file with the same write-and-rename discipline holds
+/// a handful of PR numbers just as safely and keeps the dependency list short.
+pub fn save_automation(store: &crate::green::AutomationStore) -> Result<()> {
+    let p = automation_path()?;
+    std::fs::create_dir_all(p.parent().unwrap())?;
+    let tmp = p.with_extension("json.tmp");
+    std::fs::write(&tmp, serde_json::to_string_pretty(store)?)?;
+    std::fs::rename(&tmp, &p)?;
+    Ok(())
+}
+
+/// A restart must not resurrect a `Running` state whose session is gone (§8).
+pub fn load_automation() -> crate::green::AutomationStore {
+    let Ok(p) = automation_path() else {
+        return Default::default();
+    };
+    let Ok(raw) = std::fs::read_to_string(&p) else {
+        return Default::default();
+    };
+    let mut store: crate::green::AutomationStore = match serde_json::from_str(&raw) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!("could not parse {}: {e}", p.display());
+            return Default::default();
+        }
+    };
+    // Orphaned Running is demoted to Exhausted: the run is not going to finish,
+    // and pretending it might would block the PR forever.
+    for state in store.by_pr.values_mut() {
+        if let crate::green::PrAutomation::Running { .. } = state {
+            *state = crate::green::PrAutomation::Exhausted {
+                at_head: String::new(),
+                at: std::time::SystemTime::now(),
+            };
+        }
+    }
+    store
+}
+
 pub fn save(records: &[SessionRecord]) -> Result<()> {
     let p = path()?;
     std::fs::create_dir_all(p.parent().unwrap())?;

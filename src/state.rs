@@ -38,6 +38,9 @@ pub struct Inner {
     /// told. Conflict detection on save protects you from the agent; this is
     /// the other direction, which is the one that loses work silently.
     pub human_edits: HashMap<PathBuf, HumanEdit>,
+    pub automation: crate::green::AutomationStore,
+    /// Shared resources currently held by a run (§7 rule 2).
+    pub locks_held: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -76,6 +79,8 @@ impl AppState {
                 token_source: None,
                 reviews: Default::default(),
                 human_edits: HashMap::new(),
+                automation: Default::default(),
+                locks_held: Vec::new(),
             }),
             events,
         })
@@ -201,6 +206,7 @@ impl AppState {
             }),
             token_source: inner.token_source,
             reviews: inner.reviews.clone(),
+            automation: inner.automation.by_pr.clone(),
         }
     }
 
@@ -391,6 +397,7 @@ pub struct Snapshot {
     pub pr_age_ms: Option<u64>,
     pub token_source: Option<crate::github::TokenSource>,
     pub reviews: crate::reviews::ReviewState,
+    pub automation: HashMap<u64, crate::green::PrAutomation>,
 }
 
 #[derive(Debug, Serialize)]

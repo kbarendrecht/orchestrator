@@ -6,6 +6,16 @@ Everything outside that block is hand-written and survives.
 
 ## Next
 
+- **Do the review flow in this UI, not through the `/resolve` skill.** Today the
+  button spawns a session and types `/resolve <pr>`, so the whole conversation
+  happens in a terminal pane and the threads themselves are never on screen.
+  What it should be: review threads listed under the PR, each with its file and
+  line, the diff hunk it is anchored to, and a reply box. Replying and resolving
+  go straight through the GitHub API. The skill stays for the cases that want an
+  agent to do the work — but reading threads, agreeing with one, and resolving
+  it should not need an agent at all. Needs write scope on the token, which is
+  the first real reason to move off the read-only PAT in §6.
+
 - Connector ribbons between the diff panes. §5 lists them under the PhpStorm
   wishlist; synchronized scroll already falls out of the shared scroll
   container, but the ribbons do not exist.
@@ -47,7 +57,6 @@ Everything outside that block is hand-written and survives.
 Rewritten by the daemon on every poll. Edit anything outside this block.
 
 - **transcripts are off** — spawned sessions write no `.jsonl`, so resume and the teardown transcript check do nothing. Set `persist_transcripts` back to true when you are done developing the daemon.
-- **review queue is unavailable** — `mise run reviews --json` is not answering: not polled yet
 - **`dfafdf` cannot be trusted to run PHP suites** — autoload resolves to `/home/kbarendrecht/development/acme/vendor/composer/ClassLoader.php`, outside the worktree, so a suite run there loads main's code. §7's post-WIP table assumes otherwise.
 
 <!-- <<< orchd live findings <<< -->
