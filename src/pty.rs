@@ -41,6 +41,7 @@ impl PtyHandle {
         command: &[String],
         cwd: &Path,
         env: &[(String, String)],
+        unset: &[&str],
         size: (u16, u16),
     ) -> Result<Spawned> {
         let (rows, cols) = size;
@@ -62,6 +63,10 @@ impl PtyHandle {
             cmd.arg(arg);
         }
         cmd.cwd(cwd);
+        // Removals first, so an explicit value below always wins.
+        for k in unset {
+            cmd.env_remove(k);
+        }
         for (k, v) in env {
             cmd.env(k, v);
         }
@@ -214,6 +219,7 @@ mod tests {
             &["sh".to_string(), "-c".to_string(), "echo hello; exit 3".to_string()],
             Path::new("/tmp"),
             &[],
+            &[],
             (24, 80),
         )
         .expect("spawn");
@@ -237,6 +243,7 @@ mod tests {
         let spawned = PtyHandle::spawn(
             &["sh".to_string(), "-c".to_string(), "sleep 5".to_string()],
             Path::new("/tmp"),
+            &[],
             &[],
             (24, 80),
         )

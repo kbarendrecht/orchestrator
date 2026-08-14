@@ -21,6 +21,18 @@ pub struct Config {
     /// Upstream ref the diff and worktree bases resolve against.
     #[serde(default = "default_upstream")]
     pub upstream_ref: String,
+    /// Whether sessions the daemon spawns write transcripts.
+    ///
+    /// This is decided here rather than inherited, because inheriting makes the
+    /// daemon behave differently depending on what launched it: a shell inside
+    /// a Claude Code session carries `CLAUDE_CODE_CHILD_SESSION`, which turns
+    /// transcript saving off in every child. Silently losing transcripts breaks
+    /// resume (§2) and leaves the teardown preflight with nothing to copy.
+    ///
+    /// Off is useful while developing the daemon itself — the throwaway
+    /// sessions it spawns do not then litter your real session history.
+    #[serde(default = "default_persist")]
+    pub persist_transcripts: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -55,6 +67,10 @@ fn default_port() -> u16 {
 
 fn default_upstream() -> String {
     "upstream/develop".to_string()
+}
+
+fn default_persist() -> bool {
+    true
 }
 
 impl Config {
@@ -134,6 +150,7 @@ impl Config {
             ],
             worktree_processes: vec![],
             upstream_ref: default_upstream(),
+            persist_transcripts: default_persist(),
         }
     }
 
@@ -158,10 +175,81 @@ impl Config {
     }
 }
 
+/// The environment a spawned Claude session gets, so the outcome never depends
+/// on which shell started the daemon.
+///
+/// Returns `(set, unset)`.
+pub fn transcript_env(persist: bool) -> (Vec<(String, String)>, Vec<&'static str>) {
+    if persist {
+        (
+            vec![(
+                "CLAUDE_CODE_FORCE_SESSION_PERSISTENCE".to_string(),
+                "1".to_string(),
+            )],
+            vec!["CLAUDE_CODE_CHILD_SESSION"],
+        )
+    } else {
+        // Set explicitly rather than left to chance, so "off" means off even
+        // when the daemon was launched from a plain terminal.
+        (
+            vec![("CLAUDE_CODE_CHILD_SESSION".to_string(), "1".to_string())],
+            vec!["CLAUDE_CODE_FORCE_SESSION_PERSISTENCE"],
+        )
+    }
+}
+
 /// Claude Code keys its transcript directory by working directory, slugging the
 /// absolute path by replacing every `/` with `-`. Verified against a real run.
 pub fn transcript_dir_for(cwd: &Path) -> Result<PathBuf> {
     let home = std::env::var("HOME").context("HOME is not set")?;
     let slug = cwd.to_string_lossy().replace('/', "-");
     Ok(PathBuf::from(home).join(".claude/projects").join(slug))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn persistence_on_clears_the_child_marker() {
+        let (set, unset) = transcript_env(true);
+        assert!(unset.contains(&"CLAUDE_CODE_CHILD_SESSION"));
+        assert!(set
+            .iter()
+            .any(|(k, v)| k == "CLAUDE_CODE_FORCE_SESSION_PERSISTENCE" && v == "1"));
+    }
+
+    #[test]
+    fn persistence_off_sets_the_marker_rather_than_hoping_for_it() {
+        // "Off" must mean off even when the daemon was launched from a plain
+        // terminal that carries no marker of its own.
+        let (set, unset) = transcript_env(false);
+        assert!(set
+            .iter()
+            .any(|(k, v)| k == "CLAUDE_CODE_CHILD_SESSION" && v == "1"));
+        assert!(unset.contains(&"CLAUDE_CODE_FORCE_SESSION_PERSISTENCE"));
+    }
+
+    #[test]
+    fn the_two_directions_never_agree() {
+        // Whatever launched the daemon, exactly one of the two vars is set.
+        let (on_set, on_unset) = transcript_env(true);
+        let (off_set, off_unset) = transcript_env(false);
+        for (k, _) in &on_set {
+            assert!(off_unset.contains(&k.as_str()), "{k} not cleared when off");
+        }
+        for (k, _) in &off_set {
+            assert!(on_unset.contains(&k.as_str()), "{k} not cleared when on");
+        }
+    }
+
+    #[test]
+    fn a_config_without_the_field_persists() {
+        // Existing config files predate the flag; the safe reading is on.
+        let cfg: Config = serde_json::from_str(
+            r#"{"main_checkout":"/tmp","port":7777,"upstream_ref":"upstream/develop"}"#,
+        )
+        .expect("parse");
+        assert!(cfg.persist_transcripts);
+    }
 }

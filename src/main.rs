@@ -50,6 +50,15 @@ async fn main() -> Result<()> {
         );
     }
 
+    if !cfg.persist_transcripts {
+        tracing::warn!(
+            "persist_transcripts is off — spawned sessions write no transcript, \
+             so resume and the teardown transcript check do nothing. \
+             Set it to true in {} when you are done developing.",
+            Config::path()?.display()
+        );
+    }
+
     let settings = hooks::write_settings(cfg.port)?;
     tracing::info!("hook settings at {}", settings.display());
 
