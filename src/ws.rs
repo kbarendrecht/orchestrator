@@ -139,8 +139,25 @@ async fn pty_loop(handle: Arc<PtyHandle>, socket: WebSocket) {
     }
 
     let writer = handle.clone();
+    let exit = handle.clone();
     loop {
         tokio::select! {
+            // The broadcast Sender lives in the PtyHandle, so `recv()` never
+            // errors on its own — without this the socket would outlive the
+            // process it is attached to, and a drawer full of dead shells would
+            // keep as many open sockets as it had corpses.
+            _ = exit.wait() => {
+                // The reader thread may still be draining the pty when the
+                // child is reaped, so give it a moment before taking what is
+                // left; otherwise the last lines of output are lost.
+                tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+                while let Ok(bytes) = sub.try_recv() {
+                    if tx.send(Message::Binary(bytes.to_vec())).await.is_err() {
+                        break;
+                    }
+                }
+                break;
+            }
             out = sub.recv() => match out {
                 Ok(bytes) => {
                     if tx.send(Message::Binary(bytes.to_vec())).await.is_err() {
