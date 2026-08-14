@@ -319,6 +319,42 @@ pub fn worktree_remove(main: &Path, path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Add a worktree checked out on an **existing** branch.
+///
+/// `claude --worktree` always cuts a fresh `worktree-<name>` from
+/// `upstream/develop`, which is wrong for `/resolve`: that has to land on the
+/// PR's own head branch (§8). The repo's `worktree-create` hook is therefore
+/// not involved here, but `worktree-link` still runs at `SessionStart` and does
+/// the symlinks, which is the same path §2 describes for rebuilding a worktree
+/// on resume.
+pub fn worktree_add_existing(main: &Path, path: &Path, branch: &str) -> Result<()> {
+    let path_str = path.to_string_lossy().into_owned();
+    if branch_exists(main, branch) {
+        git(main, &["worktree", "add", &path_str, branch])?;
+        return Ok(());
+    }
+    // The head ref lives on the fork, since PRs are opened from origin (§6).
+    let _ = git(main, &["fetch", "origin", branch, "--no-tags"]);
+    let remote = format!("origin/{branch}");
+    if !git_ok(main, &["rev-parse", "--verify", "--quiet", &remote]) {
+        bail!("branch {branch} exists neither locally nor on origin");
+    }
+    git(main, &["worktree", "add", &path_str, "-b", branch, &remote])?;
+    Ok(())
+}
+
+pub fn branch_exists(main: &Path, branch: &str) -> bool {
+    git_ok(
+        main,
+        &[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("refs/heads/{branch}"),
+        ],
+    )
+}
+
 pub fn fetch_upstream(main: &Path) -> Result<()> {
     git(main, &["fetch", "upstream", "develop", "--no-tags"])?;
     Ok(())
@@ -386,6 +422,59 @@ mod tests {
         let raw = rec(&["? .claude/worktrees/other/file.php"]);
         let set = parse_status(&raw, false);
         assert_eq!(set.untracked.len(), 1);
+    }
+
+    fn scratch_repo() -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("orchd-git-{}-{:?}", std::process::id(), std::thread::current().id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let run = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(&dir)
+                .output()
+                .expect("git");
+        };
+        run(&["init", "-q", "-b", "main"]);
+        run(&["config", "user.email", "t@t"]);
+        run(&["config", "user.name", "t"]);
+        std::fs::write(dir.join("f.txt"), "one\n").unwrap();
+        run(&["add", "-A"]);
+        run(&["commit", "-qm", "one"]);
+        dir
+    }
+
+    #[test]
+    fn adds_a_worktree_on_an_existing_branch() {
+        // /resolve has to land on the PR's own head branch, not a fresh one cut
+        // from upstream/develop (§8).
+        let repo = scratch_repo();
+        std::process::Command::new("git")
+            .args(["branch", "feature/x"])
+            .current_dir(&repo)
+            .output()
+            .unwrap();
+
+        let wt = repo.join(".claude/worktrees/pr-1");
+        std::fs::create_dir_all(wt.parent().unwrap()).unwrap();
+        worktree_add_existing(&repo, &wt, "feature/x").expect("worktree add");
+
+        assert!(wt.join("f.txt").exists());
+        assert_eq!(current_branch(&wt).unwrap(), "feature/x");
+        let _ = std::fs::remove_dir_all(&repo);
+    }
+
+    #[test]
+    fn refuses_a_branch_that_exists_nowhere() {
+        let repo = scratch_repo();
+        let wt = repo.join(".claude/worktrees/pr-2");
+        std::fs::create_dir_all(wt.parent().unwrap()).unwrap();
+        let err = worktree_add_existing(&repo, &wt, "feature/nope").unwrap_err();
+        assert!(
+            format!("{err:#}").contains("neither locally nor on origin"),
+            "unexpected: {err:#}"
+        );
+        let _ = std::fs::remove_dir_all(&repo);
     }
 
     #[test]

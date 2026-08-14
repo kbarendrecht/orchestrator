@@ -423,3 +423,25 @@ pub async fn diff_file(
     let context = q.context.min(10_000);
     Ok(Json(crate::diff::file_diff(&path, &base, &q.path, context)?))
 }
+
+// ---------------------------------------------------------------------------
+// /resolve (§8)
+// ---------------------------------------------------------------------------
+
+pub async fn resolve_pr(
+    State(app): State<Arc<AppState>>,
+    Path(number): Path<u64>,
+) -> ApiResult<serde_json::Value> {
+    let pr = {
+        let inner = app.inner.read().await;
+        inner.prs.iter().find(|p| p.number == number).cloned()
+    };
+    let pr = pr.ok_or_else(|| anyhow::anyhow!("PR #{number} is not in the current poll"))?;
+    if pr.unresolved == 0 && !pr.unresolved_capped && !pr.changes_requested {
+        return Err(ApiError(anyhow::anyhow!(
+            "PR #{number} has no unresolved review threads"
+        )));
+    }
+    let id = spawn::spawn_skill_session(&app, number, &pr.head_ref, "resolve").await?;
+    Ok(Json(json!({ "session": id })))
+}

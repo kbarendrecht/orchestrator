@@ -141,6 +141,83 @@ pub async fn spawn_worktree_session(app: &Arc<AppState>, name: &str) -> Result<S
     Ok(id)
 }
 
+/// Start a session for a skill that needs the PR's own head branch checked out.
+///
+/// Never automatic: review responses are your voice, and the skill expects you
+/// in the loop (§8). The PR number comes from the button's context, so the
+/// daemon never has to infer it.
+pub async fn spawn_skill_session(
+    app: &Arc<AppState>,
+    pr: u64,
+    head_ref: &str,
+    skill: &str,
+) -> Result<SessionId> {
+    // If the branch already has a worktree with a live session, take you there
+    // rather than spawning a second one (§8).
+    let existing = {
+        let inner = app.inner.read().await;
+        inner
+            .workspaces
+            .values()
+            .find(|w| w.branches.contains(&head_ref.to_string()))
+            .map(|w| w.id.clone())
+    };
+    if let Some(ws) = existing {
+        let live = app.live_sessions_in(&ws).await;
+        if let Some(id) = live.first() {
+            return Ok(*id);
+        }
+        return start_with_prompt(app, &ws, pr, skill).await;
+    }
+
+    // Otherwise pin a worktree to that branch. `git worktree add` directly,
+    // because the WorktreeCreate hook always cuts a new branch from
+    // upstream/develop; `worktree-link` still runs at SessionStart.
+    let name = format!("pr-{pr}");
+    validate_worktree_name(&name)?;
+    let path = app.cfg.worktree_path(&name);
+    if !path.exists() {
+        {
+            let inner = app.inner.read().await;
+            if inner.sessions.values().any(|s| {
+                matches!(&s.recovery, Some(ArchiveState::Recoverable { name: n, .. }) if n == &name)
+            }) {
+                bail!(
+                    "an archived session used the worktree name {name}; remove it or rename before \
+                     reusing the name, or the two transcripts interleave"
+                );
+            }
+        }
+        crate::git::worktree_add_existing(&app.cfg.main_checkout, &path, head_ref)?;
+    }
+    app.register_worktree(&name, path, Some(head_ref.to_string()))
+        .await;
+    start_with_prompt(app, &name, pr, skill).await
+}
+
+async fn start_with_prompt(
+    app: &Arc<AppState>,
+    workspace: &str,
+    pr: u64,
+    skill: &str,
+) -> Result<SessionId> {
+    let id = spawn_session(
+        app,
+        workspace,
+        Kind::Automation {
+            pr,
+            skill: skill.to_string(),
+        },
+        None,
+    )
+    .await?;
+    let mut inner = app.inner.write().await;
+    if let Some(s) = inner.sessions.get_mut(&id) {
+        s.pending_prompt = Some(format!("/{skill} {pr}"));
+    }
+    Ok(id)
+}
+
 /// Worktree names become directory names and branch names (`worktree-<name>`),
 /// so anything that would escape the worktrees dir is refused outright.
 pub fn validate_worktree_name(name: &str) -> Result<()> {
