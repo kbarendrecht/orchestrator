@@ -21,6 +21,9 @@ There is no system C toolchain on the machine this was built on, so
 `.cargo/config.toml` points the linker at `tools/zigcc`. Delete both once
 `build-essential` is installed.
 
+The SPA is compiled into the binary with `include_str!`, so editing anything
+under `web/` needs a `cargo build` before it takes effect.
+
 ## What works
 
 - **pty host** — every session and process runs in a daemon-owned pty with a

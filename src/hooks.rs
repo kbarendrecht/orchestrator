@@ -287,15 +287,22 @@ pub async fn session_end(
     let Some(id) = session_of(&headers, &payload) else {
         return ok();
     };
-    {
+    let workspace = {
         let mut inner = app.inner.write().await;
-        if let Some(s) = inner.sessions.get_mut(&id) {
-            // Buffer is retained: the transcript and scrollback outlive the
-            // process (§3).
-            s.set_state(State::Exited);
+        match inner.sessions.get_mut(&id) {
+            Some(s) => {
+                // Buffer is retained: the transcript and scrollback outlive the
+                // process (§3).
+                s.set_state(State::Exited);
+                Some(s.workspace.clone())
+            }
+            None => None,
         }
-    }
+    };
     app.release_main(id).await;
+    if let Some(ws) = workspace {
+        let _ = app.reconcile(&ws).await;
+    }
     app.notify().await;
     ok()
 }

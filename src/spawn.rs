@@ -163,15 +163,24 @@ pub fn validate_worktree_name(name: &str) -> Result<()> {
 fn watch_session_exit(app: Arc<AppState>, id: SessionId, handle: Arc<PtyHandle>) {
     tokio::spawn(async move {
         handle.wait().await;
-        {
+        let workspace = {
             let mut inner = app.inner.write().await;
-            if let Some(s) = inner.sessions.get_mut(&id) {
-                if s.state.is_live() {
-                    s.set_state(State::Exited);
+            match inner.sessions.get_mut(&id) {
+                Some(s) => {
+                    if s.state.is_live() {
+                        s.set_state(State::Exited);
+                    }
+                    Some(s.workspace.clone())
                 }
+                None => None,
             }
-        }
+        };
         app.release_main(id).await;
+        // Closing Claude is a moment the changed-file pane must be right about:
+        // whatever the last turn left behind is now the whole story.
+        if let Some(ws) = workspace {
+            let _ = app.reconcile(&ws).await;
+        }
         app.notify().await;
     });
 }

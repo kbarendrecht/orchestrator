@@ -198,7 +198,10 @@ function showTerm(target, parent) {
     if (e.host.parentElement !== parent) continue;
     e.host.hidden = key !== target;
   }
-  $('termempty').hidden = !!(target && parent === $('termwrap'));
+  // Only the centre pane owns the empty state. Without this guard, every
+  // drawer render un-hides it and "No session selected" sits on top of a
+  // perfectly working terminal.
+  if (parent === $('termwrap')) $('termempty').hidden = !!target;
   if (entry) {
     requestAnimationFrame(() => resize(entry));
   }
@@ -304,12 +307,22 @@ function appendSessions(group, w) {
   }
   if (!done.length) return;
 
-  const toggle = el('button', 'arctoggle');
-  toggle.setAttribute('aria-expanded', String(showArchived));
-  toggle.appendChild(el('span', 'caretr', '›'));
-  toggle.appendChild(el('span', null, `${done.length} finished`));
-  toggle.onclick = () => { showArchived = !showArchived; renderRail(); };
-  group.appendChild(toggle);
+  // The session you are looking at always has a row, even when it has finished
+  // and the rest are collapsed. Otherwise closing Claude hides the row while
+  // the right pane and context bar still describe it, and nothing on screen
+  // says what you are looking at.
+  const pinned = !showArchived && done.find((s) => s.id === selected);
+  if (pinned) group.appendChild(sessionRow(pinned, w));
+
+  const remaining = done.length - (pinned ? 1 : 0);
+  if (remaining > 0) {
+    const toggle = el('button', 'arctoggle');
+    toggle.setAttribute('aria-expanded', String(showArchived));
+    toggle.appendChild(el('span', 'caretr', '›'));
+    toggle.appendChild(el('span', null, `${remaining} finished`));
+    toggle.onclick = () => { showArchived = !showArchived; renderRail(); };
+    group.appendChild(toggle);
+  }
 
   if (showArchived) for (const s of done) group.appendChild(sessionRow(s, w));
 }
@@ -419,27 +432,40 @@ function renderDrawer() {
   // something.
   drawer.className = procs.length ? 'drawer' : 'drawer empty';
 
+  const alive = (p) =>
+    p.kind.kind === 'shell' ? p.kind.exit_code == null : p.health.health !== 'dead';
+
   let active = selectedProc[wsId];
-  if (!procs.some((p) => p.id === active)) active = procs[0]?.id ?? null;
+  if (!procs.some((p) => p.id === active)) {
+    // Prefer something still running; a dead shell is only shown when it is
+    // all there is, or when you picked it yourself.
+    active = (procs.find(alive) ?? procs[0])?.id ?? null;
+  }
   selectedProc[wsId] = active;
 
+  // Shells are numbered per workspace. Without this every dead one renders as
+  // the same "shell (0)" and a drawer with three corpses in it is unreadable.
+  let shellNo = 0;
   for (const p of procs) {
-    const tab = el('button', 'dtab');
+    const isShell = p.kind.kind === 'shell';
+    if (isShell) shellNo += 1;
+    const dead = isShell ? p.kind.exit_code != null : p.health.health === 'dead';
+
+    const tab = el('button', 'dtab' + (dead ? ' dead' : ''));
     tab.setAttribute('aria-selected', String(p.id === active));
     const health = p.health.health;
     const cls = health === 'failing' ? 'build'
       : health === 'ok' ? 'working'
         : health === 'dead' ? 'idle' : 'working';
     tab.appendChild(el('span', 'dot ' + cls));
-    const label = p.kind.kind === 'shell'
-      ? (p.kind.exit_code == null ? 'shell' : `shell (${p.kind.exit_code})`)
+    const label = isShell
+      ? (dead ? `shell ${shellNo} · exit ${p.kind.exit_code}` : `shell ${shellNo}`)
       : p.name;
     tab.appendChild(el('span', null, label));
-    tab.onclick = () => { selectedProc[wsId] = p.id; renderDrawer(); };
+    tab.onclick = () => { selectedProc[wsId] = p.id; drawerTouched = true; renderDrawer(); };
 
-    // Managed processes get a restart button; shells get a close button.
-    const x = el('span', 'x', p.is_managed === false ? '×' : '×');
-    x.title = 'Close';
+    const x = el('span', 'x', '×');
+    x.title = dead ? 'Dismiss' : 'Close';
     x.onclick = (ev) => {
       ev.stopPropagation();
       closeTerm(`proc:${p.id}`);
@@ -529,14 +555,24 @@ function renderFiles() {
 function select(id) {
   selected = id;
   const s = currentSession();
-  showTerm(s ? `session:${s.id}` : null, $('termwrap'));
+  // A session created a moment ago is not in the snapshot yet. Blanking the
+  // terminal here would strand it: the next snapshot sees `selected` already
+  // set and never opens one.
+  if (s) showTerm(`session:${s.id}`, $('termwrap'));
   render();
 }
+
+/** A session the daemon has just been asked to create.
+ *
+ *  Setting `selected` alone is not enough: the terminal is only opened when a
+ *  session is shown, and the snapshot handler skips that once something is
+ *  already selected. */
+let pendingSelect = null;
 
 async function newSession(workspace) {
   try {
     const r = await call('/api/session', { workspace });
-    selected = r.session;
+    pendingSelect = r.session;
   } catch (e) {
     toast(e.message, true);
   }
@@ -547,7 +583,7 @@ async function newWorktree() {
   if (!name) return;
   try {
     const r = await call('/api/worktree', { name: name.trim() });
-    selected = r.session;
+    pendingSelect = r.session;
     toast(`creating worktree ${name}`);
   } catch (e) {
     toast(e.message, true);
@@ -655,6 +691,15 @@ function connect() {
       if (!snap.sessions.some((s) => s.id === id)) closeTerm(target);
     }
     if (selected && !snap.sessions.some((s) => s.id === selected)) selected = null;
+
+    // Switch to a session we asked for as soon as the daemon reports it.
+    if (pendingSelect && snap.sessions.some((s) => s.id === pendingSelect)) {
+      const id = pendingSelect;
+      pendingSelect = null;
+      select(id);
+      return;
+    }
+
     if (!selected) {
       // Default to whatever most needs you.
       const first = snap.sessions.find(isWaiting)
