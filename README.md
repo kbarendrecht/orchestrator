@@ -41,8 +41,10 @@ under `web/` needs a `cargo build` before it takes effect.
   work. Six-check teardown preflight; `git worktree remove` only, never `rm -rf`.
 - **Changed files** — `PostToolUse` for the exact path, `git status
   --porcelain=v2` reconcile on `Stop` and at most once per 30s while working.
-- **Restart recovery** — session records persist; previously live sessions come
-  back `Archived`, orphaned pids are reaped.
+- **Restart recovery** — session records persist. With `auto_resume` on (the
+  default) the sessions that were live when the daemon went down are relaunched
+  with `--resume` on the next start, in main and in worktrees alike. A crash
+  costs the scrollback, not the conversation. Orphaned pids are reaped.
 - **Diff viewer** — read-only, two-dot against the merge-base commit. File list
   from `--numstat` first, hunks per file, word-level highlighting from a token
   LCS computed server-side, split/unified, folds that expand by widening `-U`.

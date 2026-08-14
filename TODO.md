@@ -63,8 +63,10 @@ Everything outside that block is hand-written and survives.
 
 Rewritten by the daemon on every poll. Edit anything outside this block.
 
+- **auto-resume cannot work** — `auto_resume` is on but `persist_transcripts` is off, so a crash leaves nothing to resume from. One of the two wants changing.
 - **transcripts are off** — spawned sessions write no `.jsonl`, so resume and the teardown transcript check do nothing. Set `persist_transcripts` back to true when you are done developing the daemon.
-- **`dfafdf` cannot be trusted to run PHP suites** — autoload resolves to `/home/kbarendrecht/development/scienta/vendor/composer/ClassLoader.php`, outside the worktree, so a suite run there loads main's code. §7's post-WIP table assumes otherwise.
+- **GitHub token is gh's** — it carries write scopes; §6 wants a read-only PAT in `ORCHD_GITHUB_TOKEN` or `github_token_file`.
 - **`transient-tickling-newell` cannot be trusted to run PHP suites** — autoload resolves to `/home/kbarendrecht/development/scienta/vendor/composer/ClassLoader.php`, outside the worktree, so a suite run there loads main's code. §7's post-WIP table assumes otherwise.
+- **`dfafdf` cannot be trusted to run PHP suites** — autoload resolves to `/home/kbarendrecht/development/scienta/vendor/composer/ClassLoader.php`, outside the worktree, so a suite run there loads main's code. §7's post-WIP table assumes otherwise.
 
 <!-- <<< orchd live findings <<< -->

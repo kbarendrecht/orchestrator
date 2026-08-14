@@ -29,6 +29,11 @@ pub struct SessionRecord {
     /// Recorded next to the session so a crashed daemon's orphans can be found
     /// in the process table on the next start (§8b).
     pub pid: Option<u32>,
+    /// Whether this was live when the record was last written. The daemon owns
+    /// the pty, so a crash kills the process — this is the only way to know
+    /// afterwards which sessions were actually going.
+    #[serde(default)]
+    pub was_live: bool,
 }
 
 impl SessionRecord {
@@ -45,6 +50,7 @@ impl SessionRecord {
             recovery: s.recovery.clone(),
             created_at: s.created_at,
             pid: s.pid,
+            was_live: s.state.is_live(),
         }
     }
 
@@ -219,4 +225,20 @@ mod tests {
         assert_eq!(r.kind, Kind::Automation { pr: 4812, skill: "green".into() });
         assert!(matches!(r.recovery, Some(ArchiveState::Recoverable { .. })));
     }
+}
+
+/// Whether there is a transcript to resume this session from.
+///
+/// `claude --resume <id>` reads `~/.claude/projects/<cwd-slug>/<id>.jsonl`, so
+/// with `persist_transcripts` off there is nothing to resume and the attempt
+/// would just open an empty session under an old name.
+pub fn resumable(record: &SessionRecord) -> bool {
+    if let Some(p) = &record.transcript_path {
+        if p.exists() {
+            return true;
+        }
+    }
+    crate::config::transcript_dir_for(&record.cwd)
+        .map(|d| d.join(format!("{}.jsonl", record.id)).exists())
+        .unwrap_or(false)
 }

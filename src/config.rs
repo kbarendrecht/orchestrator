@@ -46,6 +46,13 @@ pub struct Config {
     /// orchestrator's own TODO.md.
     #[serde(default)]
     pub todo_path: Option<PathBuf>,
+    /// Bring back sessions that were live when the daemon last went down.
+    ///
+    /// The daemon owns every pty, so a crash — or a reboot — takes every Claude
+    /// process with it. This relaunches them with `--resume` so a crash costs
+    /// you the scrollback rather than the conversation.
+    #[serde(default = "default_auto_resume")]
+    pub auto_resume: bool,
     /// Whether sessions the daemon spawns write transcripts.
     ///
     /// This is decided here rather than inherited, because inheriting makes the
@@ -95,6 +102,10 @@ fn default_upstream() -> String {
 }
 
 fn default_persist() -> bool {
+    true
+}
+
+fn default_auto_resume() -> bool {
     true
 }
 
@@ -194,6 +205,7 @@ impl Config {
             review_timeout_seconds: default_review_timeout(),
             capabilities: Default::default(),
             todo_path: None,
+            auto_resume: default_auto_resume(),
             persist_transcripts: default_persist(),
         }
     }
