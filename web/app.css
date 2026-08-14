@@ -375,3 +375,19 @@ button.ctx-btn:hover{color:var(--text)}
   box-shadow:inset 2px 0 0 var(--attn);
 }
 .editarea:focus{box-shadow:inset 2px 0 0 var(--ok)}
+
+/* ---------- divergence strip ---------- */
+.diverge{display:none}
+.diverge.on{
+  display:flex;align-items:center;gap:9px;padding:7px 13px;
+  border-bottom:1px solid var(--line-soft);background:var(--raised);
+  font-family:var(--mono);font-size:10px;color:var(--attn);flex:0 0 auto;
+}
+.diverge.on.bad{color:var(--bad)}
+.dvtext{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dvbtn{
+  margin-left:auto;font-family:var(--mono);font-size:9.5px;color:inherit;
+  padding:1px 7px;border:1px solid var(--line);border-radius:2px;flex:0 0 auto;
+}
+.dvbtn:hover:not(:disabled){background:var(--surface);border-color:currentColor}
+.dvbtn:disabled{color:var(--ghost);cursor:default}

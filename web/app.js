@@ -660,9 +660,56 @@ let drawerTouched = false;
 // Files — changed files for the selected session's workspace (§9)
 // ---------------------------------------------------------------------------
 
+/** Behind/ahead against upstream/develop, with the one action worth offering.
+ *
+ *  The changed-file list is a poor summary of a branch that has simply fallen
+ *  behind: what you want then is to take develop in, not to read a list. */
+function renderDivergence(w) {
+  const box = $('diverge');
+  box.replaceChildren();
+  if (!w) return;
+
+  if (w.rebasing) {
+    box.className = 'diverge on bad';
+    box.appendChild(el('span', 'dvtext', 'rebase stopped on conflicts'));
+    const a = el('button', 'dvbtn', 'Abort');
+    a.onclick = () => act(`/api/workspace/${encodeURIComponent(w.id)}/rebase/abort`, 'aborted');
+    box.appendChild(a);
+    return;
+  }
+  if (!w.behind) {
+    box.className = 'diverge';
+    return;
+  }
+
+  box.className = 'diverge on';
+  const ahead = w.ahead ? `, ${w.ahead} ahead` : '';
+  box.appendChild(el('span', 'dvtext',
+    `${w.behind} behind upstream/develop${ahead}`));
+  const b = el('button', 'dvbtn', 'Rebase');
+  // Never a merge: history stays linear.
+  b.title = `git rebase upstream/develop in ${w.id}`;
+  b.onclick = async () => {
+    b.disabled = true;
+    await act(`/api/workspace/${encodeURIComponent(w.id)}/rebase`, 'rebased');
+    b.disabled = false;
+  };
+  box.appendChild(b);
+}
+
+async function act(path, verb) {
+  try {
+    await call(path);
+    toast(verb);
+  } catch (e) {
+    toast(e.message, true);
+  }
+}
+
 function renderFiles() {
   const wsId = currentWorkspaceId();
   const w = snap.workspaces.find((x) => x.id === wsId);
+  renderDivergence(w);
   const panes = $('filepanes');
   panes.replaceChildren();
 

@@ -689,3 +689,75 @@ fn watch_green(
         app.notify().await;
     });
 }
+
+// ---------------------------------------------------------------------------
+// Rebase onto the upstream base
+// ---------------------------------------------------------------------------
+
+/// Take in `upstream/develop` by rebasing, never merging: history stays linear.
+///
+/// Refuses rather than half-doing it — a dirty tree or a working session would
+/// both turn a one-click rebase into a mess someone has to unpick.
+pub async fn rebase(
+    State(app): State<Arc<AppState>>,
+    Path(workspace): Path<String>,
+) -> ApiResult<serde_json::Value> {
+    let path = app
+        .workspace_path(&workspace)
+        .await
+        .ok_or_else(|| anyhow::anyhow!("unknown workspace {workspace}"))?;
+
+    if crate::git::rebase_in_progress(&path) {
+        return Err(ApiError(anyhow::anyhow!(
+            "a rebase is already stopped part-way here; finish or abort it first"
+        )));
+    }
+    if !crate::git::is_clean(&path).unwrap_or(false) {
+        return Err(ApiError(anyhow::anyhow!(
+            "uncommitted changes — commit or stash before rebasing"
+        )));
+    }
+    {
+        let inner = app.inner.read().await;
+        if inner.sessions.values().any(|s| {
+            s.workspace == workspace
+                && s.state.is_live()
+                && !matches!(s.state, crate::model::State::YourTurn { .. })
+        }) {
+            return Err(ApiError(anyhow::anyhow!(
+                "a session is working here; rebasing under it would fight it"
+            )));
+        }
+    }
+
+    // Refresh the base first, or "behind" is answered from a stale ref.
+    let _ = crate::git::fetch_upstream(&app.cfg.main_checkout);
+
+    let upstream = app.cfg.upstream_ref.clone();
+    let p = path.clone();
+    let result =
+        tokio::task::spawn_blocking(move || crate::git::rebase_onto(&p, &upstream)).await;
+
+    let _ = app.reconcile(&workspace).await;
+    app.notify().await;
+
+    match result {
+        Ok(Ok(())) => Ok(Json(json!({ "rebased": workspace }))),
+        Ok(Err(e)) => Err(ApiError(e)),
+        Err(e) => Err(ApiError(anyhow::anyhow!("rebase task failed: {e}"))),
+    }
+}
+
+pub async fn rebase_abort(
+    State(app): State<Arc<AppState>>,
+    Path(workspace): Path<String>,
+) -> ApiResult<serde_json::Value> {
+    let path = app
+        .workspace_path(&workspace)
+        .await
+        .ok_or_else(|| anyhow::anyhow!("unknown workspace {workspace}"))?;
+    crate::git::rebase_abort(&path)?;
+    let _ = app.reconcile(&workspace).await;
+    app.notify().await;
+    Ok(Json(json!({ "aborted": workspace })))
+}

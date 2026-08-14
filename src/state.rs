@@ -39,6 +39,10 @@ pub struct Inner {
     /// the other direction, which is the one that loses work silently.
     pub human_edits: HashMap<PathBuf, HumanEdit>,
     pub automation: crate::green::AutomationStore,
+    /// (behind, ahead) per workspace against the upstream base.
+    pub divergence: HashMap<WorkspaceId, (u32, u32)>,
+    /// Workspaces with a rebase stopped part-way.
+    pub rebasing: std::collections::HashSet<WorkspaceId>,
     /// Shared resources currently held by a run (§7 rule 2).
     pub locks_held: Vec<String>,
 }
@@ -80,6 +84,8 @@ impl AppState {
                 reviews: Default::default(),
                 human_edits: HashMap::new(),
                 automation: Default::default(),
+                divergence: HashMap::new(),
+                rebasing: Default::default(),
                 locks_held: Vec::new(),
             }),
             events,
@@ -162,6 +168,9 @@ impl AppState {
                     })
                     .collect(),
                 files: inner.files.get(&w.id).cloned().unwrap_or_default(),
+                behind: inner.divergence.get(&w.id).map(|d| d.0).unwrap_or(0),
+                ahead: inner.divergence.get(&w.id).map(|d| d.1).unwrap_or(0),
+                rebasing: inner.rebasing.contains(&w.id),
             })
             .collect();
         workspaces.sort_by(|a, b| b.is_main.cmp(&a.is_main).then(a.id.cmp(&b.id)));
@@ -364,6 +373,10 @@ impl AppState {
             (w.path.clone(), w.is_main())
         };
         let set = git::status(&path, is_main)?;
+        // Recomputed alongside the file list, so the two always describe the
+        // same moment.
+        let divergence = git::divergence(&path, &self.cfg.upstream_ref).ok();
+        let rebasing = git::rebase_in_progress(&path);
         // Branches accumulate and are never removed (§2): a PR still belongs to
         // the session that made it after you have moved on to another branch.
         let branch = git::current_branch(&path).ok();
@@ -372,6 +385,14 @@ impl AppState {
             w.branches.insert(b);
         }
         inner.files.insert(workspace.to_string(), set);
+        if let Some(d) = divergence {
+            inner.divergence.insert(workspace.to_string(), d);
+        }
+        if rebasing {
+            inner.rebasing.insert(workspace.to_string());
+        } else {
+            inner.rebasing.remove(workspace);
+        }
         for s in inner.sessions.values_mut() {
             if s.workspace == workspace {
                 s.dirty_paths.clear();
@@ -421,6 +442,11 @@ pub struct WorkspaceView {
     pub branches: Vec<String>,
     pub processes: Vec<ProcessView>,
     pub files: FileSet,
+    /// Commits on `upstream/develop` this branch does not have. Drives the
+    /// rebase affordance.
+    pub behind: u32,
+    pub ahead: u32,
+    pub rebasing: bool,
 }
 
 #[derive(Debug, Serialize)]
