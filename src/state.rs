@@ -469,6 +469,9 @@ pub struct SessionView {
     pub title: Option<String>,
     pub cwd: String,
     pub rank: u8,
+    /// Whether this is idle time worth counting. A session you just opened is
+    /// idle but not waiting on you in the sense the rail exists to surface.
+    pub wants_attention: bool,
     /// How long this session has been waiting on you. With 4-6 sessions the
     /// cost of the whole tool is measured in agent-minutes spent idle (§2).
     pub waiting_ms: Option<u64>,
@@ -494,6 +497,7 @@ impl SessionView {
             title: s.title.clone(),
             cwd: s.cwd.to_string_lossy().into_owned(),
             rank: s.sort_rank(),
+            wants_attention: s.state.wants_attention(),
             waiting_ms,
             created_ms: now
                 .duration_since(s.created_at)

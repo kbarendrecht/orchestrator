@@ -59,6 +59,10 @@ pub enum TurnReason {
     AskedAQuestion,
     /// Rare in auto mode.
     NeedsPermission,
+    /// Opened, never prompted. Idle in the sense that matters to the guards —
+    /// nothing is running and nothing will until you type — but not idle in the
+    /// sense the rail shouts about, because you only just opened it.
+    Ready,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -92,7 +96,14 @@ impl State {
         match self {
             State::BuildFailing { .. } => 0,
             State::Error { .. } => 1,
-            State::YourTurn { .. } => 2,
+            // A finished turn outranks a session you have not typed into yet.
+            State::YourTurn { reason, .. } => {
+                if *reason == TurnReason::Ready {
+                    3
+                } else {
+                    2
+                }
+            }
             State::Working | State::Starting => 3,
             State::Exited => 5,
             State::Archived { .. } => 6,
@@ -108,6 +119,29 @@ impl State {
 
     pub fn is_live(&self) -> bool {
         !matches!(self, State::Exited | State::Archived { .. })
+    }
+
+    /// Whether an agent is actually doing something here.
+    ///
+    /// Not the same as "live": a session waiting at its prompt, or one stopped
+    /// on a red build, is live but idle. Actions that would fight a running
+    /// agent — rebasing under it, starting `/green` on its branch — ask this,
+    /// not `is_live`.
+    pub fn is_busy(&self) -> bool {
+        matches!(self, State::Working | State::Starting)
+    }
+
+    /// Whether this is idle time worth surfacing as attention.
+    ///
+    /// A session you opened a moment ago and have not typed into is not an
+    /// agent waiting on you, so it does not join the count (§2's metric is
+    /// agent-minutes lost, not terminal-minutes open).
+    pub fn wants_attention(&self) -> bool {
+        match self {
+            State::YourTurn { reason, .. } => *reason != TurnReason::Ready,
+            State::BuildFailing { .. } | State::Error { .. } => true,
+            _ => false,
+        }
     }
 }
 
@@ -296,3 +330,48 @@ pub struct FileSet {
 }
 
 pub type FileSets = HashMap<WorkspaceId, FileSet>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn your_turn(reason: TurnReason) -> State {
+        State::YourTurn {
+            since: SystemTime::now(),
+            reason,
+        }
+    }
+
+    #[test]
+    fn a_freshly_opened_session_is_not_busy() {
+        // The bug this exists for: it read as Working, so rebasing in that
+        // workspace was refused as "a session is working here".
+        assert!(!your_turn(TurnReason::Ready).is_busy());
+    }
+
+    #[test]
+    fn only_a_running_agent_counts_as_busy() {
+        assert!(State::Working.is_busy());
+        assert!(State::Starting.is_busy());
+        assert!(!your_turn(TurnReason::TurnComplete).is_busy());
+        // Stopped on a red build is idle too: it reached Stop and wants you.
+        assert!(!State::BuildFailing { summary: "x".into() }.is_busy());
+        assert!(!State::Exited.is_busy());
+    }
+
+    #[test]
+    fn ready_is_idle_without_demanding_attention() {
+        assert!(!your_turn(TurnReason::Ready).wants_attention());
+        assert!(your_turn(TurnReason::TurnComplete).wants_attention());
+        assert!(your_turn(TurnReason::AskedAQuestion).wants_attention());
+        assert!(State::BuildFailing { summary: "x".into() }.wants_attention());
+        assert!(!State::Working.wants_attention());
+    }
+
+    #[test]
+    fn a_finished_turn_outranks_one_you_never_typed_into() {
+        assert!(your_turn(TurnReason::TurnComplete).rank() < your_turn(TurnReason::Ready).rank());
+        assert!(State::BuildFailing { summary: "x".into() }.rank()
+            < your_turn(TurnReason::TurnComplete).rank());
+    }
+}

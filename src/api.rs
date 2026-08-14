@@ -593,11 +593,10 @@ pub async fn green_pr(
 
     let verdict = {
         let inner = app.inner.read().await;
-        let branch_busy = inner.sessions.values().any(|s| {
-            s.workspace == workspace
-                && s.state.is_live()
-                && !matches!(s.state, crate::model::State::YourTurn { .. })
-        });
+        let branch_busy = inner
+            .sessions
+            .values()
+            .any(|s| s.workspace == workspace && s.state.is_busy());
         let running_automations = inner
             .sessions
             .values()
@@ -719,11 +718,11 @@ pub async fn rebase(
     }
     {
         let inner = app.inner.read().await;
-        if inner.sessions.values().any(|s| {
-            s.workspace == workspace
-                && s.state.is_live()
-                && !matches!(s.state, crate::model::State::YourTurn { .. })
-        }) {
+        if inner
+            .sessions
+            .values()
+            .any(|s| s.workspace == workspace && s.state.is_busy())
+        {
             return Err(ApiError(anyhow::anyhow!(
                 "a session is working here; rebasing under it would fight it"
             )));
