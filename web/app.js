@@ -221,6 +221,7 @@ function render() {
   renderContext();
   renderDrawer();
   renderFiles();
+  renderReviews();
 }
 
 function renderRail() {
@@ -924,6 +925,90 @@ function cycleBase() {
   diffState.context = 3;
   renderFiles();
   if (diffState.open) openDiff(diffState.path);
+}
+
+
+// ---------------------------------------------------------------------------
+// Review queue (§6b)
+// ---------------------------------------------------------------------------
+
+let showReviews = true;
+
+function reviewAge(hours) {
+  if (hours < 1) return 'just now';
+  if (hours < 48) return `${Math.round(hours)}h`;
+  return `${Math.round(hours / 24)}d`;
+}
+
+/** Why this row is in your queue, when there is a reason worth the width. */
+function reviewReason(r) {
+  if (r.blockers && r.blockers.length) return r.blockers[0];
+  if (r.needs_re_review) return 're-requested';
+  if (r.is_draft) return 'draft';
+  if (r.prio === 0) return 'prio stopper';
+  if (r.prio === 1) return 'prio';
+  if (r.prio === 3) return 'team';
+  return '';
+}
+
+function renderReviews() {
+  const block = $('rvblock');
+  const head = $('rvhead');
+  const list = $('rvlist');
+  head.replaceChildren();
+  list.replaceChildren();
+  block.classList.toggle('closed', !showReviews);
+
+  const rv = snap.reviews;
+  head.appendChild(el('span', 'eyebrow', 'Review queue'));
+  const count = el('span', 'rvcount');
+
+  if (!rv || rv.state !== 'ok') {
+    // Never an empty queue: a broken command reads as broken (§6b).
+    count.appendChild(el('span', 'f', 'unavailable'));
+    head.appendChild(count);
+    head.title = rv?.reason || 'not polled yet';
+    const note = el('div', 'fempty', `reviews unavailable\n${(rv?.reason || '').slice(0, 160)}`);
+    list.appendChild(note);
+    head.onclick = () => { showReviews = !showReviews; renderReviews(); };
+    return;
+  }
+
+  const rows = rv.actionable || [];
+  const blocked = rv.blocked || [];
+  const oldest = rows.reduce((a, r) => Math.max(a, r.age_hours || 0), 0);
+  count.appendChild(el('span', rows.length ? 'n' : null,
+    rows.length ? `${rows.length} waiting · oldest ${reviewAge(oldest)}` : 'clear'));
+  head.appendChild(count);
+  head.onclick = () => { showReviews = !showReviews; renderReviews(); };
+
+  // The file-count column only earns its width once the source emits it.
+  const anyFiles = [...rows, ...blocked].some((r) => r.changed_files != null);
+
+  const rowFor = (r, dim) => {
+    // Rows are anchors, so ⌘-click and copy-link behave, and the browser
+    // already holds the GitHub session (§6b).
+    const a = el('a', 'rvrow' + (dim ? ' dim' : ''));
+    // Review mode is the files-changed tab, which is where reviewing happens.
+    a.href = `${r.url}/files`;
+    a.target = '_blank';
+    a.rel = 'noreferrer';
+    a.appendChild(el('span', 'dot'));           // always grey here
+    a.appendChild(el('span', 'num', `#${r.number}`));
+    a.appendChild(el('span', 'ttl', r.title));
+    a.appendChild(el('span', 'who', r.author));
+    // File count stands in for review cost — 37 files is a different
+    // commitment from 1 — but an empty column just steals width from the title.
+    if (anyFiles) a.appendChild(el('span', 'fc', r.changed_files != null ? String(r.changed_files) : '·'));
+    const why = reviewReason(r);
+    if (why) a.appendChild(el('span', 'why', why));
+    return a;
+  };
+
+  for (const r of rows) list.appendChild(rowFor(r, false));
+  if (!rows.length) list.appendChild(el('div', 'fempty', 'Nothing waiting on you.'));
+  // Waiting on someone else, so sunk to the bottom rather than dropped.
+  for (const r of blocked) list.appendChild(rowFor(r, true));
 }
 
 // ---------------------------------------------------------------------------

@@ -7,6 +7,7 @@ mod hooks;
 mod model;
 mod pty;
 mod ring;
+mod reviews;
 mod spawn;
 mod state;
 mod store;
@@ -87,6 +88,7 @@ async fn main() -> Result<()> {
     reconcile_all(&app).await;
     autostart_processes(&app).await;
     start_pr_poller(app.clone());
+    start_review_poller(app.clone());
 
     let port = app.cfg.port;
     let router = Router::new()
@@ -246,6 +248,30 @@ fn start_pr_poller(app: Arc<AppState>) {
                     inner.pr_error = Some(format!("{e:#}"));
                 }
             }
+            app.notify().await;
+            tokio::time::sleep(interval).await;
+        }
+    });
+}
+
+/// Own timer, offset from the PR poll so the two do not burst together (§6b).
+fn start_review_poller(app: Arc<AppState>) {
+    tokio::spawn(async move {
+        let interval = std::time::Duration::from_secs(app.cfg.poll_seconds.max(30));
+        // Half the period out of phase with the PR poller.
+        tokio::time::sleep(interval / 2).await;
+        loop {
+            let main = app.cfg.main_checkout.clone();
+            let timeout = app.cfg.review_timeout_seconds;
+            let state = tokio::task::spawn_blocking(move || reviews::fetch(&main, timeout))
+                .await
+                .unwrap_or_else(|e| reviews::ReviewState::Degraded {
+                    reason: format!("review poll task failed: {e}"),
+                });
+            if let reviews::ReviewState::Degraded { reason } = &state {
+                tracing::warn!("review queue degraded: {reason}");
+            }
+            app.inner.write().await.reviews = state;
             app.notify().await;
             tokio::time::sleep(interval).await;
         }
