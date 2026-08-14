@@ -269,8 +269,12 @@ pub async fn spawn_shell(app: &Arc<AppState>, workspace: &str) -> Result<String>
         }
     }
 
-    // Shells are disposable: a dead one keeps its buffer and shows its exit code
-    // until dismissed.
+    // Ctrl+D means close. A shell that exits cleanly is removed outright rather
+    // than left as a corpse tab you have to hunt down an × to clear.
+    //
+    // §2 says a dead shell keeps its buffer "until dismissed", and that is still
+    // true of the case it was written for: a shell that died on its own, with a
+    // non-zero code, keeps its output so the failure is not swallowed.
     let app2 = app.clone();
     let ws = workspace.to_string();
     let pid2 = proc_id.clone();
@@ -279,7 +283,9 @@ pub async fn spawn_shell(app: &Arc<AppState>, workspace: &str) -> Result<String>
         {
             let mut inner = app2.inner.write().await;
             if let Some(w) = inner.workspaces.get_mut(&ws) {
-                if let Some(p) = w.processes.iter_mut().find(|p| p.id == pid2) {
+                if code == 0 {
+                    w.processes.retain(|p| p.id != pid2);
+                } else if let Some(p) = w.processes.iter_mut().find(|p| p.id == pid2) {
                     p.kind = ProcKind::Shell {
                         exit_code: Some(code),
                     };
