@@ -209,3 +209,60 @@ button.ctx-btn:hover{color:var(--text)}
 }
 .toast.on{opacity:1}
 .toast.bad{border-color:var(--bad);color:var(--bad)}
+
+/* ---------- diff overlay (§5) ---------- */
+.overlay{
+  position:absolute;inset:0;background:var(--bg);z-index:20;
+  display:none;flex-direction:column;
+}
+.overlay.on{display:flex}
+.ov-head{display:flex;align-items:center;gap:12px;padding:9px 15px;border-bottom:1px solid var(--line);background:var(--surface);flex:0 0 auto}
+.ov-path{font-family:var(--mono);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ov-path span{color:var(--faint-solid)}
+.ov-nav{margin-left:auto;display:flex;align-items:center;gap:8px;flex:0 0 auto}
+.ov-count{font-family:var(--mono);font-size:10px;color:var(--faint-solid)}
+.head-btn{
+  font-family:var(--label);font-size:8.5px;font-weight:700;letter-spacing:.1em;
+  text-transform:uppercase;color:var(--dim);padding:4px 8px;border:1px solid var(--line);border-radius:2px;
+}
+.head-btn:hover{color:var(--text);border-color:var(--faint-solid)}
+
+.diff{flex:1;overflow:auto;font-family:var(--mono);font-size:11.5px;line-height:1.65}
+/* align-content:start matters: the grid is taller than its rows, and the
+   default `stretch` hands the leftover height to every auto-sized row, so a
+   one-line diff row renders four lines tall. */
+.diff.split{display:grid;grid-template-columns:1fr 22px 1fr;align-items:stretch;align-content:start}
+.pane{min-width:0}
+.gutter{background:var(--surface);border-left:1px solid var(--line-soft);border-right:1px solid var(--line-soft);height:100%}
+.ln{display:grid;grid-template-columns:44px 1fr;white-space:pre-wrap;word-break:break-word}
+.ln i{color:#4C4C4C;text-align:right;padding-right:10px;font-style:normal;user-select:none}
+.ln s{text-decoration:none;padding:0 10px;display:block}
+.ln.add s{background:var(--add)}
+.ln.del s{background:var(--del)}
+.ln.empty s{background:#0B0B0B}
+.w-add{background:var(--add-hi);border-radius:2px}
+.w-del{background:var(--del-hi);border-radius:2px}
+.ln.cur s{box-shadow:inset 2px 0 0 var(--attn)}
+:root{
+  --add:rgba(95,169,124,.13);
+  --add-hi:rgba(95,169,124,.32);
+  --del:rgba(201,97,90,.13);
+  --del-hi:rgba(201,97,90,.32);
+}
+.fold{
+  padding:3px 12px;color:var(--faint-solid);background:#0B0B0B;
+  border-top:1px solid var(--line-soft);border-bottom:1px solid var(--line-soft);
+  font-size:10.5px;cursor:pointer;grid-column:1/-1;
+}
+.fold:hover{color:var(--dim)}
+.diffnote{padding:22px 15px;font-family:var(--mono);font-size:10.5px;color:var(--ghost);grid-column:1/-1}
+
+/* diff file list in the right pane */
+.dfrow{
+  width:100%;display:grid;grid-template-columns:11px 1fr auto;gap:8px;align-items:center;
+  padding:3.5px 13px;text-align:left;font-family:var(--mono);font-size:11px;
+}
+.dfrow:hover{background:var(--raised)}
+.dfrow[aria-current="true"]{background:var(--raised)}
+.dfnum{font-size:9.5px;color:var(--faint-solid);letter-spacing:-.02em;white-space:nowrap}
+.dfnum .p{color:var(--ok)}.dfnum .m{color:var(--bad)}

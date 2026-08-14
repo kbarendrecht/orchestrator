@@ -509,9 +509,48 @@ function renderFiles() {
   const panes = $('filepanes');
   panes.replaceChildren();
 
+  $('basebtn').textContent = BASES.find(([k]) => k === diffState.base)?.[1] ?? '';
+  $('filestitle').textContent = diffState.open ? 'Changeset' : 'Changed files';
+
   if (!w) {
     panes.appendChild(el('div', 'fempty', 'No workspace selected.'));
     $('filesfoot').textContent = '';
+    return;
+  }
+
+  // With the diff open the pane becomes the whole-changeset file list, which is
+  // a different set from `git status`: it includes committed work (§5).
+  if (diffState.open) {
+    const sum = diffState.summary;
+    if (!sum) {
+      panes.appendChild(el('div', 'fempty', 'No diff available.'));
+      $('filesfoot').textContent = '';
+      return;
+    }
+    for (const f of sum.files) {
+      const row = el('button', 'dfrow');
+      row.setAttribute('aria-current', String(f.path === diffState.path));
+      const letter = f.status[0] || 'M';
+      row.appendChild(el('span', 'fst ' + letter, letter));
+      const n = el('span', 'fname');
+      n.textContent = '‪' + f.path;
+      n.title = f.path;
+      row.appendChild(n);
+      const nums = el('span', 'dfnum');
+      if (f.binary) {
+        nums.textContent = 'bin';
+      } else {
+        nums.appendChild(el('span', 'p', `+${f.added}`));
+        nums.appendChild(document.createTextNode(' '));
+        nums.appendChild(el('span', 'm', `−${f.deleted}`));
+      }
+      row.appendChild(nums);
+      row.onclick = () => { diffState.cursor = 0; diffState.context = 3; loadFile(f.path); };
+      panes.appendChild(row);
+    }
+    if (!sum.files.length) panes.appendChild(el('div', 'fempty', 'Nothing changed against this base.'));
+    $('filesfoot').textContent =
+      `${sum.files.length} files · +${sum.added} −${sum.deleted} · base ${sum.base.slice(0, 7)}`;
     return;
   }
 
@@ -527,25 +566,267 @@ function renderFiles() {
     panes.appendChild(el('div', 'fgroup')).appendChild(
       el('span', 'eyebrow', `${label} · ${files.length}`));
     for (const f of files) {
-      const row = el('div', 'frow');
+      const row = el('button', 'frow');
       const letter = f.status === 'untracked' ? 'U'
         : (f.code.replace(/\./g, '')[0] || 'M');
       row.appendChild(el('span', 'fst ' + letter, letter));
       const n = el('span', 'fname');
-      // RTL truncation keeps the filename visible and elides the directory.
       n.textContent = '‪' + f.path;
       n.title = f.path;
       row.appendChild(n);
+      // Clicking a changed file is the fastest way into the diff.
+      row.onclick = () => openDiff(f.path);
       panes.appendChild(row);
     }
   }
 
-  if (!total) {
-    panes.appendChild(el('div', 'fempty', 'Clean tree.'));
-  }
+  if (!total) panes.appendChild(el('div', 'fempty', 'Clean tree.'));
   $('filesfoot').textContent = w.is_main
     ? `${total} changed · worktrees excluded`
     : `${total} changed`;
+}
+
+/** Filled in by the PR poller; until then nothing maps to a PR base. */
+function prForWorkspace() {
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// Diff (§5)
+// ---------------------------------------------------------------------------
+
+const BASES = [
+  ['upstream', 'vs upstream/develop'],
+  ['head', 'vs HEAD'],
+  ['pr_base', 'vs PR base'],
+];
+
+const diffState = {
+  open: false,
+  base: 'upstream',
+  summary: null,     // { base, files, added, deleted }
+  path: null,
+  file: null,        // { path, hunks, binary }
+  split: true,
+  cursor: 0,         // index into the current file's change blocks
+  context: 3,
+};
+
+/* Byte offsets come from Rust; JS strings are UTF-16. Decode through the byte
+   array rather than assuming ASCII, or a line with an accent in it highlights
+   the wrong span. */
+const ENC = new TextEncoder();
+const DEC = new TextDecoder();
+function lineEl(row, side) {
+  // side: 'old' | 'new'. In split view each pane shows only its own side.
+  const empty = !row || (side === 'old' && row.kind === 'add') ||
+                        (side === 'new' && row.kind === 'del');
+  const div = el('div', 'ln' + (empty ? ' empty' : row.kind === 'add' ? ' add' : row.kind === 'del' ? ' del' : ''));
+  const num = el('i', null, empty ? '' : String((side === 'old' ? row.old : row.new) ?? ''));
+  div.appendChild(num);
+  const body = el('s');
+  if (!empty) {
+    if (row.words && row.words.length) {
+      // Ranges arrive ordered and non-overlapping, so one pass covers them all.
+      const bytes = ENC.encode(row.text);
+      const cls = row.kind === 'add' ? 'w-add' : 'w-del';
+      let at = 0;
+      for (const [ws, we] of row.words) {
+        if (ws > at) body.appendChild(document.createTextNode(DEC.decode(bytes.slice(at, ws))));
+        body.appendChild(el('span', cls, DEC.decode(bytes.slice(ws, we))));
+        at = we;
+      }
+      if (at < bytes.length) body.appendChild(document.createTextNode(DEC.decode(bytes.slice(at))));
+    } else {
+      body.textContent = row.text || ' ';
+    }
+  }
+  div.appendChild(body);
+  return div;
+}
+
+/** Align a hunk's rows into side-by-side pairs.
+ *
+ *  The server emits deletions then additions; split view needs them abreast,
+ *  padding the shorter run so the two panes stay in step. */
+function pairRows(rows) {
+  const out = [];
+  let i = 0;
+  while (i < rows.length) {
+    if (rows[i].kind === 'context') {
+      out.push([rows[i], rows[i]]);
+      i += 1;
+      continue;
+    }
+    const dels = [];
+    const adds = [];
+    while (i < rows.length && rows[i].kind === 'del') dels.push(rows[i++]);
+    while (i < rows.length && rows[i].kind === 'add') adds.push(rows[i++]);
+    const n = Math.max(dels.length, adds.length);
+    for (let k = 0; k < n; k++) out.push([dels[k] ?? null, adds[k] ?? null]);
+    // A row that is neither context nor a del/add run would loop forever.
+    if (!dels.length && !adds.length) i += 1;
+  }
+  return out;
+}
+
+function renderDiff() {
+  const body = $('diffbody');
+  body.replaceChildren();
+  body.className = 'diff' + (diffState.split ? ' split' : '');
+  const f = diffState.file;
+
+  $('ovpath').replaceChildren();
+  if (diffState.path) {
+    const parts = diffState.path.split('/');
+    const name = parts.pop();
+    $('ovpath').appendChild(el('span', null, parts.length ? parts.join('/') + '/' : ''));
+    $('ovpath').appendChild(document.createTextNode(name));
+  }
+  $('ovmode').textContent = diffState.split ? 'Unified' : 'Split';
+
+  const note = (t) => {
+    body.appendChild(el('div', 'diffnote', t));
+    $('ovcount').textContent = '';
+    diffState.anchors = [];
+  };
+  if (!f) return note('Select a file.');
+  if (f.binary) return note('Binary file — not shown.');
+  if (!f.hunks.length) return note('No textual changes against this base.');
+
+  const anchors = [];
+  let block = -1;
+
+  // Every row is three grid cells in split view and one in unified, so a fold
+  // spanning the full width interleaves naturally between hunks.
+  const push3 = (a, b) => {
+    body.appendChild(a);
+    body.appendChild(el('div', 'gutter'));
+    body.appendChild(b);
+  };
+
+  for (const h of f.hunks) {
+    if (h.gap_before > 0) {
+      const b = el('div', 'fold', `⋯ ${h.gap_before} unchanged lines — click to expand`);
+      b.onclick = () => {
+        diffState.context = Math.min(diffState.context + Math.max(h.gap_before, 20), 10000);
+        loadFile(diffState.path);
+      };
+      body.appendChild(b);
+    }
+
+    if (diffState.split) {
+      let splitInBlock = false;
+      for (const [o, n] of pairRows(h.rows)) {
+        const lo = lineEl(o, 'old');
+        const ro = lineEl(n, 'new');
+        const changed = o?.kind === 'del' || n?.kind === 'add';
+        if (changed) {
+          if (!splitInBlock) { block += 1; anchors.push(lo); splitInBlock = true; }
+          lo.dataset.blk = ro.dataset.blk = String(block);
+        } else {
+          splitInBlock = false;
+        }
+        push3(lo, ro);
+      }
+    } else {
+      let inBlock = false;
+      for (const r of h.rows) {
+        const e = lineEl(r, r.kind === 'del' ? 'old' : 'new');
+        if (r.kind !== 'context') {
+          if (!inBlock) { block += 1; anchors.push(e); inBlock = true; }
+          e.dataset.blk = String(block);
+        } else {
+          inBlock = false;
+        }
+        body.appendChild(e);
+      }
+    }
+  }
+
+  diffState.anchors = anchors;
+  diffState.cursor = Math.min(diffState.cursor, Math.max(anchors.length - 1, 0));
+  markCursor();
+}
+
+function markCursor() {
+  for (const e of $('diffbody').querySelectorAll('.ln.cur')) e.classList.remove('cur');
+  const a = (diffState.anchors || [])[diffState.cursor];
+  if (!a) return;
+  a.classList.add('cur');
+  a.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  $('ovcount').textContent = `change ${diffState.cursor + 1} of ${diffState.anchors.length}`;
+}
+
+function stepChange(delta) {
+  const n = (diffState.anchors || []).length;
+  if (!n) return;
+  diffState.cursor = (diffState.cursor + delta + n) % n;
+  markCursor();
+}
+
+async function loadSummary() {
+  const ws = currentWorkspaceId();
+  if (!ws) return;
+  const q = new URLSearchParams({ workspace: ws, base: diffState.base });
+  const pr = prForWorkspace(ws);
+  if (pr && pr.base_ref) q.set('pr_base', pr.base_ref);
+  try {
+    diffState.summary = await get(`/api/diff?${q}`);
+  } catch (e) {
+    diffState.summary = null;
+    toast(e.message, true);
+  }
+  renderFiles();
+}
+
+async function loadFile(path) {
+  const ws = currentWorkspaceId();
+  if (!ws) return;
+  diffState.path = path;
+  const q = new URLSearchParams({
+    workspace: ws, base: diffState.base, path, context: String(diffState.context),
+  });
+  const pr = prForWorkspace(ws);
+  if (pr && pr.base_ref) q.set('pr_base', pr.base_ref);
+  try {
+    diffState.file = await get(`/api/diff/file?${q}`);
+  } catch (e) {
+    diffState.file = null;
+    toast(e.message, true);
+  }
+  renderDiff();
+  renderFiles();
+}
+
+async function openDiff(path) {
+  diffState.open = true;
+  diffState.context = 3;
+  $('overlay').classList.add('on');
+  await loadSummary();
+  const first = path || diffState.summary?.files?.[0]?.path;
+  if (first) {
+    diffState.cursor = 0;
+    await loadFile(first);
+  } else {
+    renderDiff();
+  }
+}
+
+function closeDiff() {
+  diffState.open = false;
+  diffState.file = null;
+  diffState.path = null;
+  $('overlay').classList.remove('on');
+  renderFiles();
+}
+
+function cycleBase() {
+  const i = BASES.findIndex(([k]) => k === diffState.base);
+  diffState.base = BASES[(i + 1) % BASES.length][0];
+  diffState.context = 3;
+  renderFiles();
+  if (diffState.open) openDiff(diffState.path);
 }
 
 // ---------------------------------------------------------------------------
@@ -624,6 +905,12 @@ async function teardown(wsId) {
   }
 }
 
+$('diffbtn').onclick = () => (diffState.open ? closeDiff() : openDiff());
+$('ovclose').onclick = closeDiff;
+$('ovprev').onclick = () => stepChange(-1);
+$('ovnext').onclick = () => stepChange(1);
+$('ovmode').onclick = () => { diffState.split = !diffState.split; renderDiff(); };
+$('basebtn').onclick = cycleBase;
 $('addshell').onclick = newShell;
 $('shellbtn').onclick = newShell;
 $('refreshbtn').onclick = () => {
@@ -640,6 +927,19 @@ $('killbtn').onclick = () => {
 // ---------------------------------------------------------------------------
 
 window.addEventListener('keydown', (e) => {
+  if (diffState.open) {
+    if (e.key === 'Escape') { e.preventDefault(); closeDiff(); return; }
+    if (e.key === 'F7') {
+      e.preventDefault();
+      stepChange(e.shiftKey ? -1 : 1);
+      return;
+    }
+  }
+  if (e.altKey && e.key === 'd') {
+    e.preventDefault();
+    diffState.open ? closeDiff() : openDiff();
+    return;
+  }
   // Modifier combinations xterm does not claim, so they work with the terminal
   // focused.
   if (e.ctrlKey && e.key === '`') {

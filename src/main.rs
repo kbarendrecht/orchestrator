@@ -1,5 +1,6 @@
 mod api;
 mod config;
+mod diff;
 mod git;
 mod hooks;
 mod model;
@@ -93,6 +94,8 @@ async fn main() -> Result<()> {
         .route("/vendor/:file", get(vendor))
         .route("/api/state", get(api::get_state))
         .route("/api/merge-base", get(api::merge_base))
+        .route("/api/diff", get(api::diff_summary))
+        .route("/api/diff/file", get(api::diff_file))
         .route("/api/session", post(api::new_session))
         .route("/api/session/:id/kill", post(api::kill_session))
         .route("/api/session/:id/resume", post(api::resume_session))

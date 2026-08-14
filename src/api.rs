@@ -353,3 +353,73 @@ mod tests {
         assert!(!host_allowed("127.0.0.1", 7777));
     }
 }
+
+// ---------------------------------------------------------------------------
+// Diff (§5)
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+pub struct DiffQuery {
+    pub workspace: String,
+    #[serde(default)]
+    pub base: crate::diff::Base,
+    #[serde(default)]
+    pub pr_base: Option<String>,
+}
+
+async fn base_for(
+    app: &Arc<AppState>,
+    q: &DiffQuery,
+) -> Result<(std::path::PathBuf, String), ApiError> {
+    let path = app
+        .workspace_path(&q.workspace)
+        .await
+        .ok_or_else(|| anyhow::anyhow!("unknown workspace {}", q.workspace))?;
+    let base = crate::diff::resolve_base(
+        &path,
+        q.base,
+        &app.cfg.upstream_ref,
+        q.pr_base.as_deref(),
+    )?;
+    Ok((path, base))
+}
+
+pub async fn diff_summary(
+    State(app): State<Arc<AppState>>,
+    Query(q): Query<DiffQuery>,
+) -> ApiResult<crate::diff::DiffSummary> {
+    let (path, base) = base_for(&app, &q).await?;
+    Ok(Json(crate::diff::summary(&path, &base)?))
+}
+
+#[derive(Deserialize)]
+pub struct FileDiffQuery {
+    pub workspace: String,
+    pub path: String,
+    #[serde(default)]
+    pub base: crate::diff::Base,
+    #[serde(default)]
+    pub pr_base: Option<String>,
+    /// Widening this is how expand-on-click is served.
+    #[serde(default = "default_context")]
+    pub context: u32,
+}
+
+fn default_context() -> u32 {
+    3
+}
+
+pub async fn diff_file(
+    State(app): State<Arc<AppState>>,
+    Query(q): Query<FileDiffQuery>,
+) -> ApiResult<crate::diff::FileDiff> {
+    let dq = DiffQuery {
+        workspace: q.workspace.clone(),
+        base: q.base,
+        pr_base: q.pr_base.clone(),
+    };
+    let (path, base) = base_for(&app, &dq).await?;
+    // A pathological context value would ask git for the whole repo.
+    let context = q.context.min(10_000);
+    Ok(Json(crate::diff::file_diff(&path, &base, &q.path, context)?))
+}
