@@ -52,13 +52,14 @@ pub struct ReviewQueue {
 pub enum ReviewState {
     Ok(ReviewQueue),
     Degraded { reason: String },
+    /// Before the first poll lands. Distinct from `Degraded` so startup does
+    /// not read as a broken command — and so it never becomes a TODO entry.
+    Pending,
 }
 
 impl Default for ReviewState {
     fn default() -> Self {
-        ReviewState::Degraded {
-            reason: "not polled yet".into(),
-        }
+        ReviewState::Pending
     }
 }
 
@@ -251,11 +252,10 @@ mod tests {
     }
 
     #[test]
-    fn an_unknown_version_degrades() {
-        let e = ReviewState::Degraded { reason: "x".into() };
-        assert!(matches!(e, ReviewState::Degraded { .. }));
-        // And the default before the first poll is degraded, not an empty Ok.
-        assert!(matches!(ReviewState::default(), ReviewState::Degraded { .. }));
+    fn the_state_before_the_first_poll_is_pending_not_degraded() {
+        // Degraded means the command is broken and someone should look; startup
+        // is not that, and treating it as such cries wolf on every restart.
+        assert!(matches!(ReviewState::default(), ReviewState::Pending));
     }
 
     #[test]

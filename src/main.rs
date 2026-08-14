@@ -2,6 +2,7 @@ mod api;
 mod capability;
 mod config;
 mod diff;
+mod edit;
 mod git;
 mod github;
 mod hooks;
@@ -11,6 +12,7 @@ mod ring;
 mod reviews;
 mod spawn;
 mod state;
+mod todo;
 mod store;
 mod worktree;
 mod ws;
@@ -90,6 +92,7 @@ async fn main() -> Result<()> {
     autostart_processes(&app).await;
     start_pr_poller(app.clone());
     start_review_poller(app.clone());
+    start_todo_writer(app.clone());
 
     let port = app.cfg.port;
     let router = Router::new()
@@ -101,6 +104,8 @@ async fn main() -> Result<()> {
         .route("/api/merge-base", get(api::merge_base))
         .route("/api/diff", get(api::diff_summary))
         .route("/api/diff/file", get(api::diff_file))
+        .route("/api/file", get(api::read_file))
+        .route("/api/file", post(api::write_file))
         .route("/api/session", post(api::new_session))
         .route("/api/session/:id/kill", post(api::kill_session))
         .route("/api/session/:id/resume", post(api::resume_session))
@@ -123,6 +128,7 @@ async fn main() -> Result<()> {
         // write-only observers (§12).
         .route("/hooks/session-start", post(hooks::session_start))
         .route("/hooks/user-prompt-submit", post(hooks::user_prompt_submit))
+        .route("/hooks/pre-edit", post(hooks::pre_edit))
         .route("/hooks/post-tool-use", post(hooks::post_tool_use))
         .route("/hooks/notification/:kind", post(hooks::notification))
         .route("/hooks/stop", post(hooks::stop))
@@ -255,6 +261,107 @@ fn start_pr_poller(app: Arc<AppState>) {
             tokio::time::sleep(interval).await;
         }
     });
+}
+
+/// Keep TODO.md's generated block honest about what the daemon can currently
+/// see. Only conditions that are true now, so the list stays worth reading.
+fn start_todo_writer(app: Arc<AppState>) {
+    tokio::spawn(async move {
+        let path = app
+            .cfg
+            .todo_path
+            .clone()
+            .unwrap_or_else(todo::default_path);
+        loop {
+            let findings = live_findings(&app).await;
+            if let Err(e) = todo::update(&path, &findings) {
+                tracing::warn!("could not update {}: {e:#}", path.display());
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(app.cfg.poll_seconds.max(60))).await;
+        }
+    });
+}
+
+async fn live_findings(app: &Arc<AppState>) -> Vec<todo::Finding> {
+    let mut out = Vec::new();
+
+    if !app.cfg.persist_transcripts {
+        out.push(todo::Finding {
+            what: "transcripts are off".into(),
+            why: "spawned sessions write no `.jsonl`, so resume and the teardown transcript \
+                  check do nothing. Set `persist_transcripts` back to true when you are done \
+                  developing the daemon."
+                .into(),
+        });
+    }
+
+    let (workspaces, token, review_bad) = {
+        let inner = app.inner.read().await;
+        (
+            inner
+                .workspaces
+                .values()
+                .map(|w| (w.id.clone(), w.path.clone(), w.is_main()))
+                .collect::<Vec<_>>(),
+            inner.token_source,
+            match &inner.reviews {
+                crate::reviews::ReviewState::Degraded { reason } => Some(reason.clone()),
+                // Pending is startup, not a fault.
+                _ => None,
+            },
+        )
+    };
+
+    if token == Some(github::TokenSource::GhCli) {
+        out.push(todo::Finding {
+            what: "GitHub token is gh's".into(),
+            why: "it carries write scopes; §6 wants a read-only PAT in `ORCHD_GITHUB_TOKEN` \
+                  or `github_token_file`."
+                .into(),
+        });
+    }
+    if let Some(reason) = review_bad {
+        out.push(todo::Finding {
+            what: "review queue is unavailable".into(),
+            why: format!("`mise run reviews --json` is not answering: {}", reason.trim()),
+        });
+    }
+
+    // The capability probe is the one that finds real drift, so it drives the
+    // per-workspace entries.
+    for (id, path, is_main) in workspaces {
+        if is_main {
+            continue;
+        }
+        let cfg = app.cfg.capabilities.clone();
+        let main = app.cfg.main_checkout.clone();
+        let ws = id.clone();
+        let report = tokio::task::spawn_blocking(move || {
+            capability::report(&cfg, &ws, &path, &main, false)
+        })
+        .await;
+        let Ok(report) = report else { continue };
+
+        if let capability::AutoloadProbe::Outside { file } = &report.autoload {
+            out.push(todo::Finding {
+                what: format!("`{id}` cannot be trusted to run PHP suites"),
+                why: format!(
+                    "autoload resolves to `{file}`, outside the worktree, so a suite run there \
+                     loads main's code. §7's post-WIP table assumes otherwise."
+                ),
+            });
+        }
+        for d in report.deps.iter().filter(|d| d.present && !d.matches_main) {
+            out.push(todo::Finding {
+                what: format!("`{id}` has a stale `{}`", d.file),
+                why: "re-link from main; results from a frozen lockfile are not this \
+                      workspace's (§7 rule 3)."
+                    .into(),
+            });
+        }
+    }
+
+    out
 }
 
 /// Own timer, offset from the PR poll so the two do not burst together (§6b).

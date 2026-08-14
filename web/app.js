@@ -902,6 +902,7 @@ async function loadSummary() {
 async function loadFile(path) {
   const ws = currentWorkspaceId();
   if (!ws) return;
+  if (editState.on && path !== editState.path && !closeEditor()) return;
   diffState.path = path;
   const q = new URLSearchParams({
     workspace: ws, base: diffState.base, path, context: String(diffState.context),
@@ -933,6 +934,7 @@ async function openDiff(path) {
 }
 
 function closeDiff() {
+  if (editState.on && !closeEditor()) return;
   diffState.open = false;
   diffState.file = null;
   diffState.path = null;
@@ -948,6 +950,139 @@ function cycleBase() {
   if (diffState.open) openDiff(diffState.path);
 }
 
+
+
+// ---------------------------------------------------------------------------
+// Editable right pane (§5, step 9)
+// ---------------------------------------------------------------------------
+
+const editState = {
+  on: false,
+  path: null,
+  version: null,     // what the buffer was loaded at
+  dirty: false,
+  watch: null,       // polls for someone editing underneath you
+};
+
+function editQuery(extra) {
+  const ws = currentWorkspaceId();
+  const q = new URLSearchParams({ workspace: ws, path: diffState.path, ...extra });
+  const pr = prForWorkspace(ws);
+  if (pr && pr.base_ref) q.set('pr_base', pr.base_ref);
+  return q;
+}
+
+async function openEditor() {
+  if (!diffState.path || !diffState.file || diffState.file.binary) {
+    return toast('nothing editable here', true);
+  }
+  let live, base;
+  try {
+    [live, base] = await Promise.all([
+      get(`/api/file?${editQuery({})}`),
+      get(`/api/file?${editQuery({ base: diffState.base })}`),
+    ]);
+  } catch (e) {
+    return toast(e.message, true);
+  }
+
+  editState.on = true;
+  editState.path = diffState.path;
+  editState.version = live.version;
+  editState.dirty = false;
+  $('ovsave').hidden = false;
+  $('ovedit').textContent = 'Cancel';
+
+  const body = $('diffbody');
+  body.replaceChildren();
+  body.className = 'diff split editing';
+
+  // The left pane stays the base revision, read-only: this is an editable
+  // right pane, not a free-floating text editor.
+  const left = el('pre', 'editbase');
+  left.textContent = base.content;
+  body.appendChild(left);
+  body.appendChild(el('div', 'gutter'));
+
+  const ta = el('textarea', 'editarea');
+  ta.value = live.content;
+  ta.spellcheck = false;
+  ta.oninput = () => {
+    editState.dirty = true;
+    $('ovsave').textContent = 'Save •';
+  };
+  body.appendChild(ta);
+  ta.focus();
+
+  // Invalidation: an agent editing the same file underneath you must not be
+  // discovered only at save time (§5).
+  clearInterval(editState.watch);
+  editState.watch = setInterval(checkUnderneath, 4000);
+}
+
+async function checkUnderneath() {
+  if (!editState.on) return;
+  try {
+    const now = await get(`/api/file?${editQuery({})}`);
+    if (now.version !== editState.version) {
+      clearInterval(editState.watch);
+      editState.watch = null;
+      $('ovsave').textContent = 'Save (conflict)';
+      toast('this file changed on disk — an agent is editing it too. Saving will be refused.', true);
+    }
+  } catch (e) {
+    // A file that vanished is also a change worth knowing about, but not worth
+    // a second alarm; the save will report it.
+  }
+}
+
+function closeEditor(silent) {
+  if (editState.on && editState.dirty && !silent
+      && !confirm('Discard unsaved edits?')) return false;
+  clearInterval(editState.watch);
+  editState.watch = null;
+  editState.on = false;
+  editState.dirty = false;
+  $('ovsave').hidden = true;
+  $('ovsave').textContent = 'Save ⌘S';
+  $('ovedit').textContent = 'Edit';
+  renderDiff();
+  return true;
+}
+
+async function saveEditor() {
+  if (!editState.on) return;
+  const ta = $('diffbody').querySelector('.editarea');
+  if (!ta) return;
+  let out;
+  try {
+    out = await call('/api/file', {
+      workspace: currentWorkspaceId(),
+      path: editState.path,
+      content: ta.value,
+      version: editState.version,
+    });
+  } catch (e) {
+    return toast(e.message, true);
+  }
+  if (out.result === 'conflict') {
+    return toast(
+      'refused: the file changed on disk since you opened it. Cancel and reopen to see their version.',
+      true);
+  }
+  editState.version = out.version;
+  editState.dirty = false;
+  $('ovsave').textContent = 'Save ⌘S';
+  toast('saved');
+  // Re-diff so the changeset reflects the write.
+  await loadSummary();
+  const q = editQuery({ context: String(diffState.context) });
+  try {
+    diffState.file = await get(`/api/diff/file?${q}`);
+  } catch (e) {
+    /* the editor is still the source of truth on screen */
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Review queue (§6b)
@@ -985,12 +1120,15 @@ function renderReviews() {
   const count = el('span', 'rvcount');
 
   if (!rv || rv.state !== 'ok') {
-    // Never an empty queue: a broken command reads as broken (§6b).
-    count.appendChild(el('span', 'f', 'unavailable'));
+    // Never an empty queue: a broken command reads as broken (§6b). Startup is
+    // not broken, so it says so differently.
+    const pending = !rv || rv.state === 'pending';
+    count.appendChild(el('span', pending ? null : 'f', pending ? 'polling…' : 'unavailable'));
     head.appendChild(count);
-    head.title = rv?.reason || 'not polled yet';
-    const note = el('div', 'fempty', `reviews unavailable\n${(rv?.reason || '').slice(0, 160)}`);
-    list.appendChild(note);
+    head.title = rv?.reason || '';
+    list.appendChild(el('div', 'fempty', pending
+      ? 'waiting for the first poll'
+      : `reviews unavailable\n${(rv?.reason || '').slice(0, 160)}`));
     head.onclick = () => { showReviews = !showReviews; renderReviews(); };
     return;
   }
@@ -1191,7 +1329,13 @@ $('diffbtn').onclick = () => (diffState.open ? closeDiff() : openDiff());
 $('ovclose').onclick = closeDiff;
 $('ovprev').onclick = () => stepChange(-1);
 $('ovnext').onclick = () => stepChange(1);
-$('ovmode').onclick = () => { diffState.split = !diffState.split; renderDiff(); };
+$('ovmode').onclick = () => {
+  if (editState.on && !closeEditor()) return;
+  diffState.split = !diffState.split;
+  renderDiff();
+};
+$('ovedit').onclick = () => (editState.on ? closeEditor() : openEditor());
+$('ovsave').onclick = saveEditor;
 $('basebtn').onclick = cycleBase;
 $('addshell').onclick = newShell;
 $('shellbtn').onclick = newShell;
@@ -1212,6 +1356,11 @@ window.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && $('capmodal').classList.contains('on')) {
     e.preventDefault();
     hideCapabilities();
+    return;
+  }
+  if ((e.metaKey || e.ctrlKey) && e.key === 's' && editState.on) {
+    e.preventDefault();
+    saveEditor();
     return;
   }
   if (diffState.open) {

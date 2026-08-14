@@ -34,6 +34,18 @@ pub struct Inner {
     pub pr_fetched: Option<SystemTime>,
     pub token_source: Option<crate::github::TokenSource>,
     pub reviews: crate::reviews::ReviewState,
+    /// Files rewritten through the diff editor, and which sessions have been
+    /// told. Conflict detection on save protects you from the agent; this is
+    /// the other direction, which is the one that loses work silently.
+    pub human_edits: HashMap<PathBuf, HumanEdit>,
+}
+
+#[derive(Debug, Clone)]
+pub struct HumanEdit {
+    pub at: SystemTime,
+    /// Sessions already interrupted about this edit. Each is told exactly once,
+    /// so the retry after re-reading goes through.
+    pub told: std::collections::HashSet<SessionId>,
 }
 
 impl AppState {
@@ -63,6 +75,7 @@ impl AppState {
                 pr_fetched: None,
                 token_source: None,
                 reviews: Default::default(),
+                human_edits: HashMap::new(),
             }),
             events,
         })
@@ -189,6 +202,45 @@ impl AppState {
             token_source: inner.token_source,
             reviews: inner.reviews.clone(),
         }
+    }
+
+    /// Record a rewrite made through the editor, so agents can be told about it.
+    ///
+    /// Re-recording clears `told`: a second rewrite is news again even to a
+    /// session that already heard about the first.
+    pub async fn record_human_edit(&self, path: PathBuf) {
+        let real = std::fs::canonicalize(&path).unwrap_or(path);
+        let mut inner = self.inner.write().await;
+        inner.human_edits.insert(
+            real,
+            HumanEdit {
+                at: SystemTime::now(),
+                told: Default::default(),
+            },
+        );
+    }
+
+    /// Whether this session should be interrupted before writing `path`.
+    ///
+    /// Returns the message once per session per edit; afterwards the write is
+    /// allowed, so the agent's retry after re-reading succeeds.
+    pub async fn claim_stale_warning(&self, session: SessionId, path: &Path) -> Option<String> {
+        let real = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        let mut inner = self.inner.write().await;
+        let edit = inner.human_edits.get_mut(&real)?;
+        if !edit.told.insert(session) {
+            return None;
+        }
+        let ago = edit
+            .at
+            .elapsed()
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        Some(format!(
+            "STALE BUFFER: this file was rewritten in the orchestrator's editor {ago}s ago, \
+             after you last read it. Re-read {} before writing, or you will overwrite that change.",
+            real.display()
+        ))
     }
 
     // -----------------------------------------------------------------------
@@ -438,4 +490,61 @@ pub fn random_token() -> String {
             }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Config;
+
+    async fn app() -> Arc<AppState> {
+        let dir = std::env::temp_dir().join(format!("orchd-state-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cfg: Config = serde_json::from_str(&format!(
+            r#"{{"main_checkout":"{}","port":7798}}"#,
+            dir.display()
+        ))
+        .unwrap();
+        AppState::new(cfg, "t".into())
+    }
+
+    #[tokio::test]
+    async fn an_agent_is_warned_once_then_allowed_through() {
+        let app = app().await;
+        let dir = std::env::temp_dir().join(format!("orchd-warn-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("a.txt");
+        std::fs::write(&f, "x").unwrap();
+
+        let s1 = Uuid::new_v4();
+        // Nothing recorded yet, so an ordinary edit is never gated.
+        assert!(app.claim_stale_warning(s1, &f).await.is_none());
+
+        app.record_human_edit(f.clone()).await;
+        let first = app.claim_stale_warning(s1, &f).await;
+        assert!(first.is_some(), "the agent must be told");
+        assert!(first.unwrap().contains("STALE BUFFER"));
+
+        // The retry after re-reading has to go through, or the turn stalls.
+        assert!(app.claim_stale_warning(s1, &f).await.is_none());
+
+        // A different session has not heard about it yet.
+        let s2 = Uuid::new_v4();
+        assert!(app.claim_stale_warning(s2, &f).await.is_some());
+
+        // A second rewrite is news again, even to a session already told.
+        app.record_human_edit(f.clone()).await;
+        assert!(app.claim_stale_warning(s1, &f).await.is_some());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_file_nobody_rewrote_is_never_gated() {
+        let app = app().await;
+        let other = std::env::temp_dir().join("orchd-untouched.txt");
+        std::fs::write(&other, "x").unwrap();
+        assert!(app.claim_stale_warning(Uuid::new_v4(), &other).await.is_none());
+        let _ = std::fs::remove_file(&other);
+    }
 }

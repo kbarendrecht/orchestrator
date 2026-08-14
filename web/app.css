@@ -349,3 +349,17 @@ button.ctx-btn:hover{color:var(--text)}
 .capcmd{font-family:var(--mono);font-size:10px;color:var(--faint-solid);
   padding:0 0 4px 15px;word-break:break-all}
 .capnote{font-family:var(--mono);font-size:10px;color:var(--attn);padding:0 0 6px 15px}
+
+/* ---------- editable right pane (§5) ---------- */
+.diff.editing{grid-template-rows:1fr;align-content:stretch;overflow:hidden}
+.editbase,.editarea{
+  font-family:var(--mono);font-size:11.5px;line-height:1.65;
+  padding:6px 12px;margin:0;overflow:auto;min-height:0;height:100%;
+  white-space:pre;tab-size:4;
+}
+.editbase{color:var(--faint-solid);background:#0B0B0B}
+.editarea{
+  color:var(--text);background:var(--bg);border:0;resize:none;outline:0;
+  box-shadow:inset 2px 0 0 var(--attn);
+}
+.editarea:focus{box-shadow:inset 2px 0 0 var(--ok)}

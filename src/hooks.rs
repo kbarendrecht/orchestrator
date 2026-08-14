@@ -327,6 +327,46 @@ pub async fn session_end(
     ok()
 }
 
+/// Tell an agent, once, that a file it is about to write was rewritten
+/// underneath it.
+///
+/// Verified against a real session: the deny reason reaches the model, it
+/// re-reads the file, and it does not clobber the change. Announce-once is what
+/// makes that work — a permanent deny would just stall the turn.
+pub async fn pre_edit(
+    AxState(app): AxState<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(payload): Json<HookPayload>,
+) -> HookResult {
+    let Some(id) = session_of(&headers, &payload) else {
+        return ok();
+    };
+    let Some(path) = payload
+        .tool_input
+        .as_ref()
+        .and_then(|v| v.get("file_path"))
+        .and_then(|v| v.as_str())
+    else {
+        return ok();
+    };
+
+    match app.claim_stale_warning(id, &PathBuf::from(path)).await {
+        Some(reason) => (
+            StatusCode::OK,
+            Json(json!({
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "deny",
+                    "permissionDecisionReason": reason,
+                }
+            })),
+        ),
+        // An empty body leaves the decision alone; this hook is otherwise an
+        // observer and must never gate an ordinary edit.
+        None => ok(),
+    }
+}
+
 /// A blocked tool call from `worktree-edit-boundary` surfaces as a distinct
 /// signal — an agent editing outside its worktree is a prompt problem worth
 /// seeing, not noise to swallow (§11).
@@ -402,6 +442,9 @@ pub fn write_settings(port: u16) -> Result<PathBuf> {
         "hooks": {
             "SessionStart":     [session_start],
             "UserPromptSubmit": [entry("user-prompt-submit")],
+            // Ordering matters only in that both fire: PreToolUse warns about a
+            // rewrite, PostToolUse records what was written.
+            "PreToolUse":       [matched("Edit|Write", "pre-edit")],
             "PostToolUse":      [matched("Edit|Write", "post-tool-use")],
             "Notification": [
                 matched("agent_needs_input", "notification/agent_needs_input"),
