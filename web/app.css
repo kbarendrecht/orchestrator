@@ -1,6 +1,23 @@
 /* Design system lifted from orchestrator-ui.html. The mockup's fixed 1440x900
    stage and zoom control are dropped: this is the real app, so it fills the
    viewport. */
+
+/* Fonts are served by the daemon, not fetched from Google. A desktop app that
+   needs DNS to render its own labels is not one; `swap` still applies for the
+   first paint before the local files land. Latin subset only — the rest of the
+   Unicode range falls through to the system stack, which is the right trade
+   for a tool whose text is branch names and file paths. */
+@font-face{font-family:'IBM Plex Sans';src:url('/vendor/fonts/plex-sans.woff2') format('woff2');
+  font-weight:100 700;font-style:normal;font-display:swap}
+@font-face{font-family:'IBM Plex Mono';src:url('/vendor/fonts/plex-mono-400.woff2') format('woff2');
+  font-weight:400;font-style:normal;font-display:swap}
+@font-face{font-family:'IBM Plex Mono';src:url('/vendor/fonts/plex-mono-500.woff2') format('woff2');
+  font-weight:500;font-style:normal;font-display:swap}
+@font-face{font-family:'IBM Plex Mono';src:url('/vendor/fonts/plex-mono-600.woff2') format('woff2');
+  font-weight:600;font-style:normal;font-display:swap}
+@font-face{font-family:'Martian Mono';src:url('/vendor/fonts/martian-mono.woff2') format('woff2');
+  font-weight:100 800;font-style:normal;font-display:swap}
+
 :root{
   --bg:#101010;
   --surface:#171717;
@@ -58,6 +75,60 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
 .top-l{border-right:1px solid var(--line);background:var(--surface)}
 .top-r{border-left:1px solid var(--line);background:var(--surface)}
 .rail,.center,.files{min-height:0}
+
+/* ---------- native window chrome ---------- */
+/* The top row doubles as the titlebar when the OS draws none. Everything
+   interactive in it stops the drag itself, so this stays a background gesture.
+   `-webkit-app-region` is not used: it is a Chromium/WebView2 property and the
+   Linux target is WebKitGTK, where it does nothing. The drag is a real
+   mousedown handler instead, which behaves the same everywhere. */
+body[data-chrome="custom"] .top,
+body[data-chrome="overlay"] .top{-webkit-user-select:none;user-select:none}
+
+/* macOS: the real traffic lights float over the top-left, so buy them room.
+   78px = 3 buttons at 20px pitch from a 16px inset, plus breathing space. */
+body[data-chrome="overlay"] .top-l{padding-left:86px}
+
+.wctl{display:none;margin-left:10px;gap:2px;align-items:center;flex:0 0 auto}
+body[data-chrome="custom"] .wctl{display:flex}
+/* Buttons sit flush to the window edge, so cancel the bar's own padding and
+   pay it back as button width: a corner-targeted click still lands. */
+body[data-chrome="custom"] .top-r{padding-right:0}
+
+.wctl-btn{
+  width:34px;height:45px;position:relative;background:none;border:0;cursor:default;
+  color:var(--faint-solid);transition:background .12s,color .12s;
+}
+.wctl-btn:hover{background:var(--raised);color:var(--text)}
+.wctl-btn.close:hover{background:var(--bad);color:#fff}
+/* Glyphs are drawn, not typed: the font stack has no consistent set of these
+   at this size, and a missing glyph reads as a broken window button. */
+.wctl-btn::before,.wctl-btn::after{content:'';position:absolute;background:currentColor}
+.wctl-btn[data-cmd="minimize"]::before{left:11px;top:22px;width:12px;height:1px}
+.wctl-btn[data-cmd="toggle-maximize"]::before{
+  left:11px;top:17px;width:11px;height:11px;background:none;
+  border:1px solid currentColor;
+}
+.wctl-btn.close::before,.wctl-btn.close::after{left:11px;top:22px;width:13px;height:1px}
+.wctl-btn.close::before{transform:rotate(45deg)}
+.wctl-btn.close::after{transform:rotate(-45deg)}
+
+/* Resize strips: 5px along the edges, 12px squares in the corners so the
+   diagonal is actually hittable. Above everything, including the diff overlay
+   and the terminal, or the window stops resizing wherever the UI happens to be
+   tall. */
+.resizers{display:none}
+body[data-chrome="custom"] .resizers{display:block}
+.rz{position:fixed;z-index:9999}
+.rz-n{top:0;left:0;right:0;height:5px;cursor:ns-resize}
+.rz-s{bottom:0;left:0;right:0;height:5px;cursor:ns-resize}
+.rz-w{top:0;bottom:0;left:0;width:5px;cursor:ew-resize}
+.rz-e{top:0;bottom:0;right:0;width:5px;cursor:ew-resize}
+.rz-nw,.rz-ne,.rz-sw,.rz-se{width:12px;height:12px}
+.rz-nw{top:0;left:0;cursor:nwse-resize}
+.rz-se{bottom:0;right:0;cursor:nwse-resize}
+.rz-ne{top:0;right:0;cursor:nesw-resize}
+.rz-sw{bottom:0;left:0;cursor:nesw-resize}
 
 /* ---------- context bar ---------- */
 .ctx-name{font-family:var(--mono);font-size:12px;color:var(--text);flex:0 0 auto}

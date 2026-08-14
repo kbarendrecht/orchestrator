@@ -1,7 +1,20 @@
+[workspace]
+members = ["desktop"]
+
 [package]
 name = "orchd"
 version = "0.1.0"
 edition = "2021"
+
+# The daemon is a library so the desktop shell can embed it in-process, and a
+# binary so it still runs headless in a terminal.
+[lib]
+name = "orchd"
+path = "src/lib.rs"
+
+[[bin]]
+name = "orchd"
+path = "src/main.rs"
 
 [dependencies]
 anyhow = "1"

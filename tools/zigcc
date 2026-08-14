@@ -1,3 +1,0 @@
-#!/bin/sh
-# No system C toolchain on this box, so zig stands in as the linker.
-exec "$HOME/.local/share/mise/installs/zig/latest/zig" cc "$@"

@@ -29,6 +29,15 @@ pub struct AppState {
     pub inner: RwLock<Inner>,
     /// Fan-out of state snapshots to connected SPAs.
     pub events: broadcast::Sender<String>,
+    /// How the SPA should draw its top bar.
+    ///
+    /// Fixed at startup rather than set when the window attaches: the webview
+    /// begins loading the instant it is built, so a chrome decided afterwards
+    /// would race the very first paint and lose, intermittently.
+    pub chrome: crate::window::Chrome,
+    /// Set by the desktop shell once it has a window; `None` when orchd is
+    /// running headless and the UI is a browser tab that owns its own chrome.
+    pub window: RwLock<Option<Arc<dyn crate::window::WindowControl>>>,
 }
 
 #[derive(Default)]
@@ -65,7 +74,7 @@ pub struct HumanEdit {
 }
 
 impl AppState {
-    pub fn new(cfg: Config, token: String) -> Arc<Self> {
+    pub fn new(cfg: Config, token: String, chrome: crate::window::Chrome) -> Arc<Self> {
         let (events, _) = broadcast::channel(64);
         let mut workspaces = HashMap::new();
         workspaces.insert(
@@ -107,7 +116,17 @@ impl AppState {
                 locks_held: Vec::new(),
             }),
             events,
+            chrome,
+            window: RwLock::new(None),
         })
+    }
+
+    /// Hand the daemon a window to drive.
+    ///
+    /// Called once, from the desktop shell's `setup`, as soon as the webview
+    /// exists. Until then `/api/window/*` has nothing to talk to and says so.
+    pub async fn attach_window(&self, control: Arc<dyn crate::window::WindowControl>) {
+        *self.window.write().await = Some(control);
     }
 
     /// Push a fresh snapshot to every connected SPA. State is small enough that
@@ -118,6 +137,15 @@ impl AppState {
         if let Ok(json) = serde_json::to_string(&snapshot) {
             let _ = self.events.send(json);
         }
+    }
+
+    /// Write the session records without pushing a snapshot.
+    ///
+    /// Shutdown wants this: `was_live` is read off session state, and killing
+    /// the ptys flips that state from under you a moment later. Persisting
+    /// first is what lets auto-resume rebuild the rail next launch.
+    pub async fn persist_now(&self) {
+        self.persist().await;
     }
 
     /// Session records are written on every state change, so a daemon that dies
@@ -562,7 +590,7 @@ mod tests {
             dir.display()
         ))
         .unwrap();
-        AppState::new(cfg, "t".into())
+        AppState::new(cfg, "t".into(), crate::window::Chrome::None)
     }
 
     #[tokio::test]

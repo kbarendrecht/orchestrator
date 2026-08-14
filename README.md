@@ -9,20 +9,60 @@ change: `/green` is hand-triggered, never automatic.
 
 ## Run
 
+Two front ends over one daemon. The desktop app is the intended one; the
+headless binary is the faster way to debug the daemon itself.
+
 ```
 mise install
-cargo run -- --main /path/to/acme
+cargo run -p orchestrator-desktop          # the app
+cargo run -p orchd -- --main /path/to/acme   # headless, browser at the printed URL
 ```
 
-It prints a URL with the token in it. Config lands at
+The headless binary prints a URL with the token in it. Config lands at
 `~/.config/orchd/config.json` on first run, hooks at `~/.config/orchd/hooks.json`.
-
-There is no system C toolchain on the machine this was built on, so
-`.cargo/config.toml` points the linker at `tools/zigcc`. Delete both once
-`build-essential` is installed.
+The app reads the same config and asks for the checkout in a folder dialog when
+there is none — or when the one on record has moved.
 
 The SPA is compiled into the binary with `include_str!`, so editing anything
 under `web/` needs a `cargo build` before it takes effect.
+
+## Desktop app
+
+`desktop/` is a Tauri v2 shell around `orchd` the library. The daemon runs
+**in the same process**: `orchd::start` binds a loopback port and the webview is
+pointed at it. No sidecar, no agreed-upon port, nothing to leave running.
+
+The window is frameless and the SPA draws its own titlebar; on macOS the real
+traffic lights float over a transparent one instead. Window controls do *not*
+use Tauri's IPC — the page's origin is `http://127.0.0.1:<port>` with a port
+chosen at bind time, and opening IPC to that origin means whitelisting
+`http://127.0.0.1:*`, which would hand window control to anything else served
+there. `POST /api/window/*` carries the same token as the rest of the UI and the
+Rust side calls Tauri's window API directly.
+
+Closing the window kills the Claude sessions and `ng-watch`. It does not touch
+containers: `docker compose up -d` has already detached by then. Sessions that
+were live are recorded first, so `auto_resume` rebuilds the rail next launch.
+
+### Building it
+
+Tauri v2 needs **WebKitGTK 4.1**, which means a baseline of Ubuntu 22.04 or
+Debian 12. Ubuntu 20.04 ships only 4.0 (libsoup2) and cannot build this — there
+is no backport.
+
+```
+sudo apt install libwebkit2gtk-4.1-dev build-essential curl wget file \
+  libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+```
+
+`cargo run -p orchestrator-desktop` is enough for development. Bundling a `.deb`
+or AppImage needs the CLI: `cargo install tauri-cli --version "^2"`, then
+`cargo tauri build`. No Node anywhere — there is no frontend build step, because
+the daemon serves the page.
+
+If the window comes up blank on a virtualised GPU, export
+`WEBKIT_DISABLE_DMABUF_RENDERER=1`. This is not set in code: it disables a fast
+path that works fine on real hardware.
 
 ## What works
 

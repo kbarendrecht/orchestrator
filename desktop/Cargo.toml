@@ -1,0 +1,25 @@
+[package]
+name = "orchestrator-desktop"
+version = "0.1.0"
+edition = "2021"
+
+[build-dependencies]
+tauri-build = "2.6"
+
+[dependencies]
+orchd = { path = ".." }
+anyhow = "1"
+tauri = "2.11"
+# The native folder picker for first run, when there is no config to read a
+# checkout out of.
+tauri-plugin-dialog = "2.7"
+# `ResizeDirection` is not re-exported by `tauri`, and a frameless window needs
+# it to resize. Kept in lockstep with tauri's own dependency on it.
+tauri-runtime = "2.11"
+# `time` and `net` are not incidental: `enable_all()` silently skips the timer
+# and io drivers unless they are asked for, and the teardown path builds its own
+# runtime rather than borrowing orchd's. Relying on feature unification through
+# orchd would make that work by accident.
+tokio = { version = "1", features = ["rt-multi-thread", "time", "net"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

@@ -1494,6 +1494,58 @@ function connect() {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Native window chrome
+// ---------------------------------------------------------------------------
+
+// The daemon decides this, not the user agent string: it is the side that knows
+// whether it is being shown in a window it owns or in somebody's browser tab.
+//
+// The commands go over the same authenticated HTTP the rest of the UI uses,
+// and the daemon — running inside the desktop process — calls Tauri's window
+// API in Rust. No IPC bridge, so nothing here depends on which port we bound.
+const CHROME = window.__ORCH__.chrome || 'none';
+
+function setupChrome() {
+  document.body.dataset.chrome = CHROME;
+  if (CHROME === 'none') return;
+
+  const wcmd = (cmd) => call(`/api/window/${cmd}`).catch((e) => toast(e.message, true));
+
+  for (const b of document.querySelectorAll('.wctl-btn')) {
+    b.addEventListener('click', () => wcmd(b.dataset.cmd));
+  }
+
+  for (const bar of document.querySelectorAll('.top')) {
+    bar.addEventListener('mousedown', (e) => {
+      // Left button only, and only on the bar's own background: a drag that
+      // swallowed clicks on the session name or the close button would make
+      // the header unusable.
+      if (e.button !== 0) return;
+      if (e.target.closest('button, input, a, kbd, .ctx-btn')) return;
+      // A double-click is the OS gesture for maximise, so it must not also
+      // start a drag; the compositor keeps the drag alive past mouseup, which
+      // would eat the second click.
+      if (e.detail > 1) return;
+      wcmd('start-drag');
+    });
+    bar.addEventListener('dblclick', (e) => {
+      if (e.target.closest('button, input, a, kbd, .ctx-btn')) return;
+      wcmd('toggle-maximize');
+    });
+  }
+
+  for (const rz of document.querySelectorAll('.rz')) {
+    rz.addEventListener('mousedown', (e) => {
+      if (e.button !== 0) return;
+      // Stop the browser starting a text selection that outlives the resize.
+      e.preventDefault();
+      wcmd(`resize/${rz.dataset.edge}`);
+    });
+  }
+}
+
+setupChrome();
 connect();
 // The waiting clock has to tick even when nothing else changes.
 setInterval(() => { renderRail(); }, 1000);
