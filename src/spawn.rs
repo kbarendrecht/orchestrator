@@ -51,8 +51,9 @@ pub async fn spawn_session(
     cmd.push("--settings".into());
     cmd.push(settings.to_string_lossy().into_owned());
 
-    let env = vec![("ORCH_SESSION_ID".to_string(), id.to_string())];
-    let spawned = PtyHandle::spawn(&cmd, &path, &env, DEFAULT_SIZE)?;
+    let (mut env, unset) = crate::config::transcript_env(app.cfg.persist_transcripts);
+    env.push(("ORCH_SESSION_ID".to_string(), id.to_string()));
+    let spawned = PtyHandle::spawn(&cmd, &path, &env, &unset, DEFAULT_SIZE)?;
 
     let mut session = Session::new(id, workspace.to_string(), path.clone(), kind);
     session.pty = Some(spawned.handle.clone());
@@ -117,10 +118,11 @@ pub async fn spawn_worktree_session(app: &Arc<AppState>, name: &str) -> Result<S
         "--settings".to_string(),
         settings.to_string_lossy().into_owned(),
     ];
-    let env = vec![("ORCH_SESSION_ID".to_string(), id.to_string())];
+    let (mut env, unset) = crate::config::transcript_env(app.cfg.persist_transcripts);
+    env.push(("ORCH_SESSION_ID".to_string(), id.to_string()));
 
     // cwd is the main checkout, not the worktree-to-be.
-    let spawned = PtyHandle::spawn(&cmd, &app.cfg.main_checkout, &env, DEFAULT_SIZE)?;
+    let spawned = PtyHandle::spawn(&cmd, &app.cfg.main_checkout, &env, &unset, DEFAULT_SIZE)?;
 
     let expected = app.cfg.worktree_path(name);
     app.register_worktree(name, expected.clone(), Some(format!("worktree-{name}")))
@@ -195,7 +197,7 @@ pub async fn start_managed(app: &Arc<AppState>, workspace: &str, spec: &ManagedS
         .workspace_path(workspace)
         .await
         .with_context(|| format!("unknown workspace {workspace}"))?;
-    let spawned = PtyHandle::spawn(&spec.command, &path, &[], DEFAULT_SIZE)?;
+    let spawned = PtyHandle::spawn(&spec.command, &path, &[], &[], DEFAULT_SIZE)?;
     // Subscribe here rather than inside the watcher task: a process that prints
     // its first lines immediately would otherwise have them delivered before
     // the task runs, and a build that was green from its very first line would
@@ -247,7 +249,7 @@ pub async fn spawn_shell(app: &Arc<AppState>, workspace: &str) -> Result<String>
         .await
         .with_context(|| format!("unknown workspace {workspace}"))?;
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
-    let spawned = PtyHandle::spawn(&[shell], &path, &[], DEFAULT_SIZE)?;
+    let spawned = PtyHandle::spawn(&[shell], &path, &[], &[], DEFAULT_SIZE)?;
     let proc_id = format!("{workspace}:shell:{}", Uuid::new_v4().simple());
 
     let process = Process {
