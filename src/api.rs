@@ -477,3 +477,74 @@ pub async fn capabilities(
     .map_err(|e| anyhow::anyhow!("capability probe failed: {e}"))?;
     Ok(Json(report))
 }
+
+// ---------------------------------------------------------------------------
+// Editable right pane (§5, step 9)
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+pub struct FileQuery {
+    pub workspace: String,
+    pub path: String,
+    /// Read the file as it was at this base instead of from the working tree.
+    /// Used for the read-only left pane, and never writable.
+    #[serde(default)]
+    pub base: Option<crate::diff::Base>,
+    #[serde(default)]
+    pub pr_base: Option<String>,
+}
+
+pub async fn read_file(
+    State(app): State<Arc<AppState>>,
+    Query(q): Query<FileQuery>,
+) -> ApiResult<crate::edit::FileContents> {
+    let root = app
+        .workspace_path(&q.workspace)
+        .await
+        .ok_or_else(|| anyhow::anyhow!("unknown workspace {}", q.workspace))?;
+
+    if let Some(base) = q.base {
+        let rev = crate::diff::resolve_base(&root, base, &app.cfg.upstream_ref, q.pr_base.as_deref())?;
+        let content = crate::diff::show_at(&root, &rev, &q.path)?;
+        return Ok(Json(crate::edit::FileContents {
+            path: q.path.clone(),
+            bytes: content.len() as u64,
+            // No version: a historical revision is never written back.
+            version: String::new(),
+            content,
+        }));
+    }
+    Ok(Json(crate::edit::read(&root, &q.path)?))
+}
+
+#[derive(Deserialize)]
+pub struct WriteBody {
+    pub workspace: String,
+    pub path: String,
+    pub content: String,
+    /// The version the buffer was loaded at. A mismatch means an agent edited
+    /// the file underneath you, and the write is refused (§5).
+    pub version: String,
+}
+
+pub async fn write_file(
+    State(app): State<Arc<AppState>>,
+    Json(body): Json<WriteBody>,
+) -> ApiResult<crate::edit::WriteOutcome> {
+    let root = app
+        .workspace_path(&body.workspace)
+        .await
+        .ok_or_else(|| anyhow::anyhow!("unknown workspace {}", body.workspace))?;
+    let out = crate::edit::write(&root, &body.path, &body.content, &body.version)?;
+    if matches!(out, crate::edit::WriteOutcome::Written { .. }) {
+        // Agents working in this workspace hold a stale copy now, and will
+        // overwrite it unless they are told (§5's invalidation, in the
+        // direction that actually loses work).
+        let resolved = crate::edit::resolve_in_workspace(&root, &body.path)?;
+        app.record_human_edit(resolved).await;
+        // The changed-file pane and the diff must both reflect the write.
+        let _ = app.reconcile(&body.workspace).await;
+        app.notify().await;
+    }
+    Ok(Json(out))
+}

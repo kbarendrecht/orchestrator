@@ -42,6 +42,10 @@ pub struct Config {
     /// table has already changed once (§7 rule 6).
     #[serde(default)]
     pub capabilities: crate::capability::CapabilityConfig,
+    /// Where the auto-updated findings block lives. Defaults to the
+    /// orchestrator's own TODO.md.
+    #[serde(default)]
+    pub todo_path: Option<PathBuf>,
     /// Whether sessions the daemon spawns write transcripts.
     ///
     /// This is decided here rather than inherited, because inheriting makes the
@@ -189,6 +193,7 @@ impl Config {
             poll_seconds: default_poll_seconds(),
             review_timeout_seconds: default_review_timeout(),
             capabilities: Default::default(),
+            todo_path: None,
             persist_transcripts: default_persist(),
         }
     }

@@ -201,6 +201,13 @@ pub struct FileDiff {
     pub truncated: bool,
 }
 
+/// A file as it exists at `base`, for the read-only left pane in edit mode.
+pub fn show_at(cwd: &Path, base: &str, path: &str) -> Result<String> {
+    // `--` so a path that looks like a rev is still treated as a path.
+    git(cwd, &["show", &format!("{base}:{path}")])
+        .or_else(|_| Ok(String::new()))
+}
+
 /// Hunks for one file. `context` widens `-U`, which is how expand-on-click is
 /// served without a second diff format.
 pub fn file_diff(cwd: &Path, base: &str, path: &str, context: u32) -> Result<FileDiff> {
