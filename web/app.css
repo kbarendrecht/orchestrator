@@ -1,0 +1,208 @@
+/* Design system lifted from orchestrator-ui.html. The mockup's fixed 1440x900
+   stage and zoom control are dropped: this is the real app, so it fills the
+   viewport. */
+:root{
+  --bg:#101010;
+  --surface:#171717;
+  --raised:#212121;
+  --line:#2C2C2C;
+  --line-soft:#262626;
+  --text:#D2D2D2;
+  --dim:#8B8B8B;
+  --faint:#00000000;
+  --faint-solid:#5B5B5B;
+  --ghost:#3E3E3E;
+
+  --attn:#E0A244;        /* needs you — deliberately not green or red */
+  --work:#4C9AAF;
+  --ok:#5FA97C;
+  --bad:#C9615A;
+  --auto:#3E9AAF;        /* automation — NOT purple: purple reads as merged on GitHub */
+
+  --mono:'IBM Plex Mono',ui-monospace,monospace;
+  --sans:'IBM Plex Sans',system-ui,sans-serif;
+  --label:'Martian Mono',ui-monospace,monospace;
+
+  --rail:290px;
+  --files:296px;
+}
+
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{
+  background:var(--bg);
+  color:var(--text);font-family:var(--sans);font-size:13px;line-height:1.5;
+  -webkit-font-smoothing:antialiased;overflow:hidden;
+}
+button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
+:focus-visible{outline:2px solid var(--attn);outline-offset:1px;border-radius:2px}
+
+.eyebrow{
+  font-family:var(--label);font-size:8.5px;font-weight:700;
+  letter-spacing:.16em;text-transform:uppercase;color:var(--faint-solid);
+}
+
+/* ---------- shell ---------- */
+/* One grid for the whole app: the top row shares the body's columns, so each
+   top-bar segment sits directly above the pane it describes. */
+.app{
+  display:grid;
+  grid-template-columns:var(--rail) 1fr var(--files);
+  grid-template-rows:46px 1fr;
+  height:100vh;
+}
+.top{
+  display:flex;align-items:center;gap:11px;padding:0 16px;
+  border-bottom:1px solid var(--line);background:var(--bg);min-width:0;
+}
+.top-l{border-right:1px solid var(--line);background:var(--surface)}
+.top-r{border-left:1px solid var(--line);background:var(--surface)}
+.rail,.center,.files{min-height:0}
+
+/* ---------- context bar ---------- */
+.ctx-name{font-family:var(--mono);font-size:12px;color:var(--text);flex:0 0 auto}
+.ctx-branch{font-family:var(--mono);font-size:10.5px;color:var(--faint-solid);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ctx-pr{font-family:var(--mono);font-size:10.5px;color:var(--dim);white-space:nowrap;flex:0 1 auto;overflow:hidden;text-overflow:ellipsis}
+.ctx-sep{color:var(--ghost);font-size:10px}
+.ctx-right{margin-left:auto;display:flex;align-items:center;gap:12px;flex:0 0 auto}
+.ctx-btn{font-family:var(--mono);font-size:10.5px;color:var(--faint-solid)}
+button.ctx-btn:hover{color:var(--text)}
+.repo{font-family:var(--mono);font-size:11px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+/* ---------- rail ---------- */
+.rail{border-right:1px solid var(--line);background:var(--surface);display:flex;flex-direction:column;overflow:hidden}
+.rail-scroll{flex:1;overflow-y:auto;min-height:0}
+.ws{border-bottom:1px solid var(--line-soft)}
+.ws-head{
+  display:flex;align-items:center;justify-content:space-between;
+  padding:13px 15px 7px;position:sticky;top:0;background:var(--surface);z-index:2;
+}
+.ws-name{display:flex;align-items:center;gap:7px;min-width:0}
+.ws-note{font-family:var(--mono);font-size:9.5px;color:var(--ghost);margin-left:auto;white-space:nowrap}
+
+/* The one row that says how much you are losing to idle agents. */
+.waitbar{
+  z-index:3;display:none;align-items:center;gap:7px;
+  padding:5px 15px;background:var(--surface);border-bottom:1px solid var(--line-soft);
+  font-family:var(--mono);font-size:10px;color:var(--attn);width:100%;text-align:left;
+}
+.waitbar.on{display:flex}
+
+.plus{
+  font-family:var(--mono);font-size:14px;line-height:1;color:var(--ghost);
+  padding:1px 5px 3px;border-radius:3px;margin-left:9px;
+}
+.plus:hover:not(:disabled){color:var(--text);background:var(--raised)}
+.plus:disabled{color:#2E2E2E;cursor:not-allowed}
+
+.sess{
+  width:100%;display:block;padding:9px 15px 0;position:relative;text-align:left;
+  border-left:2px solid transparent;transition:background .12s;
+}
+.sess:hover{background:var(--raised)}
+.sess[aria-current="true"]{background:var(--raised);border-left-color:var(--text)}
+.sess-row{display:flex;align-items:center;gap:8px}
+.dot{width:6px;height:6px;border-radius:50%;flex:0 0 auto;background:#3E3E3E}
+.dot.blocked{background:var(--attn)}
+.dot.build{background:var(--bad)}
+.dot.auto{background:var(--auto)}
+.dot.working{background:#6A6A6A}
+.dot.idle{background:#3E3E3E}
+.dot.archived{background:transparent;border:1px solid var(--faint-solid)}
+@media (prefers-reduced-motion:no-preference){
+  .dot.blocked{animation:breathe 2.4s ease-in-out infinite}
+}
+@keyframes breathe{0%,100%{opacity:1}50%{opacity:.35}}
+
+.sess-name{
+  font-family:var(--mono);font-size:11.5px;flex:1;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+.sess.auto .sess-name{color:var(--auto)}
+.sess-sub{
+  display:flex;align-items:center;gap:13px;padding-left:14px;margin-top:2px;
+  font-family:var(--mono);font-size:10px;color:var(--faint-solid);
+}
+.sess-state{color:var(--dim)}
+.sess-state.blocked{color:var(--attn)}
+.sess-state.build{color:var(--bad)}
+.sess-pad{height:11px}
+.sess-id{font-family:var(--mono);font-size:9px;color:var(--ghost);flex:0 0 auto}
+
+/* Finished sessions collapse: the rail is for what still needs you. */
+.arctoggle{
+  display:flex;align-items:center;gap:7px;width:100%;
+  padding:7px 15px 12px;font-family:var(--mono);font-size:10px;color:var(--ghost);
+}
+.arctoggle:hover{color:var(--dim)}
+.arctoggle .caretr{display:inline-block;transition:transform .13s;font-size:9px}
+.arctoggle[aria-expanded="true"] .caretr{transform:rotate(90deg)}
+.sess-warn{
+  display:block;padding:0 15px 8px 29px;font-family:var(--mono);
+  font-size:9.5px;color:var(--bad);
+}
+
+.railbtn{
+  display:block;width:100%;text-align:left;padding:7px 15px 11px;
+  font-family:var(--mono);font-size:10px;color:var(--ghost);
+}
+.railbtn:hover{color:var(--dim)}
+
+/* ---------- center ---------- */
+.center{display:flex;flex-direction:column;min-width:0;background:var(--bg);position:relative}
+.termwrap{flex:1;min-height:0;position:relative;padding:8px 6px 8px 12px}
+.termhost{position:absolute;inset:8px 6px 8px 12px}
+.termhost[hidden]{display:none}
+
+/* ---------- process drawer ---------- */
+.drawer{border-top:1px solid var(--line);background:var(--surface);display:flex;flex-direction:column;height:210px;flex:0 0 auto}
+.drawer.empty{height:auto}
+.drawer.empty .drawer-body{display:none}
+.drawer.empty .drawer-head{border-bottom:0}
+.drawer-head{display:flex;align-items:center;gap:9px;padding:7px 15px;border-bottom:1px solid var(--line-soft);flex:0 0 auto}
+.dtab{
+  font-family:var(--mono);font-size:10.5px;color:var(--faint-solid);
+  padding:3px 8px;border-radius:2px;display:flex;align-items:center;gap:6px;
+}
+.dtab[aria-selected="true"]{color:var(--text);background:var(--raised)}
+.dtab .dot{width:5px;height:5px}
+.dtab .x{color:#3E3E3E;margin-left:1px}
+.dtab .x:hover{color:var(--bad)}
+.addsh{
+  font-family:var(--mono);font-size:10.5px;color:var(--faint-solid);
+  padding:3px 8px;display:flex;align-items:center;gap:7px;
+}
+.addsh:hover{color:var(--text)}
+.addsh kbd{font-size:9.5px;color:#3E3E3E}
+.dcwd{margin-left:auto;font-family:var(--mono);font-size:9.5px;color:#3E3E3E;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.drawer-body{flex:1;min-height:0;position:relative}
+.drawer-body .termhost{inset:6px 10px}
+
+/* ---------- files ---------- */
+.files{border-left:1px solid var(--line);background:var(--surface);display:flex;flex-direction:column;overflow:hidden}
+.fgroup{padding:9px 13px 3px}
+.frow{
+  width:100%;display:grid;grid-template-columns:11px 1fr;gap:8px;align-items:center;
+  padding:3.5px 13px;text-align:left;font-family:var(--mono);font-size:11px;
+}
+.frow:hover{background:var(--raised)}
+.fst{font-size:10px;font-weight:600;text-align:center}
+.fst.M{color:var(--attn)}.fst.A{color:var(--ok)}.fst.D{color:var(--bad)}.fst.U{color:var(--faint-solid)}.fst.R{color:var(--work)}
+.fname{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;direction:rtl;text-align:left}
+#filepanes{flex:1;min-height:0;overflow-y:auto}
+.fempty{padding:22px 15px;font-family:var(--mono);font-size:10.5px;color:var(--ghost);line-height:1.75}
+.files-foot{padding:9px 13px;font-family:var(--mono);font-size:10px;color:var(--faint-solid);border-top:1px solid var(--line-soft)}
+
+/* ---------- toast ---------- */
+/* A refused `git worktree remove` is information, so errors are shown rather
+   than swallowed. */
+.toast{
+  position:fixed;left:50%;bottom:22px;transform:translateX(-50%);
+  max-width:70vw;padding:9px 14px;border-radius:3px;
+  background:var(--raised);border:1px solid var(--line);
+  font-family:var(--mono);font-size:11px;color:var(--text);
+  opacity:0;pointer-events:none;transition:opacity .16s;z-index:99;
+  white-space:pre-wrap;
+}
+.toast.on{opacity:1}
+.toast.bad{border-color:var(--bad);color:var(--bad)}

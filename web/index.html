@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>orchd — session board</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&family=Martian+Mono:wght@600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/vendor/xterm.css">
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+
+<div class="app">
+
+  <!-- ============ CONTEXT BAR ============ -->
+  <!-- Replaces the centre pane's own header, so it costs no net vertical space. -->
+  <div class="top top-l">
+    <span class="repo" id="repo">—</span>
+    <span class="ctx-sep" style="margin-left:auto" id="upstream">develop</span>
+  </div>
+
+  <div class="top top-c">
+    <span class="dot" id="ctxdot"></span>
+    <span class="ctx-name" id="ctxname">no session</span>
+    <span class="ctx-branch" id="ctxbranch"></span>
+    <span class="ctx-sep">·</span>
+    <span class="ctx-pr" id="ctxstate"></span>
+    <span class="ctx-right">
+      <span class="ctx-btn" id="ctxbase"></span>
+      <button class="ctx-btn" id="shellbtn">Shell</button>
+      <button class="ctx-btn" id="killbtn">Kill</button>
+    </span>
+  </div>
+
+  <div class="top top-r">
+    <span class="eyebrow">Changed files</span>
+    <button class="ctx-btn" style="margin-left:auto" id="refreshbtn">Refresh</button>
+  </div>
+
+  <!-- ============ RAIL ============ -->
+  <nav class="rail" aria-label="Sessions">
+    <button class="waitbar" id="waitbar"></button>
+    <div class="rail-scroll" id="rail"></div>
+  </nav>
+
+  <!-- ============ CENTER ============ -->
+  <main class="center">
+    <div class="termwrap" id="termwrap">
+      <div class="fempty" id="termempty">
+        No session selected.<br>
+        Start one from the rail.
+      </div>
+    </div>
+
+    <!-- Process drawer: available on every workspace, not just main. -->
+    <div class="drawer empty" id="drawer">
+      <div class="drawer-head">
+        <span class="eyebrow" style="margin-right:2px">Processes</span>
+        <span id="dtabs" style="display:flex;gap:4px"></span>
+        <button class="addsh" id="addshell">+ Shell <kbd>⌃`</kbd></button>
+        <span class="dcwd" id="dcwd"></span>
+      </div>
+      <div class="drawer-body" id="drawerbody"></div>
+    </div>
+  </main>
+
+  <!-- ============ FILES ============ -->
+  <aside class="files">
+    <div id="filepanes"></div>
+    <div class="files-foot" id="filesfoot"></div>
+  </aside>
+
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>window.__ORCH__ = { token: "__ORCH_TOKEN__" };</script>
+<script src="/vendor/xterm.js"></script>
+<script src="/vendor/addon-fit.js"></script>
+<script src="/vendor/addon-webgl.js"></script>
+<script src="/app.js"></script>
+</body>
+</html>
