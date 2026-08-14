@@ -27,6 +27,12 @@ pub struct Inner {
     pub workspaces: HashMap<WorkspaceId, Workspace>,
     pub sessions: HashMap<SessionId, Session>,
     pub files: FileSets,
+    pub prs: Vec<crate::github::Pr>,
+    /// Last poll failure. A broken poller must read as broken, never as "no
+    /// open PRs".
+    pub pr_error: Option<String>,
+    pub pr_fetched: Option<SystemTime>,
+    pub token_source: Option<crate::github::TokenSource>,
 }
 
 impl AppState {
@@ -51,6 +57,10 @@ impl AppState {
                 workspaces,
                 sessions: HashMap::new(),
                 files: HashMap::new(),
+                prs: Vec::new(),
+                pr_error: None,
+                pr_fetched: None,
+                token_source: None,
             }),
             events,
         })
@@ -136,9 +146,45 @@ impl AppState {
             .collect();
         workspaces.sort_by(|a, b| b.is_main.cmp(&a.is_main).then(a.id.cmp(&b.id)));
 
+        // A PR belongs to a workspace when its head ref is in that workspace's
+        // branch set (§2). Many-to-many, so this is a lookup rather than a
+        // field on either side.
+        let mut prs: Vec<PrView> = inner
+            .prs
+            .iter()
+            .map(|p| {
+                let workspace = inner
+                    .workspaces
+                    .values()
+                    .find(|w| w.branches.contains(&p.head_ref))
+                    .map(|w| w.id.clone());
+                let session = workspace.as_ref().and_then(|ws| {
+                    inner
+                        .sessions
+                        .values()
+                        .filter(|s| &s.workspace == ws && s.state.is_live())
+                        .map(|s| s.id)
+                        .next()
+                });
+                PrView {
+                    pr: p.clone(),
+                    rank: p.rank(),
+                    workspace,
+                    session,
+                }
+            })
+            .collect();
+        prs.sort_by(|a, b| a.rank.cmp(&b.rank).then(b.pr.number.cmp(&a.pr.number)));
+
         Snapshot {
             workspaces,
             sessions,
+            prs,
+            pr_error: inner.pr_error.clone(),
+            pr_age_ms: inner.pr_fetched.and_then(|t| {
+                now.duration_since(t).ok().map(|d| d.as_millis() as u64)
+            }),
+            token_source: inner.token_source,
         }
     }
 
@@ -257,7 +303,13 @@ impl AppState {
             (w.path.clone(), w.is_main())
         };
         let set = git::status(&path, is_main)?;
+        // Branches accumulate and are never removed (§2): a PR still belongs to
+        // the session that made it after you have moved on to another branch.
+        let branch = git::current_branch(&path).ok();
         let mut inner = self.inner.write().await;
+        if let (Some(b), Some(w)) = (branch, inner.workspaces.get_mut(workspace)) {
+            w.branches.insert(b);
+        }
         inner.files.insert(workspace.to_string(), set);
         for s in inner.sessions.values_mut() {
             if s.workspace == workspace {
@@ -277,6 +329,23 @@ impl AppState {
 pub struct Snapshot {
     pub workspaces: Vec<WorkspaceView>,
     pub sessions: Vec<SessionView>,
+    pub prs: Vec<PrView>,
+    /// Set when the last poll failed; the pane says so rather than showing an
+    /// empty list.
+    pub pr_error: Option<String>,
+    pub pr_age_ms: Option<u64>,
+    pub token_source: Option<crate::github::TokenSource>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PrView {
+    #[serde(flatten)]
+    pub pr: crate::github::Pr,
+    pub rank: u8,
+    /// The workspace whose branch set contains this PR's head ref.
+    pub workspace: Option<String>,
+    /// A live session in that workspace, so the row can act as a jump link.
+    pub session: Option<Uuid>,
 }
 
 #[derive(Debug, Serialize)]

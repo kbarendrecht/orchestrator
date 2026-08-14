@@ -2,6 +2,7 @@ mod api;
 mod config;
 mod diff;
 mod git;
+mod github;
 mod hooks;
 mod model;
 mod pty;
@@ -85,6 +86,7 @@ async fn main() -> Result<()> {
     app.restore_sessions(records).await;
     reconcile_all(&app).await;
     autostart_processes(&app).await;
+    start_pr_poller(app.clone());
 
     let port = app.cfg.port;
     let router = Router::new()
@@ -186,6 +188,77 @@ async fn autostart_processes(app: &Arc<AppState>) {
             tracing::warn!("could not start {}: {e:#}", spec.name);
         }
     }
+}
+
+/// One GraphQL query per 5 minutes, read-only (§6).
+///
+/// No ETag caching: conditional requests are a REST feature and the GraphQL
+/// endpoint is a POST, so the budget is points rather than round trips.
+fn start_pr_poller(app: Arc<AppState>) {
+    tokio::spawn(async move {
+        let repo = match resolve_repo(&app) {
+            Some(r) => r,
+            None => {
+                tracing::warn!("no upstream remote on GitHub — PR polling is off");
+                let mut inner = app.inner.write().await;
+                inner.pr_error = Some("no GitHub upstream remote configured".into());
+                return;
+            }
+        };
+        tracing::info!("polling PRs for {}/{}", repo.0, repo.1);
+
+        let interval = std::time::Duration::from_secs(app.cfg.poll_seconds.max(30));
+        loop {
+            let token = github::resolve_token(app.cfg.github_token_file.as_deref());
+            match token {
+                Ok(t) => {
+                    if t.source == github::TokenSource::GhCli {
+                        // §6 wants read scopes only; gh's token carries write.
+                        tracing::warn!(
+                            "using `gh auth token`, which has broader scopes than orchd needs. \
+                             Set ORCHD_GITHUB_TOKEN or github_token_file to a read-only PAT."
+                        );
+                    }
+                    let source = t.source;
+                    let (owner, name) = (repo.0.clone(), repo.1.clone());
+                    let result =
+                        tokio::task::spawn_blocking(move || github::poll(&t.value, &owner, &name))
+                            .await;
+                    let mut inner = app.inner.write().await;
+                    inner.token_source = Some(source);
+                    match result {
+                        Ok(Ok(prs)) => {
+                            inner.prs = prs;
+                            inner.pr_error = None;
+                            inner.pr_fetched = Some(std::time::SystemTime::now());
+                        }
+                        Ok(Err(e)) => {
+                            // Keep the last good list: stale is more useful than
+                            // empty, as long as the pane says it is stale.
+                            tracing::warn!("PR poll failed: {e:#}");
+                            inner.pr_error = Some(format!("{e:#}"));
+                        }
+                        Err(e) => inner.pr_error = Some(format!("poll task failed: {e}")),
+                    }
+                }
+                Err(e) => {
+                    let mut inner = app.inner.write().await;
+                    inner.pr_error = Some(format!("{e:#}"));
+                }
+            }
+            app.notify().await;
+            tokio::time::sleep(interval).await;
+        }
+    });
+}
+
+fn resolve_repo(app: &Arc<AppState>) -> Option<(String, String)> {
+    if let Some(r) = &app.cfg.repo {
+        let (o, n) = r.split_once('/')?;
+        return Some((o.to_string(), n.to_string()));
+    }
+    let url = github::remote_url(&app.cfg.main_checkout, &app.cfg.upstream_remote)?;
+    github::repo_from_remote(&url)
 }
 
 // ---------------------------------------------------------------------------
