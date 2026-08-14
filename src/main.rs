@@ -88,10 +88,13 @@ async fn main() -> Result<()> {
         tracing::warn!("reaped {orphans} orphan session(s) from a crashed daemon");
     }
     adopt_existing_worktrees(&app).await?;
-    app.restore_sessions(records).await;
+    app.restore_sessions(records.clone()).await;
     app.inner.write().await.automation = store::load_automation();
     reconcile_all(&app).await;
     autostart_processes(&app).await;
+    if app.cfg.auto_resume {
+        auto_resume(app.clone(), records);
+    }
     start_pr_poller(app.clone());
     start_review_poller(app.clone());
     start_todo_writer(app.clone());
@@ -286,6 +289,74 @@ fn start_pr_poller(app: Arc<AppState>) {
     });
 }
 
+/// Bring back the sessions that were live when the daemon last went down.
+///
+/// A crash or a reboot takes every Claude process with it, because the daemon
+/// owns the pty. Resuming costs the scrollback — ring buffers are in memory —
+/// but keeps the conversation, which is the part that took time to build.
+///
+/// Deliberately skipped: automation runs, because the PR has moved on and §8
+/// demotes an orphaned run to `Exhausted` rather than resurrecting it.
+fn auto_resume(app: Arc<AppState>, records: Vec<store::SessionRecord>) {
+    tokio::spawn(async move {
+        let mut candidates: Vec<store::SessionRecord> = records
+            .into_iter()
+            .filter(|r| r.was_live && matches!(r.kind, Kind::Interactive))
+            .collect();
+        if candidates.is_empty() {
+            return;
+        }
+        // Oldest first, so the rail comes back in the order you built it up.
+        candidates.sort_by_key(|r| r.created_at);
+
+        let mut resumed = 0usize;
+        let mut main_taken = false;
+        for r in candidates {
+            if resumed >= green::MAX_CLAUDE_PROCESSES {
+                tracing::warn!(
+                    "stopping auto-resume at {} sessions (process cap)",
+                    green::MAX_CLAUDE_PROCESSES
+                );
+                break;
+            }
+            if !r.cwd.exists() {
+                tracing::warn!(session = %r.id, "not resumed: {} is gone", r.cwd.display());
+                continue;
+            }
+            if !store::resumable(&r) {
+                tracing::warn!(
+                    session = %r.id,
+                    "not resumed: no transcript. persist_transcripts was off when it ran."
+                );
+                continue;
+            }
+            // Main is exclusive, so only the first one there comes back (§2).
+            if r.workspace == MAIN {
+                if main_taken {
+                    tracing::warn!(session = %r.id, "not resumed: main is already occupied");
+                    continue;
+                }
+                main_taken = true;
+            }
+
+            match spawn::spawn_session(&app, &r.workspace, Kind::Interactive, Some(r.id)).await {
+                Ok(id) => {
+                    tracing::info!(session = %id, workspace = %r.workspace, "auto-resumed");
+                    resumed += 1;
+                    // Staggered: half a dozen Claude processes starting at once
+                    // makes for a slow, noisy boot.
+                    tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
+                }
+                Err(e) => tracing::warn!(session = %r.id, "auto-resume failed: {e:#}"),
+            }
+        }
+        if resumed > 0 {
+            tracing::info!("auto-resumed {resumed} session(s)");
+            app.notify().await;
+        }
+    });
+}
+
 /// Keep TODO.md's generated block honest about what the daemon can currently
 /// see. Only conditions that are true now, so the list stays worth reading.
 fn start_todo_writer(app: Arc<AppState>) {
@@ -308,6 +379,14 @@ fn start_todo_writer(app: Arc<AppState>) {
 async fn live_findings(app: &Arc<AppState>) -> Vec<todo::Finding> {
     let mut out = Vec::new();
 
+    if !app.cfg.persist_transcripts && app.cfg.auto_resume {
+        out.push(todo::Finding {
+            what: "auto-resume cannot work".into(),
+            why: "`auto_resume` is on but `persist_transcripts` is off, so a crash leaves \
+                  nothing to resume from. One of the two wants changing."
+                .into(),
+        });
+    }
     if !app.cfg.persist_transcripts {
         out.push(todo::Finding {
             what: "transcripts are off".into(),
@@ -430,16 +509,36 @@ const APP_CSS: &str = include_str!("../web/app.css");
 
 /// The token is embedded in the served page rather than fetched, so it never
 /// exists as a value any other origin could ask for (§12).
-async fn index(State(app): State<Arc<AppState>>) -> Html<String> {
-    Html(INDEX.replace("__ORCH_TOKEN__", &app.token))
+async fn index(State(app): State<Arc<AppState>>) -> Response {
+    (
+        [(header::CACHE_CONTROL, "no-store, must-revalidate")],
+        Html(INDEX.replace("__ORCH_TOKEN__", &app.token)),
+    )
+        .into_response()
 }
 
-async fn asset_js() -> impl IntoResponse {
-    ([(header::CONTENT_TYPE, "text/javascript")], APP_JS)
+/// Serve a static asset with its real type and no caching.
+///
+/// `no-store` matters more than it looks: the SPA is baked into the binary with
+/// `include_str!`, so a cached bundle silently shadows a rebuilt daemon and you
+/// debug code that is not running. Found exactly that way.
+fn asset(content_type: &'static str, body: &'static str) -> Response {
+    (
+        [
+            (header::CONTENT_TYPE, content_type),
+            (header::CACHE_CONTROL, "no-store, must-revalidate"),
+        ],
+        body,
+    )
+        .into_response()
 }
 
-async fn asset_css() -> impl IntoResponse {
-    ([(header::CONTENT_TYPE, "text/css")], APP_CSS)
+async fn asset_js() -> Response {
+    asset("text/javascript; charset=utf-8", APP_JS)
+}
+
+async fn asset_css() -> Response {
+    asset("text/css; charset=utf-8", APP_CSS)
 }
 
 /// xterm's own dist files, copied in at build time.
@@ -456,9 +555,9 @@ async fn vendor(axum::extract::Path(file): axum::extract::Path<String>) -> Respo
         _ => return (StatusCode::NOT_FOUND, "no such asset").into_response(),
     };
     let ct = if file.ends_with(".css") {
-        "text/css"
+        "text/css; charset=utf-8"
     } else {
-        "text/javascript"
+        "text/javascript; charset=utf-8"
     };
-    ([(header::CONTENT_TYPE, ct)], body).into_response()
+    asset(ct, body)
 }

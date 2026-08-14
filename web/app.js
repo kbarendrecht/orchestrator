@@ -1178,6 +1178,7 @@ async function saveEditor() {
 // ---------------------------------------------------------------------------
 
 let showReviews = true;
+let showBlockedReviews = false;
 
 function reviewAge(hours) {
   if (hours < 1) return 'just now';
@@ -1187,7 +1188,7 @@ function reviewAge(hours) {
 
 /** Why this row is in your queue, when there is a reason worth the width. */
 function reviewReason(r) {
-  if (r.blockers && r.blockers.length) return r.blockers[0];
+  if (r.blockers && r.blockers.length) return r.blockers.join(', ');
   if (r.needs_re_review) return 're-requested';
   if (r.is_draft) return 'draft';
   if (r.prio === 0) return 'prio stopper';
@@ -1255,8 +1256,20 @@ function renderReviews() {
 
   for (const r of rows) list.appendChild(rowFor(r, false));
   if (!rows.length) list.appendChild(el('div', 'fempty', 'Nothing waiting on you.'));
-  // Waiting on someone else, so sunk to the bottom rather than dropped.
-  for (const r of blocked) list.appendChild(rowFor(r, true));
+
+  // Blocked on conflicts or red checks: waiting on their author, not on you.
+  // Sunk rather than dropped, because sometimes you still want to look — but
+  // folded, so they do not pad the queue you actually work from.
+  if (blocked.length) {
+    const t = el('button', 'arctoggle');
+    t.setAttribute('aria-expanded', String(showBlockedReviews));
+    t.appendChild(el('span', 'caretr', '\u203a'));
+    t.appendChild(el('span', null, `${blocked.length} not reviewable`));
+    t.title = blocked.map((r) => `#${r.number} — ${r.blockers.join(', ')}`).join('\n');
+    t.onclick = () => { showBlockedReviews = !showBlockedReviews; renderReviews(); };
+    list.appendChild(t);
+    if (showBlockedReviews) for (const r of blocked) list.appendChild(rowFor(r, true));
+  }
 }
 
 
