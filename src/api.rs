@@ -139,14 +139,17 @@ pub async fn new_session(
 
 #[derive(Deserialize)]
 pub struct NewWorktree {
-    pub name: String,
+    /// Absent means let Claude Code name it, which is the common case.
+    #[serde(default)]
+    pub name: Option<String>,
 }
 
 pub async fn new_worktree(
     State(app): State<Arc<AppState>>,
     Json(body): Json<NewWorktree>,
 ) -> ApiResult<serde_json::Value> {
-    let id = spawn::spawn_worktree_session(&app, &body.name).await?;
+    let name = body.name.as_deref().map(str::trim).filter(|n| !n.is_empty());
+    let id = spawn::spawn_worktree_session(&app, name).await?;
     Ok(Json(json!({ "session": id })))
 }
 

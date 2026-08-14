@@ -57,6 +57,7 @@ Everything outside that block is hand-written and survives.
 Rewritten by the daemon on every poll. Edit anything outside this block.
 
 - **transcripts are off** — spawned sessions write no `.jsonl`, so resume and the teardown transcript check do nothing. Set `persist_transcripts` back to true when you are done developing the daemon.
+- **`transient-tickling-newell` cannot be trusted to run PHP suites** — autoload resolves to `/home/kbarendrecht/development/acme/vendor/composer/ClassLoader.php`, outside the worktree, so a suite run there loads main's code. §7's post-WIP table assumes otherwise.
 - **`dfafdf` cannot be trusted to run PHP suites** — autoload resolves to `/home/kbarendrecht/development/acme/vendor/composer/ClassLoader.php`, outside the worktree, so a suite run there loads main's code. §7's post-WIP table assumes otherwise.
 
 <!-- <<< orchd live findings <<< -->

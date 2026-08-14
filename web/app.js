@@ -240,8 +240,8 @@ function renderRail() {
   name.appendChild(el('span', 'eyebrow', 'Worktrees'));
   head.appendChild(name);
   const add = el('button', 'plus', '+');
-  add.title = 'New worktree session';
-  add.onclick = newWorktree;
+  add.title = 'New worktree session (shift-click to name it)';
+  add.onclick = (ev) => newWorktree(ev.shiftKey);
   head.appendChild(add);
   wtGroup.appendChild(head);
 
@@ -249,6 +249,7 @@ function renderRail() {
     wtGroup.appendChild(el('div', 'railbtn', 'none yet'));
   }
   for (const w of worktrees) {
+    if (w.id === '\u2026creating') continue;
     if (!sessionsOf(w.id).length) {
       wtGroup.appendChild(emptyWorkspaceRow(w));
       continue;
@@ -256,7 +257,8 @@ function renderRail() {
     appendSessions(wtGroup, w);
   }
   rail.appendChild(wtGroup);
-  rail.appendChild(prGroup());
+  // Its own pane below the scroller, so it stays put while sessions scroll.
+  $('prpane').replaceChildren(prGroup());
 
   renderWaitbar();
 }
@@ -300,7 +302,9 @@ function skillButton(p, skill) {
 
 function prGroup() {
   const prs = snap.prs || [];
-  const group = el('div', 'ws prblock');
+  // Just `ws`: the pinned pane it lives in owns the sizing, and carrying
+  // `prblock` here too applied max-height twice, nested.
+  const group = el('div', 'ws');
 
   const head = el('button', 'prgroup-head');
   head.setAttribute('aria-expanded', String(showPrs));
@@ -344,6 +348,10 @@ function prGroup() {
     // Rows for PRs that already have a session are dimmed and jump to it (§9).
     const row = el('a', 'prrow' + (p.session ? ' linked' : ''));
     row.href = p.url || '#';
+    // ⌘-click, middle-click and copy-link all behave, and the browser already
+    // holds the GitHub session.
+    row.target = '_blank';
+    row.rel = 'noreferrer';
     row.appendChild(el('span', 'dot ' + prDot(p)));
     row.appendChild(el('span', 'num', `#${p.number}`));
     row.appendChild(el('span', 'ttl', p.title));
@@ -380,9 +388,17 @@ function prGroup() {
       if (needsGreen) row.appendChild(skillButton(p, 'green'));
     }
 
-    if (p.session && !needsResolve && !needsGreen) {
-      row.appendChild(el('span', 'jump', 'jump'));
-      row.onclick = (ev) => { ev.preventDefault(); select(p.session); };
+    // The row opens the PR; jumping to its session is the explicit chip, so
+    // one does not swallow the other.
+    if (p.session) {
+      const j = el('button', 'jump', 'jump');
+      j.title = 'Go to the session on this branch';
+      j.onclick = (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        select(p.session);
+      };
+      row.appendChild(j);
     }
     group.appendChild(row);
   }
@@ -1301,13 +1317,21 @@ async function newSession(workspace) {
   }
 }
 
-async function newWorktree() {
-  const name = prompt('Worktree name');
-  if (!name) return;
+/** Claude Code names the worktree unless you shift-click and name it yourself.
+ *  Naming one every time is friction for something you rarely refer to by
+ *  name, and an unnamed one cannot collide with an archived worktree either. */
+async function newWorktree(named) {
+  let name = null;
+  if (named) {
+    name = prompt('Worktree name (blank to let Claude name it)');
+    // Cancel means cancel; blank means auto.
+    if (name === null) return;
+    name = name.trim() || null;
+  }
   try {
-    const r = await call('/api/worktree', { name: name.trim() });
+    const r = await call('/api/worktree', name ? { name } : {});
     pendingSelect = r.session;
-    toast(`creating worktree ${name}`);
+    toast(name ? `creating worktree ${name}` : 'creating worktree');
   } catch (e) {
     toast(e.message, true);
   }

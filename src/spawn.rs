@@ -11,6 +11,10 @@ use crate::state::AppState;
 
 const DEFAULT_SIZE: (u16, u16) = (40, 140);
 
+/// Placeholder workspace for a worktree whose name Claude Code has not reported
+/// yet. Replaced at `SessionStart`.
+pub const PENDING_WORKTREE: &str = "\u{2026}creating";
+
 /// Spawn an interactive Claude session in an existing workspace.
 ///
 /// The daemon spawns every session and never adopts a shell-started one. That
@@ -78,13 +82,13 @@ pub async fn spawn_session(
 ///
 /// **Spawned with cwd = main**: `worktree-create` refuses to nest a worktree
 /// inside a worktree (§2).
-pub async fn spawn_worktree_session(app: &Arc<AppState>, name: &str) -> Result<SessionId> {
-    validate_worktree_name(name)?;
+pub async fn spawn_worktree_session(app: &Arc<AppState>, name: Option<&str>) -> Result<SessionId> {
+    if let Some(name) = name {
+        validate_worktree_name(name)?;
 
-    // Worktree names must be unique over time (§2): the projects directory is
-    // keyed by path, so reusing an archived worktree's name would interleave
-    // the two sessions' transcripts.
-    {
+        // Worktree names must be unique over time (§2): the projects directory
+        // is keyed by path, so reusing an archived worktree's name would
+        // interleave the two sessions' transcripts.
         let inner = app.inner.read().await;
         if inner.workspaces.contains_key(name) {
             bail!("a workspace named {name} already exists");
@@ -99,36 +103,49 @@ pub async fn spawn_worktree_session(app: &Arc<AppState>, name: &str) -> Result<S
                  so its transcripts do not interleave"
             );
         }
-    }
-    if app.cfg.worktree_path(name).exists() {
-        bail!(
-            "{} already exists on disk",
-            app.cfg.worktree_path(name).display()
-        );
+        drop(inner);
+        if app.cfg.worktree_path(name).exists() {
+            bail!(
+                "{} already exists on disk",
+                app.cfg.worktree_path(name).display()
+            );
+        }
     }
 
     let id = Uuid::new_v4();
     let settings = Config::hooks_settings_path()?;
-    let cmd = vec![
-        "claude".to_string(),
-        "--worktree".to_string(),
-        name.to_string(),
+    let mut cmd = vec!["claude".to_string(), "--worktree".to_string()];
+    // With no name, Claude Code generates one. That is also the only path that
+    // cannot collide with an archived worktree by construction, since it has
+    // never been used before.
+    if let Some(name) = name {
+        cmd.push(name.to_string());
+    }
+    cmd.extend([
         "--session-id".to_string(),
         id.to_string(),
         "--settings".to_string(),
         settings.to_string_lossy().into_owned(),
-    ];
+    ]);
     let (mut env, unset) = crate::config::transcript_env(app.cfg.persist_transcripts);
     env.push(("ORCH_SESSION_ID".to_string(), id.to_string()));
 
     // cwd is the main checkout, not the worktree-to-be.
     let spawned = PtyHandle::spawn(&cmd, &app.cfg.main_checkout, &env, &unset, DEFAULT_SIZE)?;
 
-    let expected = app.cfg.worktree_path(name);
-    app.register_worktree(name, expected.clone(), Some(format!("worktree-{name}")))
-        .await;
+    // Without a name the path is not known until `SessionStart` reports the
+    // cwd, so the workspace is registered there instead.
+    let (workspace, cwd) = match name {
+        Some(name) => {
+            let expected = app.cfg.worktree_path(name);
+            app.register_worktree(name, expected.clone(), Some(format!("worktree-{name}")))
+                .await;
+            (name.to_string(), expected)
+        }
+        None => (PENDING_WORKTREE.to_string(), app.cfg.main_checkout.clone()),
+    };
 
-    let mut session = Session::new(id, name.to_string(), expected, Kind::Interactive);
+    let mut session = Session::new(id, workspace, cwd, Kind::Interactive);
     session.pty = Some(spawned.handle.clone());
     session.pid = spawned.pid;
     {
