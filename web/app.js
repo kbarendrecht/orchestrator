@@ -685,10 +685,18 @@ function connect() {
     snap = JSON.parse(ev.data);
     // A session whose pty is gone keeps its scrollback until it is dismissed,
     // so terminals are only torn down when the session disappears entirely.
+    const liveProcs = new Set(
+      snap.workspaces.flatMap((w) => w.processes.map((p) => `proc:${p.id}`))
+    );
     for (const target of [...terms.keys()]) {
-      if (!target.startsWith('session:')) continue;
-      const id = target.slice('session:'.length);
-      if (!snap.sessions.some((s) => s.id === id)) closeTerm(target);
+      if (target.startsWith('session:')) {
+        const id = target.slice('session:'.length);
+        if (!snap.sessions.some((s) => s.id === id)) closeTerm(target);
+      } else if (!liveProcs.has(target)) {
+        // A shell that closed cleanly is gone from the snapshot; drop its
+        // terminal rather than leaving a hidden host behind forever.
+        closeTerm(target);
+      }
     }
     if (selected && !snap.sessions.some((s) => s.id === selected)) selected = null;
 

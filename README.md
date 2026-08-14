@@ -75,6 +75,14 @@ literally they create a state nothing can escape:
   `.jsonl`, so requiring one stranded the worktree. "Nothing to copy" is now
   distinguished from "not copied yet".
 
+One more, from using it rather than reading it:
+
+- **Dead shells.** §2 says a dead shell keeps its buffer "until dismissed".
+  Applied to every exit that makes Ctrl+D leave a corpse tab behind, which is
+  the opposite of what pressing it means. A shell that exits cleanly is now
+  removed outright; one that exits non-zero keeps its buffer and code, which is
+  the case the rule was written for.
+
 ## Layout
 
 ```
