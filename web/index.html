@@ -17,8 +17,12 @@
   <!-- ============ CONTEXT BAR ============ -->
   <!-- Replaces the centre pane's own header, so it costs no net vertical space. -->
   <div class="top top-l">
-    <span class="repo" id="repo">—</span>
-    <span class="ctx-sep" style="margin-left:auto" id="upstream">develop</span>
+    <!-- Switching between repos is not built; the shape is here so the header
+         stops pretending the fork and the upstream are the same thing. -->
+    <button class="repo-switch" id="reposwitch" title="Switch repository">
+      <span class="repo-main" id="repoupstream">—</span>
+      <span class="repo-fork" id="repofork"></span>
+    </button>
   </div>
 
   <div class="top top-c">
@@ -29,10 +33,7 @@
     <span class="ctx-pr" id="ctxstate"></span>
     <span class="ctx-right">
       <span class="ctx-btn" id="ctxbase"></span>
-      <button class="ctx-btn" id="capbtn">Tests</button>
-      <button class="ctx-btn" id="diffbtn">Diff</button>
-      <button class="ctx-btn" id="shellbtn">Shell</button>
-      <button class="ctx-btn" id="killbtn">Kill</button>
+      <button class="ctx-close" id="killbtn" title="End this session">&#10005;</button>
     </span>
   </div>
 
@@ -105,16 +106,6 @@
     </div>
   </aside>
 
-</div>
-
-<div class="modal" id="capmodal">
-  <div class="modal-box">
-    <div class="modal-head">
-      <span class="eyebrow">Test capabilities</span>
-      <button class="head-btn" id="capclose">Close</button>
-    </div>
-    <div class="modal-body" id="capbody"></div>
-  </div>
 </div>
 
 <div class="toast" id="toast"></div>

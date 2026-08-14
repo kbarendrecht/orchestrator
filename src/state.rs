@@ -12,8 +12,17 @@ use crate::git;
 use crate::model::*;
 use crate::pty::pid_alive;
 
+#[derive(Debug, Clone, Serialize, Default)]
+pub struct Repos {
+    /// Where PRs are opened, e.g. `acme/monorepo`.
+    pub upstream: Option<String>,
+    /// Where branches are pushed, e.g. `kbarendrecht/acme` (§6's fork flow).
+    pub fork: Option<String>,
+}
+
 pub struct AppState {
     pub cfg: Config,
+    pub repos: Repos,
     /// Random per-start token embedded in the served SPA and required on the
     /// WebSocket and every mutating endpoint (§12).
     pub token: String,
@@ -70,8 +79,17 @@ impl AppState {
                 occupant: None,
             },
         );
+        let repos = Repos {
+            upstream: crate::github::remote_url(&cfg.main_checkout, &cfg.upstream_remote)
+                .and_then(|u| crate::github::repo_from_remote(&u))
+                .map(|(o, n)| format!("{o}/{n}")),
+            fork: crate::github::remote_url(&cfg.main_checkout, "origin")
+                .and_then(|u| crate::github::repo_from_remote(&u))
+                .map(|(o, n)| format!("{o}/{n}")),
+        };
         Arc::new(AppState {
             cfg,
+            repos,
             token,
             inner: RwLock::new(Inner {
                 workspaces,
@@ -216,6 +234,7 @@ impl AppState {
             token_source: inner.token_source,
             reviews: inner.reviews.clone(),
             automation: inner.automation.by_pr.clone(),
+            repos: self.repos.clone(),
         }
     }
 
@@ -419,6 +438,7 @@ pub struct Snapshot {
     pub token_source: Option<crate::github::TokenSource>,
     pub reviews: crate::reviews::ReviewState,
     pub automation: HashMap<u64, crate::green::PrAutomation>,
+    pub repos: Repos,
 }
 
 #[derive(Debug, Serialize)]

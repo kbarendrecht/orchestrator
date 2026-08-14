@@ -16,6 +16,14 @@ Everything outside that block is hand-written and survives.
   it should not need an agent at all. Needs write scope on the token, which is
   the first real reason to move off the read-only PAT in §6.
 
+- **Somewhere to see whether the docker stack is up.** Right now the only
+  signal is opening the `docker` tab in the drawer and reading the output, which
+  is not a status. Probably wants to be plugin-shaped rather than hardcoded:
+  the daemon already treats managed processes as config (§2), so a stack check
+  is another declared thing with a health probe and a place on the main
+  workspace row, not a special case for compose. Same shape would cover the dev
+  URL being reachable, the toolbox container being alive, and whatever the next
+  project needs.
 - Connector ribbons between the diff panes. §5 lists them under the PhpStorm
   wishlist; synchronized scroll already falls out of the shared scroll
   container, but the ribbons do not exist.
@@ -65,8 +73,14 @@ Rewritten by the daemon on every poll. Edit anything outside this block.
 
 - **auto-resume cannot work** — `auto_resume` is on but `persist_transcripts` is off, so a crash leaves nothing to resume from. One of the two wants changing.
 - **transcripts are off** — spawned sessions write no `.jsonl`, so resume and the teardown transcript check do nothing. Set `persist_transcripts` back to true when you are done developing the daemon.
-- **GitHub token is gh's** — it carries write scopes; §6 wants a read-only PAT in `ORCHD_GITHUB_TOKEN` or `github_token_file`.
-- **`transient-tickling-newell` cannot be trusted to run PHP suites** — autoload resolves to `/home/kbarendrecht/development/acme/vendor/composer/ClassLoader.php`, outside the worktree, so a suite run there loads main's code. §7's post-WIP table assumes otherwise.
 - **`dfafdf` cannot be trusted to run PHP suites** — autoload resolves to `/home/kbarendrecht/development/acme/vendor/composer/ClassLoader.php`, outside the worktree, so a suite run there loads main's code. §7's post-WIP table assumes otherwise.
+- **`dfafdf` has a stale `composer.lock`** — re-link from main; results from a frozen lockfile are not this workspace's (§7 rule 3).
+- **`dfafdf` has a stale `pnpm-lock.yaml`** — re-link from main; results from a frozen lockfile are not this workspace's (§7 rule 3).
+- **`transient-tickling-newell` cannot be trusted to run PHP suites** — autoload resolves to `/home/kbarendrecht/development/acme/vendor/composer/ClassLoader.php`, outside the worktree, so a suite run there loads main's code. §7's post-WIP table assumes otherwise.
+- **`transient-tickling-newell` has a stale `composer.lock`** — re-link from main; results from a frozen lockfile are not this workspace's (§7 rule 3).
+- **`transient-tickling-newell` has a stale `pnpm-lock.yaml`** — re-link from main; results from a frozen lockfile are not this workspace's (§7 rule 3).
+- **`whimsical-inventing-wozniak` cannot be trusted to run PHP suites** — autoload resolves to `/home/kbarendrecht/development/acme/vendor/composer/ClassLoader.php`, outside the worktree, so a suite run there loads main's code. §7's post-WIP table assumes otherwise.
+- **`whimsical-inventing-wozniak` has a stale `composer.lock`** — re-link from main; results from a frozen lockfile are not this workspace's (§7 rule 3).
+- **`whimsical-inventing-wozniak` has a stale `pnpm-lock.yaml`** — re-link from main; results from a frozen lockfile are not this workspace's (§7 rule 3).
 
 <!-- <<< orchd live findings <<< -->
