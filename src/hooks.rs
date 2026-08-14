@@ -81,6 +81,20 @@ pub async fn session_start(
     let Some(id) = session_of(&headers, &payload) else {
         return ok();
     };
+    // A worktree the daemon did not name only reveals its path here, so this is
+    // where it gets adopted.
+    if let Some(cwd) = payload.cwd.as_deref() {
+        let path = PathBuf::from(cwd);
+        if let Some(name) = crate::spawn::worktree_name_of(&path, &app.cfg.worktrees_dir()) {
+            let branch = crate::git::current_branch(&path).ok();
+            app.register_worktree(&name, path.clone(), branch).await;
+            let mut inner = app.inner.write().await;
+            if let Some(s) = inner.sessions.get_mut(&id) {
+                s.workspace = name;
+            }
+        }
+    }
+
     {
         let mut inner = app.inner.write().await;
         if let Some(s) = inner.sessions.get_mut(&id) {
