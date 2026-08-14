@@ -114,6 +114,8 @@ async fn main() -> Result<()> {
         .route("/api/worktree", post(api::new_worktree))
         .route("/api/workspace/:id/shell", post(api::new_shell))
         .route("/api/workspace/:id/reconcile", post(api::reconcile))
+        .route("/api/workspace/:id/rebase", post(api::rebase))
+        .route("/api/workspace/:id/rebase/abort", post(api::rebase_abort))
         .route("/api/workspace/:id/preflight", get(api::preflight))
         .route("/api/workspace/:id/capabilities", get(api::capabilities))
         .route("/api/workspace/:id/archive", post(api::archive_workspace))
@@ -223,6 +225,12 @@ fn start_pr_poller(app: Arc<AppState>) {
 
         let interval = std::time::Duration::from_secs(app.cfg.poll_seconds.max(30));
         loop {
+            // Piggyback the upstream fetch on this timer (§5): the merge-base
+            // and the behind count are both answered from that ref.
+            let main = app.cfg.main_checkout.clone();
+            let _ = tokio::task::spawn_blocking(move || git::fetch_upstream(&main)).await;
+            reconcile_all(&app).await;
+
             let token = github::resolve_token(app.cfg.github_token_file.as_deref());
             match token {
                 Ok(t) => {

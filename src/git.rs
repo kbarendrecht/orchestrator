@@ -355,6 +355,83 @@ pub fn branch_exists(main: &Path, branch: &str) -> bool {
     )
 }
 
+/// How far this branch has drifted from the upstream base.
+///
+/// `behind` is what makes the rebase affordance appear: commits on
+/// `upstream/develop` that this branch does not have, i.e. other people's work
+/// that has landed since you branched.
+pub fn divergence(cwd: &Path, upstream: &str) -> Result<(u32, u32)> {
+    let range = format!("{upstream}...HEAD");
+    let out = git(cwd, &["rev-list", "--left-right", "--count", &range])?;
+    let mut parts = out.split_whitespace();
+    let behind = parts.next().unwrap_or("0").parse().unwrap_or(0);
+    let ahead = parts.next().unwrap_or("0").parse().unwrap_or(0);
+    Ok((behind, ahead))
+}
+
+/// Whether a rebase is stopped part-way in this worktree.
+///
+/// Checked on disk rather than inferred: a button that offers to rebase a tree
+/// already mid-rebase would make a mess that is annoying to unpick.
+pub fn rebase_in_progress(cwd: &Path) -> bool {
+    let Ok(dir) = git(cwd, &["rev-parse", "--path-format=absolute", "--git-dir"]) else {
+        return false;
+    };
+    let dir = Path::new(dir.trim());
+    dir.join("rebase-merge").exists() || dir.join("rebase-apply").exists()
+}
+
+/// Rebase onto the upstream base.
+///
+/// Never a merge: history stays linear, which is how this repo is worked (§5's
+/// base choice depends on it too). A rebase that stops on conflicts is left
+/// stopped — that is the state you resolve from — and reported rather than
+/// silently aborted.
+pub fn rebase_onto(cwd: &Path, upstream: &str) -> Result<()> {
+    let out = Command::new("git")
+        .args(["rebase", upstream])
+        .current_dir(cwd)
+        .output()
+        .context("running git rebase")?;
+    if out.status.success() {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    if rebase_in_progress(cwd) {
+        let files = conflicted_files(cwd).unwrap_or_default();
+        bail!(
+            "rebase stopped on conflicts in {} file(s): {}. Resolve them in a session, \
+             or abort.",
+            files.len(),
+            files
+                .iter()
+                .take(4)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+    bail!(
+        "rebase failed: {}",
+        stderr
+            .lines()
+            .chain(stdout.lines())
+            .find(|l| !l.trim().is_empty())
+            .unwrap_or("no output")
+    );
+}
+
+pub fn rebase_abort(cwd: &Path) -> Result<()> {
+    git(cwd, &["rebase", "--abort"])?;
+    Ok(())
+}
+
+pub fn conflicted_files(cwd: &Path) -> Result<Vec<String>> {
+    let out = git(cwd, &["diff", "--name-only", "--diff-filter=U"])?;
+    Ok(out.lines().map(|l| l.to_string()).collect())
+}
+
 pub fn fetch_upstream(main: &Path) -> Result<()> {
     git(main, &["fetch", "upstream", "develop", "--no-tags"])?;
     Ok(())

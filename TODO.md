@@ -32,6 +32,13 @@ Everything outside that block is hand-written and survives.
 
 ## Decisions worth revisiting
 
+- **The changed-files pane still refreshes.** The divergence strip now carries
+  the thing worth acting on when a branch has fallen behind, but the list under
+  it is still `git status`, recomputed on reconcile. Freezing it was the other
+  reading of "it shouldn't update"; a pane showing a tree that no longer exists
+  seemed worse than one showing a long list. Say so if you want it pinned to a
+  snapshot with an explicit refresh instead.
+
 - **`gh auth token` fallback.** Works out of the box and is what the daemon uses
   today, but its scopes include write and §6 wants read-only. Superseded as soon
   as a fine-grained PAT exists.
@@ -57,7 +64,7 @@ Everything outside that block is hand-written and survives.
 Rewritten by the daemon on every poll. Edit anything outside this block.
 
 - **transcripts are off** — spawned sessions write no `.jsonl`, so resume and the teardown transcript check do nothing. Set `persist_transcripts` back to true when you are done developing the daemon.
-- **`transient-tickling-newell` cannot be trusted to run PHP suites** — autoload resolves to `/home/kbarendrecht/development/scienta/vendor/composer/ClassLoader.php`, outside the worktree, so a suite run there loads main's code. §7's post-WIP table assumes otherwise.
 - **`dfafdf` cannot be trusted to run PHP suites** — autoload resolves to `/home/kbarendrecht/development/scienta/vendor/composer/ClassLoader.php`, outside the worktree, so a suite run there loads main's code. §7's post-WIP table assumes otherwise.
+- **`transient-tickling-newell` cannot be trusted to run PHP suites** — autoload resolves to `/home/kbarendrecht/development/scienta/vendor/composer/ClassLoader.php`, outside the worktree, so a suite run there loads main's code. §7's post-WIP table assumes otherwise.
 
 <!-- <<< orchd live findings <<< -->
