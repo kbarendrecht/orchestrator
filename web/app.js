@@ -545,7 +545,12 @@ function renderContext() {
   const wsId = currentWorkspaceId();
   const w = snap.workspaces.find((x) => x.id === wsId);
 
-  $('repo').textContent = w ? w.path.split('/').slice(-2).join('/') : '—';
+  // PRs are opened against upstream while branches live on the fork (§6), so
+  // the header names both rather than collapsing them into one path.
+  const repos = snap.repos || {};
+  $('repoupstream').textContent = repos.upstream
+    || (w ? w.path.split('/').slice(-2).join('/') : '—');
+  $('repofork').textContent = repos.fork || '';
   $('ctxdot').className = 'dot ' + (s ? dotClass(s) : 'idle');
   $('ctxname').textContent = s ? (s.title || wsId) : (wsId || 'no session');
   $('ctxbranch').textContent = w ? (w.branches[0] || '') : '';
@@ -566,7 +571,6 @@ function renderContext() {
   if (wsId) {
     get(`/api/merge-base?workspace=${encodeURIComponent(wsId)}`)
       .then((b) => {
-        $('upstream').textContent = b.upstream;
         $('ctxbase').textContent = `merge-base ${b.merge_base.slice(0, 7)}`;
       })
       .catch(() => { $('ctxbase').textContent = ''; });
@@ -1273,81 +1277,6 @@ function renderReviews() {
 }
 
 
-// ---------------------------------------------------------------------------
-// Test capabilities (§7) — reporting only
-// ---------------------------------------------------------------------------
-
-const TRUST_CLASS = { verified: 'ok', stale: 'blocked', untrusted: 'build' };
-
-async function showCapabilities() {
-  const ws = currentWorkspaceId();
-  if (!ws) return;
-  const body = $('capbody');
-  body.replaceChildren();
-  $('capmodal').classList.add('on');
-  body.appendChild(el('div', 'fempty', 'Probing…'));
-
-  let r;
-  try {
-    r = await get(`/api/workspace/${encodeURIComponent(ws)}/capabilities`);
-  } catch (e) {
-    body.replaceChildren(el('div', 'fempty', e.message));
-    return;
-  }
-  body.replaceChildren();
-
-  const line = (label, value, cls) => {
-    const d = el('div', 'capline');
-    d.appendChild(el('span', 'capkey', label));
-    d.appendChild(el('span', 'capval ' + (cls || ''), value));
-    return d;
-  };
-
-  // Reporting only: this says what /green *would* be allowed to do, and runs
-  // nothing.
-  body.appendChild(line('workspace', `${r.workspace}${r.is_main ? ' (main)' : ''}`));
-  if (r.container_path) body.appendChild(line('in container', r.container_path));
-  body.appendChild(line(
-    '/green eligible',
-    r.green_eligible ? 'yes' : 'no',
-    r.green_eligible ? 'ok' : 'bad'));
-  for (const b of r.green_blockers) body.appendChild(line('', b, 'dim'));
-  for (const l of r.locks_required) body.appendChild(line('needs lock', l, 'dim'));
-
-  body.appendChild(el('div', 'capgroup')).appendChild(el('span', 'eyebrow', 'Suites'));
-  for (const c of r.capabilities) {
-    const row = el('div', 'caprow');
-    row.appendChild(el('span', 'dot ' + (TRUST_CLASS[c.trust] || 'idle')));
-    row.appendChild(el('span', 'capsuite', c.suite));
-    row.appendChild(el('span', 'captrust ' + (TRUST_CLASS[c.trust] || ''), c.trust));
-    row.appendChild(el('span', 'capiso',
-      c.isolation.kind === 'shared_resource' ? `lock: ${c.isolation.resource}` : 'isolated'));
-    if (!c.runnable) row.appendChild(el('span', 'captrust build', 'no command'));
-    body.appendChild(row);
-    body.appendChild(el('div', 'capcmd', c.command.join(' ')));
-    if (c.note) body.appendChild(el('div', 'capnote', c.note));
-  }
-
-  if (r.deps.length) {
-    body.appendChild(el('div', 'capgroup')).appendChild(el('span', 'eyebrow', 'Dependencies'));
-    for (const d of r.deps) {
-      const state = !d.present ? 'absent' : d.matches_main ? 'matches main' : 'drifted';
-      body.appendChild(line(d.file, state,
-        !d.present ? 'dim' : d.matches_main ? 'ok' : 'bad'));
-    }
-  }
-
-  body.appendChild(el('div', 'capgroup')).appendChild(el('span', 'eyebrow', 'Autoload probe'));
-  const a = r.autoload;
-  body.appendChild(line(
-    a.result,
-    a.file || a.reason || '',
-    a.result === 'inside' ? 'ok' : a.result === 'outside' ? 'bad' : 'dim'));
-}
-
-function hideCapabilities() {
-  $('capmodal').classList.remove('on');
-}
 
 // ---------------------------------------------------------------------------
 // Actions
@@ -1433,9 +1362,6 @@ async function teardown(wsId) {
   }
 }
 
-$('capbtn').onclick = showCapabilities;
-$('capclose').onclick = hideCapabilities;
-$('diffbtn').onclick = () => (diffState.open ? closeDiff() : openDiff());
 $('ovclose').onclick = closeDiff;
 $('ovprev').onclick = () => stepChange(-1);
 $('ovnext').onclick = () => stepChange(1);
@@ -1447,8 +1373,9 @@ $('ovmode').onclick = () => {
 $('ovedit').onclick = () => (editState.on ? closeEditor() : openEditor());
 $('ovsave').onclick = saveEditor;
 $('basebtn').onclick = cycleBase;
+$('reposwitch').onclick = () =>
+  toast('switching repositories is not implemented yet', true);
 $('addshell').onclick = newShell;
-$('shellbtn').onclick = newShell;
 $('refreshbtn').onclick = () => {
   const wsId = currentWorkspaceId();
   if (wsId) call(`/api/workspace/${encodeURIComponent(wsId)}/reconcile`).catch((e) => toast(e.message, true));
@@ -1463,11 +1390,6 @@ $('killbtn').onclick = () => {
 // ---------------------------------------------------------------------------
 
 window.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape' && $('capmodal').classList.contains('on')) {
-    e.preventDefault();
-    hideCapabilities();
-    return;
-  }
   if ((e.metaKey || e.ctrlKey) && e.key === 's' && editState.on) {
     e.preventDefault();
     saveEditor();
