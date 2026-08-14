@@ -548,3 +548,141 @@ pub async fn write_file(
     }
     Ok(Json(out))
 }
+
+// ---------------------------------------------------------------------------
+// /green (§8) — hand-triggered only
+// ---------------------------------------------------------------------------
+
+/// Start a `/green` run for a PR.
+///
+/// Deliberately **not** automatic. §8 fires it on a PR going red; running it by
+/// hand instead means the guard table is a gate you read rather than one that
+/// trips behind you, and it is the difference between a tool that helps and one
+/// that rebases your branches while you are looking elsewhere.
+pub async fn green_pr(
+    State(app): State<Arc<AppState>>,
+    Path(number): Path<u64>,
+) -> ApiResult<serde_json::Value> {
+    use crate::green::{evaluate, GuardInput, PrAutomation, Verdict};
+
+    let pr = {
+        let inner = app.inner.read().await;
+        inner.prs.iter().find(|p| p.number == number).cloned()
+    }
+    .ok_or_else(|| anyhow::anyhow!("PR #{number} is not in the current poll"))?;
+
+    // The worktree has to exist before its capabilities can be probed, and the
+    // probe is what decides whether the run may happen at all.
+    let workspace = spawn::ensure_pr_worktree(&app, number, &pr.head_ref).await?;
+    let path = app
+        .workspace_path(&workspace)
+        .await
+        .ok_or_else(|| anyhow::anyhow!("worktree for #{number} vanished"))?;
+
+    let cfg = app.cfg.capabilities.clone();
+    let main = app.cfg.main_checkout.clone();
+    let ws = workspace.clone();
+    let capability = tokio::task::spawn_blocking(move || {
+        crate::capability::report(&cfg, &ws, &path, &main, false)
+    })
+    .await
+    .map_err(|e| anyhow::anyhow!("capability probe failed: {e}"))?;
+
+    let verdict = {
+        let inner = app.inner.read().await;
+        let branch_busy = inner.sessions.values().any(|s| {
+            s.workspace == workspace
+                && s.state.is_live()
+                && !matches!(s.state, crate::model::State::YourTurn { .. })
+        });
+        let running_automations = inner
+            .sessions
+            .values()
+            .filter(|s| s.is_automation() && s.state.is_live())
+            .count();
+        let live_claude_processes =
+            inner.sessions.values().filter(|s| s.state.is_live()).count();
+        let main_occupant = inner.workspaces.get(MAIN).and_then(|w| w.occupant);
+        let locks = inner.locks_held.clone();
+
+        evaluate(&GuardInput {
+            pr: &pr,
+            automation: inner.automation.get(number),
+            capability: &capability,
+            viewer: pr.head_owner.as_deref().unwrap_or_default(),
+            branch_busy,
+            running_automations,
+            live_claude_processes,
+            main_occupant,
+            locks_held: &locks,
+        })
+    };
+
+    let locks = match verdict {
+        Verdict::Go { locks } => locks,
+        Verdict::No { reason } => return Err(ApiError(anyhow::anyhow!("{reason}"))),
+    };
+
+    let session = spawn::spawn_green_session(&app, number, &pr.head_ref).await?;
+    {
+        let mut inner = app.inner.write().await;
+        inner.automation.by_pr.insert(
+            number,
+            PrAutomation::Running {
+                session,
+                started: std::time::SystemTime::now(),
+            },
+        );
+        inner.locks_held.extend(locks.iter().cloned());
+        let _ = crate::store::save_automation(&inner.automation);
+    }
+
+    // Releasing the locks and recording exhaustion belongs to whoever sees the
+    // session end.
+    watch_green(app.clone(), number, session, locks);
+    app.notify().await;
+    Ok(Json(json!({ "session": session })))
+}
+
+fn watch_green(
+    app: Arc<AppState>,
+    number: u64,
+    session: uuid::Uuid,
+    locks: Vec<String>,
+) {
+    use crate::green::{ended_red, PrAutomation};
+    tokio::spawn(async move {
+        let handle = {
+            let inner = app.inner.read().await;
+            inner.sessions.get(&session).and_then(|s| s.pty.clone())
+        };
+        if let Some(h) = handle {
+            h.wait().await;
+        }
+
+        let mut inner = app.inner.write().await;
+        inner.locks_held.retain(|l| !locks.contains(l));
+
+        // A run that ends with the PR still red means the skill is asking for
+        // you. Record it and never re-fire on its own (§8).
+        let pr = inner.prs.iter().find(|p| p.number == number).cloned();
+        match pr {
+            Some(pr) if ended_red(&pr) => {
+                inner.automation.by_pr.insert(
+                    number,
+                    PrAutomation::Exhausted {
+                        at_head: pr.head_sha.clone().unwrap_or_default(),
+                        at: std::time::SystemTime::now(),
+                    },
+                );
+            }
+            // Green, or the PR is gone from the poll: nothing to remember.
+            _ => {
+                inner.automation.by_pr.remove(&number);
+            }
+        }
+        let _ = crate::store::save_automation(&inner.automation);
+        drop(inner);
+        app.notify().await;
+    });
+}

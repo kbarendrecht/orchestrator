@@ -173,26 +173,108 @@ pub async fn spawn_skill_session(
     // Otherwise pin a worktree to that branch. `git worktree add` directly,
     // because the WorktreeCreate hook always cuts a new branch from
     // upstream/develop; `worktree-link` still runs at SessionStart.
+    {
+        let name = format!("pr-{pr}");
+        let inner = app.inner.read().await;
+        if inner.sessions.values().any(|s| {
+            matches!(&s.recovery, Some(ArchiveState::Recoverable { name: n, .. }) if n == &name)
+        }) {
+            bail!(
+                "an archived session used the worktree name {name}; remove it or rename before \
+                 reusing the name, or the two transcripts interleave"
+            );
+        }
+    }
+    let name = ensure_pr_worktree(app, pr, head_ref).await?;
+    start_with_prompt(app, &name, pr, skill).await
+}
+
+/// Start a headless `/green` run pinned to the PR's head branch.
+///
+/// §8 writes this as `claude -p "/green <pr>" --worktree`, but `--worktree`
+/// always cuts a fresh branch from `upstream/develop` while the same section
+/// requires a worktree "pinned to that PR's head branch". The branch wins: the
+/// worktree is created here and `claude -p` runs inside it.
+pub async fn spawn_green_session(
+    app: &Arc<AppState>,
+    pr: u64,
+    head_ref: &str,
+) -> Result<SessionId> {
+    let workspace = ensure_pr_worktree(app, pr, head_ref).await?;
+    let path = app
+        .workspace_path(&workspace)
+        .await
+        .context("worktree vanished")?;
+
+    let id = Uuid::new_v4();
+    let settings = Config::hooks_settings_path()?;
+    let cmd = vec![
+        "claude".to_string(),
+        "-p".to_string(),
+        format!("/green {pr}"),
+        "--output-format".to_string(),
+        "stream-json".to_string(),
+        "--verbose".to_string(),
+        "--session-id".to_string(),
+        id.to_string(),
+        "--settings".to_string(),
+        settings.to_string_lossy().into_owned(),
+    ];
+
+    let (mut env, unset) = crate::config::transcript_env(app.cfg.persist_transcripts);
+    env.push(("ORCH_SESSION_ID".to_string(), id.to_string()));
+    // Parallel runs collide on ports and docker resource names, so each gets
+    // its own compose project and port base (§8).
+    env.push((
+        "COMPOSE_PROJECT_NAME".to_string(),
+        format!("orchd-pr-{pr}"),
+    ));
+    env.push(("ORCHD_PORT_BASE".to_string(), (20000 + (pr % 1000) * 20).to_string()));
+
+    let spawned = PtyHandle::spawn(&cmd, &path, &env, &unset, DEFAULT_SIZE)?;
+    let mut session = Session::new(
+        id,
+        workspace,
+        path,
+        Kind::Automation {
+            pr,
+            skill: "green".to_string(),
+        },
+    );
+    session.pty = Some(spawned.handle.clone());
+    session.pid = spawned.pid;
+    {
+        let mut inner = app.inner.write().await;
+        inner.sessions.insert(id, session);
+    }
+
+    watch_session_exit(app.clone(), id, spawned.handle);
+    app.notify().await;
+    Ok(id)
+}
+
+/// The worktree for a PR's head branch, created if absent.
+pub async fn ensure_pr_worktree(app: &Arc<AppState>, pr: u64, head_ref: &str) -> Result<String> {
+    if let Some(ws) = {
+        let inner = app.inner.read().await;
+        inner
+            .workspaces
+            .values()
+            .find(|w| w.branches.contains(&head_ref.to_string()))
+            .map(|w| w.id.clone())
+    } {
+        return Ok(ws);
+    }
+
     let name = format!("pr-{pr}");
     validate_worktree_name(&name)?;
     let path = app.cfg.worktree_path(&name);
     if !path.exists() {
-        {
-            let inner = app.inner.read().await;
-            if inner.sessions.values().any(|s| {
-                matches!(&s.recovery, Some(ArchiveState::Recoverable { name: n, .. }) if n == &name)
-            }) {
-                bail!(
-                    "an archived session used the worktree name {name}; remove it or rename before \
-                     reusing the name, or the two transcripts interleave"
-                );
-            }
-        }
         crate::git::worktree_add_existing(&app.cfg.main_checkout, &path, head_ref)?;
     }
     app.register_worktree(&name, path, Some(head_ref.to_string()))
         .await;
-    start_with_prompt(app, &name, pr, skill).await
+    Ok(name)
 }
 
 async fn start_with_prompt(

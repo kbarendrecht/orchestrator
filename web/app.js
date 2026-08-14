@@ -274,6 +274,30 @@ function prDot(p) {
 
 let showPrs = true;
 
+/** A hand-triggered skill run against a PR. A refusal from the guard table is
+ *  shown verbatim: it is the whole point of triggering by hand. */
+function skillButton(p, skill) {
+  const b = el('button', 'pract', `/${skill}`);
+  b.title = skill === 'green'
+    ? 'Start a headless /green run on this PR'
+    : 'Start a session on this PR and run /resolve';
+  b.onclick = async (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    b.disabled = true;
+    try {
+      const r = await call(`/api/pr/${p.number}/${skill}`);
+      pendingSelect = r.session;
+      toast(`/${skill} ${p.number}`);
+    } catch (e) {
+      toast(e.message, true);
+    } finally {
+      b.disabled = false;
+    }
+  };
+  return b;
+}
+
 function prGroup() {
   const prs = snap.prs || [];
   const group = el('div', 'ws prblock');
@@ -324,39 +348,39 @@ function prGroup() {
     row.appendChild(el('span', 'num', `#${p.number}`));
     row.appendChild(el('span', 'ttl', p.title));
 
-    const why = [];
-    // An under-count would silently hide work, so a capped page reads as 50+.
-    if (p.unresolved) why.push(`${p.unresolved}${p.unresolved_capped ? '+' : ''} unresolved`);
-    else if (p.unresolved_capped) why.push('50+ threads');
-    if (p.changes_requested) why.push('changes requested');
-    if (p.mergeable === 'CONFLICTING') why.push('conflicts');
-    else if (p.checks === 'failing') why.push('checks failing');
-    if (p.children && p.children.length) why.push(`${p.children.length} stacked`);
-    if (p.is_draft) why.push('draft');
-    if (why.length) row.appendChild(el('span', 'link', why[0]));
+    const auto0 = (snap.automation || {})[p.number];
+    const needsResolve0 = p.unresolved > 0 || p.unresolved_capped || p.changes_requested;
+    const needsGreen0 = p.checks === 'failing' || p.mergeable === 'CONFLICTING';
 
-    // Never automatic: review responses are your voice (§8).
-    if (p.unresolved > 0 || p.unresolved_capped || p.changes_requested) {
-      const b = el('button', 'pract', 'resolve');
-      b.title = p.session
-        ? 'Take me to the session already on this branch'
-        : 'Start a session on this PR and run /resolve';
-      b.onclick = async (ev) => {
-        ev.preventDefault();
-        ev.stopPropagation();
-        b.disabled = true;
-        try {
-          const r = await call(`/api/pr/${p.number}/resolve`);
-          pendingSelect = r.session;
-          toast(`/resolve ${p.number}`);
-        } catch (e) {
-          toast(e.message, true);
-        } finally {
-          b.disabled = false;
-        }
-      };
+    // A reason chip next to a button just repeats it and steals width from the
+    // title, which is the part you actually read.
+    if (!needsResolve0 && !needsGreen0) {
+      const why = [];
+      if (p.unresolved_capped) why.push('50+ threads');
+      if (p.children && p.children.length) why.push(`${p.children.length} stacked`);
+      if (p.is_draft) why.push('draft');
+      if (why.length) row.appendChild(el('span', 'link', why[0]));
+    }
+
+    // Both skills are hand-triggered. /green is deliberately not automatic:
+    // the guard table is a gate you read, not one that trips behind you.
+    const auto = auto0, needsResolve = needsResolve0, needsGreen = needsGreen0;
+
+    if (auto && auto.state === 'running') {
+      const b = el('span', 'pract running', '/green running');
+      b.title = 'Jump to the run';
+      b.onclick = (ev) => { ev.preventDefault(); ev.stopPropagation(); select(auto.session); };
       row.appendChild(b);
-    } else if (p.session) {
+    } else {
+      if (auto && auto.state === 'exhausted') {
+        // The skill stopped without turning it green: it wants you.
+        row.appendChild(el('span', 'why gaveup', 'gave up'));
+      }
+      if (needsResolve) row.appendChild(skillButton(p, 'resolve'));
+      if (needsGreen) row.appendChild(skillButton(p, 'green'));
+    }
+
+    if (p.session && !needsResolve && !needsGreen) {
       row.appendChild(el('span', 'jump', 'jump'));
       row.onclick = (ev) => { ev.preventDefault(); select(p.session); };
     }

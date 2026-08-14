@@ -5,6 +5,7 @@ mod diff;
 mod edit;
 mod git;
 mod github;
+mod green;
 mod hooks;
 mod model;
 mod pty;
@@ -88,6 +89,7 @@ async fn main() -> Result<()> {
     }
     adopt_existing_worktrees(&app).await?;
     app.restore_sessions(records).await;
+    app.inner.write().await.automation = store::load_automation();
     reconcile_all(&app).await;
     autostart_processes(&app).await;
     start_pr_poller(app.clone());
@@ -122,6 +124,7 @@ async fn main() -> Result<()> {
         )
         .route("/api/process/:id/close", post(api::close_process))
         .route("/api/pr/:number/resolve", post(api::resolve_pr))
+        .route("/api/pr/:number/green", post(api::green_pr))
         .route("/ws/events", get(ws::events))
         .route("/ws/pty", get(ws::pty))
         // Hook endpoints live under their own prefix and are treated as
@@ -239,6 +242,18 @@ fn start_pr_poller(app: Arc<AppState>) {
                     inner.token_source = Some(source);
                     match result {
                         Ok(Ok(prs)) => {
+                            for p in &prs {
+                                let alive = matches!(
+                                    inner.automation.get(p.number),
+                                    Some(green::PrAutomation::Running { .. })
+                                );
+                                if !alive {
+                                    inner
+                                        .automation
+                                        .reconcile_head(p.number, p.head_sha.as_deref());
+                                }
+                            }
+                            let _ = store::save_automation(&inner.automation);
                             inner.prs = prs;
                             inner.pr_error = None;
                             inner.pr_fetched = Some(std::time::SystemTime::now());

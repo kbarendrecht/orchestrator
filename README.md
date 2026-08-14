@@ -4,8 +4,8 @@ Rust daemon + browser SPA that hosts several Claude Code sessions over one
 monorepo. Built from `orchestrator-spec.md`; the design comes from
 `orchestrator-ui.html`.
 
-Steps 1-8 of the spec's build order are implemented. The editable diff pane
-(step 9) and `/green` (step 10) are not.
+All ten steps of the spec's build order are implemented, with one deliberate
+change: `/green` is hand-triggered, never automatic.
 
 ## Run
 
@@ -55,7 +55,14 @@ under `web/` needs a `cargo build` before it takes effect.
   typed into the pty once `SessionStart` lands.
 - **Test capabilities** — per-suite trust and isolation from config, lockfile
   drift by content hash, an autoload probe, host↔container path mapping.
-  Reports only; nothing runs.
+- **Editable diff pane** — the right side is a live buffer with a disk write
+  path. Saving refuses if the file moved underneath you, and a `PreToolUse`
+  deny tells the agent, once, that you rewrote a file so it re-reads instead of
+  clobbering you.
+- **`/green`** — hand-triggered, with the whole §8 guard table: authorship,
+  one run per PR, capability trust, dep freshness, active-session suppression,
+  concurrency and process caps, shared-resource locks. Push guards deny
+  `push -u`, bare `--force`, and pushes to protected refs or upstream.
 
 ## What the spec got wrong
 
@@ -96,6 +103,25 @@ One more, from using it rather than reading it:
   removed outright; one that exits non-zero keeps its buffer and code, which is
   the case the rule was written for.
 
+## `/green` is triggered, not automatic
+
+§8 fires `/green` on a PR going red. It does not here — that was a deliberate
+call, and it changes what the guard table is for: a gate you read before
+starting, rather than one that trips while you are looking elsewhere. Everything
+else in that table still applies, because those guards protect the machine and
+the repo rather than the schedule.
+
+What that removes: the trigger-on-transition rules, the stack ordering (nothing
+fires on its own, so nothing needs serializing bottom-up), and the kill switch
+(there is nothing to switch off). `Exhausted` is kept and shown as *gave up* on
+the row, because a run that stopped without turning the PR green is worth
+knowing about before you trigger another one.
+
+`/green` also creates the PR's worktree before it evaluates the guards. That is
+not avoidable: lockfile drift and the autoload probe are questions about the
+worktree, and there is no worktree to ask about until it exists. It is reusable
+afterwards, including by `/resolve`.
+
 ## What the capability probe found
 
 Pointed at the `dfafdf` worktree, the §7 rule 4 autoload probe reports every PHP
@@ -125,6 +151,10 @@ src/
   github.rs     token resolution, GraphQL, PR model, stacks
   reviews.rs    `mise run reviews --json`, degraded states
   capability.rs suites, trust, dep drift, autoload probe, path mapping
+  green.rs      automation state and the /green guard table
+  edit.rs       file read/write with containment and conflict detection
+  todo.rs       the generated block in TODO.md
+guards/push.py  PreToolUse deny for dangerous pushes
   worktree.rs   teardown preflight, archive, removal
   store.rs      session record persistence, orphan reaping
   api.rs        HTTP surface and the origin/token guards
@@ -155,6 +185,8 @@ web/            SPA (vanilla, xterm.js vendored)
   so falling back to it logs a warning rather than passing quietly. GraphQL goes
   out through `curl` with the token on stdin, which keeps an HTTP+TLS stack (and
   its C toolchain) out of the build and the token out of the process table.
+- **TODO.md** carries a generated block the daemon rewrites each poll with
+  conditions that are true right now. Everything outside the markers is yours.
 - Bound to `127.0.0.1` only, with Origin/Host validation and a per-start token
   on every mutating route. Hook endpoints are exempt from the token but confined
   to their own prefix and can only ever update state.

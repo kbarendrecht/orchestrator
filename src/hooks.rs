@@ -400,7 +400,24 @@ pub async fn boundary_block(
 /// settings rather than replacing them, so the repo's own `worktree-create`,
 /// `worktree-link`, `worktree-edit-boundary` and `pre-bash` hooks keep firing
 /// alongside these. §3's fallback of inlining the repo's hooks is unnecessary.
+/// Blast-radius guards for `git push` (§8), kept as a real script in the repo
+/// rather than a string literal so it can be read, tested and diffed.
+const PUSH_GUARD: &str = include_str!("../guards/push.py");
+
+fn write_push_guard() -> Result<PathBuf> {
+    let path = Config::config_dir()?.join("guard-push.py");
+    std::fs::create_dir_all(path.parent().unwrap())?;
+    std::fs::write(&path, PUSH_GUARD)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))?;
+    }
+    Ok(path)
+}
+
 pub fn write_settings(port: u16) -> Result<PathBuf> {
+    let guard = write_push_guard()?;
     let base = format!("http://127.0.0.1:{port}/hooks");
     let http = |path: &str| {
         json!({
@@ -444,7 +461,16 @@ pub fn write_settings(port: u16) -> Result<PathBuf> {
             "UserPromptSubmit": [entry("user-prompt-submit")],
             // Ordering matters only in that both fire: PreToolUse warns about a
             // rewrite, PostToolUse records what was written.
-            "PreToolUse":       [matched("Edit|Write", "pre-edit")],
+            "PreToolUse": [
+                matched("Edit|Write", "pre-edit"),
+                // Additive to the repo's own `pre-bash`: any hook exiting 2
+                // blocks, so both sets of rules apply (§11).
+                { "matcher": "Bash", "hooks": [{
+                    "type": "command",
+                    "command": guard.to_string_lossy(),
+                    "timeout": 5,
+                }]},
+            ],
             "PostToolUse":      [matched("Edit|Write", "post-tool-use")],
             "Notification": [
                 matched("agent_needs_input", "notification/agent_needs_input"),
