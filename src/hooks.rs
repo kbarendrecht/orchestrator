@@ -105,7 +105,13 @@ pub async fn session_start(
                 s.cwd = PathBuf::from(cwd);
             }
             if matches!(s.state, State::Starting) {
-                s.set_state(State::Working);
+                // Started, but nothing is running: the prompt box is empty and
+                // waiting for you. `Working` here made a brand-new session look
+                // busy and blocked actions that only fight a running agent.
+                s.set_state(State::YourTurn {
+                    since: SystemTime::now(),
+                    reason: TurnReason::Ready,
+                });
             }
         }
     }

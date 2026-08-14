@@ -73,6 +73,7 @@ function stateLabel(s) {
     case 'your_turn':
       if (s.state.reason === 'asked_a_question') return 'asked a question';
       if (s.state.reason === 'needs_permission') return 'needs permission';
+      if (s.state.reason === 'ready') return 'ready';
       return 'turn complete';
     case 'build_failing': return s.state.summary || 'build failing';
     case 'error': return s.state.message || 'error';
@@ -98,12 +99,13 @@ function dotClass(s) {
 function stateClass(s) {
   const k = s.state.state;
   if (k === 'build_failing' || k === 'error') return 'build';
-  if (k === 'your_turn') return 'blocked';
+  if (k === 'your_turn' && s.state.reason !== 'ready') return 'blocked';
   return '';
 }
 
-const isWaiting = (s) =>
-  s.state.state === 'your_turn' || s.state.state === 'build_failing';
+/** Idle time worth surfacing. A session you opened and have not typed into is
+ *  idle, but shouting about it the moment you open it is noise. */
+const isWaiting = (s) => s.wants_attention;
 
 // ---------------------------------------------------------------------------
 // Terminals
