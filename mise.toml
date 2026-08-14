@@ -1,0 +1,3 @@
+[tools]
+claude = "latest"
+node = "latest"

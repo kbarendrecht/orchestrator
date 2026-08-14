@@ -1,0 +1,900 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>orchd — session board</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&family=Martian+Mono:wght@600;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#101010;
+  --surface:#171717;
+  --raised:#212121;
+  --line:#2C2C2C;
+  --line-soft:#262626;
+  --text:#D2D2D2;
+  --dim:#8B8B8B;
+  --faint:#00000000;
+  --faint-solid:#5B5B5B;
+  --ghost:#3E3E3E;
+
+  --attn:#E0A244;        /* needs you — deliberately not green or red */
+  --work:#4C9AAF;
+  --ok:#5FA97C;
+  --bad:#C9615A;
+  --auto:#3E9AAF;   /* automation — NOT purple: purple reads as merged on GitHub */
+
+  --add:rgba(95,169,124,.13);
+  --add-hi:rgba(95,169,124,.32);
+  --del:rgba(201,97,90,.13);
+  --del-hi:rgba(201,97,90,.32);
+
+  --mono:'IBM Plex Mono',ui-monospace,monospace;
+  --sans:'IBM Plex Sans',system-ui,sans-serif;
+  --label:'Martian Mono',ui-monospace,monospace;
+
+  --rail:290px;
+  --files:296px;
+}
+
+*{box-sizing:border-box;margin:0;padding:0}
+/* Fixed desktop stage. Mobile browsers honour width=1440 and shrink-to-fit,
+   so the full desktop layout is reviewable by pinch-zooming. */
+html{background:#000}
+body{
+  margin:0;overflow:auto;background:#000;
+  color:var(--text);font-family:var(--sans);font-size:13px;line-height:1.5;
+  -webkit-font-smoothing:antialiased;
+}
+.frame{position:relative}
+/* The stage is always 1440x900. JS scales it to whatever width we actually
+   get, so the desktop layout stays intact and simply renders smaller. */
+.stage{
+  width:1440px;height:900px;position:relative;
+  transform-origin:top left;background:var(--bg);
+}
+button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
+:focus-visible{outline:2px solid var(--attn);outline-offset:1px;border-radius:2px}
+
+.eyebrow{
+  font-family:var(--label);font-size:8.5px;font-weight:700;
+  letter-spacing:.16em;text-transform:uppercase;color:var(--faint-solid);
+}
+
+/* ---------- shell ---------- */
+/* one grid for the whole app: the top row shares the body's columns,
+   so each top-bar segment sits directly above the pane it describes */
+.app{
+  display:grid;
+  grid-template-columns:var(--rail) 1fr var(--files);
+  grid-template-rows:46px 1fr;
+  height:900px;
+}
+.top{
+  display:flex;align-items:center;gap:11px;padding:0 16px;
+  border-bottom:1px solid var(--line);background:var(--bg);min-width:0;
+}
+.top-l{border-right:1px solid var(--line);background:var(--surface)}
+.top-r{border-left:1px solid var(--line);background:var(--surface)}
+.rail,.center,.files{min-height:0}
+
+/* ---------- PR strip ---------- */
+.ctx-name{font-family:var(--mono);font-size:12px;color:var(--text);flex:0 0 auto}
+.ctx-branch{font-family:var(--mono);font-size:10.5px;color:var(--faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ctx-pr{font-family:var(--mono);font-size:10.5px;color:var(--dim);white-space:nowrap;flex:0 1 auto;overflow:hidden;text-overflow:ellipsis}
+.ctx-sep{color:var(--ghost);font-size:10px}
+.ctx-right{margin-left:auto;display:flex;align-items:center;gap:12px;flex:0 0 auto}
+.ctx-btn{font-family:var(--mono);font-size:10.5px;color:var(--faint)}
+.ctx-btn:hover{color:var(--text)}
+.repo{font-family:var(--mono);font-size:11px;color:var(--dim)}
+
+/* ---------- rail ---------- */
+.rail{border-right:1px solid var(--line);background:var(--surface);display:flex;flex-direction:column;overflow:hidden}
+.rail-scroll{flex:1;overflow-y:auto;min-height:0}
+.prblock{flex:0 0 auto;max-height:46%;overflow-y:auto;border-top:1px solid var(--line);border-bottom:0}
+.ws{border-bottom:1px solid var(--line-soft)}
+.ws.closed .prlist{display:none}
+.ws-head{
+  display:flex;align-items:center;justify-content:space-between;
+  padding:13px 15px 7px;position:sticky;top:0;background:var(--surface);z-index:2;
+}
+.ws-name{display:flex;align-items:center;gap:7px}
+.sortbtn{
+  margin-left:auto;display:flex;align-items:center;justify-content:center;
+  color:var(--ghost);padding:3px;border-radius:3px;line-height:0;
+}
+.sortbtn:hover{color:var(--dim)}
+.sortbtn[aria-pressed="true"]{color:var(--text);background:var(--raised)}
+.sortbtn svg{display:block}
+
+.waitbar{
+  position:sticky;top:0;z-index:3;display:none;align-items:center;gap:7px;
+  padding:5px 15px;background:var(--surface);border-bottom:1px solid var(--line-soft);
+  font-family:var(--mono);font-size:10px;color:var(--attn);width:100%;text-align:left;
+}
+.waitbar.on{display:flex}
+
+.plus{
+  font-family:var(--mono);font-size:14px;line-height:1;color:var(--ghost);
+  padding:1px 5px 3px;border-radius:3px;margin-left:9px;
+}
+.plus:hover:not(:disabled){color:var(--text);background:var(--raised)}
+.plus:disabled{color:#2E2E2E;cursor:not-allowed}
+
+.sess{
+  width:100%;display:block;padding:9px 15px 0;position:relative;text-align:left;
+  border-left:2px solid transparent;transition:background .12s;
+}
+.sess:hover{background:var(--raised)}
+.sess[aria-current="true"]{background:var(--raised);border-left-color:var(--text)}
+.sess-row{display:flex;align-items:center;gap:8px}
+.dot{width:6px;height:6px;border-radius:50%;flex:0 0 auto}
+.dot.blocked{background:var(--attn)}
+.dot.build{background:var(--bad)}
+.dot.auto{background:var(--auto)}
+.dot.working{background:#6A6A6A}
+.dot.done{background:#6A6A6A}
+.dot.idle{background:#3E3E3E}
+.dot.archived{background:transparent;border:1px solid var(--faint-solid)}
+@media (prefers-reduced-motion:no-preference){
+  .dot.blocked{animation:breathe 2.4s ease-in-out infinite}
+}
+@keyframes breathe{0%,100%{opacity:1}50%{opacity:.35}}
+
+.sess-name{
+  font-family:var(--mono);font-size:11.5px;flex:1;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+.sess.auto .sess-name{color:var(--auto)}
+.sess-sub{
+  display:flex;align-items:center;gap:13px;padding-left:14px;margin-top:2px;
+  font-family:var(--mono);font-size:10px;color:var(--faint-solid);
+}
+.sess-state{color:var(--dim)}
+.sess-state.blocked{color:var(--attn)}
+.sess-state.build{color:var(--bad)}
+
+.sess-pad{height:11px}
+.arctoggle{
+  display:flex;align-items:center;gap:7px;width:100%;
+  padding:7px 15px 12px;font-family:var(--mono);font-size:10px;color:var(--ghost);
+}
+.arctoggle:hover{color:var(--dim)}
+.arctoggle .caretr{display:inline-block;transition:transform .13s;font-size:9px}
+.arctoggle[aria-expanded="true"] .caretr{transform:rotate(90deg)}
+
+.prgroup-head{
+  display:flex;align-items:center;gap:9px;padding:13px 15px 7px;
+  width:100%;position:sticky;top:0;background:var(--surface);z-index:2;
+}
+.prcount{font-family:var(--mono);font-size:9.5px;color:var(--ghost);margin-left:auto}
+.prcount b{font-weight:400}
+.prcount .n{color:var(--attn)}
+.prcount .f{color:var(--bad)}
+.prrow{
+  display:flex;align-items:center;gap:9px;padding:4px 15px;width:100%;position:relative;
+}
+.prrow:hover{background:var(--raised)}
+.prrow .num{font-family:var(--mono);font-size:10.5px;color:var(--faint);flex-grow:0;flex-shrink:0;flex-basis:40px}
+.prrow .ttl{font-size:11.5px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex-grow:1;flex-shrink:1;flex-basis:0%;min-width:0;text-align:left}
+.prrow .link{font-family:var(--mono);font-size:10px;color:var(--ghost);opacity:0}
+.prrow.linked .link{opacity:1}
+.prrow:hover .link{opacity:0}
+.prrow .jump{font-family:var(--mono);font-size:9.5px;color:var(--faint);opacity:0;position:absolute;right:15px}
+.prrow:hover .jump{opacity:1}
+
+/* ---------- center ---------- */
+.center{display:flex;flex-direction:column;min-width:0;background:var(--bg);position:relative}
+.head-btn{
+  font-family:var(--label);font-size:8.5px;font-weight:700;letter-spacing:.1em;
+  text-transform:uppercase;color:var(--dim);padding:4px 8px;border:1px solid var(--line);border-radius:2px;
+}
+.head-btn:hover{color:var(--text);border-color:var(--faint-solid)}
+
+.term{
+  flex:1;overflow-y:auto;padding:14px 16px;
+  font-family:var(--mono);font-size:12px;line-height:1.62;white-space:pre-wrap;
+}
+.term .u{color:var(--attn)}
+.term .c{color:var(--dim)}
+.term .g{color:var(--ok)}
+.term .r{color:var(--bad)}
+.term .b{color:var(--work)}
+.term .f{color:var(--faint-solid)}
+.caret{display:inline-block;width:7px;height:14px;background:var(--text);vertical-align:-2px}
+@media (prefers-reduced-motion:no-preference){.caret{animation:blink 1.1s steps(1) infinite}}
+@keyframes blink{50%{opacity:0}}
+
+
+
+/* build drawer */
+.drawer{border-top:1px solid var(--line);background:var(--surface);display:flex;flex-direction:column;max-height:210px}
+.drawer.empty .drawer-body{display:none}
+.drawer.empty .drawer-head{border-bottom:0}
+.drawer-head{display:flex;align-items:center;gap:9px;padding:7px 15px;border-bottom:1px solid var(--line-soft)}
+.dtab{
+  font-family:var(--mono);font-size:10.5px;color:var(--faint-solid);
+  padding:3px 8px;border-radius:2px;display:flex;align-items:center;gap:6px;
+}
+.dtab[aria-selected="true"]{color:var(--text);background:var(--raised)}
+.dtab .dot{width:5px;height:5px}
+.dtab .x{color:#3E3E3E;margin-left:1px}
+.dtab .x:hover{color:var(--bad)}
+.addsh{
+  font-family:var(--mono);font-size:10.5px;color:var(--faint-solid);
+  padding:3px 8px;display:flex;align-items:center;gap:7px;
+}
+.addsh:hover{color:var(--text)}
+.addsh kbd{font-size:9.5px;color:#3E3E3E}
+.dcwd{margin-left:auto;font-family:var(--mono);font-size:9.5px;color:#3E3E3E}
+.drawer-body{overflow-y:auto;padding:10px 15px;font-family:var(--mono);font-size:11px;line-height:1.6;white-space:pre-wrap}
+.drawer-foot{padding:6px 15px;border-top:1px solid var(--line-soft);display:flex;align-items:center;gap:10px}
+
+/* ---------- files ---------- */
+.files{border-left:1px solid var(--line);background:var(--surface);display:flex;flex-direction:column;overflow:hidden}
+.base{
+  display:flex;align-items:center;gap:6px;margin-top:5px;
+  font-family:var(--mono);font-size:10px;color:var(--dim);
+}
+.base b{color:var(--text);font-weight:500}
+.base .swap{color:var(--faint-solid);font-size:9.5px}
+.fgroup{padding:9px 13px 3px}
+.frow{
+  width:100%;display:grid;grid-template-columns:11px 1fr auto;gap:8px;align-items:center;
+  padding:3.5px 13px;text-align:left;font-family:var(--mono);font-size:11px;
+}
+.frow:hover{background:var(--raised)}
+.fst{font-size:10px;font-weight:600;text-align:center}
+.fst.M{color:var(--attn)}.fst.A{color:var(--ok)}.fst.D{color:var(--bad)}.fst.U{color:var(--faint-solid)}
+.fname{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;direction:rtl;text-align:left}
+.fnum{font-size:9.5px;color:var(--faint-solid);letter-spacing:-.02em}
+.fnum .p{color:var(--ok)}.fnum .m{color:var(--bad)}
+#filepanes{flex:1;min-height:0;overflow-y:auto}
+.rvblock{flex:0 0 auto;max-height:46%;overflow-y:auto;border-top:1px solid var(--line)}
+.rvrow{display:flex;text-decoration:none;color:inherit;cursor:pointer;align-items:center;gap:9px;padding:4px 15px;width:100%;position:relative}
+.rvrow:hover{background:var(--raised)}
+.rvrow .dot{background-color:#5B5B5B}
+.rvrow .num{font-family:var(--mono);font-size:10.5px;color:var(--faint);flex-grow:0;flex-shrink:0;flex-basis:40px}
+.rvrow .ttl{font-size:11.5px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex-grow:1;flex-shrink:1;flex-basis:0%;min-width:0;text-align:left}
+.rvrow .who{font-family:var(--mono);font-size:9.5px;color:var(--dim);
+  flex-grow:0;flex-shrink:0;flex-basis:62px;text-align:right;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.rvrow .fc{font-family:var(--mono);font-size:9.5px;color:var(--ghost);
+  flex-grow:0;flex-shrink:0;flex-basis:22px;text-align:right}
+.rvrow .why{font-family:var(--mono);font-size:9.5px;color:var(--faint);flex-grow:0;flex-shrink:1;min-width:0;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.rvhead{display:flex;align-items:center;gap:9px;padding:11px 15px 6px;width:100%;
+  position:sticky;top:0;background:var(--surface);z-index:2}
+.rvcount{font-family:var(--mono);font-size:9.5px;color:var(--ghost);margin-left:auto}
+.rvcount .n{color:var(--attn)}
+.rvblock.closed .rvlist{display:none}
+.fempty{padding:22px 15px;font-family:var(--mono);font-size:10.5px;color:var(--ghost);line-height:1.75}
+.files-foot{padding:9px 13px;font-family:var(--mono);font-size:10px;color:var(--faint-solid)}
+
+/* ---------- diff overlay ---------- */
+.overlay{
+  position:absolute;inset:0;background:var(--bg);z-index:20;
+  display:none;flex-direction:column;
+}
+.overlay.on{display:flex}
+.ov-head{display:flex;align-items:center;gap:12px;padding:9px 15px;border-bottom:1px solid var(--line);background:var(--surface)}
+.ov-path{font-family:var(--mono);font-size:12px}
+.ov-path span{color:var(--faint-solid)}
+.ov-nav{margin-left:auto;display:flex;align-items:center;gap:8px}
+.ov-count{font-family:var(--mono);font-size:10px;color:var(--faint-solid)}
+.diff{flex:1;overflow:auto;display:grid;grid-template-columns:1fr 22px 1fr;font-family:var(--mono);font-size:11.5px;line-height:1.65}
+.pane{min-width:0}
+.pane-head{
+  position:sticky;top:0;background:var(--surface);border-bottom:1px solid var(--line-soft);
+  padding:5px 12px;z-index:2;display:flex;justify-content:space-between;align-items:center;
+}
+.gutter{background:var(--surface);border-left:1px solid var(--line-soft);border-right:1px solid var(--line-soft)}
+.ln{display:grid;grid-template-columns:38px 1fr;gap:0;white-space:pre}
+.ln i{color:#4C4C4C;text-align:right;padding-right:10px;font-style:normal;user-select:none}
+.ln span{padding:0 10px}
+.ln.add span{background:var(--add)}
+.ln.del span{background:var(--del)}
+.ln.empty span{background:#0B0B0B}
+.w-add{background:var(--add-hi);border-radius:2px}
+.w-del{background:var(--del-hi);border-radius:2px}
+.fold{
+  padding:3px 12px;color:var(--faint-solid);background:#0B0B0B;
+  border-top:1px solid var(--line-soft);border-bottom:1px solid var(--line-soft);
+  font-size:10.5px;cursor:pointer;
+}
+.fold:hover{color:var(--dim)}
+
+.zoom{
+  position:fixed;left:8px;bottom:8px;z-index:999;display:flex;align-items:center;gap:2px;
+  background:#1c1c1c;border:1px solid #3a3a3a;border-radius:4px;padding:3px;
+  font-family:var(--mono);font-size:13px;color:#ccc;box-shadow:0 2px 10px rgba(0,0,0,.6);
+}
+.zoom button{padding:5px 9px;border-radius:3px;line-height:1;min-width:30px}
+.zoom button:hover{background:#2c2c2c}
+.zoom span{padding:0 6px;font-size:11px;color:#888;min-width:38px;text-align:center}
+
+</style>
+</head>
+<body>
+<div class="zoom" id="zoom">
+  <button data-z="out">−</button><span id="zlabel">fit</span><button data-z="in">+</button><button data-z="fit">fit</button><button data-z="one">1:1</button>
+</div>
+<div class="frame" id="frame">
+<div class="stage">
+<div class="app">
+
+  <!-- ============ PR STRIP ============ -->
+  <div class="top top-l">
+    <span class="repo">scienta/scienta</span>
+    <span class="ctx-sep" style="margin-left:auto">develop</span>
+  </div>
+
+  <div class="top top-c">
+    <span class="dot" id="ctxdot"></span>
+    <span class="ctx-name" id="ctxname">invoice-export</span>
+    <span class="ctx-branch" id="ctxbranch">feat/invoice-pdf → upstream/develop</span>
+    <span class="ctx-sep">·</span>
+    <span class="ctx-pr" id="ctxpr">#4812 checks failing</span>
+    <span class="ctx-right">
+      <button class="ctx-btn" id="diffbtn">Diff</button>
+      <button class="ctx-btn" id="shellbtn2">Shell</button>
+      <button class="ctx-btn" id="killbtn">Kill</button>
+    </span>
+  </div>
+
+  <div class="top top-r">
+    <span class="eyebrow">Changed files</span>
+    <span class="base" style="margin:0 0 0 auto"><span>vs</span><b>upstream/develop</b><span class="swap">▾</span></span>
+  </div>
+
+
+    <!-- ============ RAIL ============ -->
+    <nav class="rail" aria-label="Sessions">
+      <div class="rail-scroll">
+
+      <div class="ws">
+        <div class="ws-head">
+          <div class="ws-name"><span class="eyebrow">Main checkout</span></div>
+          <span style="margin-left:auto"></span>
+          <button class="plus" disabled title="invoice pdf layout is holding main">+</button>
+        </div>
+        <button class="sess" aria-current="false" data-view="main">
+          <div class="sess-row"><span class="dot build"></span><span class="sess-name">invoice pdf layout</span></div>
+          <div class="sess-sub"><span class="sess-state build">Build failing</span><span>ng-watch</span></div>
+          <div class="sess-pad"></div>
+        </button>
+      </div>
+
+      <div class="ws">
+        <div class="ws-head"><span class="eyebrow">Worktrees</span>
+          <button class="sortbtn" id="sortbtn" aria-pressed="false"
+                  title="Sorted by creation order — click to sort by waiting time"
+                  aria-label="Sort order: created">
+            <svg width="12" height="12" viewBox="0 0 16 16" fill="none"
+                 stroke="currentColor" stroke-width="1.4" stroke-linecap="round">
+              <path d="M2 3.5h8M2 8h5.5M2 12.5h3"/>
+              <path d="M12.5 4v8M10.5 10l2 2 2-2"/>
+            </svg>
+          </button>
+          <button class="plus" title="New worktree session">+</button></div>
+        <button class="waitbar" id="waitbar"></button>
+        <div id="wtlist">
+
+        <button class="sess" data-born="1" data-view="done">
+          <div class="sess-row"><span class="dot blocked"></span><span class="sess-name">api-pagination</span></div>
+          <div class="sess-sub"><span class="sess-state blocked">Your turn</span><span>22m idle</span><span>#4809</span></div>
+          <div class="sess-pad"></div>
+        </button>
+
+        <button class="sess" data-born="2" aria-current="true" data-view="blocked">
+          <div class="sess-row"><span class="dot blocked"></span><span class="sess-name">invoice-export</span></div>
+          <div class="sess-sub"><span class="sess-state blocked">Your turn</span><span>6m idle</span><span>#4812</span></div>
+          <div class="sess-pad"></div>
+        </button>
+
+        <button class="sess" data-born="3" data-view="working">
+          <div class="sess-row"><span class="dot working"></span><span class="sess-name">renderer-cache</span></div>
+          <div class="sess-sub"><span class="sess-state">Working</span><span>4m</span></div>
+          <div class="sess-pad"></div>
+        </button>
+
+        <button class="sess auto" data-born="4" data-view="auto">
+          <div class="sess-row"><span class="dot working" style="background:var(--auto)"></span><span class="sess-name">Invoice export to PDF</span></div>
+          <div class="sess-sub"><span class="sess-state" style="color:var(--auto)">Automation</span><span>#4812</span></div>
+          <div class="sess-pad"></div>
+        </button>
+
+        </div>
+        <button class="arctoggle" id="arctoggle" aria-expanded="false">
+          <span class="caretr">▸</span>1 archived
+        </button>
+        <div id="arclist" hidden>
+          <button class="sess" data-view="archived">
+            <div class="sess-row"><span class="dot archived"></span><span class="sess-name" style="color:var(--faint-solid)">tenant-fixtures</span></div>
+            <div class="sess-sub"><span>Archived</span><span>resumable</span><span>transcript kept</span></div>
+            <div class="sess-pad"></div>
+          </button>
+        </div>
+      </div>
+
+      </div>
+
+      <div class="ws prblock">
+        <button class="prgroup-head" onclick="this.parentNode.classList.toggle('closed')">
+          <span class="eyebrow">PRs</span>
+          <span class="prcount"><b class="n">1 needs you</b> · <b class="f">1 failing</b> · 5 open</span>
+        </button>
+        <div class="prlist">
+          <button class="prrow"><span class="dot" style="background:var(--attn)"></span><span class="num">#4809</span><span class="ttl">Paginate the API index</span><span class="jump">resolve</span></button>
+          <button class="prrow"><span class="dot" style="background:var(--bad)"></span><span class="num">#4801</span><span class="ttl">Seed tenant fixtures</span><span class="jump">run in main</span></button>
+          <button class="prrow linked"><span class="dot" style="background:var(--auto)"></span><span class="num">#4812</span><span class="ttl">Invoice export to PDF</span><span class="link">↑</span><span class="jump">go to session</span></button>
+          <button class="prrow"><span class="dot" style="background:var(--ok)"></span><span class="num">#4796</span><span class="ttl">Tighten VAT rounding</span><span class="jump">open</span></button>
+          <button class="prrow linked"><span class="dot idle"></span><span class="num">#4815</span><span class="ttl">Renderer cache keys</span><span class="link">↑</span><span class="jump">go to session</span></button>
+        </div>
+      </div>
+    </nav>
+
+    <!-- ============ CENTER ============ -->
+    <main class="center">
+
+      <!-- interactive terminal -->
+      <div id="pane-term" style="display:flex;flex-direction:column;flex:1;min-height:0">
+        <div class="term" id="termbody"></div>
+      </div>
+
+
+      <!-- build drawer (main only) -->
+      <div class="drawer" id="drawer">
+        <div class="drawer-head">
+          <span class="eyebrow" style="margin-right:2px">Processes</span>
+          <span id="dtabs" style="display:flex;gap:4px"></span>
+          <button class="addsh" id="addshell">+ Shell <kbd>⌃`</kbd></button>
+          <span class="dcwd" id="dcwd"></span>
+        </div>
+        <div class="drawer-body" id="drawerbody"></div>
+      </div>
+
+      <!-- ============ DIFF OVERLAY ============ -->
+      <div class="overlay" id="overlay">
+        <div class="ov-head">
+          <span class="ov-path"><span>src/Invoice/</span>PdfExporter.php</span>
+          <div class="ov-nav">
+            <span class="ov-count">change 2 of 7</span>
+            <button class="head-btn">Prev ⇧F7</button>
+            <button class="head-btn">Next F7</button>
+            <button class="head-btn" id="closeov">Close ESC</button>
+          </div>
+        </div>
+        <div class="diff" id="diffbody"></div>
+      </div>
+    </main>
+
+    <!-- ============ FILES ============ -->
+    <aside class="files">
+      <div id="filepanes"></div>
+      <div class="files-foot" id="filesfoot"></div>
+
+      <div class="rvblock" id="rvblock">
+        <button class="rvhead" onclick="document.getElementById('rvblock').classList.toggle('closed')">
+          <span class="eyebrow">Reviews</span>
+          <span class="rvcount"><span class="n">3 waiting</span> · oldest 5d</span>
+        </button>
+        <div class="rvlist">
+          <a class="rvrow" href="https://github.com/scienta/scienta/pull/4771/files" target="_blank" rel="noopener noreferrer" title="Open review on GitHub"><span class="dot"></span><span class="num">#4771</span><span class="ttl">Refactor billing exports</span><span class="who">joost</span><span class="fc">37</span></a>
+          <a class="rvrow" href="https://github.com/scienta/scienta/pull/4788/files" target="_blank" rel="noopener noreferrer" title="Open review on GitHub"><span class="dot"></span><span class="num">#4788</span><span class="ttl">Fix tenant switcher race</span><span class="why">re-requested</span><span class="who">marieke</span><span class="fc">8</span></a>
+          <a class="rvrow" href="https://github.com/scienta/scienta/pull/4803/files" target="_blank" rel="noopener noreferrer" title="Open review on GitHub"><span class="dot"></span><span class="num">#4803</span><span class="ttl">Bump symfony/console</span><span class="who">dependabot</span><span class="fc">1</span></a>
+          <a class="rvrow" href="https://github.com/scienta/scienta/pull/4799/files" target="_blank" rel="noopener noreferrer" title="Open review on GitHub"><span class="dot"></span><span class="num">#4799</span><span class="ttl">Add audit log index</span><span class="why">approved</span><span class="who">sanne</span><span class="fc">4</span></a>
+        </div>
+      </div>
+    </aside>
+</div>
+
+</div>
+</div><!-- /stage /frame -->
+
+<script>
+/* ---------- fit the fixed stage to the available width ---------- */
+(function(){
+  const stage=document.querySelector('.stage'),
+        frame=document.getElementById('frame'),
+        label=document.getElementById('zlabel');
+  let z=null;                                  // null = auto-fit
+  function visible(){
+    // The iframe often reports a wider viewport than the phone actually shows,
+    // so take the smallest credible measurement available.
+    return Math.min(
+      document.documentElement.clientWidth || 1e9,
+      (window.visualViewport && window.visualViewport.width) || 1e9,
+      (window.screen && window.screen.width) || 1e9
+    );
+  }
+  function apply(){
+    const s = z === null ? Math.min(1, visible()/1440) : z;
+    stage.style.transform='scale('+s+')';
+    frame.style.width=Math.round(1440*s)+'px';
+    frame.style.height=Math.round(900*s)+'px';
+    label.textContent = z===null ? 'fit' : Math.round(s*100)+'%';
+  }
+  document.getElementById('zoom').addEventListener('click',e=>{
+    const b=e.target.closest('button'); if(!b) return;
+    const cur = z === null ? Math.min(1, visible()/1440) : z;
+    if(b.dataset.z==='in')  z=Math.min(2, cur*1.35);
+    if(b.dataset.z==='out') z=Math.max(.1, cur/1.35);
+    if(b.dataset.z==='fit') z=null;
+    if(b.dataset.z==='one') z=1;
+    apply();
+  });
+  apply();
+  addEventListener('resize',apply);
+})();
+
+/* ---------- terminal content ---------- */
+const TERM = `<span class="f">╭──────────────────────────────────────────────╮</span>
+<span class="f">│</span>  Claude Code · invoice-export                <span class="f">│</span>
+<span class="f">╰──────────────────────────────────────────────╯</span>
+
+<span class="u">&gt;</span> the PDF exporter drops the tax column when a line
+  item has no VAT. fix it and add a regression test.
+
+<span class="c">⏺</span> Read <span class="b">src/Invoice/PdfExporter.php</span> <span class="f">(214 lines)</span>
+<span class="c">⏺</span> Read <span class="b">src/Invoice/LineItem.php</span> <span class="f">(88 lines)</span>
+
+  Found it. <span class="b">renderTaxCell()</span> returns early on a null
+  rate, which skips the cell entirely rather than
+  emitting an empty one. The column count then drifts
+  and TCPDF silently collapses the row.
+
+<span class="c">⏺</span> Edit <span class="b">src/Invoice/PdfExporter.php</span>
+  <span class="g">+7</span> <span class="r">-3</span> · renderTaxCell
+<span class="c">⏺</span> Write <span class="b">tests/unit/Invoice/PdfExporterTest.php</span>
+  <span class="g">+94</span>
+
+  Unit tests cover it. The integration suite also
+  touches invoice rendering, so I'd like to run that
+  before calling this done.
+
+<span class="c">⏺</span> Bash <span class="f">docker exec … phpunit --testsuite=unit</span>
+  <span class="g">412 passed, 0 failed</span>
+<span class="c">⏺</span> Bash <span class="f">docker exec … phpunit --testsuite=integration</span>
+  <span class="g">210 passed, 0 failed</span>
+
+  Done. <span class="b">renderTaxCell()</span> now emits an empty cell instead
+  of returning early, so the column count holds. The
+  regression test covers both the null-rate and
+  zero-rate cases.
+
+<span class="u">&gt;</span> <span class="caret"></span>`;
+
+/* an automation session is an ordinary Claude Code session
+   whose first prompt is the skill invocation */
+const TERM_AUTO = `<span class="f">╭──────────────────────────────────────────────╮</span>
+<span class="f">│</span>  Claude Code · #4812                         <span class="f">│</span>
+<span class="f">╰──────────────────────────────────────────────╯</span>
+
+<span class="u">&gt;</span> /green 4812
+
+<span class="c">⏺</span> Read <span class="b">.github/workflows/ci.yml</span>
+<span class="c">⏺</span> Bash <span class="f">gh pr checks 4812</span>
+  <span class="r">✕ unit (php 8.3)   failing</span>
+  <span class="f">✓ static           passing</span>
+  <span class="f">✓ lint             passing</span>
+
+  Three failures, all in <span class="b">PdfExporterTest</span>. The branch
+  is also 14 commits behind. Rebasing first.
+
+<span class="c">⏺</span> Bash <span class="f">git fetch upstream develop --no-tags</span>
+<span class="c">⏺</span> Bash <span class="f">git rebase upstream/develop</span>
+  <span class="r">CONFLICT src/Invoice/PdfExporter.php</span>
+<span class="c">⏺</span> Edit <span class="b">src/Invoice/PdfExporter.php</span> <span class="f">· resolved</span>
+<span class="c">⏺</span> Bash <span class="f">git rebase --continue</span>
+
+<span class="f">  preflight · autoload resolves to worktree src/  </span><span class="g">ok</span>
+<span class="f">  preflight · composer.lock matches main          </span><span class="g">ok</span>
+
+<span class="c">⏺</span> Bash <span class="f">… phpunit --testsuite=unit</span>
+  <span class="g">412 passed, 0 failed</span>
+<span class="c">⏺</span> Bash <span class="f">… phpunit --testsuite=integration</span>
+  <span class="f">running… 88 of 210</span> <span class="caret"></span>`;
+
+const DRAWER = `<span style="color:var(--dim)">✔ Browser application bundle generation complete.</span>
+<span style="color:var(--dim)">⠋ Generating browser application bundles…</span>
+
+<span style="color:var(--bad)">✖ Error: src/app/invoice/invoice-preview.component.ts:42:18</span>
+<span style="color:var(--bad)">  TS2339: Property 'taxCell' does not exist on type</span>
+<span style="color:var(--bad)">  'InvoiceLine'.</span>
+
+<span style="color:var(--faint-solid)">  42   const cell = line.taxCell ?? emptyCell();</span>
+<span style="color:var(--faint-solid)">                          ~~~~~~~</span>
+
+<span style="color:var(--dim)">Watching for file changes…</span>`;
+
+const DOCKER = `<span style="color:var(--dim)">scienta-toolbox   Up 4 hours</span>
+<span style="color:var(--dim)">scienta-db        Up 4 hours (healthy)</span>
+<span style="color:var(--dim)">scienta-web       Up 4 hours   :8080 → localhost</span>
+<span style="color:var(--dim)">scienta-redis     Up 4 hours</span>
+
+<span style="color:var(--faint-solid)">web_1  | 06:12:41 GET /invoices/4812/preview 200 84ms</span>
+<span style="color:var(--faint-solid)">web_1  | 06:13:02 GET /invoices/4812/preview 200 71ms</span>`;
+
+function shellBody(cwd){
+  return `<span style="color:var(--ok)">kars</span><span style="color:var(--faint-solid)">@lin</span> <span style="color:var(--work)">${cwd}</span>
+$ <span class="caret"></span>`;
+}
+
+/* ---------- per-session changed files ---------- */
+const FILESETS = {
+  main:{base:'a91f0c3 · fetched 2m ago',
+    u:[['M','src/app/invoice/invoice-preview.component.ts','+18','-4'],
+       ['M','src/app/invoice/invoice-preview.component.html','+9','-1'],
+       ['M','src/styles/_invoice.scss','+31','-12']],
+    n:[['?','src/app/invoice/tax-cell.component.ts','+47','']]},
+  blocked:{base:'a91f0c3 · fetched 2m ago',
+    u:[['M','src/Invoice/PdfExporter.php','+7','-3'],
+       ['M','src/Invoice/LineItem.php','+2','-2'],
+       ['M','config/services/invoice.yaml','+4',''],
+       ['A','src/Invoice/TaxCellRenderer.php','+61',''],
+       ['D','src/Invoice/LegacyTaxColumn.php','','-38']],
+    n:[['?','tests/unit/Invoice/PdfExporterTest.php','+94','']]},
+  auto:{base:'a91f0c3 · rebased 4m ago',
+    u:[['M','src/Invoice/PdfExporter.php','+7','-3'],
+       ['M','composer.lock','+11','-11']],
+    n:[]},
+  working:{base:'a91f0c3 · fetched 2m ago',
+    u:[['M','src/Renderer/CacheKey.php','+24','-9'],
+       ['M','src/Renderer/Pipeline.php','+13','-6'],
+       ['M','src/Renderer/Warmup.php','+8','-2'],
+       ['M','tests/unit/Renderer/CacheKeyTest.php','+52','-4'],
+       ['A','src/Renderer/KeyStrategy.php','+88','']],
+    n:[['?','var/bench/cache-keys.json','+6','']]},
+  done:{base:'a91f0c3 · fetched 2m ago',
+    u:[['M','src/Api/IndexController.php','+34','-11'],
+       ['M','src/Api/Paginator.php','+19','-3']],
+    n:[]},
+  archived:{base:null,u:[],n:[]}
+};
+
+function fileRows(list){
+  return list.map(function(f){
+    var st=f[0],name=f[1],p=f[2],m=f[3];
+    return '<button class="frow"><span class="fst '+(st==='?'?'U':st)+'">'+st+'</span>'+
+           '<span class="fname">'+name+'</span><span class="fnum">'+
+           (p?'<span class="p">'+p+'</span> ':'')+(m?'<span class="m">'+m+'</span>':'')+
+           '</span></button>';
+  }).join('');
+}
+function drawFiles(view){
+  var f=FILESETS[view],
+      panes=document.getElementById('filepanes'),
+      foot=document.getElementById('filesfoot');
+  if(!f.base){
+    panes.innerHTML='<div class="fempty">Worktree removed.<br><br>'+
+      'Transcript is intact in <span style="color:var(--faint)">~/.claude/projects</span>,<br>'+
+      'but <span style="color:var(--dim)">--resume</span> resolves by directory.<br><br>'+
+      'Resume rebuilds<br><span style="color:var(--faint)">.claude/worktrees/tenant-fixtures</span><br>'+
+      'on <span style="color:var(--faint)">feat/tenant-fixtures</span> at <span style="color:var(--faint)">3f9a1c2</span>,<br>'+
+      'then continues the session.<br><br>'+
+      '<span style="color:var(--attn)">⚠ branch tip moved since teardown</span></div>';
+    foot.textContent='recoverable · rebuild required';
+    return;
+  }
+  panes.innerHTML =
+    '<div class="fgroup"><div class="eyebrow">Unstaged · '+f.u.length+'</div></div>'+fileRows(f.u)+
+    (f.n.length?'<div class="fgroup"><div class="eyebrow">Untracked · '+f.n.length+'</div></div>'+fileRows(f.n):'');
+  foot.textContent='merge-base '+f.base;
+  panes.querySelectorAll('.frow').forEach(function(r){ r.onclick=function(){ ov.classList.add('on'); }; });
+}
+
+/* ---------- diff ---------- */
+const L=[
+ [138,'    private function renderTaxCell(LineItem $item): string'],
+ [139,'    {'],
+ [140,'        $rate = $item->taxRate();'],
+ ['del',141,'        if ($rate === null) {'],
+ ['del',142,"            return '';"],
+ ['del',143,'        }'],
+ [144,''],
+ [145,'        return $this->cell(']
+];
+const R=[
+ [138,'    private function renderTaxCell(LineItem $item): string'],
+ [139,'    {'],
+ [140,'        $rate = $item->taxRate();'],
+ ['add',141,'        if ($rate === null) {'],
+ ['add',142,'            return $this->emptyCell();'],
+ ['add',143,'        }'],
+ ['add',144,''],
+ ['add',145,'        // an absent rate still owes the table a cell'],
+ [146,''],
+ [147,'        return $this->cell(']
+];
+function esc(x){return x.replace(/&/g,'&amp;').replace(/</g,'&lt;')}
+function renderSide(rowsIn,side){
+  var out=rowsIn.map(function(r){
+    if(r[0]==='del'||r[0]==='add'){
+      var txt=esc(r[2]);
+      if(r[2].indexOf("return '';")>-1) txt=txt.replace("return '';",'<span class="w-del">return \'\';</span>');
+      if(r[2].indexOf('$this->emptyCell()')>-1) txt=txt.replace('return $this-&gt;emptyCell();','<span class="w-add">return $this-&gt;emptyCell();</span>');
+      if(r[2].indexOf('//')>-1) txt='<span class="w-add">'+txt+'</span>';
+      return '<div class="ln '+r[0]+'"><i>'+r[1]+'</i><span>'+txt+'</span></div>';
+    }
+    return '<div class="ln"><i>'+r[0]+'</i><span>'+esc(r[1])+'</span></div>';
+  }).join('');
+  if(side==='l') out+='<div class="ln empty"><i></i><span> </span></div><div class="ln empty"><i></i><span> </span></div>';
+  return out;
+}
+
+/* ---------- wiring ---------- */
+const term=document.getElementById('pane-term'),
+      termbody=document.getElementById('termbody'),
+      drawer=document.getElementById('drawer'),
+      ov=document.getElementById('overlay');
+
+const VIEWS={
+  main:{title:'invoice pdf layout',path:'~/scienta',term:TERM,
+        dot:'build',branch:'develop (main checkout)',pr:'no PR · ng-watch failing',
+        procs:[{n:'ng-watch',s:'build',b:DRAWER},{n:'docker',s:'done',b:DOCKER}]},
+  blocked:{title:'invoice-export',path:'.claude/worktrees/invoice-export',term:TERM,
+        dot:'blocked',branch:'feat/invoice-pdf → upstream/develop',pr:'#4812 checks failing · green running 2m',procs:[]},
+  auto:{title:'Invoice export to PDF',path:'.claude/worktrees/green-4812',term:TERM_AUTO,
+        dot:'auto',branch:'feat/invoice-pdf → upstream/develop',pr:'#4812',procs:[]},
+  working:{title:'renderer-cache',path:'.claude/worktrees/renderer-cache',term:TERM,
+        dot:'working',branch:'feat/renderer-cache → upstream/develop',pr:'#4815 draft · checks pass',
+        procs:[{n:'shell',s:'idle',b:shellBody('~/scienta/.claude/worktrees/renderer-cache'),shell:1}]},
+  done:{title:'api-pagination',path:'.claude/worktrees/api-pagination',term:TERM,
+        dot:'done',branch:'feat/api-pagination → upstream/develop',pr:'#4809 · 2 threads need resolving',procs:[]},
+  archived:{title:'tenant-fixtures',path:'archived',term:TERM,
+        dot:'archived',branch:'feat/tenant-fixtures · worktree removed',pr:'#4801 e2e failing · needs main',procs:[]}
+};
+
+/* ---------- rail ordering ----------
+   created : worktree creation time, ascending. Never moves.
+   waiting : Your turn (longest wait first) -> Build failing -> Done ->
+             Working -> Idle, ties broken by creation time so it stays
+             deterministic. Reorders are deferred while the rail is hovered
+             or focused, so rows never move under the cursor. */
+var WT=document.getElementById('wtlist'),
+    WAITBAR=document.getElementById('waitbar'),
+    RAIL=document.querySelector('.rail'),
+    sortMode='created', reorderPending=false, railBusy=false, idleTimer=null;
+
+var ORDER={blocked:0,build:1,done:2,working:3,idle:4};
+function meta(el){
+  var d=el.querySelector('.dot'), st='idle';
+  ['blocked','build','done','working','idle'].forEach(function(k){ if(d.classList.contains(k)) st=k; });
+  if(d.style.background.indexOf('auto')>-1) st='working';
+  var m=(el.querySelector('.sess-sub')||{}).textContent||'';
+  var wait=(m.match(/(\d+)m/)||[0,0])[1];
+  return {rank:ORDER[st], wait:+wait, born:+el.dataset.born||0, state:st};
+}
+function applySort(){
+  var rows=[].slice.call(WT.children);
+  rows.sort(function(a,b){
+    var A=meta(a),B=meta(b);
+    if(sortMode==='created') return A.born-B.born;
+    if(A.rank!==B.rank) return A.rank-B.rank;
+    if(A.rank===0) return B.wait-A.wait;      // longest wait first
+    return A.born-B.born;                      // deterministic tiebreak
+  });
+  rows.forEach(function(r){WT.appendChild(r)});
+  reorderPending=false;
+  updateWaitbar();
+}
+function requestSort(){
+  if(railBusy){reorderPending=true; return;}
+  applySort();
+}
+function updateWaitbar(){
+  var waiting=[].slice.call(WT.children).filter(function(r){return meta(r).state==='blocked'});
+  var hidden=waiting.filter(function(r){
+    var rb=r.getBoundingClientRect(), sb=document.querySelector('.rail-scroll').getBoundingClientRect();
+    return rb.top<sb.top+2 || rb.bottom>sb.bottom-2;
+  });
+  WAITBAR.classList.toggle('on', hidden.length>0);
+  WAITBAR.textContent='↑ '+hidden.length+' waiting';
+  if(hidden.length) WAITBAR.onclick=function(){hidden[0].scrollIntoView({block:'nearest'})};
+}
+RAIL.addEventListener('mouseenter',function(){railBusy=true; clearTimeout(idleTimer)});
+RAIL.addEventListener('mouseleave',function(){
+  railBusy=false;
+  idleTimer=setTimeout(function(){ if(reorderPending) applySort(); },300);
+});
+var SORTBTN=document.getElementById('sortbtn');
+SORTBTN.addEventListener('click',function(){
+  sortMode = sortMode==='created' ? 'waiting' : 'created';
+  var waiting = sortMode==='waiting';
+  SORTBTN.setAttribute('aria-pressed', waiting);
+  SORTBTN.setAttribute('aria-label','Sort order: '+sortMode);
+  SORTBTN.title = waiting
+    ? 'Sorted by waiting time — click to restore creation order'
+    : 'Sorted by creation order — click to sort by waiting time';
+  try{ localStorage.setItem('railSort',sortMode) }catch(_){}   // real app: daemon config
+  applySort();
+});
+document.querySelector('.rail-scroll').addEventListener('scroll',updateWaitbar);
+
+const sessions=[].slice.call(document.querySelectorAll('.sess')),
+      dtabs=document.getElementById('dtabs'),
+      dbody=document.getElementById('drawerbody'),
+      dcwd=document.getElementById('dcwd');
+let cur='blocked', sel=0;
+
+function drawDrawer(){
+  var v=VIEWS[cur], ps=v.procs;
+  drawer.classList.toggle('empty', ps.length===0);
+  if(sel>=ps.length) sel=Math.max(0,ps.length-1);
+  dtabs.innerHTML=ps.map(function(p,i){
+    return '<button class="dtab" data-i="'+i+'" aria-selected="'+(i===sel)+'">'+
+           '<span class="dot '+p.s+'"></span>'+p.n+(p.shell?'<span class="x">×</span>':'')+'</button>';
+  }).join('');
+  dbody.innerHTML = ps.length ? ps[sel].b : '';
+  dcwd.textContent = ps.length ? v.path : '';
+  dtabs.querySelectorAll('.dtab').forEach(function(t){
+    t.onclick=function(){ sel=+t.dataset.i; drawDrawer(); };
+  });
+}
+
+function select(btn){
+  sessions.forEach(function(x){ x.setAttribute('aria-current', x===btn); });
+  cur=btn.dataset.view; sel=0;
+  var v=VIEWS[cur];
+  document.getElementById('ctxname').textContent=v.title;
+  document.getElementById('ctxbranch').textContent=v.branch;
+  document.getElementById('ctxpr').textContent=v.pr;
+  document.getElementById('ctxdot').className='dot '+v.dot;
+  termbody.innerHTML=v.term;
+  drawer.style.display=cur==='archived'?'none':'flex';
+  var kb=document.getElementById('killbtn');
+  kb.textContent = cur==='archived' ? 'Rebuild & resume' : 'Kill';
+  kb.style.color  = cur==='archived' ? 'var(--attn)' : '';
+  ov.classList.remove('on');
+  drawDrawer();
+  drawFiles(cur);
+}
+sessions.forEach(function(b){ b.addEventListener('click', function(){ select(b); }); });
+
+function openShell(){
+  if(cur==='archived') return;
+  var v=VIEWS[cur];
+  v.procs.push({n:'shell',s:'idle',b:shellBody('~/scienta/'+v.path.replace(/^~\/scienta\/?/,'')),shell:1});
+  sel=v.procs.length-1;
+  drawDrawer();
+}
+document.getElementById('addshell').onclick=openShell;
+document.getElementById('shellbtn2').onclick=openShell;
+
+applySort();
+
+var arc=document.getElementById('arctoggle'), arcl=document.getElementById('arclist');
+arc.onclick=function(){
+  var open=arc.getAttribute('aria-expanded')==='true';
+  arc.setAttribute('aria-expanded', String(!open));
+  arcl.hidden=open;
+};
+
+document.getElementById('diffbody').innerHTML =
+  '<div class="pane"><div class="pane-head"><span class="eyebrow">upstream/develop</span><span class="eyebrow">a91f0c3</span></div>'+
+  '<div class="fold">⋯ 137 unchanged lines</div>'+renderSide(L,'l')+'<div class="fold">⋯ 66 unchanged lines</div></div>'+
+  '<div class="gutter"></div>'+
+  '<div class="pane"><div class="pane-head"><span class="eyebrow">working tree</span><span class="eyebrow">editable</span></div>'+
+  '<div class="fold">⋯ 137 unchanged lines</div>'+renderSide(R,'r')+'<div class="fold">⋯ 66 unchanged lines</div></div>';
+
+document.getElementById('diffbtn').onclick=function(){ ov.classList.add('on'); };
+document.getElementById('closeov').onclick=function(){ ov.classList.remove('on'); };
+
+addEventListener('keydown',function(e){
+  if(e.key==='Escape') ov.classList.remove('on');
+  if(e.target && e.target.tagName==='INPUT') return;
+  var i=sessions.findIndex(function(x){ return x.getAttribute('aria-current')==='true'; });
+  if(e.key==='j') select(sessions[Math.min(i+1,sessions.length-1)]);
+  if(e.key==='k') select(sessions[Math.max(i-1,0)]);
+  if(e.key==='d') ov.classList.toggle('on');
+  if(e.key==='B') select(sessions.filter(function(x){return x.querySelector('.dot.blocked')})[0]||sessions[i]);
+  if(e.key==='`'&&e.ctrlKey){ e.preventDefault(); openShell(); }
+});
+
+select(sessions.filter(function(b){ return b.dataset.view==='blocked'; })[0]);
+</script>
+</body>
+</html>
