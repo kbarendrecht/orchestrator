@@ -29,14 +29,16 @@
     <span class="ctx-pr" id="ctxstate"></span>
     <span class="ctx-right">
       <span class="ctx-btn" id="ctxbase"></span>
+      <button class="ctx-btn" id="diffbtn">Diff</button>
       <button class="ctx-btn" id="shellbtn">Shell</button>
       <button class="ctx-btn" id="killbtn">Kill</button>
     </span>
   </div>
 
   <div class="top top-r">
-    <span class="eyebrow">Changed files</span>
-    <button class="ctx-btn" style="margin-left:auto" id="refreshbtn">Refresh</button>
+    <span class="eyebrow" id="filestitle">Changed files</span>
+    <button class="ctx-btn" id="basebtn" style="margin-left:auto"></button>
+    <button class="ctx-btn" id="refreshbtn">Refresh</button>
   </div>
 
   <!-- ============ RAIL ============ -->
@@ -47,6 +49,21 @@
 
   <!-- ============ CENTER ============ -->
   <main class="center">
+    <!-- ============ DIFF OVERLAY ============ -->
+    <div class="overlay" id="overlay">
+      <div class="ov-head">
+        <span class="ov-path" id="ovpath"></span>
+        <div class="ov-nav">
+          <span class="ov-count" id="ovcount"></span>
+          <button class="head-btn" id="ovprev">Prev &#8679;F7</button>
+          <button class="head-btn" id="ovnext">Next F7</button>
+          <button class="head-btn" id="ovmode">Split</button>
+          <button class="head-btn" id="ovclose">Close ESC</button>
+        </div>
+      </div>
+      <div class="diff" id="diffbody"></div>
+    </div>
+
     <div class="termwrap" id="termwrap">
       <div class="fempty" id="termempty">
         No session selected.<br>
