@@ -1,3 +1,5 @@
 [tools]
 claude = "latest"
 node = "latest"
+rust = "latest"
+zig = "latest"
