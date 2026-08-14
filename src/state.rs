@@ -33,6 +33,7 @@ pub struct Inner {
     pub pr_error: Option<String>,
     pub pr_fetched: Option<SystemTime>,
     pub token_source: Option<crate::github::TokenSource>,
+    pub reviews: crate::reviews::ReviewState,
 }
 
 impl AppState {
@@ -61,6 +62,7 @@ impl AppState {
                 pr_error: None,
                 pr_fetched: None,
                 token_source: None,
+                reviews: Default::default(),
             }),
             events,
         })
@@ -185,6 +187,7 @@ impl AppState {
                 now.duration_since(t).ok().map(|d| d.as_millis() as u64)
             }),
             token_source: inner.token_source,
+            reviews: inner.reviews.clone(),
         }
     }
 
@@ -335,6 +338,7 @@ pub struct Snapshot {
     pub pr_error: Option<String>,
     pub pr_age_ms: Option<u64>,
     pub token_source: Option<crate::github::TokenSource>,
+    pub reviews: crate::reviews::ReviewState,
 }
 
 #[derive(Debug, Serialize)]

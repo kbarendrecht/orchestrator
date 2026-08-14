@@ -34,6 +34,10 @@ pub struct Config {
     /// 288 queries/day is negligible against 5000 points/hour (§6).
     #[serde(default = "default_poll_seconds")]
     pub poll_seconds: u64,
+    /// `mise run reviews` walks every open PR, so it needs a generous ceiling
+    /// but must not hang the poller forever.
+    #[serde(default = "default_review_timeout")]
+    pub review_timeout_seconds: u64,
     /// Whether sessions the daemon spawns write transcripts.
     ///
     /// This is decided here rather than inherited, because inheriting makes the
@@ -92,6 +96,10 @@ fn default_upstream_remote() -> String {
 
 fn default_poll_seconds() -> u64 {
     300
+}
+
+fn default_review_timeout() -> u64 {
+    240
 }
 
 impl Config {
@@ -175,6 +183,7 @@ impl Config {
             repo: None,
             github_token_file: None,
             poll_seconds: default_poll_seconds(),
+            review_timeout_seconds: default_review_timeout(),
             persist_transcripts: default_persist(),
         }
     }
