@@ -32,7 +32,38 @@ const CHROME: Chrome = if cfg!(target_os = "macos") {
     Chrome::Custom
 };
 
+/// WSLg's virtual GPU mis-renders WebKitGTK's accelerated compositing layers as
+/// stray white tiles — a white box on top of the UI, and white smears left
+/// behind as hover states repaint. Forcing the software paint path removes both.
+/// The cost is GPU-accelerated compositing, which does not matter for a terminal
+/// board; the app already treats software rendering as the correct fallback.
+///
+/// Gated to WSL so a real Linux desktop with a working GPU keeps compositing, and
+/// skipped when either variable is already set so the choice stays overridable
+/// from the environment. Must run before GTK/WebKit start their web process,
+/// hence the very top of `main`.
+#[cfg(target_os = "linux")]
+fn wsl_render_workaround() {
+    let under_wsl = std::env::var_os("WSL_DISTRO_NAME").is_some()
+        || std::fs::read_to_string("/proc/version")
+            .map(|v| v.to_ascii_lowercase().contains("microsoft"))
+            .unwrap_or(false);
+    if !under_wsl {
+        return;
+    }
+    for var in ["WEBKIT_DISABLE_DMABUF_RENDERER", "WEBKIT_DISABLE_COMPOSITING_MODE"] {
+        if std::env::var_os(var).is_none() {
+            std::env::set_var(var, "1");
+        }
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn wsl_render_workaround() {}
+
 fn main() {
+    wsl_render_workaround();
+
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
