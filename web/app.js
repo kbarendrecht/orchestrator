@@ -605,7 +605,13 @@ function renderDrawer() {
   const w = snap.workspaces.find((x) => x.id === wsId);
   const tabs = $('dtabs');
   tabs.replaceChildren();
-  $('dcwd').textContent = w ? w.path : '';
+
+  // Docker stack status, in place of the path: blue = up, red = down.
+  const dcwd = $('dcwd');
+  dcwd.replaceChildren();
+  const up = snap.stack_up === true;
+  dcwd.appendChild(el('span', 'stackdot ' + (up ? 'up' : 'down')));
+  dcwd.appendChild(el('span', null, up ? 'stack up' : 'stack down'));
 
   const procs = w ? w.processes : [];
   const drawer = $('drawer');
