@@ -1,0 +1,9 @@
+{
+  "name": "orchd-tools",
+  "private": true,
+  "type": "module",
+  "description": "Terminal-side tooling for orchd. playwright-core drives an already-installed Chrome, so no browser is downloaded.",
+  "dependencies": {
+    "playwright-core": "^1.49.0"
+  }
+}
