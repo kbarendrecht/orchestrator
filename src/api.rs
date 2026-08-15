@@ -481,6 +481,12 @@ pub async fn refresh_reviews(State(app): State<Arc<AppState>>) -> impl IntoRespo
     (StatusCode::ACCEPTED, Json(json!({ "refreshing": true })))
 }
 
+/// Ask the PR poller to fetch now, the same way `refresh_reviews` does.
+pub async fn refresh_prs(State(app): State<Arc<AppState>>) -> impl IntoResponse {
+    app.pr_refresh.notify_one();
+    (StatusCode::ACCEPTED, Json(json!({ "refreshing": true })))
+}
+
 #[derive(Deserialize)]
 pub struct OpenUrl {
     pub url: String,

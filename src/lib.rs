@@ -273,6 +273,7 @@ fn router(app: Arc<AppState>) -> Router {
         .route("/api/window/resize/:edge", post(api::window_resize))
         .route("/api/window/:cmd", post(api::window_cmd))
         .route("/api/reviews/refresh", post(api::refresh_reviews))
+        .route("/api/prs/refresh", post(api::refresh_prs))
         .route("/api/open", post(api::open_url))
         .route("/api/pr/:number/resolve", post(api::resolve_pr))
         .route("/api/pr/:number/green", post(api::green_pr))
@@ -417,8 +418,15 @@ fn start_pr_poller(app: Arc<AppState>) {
                     inner.pr_error = Some(format!("{e:#}"));
                 }
             }
+            // Signals the refresh button that a fetch landed, success or not.
+            app.inner.write().await.pr_poll += 1;
             app.notify().await;
-            tokio::time::sleep(interval).await;
+            // A manual refresh cuts the wait short and restarts the period, so a
+            // button press and the next scheduled poll never land back to back.
+            tokio::select! {
+                _ = tokio::time::sleep(interval) => {}
+                _ = app.pr_refresh.notified() => {}
+            }
         }
     });
 }
