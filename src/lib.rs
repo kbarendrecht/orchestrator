@@ -180,6 +180,7 @@ pub async fn start(opts: StartOptions) -> Result<Server> {
     }
     start_pr_poller(app.clone());
     start_review_poller(app.clone());
+    start_stack_poller(app.clone());
     start_todo_writer(app.clone());
     // A debug build is `cargo run` from a checkout; its version is whatever the
     // working tree is, so comparing it against a release only ever nags. Only a
@@ -630,6 +631,40 @@ fn start_review_poller(app: Arc<AppState>) {
             }
         }
     });
+}
+
+/// Whether the main checkout's `docker compose` stack is up, for the drawer
+/// header. Not the managed `docker` process's state — the containers' own — so it
+/// stays right whether the stack was brought up through the drawer or by hand.
+fn start_stack_poller(app: Arc<AppState>) {
+    tokio::spawn(async move {
+        let interval = std::time::Duration::from_secs(20);
+        loop {
+            let main = app.cfg.main_checkout.clone();
+            let up = tokio::task::spawn_blocking(move || stack_running(&main))
+                .await
+                .unwrap_or(false);
+            let mut inner = app.inner.write().await;
+            if inner.stack_up != Some(up) {
+                inner.stack_up = Some(up);
+                drop(inner);
+                app.notify().await;
+            }
+            tokio::time::sleep(interval).await;
+        }
+    });
+}
+
+/// True when `docker compose ps` reports at least one running container. A missing
+/// `docker`, no compose file, or a stopped daemon all fail the command and read
+/// as down, which is the honest answer for "is the stack up".
+fn stack_running(main: &std::path::Path) -> bool {
+    std::process::Command::new("docker")
+        .args(["compose", "ps", "--status", "running", "-q"])
+        .current_dir(main)
+        .output()
+        .map(|o| o.status.success() && !String::from_utf8_lossy(&o.stdout).trim().is_empty())
+        .unwrap_or(false)
 }
 
 /// Notice a newer GitHub release than the running build.

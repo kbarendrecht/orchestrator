@@ -70,6 +70,9 @@ pub struct Inner {
     pub rebasing: std::collections::HashSet<WorkspaceId>,
     /// Shared resources currently held by a run (§7 rule 2).
     pub locks_held: Vec<String>,
+    /// Whether the main checkout's `docker compose` stack has running containers.
+    /// `None` before the first probe; the drawer header reads it as up/down.
+    pub stack_up: Option<bool>,
     /// A newer GitHub release than the running build, if the update poller has
     /// found one. Surfaced to the SPA as a dismissible nudge; the actual upgrade
     /// is `mise up`.
@@ -135,6 +138,7 @@ impl AppState {
                 divergence: HashMap::new(),
                 rebasing: Default::default(),
                 locks_held: Vec::new(),
+                stack_up: None,
                 update: None,
             }),
             events,
@@ -287,6 +291,7 @@ impl AppState {
             reviews_poll: inner.reviews_poll,
             automation: inner.automation.by_pr.clone(),
             repos: self.repos.clone(),
+            stack_up: inner.stack_up,
             update: inner.update.clone(),
         }
     }
@@ -494,6 +499,8 @@ pub struct Snapshot {
     pub reviews_poll: u64,
     pub automation: HashMap<u64, crate::green::PrAutomation>,
     pub repos: Repos,
+    /// `docker compose` stack has running containers; `None` before first probe.
+    pub stack_up: Option<bool>,
     /// A newer release than the running build, or `None`.
     pub update: Option<UpdateInfo>,
 }

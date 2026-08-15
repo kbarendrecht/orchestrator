@@ -273,7 +273,10 @@ button.ctx-btn:hover{color:var(--text)}
 }
 .addsh:hover{color:var(--text)}
 .addsh kbd{font-size:9.5px;color:#3E3E3E}
-.dcwd{margin-left:auto;font-family:var(--mono);font-size:9.5px;color:#3E3E3E;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dcwd{margin-left:auto;font-family:var(--mono);font-size:9.5px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:flex;align-items:center}
+.stackdot{width:7px;height:7px;border-radius:50%;margin-right:6px;flex:0 0 auto}
+.stackdot.up{background:var(--work)}
+.stackdot.down{background:var(--bad)}
 .drawer-body{flex:1;min-height:0;position:relative}
 .drawer-body .termhost{inset:6px 10px}
 
