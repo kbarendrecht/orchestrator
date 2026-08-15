@@ -406,9 +406,16 @@ button.ctx-btn:hover{color:var(--text)}
 .rvblock.closed .rvlist{display:none}
 .rvhead{display:flex;align-items:center;gap:9px;padding:11px 15px 6px;width:100%;
   position:sticky;top:0;background:var(--surface);z-index:2}
+/* margin-left:auto claims the free space, so the count and the refresh after it
+   both sit hard right. */
 .rvcount{font-family:var(--mono);font-size:9.5px;color:var(--ghost);margin-left:auto}
 .rvcount .n{color:var(--dim)}
 .rvcount .f{color:var(--bad)}
+.rvrefresh{font-size:12px;line-height:1;color:var(--faint-solid);cursor:pointer;
+  padding:2px 3px;border-radius:4px;transition:color .12s,background .12s}
+.rvrefresh:hover{color:var(--text);background:var(--raised)}
+.rvrefresh.spin{animation:rvspin .8s linear infinite;color:var(--dim)}
+@keyframes rvspin{to{transform:rotate(360deg)}}
 .rvrow{display:flex;text-decoration:none;color:inherit;cursor:pointer;align-items:center;
   gap:9px;padding:4px 15px;width:100%;position:relative}
 .rvrow:hover{background:var(--raised)}

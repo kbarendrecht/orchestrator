@@ -472,6 +472,14 @@ pub async fn diff_file(
 // /resolve (§8)
 // ---------------------------------------------------------------------------
 
+/// Ask the review poller to fetch now. It owns the fetch and the state write, so
+/// this only pulses it: `notify_one` stores a permit even if a poll is mid-flight,
+/// so a press during a fetch still forces one more right after.
+pub async fn refresh_reviews(State(app): State<Arc<AppState>>) -> impl IntoResponse {
+    app.review_refresh.notify_one();
+    (StatusCode::ACCEPTED, Json(json!({ "refreshing": true })))
+}
+
 pub async fn resolve_pr(
     State(app): State<Arc<AppState>>,
     Path(number): Path<u64>,
