@@ -224,6 +224,25 @@ function render() {
   renderDrawer();
   renderFiles();
   renderReviews();
+  renderUpdate();
+}
+
+// The reviews_poll value at the moment the refresh button was pressed; the
+// button spins while the live counter has not moved past it. null = not spinning.
+let reviewSpinFloor = null;
+
+// The version the user dismissed this session. A newer release than this shows
+// again; the same one stays hidden until the next launch.
+let updateDismissed = null;
+function renderUpdate() {
+  const bar = $('updatebar');
+  const u = snap.update;
+  if (!u || updateDismissed === u.latest) { bar.hidden = true; return; }
+  const link = $('updatelink');
+  link.textContent = `Update available — v${u.latest} (you have v${u.current}). Run mise up`;
+  link.href = u.url || '#';
+  $('updatex').onclick = () => { updateDismissed = u.latest; bar.hidden = true; };
+  bar.hidden = false;
 }
 
 function renderRail() {
@@ -1218,11 +1237,17 @@ function renderReviews() {
   const refresh = el('span', 'rvrefresh', '↻');
   refresh.title = 'Refresh now';
   refresh.setAttribute('role', 'button');
+  // Spin until a poll newer than the click has landed (reviews_poll advances),
+  // not merely until the next unrelated re-render.
+  const pollNow = snap.reviews_poll ?? 0;
+  if (reviewSpinFloor != null && pollNow > reviewSpinFloor) reviewSpinFloor = null;
+  if (reviewSpinFloor != null) refresh.classList.add('spin');
   refresh.onclick = (e) => {
     e.stopPropagation();               // the header's own click toggles the pane
+    reviewSpinFloor = snap.reviews_poll ?? 0;
     refresh.classList.add('spin');
     call('/api/reviews/refresh')
-      .catch((err) => toast(err.message, true));
+      .catch((err) => { reviewSpinFloor = null; toast(err.message, true); });
   };
 
   if (!rv || rv.state !== 'ok') {
@@ -1523,6 +1548,17 @@ const CHROME = window.__ORCH__.chrome || 'none';
 function setupChrome() {
   document.body.dataset.chrome = CHROME;
   if (CHROME === 'none') return;
+
+  // The webview opens no target=_blank windows and wires no shell, so external
+  // links (review rows, PR rows, the update nudge) go nowhere on their own —
+  // under WSLg especially. Route them through the daemon's OS opener. A browser
+  // tab (chrome 'none') returns above and opens them natively.
+  document.addEventListener('click', (e) => {
+    const a = e.target.closest && e.target.closest('a[target="_blank"]');
+    if (!a || !/^https?:/i.test(a.href || '')) return;
+    e.preventDefault();
+    call('/api/open', { url: a.href }).catch((err) => toast(err.message, true));
+  });
 
   const wcmd = (cmd) => call(`/api/window/${cmd}`).catch((e) => toast(e.message, true));
 

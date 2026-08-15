@@ -306,6 +306,22 @@ button.ctx-btn:hover{color:var(--text)}
 .toast.on{opacity:1}
 .toast.bad{border-color:var(--bad);color:var(--bad)}
 
+/* Update nudge: a quiet pill top-centre, out of the way but not a toast that
+   vanishes before you act on it. */
+.updatebar{
+  position:fixed;left:50%;top:10px;transform:translateX(-50%);
+  display:flex;align-items:center;gap:10px;padding:6px 8px 6px 13px;
+  border-radius:20px;background:var(--raised);border:1px solid var(--line);
+  font-family:var(--mono);font-size:10.5px;z-index:100;
+  box-shadow:0 4px 14px #0006;
+}
+.updatebar[hidden]{display:none}
+.updatebar-link{color:var(--work);text-decoration:none}
+.updatebar-link:hover{text-decoration:underline}
+.updatebar-x{color:var(--faint-solid);cursor:pointer;font-size:11px;line-height:1;
+  padding:2px 5px;border-radius:50%;transition:color .12s,background .12s}
+.updatebar-x:hover{color:var(--text);background:var(--surface)}
+
 /* ---------- diff overlay (§5) ---------- */
 .overlay{
   position:absolute;inset:0;background:var(--bg);z-index:20;

@@ -55,6 +55,10 @@ pub struct Inner {
     pub pr_fetched: Option<SystemTime>,
     pub token_source: Option<crate::github::TokenSource>,
     pub reviews: crate::reviews::ReviewState,
+    /// Bumped once per completed review poll. The SPA watches it to spin the
+    /// refresh button until the fetch its click triggered has actually landed,
+    /// rather than until the next unrelated re-render.
+    pub reviews_poll: u64,
     /// Files rewritten through the diff editor, and which sessions have been
     /// told. Conflict detection on save protects you from the agent; this is
     /// the other direction, which is the one that loses work silently.
@@ -66,6 +70,19 @@ pub struct Inner {
     pub rebasing: std::collections::HashSet<WorkspaceId>,
     /// Shared resources currently held by a run (§7 rule 2).
     pub locks_held: Vec<String>,
+    /// A newer GitHub release than the running build, if the update poller has
+    /// found one. Surfaced to the SPA as a dismissible nudge; the actual upgrade
+    /// is `mise up`.
+    pub update: Option<UpdateInfo>,
+}
+
+/// A release newer than what is running. `mise` does the upgrade; this only tells
+/// you it is there.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct UpdateInfo {
+    pub current: String,
+    pub latest: String,
+    pub url: String,
 }
 
 #[derive(Debug, Clone)]
@@ -112,11 +129,13 @@ impl AppState {
                 pr_fetched: None,
                 token_source: None,
                 reviews: Default::default(),
+                reviews_poll: 0,
                 human_edits: HashMap::new(),
                 automation: Default::default(),
                 divergence: HashMap::new(),
                 rebasing: Default::default(),
                 locks_held: Vec::new(),
+                update: None,
             }),
             events,
             chrome,
@@ -265,8 +284,10 @@ impl AppState {
             }),
             token_source: inner.token_source,
             reviews: inner.reviews.clone(),
+            reviews_poll: inner.reviews_poll,
             automation: inner.automation.by_pr.clone(),
             repos: self.repos.clone(),
+            update: inner.update.clone(),
         }
     }
 
@@ -469,8 +490,12 @@ pub struct Snapshot {
     pub pr_age_ms: Option<u64>,
     pub token_source: Option<crate::github::TokenSource>,
     pub reviews: crate::reviews::ReviewState,
+    /// Monotonic counter of completed review polls; see `Inner::reviews_poll`.
+    pub reviews_poll: u64,
     pub automation: HashMap<u64, crate::green::PrAutomation>,
     pub repos: Repos,
+    /// A newer release than the running build, or `None`.
+    pub update: Option<UpdateInfo>,
 }
 
 #[derive(Debug, Serialize)]

@@ -5,6 +5,7 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
+use anyhow::Context;
 use serde::Deserialize;
 use serde_json::json;
 use std::sync::Arc;
@@ -478,6 +479,76 @@ pub async fn diff_file(
 pub async fn refresh_reviews(State(app): State<Arc<AppState>>) -> impl IntoResponse {
     app.review_refresh.notify_one();
     (StatusCode::ACCEPTED, Json(json!({ "refreshing": true })))
+}
+
+#[derive(Deserialize)]
+pub struct OpenUrl {
+    pub url: String,
+}
+
+/// Open an external URL in the OS browser.
+///
+/// The desktop webview wires no IPC and no shell, so a `target="_blank"` link
+/// goes nowhere inside it — under WSLg especially. The SPA routes those clicks
+/// here instead, and the daemon (which is a local process) hands the URL to the
+/// platform opener. Only `http(s)` is accepted, so this can never be coaxed into
+/// launching a local file or a `mailto:`/`file:` handler.
+pub async fn open_url(
+    State(_app): State<Arc<AppState>>,
+    Json(body): Json<OpenUrl>,
+) -> ApiResult<serde_json::Value> {
+    let url = body.url.trim();
+    if !(url.starts_with("https://") || url.starts_with("http://")) {
+        return Err(ApiError(anyhow::anyhow!("refusing to open non-http URL")));
+    }
+    open_external(url)?;
+    Ok(Json(json!({ "opened": url })))
+}
+
+/// Hand a URL to the platform browser opener, detached.
+///
+/// On WSL the standard `xdg-open` often resolves to a portal that silently does
+/// nothing, so `wslview` (which reaches the Windows default browser) is tried
+/// first there. Elsewhere the usual Linux openers are tried in turn.
+fn open_external(url: &str) -> anyhow::Result<()> {
+    use std::process::{Command, Stdio};
+
+    let is_wsl = std::env::var_os("WSL_DISTRO_NAME").is_some()
+        || std::fs::read_to_string("/proc/version")
+            .map(|v| v.to_ascii_lowercase().contains("microsoft"))
+            .unwrap_or(false);
+
+    let candidates: &[&str] = if cfg!(target_os = "macos") {
+        &["open"]
+    } else if is_wsl {
+        &["wslview", "xdg-open", "x-www-browser", "sensible-browser"]
+    } else {
+        &["xdg-open", "x-www-browser", "sensible-browser"]
+    };
+
+    for cmd in candidates {
+        // Skip openers that are not installed rather than spawning one that
+        // "succeeds" but does nothing, which would stop the fallthrough.
+        let present = Command::new("which")
+            .arg(cmd)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if !present {
+            continue;
+        }
+        Command::new(cmd)
+            .arg(url)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .with_context(|| format!("spawning {cmd}"))?;
+        return Ok(());
+    }
+    anyhow::bail!("no browser opener found (tried {})", candidates.join(", "))
 }
 
 pub async fn resolve_pr(

@@ -60,9 +60,30 @@ or AppImage needs the CLI: `cargo install tauri-cli --version "^2"`, then
 `cargo tauri build`. No Node anywhere — there is no frontend build step, because
 the daemon serves the page.
 
-If the window comes up blank on a virtualised GPU, export
-`WEBKIT_DISABLE_DMABUF_RENDERER=1`. This is not set in code: it disables a fast
-path that works fine on real hardware.
+On a virtualised GPU — WSLg especially — WebKitGTK's accelerated compositing can
+render as stray white tiles (a white box, hover leaving smears). Under WSL the
+app forces the software paint path automatically (`WEBKIT_DISABLE_DMABUF_RENDERER`
+and `WEBKIT_DISABLE_COMPOSITING_MODE`, set in `main`), skipped on a real desktop
+and overridable if you set either variable yourself.
+
+## Install and update
+
+Releases are cut by tagging: `git tag v0.2.0 && git push origin v0.2.0` runs the
+`release` workflow, which builds on Ubuntu 22.04 and attaches a Linux binary
+tarball to the GitHub release.
+
+Install and upgrade through `mise` with the `ubi` backend, which pulls that asset
+straight from the releases page:
+
+```
+mise use -g "ubi:kbarendrecht/orchestrator[exe=orchestrator-desktop]"
+mise up          # upgrade to the newest release
+```
+
+A running app also checks the releases page on launch and every six hours; when a
+newer version is out it shows a dismissible nudge in the window. The nudge only
+*notices* — `mise up` is what installs it. The check is release-builds only, so
+`cargo run` from a checkout never nags.
 
 ## What works
 

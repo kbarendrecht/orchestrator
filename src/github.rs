@@ -141,6 +141,39 @@ pub fn graphql(token: &str, query: &str) -> Result<Value> {
     Ok(v)
 }
 
+/// The latest published release of `owner/name`, as `(tag, html_url)`.
+///
+/// Unauthenticated: releases are public and the check must work before any token
+/// is configured. Anything short of a clean answer — no network, no `curl`, a
+/// repo with no releases (404), unparseable JSON — is `None`, never an error;
+/// the update nudge is a nicety and must never be able to break startup.
+pub fn latest_release(owner: &str, name: &str) -> Option<(String, String)> {
+    let out = Command::new("curl")
+        .args([
+            "-sS",
+            "--max-time",
+            "10",
+            "-H",
+            "Accept: application/vnd.github+json",
+            "-H",
+            "User-Agent: orchd",
+            &format!("https://api.github.com/repos/{owner}/{name}/releases/latest"),
+        ])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let v: Value = serde_json::from_slice(&out.stdout).ok()?;
+    let tag = v.get("tag_name")?.as_str()?.to_string();
+    let url = v
+        .get("html_url")
+        .and_then(|u| u.as_str())
+        .unwrap_or("")
+        .to_string();
+    Some((tag, url))
+}
+
 // ---------------------------------------------------------------------------
 // Model
 // ---------------------------------------------------------------------------
