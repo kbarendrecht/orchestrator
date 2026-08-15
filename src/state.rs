@@ -41,6 +41,8 @@ pub struct AppState {
     /// Pulsed by the refresh button to make the review poller fetch now rather
     /// than wait out the rest of its period.
     pub review_refresh: Arc<Notify>,
+    /// The same, for the PR poller.
+    pub pr_refresh: Arc<Notify>,
 }
 
 #[derive(Default)]
@@ -53,6 +55,9 @@ pub struct Inner {
     /// open PRs".
     pub pr_error: Option<String>,
     pub pr_fetched: Option<SystemTime>,
+    /// Bumped once per completed PR poll, so the refresh button can spin until
+    /// the fetch it triggered has landed. Mirrors `reviews_poll`.
+    pub pr_poll: u64,
     pub token_source: Option<crate::github::TokenSource>,
     pub reviews: crate::reviews::ReviewState,
     /// Bumped once per completed review poll. The SPA watches it to spin the
@@ -130,6 +135,7 @@ impl AppState {
                 prs: Vec::new(),
                 pr_error: None,
                 pr_fetched: None,
+                pr_poll: 0,
                 token_source: None,
                 reviews: Default::default(),
                 reviews_poll: 0,
@@ -145,6 +151,7 @@ impl AppState {
             chrome,
             window: RwLock::new(None),
             review_refresh: Arc::new(Notify::new()),
+            pr_refresh: Arc::new(Notify::new()),
         })
     }
 
@@ -286,6 +293,7 @@ impl AppState {
             pr_age_ms: inner.pr_fetched.and_then(|t| {
                 now.duration_since(t).ok().map(|d| d.as_millis() as u64)
             }),
+            pr_poll: inner.pr_poll,
             token_source: inner.token_source,
             reviews: inner.reviews.clone(),
             reviews_poll: inner.reviews_poll,
@@ -493,6 +501,8 @@ pub struct Snapshot {
     /// empty list.
     pub pr_error: Option<String>,
     pub pr_age_ms: Option<u64>,
+    /// Monotonic counter of completed PR polls; see `Inner::pr_poll`.
+    pub pr_poll: u64,
     pub token_source: Option<crate::github::TokenSource>,
     pub reviews: crate::reviews::ReviewState,
     /// Monotonic counter of completed review polls; see `Inner::reviews_poll`.

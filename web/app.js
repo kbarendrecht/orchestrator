@@ -230,6 +230,8 @@ function render() {
 // The reviews_poll value at the moment the refresh button was pressed; the
 // button spins while the live counter has not moved past it. null = not spinning.
 let reviewSpinFloor = null;
+// Same, for the PR pane against pr_poll.
+let prSpinFloor = null;
 
 // The version the user dismissed this session. A newer release than this shows
 // again; the same one stays hidden until the next launch.
@@ -349,6 +351,23 @@ function prGroup() {
     if (needs) count.querySelector('b').classList.add('n');
   }
   head.appendChild(count);
+
+  // Force a PR poll now instead of waiting out the period. Mirrors the review
+  // queue's refresh; spins until pr_poll moves past the click.
+  const refresh = el('span', 'rvrefresh', '↻');
+  refresh.title = 'Refresh now';
+  refresh.setAttribute('role', 'button');
+  const pollNow = snap.pr_poll ?? 0;
+  if (prSpinFloor != null && pollNow > prSpinFloor) prSpinFloor = null;
+  if (prSpinFloor != null) refresh.classList.add('spin');
+  refresh.onclick = (e) => {
+    e.stopPropagation();
+    prSpinFloor = snap.pr_poll ?? 0;
+    refresh.classList.add('spin');
+    call('/api/prs/refresh').catch((err) => { prSpinFloor = null; toast(err.message, true); });
+  };
+  head.appendChild(refresh);
+
   head.onclick = () => { showPrs = !showPrs; renderRail(); };
   group.appendChild(head);
 
@@ -1209,8 +1228,9 @@ async function saveEditor() {
 let showReviews = true;
 let showBlockedReviews = false;
 
+/** Compact age: `just now`, `5h`, `2d`. */
 function reviewAge(hours) {
-  if (hours < 1) return 'just now';
+  if (hours < 1) return 'now';
   if (hours < 48) return `${Math.round(hours)}h`;
   return `${Math.round(hours / 24)}d`;
 }
@@ -1273,9 +1293,8 @@ function renderReviews() {
 
   const rows = rv.actionable || [];
   const blocked = rv.blocked || [];
-  const oldest = rows.reduce((a, r) => Math.max(a, r.age_hours || 0), 0);
   count.appendChild(el('span', rows.length ? 'n' : null,
-    rows.length ? `${rows.length} waiting · oldest ${reviewAge(oldest)}` : 'clear'));
+    rows.length ? `${rows.length} waiting` : 'clear'));
   head.appendChild(count);
   head.appendChild(refresh);
   head.onclick = () => { showReviews = !showReviews; renderReviews(); };
@@ -1292,7 +1311,11 @@ function renderReviews() {
     a.target = '_blank';
     a.rel = 'noreferrer';
     a.appendChild(el('span', 'dot'));           // always grey here
-    a.appendChild(el('span', 'num', `#${r.number}`));
+    // Age, not the PR number: how long it has waited is what tells you to pick
+    // it up. The whole row already links to the PR, so the number earns nothing.
+    const age = el('span', 'num', reviewAge(r.age_hours || 0));
+    age.title = `#${r.number}`;
+    a.appendChild(age);
     a.appendChild(el('span', 'ttl', r.title));
     a.appendChild(el('span', 'who', r.author));
     // File count stands in for review cost — 37 files is a different
