@@ -3,3 +3,15 @@ claude = "latest"
 node = "latest"
 rust = "latest"
 zig = "latest"
+
+# Screenshot the running app from a terminal — the only way to check a UI change
+# when you cannot see the screen. Needs the app running and Chrome installed;
+# `npm i` in tools/ first (playwright-core only, no browser download).
+#
+#   mise run shot
+#   mise run shot -- '.drawer-head'
+#   mise run shot -- '.rvblock' --click '#rvhead'
+[tasks.shot]
+description = "Screenshot the running SPA (optionally one selector)"
+dir = "{{config_root}}"
+run = "node tools/shot.mjs"
