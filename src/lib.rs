@@ -181,6 +181,12 @@ pub async fn start(opts: StartOptions) -> Result<Server> {
     start_pr_poller(app.clone());
     start_review_poller(app.clone());
     start_todo_writer(app.clone());
+    // A debug build is `cargo run` from a checkout; its version is whatever the
+    // working tree is, so comparing it against a release only ever nags. Only a
+    // release build — which is what a downloaded/`mise`-installed one is — checks.
+    if !cfg!(debug_assertions) {
+        start_update_poller(app.clone());
+    }
 
     let router = router(app.clone());
     let serve = tokio::spawn(async move {
@@ -266,6 +272,7 @@ fn router(app: Arc<AppState>) -> Router {
         .route("/api/window/resize/:edge", post(api::window_resize))
         .route("/api/window/:cmd", post(api::window_cmd))
         .route("/api/reviews/refresh", post(api::refresh_reviews))
+        .route("/api/open", post(api::open_url))
         .route("/api/pr/:number/resolve", post(api::resolve_pr))
         .route("/api/pr/:number/green", post(api::green_pr))
         .route("/ws/events", get(ws::events))
@@ -606,7 +613,13 @@ fn start_review_poller(app: Arc<AppState>) {
             if let reviews::ReviewState::Degraded { reason } = &state {
                 tracing::warn!("review queue degraded: {reason}");
             }
-            app.inner.write().await.reviews = state;
+            {
+                let mut inner = app.inner.write().await;
+                inner.reviews = state;
+                // Signals the refresh button that a fetch landed, even when the
+                // queue is byte-for-byte the same as before.
+                inner.reviews_poll = inner.reviews_poll.wrapping_add(1);
+            }
             app.notify().await;
 
             // A manual refresh cuts the wait short and restarts the period, so a
@@ -617,6 +630,58 @@ fn start_review_poller(app: Arc<AppState>) {
             }
         }
     });
+}
+
+/// Notice a newer GitHub release than the running build.
+///
+/// The release lives on the fork (`kbarendrecht/orchestrator`), which is where
+/// the app itself ships from — distinct from the *monorepo's* upstream that the
+/// PR poller watches. Checks on launch and every six hours; a found update sits
+/// in the snapshot as a dismissible nudge, and `mise up` is what installs it.
+fn start_update_poller(app: Arc<AppState>) {
+    // The repo the binary is released from, not the monorepo it hosts.
+    const RELEASE_REPO: (&str, &str) = ("kbarendrecht", "orchestrator");
+    let current = env!("CARGO_PKG_VERSION").to_string();
+    tokio::spawn(async move {
+        let interval = std::time::Duration::from_secs(6 * 60 * 60);
+        loop {
+            let cur = current.clone();
+            if let Ok(Some((tag, url))) =
+                tokio::task::spawn_blocking(|| github::latest_release(RELEASE_REPO.0, RELEASE_REPO.1))
+                    .await
+            {
+                let newer = match (parse_semver(&tag), parse_semver(&cur)) {
+                    (Some(latest), Some(running)) => latest > running,
+                    _ => false,
+                };
+                let next = newer.then(|| crate::state::UpdateInfo {
+                    current: cur.clone(),
+                    latest: tag.trim_start_matches('v').to_string(),
+                    url,
+                });
+                let mut inner = app.inner.write().await;
+                if inner.update != next {
+                    inner.update = next;
+                    drop(inner);
+                    app.notify().await;
+                }
+            }
+            tokio::time::sleep(interval).await;
+        }
+    });
+}
+
+/// `v1.2.3` / `1.2.3` / `1.2.3-rc1` → `(1, 2, 3)`. Prerelease and build metadata
+/// are dropped: good enough to answer "is there a newer release", which is all
+/// the nudge asks. Anything unparseable is `None` and simply never nags.
+fn parse_semver(s: &str) -> Option<(u64, u64, u64)> {
+    let core = s.trim().trim_start_matches('v');
+    let core = core.split(['-', '+']).next()?;
+    let mut parts = core.split('.');
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next().unwrap_or("0").parse().ok()?;
+    let patch = parts.next().unwrap_or("0").parse().ok()?;
+    Some((major, minor, patch))
 }
 
 fn resolve_repo(app: &Arc<AppState>) -> Option<(String, String)> {

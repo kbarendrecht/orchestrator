@@ -129,6 +129,13 @@
   <div class="rz rz-sw" data-edge="south-west"></div>
 </div>
 
+<!-- A newer release exists. Notice only: `mise up` does the upgrade. Shown until
+     dismissed, and again when a version newer than the dismissed one lands. -->
+<div class="updatebar" id="updatebar" hidden>
+  <a class="updatebar-link" id="updatelink" target="_blank" rel="noreferrer"></a>
+  <span class="updatebar-x" id="updatex" role="button" title="Dismiss">&#10005;</span>
+</div>
+
 <div class="toast" id="toast"></div>
 
 <script>window.__ORCH__ = { token: "__ORCH_TOKEN__", chrome: "__ORCH_CHROME__" };</script>
