@@ -265,6 +265,7 @@ fn router(app: Arc<AppState>) -> Router {
         .route("/api/process/:id/close", post(api::close_process))
         .route("/api/window/resize/:edge", post(api::window_resize))
         .route("/api/window/:cmd", post(api::window_cmd))
+        .route("/api/reviews/refresh", post(api::refresh_reviews))
         .route("/api/pr/:number/resolve", post(api::resolve_pr))
         .route("/api/pr/:number/green", post(api::green_pr))
         .route("/ws/events", get(ws::events))
@@ -591,9 +592,10 @@ async fn live_findings(app: &Arc<AppState>) -> Vec<todo::Finding> {
 fn start_review_poller(app: Arc<AppState>) {
     tokio::spawn(async move {
         let interval = std::time::Duration::from_secs(app.cfg.poll_seconds.max(30));
-        // Half the period out of phase with the PR poller.
-        tokio::time::sleep(interval / 2).await;
         loop {
+            // Fetch straight away on launch, so the queue is not blank for the
+            // first period, then again on each period or whenever the refresh
+            // button pulses `review_refresh`.
             let main = app.cfg.main_checkout.clone();
             let timeout = app.cfg.review_timeout_seconds;
             let state = tokio::task::spawn_blocking(move || reviews::fetch(&main, timeout))
@@ -606,7 +608,13 @@ fn start_review_poller(app: Arc<AppState>) {
             }
             app.inner.write().await.reviews = state;
             app.notify().await;
-            tokio::time::sleep(interval).await;
+
+            // A manual refresh cuts the wait short and restarts the period, so a
+            // button press and the next scheduled poll never land back to back.
+            tokio::select! {
+                _ = tokio::time::sleep(interval) => {}
+                _ = app.review_refresh.notified() => {}
+            }
         }
     });
 }

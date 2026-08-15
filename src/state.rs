@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::SystemTime;
-use tokio::sync::{broadcast, RwLock};
+use tokio::sync::{broadcast, Notify, RwLock};
 use uuid::Uuid;
 
 use crate::config::Config;
@@ -38,6 +38,9 @@ pub struct AppState {
     /// Set by the desktop shell once it has a window; `None` when orchd is
     /// running headless and the UI is a browser tab that owns its own chrome.
     pub window: RwLock<Option<Arc<dyn crate::window::WindowControl>>>,
+    /// Pulsed by the refresh button to make the review poller fetch now rather
+    /// than wait out the rest of its period.
+    pub review_refresh: Arc<Notify>,
 }
 
 #[derive(Default)]
@@ -118,6 +121,7 @@ impl AppState {
             events,
             chrome,
             window: RwLock::new(None),
+            review_refresh: Arc::new(Notify::new()),
         })
     }
 

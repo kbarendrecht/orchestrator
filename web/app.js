@@ -1213,12 +1213,25 @@ function renderReviews() {
   head.appendChild(el('span', 'eyebrow', 'Review queue'));
   const count = el('span', 'rvcount');
 
+  // Force a poll now instead of waiting out the 5-minute period. A span, not a
+  // button: the header itself is a <button> and nesting one is invalid.
+  const refresh = el('span', 'rvrefresh', '↻');
+  refresh.title = 'Refresh now';
+  refresh.setAttribute('role', 'button');
+  refresh.onclick = (e) => {
+    e.stopPropagation();               // the header's own click toggles the pane
+    refresh.classList.add('spin');
+    call('/api/reviews/refresh')
+      .catch((err) => toast(err.message, true));
+  };
+
   if (!rv || rv.state !== 'ok') {
     // Never an empty queue: a broken command reads as broken (§6b). Startup is
     // not broken, so it says so differently.
     const pending = !rv || rv.state === 'pending';
     count.appendChild(el('span', pending ? null : 'f', pending ? 'polling…' : 'unavailable'));
     head.appendChild(count);
+    head.appendChild(refresh);
     head.title = rv?.reason || '';
     list.appendChild(el('div', 'fempty', pending
       ? 'waiting for the first poll'
@@ -1233,6 +1246,7 @@ function renderReviews() {
   count.appendChild(el('span', rows.length ? 'n' : null,
     rows.length ? `${rows.length} waiting · oldest ${reviewAge(oldest)}` : 'clear'));
   head.appendChild(count);
+  head.appendChild(refresh);
   head.onclick = () => { showReviews = !showReviews; renderReviews(); };
 
   // The file-count column only earns its width once the source emits it.
