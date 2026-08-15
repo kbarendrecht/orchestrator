@@ -664,9 +664,18 @@ fn start_stack_poller(app: Arc<AppState>) {
 }
 
 /// True when `docker compose ps` reports at least one running container. A missing
-/// `docker`, no compose file, or a stopped daemon all fail the command and read
-/// as down, which is the honest answer for "is the stack up".
+/// `docker` or a stopped daemon fails the command and reads as down, which is the
+/// honest answer for "is the stack up".
+///
+/// A checkout with no compose file has no stack at all, so it answers with a cheap
+/// filesystem check rather than spawning `docker` every poll for a fixed "down".
 fn stack_running(main: &std::path::Path) -> bool {
+    let has_compose = ["docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml"]
+        .iter()
+        .any(|f| main.join(f).exists());
+    if !has_compose {
+        return false;
+    }
     std::process::Command::new("docker")
         .args(["compose", "ps", "--status", "running", "-q"])
         .current_dir(main)
