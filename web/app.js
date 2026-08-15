@@ -227,11 +227,29 @@ function render() {
   renderUpdate();
 }
 
-// The reviews_poll value at the moment the refresh button was pressed; the
-// button spins while the live counter has not moved past it. null = not spinning.
-let reviewSpinFloor = null;
-// Same, for the PR pane against pr_poll.
-let prSpinFloor = null;
+// The poll counter each pane captured when its refresh was pressed; the button
+// spins until the live counter moves past it. null = not spinning.
+const spinFloor = { pr: null, review: null };
+
+/**
+ * A ↻ that forces a poll and spins until the poll it triggered lands.
+ * `pollCount` is the pane's monotonic poll counter from the snapshot; `endpoint`
+ * is the POST that pulses that poller. Used by both the PR and review panes.
+ */
+function refreshButton(kind, pollCount, endpoint) {
+  const btn = el('span', 'rvrefresh', '↻');
+  btn.title = 'Refresh now';
+  btn.setAttribute('role', 'button');
+  if (spinFloor[kind] != null && pollCount > spinFloor[kind]) spinFloor[kind] = null;
+  if (spinFloor[kind] != null) btn.classList.add('spin');
+  btn.onclick = (e) => {
+    e.stopPropagation();               // the header's own click toggles the pane
+    spinFloor[kind] = pollCount;
+    btn.classList.add('spin');
+    call(endpoint).catch((err) => { spinFloor[kind] = null; toast(err.message, true); });
+  };
+  return btn;
+}
 
 // The version the user dismissed this session. A newer release than this shows
 // again; the same one stays hidden until the next launch.
@@ -351,23 +369,7 @@ function prGroup() {
     if (needs) count.querySelector('b').classList.add('n');
   }
   head.appendChild(count);
-
-  // Force a PR poll now instead of waiting out the period. Mirrors the review
-  // queue's refresh; spins until pr_poll moves past the click.
-  const refresh = el('span', 'rvrefresh', '↻');
-  refresh.title = 'Refresh now';
-  refresh.setAttribute('role', 'button');
-  const pollNow = snap.pr_poll ?? 0;
-  if (prSpinFloor != null && pollNow > prSpinFloor) prSpinFloor = null;
-  if (prSpinFloor != null) refresh.classList.add('spin');
-  refresh.onclick = (e) => {
-    e.stopPropagation();
-    prSpinFloor = snap.pr_poll ?? 0;
-    refresh.classList.add('spin');
-    call('/api/prs/refresh').catch((err) => { prSpinFloor = null; toast(err.message, true); });
-  };
-  head.appendChild(refresh);
-
+  head.appendChild(refreshButton('pr', snap.pr_poll ?? 0, '/api/prs/refresh'));
   head.onclick = () => { showPrs = !showPrs; renderRail(); };
   group.appendChild(head);
 
@@ -1258,23 +1260,7 @@ function renderReviews() {
   head.appendChild(el('span', 'eyebrow', 'Review queue'));
   const count = el('span', 'rvcount');
 
-  // Force a poll now instead of waiting out the 5-minute period. A span, not a
-  // button: the header itself is a <button> and nesting one is invalid.
-  const refresh = el('span', 'rvrefresh', '↻');
-  refresh.title = 'Refresh now';
-  refresh.setAttribute('role', 'button');
-  // Spin until a poll newer than the click has landed (reviews_poll advances),
-  // not merely until the next unrelated re-render.
-  const pollNow = snap.reviews_poll ?? 0;
-  if (reviewSpinFloor != null && pollNow > reviewSpinFloor) reviewSpinFloor = null;
-  if (reviewSpinFloor != null) refresh.classList.add('spin');
-  refresh.onclick = (e) => {
-    e.stopPropagation();               // the header's own click toggles the pane
-    reviewSpinFloor = snap.reviews_poll ?? 0;
-    refresh.classList.add('spin');
-    call('/api/reviews/refresh')
-      .catch((err) => { reviewSpinFloor = null; toast(err.message, true); });
-  };
+  const refresh = refreshButton('review', snap.reviews_poll ?? 0, '/api/reviews/refresh');
 
   if (!rv || rv.state !== 'ok') {
     // Never an empty queue: a broken command reads as broken (§6b). Startup is

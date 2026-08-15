@@ -18,10 +18,9 @@ const flag = (name, fallback) => {
   const i = args.indexOf(name);
   return i === -1 ? fallback : args[i + 1];
 };
-const positional = args.filter((a, i) =>
-  !a.startsWith('--') && !(i > 0 && args[i - 1].startsWith('--')));
 
-const selector = positional[0] || null;
+// The selector, if given, is always the first argument (`shot -- '.sel' --click …`).
+const selector = args[0] && !args[0].startsWith('--') ? args[0] : null;
 const port = flag('--port', process.env.ORCHD_PORT || '7777');
 const outDir = flag('--out', 'target/shots');
 const clickSel = flag('--click', null);
