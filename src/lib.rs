@@ -16,6 +16,7 @@ pub mod green;
 pub mod hooks;
 pub mod model;
 pub mod patch;
+pub mod prompt;
 pub mod proposal;
 pub mod pty;
 pub mod reviews;
@@ -24,6 +25,7 @@ pub mod spawn;
 pub mod state;
 pub mod store;
 pub mod todo;
+pub mod triage;
 pub mod window;
 pub mod worktree;
 pub mod ws;
@@ -391,7 +393,11 @@ fn start_pr_poller(app: Arc<AppState>) {
                     let mut inner = app.inner.write().await;
                     inner.token_source = Some(source);
                     match result {
-                        Ok(Ok(prs)) => {
+                        Ok(Ok((viewer, prs))) => {
+                            if !viewer.is_empty() && inner.viewer.as_deref() != Some(&viewer) {
+                                tracing::info!(login = %viewer, "github viewer");
+                                inner.viewer = Some(viewer);
+                            }
                             for p in &prs {
                                 let alive = matches!(
                                     inner.automation.get(p.number),

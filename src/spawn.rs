@@ -9,7 +9,7 @@ use crate::model::*;
 use crate::pty::PtyHandle;
 use crate::state::AppState;
 
-const DEFAULT_SIZE: (u16, u16) = (40, 140);
+pub(crate) const DEFAULT_SIZE: (u16, u16) = (40, 140);
 
 /// Placeholder workspace for a worktree whose name Claude Code has not reported
 /// yet. Replaced at `SessionStart`.
@@ -217,6 +217,7 @@ pub async fn spawn_green_session(
     app: &Arc<AppState>,
     pr: u64,
     head_ref: &str,
+    login: &str,
 ) -> Result<SessionId> {
     let workspace = ensure_pr_worktree(app, pr, head_ref).await?;
     let path = app
@@ -224,12 +225,31 @@ pub async fn spawn_green_session(
         .await
         .context("worktree vanished")?;
 
+    // The vendored prompt, inline. Typing `/green <pr>` would resolve from the
+    // agent's own command path, which depends on a repo that is usually not
+    // installed — and fails as "no such command" only after the session spawned.
+    let (owner, repo) = crate::resolve_repo(app)
+        .context("no GitHub repo configured and none on the remote")?;
+    let body = crate::prompt::render(
+        crate::prompt::GREEN,
+        &crate::prompt::Vars {
+            pr,
+            owner,
+            repo,
+            login: login.to_string(),
+            upstream: app.cfg.upstream_ref.clone(),
+            upstream_remote: app.cfg.upstream_remote.clone(),
+            // /green never posts proposals; the placeholder still has to resolve.
+            proposals_url: String::new(),
+        },
+    )?;
+
     let id = Uuid::new_v4();
     let settings = Config::hooks_settings_path()?;
     let cmd = vec![
         "claude".to_string(),
         "-p".to_string(),
-        format!("/green {pr}"),
+        body,
         "--output-format".to_string(),
         "stream-json".to_string(),
         "--verbose".to_string(),

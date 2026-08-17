@@ -63,6 +63,14 @@ pub struct Inner {
     /// re-checks before replying against a diff that may have been force-pushed
     /// away.
     pub threads: HashMap<u64, ThreadCache>,
+    /// What the last triage run proposed, per PR. A run costs a full agent pass,
+    /// so this outlives the session that produced it — you can close the overlay
+    /// and come back. Its absence after a run exits is how a failed run is
+    /// detected: the agent reports by POSTing, not by its exit code.
+    pub proposals: HashMap<u64, crate::proposal::ProposalSet>,
+    /// Your own GitHub login, from the PR poll's `viewer { login }`. The vendored
+    /// prompts take it as `{{LOGIN}}`.
+    pub viewer: Option<String>,
     /// Last poll failure. A broken poller must read as broken, never as "no
     /// open PRs".
     pub pr_error: Option<String>,
@@ -146,6 +154,8 @@ impl AppState {
                 files: HashMap::new(),
                 prs: Vec::new(),
                 threads: HashMap::new(),
+                proposals: HashMap::new(),
+                viewer: None,
                 pr_error: None,
                 pr_fetched: None,
                 pr_poll: 0,

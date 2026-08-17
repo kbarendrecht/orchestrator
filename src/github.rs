@@ -270,8 +270,19 @@ fn query_for(owner: &str, name: &str) -> String {
     )
 }
 
-pub fn poll(token: &str, owner: &str, name: &str) -> Result<Vec<Pr>> {
+/// The open PRs you authored, plus your own login.
+///
+/// The query has always asked for `viewer { login }` and thrown it away. It is
+/// wanted: the vendored prompts take it as `{{LOGIN}}` to spot threads you
+/// already answered and to refuse a branch that is not yours, and getting it
+/// from the poll costs nothing over a second `gh api user` call.
+pub fn poll(token: &str, owner: &str, name: &str) -> Result<(String, Vec<Pr>)> {
     let v = graphql(token, &query_for(owner, name))?;
+    let viewer = v
+        .pointer("/data/viewer/login")
+        .and_then(|s| s.as_str())
+        .unwrap_or_default()
+        .to_string();
     let nodes = v
         .pointer("/data/search/nodes")
         .and_then(|n| n.as_array())
@@ -280,7 +291,7 @@ pub fn poll(token: &str, owner: &str, name: &str) -> Result<Vec<Pr>> {
 
     let mut prs: Vec<Pr> = nodes.iter().filter_map(parse_pr).collect();
     link_stacks(&mut prs);
-    Ok(prs)
+    Ok((viewer, prs))
 }
 
 fn parse_pr(n: &Value) -> Option<Pr> {
