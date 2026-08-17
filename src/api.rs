@@ -1,3 +1,4 @@
+use anyhow::Context;
 use axum::{
     extract::{Path, Query, State},
     http::{Request, StatusCode},
@@ -5,7 +6,6 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
-use anyhow::Context;
 use serde::Deserialize;
 use serde_json::json;
 use std::sync::Arc;
@@ -69,7 +69,10 @@ pub async fn guard(
     let path = req.uri().path().to_string();
     let headers = req.headers();
 
-    let host = headers.get("host").and_then(|v| v.to_str().ok()).unwrap_or("");
+    let host = headers
+        .get("host")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
     if !host_allowed(host, port) {
         return (StatusCode::FORBIDDEN, "bad host").into_response();
     }
@@ -107,7 +110,13 @@ pub async fn guard(
     // GitHub traffic through the daemon and burn its rate limit. Those carry
     // the token like a mutating route does — the SPA's `get()` already sends it
     // on every request, so this costs the UI nothing.
-    let spends_github_token = path.starts_with("/api/pr/") && path.ends_with("/threads");
+    // Every GET that reaches GitHub on our credential, not just the first one.
+    // This started as a match on `/threads` alone and `/review` was added later
+    // without it — so the list is named here, with the rule, rather than left as
+    // a suffix nobody notices they have to extend.
+    const SPENDS_GITHUB_TOKEN: [&str; 2] = ["/threads", "/review"];
+    let spends_github_token =
+        path.starts_with("/api/pr/") && SPENDS_GITHUB_TOKEN.iter().any(|s| path.ends_with(s));
     let needs_token = !is_hook && (req.method() != axum::http::Method::GET || spends_github_token);
     if needs_token {
         let presented = headers
@@ -158,7 +167,11 @@ pub async fn new_worktree(
     State(app): State<Arc<AppState>>,
     Json(body): Json<NewWorktree>,
 ) -> ApiResult<serde_json::Value> {
-    let name = body.name.as_deref().map(str::trim).filter(|n| !n.is_empty());
+    let name = body
+        .name
+        .as_deref()
+        .map(str::trim)
+        .filter(|n| !n.is_empty());
     let id = spawn::spawn_worktree_session(&app, name).await?;
     Ok(Json(json!({ "session": id })))
 }
@@ -195,11 +208,7 @@ pub async fn resume_session(
             .sessions
             .get(&id)
             .ok_or_else(|| anyhow::anyhow!("no such session {id}"))?;
-        (
-            s.workspace.clone(),
-            s.recovery.clone(),
-            s.cwd.exists(),
-        )
+        (s.workspace.clone(), s.recovery.clone(), s.cwd.exists())
     };
 
     if matches!(recovery, Some(ArchiveState::TranscriptOnly)) {
@@ -234,7 +243,11 @@ pub async fn restart_process(
     Path((workspace, name)): Path<(String, String)>,
 ) -> ApiResult<serde_json::Value> {
     let spec = if workspace == MAIN {
-        app.cfg.main_processes.iter().find(|s| s.name == name).cloned()
+        app.cfg
+            .main_processes
+            .iter()
+            .find(|s| s.name == name)
+            .cloned()
     } else {
         app.cfg
             .worktree_processes
@@ -429,12 +442,8 @@ async fn base_for(
         .workspace_path(&q.workspace)
         .await
         .ok_or_else(|| anyhow::anyhow!("unknown workspace {}", q.workspace))?;
-    let base = crate::diff::resolve_base(
-        &path,
-        q.base,
-        &app.cfg.upstream_ref,
-        q.pr_base.as_deref(),
-    )?;
+    let base =
+        crate::diff::resolve_base(&path, q.base, &app.cfg.upstream_ref, q.pr_base.as_deref())?;
     Ok((path, base))
 }
 
@@ -475,7 +484,9 @@ pub async fn diff_file(
     let (path, base) = base_for(&app, &dq).await?;
     // A pathological context value would ask git for the whole repo.
     let context = q.context.min(10_000);
-    Ok(Json(crate::diff::file_diff(&path, &base, &q.path, context)?))
+    Ok(Json(crate::diff::file_diff(
+        &path, &base, &q.path, context,
+    )?))
 }
 
 // ---------------------------------------------------------------------------
@@ -611,6 +622,190 @@ pub async fn pr_threads(
     Ok(Json(body))
 }
 
+// ---------------------------------------------------------------------------
+// Review overlay
+// ---------------------------------------------------------------------------
+
+/// Fetch a PR's threads, cache them, and hand back the parsed set.
+///
+/// Shared by the endpoints that need to know what is awaiting an answer *now*
+/// rather than what a cache said earlier. Always refetches: a stale thread list
+/// is the one thing this flow must never act on.
+async fn fetch_threads(app: &Arc<AppState>, pr: u64) -> Result<crate::github::Threads, ApiError> {
+    let (owner, name) = crate::resolve_repo(app)
+        .ok_or_else(|| anyhow::anyhow!("no GitHub repo configured and none on the remote"))?;
+    let token = crate::github::resolve_token(app.cfg.github_token_file.as_deref())?;
+    let fetched = tokio::task::spawn_blocking(move || {
+        crate::github::threads(&token.value, &owner, &name, pr)
+    })
+    .await
+    .context("the thread fetch panicked")??;
+    let mut inner = app.inner.write().await;
+    inner.threads.insert(
+        pr,
+        crate::state::ThreadCache {
+            fetched: std::time::SystemTime::now(),
+            threads: fetched.clone(),
+        },
+    );
+    Ok(fetched)
+}
+
+/// The workspace already holding this PR's head branch, if any.
+///
+/// Read-only: unlike `ensure_pr_worktree` this never creates one, so the gate can
+/// be reported without a side effect.
+async fn workspace_for(app: &Arc<AppState>, head_ref: &str) -> Option<String> {
+    let inner = app.inner.read().await;
+    inner
+        .workspaces
+        .values()
+        .find(|w| w.branches.contains(&head_ref.to_string()))
+        .map(|w| w.id.clone())
+}
+
+fn pr_from_poll(prs: &[crate::github::Pr], number: u64) -> Result<crate::github::Pr, ApiError> {
+    prs.iter()
+        .find(|p| p.number == number)
+        .cloned()
+        .ok_or_else(|| ApiError(anyhow::anyhow!("PR #{number} is not in the current poll")))
+}
+
+/// Start a triage run.
+///
+/// Refuses on the worktree gates rather than starting a run whose output could
+/// not be applied. The threads are fetched first so the viewer login is current
+/// and the run has something to triage.
+pub async fn pr_triage(
+    State(app): State<Arc<AppState>>,
+    Path(number): Path<u64>,
+) -> ApiResult<serde_json::Value> {
+    let pr = {
+        let inner = app.inner.read().await;
+        pr_from_poll(&inner.prs, number)?
+    };
+    let fetched = fetch_threads(&app, number).await?;
+    if fetched.answerable_count() == 0 {
+        return Err(ApiError(anyhow::anyhow!(
+            "PR #{number} has no threads awaiting an answer"
+        )));
+    }
+    let session = crate::triage::spawn(&app, number, &pr.head_ref, &fetched.viewer).await?;
+    Ok(Json(json!({ "session": session })))
+}
+
+/// The agent's hand-off. **The only endpoint a subprocess calls.**
+///
+/// Treated as hostile input: the agent's own input includes review comments other
+/// people wrote, so nothing here is trusted for having parsed. The shape is
+/// checked by `ProposalSet::validate`, the thread ids against a **fresh** fetch,
+/// and `base_sha` against the branch as it stands — a force-push during the run
+/// invalidates every patch it produced.
+pub async fn pr_proposals(
+    State(app): State<Arc<AppState>>,
+    Path(number): Path<u64>,
+    Json(body): Json<crate::proposal::ProposalSet>,
+) -> ApiResult<serde_json::Value> {
+    let fetched = fetch_threads(&app, number).await?;
+
+    if let Some(head) = &fetched.head_sha {
+        if head != &body.base_sha {
+            return Err(ApiError(anyhow::anyhow!(
+                "the branch moved during triage ({} → {head}); its patches no longer apply",
+                &body.base_sha[..body.base_sha.len().min(7)]
+            )));
+        }
+    }
+
+    let answerable: Vec<String> = fetched
+        .items
+        .iter()
+        .filter(|t| t.answerable)
+        .map(|t| t.id.clone())
+        .collect();
+    let validated = body.validate(&answerable)?;
+    let count = validated.proposals.len();
+
+    app.inner.write().await.proposals.insert(number, validated);
+    app.notify().await;
+    Ok(Json(json!({ "accepted": count })))
+}
+
+/// Everything the overlay needs in one call: the threads, what triage proposed,
+/// and whether the worktree can be written to.
+pub async fn pr_review(
+    State(app): State<Arc<AppState>>,
+    Path(number): Path<u64>,
+) -> ApiResult<serde_json::Value> {
+    let pr = {
+        let inner = app.inner.read().await;
+        pr_from_poll(&inner.prs, number)?
+    };
+    let fetched = fetch_threads(&app, number).await?;
+
+    let gate = match workspace_for(&app, &pr.head_ref).await {
+        Some(ws) => crate::triage::gate(&app, number, &ws).await?,
+        // No worktree yet means nothing to be dirty; triage creates one.
+        None => None,
+    };
+    let proposals = app.inner.read().await.proposals.get(&number).cloned();
+
+    Ok(Json(json!({
+        "viewer": fetched.viewer,
+        "head_sha": fetched.head_sha,
+        "answerable": fetched.answerable_count(),
+        "threads": fetched.items,
+        "proposals": proposals,
+        "gate": gate,
+        // Shown in the header, never gating: a red or conflicting PR is still
+        // answerable, and `/green` is offered rather than required.
+        "checks": pr.checks,
+        "mergeable": pr.mergeable,
+    })))
+}
+
+#[derive(Deserialize)]
+pub struct CommitBody {
+    pub message: String,
+}
+
+/// The gate's `commit…` button: commit the worktree as it stands.
+pub async fn pr_commit(
+    State(app): State<Arc<AppState>>,
+    Path(number): Path<u64>,
+    Json(body): Json<CommitBody>,
+) -> ApiResult<serde_json::Value> {
+    let path = gate_worktree(&app, number).await?;
+    crate::git::commit_all(&path, &body.message)?;
+    app.notify().await;
+    Ok(Json(json!({ "committed": true })))
+}
+
+/// The gate's `stash` button. Never popped automatically — see `git::stash`.
+pub async fn pr_stash(
+    State(app): State<Arc<AppState>>,
+    Path(number): Path<u64>,
+) -> ApiResult<serde_json::Value> {
+    let path = gate_worktree(&app, number).await?;
+    crate::git::stash(&path)?;
+    app.notify().await;
+    Ok(Json(json!({ "stashed": true })))
+}
+
+/// The worktree the gate buttons act on, refusing when there is not one.
+async fn gate_worktree(app: &Arc<AppState>, number: u64) -> Result<std::path::PathBuf, ApiError> {
+    let head_ref = {
+        let inner = app.inner.read().await;
+        pr_from_poll(&inner.prs, number)?.head_ref
+    };
+    let ws = workspace_for(app, &head_ref)
+        .await
+        .ok_or_else(|| anyhow::anyhow!("no worktree for PR #{number} yet"))?;
+    app.workspace_path(&ws)
+        .await
+        .ok_or_else(|| ApiError(anyhow::anyhow!("the worktree for PR #{number} vanished")))
+}
+
 pub async fn resolve_pr(
     State(app): State<Arc<AppState>>,
     Path(number): Path<u64>,
@@ -687,7 +882,8 @@ pub async fn read_file(
         .ok_or_else(|| anyhow::anyhow!("unknown workspace {}", q.workspace))?;
 
     if let Some(base) = q.base {
-        let rev = crate::diff::resolve_base(&root, base, &app.cfg.upstream_ref, q.pr_base.as_deref())?;
+        let rev =
+            crate::diff::resolve_base(&root, base, &app.cfg.upstream_ref, q.pr_base.as_deref())?;
         let content = crate::diff::show_at(&root, &rev, &q.path)?;
         return Ok(Json(crate::edit::FileContents {
             path: q.path.clone(),
@@ -782,8 +978,11 @@ pub async fn green_pr(
             .values()
             .filter(|s| s.is_automation() && s.state.is_live())
             .count();
-        let live_claude_processes =
-            inner.sessions.values().filter(|s| s.state.is_live()).count();
+        let live_claude_processes = inner
+            .sessions
+            .values()
+            .filter(|s| s.state.is_live())
+            .count();
         let main_occupant = inner.workspaces.get(MAIN).and_then(|w| w.occupant);
         let locks = inner.locks_held.clone();
 
@@ -832,12 +1031,7 @@ pub async fn green_pr(
     Ok(Json(json!({ "session": session })))
 }
 
-fn watch_green(
-    app: Arc<AppState>,
-    number: u64,
-    session: uuid::Uuid,
-    locks: Vec<String>,
-) {
+fn watch_green(app: Arc<AppState>, number: u64, session: uuid::Uuid, locks: Vec<String>) {
     use crate::green::{ended_red, PrAutomation};
     tokio::spawn(async move {
         let handle = {
@@ -920,8 +1114,7 @@ pub async fn rebase(
 
     let upstream = app.cfg.upstream_ref.clone();
     let p = path.clone();
-    let result =
-        tokio::task::spawn_blocking(move || crate::git::rebase_onto(&p, &upstream)).await;
+    let result = tokio::task::spawn_blocking(move || crate::git::rebase_onto(&p, &upstream)).await;
 
     let _ = app.reconcile(&workspace).await;
     app.notify().await;

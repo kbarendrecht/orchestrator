@@ -281,6 +281,12 @@ fn router(app: Arc<AppState>) -> Router {
         .route("/api/prs/refresh", post(api::refresh_prs))
         .route("/api/open", post(api::open_url))
         .route("/api/pr/:number/threads", get(api::pr_threads))
+        .route("/api/pr/:number/review", get(api::pr_review))
+        .route("/api/pr/:number/triage", post(api::pr_triage))
+        // The one route a subprocess calls. Hostile input; see `pr_proposals`.
+        .route("/api/pr/:number/proposals", post(api::pr_proposals))
+        .route("/api/pr/:number/commit", post(api::pr_commit))
+        .route("/api/pr/:number/stash", post(api::pr_stash))
         .route("/api/pr/:number/resolve", post(api::resolve_pr))
         .route("/api/pr/:number/green", post(api::green_pr))
         .route("/ws/events", get(ws::events))
@@ -573,7 +579,10 @@ async fn live_findings(app: &Arc<AppState>) -> Vec<todo::Finding> {
     if let Some(reason) = review_bad {
         out.push(todo::Finding {
             what: "review queue is unavailable".into(),
-            why: format!("`mise run reviews --json` is not answering: {}", reason.trim()),
+            why: format!(
+                "`mise run reviews --json` is not answering: {}",
+                reason.trim()
+            ),
         });
     }
 
@@ -586,10 +595,9 @@ async fn live_findings(app: &Arc<AppState>) -> Vec<todo::Finding> {
         let cfg = app.cfg.capabilities.clone();
         let main = app.cfg.main_checkout.clone();
         let ws = id.clone();
-        let report = tokio::task::spawn_blocking(move || {
-            capability::report(&cfg, &ws, &path, &main, false)
-        })
-        .await;
+        let report =
+            tokio::task::spawn_blocking(move || capability::report(&cfg, &ws, &path, &main, false))
+                .await;
         let Ok(report) = report else { continue };
 
         if let capability::AutoloadProbe::Outside { file } = &report.autoload {
@@ -680,9 +688,14 @@ fn start_stack_poller(app: Arc<AppState>) {
 /// A checkout with no compose file has no stack at all, so it answers with a cheap
 /// filesystem check rather than spawning `docker` every poll for a fixed "down".
 fn stack_running(main: &std::path::Path) -> bool {
-    let has_compose = ["docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml"]
-        .iter()
-        .any(|f| main.join(f).exists());
+    let has_compose = [
+        "docker-compose.yml",
+        "docker-compose.yaml",
+        "compose.yml",
+        "compose.yaml",
+    ]
+    .iter()
+    .any(|f| main.join(f).exists());
     if !has_compose {
         return false;
     }
@@ -708,9 +721,10 @@ fn start_update_poller(app: Arc<AppState>) {
         let interval = std::time::Duration::from_secs(6 * 60 * 60);
         loop {
             let cur = current.clone();
-            if let Ok(Some((tag, url))) =
-                tokio::task::spawn_blocking(|| github::latest_release(RELEASE_REPO.0, RELEASE_REPO.1))
-                    .await
+            if let Ok(Some((tag, url))) = tokio::task::spawn_blocking(|| {
+                github::latest_release(RELEASE_REPO.0, RELEASE_REPO.1)
+            })
+            .await
             {
                 let newer = match (parse_semver(&tag), parse_semver(&cur)) {
                     (Some(latest), Some(running)) => latest > running,

@@ -40,8 +40,8 @@ pub fn resolve_token(token_file: Option<&Path>) -> Result<Token> {
     }
     if let Some(p) = token_file {
         if p.exists() {
-            let raw = std::fs::read_to_string(p)
-                .with_context(|| format!("reading {}", p.display()))?;
+            let raw =
+                std::fs::read_to_string(p).with_context(|| format!("reading {}", p.display()))?;
             let v = raw.trim().to_string();
             if !v.is_empty() {
                 warn_if_world_readable(p);
@@ -524,6 +524,7 @@ pub fn threads(token: &str, owner: &str, name: &str, pr: u64) -> Result<Threads>
             Some(c) => cursor = Some(c),
             None => {
                 out.mark_answerable();
+                out.sort_for_review();
                 return Ok(out);
             }
         }
@@ -532,6 +533,7 @@ pub fn threads(token: &str, owner: &str, name: &str, pr: u64) -> Result<Threads>
     // is still worth triaging, and the caller cannot fix a 10,000-thread PR.
     tracing::warn!("pr {pr}: stopped paging review threads at {MAX_THREAD_PAGES} pages");
     out.mark_answerable();
+    out.sort_for_review();
     Ok(out)
 }
 
@@ -544,6 +546,34 @@ impl Threads {
         for t in items {
             t.answerable = t.is_answerable(viewer);
         }
+    }
+
+    /// Put the threads in GitHub's Files-changed order.
+    ///
+    /// The API returns them **chronologically** — the Conversation tab's order,
+    /// jumping between files — but people review in the Files tab, whose order is
+    /// the diff's, and a diff's file order is a plain path sort. So sorting by
+    /// `(path, line)` reproduces the view they already read in, and puts two
+    /// comments a few lines apart in one file back to back, where the second
+    /// usually changes what the first deserves as an answer.
+    ///
+    /// Two traps: an outdated thread has no `line` and must sort on the line it
+    /// was originally left at; and the comparison is plain byte order on the full
+    /// path, matching git (`-` is 0x2D and `/` is 0x2F, so `foo-baz.ts` sorts
+    /// before `foo/bar.ts` — which looks wrong and is what git does). A thread
+    /// with no path at all is a review summary: it is about the PR rather than a
+    /// file, so it sorts last.
+    fn sort_for_review(&mut self) {
+        self.items.sort_by(|a, b| {
+            let key = |t: &Thread| {
+                (
+                    t.path.is_none(),
+                    t.path.clone().unwrap_or_default(),
+                    t.line.or(t.original_line).unwrap_or(0),
+                )
+            };
+            key(a).cmp(&key(b))
+        });
     }
 
     /// How many threads still want something from you.
@@ -653,10 +683,8 @@ fn parse_comment(n: &Value) -> Option<Comment> {
 
 /// PR B is stacked on A when `B.baseRefName == A.headRefName` (§6).
 fn link_stacks(prs: &mut [Pr]) {
-    let by_head: HashMap<String, u64> = prs
-        .iter()
-        .map(|p| (p.head_ref.clone(), p.number))
-        .collect();
+    let by_head: HashMap<String, u64> =
+        prs.iter().map(|p| (p.head_ref.clone(), p.number)).collect();
     let mut children: HashMap<u64, Vec<u64>> = HashMap::new();
     for p in prs.iter() {
         if let Some(parent) = by_head.get(&p.base_ref) {
@@ -906,6 +934,75 @@ mod tests {
     }
 
     #[test]
+    fn threads_sort_into_files_changed_order() {
+        // The API hands these back chronologically; people review in the Files
+        // tab, whose order is the diff's.
+        let mut t = Threads {
+            viewer: "kars".into(),
+            head_sha: None,
+            items: vec![
+                thread_at(Some("b.ts"), Some(9)),
+                thread_at(None, None), // review summary: no file
+                thread_at(Some("a.ts"), Some(20)),
+                thread_at(Some("a.ts"), Some(3)),
+                thread_at(Some("a-z.ts"), Some(1)),
+            ],
+        };
+        t.sort_for_review();
+        let order: Vec<(Option<&str>, Option<u32>)> = t
+            .items
+            .iter()
+            .map(|x| (x.path.as_deref(), x.line))
+            .collect();
+        assert_eq!(
+            order,
+            vec![
+                // Plain byte order on the path, matching git: '-' (0x2D) sorts
+                // before '/' and before 'a'..'z' continues.
+                (Some("a-z.ts"), Some(1)),
+                (Some("a.ts"), Some(3)),
+                (Some("a.ts"), Some(20)),
+                (Some("b.ts"), Some(9)),
+                // A summary is about the PR, not a file, so it goes last.
+                (None, None),
+            ]
+        );
+    }
+
+    #[test]
+    fn an_outdated_thread_sorts_on_the_line_it_was_left_at() {
+        // `line` is null once the code moved; without the fallback it would sort
+        // to the top of its file instead of where the reviewer was looking.
+        let mut t = Threads {
+            viewer: "kars".into(),
+            head_sha: None,
+            items: vec![thread_at(Some("a.ts"), Some(5)), {
+                let mut o = thread_at(Some("a.ts"), None);
+                o.original_line = Some(2);
+                o.is_outdated = true;
+                o
+            }],
+        };
+        t.sort_for_review();
+        assert_eq!(t.items[0].original_line, Some(2), "outdated :2 sorts first");
+        assert_eq!(t.items[1].line, Some(5));
+    }
+
+    fn thread_at(path: Option<&str>, line: Option<u32>) -> Thread {
+        Thread {
+            id: format!("PRRT_{}_{:?}", path.unwrap_or("none"), line),
+            path: path.map(|p| p.to_string()),
+            line,
+            start_line: None,
+            original_line: None,
+            is_resolved: false,
+            is_outdated: false,
+            comments: Vec::new(),
+            answerable: true,
+        }
+    }
+
+    #[test]
     fn the_cursor_is_json_encoded_into_the_query() {
         let q = threads_query("o", "n", 7, Some(r#"cur"sor"#));
         assert!(q.contains(r#"after: "cur\"sor""#), "{q}");
@@ -965,7 +1062,9 @@ mod tests {
         // The mapping is by branch set, not by workspace name: a worktree keeps
         // a PR after you have moved the main checkout to another branch (§2).
         let branches: std::collections::HashSet<String> =
-            ["develop".to_string(), "feature/x".to_string()].into_iter().collect();
+            ["develop".to_string(), "feature/x".to_string()]
+                .into_iter()
+                .collect();
         let p = pr(1, "feature/x", "develop");
         assert!(branches.contains(&p.head_ref));
         let other = pr(2, "feature/never-checked-out", "develop");
