@@ -1,0 +1,1435 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>orchd — review overlay</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&family=Martian+Mono:wght@600;700&display=swap" rel="stylesheet">
+<style>
+/* Tokens lifted verbatim from web/app.css. Nothing new is invented here: the
+   overlay has to sit inside the existing app, so it borrows the whole system
+   and spends its effort on information design instead. */
+:root{
+  --bg:#101010;
+  --surface:#171717;
+  --raised:#212121;
+  --line:#2C2C2C;
+  --line-soft:#262626;
+  --text:#D2D2D2;
+  --dim:#8B8B8B;
+  --faint-solid:#5B5B5B;
+  --ghost:#3E3E3E;
+
+  --attn:#E0A244;
+  --work:#4C9AAF;
+  --ok:#5FA97C;
+  --bad:#C9615A;
+  --auto:#3E9AAF;
+
+  --add:rgba(95,169,124,.13);
+  --del:rgba(201,97,90,.13);
+
+  --mono:'IBM Plex Mono',ui-monospace,monospace;
+  --sans:'IBM Plex Sans',system-ui,sans-serif;
+  --label:'Martian Mono',ui-monospace,monospace;
+
+  /* The centre pane's real width: 1440 stage − 290 rail − 296 files. Panels
+     are drawn at true size so the proportions are honest, not flattering. */
+  --pane:854px;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{
+  background:#0A0A0A;color:var(--text);
+  font-family:var(--sans);font-size:13px;line-height:1.5;
+  -webkit-font-smoothing:antialiased;
+  padding:40px 24px 80px;
+}
+button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
+:focus-visible{outline:2px solid var(--attn);outline-offset:1px;border-radius:2px}
+
+.eyebrow{
+  font-family:var(--label);font-size:8.5px;font-weight:700;
+  letter-spacing:.16em;text-transform:uppercase;color:var(--faint-solid);
+}
+.m{font-family:var(--mono);font-size:11px}
+
+/* ---------- the mock document itself ---------- */
+.doc{max-width:var(--pane);margin:0 auto;display:flex;flex-direction:column;gap:56px}
+.docHead{display:flex;flex-direction:column;gap:10px}
+.docHead h1{font-size:19px;font-weight:600;letter-spacing:-.01em}
+.docHead p{color:var(--dim);max-width:66ch}
+.step{display:flex;flex-direction:column;gap:12px}
+.stepHead{display:flex;align-items:baseline;gap:10px}
+.stepHead h2{font-size:13px;font-weight:600}
+.stepHead .n{font-family:var(--mono);font-size:10.5px;color:var(--ghost)}
+.note{color:var(--dim);font-size:12px;max-width:66ch}
+.note b{color:var(--text);font-weight:500}
+.rule{height:1px;background:var(--line);margin:4px 0}
+
+/* ---------- the overlay ---------- */
+/* Everything overlay-specific is scoped under `.rv`, so adding a class here
+   can never collide with app.css — `.pane` already did (app.css:350 is the
+   diff viewer's split half). The classes left UNSCOPED below are shared with
+   the app on purpose — .eyebrow, .head-btn, .ov-*, .ln/.add/.del/.hit, .m —
+   and in the real merge they are app.css's rules, not the overlay's.
+   Element ids all take an `rv-` prefix: classes can be shared, ids cannot
+   (web/app.js:1419 binds ovpath/ovcount/ovprev/... by getElementById). */
+.rv{
+  width:var(--pane);background:var(--bg);
+  border:1px solid var(--line);border-radius:3px;
+  display:flex;flex-direction:column;overflow:hidden;
+}
+.ov-head{
+  display:flex;align-items:center;gap:12px;padding:9px 15px;
+  border-bottom:1px solid var(--line);background:var(--surface);flex:0 0 auto;
+}
+.ov-path{font-family:var(--mono);font-size:12px}
+.ov-path span{color:var(--faint-solid)}
+.ov-nav{margin-left:auto;display:flex;align-items:center;gap:8px}
+/* Branch health, from data the poller already has. Never a gate — CI colour and
+   a develop conflict are product signals that do not touch the apply/push
+   machinery, so they inform and offer /green, and that is all. The real gates
+   are worktree-readiness, below. */
+.rv .health{display:flex;align-items:center;gap:7px;font-family:var(--mono);font-size:10.5px}
+.rv .health .dot{width:6px;height:6px;border-radius:50%;background:var(--ghost)}
+.rv .health.bad .dot{background:var(--bad)}
+.rv .health.ok .dot{background:var(--ok)}
+.rv .health.pending .dot{background:var(--attn)}
+.rv .health .s{color:var(--dim)}
+.rv .health.bad .s{color:var(--bad)}
+.rv .health .sep{color:var(--ghost)}
+.ov-count{font-family:var(--mono);font-size:10px;color:var(--faint-solid)}
+.head-btn{
+  font-family:var(--label);font-size:8.5px;font-weight:700;letter-spacing:.1em;
+  text-transform:uppercase;color:var(--dim);padding:4px 8px;
+  border:1px solid var(--line);border-radius:2px;
+}
+.head-btn:hover{color:var(--text);border-color:var(--faint-solid)}
+.head-btn.go{color:#1A1206;background:var(--attn);border-color:var(--attn)}
+
+/* progress strip: one bar per thread, filled by outcome. Bars read as progress
+   through a queue; dots would read as status lights and invite a colour per
+   verdict, which is not what varies. */
+.rv .strip{display:flex;align-items:center;gap:5px;padding:8px 15px;border-bottom:1px solid var(--line-soft);background:#0D0D0D}
+.rv .pip{width:22px;height:3px;border-radius:1px;background:var(--ghost)}
+.rv .pip.staged{background:var(--attn)}
+.rv .pip.skip{background:var(--line)}
+.rv .pip.cur{background:var(--text)}
+/* flex:0 0 auto or the pips squeeze the count until it wraps, and the strip
+   silently doubles in height — 32px to 62px at 50 threads. */
+.rv .strip .left{
+  margin-left:auto;flex:0 0 auto;white-space:nowrap;
+  font-family:var(--mono);font-size:10px;color:var(--faint-solid);
+}
+
+.rv .body{overflow:auto}
+.rv .sec{padding:15px;border-bottom:1px solid var(--line-soft);display:flex;flex-direction:column;gap:10px}
+.rv .sec:last-child{border-bottom:0}
+
+/* the anchored comment */
+.rv .anchor{display:flex;align-items:baseline;gap:9px;flex-wrap:wrap}
+.rv .anchor .p{font-family:var(--mono);font-size:11.5px;color:var(--text)}
+.rv .anchor .who{font-size:11.5px;color:var(--dim)}
+.rv .anchor .age{font-family:var(--mono);font-size:10px;color:var(--ghost)}
+.rv .flag{
+  font-family:var(--label);font-size:8px;font-weight:700;letter-spacing:.12em;
+  text-transform:uppercase;padding:2px 5px;border-radius:2px;
+  color:var(--faint-solid);border:1px solid var(--line);
+}
+.rv .flag.out{color:var(--dim)}
+/* Not "re-review": that is GitHub's own phrase for requesting a fresh review,
+   which the final panel already uses for `gh pr edit --add-reviewer`. */
+.rv .flag.cont{color:var(--work);border-color:rgba(76,154,175,.35)}
+
+/* hunk — reuses the diff overlay's row classes. No +/- characters: src/diff.rs
+   strips the marker and the row's background wash carries add/del. */
+.rv .hunk{font-family:var(--mono);font-size:11.5px;line-height:1.65;border:1px solid var(--line-soft);border-radius:2px;overflow:hidden}
+.rv .hh{padding:2px 10px;background:#0B0B0B;color:var(--faint-solid);font-size:10.5px;border-bottom:1px solid var(--line-soft)}
+.ln{display:grid;grid-template-columns:44px 1fr;white-space:pre-wrap;word-break:break-word}
+.ln i{color:#4C4C4C;text-align:right;padding-right:10px;font-style:normal;user-select:none}
+.ln s{text-decoration:none;padding:0 10px;display:block}
+.ln.add s{background:var(--add)}
+.ln.del s{background:var(--del)}
+.ln.hit s{box-shadow:inset 2px 0 0 var(--attn)}
+
+/* comment chain */
+.rv .chain{display:flex;flex-direction:column;gap:9px}
+.rv .cmt{display:flex;flex-direction:column;gap:3px;padding-left:10px;border-left:1px solid var(--line)}
+/* Your own comments in the chain. On a CONTINUED thread the thing that matters
+   most is what you committed to last time — the new reply has to be consistent
+   with it in public — so it cannot look identical to theirs. */
+.rv .cmt.mine{border-left-color:var(--faint-solid);background:rgba(255,255,255,.015)}
+.rv .cmt.mine .hd b{color:var(--dim)}
+.rv .cmt.mine .hd .you{
+  font-family:var(--label);font-size:7.5px;font-weight:700;letter-spacing:.12em;
+  text-transform:uppercase;color:var(--faint-solid);
+}
+.rv .cmt .hd{display:flex;gap:8px;align-items:baseline}
+.rv .cmt .hd b{font-size:11.5px;font-weight:600;color:var(--text)}
+.rv .cmt .hd .age{font-family:var(--mono);font-size:10px;color:var(--ghost)}
+.rv .cmt p{color:var(--dim);max-width:70ch}
+
+/* the agent's read */
+.rv .read{
+  background:var(--surface);border:1px solid var(--line-soft);border-radius:2px;
+  padding:10px 12px;display:flex;flex-direction:column;gap:6px;
+}
+.rv .read p{color:var(--dim);max-width:70ch}
+.rv .read p b{color:var(--text);font-weight:500}
+
+/* positions — the reply and the proposed change live inside the position, not
+   beside it. Picking a stance, writing the words and choosing the edit are one
+   act, so they are one control: you can never do A and say B. */
+.rv .pos{display:flex;flex-direction:column;gap:6px}
+.rv .opt{border:1px solid var(--line);border-radius:2px;background:#0D0D0D;overflow:hidden}
+.rv .opt:hover{border-color:var(--faint-solid)}
+.rv .opt.on{border-color:var(--attn);background:rgba(224,162,68,.06)}
+.rv .optHead{display:flex;align-items:flex-start;gap:9px;text-align:left;width:100%;padding:8px 10px}
+.rv .opt .k{
+  font-family:var(--mono);font-size:9.5px;color:var(--ghost);
+  border:1px solid var(--line);border-radius:2px;padding:0 4px;flex:0 0 auto;margin-top:1px;
+}
+.rv .opt.on .k{color:var(--attn);border-color:rgba(224,162,68,.4)}
+.rv .opt .t{font-size:12px;color:var(--text)}
+.rv .opt .t em{display:block;font-style:normal;color:var(--faint-solid);font-size:11px;margin-top:2px}
+.rv .opt .does{
+  margin-left:auto;flex:0 0 auto;font-family:var(--label);font-size:8px;font-weight:700;
+  letter-spacing:.12em;text-transform:uppercase;color:var(--faint-solid);padding-top:2px;
+  white-space:nowrap;
+}
+.rv .opt.on .does{color:var(--ok)}
+.rv .rec{
+  font-family:var(--label);font-size:8px;font-weight:700;letter-spacing:.12em;
+  text-transform:uppercase;color:var(--attn);border:1px solid rgba(224,162,68,.35);
+  border-radius:2px;padding:1px 5px;margin-left:8px;
+}
+.rv .optBody{padding:0 10px 10px 33px;display:flex;flex-direction:column;gap:7px}
+
+/* A textarea, not a contenteditable: the reply goes to GitHub as plain
+   markdown, so rich paste is liability and browsers insert <div>/<br>
+   rather than \n. `openEditor()` already settled this (web/app.js:1114). */
+.rv .box{resize:vertical;display:block;width:100%;
+  background:#0B0B0B;border:1px solid var(--line);border-radius:2px;
+  padding:9px 11px;color:var(--text);font-family:var(--sans);font-size:12.5px;
+  min-height:56px;white-space:pre-wrap;
+}
+.rv .box:focus{outline:none;border-color:var(--faint-solid)}
+.rv .foot{
+  display:flex;align-items:baseline;gap:10px;
+  font-family:var(--mono);font-size:10px;color:var(--ghost);
+}
+/* Only shown once the text differs from the draft, so it never offers to undo
+   nothing. */
+.rv .revert{margin-left:auto;color:var(--dim);border-bottom:1px dotted var(--ghost)}
+.rv .revert:hover{color:var(--text)}
+/* An option whose reply you have touched. On coming back to a card, "is this my
+   wording or the agent's?" is the question that needs answering first, and the
+   posted footer cannot answer it. */
+.rv .edited{
+  font-family:var(--label);font-size:8px;font-weight:700;letter-spacing:.12em;
+  text-transform:uppercase;color:var(--work);border:1px solid rgba(76,154,175,.35);
+  border-radius:2px;padding:1px 5px;margin-left:8px;
+}
+.rv .willwrite{
+  display:flex;align-items:baseline;gap:7px;
+  font-family:var(--label);font-size:8px;font-weight:700;letter-spacing:.12em;
+  text-transform:uppercase;color:var(--faint-solid);
+}
+.rv .willwrite b{font-family:var(--mono);font-size:10.5px;font-weight:400;letter-spacing:0;text-transform:none;color:var(--dim)}
+
+/* action bar */
+.rv .acts{display:flex;align-items:center;gap:7px;padding:11px 15px;border-top:1px solid var(--line);background:var(--surface)}
+.rv .act{
+  font-family:var(--label);font-size:8.5px;font-weight:700;letter-spacing:.1em;
+  text-transform:uppercase;padding:5px 10px;border:1px solid var(--line);
+  border-radius:2px;color:var(--dim);
+}
+.rv .act:hover{color:var(--text);border-color:var(--faint-solid)}
+.rv .act.pri{color:var(--text);border-color:var(--faint-solid)}
+.rv .act.warm{color:#1A1206;background:var(--attn);border-color:var(--attn)}
+.rv .act.sp{margin-left:auto}
+.rv .hint{margin-left:auto;font-family:var(--mono);font-size:10px;color:var(--faint-solid)}
+
+/* intake + empty */
+.rv .mid{padding:56px 15px;display:flex;flex-direction:column;align-items:center;gap:13px;text-align:center}
+.rv .mid p{color:var(--dim);max-width:52ch;font-size:12.5px}
+.rv .mid .big{font-size:14px;color:var(--text)}
+.rv .tally{display:flex;flex-direction:column;gap:0;width:100%}
+.rv .tline{display:flex;align-items:baseline;gap:10px;padding:9px 0;border-bottom:1px solid var(--line-soft)}
+.rv .tline:last-child{border-bottom:0}
+.rv .tline .n{font-family:var(--mono);font-size:15px;color:var(--text);flex:0 0 26px;text-align:right;font-variant-numeric:tabular-nums}
+.rv .tline .l{font-size:12.5px;color:var(--text)}
+.rv .tline .l em{display:block;font-style:normal;font-size:11.5px;color:var(--faint-solid);margin-top:1px}
+
+/* the post list */
+.rv .stage-row{display:flex;align-items:baseline;gap:10px;padding:8px 0;border-bottom:1px solid var(--line-soft)}
+.rv .stage-row:last-child{border-bottom:0}
+.rv .stage-row .k{font-family:var(--label);font-size:8px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;flex:0 0 82px}
+.rv .stage-row .k.apply{color:var(--ok)}
+.rv .stage-row .k.reply{color:var(--attn)}
+.rv .stage-row .k.skip{color:var(--ghost)}
+.rv .stage-row .k.req{color:var(--work)}
+.rv .stage-row .c{display:flex;flex-direction:column;gap:3px;min-width:0}
+.rv .stage-row .c .p{font-family:var(--mono);font-size:10.5px;color:var(--faint-solid)}
+.rv .stage-row .c .t{font-size:12px;color:var(--dim)}
+.rv .held{color:var(--faint-solid);font-size:11.5px;font-style:italic}
+
+/* ---------- failure states ---------- */
+/* A banner for what is already true on the remote. It uses --attn rather than
+   --bad because it is not an error — it is the fact you need before you can
+   read anything below it. */
+.rv .banner{
+  display:flex;gap:11px;padding:12px 15px;border-bottom:1px solid var(--line);
+  border-left:2px solid var(--attn);background:rgba(224,162,68,.06);
+}
+.rv .banner.clean{border-left-color:var(--ok);background:rgba(95,169,124,.05)}
+.rv .banner .ico{font-family:var(--mono);font-size:12px;color:var(--attn);flex:0 0 auto}
+.rv .banner.clean .ico{color:var(--ok)}
+.rv .banner .tx b{display:block;font-size:12.5px;font-weight:600;margin-bottom:2px}
+.rv .banner .tx p{color:var(--dim);font-size:12px;max-width:62ch}
+
+.rv .group{display:flex;flex-direction:column;gap:0}
+.rv .res{display:flex;align-items:baseline;gap:10px;padding:9px 0;border-bottom:1px solid var(--line-soft)}
+.rv .res:last-child{border-bottom:0}
+.rv .res .st{
+  font-family:var(--mono);font-size:11px;flex:0 0 14px;text-align:center;
+}
+.rv .res.ok .st{color:var(--ok)}
+.rv .res.no .st{color:var(--bad)}
+.rv .res.wait .st{color:var(--ghost)}
+.rv .res .c{display:flex;flex-direction:column;gap:3px;min-width:0}
+.rv .res .c .p{font-family:var(--mono);font-size:10.5px;color:var(--faint-solid)}
+.rv .res .c .t{font-size:12px;color:var(--dim)}
+.rv .res.ok .c .t{color:var(--faint-solid)}
+/* Errors verbatim, per the daemon's own rule (src/api.rs:23) — a refused call
+   is information, not noise to swallow behind a friendly paraphrase. */
+.rv .err{
+  font-family:var(--mono);font-size:10.5px;color:var(--bad);
+  background:rgba(201,97,90,.07);border-left:1px solid rgba(201,97,90,.35);
+  padding:5px 9px;white-space:pre-wrap;margin-top:2px;
+}
+
+/* The last thing read before the only irreversible button on the screen, so it
+   is set apart rather than being one more list among the others. */
+/* ---------- manual ---------- */
+.rv .stage-row .k.manual{color:var(--work)}
+.rv .stage-row .k.story{color:var(--work)}
+/* A comment is required on a Manual thread, so the label says so rather than
+   letting you discover it from a disabled button. */
+.rv .req{color:var(--attn)}
+.rv .manrow{
+  display:flex;flex-direction:column;gap:6px;padding:11px 0;
+  border-bottom:1px solid var(--line-soft);
+}
+.rv .manrow:last-child{border-bottom:0}
+.rv .manrow .top{display:flex;align-items:baseline;gap:9px;flex-wrap:wrap}
+.rv .manrow .top .p{font-family:var(--mono);font-size:11px;color:var(--text)}
+.rv .manrow .top .who{font-size:11.5px;color:var(--dim)}
+.rv .manrow blockquote{
+  padding-left:10px;border-left:1px solid var(--line);
+  color:var(--dim);font-size:12px;max-width:70ch;
+}
+.rv .manrow .state{
+  font-family:var(--label);font-size:8px;font-weight:700;letter-spacing:.12em;
+  text-transform:uppercase;padding:1px 5px;border-radius:2px;border:1px solid var(--line);
+}
+.rv .manrow .state.wait{color:var(--faint-solid)}
+.rv .manrow .state.got{color:var(--ok);border-color:rgba(95,169,124,.35)}
+
+/* A story the post step will file. Shown as fields rather than prose so it is
+   obvious this is a record being created, not a sentence being written. */
+.rv .storydraft{
+  border:1px solid var(--line-soft);border-radius:2px;background:#0B0B0B;
+  display:flex;flex-direction:column;
+}
+.rv .sline{display:flex;gap:10px;padding:6px 9px;border-bottom:1px solid var(--line-soft)}
+.rv .sline:last-child{border-bottom:0}
+.rv .sline .lbl{
+  font-family:var(--label);font-size:7.5px;font-weight:700;letter-spacing:.12em;
+  text-transform:uppercase;color:var(--faint-solid);flex:0 0 44px;padding-top:3px;
+}
+.rv .sline .val{font-size:12px;color:var(--dim);min-width:0}
+
+.rv .leaves{background:#0D0D0D;border-top:1px solid var(--line)}
+.rv .leaves .res .st{color:var(--faint-solid)}
+
+/* A thin ambient strip above the progress bar. Only the `.fresh` variant is
+   used now — an earlier draft had a teal one for a `/green` run during review,
+   which the mutual-exclusion decision removed. */
+.rv .autobar{
+  display:flex;align-items:baseline;gap:9px;padding:6px 15px;
+  border-bottom:1px solid var(--line-soft);
+  background:rgba(62,154,175,.07);border-left:2px solid var(--auto);
+  font-family:var(--mono);font-size:10.5px;color:var(--dim);
+}
+.rv .autobar b{color:var(--auto);font-weight:400}
+.rv .autobar .why{margin-left:auto;color:var(--faint-solid)}
+/* New comments arriving while you work. Amber, because unlike the /green strip
+   this one may actually change what you were about to say. Still not blocking:
+   the queue stays the set you agreed to triage. */
+.rv .autobar.fresh{background:rgba(224,162,68,.06);border-left-color:var(--attn)}
+.rv .autobar.fresh b{color:var(--attn)}
+.rv .autobar .act{
+  margin-left:0;padding:2px 7px;font-size:8px;letter-spacing:.1em;
+}
+</style>
+</head>
+<body>
+<div class="doc">
+
+  <header class="docHead">
+    <div class="eyebrow">orchd · design</div>
+    <h1>Review overlay</h1>
+    <p>
+      Replaces typing <span class="m">/resolve 34838</span> into a terminal pane. The agent reads
+      every thread and recommends what to do about each one; you go through them and decide. Panels
+      are drawn at the centre pane's true size, 854&nbsp;×&nbsp;n.
+    </p>
+    <div class="rule"></div>
+    <p class="note">
+      <b>Nothing is written until you handle the thread.</b> Triage reads code, it never edits it.
+      Where a change is the right answer the agent brings a <i>proposed</i> diff and you accept it —
+      so a straightforward thread is one keystroke, and it is still your keystroke.
+    </p>
+    <p class="note">
+      Colour follows the app's existing rule — <b>if it needs you, it changes colour; quiet states
+      do not narrate themselves</b>. Amber marks the recommendation and staged work. A verdict is a
+      label, never a colour: it is not urgency.
+    </p>
+  </header>
+
+  <!-- 1 ------------------------------------------------------------------ -->
+  <section class="step">
+    <div class="stepHead"><span class="n">1</span><h2>Nothing triaged yet</h2></div>
+    <p class="note">
+      The rail's resolve button opens this rather than spawning a session. The line under it is what
+      the old design could not say: reading is all that happens.
+    </p>
+    <div class="rv">
+      <div class="ov-head">
+        <div class="ov-path">#34838 <span>· turn lock file maintenance back on for pnpm</span></div>
+        <div class="health bad">
+          <span class="dot"></span><span class="s">checks failing</span>
+          <span class="sep">·</span><span class="s" style="color:var(--dim)">3 behind develop</span>
+          <button class="head-btn">/green</button>
+        </div>
+        <div class="ov-nav"><button class="head-btn">esc</button></div>
+      </div>
+      <div class="mid">
+        <div class="eyebrow">4 threads open</div>
+        <div class="big">No triage for <span class="m" style="font-size:13px">b721f10</span> yet.</div>
+        <p>
+          Triage reads the code at each thread and works out what it would do about it. It changes
+          nothing — not a file, not a commit, not a comment. You decide thread by thread.
+        </p>
+        <div style="display:flex;gap:8px;margin-top:4px">
+          <button class="head-btn go">read the threads</button>
+          <button class="head-btn">open on github</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 1b ----------------------------------------------------------------- -->
+  <section class="step">
+    <div class="stepHead"><span class="n">1b</span><h2>What actually gates resolve</h2></div>
+    <p class="note">
+      <b>Not CI, and not a develop conflict.</b> Those are signals about a <i>future</i> merge —
+      they do not touch the apply/push machinery, which works on your branch's own history. So a red
+      or conflicting PR opens to cards like any other; the header shows the state and offers
+      <span class="m">/green</span> as a shortcut, never as a wall. You can answer a comment about
+      one file while an unrelated check is red.
+    </p>
+    <p class="note">
+      What gates is the worktree not being <i>ready to receive a clean commit</i>, because the whole
+      design rests on the tree being clean until the final action. Three states, one screen:
+    </p>
+    <div class="rv">
+      <div class="ov-head">
+        <div class="ov-path">#34838 <span>· turn lock file maintenance back on for pnpm</span></div>
+        <div class="health"><span class="dot" style="background:var(--attn)"></span><span class="s" style="color:var(--attn)">2 files modified</span></div>
+        <div class="ov-nav"><button class="head-btn">esc</button></div>
+      </div>
+      <div class="mid">
+        <div class="eyebrow">uncommitted changes in this worktree</div>
+        <div class="big">Commit or stash first.</div>
+        <div class="hunk" style="text-align:left;max-width:420px;width:100%">
+          <div class="ln"><i></i><s>renovate.json5              +6 −2</s></div>
+          <div class="ln"><i></i><s>.github/workflows/ci.yml    +1 −0</s></div>
+        </div>
+        <p>
+          Resolve commits the changes you accept; work already sitting in the tree would be swept
+          into that commit, so "only what you approved" would stop being true. Clear the tree and
+          this opens to the threads.
+        </p>
+        <div style="display:flex;gap:8px;margin-top:4px">
+          <button class="head-btn go">commit…</button>
+          <button class="head-btn go">stash</button>
+          <button class="head-btn">open a shell</button>
+        </div>
+      </div>
+    </div>
+    <p class="note">
+      <b>Commit and stash are one click each; the shell is for anything more.</b>
+      <span class="m">commit…</span> asks for a message and commits the tree as-is;
+      <span class="m">stash</span> is <span class="m">git stash</span>, which you pop yourself later
+      (the daemon does not auto-pop — popping onto a branch the review just amended can conflict,
+      and silently juggling your work is worse than leaving it where you put it). Either clears the
+      tree and opens the threads.
+    </p>
+    <p class="note">
+      The same screen, different reason, in two more cases. <b>A stopped rebase</b> — the tree is
+      mid-conflict-resolution and cannot take a patch (already tracked as <span class="m">Inner.rebasing</span>).
+      And <b>a running <span class="m">/green</span></b> — it rewrites this very worktree, so the two
+      are mutually exclusive: the gate reads "resolve opens when <span class="m">/green</span>
+      finishes," and starting <span class="m">/green</span> during a review is refused from the other
+      side. All three are "the tree is not mine to write to yet."
+    </p>
+  </section>
+
+  <!-- 2 ------------------------------------------------------------------ -->
+  <section class="step">
+    <div class="stepHead"><span class="n">2</span><h2>What it found</h2></div>
+    <p class="note">
+      A shape-of-the-work screen, not a summary of things already done. It exists to tell you how
+      long this will take and where the hard part is — two you can wave through, one that wants
+      thinking about.
+    </p>
+    <p class="note">
+      Three of these four get a card below; the fourth — <span class="m">renovate.json5:188</span>,
+      marieke's — is straightforward with a diff ready, and gets skipped anyway because you ran out
+      of time. It shows up on the final screen as unhandled, which is what skipping a perfectly
+      answerable thread looks like.
+    </p>
+    <p class="note">
+      <b>The header is an offer, not a verdict.</b> This PR's checks are failing and it is 3 behind
+      develop — and you are reviewing it anyway, because neither gates. The state is named and
+      <span class="m">/green</span> sits right there for when a thread's fix also wants CI work, but
+      it never stops you answering. The rail's dot is on screen throughout; the header earns its
+      place by separating <i>failing</i> from <i>conflicting</i>, which one dot cannot.
+    </p>
+    <p class="note">
+      <b>The queue is in GitHub's Files-changed order</b> — by file, then line. That is not an
+      invented ordering: GitHub's API hands threads back chronologically, jumping between files, but
+      the Files tab renders them in the diff's order, and a diff's file order is a plain path sort.
+      Sorting by position reproduces the view people actually review in. It also puts the two
+      comments six lines apart in one file back to back, where the second usually changes what you
+      should say to the first. Outdated threads report no line, so they sort on the line they were
+      originally left at.
+    </p>
+    <div class="rv">
+      <div class="ov-head">
+        <div class="ov-path">#34838 <span>· review</span></div>
+        <div class="health bad">
+          <span class="dot"></span><span class="s">checks failing</span>
+          <span class="sep">·</span><span class="s" style="color:var(--dim)">3 behind develop</span>
+          <button class="head-btn">/green</button>
+        </div>
+        <div class="ov-nav"><span class="ov-count">4 threads</span><button class="head-btn">esc</button></div>
+      </div>
+      <div class="strip">
+        <span class="pip cur"></span><span class="pip"></span><span class="pip"></span>
+        <span class="pip"></span>
+        <span class="left">not started</span>
+      </div>
+      <div class="body">
+        <div class="sec">
+          <div class="tally">
+            <div class="tline">
+              <span class="n">2</span>
+              <span class="l">Straightforward
+                <em>they are right and the fix is not a judgement call — a diff is ready for each</em></span>
+            </div>
+            <div class="tline">
+              <span class="n">1</span>
+              <span class="l">Out of scope
+                <em>the review summary — fair, but it belongs in a story rather than this PR</em></span>
+            </div>
+            <div class="tline">
+              <span class="n">1</span>
+              <span class="l">Wants a decision
+                <em>renovate.json5:161 — the fix works but does not do what they think it does</em></span>
+            </div>
+          </div>
+        </div>
+        <div class="sec">
+          <p class="note" style="margin:0">
+            Working tree is clean and stays that way until you accept something.
+          </p>
+        </div>
+      </div>
+      <div class="acts">
+        <button class="act pri">start · thread 1 of 4</button>
+        <span class="hint">enter accepts the recommendation · j / k to move</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- 3 ------------------------------------------------------------------ -->
+  <section class="step">
+    <div class="stepHead"><span class="n">3</span><h2>A straightforward thread</h2></div>
+    <p class="note">
+      Every thread gets a card, including the obvious ones — the agent just recommends the obvious
+      thing and pre-selects it. The proposed diff is shown <b>inside</b> the option, because that is
+      what accepting it will write. Enter takes it and moves on.
+    </p>
+    <div class="rv">
+      <div class="ov-head">
+        <div class="ov-path">#34838 <span>· thread 1 of 4</span></div>
+        <div class="health bad">
+          <span class="dot"></span><span class="s">checks failing</span>
+          <span class="sep">·</span><span class="s" style="color:var(--dim)">3 behind develop</span>
+        </div>
+        <div class="ov-nav"><span class="ov-count">nothing staged</span><button class="head-btn">esc</button></div>
+      </div>
+      <div class="strip">
+        <span class="pip cur"></span><span class="pip"></span><span class="pip"></span>
+        <span class="pip"></span>
+        <span class="left">1 / 4</span>
+      </div>
+      <div class="body">
+        <div class="sec">
+          <div class="anchor">
+            <span class="p">renovate.json5:150</span>
+            <span class="who">alleknalle</span>
+            <span class="age">6d</span>
+            <span class="flag out">outdated</span>
+          </div>
+          <div class="hunk">
+            <div class="hh">@@ -149,3 +149,3 @@</div>
+            <div class="ln"><i>149</i><s>	"pre-commit": { "enabled": true },</s></div>
+            <div class="ln add hit"><i>150</i><s>	// Renovate never bumps transitive deps on its own, so a lockfile-only CVE can only be fixed by a full regen.</s></div>
+          </div>
+          <div class="chain">
+            <div class="cmt">
+              <div class="hd"><b>alleknalle</b><span class="age">6d</span></div>
+              <p>line breaks hier zijn niet zoals het zou moeten</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="sec">
+          <div class="read">
+            <div class="eyebrow">the read</div>
+            <p>
+              <b>Fair, and there is nothing to weigh up.</b> The comment runs to 140 characters where
+              the rest of the file wraps at about 80. No key is touched by rewrapping it.
+            </p>
+          </div>
+        </div>
+
+        <div class="sec">
+          <div class="eyebrow">how you are handling it</div>
+          <div class="pos">
+            <div class="opt on">
+              <div class="optHead">
+                <span class="k">1</span>
+                <span class="t">Apply<span class="rec">recommended</span>
+                  <em>respond with thumbs up</em></span>
+                <span class="does">change + thumbs up</span>
+              </div>
+              <div class="optBody">
+                <div class="willwrite">will write <b>renovate.json5</b></div>
+                <div class="hunk">
+                  <div class="hh">@@ -150,1 +150,2 @@</div>
+                  <div class="ln del"><i>150</i><s>	// Renovate never bumps transitive deps on its own, so a lockfile-only CVE can only be fixed by a full regen.</s></div>
+                  <div class="ln add"><i>150</i><s>	// Renovate never bumps transitive deps on its own.</s></div>
+                  <div class="ln add"><i>151</i><s>	// A lockfile-only CVE can only be fixed by a full regen.</s></div>
+                </div>
+              </div>
+            </div>
+            <div class="opt">
+              <div class="optHead">
+                <span class="k">2</span>
+                <span class="t">Apply, and say something
+                  <em>same diff, with a written reply as well</em></span>
+                <span class="does">change + reply</span>
+              </div>
+            </div>
+            <div class="opt">
+              <div class="optHead">
+                <span class="k">3</span>
+                <span class="t">Manual
+                  <em>you write the code — comment after you have</em></span>
+                <span class="does">by hand</span>
+              </div>
+            </div>
+            <div class="opt">
+              <div class="optHead">
+                <span class="k">4</span>
+                <span class="t">Say something else
+                  <em>your words, your stance — no code</em></span>
+                <span class="does">reply</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="acts">
+        <button class="act warm">accept · enter</button>
+        <button class="act">skip</button>
+        <span class="hint">thread 1 of 4 · nothing written yet</span>
+      </div>
+    </div>
+    <p class="note">
+      <b>Recommended is a label, not a shortcut past you.</b> It is pre-selected so the common case
+      is one key, but the diff it would write is on screen before you press it. That is the whole
+      trade: speed on the easy ones without any of them happening behind your back.
+    </p>
+  </section>
+
+  <!-- 4 ------------------------------------------------------------------ -->
+  <section class="step">
+    <div class="stepHead"><span class="n">4</span><h2>A thread that wants a decision</h2></div>
+    <p class="note">
+      Same card. What changes is that the agent does not lead with a change — it leads with what it
+      thinks is wrong about the request, and the recommendation is to accept but say so.
+    </p>
+    <div class="rv">
+      <div class="ov-head">
+        <div class="ov-path">#34838 <span>· thread 2 of 4</span></div>
+        <div class="health bad">
+          <span class="dot"></span><span class="s">checks failing</span>
+          <span class="sep">·</span><span class="s" style="color:var(--dim)">3 behind develop</span>
+        </div>
+        <div class="ov-nav"><span class="ov-count">1 staged</span><button class="head-btn">esc</button></div>
+      </div>
+      <div class="autobar fresh">
+        <b>2 new comments since you started</b>
+        <span>marieke · renovate.json5 — as well as her :188 in this queue</span>
+        <button class="act">re-triage</button>
+        <span class="why">the new two are not in this queue · she will not be re-requested</span>
+      </div>
+      <div class="strip">
+        <span class="pip staged"></span><span class="pip cur"></span><span class="pip"></span>
+        <span class="pip"></span>
+        <span class="left">2 / 4</span>
+      </div>
+      <div class="body">
+        <div class="sec">
+          <div class="anchor">
+            <span class="p">renovate.json5:161</span>
+            <span class="who">alleknalle</span>
+            <span class="age">2d</span>
+            <span class="flag out">outdated</span>
+            <span class="flag cont">continued</span>
+          </div>
+          <div class="hunk">
+            <div class="hh">@@ -155,5 +155,6 @@</div>
+            <div class="ln"><i>155</i><s>	"lockFileMaintenance": {</s></div>
+            <div class="ln del"><i>156</i><s>		"enabled": false // Does not work consistently</s></div>
+            <div class="ln add hit"><i>156</i><s>		"enabled": true,</s></div>
+            <div class="ln add"><i>157</i><s>		"schedule": ["before 4am on monday"]</s></div>
+            <div class="ln"><i>158</i><s>	},</s></div>
+          </div>
+          <div class="chain">
+            <div class="cmt">
+              <div class="hd"><b>alleknalle</b><span class="age">6d</span></div>
+              <p>
+                Dit zorgt er voor dat Renovate een kleine window heeft waarop hij lock file
+                maintenance uit kan voeren en de kans is groot dat we al op onze max aantal
+                PR's/branches zitten waardoor deze er niet doorheen komt en dus nooit wordt
+                uitgevoerd. Wellicht dat <span class="m">"branchConcurrentLimit": 20</span>
+                toevoegen helpt.
+              </p>
+            </div>
+            <div class="cmt mine">
+              <div class="hd"><b>kbarendrecht</b><span class="you">you</span><span class="age">5d</span></div>
+              <p>Goed punt, ik pak de branch limit op.</p>
+            </div>
+            <div class="cmt">
+              <div class="hd"><b>alleknalle</b><span class="age">2d</span></div>
+              <p>Is dat genoeg? De prConcurrentLimit staat volgens mij nog op 4.</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="sec">
+          <div class="read">
+            <div class="eyebrow">the read</div>
+            <p>
+              <b>They are right, and it is the thing you already half-agreed to.</b> You said you
+              would raise the branch limit; they are asking whether that alone is enough. It is not
+              — <span class="m">prConcurrentLimit: 4</span> still gates how many branches become
+              PRs, so raising the branch cap improves the odds rather than fixing it. Saying so
+              keeps you consistent with what you already committed to, and stops the next quiet week
+              reading as the same bug.
+            </p>
+          </div>
+        </div>
+
+        <div class="sec">
+          <div class="eyebrow">how you are handling it</div>
+          <div class="pos">
+            <div class="opt on">
+              <div class="optHead">
+                <span class="k">1</span>
+                <span class="t">Apply, and name what it does not fix<span class="rec">recommended</span><span class="edited">edited</span>
+                  <em>raise the branch cap; say the PR cap still gates it</em></span>
+                <span class="does">change + reply</span>
+              </div>
+              <div class="optBody">
+                <div class="willwrite">will write <b>renovate.json5</b></div>
+                <div class="hunk">
+                  <div class="hh">@@ -161,1 +161,2 @@</div>
+                  <div class="ln"><i>161</i><s>	"prConcurrentLimit": 4,</s></div>
+                  <div class="ln add"><i>162</i><s>	"branchConcurrentLimit": 20,</s></div>
+                </div>
+                <textarea class="box" aria-label="Reply">Branch limit staat nu op 20. De prConcurrentLimit blijft 4, dus het aantal PR's verandert niet — dit vergroot alleen de kans dat lockFileMaintenance er een van krijgt.</textarea>
+                <div class="foot">
+                  <span>(via orchestrator) is appended when it posts</span>
+                  <button class="revert">revert to draft</button>
+                </div>
+              </div>
+            </div>
+            <div class="opt">
+              <div class="optHead">
+                <span class="k">2</span>
+                <span class="t">Apply
+                  <em>respond with thumbs up</em></span>
+                <span class="does">change + thumbs up</span>
+              </div>
+            </div>
+            <div class="opt">
+              <div class="optHead">
+                <span class="k">3</span>
+                <span class="t">Raise the PR cap too
+                  <em>goes further than asked — a second edit in the same file</em></span>
+                <span class="does">change + reply</span>
+              </div>
+            </div>
+            <div class="opt">
+              <div class="optHead">
+                <span class="k">4</span>
+                <span class="t">Manual
+                  <em>you write the code — comment after you have</em></span>
+                <span class="does">by hand</span>
+              </div>
+            </div>
+            <div class="opt">
+              <div class="optHead">
+                <span class="k">5</span>
+                <span class="t">Say something else
+                  <em>your words, your stance — no code</em></span>
+                <span class="does">reply</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="acts">
+        <button class="act warm">accept · enter</button>
+        <button class="act">skip</button>
+        <span class="hint">thread 2 of 4 · 1 staged</span>
+      </div>
+    </div>
+    <p class="note">
+      <b>One control, not two.</b> The stance, the words and the edit used to be separate — buttons
+      on top, a draft box underneath — which let you pick <i>reject</i> and send text that agreed.
+      Now they live together, so choosing is deciding all three at once. The right-hand label says
+      what each costs: <span class="m">thumbs up</span>, <span class="m">reply</span>,
+      <span class="m">change + thumbs up</span>, <span class="m">change + reply</span>.
+    </p>
+    <p class="note">
+      <b>"Apply" is worded identically on every card</b>, with the same
+      <i>respond with thumbs up</i> under it. It is the option you will pick most often, so it should
+      be recognisable by shape rather than read each time — the specifics of what it writes are in
+      the diff underneath, where they belong.
+    </p>
+    <p class="note">
+      <b>Every card ends the same way: … / Manual / Say something else.</b> The agent's drafted
+      positions come first, then two fixed escapes — <span class="m">Manual</span> for "I will write
+      this myself", <span class="m">Say something else</span> for "my words, my stance, no code".
+      That second one exists because editing another option's text cannot express disagreement: the
+      <span class="m">does</span> label would still promise a patch, which is exactly the do-A-say-B
+      mismatch one merged control was built to prevent. So the stance you take must be a slot, not a
+      rewrite.
+    </p>
+    <p class="note">
+      <b>Skip is not in the list.</b> It sits in the action bar on every card, because positions
+      answer <i>how are you handling this</i> and skipping is <i>I am not</i>. Keeping it out also
+      keeps the list to four or five rows rather than five or six.
+    </p>
+    <p class="note">
+      <b><span style="color:var(--work)">CONTINUED</span> means you already replied here and they
+      came back.</b> Deliberately not "re-review" — that is GitHub's phrase for requesting a fresh
+      review, which the final panel already uses. Your own comments are set apart in the chain
+      because on a thread like this the thing that matters most is <i>what you committed to last
+      time</i>: the new reply has to be consistent with it, in public, in front of the person who
+      remembers. The read leads with that rather than treating the comment as a fresh ask.
+    </p>
+    <p class="note">
+      <b>Edits survive switching options.</b> Type into one, click another to look at it, come back —
+      your words are still there, kept per <i>(thread, option)</i> rather than per thread. Anything
+      else makes looking at a second option a punishment for having started typing. Options stay
+      collapsed, so comparing them is still a matter of expanding each in turn; that is the accepted
+      cost of not letting a long diff push the choices off screen.
+    </p>
+    <p class="note">
+      <b>Two things come with persistence.</b> An
+      <span class="m" style="color:var(--work)">edited</span> tag, because on returning to a card the
+      first question is "is this my wording or the agent's?" and the posted footer cannot answer it.
+      And <i>revert to draft</i>, shown only once the text actually differs, so experimenting is
+      reversible and the control never offers to undo nothing.
+    </p>
+    <p class="note">
+      <b>The reply box is a `&lt;textarea&gt;`, not a contenteditable.</b> The text goes to GitHub as
+      plain markdown, so rich paste is pure liability, and browsers insert
+      <span class="m">&lt;div&gt;</span>/<span class="m">&lt;br&gt;</span> where a newline belongs.
+      <span class="m">openEditor()</span> settled this already. While it has focus the overlay's bare
+      keys — <span class="m">enter</span>, <span class="m">j</span>/<span class="m">k</span>, digits —
+      are suspended, or a reply containing "check the job" would jump cards mid-sentence.
+      <span class="m">esc</span> blurs the box rather than closing the overlay and losing what you
+      typed.
+    </p>
+    <p class="note">
+      <b>The amber strip is comments that landed after your queue was built.</b> They are
+      deliberately <i>not</i> appended to it — a new thread has had no triage behind it, so it would
+      arrive with no proposed patch, no options and no read, a visibly worse card in the middle of
+      good ones, and "4 of 4" would keep moving. The queue stays the set you agreed to work.
+    </p>
+    <p class="note">
+      <b>The important half of that strip is the last clause.</b> Missing a new comment mostly means
+      you handle it next session; the exception is re-request, which asserts "everything of yours is
+      addressed" and would be a lie. That does not need special handling — the post step derives
+      re-requests from a fresh fetch, so a new thread counts as open and holds its author back on
+      its own, with the "held back by…" row naming why. The strip just tells you before you wonder.
+    </p>
+    <p class="note">
+      <b>Resolve and `/green` never run together.</b> Both rewrite the same worktree, so rather than
+      trying to interleave them the overlay makes them exclusive: a running `/green` gates resolve
+      (the intake becomes "resolve opens when it finishes"), and an open review refuses a `/green`
+      start from the other side. That is stricter than an earlier draft, which let `/green` run
+      during review and only blocked the final write — but "the branch is being rebalanced under the
+      diffs I am reading" is not a state worth the subtlety.
+    </p>
+  </section>
+
+  <!-- 4b ---------------------------------------------------------------- -->
+  <section class="step">
+    <div class="stepHead"><span class="n">4b</span><h2>A comment with no line</h2></div>
+    <p class="note">
+      A review's summary body, or a comment left on the conversation rather than the diff, has no
+      file and no line to anchor to. Most review comments <i>do</i> carry a path and line and get a
+      hunk like the others — this is the genuine leftover. Same card, minus the anchor and the hunk;
+      the space those took goes to the comment, which is all there is to go on.
+    </p>
+    <div class="rv">
+      <div class="ov-head">
+        <div class="ov-path">#34838 <span>· thread 4 of 4</span></div>
+        <div class="health bad">
+          <span class="dot"></span><span class="s">checks failing</span>
+          <span class="sep">·</span><span class="s" style="color:var(--dim)">3 behind develop</span>
+        </div>
+        <div class="ov-nav"><span class="ov-count">2 staged · 1 skipped</span><button class="head-btn">esc</button></div>
+      </div>
+      <div class="strip">
+        <span class="pip staged"></span><span class="pip staged"></span><span class="pip skip"></span><span class="pip cur"></span>
+        <span class="left">4 / 4</span>
+      </div>
+      <div class="body">
+        <div class="sec">
+          <div class="anchor">
+            <span class="p" style="color:var(--faint-solid)">review summary</span>
+            <span class="who">scientabot</span>
+            <span class="age">1d</span>
+            <span class="flag">no line</span>
+          </div>
+          <div class="chain">
+            <div class="cmt">
+              <div class="hd"><b>scientabot</b><span class="age">1d</span></div>
+              <p>
+                De wijziging ziet er goed uit. Eén ding voor een volgende PR: de nieuwe
+                <span class="m">lockFileMaintenance</span>-schedule overlapt met de globale schedule
+                bovenin — niet blokkerend, maar het is het overwegen waard om die te documenteren.
+              </p>
+            </div>
+          </div>
+        </div>
+        <div class="sec">
+          <div class="read">
+            <div class="eyebrow">the read</div>
+            <p>
+              <b>Fair, and genuinely out of scope.</b> They are right that the schedules overlap, and
+              right that it is not blocking — they say so themselves. It carries no line because it is
+              about the file as a whole, so there is no diff to propose. Nothing here should change,
+              but "noted, later" tends to mean never, so it wants a story rather than a promise.
+            </p>
+          </div>
+        </div>
+        <div class="sec">
+          <div class="eyebrow">how you are handling it</div>
+          <div class="pos">
+            <div class="opt on">
+              <div class="optHead">
+                <span class="k">1</span>
+                <span class="t">File a story<span class="rec">recommended</span>
+                  <em>out of scope here — track it instead of promising it</em></span>
+                <span class="does">story + reply</span>
+              </div>
+              <div class="optBody">
+                <div class="willwrite">will create <b>a Shortcut story</b></div>
+                <div class="storydraft">
+                  <div class="sline"><span class="lbl">title</span><span class="val">Documenteer de overlappende Renovate schedules</span></div>
+                  <div class="sline"><span class="lbl">body</span><span class="val">lockFileMaintenance draait "before 4am on monday" terwijl de globale schedule ook geldt. Opgemerkt door scientabot in #34838.</span></div>
+                  <div class="sline"><span class="lbl">links</span><span class="val">#34838 · this thread</span></div>
+                </div>
+                <textarea class="box" aria-label="Reply">Goed punt, valt buiten deze PR. Losgetrokken naar {story}.</textarea>
+                <div class="foot"><span><span class="m" style="color:var(--work)">{story}</span> becomes the id once it exists · (via orchestrator) is appended</span></div>
+              </div>
+            </div>
+            <div class="opt">
+              <div class="optHead">
+                <span class="k">2</span>
+                <span class="t">Just acknowledge
+                  <em>agree, no story, no change</em></span>
+                <span class="does">reply</span>
+              </div>
+            </div>
+            <div class="opt">
+              <div class="optHead">
+                <span class="k">3</span>
+                <span class="t">Manual
+                  <em>you write the code — comment after you have</em></span>
+                <span class="does">by hand</span>
+              </div>
+            </div>
+            <div class="opt">
+              <div class="optHead">
+                <span class="k">4</span>
+                <span class="t">Say something else
+                  <em>your words, your stance — no code</em></span>
+                <span class="does">reply</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="acts">
+        <button class="act warm">accept · enter</button>
+        <button class="act">skip</button>
+        <span class="hint">thread 4 of 4 · 2 staged · 1 skipped</span>
+      </div>
+    </div>
+    <p class="note">
+      <b>"I'll pick it up in a follow-up PR" is a promise with nothing behind it.</b> A story link is
+      a promise with a tracking number, so filing one is the recommendation whenever the point is
+      fair but out of scope — which is most of what lands in a review summary. The reply then says
+      something checkable instead of something reassuring.
+    </p>
+    <p class="note">
+      <b><span class="m" style="color:var(--work)">{story}</span> is a placeholder, and that is
+      load-bearing.</b> The id does not exist until the story is filed, so the reply cannot be
+      finished in advance — the post step creates the story first, substitutes the id, then posts.
+      Showing the token rather than a fake number keeps the card honest about the order.
+    </p>
+    <p class="note">
+      <b>There is no <span class="m">change + reply</span> here</b> — a comment with no anchor has no
+      line to patch, so an option that writes a diff would be guessing where. Code, if it is really
+      wanted, goes through <span class="m">Manual</span>.
+    </p>
+    <p class="note">
+      <b>Skip is worth reaching for more often here.</b> On an anchored thread it is a fallthrough;
+      on a bare remark "read it, noted, nothing owed" is frequently the right answer. It stays in the
+      action bar rather than the option list all the same — positions answer <i>how are you handling
+      this</i>, and skipping is <i>I am not</i>.
+    </p>
+  </section>
+
+  <!-- 5 ------------------------------------------------------------------ -->
+  <section class="step">
+    <div class="stepHead"><span class="n">5</span><h2>Everything, then one go</h2></div>
+    <p class="note">
+      The skill's <b>draft, show, stop</b>, kept intact. Nothing has left the machine yet and the
+      working tree is still clean: accepting staged the edits, it did not apply them. This screen
+      writes the files, amends, runs pre-commit, pushes and posts — in that order, once, so a reply
+      saying "fixed" is true the moment it lands.
+    </p>
+    <div class="rv">
+      <div class="ov-head">
+        <div class="ov-path">#34838 <span>· ready</span></div>
+        <div class="health bad">
+          <span class="dot"></span><span class="s">checks failing</span>
+          <span class="sep">·</span><span class="s" style="color:var(--dim)">3 behind develop</span>
+        </div>
+        <div class="ov-nav"><button class="head-btn">esc</button></div>
+      </div>
+      <div class="strip">
+        <span class="pip staged"></span><span class="pip staged"></span><span class="pip skip"></span><span class="pip staged"></span>
+        <span class="left">4 / 4 handled</span>
+      </div>
+      <div class="body">
+        <div class="sec">
+          <div class="stage-row">
+            <span class="k apply">apply</span>
+            <span class="c">
+              <span class="p">renovate.json5:150 · alleknalle</span>
+              <span class="t">Rewrap the comment block. Responds with a thumbs up, no written reply.</span>
+            </span>
+          </div>
+          <div class="stage-row">
+            <span class="k apply">apply</span>
+            <span class="c">
+              <span class="p">renovate.json5:161 · alleknalle</span>
+              <span class="t">Add branchConcurrentLimit: 20. Replies “Branch limit staat nu op 20. De prConcurrentLimit blijft 4…”</span>
+            </span>
+          </div>
+          <div class="stage-row">
+            <span class="k story">story</span>
+            <span class="c">
+              <span class="p">review summary · scientabot</span>
+              <span class="t">File “Documenteer de overlappende Renovate schedules”, then reply with its id.</span>
+            </span>
+          </div>
+          <div class="stage-row">
+            <span class="k skip">skipped</span>
+            <span class="c">
+              <span class="p">renovate.json5:188 · marieke</span>
+              <span class="t">Not handled. Stays open, nothing written, marieke not re-requested.</span>
+            </span>
+          </div>
+        </div>
+        <div class="sec">
+          <div class="eyebrow">re-request</div>
+          <div class="stage-row">
+            <span class="k req">alleknalle</span>
+            <span class="c"><span class="t">Both threads addressed.</span></span>
+          </div>
+          <div class="stage-row">
+            <span class="k skip">marieke</span>
+            <span class="c"><span class="t held">held back by renovate.json5:188, which you skipped</span></span>
+          </div>
+        </div>
+        <div class="sec leaves">
+          <div class="eyebrow">what leaves this machine</div>
+          <div class="group">
+            <div class="res wait">
+              <span class="st">·</span>
+              <span class="c"><span class="t">writes <span class="m">renovate.json5</span> <span style="color:var(--ok)">+3</span> <span style="color:var(--bad)">−1</span> — local only</span></span>
+            </div>
+            <div class="res wait">
+              <span class="st">↑</span>
+              <span class="c"><span class="t">1 commit to <span class="m">origin/renovate-lockfile</span></span></span>
+            </div>
+            <div class="res wait">
+              <span class="st">↑</span>
+              <span class="c"><span class="t">1 story filed in Shortcut, and its id put into a reply</span></span>
+            </div>
+            <div class="res wait">
+              <span class="st">↑</span>
+              <span class="c"><span class="t">4 things to github — 2 replies, 1 thumbs up, 1 re-request. Cannot be unsent.</span></span>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="acts">
+        <button class="act warm">push 1 commit · file 1 story · post 4</button>
+        <button class="act">back</button>
+        <span class="hint">ctrl+enter to send · enter does nothing here</span>
+      </div>
+    </div>
+    <p class="note">
+      <b>Enter is dead on this screen.</b> Across the cards it means "accept this one thing", and
+      here there is no one thing — it is the whole batch. Rather than bolt a guard onto a binding
+      that was trained to feel safe three cards running, the binding simply does not exist:
+      <span class="m">ctrl+enter</span> sends, which is what GitHub's own comment box uses, so it is
+      already in the right hands' muscle memory.
+    </p>
+    <p class="note">
+      <b>The button names what leaves, not what it does.</b> "Write, push and post" describes
+      mechanics; <i>push 1 commit · file 1 story · post 4</i> names every outward-facing thing and counts each.
+      That, plus the panel above it, is what makes this screen read differently at a glance from
+      every staging action before it.
+    </p>
+    <p class="note">
+      <b><span style="color:var(--ok)">APPLY</span> is present tense on purpose.</b> Nothing is
+      applied at this point — not on the branch, not even in the working tree. The row says what the
+      button is about to do, so the list reads as a plan you are approving rather than a receipt for
+      work already done. A thread answered with words only shows
+      <span style="color:var(--attn);font-family:var(--label);font-size:9px;letter-spacing:.12em">REPLY</span>
+      instead.
+    </p>
+    <p class="note">
+      <b>Pre-commit runs here, not per card.</b> Batching it means one hook run instead of three, and
+      it is the last gate before the push — if it fails, nothing has been posted yet and the whole
+      set is still recoverable.
+    </p>
+  </section>
+
+  <!-- 6 ------------------------------------------------------------------ -->
+  <section class="step">
+    <div class="stepHead"><span class="n">6</span><h2>Manual — the phase that waits for you</h2></div>
+    <p class="note">
+      <b>Manual means: none of these fit, I will write this myself.</b> A comment is required before
+      it posts — without one a Manual thread does nothing on GitHub and is indistinguishable from a
+      skip, except in your own head. The reviewer would get a commit and silence.
+    </p>
+    <p class="note">
+      The hard part is the code. Propose-only rests on one invariant — <b>the working tree stays
+      clean until the final action</b> — and editing by hand breaks exactly that. Recording the
+      thread and letting your edits ride along with the batch was the cheap answer, and it was
+      rejected: the commit would sweep up whatever you happened to have touched, so "exactly what
+      you approved" stops being true and the file list cannot be complete.
+    </p>
+    <p class="note">
+      <b>Don't reconcile your edits with pending patches — order them.</b> The accepted patches are
+      written and committed first; then you work on a tree that already reflects every other
+      decision, which is often <i>why</i> this thread needed hands. Nothing to merge, because
+      nothing is pending.
+    </p>
+    <p class="note">
+      Shown on a <b>different PR</b> (#34875) than the rest of this walkthrough: moving a query into
+      a repository illustrates why a thread wants hands, where #34838's config tweaks do not. Note
+      also that this phase only exists when a thread was answered <span class="m">Manual</span> —
+      #34838 has none, which is why its final screen goes straight to the push.
+    </p>
+    <div class="rv">
+      <div class="ov-head">
+        <div class="ov-path">#34875 <span>· your turn</span></div>
+        <div class="ov-nav"><span class="ov-count">1 by hand</span><button class="head-btn">esc</button></div>
+      </div>
+      <div class="strip">
+        <span class="pip staged"></span><span class="pip staged"></span><span class="pip cur"></span>
+        <span class="pip"></span>
+        <span class="left">2 written · 1 by hand</span>
+      </div>
+      <div class="body">
+        <div class="sec">
+          <div class="group">
+            <div class="res ok">
+              <span class="st">✓</span>
+              <span class="c"><span class="t">2 accepted changes written and committed locally — <span class="m">4c1e9a2</span>. Not pushed.</span></span>
+            </div>
+          </div>
+        </div>
+        <div class="sec">
+          <div class="eyebrow">needs your hands</div>
+          <div class="manrow">
+            <div class="top">
+              <span class="p">src/Invoice/Export.php:88</span>
+              <span class="who">marieke</span>
+              <span class="state got">changed</span>
+            </div>
+            <blockquote>Deze query hoort in de repository, niet in de service.</blockquote>
+            <div class="willwrite">you changed <b>src/Invoice/Export.php</b>, <b>src/Invoice/ExportRepository.php</b></div>
+            <div class="hunk">
+              <div class="hh">@@ -86,4 +86,2 @@</div>
+              <div class="ln del"><i>86</i><s>		$rows = $this->em->createQuery('SELECT i FROM Invoice i')</s></div>
+              <div class="ln del"><i>87</i><s>			->getResult();</s></div>
+              <div class="ln add"><i>86</i><s>		$rows = $this->exports->allInvoices();</s></div>
+            </div>
+          </div>
+        </div>
+        <div class="sec">
+          <div class="eyebrow">your comment <span class="req">· required</span></div>
+          <textarea class="box" aria-label="Comment">Verplaatst naar ExportRepository::allInvoices(). De service kent de query nu niet meer.</textarea>
+          <div class="foot"><span>(via orchestrator) is appended when it posts</span></div>
+        </div>
+      </div>
+      <div class="acts">
+        <button class="act warm">continue · push and post</button>
+        <button class="act">back</button>
+        <span class="hint">writes nothing further · your edits are already on disk</span>
+      </div>
+    </div>
+    <p class="note">
+      <b>Two things fall out for free.</b> You cannot describe work you have not done, so the comment
+      is written <i>here</i>, after the fact, rather than guessed at on the card — the card's box
+      becomes a draft you finish. And <span class="m">git diff</span> shows exactly what you touched,
+      so the file list stays complete and the batch is still only what you approved.
+    </p>
+    <p class="note">
+      <b>The cost is that "one go" breaks.</b> Choosing Manual inserts a screen that waits for you,
+      so the final action is no longer a single button. That is inherent to asking for a human step,
+      not a flaw in the shape — but it is a property the design deliberately bought, and this spends
+      it.
+    </p>
+    <div class="rule"></div>
+  </section>
+  <!-- 7 ------------------------------------------------------------------ -->
+  <section class="step">
+    <div class="stepHead"><span class="n">7</span><h2>When pre-commit fails</h2></div>
+    <p class="note">
+      The easy failure, and worth drawing precisely because it is easy: it happens
+      <b>before</b> the push, so nothing left the machine. The daemon cannot fix a lint error — that
+      needs you or an agent — so it stops, rolls the worktree back, and says so. Every decision you
+      made is still staged.
+    </p>
+    <div class="rv">
+      <div class="ov-head">
+        <div class="ov-path">#34838 <span>· stopped</span></div>
+        <div class="ov-nav"><button class="head-btn">esc</button></div>
+      </div>
+      <div class="banner clean">
+        <span class="ico">✓</span>
+        <span class="tx">
+          <b>Nothing was pushed or posted.</b>
+          <p>
+            The worktree is back at <span class="m">b721f10</span>. Your four decisions are still
+            staged — fix the lint and press the button again, or hand it to a session.
+          </p>
+        </span>
+      </div>
+      <div class="body">
+        <div class="sec">
+          <div class="group">
+            <div class="res ok"><span class="st">✓</span><span class="c"><span class="t">Wrote 1 file, folded into <span class="m">commit A</span></span></span></div>
+            <div class="res no">
+              <span class="st">✕</span>
+              <span class="c">
+                <span class="t">pre-commit</span>
+                <span class="err">prettier..............Failed
+- files were modified by this hook
+
+renovate.json5</span>
+              </span>
+            </div>
+            <div class="res wait"><span class="st">·</span><span class="c"><span class="t">push — not attempted</span></span></div>
+            <div class="res wait"><span class="st">·</span><span class="c"><span class="t">1 story, 2 replies, 1 thumbs up, 1 re-request — not attempted</span></span></div>
+          </div>
+        </div>
+      </div>
+      <div class="acts">
+        <button class="act pri">back</button>
+        <button class="act">open a session</button>
+        <span class="hint">decisions kept · worktree clean</span>
+      </div>
+    </div>
+    <p class="note">
+      <b>A hook that reformats rather than fails is the same problem wearing a hat.</b> If pre-commit
+      rewrites more than the diff you approved, what lands is not what you read on the cards — so
+      that case stops here too, showing the extra delta, rather than absorbing it quietly.
+    </p>
+  </section>
+
+  <!-- 8 ------------------------------------------------------------------ -->
+  <section class="step">
+    <div class="stepHead"><span class="n">8</span><h2>When posting fails halfway</h2></div>
+    <p class="note">
+      The hard one. Push succeeded, so the code is public and cannot be taken back; then a reply
+      failed. The panel's whole job is to separate <b>what is now irreversibly true</b> from what is
+      still pending, before it offers to do anything.
+    </p>
+    <div class="rv">
+      <div class="ov-head">
+        <div class="ov-path">#34838 <span>· posted with errors</span></div>
+        <div class="ov-nav"><button class="head-btn">esc</button></div>
+      </div>
+      <div class="banner">
+        <span class="ico">▲</span>
+        <span class="tx">
+          <b>The code is pushed.</b>
+          <p>
+            <span class="m">4c1e9a2</span> is on <span class="m">origin/renovate-lockfile</span>.
+            Retrying posts only what is missing — it will not push again, and it checks GitHub first
+            so nothing is sent twice.
+          </p>
+        </span>
+      </div>
+      <div class="body">
+        <div class="sec">
+          <div class="eyebrow">landed</div>
+          <div class="group">
+            <div class="res ok">
+              <span class="st">✓</span>
+              <span class="c">
+                <span class="p">renovate.json5:150 · alleknalle</span>
+                <span class="t">Thumbs up posted 12:04. Cannot be unsent.</span>
+              </span>
+            </div>
+            <div class="res ok">
+              <span class="st">✓</span>
+              <span class="c">
+                <span class="p">review summary · scientabot</span>
+                <span class="t">Story <span class="m" style="color:var(--work)">sc-51402</span> filed 12:04. Its reply is below — retry will reuse this id, not file a second one.</span>
+              </span>
+            </div>
+          </div>
+        </div>
+        <div class="sec">
+          <div class="eyebrow">failed</div>
+          <div class="group">
+            <div class="res no">
+              <span class="st">✕</span>
+              <span class="c">
+                <span class="p">renovate.json5:161 · alleknalle</span>
+                <span class="t">Reply not posted.</span>
+                <span class="err">gh api repos/ScientaNL/Scienta/pulls/34838/comments/3751166023/replies
+HTTP 502: Bad Gateway (api.github.com)</span>
+              </span>
+            </div>
+          </div>
+        </div>
+        <div class="sec">
+          <div class="eyebrow">not attempted</div>
+          <div class="group">
+            <div class="res wait">
+              <span class="st">·</span>
+              <span class="c">
+                <span class="p">re-request alleknalle</span>
+                <span class="t held">waits for the reply above — their other thread is still unanswered</span>
+              </span>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="acts">
+        <button class="act warm">retry 1 reply</button>
+        <button class="act">leave it</button>
+        <span class="hint">re-reads the threads first · never reposts</span>
+      </div>
+    </div>
+    <p class="note">
+      <b>Retry is not a second code path.</b> It re-fetches the threads and works out what is still
+      missing — the same derivation that produced the original list. So it is correct after a crash,
+      a restart, or a week later, and there is no separate resume logic to get subtly wrong.
+    </p>
+    <p class="note">
+      <b>A filed story is the one thing GitHub cannot tell us about.</b> Everything else is
+      re-derivable — a reply either exists in the thread or it does not. A story lives in Shortcut, so
+      if the id were forgotten a retry would file a duplicate. It is therefore recorded against the
+      thread the moment it is created, and the retry reuses it. This is the single exception to
+      "derive, do not remember", and it exists because the source of truth is a different system.
+    </p>
+    <p class="note">
+      <b>"Cannot be unsent" is stated, not implied.</b> The one thing a person needs from this screen
+      is to know which half of the list is now someone else's notification — showing that as a plain
+      sentence beats a green tick they have to interpret.
+    </p>
+  </section>
+
+
+  <!-- notes --------------------------------------------------------------- -->
+  <section class="step">
+    <div class="stepHead"><span class="n">·</span><h2>Decisions worth arguing with</h2></div>
+    <p class="note">
+      <b>Triage proposes, it does not apply.</b> The earlier version had the agent edit and push the
+      easy ones before you saw anything, which is what the skill does in a terminal — but behind a
+      one-click button that is code changing hands without a decision. Proposing costs one extra
+      keystroke per thread and buys back the property that nothing happens you did not choose.
+    </p>
+    <p class="note">
+      <b>Every thread gets a card, including the boring ones.</b> Auto-handling the obvious ones
+      sounds like a kindness until the one it got wrong is already pushed. A recommendation plus
+      Enter is nearly as fast and fails safe.
+    </p>
+    <p class="note">
+      <b>The read sits above the positions, not beside the comment.</b> You read the reviewer in
+      their own words first and the agent's opinion second, immediately before choosing.
+    </p>
+    <p class="note">
+      <b>Outdated is a flag, not a filter.</b> The rail's unresolved count excludes outdated threads
+      so they cannot gate a button; triage keeps them, because the code moved but the point may
+      still stand.
+    </p>
+    <p class="note">
+      <b>The footer is shown but not editable.</b> It sits under the draft as a dim line rather than
+      as text in the box, so it cannot be half-deleted into something that reads as yours.
+    </p>
+  </section>
+
+</div>
+</body>
+</html>
