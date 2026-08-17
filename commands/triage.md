@@ -149,20 +149,24 @@ curl -sS -X POST '{{PROPOSALS_URL}}' \
           "does": "change+reply",
           "patch": "diff --git a/…",
           "reply": "…" },
-        { "label": "Say something else",
-          "sub": "your words, no code change",
-          "does": "reply",
+        { "label": "File a story",
+          "sub": "out of scope here — track it instead of promising it",
+          "does": "story+reply",
           "patch": null,
-          "reply": "" }
+          "story": { "title": "…", "body": "…" },
+          "reply": "Tracked as {story}." }
       ]
     }
   ]
 }
 ```
 
-- `does` is one of `thumbsup`, `reply`, `change+thumbsup`, `change+reply`, and must match
-  the option's own fields: a `change+*` option needs a `patch`, a `*+reply` option needs
-  `reply` text.
+- `does` is one of `thumbsup`, `reply`, `change+thumbsup`, `change+reply`, `story+reply`,
+  and must match the option's own fields: a `change+*` option needs a `patch`, a `*+reply`
+  option needs `reply` text, a `story+*` option needs a `story`. The daemon rejects the set
+  if they disagree — it is how "do A but say B" is kept impossible.
+- A `story+reply` reply must contain the literal `{story}`, which the daemon replaces with
+  the id once the story exists. It cannot be written in advance.
 - **Every unresolved thread needs an entry.** A thread you silently drop is the one
   failure the human cannot see.
 - Do not send `hunk` or the current code — the daemon reads `diffHunk` from GitHub so the

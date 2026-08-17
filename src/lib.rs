@@ -16,6 +16,7 @@ pub mod green;
 pub mod hooks;
 pub mod model;
 pub mod patch;
+pub mod proposal;
 pub mod pty;
 pub mod reviews;
 pub mod ring;
