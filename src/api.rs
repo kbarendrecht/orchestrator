@@ -655,12 +655,12 @@ async fn fetch_threads(app: &Arc<AppState>, pr: u64) -> Result<crate::github::Th
 ///
 /// Read-only: unlike `ensure_pr_worktree` this never creates one, so the gate can
 /// be reported without a side effect.
-async fn workspace_for(app: &Arc<AppState>, head_ref: &str) -> Option<String> {
+pub(crate) async fn workspace_for(app: &Arc<AppState>, head_ref: &str) -> Option<String> {
     let inner = app.inner.read().await;
     inner
         .workspaces
         .values()
-        .find(|w| w.branches.contains(&head_ref.to_string()))
+        .find(|w| w.branches.iter().any(|b| b == head_ref))
         .map(|w| w.id.clone())
 }
 
@@ -790,6 +790,31 @@ pub async fn pr_stash(
     crate::git::stash(&path)?;
     app.notify().await;
     Ok(Json(json!({ "stashed": true })))
+}
+
+/// The batch — the one irreversible action.
+///
+/// The threads are refetched here rather than read from the cache, and that fetch
+/// does four jobs at once: the head-sha staleness check, the comment ids the
+/// writes are aimed at, which replies are already posted, and which threads are
+/// still open for the re-request pass. See `post::run` for the order.
+///
+/// A refusal from the local half comes back **200 with `refused` set**, not as an
+/// error: nothing was written, and the overlay renders it as a panel with the
+/// decisions still staged rather than as a failed request.
+pub async fn pr_post(
+    State(app): State<Arc<AppState>>,
+    Path(number): Path<u64>,
+    Json(batch): Json<crate::post::Batch>,
+) -> ApiResult<crate::post::PostReport> {
+    let pr = {
+        let inner = app.inner.read().await;
+        pr_from_poll(&inner.prs, number)?
+    };
+    let fresh = fetch_threads(&app, number).await?;
+    let report = crate::post::run(&app, &pr, &fresh, batch).await?;
+    app.notify().await;
+    Ok(Json(report))
 }
 
 /// The worktree the gate buttons act on, refusing when there is not one.

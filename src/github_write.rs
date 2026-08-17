@@ -20,6 +20,8 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
+use crate::github::ThreadRoot;
+
 /// Appended to every written reply the daemon posts, on its own line.
 ///
 /// A reaction never carries it — a 👍 is not authored text, and a footer on one
@@ -40,6 +42,7 @@ pub fn with_footer(body: &str) -> String {
 }
 
 /// Where writes are aimed.
+#[derive(Clone)]
 pub struct Target {
     /// The main checkout. `gh` is run here so it picks up the same auth and
     /// config the rest of the daemon's shelling does.
@@ -58,24 +61,29 @@ impl Target {
     /// Keyed on the **first comment's** REST `databaseId`, not the GraphQL
     /// thread id: the replies sub-resource is what threads a comment, whereas a
     /// bare `POST .../comments` would open a new conversation alongside the one
-    /// being answered.
-    pub fn reply(&self, pr: u64, comment_id: u64, body: &str) -> Result<Value> {
+    /// being answered. Both the id and the PR number come off the [`ThreadRoot`],
+    /// so they cannot be from different fetches — see its own doc for why the
+    /// bare `u64` is gone.
+    pub fn reply(&self, root: &ThreadRoot, body: &str) -> Result<Value> {
         let body = with_footer(body);
         // An empty reply is always a bug upstream — a blank comment is worse
         // than no comment, and it cannot be deleted from here.
         if body.trim() == FOOTER {
-            bail!("refusing to post an empty reply to comment {comment_id}");
+            bail!(
+                "refusing to post an empty reply to comment {}",
+                root.comment_id()
+            );
         }
         self.api(
-            &reply_path(&self.owner, &self.name, pr, comment_id),
+            &reply_path(&self.owner, &self.name, root.pr(), root.comment_id()),
             Some(&json!({ "body": body })),
         )
     }
 
     /// 👍 a comment. The plain-adoption case: applied as asked, nothing to add.
-    pub fn thumbs_up(&self, comment_id: u64) -> Result<Value> {
+    pub fn thumbs_up(&self, root: &ThreadRoot) -> Result<Value> {
         self.api(
-            &reaction_path(&self.owner, &self.name, comment_id),
+            &reaction_path(&self.owner, &self.name, root.comment_id()),
             Some(&json!({ "content": "+1" })),
         )
     }
@@ -223,6 +231,66 @@ mod tests {
         assert_eq!(
             reaction_path("acme-org", "acme", 9000000001),
             "repos/acme/monorepo/pulls/comments/9000000001/reactions"
+        );
+    }
+
+    /// Prove the two write paths against a live PR. Ignored by default: it posts.
+    ///
+    /// Both `reply` and `thumbs_up` were POST-only and therefore unverifiable by
+    /// probing — a GET tells you nothing about whether the request body shape is
+    /// right. So they are driven for real against a **throwaway PR in your own
+    /// repo**, where nobody else is notified:
+    ///
+    /// ```text
+    /// ORCHD_LIVE_REPO=kbarendrecht/orchestrator ORCHD_LIVE_PR=1 \
+    ///   cargo test --lib -- --ignored --nocapture posts_for_real
+    /// ```
+    ///
+    /// It thumbs up **twice** on purpose. That settles the one assumption the
+    /// design carried unverified: whether a reaction is idempotent per (user,
+    /// content), or whether retry would need `reactions` selected in the thread
+    /// query to derive what is already there.
+    #[test]
+    #[ignore = "posts to a live PR"]
+    fn posts_for_real() {
+        let Ok(slug) = std::env::var("ORCHD_LIVE_REPO") else {
+            panic!("set ORCHD_LIVE_REPO=owner/name and ORCHD_LIVE_PR")
+        };
+        let pr: u64 = std::env::var("ORCHD_LIVE_PR")
+            .expect("ORCHD_LIVE_PR")
+            .parse()
+            .expect("a PR number");
+        let (owner, name) = slug.split_once('/').expect("owner/name");
+
+        let token = crate::github::resolve_token(None).expect("a token");
+        let fetched =
+            crate::github::threads(&token.value, owner, name, pr).expect("the thread fetch");
+        let thread = fetched.items.first().expect("a review thread to answer");
+        let root = fetched.root_for(&thread.id).expect("its root comment");
+
+        let target = Target {
+            cwd: std::env::current_dir().unwrap(),
+            owner: owner.to_string(),
+            name: name.to_string(),
+        };
+
+        let body = format!("Verifying the write path at {}.", thread.id);
+        let posted = target.reply(&root, &body).expect("the reply");
+        let got = posted.get("body").and_then(|b| b.as_str()).unwrap_or("");
+        assert_eq!(got, with_footer(&body), "the reply came back changed");
+        assert!(
+            posted.get("in_reply_to_id").is_some(),
+            "posted alongside the thread rather than in it: {posted}"
+        );
+
+        let first = target.thumbs_up(&root).expect("the reaction");
+        let again = target.thumbs_up(&root).expect("the same reaction again");
+        eprintln!("reaction once={first}\nreaction twice={again}");
+        assert_eq!(
+            first.get("id"),
+            again.get("id"),
+            "posting the same reaction twice made a second one — retry needs \
+             `reactions` selected in the thread query to derive what is there"
         );
     }
 

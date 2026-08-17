@@ -178,6 +178,23 @@ pub fn head_sha(cwd: &Path) -> Result<String> {
     Ok(git(cwd, &["rev-parse", "HEAD"])?.trim().to_string())
 }
 
+/// Who git will author a commit as here.
+///
+/// Wanted by [`amend_target`], which refuses to fold into a commit somebody else
+/// wrote. Empty rather than an error when git has no `user.email`: an unset
+/// identity means "match nobody", which degrades the fold to a plain HEAD amend
+/// instead of failing the batch.
+pub fn user_email(cwd: &Path) -> String {
+    Command::new("git")
+        .args(["config", "user.email"])
+        .current_dir(cwd)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default()
+}
+
 /// Two-dot against the merge-base *commit*, not the ref, or develop's own
 /// commits appear as your deletions (§5).
 pub fn merge_base(cwd: &Path, upstream: &str) -> Result<String> {

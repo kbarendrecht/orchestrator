@@ -16,6 +16,7 @@ pub mod green;
 pub mod hooks;
 pub mod model;
 pub mod patch;
+pub mod post;
 pub mod prompt;
 pub mod proposal;
 pub mod pty;
@@ -287,6 +288,8 @@ fn router(app: Arc<AppState>) -> Router {
         .route("/api/pr/:number/proposals", post(api::pr_proposals))
         .route("/api/pr/:number/commit", post(api::pr_commit))
         .route("/api/pr/:number/stash", post(api::pr_stash))
+        // The only irreversible one. See `post::run` for the order.
+        .route("/api/pr/:number/post", post(api::pr_post))
         .route("/api/pr/:number/resolve", post(api::resolve_pr))
         .route("/api/pr/:number/green", post(api::green_pr))
         .route("/ws/events", get(ws::events))

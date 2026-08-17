@@ -443,13 +443,45 @@ impl Thread {
 /// Everything one on-demand thread fetch yields.
 #[derive(Debug, Clone, Serialize)]
 pub struct Threads {
+    /// Which PR this was fetched for. Carried so [`Threads::root_for`] can stamp
+    /// it onto a [`ThreadRoot`] — the reply endpoint is nested under a PR number,
+    /// and taking it from anywhere but the fetch that produced the comment id
+    /// would let the two disagree.
+    pub pr: u64,
     /// Your own login, for `Thread::is_answerable` and the triage prompt.
     pub viewer: String,
     /// Head at fetch time. A force-push between triage and posting invalidates
-    /// every finding derived from the earlier diff, so this is recorded and
+    /// every proposal derived from the earlier diff, so this is recorded and
     /// re-checked rather than trusted.
     pub head_sha: Option<String>,
     pub items: Vec<Thread>,
+}
+
+/// A comment id proven to belong to a specific PR's review threads.
+///
+/// Every write in [`crate::github_write`] takes one of these instead of a bare
+/// `u64`. The fields are private and the only constructor is
+/// [`Threads::root_for`], so an id the triage agent invented — or one lifted out
+/// of a review comment someone else wrote — cannot reach `gh` on your
+/// credential. Same shape as `resolve_in_workspace` (`src/edit.rs`): hand back a
+/// safe value or nothing, rather than checking at each call site.
+///
+/// It lives here rather than beside the write methods because privacy in Rust is
+/// per-module: only the module holding [`Threads`] can build one from a lookup,
+/// which is exactly the property wanted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ThreadRoot {
+    pr: u64,
+    comment_id: u64,
+}
+
+impl ThreadRoot {
+    pub fn pr(&self) -> u64 {
+        self.pr
+    }
+    pub fn comment_id(&self) -> u64 {
+        self.comment_id
+    }
 }
 
 /// Threads come back 100 at a time. The poll query stays at [`PAGE`]; this is
@@ -501,6 +533,7 @@ fn threads_query(owner: &str, name: &str, pr: u64, after: Option<&str>) -> Strin
 /// query on a short timer. This runs when the review overlay opens, for one PR.
 pub fn threads(token: &str, owner: &str, name: &str, pr: u64) -> Result<Threads> {
     let mut out = Threads {
+        pr,
         viewer: String::new(),
         head_sha: None,
         items: Vec::new(),
@@ -509,7 +542,7 @@ pub fn threads(token: &str, owner: &str, name: &str, pr: u64) -> Result<Threads>
 
     for _ in 0..MAX_THREAD_PAGES {
         let v = graphql(token, &threads_query(owner, name, pr, cursor.as_deref()))?;
-        let (page, next) = parse_thread_page(&v)
+        let (page, next) = parse_thread_page(&v, pr)
             .with_context(|| format!("no pull request {pr} in the response"))?;
 
         if out.viewer.is_empty() {
@@ -576,6 +609,20 @@ impl Threads {
         });
     }
 
+    /// The comment a reply or reaction for this thread must be aimed at.
+    ///
+    /// Always the **opening** comment: the replies sub-resource threads under it,
+    /// and it is the only comment in the conversation we ever legitimately post
+    /// to. `None` for an unknown thread id or an empty thread, so a bad id
+    /// becomes a refusal rather than a write somewhere unintended.
+    pub fn root_for(&self, thread_id: &str) -> Option<ThreadRoot> {
+        let t = self.items.iter().find(|t| t.id == thread_id)?;
+        Some(ThreadRoot {
+            pr: self.pr,
+            comment_id: t.comments.first()?.database_id,
+        })
+    }
+
     /// How many threads still want something from you.
     pub fn answerable_count(&self) -> usize {
         self.items.iter().filter(|t| t.answerable).count()
@@ -586,9 +633,9 @@ impl Threads {
 ///
 /// Split out from [`threads`] so the paging and parsing can be tested without a
 /// network round trip.
-fn parse_thread_page(v: &Value) -> Option<(Threads, Option<String>)> {
-    let pr = v.pointer("/data/repository/pullRequest")?;
-    let root = pr.pointer("/reviewThreads")?;
+fn parse_thread_page(v: &Value, pr: u64) -> Option<(Threads, Option<String>)> {
+    let node = v.pointer("/data/repository/pullRequest")?;
+    let root = node.pointer("/reviewThreads")?;
 
     let items = root
         .pointer("/nodes")
@@ -612,12 +659,13 @@ fn parse_thread_page(v: &Value) -> Option<(Threads, Option<String>)> {
 
     Some((
         Threads {
+            pr,
             viewer: v
                 .pointer("/data/viewer/login")
                 .and_then(|s| s.as_str())
                 .unwrap_or_default()
                 .to_string(),
-            head_sha: pr
+            head_sha: node
                 .get("headRefOid")
                 .and_then(|s| s.as_str())
                 .map(|s| s.to_string()),
@@ -812,7 +860,7 @@ mod tests {
             &thread_node("PRRT_1", false, false, &["john"]),
             Some("Y3Vy"),
         );
-        let (page, next) = parse_thread_page(&v).unwrap();
+        let (page, next) = parse_thread_page(&v, 10001).unwrap();
 
         assert_eq!(page.viewer, "kars");
         assert_eq!(page.head_sha.as_deref(), Some("abc123"));
@@ -832,7 +880,7 @@ mod tests {
     #[test]
     fn the_last_page_reports_no_cursor() {
         let v = thread_page("kars", &thread_node("PRRT_1", false, false, &["john"]), None);
-        assert_eq!(parse_thread_page(&v).unwrap().1, None);
+        assert_eq!(parse_thread_page(&v, 10001).unwrap().1, None);
     }
 
     #[test]
@@ -844,20 +892,20 @@ mod tests {
                 "headRefOid":"abc123","reviewThreads":{
                   "pageInfo":{"hasNextPage":true,"endCursor":null},"nodes":[]}}}}}"#,
         );
-        assert_eq!(parse_thread_page(&v).unwrap().1, None);
+        assert_eq!(parse_thread_page(&v, 10001).unwrap().1, None);
     }
 
     #[test]
     fn a_missing_pull_request_is_an_error_not_an_empty_list() {
         // A deleted or mistyped PR must not read as "no threads to answer".
         let v = node(r#"{"data":{"viewer":{"login":"kars"},"repository":{"pullRequest":null}}}"#);
-        assert!(parse_thread_page(&v).is_none());
+        assert!(parse_thread_page(&v, 10001).is_none());
     }
 
     #[test]
     fn a_resolved_thread_needs_no_answer() {
         let v = thread_page("kars", &thread_node("PRRT_1", true, false, &["john"]), None);
-        let (page, _) = parse_thread_page(&v).unwrap();
+        let (page, _) = parse_thread_page(&v, 10001).unwrap();
         assert!(!page.items[0].is_answerable("kars"));
     }
 
@@ -866,7 +914,7 @@ mod tests {
         // The code moved, but the point may still stand — unlike the rail's
         // unresolved count, triage keeps these.
         let v = thread_page("kars", &thread_node("PRRT_1", false, true, &["john"]), None);
-        let (page, _) = parse_thread_page(&v).unwrap();
+        let (page, _) = parse_thread_page(&v, 10001).unwrap();
         assert!(page.items[0].is_answerable("kars"));
     }
 
@@ -877,7 +925,7 @@ mod tests {
             &thread_node("PRRT_1", false, false, &["john", "kars"]),
             None,
         );
-        let (page, _) = parse_thread_page(&v).unwrap();
+        let (page, _) = parse_thread_page(&v, 10001).unwrap();
         assert!(!page.items[0].is_answerable("kars"));
 
         // ...but one where they got the last word still does.
@@ -886,7 +934,7 @@ mod tests {
             &thread_node("PRRT_2", false, false, &["john", "kars", "john"]),
             None,
         );
-        let (page, _) = parse_thread_page(&v).unwrap();
+        let (page, _) = parse_thread_page(&v, 10001).unwrap();
         assert!(page.items[0].is_answerable("kars"));
     }
 
@@ -899,7 +947,7 @@ mod tests {
                   "comments":{"nodes":[
                     {"databaseId":1,"author":null,"body":"b","createdAt":"t","url":"u"}]}}]}}}}}"#,
         );
-        let (page, _) = parse_thread_page(&v).unwrap();
+        let (page, _) = parse_thread_page(&v, 10001).unwrap();
         assert_eq!(page.items[0].comments[0].author, "ghost");
         assert_eq!(page.items[0].diff_hunk(), None);
     }
@@ -938,6 +986,7 @@ mod tests {
         // The API hands these back chronologically; people review in the Files
         // tab, whose order is the diff's.
         let mut t = Threads {
+            pr: 10001,
             viewer: "kars".into(),
             head_sha: None,
             items: vec![
@@ -974,6 +1023,7 @@ mod tests {
         // `line` is null once the code moved; without the fallback it would sort
         // to the top of its file instead of where the reviewer was looking.
         let mut t = Threads {
+            pr: 10001,
             viewer: "kars".into(),
             head_sha: None,
             items: vec![thread_at(Some("a.ts"), Some(5)), {
@@ -1000,6 +1050,47 @@ mod tests {
             comments: Vec::new(),
             answerable: true,
         }
+    }
+
+    #[test]
+    fn a_thread_root_is_the_opening_comment_of_the_fetched_pr() {
+        // The reply endpoint is nested under a PR *and* keyed on a comment id;
+        // both come off the same fetch so they cannot disagree.
+        let v = thread_page(
+            "kars",
+            &thread_node("PRRT_1", false, false, &["john", "kars", "john"]),
+            None,
+        );
+        let (page, _) = parse_thread_page(&v, 10001).unwrap();
+        let root = page.root_for("PRRT_1").expect("a root");
+        assert_eq!(root.pr(), 10001);
+        // The opening comment, not the latest one — replying to the last comment
+        // would still thread, but the root is the only id we ever legitimately
+        // post to, so it is the only one this hands out.
+        assert_eq!(root.comment_id(), 100);
+    }
+
+    #[test]
+    fn a_thread_id_that_is_not_in_the_fetch_yields_no_root() {
+        // The triage agent's own input includes comments other people wrote, so an
+        // id it hands back has to be looked up rather than trusted. There is no
+        // other constructor: an unvalidated id cannot reach `gh`.
+        let v = thread_page("kars", &thread_node("PRRT_1", false, false, &["john"]), None);
+        let (page, _) = parse_thread_page(&v, 10001).unwrap();
+        assert!(page.root_for("PRRT_somebody_elses_pr").is_none());
+        assert!(page.root_for("").is_none());
+    }
+
+    #[test]
+    fn a_thread_with_no_comments_yields_no_root() {
+        let v = node(
+            r#"{"data":{"viewer":{"login":"kars"},"repository":{"pullRequest":{
+                "headRefOid":"abc","reviewThreads":{"pageInfo":{"hasNextPage":false},
+                "nodes":[{"id":"PRRT_1","isResolved":false,"isOutdated":false,
+                  "comments":{"nodes":[]}}]}}}}}"#,
+        );
+        let (page, _) = parse_thread_page(&v, 1).unwrap();
+        assert!(page.root_for("PRRT_1").is_none());
     }
 
     #[test]

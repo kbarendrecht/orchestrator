@@ -70,6 +70,11 @@ impl Does {
             Does::Reply | Does::ChangeReply | Does::StoryReply | Does::Manual
         )
     }
+    /// A reaction on the thread's opening comment. The two `thumbsup` variants
+    /// differ in whether they also write code, never in what they post.
+    pub fn gives_thumbs_up(self) -> bool {
+        matches!(self, Does::ThumbsUp | Does::ChangeThumbsUp)
+    }
     pub fn files_story(self) -> bool {
         matches!(self, Does::StoryReply)
     }
