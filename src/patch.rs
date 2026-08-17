@@ -211,6 +211,112 @@ pub fn apply(cwd: &Path, patches: &[Patch]) -> Result<()> {
     Ok(())
 }
 
+/// What the local half of the batch did, or refused to do.
+///
+/// Everything here happens before the push, so every failure leaves the branch as
+/// it was and the decisions still staged — the design's "nothing left the machine"
+/// promise is structural rather than asserted.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Written {
+    /// Patches applied, hooks happy, folded into a commit. Ready to push.
+    Committed {
+        files: Vec<FileStat>,
+        /// How the fold was resolved, so the UI can say when it fell back.
+        amend: String,
+    },
+    /// Nothing to write — every decision was reply-only. Still a success: the
+    /// posting half has work even when the code does not.
+    NothingToWrite,
+    /// The ladder refused. Carries the reason already phrased for a human.
+    Refused(String),
+}
+
+/// Apply the accepted patches and fold them into a commit — the local half.
+///
+/// Order matters and differs from an earlier draft of the plan, which ran
+/// pre-commit *after* the fixup. That commits unlinted code and then needs the
+/// hook's own edits amended in silently, which is precisely the "reformats beyond
+/// the approved diff" case the design refuses to absorb. So nothing is committed
+/// until the hooks have had their say:
+///
+/// 1. blame first, while the tree is still the committed state — blame on a dirty
+///    tree returns an all-zero sha, which is nobody's commit;
+/// 2. check the ladder, 3. apply, 4. pre-commit,
+/// 5. refuse if the hooks rewrote anything — with nothing committed, that is free
+///    to undo;
+/// 6. fold.
+pub fn write_batch(
+    cwd: &Path,
+    merge_base: &str,
+    my_email: &str,
+    patches: &[Patch],
+    touched: &[(String, u32)],
+) -> Result<Written> {
+    if patches.is_empty() {
+        return Ok(Written::NothingToWrite);
+    }
+
+    // 1. Blame before anything touches the tree.
+    let amend = crate::git::amend_target(cwd, merge_base, touched, my_email)?;
+
+    // 2. The ladder.
+    let files = match check(cwd, patches)? {
+        Check::Clean(files) => files,
+        Check::Stale(threads) => {
+            return Ok(Written::Refused(format!(
+                "the file moved under {} since triage — re-triage before accepting",
+                threads.join(", ")
+            )))
+        }
+        Check::Overlap(threads) => {
+            return Ok(Written::Refused(format!(
+                "{} patch the same lines; accept one, or re-triage to get patches that \
+                 account for each other",
+                threads.join(" and ")
+            )))
+        }
+    };
+
+    // 3. Apply, atomically.
+    apply(cwd, patches)?;
+
+    // 4/5. The hooks, on what we wrote.
+    let paths: Vec<String> = files.iter().map(|f| f.path.clone()).collect();
+    match crate::git::pre_commit(cwd, &paths)? {
+        crate::git::PreCommit::Passed | crate::git::PreCommit::NotConfigured => {}
+        crate::git::PreCommit::NotInstalled => {
+            tracing::warn!(
+                "`.pre-commit-config.yaml` is present but `pre-commit` is not installed; \
+                 pushing code the local hooks did not see"
+            );
+        }
+        crate::git::PreCommit::Failed(detail) => {
+            return Ok(Written::Refused(format!(
+                "pre-commit failed, so nothing was committed:\n{detail}"
+            )))
+        }
+        crate::git::PreCommit::Reformatted(paths) => {
+            return Ok(Written::Refused(format!(
+                "the hooks rewrote {} — what would land is no longer what you approved. \
+                 Nothing was committed.",
+                paths.join(", ")
+            )))
+        }
+    }
+
+    // 6. Fold.
+    crate::git::fold_in(cwd, &amend)?;
+    Ok(Written::Committed {
+        files,
+        amend: match amend {
+            crate::git::Amend::Fixup(sha) => {
+                format!("folded into {}", sha.chars().take(7).collect::<String>())
+            }
+            crate::git::Amend::Head(why) => format!("amended HEAD — {why}"),
+        },
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -333,6 +439,241 @@ mod tests {
         let d = scratch();
         assert_eq!(check(&d, &[]).unwrap(), Check::Clean(vec![]));
         apply(&d, &[]).unwrap();
+    }
+
+    // -- the local half of the batch ---------------------------------------
+
+    /// The scratch repo plus a second commit, so blame has a PR commit to find
+    /// and `base` stands in for the merge base.
+    fn batch_repo() -> std::path::PathBuf {
+        let d = scratch();
+        run(&d, &["config", "user.email", "me@here"]);
+        run(&d, &["config", "user.name", "me"]);
+        run(&d, &["branch", "base"]);
+        // A second commit owning the lines the patches will touch.
+        let body: String = (1..=40)
+            .map(|n| {
+                if n == 5 || n == 30 {
+                    format!("mine{n}\n")
+                } else {
+                    format!("line{n}\n")
+                }
+            })
+            .collect();
+        std::fs::write(d.join("f.txt"), body).unwrap();
+        run(&d, &["add", "-A"]);
+        run(&d, &["commit", "-qm", "the PR commit"]);
+        d
+    }
+
+    fn patch_mine(dir: &Path, thread: &str, n: u32, text: &str) -> Patch {
+        let f = dir.join("f.txt");
+        let orig = std::fs::read_to_string(&f).unwrap();
+        let edited: String = orig
+            .lines()
+            .map(|l| if l == format!("mine{n}") { text } else { l })
+            .collect::<Vec<_>>()
+            .join("\n");
+        std::fs::write(&f, format!("{edited}\n")).unwrap();
+        let diff = run(dir, &["diff"]);
+        run(dir, &["checkout", "-q", "--", "f.txt"]);
+        Patch {
+            thread_id: thread.to_string(),
+            diff,
+        }
+    }
+
+    fn commit_count(dir: &Path) -> usize {
+        run(dir, &["log", "--format=%s"]).lines().count()
+    }
+
+    #[test]
+    fn two_accepted_patches_fold_into_the_commit_that_owns_them() {
+        let d = batch_repo();
+        let before = commit_count(&d);
+        let patches = [
+            patch_mine(&d, "A", 5, "FIVE"),
+            patch_mine(&d, "B", 30, "THIRTY"),
+        ];
+        let touched = vec![("f.txt".to_string(), 5), ("f.txt".to_string(), 30)];
+
+        let got = write_batch(&d, "base", "me@here", &patches, &touched).unwrap();
+        match got {
+            Written::Committed { files, amend } => {
+                assert_eq!(files.len(), 1);
+                assert!(amend.starts_with("folded into"), "{amend}");
+            }
+            other => panic!("expected Committed, got {other:?}"),
+        }
+        // Folded, not stacked: no extra commit, and the content is in.
+        assert_eq!(commit_count(&d), before);
+        let content = std::fs::read_to_string(d.join("f.txt")).unwrap();
+        assert!(content.contains("FIVE") && content.contains("THIRTY"));
+        assert!(crate::git::is_clean(&d).unwrap(), "tree left dirty");
+    }
+
+    #[test]
+    fn a_stale_patch_refuses_by_name_and_writes_nothing() {
+        let d = batch_repo();
+        let p = patch_mine(&d, "A", 5, "FIVE");
+        let before = commit_count(&d);
+        // Move the line the patch depends on.
+        let f = d.join("f.txt");
+        let now = std::fs::read_to_string(&f)
+            .unwrap()
+            .replace("mine5", "moved");
+        std::fs::write(&f, now).unwrap();
+        run(&d, &["commit", "-qam", "moved it"]);
+
+        match write_batch(&d, "base", "me@here", &[p], &[("f.txt".into(), 5)]).unwrap() {
+            Written::Refused(why) => {
+                assert!(why.contains('A'), "{why}");
+                assert!(why.contains("re-triage"), "{why}");
+            }
+            other => panic!("expected Refused, got {other:?}"),
+        }
+        assert_eq!(commit_count(&d), before + 1, "only the test's own commit");
+        assert!(crate::git::is_clean(&d).unwrap());
+    }
+
+    #[test]
+    fn an_overlapping_pair_is_named_and_nothing_is_committed() {
+        let d = batch_repo();
+        let before = commit_count(&d);
+        // Adjacent enough to sit in each other's context window.
+        let a = patch_mine(&d, "A", 5, "FIVE");
+        let b = {
+            let f = d.join("f.txt");
+            let orig = std::fs::read_to_string(&f).unwrap();
+            std::fs::write(&f, orig.replace("line6", "SIX")).unwrap();
+            let diff = run(&d, &["diff"]);
+            run(&d, &["checkout", "-q", "--", "f.txt"]);
+            Patch {
+                thread_id: "B".into(),
+                diff,
+            }
+        };
+        match write_batch(&d, "base", "me@here", &[a, b], &[("f.txt".into(), 5)]).unwrap() {
+            Written::Refused(why) => {
+                assert!(why.contains('A') && why.contains('B'), "{why}");
+                assert!(why.contains("same lines"), "{why}");
+            }
+            other => panic!("expected Refused, got {other:?}"),
+        }
+        assert_eq!(commit_count(&d), before);
+        assert!(crate::git::is_clean(&d).unwrap());
+    }
+
+    #[test]
+    fn a_hook_that_rewrites_files_stops_the_batch_with_nothing_committed() {
+        let d = batch_repo();
+        let before = commit_count(&d);
+        // A hook that "formats" by rewriting the file it was handed.
+        std::fs::write(
+            d.join(".pre-commit-config.yaml"),
+            "repos:\n  - repo: local\n    hooks: []\n",
+        )
+        .unwrap();
+        let bin = d.join("fake-bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        write_exec(
+            &bin.join("pre-commit"),
+            "#!/bin/sh\nprintf 'reformatted\\n' >> f.txt\nexit 0\n",
+        );
+        let p = patch_mine(&d, "A", 5, "FIVE");
+
+        let got = with_path(&bin, || {
+            write_batch(&d, "base", "me@here", &[p], &[("f.txt".into(), 5)])
+        })
+        .unwrap();
+        match got {
+            Written::Refused(why) => {
+                assert!(why.contains("rewrote"), "{why}");
+                assert!(why.contains("f.txt"), "{why}");
+                assert!(why.contains("Nothing was committed"), "{why}");
+            }
+            other => panic!("expected Refused, got {other:?}"),
+        }
+        assert_eq!(commit_count(&d), before, "must not have committed");
+    }
+
+    #[test]
+    fn a_failing_hook_stops_the_batch_but_a_missing_binary_only_warns() {
+        let d = batch_repo();
+        std::fs::write(
+            d.join(".pre-commit-config.yaml"),
+            "repos:\n  - repo: local\n    hooks: []\n",
+        )
+        .unwrap();
+        let bin = d.join("fake-bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        write_exec(
+            &bin.join("pre-commit"),
+            "#!/bin/sh\necho 'phpstan.....Failed' \nexit 1\n",
+        );
+
+        let p = patch_mine(&d, "A", 5, "FIVE");
+        let got = with_path(&bin, || {
+            write_batch(&d, "base", "me@here", &[p], &[("f.txt".into(), 5)])
+        })
+        .unwrap();
+        match got {
+            Written::Refused(why) => assert!(why.contains("pre-commit failed"), "{why}"),
+            other => panic!("expected Refused, got {other:?}"),
+        }
+
+        // Same repo, same config, no `pre-commit` on PATH: an environment problem
+        // must not block the review.
+        let empty = d.join("no-bin");
+        std::fs::create_dir_all(&empty).unwrap();
+        let p = patch_mine(&d, "A", 5, "FIVE");
+        let got = with_path(&empty, || {
+            write_batch(&d, "base", "me@here", &[p], &[("f.txt".into(), 5)])
+        })
+        .unwrap();
+        assert!(matches!(got, Written::Committed { .. }), "{got:?}");
+    }
+
+    #[test]
+    fn a_reply_only_batch_writes_nothing_and_still_succeeds() {
+        let d = batch_repo();
+        let before = commit_count(&d);
+        assert_eq!(
+            write_batch(&d, "base", "me@here", &[], &[]).unwrap(),
+            Written::NothingToWrite
+        );
+        assert_eq!(commit_count(&d), before);
+    }
+
+    fn write_exec(path: &Path, body: &str) {
+        std::fs::write(path, body).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+    }
+
+    /// Run `f` with `dir` as the only entry on PATH, so a fake `pre-commit` is
+    /// found (or deliberately is not). Serialised by the mutex: PATH is process
+    /// state and cargo runs tests in threads.
+    fn with_path<T>(dir: &Path, f: impl FnOnce() -> T) -> T {
+        use std::sync::Mutex;
+        static LOCK: Mutex<()> = Mutex::new(());
+        let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let old = std::env::var_os("PATH");
+        // git is still needed, so keep the real PATH behind the fake dir.
+        let combined = match &old {
+            Some(p) => format!("{}:{}", dir.display(), p.to_string_lossy()),
+            None => dir.display().to_string(),
+        };
+        std::env::set_var("PATH", &combined);
+        let out = f();
+        match old {
+            Some(p) => std::env::set_var("PATH", p),
+            None => std::env::remove_var("PATH"),
+        }
+        out
     }
 
     #[test]

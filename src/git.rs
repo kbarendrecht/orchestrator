@@ -683,6 +683,107 @@ pub fn stash(cwd: &Path) -> Result<()> {
     Ok(())
 }
 
+/// What running the repo's pre-commit hooks concluded.
+#[derive(Debug, PartialEq, Eq)]
+pub enum PreCommit {
+    /// No `.pre-commit-config.yaml`, so there is nothing configured to run.
+    NotConfigured,
+    /// Configured but `pre-commit` is not on PATH. A warning, not a stop: that
+    /// is an environment problem, and blocking a whole review on it is worse
+    /// than pushing code the local hooks did not see. (CI still runs them.)
+    NotInstalled,
+    /// Every hook passed and nothing was rewritten.
+    Passed,
+    /// A hook failed. A hard stop — the daemon cannot fix a lint error.
+    Failed(String),
+    /// The hooks passed but **rewrote files**. Also a stop: what would land is
+    /// no longer what was approved on the cards, and absorbing the difference
+    /// silently is exactly what the design refuses. The paths are handed back so
+    /// the extra delta can be shown.
+    Reformatted(Vec<String>),
+}
+
+/// Run the repo's pre-commit hooks over the files just written.
+///
+/// Detected rather than configured: if `.pre-commit-config.yaml` is absent there
+/// is nothing to run. Scoped with `--files` rather than `--all-files`, because the
+/// batch is answerable for what it wrote and not for the rest of the tree.
+///
+/// Called with the patches applied but **not yet committed**, so a rewrite can be
+/// refused with nothing to undo.
+pub fn pre_commit(cwd: &Path, files: &[String]) -> Result<PreCommit> {
+    if !cwd.join(".pre-commit-config.yaml").exists() {
+        return Ok(PreCommit::NotConfigured);
+    }
+    if files.is_empty() {
+        return Ok(PreCommit::Passed);
+    }
+
+    // Hashes before and after: the only reliable way to tell "passed" from
+    // "passed and rewrote your file" is to look.
+    let before = hash_files(cwd, files);
+
+    let mut args: Vec<&str> = vec!["run", "--files"];
+    args.extend(files.iter().map(String::as_str));
+    let out = match Command::new("pre-commit")
+        .args(&args)
+        .current_dir(cwd)
+        .output()
+    {
+        Ok(o) => o,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(PreCommit::NotInstalled),
+        Err(e) => return Err(e).context("running pre-commit"),
+    };
+
+    let rewritten: Vec<String> = files
+        .iter()
+        .filter(|f| {
+            let h = hash_one(cwd, f);
+            before.get(*f).map(|b| b != &h).unwrap_or(false)
+        })
+        .cloned()
+        .collect();
+    if !rewritten.is_empty() {
+        return Ok(PreCommit::Reformatted(rewritten));
+    }
+    if out.status.success() {
+        return Ok(PreCommit::Passed);
+    }
+    // Hooks report on stdout; stderr carries pre-commit's own troubles.
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let detail: String = stdout
+        .lines()
+        .chain(stderr.lines())
+        .filter(|l| !l.trim().is_empty())
+        .take(20)
+        .collect::<Vec<_>>()
+        .join("\n");
+    Ok(PreCommit::Failed(detail))
+}
+
+fn hash_files(cwd: &Path, files: &[String]) -> std::collections::HashMap<String, u64> {
+    files
+        .iter()
+        .map(|f| (f.clone(), hash_one(cwd, f)))
+        .collect()
+}
+
+/// Content hash, not mtime: a hook can rewrite a file to the same bytes, and a
+/// checkout can change mtime without changing content (`edit.rs` makes the same
+/// choice for the same reason).
+fn hash_one(cwd: &Path, rel: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    match std::fs::read(cwd.join(rel)) {
+        Ok(bytes) => bytes.hash(&mut h),
+        // A hook may legitimately delete a file; absent hashes to a constant
+        // distinct from any content.
+        Err(_) => 0u8.hash(&mut h),
+    }
+    h.finish()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
