@@ -159,6 +159,16 @@ pub struct ManualPhase {
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct PostReport {
     pub refused: Option<String>,
+    /// Whether pressing the same button again could succeed once you have acted on
+    /// `refused`.
+    ///
+    /// A stray file or a failing hook is something you fix and retry; the branch
+    /// having moved under an open phase is not — that sha will never match again, so
+    /// restoring the phase for it pins you to a screen whose only button is
+    /// guaranteed to fail. The SPA needs to tell those apart and the message alone
+    /// cannot.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub retryable: bool,
     /// Set when the batch is waiting on you. Everything else is empty: the outward
     /// half has not run.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -177,9 +187,20 @@ pub struct PostReport {
 }
 
 impl PostReport {
+    /// A refusal you can act on and press again.
     fn refused(why: impl Into<String>) -> Self {
         PostReport {
             refused: Some(why.into()),
+            retryable: true,
+            ..Default::default()
+        }
+    }
+
+    /// A refusal that ends the attempt: pressing again cannot succeed.
+    fn refused_finally(why: impl Into<String>) -> Self {
+        PostReport {
+            refused: Some(why.into()),
+            retryable: false,
             ..Default::default()
         }
     }
@@ -474,6 +495,28 @@ async fn run_inner(
         .await
         .context("the worktree vanished")?;
 
+    // The branch must start level with origin, on the first half only.
+    //
+    // Not a nicety: `git push` sends the whole branch, so once this batch commits
+    // anything, any commit already sitting unpushed rides along with it — and no
+    // push *condition* can prevent that, only refusing up front can. The case that
+    // makes it concrete is a manual phase somebody backed out of: it leaves a commit
+    // on the branch deliberately, and without this a later reply-only batch would
+    // force-push that commit having written nothing itself.
+    //
+    // Skipped on the resume, where being ahead of origin is exactly what half one
+    // was for.
+    let local_head = crate::git::head_sha(&path)?;
+    if !level_with_origin(&local_head, fresh.head_sha.as_deref(), resume.is_some()) {
+        return Ok(PostReport::refused(format!(
+            "this branch has work origin does not: local is {} and origin is {}. Pushing \
+             anything would push that too, so push or drop it first — a manual phase you \
+             backed out of leaves a commit here on purpose.",
+            short(&local_head),
+            short(fresh.head_sha.as_deref().unwrap_or_default())
+        )));
+    }
+
     if let Some(head) = &fresh.head_sha {
         if head != &batch.base_sha {
             return Ok(PostReport::refused(format!(
@@ -508,7 +551,7 @@ async fn run_inner(
             // is a commit, so git is the record.
             let head = crate::git::head_sha(&path)?;
             if head != done.committed {
-                return Ok(PostReport::refused(format!(
+                return Ok(PostReport::refused_finally(format!(
                     "the branch moved while the manual phase was open ({} → {}). The accepted \
                      patches are still committed on it and nothing has been pushed or posted; \
                      whatever moved it may not account for your edits, so look at the branch \
@@ -560,6 +603,12 @@ async fn run_inner(
     // when a Manual thread changed no code. Both leave it empty while an unpushed
     // commit sits on the branch — and every reply then goes out saying a fix landed
     // that nobody can see.
+    // The branch started level with origin — the gate above says so — so anything
+    // HEAD has beyond the remote head is this batch's, across both halves. Reading
+    // `report.files` instead was wrong twice over: half one moves that list into the
+    // phase with `mem::take`, and `write_manual` legitimately writes nothing when a
+    // Manual thread changed no code. Both left an unpushed commit while every reply
+    // went out saying a fix had landed.
     let head_now = crate::git::head_sha(&path)?;
     let unpushed = match &fresh.head_sha {
         Some(remote) => &head_now != remote,
@@ -603,6 +652,27 @@ async fn run_inner(
     };
     post_outward(&target, pr.number, fresh, &handled, &filed, &mut report).await;
     Ok(report)
+}
+
+/// May a batch start here, or is the branch already ahead of origin?
+///
+/// `git push` sends the whole branch, so once a batch commits anything, a commit
+/// already sitting unpushed rides along with it. No push *condition* can prevent
+/// that — only refusing to start can. The case that makes it concrete is a manual
+/// phase somebody backed out of: it leaves a commit on the branch on purpose, and
+/// without this a later reply-only batch would force-push it having written nothing
+/// itself.
+///
+/// The resume is exempt: being ahead of origin is precisely what half one was for.
+fn level_with_origin(local: &str, remote: Option<&str>, resuming: bool) -> bool {
+    if resuming {
+        return true;
+    }
+    match remote {
+        Some(r) => local == r,
+        // Nothing to compare against — the same case that skips the staleness check.
+        None => true,
+    }
 }
 
 /// The lines half one blames to pick a fixup target.
@@ -1125,6 +1195,17 @@ mod tests {
                 story: None,
             }],
         )
+    }
+
+    #[test]
+    fn a_batch_will_not_start_on_a_branch_that_is_ahead_of_origin() {
+        assert!(level_with_origin("abc", Some("abc"), false));
+        // An abandoned phase's commit, or any local WIP.
+        assert!(!level_with_origin("def", Some("abc"), false));
+        // ...but the resume is ahead by construction.
+        assert!(level_with_origin("def", Some("abc"), true));
+        // Nothing to compare against.
+        assert!(level_with_origin("def", None, false));
     }
 
     #[test]

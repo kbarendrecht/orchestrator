@@ -343,16 +343,9 @@ pub fn write_manual(
     // The sha the reviewers' anchor lines were validated against.
     anchored_at: &str,
 ) -> Result<Written> {
-    let changed = crate::git::status(cwd, false)?;
-    let paths: Vec<String> = changed
-        .staged
-        .iter()
-        .chain(changed.unstaged.iter())
-        .chain(changed.untracked.iter())
-        .map(|f| f.path.clone())
-        .collect::<std::collections::BTreeSet<_>>()
-        .into_iter()
-        .collect();
+    // The same source the phase's own file list came from, so the two lists are in
+    // one encoding and a `café.md` cannot read as a stray.
+    let paths = dirty_paths(cwd)?;
     if paths.is_empty() {
         // A Manual thread does not have to change code — "I did this in another
         // PR" is a legitimate answer, and the comment is what was required.
@@ -378,31 +371,54 @@ pub fn write_manual(
         .collect();
     if !strays.is_empty() {
         return Ok(Written::Refused(format!(
-            "the worktree holds {} that the phase did not show you — commit, remove or \
-             stash {} and press continue again. Everything in this commit has to be work \
-             you looked at.",
+            "the worktree holds {} that the phase did not show you. Press `re-read the \
+             tree` and look at {}, then continue — everything in this commit has to be \
+             work you looked at. If {} not yours, commit, remove or stash {}.",
             strays.join(", "),
+            if strays.len() == 1 { "it" } else { "them" },
+            if strays.len() == 1 {
+                "it is"
+            } else {
+                "they are"
+            },
             if strays.len() == 1 { "it" } else { "them" }
         )));
     }
 
-    // Blame only while the reviewers' anchors still point where they did.
+    // Blame only the anchors the accepted patches did not disturb.
     //
-    // They are line numbers from the PR head at triage time. If half one applied a
-    // patch above one of them and folded it in, HEAD's content has shifted and
-    // blaming HEAD at the old number reads a *different* line — which does not
-    // degrade, it silently picks the wrong commit and reports "folded into" it.
-    // Measured: an anchor owned by one commit before half one blames another after.
-    // So when HEAD has moved off the sha the anchors were validated against, the
-    // anchors are stale by construction and the fold says so instead of guessing.
-    let amend = if crate::git::head_sha(cwd)? == anchored_at {
-        crate::git::amend_target(cwd, Some("HEAD"), merge_base, touched, my_email)?
+    // An anchor is a line number from the PR head at triage. If half one patched that
+    // file and folded it in, HEAD's content has shifted and blaming HEAD at the old
+    // number reads a *different* line — which does not degrade, it silently picks the
+    // wrong commit and reports "folded into" it. Measured: an anchor owned by one
+    // commit before half one blames another after.
+    //
+    // The first attempt compared HEAD to the sha the anchors were validated against,
+    // and that was dead in both directions — the two gates in `post::run_inner` mean
+    // the comparison is decided entirely by whether half one committed *anything*, so
+    // it said "stale" exactly when it could not tell and "fresh" exactly when
+    // staleness was impossible. Staleness is per file: only the paths half one
+    // rewrote are suspect, and in the common mixed batch the patches and the manual
+    // edits are in different files.
+    let disturbed = paths_changed_between(cwd, anchored_at)?;
+    let (usable, moved): (Vec<_>, Vec<_>) = touched.iter().cloned().partition(|(path, _)| {
+        disturbed
+            .as_ref()
+            .map(|d| !d.contains(path))
+            // Could not tell, so nothing is trusted.
+            .unwrap_or(false)
+    });
+    let amend = if usable.is_empty() && !moved.is_empty() {
+        let mut names: Vec<String> = moved.into_iter().map(|(p, _)| p).collect();
+        names.sort();
+        names.dedup();
+        crate::git::Amend::Head(format!(
+            "the accepted patches moved the lines in {}, so the reviewers' anchors no \
+             longer say which commit owns them",
+            names.join(", ")
+        ))
     } else {
-        crate::git::Amend::Head(
-            "the accepted patches moved these lines, so the reviewers' anchors no longer \
-             say which commit owns them"
-                .to_string(),
-        )
+        crate::git::amend_target(cwd, Some("HEAD"), merge_base, &usable, my_email)?
     };
 
     match crate::git::pre_commit(cwd, &paths)? {
@@ -457,7 +473,46 @@ pub fn worktree_change(cwd: &Path) -> Result<(Vec<FileStat>, String)> {
         "git diff failed: {}",
         String::from_utf8_lossy(&out.stderr).trim()
     );
-    Ok((files, String::from_utf8_lossy(&out.stdout).into_owned()))
+    let mut diff = String::from_utf8_lossy(&out.stdout).into_owned();
+
+    // `git diff HEAD` cannot see an untracked file at all, and the only way to make
+    // it — `--intent-to-add` — is the index write that broke `git stash`. So each new
+    // file is diffed against nothing, separately. Without this the phase listed a
+    // whole new file and showed none of it, under a screen that says everything in
+    // the commit is work you looked at.
+    let tracked: std::collections::HashSet<String> = numstat_counts(cwd)?.into_keys().collect();
+    for f in files.iter().filter(|f| !tracked.contains(&f.path)) {
+        diff.push_str(&new_file_diff(cwd, &f.path)?);
+    }
+    Ok((files, diff))
+}
+
+/// A whole-file hunk for something git is not tracking yet.
+fn new_file_diff(cwd: &Path, path: &str) -> Result<String> {
+    let out = Command::new("git")
+        // The rest of the display is raw, so the header paths must be too.
+        .args([
+            "-c",
+            "core.quotePath=false",
+            "diff",
+            "--no-index",
+            "--",
+            "/dev/null",
+            path,
+        ])
+        .current_dir(cwd)
+        .output()
+        .context("running git diff --no-index")?;
+    // **1 means "they differ"**, which for a new file is always — so the usual
+    // `ensure!(success)` would treat every success as a failure. Only 2 and above is
+    // a real error.
+    match out.status.code() {
+        Some(0) | Some(1) => Ok(String::from_utf8_lossy(&out.stdout).into_owned()),
+        _ => anyhow::bail!(
+            "git diff --no-index failed for {path}: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ),
+    }
 }
 
 /// Every path the working tree changes against `HEAD`, with line counts.
@@ -465,60 +520,144 @@ pub fn worktree_change(cwd: &Path) -> Result<(Vec<FileStat>, String)> {
 /// The manual phase's equivalent of `git apply --numstat`: the file list has to be
 /// derived from the tree rather than from a patch nobody wrote.
 ///
+/// **`git status` decides the paths**, and nothing else does. That is the whole
+/// point of the shape. `git diff --numstat` and `git ls-files` apply `core.quotePath`
+/// and collapse a rename into `old => new`, while `git::status` uses `-z` and emits
+/// raw bytes — so a list built from the former and checked against the latter
+/// disagrees about any non-ASCII filename and about every rename. Measured:
+/// `status -z` says `café.md` where `ls-files` says `"caf\303\251.md"`. That
+/// mismatch made the manual phase refuse a person's own work as a stray and left the
+/// batch permanently unfinishable. So `status` names the files and the other commands
+/// only supply numbers for names it already chose.
+///
 /// **Reads only.** The obvious implementation stages untracked files
 /// `--intent-to-add` so one `git diff` can see them, and that was the implementation
 /// — but an intent-to-add entry makes `git stash push` fail outright (measured on git
-/// 2.34.1: `error: Entry 'x' not uptodate. Cannot merge.`, with or without `-u`), so
-/// merely *looking* at the diff broke the review overlay's own stash button until the
-/// batch committed. A read that breaks a write somewhere else is not a read. Untracked
-/// files are counted directly instead, and nothing touches the index.
+/// 2.34.1: `error: Entry 'x' not uptodate. Cannot merge.`), so merely *looking* at the
+/// diff broke the review overlay's own stash button. A read that breaks a write
+/// somewhere else is not a read.
 fn numstat_worktree(cwd: &Path) -> Result<Vec<FileStat>> {
+    let counts = numstat_counts(cwd)?;
+    let mut files: Vec<FileStat> = dirty_paths(cwd)?
+        .into_iter()
+        .map(|path| match counts.get(&path) {
+            Some((added, deleted)) => FileStat {
+                path,
+                added: *added,
+                deleted: *deleted,
+            },
+            // Untracked, so `git diff` never mentioned it: a brand-new file is
+            // entirely added, and its line count is its line count.
+            None => {
+                let added = std::fs::read_to_string(cwd.join(&path))
+                    .map(|s| s.lines().count() as u32)
+                    // Binary or unreadable: still name it, as `parse_numstat` does.
+                    .unwrap_or(0);
+                FileStat {
+                    path,
+                    added,
+                    deleted: 0,
+                }
+            }
+        })
+        .collect();
+    files.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(files)
+}
+
+/// The paths rewritten between `since` and `HEAD`.
+///
+/// Empty when they are the same commit, which is the case where nothing could have
+/// moved. `-z` for the same raw encoding everything else here uses.
+/// `None` when git could not answer — an unknown sha, say. Treating that as "nothing
+/// moved" would blame lines that may well have shifted, so the caller reads `None` as
+/// "assume all of them did" and degrades, which is the safe direction.
+fn paths_changed_between(
+    cwd: &Path,
+    since: &str,
+) -> Result<Option<std::collections::HashSet<String>>> {
     let out = Command::new("git")
-        .args(["diff", "--numstat", "HEAD"])
+        .args(["diff", "--name-only", "-z", since, "HEAD"])
         .current_dir(cwd)
         .output()
-        .context("running git diff --numstat")?;
+        .context("running git diff --name-only")?;
+    if !out.status.success() {
+        tracing::warn!(
+            "could not diff {since}..HEAD, so no anchor is trusted: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+        return Ok(None);
+    }
+    Ok(Some(
+        String::from_utf8_lossy(&out.stdout)
+            .split('\0')
+            .filter(|p| !p.is_empty())
+            .map(str::to_string)
+            .collect(),
+    ))
+}
+
+/// Everything `git status` calls changed, staged or not, tracked or not.
+///
+/// The one source of path strings for the manual phase. A rename appears once, as its
+/// new path, because that is what `--porcelain=v2` reports.
+pub fn dirty_paths(cwd: &Path) -> Result<Vec<String>> {
+    let set = crate::git::status(cwd, false)?;
+    Ok(set
+        .staged
+        .iter()
+        .chain(set.unstaged.iter())
+        .chain(set.untracked.iter())
+        .map(|f| f.path.clone())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect())
+}
+
+/// `path -> (added, deleted)` for tracked changes, from `--numstat -z`.
+///
+/// `-z` so the keys are raw bytes matching `git::status`. Its record shape differs
+/// from the plain form: an ordinary entry is `added\tdeleted\tpath\0`, but a rename
+/// is `added\tdeleted\t\0old\0new\0` — the path field is empty and the two paths
+/// follow as their own records.
+fn numstat_counts(cwd: &Path) -> Result<std::collections::HashMap<String, (u32, u32)>> {
+    let out = Command::new("git")
+        .args(["diff", "--numstat", "-z", "HEAD"])
+        .current_dir(cwd)
+        .output()
+        .context("running git diff --numstat -z")?;
     anyhow::ensure!(
         out.status.success(),
         "git diff --numstat failed: {}",
         String::from_utf8_lossy(&out.stderr).trim()
     );
-    let mut files = aggregate(parse_numstat(&String::from_utf8_lossy(&out.stdout)));
-
-    // A brand-new file is entirely added, so its line count is its line count.
-    for path in untracked(cwd)? {
-        let added = std::fs::read_to_string(cwd.join(&path))
-            .map(|s| s.lines().count() as u32)
-            // Binary or unreadable: still name the path, like `parse_numstat` does.
-            .unwrap_or(0);
-        files.push(FileStat {
-            path,
-            added,
-            deleted: 0,
-        });
+    let raw = String::from_utf8_lossy(&out.stdout);
+    let mut fields = raw.split('\0').filter(|f| !f.is_empty() || true).peekable();
+    let mut counts = std::collections::HashMap::new();
+    while let Some(field) = fields.next() {
+        if field.is_empty() {
+            continue;
+        }
+        let mut cols = field.splitn(3, '\t');
+        let (Some(added), Some(deleted), Some(path)) = (cols.next(), cols.next(), cols.next())
+        else {
+            continue;
+        };
+        let n = |s: &str| s.parse().unwrap_or(0);
+        // An empty path field means a rename: old then new follow. Keyed on the new
+        // one, so it matches what `git status` reported.
+        let key = if path.is_empty() {
+            let _old = fields.next();
+            match fields.next() {
+                Some(new) => new.to_string(),
+                None => continue,
+            }
+        } else {
+            path.to_string()
+        };
+        counts.insert(key, (n(added), n(deleted)));
     }
-    files.sort_by(|a, b| a.path.cmp(&b.path));
-    Ok(files)
-}
-
-/// Untracked, not ignored. `git status` would answer this too, but this asks the one
-/// question and cannot be confused by a rename record.
-fn untracked(cwd: &Path) -> Result<Vec<String>> {
-    let out = Command::new("git")
-        .args(["ls-files", "--others", "--exclude-standard"])
-        .current_dir(cwd)
-        .output()
-        .context("running git ls-files --others")?;
-    anyhow::ensure!(
-        out.status.success(),
-        "git ls-files --others failed: {}",
-        String::from_utf8_lossy(&out.stderr).trim()
-    );
-    Ok(String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .filter(|l| !l.trim().is_empty())
-        .map(str::to_string)
-        .collect())
+    Ok(counts)
 }
 
 #[cfg(test)]
@@ -798,28 +937,134 @@ mod tests {
     }
 
     #[test]
-    fn anchors_that_the_accepted_patches_moved_are_not_blamed() {
+    fn a_non_ascii_name_and_a_rename_are_not_strays() {
+        // The file list and the stray check used to come from git commands with
+        // different path encodings — `ls-files`/`--numstat` quote and octal-escape,
+        // `status -z` does not — so a person's own `café.md` read as a stray and the
+        // phase could never be finished. Both sides now come from `status`.
+        let d = batch_repo();
+        std::fs::write(d.join("café.md"), "één\ntwee\n").unwrap();
+        run(&d, &["mv", "f.txt", "hernoemd.txt"]);
+
+        let (files, _) = worktree_change(&d).unwrap();
+        let listed: Vec<&str> = files.iter().map(|f| f.path.as_str()).collect();
+        assert!(listed.contains(&"café.md"), "raw, not quoted: {listed:?}");
+        assert!(
+            listed.contains(&"hernoemd.txt"),
+            "a rename is its new path, not an arrow: {listed:?}"
+        );
+        assert!(
+            !listed
+                .iter()
+                .any(|p| p.contains("=>") || p.contains("\\303")),
+            "no arrows and no octal escapes: {listed:?}"
+        );
+
+        // And what the phase showed is accepted by the gate that consumes it.
+        let approved: Vec<String> = listed.iter().map(|s| s.to_string()).collect();
+        let head = crate::git::head_sha(&d).unwrap();
+        let got = write_manual(&d, "base", "me@here", &[], &approved, &head).unwrap();
+        assert!(
+            !matches!(got, Written::Refused(_)),
+            "own work must not be a stray: {got:?}"
+        );
+    }
+
+    #[test]
+    fn a_brand_new_file_is_shown_and_not_just_listed() {
+        // The list named it and the diff never showed it, under a screen that says
+        // everything in the commit is work you looked at. `git diff HEAD` cannot see
+        // an untracked file, and the only way to make it — `--intent-to-add` — is the
+        // index write that broke `git stash`.
+        let d = batch_repo();
+        std::fs::write(d.join("new_helper.rs"), "fn helper() {}\nfn other() {}\n").unwrap();
+        std::fs::write(d.join("f.txt"), "edited\n").unwrap();
+
+        let before = run(&d, &["status", "--porcelain"]);
+        let (files, diff) = worktree_change(&d).unwrap();
+
+        let new = files.iter().find(|f| f.path == "new_helper.rs").unwrap();
+        assert_eq!((new.added, new.deleted), (2, 0));
+        assert!(
+            diff.contains("new_helper.rs"),
+            "the new file must be in the diff"
+        );
+        assert!(diff.contains("+fn helper()"), "with its contents:\n{diff}");
+        assert!(diff.contains("f.txt"), "and the tracked change too");
+        assert_eq!(
+            run(&d, &["status", "--porcelain"]),
+            before,
+            "and still nothing staged"
+        );
+    }
+
+    #[test]
+    fn only_the_files_the_patches_touched_lose_their_anchors() {
+        // The first attempt compared HEAD to the anchors' sha, which the gates above
+        // it had already decided — so it said "stale" exactly when it could not tell.
+        // Staleness is per file: in the common mixed batch the accepted patch and the
+        // manual edit are in different files, and that anchor is still good.
+        let d = batch_repo();
+        // A second file that exists at triage time, so its anchor is real.
+        std::fs::write(d.join("other.txt"), "line1\nline2\n").unwrap();
+        run(&d, &["add", "-A"]);
+        run(&d, &["commit", "-qm", "another file"]);
+        let at_triage = crate::git::head_sha(&d).unwrap();
+
+        // Half one: a patch lands in f.txt and is committed.
+        std::fs::write(d.join("f.txt"), "half one wrote this\n").unwrap();
+        run(&d, &["add", "-A"]);
+        run(&d, &["commit", "-qm", "half one"]);
+
+        // Half two: the human edits the *other* file, whose anchor never moved.
+        std::fs::write(d.join("other.txt"), "line1\nby hand\n").unwrap();
+        match write_manual(
+            &d,
+            "base",
+            "me@here",
+            &[("other.txt".into(), 2)],
+            &["other.txt".to_string()],
+            &at_triage,
+        )
+        .unwrap()
+        {
+            Written::Committed { amend, .. } => assert!(
+                amend.starts_with("folded into"),
+                "an untouched file keeps its anchor: {amend}"
+            ),
+            other => panic!("expected Committed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn anchors_in_a_file_the_patches_rewrote_are_not_blamed() {
         // The anchor line numbers come from the PR head at triage. Once half one has
         // applied a patch above one of them and folded it in, blaming HEAD at the old
         // number reads a different line and picks the wrong commit — silently, and
-        // reported as "folded into" it. So a moved HEAD means the anchors are stale
-        // by construction and the fold says so instead of guessing.
+        // reported as "folded into" it. So the fold says so instead of guessing.
         let d = batch_repo();
-        std::fs::write(d.join("f.txt"), "by hand\n").unwrap();
+        let at_triage = crate::git::head_sha(&d).unwrap();
 
-        let stale = "0000000000000000000000000000000000000000";
+        // Half one rewrites the very file the anchor is in.
+        std::fs::write(d.join("f.txt"), "half one rewrote this whole file\n").unwrap();
+        run(&d, &["add", "-A"]);
+        run(&d, &["commit", "-qm", "half one"]);
+        // Half two edits it by hand.
+        std::fs::write(d.join("f.txt"), "half one rewrote this\nand then I did\n").unwrap();
+
         match write_manual(
             &d,
             "base",
             "me@here",
             &[("f.txt".into(), 5)],
             &["f.txt".to_string()],
-            stale,
+            &at_triage,
         )
         .unwrap()
         {
             Written::Committed { amend, .. } => {
                 assert!(amend.starts_with("amended HEAD"), "{amend}");
+                assert!(amend.contains("f.txt"), "it must name the file: {amend}");
                 assert!(amend.contains("anchors no longer"), "{amend}");
             }
             other => panic!("expected Committed, got {other:?}"),

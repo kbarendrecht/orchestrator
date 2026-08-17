@@ -2576,7 +2576,10 @@ async function loadManualDiff() {
  *  git is the record, and `HEAD` moving is what a refusal is made of. */
 async function finishManual() {
   if (reviewState.busy) return;
-  const m = reviewState.report.manual;
+  // Only reachable from the phase's own button today, but it reads a phase out of
+  // the report and a throw here would blank the screen mid-batch.
+  const m = reviewState.report?.manual;
+  if (!m) return;
   const missing = m.threads.filter((th) => !(manualState.comments[th.thread_id] || '').trim());
   if (missing.length) {
     return toast('a comment is required on a manual thread — the reviewer would get ' +
@@ -2600,15 +2603,27 @@ async function finishManual() {
        worktree is as it was" when half one's commit is on the branch and your edits
        are still on disk, with no way back to the phase. So the phase is kept and the
        refusal is shown on top of it. */
-    if (got.refused && !got.manual) got.manual = m;
+    /* Only when pressing again could work. A stray file or a failing hook is
+       something you act on and retry; the branch having moved under the phase is
+       not — that sha can never match again, so restoring the phase would pin you to
+       a screen whose only button is guaranteed to fail. */
+    if (got.refused && got.retryable && !got.manual) got.manual = m;
     reviewState.report = got;
     reviewState.screen = got.manual ? 'manual' : 'report';
-    if (!got.manual) {
-      // Sent. The comments described work that is now pushed; keeping them would
-      // arm the next phase on this PR with an answer to a different question.
+    /* Cleared only when there is nothing left to come back to. The comments
+       described work that is now pushed, and keeping them would arm the next phase
+       on this PR with an answer to a different question — but the report's own
+       `retry` button is live while anything failed, and that retry re-enters the
+       phase, so throwing them away first would lose the words that were already
+       posted against. */
+    if (!got.manual && !got.refused && !(got.failed || []).length) {
       manualState.comments = {};
       manualState.changed = null;
     }
+    // A stray-file refusal is about a tree that has moved on, so re-read it: the
+    // screen then shows what is actually there and pressing continue is a real
+    // second look rather than the same refusal again.
+    if (got.refused && got.retryable) loadManualDiff();
   } catch (e) {
     toast(e.message, true);
   }
