@@ -357,7 +357,9 @@ button.ctx-btn:hover{color:var(--text)}
 .ln.empty s{background:#0B0B0B}
 .w-add{background:var(--add-hi);border-radius:2px}
 .w-del{background:var(--del-hi);border-radius:2px}
-.ln.cur s{box-shadow:inset 2px 0 0 var(--attn)}
+/* `.hit` is the review overlay's name for the same mark: the line a thread is
+   anchored to. Same rule, deliberately shared rather than copied under `.rv`. */
+.ln.cur s,.ln.hit s{box-shadow:inset 2px 0 0 var(--attn)}
 :root{
   --add:rgba(95,169,124,.13);
   --add-hi:rgba(95,169,124,.32);
@@ -490,3 +492,260 @@ button.ctx-btn:hover{color:var(--text)}
 }
 .dvbtn:hover:not(:disabled){background:var(--surface);border-color:currentColor}
 .dvbtn:disabled{color:var(--ghost);cursor:default}
+
+/* ---------- review overlay ---------- */
+/* Ported from design/review-overlay.html, which is the spec for anything visual
+   here. Everything overlay-specific is scoped under `.rv`, because adding a
+   class in an 854px-wide mock is free and adding one to a live stylesheet is
+   not — `.pane` already collided (it is the diff viewer's split half above).
+   Deliberately NOT scoped, because they are this file's rules and the overlay
+   reuses them rather than copying: .eyebrow, .head-btn, .ov-*, .ln/.add/.del.
+   `.hit` joins `.ln.cur` up there for the same reason.
+   One documented deviation from the plan: `.m` IS scoped, because a bare `.m`
+   would capture `.dfnum .m` (the file list's deletion count) and restyle it. */
+
+/* No structural rules: `.overlay` already supplies inset/z-index/flex column,
+   and unlike the mock this one fills the centre pane rather than sitting in a
+   page at a fixed width. */
+.rv .m{font-family:var(--mono);font-size:11px}
+.rv .head-btn.go{color:#1A1206;background:var(--attn);border-color:var(--attn)}
+
+/* Branch health, from data the poller already has. Never a gate — CI colour and
+   a develop conflict are product signals that do not touch the apply/push
+   machinery, so they inform and offer /green, and that is all. The real gates
+   are worktree-readiness. */
+.rv .health{display:flex;align-items:center;gap:7px;font-family:var(--mono);font-size:10.5px;flex:0 0 auto}
+.rv .health .hdot{width:6px;height:6px;border-radius:50%;background:var(--ghost);flex:0 0 auto}
+.rv .health.bad .hdot{background:var(--bad)}
+.rv .health.ok .hdot{background:var(--ok)}
+.rv .health.pending .hdot{background:var(--attn)}
+.rv .health .s{color:var(--dim)}
+.rv .health.bad .s{color:var(--bad)}
+.rv .health .sep{color:var(--ghost)}
+
+/* progress strip: one bar per thread, filled by outcome. Bars read as progress
+   through a queue; dots would read as status lights and invite a colour per
+   verdict, which is not what varies. */
+.rv .strip{display:flex;align-items:center;gap:5px;padding:8px 15px;border-bottom:1px solid var(--line-soft);background:#0D0D0D;flex:0 0 auto}
+.rv .pip{width:22px;height:3px;border-radius:1px;background:var(--ghost);min-width:3px}
+.rv .pip.staged{background:var(--attn)}
+.rv .pip.skip{background:var(--line)}
+.rv .pip.cur{background:var(--text)}
+/* flex:0 0 auto or the pips squeeze the count until it wraps, and the strip
+   silently doubles in height — measured 32px to 62px at 50 threads. */
+.rv .strip .left{
+  margin-left:auto;flex:0 0 auto;white-space:nowrap;
+  font-family:var(--mono);font-size:10px;color:var(--faint-solid);
+}
+
+.rv .body{flex:1;overflow:auto}
+.rv .sec{padding:15px;border-bottom:1px solid var(--line-soft);display:flex;flex-direction:column;gap:10px}
+.rv .sec:last-child{border-bottom:0}
+
+/* the anchored comment */
+.rv .anchor{display:flex;align-items:baseline;gap:9px;flex-wrap:wrap}
+.rv .anchor .p{font-family:var(--mono);font-size:11.5px;color:var(--text)}
+.rv .anchor .p.none{color:var(--faint-solid)}
+.rv .anchor .who{font-size:11.5px;color:var(--dim)}
+.rv .anchor .age{font-family:var(--mono);font-size:10px;color:var(--ghost)}
+.rv .flag{
+  font-family:var(--label);font-size:8px;font-weight:700;letter-spacing:.12em;
+  text-transform:uppercase;padding:2px 5px;border-radius:2px;
+  color:var(--faint-solid);border:1px solid var(--line);
+}
+.rv .flag.out{color:var(--dim)}
+/* Not "re-review": that is GitHub's own phrase for requesting a fresh review,
+   which the final panel already uses for `gh pr edit --add-reviewer`. */
+.rv .flag.cont{color:var(--work);border-color:rgba(76,154,175,.35)}
+
+/* hunk — reuses the diff overlay's row classes. No +/- characters: the row's
+   background wash carries add/del. */
+.rv .hunk{font-family:var(--mono);font-size:11.5px;line-height:1.65;border:1px solid var(--line-soft);border-radius:2px;overflow:hidden}
+.rv .hh{padding:2px 10px;background:#0B0B0B;color:var(--faint-solid);font-size:10.5px;border-bottom:1px solid var(--line-soft)}
+
+/* comment chain */
+.rv .chain{display:flex;flex-direction:column;gap:9px}
+.rv .cmt{display:flex;flex-direction:column;gap:3px;padding-left:10px;border-left:1px solid var(--line)}
+/* Your own comments in the chain. On a CONTINUED thread the thing that matters
+   most is what you committed to last time — the new reply has to be consistent
+   with it in public — so it cannot look identical to theirs. */
+.rv .cmt.mine{border-left-color:var(--faint-solid);background:rgba(255,255,255,.015)}
+.rv .cmt.mine .hd b{color:var(--dim)}
+.rv .cmt.mine .hd .you{
+  font-family:var(--label);font-size:7.5px;font-weight:700;letter-spacing:.12em;
+  text-transform:uppercase;color:var(--faint-solid);
+}
+.rv .cmt .hd{display:flex;gap:8px;align-items:baseline}
+.rv .cmt .hd b{font-size:11.5px;font-weight:600;color:var(--text)}
+.rv .cmt .hd .age{font-family:var(--mono);font-size:10px;color:var(--ghost)}
+.rv .cmt p{color:var(--dim);max-width:70ch;white-space:pre-wrap}
+
+/* the agent's read */
+.rv .read{
+  background:var(--surface);border:1px solid var(--line-soft);border-radius:2px;
+  padding:10px 12px;display:flex;flex-direction:column;gap:6px;
+}
+.rv .read p{color:var(--dim);max-width:70ch;white-space:pre-wrap}
+
+/* positions — the reply and the proposed change live inside the position, not
+   beside it. Picking a stance, writing the words and choosing the edit are one
+   act, so they are one control: you can never do A and say B. */
+.rv .pos{display:flex;flex-direction:column;gap:6px}
+.rv .opt{border:1px solid var(--line);border-radius:2px;background:#0D0D0D;overflow:hidden}
+.rv .opt:hover{border-color:var(--faint-solid)}
+.rv .opt.on{border-color:var(--attn);background:rgba(224,162,68,.06)}
+.rv .optHead{display:flex;align-items:flex-start;gap:9px;text-align:left;width:100%;padding:8px 10px}
+.rv .opt .k{
+  font-family:var(--mono);font-size:9.5px;color:var(--ghost);
+  border:1px solid var(--line);border-radius:2px;padding:0 4px;flex:0 0 auto;margin-top:1px;
+}
+.rv .opt.on .k{color:var(--attn);border-color:rgba(224,162,68,.4)}
+.rv .opt .t{font-size:12px;color:var(--text)}
+.rv .opt .t em{display:block;font-style:normal;color:var(--faint-solid);font-size:11px;margin-top:2px}
+.rv .opt .does{
+  margin-left:auto;flex:0 0 auto;font-family:var(--label);font-size:8px;font-weight:700;
+  letter-spacing:.12em;text-transform:uppercase;color:var(--faint-solid);padding-top:2px;
+  white-space:nowrap;
+}
+.rv .opt.on .does{color:var(--ok)}
+.rv .rec{
+  font-family:var(--label);font-size:8px;font-weight:700;letter-spacing:.12em;
+  text-transform:uppercase;color:var(--attn);border:1px solid rgba(224,162,68,.35);
+  border-radius:2px;padding:1px 5px;margin-left:8px;
+}
+.rv .optBody{padding:0 10px 10px 33px;display:flex;flex-direction:column;gap:7px}
+
+/* A textarea, not a contenteditable: the reply goes to GitHub as plain
+   markdown, so rich paste is liability and browsers insert <div>/<br> rather
+   than \n. `openEditor()` settled this already. */
+.rv .box{resize:vertical;display:block;width:100%;
+  background:#0B0B0B;border:1px solid var(--line);border-radius:2px;
+  padding:9px 11px;color:var(--text);font-family:var(--sans);font-size:12.5px;
+  min-height:56px;white-space:pre-wrap;
+}
+.rv .box:focus{outline:none;border-color:var(--faint-solid)}
+.rv .foot{
+  display:flex;align-items:baseline;gap:10px;
+  font-family:var(--mono);font-size:10px;color:var(--ghost);
+}
+/* Only shown once the text differs from the draft, so it never offers to undo
+   nothing. */
+.rv .revert{margin-left:auto;color:var(--dim);border-bottom:1px dotted var(--ghost)}
+.rv .revert:hover{color:var(--text)}
+/* An option whose reply you have touched. On coming back to a card, "is this my
+   wording or the agent's?" is the question that needs answering first, and the
+   posted footer cannot answer it. */
+.rv .edited{
+  font-family:var(--label);font-size:8px;font-weight:700;letter-spacing:.12em;
+  text-transform:uppercase;color:var(--work);border:1px solid rgba(76,154,175,.35);
+  border-radius:2px;padding:1px 5px;margin-left:8px;
+}
+.rv .willwrite{
+  display:flex;align-items:baseline;gap:7px;flex-wrap:wrap;
+  font-family:var(--label);font-size:8px;font-weight:700;letter-spacing:.12em;
+  text-transform:uppercase;color:var(--faint-solid);
+}
+.rv .willwrite b{font-family:var(--mono);font-size:10.5px;font-weight:400;letter-spacing:0;text-transform:none;color:var(--dim)}
+
+/* action bar */
+.rv .acts{display:flex;align-items:center;gap:7px;padding:11px 15px;border-top:1px solid var(--line);background:var(--surface);flex:0 0 auto}
+.rv .act{
+  font-family:var(--label);font-size:8.5px;font-weight:700;letter-spacing:.1em;
+  text-transform:uppercase;padding:5px 10px;border:1px solid var(--line);
+  border-radius:2px;color:var(--dim);
+}
+.rv .act:hover:not(:disabled){color:var(--text);border-color:var(--faint-solid)}
+.rv .act:disabled{color:var(--ghost);cursor:default}
+.rv .act.pri{color:var(--text);border-color:var(--faint-solid)}
+.rv .act.warm{color:#1A1206;background:var(--attn);border-color:var(--attn)}
+.rv .act.warm:disabled{color:#1A1206;background:var(--ghost);border-color:var(--ghost)}
+.rv .hint{margin-left:auto;font-family:var(--mono);font-size:10px;color:var(--faint-solid);text-align:right}
+
+/* intake + empty */
+.rv .mid{padding:56px 15px;display:flex;flex-direction:column;align-items:center;gap:13px;text-align:center;overflow:auto}
+.rv .mid p{color:var(--dim);max-width:52ch;font-size:12.5px}
+.rv .mid .big{font-size:14px;color:var(--text)}
+.rv .tally{display:flex;flex-direction:column;gap:0;width:100%}
+.rv .tline{display:flex;align-items:baseline;gap:10px;padding:9px 0;border-bottom:1px solid var(--line-soft)}
+.rv .tline:last-child{border-bottom:0}
+.rv .tline .n{font-family:var(--mono);font-size:15px;color:var(--text);flex:0 0 26px;text-align:right;font-variant-numeric:tabular-nums}
+.rv .tline .l{font-size:12.5px;color:var(--text)}
+.rv .tline .l em{display:block;font-style:normal;font-size:11.5px;color:var(--faint-solid);margin-top:1px}
+
+/* the post list */
+.rv .stage-row{display:flex;align-items:baseline;gap:10px;padding:8px 0;border-bottom:1px solid var(--line-soft)}
+.rv .stage-row:last-child{border-bottom:0}
+.rv .stage-row .k{font-family:var(--label);font-size:8px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;flex:0 0 82px}
+.rv .stage-row .k.apply{color:var(--ok)}
+.rv .stage-row .k.reply{color:var(--attn)}
+.rv .stage-row .k.skip{color:var(--ghost)}
+.rv .stage-row .k.req{color:var(--work)}
+.rv .stage-row .k.manual,.rv .stage-row .k.story{color:var(--work)}
+.rv .stage-row .c{display:flex;flex-direction:column;gap:3px;min-width:0}
+.rv .stage-row .c .p{font-family:var(--mono);font-size:10.5px;color:var(--faint-solid)}
+.rv .stage-row .c .t{font-size:12px;color:var(--dim)}
+.rv .held{color:var(--faint-solid);font-size:11.5px;font-style:italic}
+
+/* A banner for what is already true on the remote. It uses --attn rather than
+   --bad because it is not an error — it is the fact you need before you can
+   read anything below it. */
+.rv .banner{
+  display:flex;gap:11px;padding:12px 15px;border-bottom:1px solid var(--line);
+  border-left:2px solid var(--attn);background:rgba(224,162,68,.06);flex:0 0 auto;
+}
+.rv .banner.clean{border-left-color:var(--ok);background:rgba(95,169,124,.05)}
+.rv .banner .ico{font-family:var(--mono);font-size:12px;color:var(--attn);flex:0 0 auto}
+.rv .banner.clean .ico{color:var(--ok)}
+.rv .banner .tx b{display:block;font-size:12.5px;font-weight:600;margin-bottom:2px}
+.rv .banner .tx p{color:var(--dim);font-size:12px;max-width:62ch}
+
+.rv .group{display:flex;flex-direction:column;gap:0}
+.rv .res{display:flex;align-items:baseline;gap:10px;padding:9px 0;border-bottom:1px solid var(--line-soft)}
+.rv .res:last-child{border-bottom:0}
+.rv .res .st{font-family:var(--mono);font-size:11px;flex:0 0 14px;text-align:center}
+.rv .res.ok .st{color:var(--ok)}
+.rv .res.no .st{color:var(--bad)}
+.rv .res.wait .st{color:var(--ghost)}
+.rv .res .c{display:flex;flex-direction:column;gap:3px;min-width:0}
+.rv .res .c .p{font-family:var(--mono);font-size:10.5px;color:var(--faint-solid)}
+.rv .res .c .t{font-size:12px;color:var(--dim)}
+.rv .res.ok .c .t{color:var(--faint-solid)}
+/* Errors verbatim, per the daemon's own rule (src/api.rs:23) — a refused call
+   is information, not noise to swallow behind a friendly paraphrase. */
+.rv .err{
+  font-family:var(--mono);font-size:10.5px;color:var(--bad);
+  background:rgba(201,97,90,.07);border-left:1px solid rgba(201,97,90,.35);
+  padding:5px 9px;white-space:pre-wrap;margin-top:2px;
+}
+
+/* A story the post step will file. Shown as fields rather than prose so it is
+   obvious this is a record being created, not a sentence being written. */
+.rv .storydraft{
+  border:1px solid var(--line-soft);border-radius:2px;background:#0B0B0B;
+  display:flex;flex-direction:column;
+}
+.rv .sline{display:flex;gap:10px;padding:6px 9px;border-bottom:1px solid var(--line-soft)}
+.rv .sline:last-child{border-bottom:0}
+.rv .sline .lbl{
+  font-family:var(--label);font-size:7.5px;font-weight:700;letter-spacing:.12em;
+  text-transform:uppercase;color:var(--faint-solid);flex:0 0 44px;padding-top:3px;
+}
+.rv .sline .val{font-size:12px;color:var(--dim);min-width:0}
+
+/* The last thing read before the only irreversible button on the screen, so it
+   is set apart rather than being one more list among the others. */
+.rv .leaves{background:#0D0D0D;border-top:1px solid var(--line)}
+.rv .leaves .res .st{color:var(--faint-solid)}
+
+/* New comments arriving while you work. Amber, because unlike a /green run this
+   may actually change what you were about to say. Still not blocking: the queue
+   stays the set you agreed to triage. */
+.rv .autobar{
+  display:flex;align-items:baseline;gap:9px;padding:6px 15px;flex:0 0 auto;
+  border-bottom:1px solid var(--line-soft);flex-wrap:wrap;
+  background:rgba(224,162,68,.06);border-left:2px solid var(--attn);
+  font-family:var(--mono);font-size:10.5px;color:var(--dim);
+}
+.rv .autobar b{color:var(--attn);font-weight:400}
+.rv .autobar .why{margin-left:auto;color:var(--faint-solid)}
+.rv .autobar .act{margin-left:0;padding:2px 7px;font-size:8px;letter-spacing:.1em}

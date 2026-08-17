@@ -78,6 +78,13 @@
       <div class="diff" id="diffbody"></div>
     </div>
 
+    <!-- ============ REVIEW OVERLAY ============ -->
+    <!-- Rendered entirely by renderReview(): it is six screens rather than one
+         layout, so markup here would be five hidden shells. Ids inside take an
+         `rv-` prefix — classes can be shared with the diff overlay above, ids
+         cannot. -->
+    <div class="overlay rv" id="rvoverlay"></div>
+
     <div class="termwrap" id="termwrap">
       <div class="fempty" id="termempty">
         No session selected.<br>

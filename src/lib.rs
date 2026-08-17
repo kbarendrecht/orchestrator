@@ -290,7 +290,6 @@ fn router(app: Arc<AppState>) -> Router {
         .route("/api/pr/:number/stash", post(api::pr_stash))
         // The only irreversible one. See `post::run` for the order.
         .route("/api/pr/:number/post", post(api::pr_post))
-        .route("/api/pr/:number/resolve", post(api::resolve_pr))
         .route("/api/pr/:number/green", post(api::green_pr))
         .route("/ws/events", get(ws::events))
         .route("/ws/pty", get(ws::pty))

@@ -490,7 +490,7 @@ pub async fn diff_file(
 }
 
 // ---------------------------------------------------------------------------
-// /resolve (§8)
+// Review queue
 // ---------------------------------------------------------------------------
 
 /// Ask the review poller to fetch now. It owns the fetch and the state write, so
@@ -829,24 +829,6 @@ async fn gate_worktree(app: &Arc<AppState>, number: u64) -> Result<std::path::Pa
     app.workspace_path(&ws)
         .await
         .ok_or_else(|| ApiError(anyhow::anyhow!("the worktree for PR #{number} vanished")))
-}
-
-pub async fn resolve_pr(
-    State(app): State<Arc<AppState>>,
-    Path(number): Path<u64>,
-) -> ApiResult<serde_json::Value> {
-    let pr = {
-        let inner = app.inner.read().await;
-        inner.prs.iter().find(|p| p.number == number).cloned()
-    };
-    let pr = pr.ok_or_else(|| anyhow::anyhow!("PR #{number} is not in the current poll"))?;
-    if pr.unresolved == 0 && !pr.unresolved_capped && !pr.changes_requested {
-        return Err(ApiError(anyhow::anyhow!(
-            "PR #{number} has no unresolved review threads"
-        )));
-    }
-    let id = spawn::spawn_command_session(&app, number, &pr.head_ref, "triage").await?;
-    Ok(Json(json!({ "session": id })))
 }
 
 // ---------------------------------------------------------------------------

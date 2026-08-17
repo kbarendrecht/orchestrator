@@ -93,11 +93,9 @@ pub async fn spawn_worktree_session(app: &Arc<AppState>, name: Option<&str>) -> 
         if inner.workspaces.contains_key(name) {
             bail!("a workspace named {name} already exists");
         }
-        if inner
-            .sessions
-            .values()
-            .any(|s| matches!(&s.recovery, Some(ArchiveState::Recoverable { name: n, .. }) if n == name))
-        {
+        if inner.sessions.values().any(
+            |s| matches!(&s.recovery, Some(ArchiveState::Recoverable { name: n, .. }) if n == name),
+        ) {
             bail!(
                 "an archived session used the worktree name {name}; pick another (e.g. {name}-2) \
                  so its transcripts do not interleave"
@@ -158,55 +156,6 @@ pub async fn spawn_worktree_session(app: &Arc<AppState>, name: Option<&str>) -> 
     Ok(id)
 }
 
-/// Start a session for a vendored prompt that needs the PR's own head branch
-/// checked out.
-///
-/// Never automatic: review responses are your voice, and the triage pass
-/// expects you in the loop (§8). The PR number comes from the button's context, so the
-/// daemon never has to infer it.
-pub async fn spawn_command_session(
-    app: &Arc<AppState>,
-    pr: u64,
-    head_ref: &str,
-    command: &str,
-) -> Result<SessionId> {
-    // If the branch already has a worktree with a live session, take you there
-    // rather than spawning a second one (§8).
-    let existing = {
-        let inner = app.inner.read().await;
-        inner
-            .workspaces
-            .values()
-            .find(|w| w.branches.contains(&head_ref.to_string()))
-            .map(|w| w.id.clone())
-    };
-    if let Some(ws) = existing {
-        let live = app.live_sessions_in(&ws).await;
-        if let Some(id) = live.first() {
-            return Ok(*id);
-        }
-        return start_with_prompt(app, &ws, pr, command).await;
-    }
-
-    // Otherwise pin a worktree to that branch. `git worktree add` directly,
-    // because the WorktreeCreate hook always cuts a new branch from
-    // upstream/develop; `worktree-link` still runs at SessionStart.
-    {
-        let name = format!("pr-{pr}");
-        let inner = app.inner.read().await;
-        if inner.sessions.values().any(|s| {
-            matches!(&s.recovery, Some(ArchiveState::Recoverable { name: n, .. }) if n == &name)
-        }) {
-            bail!(
-                "an archived session used the worktree name {name}; remove it or rename before \
-                 reusing the name, or the two transcripts interleave"
-            );
-        }
-    }
-    let name = ensure_pr_worktree(app, pr, head_ref).await?;
-    start_with_prompt(app, &name, pr, command).await
-}
-
 /// Start a headless `/green` run pinned to the PR's head branch.
 ///
 /// §8 writes this as `claude -p "/green <pr>" --worktree`, but `--worktree`
@@ -228,8 +177,8 @@ pub async fn spawn_green_session(
     // The vendored prompt, inline. Typing `/green <pr>` would resolve from the
     // agent's own command path, which depends on a repo that is usually not
     // installed — and fails as "no such command" only after the session spawned.
-    let (owner, repo) = crate::resolve_repo(app)
-        .context("no GitHub repo configured and none on the remote")?;
+    let (owner, repo) =
+        crate::resolve_repo(app).context("no GitHub repo configured and none on the remote")?;
     let body = crate::prompt::render(
         crate::prompt::GREEN,
         &crate::prompt::Vars {
@@ -263,11 +212,11 @@ pub async fn spawn_green_session(
     env.push(("ORCH_SESSION_ID".to_string(), id.to_string()));
     // Parallel runs collide on ports and docker resource names, so each gets
     // its own compose project and port base (§8).
+    env.push(("COMPOSE_PROJECT_NAME".to_string(), format!("orchd-pr-{pr}")));
     env.push((
-        "COMPOSE_PROJECT_NAME".to_string(),
-        format!("orchd-pr-{pr}"),
+        "ORCHD_PORT_BASE".to_string(),
+        (20000 + (pr % 1000) * 20).to_string(),
     ));
-    env.push(("ORCHD_PORT_BASE".to_string(), (20000 + (pr % 1000) * 20).to_string()));
 
     let spawned = PtyHandle::spawn(&cmd, &path, &env, &unset, DEFAULT_SIZE)?;
     let mut session = Session::new(
@@ -313,29 +262,6 @@ pub async fn ensure_pr_worktree(app: &Arc<AppState>, pr: u64, head_ref: &str) ->
     app.register_worktree(&name, path, Some(head_ref.to_string()))
         .await;
     Ok(name)
-}
-
-async fn start_with_prompt(
-    app: &Arc<AppState>,
-    workspace: &str,
-    pr: u64,
-    command: &str,
-) -> Result<SessionId> {
-    let id = spawn_session(
-        app,
-        workspace,
-        Kind::Automation {
-            pr,
-            command: command.to_string(),
-        },
-        None,
-    )
-    .await?;
-    let mut inner = app.inner.write().await;
-    if let Some(s) = inner.sessions.get_mut(&id) {
-        s.pending_prompt = Some(format!("/{command} {pr}"));
-    }
-    Ok(id)
 }
 
 /// Worktree names become directory names and branch names (`worktree-<name>`),
@@ -389,7 +315,11 @@ fn watch_session_exit(app: Arc<AppState>, id: SessionId, handle: Arc<PtyHandle>)
 // ---------------------------------------------------------------------------
 
 /// Start a managed process declared in config for this workspace.
-pub async fn start_managed(app: &Arc<AppState>, workspace: &str, spec: &ManagedSpec) -> Result<String> {
+pub async fn start_managed(
+    app: &Arc<AppState>,
+    workspace: &str,
+    spec: &ManagedSpec,
+) -> Result<String> {
     let path = app
         .workspace_path(workspace)
         .await
@@ -718,7 +648,10 @@ mod tests {
 
     #[test]
     fn an_angular_error_block_becomes_the_summary() {
-        let v = verdict(&ng(), "\x1b[31mError:\x1b[0m src/app/x.ts:42:7 - error TS2304: nope");
+        let v = verdict(
+            &ng(),
+            "\x1b[31mError:\x1b[0m src/app/x.ts:42:7 - error TS2304: nope",
+        );
         match v {
             Some(Health::Failing { summary }) => {
                 // Colour codes stripped, so the rail shows readable text.

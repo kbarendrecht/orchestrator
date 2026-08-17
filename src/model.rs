@@ -22,7 +22,9 @@ pub const MAIN: &str = "main";
 pub enum WorkspaceKind {
     /// Docker stack, dev URL, `ng build --watch`.
     Main,
-    Worktree { name: String },
+    Worktree {
+        name: String,
+    },
 }
 
 pub struct Workspace {
@@ -201,11 +203,6 @@ pub struct Session {
     /// editing outside its worktree is a prompt problem worth seeing.
     pub boundary_violations: Vec<String>,
     pub last_reconcile: Option<SystemTime>,
-    /// Written into the pty once `SessionStart` fires.
-    ///
-    /// `initialUserMessage` is only honoured in non-interactive mode, and
-    /// `/resolve` is interactive, so the invocation is typed in instead (§8).
-    pub pending_prompt: Option<String>,
 }
 
 impl Session {
@@ -229,7 +226,6 @@ impl Session {
             dirty_paths: HashSet::new(),
             boundary_violations: Vec::new(),
             last_reconcile: None,
-            pending_prompt: None,
         }
     }
 
@@ -362,7 +358,10 @@ mod tests {
         assert!(State::Starting.is_busy());
         assert!(!your_turn(TurnReason::TurnComplete).is_busy());
         // Stopped on a red build is idle too: it reached Stop and wants you.
-        assert!(!State::BuildFailing { summary: "x".into() }.is_busy());
+        assert!(!State::BuildFailing {
+            summary: "x".into()
+        }
+        .is_busy());
         assert!(!State::Exited.is_busy());
     }
 
@@ -371,14 +370,22 @@ mod tests {
         assert!(!your_turn(TurnReason::Ready).wants_attention());
         assert!(your_turn(TurnReason::TurnComplete).wants_attention());
         assert!(your_turn(TurnReason::AskedAQuestion).wants_attention());
-        assert!(State::BuildFailing { summary: "x".into() }.wants_attention());
+        assert!(State::BuildFailing {
+            summary: "x".into()
+        }
+        .wants_attention());
         assert!(!State::Working.wants_attention());
     }
 
     #[test]
     fn a_finished_turn_outranks_one_you_never_typed_into() {
         assert!(your_turn(TurnReason::TurnComplete).rank() < your_turn(TurnReason::Ready).rank());
-        assert!(State::BuildFailing { summary: "x".into() }.rank()
-            < your_turn(TurnReason::TurnComplete).rank());
+        assert!(
+            State::BuildFailing {
+                summary: "x".into()
+            }
+            .rank()
+                < your_turn(TurnReason::TurnComplete).rank()
+        );
     }
 }
