@@ -99,7 +99,16 @@ pub async fn guard(
     // The token closes the "any local process" hole. Hooks cannot easily carry
     // it, which is why they are confined to a separate prefix and a schema that
     // only ever updates state.
-    let needs_token = !is_hook && req.method() != axum::http::Method::GET;
+    //
+    // GETs are otherwise exempt so a same-origin address-bar read works. That
+    // holds while a GET only hands back state the daemon already had; a GET
+    // that *spends the GitHub token* on an outbound call is a different
+    // proposition, because any local process could then drive authenticated
+    // GitHub traffic through the daemon and burn its rate limit. Those carry
+    // the token like a mutating route does — the SPA's `get()` already sends it
+    // on every request, so this costs the UI nothing.
+    let spends_github_token = path.starts_with("/api/pr/") && path.ends_with("/threads");
+    let needs_token = !is_hook && (req.method() != axum::http::Method::GET || spends_github_token);
     if needs_token {
         let presented = headers
             .get("x-orch-token")
@@ -555,6 +564,51 @@ fn open_external(url: &str) -> anyhow::Result<()> {
         return Ok(());
     }
     anyhow::bail!("no browser opener found (tried {})", candidates.join(", "))
+}
+
+/// Every review thread on a PR, with bodies.
+///
+/// Deliberately not part of the 5-minute poll: that needs a count, and pulling
+/// every comment on every open PR to get one would be a large query on a short
+/// timer (§6). This runs when the review overlay opens, for a single PR, and
+/// pages past 50 so the `50+` the rail shows becomes a real number here.
+///
+/// Always refetches. The cache it writes exists so the later post step can
+/// check the `head_sha` it replied against, not to serve reads — a stale thread
+/// list is exactly the thing this endpoint must never hand back.
+pub async fn pr_threads(
+    State(app): State<Arc<AppState>>,
+    Path(number): Path<u64>,
+) -> ApiResult<serde_json::Value> {
+    let (owner, name) = crate::resolve_repo(&app)
+        .ok_or_else(|| anyhow::anyhow!("no GitHub repo configured and none on the remote"))?;
+    let token = crate::github::resolve_token(app.cfg.github_token_file.as_deref())?;
+
+    // `github::threads` shells curl, so it must not run on the async runtime.
+    let fetched = tokio::task::spawn_blocking(move || {
+        crate::github::threads(&token.value, &owner, &name, number)
+    })
+    .await
+    .context("the thread fetch panicked")??;
+
+    let body = json!({
+        "viewer": fetched.viewer,
+        "head_sha": fetched.head_sha,
+        "answerable": fetched.answerable(),
+        "threads": fetched.threads,
+    });
+
+    {
+        let mut inner = app.inner.write().await;
+        inner.threads.insert(
+            number,
+            crate::state::ThreadCache {
+                fetched: std::time::SystemTime::now(),
+                threads: fetched,
+            },
+        );
+    }
+    Ok(Json(body))
 }
 
 pub async fn resolve_pr(
