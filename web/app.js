@@ -1290,10 +1290,24 @@ function queue() {
     .map((t) => ({ t, p: by.get(t.id) }));
 }
 
-/** Which position is selected on a card: your pick, else the recommendation. */
+/** Whether a position can be acted on at all.
+ *
+ *  Only one thing makes a position unavailable: a story with no tracker
+ *  configured. It is hidden rather than offered-and-refused. */
+const offered = (pos) => pos.does !== 'story+reply' || !!reviewState.data.tracker;
+
+/** Which position is selected on a card: your pick, else the recommendation.
+ *
+ *  Falls through to the first position that is actually offered, because the
+ *  recommendation is often the story one — that is the whole point of a story on a
+ *  review summary — and with no tracker it is not on screen. Leaving the pick
+ *  pointing at a hidden row would have Enter send a decision the daemon refuses. */
 function pickOf(item) {
   const own = reviewState.picks[item.t.id];
-  return own === undefined ? item.p.recommend : own;
+  const want = own === undefined ? item.p.recommend : own;
+  if (offered(item.p.positions[want])) return want;
+  const first = item.p.positions.findIndex(offered);
+  return first < 0 ? want : first;
 }
 
 const positionOf = (item) => item.p.positions[pickOf(item)];
@@ -1791,6 +1805,10 @@ function rvPositions(item) {
   const chosen = pickOf(item);
 
   item.p.positions.forEach((pos, i) => {
+    // No tracker means nowhere to file, so the option is not shown at all — the
+    // overlay is not welded to one particular tracker. The daemon refuses it too
+    // if it arrives anyway; this is so it never has to.
+    if (!offered(pos)) return;
     const opt = el('div', 'opt' + (i === chosen ? ' on' : ''));
     const head = el('button', 'optHead');
     head.appendChild(el('span', 'k', String(i + 1)));
@@ -1971,10 +1989,12 @@ function rvFinal(root) {
   root.appendChild(body);
 
   const out = outward(q);
-  const blocked = q.filter((x) => isHandled(x) &&
-    (positionOf(x).does === 'manual' || positionOf(x).does === 'story+reply'));
+  const blocked = q.filter((x) => isHandled(x) && positionOf(x).does === 'manual');
   const bits = [];
   if (out.commits) bits.push('push 1 commit');
+  // Named separately from the GitHub count, because it is a write to another
+  // system and the one thing a retry cannot simply re-derive.
+  if (out.stories) bits.push(`file ${out.stories} story${out.stories === 1 ? '' : 's'}`);
   if (out.total) bits.push(`post ${out.total} to github`);
   const label = bits.length ? bits.join(' · ') : 'nothing to send';
 
@@ -1993,11 +2013,11 @@ function rvFinal(root) {
     const warn = el('div', 'banner');
     warn.appendChild(el('span', 'ico', '▲'));
     const tx = el('span', 'tx');
-    tx.appendChild(el('b', null, 'Two positions are not built yet.'));
+    tx.appendChild(el('b', null, 'The manual phase is not built yet.'));
     tx.appendChild(el('p', null,
-      'Filing a story needs the Shortcut MCP, and Manual needs a phase that opens after the ' +
-      'accepted patches are committed. The daemon refuses them by name rather than posting ' +
-      'nothing quietly — pick another position on ' +
+      'It has to open after the accepted patches are committed, so you edit a tree that ' +
+      'already reflects every other decision. The daemon refuses it by name rather than ' +
+      'posting nothing quietly — pick another position on ' +
       blocked.map((x) => threadLabel(x.t)).join(', ') + ', or skip it.'));
     warn.appendChild(tx);
     root.insertBefore(warn, root.querySelector('.strip'));
@@ -2092,6 +2112,16 @@ function rvLeavesSec(q) {
     row.appendChild(c);
     group.appendChild(row);
   }
+  if (out.stories) {
+    const row = el('div', 'res wait');
+    row.appendChild(el('span', 'st', '↑'));
+    const c = el('span', 'c');
+    c.appendChild(el('span', 't',
+      `${out.stories} story${out.stories === 1 ? '' : 's'} filed in the tracker, and ` +
+      `${out.stories === 1 ? 'its id' : 'their ids'} put into a reply.`));
+    row.appendChild(c);
+    group.appendChild(row);
+  }
   if (out.total) {
     const row = el('div', 'res wait');
     row.appendChild(el('span', 'st', '↑'));
@@ -2130,6 +2160,9 @@ function outward(q) {
   }
   const replies = handled.filter((x) => replyOf(x).trim() &&
     ['reply', 'change+reply', 'story+reply', 'manual'].includes(positionOf(x).does)).length;
+  // Counted apart from the GitHub writes: a story goes to a different system, and
+  // it is the one thing in the batch that is not re-derivable from the PR.
+  const stories = handled.filter((x) => positionOf(x).does === 'story+reply').length;
   const thumbs = handled.filter((x) =>
     ['thumbsup', 'change+thumbsup'].includes(positionOf(x).does)).length;
 
@@ -2149,6 +2182,7 @@ function outward(q) {
   return {
     files,
     commits: files.length ? 1 : 0,
+    stories,
     replies, thumbs, rerequests,
     total: replies + thumbs + rerequests,
   };
@@ -2224,17 +2258,43 @@ function rvReport(root) {
     body.appendChild(sec);
   }
 
-  body.appendChild(resultSec('landed', r.landed, (x) => ({
-    cls: 'ok', st: '✓',
-    t: x.already
-      ? `${whatWord(x.what)} was already there — nothing sent.`
-      : `${whatWord(x.what)} posted. Cannot be unsent.`,
-  })));
+  body.appendChild(resultSec('landed', r.landed, (x) => {
+    if (x.what === 'story') {
+      return {
+        cls: 'ok', st: '✓',
+        t: x.already
+          /* A reused story is the retry working, and it carries a consequence
+             worth stating: the fields are whatever the first run filed, so any
+             edit made since is not in the tracker. */
+          ? `Story ${x.story.id} was already filed — reused, not filed again. ` +
+            'Its fields are as they were then, so any later edit is not in it.'
+          : `Story ${x.story.id} filed. Its reply carries the link; a retry reuses ` +
+            'this id rather than filing a second one.',
+        link: x.story.url,
+      };
+    }
+    return {
+      cls: 'ok', st: '✓',
+      t: x.already
+        ? `${whatWord(x.what)} was already there — nothing sent.`
+        : `${whatWord(x.what)} posted. Cannot be unsent.`,
+    };
+  }));
   body.appendChild(resultSec('failed', r.failed, (x) => ({
-    cls: 'no', st: '✕', t: `${whatWord(x.what)} not posted.`, err: x.error,
+    // A story is filed, not posted. The verb is the difference between "a
+    // colleague can see this" and "a record exists somewhere else".
+    cls: 'no', st: '✕',
+    t: x.what === 'story' ? 'Story not filed.' : `${whatWord(x.what)} not posted.`,
+    err: x.error,
   })));
-  body.appendChild(resultSec('not attempted', r.held_back, (x) => ({
-    cls: 'wait', st: '·', t: x.waiting_on, held: true,
+  /* `skipped` and `held_back` are the same row: never tried, and here is what it
+     is waiting on. They arrive as two lists only because one is per-write and the
+     other is per-reviewer — rendering only `held_back` dropped every reply that
+     was skipped because its story did not land. */
+  body.appendChild(resultSec('not attempted', [...r.skipped, ...r.held_back], (x) => ({
+    cls: 'wait', st: '·',
+    t: x.what === 'reply' ? `Reply not posted — ${x.waiting_on}.` : x.waiting_on,
+    held: true,
   })));
   root.appendChild(body);
 
@@ -2250,7 +2310,8 @@ function rvReport(root) {
     : 're-reads the threads first · never reposts'));
 }
 
-const whatWord = (w) => ({ reply: 'Reply', thumbs_up: 'Thumbs up', rerequest: 'Re-request' }[w] || w);
+const whatWord = (w) =>
+  ({ story: 'Story', reply: 'Reply', thumbs_up: 'Thumbs up', rerequest: 'Re-request' }[w] || w);
 
 function waitRow(text) {
   const row = el('div', 'res wait');
@@ -2273,6 +2334,14 @@ function resultSec(title, rows, shape) {
     const c = el('span', 'c');
     if (x.label) c.appendChild(el('span', 'p', x.label));
     c.appendChild(el('span', s.held ? 't held' : 't', s.t));
+    if (s.link) {
+      const a = el('a', 'm', s.link);
+      a.href = s.link;
+      a.target = '_blank';
+      a.rel = 'noreferrer';
+      a.style.color = 'var(--work)';
+      c.appendChild(a);
+    }
     if (s.err) c.appendChild(el('span', 'err', s.err));
     row.appendChild(c);
     group.appendChild(row);
@@ -2498,7 +2567,7 @@ function reviewKey(e) {
   if (/^[1-9]$/.test(e.key) && reviewState.screen === 'card') {
     const item = queue()[reviewState.i];
     const i = +e.key - 1;
-    if (item && item.p.positions[i]) {
+    if (item && item.p.positions[i] && offered(item.p.positions[i])) {
       reviewState.picks[item.t.id] = i;
       delete reviewState.skipped[item.t.id];
       renderReview();
@@ -2748,7 +2817,12 @@ window.addEventListener('keydown', (e) => {
     }
     if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
       e.preventDefault();
-      if (reviewState.screen === 'final') sendBatch();
+      // Through the button rather than straight to `sendBatch`, or the shortcut
+      // sends a batch the button itself refuses — which it did until now.
+      if (reviewState.screen === 'final') {
+        const send = $('rvoverlay').querySelector('.acts .act.warm');
+        if (send && !send.disabled) send.click();
+      }
       return;
     }
     // Alt is left alone so the session switcher keeps working underneath.

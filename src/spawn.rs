@@ -188,8 +188,8 @@ pub async fn spawn_green_session(
             login: login.to_string(),
             upstream: app.cfg.upstream_ref.clone(),
             upstream_remote: app.cfg.upstream_remote.clone(),
-            // /green never posts proposals; the placeholder still has to resolve.
-            proposals_url: String::new(),
+            // /green's template uses none of the review flow's vars.
+            ..Default::default()
         },
     )?;
 

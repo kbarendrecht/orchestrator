@@ -54,6 +54,9 @@ pub struct Batch {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum What {
+    /// Filed in the tracker. First in the enum because it is first in the
+    /// sequence: the id has to exist before the reply that carries it.
+    Story,
     Reply,
     ThumbsUp,
     Rerequest,
@@ -70,6 +73,11 @@ pub struct Landed {
     /// retry: "posted" and "already posted" read the same to a reviewer but not
     /// to someone deciding whether the retry worked.
     pub already: bool,
+    /// Set on a `Story` row. Not a bare id on the struct, which would be
+    /// meaningless next to a reply or a reaction — and the report needs the URL
+    /// too, to show what the reply will actually link to.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub story: Option<crate::story::StoryRef>,
 }
 
 /// A write that was attempted and refused. `error` is `gh`'s own words.
@@ -137,6 +145,9 @@ struct Handled {
     /// The story to file, for a `story+reply` position. Taken from the proposal
     /// the human read, never from the payload — same rule as the patch.
     story: Option<crate::proposal::StoryDraft>,
+    /// The thread's own GitHub URL, which goes into the story body so a later run
+    /// can find the story instead of filing a second one.
+    permalink: String,
     /// `(path, line)` for the blame that picks the fixup target. Only for a
     /// position that writes code.
     touched: Option<(String, u32)>,
@@ -283,6 +294,11 @@ fn resolve(
             patch: pos.patch.clone().filter(|_| pos.does.writes_code()),
             reply,
             story: pos.story.clone().filter(|_| pos.does.files_story()),
+            permalink: thread
+                .comments
+                .first()
+                .map(|c| c.url.clone())
+                .unwrap_or_default(),
             touched,
         });
     }
@@ -362,6 +378,24 @@ pub async fn run(
         report.pushed = Some(crate::git::head_sha(&path)?);
     }
 
+    // --- the stories, before the replies that carry their ids ---------------
+    //
+    // After the push on purpose. A local refusal has to keep "nothing external
+    // happened" true, which is what makes the pre-commit panel what it is. And of
+    // the two half-done states, a pushed commit with an unfiled story is the one a
+    // retry fixes; a filed story with an unpushed commit is not.
+    let wanted: Vec<crate::story::Wanted> = handled
+        .iter()
+        .filter_map(|h| {
+            h.story.as_ref().map(|draft| crate::story::Wanted {
+                thread_id: h.thread_id.clone(),
+                draft: draft.clone(),
+                permalink: h.permalink.clone(),
+            })
+        })
+        .collect();
+    let filed = crate::story::file_all(app, pr.number, &wanted).await;
+
     let (owner, name) =
         crate::resolve_repo(app).context("no GitHub repo configured and none on the remote")?;
     let target = Target {
@@ -369,7 +403,7 @@ pub async fn run(
         owner,
         name,
     };
-    post_outward(&target, pr.number, fresh, &handled, &mut report).await;
+    post_outward(&target, pr.number, fresh, &handled, &filed, &mut report).await;
     Ok(report)
 }
 
@@ -416,32 +450,75 @@ async fn write_local(
     })
 }
 
-/// The outward writes, in the order the design settled: replies, then reactions,
-/// then re-requests.
+/// The outward writes, in the order the design settled: stories, then replies,
+/// then reactions, then re-requests.
 ///
-/// A failure does **not** stop the rest. Each write is independent, and the one
-/// dependency that does exist — a re-request asserting "everything of yours is
-/// addressed" — is expressed by the failed thread counting as still open, so its
-/// author lands in `held_back` on its own.
+/// A failure does **not** stop the rest. Each write is independent, and the two
+/// dependencies that do exist are expressed rather than sequenced: a re-request
+/// asserting "everything of yours is addressed" falls out of the failed thread
+/// counting as still open, and a reply that needs a story id is skipped when the
+/// story is not there, because posting a literal `{story}` is worse than posting
+/// nothing.
 async fn post_outward(
     target: &Target,
     pr: u64,
     fresh: &Threads,
     handled: &[Handled],
+    filed: &crate::story::Results,
     report: &mut PostReport,
 ) {
     let mut done: Vec<&str> = Vec::new();
 
     for h in handled {
         let mut all_landed = true;
+        let mut reply = h.reply.clone();
 
-        if let Some(text) = &h.reply {
+        if h.story.is_some() {
+            match filed.get(&h.thread_id) {
+                Some(Ok(f)) => {
+                    report.landed.push(Landed {
+                        thread_id: h.thread_id.clone(),
+                        label: h.label.clone(),
+                        what: What::Story,
+                        already: f.reused,
+                        story: Some(f.story.clone()),
+                    });
+                    // The whole reason the token exists: the id could not be known
+                    // when the reply was drafted. `replace` rather than `replacen`,
+                    // so a reply that mentions it twice is consistent.
+                    reply = reply.map(|t| t.replace(crate::proposal::STORY_TOKEN, &f.story.link()));
+                }
+                other => {
+                    all_landed = false;
+                    report.failed.push(Failed {
+                        thread_id: h.thread_id.clone(),
+                        label: h.label.clone(),
+                        what: What::Story,
+                        error: match other {
+                            Some(Err(e)) => e.clone(),
+                            // `file_all` answers for every thread it was given, so
+                            // this is unreachable rather than expected.
+                            _ => "the story run answered nothing for this thread".to_string(),
+                        },
+                    });
+                    report.skipped.push(Skipped {
+                        label: h.label.clone(),
+                        what: What::Reply,
+                        waiting_on: "the story it links to was not filed".to_string(),
+                    });
+                    reply = None;
+                }
+            }
+        }
+
+        if let Some(text) = &reply {
             match already_replied(fresh, &h.thread_id, text) {
                 true => report.landed.push(Landed {
                     thread_id: h.thread_id.clone(),
                     label: h.label.clone(),
                     what: What::Reply,
                     already: true,
+                    story: None,
                 }),
                 false => match blocking(target, &h.root, Send::Reply(text.clone())).await {
                     Ok(()) => report.landed.push(Landed {
@@ -449,6 +526,7 @@ async fn post_outward(
                         label: h.label.clone(),
                         what: What::Reply,
                         already: false,
+                        story: None,
                     }),
                     Err(e) => {
                         all_landed = false;
@@ -475,6 +553,7 @@ async fn post_outward(
                     label: h.label.clone(),
                     what: What::ThumbsUp,
                     already: false,
+                    story: None,
                 }),
                 Err(e) => {
                     all_landed = false;

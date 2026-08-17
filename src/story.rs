@@ -26,7 +26,7 @@
 //! report's "reused" wording; losing it costs latency, not correctness, which is
 //! why it may degrade to empty like every other store here.
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
@@ -106,6 +106,33 @@ impl StoryRef {
     }
 }
 
+/// One story asked for: which thread it answers, and the text approved on the card.
+pub struct Wanted {
+    pub thread_id: String,
+    pub draft: crate::proposal::StoryDraft,
+    /// The thread's own GitHub URL. Appended to the body, and the key the filer
+    /// searches on — which is what makes a second run find this story rather than
+    /// create another.
+    pub permalink: String,
+}
+
+/// A story that now exists, and whether this batch is what created it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Filed {
+    pub story: StoryRef,
+    /// It was already there — from the cache, or found by the search. The report
+    /// says so, because "filed" and "already filed" read the same to a reviewer
+    /// but not to someone deciding whether a retry worked.
+    pub reused: bool,
+}
+
+/// Per thread: the story, or why there is not one.
+///
+/// A failure is a value rather than an error, because the batch carries on — the
+/// thread simply stays open and its author is held back, which the report already
+/// knows how to say.
+pub type Results = HashMap<String, std::result::Result<Filed, String>>;
+
 /// Stories filed per PR, keyed by the thread they answer.
 ///
 /// Nested rather than keyed on a tuple because JSON object keys are strings, and
@@ -140,9 +167,584 @@ impl Cache {
     }
 }
 
+// ---------------------------------------------------------------------------
+// The run
+// ---------------------------------------------------------------------------
+
+/// What the agent writes into the drop file.
+#[derive(Debug, Deserialize)]
+struct Report {
+    #[serde(default)]
+    stories: Vec<Reported>,
+}
+
+#[derive(Debug, Deserialize)]
+struct Reported {
+    thread_id: String,
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default)]
+    url: Option<String>,
+    /// False when the search found it already there.
+    #[serde(default)]
+    created: bool,
+    #[serde(default)]
+    error: Option<String>,
+}
+
+/// The line appended to every story body.
+///
+/// Load-bearing, not decoration: it is what the filer searches for, so a run that
+/// created a story and died before reporting is found rather than duplicated. The
+/// daemon writes it so the agent cannot forget to, and so its exact shape is one
+/// thing rather than a prompt instruction that might drift.
+fn source_line(pr: u64, permalink: &str) -> String {
+    format!("Source: review of #{pr} — {permalink}")
+}
+
+/// File every story this batch needs, in one agent run.
+///
+/// One launch for all of them: two story positions must not mean two cold starts
+/// each reading a 200-line skill, inside an HTTP request the SPA is blocking on.
+///
+/// Never returns `Err`. A failure belongs to a thread, and the batch continues —
+/// the thread stays open and holds its author back from a re-request on its own.
+pub async fn file_all(
+    app: &std::sync::Arc<crate::state::AppState>,
+    pr: u64,
+    wanted: &[Wanted],
+) -> Results {
+    let mut out: Results = HashMap::new();
+    if wanted.is_empty() {
+        return out;
+    }
+
+    // The cache first, so a retry of a half-finished batch only asks about what is
+    // actually missing.
+    let mut todo: Vec<&Wanted> = Vec::new();
+    {
+        let inner = app.inner.read().await;
+        for w in wanted {
+            match inner.stories.get(pr, &w.thread_id) {
+                Some(hit) => {
+                    out.insert(
+                        w.thread_id.clone(),
+                        Ok(Filed {
+                            story: hit.clone(),
+                            reused: true,
+                        }),
+                    );
+                }
+                None => todo.push(w),
+            }
+        }
+    }
+    if todo.is_empty() {
+        return out;
+    }
+
+    match run_filer(app, pr, &todo).await {
+        Ok(reported) => {
+            for w in &todo {
+                match reported.iter().find(|r| r.thread_id == w.thread_id) {
+                    Some(r) => {
+                        out.insert(w.thread_id.clone(), accept(r));
+                    }
+                    // Every thread given was required to come back. A missing one
+                    // is not "nothing happened" — the story may exist — so it says
+                    // what a retry will do rather than implying a clean slate.
+                    None => {
+                        out.insert(
+                            w.thread_id.clone(),
+                            Err(
+                                "the story run reported nothing for this thread. If it got as \
+                                 far as filing, the next attempt will find that story by its \
+                                 link back to the thread rather than making a second one."
+                                    .to_string(),
+                            ),
+                        );
+                    }
+                }
+            }
+            // Cache what landed, so a retry does not pay for the agent again.
+            let filed: Vec<(String, StoryRef)> = out
+                .iter()
+                .filter_map(|(t, r)| r.as_ref().ok().map(|f| (t.clone(), f.story.clone())))
+                .collect();
+            if !filed.is_empty() {
+                let mut inner = app.inner.write().await;
+                for (thread, story) in filed {
+                    inner.stories.put(pr, &thread, story);
+                }
+                if let Err(e) = crate::store::save_stories(&inner.stories) {
+                    // A cache that failed to persist costs a search next time.
+                    tracing::warn!("could not save stories.json: {e:#}");
+                }
+            }
+        }
+        Err(e) => {
+            let why = format!("{e:#}");
+            for w in &todo {
+                out.insert(w.thread_id.clone(), Err(why.clone()));
+            }
+        }
+    }
+    out
+}
+
+/// Turn one reported entry into a result, refusing a pair that does not hang
+/// together.
+fn accept(r: &Reported) -> std::result::Result<Filed, String> {
+    if let Some(e) = &r.error {
+        return Err(e.clone());
+    }
+    let (Some(id), Some(url)) = (&r.id, &r.url) else {
+        return Err("reported neither a story nor an error".to_string());
+    };
+    let story = StoryRef {
+        id: id.trim().to_string(),
+        url: url.trim().to_string(),
+    };
+    if !story.consistent() {
+        // The one check that matters here: a fabricated pair would put a permanent
+        // public link to somebody else's story into a comment on a colleague's
+        // review, and nothing downstream would notice.
+        return Err(format!(
+            "reported {} with url {}, which is not that story — refusing to link it",
+            story.id, story.url
+        ));
+    }
+    Ok(Filed {
+        story,
+        reused: !r.created,
+    })
+}
+
+/// Spawn the filer, wait for it, read what it wrote.
+async fn run_filer(
+    app: &std::sync::Arc<crate::state::AppState>,
+    pr: u64,
+    todo: &[&Wanted],
+) -> Result<Vec<Reported>> {
+    use crate::config::Config;
+    use crate::model::{Kind, Session};
+    use crate::pty::PtyHandle;
+
+    let token = resolve_token(app.cfg.shortcut_token_file.as_deref())?;
+    let head_ref = {
+        let inner = app.inner.read().await;
+        inner
+            .prs
+            .iter()
+            .find(|p| p.number == pr)
+            .map(|p| p.head_ref.clone())
+            .with_context(|| format!("PR #{pr} is not in the current poll"))?
+    };
+    let workspace = crate::api::workspace_for(app, &head_ref)
+        .await
+        .with_context(|| format!("no worktree holding {head_ref}"))?;
+    let path = app
+        .workspace_path(&workspace)
+        .await
+        .context("the worktree vanished")?;
+
+    // Scratch under the daemon's own config dir, not the worktree and not
+    // elsewhere in the checkout. Both alternatives are broken: the repo's
+    // `worktree-edit-boundary` hook blocks a write under the main checkout that
+    // lands outside the worktree, and a file *inside* the worktree would make it
+    // dirty, which is the gate `post::run` re-checks.
+    let scratch = Config::config_dir()?.join(format!("story-{pr}"));
+    std::fs::create_dir_all(&scratch)?;
+    let drop_file = scratch.join("stories.json");
+    // Cleared per run, so a previous run's report can never be read as this one's.
+    // Only the file: the directory may hold state that has to outlive a run.
+    let _ = std::fs::remove_file(&drop_file);
+
+    let drafts: Vec<serde_json::Value> = todo
+        .iter()
+        .map(|w| {
+            let body = format!(
+                "{}\n\n{}",
+                w.draft.body.trim_end(),
+                source_line(pr, &w.permalink)
+            );
+            serde_json::json!({
+                "thread_id": w.thread_id,
+                "title": w.draft.title,
+                "body": body,
+            })
+        })
+        .collect();
+
+    let (owner, repo) =
+        crate::resolve_repo(app).context("no GitHub repo configured and none on the remote")?;
+    let body = crate::prompt::render(
+        crate::prompt::STORY,
+        &crate::prompt::Vars {
+            pr,
+            owner,
+            repo,
+            stories: serde_json::to_string_pretty(&drafts)?,
+            drop_file: drop_file.to_string_lossy().into_owned(),
+            ..Default::default()
+        },
+    )?;
+
+    let id = uuid::Uuid::new_v4();
+    let settings = Config::hooks_settings_path()?;
+    let mut cmd = vec![
+        "claude".to_string(),
+        "-p".to_string(),
+        body,
+        "--output-format".to_string(),
+        "stream-json".to_string(),
+        "--verbose".to_string(),
+        "--session-id".to_string(),
+        id.to_string(),
+        "--settings".to_string(),
+        settings.to_string_lossy().into_owned(),
+        // Scoped to the tracker server, reading the skill, and writing its report.
+        //
+        // `mcp__shortcut` without parentheses, because MCP rules do not support
+        // them — and the whole server rather than a list of tool names, because
+        // the skill routes through `epics-search`, `labels-list`,
+        // `workflows-list` and more, and an enumerated allowlist would fight it
+        // and fail as a silent mid-run denial.
+        //
+        // **Bare `Write`.** Measured, because all three plausible spellings
+        // behave differently: `Write` permits creating the report, `Edit` does
+        // not (creating a file is the Write tool, and an Edit rule does not cover
+        // it), and `Write(<path>)` matches nothing at all — so it reads as a tight
+        // rule and denies everything. Where it may write is scoped by `--add-dir`
+        // instead, which is the only mechanism that actually constrains a path.
+        "--allowedTools".to_string(),
+        "mcp__shortcut Read Write".to_string(),
+        // The scratch dir is outside the worktree, so it has to be granted.
+        "--add-dir".to_string(),
+        scratch.to_string_lossy().into_owned(),
+    ];
+    if app.cfg.tracker == crate::config::Tracker::Stub {
+        // Only the stub, and nothing else: `--strict-mcp-config` ignores every
+        // configured server, which is what keeps a verification run from reaching
+        // the real tracker by accident.
+        cmd.push("--mcp-config".to_string());
+        cmd.push(stub_config(&scratch)?.to_string_lossy().into_owned());
+        cmd.push("--strict-mcp-config".to_string());
+    }
+
+    let (mut env, unset) = crate::config::transcript_env(app.cfg.persist_transcripts);
+    env.push(("ORCH_SESSION_ID".to_string(), id.to_string()));
+    // What `${SHORTCUT_API_TOKEN}` in the repo's `.mcp.json` expands from. In the
+    // child's environment, never in the settings file the daemon writes — that
+    // would put a secret in `~/.config/orchd/`.
+    env.push(("SHORTCUT_API_TOKEN".to_string(), token));
+
+    let spawned = PtyHandle::spawn(&cmd, &path, &env, &unset, crate::spawn::DEFAULT_SIZE)?;
+    let worktree = path.clone();
+    let handle = spawned.handle.clone();
+    // A real session, so its pty is there to read when a story goes wrong. It is
+    // automation like `/green` and triage, and archives the same way.
+    let mut session = Session::new(
+        id,
+        workspace,
+        path,
+        Kind::Automation {
+            pr,
+            command: "story".to_string(),
+        },
+    );
+    session.pty = Some(spawned.handle.clone());
+    session.pid = spawned.pid;
+    app.inner.write().await.sessions.insert(id, session);
+    app.notify().await;
+
+    // The one timeout in this daemon. Every other agent runs under a rail entry
+    // somebody is watching; this one runs inside an HTTP request the SPA is
+    // blocking on, so a hang has to end by itself.
+    let budget = std::time::Duration::from_secs(app.cfg.story_timeout_seconds);
+    let timed_out = tokio::time::timeout(budget, handle.wait()).await.is_err();
+    if timed_out {
+        let _ = handle.kill();
+        tracing::warn!(pr, session = %id, "story run timed out after {budget:?}");
+    }
+    app.notify().await;
+
+    // The permission model can scope *where* it may write but not stop it writing
+    // into the worktree it runs in, and the prompt is the only thing telling it not
+    // to. So the tree is checked rather than assumed. Nothing here is recoverable —
+    // the commit is already pushed — but leftover junk would otherwise surface as a
+    // confusing `Gate::Dirty` on the next review, with no clue where it came from.
+    match crate::git::is_clean(&worktree) {
+        Ok(true) => {}
+        Ok(false) => tracing::warn!(
+            pr, session = %id,
+            "the story run left the worktree dirty; it was told not to write there"
+        ),
+        Err(e) => tracing::warn!("could not check the worktree after the story run: {e:#}"),
+    }
+
+    let raw = std::fs::read_to_string(&drop_file).map_err(|_| {
+        if timed_out {
+            anyhow::anyhow!(
+                "the story run was killed after {}s without reporting. If it got as far as \
+                 filing, the next attempt finds that story by its link back to the thread.",
+                app.cfg.story_timeout_seconds
+            )
+        } else {
+            anyhow::anyhow!(
+                "the story run exited without writing its report. Its session is in the rail; \
+                 a retry searches the tracker first, so it will not file twice."
+            )
+        }
+    })?;
+    let report: Report = serde_json::from_str(&raw)
+        .with_context(|| format!("the story run wrote something unparseable to {drop_file:?}"))?;
+    Ok(report.stories)
+}
+
+/// Write the stub server's MCP config next to the drop file.
+///
+/// A real stdio MCP server *named* `shortcut`, so the tool names the prompt and
+/// the skill use are byte-identical to the live ones and there is no difference in
+/// the daemon between stub and live beyond which flags are passed.
+fn stub_config(scratch: &Path) -> Result<std::path::PathBuf> {
+    let script = std::env::current_dir()?.join("tools/stub-shortcut-mcp.py");
+    anyhow::ensure!(
+        script.exists(),
+        "tracker is `stub` but {} is missing",
+        script.display()
+    );
+    // The log lives outside the per-run scratch, because it is the stub's whole
+    // database — the created stories are replayed from it so `stories-search` can
+    // find them. Keeping it in the scratch dir made it disappear with every wipe,
+    // which quietly turned the search into something that could never hit, and made
+    // "the retry heals" look proven when it had merely re-created the story under
+    // the same id.
+    let log = crate::config::Config::config_dir()?.join("story-stub.jsonl");
+    let cfg = serde_json::json!({
+        "mcpServers": {
+            "shortcut": {
+                "type": "stdio",
+                "command": "python3",
+                "args": [script.to_string_lossy(), "--log", log.to_string_lossy()],
+            }
+        }
+    });
+    let path = scratch.join("stub-mcp.json");
+    std::fs::write(&path, serde_json::to_string_pretty(&cfg)?)?;
+    Ok(path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// Drive the real filer against the stub MCP server.
+    ///
+    /// Ignored by default: it spawns a `claude` process, which is slow and needs a
+    /// login. But it is the only thing that proves the parts a unit test cannot —
+    /// that the flags let the agent reach `mcp__shortcut` and write its report at
+    /// all, that the prompt is followed, and that the search finds a story a
+    /// previous run created instead of making a second one.
+    ///
+    /// It deliberately does **not** post to GitHub. The reply path is already
+    /// proven by `github_write::posts_for_real`, and pointing this at a real PR
+    /// would notify a colleague to verify a stub.
+    ///
+    /// ```text
+    /// cargo test --lib -- --ignored --nocapture files_for_real_against_the_stub
+    /// ```
+    #[tokio::test]
+    #[ignore = "spawns a claude process"]
+    async fn files_for_real_against_the_stub() {
+        use crate::config::{Config, Tracker};
+
+        let cfg = Config::load_or_init(None).expect("the daemon's own config");
+        // The agent has to run inside a real checkout of the repo, or `.mcp.json`
+        // and `.claude/skills/shortcut` do not resolve.
+        let main = cfg.main_checkout.clone();
+        assert!(
+            main.join(".mcp.json").exists(),
+            "{} has no .mcp.json, so no tracker server to approve",
+            main.display()
+        );
+
+        let token_file = std::env::temp_dir().join("orchd-story-test-token");
+        std::fs::write(&token_file, "stub-token-not-used-by-the-stub").unwrap();
+        let cfg = Config {
+            tracker: Tracker::Stub,
+            shortcut_token_file: Some(token_file),
+            // Long enough for a cold start plus the skill read.
+            story_timeout_seconds: 300,
+            ..cfg
+        };
+        let app = crate::state::AppState::new(cfg, "t".into(), crate::window::Chrome::None);
+
+        // A PR and a worktree, faked into place: this test is about the filer, not
+        // about the poller or `ensure_pr_worktree`.
+        let pr = 999_001;
+        let head_ref = "worktree-story-test";
+        {
+            let mut inner = app.inner.write().await;
+            let mut fake = fake_pr(pr, head_ref);
+            fake.head_sha = Some("deadbeef".into());
+            inner.prs.push(fake);
+            // Onto `main`, which `AppState::new` already created — `register_worktree`
+            // is `or_insert`, so it would not touch it. The filer only needs a
+            // directory that is a real checkout of the repo; it does not rebase or
+            // commit, so the main checkout is a safe place to run it.
+            if let Some(w) = inner.workspaces.get_mut("main") {
+                w.branches.insert(head_ref.to_string());
+            }
+        }
+        let _ = main;
+
+        let permalink = "https://github.com/o/r/pull/999001#discussion_r777";
+        let wanted = vec![Wanted {
+            thread_id: "PRRT_test_1".into(),
+            draft: crate::proposal::StoryDraft {
+                title: "Splits de guard uit de service".into(),
+                body: "The guard belongs in its own file.".into(),
+            },
+            permalink: permalink.into(),
+        }];
+
+        // --- first run: it must create exactly one story ---------------------
+        let out = file_all(&app, pr, &wanted).await;
+        let filed = out
+            .get("PRRT_test_1")
+            .expect("an answer for the thread")
+            .as_ref()
+            .unwrap_or_else(|e| panic!("the filer failed: {e}"));
+        eprintln!("filed {} at {}", filed.story.id, filed.story.url);
+        assert!(!filed.reused, "the first run created it");
+        assert!(filed.story.consistent(), "id and url must agree");
+        assert!(
+            filed.story.link().contains(&filed.story.id),
+            "the reply substitution carries the id"
+        );
+
+        let log = Config::config_dir().unwrap().join("story-stub.jsonl");
+        let calls = std::fs::read_to_string(&log).unwrap_or_default();
+        let created = calls.lines().filter(|l| l.contains("\"created\"")).count();
+        assert_eq!(created, 1, "exactly one story per batch:\n{calls}");
+        // The permalink has to be in the description, or the search below cannot
+        // find it and a retry would duplicate.
+        assert!(
+            calls.contains(permalink),
+            "the body must carry the thread link:\n{calls}"
+        );
+
+        // --- second run, cache warm: no agent, same story --------------------
+        let again = file_all(&app, pr, &wanted).await;
+        let hit = again.get("PRRT_test_1").unwrap().as_ref().unwrap();
+        assert!(hit.reused, "the cache answered");
+        assert_eq!(hit.story, filed.story);
+
+        // --- third run, cache cleared: the search must find it ---------------
+        //
+        // This is the path that makes stories re-derivable rather than remembered:
+        // a run that filed and then died leaves no record, and the next attempt has
+        // to find the story instead of making another.
+        app.inner.write().await.stories = Cache::default();
+        let healed = file_all(&app, pr, &wanted).await;
+        let found = healed
+            .get("PRRT_test_1")
+            .unwrap()
+            .as_ref()
+            .unwrap_or_else(|e| panic!("the search did not heal: {e}"));
+        assert_eq!(found.story, filed.story, "found the same story");
+        assert!(found.reused, "found rather than created");
+
+        let calls = std::fs::read_to_string(&log).unwrap_or_default();
+        let created = calls.lines().filter(|l| l.contains("\"created\"")).count();
+        assert_eq!(created, 1, "still exactly one story:\n{calls}");
+    }
+
+    /// A run that does not finish in time is killed, and says what a retry will do.
+    ///
+    /// The budget is deliberately far too short — shorter than a cold start — so the
+    /// kill path is exercised rather than waited for. What matters is not the
+    /// timeout itself but the wording: the story may or may not exist, so the
+    /// message must not imply a clean slate. This is the case that would file a
+    /// duplicate if the filer trusted a ledger instead of searching.
+    #[tokio::test]
+    #[ignore = "spawns a claude process"]
+    async fn a_run_that_overruns_is_killed_and_says_what_a_retry_does() {
+        use crate::config::{Config, Tracker};
+
+        let cfg = Config::load_or_init(None).expect("config");
+        let main = cfg.main_checkout.clone();
+        let token_file = std::env::temp_dir().join("orchd-story-test-token");
+        std::fs::write(&token_file, "stub-token").unwrap();
+        let cfg = Config {
+            tracker: Tracker::Stub,
+            shortcut_token_file: Some(token_file),
+            story_timeout_seconds: 5,
+            ..cfg
+        };
+        let app = crate::state::AppState::new(cfg, "t".into(), crate::window::Chrome::None);
+
+        let pr = 999_002;
+        let head_ref = "worktree-story-timeout";
+        {
+            let mut inner = app.inner.write().await;
+            inner.prs.push(fake_pr(pr, head_ref));
+            if let Some(w) = inner.workspaces.get_mut("main") {
+                w.branches.insert(head_ref.to_string());
+            }
+        }
+        let _ = main;
+
+        let out = file_all(
+            &app,
+            pr,
+            &[Wanted {
+                thread_id: "PRRT_timeout".into(),
+                draft: crate::proposal::StoryDraft {
+                    title: "Nooit afgemaakt".into(),
+                    body: "This run gets killed.".into(),
+                },
+                permalink: "https://github.com/o/r/pull/999002#discussion_r1".into(),
+            }],
+        )
+        .await;
+
+        let err = out
+            .get("PRRT_timeout")
+            .expect("an answer even for a killed run")
+            .as_ref()
+            .expect_err("a killed run cannot have filed anything it could report");
+        eprintln!("reported: {err}");
+        assert!(err.contains("killed"), "{err}");
+        // The load-bearing half. "Nothing happened" would be a lie, and the retry
+        // has to be described as safe or nobody will press it.
+        assert!(
+            err.contains("link back to the thread"),
+            "the message must say the retry finds the story rather than duplicating: {err}"
+        );
+        // Nothing was cached, so a retry goes back to the agent — which searches.
+        assert!(app.inner.read().await.stories.is_empty());
+    }
+
+    fn fake_pr(number: u64, head_ref: &str) -> crate::github::Pr {
+        crate::github::Pr {
+            number,
+            title: "story test".into(),
+            url: String::new(),
+            head_ref: head_ref.into(),
+            head_owner: None,
+            base_ref: "develop".into(),
+            is_draft: false,
+            mergeable: "MERGEABLE".into(),
+            merge_state: "CLEAN".into(),
+            checks: crate::github::Checks::Unknown,
+            head_sha: None,
+            unresolved: 0,
+            unresolved_capped: false,
+            changes_requested: false,
+            children: vec![],
+        }
+    }
 
     fn story() -> StoryRef {
         StoryRef {

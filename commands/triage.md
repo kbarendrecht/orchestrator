@@ -167,6 +167,12 @@ curl -sS -X POST '{{PROPOSALS_URL}}' \
   if they disagree — it is how "do A but say B" is kept impossible.
 - A `story+reply` reply must contain the literal `{story}`, which the daemon replaces with
   the id once the story exists. It cannot be written in advance.
+- {{TRACKER}}
+- A `story` is `title` and `body` only. Write both in Dutch, as the repo does. **No em
+  dashes and no `.plan/` or other internal labels** — the tracker rejects the first and
+  nobody outside this session understands the second. Say what the follow-up work is, and
+  why it is out of scope for this PR; the daemon appends the link back to the thread, so
+  do not write one yourself.
 - **Every unresolved thread needs an entry.** A thread you silently drop is the one
   failure the human cannot see.
 - Do not send `hunk` or the current code — the daemon reads `diffHunk` from GitHub so the

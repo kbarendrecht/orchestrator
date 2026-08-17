@@ -17,10 +17,36 @@ pub const TRIAGE: &str = include_str!("../commands/triage.md");
 /// The rebase-and-fix pass. Pushes, unlike triage.
 pub const GREEN: &str = include_str!("../commands/green.md");
 
+/// The story pass. Places records the human already approved, and reports back by
+/// writing one file — the only agent here whose *output* the daemon reads.
+pub const STORY: &str = include_str!("../commands/story.md");
+
+/// What `{{TRACKER}}` becomes when a tracker is configured.
+///
+/// A sentence rather than a boolean, so the prompt reads as prose in both states
+/// instead of carrying a conditional the substitution cannot express. The agent
+/// must not propose `story+reply` when the daemon would only refuse it — that
+/// would put an option on a card that cannot be acted on.
+pub const TRACKER_ON: &str = "A tracker is configured, so `story+reply` is available for a \
+     point that is fair but out of scope here.";
+
+/// And when it is not.
+pub const TRACKER_OFF: &str = "**No tracker is configured, so never propose `story+reply`.** \
+     There is nowhere to file one and the daemon would refuse it. For a fair but out-of-scope \
+     point, say so plainly in a reply instead of promising a story.";
+
 /// Everything a vendored prompt can ask for.
 ///
 /// Deliberately not the token: that goes in the environment as `ORCHD_TOKEN`, so
 /// it is never in prompt text that ends up in a transcript or a pty buffer.
+///
+/// One struct for three templates, so each caller fills in only the fields its own
+/// template uses and leaves the rest at [`Default`]. Note what that costs: `render`
+/// catches an unsubstituted placeholder but cannot catch an *empty* substitution,
+/// because an empty string is a substitution. The guard against that is the
+/// per-template assertions in this module's tests, which read the real files and
+/// check the things downstream code depends on actually arriving.
+#[derive(Default)]
 pub struct Vars {
     pub pr: u64,
     pub owner: String,
@@ -32,6 +58,14 @@ pub struct Vars {
     pub upstream_remote: String,
     /// Where a triage run POSTs its proposals.
     pub proposals_url: String,
+    /// Whether `story+reply` is available at all, as a whole sentence rather than
+    /// a flag. The prompt reads as prose either way, and the agent must not
+    /// propose an option the daemon would then refuse.
+    pub tracker: String,
+    /// The stories to file, as the JSON array `commands/story.md` embeds.
+    pub stories: String,
+    /// The file a story run writes its answer into.
+    pub drop_file: String,
 }
 
 /// Substitute every `{{PLACEHOLDER}}`, and refuse to ship one that is left.
@@ -50,6 +84,9 @@ pub fn render(template: &str, v: &Vars) -> Result<String> {
         ("{{UPSTREAM}}", v.upstream.as_str()),
         ("{{UPSTREAM_REMOTE}}", v.upstream_remote.as_str()),
         ("{{PROPOSALS_URL}}", v.proposals_url.as_str()),
+        ("{{TRACKER}}", v.tracker.as_str()),
+        ("{{STORIES}}", v.stories.as_str()),
+        ("{{DROP_FILE}}", v.drop_file.as_str()),
     ]
     .iter()
     .fold(template.to_string(), |acc, (k, val)| acc.replace(k, val));
@@ -80,18 +117,69 @@ mod tests {
             upstream: "upstream/develop".into(),
             upstream_remote: "upstream".into(),
             proposals_url: "http://127.0.0.1:7777/api/pr/10001/proposals".into(),
+            tracker: TRACKER_ON.into(),
+            stories: "[]".into(),
+            drop_file: "/tmp/x/stories.json".into(),
         }
     }
 
     #[test]
-    fn both_vendored_prompts_render_with_nothing_left_over() {
+    fn every_vendored_prompt_renders_with_nothing_left_over() {
         // The real templates, not fixtures: a placeholder added to either file
         // without being added here should fail this test, not a triage run.
-        for (name, t) in [("triage", TRIAGE), ("green", GREEN)] {
+        for (name, t) in [("triage", TRIAGE), ("green", GREEN), ("story", STORY)] {
             let out = render(t, &vars()).unwrap_or_else(|e| panic!("{name}: {e}"));
             assert!(!out.contains("{{"), "{name} still has a placeholder");
             assert!(out.contains("10001"), "{name} did not get the PR number");
         }
+    }
+
+    #[test]
+    fn the_tracker_sentence_reads_both_ways() {
+        // The schema block still lists `story+reply` as a valid `does`, so the
+        // prose is the only thing that tells the agent not to use it. If these
+        // two drift apart, the agent proposes an option the daemon refuses.
+        let on = render(TRIAGE, &vars()).unwrap();
+        assert!(on.contains("`story+reply` is available"), "tracker on");
+
+        let off = render(
+            TRIAGE,
+            &Vars {
+                tracker: TRACKER_OFF.into(),
+                ..vars()
+            },
+        )
+        .unwrap();
+        assert!(off.contains("never propose `story+reply`"), "tracker off");
+        // Either way the vocabulary itself is unchanged — the daemon validates
+        // against it and the schema is one list, not two.
+        assert!(off.contains("story+reply"));
+    }
+
+    #[test]
+    fn the_story_prompt_still_says_the_things_it_must() {
+        let out = render(
+            STORY,
+            &Vars {
+                stories: r#"[{"thread_id":"PRRT_1"}]"#.into(),
+                drop_file: "/tmp/orchd-story-1/stories.json".into(),
+                ..vars()
+            },
+        )
+        .unwrap();
+        // Where it reports, and the two rules that keep a duplicate impossible.
+        assert!(out.contains("/tmp/orchd-story-1/stories.json"), "drop file");
+        assert!(out.contains(r#""thread_id":"PRRT_1""#), "the drafts");
+        assert!(out.contains("Search before you create"), "the search rule");
+        assert!(out.contains("Never two"), "the one-story rule");
+        // The approved text is the human's, not the agent's to improve.
+        assert!(
+            out.contains("Do not rewrite `title` or `body`"),
+            "the no-rewrite rule must be stated"
+        );
+        // Both halves must come from the tool, or a fabricated pair could be
+        // reported and posted.
+        assert!(out.contains("must both come from the tool response"));
     }
 
     #[test]

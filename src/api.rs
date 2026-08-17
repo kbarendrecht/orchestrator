@@ -862,14 +862,63 @@ pub async fn pr_post(
     Path(number): Path<u64>,
     Json(batch): Json<crate::post::Batch>,
 ) -> ApiResult<crate::post::PostReport> {
+    // One batch per PR at a time, refused rather than queued — same shape as
+    // `green_pr`'s `branch_busy`.
+    //
+    // This was invisible while every write was idempotent: two concurrent batches
+    // would post the same reply twice and GitHub would collapse the reaction. A
+    // story is neither. Both would search, both would find nothing, both would
+    // create — so the check-then-file is a plain race on the one action that cannot
+    // be undone.
+    let lock = format!("post:{number}");
+    {
+        let mut inner = app.inner.write().await;
+        if inner.locks_held.iter().any(|l| l == &lock) {
+            return Err(ApiError(anyhow::anyhow!(
+                "a batch for PR #{number} is already running; wait for it rather than \
+                 sending a second one"
+            )));
+        }
+        inner.locks_held.push(lock.clone());
+    }
+    // Held for the whole batch and released however it ends, including a panic in
+    // the middle: a leaked lock would make the PR unpostable until a restart.
+    let released = Released {
+        app: app.clone(),
+        lock,
+    };
+
     let pr = {
         let inner = app.inner.read().await;
         pr_from_poll(&inner.prs, number)?
     };
     let fresh = fetch_threads(&app, number).await?;
     let report = crate::post::run(&app, &pr, &fresh, batch).await?;
+    drop(released);
     app.notify().await;
     Ok(Json(report))
+}
+
+/// Releases a lock in `locks_held` when it goes out of scope.
+///
+/// A guard rather than a `let _ = ...` at each exit, because `pr_post` has several
+/// `?` between taking the lock and finishing, and every one of them would otherwise
+/// leak it.
+struct Released {
+    app: Arc<AppState>,
+    lock: String,
+}
+
+impl Drop for Released {
+    fn drop(&mut self) {
+        let (app, lock) = (self.app.clone(), self.lock.clone());
+        // `Drop` cannot await, so the release is spawned. It is the last thing
+        // touching this lock, so nothing races it.
+        tokio::spawn(async move {
+            let mut inner = app.inner.write().await;
+            inner.locks_held.retain(|l| l != &lock);
+        });
+    }
 }
 
 /// The worktree the gate buttons act on, refusing when there is not one.

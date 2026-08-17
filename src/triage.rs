@@ -121,6 +121,14 @@ pub async fn spawn(app: &Arc<AppState>, pr: u64, head_ref: &str, login: &str) ->
             upstream: app.cfg.upstream_ref.clone(),
             upstream_remote: app.cfg.upstream_remote.clone(),
             proposals_url: format!("http://127.0.0.1:{}/api/pr/{pr}/proposals", app.cfg.port),
+            // Whether the agent may offer `story+reply` at all: an option the
+            // daemon would refuse should never reach a card.
+            tracker: if app.cfg.tracker.is_configured() {
+                prompt::TRACKER_ON.to_string()
+            } else {
+                prompt::TRACKER_OFF.to_string()
+            },
+            ..Default::default()
         },
     )?;
 

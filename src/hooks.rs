@@ -455,6 +455,19 @@ pub fn write_settings(port: u16) -> Result<PathBuf> {
     let settings = json!({
         // Repo config cannot redirect the daemon's HTTP hooks elsewhere (§11).
         "allowedHttpHookUrls": [format!("http://127.0.0.1:{port}/*")],
+        // Approve the tracker server from the repo's own `.mcp.json`.
+        //
+        // Necessary, and this is the only place it can go. A project `.mcp.json`
+        // server stays *pending* until it is approved in a settings layer, and a
+        // pending server is dropped **silently** — no error, no diagnostic, the
+        // tool simply is not there. The repo's approvals live in
+        // `.claude/settings.local.json`, which is gitignored, so a worktree does
+        // not inherit them.
+        //
+        // Named rather than `enableAllProjectMcpServers`: the repo declares nine
+        // servers including browser automation and three monitoring instances, and a
+        // story-filing agent has no business with any of them.
+        "enabledMcpjsonServers": ["shortcut"],
         "hooks": {
             "SessionStart":     [session_start],
             "UserPromptSubmit": [entry("user-prompt-submit")],
