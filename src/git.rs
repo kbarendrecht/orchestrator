@@ -206,8 +206,12 @@ pub enum Unpushed {
     /// No remote counterpart, so nothing on this branch has ever been pushed.
     /// `commits` is what it carries beyond the upstream base — the work that
     /// would actually be lost.
-    NeverPushed { commits: Vec<String> },
-    Ahead { commits: Vec<String> },
+    NeverPushed {
+        commits: Vec<String>,
+    },
+    Ahead {
+        commits: Vec<String>,
+    },
     UpToDate,
 }
 
@@ -404,12 +408,7 @@ pub fn rebase_onto(cwd: &Path, upstream: &str) -> Result<()> {
             "rebase stopped on conflicts in {} file(s): {}. Resolve them in a session, \
              or abort.",
             files.len(),
-            files
-                .iter()
-                .take(4)
-                .cloned()
-                .collect::<Vec<_>>()
-                .join(", ")
+            files.iter().take(4).cloned().collect::<Vec<_>>().join(", ")
         );
     }
     bail!(
@@ -434,6 +433,253 @@ pub fn conflicted_files(cwd: &Path) -> Result<Vec<String>> {
 
 pub fn fetch_upstream(main: &Path) -> Result<()> {
     git(main, &["fetch", "upstream", "develop", "--no-tags"])?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// The review flow's writes
+// ---------------------------------------------------------------------------
+
+/// Refs a push must never target, mirroring `guards/push.py`.
+///
+/// That guard is a `PreToolUse` hook on the **agent's** Bash, so a daemon-side
+/// push never passes through it. The rest of its rules — plain `--force`,
+/// `--set-upstream`, pushing to `upstream` — are structurally impossible below
+/// because the command is a fixed string, but the protected-ref rule has to be
+/// re-stated here or it simply is not enforced.
+const PROTECTED: [&str; 4] = ["develop", "main", "master", "release"];
+
+/// Push the PR's own branch, refusing to clobber anyone else's work.
+///
+/// `--force-with-lease` rather than `--force`: it fails when the remote moved
+/// since the last fetch, which is exactly the "someone else pushed" case that
+/// must not be overwritten. Never `-u`: rebinding upstream to origin breaks pull
+/// tracking in a triangular remote setup.
+pub fn push_with_lease(cwd: &Path, branch: &str) -> Result<()> {
+    if PROTECTED.contains(&branch) {
+        bail!("refusing to push to {branch}: open a PR instead");
+    }
+    let out = Command::new("git")
+        .args(["push", "--force-with-lease", "origin", branch])
+        .current_dir(cwd)
+        .output()
+        .context("running git push")?;
+    if out.status.success() {
+        return Ok(());
+    }
+    let err = String::from_utf8_lossy(&out.stderr);
+    // The lease failing is the one refusal worth naming: it means the remote
+    // moved, and the fix is to look at both sides rather than push harder.
+    if err.contains("stale info") || err.contains("fetch first") || err.contains("rejected") {
+        bail!(
+            "push refused: {branch} moved on origin since this review started. \
+             Someone else pushed, or /green ran. Re-triage rather than overwrite it."
+        );
+    }
+    bail!(
+        "push failed: {}",
+        err.lines()
+            .find(|l| !l.trim().is_empty())
+            .unwrap_or("no output")
+    );
+}
+
+/// Who last touched a line, and who wrote that commit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Blame {
+    pub sha: String,
+    pub author_email: String,
+}
+
+/// `git blame` one line of the **committed** state.
+///
+/// Must run before the patches are applied: blame on a dirty working tree
+/// attributes the line to the uncommitted change (an all-zero sha), which is
+/// nobody's commit and cannot be a fixup target.
+pub fn blame_line(cwd: &Path, path: &str, line: u32) -> Result<Option<Blame>> {
+    let range = format!("{line},{line}");
+    let out = Command::new("git")
+        .args(["blame", "-L", &range, "--porcelain", "--", path])
+        .current_dir(cwd)
+        .output()
+        .context("running git blame")?;
+    if !out.status.success() {
+        return Ok(None);
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut lines = text.lines();
+    let sha = match lines.next().and_then(|l| l.split_whitespace().next()) {
+        Some(s) if !s.chars().all(|c| c == '0') => s.to_string(),
+        // All-zero means "not committed yet".
+        _ => return Ok(None),
+    };
+    let email = text
+        .lines()
+        .find_map(|l| l.strip_prefix("author-mail "))
+        .map(|m| m.trim_matches(['<', '>']).to_string())
+        .unwrap_or_default();
+    Ok(Some(Blame {
+        sha,
+        author_email: email,
+    }))
+}
+
+/// Where the accepted changes should be folded.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Amend {
+    /// Fold into this commit of the PR's own history, keeping the subject of
+    /// each commit true to what it contains.
+    Fixup(String),
+    /// Amend `HEAD` instead, with the reason — shown so the fallback is visible
+    /// rather than silent.
+    Head(String),
+}
+
+/// Decide the fixup target for a set of touched lines, degrading to `HEAD`.
+///
+/// The original command asked a human to fold each change "into the commit that
+/// owns it"; `git blame` answers that mechanically. Three cases degrade, each
+/// deliberately:
+///
+/// - **the lines disagree** — one commit cannot be two, and splitting the batch
+///   per target is more history surgery than this is worth;
+/// - **the line came from the base branch** — it is not the PR's commit to
+///   rewrite;
+/// - **someone else authored it** — rewriting a colleague's commit under your own
+///   force-push is not ours to do, and it changes a sha they may have checked out.
+pub fn amend_target(
+    cwd: &Path,
+    merge_base: &str,
+    touched: &[(String, u32)],
+    my_email: &str,
+) -> Result<Amend> {
+    if touched.is_empty() {
+        return Ok(Amend::Head("nothing to attribute".into()));
+    }
+
+    let mut target: Option<Blame> = None;
+    for (path, line) in touched {
+        let Some(b) = blame_line(cwd, path, *line)? else {
+            return Ok(Amend::Head(format!(
+                "{path}:{line} is not in any commit yet"
+            )));
+        };
+        match &target {
+            None => target = Some(b),
+            Some(t) if t.sha == b.sha => {}
+            Some(t) => {
+                return Ok(Amend::Head(format!(
+                    "the changes span {} and {}",
+                    short(&t.sha),
+                    short(&b.sha)
+                )))
+            }
+        }
+    }
+    let hit = target.expect("non-empty touched set");
+
+    // An ancestor of the merge base came from the base branch, not this PR.
+    if is_ancestor(cwd, &hit.sha, merge_base) {
+        return Ok(Amend::Head(format!(
+            "{} predates this branch",
+            short(&hit.sha)
+        )));
+    }
+    if !hit.author_email.is_empty() && hit.author_email != my_email {
+        return Ok(Amend::Head(format!(
+            "{} is {}'s commit",
+            short(&hit.sha),
+            hit.author_email
+        )));
+    }
+    Ok(Amend::Fixup(hit.sha))
+}
+
+fn short(sha: &str) -> String {
+    sha.chars().take(7).collect()
+}
+
+/// Is `a` an ancestor of `b`? Exit status only, so a failure means "no".
+fn is_ancestor(cwd: &Path, a: &str, b: &str) -> bool {
+    Command::new("git")
+        .args(["merge-base", "--is-ancestor", a, b])
+        .current_dir(cwd)
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// Commit everything staged-or-not into the shape [`Amend`] chose.
+///
+/// `Fixup` writes a `fixup!` commit and then autosquashes it away, so the PR's
+/// history keeps one commit per change rather than growing a "fix review" commit.
+/// **`--autosquash` is silently ignored without `-i`**, which is why the
+/// sequence editor is stubbed out rather than the flag used alone.
+///
+/// A conflict during the rebase aborts and reports: there is no session attached
+/// to a button press to resolve one, and leaving a stopped rebase behind would
+/// strand the worktree.
+pub fn fold_in(cwd: &Path, amend: &Amend) -> Result<()> {
+    git(cwd, &["add", "-A"])?;
+    match amend {
+        Amend::Head(_) => {
+            git(cwd, &["commit", "--amend", "--no-edit"])?;
+            Ok(())
+        }
+        Amend::Fixup(sha) => {
+            git(cwd, &["commit", "--fixup", sha])?;
+            let out = Command::new("git")
+                .args(["rebase", "-i", "--autosquash", &format!("{sha}~1")])
+                .env("GIT_SEQUENCE_EDITOR", "true")
+                .env("GIT_EDITOR", "true")
+                .current_dir(cwd)
+                .output()
+                .context("running autosquash rebase")?;
+            if out.status.success() {
+                return Ok(());
+            }
+            let files = conflicted_files(cwd).unwrap_or_default();
+            if rebase_in_progress(cwd) {
+                let _ = rebase_abort(cwd);
+            }
+            bail!(
+                "could not fold into {}: the rebase conflicted{}. The change is still \
+                 committed on top; fold it by hand or leave it.",
+                short(sha),
+                if files.is_empty() {
+                    String::new()
+                } else {
+                    format!(" in {}", files.join(", "))
+                }
+            );
+        }
+    }
+}
+
+/// Commit the worktree as it stands — the gate's `commit…` button.
+pub fn commit_all(cwd: &Path, message: &str) -> Result<()> {
+    anyhow::ensure!(!message.trim().is_empty(), "a commit needs a message");
+    git(cwd, &["add", "-A"])?;
+    git(cwd, &["commit", "-m", message])?;
+    Ok(())
+}
+
+/// Stash the worktree — the gate's `stash` button.
+///
+/// Never popped automatically: popping onto a branch the review just amended can
+/// conflict, and silently juggling your uncommitted work is worse than leaving it
+/// where you put it. Untracked files go too, or the tree is not actually clean.
+pub fn stash(cwd: &Path) -> Result<()> {
+    git(
+        cwd,
+        &[
+            "stash",
+            "push",
+            "--include-untracked",
+            "-m",
+            "orchd: before a review batch",
+        ],
+    )?;
     Ok(())
 }
 
@@ -485,10 +731,7 @@ mod tests {
 
     #[test]
     fn excludes_sibling_worktrees_from_mains_view() {
-        let raw = rec(&[
-            "? .claude/worktrees/other/file.php",
-            "? src/Mine.php",
-        ]);
+        let raw = rec(&["? .claude/worktrees/other/file.php", "? src/Mine.php"]);
         let set = parse_status(&raw, true);
         assert_eq!(set.untracked.len(), 1);
         assert_eq!(set.untracked[0].path, "src/Mine.php");
@@ -502,7 +745,11 @@ mod tests {
     }
 
     fn scratch_repo() -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("orchd-git-{}-{:?}", std::process::id(), std::thread::current().id()));
+        let dir = std::env::temp_dir().join(format!(
+            "orchd-git-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let run = |args: &[&str]| {
@@ -572,5 +819,177 @@ mod tests {
         // Branched straight off upstream/develop and never pushed: there is no
         // work to lose, so teardown must not be blocked forever.
         assert!(!Unpushed::NeverPushed { commits: vec![] }.blocks_teardown());
+    }
+    /// A repo with two commits so blame has something to distinguish, plus a
+    /// `base` ref standing in for the merge base.
+    fn amend_repo() -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "orchd-amend-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let run = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(&dir)
+                .output()
+                .expect("git");
+        };
+        run(&["init", "-q", "-b", "main"]);
+        run(&["config", "user.email", "me@here"]);
+        run(&["config", "user.name", "me"]);
+        // Commit 1 stands in for the base branch's history.
+        std::fs::write(dir.join("f.txt"), "base1\nbase2\n").unwrap();
+        run(&["add", "-A"]);
+        run(&["commit", "-qm", "from develop"]);
+        run(&["branch", "base"]);
+        // Commit 2 is the PR's own.
+        std::fs::write(dir.join("f.txt"), "base1\nbase2\nmine\n").unwrap();
+        run(&["add", "-A"]);
+        run(&["commit", "-qm", "the PR commit"]);
+        dir
+    }
+
+    fn sha_of(dir: &Path, subject: &str) -> String {
+        let out = std::process::Command::new("git")
+            .args(["log", "--format=%H %s"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .find(|l| l.contains(subject))
+            .map(|l| l.split_whitespace().next().unwrap().to_string())
+            .expect("commit")
+    }
+
+    #[test]
+    fn a_line_from_this_prs_own_commit_is_a_fixup_target() {
+        let d = amend_repo();
+        let want = sha_of(&d, "the PR commit");
+        let got = amend_target(&d, "base", &[("f.txt".into(), 3)], "me@here").unwrap();
+        assert_eq!(got, Amend::Fixup(want));
+    }
+
+    #[test]
+    fn a_line_that_predates_the_branch_degrades_to_head() {
+        // Line 1 came from `develop`; it is not this PR's commit to rewrite.
+        let d = amend_repo();
+        match amend_target(&d, "base", &[("f.txt".into(), 1)], "me@here").unwrap() {
+            Amend::Head(why) => assert!(why.contains("predates"), "{why}"),
+            other => panic!("expected Head, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn someone_elses_commit_degrades_to_head() {
+        // Rewriting a colleague's commit under your own force-push changes a sha
+        // they may have checked out.
+        let d = amend_repo();
+        match amend_target(&d, "base", &[("f.txt".into(), 3)], "someone@else").unwrap() {
+            Amend::Head(why) => assert!(why.contains("commit"), "{why}"),
+            other => panic!("expected Head, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn changes_spanning_two_commits_degrade_to_head() {
+        let d = amend_repo();
+        let got = amend_target(
+            &d,
+            "base",
+            &[("f.txt".into(), 1), ("f.txt".into(), 3)],
+            "me@here",
+        )
+        .unwrap();
+        match got {
+            // Line 1 is from develop, so the span check or the predates check
+            // fires first — either way it must not be a fixup.
+            Amend::Head(_) => {}
+            other => panic!("expected Head, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn blame_on_an_uncommitted_line_is_none() {
+        // Blame must run against the committed state: a dirty tree attributes
+        // the line to an all-zero sha, which is nobody's commit.
+        let d = amend_repo();
+        std::fs::write(d.join("f.txt"), "base1\nbase2\nmine\nfresh\n").unwrap();
+        assert_eq!(blame_line(&d, "f.txt", 4).unwrap(), None);
+    }
+
+    #[test]
+    fn a_fixup_folds_away_and_keeps_the_commit_count() {
+        let d = amend_repo();
+        let target = sha_of(&d, "the PR commit");
+        let before = count_commits(&d);
+
+        // Edit the line that commit owns, then fold into it.
+        std::fs::write(d.join("f.txt"), "base1\nbase2\nMINE\n").unwrap();
+        fold_in(&d, &Amend::Fixup(target)).unwrap();
+
+        assert_eq!(count_commits(&d), before, "fixup should not add a commit");
+        assert!(!subjects(&d).iter().any(|s| s.starts_with("fixup!")));
+        let content = std::fs::read_to_string(d.join("f.txt")).unwrap();
+        assert!(content.contains("MINE"));
+    }
+
+    #[test]
+    fn a_head_amend_also_keeps_the_commit_count() {
+        let d = amend_repo();
+        let before = count_commits(&d);
+        std::fs::write(d.join("g.txt"), "new\n").unwrap();
+        fold_in(&d, &Amend::Head("spanned".into())).unwrap();
+        assert_eq!(count_commits(&d), before);
+        assert!(d.join("g.txt").exists());
+    }
+
+    fn count_commits(dir: &Path) -> usize {
+        subjects(dir).len()
+    }
+
+    fn subjects(dir: &Path) -> Vec<String> {
+        let out = std::process::Command::new("git")
+            .args(["log", "--format=%s"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .map(|l| l.to_string())
+            .collect()
+    }
+
+    #[test]
+    fn a_push_to_a_protected_ref_is_refused_before_it_runs() {
+        // guards/push.py only hooks the agent's Bash; a daemon push bypasses it.
+        let d = amend_repo();
+        for branch in ["develop", "main", "master", "release"] {
+            let err = push_with_lease(&d, branch).unwrap_err().to_string();
+            assert!(err.contains("refusing to push"), "{branch}: {err}");
+        }
+    }
+
+    #[test]
+    fn commit_all_needs_a_message_and_then_cleans_the_tree() {
+        let d = amend_repo();
+        std::fs::write(d.join("h.txt"), "x\n").unwrap();
+        assert!(commit_all(&d, "   ").is_err());
+        commit_all(&d, "wip").unwrap();
+        assert!(is_clean(&d).unwrap());
+    }
+
+    #[test]
+    fn stash_clears_untracked_files_too() {
+        // Otherwise the tree is not actually clean and the gate would still fire.
+        let d = amend_repo();
+        std::fs::write(d.join("tracked-edit.txt"), "x\n").unwrap();
+        std::fs::write(d.join("f.txt"), "base1\nbase2\nedited\n").unwrap();
+        stash(&d).unwrap();
+        assert!(is_clean(&d).unwrap());
+        assert!(!d.join("tracked-edit.txt").exists());
     }
 }
