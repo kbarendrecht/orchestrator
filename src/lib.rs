@@ -11,6 +11,7 @@ pub mod diff;
 pub mod edit;
 pub mod git;
 pub mod github;
+pub mod github_write;
 pub mod green;
 pub mod hooks;
 pub mod model;
@@ -275,6 +276,7 @@ fn router(app: Arc<AppState>) -> Router {
         .route("/api/reviews/refresh", post(api::refresh_reviews))
         .route("/api/prs/refresh", post(api::refresh_prs))
         .route("/api/open", post(api::open_url))
+        .route("/api/pr/:number/threads", get(api::pr_threads))
         .route("/api/pr/:number/resolve", post(api::resolve_pr))
         .route("/api/pr/:number/green", post(api::green_pr))
         .route("/ws/events", get(ws::events))
@@ -736,7 +738,7 @@ fn parse_semver(s: &str) -> Option<(u64, u64, u64)> {
     Some((major, minor, patch))
 }
 
-fn resolve_repo(app: &Arc<AppState>) -> Option<(String, String)> {
+pub(crate) fn resolve_repo(app: &Arc<AppState>) -> Option<(String, String)> {
     if let Some(r) = &app.cfg.repo {
         let (o, n) = r.split_once('/')?;
         return Some((o.to_string(), n.to_string()));
