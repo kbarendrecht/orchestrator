@@ -10,7 +10,7 @@ pub type SessionId = Uuid;
 
 /// Per-PR automation state (§8).
 ///
-/// Retry lives in the skill, not here: `/green` amends and rebases, so the head
+/// Retry lives in the prompt, not here: `/green` amends and rebases, so the head
 /// SHA changes on every internal attempt and SHA-based provenance is impossible
 /// *and* unnecessary. The daemon's job is only to avoid starting a second run
 /// and to be honest about a run that gave up.
@@ -21,7 +21,7 @@ pub enum PrAutomation {
         session: SessionId,
         started: SystemTime,
     },
-    /// The skill stopped without turning the PR green. It wants you.
+    /// The run stopped without turning the PR green. It wants you.
     Exhausted {
         at_head: String,
         at: SystemTime,
@@ -196,7 +196,7 @@ fn no(reason: String) -> Verdict {
 
 /// Whether a finished run left the PR in a state that counts as exhausted.
 ///
-/// A run that ends with the PR still red means the skill is asking for you (§8).
+/// A run that ends with the PR still red means the run is asking for you (§8).
 pub fn ended_red(pr: &Pr) -> bool {
     pr.checks == Checks::Failing || pr.mergeable == "CONFLICTING"
 }

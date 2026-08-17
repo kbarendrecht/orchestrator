@@ -317,21 +317,22 @@ function prDot(p) {
 
 let showPrs = true;
 
-/** A hand-triggered skill run against a PR. A refusal from the guard table is
- *  shown verbatim: it is the whole point of triggering by hand. */
-function skillButton(p, skill) {
-  const b = el('button', 'pract', `/${skill}`);
-  b.title = skill === 'green'
+/** A hand-triggered run against a PR. `action` is the endpoint name, which is
+ *  also what the button shows. A refusal from the guard table is shown verbatim:
+ *  it is the whole point of triggering by hand. */
+function actionButton(p, action) {
+  const b = el('button', 'pract', `/${action}`);
+  b.title = action === 'green'
     ? 'Start a headless /green run on this PR'
-    : 'Start a session on this PR and run /resolve';
+    : 'Start a session on this PR and triage its review threads';
   b.onclick = async (ev) => {
     ev.preventDefault();
     ev.stopPropagation();
     b.disabled = true;
     try {
-      const r = await call(`/api/pr/${p.number}/${skill}`);
+      const r = await call(`/api/pr/${p.number}/${action}`);
       pendingSelect = r.session;
-      toast(`/${skill} ${p.number}`);
+      toast(`/${action} ${p.number}`);
     } catch (e) {
       toast(e.message, true);
     } finally {
@@ -426,8 +427,8 @@ function prGroup() {
         // The skill stopped without turning it green: it wants you.
         row.appendChild(el('span', 'why gaveup', 'gave up'));
       }
-      if (needsResolve) row.appendChild(skillButton(p, 'resolve'));
-      if (needsGreen) row.appendChild(skillButton(p, 'green'));
+      if (needsResolve) row.appendChild(actionButton(p, 'resolve'));
+      if (needsGreen) row.appendChild(actionButton(p, 'green'));
     }
 
     // The row opens the PR; jumping to its session is the explicit chip, so

@@ -116,7 +116,7 @@ pub async fn session_start(
         }
     }
 
-    // The skill invocation is typed in rather than passed as an argument:
+    // The prompt is typed in rather than passed as an argument:
     // `initialUserMessage` is only honoured in non-interactive mode, and this
     // session is interactive so you can take it over mid-flight (§8).
     let pending = {
@@ -516,7 +516,7 @@ pub fn write_settings(port: u16) -> Result<PathBuf> {
 mod tests {
     use super::*;
 
-    /// The pending prompt has to reach the pty, or `/resolve` starts a session
+    /// The pending prompt has to reach the pty, or a triggered run starts a session
     /// that just sits there. Exercised against a real pty running `cat`, so no
     /// Claude process is involved.
     #[tokio::test]
@@ -544,7 +544,7 @@ mod tests {
             let mut inner = app.inner.write().await;
             let mut s = Session::new(id, MAIN.to_string(), dir.clone(), Kind::Interactive);
             s.pty = Some(spawned.handle.clone());
-            s.pending_prompt = Some("/resolve 4812".to_string());
+            s.pending_prompt = Some("/triage 4812".to_string());
             inner.sessions.insert(id, s);
         }
 
@@ -556,7 +556,7 @@ mod tests {
         let mut seen = false;
         for _ in 0..60 {
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-            if String::from_utf8_lossy(&spawned.handle.snapshot()).contains("/resolve 4812") {
+            if String::from_utf8_lossy(&spawned.handle.snapshot()).contains("/triage 4812") {
                 seen = true;
                 break;
             }

@@ -208,7 +208,7 @@ mod tests {
             uuid::Uuid::new_v4(),
             "invoice".into(),
             Path::new("/repo/.claude/worktrees/invoice").to_path_buf(),
-            Kind::Automation { pr: 4812, skill: "green".into() },
+            Kind::Automation { pr: 4812, command: "green".into() },
         );
         s.transcript_archived = true;
         s.recovery = Some(ArchiveState::Recoverable {
@@ -222,8 +222,24 @@ mod tests {
         let r = back.into_iter().next().unwrap();
         assert_eq!(r.id, s.id);
         assert!(r.transcript_archived);
-        assert_eq!(r.kind, Kind::Automation { pr: 4812, skill: "green".into() });
+        assert_eq!(r.kind, Kind::Automation { pr: 4812, command: "green".into() });
         assert!(matches!(r.recovery, Some(ArchiveState::Recoverable { .. })));
+    }
+
+    #[test]
+    fn a_record_written_before_the_rename_still_loads() {
+        // `Automation.skill` became `command` when the prompts were vendored
+        // into `commands/`. Sessions already on disk say `skill`, and a daemon
+        // that cannot read its own state file loses every archived session.
+        let old = r#"{"kind":"automation","pr":4812,"skill":"green"}"#;
+        let k: Kind = serde_json::from_str(old).unwrap();
+        assert_eq!(
+            k,
+            Kind::Automation {
+                pr: 4812,
+                command: "green".into()
+            }
+        );
     }
 }
 
