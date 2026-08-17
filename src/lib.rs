@@ -15,6 +15,7 @@ pub mod github_write;
 pub mod green;
 pub mod hooks;
 pub mod model;
+pub mod patch;
 pub mod pty;
 pub mod reviews;
 pub mod ring;
