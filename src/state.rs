@@ -68,6 +68,10 @@ pub struct Inner {
     /// and come back. Its absence after a run exits is how a failed run is
     /// detected: the agent reports by POSTing, not by its exit code.
     pub proposals: HashMap<u64, crate::proposal::ProposalSet>,
+    /// Stories already filed for a review thread, so a retry reuses one rather
+    /// than filing a second. A cache, not a ledger — `crate::story` explains why
+    /// losing it costs latency and not correctness.
+    pub stories: crate::story::Cache,
     /// Your own GitHub login, from the PR poll's `viewer { login }`. The vendored
     /// prompts take it as `{{LOGIN}}`.
     pub viewer: Option<String>,
@@ -155,6 +159,7 @@ impl AppState {
                 prs: Vec::new(),
                 threads: HashMap::new(),
                 proposals: HashMap::new(),
+                stories: Default::default(),
                 viewer: None,
                 pr_error: None,
                 pr_fetched: None,
@@ -210,7 +215,11 @@ impl AppState {
     async fn persist(&self) {
         let records: Vec<crate::store::SessionRecord> = {
             let inner = self.inner.read().await;
-            inner.sessions.values().map(crate::store::SessionRecord::of).collect()
+            inner
+                .sessions
+                .values()
+                .map(crate::store::SessionRecord::of)
+                .collect()
         };
         if let Err(e) = crate::store::save(&records) {
             tracing::warn!("could not persist session records: {e:#}");
@@ -313,9 +322,9 @@ impl AppState {
             sessions,
             prs,
             pr_error: inner.pr_error.clone(),
-            pr_age_ms: inner.pr_fetched.and_then(|t| {
-                now.duration_since(t).ok().map(|d| d.as_millis() as u64)
-            }),
+            pr_age_ms: inner
+                .pr_fetched
+                .and_then(|t| now.duration_since(t).ok().map(|d| d.as_millis() as u64)),
             pr_poll: inner.pr_poll,
             token_source: inner.token_source,
             reviews: inner.reviews.clone(),
@@ -354,11 +363,7 @@ impl AppState {
         if !edit.told.insert(session) {
             return None;
         }
-        let ago = edit
-            .at
-            .elapsed()
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
+        let ago = edit.at.elapsed().map(|d| d.as_secs()).unwrap_or(0);
         Some(format!(
             "STALE BUFFER: this file was rewritten in the orchestrator's editor {ago}s ago, \
              after you last read it. Re-read {} before writing, or you will overwrite that change.",
@@ -415,16 +420,19 @@ impl AppState {
         if let Some(b) = branch {
             branches.insert(b);
         }
-        inner.workspaces.entry(name.to_string()).or_insert(Workspace {
-            id: name.to_string(),
-            path,
-            kind: WorkspaceKind::Worktree {
-                name: name.to_string(),
-            },
-            branches,
-            processes: Vec::new(),
-            occupant: None,
-        });
+        inner
+            .workspaces
+            .entry(name.to_string())
+            .or_insert(Workspace {
+                id: name.to_string(),
+                path,
+                kind: WorkspaceKind::Worktree {
+                    name: name.to_string(),
+                },
+                branches,
+                processes: Vec::new(),
+                occupant: None,
+            });
     }
 
     pub async fn workspace_path(&self, id: &str) -> Option<PathBuf> {
@@ -623,10 +631,8 @@ impl SessionView {
             alive: s.pty.as_ref().map(|h| h.is_alive()).unwrap_or(false),
             dirty_count: s.dirty_paths.len(),
             boundary_violations: s.boundary_violations.clone(),
-            resumable: matches!(
-                s.recovery,
-                Some(ArchiveState::Recoverable { .. }) | None
-            ) && !matches!(s.recovery, Some(ArchiveState::TranscriptOnly)),
+            resumable: matches!(s.recovery, Some(ArchiveState::Recoverable { .. }) | None)
+                && !matches!(s.recovery, Some(ArchiveState::TranscriptOnly)),
         }
     }
 }
@@ -698,7 +704,10 @@ mod tests {
         let app = app().await;
         let other = std::env::temp_dir().join("orchd-untouched.txt");
         std::fs::write(&other, "x").unwrap();
-        assert!(app.claim_stale_warning(Uuid::new_v4(), &other).await.is_none());
+        assert!(app
+            .claim_stale_warning(Uuid::new_v4(), &other)
+            .await
+            .is_none());
         let _ = std::fs::remove_file(&other);
     }
 }

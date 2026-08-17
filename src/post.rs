@@ -134,6 +134,9 @@ struct Handled {
     does: Does,
     patch: Option<String>,
     reply: Option<String>,
+    /// The story to file, for a `story+reply` position. Taken from the proposal
+    /// the human read, never from the payload — same rule as the patch.
+    story: Option<crate::proposal::StoryDraft>,
     /// `(path, line)` for the blame that picks the fixup target. Only for a
     /// position that writes code.
     touched: Option<(String, u32)>,
@@ -148,6 +151,7 @@ fn resolve(
     positions: &crate::proposal::ProposalSet,
     fresh: &Threads,
     batch: &Batch,
+    tracker: crate::config::Tracker,
 ) -> Result<Vec<Handled>> {
     let mut out = Vec::new();
     for d in &batch.decisions {
@@ -165,22 +169,22 @@ fn resolve(
             )
         })?;
 
-        // Two positions exist in the vocabulary and not yet in the daemon. Named
-        // rather than silently skipped: a thread that quietly did nothing is
+        // Named rather than silently skipped: a thread that quietly did nothing is
         // indistinguishable from one that was handled, which is the whole failure
         // this flow is built to avoid.
-        match pos.does {
-            Does::StoryReply => bail!(
-                "thread {}: filing a story is not built yet — it needs the Shortcut MCP, \
-                 which is its own chunk of work. Pick another position or skip.",
-                d.thread_id
-            ),
-            Does::Manual => bail!(
+        if pos.does == Does::Manual {
+            bail!(
                 "thread {}: the manual phase is not built yet — it has to open after the \
                  accepted patches are committed. Pick another position or skip.",
                 d.thread_id
-            ),
-            _ => {}
+            );
+        }
+        if pos.does.files_story() && !tracker.is_configured() {
+            bail!(
+                "thread {}: no tracker is configured, so there is nowhere to file this. \
+                 Set `tracker` in the config, pick another position, or skip.",
+                d.thread_id
+            );
         }
 
         let thread = fresh
@@ -233,6 +237,43 @@ fn resolve(
             ),
             (false, _) => None,
         };
+        // The one agent-or-human string the validator never sized. It is about to
+        // carry a public URL, so it is bounded here rather than at the API edge.
+        if let Some(r) = &reply {
+            anyhow::ensure!(
+                r.len() <= crate::proposal::MAX_FIELD,
+                "thread {}: the reply exceeds {} bytes",
+                d.thread_id,
+                crate::proposal::MAX_FIELD
+            );
+        }
+        // `{story}` is what the id is substituted into, so a story reply without
+        // it would file a story and never link to it. The draft is validated on
+        // arrival; this catches the human deleting the token while editing. Refused
+        // here, which is before the local half and long before anything is filed.
+        if pos.does.files_story() {
+            let text = reply.as_deref().unwrap_or_default();
+            if !text.contains(crate::proposal::STORY_TOKEN) {
+                bail!(
+                    "thread {}: this reply files a story but no longer contains {} — \
+                     it would be filed with nothing linking to it. Put the token back, \
+                     or pick another position.",
+                    d.thread_id,
+                    crate::proposal::STORY_TOKEN
+                );
+            }
+        } else if let Some(text) = &reply {
+            // The reverse: a token in a position that files nothing would post the
+            // literal braces to GitHub.
+            if text.contains(crate::proposal::STORY_TOKEN) {
+                bail!(
+                    "thread {}: this reply contains {} but the position files no story, \
+                     so there would be no id to put there",
+                    d.thread_id,
+                    crate::proposal::STORY_TOKEN
+                );
+            }
+        }
 
         out.push(Handled {
             thread_id: d.thread_id.clone(),
@@ -241,6 +282,7 @@ fn resolve(
             does: pos.does,
             patch: pos.patch.clone().filter(|_| pos.does.writes_code()),
             reply,
+            story: pos.story.clone().filter(|_| pos.does.files_story()),
             touched,
         });
     }
@@ -302,7 +344,7 @@ pub async fn run(
         .get(&pr.number)
         .cloned()
         .with_context(|| format!("PR #{} has no triage proposals to post", pr.number))?;
-    let handled = resolve(&proposals, fresh, &batch)?;
+    let handled = resolve(&proposals, fresh, &batch, app.cfg.tracker)?;
 
     // --- half one: local, undoable -----------------------------------------
     let mut report = match write_local(&path, app, &handled).await? {
@@ -580,6 +622,10 @@ fn short(sha: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The story arms only exist with a tracker configured, so the tests that are
+    /// not about that run with one.
+    const TRACKER: crate::config::Tracker = crate::config::Tracker::Stub;
     use crate::github::{Comment, Thread};
     use crate::proposal::{Proposal, ProposalSet, StoryDraft};
 
@@ -660,7 +706,7 @@ mod tests {
     fn a_patch_position_resolves_to_its_diff_and_a_blame_target() {
         let set = proposed("PRRT_1", vec![position(Does::ChangeThumbsUp)]);
         let fresh = fetched(vec![thread("PRRT_1", Some("src/Foo.php"), Some(42), "john")]);
-        let got = resolve(&set, &fresh, &batch("PRRT_1", 0, None)).unwrap();
+        let got = resolve(&set, &fresh, &batch("PRRT_1", 0, None), TRACKER).unwrap();
 
         assert_eq!(got.len(), 1);
         assert!(got[0].patch.is_some());
@@ -676,10 +722,16 @@ mod tests {
         let set = proposed("PRRT_1", vec![position(Does::Reply)]);
         let fresh = fetched(vec![thread("PRRT_1", Some("a.ts"), Some(1), "john")]);
 
-        let kept = resolve(&set, &fresh, &batch("PRRT_1", 0, None)).unwrap();
+        let kept = resolve(&set, &fresh, &batch("PRRT_1", 0, None), TRACKER).unwrap();
         assert_eq!(kept[0].reply.as_deref(), Some("Resolved."));
 
-        let mine = resolve(&set, &fresh, &batch("PRRT_1", 0, Some("Nee, want …"))).unwrap();
+        let mine = resolve(
+            &set,
+            &fresh,
+            &batch("PRRT_1", 0, Some("Nee, want …")),
+            TRACKER,
+        )
+        .unwrap();
         assert_eq!(mine[0].reply.as_deref(), Some("Nee, want …"));
     }
 
@@ -689,19 +741,15 @@ mod tests {
         // blank comment that cannot be deleted from here.
         let set = proposed("PRRT_1", vec![position(Does::Reply)]);
         let fresh = fetched(vec![thread("PRRT_1", Some("a.ts"), Some(1), "john")]);
-        let err = resolve(&set, &fresh, &batch("PRRT_1", 0, Some("   ")))
+        let err = resolve(&set, &fresh, &batch("PRRT_1", 0, Some("   ")), TRACKER)
             .unwrap_err()
             .to_string();
         assert!(err.contains("empty"), "{err}");
     }
 
-    #[test]
-    fn the_two_unbuilt_positions_are_named_rather_than_silently_skipped() {
-        // A thread that quietly did nothing is indistinguishable from one that was
-        // handled — which is the failure this whole flow exists to prevent.
-        let fresh = fetched(vec![thread("PRRT_1", None, None, "acme-bot")]);
-
-        let story = ProposalSet {
+    /// A story position, on the review-summary thread that is its canonical home.
+    fn story_set() -> ProposalSet {
+        ProposalSet {
             base_sha: "abc123".into(),
             proposals: vec![Proposal {
                 thread_id: "PRRT_1".into(),
@@ -710,17 +758,18 @@ mod tests {
                 verified: None,
                 recommend: 0,
                 positions: vec![Position {
-                    reply: Some("Tracked as {story}".into()),
+                    reply: Some("Tracked as {story}.".into()),
                     ..position(Does::StoryReply)
                 }],
             }],
-        };
-        let err = resolve(&story, &fresh, &batch("PRRT_1", 0, None))
-            .unwrap_err()
-            .to_string();
-        assert!(err.contains("story"), "{err}");
-        assert!(err.contains("not built yet"), "{err}");
+        }
+    }
 
+    #[test]
+    fn manual_is_still_named_rather_than_silently_skipped() {
+        // A thread that quietly did nothing is indistinguishable from one that was
+        // handled — which is the failure this whole flow exists to prevent.
+        let fresh = fetched(vec![thread("PRRT_1", None, None, "acme-bot")]);
         let manual = proposed(
             "PRRT_1",
             vec![Position {
@@ -732,11 +781,89 @@ mod tests {
                 story: None,
             }],
         );
-        let err = resolve(&manual, &fresh, &batch("PRRT_1", 0, None))
+        let err = resolve(&manual, &fresh, &batch("PRRT_1", 0, None), TRACKER)
             .unwrap_err()
             .to_string();
         assert!(err.contains("manual phase"), "{err}");
         assert!(err.contains("not built yet"), "{err}");
+    }
+
+    #[test]
+    fn a_story_resolves_to_its_draft_and_keeps_the_token() {
+        let fresh = fetched(vec![thread("PRRT_1", None, None, "acme-bot")]);
+        let got = resolve(&story_set(), &fresh, &batch("PRRT_1", 0, None), TRACKER).unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].story.as_ref().map(|s| s.title.as_str()), Some("t"));
+        // The token survives to the outward step, which is what substitutes it.
+        assert!(got[0].reply.as_deref().unwrap().contains("{story}"));
+        // A story writes no code and posts no reaction.
+        assert!(got[0].patch.is_none());
+        assert!(!got[0].does.gives_thumbs_up());
+    }
+
+    #[test]
+    fn a_story_with_no_tracker_configured_is_refused_by_name() {
+        // The overlay hides the option when `tracker` is off, but the payload is
+        // not the overlay — so the daemon says so rather than filing into nowhere.
+        let fresh = fetched(vec![thread("PRRT_1", None, None, "acme-bot")]);
+        let err = resolve(
+            &story_set(),
+            &fresh,
+            &batch("PRRT_1", 0, None),
+            crate::config::Tracker::None,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("no tracker is configured"), "{err}");
+    }
+
+    #[test]
+    fn deleting_the_token_while_editing_refuses_before_anything_is_filed() {
+        // The draft is validated on arrival, so only a human edit can lose the
+        // token. Filing a story that nothing links to is worse than not filing it,
+        // and this refusal lands before the local half — nothing written, nothing
+        // filed, decisions kept.
+        let fresh = fetched(vec![thread("PRRT_1", None, None, "acme-bot")]);
+        let err = resolve(
+            &story_set(),
+            &fresh,
+            &batch("PRRT_1", 0, Some("Goed punt, komt later.")),
+            TRACKER,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("{story}"), "{err}");
+        assert!(err.contains("nothing linking to it"), "{err}");
+    }
+
+    #[test]
+    fn a_token_in_a_position_that_files_nothing_is_refused() {
+        // The reverse mistake: there would be no id to substitute, so the literal
+        // braces would be posted to GitHub.
+        let set = proposed("PRRT_1", vec![position(Does::Reply)]);
+        let fresh = fetched(vec![thread("PRRT_1", Some("a.ts"), Some(1), "john")]);
+        let err = resolve(
+            &set,
+            &fresh,
+            &batch("PRRT_1", 0, Some("Tracked as {story}.")),
+            TRACKER,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("files no story"), "{err}");
+    }
+
+    #[test]
+    fn an_oversized_reply_override_is_refused() {
+        // The one agent-or-human string the validator never sized, and it is about
+        // to carry a public URL.
+        let set = proposed("PRRT_1", vec![position(Does::Reply)]);
+        let fresh = fetched(vec![thread("PRRT_1", Some("a.ts"), Some(1), "john")]);
+        let huge = "x".repeat(crate::proposal::MAX_FIELD + 1);
+        let err = resolve(&set, &fresh, &batch("PRRT_1", 0, Some(&huge)), TRACKER)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("exceeds"), "{err}");
     }
 
     #[test]
@@ -746,12 +873,12 @@ mod tests {
 
         // An index past the list: the payload carries indices, so this is how a
         // bad client would try to reach content nobody reviewed.
-        assert!(resolve(&set, &fresh, &batch("PRRT_1", 7, None)).is_err());
+        assert!(resolve(&set, &fresh, &batch("PRRT_1", 7, None), TRACKER).is_err());
         // A thread with no proposal behind it.
-        assert!(resolve(&set, &fresh, &batch("PRRT_9", 0, None)).is_err());
+        assert!(resolve(&set, &fresh, &batch("PRRT_9", 0, None), TRACKER).is_err());
         // A thread that has since gone from the PR.
         let gone = fetched(vec![thread("PRRT_2", Some("a.ts"), Some(1), "john")]);
-        assert!(resolve(&set, &gone, &batch("PRRT_1", 0, None)).is_err());
+        assert!(resolve(&set, &gone, &batch("PRRT_1", 0, None), TRACKER).is_err());
     }
 
     #[test]
@@ -760,7 +887,7 @@ mod tests {
         // case goes through the manual phase, not through a guessed anchor.
         let set = proposed("PRRT_1", vec![position(Does::ChangeReply)]);
         let fresh = fetched(vec![thread("PRRT_1", None, None, "acme-bot")]);
-        let err = resolve(&set, &fresh, &batch("PRRT_1", 0, None))
+        let err = resolve(&set, &fresh, &batch("PRRT_1", 0, None), TRACKER)
             .unwrap_err()
             .to_string();
         assert!(err.contains("no file"), "{err}");

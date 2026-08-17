@@ -24,7 +24,11 @@ use serde::{Deserialize, Serialize};
 /// thread's fix — none has a legitimate reason to be large. An unbounded field
 /// from a subprocess is a memory footgun, and the diff viewer already sets the
 /// precedent of capping rather than trusting (§5's eager 2000-line cap).
-const MAX_FIELD: usize = 64 * 1024;
+pub const MAX_FIELD: usize = 64 * 1024;
+
+/// A tracker title is one line. Long enough for a real sentence in Dutch,
+/// short enough that a runaway generation is refused rather than filed.
+const MAX_TITLE: usize = 256;
 
 /// How many positions one thread may offer, before the daemon appends its own.
 ///
@@ -186,6 +190,15 @@ impl Position {
                 None => bail!("{where_}: `story+reply` without a story"),
                 Some(s) if s.title.trim().is_empty() => {
                     bail!("{where_}: story has no title")
+                }
+                // A tracker title is a one-line summary and Shortcut has its own
+                // limit; 64KB of it is nonsense, so it is bounded separately from
+                // the prose fields.
+                Some(s) if s.title.len() > MAX_TITLE => {
+                    bail!("{where_}: story title exceeds {MAX_TITLE} bytes")
+                }
+                Some(s) if s.body.len() > MAX_FIELD => {
+                    bail!("{where_}: story body exceeds {MAX_FIELD} bytes")
                 }
                 Some(_) => {}
             }
@@ -417,6 +430,33 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains(STORY_TOKEN), "{err}");
+    }
+
+    #[test]
+    fn story_fields_are_bounded_like_every_other_agent_string() {
+        // These were the last two with no cap. A title is one line, so it gets a
+        // tighter one than the prose fields.
+        let mut p = proposal("T1", Does::StoryReply);
+        p.positions[0].story = Some(StoryDraft {
+            title: "t".repeat(MAX_TITLE + 1),
+            body: "b".into(),
+        });
+        let err = set(vec![p])
+            .validate(&["T1".into()])
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("title exceeds"), "{err}");
+
+        let mut p = proposal("T1", Does::StoryReply);
+        p.positions[0].story = Some(StoryDraft {
+            title: "t".into(),
+            body: "b".repeat(MAX_FIELD + 1),
+        });
+        let err = set(vec![p])
+            .validate(&["T1".into()])
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("body exceeds"), "{err}");
     }
 
     #[test]

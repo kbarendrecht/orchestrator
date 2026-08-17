@@ -31,6 +31,26 @@ pub struct Config {
     /// A `0600` file holding a read-only GitHub token, outside the repo.
     #[serde(default)]
     pub github_token_file: Option<PathBuf>,
+    /// Which tracker a `story+reply` position files into.
+    ///
+    /// Explicit, and defaulting to `None`, rather than auto-detected from whether
+    /// a token happens to resolve. Auto-detection would let an expired token
+    /// silently remove an option from every triage run, leaving "triage did not
+    /// propose a story" indistinguishable from "the daemon hid it".
+    #[serde(default)]
+    pub tracker: Tracker,
+    /// A `0600` file holding the Shortcut API token. `ORCHD_SHORTCUT_TOKEN` wins
+    /// over it, mirroring the GitHub ladder.
+    #[serde(default)]
+    pub shortcut_token_file: Option<PathBuf>,
+    /// How long the borrowed story-filing agent gets before it is killed.
+    ///
+    /// The one timeout in this daemon, because it is the one agent whose caller is
+    /// a blocking HTTP request rather than a rail entry somebody is watching. Sized
+    /// from the skill's real workload — read an epic, search, create, follow up —
+    /// so minutes, not seconds.
+    #[serde(default = "default_story_timeout")]
+    pub story_timeout_seconds: u64,
     /// 288 queries/day is negligible against 5000 points/hour (§6).
     #[serde(default = "default_poll_seconds")]
     pub poll_seconds: u64,
@@ -117,6 +137,30 @@ fn default_poll_seconds() -> u64 {
     300
 }
 
+/// Where a `story+reply` position's story goes.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Tracker {
+    /// No tracker. `story+reply` is never offered and would be refused.
+    #[default]
+    None,
+    /// The Shortcut MCP from the repo's own `.mcp.json`.
+    Shortcut,
+    /// A stub MCP server that speaks the same tool names and records what it was
+    /// asked to do. For proving the plumbing without filing a real story.
+    Stub,
+}
+
+impl Tracker {
+    pub fn is_configured(self) -> bool {
+        !matches!(self, Tracker::None)
+    }
+}
+
+fn default_story_timeout() -> u64 {
+    300
+}
+
 fn default_review_timeout() -> u64 {
     240
 }
@@ -170,16 +214,18 @@ impl Config {
                 if cfg.main_checkout != main {
                     cfg.main_checkout = main;
                     if let Err(e) = std::fs::write(&path, serde_json::to_string_pretty(&cfg)?) {
-                        tracing::warn!("could not record the new checkout in {}: {e}", path.display());
+                        tracing::warn!(
+                            "could not record the new checkout in {}: {e}",
+                            path.display()
+                        );
                     }
                 }
             }
             return Ok(cfg);
         }
 
-        let main = main_checkout.context(
-            "no config yet — pass --main <path to the main checkout> on first run",
-        )?;
+        let main = main_checkout
+            .context("no config yet — pass --main <path to the main checkout> on first run")?;
         let cfg = Config::default_for(main);
         std::fs::create_dir_all(Self::config_dir()?)?;
         std::fs::write(&path, serde_json::to_string_pretty(&cfg)?)?;
@@ -235,6 +281,9 @@ impl Config {
             github_token_file: None,
             poll_seconds: default_poll_seconds(),
             review_timeout_seconds: default_review_timeout(),
+            tracker: Tracker::None,
+            shortcut_token_file: None,
+            story_timeout_seconds: default_story_timeout(),
             capabilities: Default::default(),
             todo_path: None,
             auto_resume: default_auto_resume(),

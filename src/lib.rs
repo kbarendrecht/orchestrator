@@ -24,6 +24,7 @@ pub mod reviews;
 pub mod ring;
 pub mod spawn;
 pub mod state;
+pub mod story;
 pub mod store;
 pub mod todo;
 pub mod triage;
@@ -178,7 +179,24 @@ pub async fn start(opts: StartOptions) -> Result<Server> {
     }
     adopt_existing_worktrees(&app).await?;
     app.restore_sessions(records.clone()).await;
-    app.inner.write().await.automation = store::load_automation();
+    {
+        let mut inner = app.inner.write().await;
+        inner.automation = store::load_automation();
+        inner.stories = store::load_stories();
+        // Said out loud at boot, because `tracker` decides whether a whole option
+        // appears on every review card. A misconfigured one must not read as
+        // "triage never proposes stories".
+        match app.cfg.tracker {
+            config::Tracker::None => tracing::info!("tracker: none — `story+reply` is off"),
+            t => match story::resolve_token(app.cfg.shortcut_token_file.as_deref()) {
+                Ok(_) => tracing::info!(
+                    "tracker: {t:?}, token resolved, {} story/ies cached",
+                    inner.stories.len()
+                ),
+                Err(e) => tracing::warn!("tracker: {t:?} but no usable token — {e:#}"),
+            },
+        }
+    }
     reconcile_all(&app).await;
     autostart_processes(&app).await;
     if app.cfg.auto_resume {

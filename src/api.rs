@@ -55,6 +55,35 @@ fn origin_allowed(origin: &str, port: u16) -> bool {
     expected.iter().any(|e| e == origin)
 }
 
+/// Whether a request gets past the Origin check.
+///
+/// Extracted from [`guard`] because it is the policy, not the plumbing, and it
+/// now has four ways to pass — a matrix worth pinning in a test rather than
+/// re-deriving from an `axum` handler.
+///
+/// A **present** Origin must be ours; the three remaining arms are all about the
+/// header being absent entirely, which no browser page can arrange:
+///
+/// - a hook, which comes from a `claude` subprocess and is a write-only observer
+///   that can never trigger a spawn, a push or a teardown;
+/// - a GET, so a same-origin read from the address bar works;
+/// - **anything else carrying a valid token.** This is the vendored prompts'
+///   shape: `commands/triage.md` POSTs its proposals with `curl`, which sends no
+///   Origin, and this arm's absence meant the one route an agent calls answered
+///   403 to the only caller it has. Driving it by hand *with* an Origin header
+///   during development is what hid that.
+///
+///   Safe because Origin is a CSRF control, and CSRF is a browser problem: a page
+///   cannot omit the header on a cross-origin fetch or form POST, and it cannot
+///   read the token to forge this. Absence is positive evidence of a non-browser
+///   caller; the token is what authenticates it.
+fn origin_ok(origin: Option<&str>, port: u16, is_hook: bool, is_get: bool, token_ok: bool) -> bool {
+    match origin {
+        Some(o) => origin_allowed(o, port),
+        None => is_hook || is_get || token_ok,
+    }
+}
+
 /// Reject anything that is not the SPA's own origin.
 ///
 /// Binding to 127.0.0.1 is necessary but not sufficient: any web page you visit
@@ -87,16 +116,15 @@ pub async fn guard(
         );
     }
 
-    match origin {
-        Some(o) if origin_allowed(o, port) => {}
-        // Hook endpoints are the exception: they come from `claude`
-        // subprocesses that send no Origin. They are write-only observers that
-        // can never trigger a spawn, a push, or a teardown.
-        None if is_hook => {}
-        // A same-origin GET from the browser address bar also carries no
-        // Origin; only mutating routes require it.
-        None if req.method() == axum::http::Method::GET => {}
-        _ => return (StatusCode::FORBIDDEN, "bad origin").into_response(),
+    // Read before the Origin check, because one of its arms depends on it.
+    let token_ok = headers
+        .get("x-orch-token")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|t| t == app.token);
+
+    let is_get = req.method() == axum::http::Method::GET;
+    if !origin_ok(origin, port, is_hook, is_get, token_ok) {
+        return (StatusCode::FORBIDDEN, "bad origin").into_response();
     }
 
     // The token closes the "any local process" hole. Hooks cannot easily carry
@@ -118,14 +146,8 @@ pub async fn guard(
     let spends_github_token =
         path.starts_with("/api/pr/") && SPENDS_GITHUB_TOKEN.iter().any(|s| path.ends_with(s));
     let needs_token = !is_hook && (req.method() != axum::http::Method::GET || spends_github_token);
-    if needs_token {
-        let presented = headers
-            .get("x-orch-token")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("");
-        if presented != app.token {
-            return (StatusCode::UNAUTHORIZED, "bad token").into_response();
-        }
+    if needs_token && !token_ok {
+        return (StatusCode::UNAUTHORIZED, "bad token").into_response();
     }
 
     next.run(req).await
@@ -410,6 +432,35 @@ mod tests {
         assert!(!origin_allowed("http://127.0.0.1:7778", 7777));
         // Guards against a DNS-rebinding host that merely contains the address.
         assert!(!origin_allowed("http://127.0.0.1.evil.example:7777", 7777));
+    }
+
+    /// `(origin, is_hook, is_get, token_ok)` at port 7777.
+    fn ok(origin: Option<&str>, is_hook: bool, is_get: bool, token_ok: bool) -> bool {
+        origin_ok(origin, 7777, is_hook, is_get, token_ok)
+    }
+
+    #[test]
+    fn a_present_origin_must_be_ours_whatever_else_is_true() {
+        assert!(ok(Some("http://127.0.0.1:7777"), false, false, true));
+        // A token does not buy a pass for a page on another origin: that is
+        // exactly the request the check exists to stop.
+        assert!(!ok(Some("http://evil.example"), false, false, true));
+        assert!(!ok(Some("http://evil.example"), true, true, true));
+    }
+
+    #[test]
+    fn a_tokened_post_with_no_origin_is_the_agents_own_shape() {
+        // `commands/triage.md` POSTs with curl, which sends no Origin. Without
+        // this arm the one route an agent calls answered 403 to its only caller.
+        assert!(ok(None, false, false, true));
+        // Still nothing without the token.
+        assert!(!ok(None, false, false, false));
+    }
+
+    #[test]
+    fn a_no_origin_get_or_hook_still_passes_untokened() {
+        assert!(ok(None, false, true, false));
+        assert!(ok(None, true, false, false));
     }
 
     #[test]
@@ -761,6 +812,10 @@ pub async fn pr_review(
         // answerable, and `/green` is offered rather than required.
         "checks": pr.checks,
         "mergeable": pr.mergeable,
+        // Whether a `story+reply` position can be acted on at all. The overlay
+        // should not be welded to Shortcut, so with no tracker it hides the
+        // option rather than offering something that would be refused.
+        "tracker": app.cfg.tracker.is_configured(),
     })))
 }
 

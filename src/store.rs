@@ -118,6 +118,42 @@ pub fn load_automation() -> crate::green::AutomationStore {
     store
 }
 
+fn stories_path() -> Result<PathBuf> {
+    Ok(Config::config_dir()?.join("stories.json"))
+}
+
+/// Stories filed for review threads, so a retry does not file a second one.
+///
+/// A **cache**, not a ledger — see [`crate::story`]. The filer searches the
+/// tracker for the thread's permalink before creating anything, so this only
+/// saves an agent run. Which is why, unlike the two stores above, nothing here
+/// tries to repair or reconcile it on load: the worst an empty file costs is one
+/// redundant search.
+pub fn save_stories(cache: &crate::story::Cache) -> Result<()> {
+    let p = stories_path()?;
+    std::fs::create_dir_all(p.parent().unwrap())?;
+    let tmp = p.with_extension("json.tmp");
+    std::fs::write(&tmp, serde_json::to_string_pretty(cache)?)?;
+    std::fs::rename(&tmp, &p)?;
+    Ok(())
+}
+
+pub fn load_stories() -> crate::story::Cache {
+    let Ok(p) = stories_path() else {
+        return Default::default();
+    };
+    let Ok(raw) = std::fs::read_to_string(&p) else {
+        return Default::default();
+    };
+    match serde_json::from_str(&raw) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!("could not parse {}: {e}", p.display());
+            Default::default()
+        }
+    }
+}
+
 pub fn save(records: &[SessionRecord]) -> Result<()> {
     let p = path()?;
     std::fs::create_dir_all(p.parent().unwrap())?;
@@ -185,7 +221,10 @@ mod tests {
             Kind::Interactive,
         );
         let restored = SessionRecord::of(&s).restore();
-        assert!(matches!(restored.state, State::Archived { resumable: true }));
+        assert!(matches!(
+            restored.state,
+            State::Archived { resumable: true }
+        ));
         assert!(!restored.state.is_live());
     }
 
@@ -199,7 +238,10 @@ mod tests {
         );
         s.recovery = Some(ArchiveState::TranscriptOnly);
         let restored = SessionRecord::of(&s).restore();
-        assert!(matches!(restored.state, State::Archived { resumable: false }));
+        assert!(matches!(
+            restored.state,
+            State::Archived { resumable: false }
+        ));
     }
 
     #[test]
@@ -208,7 +250,10 @@ mod tests {
             uuid::Uuid::new_v4(),
             "invoice".into(),
             Path::new("/repo/.claude/worktrees/invoice").to_path_buf(),
-            Kind::Automation { pr: 4812, command: "green".into() },
+            Kind::Automation {
+                pr: 4812,
+                command: "green".into(),
+            },
         );
         s.transcript_archived = true;
         s.recovery = Some(ArchiveState::Recoverable {
@@ -222,7 +267,13 @@ mod tests {
         let r = back.into_iter().next().unwrap();
         assert_eq!(r.id, s.id);
         assert!(r.transcript_archived);
-        assert_eq!(r.kind, Kind::Automation { pr: 4812, command: "green".into() });
+        assert_eq!(
+            r.kind,
+            Kind::Automation {
+                pr: 4812,
+                command: "green".into()
+            }
+        );
         assert!(matches!(r.recovery, Some(ArchiveState::Recoverable { .. })));
     }
 
