@@ -2403,7 +2403,21 @@ function resultSec(title, rows, shape) {
  *  the file list complete, because nobody had to declare it. */
 function rvManual(root) {
   const m = reviewState.report.manual;
-  root.appendChild(rvHead('your turn', `${m.threads.length} by hand`));
+  const refused = reviewState.report.refused;
+  root.appendChild(rvHead(refused ? 'stopped' : 'your turn', `${m.threads.length} by hand`));
+
+  if (refused) {
+    // Amber rather than the clean banner: this is not "nothing happened". Half
+    // one's commit is on the branch and your edits are still on disk — what did
+    // *not* happen is the push and the posting.
+    const warn = el('div', 'banner');
+    warn.appendChild(el('span', 'ico', '▲'));
+    const tx = el('span', 'tx');
+    tx.appendChild(el('b', null, 'Nothing was pushed or posted.'));
+    tx.appendChild(el('p', null, refused));
+    warn.appendChild(tx);
+    root.appendChild(warn);
+  }
   root.appendChild(rvStrip(null));
 
   const body = el('div', 'body');
@@ -2437,14 +2451,17 @@ function rvManual(root) {
   // What you have edited, once, above the threads. Derived from `git diff`, not
   // from anything anyone declared — which is what keeps the batch only what you
   // approved even though nobody listed these files.
+  // `?.` throughout: this renders whatever the diff fetch last returned, and a
+  // screen that throws mid-render leaves the overlay blank with no way back — the
+  // phase is the one screen where the batch is already half-done.
   const ch = manualState.changed;
   const mine = el('div', 'sec');
-  const head = el('div', 'eyebrow', ch && ch.files.length ? 'what you changed ' : 'nothing changed yet ');
+  const head = el('div', 'eyebrow', ch?.files?.length ? 'what you changed ' : 'nothing changed yet ');
   const again = el('button', 'revert', 're-read the tree');
   again.onclick = () => loadManualDiff();
   head.appendChild(again);
   mine.appendChild(head);
-  if (ch && ch.files.length) {
+  if (ch?.files?.length) {
     mine.appendChild(fileListLabel(ch.files, 'you changed'));
     if (ch.diff) mine.appendChild(hunkEl(ch.diff, false));
   } else {
@@ -2569,12 +2586,29 @@ async function finishManual() {
   reviewState.busy = true;
   renderReview();
   try {
-    reviewState.report = await call(`/api/pr/${reviewState.pr}/manual/done`, {
+    const got = await call(`/api/pr/${reviewState.pr}/manual/done`, {
       batch: batchPayload(),
       committed: m.committed,
       comments: manualState.comments,
+      // What the screen showed you, which is what you pressed the button under.
+      // The daemon refuses anything dirty that is not in here rather than sweeping
+      // it into the commit.
+      files: (manualState.changed?.files || []).map((f) => f.path),
     });
-    reviewState.screen = 'report';
+    /* A refusal carries no phase, and taking it at face value would drop the only
+       record of one — landing on a report that says "nothing was pushed, the
+       worktree is as it was" when half one's commit is on the branch and your edits
+       are still on disk, with no way back to the phase. So the phase is kept and the
+       refusal is shown on top of it. */
+    if (got.refused && !got.manual) got.manual = m;
+    reviewState.report = got;
+    reviewState.screen = got.manual ? 'manual' : 'report';
+    if (!got.manual) {
+      // Sent. The comments described work that is now pushed; keeping them would
+      // arm the next phase on this PR with an answer to a different question.
+      manualState.comments = {};
+      manualState.changed = null;
+    }
   } catch (e) {
     toast(e.message, true);
   }
@@ -2631,6 +2665,10 @@ async function loadReview(pr) {
       reviewState.skipped = {};
       reviewState.drafts = {};
       reviewState.i = 0;
+      // A comment describes work against a tree that has moved, so it is no longer
+      // an answer to anything.
+      manualState.comments = {};
+      manualState.changed = null;
       toast('the branch moved — decisions cleared, re-read the cards');
     }
     reviewState.head = base;

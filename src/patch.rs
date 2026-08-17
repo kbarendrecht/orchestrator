@@ -339,6 +339,9 @@ pub fn write_manual(
     merge_base: &str,
     my_email: &str,
     touched: &[(String, u32)],
+    approved: &[String],
+    // The sha the reviewers' anchor lines were validated against.
+    anchored_at: &str,
 ) -> Result<Written> {
     let changed = crate::git::status(cwd, false)?;
     let paths: Vec<String> = changed
@@ -356,7 +359,51 @@ pub fn write_manual(
         return Ok(Written::NothingToWrite);
     }
 
-    let amend = crate::git::amend_target(cwd, Some("HEAD"), merge_base, touched, my_email)?;
+    // Everything dirty must be something the phase showed you, because
+    // `git::fold_in` commits with `git add -A` and the clean-tree gate is stood
+    // down on this path — so a scratch file a session left behind would be folded
+    // into the commit and force-pushed into somebody's PR. That is exactly the
+    // sweep this design rejected when it rejected letting your edits ride along
+    // with the batch.
+    //
+    // Refused rather than scoped: staging only the approved paths leaves the rest
+    // dirty, and the `--autosquash` rebase inside `fold_in` will not run on an
+    // unclean tree — so scoping trades a wrong commit for a half-finished fold. The
+    // daemon cannot tell your fix from a stray `.log`, and naming it is the same
+    // answer the worktree gate already gives.
+    let strays: Vec<String> = paths
+        .iter()
+        .filter(|p| !approved.iter().any(|a| a == *p))
+        .cloned()
+        .collect();
+    if !strays.is_empty() {
+        return Ok(Written::Refused(format!(
+            "the worktree holds {} that the phase did not show you — commit, remove or \
+             stash {} and press continue again. Everything in this commit has to be work \
+             you looked at.",
+            strays.join(", "),
+            if strays.len() == 1 { "it" } else { "them" }
+        )));
+    }
+
+    // Blame only while the reviewers' anchors still point where they did.
+    //
+    // They are line numbers from the PR head at triage time. If half one applied a
+    // patch above one of them and folded it in, HEAD's content has shifted and
+    // blaming HEAD at the old number reads a *different* line — which does not
+    // degrade, it silently picks the wrong commit and reports "folded into" it.
+    // Measured: an anchor owned by one commit before half one blames another after.
+    // So when HEAD has moved off the sha the anchors were validated against, the
+    // anchors are stale by construction and the fold says so instead of guessing.
+    let amend = if crate::git::head_sha(cwd)? == anchored_at {
+        crate::git::amend_target(cwd, Some("HEAD"), merge_base, touched, my_email)?
+    } else {
+        crate::git::Amend::Head(
+            "the accepted patches moved these lines, so the reviewers' anchors no longer \
+             say which commit owns them"
+                .to_string(),
+        )
+    };
 
     match crate::git::pre_commit(cwd, &paths)? {
         crate::git::PreCommit::Passed | crate::git::PreCommit::NotConfigured => {}
@@ -413,17 +460,19 @@ pub fn worktree_change(cwd: &Path) -> Result<(Vec<FileStat>, String)> {
     Ok((files, String::from_utf8_lossy(&out.stdout).into_owned()))
 }
 
-/// `git diff --numstat HEAD`, including untracked files, as [`FileStat`]s.
+/// Every path the working tree changes against `HEAD`, with line counts.
 ///
 /// The manual phase's equivalent of `git apply --numstat`: the file list has to be
 /// derived from the tree rather than from a patch nobody wrote.
+///
+/// **Reads only.** The obvious implementation stages untracked files
+/// `--intent-to-add` so one `git diff` can see them, and that was the implementation
+/// — but an intent-to-add entry makes `git stash push` fail outright (measured on git
+/// 2.34.1: `error: Entry 'x' not uptodate. Cannot merge.`, with or without `-u`), so
+/// merely *looking* at the diff broke the review overlay's own stash button until the
+/// batch committed. A read that breaks a write somewhere else is not a read. Untracked
+/// files are counted directly instead, and nothing touches the index.
 fn numstat_worktree(cwd: &Path) -> Result<Vec<FileStat>> {
-    // `--intent-to-add` on untracked files first, or `git diff` cannot see them
-    // and the list would silently omit a whole new file.
-    let _ = Command::new("git")
-        .args(["add", "-AN"])
-        .current_dir(cwd)
-        .output();
     let out = Command::new("git")
         .args(["diff", "--numstat", "HEAD"])
         .current_dir(cwd)
@@ -434,9 +483,42 @@ fn numstat_worktree(cwd: &Path) -> Result<Vec<FileStat>> {
         "git diff --numstat failed: {}",
         String::from_utf8_lossy(&out.stderr).trim()
     );
-    Ok(aggregate(parse_numstat(&String::from_utf8_lossy(
-        &out.stdout,
-    ))))
+    let mut files = aggregate(parse_numstat(&String::from_utf8_lossy(&out.stdout)));
+
+    // A brand-new file is entirely added, so its line count is its line count.
+    for path in untracked(cwd)? {
+        let added = std::fs::read_to_string(cwd.join(&path))
+            .map(|s| s.lines().count() as u32)
+            // Binary or unreadable: still name the path, like `parse_numstat` does.
+            .unwrap_or(0);
+        files.push(FileStat {
+            path,
+            added,
+            deleted: 0,
+        });
+    }
+    files.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(files)
+}
+
+/// Untracked, not ignored. `git status` would answer this too, but this asks the one
+/// question and cannot be confused by a rename record.
+fn untracked(cwd: &Path) -> Result<Vec<String>> {
+    let out = Command::new("git")
+        .args(["ls-files", "--others", "--exclude-standard"])
+        .current_dir(cwd)
+        .output()
+        .context("running git ls-files --others")?;
+    anyhow::ensure!(
+        out.status.success(),
+        "git ls-files --others failed: {}",
+        String::from_utf8_lossy(&out.stderr).trim()
+    );
+    Ok(String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(str::to_string)
+        .collect())
 }
 
 #[cfg(test)]
@@ -658,7 +740,9 @@ mod tests {
         std::fs::write(d.join("new.txt"), "fresh\n").unwrap();
 
         let touched = vec![("f.txt".to_string(), 5)];
-        match write_manual(&d, "base", "me@here", &touched).unwrap() {
+        let approved = vec!["f.txt".to_string(), "new.txt".to_string()];
+        let head = crate::git::head_sha(&d).unwrap();
+        match write_manual(&d, "base", "me@here", &touched, &approved, &head).unwrap() {
             Written::Committed { files, amend } => {
                 // Blamed against HEAD, so it found the owning commit rather than
                 // reporting "not committed yet" for the line just edited.
@@ -678,12 +762,107 @@ mod tests {
     }
 
     #[test]
+    fn a_file_the_phase_never_showed_you_is_refused_not_swept_in() {
+        // `fold_in` commits with `git add -A` and the clean-tree gate is stood down
+        // here, so without this an unrelated scratch file a session left behind gets
+        // folded into the commit and force-pushed into somebody else's PR — the very
+        // sweep this design rejected when it rejected letting your edits ride along.
+        let d = batch_repo();
+        let before = commit_count(&d);
+        std::fs::write(d.join("f.txt"), "by hand\n").unwrap();
+        std::fs::write(d.join("debug.log"), "scratch from a session\n").unwrap();
+
+        let head = crate::git::head_sha(&d).unwrap();
+        let got = write_manual(
+            &d,
+            "base",
+            "me@here",
+            &[("f.txt".into(), 5)],
+            // Only f.txt was on screen.
+            &["f.txt".to_string()],
+            &head,
+        )
+        .unwrap();
+        match got {
+            Written::Refused(why) => {
+                assert!(why.contains("debug.log"), "must name the stray: {why}");
+                assert!(!why.contains("f.txt"), "must not name your own edit: {why}");
+            }
+            other => panic!("expected a refusal, got {other:?}"),
+        }
+        assert_eq!(commit_count(&d), before, "nothing may be committed");
+        assert!(
+            !crate::git::is_clean(&d).unwrap(),
+            "your edits stay on disk"
+        );
+    }
+
+    #[test]
+    fn anchors_that_the_accepted_patches_moved_are_not_blamed() {
+        // The anchor line numbers come from the PR head at triage. Once half one has
+        // applied a patch above one of them and folded it in, blaming HEAD at the old
+        // number reads a different line and picks the wrong commit — silently, and
+        // reported as "folded into" it. So a moved HEAD means the anchors are stale
+        // by construction and the fold says so instead of guessing.
+        let d = batch_repo();
+        std::fs::write(d.join("f.txt"), "by hand\n").unwrap();
+
+        let stale = "0000000000000000000000000000000000000000";
+        match write_manual(
+            &d,
+            "base",
+            "me@here",
+            &[("f.txt".into(), 5)],
+            &["f.txt".to_string()],
+            stale,
+        )
+        .unwrap()
+        {
+            Written::Committed { amend, .. } => {
+                assert!(amend.starts_with("amended HEAD"), "{amend}");
+                assert!(amend.contains("anchors no longer"), "{amend}");
+            }
+            other => panic!("expected Committed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn reading_the_worktree_leaves_the_index_alone() {
+        // It used to stage untracked files `--intent-to-add` so one `git diff` could
+        // see them, which broke `git stash push` outright — so merely looking at the
+        // phase's diff killed the review overlay's own stash button.
+        let d = batch_repo();
+        std::fs::write(d.join("f.txt"), "by hand\n").unwrap();
+        std::fs::write(d.join("brand-new.txt"), "one\ntwo\n").unwrap();
+        let before = run(&d, &["status", "--porcelain"]);
+
+        let (files, diff) = worktree_change(&d).unwrap();
+        let paths: Vec<&str> = files.iter().map(|f| f.path.as_str()).collect();
+        assert!(paths.contains(&"f.txt"), "{paths:?}");
+        // A brand-new file still has to appear, counted, even though `git diff`
+        // cannot see it.
+        let new = files.iter().find(|f| f.path == "brand-new.txt").unwrap();
+        assert_eq!((new.added, new.deleted), (2, 0));
+        assert!(diff.contains("f.txt"), "the hunk text is still git's");
+
+        assert_eq!(
+            run(&d, &["status", "--porcelain"]),
+            before,
+            "reading the diff must not stage anything"
+        );
+        // The thing that actually broke: stash still works afterwards.
+        crate::git::stash(&d).expect("stash after a phase read");
+        assert!(crate::git::is_clean(&d).unwrap());
+    }
+
+    #[test]
     fn a_manual_thread_that_changed_nothing_is_not_a_failure() {
         // "I did this in another PR" is a legitimate answer; the comment was the
         // thing required, not the code.
         let d = batch_repo();
         let before = commit_count(&d);
-        let got = write_manual(&d, "base", "me@here", &[("f.txt".to_string(), 5)]).unwrap();
+        let got =
+            write_manual(&d, "base", "me@here", &[("f.txt".to_string(), 5)], &[], "x").unwrap();
         assert_eq!(got, Written::NothingToWrite);
         assert_eq!(commit_count(&d), before);
     }
@@ -738,6 +917,65 @@ mod tests {
         }
         assert_eq!(commit_count(&d), before);
         assert!(crate::git::is_clean(&d).unwrap());
+    }
+
+    #[test]
+    fn a_hook_that_both_fails_and_rewrites_is_a_failure() {
+        // `fail_fast` is off by default, so a formatter rewriting a file while a
+        // linter errors in the same run is the ordinary shape of a bad commit. It
+        // used to report as a mere reformat, because the rewrite was checked before
+        // the exit status — harmless in `write_batch`, which refuses either way, and
+        // not harmless in `write_manual`, which only logs a reformat and would have
+        // committed and pushed code that failed lint.
+        let d = batch_repo();
+        std::fs::write(
+            d.join(".pre-commit-config.yaml"),
+            "repos:\n  - repo: local\n    hooks: []\n",
+        )
+        .unwrap();
+        let bin = d.join("fake-bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        write_exec(
+            &bin.join("pre-commit"),
+            "#!/bin/sh\nprintf 'reformatted\\n' >> f.txt\nprintf 'ruff...FAILED\\nf.txt:5 unused import\\n'\nexit 1\n",
+        );
+        // A real repo tracks its hook config, and `write_manual` now refuses a tree
+        // holding anything the phase did not show you — the fixture has to be
+        // committed rather than left lying around dirty.
+        run(&d, &["add", "-A"]);
+        run(&d, &["commit", "-qm", "hook fixture"]);
+        let before = commit_count(&d);
+
+        let got = with_path(&bin, || crate::git::pre_commit(&d, &["f.txt".to_string()])).unwrap();
+        match got {
+            crate::git::PreCommit::Failed(detail) => {
+                // And the hook's own words survive, which the old ordering dropped.
+                assert!(detail.contains("unused import"), "{detail}");
+            }
+            other => panic!("a failing hook must be Failed, got {other:?}"),
+        }
+
+        // ...and the manual half refuses it rather than logging and committing.
+        // The hook rewrote f.txt when it ran above, so the tree is dirty there too.
+        std::fs::write(d.join("by-hand.txt"), "edited\n").unwrap();
+        let head = crate::git::head_sha(&d).unwrap();
+        let approved = vec!["f.txt".to_string(), "by-hand.txt".to_string()];
+        let got = with_path(&bin, || {
+            write_manual(
+                &d,
+                "base",
+                "me@here",
+                &[("f.txt".into(), 5)],
+                &approved,
+                &head,
+            )
+        })
+        .unwrap();
+        assert!(
+            matches!(got, Written::Refused(ref why) if why.contains("pre-commit failed")),
+            "expected a refusal, got {got:?}"
+        );
+        assert_eq!(commit_count(&d), before, "nothing may be committed");
     }
 
     #[test]

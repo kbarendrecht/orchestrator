@@ -55,6 +55,11 @@ pub struct Finish {
     /// Manual thread does nothing on GitHub and is indistinguishable from a skip,
     /// except in your own head. The reviewer would get a commit and silence.
     pub comments: std::collections::HashMap<String, String>,
+    /// The paths the phase screen showed you, which is what you pressed the button
+    /// under. Anything dirty and not in here is refused rather than swept into the
+    /// commit — see `patch::write_manual`.
+    #[serde(default)]
+    pub files: Vec<String>,
 }
 
 /// What the final screen sends. A thread absent from `decisions` was skipped.
@@ -504,14 +509,15 @@ async fn run_inner(
             let head = crate::git::head_sha(&path)?;
             if head != done.committed {
                 return Ok(PostReport::refused(format!(
-                    "the branch moved while the manual phase was open ({} → {}). Whatever \
-                     moved it may not account for your edits; start the batch again rather \
-                     than pushing on top of it.",
+                    "the branch moved while the manual phase was open ({} → {}). The accepted \
+                     patches are still committed on it and nothing has been pushed or posted; \
+                     whatever moved it may not account for your edits, so look at the branch \
+                     before continuing.",
                     short(&done.committed),
                     short(&head)
                 )));
             }
-            match write_manual(&path, app, &handled).await? {
+            match write_manual(&path, app, &handled, done).await? {
                 Ok(w) => w,
                 Err(refusal) => return Ok(refusal),
             }
@@ -546,7 +552,22 @@ async fn run_inner(
     }
 
     // --- the push: everything past here is public --------------------------
-    if !report.files.is_empty() {
+    //
+    // "Is there anything origin does not have" is a question about git, so it is
+    // asked of git rather than inferred from a report field. Reading `report.files`
+    // was wrong twice over on the resume: half one moves that list into the phase
+    // with `mem::take`, and `write_manual` legitimately returns nothing to write
+    // when a Manual thread changed no code. Both leave it empty while an unpushed
+    // commit sits on the branch — and every reply then goes out saying a fix landed
+    // that nobody can see.
+    let head_now = crate::git::head_sha(&path)?;
+    let unpushed = match &fresh.head_sha {
+        Some(remote) => &head_now != remote,
+        // No remote head to compare against — the same case that skips the
+        // staleness check above. Fall back to "did we write anything".
+        None => !report.files.is_empty(),
+    };
+    if unpushed {
         let branch = pr.head_ref.clone();
         let p = path.clone();
         tokio::task::spawn_blocking(move || crate::git::push_with_lease(&p, &branch))
@@ -584,6 +605,21 @@ async fn run_inner(
     Ok(report)
 }
 
+/// The lines half one blames to pick a fixup target.
+///
+/// Only lines a patch actually writes. A `Manual` thread carries an anchor too — the
+/// phase blames at it later — and including it here let a thread whose code does not
+/// exist yet decide the target for one that does: `amend_target` saw two commits,
+/// said "the changes span P and Q", and degraded the accepted patch to a plain HEAD
+/// amend.
+fn blame_lines(handled: &[Handled]) -> Vec<(String, u32)> {
+    handled
+        .iter()
+        .filter(|h| h.patch.is_some())
+        .filter_map(|h| h.touched.clone())
+        .collect()
+}
+
 /// The manual phase's local half: fold what *you* wrote.
 ///
 /// No ladder and no apply — the edits are already on disk, which is the state the
@@ -594,6 +630,7 @@ async fn write_manual(
     path: &Path,
     app: &Arc<AppState>,
     handled: &[Handled],
+    done: &Finish,
 ) -> Result<std::result::Result<PostReport, PostReport>> {
     // Blamed at the lines the reviewers pointed at. If your edits span commits the
     // fold degrades to a HEAD amend and says so, which is the honest answer.
@@ -605,10 +642,14 @@ async fn write_manual(
 
     let cwd = path.to_path_buf();
     let upstream = app.cfg.upstream_ref.clone();
+    let approved = done.files.clone();
+    // The anchors were validated against the PR head at triage; if half one has
+    // moved HEAD off it, they no longer say which commit owns them.
+    let anchored_at = done.batch.base_sha.clone();
     let written = tokio::task::spawn_blocking(move || -> Result<Written> {
         let base = crate::git::merge_base(&cwd, &upstream)?;
         let email = crate::git::user_email(&cwd);
-        crate::patch::write_manual(&cwd, &base, &email, &touched)
+        crate::patch::write_manual(&cwd, &base, &email, &touched, &approved, &anchored_at)
     })
     .await
     .context("the manual write panicked")??;
@@ -645,7 +686,7 @@ async fn write_local(
         // Reply-only decisions still have posting to do. Not a no-op.
         return Ok(Ok(PostReport::default()));
     }
-    let touched: Vec<(String, u32)> = handled.iter().filter_map(|h| h.touched.clone()).collect();
+    let touched = blame_lines(handled);
 
     let cwd = path.to_path_buf();
     let upstream = app.cfg.upstream_ref.clone();
@@ -1084,6 +1125,55 @@ mod tests {
                 story: None,
             }],
         )
+    }
+
+    #[test]
+    fn half_one_blames_only_lines_a_patch_writes() {
+        // A mixed batch: one patch, one thread to be written by hand. The Manual
+        // anchor must not reach the fixup decision — with it, `amend_target` sees two
+        // owning commits and amends HEAD instead of folding the patch into the
+        // commit that owns it, because of code that does not exist yet.
+        let fresh = fetched(vec![
+            thread("PRRT_1", Some("a.ts"), Some(10), "john"),
+            thread("PRRT_2", Some("b.ts"), Some(99), "dave"),
+        ]);
+        let mut set = proposed("PRRT_1", vec![position(Does::ChangeReply)]);
+        set.proposals.push(Proposal {
+            thread_id: "PRRT_2".into(),
+            continued: false,
+            read: "wants hands".into(),
+            verified: None,
+            recommend: 0,
+            positions: vec![Position {
+                label: "Manual".into(),
+                sub: String::new(),
+                does: Does::Manual,
+                patch: None,
+                reply: Some(String::new()),
+                story: None,
+            }],
+        });
+        let batch = Batch {
+            base_sha: "abc123".into(),
+            decisions: vec![
+                Decision {
+                    thread_id: "PRRT_1".into(),
+                    position: 0,
+                    reply: None,
+                },
+                Decision {
+                    thread_id: "PRRT_2".into(),
+                    position: 0,
+                    reply: None,
+                },
+            ],
+        };
+        let handled = resolve(&set, &fresh, &batch, TRACKER, FIRST_HALF).unwrap();
+
+        // Both carry an anchor...
+        assert_eq!(handled[1].touched, Some(("b.ts".into(), 99)));
+        // ...but only the one with a patch is blamed.
+        assert_eq!(blame_lines(&handled), vec![("a.ts".to_string(), 10)]);
     }
 
     #[test]

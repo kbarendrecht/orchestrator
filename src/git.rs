@@ -773,23 +773,29 @@ pub fn pre_commit(cwd: &Path, files: &[String]) -> Result<PreCommit> {
         })
         .cloned()
         .collect();
+    // **Exit status first.** `fail_fast` is off by default, so a formatter
+    // rewriting a file and a linter erroring in the same run is ordinary — and
+    // checking `rewritten` first reported that as a mere reformat, made the
+    // `Failed` arm below unreachable, and threw the hook's own output away.
+    // `write_batch` refuses on either, so it never showed; `write_manual` only
+    // logs a reformat, so it committed and pushed code that failed lint.
+    if !out.status.success() {
+        // Hooks report on stdout; stderr carries pre-commit's own troubles.
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let detail: String = stdout
+            .lines()
+            .chain(stderr.lines())
+            .filter(|l| !l.trim().is_empty())
+            .take(20)
+            .collect::<Vec<_>>()
+            .join("\n");
+        return Ok(PreCommit::Failed(detail));
+    }
     if !rewritten.is_empty() {
         return Ok(PreCommit::Reformatted(rewritten));
     }
-    if out.status.success() {
-        return Ok(PreCommit::Passed);
-    }
-    // Hooks report on stdout; stderr carries pre-commit's own troubles.
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    let detail: String = stdout
-        .lines()
-        .chain(stderr.lines())
-        .filter(|l| !l.trim().is_empty())
-        .take(20)
-        .collect::<Vec<_>>()
-        .join("\n");
-    Ok(PreCommit::Failed(detail))
+    Ok(PreCommit::Passed)
 }
 
 fn hash_files(cwd: &Path, files: &[String]) -> std::collections::HashMap<String, u64> {
