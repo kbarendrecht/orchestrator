@@ -899,6 +899,62 @@ pub async fn pr_post(
     Ok(Json(report))
 }
 
+/// What you have edited since the manual phase opened.
+///
+/// The tree against `HEAD`, which after the phase's own commit is exactly your
+/// hand-written work and nothing else — the ordering is what makes that true. Its
+/// own endpoint rather than the diff viewer's, because the phase wants one refresh
+/// call returning both the file list and the patch text, and because `git diff`
+/// being the source is the point: nobody declared these files, so the list cannot
+/// be wrong about them.
+pub async fn pr_manual(
+    State(app): State<Arc<AppState>>,
+    Path(number): Path<u64>,
+) -> ApiResult<serde_json::Value> {
+    let path = gate_worktree(&app, number).await?;
+    let (files, diff) = tokio::task::spawn_blocking(move || crate::patch::worktree_change(&path))
+        .await
+        .context("reading the worktree diff panicked")??;
+    Ok(Json(json!({ "files": files, "diff": diff })))
+}
+
+/// Finish a batch that stopped for the manual phase.
+///
+/// The same lock and the same pipeline as `/post`; the difference is that the local
+/// half folds *your* edits rather than applying a patch, and the clean-tree gate
+/// stands down because the phase is what asked you to make it dirty.
+pub async fn pr_manual_done(
+    State(app): State<Arc<AppState>>,
+    Path(number): Path<u64>,
+    Json(done): Json<crate::post::Finish>,
+) -> ApiResult<crate::post::PostReport> {
+    let lock = format!("post:{number}");
+    {
+        let mut inner = app.inner.write().await;
+        if inner.locks_held.iter().any(|l| l == &lock) {
+            return Err(ApiError(anyhow::anyhow!(
+                "a batch for PR #{number} is already running; wait for it rather than \
+                 sending a second one"
+            )));
+        }
+        inner.locks_held.push(lock.clone());
+    }
+    let released = Released {
+        app: app.clone(),
+        lock,
+    };
+
+    let pr = {
+        let inner = app.inner.read().await;
+        pr_from_poll(&inner.prs, number)?
+    };
+    let fresh = fetch_threads(&app, number).await?;
+    let report = crate::post::finish(&app, &pr, &fresh, done).await?;
+    drop(released);
+    app.notify().await;
+    Ok(Json(report))
+}
+
 /// Releases a lock in `locks_held` when it goes out of scope.
 ///
 /// A guard rather than a `let _ = ...` at each exit, because `pr_post` has several

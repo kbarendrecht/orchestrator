@@ -24,8 +24,8 @@ pub mod reviews;
 pub mod ring;
 pub mod spawn;
 pub mod state;
-pub mod story;
 pub mod store;
+pub mod story;
 pub mod todo;
 pub mod triage;
 pub mod window;
@@ -308,6 +308,10 @@ fn router(app: Arc<AppState>) -> Router {
         .route("/api/pr/:number/stash", post(api::pr_stash))
         // The only irreversible one. See `post::run` for the order.
         .route("/api/pr/:number/post", post(api::pr_post))
+        // ...unless a thread was answered by hand, in which case the batch stops
+        // after the local commit and this finishes it.
+        .route("/api/pr/:number/manual", get(api::pr_manual))
+        .route("/api/pr/:number/manual/done", post(api::pr_manual_done))
         .route("/api/pr/:number/green", post(api::green_pr))
         .route("/ws/events", get(ws::events))
         .route("/ws/pty", get(ws::pty))

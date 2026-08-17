@@ -62,6 +62,28 @@ impl Gate {
 /// writes: a review can sit open for hours, and the tree can go dirty, a rebase
 /// can stop, or `/green` can start in between.
 pub async fn gate(app: &Arc<AppState>, pr: u64, workspace: &str) -> Result<Option<Gate>> {
+    gate_inner(app, pr, workspace, true).await
+}
+
+/// The same gates minus the clean-tree one.
+///
+/// For the manual phase's second half only, where the tree is dirty **because you
+/// were asked to edit it**. `Rebasing` and `GreenRunning` still hold: one cannot
+/// take a commit at all, and the other is rewriting the same history.
+pub async fn gate_allowing_your_edits(
+    app: &Arc<AppState>,
+    pr: u64,
+    workspace: &str,
+) -> Result<Option<Gate>> {
+    gate_inner(app, pr, workspace, false).await
+}
+
+async fn gate_inner(
+    app: &Arc<AppState>,
+    pr: u64,
+    workspace: &str,
+    require_clean: bool,
+) -> Result<Option<Gate>> {
     // Only a *running* /green holds the worktree. An exhausted or finished one
     // has a record but has let go, so it must not gate.
     let green_running = matches!(
@@ -77,7 +99,7 @@ pub async fn gate(app: &Arc<AppState>, pr: u64, workspace: &str) -> Result<Optio
     if crate::git::rebase_in_progress(&path) {
         return Ok(Some(Gate::Rebasing));
     }
-    if !crate::git::is_clean(&path)? {
+    if require_clean && !crate::git::is_clean(&path)? {
         let set = crate::git::status(&path, false)?;
         let mut files: Vec<String> = set
             .staged

@@ -257,7 +257,9 @@ pub fn write_batch(
     }
 
     // 1. Blame before anything touches the tree.
-    let amend = crate::git::amend_target(cwd, merge_base, touched, my_email)?;
+    // No rev: nothing has been applied yet, so the working tree *is* the
+    // committed state and blaming it is correct.
+    let amend = crate::git::amend_target(cwd, None, merge_base, touched, my_email)?;
 
     // 2. The ladder.
     let files = match check(cwd, patches)? {
@@ -315,6 +317,126 @@ pub fn write_batch(
             crate::git::Amend::Head(why) => format!("amended HEAD — {why}"),
         },
     })
+}
+
+/// Fold hand-written edits into the branch — the manual phase's local half.
+///
+/// The same pass as [`write_batch`] minus the parts that only make sense for a
+/// proposed patch: there is nothing to check and nothing to apply, because the
+/// edits are already on disk. What is left is what matters — blame to find the
+/// commit that owns the line, the hooks, and the fold.
+///
+/// Two differences from `write_batch`, both forced:
+///
+/// - **Blame reads `HEAD`, not the working tree.** The human has just edited the
+///   very line being blamed, so the bare form would report "not committed yet" for
+///   every manual thread and degrade the whole pass to a plain HEAD amend.
+/// - **Pre-commit runs on what `git status` reports**, not on a known file list.
+///   Nobody declared what was touched; that is the point of the phase, and it is
+///   also what makes the file list complete rather than trusted.
+pub fn write_manual(
+    cwd: &Path,
+    merge_base: &str,
+    my_email: &str,
+    touched: &[(String, u32)],
+) -> Result<Written> {
+    let changed = crate::git::status(cwd, false)?;
+    let paths: Vec<String> = changed
+        .staged
+        .iter()
+        .chain(changed.unstaged.iter())
+        .chain(changed.untracked.iter())
+        .map(|f| f.path.clone())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    if paths.is_empty() {
+        // A Manual thread does not have to change code — "I did this in another
+        // PR" is a legitimate answer, and the comment is what was required.
+        return Ok(Written::NothingToWrite);
+    }
+
+    let amend = crate::git::amend_target(cwd, Some("HEAD"), merge_base, touched, my_email)?;
+
+    match crate::git::pre_commit(cwd, &paths)? {
+        crate::git::PreCommit::Passed | crate::git::PreCommit::NotConfigured => {}
+        crate::git::PreCommit::NotInstalled => {
+            tracing::warn!(
+                "`.pre-commit-config.yaml` is present but `pre-commit` is not installed; \
+                 pushing code the local hooks did not see"
+            );
+        }
+        crate::git::PreCommit::Failed(detail) => {
+            return Ok(Written::Refused(format!(
+                "pre-commit failed on your edits, so nothing was committed:\n{detail}"
+            )))
+        }
+        // Unlike an accepted patch, a hook rewriting your own edit is not a
+        // surprise — you wrote it, and formatting is what hooks are for. So it is
+        // reported rather than refused, and the file list below includes it.
+        crate::git::PreCommit::Reformatted(rewritten) => {
+            tracing::info!("the hooks reformatted {}", rewritten.join(", "));
+        }
+    }
+
+    // Recounted after the hooks, so the file list is what will actually land.
+    let files = numstat_worktree(cwd)?;
+    crate::git::fold_in(cwd, &amend)?;
+    Ok(Written::Committed {
+        files,
+        amend: match amend {
+            crate::git::Amend::Fixup(sha) => {
+                format!("folded into {}", sha.chars().take(7).collect::<String>())
+            }
+            crate::git::Amend::Head(why) => format!("amended HEAD — {why}"),
+        },
+    })
+}
+
+/// What the working tree holds that `HEAD` does not: the file list and the patch.
+///
+/// The manual phase's window onto its own work. Untracked files are staged
+/// `--intent-to-add` first, or `git diff` cannot see them at all and a whole new
+/// file would be missing from both halves.
+pub fn worktree_change(cwd: &Path) -> Result<(Vec<FileStat>, String)> {
+    let files = numstat_worktree(cwd)?;
+    let out = Command::new("git")
+        .args(["diff", "HEAD"])
+        .current_dir(cwd)
+        .output()
+        .context("running git diff")?;
+    anyhow::ensure!(
+        out.status.success(),
+        "git diff failed: {}",
+        String::from_utf8_lossy(&out.stderr).trim()
+    );
+    Ok((files, String::from_utf8_lossy(&out.stdout).into_owned()))
+}
+
+/// `git diff --numstat HEAD`, including untracked files, as [`FileStat`]s.
+///
+/// The manual phase's equivalent of `git apply --numstat`: the file list has to be
+/// derived from the tree rather than from a patch nobody wrote.
+fn numstat_worktree(cwd: &Path) -> Result<Vec<FileStat>> {
+    // `--intent-to-add` on untracked files first, or `git diff` cannot see them
+    // and the list would silently omit a whole new file.
+    let _ = Command::new("git")
+        .args(["add", "-AN"])
+        .current_dir(cwd)
+        .output();
+    let out = Command::new("git")
+        .args(["diff", "--numstat", "HEAD"])
+        .current_dir(cwd)
+        .output()
+        .context("running git diff --numstat")?;
+    anyhow::ensure!(
+        out.status.success(),
+        "git diff --numstat failed: {}",
+        String::from_utf8_lossy(&out.stderr).trim()
+    );
+    Ok(aggregate(parse_numstat(&String::from_utf8_lossy(
+        &out.stdout,
+    ))))
 }
 
 #[cfg(test)]
@@ -510,6 +632,60 @@ mod tests {
         let content = std::fs::read_to_string(d.join("f.txt")).unwrap();
         assert!(content.contains("FIVE") && content.contains("THIRTY"));
         assert!(crate::git::is_clean(&d).unwrap(), "tree left dirty");
+    }
+
+    #[test]
+    fn hand_written_edits_fold_into_the_commit_that_owns_the_line() {
+        // The manual phase. Nothing is applied — the edits are already on disk,
+        // which is exactly the state `write_batch` refuses to work in.
+        let d = batch_repo();
+        let before = commit_count(&d);
+        let f = d.join("f.txt");
+        let edited: String = std::fs::read_to_string(&f)
+            .unwrap()
+            .lines()
+            .map(|l| {
+                if l == "mine5" {
+                    "by hand\n".to_string()
+                } else {
+                    format!("{l}\n")
+                }
+            })
+            .collect();
+        std::fs::write(&f, edited).unwrap();
+        // A whole new file too, which `git diff` only sees once it is intent-to-add
+        // — the case that would silently drop a file from the list.
+        std::fs::write(d.join("new.txt"), "fresh\n").unwrap();
+
+        let touched = vec![("f.txt".to_string(), 5)];
+        match write_manual(&d, "base", "me@here", &touched).unwrap() {
+            Written::Committed { files, amend } => {
+                // Blamed against HEAD, so it found the owning commit rather than
+                // reporting "not committed yet" for the line just edited.
+                assert!(amend.starts_with("folded into"), "{amend}");
+                let paths: Vec<&str> = files.iter().map(|f| f.path.as_str()).collect();
+                assert!(paths.contains(&"f.txt"), "{paths:?}");
+                assert!(
+                    paths.contains(&"new.txt"),
+                    "an untracked file must count: {paths:?}"
+                );
+            }
+            other => panic!("expected Committed, got {other:?}"),
+        }
+        assert_eq!(commit_count(&d), before, "folded, not stacked");
+        assert!(crate::git::is_clean(&d).unwrap(), "tree left dirty");
+        assert!(std::fs::read_to_string(&f).unwrap().contains("by hand"));
+    }
+
+    #[test]
+    fn a_manual_thread_that_changed_nothing_is_not_a_failure() {
+        // "I did this in another PR" is a legitimate answer; the comment was the
+        // thing required, not the code.
+        let d = batch_repo();
+        let before = commit_count(&d);
+        let got = write_manual(&d, "base", "me@here", &[("f.txt".to_string(), 5)]).unwrap();
+        assert_eq!(got, Written::NothingToWrite);
+        assert_eq!(commit_count(&d), before);
     }
 
     #[test]

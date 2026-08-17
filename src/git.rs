@@ -510,13 +510,25 @@ pub struct Blame {
 
 /// `git blame` one line of the **committed** state.
 ///
-/// Must run before the patches are applied: blame on a dirty working tree
-/// attributes the line to the uncommitted change (an all-zero sha), which is
-/// nobody's commit and cannot be a fixup target.
-pub fn blame_line(cwd: &Path, path: &str, line: u32) -> Result<Option<Blame>> {
+/// `rev` is which committed state. `None` blames the working tree, which is only
+/// correct *before* anything has been applied — a dirty tree attributes the line
+/// to the uncommitted change (an all-zero sha), which is nobody's commit and
+/// cannot be a fixup target, so this returns `None` for it.
+///
+/// `Some("HEAD")` reads through a dirty tree, which is what the manual phase
+/// needs: the human has already edited the very line being blamed, so blaming the
+/// working tree would degrade every manual fold to a plain HEAD amend and the pass
+/// would never do its job. Measured: `git blame HEAD -L n,n` returns the owning
+/// commit where the bare form returns all zeros.
+pub fn blame_line(cwd: &Path, rev: Option<&str>, path: &str, line: u32) -> Result<Option<Blame>> {
     let range = format!("{line},{line}");
+    let mut args = vec!["blame"];
+    if let Some(r) = rev {
+        args.push(r);
+    }
+    args.extend_from_slice(&["-L", &range, "--porcelain", "--", path]);
     let out = Command::new("git")
-        .args(["blame", "-L", &range, "--porcelain", "--", path])
+        .args(&args)
         .current_dir(cwd)
         .output()
         .context("running git blame")?;
@@ -566,6 +578,7 @@ pub enum Amend {
 ///   force-push is not ours to do, and it changes a sha they may have checked out.
 pub fn amend_target(
     cwd: &Path,
+    rev: Option<&str>,
     merge_base: &str,
     touched: &[(String, u32)],
     my_email: &str,
@@ -576,7 +589,7 @@ pub fn amend_target(
 
     let mut target: Option<Blame> = None;
     for (path, line) in touched {
-        let Some(b) = blame_line(cwd, path, *line)? else {
+        let Some(b) = blame_line(cwd, rev, path, *line)? else {
             return Ok(Amend::Head(format!(
                 "{path}:{line} is not in any commit yet"
             )));
@@ -987,7 +1000,7 @@ mod tests {
     fn a_line_from_this_prs_own_commit_is_a_fixup_target() {
         let d = amend_repo();
         let want = sha_of(&d, "the PR commit");
-        let got = amend_target(&d, "base", &[("f.txt".into(), 3)], "me@here").unwrap();
+        let got = amend_target(&d, None, "base", &[("f.txt".into(), 3)], "me@here").unwrap();
         assert_eq!(got, Amend::Fixup(want));
     }
 
@@ -995,7 +1008,7 @@ mod tests {
     fn a_line_that_predates_the_branch_degrades_to_head() {
         // Line 1 came from `develop`; it is not this PR's commit to rewrite.
         let d = amend_repo();
-        match amend_target(&d, "base", &[("f.txt".into(), 1)], "me@here").unwrap() {
+        match amend_target(&d, None, "base", &[("f.txt".into(), 1)], "me@here").unwrap() {
             Amend::Head(why) => assert!(why.contains("predates"), "{why}"),
             other => panic!("expected Head, got {other:?}"),
         }
@@ -1006,7 +1019,7 @@ mod tests {
         // Rewriting a colleague's commit under your own force-push changes a sha
         // they may have checked out.
         let d = amend_repo();
-        match amend_target(&d, "base", &[("f.txt".into(), 3)], "someone@else").unwrap() {
+        match amend_target(&d, None, "base", &[("f.txt".into(), 3)], "someone@else").unwrap() {
             Amend::Head(why) => assert!(why.contains("commit"), "{why}"),
             other => panic!("expected Head, got {other:?}"),
         }
@@ -1017,6 +1030,7 @@ mod tests {
         let d = amend_repo();
         let got = amend_target(
             &d,
+            None,
             "base",
             &[("f.txt".into(), 1), ("f.txt".into(), 3)],
             "me@here",
@@ -1036,7 +1050,7 @@ mod tests {
         // the line to an all-zero sha, which is nobody's commit.
         let d = amend_repo();
         std::fs::write(d.join("f.txt"), "base1\nbase2\nmine\nfresh\n").unwrap();
-        assert_eq!(blame_line(&d, "f.txt", 4).unwrap(), None);
+        assert_eq!(blame_line(&d, None, "f.txt", 4).unwrap(), None);
     }
 
     #[test]

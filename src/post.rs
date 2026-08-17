@@ -41,6 +41,22 @@ pub struct Decision {
     pub reply: Option<String>,
 }
 
+/// What the manual phase sends back to finish the batch.
+///
+/// It carries the same `decisions` again rather than the daemon holding them: the
+/// durable half of the phase is the commit, which is in git, and re-sending means
+/// there is no server-side state to go stale between the two halves.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Finish {
+    pub batch: Batch,
+    /// The sha the phase reported. Checked against `HEAD`.
+    pub committed: String,
+    /// The comment per manual thread. Required, and non-empty — without one a
+    /// Manual thread does nothing on GitHub and is indistinguishable from a skip,
+    /// except in your own head. The reviewer would get a commit and silence.
+    pub comments: std::collections::HashMap<String, String>,
+}
+
 /// What the final screen sends. A thread absent from `decisions` was skipped.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Batch {
@@ -103,9 +119,45 @@ pub struct Skipped {
 /// hooks rewrote a file, pre-commit failed. Nothing was committed and nothing was
 /// pushed, so every other field is empty and the screen is panel 7 rather than
 /// panel 8.
+/// A thread the human said they would handle themselves.
+#[derive(Debug, Clone, Serialize)]
+pub struct ManualThread {
+    pub thread_id: String,
+    pub label: String,
+    /// The reviewer's own words, so the phase screen needs no second fetch.
+    pub comment: String,
+    /// What the card's box held. A starting point, not the comment — you cannot
+    /// describe work you have not done yet, which is why the real one is written
+    /// in the phase.
+    pub draft: String,
+}
+
+/// The batch stopped to wait for you.
+///
+/// Reached only when a decision chose `Manual`. The accepted patches are written
+/// and committed by then, so you edit a tree that already reflects every other
+/// decision — often *why* this thread needed hands. **Nothing has been pushed and
+/// nothing posted**, so backing out costs only the local commit.
+#[derive(Debug, Clone, Serialize)]
+pub struct ManualPhase {
+    /// The commit the accepted patches landed in. `/manual/done` checks `HEAD`
+    /// against it, which is what keeps the phase from resuming onto a branch that
+    /// moved underneath it — and it lives in git rather than in the daemon, so it
+    /// survives a restart.
+    pub committed: String,
+    /// What was already written, for the phase screen's first line.
+    pub files: Vec<FileStat>,
+    pub amend: Option<String>,
+    pub threads: Vec<ManualThread>,
+}
+
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct PostReport {
     pub refused: Option<String>,
+    /// Set when the batch is waiting on you. Everything else is empty: the outward
+    /// half has not run.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub manual: Option<ManualPhase>,
     /// The complete file list the batch wrote, from `git apply --numstat`.
     pub files: Vec<FileStat>,
     /// How the fold resolved, including when it fell back to a HEAD amend.
@@ -148,6 +200,11 @@ struct Handled {
     /// The thread's own GitHub URL, which goes into the story body so a later run
     /// can find the story instead of filing a second one.
     permalink: String,
+    /// The reviewer's opening comment, and what the card's box held. Both only for
+    /// the manual phase screen, which has to show the words being answered and the
+    /// draft to finish — and carrying them here saves it a second fetch.
+    reviewer_said: String,
+    draft: String,
     /// `(path, line)` for the blame that picks the fixup target. Only for a
     /// position that writes code.
     touched: Option<(String, u32)>,
@@ -163,6 +220,15 @@ fn resolve(
     fresh: &Threads,
     batch: &Batch,
     tracker: crate::config::Tracker,
+    // `None` on the first half, `Some` on the resume.
+    //
+    // Deliberately an `Option` around the map rather than an empty map: with a map
+    // either way, an *absent* key is indistinguishable from "the phase has not
+    // opened yet", and the resume path then treats a manual thread with no comment
+    // as one that simply has nothing to post — sailing past the requirement and
+    // posting every other reply. That is not hypothetical; it is what this code did,
+    // and it posted four replies to a live PR before the mistake was visible.
+    comments: Option<&std::collections::HashMap<String, String>>,
 ) -> Result<Vec<Handled>> {
     let mut out = Vec::new();
     for d in &batch.decisions {
@@ -180,16 +246,6 @@ fn resolve(
             )
         })?;
 
-        // Named rather than silently skipped: a thread that quietly did nothing is
-        // indistinguishable from one that was handled, which is the whole failure
-        // this flow is built to avoid.
-        if pos.does == Does::Manual {
-            bail!(
-                "thread {}: the manual phase is not built yet — it has to open after the \
-                 accepted patches are committed. Pick another position or skip.",
-                d.thread_id
-            );
-        }
         if pos.does.files_story() && !tracker.is_configured() {
             bail!(
                 "thread {}: no tracker is configured, so there is nowhere to file this. \
@@ -212,7 +268,16 @@ fn resolve(
             .root_for(&d.thread_id)
             .with_context(|| format!("thread {} has no comment to answer", d.thread_id))?;
 
-        let touched = if pos.does.writes_code() {
+        let touched = if pos.does == Does::Manual {
+            // The reviewer's own anchor, used to blame at in the phase. Absent on a
+            // review summary, and that is allowed: answering one by hand is
+            // legitimate, and with no line the fold degrades to a HEAD amend and
+            // says so rather than refusing.
+            match (thread.path.clone(), thread.line.or(thread.original_line)) {
+                (Some(p), Some(l)) => Some((p, l)),
+                _ => None,
+            }
+        } else if pos.does.writes_code() {
             let path = thread.path.clone().with_context(|| {
                 format!(
                     "thread {}: a patch was accepted on a thread with no file",
@@ -232,21 +297,28 @@ fn resolve(
             None
         };
 
-        let reply = match (pos.does.writes_reply(), &d.reply) {
-            // Your wording wins over the draft. Empty is a refusal, not a blank
-            // comment: a reply-only position that posts nothing does nothing.
-            (true, Some(text)) if !text.trim().is_empty() => Some(text.clone()),
-            (true, Some(_)) => bail!(
-                "thread {}: this position posts a reply and the text is empty",
-                d.thread_id
-            ),
-            (true, None) => Some(
-                pos.reply
-                    .clone()
-                    .filter(|r| !r.trim().is_empty())
-                    .with_context(|| format!("thread {}: no reply text to post", d.thread_id))?,
-            ),
-            (false, _) => None,
+        // A Manual thread's comment is written in the phase, after the work exists —
+        // so on the way *in* the card's box is only a draft and may be empty. The
+        // requirement is enforced where it can actually be met.
+        let reply = match (pos.does, comments) {
+            // The first half: the phase has not opened, so there is nothing to post
+            // yet and the card's box was only a draft.
+            (Does::Manual, None) => None,
+            // The resume. A comment is required, and *absent* has to fail exactly
+            // like blank — anything else lets the thread through in silence.
+            (Does::Manual, Some(map)) => {
+                let text = map.get(&d.thread_id).map(String::as_str).unwrap_or("");
+                if text.trim().is_empty() {
+                    bail!(
+                        "thread {}: a manual thread needs a comment. Without one the reviewer \
+                         gets a commit and silence, which is indistinguishable from being \
+                         ignored.",
+                        d.thread_id
+                    );
+                }
+                Some(text.to_string())
+            }
+            _ => resolve_reply(pos, d, &d.thread_id)?,
         };
         // The one agent-or-human string the validator never sized. It is about to
         // carry a public URL, so it is bounded here rather than at the API edge.
@@ -299,10 +371,35 @@ fn resolve(
                 .first()
                 .map(|c| c.url.clone())
                 .unwrap_or_default(),
+            reviewer_said: thread
+                .comments
+                .first()
+                .map(|c| c.body.clone())
+                .unwrap_or_default(),
+            draft: pos.reply.clone().unwrap_or_default(),
             touched,
         });
     }
     Ok(out)
+}
+
+/// The reply a non-manual position will post: your wording if you typed one.
+fn resolve_reply(pos: &Position, d: &Decision, thread_id: &str) -> Result<Option<String>> {
+    match (pos.does.writes_reply(), &d.reply) {
+        // Your wording wins over the draft. Empty is a refusal, not a blank
+        // comment: a reply-only position that posts nothing does nothing.
+        (true, Some(text)) if !text.trim().is_empty() => Ok(Some(text.clone())),
+        (true, Some(_)) => {
+            bail!("thread {thread_id}: this position posts a reply and the text is empty")
+        }
+        (true, None) => Ok(Some(
+            pos.reply
+                .clone()
+                .filter(|r| !r.trim().is_empty())
+                .with_context(|| format!("thread {thread_id}: no reply text to post"))?,
+        )),
+        (false, _) => Ok(None),
+    }
 }
 
 /// `renovate.json5:161 · carol`, or `review summary · acme-bot` for a
@@ -328,12 +425,43 @@ pub async fn run(
     fresh: &Threads,
     batch: Batch,
 ) -> Result<PostReport> {
+    run_inner(app, pr, fresh, batch, None).await
+}
+
+/// Finish a batch that stopped for the manual phase.
+///
+/// The same pipeline, resumed: the accepted patches are already committed, so the
+/// local half folds *your* edits instead of applying a patch, and everything from
+/// the push onward runs exactly as it would have.
+pub async fn finish(
+    app: &Arc<AppState>,
+    pr: &Pr,
+    fresh: &Threads,
+    done: Finish,
+) -> Result<PostReport> {
+    let batch = done.batch.clone();
+    run_inner(app, pr, fresh, batch, Some(done)).await
+}
+
+async fn run_inner(
+    app: &Arc<AppState>,
+    pr: &Pr,
+    fresh: &Threads,
+    batch: Batch,
+    resume: Option<Finish>,
+) -> Result<PostReport> {
     // The gates again. A review can sit open for hours: the tree can go dirty, a
     // rebase can stop, or /green can start between opening the cards and pushing.
     let workspace = crate::api::workspace_for(app, &pr.head_ref)
         .await
         .with_context(|| format!("no worktree holding {} — re-triage", pr.head_ref))?;
-    if let Some(g) = crate::triage::gate(app, pr.number, &workspace).await? {
+    let gated = match &resume {
+        // The tree is dirty because the phase asked you to edit it, so that one
+        // gate has to stand down. The other two still hold.
+        Some(_) => crate::triage::gate_allowing_your_edits(app, pr.number, &workspace).await?,
+        None => crate::triage::gate(app, pr.number, &workspace).await?,
+    };
+    if let Some(g) = gated {
         bail!("{}", g.say());
     }
     let path = app
@@ -360,13 +488,62 @@ pub async fn run(
         .get(&pr.number)
         .cloned()
         .with_context(|| format!("PR #{} has no triage proposals to post", pr.number))?;
-    let handled = resolve(&proposals, fresh, &batch, app.cfg.tracker)?;
+    let comments = resume.as_ref().map(|r| &r.comments);
+    let handled = resolve(&proposals, fresh, &batch, app.cfg.tracker, comments)?;
 
     // --- half one: local, undoable -----------------------------------------
-    let mut report = match write_local(&path, app, &handled).await? {
-        Ok(w) => w,
-        Err(refusal) => return Ok(refusal),
+    let mut report = match &resume {
+        None => match write_local(&path, app, &handled).await? {
+            Ok(w) => w,
+            Err(refusal) => return Ok(refusal),
+        },
+        Some(done) => {
+            // The phase's own staleness check, and the reason there is no
+            // server-side pending state to go stale: what the first half produced
+            // is a commit, so git is the record.
+            let head = crate::git::head_sha(&path)?;
+            if head != done.committed {
+                return Ok(PostReport::refused(format!(
+                    "the branch moved while the manual phase was open ({} → {}). Whatever \
+                     moved it may not account for your edits; start the batch again rather \
+                     than pushing on top of it.",
+                    short(&done.committed),
+                    short(&head)
+                )));
+            }
+            match write_manual(&path, app, &handled).await? {
+                Ok(w) => w,
+                Err(refusal) => return Ok(refusal),
+            }
+        }
     };
+
+    // --- the phase: stop here and wait for a human -------------------------
+    //
+    // After the local commit, before the push. So you edit a tree that already
+    // reflects every other decision — often why the thread needed hands — and
+    // nothing has left the machine yet if you walk away.
+    if resume.is_none() {
+        let waiting: Vec<ManualThread> = handled
+            .iter()
+            .filter(|h| h.does == Does::Manual)
+            .map(|h| ManualThread {
+                thread_id: h.thread_id.clone(),
+                label: h.label.clone(),
+                comment: h.reviewer_said.clone(),
+                draft: h.draft.clone(),
+            })
+            .collect();
+        if !waiting.is_empty() {
+            report.manual = Some(ManualPhase {
+                committed: crate::git::head_sha(&path)?,
+                files: std::mem::take(&mut report.files),
+                amend: report.amend.take(),
+                threads: waiting,
+            });
+            return Ok(report);
+        }
+    }
 
     // --- the push: everything past here is public --------------------------
     if !report.files.is_empty() {
@@ -405,6 +582,47 @@ pub async fn run(
     };
     post_outward(&target, pr.number, fresh, &handled, &filed, &mut report).await;
     Ok(report)
+}
+
+/// The manual phase's local half: fold what *you* wrote.
+///
+/// No ladder and no apply — the edits are already on disk, which is the state the
+/// propose-only path refuses to work in. `patch::write_manual` does the rest, and
+/// derives the file list from `git status` rather than from a patch, which is what
+/// keeps "only what you approved" true when nobody declared what was touched.
+async fn write_manual(
+    path: &Path,
+    app: &Arc<AppState>,
+    handled: &[Handled],
+) -> Result<std::result::Result<PostReport, PostReport>> {
+    // Blamed at the lines the reviewers pointed at. If your edits span commits the
+    // fold degrades to a HEAD amend and says so, which is the honest answer.
+    let touched: Vec<(String, u32)> = handled
+        .iter()
+        .filter(|h| h.does == Does::Manual)
+        .filter_map(|h| h.touched.clone())
+        .collect();
+
+    let cwd = path.to_path_buf();
+    let upstream = app.cfg.upstream_ref.clone();
+    let written = tokio::task::spawn_blocking(move || -> Result<Written> {
+        let base = crate::git::merge_base(&cwd, &upstream)?;
+        let email = crate::git::user_email(&cwd);
+        crate::patch::write_manual(&cwd, &base, &email, &touched)
+    })
+    .await
+    .context("the manual write panicked")??;
+
+    Ok(match written {
+        Written::Committed { files, amend } => Ok(PostReport {
+            files,
+            amend: Some(amend),
+            ..Default::default()
+        }),
+        // You changed nothing, which a Manual thread is allowed to mean.
+        Written::NothingToWrite => Ok(PostReport::default()),
+        Written::Refused(why) => Err(PostReport::refused(why)),
+    })
 }
 
 /// The local half: blame, ladder, apply, hooks, fold. `Err` on the inner result
@@ -705,6 +923,9 @@ mod tests {
     /// The story arms only exist with a tracker configured, so the tests that are
     /// not about that run with one.
     const TRACKER: crate::config::Tracker = crate::config::Tracker::Stub;
+
+    /// The first half: no phase has opened.
+    const FIRST_HALF: Option<&std::collections::HashMap<String, String>> = None;
     use crate::github::{Comment, Thread};
     use crate::proposal::{Proposal, ProposalSet, StoryDraft};
 
@@ -785,7 +1006,7 @@ mod tests {
     fn a_patch_position_resolves_to_its_diff_and_a_blame_target() {
         let set = proposed("PRRT_1", vec![position(Does::ChangeThumbsUp)]);
         let fresh = fetched(vec![thread("PRRT_1", Some("src/Foo.php"), Some(42), "john")]);
-        let got = resolve(&set, &fresh, &batch("PRRT_1", 0, None), TRACKER).unwrap();
+        let got = resolve(&set, &fresh, &batch("PRRT_1", 0, None), TRACKER, FIRST_HALF).unwrap();
 
         assert_eq!(got.len(), 1);
         assert!(got[0].patch.is_some());
@@ -801,7 +1022,7 @@ mod tests {
         let set = proposed("PRRT_1", vec![position(Does::Reply)]);
         let fresh = fetched(vec![thread("PRRT_1", Some("a.ts"), Some(1), "john")]);
 
-        let kept = resolve(&set, &fresh, &batch("PRRT_1", 0, None), TRACKER).unwrap();
+        let kept = resolve(&set, &fresh, &batch("PRRT_1", 0, None), TRACKER, FIRST_HALF).unwrap();
         assert_eq!(kept[0].reply.as_deref(), Some("Resolved."));
 
         let mine = resolve(
@@ -809,6 +1030,7 @@ mod tests {
             &fresh,
             &batch("PRRT_1", 0, Some("Nee, want …")),
             TRACKER,
+            FIRST_HALF,
         )
         .unwrap();
         assert_eq!(mine[0].reply.as_deref(), Some("Nee, want …"));
@@ -820,9 +1042,15 @@ mod tests {
         // blank comment that cannot be deleted from here.
         let set = proposed("PRRT_1", vec![position(Does::Reply)]);
         let fresh = fetched(vec![thread("PRRT_1", Some("a.ts"), Some(1), "john")]);
-        let err = resolve(&set, &fresh, &batch("PRRT_1", 0, Some("   ")), TRACKER)
-            .unwrap_err()
-            .to_string();
+        let err = resolve(
+            &set,
+            &fresh,
+            &batch("PRRT_1", 0, Some("   ")),
+            TRACKER,
+            FIRST_HALF,
+        )
+        .unwrap_err()
+        .to_string();
         assert!(err.contains("empty"), "{err}");
     }
 
@@ -844,33 +1072,124 @@ mod tests {
         }
     }
 
-    #[test]
-    fn manual_is_still_named_rather_than_silently_skipped() {
-        // A thread that quietly did nothing is indistinguishable from one that was
-        // handled — which is the failure this whole flow exists to prevent.
-        let fresh = fetched(vec![thread("PRRT_1", None, None, "acme-bot")]);
-        let manual = proposed(
+    fn manual_set(draft: &str) -> ProposalSet {
+        proposed(
             "PRRT_1",
             vec![Position {
                 label: "Manual".into(),
                 sub: String::new(),
                 does: Does::Manual,
                 patch: None,
-                reply: Some("done".into()),
+                reply: Some(draft.into()),
                 story: None,
             }],
+        )
+    }
+
+    #[test]
+    fn a_manual_thread_carries_no_comment_into_the_phase() {
+        // The card's box is a draft: you cannot describe work you have not done, so
+        // the real comment is written in the phase and there is nothing to post yet.
+        let fresh = fetched(vec![thread("PRRT_1", Some("a.ts"), Some(12), "john")]);
+        let got = resolve(
+            &manual_set(""),
+            &fresh,
+            &batch("PRRT_1", 0, None),
+            TRACKER,
+            FIRST_HALF,
+        )
+        .unwrap();
+        assert_eq!(got[0].does, Does::Manual);
+        assert!(got[0].reply.is_none(), "nothing to post on the way in");
+        // The reviewer's anchor rides along, for the phase to blame at.
+        assert_eq!(got[0].touched, Some(("a.ts".into(), 12)));
+        // And the words being answered, so the phase needs no second fetch.
+        assert_eq!(got[0].reviewer_said, "you call this twice");
+    }
+
+    #[test]
+    fn a_manual_thread_will_not_finish_without_a_comment() {
+        // Without one the reviewer gets a commit and silence, which is
+        // indistinguishable from being ignored.
+        let fresh = fetched(vec![thread("PRRT_1", Some("a.ts"), Some(12), "john")]);
+
+        // **An absent key must fail exactly like a blank one.** This is the case
+        // that got away: with an empty map standing in for "the phase has not
+        // opened", a resume carrying no comment at all looked like the first half,
+        // the manual thread was quietly given nothing to post, and every *other*
+        // reply in the batch went out to a live PR. Blank was tested; absent was
+        // not, and absent is what a client actually sends.
+        let none: std::collections::HashMap<String, String> = Default::default();
+        let err = resolve(
+            &manual_set(""),
+            &fresh,
+            &batch("PRRT_1", 0, None),
+            TRACKER,
+            Some(&none),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("needs a comment"), "absent key: {err}");
+
+        let blank: std::collections::HashMap<String, String> =
+            [("PRRT_1".to_string(), "   ".to_string())].into();
+        let err = resolve(
+            &manual_set(""),
+            &fresh,
+            &batch("PRRT_1", 0, None),
+            TRACKER,
+            Some(&blank),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("needs a comment"), "{err}");
+
+        let written: std::collections::HashMap<String, String> = [(
+            "PRRT_1".to_string(),
+            "Moved to the repository.".to_string(),
+        )]
+        .into();
+        let got = resolve(
+            &manual_set(""),
+            &fresh,
+            &batch("PRRT_1", 0, None),
+            TRACKER,
+            Some(&written),
+        )
+        .unwrap();
+        assert_eq!(
+            got[0].reply.as_deref(),
+            Some("Moved to the repository.")
         );
-        let err = resolve(&manual, &fresh, &batch("PRRT_1", 0, None), TRACKER)
-            .unwrap_err()
-            .to_string();
-        assert!(err.contains("manual phase"), "{err}");
-        assert!(err.contains("not built yet"), "{err}");
+    }
+
+    #[test]
+    fn manual_on_a_review_summary_has_no_line_to_blame_and_is_allowed() {
+        // No anchor, so the fold degrades to a HEAD amend and says so — rather than
+        // refusing an answer that is perfectly legitimate.
+        let fresh = fetched(vec![thread("PRRT_1", None, None, "acme-bot")]);
+        let got = resolve(
+            &manual_set(""),
+            &fresh,
+            &batch("PRRT_1", 0, None),
+            TRACKER,
+            FIRST_HALF,
+        )
+        .unwrap();
+        assert_eq!(got[0].touched, None);
     }
 
     #[test]
     fn a_story_resolves_to_its_draft_and_keeps_the_token() {
         let fresh = fetched(vec![thread("PRRT_1", None, None, "acme-bot")]);
-        let got = resolve(&story_set(), &fresh, &batch("PRRT_1", 0, None), TRACKER).unwrap();
+        let got = resolve(
+            &story_set(),
+            &fresh,
+            &batch("PRRT_1", 0, None),
+            TRACKER,
+            FIRST_HALF,
+        )
+        .unwrap();
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].story.as_ref().map(|s| s.title.as_str()), Some("t"));
         // The token survives to the outward step, which is what substitutes it.
@@ -890,6 +1209,7 @@ mod tests {
             &fresh,
             &batch("PRRT_1", 0, None),
             crate::config::Tracker::None,
+            FIRST_HALF,
         )
         .unwrap_err()
         .to_string();
@@ -908,6 +1228,7 @@ mod tests {
             &fresh,
             &batch("PRRT_1", 0, Some("Goed punt, komt later.")),
             TRACKER,
+            FIRST_HALF,
         )
         .unwrap_err()
         .to_string();
@@ -926,6 +1247,7 @@ mod tests {
             &fresh,
             &batch("PRRT_1", 0, Some("Tracked as {story}.")),
             TRACKER,
+            FIRST_HALF,
         )
         .unwrap_err()
         .to_string();
@@ -939,9 +1261,15 @@ mod tests {
         let set = proposed("PRRT_1", vec![position(Does::Reply)]);
         let fresh = fetched(vec![thread("PRRT_1", Some("a.ts"), Some(1), "john")]);
         let huge = "x".repeat(crate::proposal::MAX_FIELD + 1);
-        let err = resolve(&set, &fresh, &batch("PRRT_1", 0, Some(&huge)), TRACKER)
-            .unwrap_err()
-            .to_string();
+        let err = resolve(
+            &set,
+            &fresh,
+            &batch("PRRT_1", 0, Some(&huge)),
+            TRACKER,
+            FIRST_HALF,
+        )
+        .unwrap_err()
+        .to_string();
         assert!(err.contains("exceeds"), "{err}");
     }
 
@@ -952,12 +1280,12 @@ mod tests {
 
         // An index past the list: the payload carries indices, so this is how a
         // bad client would try to reach content nobody reviewed.
-        assert!(resolve(&set, &fresh, &batch("PRRT_1", 7, None), TRACKER).is_err());
+        assert!(resolve(&set, &fresh, &batch("PRRT_1", 7, None), TRACKER, FIRST_HALF).is_err());
         // A thread with no proposal behind it.
-        assert!(resolve(&set, &fresh, &batch("PRRT_9", 0, None), TRACKER).is_err());
+        assert!(resolve(&set, &fresh, &batch("PRRT_9", 0, None), TRACKER, FIRST_HALF).is_err());
         // A thread that has since gone from the PR.
         let gone = fetched(vec![thread("PRRT_2", Some("a.ts"), Some(1), "john")]);
-        assert!(resolve(&set, &gone, &batch("PRRT_1", 0, None), TRACKER).is_err());
+        assert!(resolve(&set, &gone, &batch("PRRT_1", 0, None), TRACKER, FIRST_HALF).is_err());
     }
 
     #[test]
@@ -966,7 +1294,7 @@ mod tests {
         // case goes through the manual phase, not through a guessed anchor.
         let set = proposed("PRRT_1", vec![position(Does::ChangeReply)]);
         let fresh = fetched(vec![thread("PRRT_1", None, None, "acme-bot")]);
-        let err = resolve(&set, &fresh, &batch("PRRT_1", 0, None), TRACKER)
+        let err = resolve(&set, &fresh, &batch("PRRT_1", 0, None), TRACKER, FIRST_HALF)
             .unwrap_err()
             .to_string();
         assert!(err.contains("no file"), "{err}");

@@ -1257,7 +1257,7 @@ const reviewState = {
   pr: null,
   head: null,          // the head sha the proposals were generated against
   data: null,          // the /review payload
-  screen: 'intake',    // intake | gate | overview | card | final | report
+  screen: 'intake',    // intake | gate | overview | card | final | manual | report
   i: 0,                // index into queue()
   picks: {},           // thread_id -> position index
   skipped: {},         // thread_id -> true
@@ -1266,6 +1266,22 @@ const reviewState = {
   drafts: {},
   report: null,
   busy: false,
+};
+
+/** The manual phase's own state.
+ *
+ *  Separate from `reviewState` because it has a different lifetime: the phase opens
+ *  once a batch has already committed, and its comments are written after the fact
+ *  rather than being the card drafts. Cleared when a batch is sent, not when the
+ *  overlay closes — walking away from a phase and coming back should not lose what
+ *  you typed about work that is already on disk. */
+const manualState = {
+  comments: {},     // thread_id -> the comment, required
+  /* `git diff HEAD` for the whole tree — one object, not one per thread. Two
+     manual threads editing the same file cannot be told apart, and the commit is
+     the tree's anyway, so attributing it per thread would be a guess dressed as a
+     fact. */
+  changed: null,
 };
 
 const draftKey = (id, pos) => `${id} ${pos}`;
@@ -1358,9 +1374,18 @@ function patchStats(diff) {
  *  hand-written — there is no deny-list, so showing what will be written is
  *  what stands in for one. */
 function willWriteLabel(diff, verb) {
+  return fileListLabel(patchStats(diff), verb || 'will write');
+}
+
+/** `<verb> renovate.json5 +3 −1`, every path.
+ *
+ *  Shared by the card (from a proposed patch) and the manual phase (from
+ *  `git diff`), because in both places the point is the same: the list is derived,
+ *  so it cannot be wrong about what is being written. */
+function fileListLabel(files, verb) {
   const row = el('div', 'willwrite');
-  row.appendChild(document.createTextNode(verb || 'will write'));
-  for (const f of patchStats(diff)) {
+  row.appendChild(document.createTextNode(verb));
+  for (const f of files) {
     const b = el('b');
     b.appendChild(document.createTextNode(f.path + ' '));
     if (f.added) {
@@ -1989,7 +2014,11 @@ function rvFinal(root) {
   root.appendChild(body);
 
   const out = outward(q);
-  const blocked = q.filter((x) => isHandled(x) && positionOf(x).does === 'manual');
+  // Nothing is blocked any more. A Manual thread does not disable the button — it
+  // changes what pressing it does: the batch commits the rest and stops, and a
+  // second screen finishes it. That cost was recorded deliberately, since "one go"
+  // was a property the design bought and asking for a human step spends it.
+  const byHand = q.filter((x) => isHandled(x) && positionOf(x).does === 'manual');
   const bits = [];
   if (out.commits) bits.push('push 1 commit');
   // Named separately from the GitHub count, because it is a write to another
@@ -2002,23 +2031,30 @@ function rvFinal(root) {
      a batch it has no natural meaning, and three cards' worth of "enter is safe"
      should not land on the one irreversible button. ctrl+enter is GitHub's own
      comment-box convention, so it is already in the right muscle memory. */
+  /* The button names what it will actually do. With a Manual thread in the batch
+     that is not the push — it is committing and then handing back to you, and
+     saying "push" would be a lie you only discover after pressing it. */
+  const goes = byHand.length
+    ? `commit, then ${byHand.length === 1 ? 'your turn' : `your turn on ${byHand.length}`}`
+    : label;
   root.appendChild(rvActs([
-    actBtn(label, 'warm', () => sendBatch(), !bits.length || blocked.length > 0),
+    actBtn(goes, 'warm', () => sendBatch(), !bits.length && !byHand.length),
     actBtn('back', null, () => { reviewState.screen = 'card'; renderReview(); }),
-  ], blocked.length
-    ? `${blocked.length} thread${blocked.length === 1 ? '' : 's'} needs a phase that is not built yet`
+  ], byHand.length
+    ? 'nothing is pushed or posted until you have written your comment'
     : 'ctrl+enter to send · enter does nothing here'));
 
-  if (blocked.length) {
+  if (byHand.length) {
     const warn = el('div', 'banner');
     warn.appendChild(el('span', 'ico', '▲'));
     const tx = el('span', 'tx');
-    tx.appendChild(el('b', null, 'The manual phase is not built yet.'));
+    tx.appendChild(el('b', null, 'This stops for you part-way.'));
     tx.appendChild(el('p', null,
-      'It has to open after the accepted patches are committed, so you edit a tree that ' +
-      'already reflects every other decision. The daemon refuses it by name rather than ' +
-      'posting nothing quietly — pick another position on ' +
-      blocked.map((x) => threadLabel(x.t)).join(', ') + ', or skip it.'));
+      `${byHand.map((x) => threadLabel(x.t)).join(', ')} ` +
+      (byHand.length === 1 ? 'is yours to write' : 'are yours to write') +
+      '. Everything else is written and committed first, so you edit a tree that ' +
+      'already reflects every other decision — then a second screen takes your ' +
+      'comment and finishes the batch. Nothing is pushed or posted before that.'));
     warn.appendChild(tx);
     root.insertBefore(warn, root.querySelector('.strip'));
   }
@@ -2350,6 +2386,202 @@ function resultSec(title, rows, shape) {
   return sec;
 }
 
+/* ---------- screen 6: manual — the phase that waits for you ---------- */
+
+/** The batch stopped after committing everything else, and is waiting for you.
+ *
+ *  The ordering is the whole design. Hand-editing breaks the propose-only
+ *  invariant that the tree stays clean until the final action, and merging your
+ *  edits into the batch was rejected — the commit would sweep up whatever you
+ *  happened to have touched, so "exactly what you approved" stops being true. So
+ *  the accepted patches are written and committed *first*, and you then edit a tree
+ *  that already reflects every other decision, which is often why this thread
+ *  needed hands in the first place.
+ *
+ *  Two things fall out for free: you cannot describe work you have not done, so the
+ *  comment is written here rather than guessed at on the card; and `git diff` makes
+ *  the file list complete, because nobody had to declare it. */
+function rvManual(root) {
+  const m = reviewState.report.manual;
+  root.appendChild(rvHead('your turn', `${m.threads.length} by hand`));
+  root.appendChild(rvStrip(null));
+
+  const body = el('div', 'body');
+
+  // What is already committed. First, because it changes what you are editing.
+  const done = el('div', 'sec');
+  const group = el('div', 'group');
+  const row = el('div', 'res ok');
+  row.appendChild(el('span', 'st', '✓'));
+  const c = el('span', 'c');
+  const t = el('span', 't');
+  if (m.files.length) {
+    t.appendChild(document.createTextNode(
+      `${m.files.length} accepted change${m.files.length === 1 ? '' : 's'} written and ` +
+      'committed locally — '));
+    t.appendChild(el('span', 'm', m.committed.slice(0, 7)));
+    t.appendChild(document.createTextNode(
+      `${m.amend ? ', ' + m.amend : ''}. Not pushed.`));
+  } else {
+    // Every other thread was reply-only, so there was nothing to write.
+    t.appendChild(document.createTextNode('Nothing was written — every other thread was words only. '));
+    t.appendChild(el('span', 'm', m.committed.slice(0, 7)));
+    t.appendChild(document.createTextNode(' is unchanged, and nothing is pushed.'));
+  }
+  c.appendChild(t);
+  row.appendChild(c);
+  group.appendChild(row);
+  done.appendChild(group);
+  body.appendChild(done);
+
+  // What you have edited, once, above the threads. Derived from `git diff`, not
+  // from anything anyone declared — which is what keeps the batch only what you
+  // approved even though nobody listed these files.
+  const ch = manualState.changed;
+  const mine = el('div', 'sec');
+  const head = el('div', 'eyebrow', ch && ch.files.length ? 'what you changed ' : 'nothing changed yet ');
+  const again = el('button', 'revert', 're-read the tree');
+  again.onclick = () => loadManualDiff();
+  head.appendChild(again);
+  mine.appendChild(head);
+  if (ch && ch.files.length) {
+    mine.appendChild(fileListLabel(ch.files, 'you changed'));
+    if (ch.diff) mine.appendChild(hunkEl(ch.diff, false));
+  } else {
+    const none = el('p', null,
+      'Edit the files in a session or your editor, then re-read. A manual thread ' +
+      'does not have to change code — the comment is what is required.');
+    none.style.cssText = 'color:var(--dim);font-size:12px;max-width:70ch';
+    mine.appendChild(none);
+  }
+  body.appendChild(mine);
+
+  // The threads themselves, each with the reviewer's words and your comment.
+  const sec = el('div', 'sec');
+  sec.appendChild(el('div', 'eyebrow', 'needs your hands'));
+  for (const th of m.threads) {
+    sec.appendChild(rvManualRow(th));
+  }
+  body.appendChild(sec);
+  root.appendChild(body);
+
+  const ready = m.threads.every((th) => (manualState.comments[th.thread_id] || '').trim());
+  root.appendChild(rvActs([
+    actBtn('continue · push and post', 'warm', () => finishManual(), !ready),
+    actBtn('back', null, () => {
+      /* The commit stays — it is on the branch and unpushed, which is a state git
+         is perfectly happy in. Only the phase is left. */
+      reviewState.report = null;
+      reviewState.screen = 'final';
+      renderReview();
+    }),
+  ], ready
+    ? 'writes nothing further · your edits are already on disk'
+    : `a comment is required on ${m.threads.length === 1 ? 'this thread' : 'each thread'}`));
+}
+
+/** One thread waiting on you: what they said, what you changed, what you will say. */
+function rvManualRow(th) {
+  const wrap = el('div', 'manrow');
+
+  const top = el('div', 'top');
+  const [where, who] = splitLabel(th.label);
+  top.appendChild(el('span', 'p', where));
+  top.appendChild(el('span', 'who', who));
+  const said = (manualState.comments[th.thread_id] || '').trim();
+  top.appendChild(said
+    ? el('span', 'state got', 'answered')
+    : el('span', 'state wait', 'needs a comment'));
+  wrap.appendChild(top);
+
+  wrap.appendChild(el('blockquote', null, th.comment));
+
+  const label = el('div', 'eyebrow', 'your comment ');
+  label.appendChild(el('span', 'req', '· required'));
+  wrap.appendChild(label);
+
+  const box = el('textarea', 'box');
+  box.setAttribute('aria-label', 'Comment');
+  // The card's box was a draft; this is the comment. Seeded from it, because a
+  // half-written intention is still a starting point.
+  box.value = manualState.comments[th.thread_id] ?? th.draft ?? '';
+  box.oninput = () => {
+    manualState.comments[th.thread_id] = box.value;
+    // Only the button's enabled state depends on this, so nothing is re-rendered:
+    // repainting here would drop focus out of the box mid-sentence.
+    const send = $('rvoverlay').querySelector('.acts .act.warm');
+    if (send) {
+      const m = reviewState.report.manual;
+      send.disabled = !m.threads.every((x) => (manualState.comments[x.thread_id] || '').trim());
+    }
+    // The row's own chip tracks the same thing, so it is flipped by hand rather
+    // than by a repaint that would take the focus with it.
+    const chip = wrap.querySelector('.state');
+    if (chip) {
+      const answered = !!box.value.trim();
+      chip.className = 'state ' + (answered ? 'got' : 'wait');
+      chip.textContent = answered ? 'answered' : 'needs a comment';
+    }
+  };
+  wrap.appendChild(box);
+
+  const foot = el('div', 'foot');
+  foot.appendChild(el('span', null, '(via orchestrator) is appended when it posts'));
+  wrap.appendChild(foot);
+  return wrap;
+}
+
+/** `a.ts:12 · alice` back into its two halves, for the row's own layout. */
+function splitLabel(label) {
+  const at = label.lastIndexOf(' · ');
+  return at < 0 ? [label, ''] : [label.slice(0, at), label.slice(at + 3)];
+}
+
+/** What you have edited since the phase opened.
+ *
+ *  One `git diff` for the whole tree, shown against every waiting thread rather
+ *  than split between them: two manual threads editing one file cannot be told
+ *  apart, and the commit is the tree's anyway. Pretending to attribute it would be
+ *  a guess dressed as a fact. */
+async function loadManualDiff() {
+  try {
+    manualState.changed = await get(`/api/pr/${reviewState.pr}/manual`);
+  } catch (e) {
+    toast(e.message, true);
+  }
+  renderReview();
+}
+
+/** Send the comments and let the batch finish.
+ *
+ *  Carries the decisions again, and the sha the phase reported. There is no pending
+ *  state on the daemon to go stale: what the first half produced is a commit, so
+ *  git is the record, and `HEAD` moving is what a refusal is made of. */
+async function finishManual() {
+  if (reviewState.busy) return;
+  const m = reviewState.report.manual;
+  const missing = m.threads.filter((th) => !(manualState.comments[th.thread_id] || '').trim());
+  if (missing.length) {
+    return toast('a comment is required on a manual thread — the reviewer would get ' +
+                 'a commit and silence otherwise', true);
+  }
+
+  reviewState.busy = true;
+  renderReview();
+  try {
+    reviewState.report = await call(`/api/pr/${reviewState.pr}/manual/done`, {
+      batch: batchPayload(),
+      committed: m.committed,
+      comments: manualState.comments,
+    });
+    reviewState.screen = 'report';
+  } catch (e) {
+    toast(e.message, true);
+  }
+  reviewState.busy = false;
+  renderReview();
+}
+
 /* ---------- the controller ---------- */
 
 function renderReview() {
@@ -2357,7 +2589,8 @@ function renderReview() {
   root.replaceChildren();
   if (!reviewState.open || !reviewState.data) return;
 
-  if (reviewState.report) reviewState.screen = 'report';
+  if (reviewState.report?.manual) reviewState.screen = 'manual';
+  else if (reviewState.report) reviewState.screen = 'report';
   else if (reviewState.data.gate) reviewState.screen = 'gate';
   else if (!reviewState.data.proposals) reviewState.screen = 'intake';
 
@@ -2367,6 +2600,7 @@ function renderReview() {
     overview: rvOverview,
     card: rvCard,
     final: rvFinal,
+    manual: rvManual,
     report: rvReport,
   })[reviewState.screen](root);
 }
@@ -2411,6 +2645,8 @@ async function openReview(pr) {
   // Two overlays at the same z-index would stack; the diff viewer goes first.
   if (diffState.open) closeDiff();
   if (reviewState.pr !== pr) {
+    manualState.comments = {};
+    manualState.changed = null;
     reviewState.picks = {};
     reviewState.skipped = {};
     reviewState.drafts = {};
@@ -2515,10 +2751,10 @@ function moveCard(delta) {
  *  content: the daemon already holds the proposals, and echoing them back would
  *  let a client substitute a different patch than the one that was reviewed. A
  *  `reply` overrides the drafted wording, and that is all it can override. */
-async function sendBatch() {
-  if (reviewState.busy) return;
-  const q = queue();
-  const decisions = q.filter(isHandled).map((item) => {
+/** Thread ids and position indices, never content. Built in one place because the
+ *  manual phase has to send exactly the same thing again to finish. */
+function batchPayload() {
+  const decisions = queue().filter(isHandled).map((item) => {
     const i = pickOf(item);
     const typed = reviewState.drafts[draftKey(item.t.id, i)];
     return {
@@ -2527,16 +2763,21 @@ async function sendBatch() {
       reply: typed === undefined ? null : typed,
     };
   });
+  return { base_sha: reviewState.data.proposals.base_sha, decisions };
+}
+
+async function sendBatch() {
+  if (reviewState.busy) return;
+  const { decisions } = batchPayload();
   if (!decisions.length) return toast('nothing to send — every thread was skipped', true);
 
   reviewState.busy = true;
   renderReview();
   try {
-    reviewState.report = await call(`/api/pr/${reviewState.pr}/post`, {
-      base_sha: reviewState.data.proposals.base_sha,
-      decisions,
-    });
-    reviewState.screen = 'report';
+    reviewState.report = await call(`/api/pr/${reviewState.pr}/post`, batchPayload());
+    // A batch that stopped for the manual phase is not a report yet.
+    reviewState.screen = reviewState.report.manual ? 'manual' : 'report';
+    if (reviewState.report.manual) loadManualDiff();
   } catch (e) {
     // A rejected request is the daemon refusing before it wrote anything —
     // a bad index, a thread that has gone, a gate that closed under you.
