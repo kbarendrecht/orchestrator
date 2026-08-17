@@ -202,8 +202,11 @@ pub struct Pr {
     pub checks: Checks,
     /// Head commit. `/green` amends and rebases, so this moves on every
     /// internal attempt — it is an identity for "has the branch changed since
-    /// the skill gave up", not a provenance record (§8).
+    /// the run gave up", not a provenance record (§8).
     pub head_sha: Option<String>,
+    /// GitHub's sense of resolved — a conversation the comment author closed.
+    /// Not to be confused with `/api/pr/:n/resolve`, which is *our* flow for
+    /// answering threads and deliberately never closes one.
     pub unresolved: u32,
     /// True when `reviewThreads` had another page, so `unresolved` is a floor.
     /// Rendered as `50+` rather than `50`, so an under-count cannot silently
@@ -392,7 +395,7 @@ pub struct Thread {
     pub is_resolved: bool,
     pub is_outdated: bool,
     pub comments: Vec<Comment>,
-    /// [`Thread::needs_answer`] against the fetch's own viewer, resolved by
+    /// [`Thread::is_answerable`] against the fetch's own viewer, resolved by
     /// [`threads`] so the SPA does not have to reimplement the rule. Always
     /// false straight out of [`parse_thread`], which has no viewer to judge by.
     pub answerable: bool,
@@ -414,7 +417,7 @@ impl Thread {
     /// Resolved threads are done. **Outdated ones are not skipped** — the code
     /// moved, but the point may still stand. A thread whose last comment is
     /// already yours has been answered; re-answering it is noise.
-    pub fn needs_answer(&self, viewer: &str) -> bool {
+    pub fn is_answerable(&self, viewer: &str) -> bool {
         if self.is_resolved {
             return false;
         }
@@ -429,13 +432,13 @@ impl Thread {
 /// Everything one on-demand thread fetch yields.
 #[derive(Debug, Clone, Serialize)]
 pub struct Threads {
-    /// Your own login, for `Thread::needs_answer` and the triage prompt.
+    /// Your own login, for `Thread::is_answerable` and the triage prompt.
     pub viewer: String,
     /// Head at fetch time. A force-push between triage and posting invalidates
     /// every finding derived from the earlier diff, so this is recorded and
     /// re-checked rather than trusted.
     pub head_sha: Option<String>,
-    pub threads: Vec<Thread>,
+    pub items: Vec<Thread>,
 }
 
 /// Threads come back 100 at a time. The poll query stays at [`PAGE`]; this is
@@ -489,7 +492,7 @@ pub fn threads(token: &str, owner: &str, name: &str, pr: u64) -> Result<Threads>
     let mut out = Threads {
         viewer: String::new(),
         head_sha: None,
-        threads: Vec::new(),
+        items: Vec::new(),
     };
     let mut cursor: Option<String> = None;
 
@@ -504,7 +507,7 @@ pub fn threads(token: &str, owner: &str, name: &str, pr: u64) -> Result<Threads>
         if out.head_sha.is_none() {
             out.head_sha = page.head_sha;
         }
-        out.threads.extend(page.threads);
+        out.items.extend(page.items);
 
         match next {
             Some(c) => cursor = Some(c),
@@ -526,17 +529,15 @@ impl Threads {
     fn mark_answerable(&mut self) {
         // Destructured so the viewer read and the thread writes are disjoint
         // borrows of self rather than an overlapping one.
-        let Threads {
-            viewer, threads, ..
-        } = self;
-        for t in threads {
-            t.answerable = t.needs_answer(viewer);
+        let Threads { viewer, items, .. } = self;
+        for t in items {
+            t.answerable = t.is_answerable(viewer);
         }
     }
 
     /// How many threads still want something from you.
-    pub fn answerable(&self) -> usize {
-        self.threads.iter().filter(|t| t.answerable).count()
+    pub fn answerable_count(&self) -> usize {
+        self.items.iter().filter(|t| t.answerable).count()
     }
 }
 
@@ -548,7 +549,7 @@ fn parse_thread_page(v: &Value) -> Option<(Threads, Option<String>)> {
     let pr = v.pointer("/data/repository/pullRequest")?;
     let root = pr.pointer("/reviewThreads")?;
 
-    let threads = root
+    let items = root
         .pointer("/nodes")
         .and_then(|n| n.as_array())
         .map(|ns| ns.iter().filter_map(parse_thread).collect())
@@ -579,7 +580,7 @@ fn parse_thread_page(v: &Value) -> Option<(Threads, Option<String>)> {
                 .get("headRefOid")
                 .and_then(|s| s.as_str())
                 .map(|s| s.to_string()),
-            threads,
+            items,
         },
         next,
     ))
@@ -778,7 +779,7 @@ mod tests {
         assert_eq!(page.head_sha.as_deref(), Some("abc123"));
         assert_eq!(next.as_deref(), Some("Y3Vy"));
 
-        let t = &page.threads[0];
+        let t = &page.items[0];
         assert_eq!(t.id, "PRRT_1");
         assert_eq!(t.path.as_deref(), Some("src/Foo.php"));
         assert_eq!(t.line, Some(42));
@@ -818,7 +819,7 @@ mod tests {
     fn a_resolved_thread_needs_no_answer() {
         let v = thread_page("kars", &thread_node("PRRT_1", true, false, &["john"]), None);
         let (page, _) = parse_thread_page(&v).unwrap();
-        assert!(!page.threads[0].needs_answer("kars"));
+        assert!(!page.items[0].is_answerable("kars"));
     }
 
     #[test]
@@ -827,7 +828,7 @@ mod tests {
         // unresolved count, triage keeps these.
         let v = thread_page("kars", &thread_node("PRRT_1", false, true, &["john"]), None);
         let (page, _) = parse_thread_page(&v).unwrap();
-        assert!(page.threads[0].needs_answer("kars"));
+        assert!(page.items[0].is_answerable("kars"));
     }
 
     #[test]
@@ -838,7 +839,7 @@ mod tests {
             None,
         );
         let (page, _) = parse_thread_page(&v).unwrap();
-        assert!(!page.threads[0].needs_answer("kars"));
+        assert!(!page.items[0].is_answerable("kars"));
 
         // ...but one where they got the last word still does.
         let v = thread_page(
@@ -847,7 +848,7 @@ mod tests {
             None,
         );
         let (page, _) = parse_thread_page(&v).unwrap();
-        assert!(page.threads[0].needs_answer("kars"));
+        assert!(page.items[0].is_answerable("kars"));
     }
 
     #[test]
@@ -860,8 +861,8 @@ mod tests {
                     {"databaseId":1,"author":null,"body":"b","createdAt":"t","url":"u"}]}}]}}}}}"#,
         );
         let (page, _) = parse_thread_page(&v).unwrap();
-        assert_eq!(page.threads[0].comments[0].author, "ghost");
-        assert_eq!(page.threads[0].diff_hunk(), None);
+        assert_eq!(page.items[0].comments[0].author, "ghost");
+        assert_eq!(page.items[0].diff_hunk(), None);
     }
 
     /// Smoke-test the live query. Ignored by default: it needs the network and
@@ -876,7 +877,7 @@ mod tests {
 
         assert!(!got.viewer.is_empty(), "viewer login came back empty");
         assert!(got.head_sha.is_some(), "no head sha");
-        for t in &got.threads {
+        for t in &got.items {
             assert!(t.id.starts_with("PRRT_"), "odd thread id: {}", t.id);
             assert!(!t.comments.is_empty(), "{} has no comments", t.id);
             // An outdated thread reports a null `line` but keeps `originalLine`,
@@ -889,7 +890,7 @@ mod tests {
             "viewer={} head={:?} threads={}",
             got.viewer,
             got.head_sha,
-            got.threads.len()
+            got.items.len()
         );
     }
 

@@ -594,8 +594,8 @@ pub async fn pr_threads(
     let body = json!({
         "viewer": fetched.viewer,
         "head_sha": fetched.head_sha,
-        "answerable": fetched.answerable(),
-        "threads": fetched.threads,
+        "answerable": fetched.answerable_count(),
+        "threads": fetched.items,
     });
 
     {
@@ -625,7 +625,7 @@ pub async fn resolve_pr(
             "PR #{number} has no unresolved review threads"
         )));
     }
-    let id = spawn::spawn_skill_session(&app, number, &pr.head_ref, "resolve").await?;
+    let id = spawn::spawn_command_session(&app, number, &pr.head_ref, "triage").await?;
     Ok(Json(json!({ "session": id })))
 }
 
@@ -845,7 +845,7 @@ fn watch_green(
         let mut inner = app.inner.write().await;
         inner.locks_held.retain(|l| !locks.contains(l));
 
-        // A run that ends with the PR still red means the skill is asking for
+        // A run that ends with the PR still red means the run is asking for
         // you. Record it and never re-fire on its own (§8).
         let pr = inner.prs.iter().find(|p| p.number == number).cloned();
         match pr {

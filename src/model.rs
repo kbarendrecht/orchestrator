@@ -149,9 +149,16 @@ impl State {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Kind {
     Interactive,
-    /// An ordinary session whose first prompt is a skill invocation (§8).
-    /// Nothing about it needs a separate view.
-    Automation { pr: u64, skill: String },
+    /// An ordinary session whose first prompt is one of the vendored prompts in
+    /// `commands/` (§8). Nothing about it needs a separate view.
+    ///
+    /// `alias = "skill"` so records written before the rename still load: these
+    /// were called skills when they resolved from the agent's command path.
+    Automation {
+        pr: u64,
+        #[serde(alias = "skill")]
+        command: String,
+    },
 }
 
 /// How to rebuild a torn-down worktree so an archived session can be resumed (§2).

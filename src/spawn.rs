@@ -158,16 +158,17 @@ pub async fn spawn_worktree_session(app: &Arc<AppState>, name: Option<&str>) -> 
     Ok(id)
 }
 
-/// Start a session for a skill that needs the PR's own head branch checked out.
+/// Start a session for a vendored prompt that needs the PR's own head branch
+/// checked out.
 ///
-/// Never automatic: review responses are your voice, and the skill expects you
-/// in the loop (§8). The PR number comes from the button's context, so the
+/// Never automatic: review responses are your voice, and the triage pass
+/// expects you in the loop (§8). The PR number comes from the button's context, so the
 /// daemon never has to infer it.
-pub async fn spawn_skill_session(
+pub async fn spawn_command_session(
     app: &Arc<AppState>,
     pr: u64,
     head_ref: &str,
-    skill: &str,
+    command: &str,
 ) -> Result<SessionId> {
     // If the branch already has a worktree with a live session, take you there
     // rather than spawning a second one (§8).
@@ -184,7 +185,7 @@ pub async fn spawn_skill_session(
         if let Some(id) = live.first() {
             return Ok(*id);
         }
-        return start_with_prompt(app, &ws, pr, skill).await;
+        return start_with_prompt(app, &ws, pr, command).await;
     }
 
     // Otherwise pin a worktree to that branch. `git worktree add` directly,
@@ -203,7 +204,7 @@ pub async fn spawn_skill_session(
         }
     }
     let name = ensure_pr_worktree(app, pr, head_ref).await?;
-    start_with_prompt(app, &name, pr, skill).await
+    start_with_prompt(app, &name, pr, command).await
 }
 
 /// Start a headless `/green` run pinned to the PR's head branch.
@@ -255,7 +256,7 @@ pub async fn spawn_green_session(
         path,
         Kind::Automation {
             pr,
-            skill: "green".to_string(),
+            command: "green".to_string(),
         },
     );
     session.pty = Some(spawned.handle.clone());
@@ -298,21 +299,21 @@ async fn start_with_prompt(
     app: &Arc<AppState>,
     workspace: &str,
     pr: u64,
-    skill: &str,
+    command: &str,
 ) -> Result<SessionId> {
     let id = spawn_session(
         app,
         workspace,
         Kind::Automation {
             pr,
-            skill: skill.to_string(),
+            command: command.to_string(),
         },
         None,
     )
     .await?;
     let mut inner = app.inner.write().await;
     if let Some(s) = inner.sessions.get_mut(&id) {
-        s.pending_prompt = Some(format!("/{skill} {pr}"));
+        s.pending_prompt = Some(format!("/{command} {pr}"));
     }
     Ok(id)
 }
