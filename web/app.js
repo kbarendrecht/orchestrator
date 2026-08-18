@@ -3296,6 +3296,11 @@ window.addEventListener('keydown', (e) => {
     closeMenu();
     return;
   }
+  if (e.key === 'Escape' && settingsOpen()) {
+    e.preventDefault();
+    closeSettings();
+    return;
+  }
   if ((e.metaKey || e.ctrlKey) && e.key === 's' && editState.on) {
     e.preventDefault();
     saveEditor();
@@ -3580,6 +3585,75 @@ function setupColumns() {
   });
 }
 
+// ---------------------------------------------------------------------------
+// Settings
+// ---------------------------------------------------------------------------
+
+/* One panel, one setting so far. Font size is a `zoom` on the grid rather than a
+ * sweep of every px in the stylesheet: it scales the terminal, the rail and the
+ * diff together, which is what "font size" means when the whole window is text.
+ *
+ * Kept in localStorage, like the column widths — it is this browser's opinion,
+ * not something the daemon owns. */
+const ZOOM = { key: 'orch.uiZoom', def: 1, min: 0.8, max: 1.6, step: 0.05 };
+
+const uiZoom = () =>
+  Number(getComputedStyle(document.documentElement).getPropertyValue('--ui-zoom')) || ZOOM.def;
+
+function setZoom(z) {
+  const next = Math.min(ZOOM.max, Math.max(ZOOM.min, Math.round(z * 100) / 100));
+  document.documentElement.style.setProperty('--ui-zoom', String(next));
+  $('fsval').textContent = `${Math.round(next * 100)}%`;
+  $('fsdown').disabled = next <= ZOOM.min;
+  $('fsup').disabled = next >= ZOOM.max;
+  // The grid's columns changed size in real pixels, so xterm has to re-measure.
+  refitTerms();
+  return next;
+}
+
+function saveZoom(z) {
+  try {
+    if (z === ZOOM.def) localStorage.removeItem(ZOOM.key);
+    else localStorage.setItem(ZOOM.key, String(z));
+  } catch (e) { /* private mode: it still applies for this session */ }
+}
+
+const settingsOpen = () => !$('settings').hidden;
+
+function closeSettings() {
+  $('settings').hidden = true;
+  $('gearbtn').setAttribute('aria-expanded', 'false');
+}
+
+function openSettings() {
+  const panel = $('settings');
+  panel.hidden = false;
+  $('gearbtn').setAttribute('aria-expanded', 'true');
+  const r = $('gearbtn').getBoundingClientRect();
+  const box = panel.getBoundingClientRect();
+  panel.style.left = `${Math.min(r.left, window.innerWidth - box.width - 8)}px`;
+  panel.style.top = `${r.bottom + 6}px`;
+}
+
+function setupSettings() {
+  setZoom(Number(localStorage.getItem(ZOOM.key)) || ZOOM.def);
+
+  $('gearbtn').onclick = (ev) => {
+    ev.stopPropagation();
+    if (settingsOpen()) closeSettings();
+    else openSettings();
+  };
+  $('fsdown').onclick = () => saveZoom(setZoom(uiZoom() - ZOOM.step));
+  $('fsup').onclick = () => saveZoom(setZoom(uiZoom() + ZOOM.step));
+  $('fsreset').onclick = () => saveZoom(setZoom(ZOOM.def));
+
+  // Same dismissal as the context menu: a click anywhere else puts it away.
+  document.addEventListener('mousedown', (e) => {
+    if (settingsOpen() && !e.target.closest('#settings, #gearbtn')) closeSettings();
+  }, true);
+}
+
+setupSettings();
 setupColumns();
 setupChrome();
 connect();

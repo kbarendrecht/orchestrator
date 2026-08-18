@@ -66,7 +66,10 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
   display:grid;
   grid-template-columns:var(--rail) 1fr var(--files);
   grid-template-rows:46px 1fr;
-  height:100vh;
+  /* `zoom` scales the box as well as the text, so the viewport has to be divided
+     back out or the grid runs off the bottom at anything above 100%. */
+  zoom:var(--ui-zoom,1);
+  height:calc(100vh / var(--ui-zoom,1));
 }
 .top{
   display:flex;align-items:center;gap:11px;padding:0 16px;flex-wrap:nowrap;
@@ -145,9 +148,15 @@ body[data-chrome="custom"] .resizers{display:block}
 button.ctx-btn:hover{color:var(--text)}
 .repo-switch{
   display:flex;flex-direction:column;align-items:flex-start;gap:1px;
-  min-width:0;width:100%;text-align:left;padding:2px 4px;
+  min-width:0;flex:1 1 auto;text-align:left;padding:2px 4px;
   border-radius:3px;border:1px solid transparent;
 }
+.gear{
+  flex:0 0 auto;display:flex;align-items:center;justify-content:center;
+  width:26px;height:26px;border-radius:3px;color:var(--faint-solid);
+  transition:color .12s,background .12s;
+}
+.gear:hover,.gear[aria-expanded="true"]{color:var(--text);background:var(--raised)}
 .repo-switch:hover{background:var(--raised);border-color:var(--line)}
 .repo-main{
   font-family:var(--mono);font-size:11px;color:var(--text);
@@ -321,6 +330,33 @@ button.ctx-btn:hover{color:var(--text)}
 /* Held on the body so the cursor survives leaving the 7px strip mid-drag, and a
    drag never selects the text it passes over. */
 body.col-resizing{cursor:col-resize;user-select:none}
+
+/* ---------- settings ---------- */
+/* Positioned from script, under the sliders it belongs to. Outside `.app`, so it
+   is not itself scaled by the setting it carries. */
+.settings{
+  position:fixed;z-index:100;min-width:210px;padding:10px 11px;
+  background:var(--raised);border:1px solid var(--line);border-radius:4px;
+  box-shadow:0 6px 18px rgba(0,0,0,.45);
+}
+.settings-row{display:flex;align-items:center;gap:12px}
+.settings-k{font-family:var(--mono);font-size:11px;color:var(--text)}
+.settings-step{margin-left:auto;display:flex;align-items:center;gap:2px}
+.stepbtn{
+  width:22px;height:22px;border-radius:3px;border:1px solid var(--line);
+  font-family:var(--mono);font-size:12px;line-height:1;color:var(--dim);
+}
+.stepbtn:hover:not(:disabled){color:var(--text);background:var(--bg)}
+.stepbtn:disabled{color:var(--ghost);cursor:default}
+.stepval{
+  min-width:44px;text-align:center;font-family:var(--mono);font-size:11px;
+  color:var(--dim);
+}
+.settings-reset{
+  margin-top:9px;width:100%;text-align:left;
+  font-family:var(--mono);font-size:10px;color:var(--faint-solid);
+}
+.settings-reset:hover{color:var(--text)}
 
 /* ---------- context menu ---------- */
 /* Right-click on a session row. Above the toast, because it is the thing you
