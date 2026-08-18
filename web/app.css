@@ -40,6 +40,12 @@
   --sans:'IBM Plex Sans',system-ui,sans-serif;
   --label:'Martian Mono',ui-monospace,monospace;
 
+  /* One multiplier for every text size in this sheet, so the font-size setting
+     scales type without touching layout. 1.1 is the default: the design was drawn
+     a little small for a full-screen window, and this is what the setting calls
+     100%. */
+  --fs:1.1;
+
   --rail:290px;
   --files:296px;
 }
@@ -48,14 +54,14 @@
 html,body{height:100%}
 body{
   background:var(--bg);
-  color:var(--text);font-family:var(--sans);font-size:13px;line-height:1.5;
+  color:var(--text);font-family:var(--sans);font-size:calc(13px * var(--fs));line-height:1.5;
   -webkit-font-smoothing:antialiased;overflow:hidden;
 }
 button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
 :focus-visible{outline:2px solid var(--attn);outline-offset:1px;border-radius:2px}
 
 .eyebrow{
-  font-family:var(--label);font-size:8.5px;font-weight:700;
+  font-family:var(--label);font-size:calc(8.5px * var(--fs));font-weight:700;
   letter-spacing:.16em;text-transform:uppercase;color:var(--faint-solid);
 }
 
@@ -66,10 +72,7 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
   display:grid;
   grid-template-columns:var(--rail) 1fr var(--files);
   grid-template-rows:46px 1fr;
-  /* `zoom` scales the box as well as the text, so the viewport has to be divided
-     back out or the grid runs off the bottom at anything above 100%. */
-  zoom:var(--ui-zoom,1);
-  height:calc(100vh / var(--ui-zoom,1));
+  height:100vh;
 }
 .top{
   display:flex;align-items:center;gap:11px;padding:0 16px;flex-wrap:nowrap;
@@ -134,14 +137,14 @@ body[data-chrome="custom"] .resizers{display:block}
 .rz-sw{bottom:0;left:0;cursor:nesw-resize}
 
 /* ---------- context bar ---------- */
-.ctx-name{font-family:var(--mono);font-size:12px;color:var(--text);flex:0 0 auto}
-.ctx-branch{font-family:var(--mono);font-size:10.5px;color:var(--faint-solid);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.ctx-pr{font-family:var(--mono);font-size:10.5px;color:var(--dim);white-space:nowrap;flex:0 1 auto;overflow:hidden;text-overflow:ellipsis}
-.ctx-sep{color:var(--ghost);font-size:10px}
+.ctx-name{font-family:var(--mono);font-size:calc(12px * var(--fs));color:var(--text);flex:0 0 auto}
+.ctx-branch{font-family:var(--mono);font-size:calc(10.5px * var(--fs));color:var(--faint-solid);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ctx-pr{font-family:var(--mono);font-size:calc(10.5px * var(--fs));color:var(--dim);white-space:nowrap;flex:0 1 auto;overflow:hidden;text-overflow:ellipsis}
+.ctx-sep{color:var(--ghost);font-size:calc(10px * var(--fs))}
 .ctx-right{margin-left:auto;display:flex;align-items:center;gap:12px;flex:0 0 auto}
-.ctx-btn{font-family:var(--mono);font-size:10.5px;color:var(--faint-solid)}
+.ctx-btn{font-family:var(--mono);font-size:calc(10.5px * var(--fs));color:var(--faint-solid)}
 .ctx-close{
-  font-size:12px;line-height:1;color:var(--faint-solid);
+  font-size:calc(12px * var(--fs));line-height:1;color:var(--faint-solid);
   padding:2px 6px;border-radius:2px;
 }
 .ctx-close:hover{color:var(--bad);background:var(--raised)}
@@ -159,11 +162,11 @@ button.ctx-btn:hover{color:var(--text)}
 .gear:hover,.gear[aria-expanded="true"]{color:var(--text);background:var(--raised)}
 .repo-switch:hover{background:var(--raised);border-color:var(--line)}
 .repo-main{
-  font-family:var(--mono);font-size:11px;color:var(--text);
+  font-family:var(--mono);font-size:calc(11px * var(--fs));color:var(--text);
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%;
 }
 .repo-fork{
-  font-family:var(--mono);font-size:9px;color:var(--faint-solid);
+  font-family:var(--mono);font-size:calc(9px * var(--fs));color:var(--faint-solid);
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%;
 }
 
@@ -176,18 +179,18 @@ button.ctx-btn:hover{color:var(--text)}
   padding:13px 15px 7px;position:sticky;top:0;background:var(--surface);z-index:2;
 }
 .ws-name{display:flex;align-items:center;gap:7px;min-width:0}
-.ws-note{font-family:var(--mono);font-size:9.5px;color:var(--faint-solid);margin-left:auto;white-space:nowrap}
+.ws-note{font-family:var(--mono);font-size:calc(9.5px * var(--fs));color:var(--faint-solid);margin-left:auto;white-space:nowrap}
 
 /* The one row that says how much you are losing to idle agents. */
 .waitbar{
   z-index:3;display:none;align-items:center;gap:7px;
   padding:5px 15px;background:var(--surface);border-bottom:1px solid var(--line-soft);
-  font-family:var(--mono);font-size:10px;color:var(--attn);width:100%;text-align:left;
+  font-family:var(--mono);font-size:calc(10px * var(--fs));color:var(--attn);width:100%;text-align:left;
 }
 .waitbar.on{display:flex}
 
 .plus{
-  font-family:var(--mono);font-size:14px;line-height:1;color:var(--ghost);
+  font-family:var(--mono);font-size:calc(14px * var(--fs));line-height:1;color:var(--ghost);
   padding:1px 5px 3px;border-radius:3px;margin-left:9px;
 }
 .plus:hover:not(:disabled){color:var(--text);background:var(--raised)}
@@ -209,7 +212,7 @@ button.ctx-btn:hover{color:var(--text)}
 .dot.archived{background:transparent;border:1px solid var(--faint-solid)}
 
 .sess-name{
-  font-family:var(--mono);font-size:11.5px;flex:1;
+  font-family:var(--mono);font-size:calc(11.5px * var(--fs));flex:1;
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
 }
 .sess.auto .sess-name{color:var(--auto)}
@@ -219,23 +222,23 @@ button.ctx-btn:hover{color:var(--text)}
 .sess-name.pending::after{content:'…'}
 .sess-sub{
   display:flex;align-items:center;gap:13px;padding-left:14px;margin-top:2px;
-  font-family:var(--mono);font-size:10px;color:var(--faint-solid);
+  font-family:var(--mono);font-size:calc(10px * var(--fs));color:var(--faint-solid);
 }
 .sess-state{color:var(--dim)}
 .sess-state.blocked{color:var(--attn)}
 .sess-state.build{color:var(--bad)}
 .sess-pad{height:11px}
-.sess-id{font-family:var(--mono);font-size:9px;color:var(--faint-solid);flex:0 0 auto}
+.sess-id{font-family:var(--mono);font-size:calc(9px * var(--fs));color:var(--faint-solid);flex:0 0 auto}
 
 /* Past conversations collapse: the rail is for what still needs you. */
 .arctoggle{
   display:flex;align-items:center;gap:7px;width:100%;
-  padding:7px 15px 12px;font-family:var(--mono);font-size:10px;color:var(--faint-solid);
+  padding:7px 15px 12px;font-family:var(--mono);font-size:calc(10px * var(--fs));color:var(--faint-solid);
 }
 .arctoggle:hover{color:var(--dim)}
-.arctoggle .caretr{display:inline-block;transition:transform .13s;font-size:13px;line-height:1}
+.arctoggle .caretr{display:inline-block;transition:transform .13s;font-size:calc(13px * var(--fs));line-height:1}
 .arctoggle[aria-expanded="true"] .caretr{transform:rotate(90deg)}
-.arccount{margin-left:auto;font-size:9.5px;color:var(--faint-solid)}
+.arccount{margin-left:auto;font-size:calc(9.5px * var(--fs));color:var(--faint-solid)}
 
 /* A past conversation. Quieter than a live row, and one line rather than two, so
    twenty of them still read as a list. */
@@ -244,24 +247,19 @@ button.ctx-btn:hover{color:var(--text)}
 .sess.arc .sess-sub{color:var(--faint-solid);margin-top:0}
 .sess-warn{
   display:block;padding:0 15px 8px 29px;font-family:var(--mono);
-  font-size:9.5px;color:var(--bad);
+  font-size:calc(9.5px * var(--fs));color:var(--bad);
 }
 
 /* A line of rail text that is not a control: an empty state, a poller's error.
    Nothing here is clickable, so nothing here lights up under the cursor. */
 .railbtn{
   display:block;width:100%;text-align:left;padding:7px 15px 11px;
-  font-family:var(--mono);font-size:10px;color:var(--faint-solid);
+  font-family:var(--mono);font-size:calc(10px * var(--fs));color:var(--faint-solid);
 }
 
 /* ---------- center ---------- */
 .center{display:flex;flex-direction:column;min-width:0;background:var(--bg);position:relative}
 .termwrap{flex:1;min-height:0;position:relative;padding:8px 6px 8px 12px}
-/* Terminals opt out of the zoom and scale their font instead. `zoom` resamples a
-   canvas, which is what made the centre pane blurry; counter-zooming puts the
-   content back at 1:1 with the screen, and `setZoom` raises xterm's own
-   `fontSize` by the same factor so the text still grows. */
-.termwrap,.drawer-body{zoom:calc(1 / var(--ui-zoom,1))}
 .termhost{position:absolute;inset:8px 6px 8px 12px}
 .termhost[hidden]{display:none}
 
@@ -279,7 +277,7 @@ button.ctx-btn:hover{color:var(--text)}
   background:var(--surface);position:relative;z-index:2;
 }
 .dtab{
-  font-family:var(--mono);font-size:10.5px;color:var(--faint-solid);
+  font-family:var(--mono);font-size:calc(10.5px * var(--fs));color:var(--faint-solid);
   padding:3px 8px;border-radius:2px;display:flex;align-items:center;gap:6px;
 }
 .dtab[aria-selected="true"]{color:var(--text);background:var(--raised)}
@@ -290,12 +288,12 @@ button.ctx-btn:hover{color:var(--text)}
 .dtab .x{color:var(--ghost);margin-left:1px}
 .dtab .x:hover{color:var(--bad)}
 .addsh{
-  font-family:var(--mono);font-size:10.5px;color:var(--faint-solid);
+  font-family:var(--mono);font-size:calc(10.5px * var(--fs));color:var(--faint-solid);
   padding:3px 8px;display:flex;align-items:center;gap:7px;
 }
 .addsh:hover{color:var(--text)}
-.addsh kbd{font-size:9.5px;color:var(--faint-solid)}
-.dcwd{margin-left:auto;font-family:var(--mono);font-size:9.5px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:flex;align-items:center}
+.addsh kbd{font-size:calc(9.5px * var(--fs));color:var(--faint-solid)}
+.dcwd{margin-left:auto;font-family:var(--mono);font-size:calc(9.5px * var(--fs));color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:flex;align-items:center}
 .stackdot{width:7px;height:7px;border-radius:50%;margin-right:6px;flex:0 0 auto}
 .stackdot.up{background:var(--work)}
 .stackdot.down{background:var(--bad)}
@@ -311,15 +309,15 @@ button.ctx-btn:hover{color:var(--text)}
    markup now. */
 .frow,.dfrow{
   width:100%;display:grid;grid-template-columns:11px 1fr auto;gap:8px;align-items:center;
-  padding:3.5px 13px;text-align:left;font-family:var(--mono);font-size:11px;
+  padding:3.5px 13px;text-align:left;font-family:var(--mono);font-size:calc(11px * var(--fs));
 }
 .frow:hover{background:var(--raised)}
-.fst{font-size:10px;font-weight:600;text-align:center}
+.fst{font-size:calc(10px * var(--fs));font-weight:600;text-align:center}
 .fst.M{color:var(--attn)}.fst.A{color:var(--ok)}.fst.D{color:var(--bad)}.fst.U{color:var(--faint-solid)}.fst.R{color:var(--work)}
 .fname{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;direction:rtl;text-align:left}
 #filepanes{flex:1;min-height:0;overflow-y:auto}
-.fempty{padding:22px 15px;font-family:var(--mono);font-size:10.5px;color:var(--faint-solid);line-height:1.75}
-.files-foot{padding:9px 13px;font-family:var(--mono);font-size:10px;color:var(--faint-solid);border-top:1px solid var(--line-soft)}
+.fempty{padding:22px 15px;font-family:var(--mono);font-size:calc(10.5px * var(--fs));color:var(--faint-solid);line-height:1.75}
+.files-foot{padding:9px 13px;font-family:var(--mono);font-size:calc(10px * var(--fs));color:var(--faint-solid);border-top:1px solid var(--line-soft)}
 /* Nothing to count, nothing to draw: otherwise the border and the padding read
    as a panel of their own. */
 .files-foot:empty{display:none}
@@ -334,10 +332,8 @@ button.ctx-btn:hover{color:var(--text)}
   background:transparent;transition:background .12s;
 }
 .split:hover::after,.split.dragging::after{background:var(--faint-solid)}
-/* The columns live inside the zoom, so their boundary is at the scaled width —
-   an unscaled `left` put the handles next to the seam rather than on it. */
-.split-l{left:calc(var(--rail) * var(--ui-zoom,1));margin-left:-3px}
-.split-r{right:calc(var(--files) * var(--ui-zoom,1));margin-right:-3px}
+.split-l{left:var(--rail);margin-left:-3px}
+.split-r{right:var(--files);margin-right:-3px}
 /* Held on the body so the cursor survives leaving the 7px strip mid-drag, and a
    drag never selects the text it passes over. */
 body.col-resizing{cursor:col-resize;user-select:none}
@@ -351,21 +347,21 @@ body.col-resizing{cursor:col-resize;user-select:none}
   box-shadow:0 6px 18px rgba(0,0,0,.45);
 }
 .settings-row{display:flex;align-items:center;gap:12px}
-.settings-k{font-family:var(--mono);font-size:11px;color:var(--text)}
+.settings-k{font-family:var(--mono);font-size:calc(11px * var(--fs));color:var(--text)}
 .settings-step{margin-left:auto;display:flex;align-items:center;gap:2px}
 .stepbtn{
   width:22px;height:22px;border-radius:3px;border:1px solid var(--line);
-  font-family:var(--mono);font-size:12px;line-height:1;color:var(--dim);
+  font-family:var(--mono);font-size:calc(12px * var(--fs));line-height:1;color:var(--dim);
 }
 .stepbtn:hover:not(:disabled){color:var(--text);background:var(--bg)}
 .stepbtn:disabled{color:var(--ghost);cursor:default}
 .stepval{
-  min-width:44px;text-align:center;font-family:var(--mono);font-size:11px;
+  min-width:44px;text-align:center;font-family:var(--mono);font-size:calc(11px * var(--fs));
   color:var(--dim);
 }
 .settings-reset{
   margin-top:9px;width:100%;text-align:left;
-  font-family:var(--mono);font-size:10px;color:var(--faint-solid);
+  font-family:var(--mono);font-size:calc(10px * var(--fs));color:var(--faint-solid);
 }
 .settings-reset:hover{color:var(--text)}
 
@@ -379,7 +375,7 @@ body.col-resizing{cursor:col-resize;user-select:none}
 }
 .ctxmenu-item{
   display:block;width:100%;padding:5px 9px;text-align:left;border-radius:2px;
-  font-family:var(--mono);font-size:11px;color:var(--text);
+  font-family:var(--mono);font-size:calc(11px * var(--fs));color:var(--text);
 }
 .ctxmenu-item:hover:not(:disabled){background:var(--bg)}
 .ctxmenu-item:disabled{color:var(--ghost);cursor:default}
@@ -392,7 +388,7 @@ body.col-resizing{cursor:col-resize;user-select:none}
   position:fixed;left:50%;bottom:22px;transform:translateX(-50%);
   max-width:70vw;padding:9px 14px;border-radius:3px;
   background:var(--raised);border:1px solid var(--line);
-  font-family:var(--mono);font-size:11px;color:var(--text);
+  font-family:var(--mono);font-size:calc(11px * var(--fs));color:var(--text);
   opacity:0;pointer-events:none;transition:opacity .16s;z-index:99;
   white-space:pre-wrap;
 }
@@ -405,13 +401,13 @@ body.col-resizing{cursor:col-resize;user-select:none}
   position:fixed;left:50%;top:10px;transform:translateX(-50%);
   display:flex;align-items:center;gap:10px;padding:6px 8px 6px 13px;
   border-radius:20px;background:var(--raised);border:1px solid var(--line);
-  font-family:var(--mono);font-size:10.5px;z-index:100;
+  font-family:var(--mono);font-size:calc(10.5px * var(--fs));z-index:100;
   box-shadow:0 4px 14px #0006;
 }
 .updatebar[hidden]{display:none}
 .updatebar-link{color:var(--work);text-decoration:none}
 .updatebar-link:hover{text-decoration:underline}
-.updatebar-x{color:var(--faint-solid);cursor:pointer;font-size:11px;line-height:1;
+.updatebar-x{color:var(--faint-solid);cursor:pointer;font-size:calc(11px * var(--fs));line-height:1;
   padding:2px 5px;border-radius:50%;transition:color .12s,background .12s}
 .updatebar-x:hover{color:var(--text);background:var(--surface)}
 
@@ -422,17 +418,17 @@ body.col-resizing{cursor:col-resize;user-select:none}
 }
 .overlay.on{display:flex}
 .ov-head{display:flex;align-items:center;gap:12px;padding:9px 15px;border-bottom:1px solid var(--line);background:var(--surface);flex:0 0 auto}
-.ov-path{font-family:var(--mono);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ov-path{font-family:var(--mono);font-size:calc(12px * var(--fs));white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .ov-path span{color:var(--faint-solid)}
 .ov-nav{margin-left:auto;display:flex;align-items:center;gap:8px;flex:0 0 auto}
-.ov-count{font-family:var(--mono);font-size:10px;color:var(--faint-solid)}
+.ov-count{font-family:var(--mono);font-size:calc(10px * var(--fs));color:var(--faint-solid)}
 .head-btn{
-  font-family:var(--label);font-size:8.5px;font-weight:700;letter-spacing:.1em;
+  font-family:var(--label);font-size:calc(8.5px * var(--fs));font-weight:700;letter-spacing:.1em;
   text-transform:uppercase;color:var(--dim);padding:4px 8px;border:1px solid var(--line);border-radius:2px;
 }
 .head-btn:hover{color:var(--text);border-color:var(--faint-solid)}
 
-.diff{flex:1;overflow:auto;font-family:var(--mono);font-size:11.5px;line-height:1.65}
+.diff{flex:1;overflow:auto;font-family:var(--mono);font-size:calc(11.5px * var(--fs));line-height:1.65}
 /* align-content:start matters: the grid is taller than its rows, and the
    default `stretch` hands the leftover height to every auto-sized row, so a
    one-line diff row renders four lines tall. */
@@ -459,15 +455,15 @@ body.col-resizing{cursor:col-resize;user-select:none}
 .fold{
   padding:3px 12px;color:var(--faint-solid);background:#0B0B0B;
   border-top:1px solid var(--line-soft);border-bottom:1px solid var(--line-soft);
-  font-size:10.5px;cursor:pointer;grid-column:1/-1;
+  font-size:calc(10.5px * var(--fs));cursor:pointer;grid-column:1/-1;
 }
 .fold:hover{color:var(--dim)}
-.diffnote{padding:22px 15px;font-family:var(--mono);font-size:10.5px;color:var(--faint-solid);grid-column:1/-1}
+.diffnote{padding:22px 15px;font-family:var(--mono);font-size:calc(10.5px * var(--fs));color:var(--faint-solid);grid-column:1/-1}
 
 /* diff file list in the right pane */
 .dfrow:hover{background:var(--raised)}
 .dfrow[aria-current="true"]{background:var(--raised)}
-.dfnum{font-size:9.5px;color:var(--faint-solid);letter-spacing:-.02em;white-space:nowrap}
+.dfnum{font-size:calc(9.5px * var(--fs));color:var(--faint-solid);letter-spacing:-.02em;white-space:nowrap}
 .dfnum .p{color:var(--ok)}.dfnum .m{color:var(--bad)}
 
 /* ---------- PR group (§9) ---------- */
@@ -484,11 +480,11 @@ body.col-resizing{cursor:col-resize;user-select:none}
   width:100%;position:sticky;top:0;background:var(--surface);z-index:2;
 }
 .prgroup-head .caretr,.rvhead .caretr{
-  color:var(--faint-solid);font-size:13px;line-height:1;transition:transform .13s;
+  color:var(--faint-solid);font-size:calc(13px * var(--fs));line-height:1;transition:transform .13s;
 }
 .prgroup-head[aria-expanded="true"] .caretr,
 .rvhead[aria-expanded="true"] .caretr{transform:rotate(90deg)}
-.prcount{font-family:var(--mono);font-size:9.5px;color:var(--faint-solid);margin-left:auto}
+.prcount{font-family:var(--mono);font-size:calc(9.5px * var(--fs));color:var(--faint-solid);margin-left:auto}
 .prcount b{font-weight:400}
 .prcount .n{color:var(--attn)}
 .prcount .f{color:var(--bad)}
@@ -522,12 +518,12 @@ body.col-resizing{cursor:col-resize;user-select:none}
   position:sticky;top:0;background:var(--surface);z-index:2}
 /* margin-left:auto claims the free space, so the count and the refresh after it
    both sit hard right. */
-.rvcount{font-family:var(--mono);font-size:9.5px;color:var(--faint-solid);margin-left:auto}
+.rvcount{font-family:var(--mono);font-size:calc(9.5px * var(--fs));color:var(--faint-solid);margin-left:auto}
 .rvcount .n{color:var(--dim)}
 .rvcount .f{color:var(--bad)}
 /* Refresh: one glyph, three headers. 12px with 3px of padding was a 16px target
    for a thing you press by hand, so it is 15px in a 24px box now. */
-.rvrefresh,.refresh{font-size:15px;line-height:1;color:var(--faint-solid);cursor:pointer;
+.rvrefresh,.refresh{font-size:calc(15px * var(--fs));line-height:1;color:var(--faint-solid);cursor:pointer;
   padding:4px 6px;border-radius:3px;transition:color .12s,background .12s}
 .rvrefresh:hover,.refresh:hover{color:var(--text);background:var(--raised)}
 .rvrefresh.spin{animation:rvspin .8s linear infinite;color:var(--dim)}
@@ -540,17 +536,17 @@ body.col-resizing{cursor:col-resize;user-select:none}
 /* Beats the line above on order, not specificity, so it has to come after it. */
 .rvrow .dot.blocked{background-color:var(--attn)}
 /* Fixed-width number column so titles start at the same offset as the PR list. */
-.rvrow .num{font-family:var(--mono);font-size:10.5px;color:var(--faint-solid);flex:0 0 46px}
-.rvrow .ttl{font-size:11.5px;color:var(--text);white-space:nowrap;overflow:hidden;
+.rvrow .num{font-family:var(--mono);font-size:calc(10.5px * var(--fs));color:var(--faint-solid);flex:0 0 46px}
+.rvrow .ttl{font-size:calc(11.5px * var(--fs));color:var(--text);white-space:nowrap;overflow:hidden;
   text-overflow:ellipsis;flex:1 1 0;min-width:0}
-.rvrow .who{font-family:var(--mono);font-size:9.5px;color:var(--dim);
+.rvrow .who{font-family:var(--mono);font-size:calc(9.5px * var(--fs));color:var(--dim);
   flex:0 0 56px;text-align:right;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.rvrow .fc{font-family:var(--mono);font-size:9.5px;color:var(--faint-solid);flex:0 0 22px;text-align:right}
-.rvrow .why{font-family:var(--mono);font-size:9.5px;color:var(--faint-solid);
+.rvrow .fc{font-family:var(--mono);font-size:calc(9.5px * var(--fs));color:var(--faint-solid);flex:0 0 22px;text-align:right}
+.rvrow .why{font-family:var(--mono);font-size:calc(9.5px * var(--fs));color:var(--faint-solid);
   flex:0 1 auto;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 
 .pract{
-  font-family:var(--mono);font-size:9.5px;color:var(--attn);
+  font-family:var(--mono);font-size:calc(9.5px * var(--fs));color:var(--attn);
   padding:1px 6px;border:1px solid var(--line);border-radius:2px;
   flex:0 0 auto;white-space:nowrap;
 }
@@ -567,7 +563,7 @@ body.col-resizing{cursor:col-resize;user-select:none}
 /* ---------- editable right pane (§5) ---------- */
 .diff.editing{grid-template-rows:1fr;align-content:stretch;overflow:hidden}
 .editbase,.editarea{
-  font-family:var(--mono);font-size:11.5px;line-height:1.65;
+  font-family:var(--mono);font-size:calc(11.5px * var(--fs));line-height:1.65;
   padding:6px 12px;margin:0;overflow:auto;min-height:0;height:100%;
   white-space:pre;tab-size:4;
 }
@@ -583,12 +579,12 @@ body.col-resizing{cursor:col-resize;user-select:none}
 .diverge.on{
   display:flex;align-items:center;gap:9px;padding:7px 13px;
   border-bottom:1px solid var(--line-soft);background:var(--raised);
-  font-family:var(--mono);font-size:10px;color:var(--attn);flex:0 0 auto;
+  font-family:var(--mono);font-size:calc(10px * var(--fs));color:var(--attn);flex:0 0 auto;
 }
 .diverge.on.bad{color:var(--bad)}
 .dvtext{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .dvbtn{
-  margin-left:auto;font-family:var(--mono);font-size:9.5px;color:inherit;
+  margin-left:auto;font-family:var(--mono);font-size:calc(9.5px * var(--fs));color:inherit;
   padding:1px 7px;border:1px solid var(--line);border-radius:2px;flex:0 0 auto;
 }
 .dvbtn:hover:not(:disabled){background:var(--surface);border-color:currentColor}
@@ -608,14 +604,14 @@ body.col-resizing{cursor:col-resize;user-select:none}
 /* No structural rules: `.overlay` already supplies inset/z-index/flex column,
    and unlike the mock this one fills the centre pane rather than sitting in a
    page at a fixed width. */
-.rv .m{font-family:var(--mono);font-size:11px}
+.rv .m{font-family:var(--mono);font-size:calc(11px * var(--fs))}
 .rv .head-btn.go{color:#1A1206;background:var(--attn);border-color:var(--attn)}
 
 /* Branch health, from data the poller already has. Never a gate — CI colour and
    a develop conflict are product signals that do not touch the apply/push
    machinery, so they inform and offer /green, and that is all. The real gates
    are worktree-readiness. */
-.rv .health{display:flex;align-items:center;gap:7px;font-family:var(--mono);font-size:10.5px;flex:0 0 auto}
+.rv .health{display:flex;align-items:center;gap:7px;font-family:var(--mono);font-size:calc(10.5px * var(--fs));flex:0 0 auto}
 .rv .health .hdot{width:6px;height:6px;border-radius:50%;background:var(--ghost);flex:0 0 auto}
 .rv .health.bad .hdot{background:var(--bad)}
 .rv .health.ok .hdot{background:var(--ok)}
@@ -636,7 +632,7 @@ body.col-resizing{cursor:col-resize;user-select:none}
    silently doubles in height — measured 32px to 62px at 50 threads. */
 .rv .strip .left{
   margin-left:auto;flex:0 0 auto;white-space:nowrap;
-  font-family:var(--mono);font-size:10px;color:var(--faint-solid);
+  font-family:var(--mono);font-size:calc(10px * var(--fs));color:var(--faint-solid);
 }
 
 .rv .body{flex:1;overflow:auto}
@@ -645,12 +641,12 @@ body.col-resizing{cursor:col-resize;user-select:none}
 
 /* the anchored comment */
 .rv .anchor{display:flex;align-items:baseline;gap:9px;flex-wrap:wrap}
-.rv .anchor .p{font-family:var(--mono);font-size:11.5px;color:var(--text)}
+.rv .anchor .p{font-family:var(--mono);font-size:calc(11.5px * var(--fs));color:var(--text)}
 .rv .anchor .p.none{color:var(--faint-solid)}
-.rv .anchor .who{font-size:11.5px;color:var(--dim)}
-.rv .anchor .age{font-family:var(--mono);font-size:10px;color:var(--faint-solid)}
+.rv .anchor .who{font-size:calc(11.5px * var(--fs));color:var(--dim)}
+.rv .anchor .age{font-family:var(--mono);font-size:calc(10px * var(--fs));color:var(--faint-solid)}
 .rv .flag{
-  font-family:var(--label);font-size:8px;font-weight:700;letter-spacing:.12em;
+  font-family:var(--label);font-size:calc(8px * var(--fs));font-weight:700;letter-spacing:.12em;
   text-transform:uppercase;padding:2px 5px;border-radius:2px;
   color:var(--faint-solid);border:1px solid var(--line);
 }
@@ -661,8 +657,8 @@ body.col-resizing{cursor:col-resize;user-select:none}
 
 /* hunk — reuses the diff overlay's row classes. No +/- characters: the row's
    background wash carries add/del. */
-.rv .hunk{font-family:var(--mono);font-size:11.5px;line-height:1.65;border:1px solid var(--line-soft);border-radius:2px;overflow:hidden}
-.rv .hh{padding:2px 10px;background:#0B0B0B;color:var(--faint-solid);font-size:10.5px;border-bottom:1px solid var(--line-soft)}
+.rv .hunk{font-family:var(--mono);font-size:calc(11.5px * var(--fs));line-height:1.65;border:1px solid var(--line-soft);border-radius:2px;overflow:hidden}
+.rv .hh{padding:2px 10px;background:#0B0B0B;color:var(--faint-solid);font-size:calc(10.5px * var(--fs));border-bottom:1px solid var(--line-soft)}
 
 /* comment chain */
 .rv .chain{display:flex;flex-direction:column;gap:9px}
@@ -673,12 +669,12 @@ body.col-resizing{cursor:col-resize;user-select:none}
 .rv .cmt.mine{border-left-color:var(--faint-solid);background:rgba(255,255,255,.015)}
 .rv .cmt.mine .hd b{color:var(--dim)}
 .rv .cmt.mine .hd .you{
-  font-family:var(--label);font-size:7.5px;font-weight:700;letter-spacing:.12em;
+  font-family:var(--label);font-size:calc(7.5px * var(--fs));font-weight:700;letter-spacing:.12em;
   text-transform:uppercase;color:var(--faint-solid);
 }
 .rv .cmt .hd{display:flex;gap:8px;align-items:baseline}
-.rv .cmt .hd b{font-size:11.5px;font-weight:600;color:var(--text)}
-.rv .cmt .hd .age{font-family:var(--mono);font-size:10px;color:var(--faint-solid)}
+.rv .cmt .hd b{font-size:calc(11.5px * var(--fs));font-weight:600;color:var(--text)}
+.rv .cmt .hd .age{font-family:var(--mono);font-size:calc(10px * var(--fs));color:var(--faint-solid)}
 .rv .cmt p{color:var(--dim);max-width:70ch;white-space:pre-wrap}
 
 /* the agent's read */
@@ -697,20 +693,20 @@ body.col-resizing{cursor:col-resize;user-select:none}
 .rv .opt.on{border-color:var(--attn);background:rgba(224,162,68,.06)}
 .rv .optHead{display:flex;align-items:flex-start;gap:9px;text-align:left;width:100%;padding:8px 10px}
 .rv .opt .k{
-  font-family:var(--mono);font-size:9.5px;color:var(--faint-solid);
+  font-family:var(--mono);font-size:calc(9.5px * var(--fs));color:var(--faint-solid);
   border:1px solid var(--line);border-radius:2px;padding:0 4px;flex:0 0 auto;margin-top:1px;
 }
 .rv .opt.on .k{color:var(--attn);border-color:rgba(224,162,68,.4)}
-.rv .opt .t{font-size:12px;color:var(--text)}
-.rv .opt .t em{display:block;font-style:normal;color:var(--faint-solid);font-size:11px;margin-top:2px}
+.rv .opt .t{font-size:calc(12px * var(--fs));color:var(--text)}
+.rv .opt .t em{display:block;font-style:normal;color:var(--faint-solid);font-size:calc(11px * var(--fs));margin-top:2px}
 .rv .opt .does{
-  margin-left:auto;flex:0 0 auto;font-family:var(--label);font-size:8px;font-weight:700;
+  margin-left:auto;flex:0 0 auto;font-family:var(--label);font-size:calc(8px * var(--fs));font-weight:700;
   letter-spacing:.12em;text-transform:uppercase;color:var(--faint-solid);padding-top:2px;
   white-space:nowrap;
 }
 .rv .opt.on .does{color:var(--ok)}
 .rv .rec{
-  font-family:var(--label);font-size:8px;font-weight:700;letter-spacing:.12em;
+  font-family:var(--label);font-size:calc(8px * var(--fs));font-weight:700;letter-spacing:.12em;
   text-transform:uppercase;color:var(--attn);border:1px solid rgba(224,162,68,.35);
   border-radius:2px;padding:1px 5px;margin-left:8px;
 }
@@ -721,13 +717,13 @@ body.col-resizing{cursor:col-resize;user-select:none}
    than \n. `openEditor()` settled this already. */
 .rv .box{resize:vertical;display:block;width:100%;
   background:#0B0B0B;border:1px solid var(--line);border-radius:2px;
-  padding:9px 11px;color:var(--text);font-family:var(--sans);font-size:12.5px;
+  padding:9px 11px;color:var(--text);font-family:var(--sans);font-size:calc(12.5px * var(--fs));
   min-height:56px;white-space:pre-wrap;
 }
 .rv .box:focus{outline:none;border-color:var(--faint-solid)}
 .rv .foot{
   display:flex;align-items:baseline;gap:10px;
-  font-family:var(--mono);font-size:10px;color:var(--faint-solid);
+  font-family:var(--mono);font-size:calc(10px * var(--fs));color:var(--faint-solid);
 }
 /* Only shown once the text differs from the draft, so it never offers to undo
    nothing. */
@@ -737,21 +733,21 @@ body.col-resizing{cursor:col-resize;user-select:none}
    wording or the agent's?" is the question that needs answering first, and the
    posted footer cannot answer it. */
 .rv .edited{
-  font-family:var(--label);font-size:8px;font-weight:700;letter-spacing:.12em;
+  font-family:var(--label);font-size:calc(8px * var(--fs));font-weight:700;letter-spacing:.12em;
   text-transform:uppercase;color:var(--work);border:1px solid rgba(76,154,175,.35);
   border-radius:2px;padding:1px 5px;margin-left:8px;
 }
 .rv .willwrite{
   display:flex;align-items:baseline;gap:7px;flex-wrap:wrap;
-  font-family:var(--label);font-size:8px;font-weight:700;letter-spacing:.12em;
+  font-family:var(--label);font-size:calc(8px * var(--fs));font-weight:700;letter-spacing:.12em;
   text-transform:uppercase;color:var(--faint-solid);
 }
-.rv .willwrite b{font-family:var(--mono);font-size:10.5px;font-weight:400;letter-spacing:0;text-transform:none;color:var(--dim)}
+.rv .willwrite b{font-family:var(--mono);font-size:calc(10.5px * var(--fs));font-weight:400;letter-spacing:0;text-transform:none;color:var(--dim)}
 
 /* action bar */
 .rv .acts{display:flex;align-items:center;gap:7px;padding:11px 15px;border-top:1px solid var(--line);background:var(--surface);flex:0 0 auto}
 .rv .act{
-  font-family:var(--label);font-size:8.5px;font-weight:700;letter-spacing:.1em;
+  font-family:var(--label);font-size:calc(8.5px * var(--fs));font-weight:700;letter-spacing:.1em;
   text-transform:uppercase;padding:5px 10px;border:1px solid var(--line);
   border-radius:2px;color:var(--dim);
 }
@@ -760,32 +756,32 @@ body.col-resizing{cursor:col-resize;user-select:none}
 .rv .act.pri{color:var(--text);border-color:var(--faint-solid)}
 .rv .act.warm{color:#1A1206;background:var(--attn);border-color:var(--attn)}
 .rv .act.warm:disabled{color:#1A1206;background:var(--ghost);border-color:var(--ghost)}
-.rv .hint{margin-left:auto;font-family:var(--mono);font-size:10px;color:var(--faint-solid);text-align:right}
+.rv .hint{margin-left:auto;font-family:var(--mono);font-size:calc(10px * var(--fs));color:var(--faint-solid);text-align:right}
 
 /* intake + empty */
 .rv .mid{padding:56px 15px;display:flex;flex-direction:column;align-items:center;gap:13px;text-align:center;overflow:auto}
-.rv .mid p{color:var(--dim);max-width:52ch;font-size:12.5px}
-.rv .mid .big{font-size:14px;color:var(--text)}
+.rv .mid p{color:var(--dim);max-width:52ch;font-size:calc(12.5px * var(--fs))}
+.rv .mid .big{font-size:calc(14px * var(--fs));color:var(--text)}
 .rv .tally{display:flex;flex-direction:column;gap:0;width:100%}
 .rv .tline{display:flex;align-items:baseline;gap:10px;padding:9px 0;border-bottom:1px solid var(--line-soft)}
 .rv .tline:last-child{border-bottom:0}
-.rv .tline .n{font-family:var(--mono);font-size:15px;color:var(--text);flex:0 0 26px;text-align:right;font-variant-numeric:tabular-nums}
-.rv .tline .l{font-size:12.5px;color:var(--text)}
-.rv .tline .l em{display:block;font-style:normal;font-size:11.5px;color:var(--faint-solid);margin-top:1px}
+.rv .tline .n{font-family:var(--mono);font-size:calc(15px * var(--fs));color:var(--text);flex:0 0 26px;text-align:right;font-variant-numeric:tabular-nums}
+.rv .tline .l{font-size:calc(12.5px * var(--fs));color:var(--text)}
+.rv .tline .l em{display:block;font-style:normal;font-size:calc(11.5px * var(--fs));color:var(--faint-solid);margin-top:1px}
 
 /* the post list */
 .rv .stage-row{display:flex;align-items:baseline;gap:10px;padding:8px 0;border-bottom:1px solid var(--line-soft)}
 .rv .stage-row:last-child{border-bottom:0}
-.rv .stage-row .k{font-family:var(--label);font-size:8px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;flex:0 0 82px}
+.rv .stage-row .k{font-family:var(--label);font-size:calc(8px * var(--fs));font-weight:700;letter-spacing:.12em;text-transform:uppercase;flex:0 0 82px}
 .rv .stage-row .k.apply{color:var(--ok)}
 .rv .stage-row .k.reply{color:var(--attn)}
 .rv .stage-row .k.skip{color:var(--faint-solid)}
 .rv .stage-row .k.req{color:var(--work)}
 .rv .stage-row .k.manual,.rv .stage-row .k.story{color:var(--work)}
 .rv .stage-row .c{display:flex;flex-direction:column;gap:3px;min-width:0}
-.rv .stage-row .c .p{font-family:var(--mono);font-size:10.5px;color:var(--faint-solid)}
-.rv .stage-row .c .t{font-size:12px;color:var(--dim)}
-.rv .held{color:var(--faint-solid);font-size:11.5px;font-style:italic}
+.rv .stage-row .c .p{font-family:var(--mono);font-size:calc(10.5px * var(--fs));color:var(--faint-solid)}
+.rv .stage-row .c .t{font-size:calc(12px * var(--fs));color:var(--dim)}
+.rv .held{color:var(--faint-solid);font-size:calc(11.5px * var(--fs));font-style:italic}
 
 /* A banner for what is already true on the remote. It uses --attn rather than
    --bad because it is not an error — it is the fact you need before you can
@@ -795,26 +791,26 @@ body.col-resizing{cursor:col-resize;user-select:none}
   border-left:2px solid var(--attn);background:rgba(224,162,68,.06);flex:0 0 auto;
 }
 .rv .banner.clean{border-left-color:var(--ok);background:rgba(95,169,124,.05)}
-.rv .banner .ico{font-family:var(--mono);font-size:12px;color:var(--attn);flex:0 0 auto}
+.rv .banner .ico{font-family:var(--mono);font-size:calc(12px * var(--fs));color:var(--attn);flex:0 0 auto}
 .rv .banner.clean .ico{color:var(--ok)}
-.rv .banner .tx b{display:block;font-size:12.5px;font-weight:600;margin-bottom:2px}
-.rv .banner .tx p{color:var(--dim);font-size:12px;max-width:62ch}
+.rv .banner .tx b{display:block;font-size:calc(12.5px * var(--fs));font-weight:600;margin-bottom:2px}
+.rv .banner .tx p{color:var(--dim);font-size:calc(12px * var(--fs));max-width:62ch}
 
 .rv .group{display:flex;flex-direction:column;gap:0}
 .rv .res{display:flex;align-items:baseline;gap:10px;padding:9px 0;border-bottom:1px solid var(--line-soft)}
 .rv .res:last-child{border-bottom:0}
-.rv .res .st{font-family:var(--mono);font-size:11px;flex:0 0 14px;text-align:center}
+.rv .res .st{font-family:var(--mono);font-size:calc(11px * var(--fs));flex:0 0 14px;text-align:center}
 .rv .res.ok .st{color:var(--ok)}
 .rv .res.no .st{color:var(--bad)}
 .rv .res.wait .st{color:var(--faint-solid)}
 .rv .res .c{display:flex;flex-direction:column;gap:3px;min-width:0}
-.rv .res .c .p{font-family:var(--mono);font-size:10.5px;color:var(--faint-solid)}
-.rv .res .c .t{font-size:12px;color:var(--dim)}
+.rv .res .c .p{font-family:var(--mono);font-size:calc(10.5px * var(--fs));color:var(--faint-solid)}
+.rv .res .c .t{font-size:calc(12px * var(--fs));color:var(--dim)}
 .rv .res.ok .c .t{color:var(--faint-solid)}
 /* Errors verbatim, per the daemon's own rule (src/api.rs:23) — a refused call
    is information, not noise to swallow behind a friendly paraphrase. */
 .rv .err{
-  font-family:var(--mono);font-size:10.5px;color:var(--bad);
+  font-family:var(--mono);font-size:calc(10.5px * var(--fs));color:var(--bad);
   background:rgba(201,97,90,.07);border-left:1px solid rgba(201,97,90,.35);
   padding:5px 9px;white-space:pre-wrap;margin-top:2px;
 }
@@ -828,10 +824,10 @@ body.col-resizing{cursor:col-resize;user-select:none}
 .rv .sline{display:flex;gap:10px;padding:6px 9px;border-bottom:1px solid var(--line-soft)}
 .rv .sline:last-child{border-bottom:0}
 .rv .sline .lbl{
-  font-family:var(--label);font-size:7.5px;font-weight:700;letter-spacing:.12em;
+  font-family:var(--label);font-size:calc(7.5px * var(--fs));font-weight:700;letter-spacing:.12em;
   text-transform:uppercase;color:var(--faint-solid);flex:0 0 44px;padding-top:3px;
 }
-.rv .sline .val{font-size:12px;color:var(--dim);min-width:0}
+.rv .sline .val{font-size:calc(12px * var(--fs));color:var(--dim);min-width:0}
 
 /* The last thing read before the only irreversible button on the screen, so it
    is set apart rather than being one more list among the others. */
@@ -845,11 +841,11 @@ body.col-resizing{cursor:col-resize;user-select:none}
   display:flex;align-items:baseline;gap:9px;padding:6px 15px;flex:0 0 auto;
   border-bottom:1px solid var(--line-soft);flex-wrap:wrap;
   background:rgba(224,162,68,.06);border-left:2px solid var(--attn);
-  font-family:var(--mono);font-size:10.5px;color:var(--dim);
+  font-family:var(--mono);font-size:calc(10.5px * var(--fs));color:var(--dim);
 }
 .rv .autobar b{color:var(--attn);font-weight:400}
 .rv .autobar .why{margin-left:auto;color:var(--faint-solid)}
-.rv .autobar .act{margin-left:0;padding:2px 7px;font-size:8px;letter-spacing:.1em}
+.rv .autobar .act{margin-left:0;padding:2px 7px;font-size:calc(8px * var(--fs));letter-spacing:.1em}
 
 /* ---------- the manual phase ---------- */
 /* A comment is required on a Manual thread, so the label says so rather than
@@ -861,14 +857,14 @@ body.col-resizing{cursor:col-resize;user-select:none}
 }
 .rv .manrow:last-child{border-bottom:0}
 .rv .manrow .top{display:flex;align-items:baseline;gap:9px;flex-wrap:wrap}
-.rv .manrow .top .p{font-family:var(--mono);font-size:11px;color:var(--text)}
-.rv .manrow .top .who{font-size:11.5px;color:var(--dim)}
+.rv .manrow .top .p{font-family:var(--mono);font-size:calc(11px * var(--fs));color:var(--text)}
+.rv .manrow .top .who{font-size:calc(11.5px * var(--fs));color:var(--dim)}
 .rv .manrow blockquote{
   padding-left:10px;border-left:1px solid var(--line);
-  color:var(--dim);font-size:12px;max-width:70ch;white-space:pre-wrap;
+  color:var(--dim);font-size:calc(12px * var(--fs));max-width:70ch;white-space:pre-wrap;
 }
 .rv .manrow .state{
-  font-family:var(--label);font-size:8px;font-weight:700;letter-spacing:.12em;
+  font-family:var(--label);font-size:calc(8px * var(--fs));font-weight:700;letter-spacing:.12em;
   text-transform:uppercase;padding:1px 5px;border-radius:2px;border:1px solid var(--line);
 }
 .rv .manrow .state.wait{color:var(--faint-solid)}
