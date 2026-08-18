@@ -897,6 +897,9 @@ let drawerTouched = false;
 function renderDivergence(w) {
   const box = $('diverge');
   box.replaceChildren();
+  // Reset the class too, not just the children: `on` is what makes this visible,
+  // and leaving it behind left an empty bar above the file list.
+  box.className = 'diverge';
   if (!w) return;
 
   if (w.rebasing) {
@@ -3097,6 +3100,8 @@ function renderReviews() {
   block.classList.toggle('closed', !showReviews);
 
   const rv = snap.reviews;
+  head.setAttribute('aria-expanded', String(showReviews));
+  head.appendChild(el('span', 'caretr', '\u203a'));
   head.appendChild(el('span', 'eyebrow', 'Review queue'));
   const count = el('span', 'rvcount');
 

@@ -224,7 +224,7 @@ button.ctx-btn:hover{color:var(--text)}
   padding:7px 15px 12px;font-family:var(--mono);font-size:10px;color:var(--faint-solid);
 }
 .arctoggle:hover{color:var(--dim)}
-.arctoggle .caretr{display:inline-block;transition:transform .13s;font-size:9px}
+.arctoggle .caretr{display:inline-block;transition:transform .13s;font-size:13px;line-height:1}
 .arctoggle[aria-expanded="true"] .caretr{transform:rotate(90deg)}
 .arccount{margin-left:auto;font-size:9.5px;color:var(--faint-solid)}
 
@@ -302,6 +302,9 @@ button.ctx-btn:hover{color:var(--text)}
 #filepanes{flex:1;min-height:0;overflow-y:auto}
 .fempty{padding:22px 15px;font-family:var(--mono);font-size:10.5px;color:var(--faint-solid);line-height:1.75}
 .files-foot{padding:9px 13px;font-family:var(--mono);font-size:10px;color:var(--faint-solid);border-top:1px solid var(--line-soft)}
+/* Nothing to count, nothing to draw: otherwise the border and the padding read
+   as a panel of their own. */
+.files-foot:empty{display:none}
 
 /* ---------- column splitters ---------- */
 /* Under the window's own resize edges (z 9999) and the overlays, over everything
@@ -437,8 +440,11 @@ body.col-resizing{cursor:col-resize;user-select:none}
   display:flex;align-items:center;gap:9px;padding:13px 15px 7px;
   width:100%;position:sticky;top:0;background:var(--surface);z-index:2;
 }
-.prgroup-head .caretr{color:var(--ghost);font-size:9px;transition:transform .13s}
-.prgroup-head[aria-expanded="true"] .caretr{transform:rotate(90deg)}
+.prgroup-head .caretr,.rvhead .caretr{
+  color:var(--faint-solid);font-size:13px;line-height:1;transition:transform .13s;
+}
+.prgroup-head[aria-expanded="true"] .caretr,
+.rvhead[aria-expanded="true"] .caretr{transform:rotate(90deg)}
 .prcount{font-family:var(--mono);font-size:9.5px;color:var(--faint-solid);margin-left:auto}
 .prcount b{font-weight:400}
 .prcount .n{color:var(--attn)}
