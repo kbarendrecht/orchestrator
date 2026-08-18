@@ -1003,6 +1003,66 @@ pub async fn pr_manual_done(
 /// The robust path. The agent does the work in a pane you supervise; the daemon
 /// itself makes no irreversible write. The native overlay (`/triage` → cards →
 /// `/post`) is the opt-in alternative, chosen from the same rail row.
+/// Where an `open` request wants the session.
+#[derive(Deserialize)]
+pub struct OpenPr {
+    #[serde(rename = "where")]
+    pub place: String,
+}
+
+/// Start working on a PR, without the review flow.
+///
+/// A worktree pinned to its head branch, or the main checkout switched onto it —
+/// which is what you want when the PR needs the docker stack and `ng-watch` that
+/// only main has. Main is refused rather than disturbed: switching a branch out
+/// from under uncommitted work, or under a session already sitting there, is not
+/// something a right-click menu gets to do.
+pub async fn open_pr(
+    State(app): State<Arc<AppState>>,
+    Path(number): Path<u64>,
+    Json(body): Json<OpenPr>,
+) -> ApiResult<serde_json::Value> {
+    let pr = {
+        let inner = app.inner.read().await;
+        inner.prs.iter().find(|p| p.number == number).cloned()
+    }
+    .ok_or_else(|| anyhow::anyhow!("PR #{number} is not in the current poll"))?;
+
+    let workspace = match body.place.as_str() {
+        "worktree" => spawn::ensure_pr_worktree(&app, number, &pr.head_ref).await?,
+        "main" => {
+            if let Some(held) = {
+                let inner = app.inner.read().await;
+                inner.workspaces.get(MAIN).and_then(|w| w.occupant)
+            } {
+                return Err(ApiError(anyhow::anyhow!(
+                    "a session already holds main ({}); end it before moving the checkout",
+                    &held.to_string()[..8]
+                )));
+            }
+            let main = app.cfg.main_checkout.clone();
+            let branch = pr.head_ref.clone();
+            let path = main.clone();
+            tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+                if !crate::git::is_clean(&path)? {
+                    anyhow::bail!(
+                        "the main checkout has uncommitted changes; commit or stash them first"
+                    );
+                }
+                crate::git::switch_branch(&path, &branch)
+            })
+            .await
+            .map_err(|e| anyhow::anyhow!("switch task failed: {e}"))??;
+            let _ = app.reconcile(MAIN).await;
+            MAIN.to_string()
+        }
+        other => return Err(ApiError(anyhow::anyhow!("unknown place {other}"))),
+    };
+
+    let id = spawn::spawn_session(&app, &workspace, Kind::Interactive, None).await?;
+    Ok(Json(json!({ "session": id, "workspace": workspace })))
+}
+
 pub async fn resolve_pr(
     State(app): State<Arc<AppState>>,
     Path(number): Path<u64>,

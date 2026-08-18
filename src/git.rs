@@ -452,6 +452,26 @@ pub fn worktree_rebuild(
     Ok((tip != recorded).then_some(tip))
 }
 
+/// Put a checkout on `branch`, fetching it from origin when it is not local yet.
+///
+/// Git refuses a branch that another worktree already has checked out, and that
+/// refusal is the right answer: two trees on one branch is how you get a rebase
+/// in one of them rewriting the other's HEAD underneath it.
+pub fn switch_branch(cwd: &Path, branch: &str) -> Result<()> {
+    if branch_exists(cwd, branch) {
+        git(cwd, &["switch", branch])?;
+        return Ok(());
+    }
+    // The head ref lives on the fork, since PRs are opened from origin (§6).
+    let _ = git(cwd, &["fetch", "origin", branch, "--no-tags"]);
+    let remote = format!("origin/{branch}");
+    if !git_ok(cwd, &["rev-parse", "--verify", "--quiet", &remote]) {
+        bail!("branch {branch} exists neither locally nor on origin");
+    }
+    git(cwd, &["switch", "-c", branch, "--track", &remote])?;
+    Ok(())
+}
+
 pub fn branch_exists(main: &Path, branch: &str) -> bool {
     git_ok(
         main,

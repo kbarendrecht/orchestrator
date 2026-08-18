@@ -420,27 +420,52 @@ function reviewButtons(p) {
   btn.title = `Answer #${p.number}'s review threads`;
   btn.onclick = (ev) => {
     ev.stopPropagation();
-    openMenu(ev, [
-      ['/resolve in a pane', null, () => runResolve(p.number, btn)],
-      ['cards overlay (beta)', null, () => openReview(p.number)],
-    ]);
+    openMenu(ev, prMenu(p, btn));
   };
   wrap.appendChild(btn);
 
   return wrap;
 }
 
+/** Everything you can start from a PR row.
+ *
+ *  The same list behind the `review` button and behind a right-click, because
+ *  they are the same question — "do something with this PR" — and having two
+ *  different menus for it is how you end up hunting for the one that has the item
+ *  you want. */
+function prMenu(p, btn) {
+  return [
+    ['open in main checkout', null, () => openPr(p.number, 'main')],
+    ['open in worktree', null, () => openPr(p.number, 'worktree')],
+    ['resolve', null, () => runResolve(p.number, btn)],
+    ['resolve in ui [beta]', null, () => openReview(p.number)],
+  ];
+}
+
+/** Start a plain session on a PR: a worktree pinned to its head branch, or the
+ *  main checkout moved onto it. */
+async function openPr(number, where) {
+  try {
+    const r = await call(`/api/pr/${number}/open`, { where });
+    pendingSelect = r.session;
+    toast(`#${number} in ${r.workspace}`);
+  } catch (e) {
+    toast(e.message, true);
+  }
+}
+
 /** Spawn the session that answers #`number`'s threads, and switch to its pane. */
 async function runResolve(number, btn) {
-  btn.disabled = true;
+  // No button when this came from a right-click on the row.
+  if (btn) btn.disabled = true;
   try {
     const r = await call(`/api/pr/${number}/resolve`);
     pendingSelect = r.session;
-    toast(`/resolve ${number}`);
+    toast(`resolve ${number}`);
   } catch (e) {
     toast(e.message, true);
   } finally {
-    btn.disabled = false;
+    if (btn) btn.disabled = false;
   }
 }
 
@@ -517,6 +542,7 @@ function prGroup() {
     // Rows for PRs that already have a session are dimmed and jump to it (§9).
     const row = el('a', 'prrow' + (p.session ? ' linked' : ''));
     row.href = p.url || '#';
+    row.oncontextmenu = (ev) => openMenu(ev, prMenu(p, null));
     // ⌘-click, middle-click and copy-link all behave, and the browser already
     // holds the GitHub session.
     row.target = '_blank';
