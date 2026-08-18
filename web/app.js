@@ -283,7 +283,30 @@ function sessionsOf(wsId) {
   return snap.sessions.filter((s) => s.workspace === wsId);
 }
 
+/** Keep an open diff on the session you are in.
+ *
+ *  The three panes describe one thing; a diff pinned to the worktree you have
+ *  just switched away from is the odd one out. Re-pointed rather than closed,
+ *  because switching sessions with the diff open reads as "show me this one's
+ *  changes" — and closed only when there is no session left to describe. */
+function syncDiffToSession() {
+  if (!diffState.open) return;
+  const ws = activeWorkspaceId();
+  if (!ws) {
+    closeDiff();
+    return;
+  }
+  if (ws === diffState.ws) return;
+  // Before the await, or the next render re-enters and fetches twice.
+  diffState.ws = ws;
+  diffState.path = null;
+  diffState.file = null;
+  diffState.summary = null;
+  openDiff();
+}
+
 function render() {
+  syncDiffToSession();
   renderRail();
   renderContext();
   renderDrawer();
@@ -956,7 +979,7 @@ async function act(path, verb) {
 function renderFiles() {
   // The diff overlay is opened against a workspace and keeps describing it while
   // it is open, session or no session.
-  const wsId = diffState.open ? currentWorkspaceId() : activeWorkspaceId();
+  const wsId = diffState.open ? diffState.ws : activeWorkspaceId();
   const w = snap.workspaces.find((x) => x.id === wsId);
   renderDivergence(w);
   const panes = $('filepanes');
@@ -1048,6 +1071,11 @@ function prForWorkspace(wsId) {
 // and a long label wraps it onto two lines.
 const diffState = {
   open: false,
+  /* Which workspace the open diff describes. Every fetch used to read the
+   * current one at call time, so switching sessions left the loaded hunks
+   * describing the old worktree while the next request quietly asked about the
+   * new one. Pinned here, and re-pointed by `syncDiffToSession`. */
+  ws: null,
   base: 'upstream',
   summary: null,     // { base, files, added, deleted }
   path: null,
@@ -1211,7 +1239,7 @@ function stepChange(delta) {
 }
 
 async function loadSummary() {
-  const ws = currentWorkspaceId();
+  const ws = diffState.ws || activeWorkspaceId();
   if (!ws) return;
   const q = new URLSearchParams({ workspace: ws, base: diffState.base });
   const pr = prForWorkspace(ws);
@@ -1226,7 +1254,7 @@ async function loadSummary() {
 }
 
 async function loadFile(path) {
-  const ws = currentWorkspaceId();
+  const ws = diffState.ws || activeWorkspaceId();
   if (!ws) return;
   if (editState.on && path !== editState.path && !closeEditor()) return;
   diffState.path = path;
@@ -1247,6 +1275,7 @@ async function loadFile(path) {
 
 async function openDiff(path) {
   diffState.open = true;
+  diffState.ws = activeWorkspaceId() || currentWorkspaceId();
   diffState.context = 3;
   $('overlay').classList.add('on');
   await loadSummary();
@@ -1262,6 +1291,7 @@ async function openDiff(path) {
 function closeDiff() {
   if (editState.on && !closeEditor()) return;
   diffState.open = false;
+  diffState.ws = null;
   diffState.file = null;
   diffState.path = null;
   $('overlay').classList.remove('on');
@@ -1284,7 +1314,7 @@ const editState = {
 };
 
 function editQuery(extra) {
-  const ws = currentWorkspaceId();
+  const ws = diffState.ws || activeWorkspaceId();
   const q = new URLSearchParams({ workspace: ws, path: diffState.path, ...extra });
   const pr = prForWorkspace(ws);
   if (pr && pr.base_ref) q.set('pr_base', pr.base_ref);
