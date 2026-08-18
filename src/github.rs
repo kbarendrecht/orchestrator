@@ -214,7 +214,20 @@ pub struct Pr {
     /// Rendered as `50+` rather than `50`, so an under-count cannot silently
     /// hide work (§6).
     pub unresolved_capped: bool,
+    /// Of those, the ones whose last word is not yours and which you have not
+    /// 👍'd. This is the number the rail acts on; `unresolved` is GitHub's.
+    pub awaiting_you: u32,
     pub changes_requested: bool,
+    /// Whether this PR is waiting on you, decided here rather than in four
+    /// places that each got it slightly differently.
+    ///
+    /// A thread you have answered is not your turn even though GitHub still
+    /// calls it unresolved — closing it is the reviewer's button. A
+    /// changes-requested review counts only when there are no threads to answer,
+    /// which is the shape of an objection written in the review body: with
+    /// threads present it stays set until the reviewer looks again, and treating
+    /// that as your turn is what made an answered PR sit there amber.
+    pub needs_you: bool,
     /// PRs stacked directly on this one.
     pub children: Vec<u64>,
 }
@@ -226,7 +239,7 @@ impl Pr {
         if self.is_draft {
             return 4;
         }
-        if self.unresolved > 0 || self.changes_requested {
+        if self.needs_you {
             return 0;
         }
         if self.checks == Checks::Failing || self.mergeable == "CONFLICTING" {
@@ -262,7 +275,12 @@ fn query_for(owner: &str, name: &str) -> String {
         commits(last: 1) {{ nodes {{ commit {{ oid statusCheckRollup {{ state }} }} }} }}
         reviewThreads(first: {PAGE}) {{
           pageInfo {{ hasNextPage }}
-          nodes {{ isResolved isOutdated }}
+          nodes {{ isResolved isOutdated
+            comments(last: 1) {{ nodes {{
+              author {{ login }}
+              reactionGroups {{ content viewerHasReacted }}
+            }} }}
+          }}
         }}
         reviews(states: CHANGES_REQUESTED, first: 20) {{ nodes {{ author {{ login }} }} }}
       }}
@@ -291,12 +309,37 @@ pub fn poll(token: &str, owner: &str, name: &str) -> Result<(String, Vec<Pr>)> {
         .cloned()
         .unwrap_or_default();
 
-    let mut prs: Vec<Pr> = nodes.iter().filter_map(parse_pr).collect();
+    let mut prs: Vec<Pr> = nodes.iter().filter_map(|n| parse_pr(n, &viewer)).collect();
     link_stacks(&mut prs);
     Ok((viewer, prs))
 }
 
-fn parse_pr(n: &Value) -> Option<Pr> {
+/// Whether a thread's last word is yours, one way or another.
+///
+/// Either you replied — nothing after your comment — or the reviewer had the
+/// last word and you gave it a 👍. The thumbs-up is not decoration: it is the
+/// convention `commands/resolve.md` writes for "applied as asked, nothing to
+/// add", so reading it back is how the daemon sees work the flow finished.
+fn acknowledged(thread: &Value, viewer: &str) -> bool {
+    let Some(last) = thread.pointer("/comments/nodes/0") else {
+        // No comments at all is not a thread anybody is waiting on.
+        return true;
+    };
+    if last.pointer("/author/login").and_then(|l| l.as_str()) == Some(viewer) {
+        return true;
+    }
+    last.get("reactionGroups")
+        .and_then(|g| g.as_array())
+        .map(|groups| {
+            groups.iter().any(|g| {
+                g.get("content").and_then(|c| c.as_str()) == Some("THUMBS_UP")
+                    && g.get("viewerHasReacted").and_then(|b| b.as_bool()) == Some(true)
+            })
+        })
+        .unwrap_or(false)
+}
+
+fn parse_pr(n: &Value, viewer: &str) -> Option<Pr> {
     let number = n.get("number")?.as_u64()?;
 
     // The rollup hangs off the head commit, not off the PR (§6).
@@ -313,16 +356,26 @@ fn parse_pr(n: &Value) -> Option<Pr> {
     let threads = n.pointer("/reviewThreads/nodes").and_then(|t| t.as_array());
     // A thread that is outdated is about code that no longer exists, so it does
     // not gate `/resolve`.
-    let unresolved = threads
+    let open_threads: Vec<&Value> = threads
         .map(|ts| {
             ts.iter()
                 .filter(|t| {
                     t.get("isResolved").and_then(|b| b.as_bool()) == Some(false)
                         && t.get("isOutdated").and_then(|b| b.as_bool()) != Some(true)
                 })
-                .count() as u32
+                .collect()
         })
-        .unwrap_or(0);
+        .unwrap_or_default();
+    let unresolved = open_threads.len() as u32;
+    // Closing a thread is the reviewer's button, so "unresolved" is not the same
+    // question as "waiting on you" — answer every thread and the count does not
+    // move. What moves is who spoke last, and whether you acknowledged them:
+    // `/resolve` replies where there is something to say and leaves a 👍 where
+    // there is not, so both count as handled.
+    let awaiting_you = open_threads
+        .iter()
+        .filter(|t| !acknowledged(t, viewer))
+        .count() as u32;
     let capped = n
         .pointer("/reviewThreads/pageInfo/hasNextPage")
         .and_then(|b| b.as_bool())
@@ -370,7 +423,9 @@ fn parse_pr(n: &Value) -> Option<Pr> {
             .map(|s| s.to_string()),
         unresolved,
         unresolved_capped: capped,
+        awaiting_you,
         changes_requested,
+        needs_you: awaiting_you > 0 || (changes_requested && unresolved == 0) || capped,
         children: Vec::new(),
     })
 }
@@ -806,9 +861,59 @@ mod tests {
                   {"isResolved":false,"isOutdated":false},
                   {"isResolved":true,"isOutdated":false}]}}"#,
         );
-        let pr = parse_pr(&n).unwrap();
+        let pr = parse_pr(&n, "me").unwrap();
         assert_eq!(pr.unresolved, 1);
         assert!(!pr.unresolved_capped);
+    }
+
+    #[test]
+    fn a_thread_you_answered_is_not_waiting_on_you() {
+        // The whole point: closing a thread is the reviewer's button, so a PR
+        // whose every thread has your reply or your 👍 is their turn, not yours.
+        let n = node(
+            r#"{"number":1,"title":"t","headRefName":"a","baseRefName":"develop",
+                "reviews":{"nodes":[{"author":{"login":"them"}}]},
+                "reviewThreads":{"pageInfo":{"hasNextPage":false},"nodes":[
+                  {"isResolved":false,"isOutdated":false,"comments":{"nodes":[
+                    {"author":{"login":"me"},"reactionGroups":[]}]}},
+                  {"isResolved":false,"isOutdated":false,"comments":{"nodes":[
+                    {"author":{"login":"them"},
+                     "reactionGroups":[{"content":"THUMBS_UP","viewerHasReacted":true}]}]}}]}}"#,
+        );
+        let pr = parse_pr(&n, "me").unwrap();
+        assert_eq!(pr.unresolved, 2, "GitHub still calls both unresolved");
+        assert_eq!(pr.awaiting_you, 0, "one you answered, one you thumbed");
+        assert!(
+            !pr.needs_you,
+            "changes-requested must not outvote threads that are all handled"
+        );
+    }
+
+    #[test]
+    fn a_reviewer_who_spoke_last_is_waiting_on_you() {
+        let n = node(
+            r#"{"number":1,"title":"t","headRefName":"a","baseRefName":"develop",
+                "reviewThreads":{"pageInfo":{"hasNextPage":false},"nodes":[
+                  {"isResolved":false,"isOutdated":false,"comments":{"nodes":[
+                    {"author":{"login":"them"},"reactionGroups":[]}]}}]}}"#,
+        );
+        let pr = parse_pr(&n, "me").unwrap();
+        assert_eq!(pr.awaiting_you, 1);
+        assert!(pr.needs_you);
+    }
+
+    #[test]
+    fn changes_requested_with_nothing_to_answer_still_needs_you() {
+        // The objection lives in the review body, so there is no thread to
+        // answer and no 👍 to leave; it would otherwise vanish from the rail.
+        let n = node(
+            r#"{"number":1,"title":"t","headRefName":"a","baseRefName":"develop",
+                "reviews":{"nodes":[{"author":{"login":"them"}}]},
+                "reviewThreads":{"pageInfo":{"hasNextPage":false},"nodes":[]}}"#,
+        );
+        let pr = parse_pr(&n, "me").unwrap();
+        assert!(pr.changes_requested);
+        assert!(pr.needs_you);
     }
 
     #[test]
@@ -817,7 +922,7 @@ mod tests {
             r#"{"number":1,"title":"t","headRefName":"a","baseRefName":"develop",
                 "reviewThreads":{"pageInfo":{"hasNextPage":true},"nodes":[]}}"#,
         );
-        assert!(parse_pr(&n).unwrap().unresolved_capped);
+        assert!(parse_pr(&n, "me").unwrap().unresolved_capped);
     }
 
     // -- review threads ----------------------------------------------------
@@ -1108,13 +1213,13 @@ mod tests {
             r#"{"number":1,"title":"t","headRefName":"a","baseRefName":"develop",
                 "commits":{"nodes":[{"commit":{"statusCheckRollup":{"state":"FAILURE"}}}]}}"#,
         );
-        assert_eq!(parse_pr(&n).unwrap().checks, Checks::Failing);
+        assert_eq!(parse_pr(&n, "me").unwrap().checks, Checks::Failing);
     }
 
     #[test]
     fn a_missing_rollup_is_unknown_not_passing() {
         let n = node(r#"{"number":1,"title":"t","headRefName":"a","baseRefName":"develop"}"#);
-        assert_eq!(parse_pr(&n).unwrap().checks, Checks::Unknown);
+        assert_eq!(parse_pr(&n, "me").unwrap().checks, Checks::Unknown);
     }
 
     fn pr(number: u64, head: &str, base: &str) -> Pr {
@@ -1132,7 +1237,9 @@ mod tests {
             head_sha: None,
             unresolved: 0,
             unresolved_capped: false,
+            awaiting_you: 0,
             changes_requested: false,
+            needs_you: false,
             children: vec![],
         }
     }
@@ -1167,7 +1274,10 @@ mod tests {
     #[test]
     fn ranks_needing_you_above_failing_and_drafts_last() {
         let mut needs = pr(1, "a", "develop");
+        // Two open threads, one of them still waiting on a word from you.
         needs.unresolved = 2;
+        needs.awaiting_you = 1;
+        needs.needs_you = true;
         let mut failing = pr(2, "b", "develop");
         failing.checks = Checks::Failing;
         let clean = pr(3, "c", "develop");

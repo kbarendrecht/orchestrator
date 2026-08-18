@@ -363,7 +363,7 @@ function renderRail() {
 function prDot(p) {
   if (p.session) return 'auto';           // a session is holding it
   if (p.is_draft) return 'idle';
-  if (p.unresolved > 0 || p.changes_requested) return 'blocked';
+  if (p.needs_you) return 'blocked';
   if (p.checks === 'failing' || p.mergeable === 'CONFLICTING') return 'build';
   if (p.checks === 'passing') return 'ok';
   return 'idle';
@@ -451,7 +451,7 @@ function prGroup() {
     count.appendChild(el('b', 'f', 'unavailable'));
     head.title = snap.pr_error;
   } else {
-    const needs = prs.filter((p) => p.unresolved > 0 || p.changes_requested).length;
+    const needs = prs.filter((p) => p.needs_you).length;
     const failing = prs.filter(
       (p) => p.checks === 'failing' || p.mergeable === 'CONFLICTING').length;
     const bits = [`${prs.length}`];
@@ -491,7 +491,7 @@ function prGroup() {
     row.appendChild(el('span', 'ttl', p.title));
 
     const auto0 = (snap.automation || {})[p.number];
-    const needsResolve0 = p.unresolved > 0 || p.unresolved_capped || p.changes_requested;
+    const needsResolve0 = p.needs_you;
     const needsGreen0 = p.checks === 'failing' || p.mergeable === 'CONFLICTING';
 
     // A reason chip next to a button just repeats it and steals width from the
@@ -771,7 +771,7 @@ function renderContext() {
   const bits = [];
   if (s) bits.push(stateLabel(s));
   if (pr) {
-    const state = pr.unresolved ? `${pr.unresolved} unresolved`
+    const state = pr.awaiting_you ? `${pr.awaiting_you} waiting on you`
       : pr.mergeable === 'CONFLICTING' ? 'conflicted'
         : pr.checks === 'failing' ? 'checks failing'
           : pr.checks === 'pending' ? 'checks running'

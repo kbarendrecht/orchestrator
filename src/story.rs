@@ -741,7 +741,9 @@ mod tests {
             head_sha: None,
             unresolved: 0,
             unresolved_capped: false,
+            awaiting_you: 0,
             changes_requested: false,
+            needs_you: false,
             children: vec![],
         }
     }

@@ -1012,9 +1012,10 @@ pub async fn resolve_pr(
         inner.prs.iter().find(|p| p.number == number).cloned()
     };
     let pr = pr.ok_or_else(|| anyhow::anyhow!("PR #{number} is not in the current poll"))?;
-    if pr.unresolved == 0 && !pr.unresolved_capped && !pr.changes_requested {
+    if !pr.needs_you {
         return Err(ApiError(anyhow::anyhow!(
-            "PR #{number} has no unresolved review threads"
+            "PR #{number} has nothing waiting on you: every open thread has your \
+             reply or your 👍 on it"
         )));
     }
     let id = spawn::spawn_command_session(&app, number, &pr.head_ref, "resolve").await?;
