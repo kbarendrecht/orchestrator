@@ -210,7 +210,18 @@ function showTerm(target, parent) {
   // perfectly working terminal.
   if (parent === $('termwrap')) $('termempty').hidden = !!target;
   if (entry) {
-    requestAnimationFrame(() => resize(entry));
+    requestAnimationFrame(() => {
+      resize(entry);
+      // A hidden xterm has no dimensions, so its renderer parks; coming back
+      // does not always repaint what is already in the buffer, which is the
+      // black pane you get from switching sessions quickly. Ask for the redraw
+      // rather than hope for one — and drop the WebGL glyph atlas, which is the
+      // half that survives being sized to nothing.
+      try {
+        entry.term.clearTextureAtlas?.();
+        entry.term.refresh(0, Math.max(0, entry.term.rows - 1));
+      } catch (e) { /* a disposed terminal has nothing to refresh */ }
+    });
   }
   return entry;
 }
@@ -350,7 +361,7 @@ function renderRail() {
 
   // Main is pinned first (§9).
   if (main) rail.appendChild(mainGroup(main));
-  rail.appendChild(worktreeGroup(worktrees));
+  rail.appendChild(worktreeGroup(main?.id));
 
   // Its own pane below the scroller, so it stays put while sessions scroll.
   $('prpane').replaceChildren(prGroup());
@@ -579,15 +590,18 @@ function mainGroup(w) {
  *  is a session whose worktree has no name yet, which shows as `…creating`
  *  rather than nothing at all — an invisible session is how you end up
  *  starting a second one. */
-function worktreeGroup(worktrees) {
+function worktreeGroup(mainId) {
   const group = el('div', 'ws');
   const add = el('button', 'plus', '+');
   add.title = 'New worktree session (shift-click to name it)';
   add.onclick = (ev) => newWorktree(ev.shiftKey);
   group.appendChild(groupHead('Worktrees', add));
 
-  const ids = new Set(worktrees.map((w) => w.id));
-  const sessions = snap.sessions.filter((s) => ids.has(s.workspace));
+  /* Anything that is not main's belongs here — by session, not by workspace.
+   * A worktree Claude Code has not named yet has no workspace record at all,
+   * only a session pointing at the placeholder, so filtering on the known
+   * workspaces dropped exactly the row that says something is happening. */
+  const sessions = snap.sessions.filter((s) => s.workspace !== mainId);
   const active = sessions.filter((s) => !isArchived(s));
 
   for (const s of active.sort(byNewest)) {
@@ -777,7 +791,7 @@ function renderContext() {
     || (w ? w.path.split('/').slice(-2).join('/') : '—');
   $('repofork').textContent = repos.fork || '';
   $('ctxdot').className = 'dot ' + (s ? dotClass(s) : 'idle');
-  $('ctxname').textContent = s ? (s.title || wsId) : (wsId || 'no session');
+  $('ctxname').textContent = s ? railName(s, { id: wsId }) : (wsId || 'no session');
   $('ctxbranch').textContent = w ? (w.branches[0] || '') : '';
   const pr = wsId ? prForWorkspace(wsId) : null;
   const bits = [];
@@ -951,7 +965,10 @@ function renderFiles() {
   $('filestitle').textContent = diffState.open ? 'Changeset' : 'Changes';
 
   if (!w) {
-    panes.appendChild(el('div', 'fempty', 'No session open.'));
+    const s = currentSession();
+    panes.appendChild(el('div', 'fempty', s && pending(s)
+      ? 'Creating the worktree…'
+      : 'No session open.'));
     $('filesfoot').textContent = '';
     $('filesbase').textContent = '';
     return;
