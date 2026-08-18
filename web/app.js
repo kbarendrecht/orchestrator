@@ -945,7 +945,7 @@ function renderFiles() {
   const panes = $('filepanes');
   panes.replaceChildren();
 
-  $('filestitle').textContent = diffState.open ? 'Changeset' : 'Changed here';
+  $('filestitle').textContent = diffState.open ? 'Changeset' : 'Changes';
 
   if (!w) {
     panes.appendChild(el('div', 'fempty', 'No session open.'));
@@ -3396,7 +3396,15 @@ function connect() {
         closeTerm(target);
       }
     }
-    if (selected && !snap.sessions.some((s) => s.id === selected)) selected = null;
+    // The three panes describe one thing: the session you are in. The rail says
+    // which, the centre shows its pty, the right pane its changes. So the
+    // selection only ever points at something running — a session that finished
+    // is not something to land on, and its scrollback is not what the centre is
+    // for once it has stopped.
+    if (selected) {
+      const cur = snap.sessions.find((s) => s.id === selected);
+      if (!cur || isArchived(cur)) selected = null;
+    }
 
     // Switch to a session we asked for as soon as the daemon reports it.
     if (pendingSelect && snap.sessions.some((s) => s.id === pendingSelect)) {
@@ -3407,13 +3415,14 @@ function connect() {
     }
 
     if (!selected) {
-      // Default to whatever most needs you.
-      const first = snap.sessions.find(isWaiting)
-        || snap.sessions.find((x) => !isArchived(x))
-        || snap.sessions[0];
-      if (first) {
-        selected = first.id;
-        showTerm(`session:${first.id}`, $('termwrap'));
+      // Default to whatever most needs you, among what is actually running.
+      const first = snap.sessions.filter((x) => !isArchived(x));
+      const pick = first.find(isWaiting) || first[0];
+      if (pick) {
+        selected = pick.id;
+        showTerm(`session:${pick.id}`, $('termwrap'));
+      } else {
+        showTerm(null, $('termwrap'));
       }
     }
     render();
