@@ -238,11 +238,12 @@ button.ctx-btn:hover{color:var(--text)}
   font-size:9.5px;color:var(--bad);
 }
 
+/* A line of rail text that is not a control: an empty state, a poller's error.
+   Nothing here is clickable, so nothing here lights up under the cursor. */
 .railbtn{
   display:block;width:100%;text-align:left;padding:7px 15px 11px;
   font-family:var(--mono);font-size:10px;color:var(--faint-solid);
 }
-.railbtn:hover{color:var(--dim)}
 
 /* ---------- center ---------- */
 .center{display:flex;flex-direction:column;min-width:0;background:var(--bg);position:relative}

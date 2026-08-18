@@ -567,7 +567,7 @@ function mainGroup(w) {
   group.appendChild(groupHead('Main checkout', add));
 
   for (const s of active.sort(byNewest)) group.appendChild(sessionRow(s, w));
-  if (!active.length) group.appendChild(el('div', 'railbtn', 'no session'));
+  if (!active.length) group.appendChild(el('div', 'railbtn', 'no sessions'));
   appendArchived(group, 'main', sessions.filter(isConversation));
   return group;
 }
@@ -594,7 +594,7 @@ function worktreeGroup(worktrees) {
     // The workspace is only needed for the name it lends the row.
     group.appendChild(sessionRow(s, { id: s.workspace }));
   }
-  if (!active.length) group.appendChild(el('div', 'railbtn', 'nothing running'));
+  if (!active.length) group.appendChild(el('div', 'railbtn', 'no sessions'));
   appendArchived(group, 'worktrees', sessions.filter(isConversation));
   return group;
 }
@@ -746,6 +746,17 @@ function renderWaitbar() {
 
 function currentSession() {
   return snap.sessions.find((s) => s.id === selected) || null;
+}
+
+/** The workspace the right pane describes: the one you are working in.
+ *
+ *  Deliberately not `currentWorkspaceId`, which falls back to main so the drawer
+ *  and the shell button always have somewhere to act. A file list has no such
+ *  duty: main's tree is not "your changes" just because you closed your session,
+ *  and a pane still listing a finished session's work reads as live. */
+function activeWorkspaceId() {
+  const s = currentSession();
+  return s && !isArchived(s) ? s.workspace : null;
 }
 
 function currentWorkspaceId() {
@@ -926,7 +937,9 @@ async function act(path, verb) {
 }
 
 function renderFiles() {
-  const wsId = currentWorkspaceId();
+  // The diff overlay is opened against a workspace and keeps describing it while
+  // it is open, session or no session.
+  const wsId = diffState.open ? currentWorkspaceId() : activeWorkspaceId();
   const w = snap.workspaces.find((x) => x.id === wsId);
   renderDivergence(w);
   const panes = $('filepanes');
@@ -935,7 +948,7 @@ function renderFiles() {
   $('filestitle').textContent = diffState.open ? 'Changeset' : 'Changed here';
 
   if (!w) {
-    panes.appendChild(el('div', 'fempty', 'No workspace selected.'));
+    panes.appendChild(el('div', 'fempty', 'No session open.'));
     $('filesfoot').textContent = '';
     $('filesbase').textContent = '';
     return;
