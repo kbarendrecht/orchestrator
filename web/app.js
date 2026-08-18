@@ -3295,8 +3295,18 @@ function select(id) {
   // A session created a moment ago is not in the snapshot yet. Blanking the
   // terminal here would strand it: the next snapshot sees `selected` already
   // set and never opens one.
-  if (s) showTerm(`session:${s.id}`, $('termwrap'));
+  const shown = s ? showTerm(`session:${s.id}`, $('termwrap')) : null;
   render();
+  // Picking a session is picking where you are about to type. After the frame
+  // that un-hides it, for the same reason the drawer waits: xterm refuses focus
+  // while its host still has no dimensions.
+  if (shown) {
+    requestAnimationFrame(() => {
+      try {
+        shown.term.focus();
+      } catch (e) { /* disposed while we waited */ }
+    });
+  }
 }
 
 /** A session the daemon has just been asked to create.
