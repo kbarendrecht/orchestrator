@@ -934,6 +934,10 @@ async fn font(axum::extract::Path(file): axum::extract::Path<String>) -> Respons
         "plex-mono-500.woff2" => include_bytes!("../web/vendor/fonts/plex-mono-500.woff2"),
         "plex-mono-600.woff2" => include_bytes!("../web/vendor/fonts/plex-mono-600.woff2"),
         "martian-mono.woff2" => include_bytes!("../web/vendor/fonts/martian-mono.woff2"),
+        // Diffs only, and only the one weight they use.
+        "jetbrains-mono-400.woff2" => {
+            include_bytes!("../web/vendor/fonts/jetbrains-mono-400.woff2")
+        }
         _ => return (StatusCode::NOT_FOUND, "no such asset").into_response(),
     };
     (

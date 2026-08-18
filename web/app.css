@@ -17,6 +17,10 @@
   font-weight:600;font-style:normal;font-display:swap}
 @font-face{font-family:'Martian Mono';src:url('/vendor/fonts/martian-mono.woff2') format('woff2');
   font-weight:100 800;font-style:normal;font-display:swap}
+/* Diffs only, so one weight: nothing in a diff is bold. Its licence sits beside it
+   in `web/vendor/fonts/`. */
+@font-face{font-family:'JetBrains Mono';src:url('/vendor/fonts/jetbrains-mono-400.woff2') format('woff2');
+  font-weight:400;font-style:normal;font-display:swap}
 
 :root{
   --bg:#101010;
@@ -37,6 +41,9 @@
   --auto:#3E9AAF;        /* automation — NOT purple: purple reads as merged on GitHub */
 
   --mono:'IBM Plex Mono',ui-monospace,monospace;
+  /* Code you read line by line, which is the diff. The rest of the UI stays on
+     Plex Mono: this is for reading source, not for labels. */
+  --code:'JetBrains Mono','IBM Plex Mono',ui-monospace,monospace;
   --sans:'IBM Plex Sans',system-ui,sans-serif;
   --label:'Martian Mono',ui-monospace,monospace;
 
@@ -431,7 +438,7 @@ body.col-resizing{cursor:col-resize;user-select:none}
 }
 .head-btn:hover{color:var(--text);border-color:var(--faint-solid)}
 
-.diff{flex:1;overflow:auto;font-family:var(--mono);font-size:calc(11.5px * var(--fs));line-height:1.65}
+.diff{flex:1;overflow:auto;font-family:var(--code);font-size:calc(11.5px * var(--fs));line-height:1.65}
 /* align-content:start matters: the grid is taller than its rows, and the
    default `stretch` hands the leftover height to every auto-sized row, so a
    one-line diff row renders four lines tall. */
@@ -566,7 +573,7 @@ body.col-resizing{cursor:col-resize;user-select:none}
 /* ---------- editable right pane (§5) ---------- */
 .diff.editing{grid-template-rows:1fr;align-content:stretch;overflow:hidden}
 .editbase,.editarea{
-  font-family:var(--mono);font-size:calc(11.5px * var(--fs));line-height:1.65;
+  font-family:var(--code);font-size:calc(11.5px * var(--fs));line-height:1.65;
   padding:6px 12px;margin:0;overflow:auto;min-height:0;height:100%;
   white-space:pre;tab-size:4;
 }
