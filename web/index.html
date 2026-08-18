@@ -30,15 +30,15 @@
     <span class="ctx-sep">·</span>
     <span class="ctx-pr" id="ctxstate"></span>
     <span class="ctx-right">
-      <span class="ctx-btn" id="ctxbase"></span>
       <button class="ctx-close" id="killbtn" title="End this session">&#10005;</button>
     </span>
   </div>
 
   <div class="top top-r">
     <span class="eyebrow" id="filestitle">Changed files</span>
-    <button class="ctx-btn" id="basebtn" style="margin-left:auto"></button>
-    <button class="ctx-btn" id="refreshbtn" title="Re-read git status">&#8635;</button>
+    <span class="ctx-btn" id="filesbase" style="margin-left:auto"
+          title="Everything changed since this workspace branched"></span>
+    <button class="refresh" id="refreshbtn" title="Re-read git status">&#8635;</button>
 
     <!-- Frameless-window controls. Present in the markup always, revealed by
          `data-chrome="custom"` on the body; macOS keeps its real traffic

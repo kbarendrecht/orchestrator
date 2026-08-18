@@ -87,6 +87,27 @@ pub struct DiffFile {
     pub old_path: Option<String>,
 }
 
+impl DiffFile {
+    /// A file git has never seen. `git diff` cannot report one, so the pane's
+    /// list would be missing exactly the files a session just created.
+    ///
+    /// No line counts: counting them means reading every new file on every
+    /// reconcile, and an untracked file is entirely new by definition — the
+    /// number would only ever say "all of it".
+    pub fn untracked(f: &crate::model::ChangedFile) -> Self {
+        DiffFile {
+            path: f.path.clone(),
+            status: "?".to_string(),
+            added: 0,
+            deleted: 0,
+            binary: false,
+            // Nothing to diff against, so there are no hunks to fetch.
+            eager: false,
+            old_path: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct DiffSummary {
     pub base: String,

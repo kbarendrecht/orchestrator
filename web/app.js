@@ -781,13 +781,6 @@ function renderContext() {
   $('ctxstate').textContent = bits.join(' · ');
   $('killbtn').style.display = s && s.alive ? '' : 'none';
 
-  if (wsId) {
-    get(`/api/merge-base?workspace=${encodeURIComponent(wsId)}`)
-      .then((b) => {
-        $('ctxbase').textContent = `merge-base ${b.merge_base.slice(0, 7)}`;
-      })
-      .catch(() => { $('ctxbase').textContent = ''; });
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -938,81 +931,74 @@ function renderFiles() {
   const panes = $('filepanes');
   panes.replaceChildren();
 
-  $('basebtn').textContent = BASES.find(([k]) => k === diffState.base)?.[1] ?? '';
-  $('filestitle').textContent = diffState.open ? 'Changeset' : 'Changed files';
+  $('filestitle').textContent = diffState.open ? 'Changeset' : 'Changed here';
 
   if (!w) {
     panes.appendChild(el('div', 'fempty', 'No workspace selected.'));
     $('filesfoot').textContent = '';
+    $('filesbase').textContent = '';
     return;
   }
 
-  // With the diff open the pane becomes the whole-changeset file list, which is
-  // a different set from `git status`: it includes committed work (§5).
-  if (diffState.open) {
-    const sum = diffState.summary;
-    if (!sum) {
-      panes.appendChild(el('div', 'fempty', 'No diff available.'));
-      $('filesfoot').textContent = '';
-      return;
+  /* One list, one meaning: everything this workspace changed since it branched.
+   *
+   * Not `git status`, which is uncommitted work only — a session that commits
+   * would empty its own pane. Not a diff against develop's tip either, which
+   * would add every file a colleague landed meanwhile. The base is the
+   * merge-base, so the list is what happened *here*.
+   *
+   * With the diff open the same question is asked of the diff's own summary,
+   * which carries line counts per file and a cursor. */
+  const sum = diffState.open ? diffState.summary : null;
+  const files = sum ? sum.files : (w.changed || []);
+  const since = sum ? sum.base : w.changed_since;
+
+  for (const f of files) {
+    const row = el('button', sum ? 'dfrow' : 'frow');
+    if (sum) row.setAttribute('aria-current', String(f.path === diffState.path));
+    const letter = (f.status || 'M')[0];
+    row.appendChild(el('span', 'fst ' + letter, letter));
+    const n = el('span', 'fname');
+    n.textContent = '\u202a' + f.path;
+    n.title = f.old_path ? `${f.old_path} → ${f.path}` : f.path;
+    row.appendChild(n);
+    const nums = el('span', 'dfnum');
+    if (f.binary) {
+      nums.textContent = 'bin';
+    } else if (f.status === '?') {
+      // Untracked: entirely new by definition, so a count would only ever say
+      // "all of it".
+      nums.appendChild(el('span', 'p', 'new'));
+    } else {
+      nums.appendChild(el('span', 'p', `+${f.added}`));
+      nums.appendChild(document.createTextNode(' '));
+      nums.appendChild(el('span', 'm', `\u2212${f.deleted}`));
     }
-    for (const f of sum.files) {
-      const row = el('button', 'dfrow');
-      row.setAttribute('aria-current', String(f.path === diffState.path));
-      const letter = f.status[0] || 'M';
-      row.appendChild(el('span', 'fst ' + letter, letter));
-      const n = el('span', 'fname');
-      n.textContent = '‪' + f.path;
-      n.title = f.path;
-      row.appendChild(n);
-      const nums = el('span', 'dfnum');
-      if (f.binary) {
-        nums.textContent = 'bin';
+    row.appendChild(nums);
+    row.onclick = () => {
+      if (sum) {
+        diffState.cursor = 0;
+        diffState.context = 3;
+        loadFile(f.path);
       } else {
-        nums.appendChild(el('span', 'p', `+${f.added}`));
-        nums.appendChild(document.createTextNode(' '));
-        nums.appendChild(el('span', 'm', `−${f.deleted}`));
+        openDiff(f.path);
       }
-      row.appendChild(nums);
-      row.onclick = () => { diffState.cursor = 0; diffState.context = 3; loadFile(f.path); };
-      panes.appendChild(row);
-    }
-    if (!sum.files.length) panes.appendChild(el('div', 'fempty', 'Nothing changed against this base.'));
-    $('filesfoot').textContent =
-      `${sum.files.length} files · +${sum.added} −${sum.deleted} · base ${sum.base.slice(0, 7)}`;
-    return;
+    };
+    panes.appendChild(row);
   }
 
-  const groups = [
-    ['Staged', w.files.staged],
-    ['Unstaged', w.files.unstaged],
-    ['Untracked', w.files.untracked],
-  ];
-  let total = 0;
-  for (const [label, files] of groups) {
-    if (!files.length) continue;
-    total += files.length;
-    panes.appendChild(el('div', 'fgroup')).appendChild(
-      el('span', 'eyebrow', `${label} · ${files.length}`));
-    for (const f of files) {
-      const row = el('button', 'frow');
-      const letter = f.status === 'untracked' ? 'U'
-        : (f.code.replace(/\./g, '')[0] || 'M');
-      row.appendChild(el('span', 'fst ' + letter, letter));
-      const n = el('span', 'fname');
-      n.textContent = '‪' + f.path;
-      n.title = f.path;
-      row.appendChild(n);
-      // Clicking a changed file is the fastest way into the diff.
-      row.onclick = () => openDiff(f.path);
-      panes.appendChild(row);
-    }
+  if (!files.length) {
+    panes.appendChild(el('div', 'fempty',
+      w.is_main ? 'Nothing changed in the main checkout.' : 'Nothing changed in this worktree yet.'));
   }
 
-  if (!total) panes.appendChild(el('div', 'fempty', 'Clean tree.'));
-  $('filesfoot').textContent = w.is_main
-    ? `${total} changed · worktrees excluded`
-    : `${total} changed`;
+  const bits = [`${files.length} file${files.length === 1 ? '' : 's'}`];
+  if (sum) bits.push(`+${sum.added} \u2212${sum.deleted}`);
+  if (w.is_main) bits.push('worktrees excluded');
+  $('filesfoot').textContent = bits.join(' \u00b7 ');
+  // The base belongs in the header, where the toggle used to be: it is the one
+  // thing you need to know to read the list, and it is not a choice.
+  $('filesbase').textContent = since ? `since ${since.slice(0, 7)}` : '';
 }
 
 /** The PR whose head ref this workspace holds, if any. */
@@ -1026,12 +1012,6 @@ function prForWorkspace(wsId) {
 
 // Kept short: the right header also carries the title and the refresh control,
 // and a long label wraps it onto two lines.
-const BASES = [
-  ['upstream', 'vs develop'],
-  ['head', 'vs HEAD'],
-  ['pr_base', 'vs PR base'],
-];
-
 const diffState = {
   open: false,
   base: 'upstream',
@@ -1254,13 +1234,6 @@ function closeDiff() {
   renderFiles();
 }
 
-function cycleBase() {
-  const i = BASES.findIndex(([k]) => k === diffState.base);
-  diffState.base = BASES[(i + 1) % BASES.length][0];
-  diffState.context = 3;
-  renderFiles();
-  if (diffState.open) openDiff(diffState.path);
-}
 
 
 
@@ -3279,7 +3252,6 @@ $('ovmode').onclick = () => {
 };
 $('ovedit').onclick = () => (editState.on ? closeEditor() : openEditor());
 $('ovsave').onclick = saveEditor;
-$('basebtn').onclick = cycleBase;
 $('reposwitch').onclick = () =>
   toast('switching repositories is not implemented yet', true);
 $('addshell').onclick = newShell;

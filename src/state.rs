@@ -105,6 +105,11 @@ pub struct Inner {
     pub automation: crate::green::AutomationStore,
     /// (behind, ahead) per workspace against the upstream base.
     pub divergence: HashMap<WorkspaceId, (u32, u32)>,
+    /// What each workspace changed since it branched, and the commit that is
+    /// measured from. Computed in `reconcile` beside the status, so the two
+    /// always describe the same moment.
+    pub changed: HashMap<WorkspaceId, Vec<crate::diff::DiffFile>>,
+    pub base: HashMap<WorkspaceId, String>,
     /// Workspaces with a rebase stopped part-way.
     pub rebasing: std::collections::HashSet<WorkspaceId>,
     /// Shared resources currently held by a run (§7 rule 2).
@@ -181,6 +186,8 @@ impl AppState {
                 human_edits: HashMap::new(),
                 automation: Default::default(),
                 divergence: HashMap::new(),
+                changed: HashMap::new(),
+                base: HashMap::new(),
                 rebasing: Default::default(),
                 locks_held: Vec::new(),
                 stack_up: None,
@@ -291,6 +298,8 @@ impl AppState {
                     })
                     .collect(),
                 files: inner.files.get(&w.id).cloned().unwrap_or_default(),
+                changed: inner.changed.get(&w.id).cloned().unwrap_or_default(),
+                changed_since: inner.base.get(&w.id).cloned(),
                 behind: inner.divergence.get(&w.id).map(|d| d.0).unwrap_or(0),
                 ahead: inner.divergence.get(&w.id).map(|d| d.1).unwrap_or(0),
                 rebasing: inner.rebasing.contains(&w.id),
@@ -531,11 +540,36 @@ impl AppState {
         // Branches accumulate and are never removed (§2): a PR still belongs to
         // the session that made it after you have moved on to another branch.
         let branch = git::current_branch(&path).ok();
+
+        // What this workspace changed since it branched: committed work and
+        // uncommitted both, which is the question the changed-files pane asks.
+        // `git status` cannot answer it — a session that commits would empty its
+        // own list — so it is a diff against the merge-base, plus the untracked
+        // files a diff never sees.
+        //
+        // Failure is empty rather than fatal: a worktree whose upstream ref has
+        // not been fetched yet still has a status worth showing.
+        let base = git::merge_base(&path, &self.cfg.upstream_ref).ok();
+        let changed = base.as_deref().map(|b| {
+            let mut files = crate::diff::summary(&path, b)
+                .map(|s| s.files)
+                .unwrap_or_default();
+            files.extend(set.untracked.iter().map(crate::diff::DiffFile::untracked));
+            files.sort_by(|a, b| a.path.cmp(&b.path));
+            files
+        });
+
         let mut inner = self.inner.write().await;
         if let (Some(b), Some(w)) = (branch, inner.workspaces.get_mut(workspace)) {
             w.branches.insert(b);
         }
         inner.files.insert(workspace.to_string(), set);
+        if let Some(b) = base {
+            inner.base.insert(workspace.to_string(), b);
+        }
+        if let Some(c) = changed {
+            inner.changed.insert(workspace.to_string(), c);
+        }
         if let Some(d) = divergence {
             inner.divergence.insert(workspace.to_string(), d);
         }
@@ -602,6 +636,11 @@ pub struct WorkspaceView {
     pub branches: Vec<String>,
     pub processes: Vec<ProcessView>,
     pub files: FileSet,
+    /// Every file this workspace changed since it branched, committed work
+    /// included, plus anything untracked. What the changed-files pane lists.
+    pub changed: Vec<crate::diff::DiffFile>,
+    /// The commit the above is measured from: `merge-base(upstream, HEAD)`.
+    pub changed_since: Option<String>,
     /// Commits on `upstream/develop` this branch does not have. Drives the
     /// rebase affordance.
     pub behind: u32,
