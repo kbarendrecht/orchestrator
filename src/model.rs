@@ -203,6 +203,12 @@ pub struct Session {
     /// editing outside its worktree is a prompt problem worth seeing.
     pub boundary_violations: Vec<String>,
     pub last_reconcile: Option<SystemTime>,
+    /// Written into the pty once `SessionStart` fires.
+    ///
+    /// `initialUserMessage` is only honoured in non-interactive mode, and a
+    /// `/resolve` session is interactive so you can take it over mid-flight — so
+    /// the invocation is typed in instead (§8).
+    pub pending_prompt: Option<String>,
 }
 
 impl Session {
@@ -226,6 +232,7 @@ impl Session {
             dirty_paths: HashSet::new(),
             boundary_violations: Vec::new(),
             last_reconcile: None,
+            pending_prompt: None,
         }
     }
 

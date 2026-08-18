@@ -240,6 +240,80 @@ pub async fn spawn_green_session(
     Ok(id)
 }
 
+/// Spawn an interactive session pinned to a PR's head branch, and type a slash
+/// command into it once it is ready.
+///
+/// The default answer to the rail's review button: a `claude` session in the PR
+/// worktree running `/resolve <pr>` in the pane, the agent doing the reading,
+/// fixing, pushing and posting itself while you supervise. The daemon does no
+/// irreversible writes here — the agent does, in a shell you can take over. This is
+/// the robust path; the native overlay is the opt-in alternative.
+pub async fn spawn_command_session(
+    app: &Arc<AppState>,
+    pr: u64,
+    head_ref: &str,
+    command: &str,
+) -> Result<SessionId> {
+    // If the branch already has a worktree with a live session, take you there
+    // rather than spawning a second one (§8).
+    let existing = {
+        let inner = app.inner.read().await;
+        inner
+            .workspaces
+            .values()
+            .find(|w| w.branches.iter().any(|b| b == head_ref))
+            .map(|w| w.id.clone())
+    };
+    if let Some(ws) = existing {
+        let live = app.live_sessions_in(&ws).await;
+        if let Some(id) = live.first() {
+            return Ok(*id);
+        }
+        return start_with_prompt(app, &ws, pr, command).await;
+    }
+
+    // Otherwise pin a worktree to that branch. `git worktree add` directly,
+    // because the WorktreeCreate hook always cuts a new branch from
+    // upstream/develop; `worktree-link` still runs at SessionStart.
+    {
+        let name = format!("pr-{pr}");
+        let inner = app.inner.read().await;
+        if inner.sessions.values().any(|s| {
+            matches!(&s.recovery, Some(ArchiveState::Recoverable { name: n, .. }) if n == &name)
+        }) {
+            bail!(
+                "an archived session used the worktree name {name}; remove it or rename before \
+                 reusing the name, or the two transcripts interleave"
+            );
+        }
+    }
+    let name = ensure_pr_worktree(app, pr, head_ref).await?;
+    start_with_prompt(app, &name, pr, command).await
+}
+
+async fn start_with_prompt(
+    app: &Arc<AppState>,
+    workspace: &str,
+    pr: u64,
+    command: &str,
+) -> Result<SessionId> {
+    let id = spawn_session(
+        app,
+        workspace,
+        Kind::Automation {
+            pr,
+            command: command.to_string(),
+        },
+        None,
+    )
+    .await?;
+    let mut inner = app.inner.write().await;
+    if let Some(s) = inner.sessions.get_mut(&id) {
+        s.pending_prompt = Some(format!("/{command} {pr}"));
+    }
+    Ok(id)
+}
+
 /// The worktree for a PR's head branch, created if absent.
 pub async fn ensure_pr_worktree(app: &Arc<AppState>, pr: u64, head_ref: &str) -> Result<String> {
     if let Some(ws) = {
@@ -247,7 +321,7 @@ pub async fn ensure_pr_worktree(app: &Arc<AppState>, pr: u64, head_ref: &str) ->
         inner
             .workspaces
             .values()
-            .find(|w| w.branches.contains(&head_ref.to_string()))
+            .find(|w| w.branches.iter().any(|b| b == head_ref))
             .map(|w| w.id.clone())
     } {
         return Ok(ws);

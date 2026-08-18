@@ -317,20 +317,44 @@ function prDot(p) {
 
 let showPrs = true;
 
-/** Threads want answering. Opens the review overlay rather than spawning a
- *  session — which is the whole point of the overlay, and it also fixes the bug
- *  underneath: the old button typed `/resolve <pr>` into a pty, and that slash
- *  command resolves from the agent's own command path, which is not installed
- *  here. */
-function reviewButton(p) {
-  const b = el('button', 'pract', 'review');
-  b.title = `Read and answer #${p.number}'s review threads`;
-  b.onclick = (ev) => {
+/** The two ways to answer a PR's threads, offered side by side.
+ *
+ *  The default is `/resolve`: a session pinned to the PR worktree that runs the
+ *  skill in a pane, the agent doing the work while you supervise, the daemon making
+ *  no irreversible write itself. `cards` is the opt-in native overlay — triage,
+ *  a card per thread, one batched post. The skill leads because it is the robust
+ *  path; the overlay is there when you want the diffs and the batch. */
+function reviewButtons(p) {
+  const wrap = el('span', 'prpair');
+
+  const resolve = el('button', 'pract', '/resolve');
+  resolve.title = `Spawn a session and run /resolve on #${p.number}`;
+  resolve.onclick = async (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    resolve.disabled = true;
+    try {
+      const r = await call(`/api/pr/${p.number}/resolve`);
+      pendingSelect = r.session;
+      toast(`/resolve ${p.number}`);
+    } catch (e) {
+      toast(e.message, true);
+    } finally {
+      resolve.disabled = false;
+    }
+  };
+  wrap.appendChild(resolve);
+
+  const cards = el('button', 'prlink', 'cards');
+  cards.title = `Read and answer #${p.number}'s threads in the overlay`;
+  cards.onclick = (ev) => {
     ev.preventDefault();
     ev.stopPropagation();
     openReview(p.number);
   };
-  return b;
+  wrap.appendChild(cards);
+
+  return wrap;
 }
 
 /** A hand-triggered run against a PR. `action` is the endpoint name, which is
@@ -441,7 +465,7 @@ function prGroup() {
         // The skill stopped without turning it green: it wants you.
         row.appendChild(el('span', 'why gaveup', 'gave up'));
       }
-      if (needsResolve) row.appendChild(reviewButton(p));
+      if (needsResolve) row.appendChild(reviewButtons(p));
       if (needsGreen) row.appendChild(actionButton(p, 'green'));
     }
 

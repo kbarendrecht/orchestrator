@@ -462,6 +462,15 @@ button.ctx-btn:hover{color:var(--text)}
 .pract.running{color:var(--auto);border-color:var(--line);cursor:pointer}
 .why.gaveup{color:var(--bad);white-space:nowrap;flex:0 0 auto}
 
+/* The default /resolve action and its quieter `cards` alternative, kept together
+   so the pair reads as one control with a primary and a secondary. */
+.prpair{display:inline-flex;align-items:center;gap:5px;flex:0 0 auto}
+.prlink{
+  font-family:var(--mono);font-size:9.5px;color:var(--faint-solid);
+  border-bottom:1px dotted var(--ghost);white-space:nowrap;flex:0 0 auto;
+}
+.prlink:hover{color:var(--text);border-bottom-color:var(--faint-solid)}
+
 
 /* ---------- editable right pane (§5) ---------- */
 .diff.editing{grid-template-rows:1fr;align-content:stretch;overflow:hidden}

@@ -964,6 +964,29 @@ pub async fn pr_manual_done(
     Ok(Json(report))
 }
 
+/// The rail's default review action: spawn a session and run `/resolve <pr>`.
+///
+/// The robust path. The agent does the work in a pane you supervise; the daemon
+/// itself makes no irreversible write. The native overlay (`/triage` → cards →
+/// `/post`) is the opt-in alternative, chosen from the same rail row.
+pub async fn resolve_pr(
+    State(app): State<Arc<AppState>>,
+    Path(number): Path<u64>,
+) -> ApiResult<serde_json::Value> {
+    let pr = {
+        let inner = app.inner.read().await;
+        inner.prs.iter().find(|p| p.number == number).cloned()
+    };
+    let pr = pr.ok_or_else(|| anyhow::anyhow!("PR #{number} is not in the current poll"))?;
+    if pr.unresolved == 0 && !pr.unresolved_capped && !pr.changes_requested {
+        return Err(ApiError(anyhow::anyhow!(
+            "PR #{number} has no unresolved review threads"
+        )));
+    }
+    let id = spawn::spawn_command_session(&app, number, &pr.head_ref, "resolve").await?;
+    Ok(Json(json!({ "session": id })))
+}
+
 /// Releases a lock in `locks_held` when it goes out of scope.
 ///
 /// A guard rather than a `let _ = ...` at each exit, because `pr_post` has several

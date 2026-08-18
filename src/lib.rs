@@ -319,6 +319,8 @@ fn router(app: Arc<AppState>) -> Router {
         // after the local commit and this finishes it.
         .route("/api/pr/:number/manual", get(api::pr_manual))
         .route("/api/pr/:number/manual/done", post(api::pr_manual_done))
+        // The rail's default: spawn a session running `/resolve <pr>` in a pane.
+        .route("/api/pr/:number/resolve", post(api::resolve_pr))
         .route("/api/pr/:number/green", post(api::green_pr))
         .route("/ws/events", get(ws::events))
         .route("/ws/pty", get(ws::pty))

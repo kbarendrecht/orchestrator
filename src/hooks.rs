@@ -116,6 +116,25 @@ pub async fn session_start(
         }
     }
 
+    // The prompt is typed in rather than passed as an argument:
+    // `initialUserMessage` is only honoured in non-interactive mode, and a
+    // `/resolve` session is interactive so you can take it over mid-flight (§8).
+    let pending = {
+        let mut inner = app.inner.write().await;
+        inner
+            .sessions
+            .get_mut(&id)
+            .and_then(|s| s.pending_prompt.take().map(|p| (p, s.pty.clone())))
+    };
+    if let Some((prompt, Some(pty))) = pending {
+        tokio::spawn(async move {
+            // The prompt box is not ready the instant SessionStart fires; typing
+            // into it too early drops characters.
+            tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+            let _ = pty.write(format!("{prompt}\r").as_bytes());
+        });
+    }
+
     app.notify().await;
     ok()
 }
@@ -508,9 +527,61 @@ pub fn write_settings(port: u16) -> Result<PathBuf> {
 mod tests {
     use super::*;
 
-    /// The pending prompt has to reach the pty, or a triggered run starts a session
-    /// that just sits there. Exercised against a real pty running `cat`, so no
-    /// Claude process is involved.
+    /// The pending prompt has to reach the pty, or the review button starts a session
+    /// that just sits there. Exercised against a real pty running `cat`, so no Claude
+    /// process is involved.
+    #[tokio::test]
+    async fn session_start_types_the_pending_prompt_into_the_pty() {
+        use crate::config::Config;
+        use crate::pty::PtyHandle;
+        use crate::state::AppState;
+        use std::path::Path;
+
+        let dir = std::env::temp_dir().join(format!("orchd-hook-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("HOME", &dir);
+
+        let cfg: Config = serde_json::from_str(&format!(
+            r#"{{"main_checkout":"{}","port":7799}}"#,
+            dir.display()
+        ))
+        .unwrap();
+        let app = AppState::new(cfg, "t".into(), crate::window::Chrome::None);
+
+        let spawned =
+            PtyHandle::spawn(&["cat".to_string()], Path::new("/tmp"), &[], &[], (24, 80)).unwrap();
+        let id = Uuid::new_v4();
+        {
+            let mut inner = app.inner.write().await;
+            let mut s = Session::new(id, MAIN.to_string(), dir.clone(), Kind::Interactive);
+            s.pty = Some(spawned.handle.clone());
+            s.pending_prompt = Some("/resolve 4812".to_string());
+            inner.sessions.insert(id, s);
+        }
+
+        let mut headers = HeaderMap::new();
+        headers.insert("x-orch-session", id.to_string().parse().unwrap());
+        session_start(AxState(app.clone()), headers, Json(HookPayload::default())).await;
+
+        // `cat` echoes it straight back, so the buffer proves it was written.
+        let mut seen = false;
+        for _ in 0..60 {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            if String::from_utf8_lossy(&spawned.handle.snapshot()).contains("/resolve 4812") {
+                seen = true;
+                break;
+            }
+        }
+        assert!(seen, "prompt never reached the pty");
+
+        // Taken, not left to fire again on a later SessionStart.
+        let inner = app.inner.read().await;
+        assert!(inner.sessions.get(&id).unwrap().pending_prompt.is_none());
+
+        let _ = spawned.handle.kill();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn subagent_stop_is_routed_somewhere_that_cannot_change_state() {
         // Guards the §3 invariant at the config layer: SubagentStop must never
