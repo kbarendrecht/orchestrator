@@ -167,6 +167,19 @@ pub async fn spawn_green_session(
     pr: u64,
     head_ref: &str,
 ) -> Result<SessionId> {
+    // One agent per worktree. `ensure_pr_worktree` hands back the worktree a
+    // review session is already sitting in, so spawning here unconditionally puts
+    // two agents on one index, and green's first move is a rebase. Refusing is
+    // the honest answer of the three: reusing that session silently would leave
+    // it running someone else's instructions, and retargeting it mid-flight is
+    // not the daemon's call. Finish the review and press fix again, or tell that
+    // session to fix the build yourself.
+    if let Some(ws) = worktree_holding(app, head_ref).await {
+        if !app.live_sessions_in(&ws).await.is_empty() {
+            bail!("{ws} already has a live session for #{pr}; finish or close it first");
+        }
+    }
+
     let workspace = ensure_pr_worktree(app, pr, head_ref).await?;
     let path = app
         .workspace_path(&workspace)
