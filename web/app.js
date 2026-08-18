@@ -3119,8 +3119,9 @@ function renderReviews() {
     // Rows are anchors, so ⌘-click and copy-link behave, and the browser
     // already holds the GitHub session (§6b).
     const a = el('a', 'rvrow' + (dim ? ' dim' : ''));
-    // Review mode is the files-changed tab, which is where reviewing happens.
-    a.href = `${r.url}/files`;
+    // The conversation tab: what a reviewer needs first is the description and
+    // what has already been said, not a wall of diff with none of the context.
+    a.href = r.url;
     a.target = '_blank';
     a.rel = 'noreferrer';
     a.appendChild(el('span', 'dot'));           // always grey here
