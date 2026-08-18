@@ -107,6 +107,15 @@ fn main() {
         .expect("building the application");
 
     app.run(|app_handle, event| {
+        // Recorded as it happens, not at exit: by the time the app is exiting the
+        // window has already been destroyed, and there is nothing left to measure.
+        if let tauri::RunEvent::WindowEvent {
+            event: tauri::WindowEvent::Resized(_),
+            ..
+        } = &event
+        {
+            remember_window(app_handle);
+        }
         if let tauri::RunEvent::ExitRequested { api, code, .. } = event {
             // Hold the loop open just long enough to take the children with us.
             api.prevent_exit();
@@ -165,12 +174,16 @@ fn open(app_handle: &AppHandle, rt: &tokio::runtime::Handle, main: Option<std::p
 
     tracing::info!("serving {} on port {}", server.app.cfg.main_checkout.display(), server.port);
 
+    let size = orchd::store::load_window()
+        .map(|(w, h)| (w as f64, h as f64))
+        .unwrap_or((1728.0, 1080.0));
     let url = server.url().parse().context("the daemon's own URL")?;
     let mut builder = WebviewWindowBuilder::new(app_handle, "main", WebviewUrl::External(url))
         .title("Orchestrator")
-        // 20% up on the 1440x900 this started at: three columns and a terminal
-        // want the room, and every desktop this runs on has it.
-        .inner_size(1728.0, 1080.0)
+        // The size you left it at, or 20% up on the 1440x900 this started at:
+        // three columns and a terminal want the room, and every desktop this runs
+        // on has it.
+        .inner_size(size.0, size.1)
         // Below this the three-column grid stops being three columns.
         .min_inner_size(1000.0, 600.0);
 
@@ -200,6 +213,30 @@ fn open(app_handle: &AppHandle, rt: &tokio::runtime::Handle, main: Option<std::p
 }
 
 /// Take the daemon's children down before the process goes.
+/// Write down how big the window is, so the next launch opens the same way.
+///
+/// Logical pixels, not physical: the physical size is multiplied by the display's
+/// scale factor, and handing that back to `inner_size` grows the window by that
+/// factor on every restart.
+///
+/// Called on every resize. That is a small file written a few times while you drag
+/// an edge, which is cheaper than the alternative of not knowing the size when it
+/// matters.
+fn remember_window(app: &AppHandle) {
+    let Some(win) = app.get_webview_window("main") else { return };
+    // Not while maximised or fullscreen: that size belongs to the screen, not to
+    // the window, and restoring into it means every launch opens full-screen with
+    // nothing to un-maximise back to.
+    if win.is_maximized().unwrap_or(false) || win.is_fullscreen().unwrap_or(false) {
+        return;
+    }
+    let Ok(scale) = win.scale_factor() else { return };
+    if let Ok(size) = win.inner_size() {
+        let logical = size.to_logical::<f64>(scale);
+        orchd::store::save_window(logical.width.round() as u32, logical.height.round() as u32);
+    }
+}
+
 fn shutdown() {
     let Some(server) = SERVER.get().and_then(|s| s.lock().unwrap().take()) else {
         return;

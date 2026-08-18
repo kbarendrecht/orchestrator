@@ -71,6 +71,29 @@ impl SessionRecord {
     }
 }
 
+/// The window's last size, remembered so the app opens the way you left it.
+///
+/// Its own file rather than a field in `config.json`: that file is yours to edit,
+/// and a number the app rewrites on every close does not belong in it.
+pub fn save_window(width: u32, height: u32) {
+    let Ok(dir) = Config::config_dir() else { return };
+    let _ = std::fs::create_dir_all(&dir);
+    let _ = std::fs::write(
+        dir.join("window.json"),
+        format!("{{\"width\":{width},\"height\":{height}}}\n"),
+    );
+}
+
+/// What [`save_window`] wrote, if it is still sane. A size smaller than the
+/// layout's own minimum is ignored rather than honoured.
+pub fn load_window() -> Option<(u32, u32)> {
+    let raw = std::fs::read_to_string(Config::config_dir().ok()?.join("window.json")).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    let w = v.get("width")?.as_u64()? as u32;
+    let h = v.get("height")?.as_u64()? as u32;
+    (w >= 1000 && h >= 600).then_some((w, h))
+}
+
 fn path() -> Result<PathBuf> {
     Ok(Config::config_dir()?.join("sessions.json"))
 }
