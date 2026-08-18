@@ -1,7 +1,10 @@
 use anyhow::Result;
 use axum::{
-    extract::{Path as AxPath, State as AxState},
+    body::Body,
+    extract::{Path as AxPath, Request, State as AxState},
     http::{HeaderMap, StatusCode},
+    middleware::Next,
+    response::{IntoResponse, Response},
     Json,
 };
 use serde::Deserialize;
@@ -67,6 +70,30 @@ type HookResult = (StatusCode, Json<serde_json::Value>);
 
 fn ok() -> HookResult {
     (StatusCode::OK, Json(json!({})))
+}
+
+/// Answer an observer hook on arrival and finish its work detached.
+///
+/// Axum drops a handler's future the moment the client goes away, and Claude
+/// gives a hook one second (§3). So any handler that ran long — a cold `git
+/// status`, the write lock held by a poll, a box deep in swap — was cancelled
+/// mid-way and lost its state change outright. `SessionStart` losing it is the
+/// visible one: the session reads `starting` forever, and the rail invites you
+/// to start another.
+///
+/// The body is read here rather than in the spawned task, so nothing we need
+/// outlives the connection it arrived on. Not for `pre_edit`, whose answer is
+/// the whole point of the request.
+pub async fn detach(req: Request, next: Next) -> Response {
+    let (parts, body) = req.into_parts();
+    let bytes = axum::body::to_bytes(body, 256 * 1024)
+        .await
+        .unwrap_or_default();
+    tokio::spawn(async move {
+        next.run(Request::from_parts(parts, Body::from(bytes)))
+            .await;
+    });
+    ok().into_response()
 }
 
 // ---------------------------------------------------------------------------

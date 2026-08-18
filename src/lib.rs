@@ -325,10 +325,27 @@ fn router(app: Arc<AppState>) -> Router {
         .route("/ws/events", get(ws::events))
         .route("/ws/pty", get(ws::pty))
         // Hook endpoints live under their own prefix and are treated as
-        // write-only observers (§12).
+        // write-only observers (§12). The one that answers a question rather
+        // than recording something stays on this router; the rest are merged in
+        // below, behind the layer that stops a one-second timeout cancelling
+        // them.
+        .route("/hooks/pre-edit", post(hooks::pre_edit))
+        .merge(observer_hooks())
+        .layer(axum::middleware::from_fn_with_state(
+            app.clone(),
+            api::guard,
+        ))
+        .with_state(app)
+}
+
+/// The hooks that only ever record what happened, answered on arrival.
+///
+/// Separate router because the layer is what makes them safe to be slow, and a
+/// handler added to the list gets it without anyone remembering to.
+fn observer_hooks() -> Router<Arc<AppState>> {
+    Router::new()
         .route("/hooks/session-start", post(hooks::session_start))
         .route("/hooks/user-prompt-submit", post(hooks::user_prompt_submit))
-        .route("/hooks/pre-edit", post(hooks::pre_edit))
         .route("/hooks/post-tool-use", post(hooks::post_tool_use))
         .route("/hooks/notification/:kind", post(hooks::notification))
         .route("/hooks/stop", post(hooks::stop))
@@ -336,11 +353,7 @@ fn router(app: Arc<AppState>) -> Router {
         .route("/hooks/stop-failure", post(hooks::stop_failure))
         .route("/hooks/session-end", post(hooks::session_end))
         .route("/hooks/boundary-block", post(hooks::boundary_block))
-        .layer(axum::middleware::from_fn_with_state(
-            app.clone(),
-            api::guard,
-        ))
-        .with_state(app)
+        .layer(axum::middleware::from_fn(hooks::detach))
 }
 
 /// Register worktrees that already exist on disk.
