@@ -410,12 +410,13 @@ async function runResolve(number, btn) {
   }
 }
 
-/** A hand-triggered run against a PR. `action` is the endpoint name, which is
- *  also what the button shows. A refusal from the guard table is shown verbatim:
- *  it is the whole point of triggering by hand. */
-function actionButton(p, action) {
-  const b = el('button', 'pract', `/${action}`);
-  b.title = 'Start a headless /green run on this PR';
+/** A hand-triggered run against a PR. `action` is the endpoint; `label` is what
+ *  the button says, because the endpoint's name is not the useful word on a row.
+ *  A refusal from the guard table is shown verbatim: it is the whole point of
+ *  triggering by hand. */
+function actionButton(p, action, label) {
+  const b = el('button', 'pract', label);
+  b.title = 'Rebase on develop, fix what CI says, push — in a pane you can take over';
   b.onclick = async (ev) => {
     ev.preventDefault();
     ev.stopPropagation();
@@ -423,7 +424,7 @@ function actionButton(p, action) {
     try {
       const r = await call(`/api/pr/${p.number}/${action}`);
       pendingSelect = r.session;
-      toast(`/${action} ${p.number}`);
+      toast(`${label} ${p.number}`);
     } catch (e) {
       toast(e.message, true);
     } finally {
@@ -509,7 +510,7 @@ function prGroup() {
     const auto = auto0, needsResolve = needsResolve0, needsGreen = needsGreen0;
 
     if (auto && auto.state === 'running') {
-      const b = el('span', 'pract running', '/green running');
+      const b = el('span', 'pract running', 'fixing');
       b.title = 'Jump to the run';
       b.onclick = (ev) => { ev.preventDefault(); ev.stopPropagation(); select(auto.session); };
       row.appendChild(b);
@@ -519,7 +520,7 @@ function prGroup() {
         row.appendChild(el('span', 'why gaveup', 'gave up'));
       }
       if (needsResolve) row.appendChild(reviewButtons(p));
-      if (needsGreen) row.appendChild(actionButton(p, 'green'));
+      if (needsGreen) row.appendChild(actionButton(p, 'green', 'fix'));
     }
 
     // The row opens the PR; jumping to its session is the explicit chip, so
@@ -1640,9 +1641,9 @@ function rvHealth() {
   });
   const preDecision = reviewState.screen === 'intake' || reviewState.screen === 'overview';
   if (preDecision && (d.checks === 'failing' || d.mergeable === 'CONFLICTING')) {
-    const b = el('button', 'head-btn', '/green');
-    b.title = 'Start a headless /green run. It cannot run while a review is open.';
-    b.onclick = () => rvAct(() => call(`/api/pr/${reviewState.pr}/green`), 'started /green', true);
+    const b = el('button', 'head-btn', 'fix');
+    b.title = 'Rebase on develop and fix what CI says. It cannot run while a review is open.';
+    b.onclick = () => rvAct(() => call(`/api/pr/${reviewState.pr}/green`), 'started the fix run', true);
     wrap.appendChild(b);
   }
   return wrap;
@@ -1797,12 +1798,12 @@ function rvGate(root) {
     row.appendChild(headBtn('open a shell', null, () => { closeReview(); newShell(); }));
     mid.appendChild(row);
   } else {
-    mid.appendChild(el('div', 'eyebrow', '/green is running on this branch'));
-    mid.appendChild(el('div', 'big', 'Resolve opens when /green finishes.'));
+    mid.appendChild(el('div', 'eyebrow', 'a fix run is going on this branch'));
+    mid.appendChild(el('div', 'big', 'Resolve opens when it finishes.'));
     mid.appendChild(el('p', null,
       'Both rewrite this same worktree, so the two are mutually exclusive — two concurrent ' +
       'rebases in one working directory is index corruption, not a UI glitch. Starting ' +
-      '/green during a review is refused from the other side too.'));
+      'a fix run during a review is refused from the other side too.'));
   }
   root.appendChild(mid);
   root.appendChild(rvActs([actBtn('re-check', 'pri', () => loadReview(reviewState.pr))]));
