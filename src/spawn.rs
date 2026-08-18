@@ -244,15 +244,7 @@ pub async fn spawn_command_session(
 ) -> Result<SessionId> {
     // If the branch already has a worktree with a live session, take you there
     // rather than spawning a second one (§8).
-    let existing = {
-        let inner = app.inner.read().await;
-        inner
-            .workspaces
-            .values()
-            .find(|w| w.branches.iter().any(|b| b == head_ref))
-            .map(|w| w.id.clone())
-    };
-    if let Some(ws) = existing {
+    if let Some(ws) = worktree_holding(app, head_ref).await {
         let live = app.live_sessions_in(&ws).await;
         if let Some(id) = live.first() {
             return Ok(*id);
@@ -355,15 +347,24 @@ async fn vendored_prompt_file(app: &Arc<AppState>, pr: u64, command: &str) -> Re
 }
 
 /// The worktree for a PR's head branch, created if absent.
+/// The worktree holding `head_ref`, if one already does.
+///
+/// Main is never the answer, even when its branch set says it has been on this
+/// ref: main's branches accumulate and are never removed (§2), so a PR whose head
+/// main once visited would otherwise send a fix or a review run into the main
+/// checkout — rebasing and force-pushing the one tree every worktree is cut from.
+async fn worktree_holding(app: &Arc<AppState>, head_ref: &str) -> Option<String> {
+    let inner = app.inner.read().await;
+    inner
+        .workspaces
+        .values()
+        .filter(|w| !w.is_main())
+        .find(|w| w.branches.iter().any(|b| b == head_ref))
+        .map(|w| w.id.clone())
+}
+
 pub async fn ensure_pr_worktree(app: &Arc<AppState>, pr: u64, head_ref: &str) -> Result<String> {
-    if let Some(ws) = {
-        let inner = app.inner.read().await;
-        inner
-            .workspaces
-            .values()
-            .find(|w| w.branches.iter().any(|b| b == head_ref))
-            .map(|w| w.id.clone())
-    } {
+    if let Some(ws) = worktree_holding(app, head_ref).await {
         return Ok(ws);
     }
 
