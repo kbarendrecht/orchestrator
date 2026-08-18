@@ -526,6 +526,8 @@ body.col-resizing{cursor:col-resize;user-select:none}
 .rvrow:hover{background:var(--raised)}
 .rvrow.dim{opacity:.5}
 .rvrow .dot{background-color:#6B6B6B}
+/* Beats the line above on order, not specificity, so it has to come after it. */
+.rvrow .dot.blocked{background-color:var(--attn)}
 /* Fixed-width number column so titles start at the same offset as the PR list. */
 .rvrow .num{font-family:var(--mono);font-size:10.5px;color:var(--faint-solid);flex:0 0 46px}
 .rvrow .ttl{font-size:11.5px;color:var(--text);white-space:nowrap;overflow:hidden;
