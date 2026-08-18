@@ -703,10 +703,21 @@ fn start_stack_poller(app: Arc<AppState>) {
             let up = tokio::task::spawn_blocking(move || stack_running(&main))
                 .await
                 .unwrap_or(false);
-            let mut inner = app.inner.write().await;
-            if inner.stack_up != Some(up) {
-                inner.stack_up = Some(up);
-                drop(inner);
+            // Scoped, because the guard used to outlive the `if` and stay held
+            // across the sleep below whenever the answer had not changed — which
+            // is every poll, normally. That is the state write lock, so the
+            // daemon spent 20 seconds out of every 20 holding it, and anything
+            // that touched state waited for the gap: a spawn, a hook, the
+            // rail's own snapshot.
+            let changed = {
+                let mut inner = app.inner.write().await;
+                let changed = inner.stack_up != Some(up);
+                if changed {
+                    inner.stack_up = Some(up);
+                }
+                changed
+            };
+            if changed {
                 app.notify().await;
             }
             tokio::time::sleep(interval).await;
