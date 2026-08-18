@@ -246,6 +246,16 @@ web/            SPA (vanilla, xterm.js vendored)
   no switch: it was a config flag while the daemon itself was being built and its
   throwaway sessions littered real session history, and every hour it was off
   cost a conversation instead.
+- **Checking the UI from a terminal.** `mise run shot` drives Chrome, which is
+  enough for layout and copy — but the app itself runs in **WebKitGTK**, and the
+  two do not always agree. A splitter rule named `.split` collided with the diff
+  body's own `.diff.split`, and the result was a 7px-wide diff pane: invisible in
+  Chrome's numbers unless you measure the box, obvious the moment you look at
+  pixels. `tools/` pins `playwright-core` to the exact version whose WebKit build
+  is on disk (`npx playwright@1.49.1 install webkit`), so an engine-specific
+  rendering fault can be reproduced rather than guessed at. Stub
+  `/vendor/addon-webgl.js` in such a test: headless WebKit dies on xterm's WebGL
+  renderer.
 - Managed processes do not autostart. Flip `autostart` in config if you want
   `docker compose up` on daemon start.
 - **GitHub auth** resolves in order: `ORCHD_GITHUB_TOKEN`, a `0600`

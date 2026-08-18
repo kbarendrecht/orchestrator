@@ -326,14 +326,17 @@ button.ctx-btn:hover{color:var(--text)}
 /* Under the window's own resize edges (z 9999) and the overlays, over everything
    that just wants a click. The hit area is 7px; the line you see is 1px, because
    a visible 7px seam would read as a panel of its own. */
-.split{position:fixed;top:0;bottom:0;width:7px;z-index:60;cursor:col-resize}
-.split::after{
+/* `colsplit`, not `split`: the diff body wears `.diff.split` in side-by-side mode,
+   and a bare `.split` rule caught it too — 7px wide and position:fixed, which is a
+   diff pane that looks empty with a very long scrollbar. */
+.colsplit{position:fixed;top:0;bottom:0;width:7px;z-index:60;cursor:col-resize}
+.colsplit::after{
   content:'';position:absolute;top:0;bottom:0;left:3px;width:1px;
   background:transparent;transition:background .12s;
 }
-.split:hover::after,.split.dragging::after{background:var(--faint-solid)}
-.split-l{left:var(--rail);margin-left:-3px}
-.split-r{right:var(--files);margin-right:-3px}
+.colsplit:hover::after,.colsplit.dragging::after{background:var(--faint-solid)}
+.colsplit-l{left:var(--rail);margin-left:-3px}
+.colsplit-r{right:var(--files);margin-right:-3px}
 /* Held on the body so the cursor survives leaving the 7px strip mid-drag, and a
    drag never selects the text it passes over. */
 body.col-resizing{cursor:col-resize;user-select:none}

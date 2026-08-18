@@ -2,8 +2,8 @@
   "name": "orchd-tools",
   "private": true,
   "type": "module",
-  "description": "Terminal-side tooling for orchd. playwright-core drives an already-installed Chrome, so no browser is downloaded.",
+  "description": "Terminal-side tooling for orchd. playwright-core drives an already-installed Chrome, and the WebKit build that matches this exact version \u2014 the app runs in WebKitGTK, so Chrome alone cannot see a rendering fault that only happens there. Pinned, not caret: the browser build on disk is tied to the version.",
   "dependencies": {
-    "playwright-core": "^1.49.0"
+    "playwright-core": "1.49.1"
   }
 }
