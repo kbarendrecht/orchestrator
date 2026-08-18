@@ -183,6 +183,13 @@ pub async fn start(opts: StartOptions) -> Result<Server> {
         let mut inner = app.inner.write().await;
         inner.automation = store::load_automation();
         inner.stories = store::load_stories();
+        // A batch that stopped for the manual phase. Its patches are already
+        // committed, so losing this to a restart would strand the branch.
+        inner.manual = store::load_manual();
+        if !inner.manual.is_empty() {
+            let prs: Vec<String> = inner.manual.keys().map(|p| format!("#{p}")).collect();
+            tracing::info!("manual phase still open on {}", prs.join(", "));
+        }
         // Said out loud at boot, because `tracker` decides whether a whole option
         // appears on every review card. A misconfigured one must not read as
         // "triage never proposes stories".

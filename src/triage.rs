@@ -192,6 +192,16 @@ pub async fn spawn(app: &Arc<AppState>, pr: u64, head_ref: &str, login: &str) ->
         // A fresh run supersedes whatever the last one proposed; keeping stale
         // proposals visible while a new run works would be worse than a gap.
         inner.proposals.remove(&pr);
+        // And with them any batch that stopped for the manual phase: its decisions
+        // point at positions that no longer exist, so finishing it is impossible and
+        // offering to would be a screen whose button always fails. The local commit it
+        // left behind is not silently lost — the next batch's own gate names it.
+        if inner.manual.remove(&pr).is_some() {
+            tracing::warn!(pr, "a manual phase was open; re-triaging abandons it");
+            if let Err(e) = crate::store::save_manual(&inner.manual) {
+                tracing::warn!("could not save manual.json: {e:#}");
+            }
+        }
         inner.sessions.insert(id, session);
     }
 

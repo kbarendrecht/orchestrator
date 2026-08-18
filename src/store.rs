@@ -154,6 +154,45 @@ pub fn load_stories() -> crate::story::Cache {
     }
 }
 
+fn manual_path() -> Result<PathBuf> {
+    Ok(Config::config_dir()?.join("manual.json"))
+}
+
+/// Batches that stopped for the manual phase, per PR.
+///
+/// Persisted because the alternative is a stranded branch: the accepted patches are
+/// already committed by the time the phase opens, and losing the resume pointer to a
+/// restart leaves work that can only be finished by hand in git. `fold_in` rewrites
+/// shas, so nothing can re-derive which commit was ours.
+pub fn save_manual(
+    phases: &std::collections::HashMap<u64, crate::post::ManualPhase>,
+) -> Result<()> {
+    let p = manual_path()?;
+    std::fs::create_dir_all(p.parent().unwrap())?;
+    let tmp = p.with_extension("json.tmp");
+    std::fs::write(&tmp, serde_json::to_string_pretty(phases)?)?;
+    std::fs::rename(&tmp, &p)?;
+    Ok(())
+}
+
+pub fn load_manual() -> std::collections::HashMap<u64, crate::post::ManualPhase> {
+    let Ok(p) = manual_path() else {
+        return Default::default();
+    };
+    let Ok(raw) = std::fs::read_to_string(&p) else {
+        return Default::default();
+    };
+    match serde_json::from_str(&raw) {
+        Ok(v) => v,
+        Err(e) => {
+            // Degrading to empty costs the resume, which is bad but recoverable by
+            // hand; refusing to boot would cost every session.
+            tracing::warn!("could not parse {}: {e}", p.display());
+            Default::default()
+        }
+    }
+}
+
 pub fn save(records: &[SessionRecord]) -> Result<()> {
     let p = path()?;
     std::fs::create_dir_all(p.parent().unwrap())?;
@@ -211,6 +250,38 @@ pub fn reap_orphans(records: &[SessionRecord]) -> usize {
 mod tests {
     use super::*;
     use std::path::Path;
+
+    #[test]
+    fn a_manual_phase_survives_a_round_trip() {
+        // The file exists so a restart does not strand a batch whose patches are
+        // already committed, which means the digest has to mean the same thing in the
+        // next process too.
+        let phase = crate::post::ManualPhase {
+            committed: "4c1e9a27f3b8d1e5a9c2f7b4e8d3a6c1f5b9e2d7".into(),
+            files: vec![crate::patch::FileStat {
+                path: "renovate.json5".into(),
+                added: 3,
+                deleted: 1,
+            }],
+            amend: Some("folded into 9b21f04".into()),
+            threads: vec![crate::post::ManualThread {
+                thread_id: "PRRT_1".into(),
+                label: "a.ts:12 · alice".into(),
+                comment: "belongs in the repository".into(),
+                draft: String::new(),
+            }],
+            decisions: "0badc0de0badc0de".into(),
+        };
+        let map: std::collections::HashMap<u64, crate::post::ManualPhase> = [(10001, phase)].into();
+        let back: std::collections::HashMap<u64, crate::post::ManualPhase> =
+            serde_json::from_str(&serde_json::to_string(&map).unwrap()).unwrap();
+
+        let got = back.get(&10001).expect("the phase");
+        assert_eq!(got.committed, map[&10001].committed);
+        assert_eq!(got.decisions, "0badc0de0badc0de", "the digest must survive");
+        assert_eq!(got.files[0].path, "renovate.json5");
+        assert_eq!(got.threads[0].thread_id, "PRRT_1");
+    }
 
     #[test]
     fn a_restored_session_is_archived_never_live() {

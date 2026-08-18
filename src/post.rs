@@ -147,8 +147,12 @@ pub struct ManualThread {
 pub struct ManualPhase {
     /// The commit the accepted patches landed in. `/manual/done` checks `HEAD`
     /// against it, which is what keeps the phase from resuming onto a branch that
-    /// moved underneath it — and it lives in git rather than in the daemon, so it
-    /// survives a restart.
+    /// moved underneath it.
+    ///
+    /// Kept in step with the worktree by `update_phase_head` and written to disk with
+    /// the rest of the phase, because `fold_in` rewrites shas in both its arms — after
+    /// a fold the old sha is not even an ancestor of `HEAD`, so nothing can re-derive
+    /// which commit was ours.
     pub committed: String,
     /// What was already written, for the phase screen's first line.
     pub files: Vec<FileStat>,
@@ -168,6 +172,11 @@ pub struct ManualPhase {
 /// Only the parts that change what gets written or posted: the thread, the position
 /// index, and whether the wording was overridden. Sorted, because the client's order
 /// is not a decision.
+///
+/// **FNV-1a rather than `DefaultHasher`.** The digest is written to disk with the
+/// phase, so it has to mean the same thing in the next process — and `Hasher`'s output
+/// is explicitly not guaranteed stable across Rust releases. A toolchain upgrade would
+/// otherwise refuse every in-flight phase, and the message would blame the decisions.
 fn digest_of(batch: &Batch) -> String {
     let mut parts: Vec<String> = batch
         .decisions
@@ -177,14 +186,24 @@ fn digest_of(batch: &Batch) -> String {
                 "{}:{}:{}",
                 d.thread_id,
                 d.position,
-                d.reply.as_deref().unwrap_or("\u{0}")
+                // A distinct marker for "not overridden", so an empty override and no
+                // override are not the same fingerprint.
+                d.reply.as_deref().unwrap_or("\u{1}none")
             )
         })
         .collect();
     parts.sort();
-    let mut hash = std::collections::hash_map::DefaultHasher::new();
-    std::hash::Hash::hash(&(batch.base_sha.as_str(), parts.join("\n")), &mut hash);
-    format!("{:016x}", std::hash::Hasher::finish(&hash))
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in batch
+        .base_sha
+        .as_bytes()
+        .iter()
+        .chain(parts.join("\n").as_bytes())
+    {
+        hash ^= *byte as u64;
+        hash = hash.wrapping_mul(0x100_0000_01b3);
+    }
+    format!("{hash:016x}")
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -646,11 +665,11 @@ async fn run_inner(
         };
         // Durable, so a reload or a restart does not strand a batch whose patches are
         // already committed.
-        app.inner
-            .write()
-            .await
-            .manual
-            .insert(pr.number, phase.clone());
+        {
+            let mut inner = app.inner.write().await;
+            inner.manual.insert(pr.number, phase.clone());
+            persist_phases(&inner);
+        }
         report.manual = Some(phase);
         return Ok(report);
     }
@@ -726,7 +745,10 @@ async fn run_inner(
     // already finished — and a later batch on this PR would inherit its digest.
     // Anything still failed is retried through the report, not the phase.
     if report.failed.is_empty() {
-        app.inner.write().await.manual.remove(&pr.number);
+        let mut inner = app.inner.write().await;
+        if inner.manual.remove(&pr.number).is_some() {
+            persist_phases(&inner);
+        }
     } else {
         update_phase_head(app, pr.number, &path).await;
     }
@@ -781,8 +803,22 @@ async fn update_phase_head(app: &Arc<AppState>, pr: u64, path: &Path) {
         return;
     };
     let mut inner = app.inner.write().await;
-    if let Some(phase) = inner.manual.get_mut(&pr) {
-        phase.committed = head;
+    let Some(phase) = inner.manual.get_mut(&pr) else {
+        return;
+    };
+    if phase.committed == head {
+        return;
+    }
+    phase.committed = head;
+    persist_phases(&inner);
+}
+
+/// Write the phases out. Best effort by design: failing to persist costs the resume
+/// after a restart, and turning that into a failed batch would be worse than the thing
+/// it protects against.
+fn persist_phases(inner: &crate::state::Inner) {
+    if let Err(e) = crate::store::save_manual(&inner.manual) {
+        tracing::warn!("could not save manual.json: {e:#}");
     }
 }
 
