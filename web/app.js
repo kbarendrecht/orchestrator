@@ -1277,6 +1277,10 @@ const reviewState = {
  *  you typed about work that is already on disk. */
 const manualState = {
   comments: {},     // thread_id -> the comment, required
+  /* The payload the last `/manual/done` sent, so the report's retry can go back to
+     the same endpoint. Retrying a manual batch through `/post` cannot work: the
+     branch it pushed is the remote head now, and it would resolve with no comments. */
+  finished: null,
   /* `git diff HEAD` for the whole tree — one object, not one per thread. Two
      manual threads editing the same file cannot be told apart, and the commit is
      the tree's anyway, so attributing it per thread would be a guess dressed as a
@@ -1418,7 +1422,25 @@ function hunkEl(text, hitLast) {
   let newNo = 0;
   let last = null;
   for (const line of (text || '').split('\n')) {
-    if (/^(diff --git|index |new file|deleted file|old mode|new mode|similarity|rename |Binary )/.test(line)) continue;
+    /* A file boundary, and the states that have no hunk at all. Skipping these
+       rendered a binary replacement, a pure rename and a deletion as *nothing* —
+       on the manual phase's screen, whose whole premise is that you looked at what
+       is about to be committed — and ran multi-file diffs together with line numbers
+       that jump at the seam. */
+    const file = /^diff --git (?:a\/)?(.+?) (?:b\/)?(.+)$/.exec(line);
+    if (file) {
+      const [, from, to] = file;
+      box.appendChild(el('div', 'hh', from === to ? from : `${from} → ${to}`));
+      oldNo = 0;
+      newNo = 0;
+      continue;
+    }
+    const said = /^(new file|deleted file|Binary files|rename from|rename to)/.exec(line);
+    if (said) {
+      box.appendChild(el('div', 'hh', line));
+      continue;
+    }
+    if (/^(index |old mode|new mode|similarity|dissimilarity)/.test(line)) continue;
     if (/^(--- |\+\+\+ )/.test(line)) continue;
     const at = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(line);
     if (at) {
@@ -2338,7 +2360,12 @@ function rvReport(root) {
   root.appendChild(rvActs([
     retry ? actBtn(r.refused ? 'back' : `retry ${r.failed.length}`, 'pri', () => {
       if (r.refused) { reviewState.report = null; reviewState.screen = 'final'; return renderReview(); }
-      sendBatch();
+      /* Back to whichever endpoint the batch used. A manual batch retried through
+         `/post` is refused every time — the branch it pushed is now the remote head —
+         and it would resolve with no comments, so the Manual thread would post
+         nothing at all. */
+      if (manualState.finished) finishManual(manualState.finished);
+      else sendBatch();
     }) : actBtn('done', 'pri', () => closeReview()),
     retry ? actBtn('leave it', null, () => closeReview()) : null,
   ], r.refused
@@ -2574,11 +2601,11 @@ async function loadManualDiff() {
  *  Carries the decisions again, and the sha the phase reported. There is no pending
  *  state on the daemon to go stale: what the first half produced is a commit, so
  *  git is the record, and `HEAD` moving is what a refusal is made of. */
-async function finishManual() {
+async function finishManual(replay) {
   if (reviewState.busy) return;
-  // Only reachable from the phase's own button today, but it reads a phase out of
-  // the report and a throw here would blank the screen mid-batch.
-  const m = reviewState.report?.manual;
+  // Only reachable from the phase's own button and the report's retry, but it reads a
+  // phase out of the report and a throw here would blank the screen mid-batch.
+  const m = replay ? { threads: [] } : reviewState.report?.manual;
   if (!m) return;
   const missing = m.threads.filter((th) => !(manualState.comments[th.thread_id] || '').trim());
   if (missing.length) {
@@ -2586,18 +2613,24 @@ async function finishManual() {
                  'a commit and silence otherwise', true);
   }
 
+  /* Replayed verbatim on a retry. Rebuilding it would re-derive `batchPayload()`
+     from live state and re-read the tree, and the tree has moved on — the fold has
+     already happened — so the retry has to be the same request, not a new one. */
+  const payload = replay || {
+    batch: batchPayload(),
+    committed: m.committed,
+    comments: manualState.comments,
+    // What the screen showed you, which is what you pressed the button under. The
+    // daemon refuses anything dirty that is not in here rather than sweeping it into
+    // the commit.
+    files: (manualState.changed?.files || []).map((f) => f.path),
+  };
+
   reviewState.busy = true;
   renderReview();
   try {
-    const got = await call(`/api/pr/${reviewState.pr}/manual/done`, {
-      batch: batchPayload(),
-      committed: m.committed,
-      comments: manualState.comments,
-      // What the screen showed you, which is what you pressed the button under.
-      // The daemon refuses anything dirty that is not in here rather than sweeping
-      // it into the commit.
-      files: (manualState.changed?.files || []).map((f) => f.path),
-    });
+    const got = await call(`/api/pr/${reviewState.pr}/manual/done`, payload);
+    manualState.finished = payload;
     /* A refusal carries no phase, and taking it at face value would drop the only
        record of one — landing on a report that says "nothing was pushed, the
        worktree is as it was" when half one's commit is on the branch and your edits
@@ -2687,6 +2720,20 @@ async function loadReview(pr) {
       toast('the branch moved — decisions cleared, re-read the cards');
     }
     reviewState.head = base;
+
+    /* A batch that stopped for the manual phase now lives on the daemon, so a reload,
+       a restart, or coming back to this PR resumes it instead of stranding a branch
+       whose patches are already committed. Only adopted when the screen is not
+       already showing one, so a live phase's own state is never clobbered by a tick. */
+    if (data.manual && !reviewState.report) {
+      reviewState.report = {
+        refused: null, files: [], amend: null, pushed: null,
+        landed: [], failed: [], skipped: [], rerequested: [], held_back: [],
+        manual: data.manual,
+      };
+      reviewState.screen = 'manual';
+      loadManualDiff();
+    }
     renderReview();
   } catch (e) {
     toast(e.message, true);

@@ -799,7 +799,13 @@ pub async fn pr_review(
         // No worktree yet means nothing to be dirty; triage creates one.
         None => None,
     };
-    let proposals = app.inner.read().await.proposals.get(&number).cloned();
+    let (proposals, manual) = {
+        let inner = app.inner.read().await;
+        (
+            inner.proposals.get(&number).cloned(),
+            inner.manual.get(&number).cloned(),
+        )
+    };
 
     Ok(Json(json!({
         "viewer": fetched.viewer,
@@ -807,6 +813,9 @@ pub async fn pr_review(
         "answerable": fetched.answerable_count(),
         "threads": fetched.items,
         "proposals": proposals,
+        // A batch that stopped for the manual phase. Served so a reload or a restart
+        // resumes it rather than stranding a branch whose patches are committed.
+        "manual": manual,
         "gate": gate,
         // Shown in the header, never gating: a red or conflicting PR is still
         // answerable, and `/green` is offered rather than required.

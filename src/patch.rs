@@ -18,7 +18,7 @@
 //! apply" cannot tell a stale patch from two that collide with each other.
 
 use anyhow::{Context, Result};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -32,7 +32,7 @@ pub struct Patch {
 
 /// A path the batch will touch, with its line counts — the data behind the
 /// card's `will write renovate.json5 +2 −1` label.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FileStat {
     pub path: String,
     pub added: u32,
@@ -373,11 +373,22 @@ pub fn write_manual(
         .cloned()
         .collect();
     if !strays.is_empty() {
+        // Capped: an untracked directory is now one stray per file, and a hundred of
+        // them in one sentence is not a message anybody reads.
+        let shown = if strays.len() > 10 {
+            format!(
+                "{}, and {} more",
+                strays[..10].join(", "),
+                strays.len() - 10
+            )
+        } else {
+            strays.join(", ")
+        };
         return Ok(Written::Refused(format!(
             "the worktree holds {} that the phase did not show you. Press `re-read the \
              tree` and look at {}, then continue — everything in this commit has to be \
              work you looked at. If {} not yours, commit, remove or stash {}.",
-            strays.join(", "),
+            shown,
             if strays.len() == 1 { "it" } else { "them" },
             if strays.len() == 1 {
                 "it is"
@@ -519,12 +530,19 @@ fn new_file_diff(cwd: &Path, path: &str) -> Result<String> {
     // **1 means "they differ"**, which for a new file is always — so the usual
     // `ensure!(success)` would treat every success as a failure. Only 2 and above is
     // a real error.
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    // **1 means "they differ"**, which for a new file is always — so the usual
+    // `ensure!(success)` would treat every success as a failure. But 1 is also what a
+    // real error exits with, and accepting it unconditionally is how an untracked
+    // *directory* came back as an empty diff and got committed unseen. Empty output
+    // with something on stderr is a failure whatever the code says.
+    if stdout.is_empty() && !stderr.trim().is_empty() {
+        anyhow::bail!("git diff --no-index failed for {path}: {}", stderr.trim());
+    }
     match out.status.code() {
-        Some(0) | Some(1) => Ok(String::from_utf8_lossy(&out.stdout).into_owned()),
-        _ => anyhow::bail!(
-            "git diff --no-index failed for {path}: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        ),
+        Some(0) | Some(1) => Ok(stdout.into_owned()),
+        _ => anyhow::bail!("git diff --no-index failed for {path}: {}", stderr.trim()),
     }
 }
 
@@ -615,7 +633,7 @@ fn paths_changed_between(
 /// The one source of path strings for the manual phase. A rename appears once, as its
 /// new path, because that is what `--porcelain=v2` reports.
 pub fn dirty_paths(cwd: &Path) -> Result<Vec<String>> {
-    let set = crate::git::status(cwd, false)?;
+    let set = crate::git::status(cwd, false, crate::git::Untracked::Each)?;
     Ok(set
         .staged
         .iter()
@@ -981,6 +999,76 @@ mod tests {
             !matches!(got, Written::Refused(_)),
             "own work must not be a stray: {got:?}"
         );
+    }
+
+    #[test]
+    fn a_wall_of_strays_is_capped() {
+        // An untracked directory is one stray per file now, and a hundred of them in
+        // one sentence is not a message anybody reads.
+        let d = batch_repo();
+        for n in 0..25 {
+            std::fs::write(d.join(format!("stray{n:02}.txt")), "x\n").unwrap();
+        }
+        let head = crate::git::head_sha(&d).unwrap();
+        match write_manual(&d, "base", "me@here", &[], &[], &head).unwrap() {
+            Written::Refused(why) => {
+                assert!(why.contains("and 15 more"), "{why}");
+                assert!(why.contains("stray00.txt"), "{why}");
+                assert!(!why.contains("stray20.txt"), "capped: {why}");
+            }
+            other => panic!("expected a refusal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_new_directory_is_listed_and_shown_file_by_file() {
+        // `git status --untracked-files=normal` collapses an untracked directory to
+        // one `newdir/` entry — which cannot be counted, cannot be diffed, and could
+        // not be refused one file at a time. The phase listed the directory, showed
+        // none of it, and `git add -A` committed everything inside, under a screen
+        // that says everything in the commit is work you looked at.
+        let d = batch_repo();
+        std::fs::create_dir_all(d.join("newdir/sub")).unwrap();
+        std::fs::write(d.join("newdir/a.txt"), "one\ntwo\n").unwrap();
+        std::fs::write(d.join("newdir/sub/b.txt"), "three\n").unwrap();
+
+        let (files, diff) = worktree_change(&d).unwrap();
+        let paths: Vec<&str> = files.iter().map(|f| f.path.as_str()).collect();
+        assert!(
+            paths.contains(&"newdir/a.txt"),
+            "per file, not per dir: {paths:?}"
+        );
+        assert!(paths.contains(&"newdir/sub/b.txt"), "{paths:?}");
+        assert!(
+            !paths.contains(&"newdir/"),
+            "the collapsed entry must be gone: {paths:?}"
+        );
+        assert_eq!(
+            files
+                .iter()
+                .find(|f| f.path == "newdir/a.txt")
+                .unwrap()
+                .added,
+            2
+        );
+        assert!(diff.contains("+one"), "and its contents are shown:\n{diff}");
+        assert!(diff.contains("+three"), "including nested ones:\n{diff}");
+
+        // ...and one file out of the directory can be refused on its own.
+        let head = crate::git::head_sha(&d).unwrap();
+        let got = write_manual(
+            &d,
+            "base",
+            "me@here",
+            &[],
+            &["newdir/a.txt".to_string()],
+            &head,
+        )
+        .unwrap();
+        match got {
+            Written::Refused(why) => assert!(why.contains("newdir/sub/b.txt"), "{why}"),
+            other => panic!("expected a refusal, got {other:?}"),
+        }
     }
 
     #[test]

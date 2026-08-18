@@ -125,7 +125,7 @@ pub struct Skipped {
 /// pushed, so every other field is empty and the screen is panel 7 rather than
 /// panel 8.
 /// A thread the human said they would handle themselves.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ManualThread {
     pub thread_id: String,
     pub label: String,
@@ -143,7 +143,7 @@ pub struct ManualThread {
 /// and committed by then, so you edit a tree that already reflects every other
 /// decision — often *why* this thread needed hands. **Nothing has been pushed and
 /// nothing posted**, so backing out costs only the local commit.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ManualPhase {
     /// The commit the accepted patches landed in. `/manual/done` checks `HEAD`
     /// against it, which is what keeps the phase from resuming onto a branch that
@@ -154,6 +154,37 @@ pub struct ManualPhase {
     pub files: Vec<FileStat>,
     pub amend: Option<String>,
     pub threads: Vec<ManualThread>,
+    /// A digest of the decisions half one resolved.
+    ///
+    /// The resume re-supplies the whole batch and the daemon re-resolves it from
+    /// scratch, with only `committed == HEAD` checked — and that says nothing about
+    /// *which* decisions produced that commit. A decision half one never saw would
+    /// otherwise post a reply describing code that was never applied.
+    pub decisions: String,
+}
+
+/// A stable fingerprint of what a batch decided.
+///
+/// Only the parts that change what gets written or posted: the thread, the position
+/// index, and whether the wording was overridden. Sorted, because the client's order
+/// is not a decision.
+fn digest_of(batch: &Batch) -> String {
+    let mut parts: Vec<String> = batch
+        .decisions
+        .iter()
+        .map(|d| {
+            format!(
+                "{}:{}:{}",
+                d.thread_id,
+                d.position,
+                d.reply.as_deref().unwrap_or("\u{0}")
+            )
+        })
+        .collect();
+    parts.sort();
+    let mut hash = std::collections::hash_map::DefaultHasher::new();
+    std::hash::Hash::hash(&(batch.base_sha.as_str(), parts.join("\n")), &mut hash);
+    format!("{:016x}", std::hash::Hasher::finish(&hash))
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -518,7 +549,13 @@ async fn run_inner(
     }
 
     if let Some(head) = &fresh.head_sha {
-        if head != &batch.base_sha {
+        // On the resume, origin already holding our own commit means the push landed
+        // and only the response was lost — a post-receive hook, a dropped connection,
+        // the daemon being killed. Without this arm that is a permanent refusal with
+        // the code public and not one reply posted, which is the same family of bug
+        // as the dead end this whole round is closing.
+        let ours = resume.is_some() && head == &local_head;
+        if head != &batch.base_sha && !ours {
             return Ok(PostReport::refused(format!(
                 "the branch moved since triage ({} → {}). The patches were generated against \
                  code that is no longer there; re-triage rather than write over it.",
@@ -538,6 +575,20 @@ async fn run_inner(
         .with_context(|| format!("PR #{} has no triage proposals to post", pr.number))?;
     let comments = resume.as_ref().map(|r| &r.comments);
     let handled = resolve(&proposals, fresh, &batch, app.cfg.tracker, comments)?;
+
+    // Hoisted above the local write: the recovery path below needs it to carry the
+    // phase forward, and a phase whose `threads` is empty renders a list with no rows
+    // and a live continue button asking for no comment.
+    let waiting: Vec<ManualThread> = handled
+        .iter()
+        .filter(|h| h.does == Does::Manual)
+        .map(|h| ManualThread {
+            thread_id: h.thread_id.clone(),
+            label: h.label.clone(),
+            comment: h.reviewer_said.clone(),
+            draft: h.draft.clone(),
+        })
+        .collect();
 
     // --- half one: local, undoable -----------------------------------------
     let mut report = match &resume {
@@ -560,9 +611,22 @@ async fn run_inner(
                     short(&head)
                 )));
             }
+            // The digest half one recorded. The batch is re-supplied and re-resolved
+            // from scratch on the resume, so without this a decision half one never
+            // saw would post a reply describing code that was never applied.
+            if let Some(phase) = app.inner.read().await.manual.get(&pr.number) {
+                if phase.decisions != digest_of(&batch) {
+                    return Ok(PostReport::refused_finally(
+                        "these are not the decisions the phase was opened with. Start the \
+                         batch again from the cards rather than finishing one it did not \
+                         produce."
+                            .to_string(),
+                    ));
+                }
+            }
             match write_manual(&path, app, &handled, done).await? {
                 Ok(w) => w,
-                Err(refusal) => return Ok(refusal),
+                Err(refusal) => return Ok(carry_phase(app, pr.number, &path, refusal).await),
             }
         }
     };
@@ -572,37 +636,27 @@ async fn run_inner(
     // After the local commit, before the push. So you edit a tree that already
     // reflects every other decision — often why the thread needed hands — and
     // nothing has left the machine yet if you walk away.
-    if resume.is_none() {
-        let waiting: Vec<ManualThread> = handled
-            .iter()
-            .filter(|h| h.does == Does::Manual)
-            .map(|h| ManualThread {
-                thread_id: h.thread_id.clone(),
-                label: h.label.clone(),
-                comment: h.reviewer_said.clone(),
-                draft: h.draft.clone(),
-            })
-            .collect();
-        if !waiting.is_empty() {
-            report.manual = Some(ManualPhase {
-                committed: crate::git::head_sha(&path)?,
-                files: std::mem::take(&mut report.files),
-                amend: report.amend.take(),
-                threads: waiting,
-            });
-            return Ok(report);
-        }
+    if resume.is_none() && !waiting.is_empty() {
+        let phase = ManualPhase {
+            committed: crate::git::head_sha(&path)?,
+            files: std::mem::take(&mut report.files),
+            amend: report.amend.take(),
+            threads: waiting,
+            decisions: digest_of(&batch),
+        };
+        // Durable, so a reload or a restart does not strand a batch whose patches are
+        // already committed.
+        app.inner
+            .write()
+            .await
+            .manual
+            .insert(pr.number, phase.clone());
+        report.manual = Some(phase);
+        return Ok(report);
     }
 
     // --- the push: everything past here is public --------------------------
     //
-    // "Is there anything origin does not have" is a question about git, so it is
-    // asked of git rather than inferred from a report field. Reading `report.files`
-    // was wrong twice over on the resume: half one moves that list into the phase
-    // with `mem::take`, and `write_manual` legitimately returns nothing to write
-    // when a Manual thread changed no code. Both leave it empty while an unpushed
-    // commit sits on the branch — and every reply then goes out saying a fix landed
-    // that nobody can see.
     // The branch started level with origin — the gate above says so — so anything
     // HEAD has beyond the remote head is this batch's, across both halves. Reading
     // `report.files` instead was wrong twice over: half one moves that list into the
@@ -612,17 +666,33 @@ async fn run_inner(
     let head_now = crate::git::head_sha(&path)?;
     let unpushed = match &fresh.head_sha {
         Some(remote) => &head_now != remote,
-        // No remote head to compare against — the same case that skips the
-        // staleness check above. Fall back to "did we write anything".
-        None => !report.files.is_empty(),
+        // No remote head to compare against — the same case that skips the staleness
+        // check above. Ask git rather than the report: on a resume `report.files` is
+        // routinely empty (the fold already happened, or you changed nothing), and
+        // reading it there would post replies saying a fix landed without pushing it.
+        None => crate::git::has_unpushed(&path, &pr.head_ref),
     };
     if unpushed {
         let branch = pr.head_ref.clone();
         let p = path.clone();
-        tokio::task::spawn_blocking(move || crate::git::push_with_lease(&p, &branch))
+        let pushed = tokio::task::spawn_blocking(move || crate::git::push_with_lease(&p, &branch))
             .await
-            .context("the push panicked")??;
+            .context("the push panicked")?;
+        if let Err(e) = pushed {
+            // **HEAD has moved by now**, on both halves — the local write committed.
+            // Returning an `Err` here 500s the request, the SPA only toasts, and the
+            // next attempt finds a HEAD that no longer matches the phase and calls it
+            // terminal. So the batch dies with a local commit and no route forward.
+            // A push that failed is the most recoverable state there is, and it has to
+            // be reported as one.
+            report.refused = Some(format!("{e:#}"));
+            report.retryable = true;
+            return Ok(carry_phase(app, pr.number, &path, report).await);
+        }
         report.pushed = Some(crate::git::head_sha(&path)?);
+        // Recorded before anything outward runs: if the story call or a reply then
+        // fails, a retry must know the push already landed.
+        update_phase_head(app, pr.number, &path).await;
     }
 
     // --- the stories, before the replies that carry their ids ---------------
@@ -646,11 +716,20 @@ async fn run_inner(
     let (owner, name) =
         crate::resolve_repo(app).context("no GitHub repo configured and none on the remote")?;
     let target = Target {
-        cwd: path,
+        cwd: path.clone(),
         owner,
         name,
     };
     post_outward(&target, pr.number, fresh, &handled, &filed, &mut report).await;
+
+    // The batch is over. Keeping the phase would offer to finish something that
+    // already finished — and a later batch on this PR would inherit its digest.
+    // Anything still failed is retried through the report, not the phase.
+    if report.failed.is_empty() {
+        app.inner.write().await.manual.remove(&pr.number);
+    } else {
+        update_phase_head(app, pr.number, &path).await;
+    }
     Ok(report)
 }
 
@@ -672,6 +751,38 @@ fn level_with_origin(local: &str, remote: Option<&str>, resuming: bool) -> bool 
         Some(r) => local == r,
         // Nothing to compare against — the same case that skips the staleness check.
         None => true,
+    }
+}
+
+/// Attach the stored phase to a report, so a stumble mid-batch stays resumable.
+///
+/// The phase's `committed` is refreshed from the worktree first: whatever went wrong,
+/// the local write may already have moved `HEAD`, and a phase pointing at the old sha
+/// is what turns a recoverable failure into a permanent one. `files` and `amend` keep
+/// half one's values — they describe the accepted patches, and substituting the
+/// hand-edits would have the screen call your own work "accepted changes".
+async fn carry_phase(
+    app: &Arc<AppState>,
+    pr: u64,
+    path: &Path,
+    mut report: PostReport,
+) -> PostReport {
+    update_phase_head(app, pr, path).await;
+    if let Some(phase) = app.inner.read().await.manual.get(&pr) {
+        report.manual = Some(phase.clone());
+        report.retryable = true;
+    }
+    report
+}
+
+/// Point the stored phase at the worktree's current `HEAD`.
+async fn update_phase_head(app: &Arc<AppState>, pr: u64, path: &Path) {
+    let Ok(head) = crate::git::head_sha(path) else {
+        return;
+    };
+    let mut inner = app.inner.write().await;
+    if let Some(phase) = inner.manual.get_mut(&pr) {
+        phase.committed = head;
     }
 }
 

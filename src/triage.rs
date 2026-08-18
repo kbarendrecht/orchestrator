@@ -100,7 +100,7 @@ async fn gate_inner(
         return Ok(Some(Gate::Rebasing));
     }
     if require_clean && !crate::git::is_clean(&path)? {
-        let set = crate::git::status(&path, false)?;
+        let set = crate::git::status(&path, false, crate::git::Untracked::Each)?;
         let mut files: Vec<String> = set
             .staged
             .iter()

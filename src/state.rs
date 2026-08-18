@@ -68,6 +68,16 @@ pub struct Inner {
     /// and come back. Its absence after a run exits is how a failed run is
     /// detected: the agent reports by POSTing, not by its exit code.
     pub proposals: HashMap<u64, crate::proposal::ProposalSet>,
+    /// A batch that stopped for the manual phase, per PR.
+    ///
+    /// The resume pointer used to live only in the browser, so a reload, a daemon
+    /// restart, or opening another PR stranded a batch whose patches were already
+    /// committed — recoverable only by hand in git. Not the ledger the post batch
+    /// rejects: that rule is about what landed on GitHub, which GitHub can be asked
+    /// about. This records a *local* commit, and `fold_in` rewrites shas in both its
+    /// arms, so after a fold the old sha is not even an ancestor of HEAD and no
+    /// reachability query can prove the new one is ours.
+    pub manual: HashMap<u64, crate::post::ManualPhase>,
     /// Stories already filed for a review thread, so a retry reuses one rather
     /// than filing a second. A cache, not a ledger — `crate::story` explains why
     /// losing it costs latency and not correctness.
@@ -159,6 +169,7 @@ impl AppState {
                 prs: Vec::new(),
                 threads: HashMap::new(),
                 proposals: HashMap::new(),
+                manual: HashMap::new(),
                 stories: Default::default(),
                 viewer: None,
                 pr_error: None,
@@ -488,7 +499,7 @@ impl AppState {
                 .ok_or_else(|| anyhow::anyhow!("unknown workspace {workspace}"))?;
             (w.path.clone(), w.is_main())
         };
-        let set = git::status(&path, is_main)?;
+        let set = git::status(&path, is_main, git::Untracked::Collapsed)?;
         // Recomputed alongside the file list, so the two always describe the
         // same moment.
         let divergence = git::divergence(&path, &self.cfg.upstream_ref).ok();

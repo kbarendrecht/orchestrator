@@ -56,15 +56,33 @@ fn git_ok(cwd: &Path, args: &[&str]) -> bool {
 // Status
 // ---------------------------------------------------------------------------
 
+/// How much detail to ask for about untracked files.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Untracked {
+    /// One entry per untracked *directory*. What the rail wants: it runs on every
+    /// hook event, for every workspace, including main — whose tree contains every
+    /// worktree — and the result is broadcast to every client. One un-ignored build
+    /// directory would otherwise become ten thousand rows in every snapshot.
+    Collapsed,
+    /// One entry per untracked *file*.
+    ///
+    /// What anything deciding what to *commit* needs. A collapsed `newdir/` cannot
+    /// be counted, cannot be diffed, and cannot be refused one file at a time — so
+    /// the manual phase listed a directory, showed none of it, and `git add -A`
+    /// committed everything inside.
+    Each,
+}
+
 /// Changed files for a workspace, grouped staged / unstaged / untracked (§4).
 ///
 /// `exclude_worktrees` is set for main: main's file tree contains every
 /// worktree, so without it you see every sibling session's work (§2).
-pub fn status(cwd: &Path, exclude_worktrees: bool) -> Result<FileSet> {
-    let raw = git_raw(
-        cwd,
-        &["status", "--porcelain=v2", "--untracked-files=normal", "-z"],
-    )?;
+pub fn status(cwd: &Path, exclude_worktrees: bool, untracked: Untracked) -> Result<FileSet> {
+    let mode = match untracked {
+        Untracked::Collapsed => "--untracked-files=normal",
+        Untracked::Each => "--untracked-files=all",
+    };
+    let raw = git_raw(cwd, &["status", "--porcelain=v2", mode, "-z"])?;
     Ok(parse_status(&raw, exclude_worktrees))
 }
 
@@ -176,6 +194,30 @@ pub fn current_branch(cwd: &Path) -> Result<String> {
 
 pub fn head_sha(cwd: &Path) -> Result<String> {
     Ok(git(cwd, &["rev-parse", "HEAD"])?.trim().to_string())
+}
+
+/// Does this branch hold commits its remote does not?
+///
+/// For when GitHub could not say what the remote head is. `@{upstream}` is whatever
+/// the branch tracks; with no tracking branch there is nothing to compare against, so
+/// the honest answer is "assume yes" — an unnecessary push is refused by the lease,
+/// while a skipped one posts a reply about a commit nobody can see.
+pub fn has_unpushed(cwd: &Path, branch: &str) -> bool {
+    for range in [
+        format!("@{{upstream}}..{branch}"),
+        format!("origin/{branch}..{branch}"),
+    ] {
+        if let Ok(out) = Command::new("git")
+            .args(["rev-list", "--count", &range])
+            .current_dir(cwd)
+            .output()
+        {
+            if out.status.success() {
+                return String::from_utf8_lossy(&out.stdout).trim() != "0";
+            }
+        }
+    }
+    true
 }
 
 /// Who git will author a commit as here.
