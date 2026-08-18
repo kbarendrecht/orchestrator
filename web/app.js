@@ -126,6 +126,14 @@ const THEME = {
   selectionBackground: '#2C2C2C',
 };
 
+/** The terminal's font in px. Its host is counter-zoomed, so this is the only
+ *  thing that makes terminal text follow the font-size setting — and it renders
+ *  natively at that size rather than being scaled up afterwards. */
+const TERM_FONT = 12;
+const termFontSize = () =>
+  Math.round(TERM_FONT * (Number(getComputedStyle(document.documentElement)
+    .getPropertyValue('--ui-zoom')) || 1));
+
 /** Attach to a pty, replaying the daemon's buffer first. */
 function openTerm(target, parent) {
   if (terms.has(target)) return terms.get(target);
@@ -136,7 +144,7 @@ function openTerm(target, parent) {
   const term = new Terminal({
     theme: THEME,
     fontFamily: "'IBM Plex Mono', ui-monospace, monospace",
-    fontSize: 12,
+    fontSize: termFontSize(),
     lineHeight: 1.25,
     cursorBlink: true,
     scrollback: 10000,
@@ -3635,7 +3643,8 @@ const colWidth = (col) =>
 /** Set a column, clamped so the centre always survives and so does the other one. */
 function setCol(col, px) {
   const other = col === COLS.rail ? COLS.files : COLS.rail;
-  const room = window.innerWidth - CENTRE_MIN - colWidth(other);
+  // All three widths are unzoomed, so the viewport has to be measured that way.
+  const room = window.innerWidth / uiZoom() - CENTRE_MIN - colWidth(other);
   const width = Math.round(Math.max(col.min, Math.min(px, Math.max(col.min, room))));
   document.documentElement.style.setProperty(col.prop, `${width}px`);
   return width;
@@ -3655,7 +3664,12 @@ function dragColumn(handle, col, fromLeft) {
     handle.classList.add('dragging');
     document.body.classList.add('col-resizing');
 
-    const move = (ev) => setCol(col, fromLeft ? ev.clientX : window.innerWidth - ev.clientX);
+    const move = (ev) => {
+      // Pointer coordinates are screen px; the column variables are inside the
+      // zoom. Convert, or the seam runs away from the cursor.
+      const z = uiZoom();
+      setCol(col, (fromLeft ? ev.clientX : window.innerWidth - ev.clientX) / z);
+    };
     const done = () => {
       window.removeEventListener('mousemove', move);
       handle.classList.remove('dragging');
@@ -3714,7 +3728,12 @@ function setZoom(z) {
   $('fsval').textContent = `${Math.round(next * 100)}%`;
   $('fsdown').disabled = next <= ZOOM.min;
   $('fsup').disabled = next >= ZOOM.max;
-  // The grid's columns changed size in real pixels, so xterm has to re-measure.
+  // Terminals are outside the zoom, so their font is set rather than scaled, and
+  // the new glyph size means new rows and cols.
+  const px = termFontSize();
+  for (const entry of terms.values()) {
+    if (entry.term.options.fontSize !== px) entry.term.options.fontSize = px;
+  }
   refitTerms();
   return next;
 }

@@ -257,6 +257,11 @@ button.ctx-btn:hover{color:var(--text)}
 /* ---------- center ---------- */
 .center{display:flex;flex-direction:column;min-width:0;background:var(--bg);position:relative}
 .termwrap{flex:1;min-height:0;position:relative;padding:8px 6px 8px 12px}
+/* Terminals opt out of the zoom and scale their font instead. `zoom` resamples a
+   canvas, which is what made the centre pane blurry; counter-zooming puts the
+   content back at 1:1 with the screen, and `setZoom` raises xterm's own
+   `fontSize` by the same factor so the text still grows. */
+.termwrap,.drawer-body{zoom:calc(1 / var(--ui-zoom,1))}
 .termhost{position:absolute;inset:8px 6px 8px 12px}
 .termhost[hidden]{display:none}
 
@@ -329,8 +334,10 @@ button.ctx-btn:hover{color:var(--text)}
   background:transparent;transition:background .12s;
 }
 .split:hover::after,.split.dragging::after{background:var(--faint-solid)}
-.split-l{left:var(--rail);margin-left:-3px}
-.split-r{right:var(--files);margin-right:-3px}
+/* The columns live inside the zoom, so their boundary is at the scaled width —
+   an unscaled `left` put the handles next to the seam rather than on it. */
+.split-l{left:calc(var(--rail) * var(--ui-zoom,1));margin-left:-3px}
+.split-r{right:calc(var(--files) * var(--ui-zoom,1));margin-right:-3px}
 /* Held on the body so the cursor survives leaving the 7px strip mid-drag, and a
    drag never selects the text it passes over. */
 body.col-resizing{cursor:col-resize;user-select:none}
