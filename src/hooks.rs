@@ -158,7 +158,14 @@ pub async fn session_start(
             // The prompt box is not ready the instant SessionStart fires; typing
             // into it too early drops characters.
             tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
-            let _ = pty.write(format!("{prompt}\r").as_bytes());
+            let _ = pty.write(prompt.as_bytes());
+            // The return goes in its own write, after a beat. A line of text and
+            // its newline arriving as one burst reads as a *paste*, and a pasted
+            // newline is a line break in the prompt box rather than a send — so
+            // the instructions sat there typed but never submitted. Short slash
+            // commands got away with it; a sentence with a path in it does not.
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            let _ = pty.write(b"\r");
         });
     }
 
