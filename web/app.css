@@ -25,15 +25,15 @@
   --line:#2C2C2C;
   --line-soft:#262626;
   --text:#D2D2D2;
-  --dim:#8B8B8B;
+  --dim:#A8A8A8;
   --faint:#00000000;
-  --faint-solid:#5B5B5B;
-  --ghost:#3E3E3E;
+  --faint-solid:#8E8E8E;
+  --ghost:#787878;
 
   --attn:#E0A244;        /* needs you — deliberately not green or red */
   --work:#4C9AAF;
   --ok:#5FA97C;
-  --bad:#C9615A;
+  --bad:#D4726B;
   --auto:#3E9AAF;        /* automation — NOT purple: purple reads as merged on GitHub */
 
   --mono:'IBM Plex Mono',ui-monospace,monospace;
@@ -154,7 +154,7 @@ button.ctx-btn:hover{color:var(--text)}
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%;
 }
 .repo-fork{
-  font-family:var(--mono);font-size:9px;color:var(--ghost);
+  font-family:var(--mono);font-size:9px;color:var(--faint-solid);
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%;
 }
 
@@ -167,7 +167,7 @@ button.ctx-btn:hover{color:var(--text)}
   padding:13px 15px 7px;position:sticky;top:0;background:var(--surface);z-index:2;
 }
 .ws-name{display:flex;align-items:center;gap:7px;min-width:0}
-.ws-note{font-family:var(--mono);font-size:9.5px;color:var(--ghost);margin-left:auto;white-space:nowrap}
+.ws-note{font-family:var(--mono);font-size:9.5px;color:var(--faint-solid);margin-left:auto;white-space:nowrap}
 
 /* The one row that says how much you are losing to idle agents. */
 .waitbar{
@@ -191,12 +191,12 @@ button.ctx-btn:hover{color:var(--text)}
 .sess:hover{background:var(--raised)}
 .sess[aria-current="true"]{background:var(--raised);border-left-color:var(--text)}
 .sess-row{display:flex;align-items:center;gap:8px}
-.dot{width:6px;height:6px;border-radius:50%;flex:0 0 auto;background:#3E3E3E}
+.dot{width:6px;height:6px;border-radius:50%;flex:0 0 auto;background:#6B6B6B}
 .dot.blocked{background:var(--attn)}
 .dot.build{background:var(--bad)}
 .dot.auto{background:var(--auto)}
 .dot.working{background:#6A6A6A}
-.dot.idle{background:#3E3E3E}
+.dot.idle{background:#6B6B6B}
 .dot.archived{background:transparent;border:1px solid var(--faint-solid)}
 
 .sess-name{
@@ -216,12 +216,12 @@ button.ctx-btn:hover{color:var(--text)}
 .sess-state.blocked{color:var(--attn)}
 .sess-state.build{color:var(--bad)}
 .sess-pad{height:11px}
-.sess-id{font-family:var(--mono);font-size:9px;color:var(--ghost);flex:0 0 auto}
+.sess-id{font-family:var(--mono);font-size:9px;color:var(--faint-solid);flex:0 0 auto}
 
 /* Past conversations collapse: the rail is for what still needs you. */
 .arctoggle{
   display:flex;align-items:center;gap:7px;width:100%;
-  padding:7px 15px 12px;font-family:var(--mono);font-size:10px;color:var(--ghost);
+  padding:7px 15px 12px;font-family:var(--mono);font-size:10px;color:var(--faint-solid);
 }
 .arctoggle:hover{color:var(--dim)}
 .arctoggle .caretr{display:inline-block;transition:transform .13s;font-size:9px}
@@ -240,7 +240,7 @@ button.ctx-btn:hover{color:var(--text)}
 
 .railbtn{
   display:block;width:100%;text-align:left;padding:7px 15px 11px;
-  font-family:var(--mono);font-size:10px;color:var(--ghost);
+  font-family:var(--mono);font-size:10px;color:var(--faint-solid);
 }
 .railbtn:hover{color:var(--dim)}
 
@@ -272,14 +272,14 @@ button.ctx-btn:hover{color:var(--text)}
 .dtab.dead{color:var(--ghost)}
 .dtab.dead[aria-selected="true"]{color:var(--faint-solid)}
 .dtab .dot{width:5px;height:5px}
-.dtab .x{color:#3E3E3E;margin-left:1px}
+.dtab .x{color:var(--ghost);margin-left:1px}
 .dtab .x:hover{color:var(--bad)}
 .addsh{
   font-family:var(--mono);font-size:10.5px;color:var(--faint-solid);
   padding:3px 8px;display:flex;align-items:center;gap:7px;
 }
 .addsh:hover{color:var(--text)}
-.addsh kbd{font-size:9.5px;color:#3E3E3E}
+.addsh kbd{font-size:9.5px;color:var(--faint-solid)}
 .dcwd{margin-left:auto;font-family:var(--mono);font-size:9.5px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:flex;align-items:center}
 .stackdot{width:7px;height:7px;border-radius:50%;margin-right:6px;flex:0 0 auto}
 .stackdot.up{background:var(--work)}
@@ -299,7 +299,7 @@ button.ctx-btn:hover{color:var(--text)}
 .fst.M{color:var(--attn)}.fst.A{color:var(--ok)}.fst.D{color:var(--bad)}.fst.U{color:var(--faint-solid)}.fst.R{color:var(--work)}
 .fname{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;direction:rtl;text-align:left}
 #filepanes{flex:1;min-height:0;overflow-y:auto}
-.fempty{padding:22px 15px;font-family:var(--mono);font-size:10.5px;color:var(--ghost);line-height:1.75}
+.fempty{padding:22px 15px;font-family:var(--mono);font-size:10.5px;color:var(--faint-solid);line-height:1.75}
 .files-foot{padding:9px 13px;font-family:var(--mono);font-size:10px;color:var(--faint-solid);border-top:1px solid var(--line-soft)}
 
 /* ---------- context menu ---------- */
@@ -373,7 +373,7 @@ button.ctx-btn:hover{color:var(--text)}
 .pane{min-width:0}
 .gutter{background:var(--surface);border-left:1px solid var(--line-soft);border-right:1px solid var(--line-soft);height:100%}
 .ln{display:grid;grid-template-columns:44px 1fr;white-space:pre-wrap;word-break:break-word}
-.ln i{color:#4C4C4C;text-align:right;padding-right:10px;font-style:normal;user-select:none}
+.ln i{color:#8E8E8E;text-align:right;padding-right:10px;font-style:normal;user-select:none}
 .ln s{text-decoration:none;padding:0 10px;display:block}
 .ln.add s{background:var(--add)}
 .ln.del s{background:var(--del)}
@@ -395,7 +395,7 @@ button.ctx-btn:hover{color:var(--text)}
   font-size:10.5px;cursor:pointer;grid-column:1/-1;
 }
 .fold:hover{color:var(--dim)}
-.diffnote{padding:22px 15px;font-family:var(--mono);font-size:10.5px;color:var(--ghost);grid-column:1/-1}
+.diffnote{padding:22px 15px;font-family:var(--mono);font-size:10.5px;color:var(--faint-solid);grid-column:1/-1}
 
 /* diff file list in the right pane */
 .dfrow{
@@ -422,7 +422,7 @@ button.ctx-btn:hover{color:var(--text)}
 }
 .prgroup-head .caretr{color:var(--ghost);font-size:9px;transition:transform .13s}
 .prgroup-head[aria-expanded="true"] .caretr{transform:rotate(90deg)}
-.prcount{font-family:var(--mono);font-size:9.5px;color:var(--ghost);margin-left:auto}
+.prcount{font-family:var(--mono);font-size:9.5px;color:var(--faint-solid);margin-left:auto}
 .prcount b{font-weight:400}
 .prcount .n{color:var(--attn)}
 .prcount .f{color:var(--bad)}
@@ -435,7 +435,7 @@ button.ctx-btn:hover{color:var(--text)}
 .prrow .num{font-family:var(--mono);font-size:10.5px;color:var(--faint-solid);flex:0 0 42px}
 .prrow .ttl{font-size:11.5px;color:var(--text);white-space:nowrap;overflow:hidden;
   text-overflow:ellipsis;flex:1 1 auto;min-width:0}
-.prrow .link{font-family:var(--mono);font-size:9.5px;color:var(--ghost);flex:0 0 auto}
+.prrow .link{font-family:var(--mono);font-size:9.5px;color:var(--faint-solid);flex:0 0 auto}
 .prrow:hover .link{opacity:0}
 .prrow .jump{font-family:var(--mono);font-size:9.5px;color:var(--faint-solid);
   flex:0 0 auto;opacity:0;transition:opacity .12s}
@@ -452,26 +452,28 @@ button.ctx-btn:hover{color:var(--text)}
   position:sticky;top:0;background:var(--surface);z-index:2}
 /* margin-left:auto claims the free space, so the count and the refresh after it
    both sit hard right. */
-.rvcount{font-family:var(--mono);font-size:9.5px;color:var(--ghost);margin-left:auto}
+.rvcount{font-family:var(--mono);font-size:9.5px;color:var(--faint-solid);margin-left:auto}
 .rvcount .n{color:var(--dim)}
 .rvcount .f{color:var(--bad)}
-.rvrefresh{font-size:12px;line-height:1;color:var(--faint-solid);cursor:pointer;
-  padding:2px 3px;border-radius:4px;transition:color .12s,background .12s}
-.rvrefresh:hover{color:var(--text);background:var(--raised)}
+/* Refresh: one glyph, three headers. 12px with 3px of padding was a 16px target
+   for a thing you press by hand, so it is 15px in a 24px box now. */
+.rvrefresh,.refresh{font-size:15px;line-height:1;color:var(--faint-solid);cursor:pointer;
+  padding:4px 6px;border-radius:3px;transition:color .12s,background .12s}
+.rvrefresh:hover,.refresh:hover{color:var(--text);background:var(--raised)}
 .rvrefresh.spin{animation:rvspin .8s linear infinite;color:var(--dim)}
 @keyframes rvspin{to{transform:rotate(360deg)}}
 .rvrow{display:flex;text-decoration:none;color:inherit;cursor:pointer;align-items:center;
   gap:9px;padding:4px 15px;width:100%;position:relative}
 .rvrow:hover{background:var(--raised)}
 .rvrow.dim{opacity:.5}
-.rvrow .dot{background-color:#5B5B5B}
+.rvrow .dot{background-color:#6B6B6B}
 /* Fixed-width number column so titles start at the same offset as the PR list. */
 .rvrow .num{font-family:var(--mono);font-size:10.5px;color:var(--faint-solid);flex:0 0 46px}
 .rvrow .ttl{font-size:11.5px;color:var(--text);white-space:nowrap;overflow:hidden;
   text-overflow:ellipsis;flex:1 1 0;min-width:0}
 .rvrow .who{font-family:var(--mono);font-size:9.5px;color:var(--dim);
   flex:0 0 56px;text-align:right;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.rvrow .fc{font-family:var(--mono);font-size:9.5px;color:var(--ghost);flex:0 0 22px;text-align:right}
+.rvrow .fc{font-family:var(--mono);font-size:9.5px;color:var(--faint-solid);flex:0 0 22px;text-align:right}
 .rvrow .why{font-family:var(--mono);font-size:9.5px;color:var(--faint-solid);
   flex:0 1 auto;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 
@@ -574,7 +576,7 @@ button.ctx-btn:hover{color:var(--text)}
 .rv .anchor .p{font-family:var(--mono);font-size:11.5px;color:var(--text)}
 .rv .anchor .p.none{color:var(--faint-solid)}
 .rv .anchor .who{font-size:11.5px;color:var(--dim)}
-.rv .anchor .age{font-family:var(--mono);font-size:10px;color:var(--ghost)}
+.rv .anchor .age{font-family:var(--mono);font-size:10px;color:var(--faint-solid)}
 .rv .flag{
   font-family:var(--label);font-size:8px;font-weight:700;letter-spacing:.12em;
   text-transform:uppercase;padding:2px 5px;border-radius:2px;
@@ -604,7 +606,7 @@ button.ctx-btn:hover{color:var(--text)}
 }
 .rv .cmt .hd{display:flex;gap:8px;align-items:baseline}
 .rv .cmt .hd b{font-size:11.5px;font-weight:600;color:var(--text)}
-.rv .cmt .hd .age{font-family:var(--mono);font-size:10px;color:var(--ghost)}
+.rv .cmt .hd .age{font-family:var(--mono);font-size:10px;color:var(--faint-solid)}
 .rv .cmt p{color:var(--dim);max-width:70ch;white-space:pre-wrap}
 
 /* the agent's read */
@@ -623,7 +625,7 @@ button.ctx-btn:hover{color:var(--text)}
 .rv .opt.on{border-color:var(--attn);background:rgba(224,162,68,.06)}
 .rv .optHead{display:flex;align-items:flex-start;gap:9px;text-align:left;width:100%;padding:8px 10px}
 .rv .opt .k{
-  font-family:var(--mono);font-size:9.5px;color:var(--ghost);
+  font-family:var(--mono);font-size:9.5px;color:var(--faint-solid);
   border:1px solid var(--line);border-radius:2px;padding:0 4px;flex:0 0 auto;margin-top:1px;
 }
 .rv .opt.on .k{color:var(--attn);border-color:rgba(224,162,68,.4)}
@@ -653,7 +655,7 @@ button.ctx-btn:hover{color:var(--text)}
 .rv .box:focus{outline:none;border-color:var(--faint-solid)}
 .rv .foot{
   display:flex;align-items:baseline;gap:10px;
-  font-family:var(--mono);font-size:10px;color:var(--ghost);
+  font-family:var(--mono);font-size:10px;color:var(--faint-solid);
 }
 /* Only shown once the text differs from the draft, so it never offers to undo
    nothing. */
@@ -705,7 +707,7 @@ button.ctx-btn:hover{color:var(--text)}
 .rv .stage-row .k{font-family:var(--label);font-size:8px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;flex:0 0 82px}
 .rv .stage-row .k.apply{color:var(--ok)}
 .rv .stage-row .k.reply{color:var(--attn)}
-.rv .stage-row .k.skip{color:var(--ghost)}
+.rv .stage-row .k.skip{color:var(--faint-solid)}
 .rv .stage-row .k.req{color:var(--work)}
 .rv .stage-row .k.manual,.rv .stage-row .k.story{color:var(--work)}
 .rv .stage-row .c{display:flex;flex-direction:column;gap:3px;min-width:0}
@@ -732,7 +734,7 @@ button.ctx-btn:hover{color:var(--text)}
 .rv .res .st{font-family:var(--mono);font-size:11px;flex:0 0 14px;text-align:center}
 .rv .res.ok .st{color:var(--ok)}
 .rv .res.no .st{color:var(--bad)}
-.rv .res.wait .st{color:var(--ghost)}
+.rv .res.wait .st{color:var(--faint-solid)}
 .rv .res .c{display:flex;flex-direction:column;gap:3px;min-width:0}
 .rv .res .c .p{font-family:var(--mono);font-size:10.5px;color:var(--faint-solid)}
 .rv .res .c .t{font-size:12px;color:var(--dim)}
