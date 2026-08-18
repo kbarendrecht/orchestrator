@@ -166,7 +166,6 @@ pub async fn spawn_green_session(
     app: &Arc<AppState>,
     pr: u64,
     head_ref: &str,
-    login: &str,
 ) -> Result<SessionId> {
     let workspace = ensure_pr_worktree(app, pr, head_ref).await?;
     let path = app
@@ -174,41 +173,26 @@ pub async fn spawn_green_session(
         .await
         .context("worktree vanished")?;
 
-    // The vendored prompt, inline. Typing `/green <pr>` would resolve from the
-    // agent's own command path, which depends on a repo that is usually not
-    // installed — and fails as "no such command" only after the session spawned.
-    let (owner, repo) =
-        crate::resolve_repo(app).context("no GitHub repo configured and none on the remote")?;
-    let body = crate::prompt::render(
-        crate::prompt::GREEN,
-        &crate::prompt::Vars {
-            pr,
-            owner,
-            repo,
-            login: login.to_string(),
-            upstream: app.cfg.upstream_ref.clone(),
-            upstream_remote: app.cfg.upstream_remote.clone(),
-            // /green's template uses none of the review flow's vars.
-            ..Default::default()
-        },
-    )?;
+    // Headed, not `-p`: a run you can watch, answer and take over mid-flight, the
+    // same shape as /resolve. The guard table is what decides whether the run may
+    // start (§8); it never depended on the run being invisible.
+    //
+    // The prompt is a file the session is told to read rather than a slash
+    // command, so nothing depends on `you/commands` being installed and
+    // nothing is written into the checkout being driven.
+    let prompt_file = vendored_prompt_file(app, pr, "green").await?;
 
     let id = Uuid::new_v4();
     let settings = Config::hooks_settings_path()?;
     let cmd = vec![
         "claude".to_string(),
-        "-p".to_string(),
-        body,
-        "--output-format".to_string(),
-        "stream-json".to_string(),
-        "--verbose".to_string(),
         "--session-id".to_string(),
         id.to_string(),
         "--settings".to_string(),
         settings.to_string_lossy().into_owned(),
     ];
 
-    let (mut env, unset) = crate::config::transcript_env(app.cfg.persist_transcripts);
+    let (mut env, unset) = crate::config::transcript_env();
     env.push(("ORCH_SESSION_ID".to_string(), id.to_string()));
     // Parallel runs collide on ports and docker resource names, so each gets
     // its own compose project and port base (§8).
@@ -230,6 +214,10 @@ pub async fn spawn_green_session(
     );
     session.pty = Some(spawned.handle.clone());
     session.pid = spawned.pid;
+    session.pending_prompt = Some(format!(
+        "Read {} and follow it. Those are your instructions for PR {pr}.",
+        prompt_file.display()
+    ));
     {
         let mut inner = app.inner.write().await;
         inner.sessions.insert(id, session);

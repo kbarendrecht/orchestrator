@@ -1237,13 +1237,7 @@ pub async fn green_pr(
         Verdict::No { reason } => return Err(ApiError(anyhow::anyhow!("{reason}"))),
     };
 
-    // `{{LOGIN}}` is you: /green refuses a head branch that is not yours.
-    let login = {
-        let inner = app.inner.read().await;
-        inner.viewer.clone()
-    }
-    .ok_or_else(|| anyhow::anyhow!("no GitHub login yet — the PR poller has not run"))?;
-    let session = spawn::spawn_green_session(&app, number, &pr.head_ref, &login).await?;
+    let session = spawn::spawn_green_session(&app, number, &pr.head_ref).await?;
     {
         let mut inner = app.inner.write().await;
         inner.automation.by_pr.insert(
