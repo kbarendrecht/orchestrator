@@ -55,7 +55,7 @@ pub async fn spawn_session(
     cmd.push("--settings".into());
     cmd.push(settings.to_string_lossy().into_owned());
 
-    let (mut env, unset) = crate::config::transcript_env(app.cfg.persist_transcripts);
+    let (mut env, unset) = crate::config::transcript_env();
     env.push(("ORCH_SESSION_ID".to_string(), id.to_string()));
     let spawned = PtyHandle::spawn(&cmd, &path, &env, &unset, DEFAULT_SIZE)?;
 
@@ -125,7 +125,7 @@ pub async fn spawn_worktree_session(app: &Arc<AppState>, name: Option<&str>) -> 
         "--settings".to_string(),
         settings.to_string_lossy().into_owned(),
     ]);
-    let (mut env, unset) = crate::config::transcript_env(app.cfg.persist_transcripts);
+    let (mut env, unset) = crate::config::transcript_env();
     env.push(("ORCH_SESSION_ID".to_string(), id.to_string()));
 
     // cwd is the main checkout, not the worktree-to-be.

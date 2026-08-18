@@ -243,14 +243,6 @@ fn check_config(cfg: &Config) -> Result<()> {
             cfg.main_checkout.display()
         );
     }
-    if !cfg.persist_transcripts {
-        tracing::warn!(
-            "persist_transcripts is off — spawned sessions write no transcript, \
-             so resume and the teardown transcript check do nothing. \
-             Set it to true in {} when you are done developing.",
-            Config::path()?.display()
-        );
-    }
     Ok(())
 }
 
@@ -530,7 +522,7 @@ fn auto_resume(app: Arc<AppState>, records: Vec<store::SessionRecord>) {
             if !store::resumable(&r) {
                 tracing::warn!(
                     session = %r.id,
-                    "not resumed: no transcript. persist_transcripts was off when it ran."
+                    "not resumed: no transcript on disk to resume from."
                 );
                 continue;
             }
@@ -578,24 +570,6 @@ fn start_todo_writer(app: Arc<AppState>) {
 
 async fn live_findings(app: &Arc<AppState>) -> Vec<todo::Finding> {
     let mut out = Vec::new();
-
-    if !app.cfg.persist_transcripts && app.cfg.auto_resume {
-        out.push(todo::Finding {
-            what: "auto-resume cannot work".into(),
-            why: "`auto_resume` is on but `persist_transcripts` is off, so a crash leaves \
-                  nothing to resume from. One of the two wants changing."
-                .into(),
-        });
-    }
-    if !app.cfg.persist_transcripts {
-        out.push(todo::Finding {
-            what: "transcripts are off".into(),
-            why: "spawned sessions write no `.jsonl`, so resume and the teardown transcript \
-                  check do nothing. Set `persist_transcripts` back to true when you are done \
-                  developing the daemon."
-                .into(),
-        });
-    }
 
     let (workspaces, token, review_bad) = {
         let inner = app.inner.read().await;

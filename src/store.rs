@@ -1,6 +1,6 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use crate::config::Config;
@@ -367,16 +367,26 @@ mod tests {
 
 /// Whether there is a transcript to resume this session from.
 ///
-/// `claude --resume <id>` reads `~/.claude/projects/<cwd-slug>/<id>.jsonl`, so
-/// with `persist_transcripts` off there is nothing to resume and the attempt
-/// would just open an empty session under an old name.
+/// `claude --resume <id>` reads `~/.claude/projects/<cwd-slug>/<id>.jsonl`. A
+/// session killed before its first turn never gets one, and resuming from a
+/// missing file would just open an empty session under an old name.
 pub fn resumable(record: &SessionRecord) -> bool {
-    if let Some(p) = &record.transcript_path {
+    transcript_exists(record.id, &record.cwd, record.transcript_path.as_deref())
+}
+
+/// Whether a conversation was ever written to disk.
+///
+/// A session killed before its first turn has no `.jsonl` at all, and there is
+/// nothing to come back to: `claude --resume` answers "no conversation found"
+/// and exits. Both the startup resume and the rail's archive ask this, so they
+/// ask it the same way.
+pub fn transcript_exists(id: uuid::Uuid, cwd: &Path, recorded: Option<&Path>) -> bool {
+    if let Some(p) = recorded {
         if p.exists() {
             return true;
         }
     }
-    crate::config::transcript_dir_for(&record.cwd)
-        .map(|d| d.join(format!("{}.jsonl", record.id)).exists())
+    crate::config::transcript_dir_for(cwd)
+        .map(|d| d.join(format!("{id}.jsonl")).exists())
         .unwrap_or(false)
 }

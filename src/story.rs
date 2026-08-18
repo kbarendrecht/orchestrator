@@ -432,7 +432,7 @@ async fn run_filer(
         cmd.push("--strict-mcp-config".to_string());
     }
 
-    let (mut env, unset) = crate::config::transcript_env(app.cfg.persist_transcripts);
+    let (mut env, unset) = crate::config::transcript_env();
     env.push(("ORCH_SESSION_ID".to_string(), id.to_string()));
     // What `${SHORTCUT_API_TOKEN}` in the repo's `.mcp.json` expands from. In the
     // child's environment, never in the settings file the daemon writes — that

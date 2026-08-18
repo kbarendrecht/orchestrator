@@ -157,11 +157,6 @@ pub async fn preflight(app: &Arc<AppState>, workspace: &str) -> Result<Preflight
 }
 
 async fn transcripts_archived(app: &Arc<AppState>, workspace: &str) -> (bool, String) {
-    if !app.cfg.persist_transcripts {
-        // Passing silently here would read as "archived safely" when in fact
-        // nothing was ever written.
-        return (true, "transcript persistence is off — nothing was recorded".into());
-    }
     let inner = app.inner.read().await;
     let sessions: Vec<_> = inner
         .sessions

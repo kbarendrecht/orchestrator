@@ -169,7 +169,7 @@ pub async fn spawn(app: &Arc<AppState>, pr: u64, head_ref: &str, login: &str) ->
         settings.to_string_lossy().into_owned(),
     ];
 
-    let (mut env, unset) = crate::config::transcript_env(app.cfg.persist_transcripts);
+    let (mut env, unset) = crate::config::transcript_env();
     env.push(("ORCH_SESSION_ID".to_string(), id.to_string()));
     // The run POSTs its proposals back, so it needs the API token — in the
     // environment, never in the prompt text, which lands in transcripts.

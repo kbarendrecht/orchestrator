@@ -230,16 +230,14 @@ web/            SPA (vanilla, xterm.js vendored)
 - The daemon sets `core.fsmonitor`, `core.untrackedCache` and
   `fetch.writeCommitGraph` on the main checkout at startup (§4). fsmonitor is
   main-only on purpose.
-- **Transcripts.** `persist_transcripts` in config decides whether spawned
-  sessions write a `.jsonl`, and the daemon sets the environment explicitly in
-  both directions rather than inheriting it. A shell inside a Claude Code
-  session carries `CLAUDE_CODE_CHILD_SESSION`, which silently turns transcript
-  saving off in every child — so without this the daemon behaves differently
-  depending on what launched it, and resume (§2) quietly stops working. Default
-  is on. Turning it off is useful while developing the daemon itself, so its
-  throwaway sessions do not litter your real session history; the daemon logs a
-  warning at startup and the teardown preflight says so rather than passing
-  silently.
+- **Transcripts** are always written, and the daemon sets the environment
+  explicitly rather than inheriting it. A shell inside a Claude Code session
+  carries `CLAUDE_CODE_CHILD_SESSION`, which silently turns transcript saving off
+  in every child — so without clearing it the daemon behaves differently
+  depending on what launched it, and resume (§2) quietly stops working. There is
+  no switch: it was a config flag while the daemon itself was being built and its
+  throwaway sessions littered real session history, and every hour it was off
+  cost a conversation instead.
 - Managed processes do not autostart. Flip `autostart` in config if you want
   `docker compose up` on daemon start.
 - **GitHub auth** resolves in order: `ORCHD_GITHUB_TOKEN`, a `0600`

@@ -73,18 +73,6 @@ pub struct Config {
     /// you the scrollback rather than the conversation.
     #[serde(default = "default_auto_resume")]
     pub auto_resume: bool,
-    /// Whether sessions the daemon spawns write transcripts.
-    ///
-    /// This is decided here rather than inherited, because inheriting makes the
-    /// daemon behave differently depending on what launched it: a shell inside
-    /// a Claude Code session carries `CLAUDE_CODE_CHILD_SESSION`, which turns
-    /// transcript saving off in every child. Silently losing transcripts breaks
-    /// resume (§2) and leaves the teardown preflight with nothing to copy.
-    ///
-    /// Off is useful while developing the daemon itself — the throwaway
-    /// sessions it spawns do not then litter your real session history.
-    #[serde(default = "default_persist")]
-    pub persist_transcripts: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -119,10 +107,6 @@ fn default_port() -> u16 {
 
 fn default_upstream() -> String {
     "upstream/develop".to_string()
-}
-
-fn default_persist() -> bool {
-    true
 }
 
 fn default_auto_resume() -> bool {
@@ -287,7 +271,6 @@ impl Config {
             capabilities: Default::default(),
             todo_path: None,
             auto_resume: default_auto_resume(),
-            persist_transcripts: default_persist(),
         }
     }
 
@@ -315,32 +298,44 @@ impl Config {
 /// The environment a spawned Claude session gets, so the outcome never depends
 /// on which shell started the daemon.
 ///
+/// Transcripts are always on: resume (§2) and the teardown transcript check both
+/// need one, and a session without a transcript costs you the conversation. Set
+/// explicitly rather than inherited, because a shell inside a Claude Code session
+/// carries `CLAUDE_CODE_CHILD_SESSION`, which turns transcript saving off in every
+/// child — so without clearing it the daemon would behave differently depending on
+/// what launched it.
+///
 /// Returns `(set, unset)`.
-pub fn transcript_env(persist: bool) -> (Vec<(String, String)>, Vec<&'static str>) {
-    if persist {
-        (
-            vec![(
-                "CLAUDE_CODE_FORCE_SESSION_PERSISTENCE".to_string(),
-                "1".to_string(),
-            )],
-            vec!["CLAUDE_CODE_CHILD_SESSION"],
-        )
-    } else {
-        // Set explicitly rather than left to chance, so "off" means off even
-        // when the daemon was launched from a plain terminal.
-        (
-            vec![("CLAUDE_CODE_CHILD_SESSION".to_string(), "1".to_string())],
-            vec!["CLAUDE_CODE_FORCE_SESSION_PERSISTENCE"],
-        )
-    }
+pub fn transcript_env() -> (Vec<(String, String)>, Vec<&'static str>) {
+    (
+        vec![(
+            "CLAUDE_CODE_FORCE_SESSION_PERSISTENCE".to_string(),
+            "1".to_string(),
+        )],
+        vec!["CLAUDE_CODE_CHILD_SESSION"],
+    )
 }
 
 /// Claude Code keys its transcript directory by working directory, slugging the
-/// absolute path by replacing every `/` with `-`. Verified against a real run.
+/// absolute path by replacing every `/` **and every `.`** with `-`.
+///
+/// The dots matter here more than anywhere else: worktrees live under
+/// `.claude/worktrees/`, so slugging only the slashes produced
+/// `…-acme-.claude-worktrees-x` against a real `…-acme--claude-worktrees-x`
+/// — a directory that never exists. Every worktree session therefore looked like
+/// it had no transcript, which is what auto-resume and the teardown transcript
+/// check both read to decide there was nothing to resume or copy.
 pub fn transcript_dir_for(cwd: &Path) -> Result<PathBuf> {
     let home = std::env::var("HOME").context("HOME is not set")?;
-    let slug = cwd.to_string_lossy().replace('/', "-");
-    Ok(PathBuf::from(home).join(".claude/projects").join(slug))
+    Ok(PathBuf::from(home)
+        .join(".claude/projects")
+        .join(transcript_slug(cwd)))
+}
+
+/// The slug half of [`transcript_dir_for`], so the rule can be tested without a
+/// test reaching into `HOME` and changing it under every other test.
+fn transcript_slug(cwd: &Path) -> String {
+    cwd.to_string_lossy().replace(['/', '.'], "-")
 }
 
 #[cfg(test)]
@@ -348,8 +343,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn persistence_on_clears_the_child_marker() {
-        let (set, unset) = transcript_env(true);
+    fn a_worktree_slug_collapses_the_dot_as_well_as_the_slashes() {
+        // The real directory name for a worktree at `<main>/.claude/worktrees/x`.
+        // Slugging only the slashes gave `-.claude-`, which exists nowhere, so
+        // every worktree session read as having no transcript.
+        assert_eq!(
+            transcript_slug(Path::new("/home/x/dev/acme/.claude/worktrees/dfafdf")),
+            "-home-x-dev-acme--claude-worktrees-dfafdf"
+        );
+    }
+
+    #[test]
+    fn persistence_clears_the_child_marker() {
+        // The marker is what a daemon launched from inside a Claude session
+        // inherits, and it silently turns transcripts off in every child.
+        let (set, unset) = transcript_env();
         assert!(unset.contains(&"CLAUDE_CODE_CHILD_SESSION"));
         assert!(set
             .iter()
@@ -357,36 +365,14 @@ mod tests {
     }
 
     #[test]
-    fn persistence_off_sets_the_marker_rather_than_hoping_for_it() {
-        // "Off" must mean off even when the daemon was launched from a plain
-        // terminal that carries no marker of its own.
-        let (set, unset) = transcript_env(false);
-        assert!(set
-            .iter()
-            .any(|(k, v)| k == "CLAUDE_CODE_CHILD_SESSION" && v == "1"));
-        assert!(unset.contains(&"CLAUDE_CODE_FORCE_SESSION_PERSISTENCE"));
-    }
-
-    #[test]
-    fn the_two_directions_never_agree() {
-        // Whatever launched the daemon, exactly one of the two vars is set.
-        let (on_set, on_unset) = transcript_env(true);
-        let (off_set, off_unset) = transcript_env(false);
-        for (k, _) in &on_set {
-            assert!(off_unset.contains(&k.as_str()), "{k} not cleared when off");
-        }
-        for (k, _) in &off_set {
-            assert!(on_unset.contains(&k.as_str()), "{k} not cleared when on");
-        }
-    }
-
-    #[test]
-    fn a_config_without_the_field_persists() {
-        // Existing config files predate the flag; the safe reading is on.
+    fn a_config_still_parses_with_the_dropped_flag_in_it() {
+        // `persist_transcripts` was a config key until it was always-on; a file
+        // written back then must still load.
         let cfg: Config = serde_json::from_str(
-            r#"{"main_checkout":"/tmp","port":7777,"upstream_ref":"upstream/develop"}"#,
+            r#"{"main_checkout":"/tmp","port":7777,"upstream_ref":"upstream/develop",
+                "persist_transcripts":false}"#,
         )
         .expect("parse");
-        assert!(cfg.persist_transcripts);
+        assert_eq!(cfg.main_checkout, PathBuf::from("/tmp"));
     }
 }
