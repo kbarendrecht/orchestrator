@@ -562,6 +562,105 @@ pub enum Amend {
     /// Amend `HEAD` instead, with the reason — shown so the fallback is visible
     /// rather than silent.
     Head(String),
+    /// Make a **new** commit, because rewriting anything here would rewrite work
+    /// that is not ours. The reason is shown for the same purpose.
+    OnTop(String),
+}
+
+/// Who git will actually author a commit as, asked of git rather than of config.
+///
+/// `git config user.email` is empty in a container that never set one — and git
+/// commits there anyway, as `you@hostname`. Reading the config would report "no
+/// identity", which the authorship checks below would take to mean *every* commit
+/// belongs to somebody else.
+pub fn effective_email(cwd: &Path) -> Option<String> {
+    let ident = Command::new("git")
+        .args(["var", "GIT_AUTHOR_IDENT"])
+        .current_dir(cwd)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())?;
+    // `Name <email> 1699999999 +0200`
+    let email = ident
+        .split('<')
+        .nth(1)?
+        .split('>')
+        .next()?
+        .trim()
+        .to_string();
+    (!email.is_empty()).then(|| email.to_lowercase())
+}
+
+/// Every author `git log <args>` selects, lowercased.
+///
+/// `None` when git could not answer. The callers read that as "cannot tell", which
+/// has to degrade rather than proceed: an empty list would mean "nobody else is
+/// involved" and authorise a rewrite. Takes the arguments as a slice because
+/// `["-1 HEAD"]` is one argument git cannot parse — which is how the first draft of
+/// this check silently never fired.
+fn authors_in(cwd: &Path, args: &[&str]) -> Option<Vec<String>> {
+    let mut argv = vec!["log", "--format=%ae"];
+    argv.extend_from_slice(args);
+    let out = Command::new("git")
+        .args(&argv)
+        .current_dir(cwd)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())?;
+    Some(
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .map(|l| l.trim().to_lowercase())
+            .filter(|l| !l.is_empty())
+            .collect(),
+    )
+}
+
+/// Does `rev` have more than one parent?
+fn is_merge(cwd: &Path, rev: &str) -> bool {
+    Command::new("git")
+        .args(["rev-list", "--parents", "-n", "1", rev])
+        .current_dir(cwd)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .split_whitespace()
+                .count()
+                > 2
+        })
+        .unwrap_or(false)
+}
+
+/// The **only** way to build an [`Amend::Head`].
+///
+/// Amending `HEAD` rewrites it, so the "someone else authored it" guard above is
+/// worthless if the fallback then rewrites `HEAD` regardless — which is exactly
+/// what happened: `Amend::Head("<sha> is <email>'s commit")` was a value whose own
+/// text said it had refused, handed to a `git commit --amend`.
+///
+/// Note the discriminator is **authorship, not publication**. It has to be: a batch
+/// only starts when the branch is level with origin, so `HEAD` is always already
+/// pushed. The question is never "has anyone seen this commit", it is "is it mine
+/// to rewrite".
+pub fn head_or_on_top(cwd: &Path, my_email: Option<&str>, why: String) -> Amend {
+    let Some(mine) = my_email else {
+        return Amend::OnTop(format!(
+            "{why}, and git has no identity here so no commit can be shown to be yours"
+        ));
+    };
+    if is_merge(cwd, "HEAD") {
+        return Amend::OnTop(format!("{why}, and HEAD is a merge"));
+    }
+    match authors_in(cwd, &["-n", "1", "HEAD"]).as_deref() {
+        Some([author, ..]) if author != mine => {
+            Amend::OnTop(format!("{why}, and HEAD is {author}'s commit"))
+        }
+        Some(_) => Amend::Head(why),
+        None => Amend::OnTop(format!("{why}, and who wrote HEAD could not be read")),
+    }
 }
 
 /// Decide the fixup target for a set of touched lines, degrading to `HEAD`.
@@ -583,22 +682,29 @@ pub fn amend_target(
     touched: &[(String, u32)],
     my_email: &str,
 ) -> Result<Amend> {
+    // The caller's identity wins; `effective_email` is the fallback for when it is
+    // empty, which is what `git config user.email` returns in a container that never
+    // set one — git still commits there, as `you@hostname`, so "no identity" must not
+    // be read as "every commit belongs to somebody else".
+    let mine = Some(my_email.trim().to_lowercase())
+        .filter(|e| !e.is_empty())
+        .or_else(|| effective_email(cwd));
+    let degrade = |why: String| head_or_on_top(cwd, mine.as_deref(), why);
+
     if touched.is_empty() {
-        return Ok(Amend::Head("nothing to attribute".into()));
+        return Ok(degrade("nothing to attribute".into()));
     }
 
     let mut target: Option<Blame> = None;
     for (path, line) in touched {
         let Some(b) = blame_line(cwd, rev, path, *line)? else {
-            return Ok(Amend::Head(format!(
-                "{path}:{line} is not in any commit yet"
-            )));
+            return Ok(degrade(format!("{path}:{line} is not in any commit yet")));
         };
         match &target {
             None => target = Some(b),
             Some(t) if t.sha == b.sha => {}
             Some(t) => {
-                return Ok(Amend::Head(format!(
+                return Ok(degrade(format!(
                     "the changes span {} and {}",
                     short(&t.sha),
                     short(&b.sha)
@@ -610,16 +716,37 @@ pub fn amend_target(
 
     // An ancestor of the merge base came from the base branch, not this PR.
     if is_ancestor(cwd, &hit.sha, merge_base) {
-        return Ok(Amend::Head(format!(
-            "{} predates this branch",
-            short(&hit.sha)
-        )));
+        return Ok(degrade(format!("{} predates this branch", short(&hit.sha))));
     }
-    if !hit.author_email.is_empty() && hit.author_email != my_email {
-        return Ok(Amend::Head(format!(
-            "{} is {}'s commit",
-            short(&hit.sha),
-            hit.author_email
+
+    // **The whole range, not just the target.** `fold_in` autosquashes with
+    // `rebase -i <sha>~1`, which replays every commit from `<sha>` to `HEAD` and
+    // gives each a new sha — so a colleague's commit sitting *on top* of the one
+    // that owns this line is rewritten and force-pushed, without this path ever
+    // being taken. Checking only `hit.author_email` guarded the target and left
+    // its descendants wide open.
+    let range = format!("{}^..HEAD", hit.sha);
+    let in_range = authors_in(cwd, &[&range]).or_else(|| {
+        // No `^` on a root commit, so ask for the commit itself.
+        authors_in(cwd, &["-n", "1", &hit.sha])
+    });
+    match in_range {
+        None => return Ok(degrade("who wrote this branch could not be read".into())),
+        Some(authors) => {
+            if let Some(other) = authors.iter().find(|a| Some(a.as_str()) != mine.as_deref()) {
+                return Ok(degrade(format!(
+                    "folding into {} would rewrite {}'s commit above it",
+                    short(&hit.sha),
+                    other
+                )));
+            }
+        }
+    }
+    // A root commit has no `~1` for the rebase to start from.
+    if !rev_exists(cwd, &format!("{}~1", hit.sha)) {
+        return Ok(degrade(format!(
+            "{} is the first commit, so there is nothing to rebase onto",
+            short(&hit.sha)
         )));
     }
     Ok(Amend::Fixup(hit.sha))
@@ -627,6 +754,11 @@ pub fn amend_target(
 
 fn short(sha: &str) -> String {
     sha.chars().take(7).collect()
+}
+
+/// Does this revision resolve?
+fn rev_exists(cwd: &Path, rev: &str) -> bool {
+    git_ok(cwd, &["rev-parse", "--verify", "--quiet", rev])
 }
 
 /// Is `a` an ancestor of `b`? Exit status only, so a failure means "no".
@@ -652,6 +784,18 @@ fn is_ancestor(cwd: &Path, a: &str, b: &str) -> bool {
 pub fn fold_in(cwd: &Path, amend: &Amend) -> Result<()> {
     git(cwd, &["add", "-A"])?;
     match amend {
+        Amend::OnTop(why) => {
+            // `--amend` succeeds on an empty staged diff; `commit -m` does not, and
+            // a hook that reverted an edit back to HEAD's content would otherwise
+            // turn a silent success into a hard error.
+            if git_ok(cwd, &["diff", "--cached", "--quiet"]) {
+                return Ok(());
+            }
+            // Never `fixup!`/`squash!`: a later batch's autosquash over this range
+            // would silently absorb it.
+            git(cwd, &["commit", "-m", &format!("review batch: {why}")])?;
+            Ok(())
+        }
         Amend::Head(_) => {
             git(cwd, &["commit", "--amend", "--no-edit"])?;
             Ok(())
@@ -1021,14 +1165,109 @@ mod tests {
     }
 
     #[test]
-    fn someone_elses_commit_degrades_to_head() {
+    fn someone_elses_commit_is_never_rewritten() {
         // Rewriting a colleague's commit under your own force-push changes a sha
         // they may have checked out.
+        //
+        // This used to assert `Head`, which was the bug wearing the test's clothes:
+        // `fold_in`'s `Head` arm runs `git commit --amend`, so "degrading" to it
+        // rewrote the very commit the guard had just refused to touch. When nothing
+        // on the branch is yours, the only safe fold is a new commit.
         let d = amend_repo();
         match amend_target(&d, None, "base", &[("f.txt".into(), 3)], "someone@else").unwrap() {
-            Amend::Head(why) => assert!(why.contains("commit"), "{why}"),
-            other => panic!("expected Head, got {other:?}"),
+            Amend::OnTop(why) => assert!(why.contains("me@here"), "must name them: {why}"),
+            other => panic!("expected OnTop, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn a_colleagues_commit_stacked_on_the_target_is_not_rewritten_either() {
+        // The half the first attempt missed. `fold_in` autosquashes with
+        // `rebase -i <sha>~1`, which replays every commit from the target to HEAD and
+        // gives each a new sha — so guarding only the target left its descendants
+        // wide open, and this path was never taken.
+        let d = amend_repo();
+        let target = sha_of(&d, "the PR commit");
+        // A colleague commits on top of the commit that owns the line.
+        std::fs::write(d.join("theirs.txt"), "their work\n").unwrap();
+        for args in [
+            vec!["add", "-A"],
+            vec![
+                "-c",
+                "user.email=bob@example.com",
+                "-c",
+                "user.name=bob",
+                "commit",
+                "-qm",
+                "bob's commit",
+            ],
+        ] {
+            std::process::Command::new("git")
+                .args(&args)
+                .current_dir(&d)
+                .output()
+                .expect("git");
+        }
+
+        match amend_target(&d, None, "base", &[("f.txt".into(), 3)], "me@here").unwrap() {
+            Amend::OnTop(why) => {
+                assert!(why.contains("bob@example.com"), "must name them: {why}");
+                assert!(why.contains(&target[..7]), "and the target: {why}");
+            }
+            other => panic!("a stacked commit must not be rewritten, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn committing_on_top_leaves_every_existing_sha_alone() {
+        // The whole point: an amend rewrites, a new commit does not.
+        let d = amend_repo();
+        let before_head = head_sha(&d).unwrap();
+        let before_count = std::process::Command::new("git")
+            .args(["rev-list", "--count", "HEAD"])
+            .current_dir(&d)
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap();
+
+        std::fs::write(d.join("f.txt"), "base1\nbase2\nmine\nby hand\n").unwrap();
+        fold_in(&d, &Amend::OnTop("HEAD is bob's commit".into())).unwrap();
+
+        let after_count = std::process::Command::new("git")
+            .args(["rev-list", "--count", "HEAD"])
+            .current_dir(&d)
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap();
+        assert_eq!(
+            after_count.parse::<u32>().unwrap(),
+            before_count.parse::<u32>().unwrap() + 1,
+            "one commit added, not folded"
+        );
+        // Byte-identical: nothing anybody may have checked out has moved.
+        let parent = std::process::Command::new("git")
+            .args(["rev-parse", "HEAD^"])
+            .current_dir(&d)
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap();
+        assert_eq!(parent, before_head, "the old HEAD must be untouched");
+        assert!(is_clean(&d).unwrap());
+    }
+
+    #[test]
+    fn committing_on_top_with_nothing_staged_is_not_an_error() {
+        // `--amend` succeeds on an empty diff and `commit -m` does not, so a hook
+        // that reverted an edit back to HEAD's content would turn a silent success
+        // into a hard error — which, mid-batch, is a 500 with HEAD already moved.
+        let d = amend_repo();
+        let before = head_sha(&d).unwrap();
+        fold_in(&d, &Amend::OnTop("nothing to attribute".into())).unwrap();
+        assert_eq!(
+            head_sha(&d).unwrap(),
+            before,
+            "nothing to commit, nothing done"
+        );
     }
 
     #[test]

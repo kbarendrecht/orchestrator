@@ -315,6 +315,9 @@ pub fn write_batch(
                 format!("folded into {}", sha.chars().take(7).collect::<String>())
             }
             crate::git::Amend::Head(why) => format!("amended HEAD — {why}"),
+            // Worth naming differently: an amend leaves the branch's shape alone
+            // and a new commit does not.
+            crate::git::Amend::OnTop(why) => format!("committed on top — {why}"),
         },
     })
 }
@@ -412,11 +415,18 @@ pub fn write_manual(
         let mut names: Vec<String> = moved.into_iter().map(|(p, _)| p).collect();
         names.sort();
         names.dedup();
-        crate::git::Amend::Head(format!(
-            "the accepted patches moved the lines in {}, so the reviewers' anchors no \
-             longer say which commit owns them",
-            names.join(", ")
-        ))
+        // Through the shared constructor, never `Amend::Head` directly: it is the
+        // only thing that checks whether HEAD is ours to rewrite, and building one
+        // here walked straight past it.
+        crate::git::head_or_on_top(
+            cwd,
+            crate::git::effective_email(cwd).as_deref(),
+            format!(
+                "the accepted patches moved the lines in {}, so the reviewers' anchors no \
+                 longer say which commit owns them",
+                names.join(", ")
+            ),
+        )
     } else {
         crate::git::amend_target(cwd, Some("HEAD"), merge_base, &usable, my_email)?
     };
@@ -452,6 +462,9 @@ pub fn write_manual(
                 format!("folded into {}", sha.chars().take(7).collect::<String>())
             }
             crate::git::Amend::Head(why) => format!("amended HEAD — {why}"),
+            // Worth naming differently: an amend leaves the branch's shape alone
+            // and a new commit does not.
+            crate::git::Amend::OnTop(why) => format!("committed on top — {why}"),
         },
     })
 }
