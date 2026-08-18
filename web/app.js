@@ -159,6 +159,8 @@ function openTerm(target, parent) {
 
   sock.onopen = () => {
     entry.ready = true;
+    // A fresh socket knows nothing about the size, whatever the last one was told.
+    entry.sent = null;
     resize(entry);
   };
   sock.onmessage = (ev) => {
@@ -182,10 +184,14 @@ function resize(entry) {
   } catch (e) {
     return;
   }
+  const { rows, cols } = entry.term;
+  // Only tell the pty when the geometry actually moved. That makes a refit
+  // idempotent, which is what lets the observer below fire as often as it likes
+  // instead of costing a resize message per frame of a drag.
+  if (entry.sent && entry.sent.rows === rows && entry.sent.cols === cols) return;
+  entry.sent = { rows, cols };
   if (entry.ready && entry.sock.readyState === WebSocket.OPEN) {
-    entry.sock.send(JSON.stringify({
-      type: 'resize', rows: entry.term.rows, cols: entry.term.cols,
-    }));
+    entry.sock.send(JSON.stringify({ type: 'resize', rows, cols }));
   }
 }
 
@@ -3457,9 +3463,33 @@ window.addEventListener('keydown', (e) => {
   }
 }, true);
 
-window.addEventListener('resize', () => {
-  for (const e of terms.values()) resize(e);
-});
+/* A terminal sizes itself to its host, and the host changes size for more reasons
+ * than any one event covers: a window resize, a column drag, a font-size step, or
+ * a compositor handing the window back at a different size than it took it —
+ * which is the one that left the centre pane short of full height until you
+ * switched sessions. So watch the box rather than enumerate the causes.
+ *
+ * Coalesced to one refit per frame, and a refit that changes nothing sends
+ * nothing. */
+let refitQueued = false;
+function queueRefit() {
+  if (refitQueued) return;
+  refitQueued = true;
+  requestAnimationFrame(() => {
+    refitQueued = false;
+    refitTerms();
+  });
+}
+
+const hostObserver = new ResizeObserver(queueRefit);
+for (const id of ['termwrap', 'drawerbody']) {
+  const host = $(id);
+  if (host) hostObserver.observe(host);
+}
+// Belt and braces for the focus case: if the window comes back with the same box
+// but a parked renderer, nothing above fires and this costs nothing.
+window.addEventListener('focus', queueRefit);
+document.addEventListener('visibilitychange', queueRefit);
 
 // ---------------------------------------------------------------------------
 // Live state
