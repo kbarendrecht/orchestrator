@@ -311,26 +311,15 @@ function sessionsOf(wsId) {
   return snap.sessions.filter((s) => s.workspace === wsId);
 }
 
-/** Keep an open diff on the session you are in.
+/** An open diff belongs to the session it was opened from.
  *
- *  The three panes describe one thing; a diff pinned to the worktree you have
- *  just switched away from is the odd one out. Re-pointed rather than closed,
- *  because switching sessions with the diff open reads as "show me this one's
- *  changes" — and closed only when there is no session left to describe. */
+ *  So switching away closes it. It used to re-point at the new workspace, which
+ *  meant a switch silently swapped the file under you — and a diff is a thing you
+ *  opened deliberately, not a pane that should follow you around. */
 function syncDiffToSession() {
   if (!diffState.open) return;
   const ws = activeWorkspaceId();
-  if (!ws) {
-    closeDiff();
-    return;
-  }
-  if (ws === diffState.ws) return;
-  // Before the await, or the next render re-enters and fetches twice.
-  diffState.ws = ws;
-  diffState.path = null;
-  diffState.file = null;
-  diffState.summary = null;
-  openDiff();
+  if (!ws || ws !== diffState.ws) closeDiff();
 }
 
 function render() {
@@ -965,7 +954,17 @@ function renderDrawer() {
     tabs.appendChild(tab);
   }
 
-  showTerm(active ? `proc:${active}` : null, $('drawerbody'));
+  const shown = showTerm(active ? `proc:${active}` : null, $('drawerbody'));
+  if (shown && pendingProcFocus && active === pendingProcFocus) {
+    pendingProcFocus = null;
+    // After the frame that un-hides it: xterm refuses focus while its host has no
+    // dimensions, which is exactly the state it is in right now.
+    requestAnimationFrame(() => {
+      try {
+        shown.term.focus();
+      } catch (e) { /* disposed while we waited */ }
+    });
+  }
 
   // Auto-expand when a managed process goes red.
   const failing = procs.find((p) => p.health.health === 'failing');
@@ -976,6 +975,8 @@ function renderDrawer() {
 }
 
 let drawerTouched = false;
+/** A shell whose terminal should take the cursor as soon as it exists. */
+let pendingProcFocus = null;
 
 // ---------------------------------------------------------------------------
 // Files — changed files for the selected session's workspace (§9)
@@ -3341,6 +3342,9 @@ async function newShell() {
   try {
     const r = await call(`/api/workspace/${encodeURIComponent(wsId)}/shell`);
     selectedProc[wsId] = r.process;
+    // You pressed + to type in it. The pty does not exist until the daemon says
+    // so, so this is claimed here and spent when the terminal appears.
+    pendingProcFocus = r.process;
   } catch (e) {
     toast(e.message, true);
   }
