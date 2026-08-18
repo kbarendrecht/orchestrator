@@ -219,6 +219,7 @@ pub async fn start(opts: StartOptions) -> Result<Server> {
     start_pr_poller(app.clone());
     start_review_poller(app.clone());
     start_stack_poller(app.clone());
+    start_workspace_watcher(app.clone());
     start_todo_writer(app.clone());
     // A debug build is `cargo run` from a checkout; its version is whatever the
     // working tree is, so comparing it against a release only ever nags. Only a
@@ -684,6 +685,40 @@ fn start_review_poller(app: Arc<AppState>) {
                 _ = tokio::time::sleep(interval) => {}
                 _ = app.review_refresh.notified() => {}
             }
+        }
+    });
+}
+
+/// Re-read the file list of workspaces somebody is sitting in.
+///
+/// Hooks are the primary signal (§4) but they only fire for things the agent does
+/// through a tool. A `!` command typed into a session runs no tool, so no
+/// `PostToolUse` arrives and no `Stop` either — a `git restore` that way changed
+/// 849 files and the pane never heard. Same for an editor, a build, or a `git`
+/// command in a shell tab.
+///
+/// Only workspaces with a live session, so an idle machine does no git at all.
+fn start_workspace_watcher(app: Arc<AppState>) {
+    tokio::spawn(async move {
+        let interval = std::time::Duration::from_secs(15);
+        loop {
+            tokio::time::sleep(interval).await;
+            let busy: std::collections::HashSet<String> = {
+                let inner = app.inner.read().await;
+                inner
+                    .sessions
+                    .values()
+                    .filter(|s| s.state.is_live())
+                    .map(|s| s.workspace.clone())
+                    .collect()
+            };
+            if busy.is_empty() {
+                continue;
+            }
+            for ws in busy {
+                let _ = app.reconcile(&ws).await;
+            }
+            app.notify().await;
         }
     });
 }

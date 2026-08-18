@@ -205,21 +205,34 @@ pub async fn post_tool_use(
         .and_then(|v| v.as_str())
         .map(PathBuf::from);
 
+    // A tool with no `file_path` is usually `Bash`, which is exactly the tool that
+    // moves files the daemon cannot predict: a build, a codegen, a `git restore`.
+    // It used to reconcile only when a path was there to attribute, so a whole
+    // class of change waited for the end of the turn.
     let mut needs_reconcile = None;
-    if let Some(path) = edited {
-        // `.plan/` in a worktree is a symlink to main's `.plan/`. Resolve every
-        // hook path through realpath before attributing it, or the edit shows as
-        // a phantom untracked file in the wrong pane (§4).
-        let real = std::fs::canonicalize(&path).unwrap_or(path);
-        let owner = app.workspace_for_path(&real).await;
+    {
+        let owner = match &edited {
+            // `.plan/` in a worktree is a symlink to main's `.plan/`. Resolve every
+            // hook path through realpath before attributing it, or the edit shows
+            // as a phantom untracked file in the wrong pane (§4).
+            Some(path) => {
+                let real = std::fs::canonicalize(path).unwrap_or_else(|_| path.clone());
+                let owner = app.workspace_for_path(&real).await;
+                let mut inner = app.inner.write().await;
+                if let Some(s) = inner.sessions.get_mut(&id) {
+                    s.dirty_paths.insert(real);
+                }
+                owner
+            }
+            None => None,
+        };
         let mut inner = app.inner.write().await;
         if let Some(s) = inner.sessions.get_mut(&id) {
-            s.dirty_paths.insert(real.clone());
             if s.last_reconcile
                 .map(|t| t.elapsed().unwrap_or_default() > RECONCILE_EVERY)
                 .unwrap_or(true)
             {
-                needs_reconcile = owner.clone().or(Some(s.workspace.clone()));
+                needs_reconcile = owner.or(Some(s.workspace.clone()));
             }
         }
     }
