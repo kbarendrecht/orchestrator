@@ -3473,6 +3473,87 @@ function setupChrome() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Column widths
+// ---------------------------------------------------------------------------
+
+/* The three-column grid is two CSS variables wide, so a drag is a variable
+ * write and nothing re-renders. Widths are a preference of this browser, not
+ * state the daemon owns, so they live in localStorage — same reasoning as the
+ * rail's collapsed sections. */
+const COLS = {
+  rail: { prop: '--rail', key: 'orch.railWidth', def: 290, min: 210 },
+  files: { prop: '--files', key: 'orch.filesWidth', def: 296, min: 230 },
+};
+/* The centre pane holds a terminal; squeezing it to nothing to admire a wide
+ * rail is not a layout anybody wants to be one drag away from. */
+const CENTRE_MIN = 420;
+
+const colWidth = (col) =>
+  parseInt(getComputedStyle(document.documentElement).getPropertyValue(col.prop), 10) || col.def;
+
+/** Set a column, clamped so the centre always survives and so does the other one. */
+function setCol(col, px) {
+  const other = col === COLS.rail ? COLS.files : COLS.rail;
+  const room = window.innerWidth - CENTRE_MIN - colWidth(other);
+  const width = Math.round(Math.max(col.min, Math.min(px, Math.max(col.min, room))));
+  document.documentElement.style.setProperty(col.prop, `${width}px`);
+  return width;
+}
+
+/** xterm sizes itself to its host, and a column drag is not a window resize. */
+function refitTerms() {
+  for (const entry of terms.values()) resize(entry);
+}
+
+function dragColumn(handle, col, fromLeft) {
+  handle.addEventListener('mousedown', (e) => {
+    if (e.button !== 0) return;
+    // The titlebar's own drag handler lives under this strip.
+    e.preventDefault();
+    e.stopPropagation();
+    handle.classList.add('dragging');
+    document.body.classList.add('col-resizing');
+
+    const move = (ev) => setCol(col, fromLeft ? ev.clientX : window.innerWidth - ev.clientX);
+    const done = () => {
+      window.removeEventListener('mousemove', move);
+      handle.classList.remove('dragging');
+      document.body.classList.remove('col-resizing');
+      try {
+        localStorage.setItem(col.key, String(colWidth(col)));
+      } catch (err) { /* private mode: the drag still worked for this session */ }
+      // Once, at the end: fitting on every mousemove means a pty resize per
+      // mouse event, and the terminal reflows fine on release.
+      refitTerms();
+    };
+    window.addEventListener('mousemove', move);
+    window.addEventListener('mouseup', done, { once: true });
+  });
+
+  handle.addEventListener('dblclick', () => {
+    setCol(col, col.def);
+    try {
+      localStorage.removeItem(col.key);
+    } catch (err) { /* nothing to forget */ }
+    refitTerms();
+  });
+}
+
+function setupColumns() {
+  for (const col of Object.values(COLS)) {
+    const saved = Number(localStorage.getItem(col.key));
+    if (saved) setCol(col, saved);
+  }
+  dragColumn($('splitl'), COLS.rail, true);
+  dragColumn($('splitr'), COLS.files, false);
+  // A window that got narrower can leave a stored width with no room for it.
+  window.addEventListener('resize', () => {
+    for (const col of Object.values(COLS)) setCol(col, colWidth(col));
+  });
+}
+
+setupColumns();
 setupChrome();
 connect();
 // The waiting clock has to tick even when nothing else changes.
