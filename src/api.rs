@@ -218,8 +218,10 @@ pub async fn kill_session(
 /// Resume an archived session.
 ///
 /// A live worktree resumes trivially — relaunch with cwd set to the recorded
-/// path. A torn-down one needs its worktree rebuilt first, which is refused
-/// here rather than half-done (§2).
+/// path. A torn-down one is rebuilt here from its recovery record (branch and
+/// `head_sha`) at the same absolute path, then relaunched; if HEAD has moved on
+/// since, that is reported as a warning rather than refused (§2). Only a
+/// transcript-only session — branch gone, commit unreachable — cannot resume.
 pub async fn resume_session(
     State(app): State<Arc<AppState>>,
     Path(id): Path<Uuid>,
