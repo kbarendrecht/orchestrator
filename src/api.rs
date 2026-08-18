@@ -278,7 +278,17 @@ pub async fn resume_session(
         }
     }
 
-    let new_id = spawn::spawn_session(&app, &workspace, Kind::Interactive, Some(id)).await?;
+    // Its recorded kind, not `Interactive`: reopening a fix run should come back as
+    // the automation the rail colours and the guard table counts.
+    let kind = {
+        let inner = app.inner.read().await;
+        inner
+            .sessions
+            .get(&id)
+            .map(|s| s.kind.clone())
+            .unwrap_or(Kind::Interactive)
+    };
+    let new_id = spawn::spawn_session(&app, &workspace, kind, Some(id)).await?;
     Ok(Json(json!({ "session": new_id, "warning": warning })))
 }
 

@@ -505,10 +505,13 @@ fn start_pr_poller(app: Arc<AppState>) {
 /// demotes an orphaned run to `Exhausted` rather than resurrecting it.
 fn auto_resume(app: Arc<AppState>, records: Vec<store::SessionRecord>) {
     tokio::spawn(async move {
-        let mut candidates: Vec<store::SessionRecord> = records
-            .into_iter()
-            .filter(|r| r.was_live && matches!(r.kind, Kind::Interactive))
-            .collect();
+        // Any session that was live, whatever started it. `/resolve` and the fix
+        // run are `Automation`, and skipping them silently meant the pane you
+        // were actually sitting in was the one that did not come back. `--resume`
+        // reopens the conversation at its prompt; it re-runs nothing, so there is
+        // no rebase or push waiting to fire on boot.
+        let mut candidates: Vec<store::SessionRecord> =
+            records.into_iter().filter(|r| r.was_live).collect();
         if candidates.is_empty() {
             return;
         }
@@ -545,7 +548,9 @@ fn auto_resume(app: Arc<AppState>, records: Vec<store::SessionRecord>) {
                 main_taken = true;
             }
 
-            match spawn::spawn_session(&app, &r.workspace, Kind::Interactive, Some(r.id)).await {
+            // Its own kind, not `Interactive`: a resumed fix run is still the
+            // automation the rail colours teal and the guard table counts.
+            match spawn::spawn_session(&app, &r.workspace, r.kind.clone(), Some(r.id)).await {
                 Ok(id) => {
                     tracing::info!(session = %id, workspace = %r.workspace, "auto-resumed");
                     resumed += 1;
