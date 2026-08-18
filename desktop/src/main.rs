@@ -223,14 +223,18 @@ fn open(app_handle: &AppHandle, rt: &tokio::runtime::Handle, main: Option<std::p
 /// an edge, which is cheaper than the alternative of not knowing the size when it
 /// matters.
 fn remember_window(app: &AppHandle) {
-    let Some(win) = app.get_webview_window("main") else { return };
+    let Some(win) = app.get_webview_window("main") else {
+        return;
+    };
     // Not while maximised or fullscreen: that size belongs to the screen, not to
     // the window, and restoring into it means every launch opens full-screen with
     // nothing to un-maximise back to.
     if win.is_maximized().unwrap_or(false) || win.is_fullscreen().unwrap_or(false) {
         return;
     }
-    let Ok(scale) = win.scale_factor() else { return };
+    let Ok(scale) = win.scale_factor() else {
+        return;
+    };
     if let Ok(size) = win.inner_size() {
         let logical = size.to_logical::<f64>(scale);
         orchd::store::save_window(logical.width.round() as u32, logical.height.round() as u32);

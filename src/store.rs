@@ -76,7 +76,9 @@ impl SessionRecord {
 /// Its own file rather than a field in `config.json`: that file is yours to edit,
 /// and a number the app rewrites on every close does not belong in it.
 pub fn save_window(width: u32, height: u32) {
-    let Ok(dir) = Config::config_dir() else { return };
+    let Ok(dir) = Config::config_dir() else {
+        return;
+    };
     let _ = std::fs::create_dir_all(&dir);
     let _ = std::fs::write(
         dir.join("window.json"),
