@@ -177,6 +177,7 @@ function openTerm(target, parent) {
     entry.ready = true;
     // A fresh socket knows nothing about the size, whatever the last one was told.
     entry.sent = null;
+    entry.box = null;
     resize(entry);
   };
   sock.onmessage = (ev) => {
@@ -195,6 +196,13 @@ function openTerm(target, parent) {
 
 function resize(entry) {
   if (!entry || entry.host.hidden) return;
+  // Nothing moved, nothing to do. Without this a repeated observation refits at
+  // the same size, and a box whose width lands between two whole cells can flip
+  // the answer back and forth — which reads as the terminal resizing itself.
+  const box = entry.host.getBoundingClientRect();
+  const seen = `${Math.round(box.width)}x${Math.round(box.height)}`;
+  if (entry.box === seen) return;
+  entry.box = seen;
   try {
     entry.fit.fit();
   } catch (e) {
@@ -3487,14 +3495,16 @@ window.addEventListener('keydown', (e) => {
  *
  * Coalesced to one refit per frame, and a refit that changes nothing sends
  * nothing. */
-let refitQueued = false;
+let refitTimer = null;
 function queueRefit() {
-  if (refitQueued) return;
-  refitQueued = true;
-  requestAnimationFrame(() => {
-    refitQueued = false;
+  // Settled, not per-frame: a drag or a compositor animation fires this dozens of
+  // times, and fitting mid-flight is how a terminal ends up sized to a box that
+  // is still moving.
+  if (refitTimer) clearTimeout(refitTimer);
+  refitTimer = setTimeout(() => {
+    refitTimer = null;
     refitTerms();
-  });
+  }, 120);
 }
 
 const hostObserver = new ResizeObserver(queueRefit);
