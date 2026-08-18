@@ -52,6 +52,14 @@ async function get(path) {
 }
 
 /** Compact enough to sit on a rail row without pushing the name out. */
+/* When the snapshot the current numbers came from landed. Durations are computed
+ * server-side as the snapshot is built, so rendering them raw freezes the clock
+ * between events: a session waiting on a permission prompt sat at "0s" until
+ * something unrelated pushed a snapshot, then jumped to "1m". The rail redraws
+ * every second; this is what makes those seconds mean anything. */
+let snapAt = Date.now();
+const sinceSnap = (ms) => (ms == null ? null : ms + (Date.now() - snapAt));
+
 function duration(ms) {
   if (ms == null) return '';
   const s = Math.floor(ms / 1000);
@@ -709,7 +717,7 @@ function archivedRow(s) {
   const row = el('div', 'sess-row');
   row.appendChild(el('span', 'dot archived'));
   row.appendChild(el('span', 'sess-name', s.title || s.workspace));
-  row.appendChild(el('span', 'sess-id', duration(s.created_ms) + ' ago'));
+  row.appendChild(el('span', 'sess-id', duration(sinceSnap(s.created_ms)) + ' ago'));
   btn.appendChild(row);
 
   if (!s.resumable) {
@@ -774,9 +782,9 @@ function sessionRow(s, w) {
   // the repo's link hooks before it says anything, which is ten seconds of
   // nothing. A number that moves is the difference between slow and hung.
   if (isWaiting(s) && s.waiting_ms != null) {
-    sub.appendChild(el('span', null, duration(s.waiting_ms)));
+    sub.appendChild(el('span', null, duration(sinceSnap(s.waiting_ms))));
   } else if (s.state.state === 'starting') {
-    sub.appendChild(el('span', null, duration(s.created_ms)));
+    sub.appendChild(el('span', null, duration(sinceSnap(s.created_ms))));
   }
   btn.appendChild(sub);
 
@@ -817,7 +825,7 @@ function renderWaitbar() {
   const longest = waiting.reduce(
     (a, b) => ((a.waiting_ms ?? 0) >= (b.waiting_ms ?? 0) ? a : b));
   bar.className = 'waitbar on';
-  bar.textContent = `${waiting.length} waiting · longest ${duration(longest.waiting_ms ?? 0)}`;
+  bar.textContent = `${waiting.length} waiting · longest ${duration(sinceSnap(longest.waiting_ms) ?? 0)}`;
   bar.onclick = () => select(longest.id);
 }
 
@@ -3507,6 +3515,7 @@ function connect() {
   const sock = new WebSocket(`${WS_BASE}/ws/events?token=${encodeURIComponent(TOKEN)}`);
   sock.onmessage = (ev) => {
     snap = JSON.parse(ev.data);
+    snapAt = Date.now();
     // A session whose pty is gone keeps its scrollback until it is dismissed,
     // so terminals are only torn down when the session disappears entirely.
     const liveProcs = new Set(
