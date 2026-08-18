@@ -482,6 +482,30 @@ impl AppState {
             .collect()
     }
 
+    /// Kill everything running in a workspace nobody is in any more.
+    ///
+    /// The build watcher and the shells exist for the session that opened them:
+    /// once it is gone they are a watcher nobody reads and a prompt nobody
+    /// types into, still holding the port and the CPU. Their own exit watchers
+    /// do the bookkeeping, so this only has to pull the trigger.
+    ///
+    /// Containers are not reached, the same as at shutdown: `docker compose up`
+    /// has already detached by the time its pty dies.
+    pub async fn kill_processes_in(&self, workspace: &str) -> usize {
+        let handles: Vec<_> = {
+            let inner = self.inner.read().await;
+            inner
+                .workspaces
+                .get(workspace)
+                .map(|w| w.processes.iter().filter_map(|p| p.pty.clone()).collect())
+                .unwrap_or_default()
+        };
+        for h in &handles {
+            let _ = h.kill();
+        }
+        handles.len()
+    }
+
     // -----------------------------------------------------------------------
     // Reconcile
     // -----------------------------------------------------------------------

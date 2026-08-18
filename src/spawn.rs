@@ -415,9 +415,19 @@ fn watch_session_exit(app: Arc<AppState>, id: SessionId, handle: Arc<PtyHandle>)
             }
         };
         app.release_main(id).await;
-        // Closing Claude is a moment the changed-file pane must be right about:
-        // whatever the last turn left behind is now the whole story.
         if let Some(ws) = workspace {
+            // The drawer's processes belong to whoever was working here. Only
+            // once the last session in the workspace is gone, though: two
+            // sessions can share a worktree, and closing one of them must not
+            // pull the shells out from under the other.
+            if app.live_sessions_in(&ws).await.is_empty() {
+                let killed = app.kill_processes_in(&ws).await;
+                if killed > 0 {
+                    tracing::info!(workspace = %ws, "stopped {killed} process(es) with the last session");
+                }
+            }
+            // Closing Claude is a moment the changed-file pane must be right
+            // about: whatever the last turn left behind is now the whole story.
             let _ = app.reconcile(&ws).await;
         }
         app.notify().await;
