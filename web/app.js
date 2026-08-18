@@ -59,7 +59,10 @@ function duration(ms) {
   const m = Math.floor(s / 60);
   if (m < 60) return `${m}m`;
   const h = Math.floor(m / 60);
-  return `${h}h ${m % 60}m`;
+  if (h < 24) return `${h}h ${m % 60}m`;
+  // Archived conversations are days old soon enough, and "51h 0m" is not a
+  // number anybody reads as two days.
+  return `${Math.floor(h / 24)}d ${h % 24}h`;
 }
 
 // ---------------------------------------------------------------------------
@@ -77,7 +80,9 @@ function stateLabel(s) {
       return 'turn complete';
     case 'build_failing': return s.state.summary || 'build failing';
     case 'error': return s.state.message || 'error';
-    case 'exited': return 'exited';
+    // One word for both: a session whose process ended and one archived by a
+    // restart are the same thing to you, a conversation you are not in.
+    case 'exited': return 'archived';
     case 'archived': return s.state.resumable ? 'archived' : 'archived, transcript only';
     default: return s.state.state;
   }
@@ -92,7 +97,7 @@ function dotClass(s) {
   // "already being handled" is the more useful signal.
   if (s.kind.kind === 'automation') return 'auto';
   if (k === 'working' || k === 'starting') return 'working';
-  if (k === 'archived') return 'archived';
+  if (k === 'archived' || k === 'exited') return 'archived';
   return 'idle';
 }
 
@@ -211,6 +216,55 @@ function showTerm(target, parent) {
 }
 
 // ---------------------------------------------------------------------------
+// Context menu
+// ---------------------------------------------------------------------------
+
+/**
+ * A menu at the cursor. `items` are `[label, extraClass, handler]`; a null
+ * handler renders the row disabled, so right-clicking a session that has
+ * already ended still says what the menu would have offered.
+ */
+function openMenu(ev, items) {
+  ev.preventDefault();
+  const menu = $('ctxmenu');
+  menu.replaceChildren();
+  for (const [label, cls, handler] of items) {
+    const item = el('button', 'ctxmenu-item' + (cls ? ` ${cls}` : ''), label);
+    if (handler) item.onclick = () => { closeMenu(); handler(); };
+    else item.disabled = true;
+    menu.appendChild(item);
+  }
+  // Un-hidden before it is measured, or there is no box to clamp.
+  menu.hidden = false;
+  const box = menu.getBoundingClientRect();
+  // Keyboard activation reports no cursor, so hang it off the button instead of
+  // pinning it to the top-left corner.
+  let { clientX: x, clientY: y } = ev;
+  if (!x && !y) {
+    const r = (ev.currentTarget || ev.target).getBoundingClientRect();
+    [x, y] = [r.left, r.bottom];
+  }
+  menu.style.left = `${Math.min(x, window.innerWidth - box.width - 6)}px`;
+  menu.style.top = `${Math.min(y, window.innerHeight - box.height - 6)}px`;
+}
+
+function closeMenu() {
+  $('ctxmenu').hidden = true;
+}
+
+const menuOpen = () => !$('ctxmenu').hidden;
+
+// Anything that moves what the menu is pointing at dismisses it. On mousedown
+// rather than click, and captured, so the row underneath still gets its own
+// click; a rail that rebuilds every second would otherwise leave the menu
+// hanging over a row that no longer exists.
+document.addEventListener('mousedown', (e) => {
+  if (menuOpen() && !e.target.closest('#ctxmenu')) closeMenu();
+}, true);
+document.addEventListener('scroll', closeMenu, true);
+window.addEventListener('blur', closeMenu);
+
+// ---------------------------------------------------------------------------
 // Render
 // ---------------------------------------------------------------------------
 
@@ -265,6 +319,28 @@ function renderUpdate() {
   bar.hidden = false;
 }
 
+/* A session is one of two things: active, or a past conversation you can come
+ * back to. The daemon's `exited` and `archived` are the same fact from here, and
+ * neither is a state worth a word of its own in the rail. */
+const isArchived = (s) => s.state.state === 'archived' || s.state.state === 'exited';
+
+/** `spawn::PENDING_WORKTREE`: the workspace a worktree session sits in until
+ *  `SessionStart` reports the name Claude Code gave it. */
+const PENDING_WORKTREE = '\u2026creating';
+
+/* A finished session that never had a turn wrote no transcript, so there is no
+ * conversation to come back to — `claude --resume` answers "no conversation
+ * found" and exits. Listing one is offering something that cannot work, so the
+ * archive is conversations, not every session that ever stopped. */
+const isConversation = (s) => isArchived(s) && s.has_transcript;
+
+/** Newest first: `created_ms` is an age, so the smallest number is the newest. */
+const byNewest = (a, b) => a.created_ms - b.created_ms;
+
+/* Expanded per group and kept across renders. Main's two conversations and the
+ * worktrees' twenty are not the same question. */
+const showArchived = { main: false, worktrees: false };
+
 function renderRail() {
   const rail = $('rail');
   rail.replaceChildren();
@@ -273,31 +349,9 @@ function renderRail() {
   const worktrees = snap.workspaces.filter((w) => !w.is_main);
 
   // Main is pinned first (§9).
-  if (main) rail.appendChild(groupFor(main, 'Main checkout'));
+  if (main) rail.appendChild(mainGroup(main));
+  rail.appendChild(worktreeGroup(worktrees));
 
-  const wtGroup = el('div', 'ws');
-  const head = el('div', 'ws-head');
-  const name = el('div', 'ws-name');
-  name.appendChild(el('span', 'eyebrow', 'Worktrees'));
-  head.appendChild(name);
-  const add = el('button', 'plus', '+');
-  add.title = 'New worktree session (shift-click to name it)';
-  add.onclick = (ev) => newWorktree(ev.shiftKey);
-  head.appendChild(add);
-  wtGroup.appendChild(head);
-
-  if (!worktrees.length) {
-    wtGroup.appendChild(el('div', 'railbtn', 'none yet'));
-  }
-  for (const w of worktrees) {
-    if (w.id === '\u2026creating') continue;
-    if (!sessionsOf(w.id).length) {
-      wtGroup.appendChild(emptyWorkspaceRow(w));
-      continue;
-    }
-    appendSessions(wtGroup, w);
-  }
-  rail.appendChild(wtGroup);
   // Its own pane below the scroller, so it stays put while sessions scroll.
   $('prpane').replaceChildren(prGroup());
 
@@ -524,99 +578,166 @@ function prGroup() {
   return group;
 }
 
-function groupFor(w, label) {
-  const group = el('div', 'ws');
+/** A label and the button that adds to the group under it. */
+function groupHead(label, add) {
   const head = el('div', 'ws-head');
   const name = el('div', 'ws-name');
   name.appendChild(el('span', 'eyebrow', label));
   head.appendChild(name);
+  head.appendChild(add);
+  return head;
+}
 
-  const sessions = sessionsOf(w.id).filter((s) => s.state.state !== 'archived');
-  const occupant = sessions.find((s) => s.id === w.occupant && s.alive);
+/** Main is exclusive: one active session at a time, and no queue. While it is
+ *  occupied the button is disabled and the row that holds it says so (§2). */
+function mainGroup(w) {
+  const group = el('div', 'ws');
+  const sessions = sessionsOf(w.id);
+  const active = sessions.filter((s) => !isArchived(s));
+  const occupant = active.find((s) => s.id === w.occupant && s.alive);
 
-  // Main is exclusive. No queue: while it is occupied the button is disabled
-  // and the rail says which session holds it (§2).
   const add = el('button', 'plus', '+');
   add.disabled = !!occupant;
   add.title = occupant
     ? `main is held by ${occupant.title || occupant.id.slice(0, 8)}`
     : 'New session in main';
   add.onclick = () => newSession(w.id);
-  head.appendChild(add);
-  group.appendChild(head);
+  group.appendChild(groupHead('Main checkout', add));
 
-  if (occupant) {
-    const note = el('div', 'railbtn', `held by ${occupant.title || occupant.id.slice(0, 8)}`);
-    note.style.paddingBottom = '4px';
-    group.appendChild(note);
-  }
-
-  appendSessions(group, w);
+  for (const s of active.sort(byNewest)) group.appendChild(sessionRow(s, w));
+  if (!active.length) group.appendChild(el('div', 'railbtn', 'no session'));
+  appendArchived(group, 'main', sessions.filter(isConversation));
   return group;
 }
 
-const isDone = (s) => s.state.state === 'archived' || s.state.state === 'exited';
+/** Every worktree session under one header.
+ *
+ *  Rows come from sessions, not from worktrees: a worktree with nothing running
+ *  in it is not something you can act on, so it gets no row. The one exception
+ *  is a session whose worktree has no name yet, which shows as `…creating`
+ *  rather than nothing at all — an invisible session is how you end up
+ *  starting a second one. */
+function worktreeGroup(worktrees) {
+  const group = el('div', 'ws');
+  const add = el('button', 'plus', '+');
+  add.title = 'New worktree session (shift-click to name it)';
+  add.onclick = (ev) => newWorktree(ev.shiftKey);
+  group.appendChild(groupHead('Worktrees', add));
 
-let showArchived = false;
+  const ids = new Set(worktrees.map((w) => w.id));
+  const sessions = snap.sessions.filter((s) => ids.has(s.workspace));
+  const active = sessions.filter((s) => !isArchived(s));
 
-/** Live sessions always; finished ones behind a toggle, so a long-running rail
- *  does not fill with history you are not acting on. */
-function appendSessions(group, w) {
-  const all = sessionsOf(w.id);
-  const live = all.filter((s) => !isDone(s));
-  const done = all.filter(isDone);
-
-  for (const s of live) group.appendChild(sessionRow(s, w));
-  if (!live.length && !done.length) {
-    group.appendChild(el('div', 'railbtn', 'no session'));
+  for (const s of active.sort(byNewest)) {
+    // The workspace is only needed for the name it lends the row.
+    group.appendChild(sessionRow(s, { id: s.workspace }));
   }
-  if (!done.length) return;
-
-  // The session you are looking at always has a row, even when it has finished
-  // and the rest are collapsed. Otherwise closing Claude hides the row while
-  // the right pane and context bar still describe it, and nothing on screen
-  // says what you are looking at.
-  const pinned = !showArchived && done.find((s) => s.id === selected);
-  if (pinned) group.appendChild(sessionRow(pinned, w));
-
-  const remaining = done.length - (pinned ? 1 : 0);
-  if (remaining > 0) {
-    const toggle = el('button', 'arctoggle');
-    toggle.setAttribute('aria-expanded', String(showArchived));
-    toggle.appendChild(el('span', 'caretr', '›'));
-    toggle.appendChild(el('span', null, `${remaining} finished`));
-    toggle.onclick = () => { showArchived = !showArchived; renderRail(); };
-    group.appendChild(toggle);
-  }
-
-  if (showArchived) for (const s of done) group.appendChild(sessionRow(s, w));
+  if (!active.length) group.appendChild(el('div', 'railbtn', 'nothing running'));
+  appendArchived(group, 'worktrees', sessions.filter(isConversation));
+  return group;
 }
 
-function emptyWorkspaceRow(w) {
-  const btn = el('button', 'railbtn', `${w.id} · no session · start one`);
-  btn.onclick = () => newSession(w.id);
+/** The group's past conversations, behind a count.
+ *
+ *  Collapsed by default, because history is not what the rail is for — but
+ *  opened whenever the conversation you are looking at is in here, so the rail
+ *  never goes silent about what the centre pane is showing.
+ */
+function appendArchived(group, key, sessions) {
+  if (!sessions.length) return;
+  const open = showArchived[key] || sessions.some((s) => s.id === selected);
+
+  const toggle = el('button', 'arctoggle');
+  toggle.setAttribute('aria-expanded', String(open));
+  toggle.appendChild(el('span', 'caretr', '\u203a'));
+  toggle.appendChild(el('span', null, 'archived'));
+  toggle.appendChild(el('span', 'arccount', String(sessions.length)));
+  toggle.onclick = () => { showArchived[key] = !open; renderRail(); };
+  group.appendChild(toggle);
+
+  if (!open) return;
+  for (const s of sessions.sort(byNewest)) group.appendChild(archivedRow(s));
+}
+
+/** A past conversation: which worktree it was in, and how long ago.
+ *
+ *  No state word — `archived` is the state, and the section it sits in already
+ *  says it. Clicking rebuilds what it needs and resumes it. */
+function archivedRow(s) {
+  const btn = el('button', 'sess arc');
+  btn.setAttribute('aria-current', String(s.id === selected));
+
+  const row = el('div', 'sess-row');
+  row.appendChild(el('span', 'dot archived'));
+  row.appendChild(el('span', 'sess-name', s.title || s.workspace));
+  row.appendChild(el('span', 'sess-id', duration(s.created_ms) + ' ago'));
+  btn.appendChild(row);
+
+  if (!s.resumable) {
+    // The transcript is readable, the conversation cannot be continued (§2).
+    btn.appendChild(el('div', 'sess-sub', 'transcript only'));
+  }
+  btn.onclick = () => openArchived(s);
   return btn;
+}
+
+/** Continue a past conversation, rebuilding its worktree first if it is gone. */
+async function openArchived(s) {
+  if (!s.resumable) {
+    toast('transcript only: the branch is gone and the commit is unreachable', true);
+    return;
+  }
+  try {
+    const r = await call(`/api/session/${s.id}/resume`);
+    // A resumed session keeps its id, because `claude --resume <id>` continues
+    // that same conversation. So the dead terminal is still in `terms` under the
+    // key the new pty wants, and `openTerm` would hand back the corpse — you
+    // resume and stare at the old scrollback with a closed socket.
+    closeTerm(`session:${r.session}`);
+    pendingSelect = r.session;
+    // The branch moved since the conversation happened, so the files it talks
+    // about are not the files on disk. Worth saying, not worth refusing over.
+    if (r.warning) toast(r.warning, true);
+  } catch (e) {
+    toast(e.message, true);
+  }
 }
 
 /** Two lines: dot + name, then state and duration. No dirty-file count — that
  *  lives in the right column, one click away (§9). */
+/** A worktree Claude Code has not named yet (§2): the daemon knows the session
+ *  before it knows where it lives. */
+const pending = (s) => s.workspace === PENDING_WORKTREE;
+
+/** What the row calls itself. The placeholder workspace id is the daemon's own
+ *  bookkeeping, so it says what is happening instead. */
+function railName(s, w) {
+  if (pending(s)) return 'creating worktree';
+  return s.title || w.id;
+}
+
 function sessionRow(s, w) {
   const btn = el('button', 'sess' + (s.kind.kind === 'automation' ? ' auto' : ''));
   btn.setAttribute('aria-current', String(s.id === selected));
 
   const row = el('div', 'sess-row');
   row.appendChild(el('span', 'dot ' + dotClass(s)));
-  row.appendChild(el('span', 'sess-name', s.title || w.id));
-  // Main holds one live session at a time but accumulates finished ones, so
-  // without this every row in the group reads the same word.
+  row.appendChild(el('span', 'sess-name' + (pending(s) ? ' pending' : ''), railName(s, w)));
+  // Worktree rows all carry their worktree's name, so without this the ones
+  // sharing a worktree read identically.
   row.appendChild(el('span', 'sess-id', s.id.slice(0, 8)));
   btn.appendChild(row);
 
   const sub = el('div', 'sess-sub');
   sub.appendChild(el('span', 'sess-state ' + stateClass(s), stateLabel(s)));
-  // The waiting duration is the number to optimise down (§2).
+  // The waiting duration is the number to optimise down (§2). A start has a
+  // clock for a different reason: `claude --worktree` cuts the worktree and runs
+  // the repo's link hooks before it says anything, which is ten seconds of
+  // nothing. A number that moves is the difference between slow and hung.
   if (isWaiting(s) && s.waiting_ms != null) {
     sub.appendChild(el('span', null, duration(s.waiting_ms)));
+  } else if (s.state.state === 'starting') {
+    sub.appendChild(el('span', null, duration(s.created_ms)));
   }
   btn.appendChild(sub);
 
@@ -629,7 +750,21 @@ function sessionRow(s, w) {
 
   btn.appendChild(el('div', 'sess-pad'));
   btn.onclick = () => select(s.id);
+  // The header's ✕ only ever closes the selected session, so closing any other
+  // one meant switching to it first.
+  btn.oncontextmenu = (ev) => openMenu(ev, [
+    ['Close session', 'bad', s.alive ? () => closeSession(s.id) : null],
+  ]);
   return btn;
+}
+
+/** End a session: kills the pty, keeps the row and its scrollback (§2). */
+function closeSession(id) {
+  // Claude takes several seconds to shut down and the row only turns `exited`
+  // once the daemon sees it go, so without this the click reads as a no-op.
+  call(`/api/session/${id}/kill`)
+    .then(() => toast('closing session'))
+    .catch((e) => toast(e.message, true));
 }
 
 /** The rail exists to surface idle agents, so the count sits at the top of it. */
@@ -3193,7 +3328,7 @@ $('refreshbtn').onclick = () => {
 };
 $('killbtn').onclick = () => {
   const s = currentSession();
-  if (s) call(`/api/session/${s.id}/kill`).catch((e) => toast(e.message, true));
+  if (s) closeSession(s.id);
 };
 
 // ---------------------------------------------------------------------------
@@ -3201,6 +3336,13 @@ $('killbtn').onclick = () => {
 // ---------------------------------------------------------------------------
 
 window.addEventListener('keydown', (e) => {
+  // First, or Escape closes the overlay underneath and leaves the menu floating
+  // over it.
+  if (e.key === 'Escape' && menuOpen()) {
+    e.preventDefault();
+    closeMenu();
+    return;
+  }
   if ((e.metaKey || e.ctrlKey) && e.key === 's' && editState.on) {
     e.preventDefault();
     saveEditor();
@@ -3319,7 +3461,7 @@ function connect() {
     if (!selected) {
       // Default to whatever most needs you.
       const first = snap.sessions.find(isWaiting)
-        || snap.sessions.find((x) => !isDone(x))
+        || snap.sessions.find((x) => !isArchived(x))
         || snap.sessions[0];
       if (first) {
         selected = first.id;

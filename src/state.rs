@@ -616,6 +616,10 @@ pub struct SessionView {
     pub dirty_count: usize,
     pub boundary_violations: Vec<String>,
     pub resumable: bool,
+    /// Whether there is a conversation on disk to come back to. Only asked of
+    /// sessions that have finished, so the cost is one stat per archived row
+    /// rather than one per session on every snapshot.
+    pub has_transcript: bool,
 }
 
 impl SessionView {
@@ -642,6 +646,8 @@ impl SessionView {
             alive: s.pty.as_ref().map(|h| h.is_alive()).unwrap_or(false),
             dirty_count: s.dirty_paths.len(),
             boundary_violations: s.boundary_violations.clone(),
+            has_transcript: matches!(s.state, State::Archived { .. } | State::Exited)
+                && crate::store::transcript_exists(s.id, &s.cwd, s.transcript_path.as_deref()),
             resumable: matches!(s.recovery, Some(ArchiveState::Recoverable { .. }) | None)
                 && !matches!(s.recovery, Some(ArchiveState::TranscriptOnly)),
         }

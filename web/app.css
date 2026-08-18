@@ -198,16 +198,16 @@ button.ctx-btn:hover{color:var(--text)}
 .dot.working{background:#6A6A6A}
 .dot.idle{background:#3E3E3E}
 .dot.archived{background:transparent;border:1px solid var(--faint-solid)}
-@media (prefers-reduced-motion:no-preference){
-  .dot.blocked{animation:breathe 2.4s ease-in-out infinite}
-}
-@keyframes breathe{0%,100%{opacity:1}50%{opacity:.35}}
 
 .sess-name{
   font-family:var(--mono);font-size:11.5px;flex:1;
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
 }
 .sess.auto .sess-name{color:var(--auto)}
+/* A worktree with no name yet. Italic because it is a description of what is
+   happening, not the name it will end up with. */
+.sess-name.pending{font-style:italic;color:var(--dim)}
+.sess-name.pending::after{content:'…'}
 .sess-sub{
   display:flex;align-items:center;gap:13px;padding-left:14px;margin-top:2px;
   font-family:var(--mono);font-size:10px;color:var(--faint-solid);
@@ -218,7 +218,7 @@ button.ctx-btn:hover{color:var(--text)}
 .sess-pad{height:11px}
 .sess-id{font-family:var(--mono);font-size:9px;color:var(--ghost);flex:0 0 auto}
 
-/* Finished sessions collapse: the rail is for what still needs you. */
+/* Past conversations collapse: the rail is for what still needs you. */
 .arctoggle{
   display:flex;align-items:center;gap:7px;width:100%;
   padding:7px 15px 12px;font-family:var(--mono);font-size:10px;color:var(--ghost);
@@ -226,6 +226,13 @@ button.ctx-btn:hover{color:var(--text)}
 .arctoggle:hover{color:var(--dim)}
 .arctoggle .caretr{display:inline-block;transition:transform .13s;font-size:9px}
 .arctoggle[aria-expanded="true"] .caretr{transform:rotate(90deg)}
+.arccount{margin-left:auto;font-size:9.5px;color:var(--faint-solid)}
+
+/* A past conversation. Quieter than a live row, and one line rather than two, so
+   twenty of them still read as a list. */
+.sess.arc{padding:6px 15px 7px}
+.sess.arc .sess-name{color:var(--dim)}
+.sess.arc .sess-sub{color:var(--faint-solid);margin-top:0}
 .sess-warn{
   display:block;padding:0 15px 8px 29px;font-family:var(--mono);
   font-size:9.5px;color:var(--bad);
@@ -294,6 +301,22 @@ button.ctx-btn:hover{color:var(--text)}
 #filepanes{flex:1;min-height:0;overflow-y:auto}
 .fempty{padding:22px 15px;font-family:var(--mono);font-size:10.5px;color:var(--ghost);line-height:1.75}
 .files-foot{padding:9px 13px;font-family:var(--mono);font-size:10px;color:var(--faint-solid);border-top:1px solid var(--line-soft)}
+
+/* ---------- context menu ---------- */
+/* Right-click on a session row. Above the toast, because it is the thing you
+   are pointing at. */
+.ctxmenu{
+  position:fixed;z-index:100;min-width:132px;padding:3px;
+  background:var(--raised);border:1px solid var(--line);border-radius:3px;
+  box-shadow:0 6px 18px rgba(0,0,0,.45);
+}
+.ctxmenu-item{
+  display:block;width:100%;padding:5px 9px;text-align:left;border-radius:2px;
+  font-family:var(--mono);font-size:11px;color:var(--text);
+}
+.ctxmenu-item:hover:not(:disabled){background:var(--bg)}
+.ctxmenu-item:disabled{color:var(--ghost);cursor:default}
+.ctxmenu-item.bad:hover:not(:disabled){color:var(--bad)}
 
 /* ---------- toast ---------- */
 /* A refused `git worktree remove` is information, so errors are shown rather
