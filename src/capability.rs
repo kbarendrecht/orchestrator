@@ -30,8 +30,8 @@ pub enum Trust {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Isolation {
     Isolated,
-    /// Requires a global lock before running. `main:instances` conflicts with
-    /// main occupancy as well as with itself (§7 rule 2).
+    /// Requires a global lock before running: two runs taking `main:instances`
+    /// would fight over one instances dir (§7 rule 2).
     SharedResource { resource: String },
 }
 
@@ -193,8 +193,8 @@ pub struct CapabilityReport {
     pub green_eligible: bool,
     pub green_blockers: Vec<String>,
     /// §7 **rule 2**, kept separate from eligibility: a shared resource needs a
-    /// global lock before running, it does not make the PR ineligible. Holding
-    /// `main:instances` conflicts with main occupancy as well as with itself.
+    /// global lock before running, it does not make the PR ineligible. The lock
+    /// conflicts with another *run* holding it, not with you working in main.
     pub locks_required: Vec<String>,
 }
 

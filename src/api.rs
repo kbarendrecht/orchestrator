@@ -1217,7 +1217,6 @@ pub async fn green_pr(
             .values()
             .filter(|s| s.state.is_live())
             .count();
-        let main_occupant = inner.workspaces.get(MAIN).and_then(|w| w.occupant);
         let locks = inner.locks_held.clone();
 
         evaluate(&GuardInput {
@@ -1228,7 +1227,6 @@ pub async fn green_pr(
             branch_busy,
             running_automations,
             live_claude_processes,
-            main_occupant,
             locks_held: &locks,
         })
     };

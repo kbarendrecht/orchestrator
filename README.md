@@ -158,8 +158,16 @@ literally they create a state nothing can escape:
   `.jsonl`, so requiring one stranded the worktree. "Nothing to copy" is now
   distinguished from "not copied yet".
 
-One more, from using it rather than reading it:
+Two more, from using it rather than reading it:
 
+- **`main:instances` and main occupancy.** §7 rule 2 makes the e2e lock conflict
+  with a session occupying main, because playwright teardown anchors its
+  instances dir there. That turned "somebody has main open" into "no fix run may
+  start anywhere" — and the run happens in the PR's own worktree, while a session
+  in main is normally just editing code. The lock now conflicts with another
+  *run* holding it, which is the collision that actually corrupts something. What
+  you give up: running playwright by hand in main while a fix run also reaches
+  e2e, where the two would fight over one instances dir.
 - **Dead shells.** §2 says a dead shell keeps its buffer "until dismissed".
   Applied to every exit that makes Ctrl+D leave a corpse tab behind, which is
   the opposite of what pressing it means. A shell that exits cleanly is now

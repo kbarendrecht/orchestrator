@@ -69,7 +69,6 @@ pub struct GuardInput<'a> {
     pub running_automations: usize,
     pub live_claude_processes: usize,
     /// Which session holds main, if any.
-    pub main_occupant: Option<SessionId>,
     /// Shared resources currently held.
     pub locks_held: &'a [String],
 }
@@ -167,19 +166,19 @@ pub fn evaluate(input: &GuardInput) -> Verdict {
         ));
     }
 
-    // Shared resources. `main:instances` conflicts with main occupancy as well
-    // as with itself (§7 rule 2): e2e teardown reaches into the main checkout.
+    // Shared resources (§7 rule 2). The conflict is between *runs*: two of them
+    // taking `main:instances` would fight over one instances dir.
+    //
+    // A session merely occupying main used to refuse this too, on the grounds
+    // that e2e teardown reaches into the main checkout. It costs more than it
+    // buys: the run happens in the PR's own worktree, a session in main is
+    // normally just editing code, and the rule turned "somebody has main open"
+    // into "no fix run may start anywhere".
     let mut locks = Vec::new();
     for c in &input.capability.capabilities {
         if let Isolation::SharedResource { resource } = &c.isolation {
             if input.locks_held.iter().any(|h| h == resource) {
                 return no(format!("{resource} is already held by another run"));
-            }
-            if resource.starts_with("main:") && input.main_occupant.is_some() {
-                return no(format!(
-                    "{resource} conflicts with the session holding main; \
-                     end it first, or this run would reach into your checkout"
-                ));
             }
             if !locks.contains(resource) {
                 locks.push(resource.clone());
@@ -260,7 +259,6 @@ mod tests {
             branch_busy: false,
             running_automations: 0,
             live_claude_processes: 1,
-            main_occupant: None,
             locks_held: &[],
         }
     }
@@ -336,9 +334,9 @@ mod tests {
     }
 
     #[test]
-    fn a_main_lock_is_refused_while_you_hold_main() {
-        // e2e teardown reaches into the main checkout, so it must not run while
-        // you are working there (§7 rule 2).
+    fn working_in_main_does_not_block_a_run_in_a_worktree() {
+        // The run happens in the PR's own worktree. Refusing it because a session
+        // has main open turned "somebody is working" into "nothing may start".
         let p = pr(1);
         let c = cap(
             Trust::Verified,
@@ -346,12 +344,12 @@ mod tests {
                 resource: "main:instances".into(),
             },
         );
-        let mut i = input(&p, &c);
-        i.main_occupant = Some(Uuid::new_v4());
-        match evaluate(&i) {
-            Verdict::No { reason } => assert!(reason.contains("holding main"), "{reason}"),
-            other => panic!("expected No, got {other:?}"),
-        }
+        assert_eq!(
+            evaluate(&input(&p, &c)),
+            Verdict::Go {
+                locks: vec!["main:instances".into()]
+            }
+        );
     }
 
     #[test]
