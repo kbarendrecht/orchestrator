@@ -87,8 +87,15 @@ fn main() {
             let rt = handle.clone();
 
             match orchd::config::Config::existing() {
-                // Configured already: straight to a window.
-                Some(_) => open(&app_handle, &rt, None)?,
+                // Configured already: straight to a window. A failure here is
+                // shown rather than propagated: `?` would surface as a panic
+                // from `build()`, and "already running" deserves a sentence in a
+                // dialog, not a backtrace nobody launched a GUI to read.
+                Some(_) => {
+                    if let Err(e) = open(&app_handle, &rt, None) {
+                        fail(&app_handle, &format!("{e:#}"));
+                    }
+                }
                 // First run, or a config pointing at a checkout that has since
                 // moved. Ask, rather than dying with a CLI flag in the message
                 // — there is no terminal here to read it in.

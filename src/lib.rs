@@ -14,6 +14,7 @@ pub mod github;
 pub mod github_write;
 pub mod green;
 pub mod hooks;
+pub mod instance;
 pub mod model;
 pub mod patch;
 pub mod post;
@@ -83,6 +84,8 @@ pub struct Server {
     pub token: String,
     pub app: Arc<AppState>,
     serve: tokio::task::JoinHandle<()>,
+    /// Dropped last, releasing the single-instance lock when the daemon goes.
+    _lock: instance::Lock,
 }
 
 impl Server {
@@ -142,6 +145,10 @@ impl Server {
 /// has a port and a token to point it at. Everything slower than that — the
 /// upstream fetch, auto-resume, the pollers — runs on its own tasks.
 pub async fn start(opts: StartOptions) -> Result<Server> {
+    // First, and before anything is written: a second daemon would spawn into
+    // the same worktrees and rewrite the hook settings with its own port.
+    let lock = instance::acquire()?;
+
     let mut cfg = Config::load_or_init(opts.main_checkout)?;
     check_config(&cfg)?;
 
@@ -232,6 +239,7 @@ pub async fn start(opts: StartOptions) -> Result<Server> {
         token,
         app,
         serve,
+        _lock: lock,
     })
 }
 
