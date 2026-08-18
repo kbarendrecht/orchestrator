@@ -371,82 +371,43 @@ function prDot(p) {
 
 let showPrs = true;
 
-/* PRs opted into the beta overlay, per PR, remembered in the browser.
+/** How to answer a PR's threads: asked per PR, not remembered.
  *
- *  A UI preference, not data, so it lives in localStorage rather than in the
- *  daemon — deliberately: the overlay is the unstable path, and adding daemon-side
- *  per-PR state is the shape that caused its bugs. Off by default, so a PR only
- *  shows `cards` once you have opted it in. */
-const betaPrs = new Set(loadBeta());
-function loadBeta() {
-  try {
-    return JSON.parse(localStorage.getItem('orch.betaPrs') || '[]');
-  } catch {
-    return [];
-  }
-}
-function toggleBeta(n) {
-  if (betaPrs.has(n)) betaPrs.delete(n);
-  else betaPrs.add(n);
-  try {
-    localStorage.setItem('orch.betaPrs', JSON.stringify([...betaPrs]));
-  } catch { /* private mode: the toggle still works for this session */ }
-  renderRail();
-}
-
-/** How to answer a PR's threads.
- *
- *  The default is `/resolve`: a session pinned to the PR worktree that runs the
- *  skill in a pane, the agent doing the work while you supervise, the daemon making
- *  no irreversible write itself. Beside it, a `beta` toggle opts this one PR into
- *  the native overlay — triage, a card per thread, one batched post — which then
- *  appears as `cards`. The skill leads because it is the robust path; the overlay
- *  is behind an explicit per-PR opt-in because it is not yet. */
+ *  `/resolve` spawns a session pinned to the PR worktree and runs the vendored
+ *  prompt in a pane — the agent doing the reading, fixing and drafting while you
+ *  supervise, the daemon making no irreversible write itself. The overlay answers
+ *  the threads here instead: triage, a card per thread, one batched post. The
+ *  overlay is still the unstable one, so the menu says so rather than one of the
+ *  two being the default you fall into. */
 function reviewButtons(p) {
   const wrap = el('span', 'prpair');
 
-  const resolve = el('button', 'pract', '/resolve');
-  resolve.title = `Spawn a session and run /resolve on #${p.number}`;
-  resolve.onclick = async (ev) => {
-    ev.preventDefault();
+  const btn = el('button', 'pract', 'review ▾');
+  btn.title = `Answer #${p.number}'s review threads`;
+  btn.onclick = (ev) => {
     ev.stopPropagation();
-    resolve.disabled = true;
-    try {
-      const r = await call(`/api/pr/${p.number}/resolve`);
-      pendingSelect = r.session;
-      toast(`/resolve ${p.number}`);
-    } catch (e) {
-      toast(e.message, true);
-    } finally {
-      resolve.disabled = false;
-    }
+    openMenu(ev, [
+      ['/resolve in a pane', null, () => runResolve(p.number, btn)],
+      ['cards overlay (beta)', null, () => openReview(p.number)],
+    ]);
   };
-  wrap.appendChild(resolve);
-
-  const on = betaPrs.has(p.number);
-  if (on) {
-    const cards = el('button', 'prlink', 'cards');
-    cards.title = `Read and answer #${p.number}'s threads in the overlay`;
-    cards.onclick = (ev) => {
-      ev.preventDefault();
-      ev.stopPropagation();
-      openReview(p.number);
-    };
-    wrap.appendChild(cards);
-  }
-
-  const beta = el('button', 'betatoggle' + (on ? ' on' : ''), 'beta');
-  beta.title = on
-    ? 'Overlay enabled for this PR — click to hide it'
-    : 'Try the experimental card overlay for this PR';
-  beta.onclick = (ev) => {
-    ev.preventDefault();
-    ev.stopPropagation();
-    toggleBeta(p.number);
-  };
-  wrap.appendChild(beta);
+  wrap.appendChild(btn);
 
   return wrap;
+}
+
+/** Spawn the session that answers #`number`'s threads, and switch to its pane. */
+async function runResolve(number, btn) {
+  btn.disabled = true;
+  try {
+    const r = await call(`/api/pr/${number}/resolve`);
+    pendingSelect = r.session;
+    toast(`/resolve ${number}`);
+  } catch (e) {
+    toast(e.message, true);
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 /** A hand-triggered run against a PR. `action` is the endpoint name, which is

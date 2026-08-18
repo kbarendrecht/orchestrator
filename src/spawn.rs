@@ -297,6 +297,7 @@ async fn start_with_prompt(
     pr: u64,
     command: &str,
 ) -> Result<SessionId> {
+    let prompt_file = vendored_prompt_file(app, pr, command).await?;
     let id = spawn_session(
         app,
         workspace,
@@ -309,9 +310,60 @@ async fn start_with_prompt(
     .await?;
     let mut inner = app.inner.write().await;
     if let Some(s) = inner.sessions.get_mut(&id) {
-        s.pending_prompt = Some(format!("/{command} {pr}"));
+        // One line, because it is typed into the prompt box: the instructions
+        // themselves are in the file. Typing the whole prompt would submit at the
+        // first newline, and `/{command}` would resolve from the agent's command
+        // path, which is the dependency the vendored prompts exist to remove.
+        s.pending_prompt = Some(format!(
+            "Read {} and follow it. Those are your instructions for PR {pr}.",
+            prompt_file.display()
+        ));
     }
     Ok(id)
+}
+
+/// Render the vendored prompt for `command` and leave it somewhere the session can
+/// read it.
+///
+/// Under the daemon's own config dir, like `story`'s scratch and for the same two
+/// reasons: the repo's `worktree-edit-boundary` hook blocks a write under the main
+/// checkout that lands outside the worktree, and a file *inside* the worktree would
+/// make the tree dirty — which the review flow then checks. Nothing of the
+/// daemon's is written into the checkout it is driving.
+async fn vendored_prompt_file(app: &Arc<AppState>, pr: u64, command: &str) -> Result<PathBuf> {
+    let template = match command {
+        "resolve" => crate::prompt::RESOLVE,
+        "green" => crate::prompt::GREEN,
+        other => bail!("no vendored prompt for /{other}"),
+    };
+    let (owner, repo) =
+        crate::resolve_repo(app).context("no GitHub repo configured and none on the remote")?;
+    let login = {
+        let inner = app.inner.read().await;
+        inner.viewer.clone()
+    }
+    .context("no GitHub login yet — the PR poller has not run")?;
+    let body = crate::prompt::render(
+        template,
+        &crate::prompt::Vars {
+            pr,
+            owner,
+            repo,
+            login,
+            upstream: app.cfg.upstream_ref.clone(),
+            upstream_remote: app.cfg.upstream_remote.clone(),
+            // The review flow's template uses none of triage's or story's vars.
+            ..Default::default()
+        },
+    )?;
+
+    let dir = Config::config_dir()?.join(format!("{command}-{pr}"));
+    std::fs::create_dir_all(&dir)?;
+    let file = dir.join("prompt.md");
+    // Rewritten per run: the login and the repo are resolved fresh, and a stale
+    // copy would be read as this run's instructions.
+    std::fs::write(&file, body).with_context(|| format!("writing {}", file.display()))?;
+    Ok(file)
 }
 
 /// The worktree for a PR's head branch, created if absent.

@@ -21,6 +21,10 @@ pub const GREEN: &str = include_str!("../commands/green.md");
 /// writing one file — the only agent here whose *output* the daemon reads.
 pub const STORY: &str = include_str!("../commands/story.md");
 
+/// The interactive review pass. Unlike the others this one runs in a pane you can
+/// take over, so it reaches the session as a file to read rather than as `-p`.
+pub const RESOLVE: &str = include_str!("../commands/resolve.md");
+
 /// What `{{TRACKER}}` becomes when a tracker is configured.
 ///
 /// A sentence rather than a boolean, so the prompt reads as prose in both states
@@ -127,7 +131,12 @@ mod tests {
     fn every_vendored_prompt_renders_with_nothing_left_over() {
         // The real templates, not fixtures: a placeholder added to either file
         // without being added here should fail this test, not a triage run.
-        for (name, t) in [("triage", TRIAGE), ("green", GREEN), ("story", STORY)] {
+        for (name, t) in [
+            ("triage", TRIAGE),
+            ("green", GREEN),
+            ("story", STORY),
+            ("resolve", RESOLVE),
+        ] {
             let out = render(t, &vars()).unwrap_or_else(|e| panic!("{name}: {e}"));
             assert!(!out.contains("{{"), "{name} still has a placeholder");
             assert!(out.contains("10001"), "{name} did not get the PR number");
