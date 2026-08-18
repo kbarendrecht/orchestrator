@@ -168,7 +168,9 @@ fn open(app_handle: &AppHandle, rt: &tokio::runtime::Handle, main: Option<std::p
     let url = server.url().parse().context("the daemon's own URL")?;
     let mut builder = WebviewWindowBuilder::new(app_handle, "main", WebviewUrl::External(url))
         .title("Orchestrator")
-        .inner_size(1440.0, 900.0)
+        // 20% up on the 1440x900 this started at: three columns and a terminal
+        // want the room, and every desktop this runs on has it.
+        .inner_size(1728.0, 1080.0)
         // Below this the three-column grid stops being three columns.
         .min_inner_size(1000.0, 600.0);
 
