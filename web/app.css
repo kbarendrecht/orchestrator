@@ -470,6 +470,17 @@ button.ctx-btn:hover{color:var(--text)}
   border-bottom:1px dotted var(--ghost);white-space:nowrap;flex:0 0 auto;
 }
 .prlink:hover{color:var(--text);border-bottom-color:var(--faint-solid)}
+/* A per-PR opt-in for the experimental overlay. Quiet when off, teal — the
+   automation colour — when on, so it reads as "a mode is enabled" rather than
+   "something needs you". */
+.betatoggle{
+  font-family:var(--label);font-size:7.5px;font-weight:700;letter-spacing:.12em;
+  text-transform:uppercase;color:var(--ghost);
+  border:1px solid var(--line);border-radius:2px;padding:0 4px;
+  white-space:nowrap;flex:0 0 auto;
+}
+.betatoggle:hover{color:var(--faint-solid);border-color:var(--faint-solid)}
+.betatoggle.on{color:var(--auto);border-color:var(--auto)}
 
 
 /* ---------- editable right pane (§5) ---------- */
