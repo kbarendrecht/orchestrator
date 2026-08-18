@@ -300,8 +300,12 @@ button.ctx-btn:hover{color:var(--text)}
 /* ---------- files ---------- */
 .files{border-left:1px solid var(--line);background:var(--surface);display:flex;flex-direction:column;overflow:hidden}
 .fgroup{padding:9px 13px 3px}
-.frow{
-  width:100%;display:grid;grid-template-columns:11px 1fr;gap:8px;align-items:center;
+/* One line per file. Three columns, because a row is status, path and counts —
+   with two, the counts wrapped onto a second grid row and every file took two
+   lines. Shared with `.dfrow`: the pane and the changeset list render the same
+   markup now. */
+.frow,.dfrow{
+  width:100%;display:grid;grid-template-columns:11px 1fr auto;gap:8px;align-items:center;
   padding:3.5px 13px;text-align:left;font-family:var(--mono);font-size:11px;
 }
 .frow:hover{background:var(--raised)}
@@ -454,10 +458,6 @@ body.col-resizing{cursor:col-resize;user-select:none}
 .diffnote{padding:22px 15px;font-family:var(--mono);font-size:10.5px;color:var(--faint-solid);grid-column:1/-1}
 
 /* diff file list in the right pane */
-.dfrow{
-  width:100%;display:grid;grid-template-columns:11px 1fr auto;gap:8px;align-items:center;
-  padding:3.5px 13px;text-align:left;font-family:var(--mono);font-size:11px;
-}
 .dfrow:hover{background:var(--raised)}
 .dfrow[aria-current="true"]{background:var(--raised)}
 .dfnum{font-size:9.5px;color:var(--faint-solid);letter-spacing:-.02em;white-space:nowrap}
