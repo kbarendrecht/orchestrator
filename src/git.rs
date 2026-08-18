@@ -406,6 +406,52 @@ pub fn worktree_add_existing(main: &Path, path: &Path, branch: &str) -> Result<(
     Ok(())
 }
 
+/// Rebuild an archived session's worktree at the path it was recorded under.
+///
+/// Transcripts are keyed by working directory, so `--resume` only finds the
+/// conversation when the path is identical (§2) — the caller passes the recorded
+/// `cwd`, not a freshly chosen one.
+///
+/// §2 step 1: the branch may be gone, merged and deleted. Recreate it, from
+/// `origin` if the head ref is still there and from the recorded commit if it is
+/// not. Step 3: the branch may have moved on instead, in which case the working
+/// tree the conversation describes is not the one being rebuilt — that comes back
+/// as the tip so the caller can say so.
+pub fn worktree_rebuild(
+    main: &Path,
+    path: &Path,
+    branch: &str,
+    recorded: &str,
+) -> Result<Option<String>> {
+    let path_str = path.to_string_lossy().into_owned();
+    if branch_exists(main, branch) {
+        git(main, &["worktree", "add", &path_str, branch])?;
+    } else {
+        // The head ref lives on the fork, since PRs are opened from origin (§6).
+        let _ = git(main, &["fetch", "origin", branch, "--no-tags"]);
+        let remote = format!("origin/{branch}");
+        if git_ok(main, &["rev-parse", "--verify", "--quiet", &remote]) {
+            git(main, &["worktree", "add", &path_str, "-b", branch, &remote])?;
+        } else if git_ok(main, &["cat-file", "-e", &format!("{recorded}^{{commit}}")]) {
+            // Nothing to track, but the commit the conversation ran on is still
+            // reachable, so the branch is recreated where it left off.
+            git(
+                main,
+                &["worktree", "add", &path_str, "-b", branch, recorded],
+            )?;
+        } else {
+            bail!(
+                "branch {branch} is gone and {} is unreachable, so there is nothing \
+                 to rebuild this conversation on",
+                &recorded[..recorded.len().min(7)]
+            );
+        }
+    }
+
+    let tip = head_sha(path)?;
+    Ok((tip != recorded).then_some(tip))
+}
+
 pub fn branch_exists(main: &Path, branch: &str) -> bool {
     git_ok(
         main,
@@ -1009,6 +1055,77 @@ fn hash_one(cwd: &Path, rel: &str) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A `feature` branch on the scratch repo, and the sha a conversation on it
+    /// would have recorded.
+    fn feature_at(repo: &std::path::Path) -> (std::path::PathBuf, String) {
+        git(repo, &["branch", "feature"]).unwrap();
+        let sha = git(repo, &["rev-parse", "feature"])
+            .unwrap()
+            .trim()
+            .to_string();
+        (repo.join(".claude/worktrees/wt"), sha)
+    }
+
+    #[test]
+    fn rebuilds_on_the_branch_that_is_still_there() {
+        let repo = scratch_repo();
+        let (wt, sha) = feature_at(&repo);
+        let moved = worktree_rebuild(&repo, &wt, "feature", &sha).unwrap();
+        assert!(
+            moved.is_none(),
+            "tip matches the record, so nothing to warn about"
+        );
+        assert!(
+            wt.join(".git").exists(),
+            "worktree was not created at {wt:?}"
+        );
+    }
+
+    #[test]
+    fn recreates_a_deleted_branch_at_the_recorded_commit() {
+        // The merged-and-deleted case (§2 step 1): no ref left, but the commit the
+        // conversation ran on is still in the object store.
+        let repo = scratch_repo();
+        let (wt, sha) = feature_at(&repo);
+        git(&repo, &["branch", "-D", "feature"]).unwrap();
+        assert!(!branch_exists(&repo, "feature"));
+
+        let moved = worktree_rebuild(&repo, &wt, "feature", &sha).unwrap();
+        assert!(
+            moved.is_none(),
+            "recreated at the recorded commit, so it matches"
+        );
+        assert!(branch_exists(&repo, "feature"), "branch was not recreated");
+        assert_eq!(head_sha(&wt).unwrap(), sha);
+    }
+
+    #[test]
+    fn reports_the_tip_when_the_branch_moved_on() {
+        // §2 step 3: the transcript describes a tree that is no longer checked
+        // out, and the caller has to be able to say so.
+        let repo = scratch_repo();
+        let (wt, recorded) = feature_at(&repo);
+        git(&repo, &["switch", "-q", "feature"]).unwrap();
+        git(&repo, &["commit", "-q", "--allow-empty", "-m", "later"]).unwrap();
+        let tip = git(&repo, &["rev-parse", "feature"])
+            .unwrap()
+            .trim()
+            .to_string();
+        git(&repo, &["switch", "-q", "main"]).unwrap();
+
+        let moved = worktree_rebuild(&repo, &wt, "feature", &recorded).unwrap();
+        assert_eq!(moved.as_deref(), Some(tip.as_str()));
+    }
+
+    #[test]
+    fn refuses_when_neither_the_branch_nor_the_commit_survives() {
+        let repo = scratch_repo();
+        let wt = repo.join(".claude/worktrees/wt");
+        let err = worktree_rebuild(&repo, &wt, "gone", &"0".repeat(40))
+            .expect_err("nothing to rebuild on");
+        assert!(format!("{err:#}").contains("unreachable"), "got: {err:#}");
+    }
 
     fn rec(parts: &[&str]) -> Vec<u8> {
         let mut v = Vec::new();

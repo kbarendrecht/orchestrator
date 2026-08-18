@@ -224,28 +224,62 @@ pub async fn resume_session(
     State(app): State<Arc<AppState>>,
     Path(id): Path<Uuid>,
 ) -> ApiResult<serde_json::Value> {
-    let (workspace, recovery, path_exists) = {
+    let (workspace, recovery, cwd) = {
         let inner = app.inner.read().await;
         let s = inner
             .sessions
             .get(&id)
             .ok_or_else(|| anyhow::anyhow!("no such session {id}"))?;
-        (s.workspace.clone(), s.recovery.clone(), s.cwd.exists())
+        (s.workspace.clone(), s.recovery.clone(), s.cwd.clone())
     };
+    let path_exists = cwd.exists();
 
     if matches!(recovery, Some(ArchiveState::TranscriptOnly)) {
         return Err(ApiError(anyhow::anyhow!(
             "session {id} is transcript-only: the branch is gone and the commit is unreachable"
         )));
     }
+
+    // A worktree that was torn down is rebuilt here, at the same absolute path:
+    // transcripts are keyed by working directory, so a different path resumes
+    // nothing (§2).
+    let mut warning = None;
     if !path_exists {
-        return Err(ApiError(anyhow::anyhow!(
-            "the worktree for session {id} no longer exists; rebuilding it for resume is not implemented yet"
-        )));
+        let Some(ArchiveState::Recoverable {
+            name,
+            branch,
+            head_sha,
+        }) = recovery
+        else {
+            return Err(ApiError(anyhow::anyhow!(
+                "session {id} has no recovery record, so its worktree cannot be rebuilt"
+            )));
+        };
+        let main = app.cfg.main_checkout.clone();
+        let (path, b, sha) = (cwd.clone(), branch.clone(), head_sha.clone());
+        let moved = tokio::task::spawn_blocking(move || {
+            crate::git::worktree_rebuild(&main, &path, &b, &sha)
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("rebuild task failed: {e}"))??;
+
+        app.register_worktree(&name, cwd.clone(), Some(branch.clone()))
+            .await;
+
+        // The conversation happened on a different commit than the one now
+        // checked out, so it describes files that are not there. Said rather than
+        // refused: the branch moving on is the normal case for work that landed.
+        if let Some(tip) = moved {
+            warning = Some(format!(
+                "{name} moved since this conversation: recorded {}, branch now {}",
+                &head_sha[..head_sha.len().min(7)],
+                &tip[..tip.len().min(7)]
+            ));
+        }
     }
 
     let new_id = spawn::spawn_session(&app, &workspace, Kind::Interactive, Some(id)).await?;
-    Ok(Json(json!({ "session": new_id })))
+    Ok(Json(json!({ "session": new_id, "warning": warning })))
 }
 
 // ---------------------------------------------------------------------------
