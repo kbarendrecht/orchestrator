@@ -558,6 +558,8 @@ body.row-resizing{cursor:row-resize;user-select:none}
 .rvrow .dot{background-color:#6B6B6B}
 /* Beats the line above on order, not specificity, so it has to come after it. */
 .rvrow .dot.blocked{background-color:var(--attn)}
+/* `prio` / `prio stopper` from the source's labels. Last, so it wins over both. */
+.rvrow .dot.prio{background-color:var(--bad)}
 /* Fixed-width number column so titles start at the same offset as the PR list. */
 .rvrow .num{font-family:var(--mono);font-size:calc(10.5px * var(--fs));color:var(--faint-solid);flex:0 0 46px}
 .rvrow .ttl{font-size:calc(11.5px * var(--fs));color:var(--text);white-space:nowrap;overflow:hidden;

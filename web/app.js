@@ -3282,8 +3282,11 @@ function renderReviews() {
      * rows in *your* queue, so it is the one thing here that is waiting on you
      * rather than on a colleague. Amber is the legend's "needs you" (§9).
      * It cannot tell a personal re-request from a team one — `prio` splits that
-     * only for first requests. */
-    a.appendChild(el('span', 'dot' + (r.needs_re_review ? ' blocked' : '')));
+     * only for first requests.
+     * A `prio` or `prio stopper` label outranks both: red, because that queue is
+     * somebody's release waiting on you. */
+    const dot = r.prio <= 1 ? ' prio' : r.needs_re_review ? ' blocked' : '';
+    a.appendChild(el('span', 'dot' + dot));
     // Age, not the PR number: how long it has waited is what tells you to pick
     // it up. The whole row already links to the PR, so the number earns nothing.
     const age = el('span', 'num', reviewAge(r.age_hours || 0));
