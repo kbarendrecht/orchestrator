@@ -51,6 +51,17 @@ Everything outside that block is hand-written and survives.
   inside, and a file in the worktree would dirty the tree). Next step is the exact
   path the dialog names.
 
+- **The update nudge cannot fire on this repo.** `github::latest_release`
+  (`src/github.rs:152`) asks `api.github.com/repos/.../releases/latest` through
+  plain `curl` with no token, and the release repo is private, so the call is a
+  404 and the poller sees `None`. Authenticated, the same request answers
+  `v2026.8.5`. The token ladder the PR poller already uses
+  (`ORCHD_GITHUB_TOKEN`, the token file, then `gh auth token`) is right there for
+  it to ride, or the repo goes public. Note also that a failed check and "no
+  update" are the same answer today, which is why this went unnoticed. The debug
+  gate in `lib.rs` is not the bug: `cargo run` deliberately never nags, and the
+  nudge would still not fire from a release build.
+
 - **Finish the rail row now the names mean something.** A session says which PR it
   is on, or whatever Claude Code called the conversation, so the 8-character uuid
   beside the name is no longer what tells two rows apart and the worktree is no
@@ -77,6 +88,10 @@ Everything outside that block is hand-written and survives.
   at 50 and the PR row renders `50+` (`web/app.js`). An under-count cannot hide
   work, which was the point, but the real number is still unknown on a
   long-running PR.
+- Bump `actions/checkout@v4` and `softprops/action-gh-release@v2` in
+  `.github/workflows/release.yml`. GitHub is retiring Node 20 and both are being
+  forced onto Node 24, which works but annotates every release run until one of
+  them stops being forced.
 - `inotify` on `.git/HEAD` per workspace (§2). The branch set is refreshed on
   reconcile instead, which is correct but lags a branch switch.
 
