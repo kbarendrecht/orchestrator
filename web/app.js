@@ -405,7 +405,7 @@ function renderInteraction() {
   host.appendChild(el('div', 'oqq', q.question));
   // Whatever the agent thought you needed to see to decide: a diff, a file, the
   // reviewer's words. Shown verbatim, in the diff's own type.
-  if (q.detail) host.appendChild(el('pre', 'oqd', q.detail));
+  if (q.detail) host.appendChild(detailEl(q.detail));
 
   const opts = el('div', 'oqopts');
   for (const o of q.options) {
@@ -1448,6 +1448,47 @@ function lineSegments(text, words, lang) {
     segs.push({ s, e, cls: tok ? tok.cls : null, word });
   }
   return segs;
+}
+
+/** The open-question detail is usually a commit diff and a reply, with no file to
+ *  name a language from, so it is coloured as a *diff*: whole +/- lines, headers
+ *  neutral. Prism's diff grammar is line-aware — a `---`/`+++` header is `coord`,
+ *  not a deletion, so the `--- the reply ---` separator does not read as removed.
+ *  Only the top-level (per-line) token is taken, so the whole line is coloured
+ *  rather than the sign alone. Non-diff prose has no diff tokens and stays plain. */
+function tokenLen(x) {
+  if (typeof x === 'string') return x.length;
+  if (Array.isArray(x)) return x.reduce((a, c) => a + tokenLen(c), 0);
+  return tokenLen(x.content);
+}
+function diffRanges(text) {
+  if (!window.Prism || !Prism.languages.diff) return [];
+  let toks;
+  try { toks = Prism.tokenize(text, Prism.languages.diff); }
+  catch (e) { return []; }
+  const out = [];
+  let pos = 0;
+  for (const t of toks) {
+    if (typeof t === 'string') { pos += t.length; continue; }
+    const ty = (t.alias && (Array.isArray(t.alias) ? t.alias[0] : t.alias)) || t.type;
+    const len = tokenLen(t);
+    out.push({ s: pos, e: pos + len, cls: ty });
+    pos += len;
+  }
+  return out;
+}
+function detailEl(text) {
+  const pre = el('pre', 'oqd');
+  const ranges = diffRanges(text);
+  if (!ranges.length) { pre.textContent = text; return pre; }
+  let at = 0;
+  for (const r of ranges) {
+    if (r.s > at) pre.appendChild(document.createTextNode(text.slice(at, r.s)));
+    pre.appendChild(el('span', 'tok-' + r.cls, text.slice(r.s, r.e)));
+    at = r.e;
+  }
+  if (at < text.length) pre.appendChild(document.createTextNode(text.slice(at)));
+  return pre;
 }
 
 function lineEl(row, side) {

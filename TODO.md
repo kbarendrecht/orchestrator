@@ -156,10 +156,6 @@ Everything outside that block is hand-written and survives.
   jump-to-a-PR has no keybind at all, and `Alt+m` is a "take main" with no
   matching "release" (release today means ending the session).
 
-- Line numbers and syntax highlighting in the open question's detail block
-  (`.oqd`). Same want as the diff viewer below, and probably the same answer, so
-  do them together: whatever gets vendored for one should serve both.
-
 ## Decisions worth revisiting
 
 - **The changed-files pane still refreshes.** The divergence strip now carries
