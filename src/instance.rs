@@ -28,7 +28,13 @@ pub struct Lock {
 /// `create_new` is the whole mutex: the check and the claim are one syscall, so
 /// two instances starting together cannot both pass it.
 pub fn acquire() -> Result<Lock> {
-    let path = Config::config_dir()?.join("instance.pid");
+    acquire_at(Config::config_dir()?.join("instance.pid"))
+}
+
+/// The real work, with the path injected so a test can point it at a temp dir
+/// rather than the machine's one true `~/.config/orchd/instance.pid` — which a
+/// real daemon might hold and which two tests cannot share.
+fn acquire_at(path: PathBuf) -> Result<Lock> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
@@ -112,14 +118,16 @@ mod tests {
 
     #[test]
     fn the_file_goes_when_the_lock_drops() {
-        let path = Config::config_dir().unwrap().join("instance.pid");
-        let existing = std::fs::read_to_string(&path).ok();
-        if existing.is_some() {
-            // A real daemon may be running on this machine; do not touch it.
-            return;
-        }
+        // A temp path, not the real config dir: the old version acquired the
+        // machine's one lock, so it raced a running daemon and could not survive
+        // the suite running in parallel.
+        let d = std::env::temp_dir()
+            .join(format!("orchd-lock-{}-{:?}", std::process::id(), std::thread::current().id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let path = d.join("instance.pid");
+        let _ = std::fs::remove_file(&path);
         {
-            let _lock = acquire().expect("lock");
+            let _lock = acquire_at(path.clone()).expect("lock");
             assert!(path.exists());
         }
         assert!(!path.exists(), "the lock file outlived the guard");
