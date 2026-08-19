@@ -160,7 +160,12 @@ function openTerm(target, parent) {
   term.loadAddon(fit);
   term.open(host);
   try {
-    term.loadAddon(new WebglAddon.WebglAddon());
+    const webgl = new WebglAddon.WebglAddon();
+    // A lost context leaves the canvas frozen on whatever it last painted, and
+    // nothing in xterm notices. Dropping the addon puts the DOM renderer back,
+    // which is slower and correct.
+    webgl.onContextLoss?.(() => webgl.dispose());
+    term.loadAddon(webgl);
   } catch (e) {
     // Software rendering is slower but correct; not worth failing over.
   }
@@ -200,12 +205,22 @@ function resize(entry) {
   const box = entry.host.getBoundingClientRect();
   const seen = `${Math.round(box.width)}x${Math.round(box.height)}`;
   if (entry.box === seen) return;
+  // A host that is visible but not laid out yet measures as nothing, and fitting
+  // to that hands the pty a couple of columns. The TUI on the other end redraws
+  // itself to fit and its previous frame is gone, so the pane comes back shrunk
+  // and full of the wreckage of the old one. There is no useful terminal this
+  // small, so wait for a real box instead.
+  if (box.width < 80 || box.height < 40) return;
   entry.box = seen;
   try {
     entry.fit.fit();
   } catch (e) {
     return;
   }
+  // The canvas was just resized under the renderer. On WebKitGTK that is where
+  // the glyphs come back as garbage that a scroll or a selection cleans up: the
+  // buffer is right and the paint is not, so ask for the paint.
+  repaint(entry);
   const { rows, cols } = entry.term;
   // Only tell the pty when the geometry actually moved. That makes a refit
   // idempotent, which is what lets the observer below fire as often as it likes
@@ -215,6 +230,20 @@ function resize(entry) {
   if (entry.ready && entry.sock.readyState === WebSocket.OPEN) {
     entry.sock.send(JSON.stringify({ type: 'resize', rows, cols }));
   }
+}
+
+/** Redraw a terminal from its buffer, glyph atlas and all.
+ *
+ *  Dropping the atlas is the half that matters after a resize or a spell hidden:
+ *  it is the piece that survives the canvas being sized to something else, and
+ *  it is what the leftover garbage is made of. */
+function repaint(entry) {
+  requestAnimationFrame(() => {
+    try {
+      entry.term.clearTextureAtlas?.();
+      entry.term.refresh(0, Math.max(0, entry.term.rows - 1));
+    } catch (e) { /* a disposed terminal has nothing to refresh */ }
+  });
 }
 
 function closeTerm(target) {
@@ -243,12 +272,8 @@ function showTerm(target, parent) {
       // A hidden xterm has no dimensions, so its renderer parks; coming back
       // does not always repaint what is already in the buffer, which is the
       // black pane you get from switching sessions quickly. Ask for the redraw
-      // rather than hope for one — and drop the WebGL glyph atlas, which is the
-      // half that survives being sized to nothing.
-      try {
-        entry.term.clearTextureAtlas?.();
-        entry.term.refresh(0, Math.max(0, entry.term.rows - 1));
-      } catch (e) { /* a disposed terminal has nothing to refresh */ }
+      // rather than hope for one.
+      repaint(entry);
     });
   }
   return entry;
