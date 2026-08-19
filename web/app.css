@@ -526,9 +526,12 @@ body.row-resizing{cursor:row-resize;user-select:none}
   text-overflow:ellipsis;flex:1 1 auto;min-width:0}
 .prrow .link{font-family:var(--mono);font-size:calc(9.5px * var(--fs));color:var(--faint-solid);flex:0 0 auto}
 .prrow:hover .link{opacity:0}
-.prrow .jump{font-family:var(--mono);font-size:calc(9.5px * var(--fs));color:var(--faint-solid);
-  flex:0 0 auto;opacity:0;transition:opacity .12s}
-.prrow:hover .jump{opacity:1}
+/* Always on, and dimmed rather than hidden. The pane is rebuilt on every daemon
+   snapshot, so a chip that fades in on row hover replays that fade a few times a
+   minute under a stationary cursor, which reads as a pulse. */
+.prrow .jump{font-family:var(--mono);font-size:calc(9.5px * var(--fs));color:var(--ghost);
+  flex:0 0 auto}
+.prrow:hover .jump{color:var(--faint-solid)}
 .prrow .jump:hover{color:var(--text)}
 .dot.ok{background:var(--ok)}
 
