@@ -435,8 +435,14 @@ body.row-resizing{cursor:row-resize;user-select:none}
 .updatebar-x:hover{color:var(--text);background:var(--surface)}
 
 /* ---------- diff overlay (§5) ---------- */
+/* Fixed to the centre column rather than filling the pane, so it covers the
+   context bar too. That bar ends in the session's own close button, one row
+   above the overlay's Close: two buttons, a few pixels apart, one of which
+   throws away a conversation. Held below the column splitters (60), which stay
+   draggable with a file open. */
 .overlay{
-  position:absolute;inset:0;background:var(--bg);z-index:20;
+  position:fixed;top:0;bottom:0;left:var(--rail);right:var(--files);
+  background:var(--bg);z-index:20;
   display:none;flex-direction:column;
 }
 .overlay.on{display:flex}
