@@ -3563,6 +3563,25 @@ for (const id of ['termwrap', 'drawerbody']) {
 window.addEventListener('focus', queueRefit);
 document.addEventListener('visibilitychange', queueRefit);
 
+/* Both bottom panes are lists of links you follow out of the app, and what you
+ * do out there (approve, comment, merge) is the very thing they list. Coming
+ * back to a queue that still holds the review you just finished is the pane
+ * lying until the next poll, so returning to the window pulses both pollers.
+ *
+ * Throttled, because alt-tabbing is not a reason to spend the GitHub budget, and
+ * silent, because nobody asked for this one: the ↻ buttons stay the loud path. */
+const RETURN_REFRESH_MS = 30_000;
+let lastReturnRefresh = 0;
+function refreshOnReturn() {
+  if (document.hidden) return;
+  if (Date.now() - lastReturnRefresh < RETURN_REFRESH_MS) return;
+  lastReturnRefresh = Date.now();
+  call('/api/prs/refresh').catch(() => {});
+  call('/api/reviews/refresh').catch(() => {});
+}
+window.addEventListener('focus', refreshOnReturn);
+document.addEventListener('visibilitychange', refreshOnReturn);
+
 // ---------------------------------------------------------------------------
 // Live state
 // ---------------------------------------------------------------------------
