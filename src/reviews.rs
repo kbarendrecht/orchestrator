@@ -55,6 +55,10 @@ pub enum ReviewState {
     /// Before the first poll lands. Distinct from `Degraded` so startup does
     /// not read as a broken command — and so it never becomes a TODO entry.
     Pending,
+    /// No review-queue command configured. Not a fault — this repo simply has
+    /// no such source — so, like `Pending`, it never becomes a TODO finding and
+    /// the pane says "not configured" rather than "unavailable".
+    Off,
 }
 
 impl Default for ReviewState {
@@ -67,8 +71,11 @@ impl Default for ReviewState {
 /// absence is accepted; a *different* one is not.
 const KNOWN_VERSION: u64 = 1;
 
-pub fn fetch(main: &Path, timeout_secs: u64) -> ReviewState {
-    match run(main, timeout_secs) {
+pub fn fetch(main: &Path, timeout_secs: u64, command: &[String]) -> ReviewState {
+    if command.is_empty() {
+        return ReviewState::Off;
+    }
+    match run(main, timeout_secs, command) {
         Ok(q) => ReviewState::Ok(q),
         Err(e) => ReviewState::Degraded {
             reason: format!("{e:#}"),
@@ -76,15 +83,15 @@ pub fn fetch(main: &Path, timeout_secs: u64) -> ReviewState {
     }
 }
 
-fn run(main: &Path, timeout_secs: u64) -> Result<ReviewQueue> {
-    // `timeout` rather than a thread: the child is a bun process that talks to
+fn run(main: &Path, timeout_secs: u64, command: &[String]) -> Result<ReviewQueue> {
+    // `timeout` rather than a thread: the child may be a process that talks to
     // GitHub, and orphaning it would leave the next poll racing this one.
     let out = Command::new("timeout")
         .arg(timeout_secs.to_string())
-        .args(["mise", "run", "reviews", "--json"])
+        .args(command)
         .current_dir(main)
         .output()
-        .context("running `mise run reviews --json`")?;
+        .with_context(|| format!("running `{}`", command.join(" ")))?;
 
     if !out.status.success() {
         let tail: String = String::from_utf8_lossy(&out.stderr)
@@ -262,5 +269,15 @@ mod tests {
     fn an_empty_but_valid_queue_is_ok_not_degraded() {
         let q = parse(&v(r#"{"forLogin":"me","actionable":[],"blocked":[]}"#)).unwrap();
         assert!(q.actionable.is_empty());
+    }
+
+    #[test]
+    fn no_command_is_off_not_degraded() {
+        // A repo with no review-queue source must not read as a broken command —
+        // that would nag in the TODO block and colour the pane red for nothing.
+        assert!(matches!(
+            fetch(Path::new("/nonexistent"), 1, &[]),
+            ReviewState::Off
+        ));
     }
 }

@@ -3816,16 +3816,21 @@ function renderReviews() {
     snap.reviews_polling);
 
   if (!rv || rv.state !== 'ok') {
-    // Never an empty queue: a broken command reads as broken (§6b). Startup is
-    // not broken, so it says so differently.
+    // Never an empty queue: a broken command reads as broken (§6b). Startup and
+    // "no such command here" are not broken, so they each say so differently.
     const pending = !rv || rv.state === 'pending';
-    count.appendChild(el('span', pending ? null : 'f', pending ? 'polling…' : 'unavailable'));
+    const off = rv && rv.state === 'off';
+    // Only a real fault gets the red `f`; pending and off are neutral.
+    const label = pending ? 'polling…' : off ? 'off' : 'unavailable';
+    count.appendChild(el('span', pending || off ? null : 'f', label));
     head.appendChild(count);
     head.appendChild(refresh);
     head.title = rv?.reason || '';
     list.appendChild(el('div', 'fempty', pending
       ? 'waiting for the first poll'
-      : `reviews unavailable\n${(rv?.reason || '').slice(0, 160)}`));
+      : off
+        ? 'no review queue configured\nset `reviews_command` in config.json'
+        : `reviews unavailable\n${(rv?.reason || '').slice(0, 160)}`));
     head.onclick = () => { showReviews = !showReviews; renderReviews(); };
     return;
   }

@@ -58,6 +58,16 @@ pub struct Config {
     /// but must not hang the poller forever.
     #[serde(default = "default_review_timeout")]
     pub review_timeout_seconds: u64,
+    /// The command whose JSON output feeds the review-queue pane (the shape in
+    /// `docs/reviews-json.md`). An argv, run under `timeout` in the main checkout.
+    ///
+    /// Empty means "no review queue here", and the pane says so rather than
+    /// reading as a broken command. The serde default is acme's own
+    /// `mise run reviews --json` so a config written before this field existed
+    /// keeps working; `default_for` leaves it empty, because a fresh checkout on
+    /// another machine has no such task and should not pretend to.
+    #[serde(default = "default_reviews_command")]
+    pub reviews_command: Vec<String>,
     /// Test capabilities per suite. Config rather than hardcoded, because the
     /// table has already changed once (§7 rule 6).
     #[serde(default)]
@@ -147,6 +157,13 @@ fn default_story_timeout() -> u64 {
 
 fn default_review_timeout() -> u64 {
     240
+}
+
+fn default_reviews_command() -> Vec<String> {
+    ["mise", "run", "reviews", "--json"]
+        .into_iter()
+        .map(String::from)
+        .collect()
 }
 
 impl Config {
@@ -274,6 +291,9 @@ impl Config {
             github_token_file: None,
             poll_seconds: default_poll_seconds(),
             review_timeout_seconds: default_review_timeout(),
+            // Empty on a fresh checkout: the review queue is acme's task, not
+            // something every repo has. Set it in config.json to turn the pane on.
+            reviews_command: Vec::new(),
             tracker: Tracker::None,
             shortcut_token_file: None,
             story_timeout_seconds: default_story_timeout(),
@@ -399,5 +419,21 @@ mod tests {
         )
         .expect("parse");
         assert_eq!(cfg.main_checkout, PathBuf::from("/tmp"));
+    }
+
+    #[test]
+    fn a_config_without_a_reviews_command_keeps_the_old_behaviour() {
+        // Existing configs predate the field; they must still drive acme's
+        // `mise run reviews --json` rather than silently turning the pane off.
+        let cfg: Config = serde_json::from_str(r#"{"main_checkout":"/tmp"}"#).expect("parse");
+        assert_eq!(cfg.reviews_command, vec!["mise", "run", "reviews", "--json"]);
+    }
+
+    #[test]
+    fn a_fresh_config_leaves_the_reviews_command_empty() {
+        // A new checkout elsewhere has no such task, so the default written on
+        // first run is off, not a acme assumption.
+        let cfg = Config::default_for(PathBuf::from("/tmp/x"));
+        assert!(cfg.reviews_command.is_empty());
     }
 }

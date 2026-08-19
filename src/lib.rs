@@ -629,7 +629,7 @@ async fn live_findings(app: &Arc<AppState>) -> Vec<todo::Finding> {
         out.push(todo::Finding {
             what: "review queue is unavailable".into(),
             why: format!(
-                "`mise run reviews --json` is not answering: {}",
+                "the configured review-queue command is not answering: {}",
                 reason.trim()
             ),
         });
@@ -683,7 +683,8 @@ fn start_review_poller(app: Arc<AppState>) {
             app.notify().await;
             let main = app.cfg.main_checkout.clone();
             let timeout = app.cfg.review_timeout_seconds;
-            let state = tokio::task::spawn_blocking(move || reviews::fetch(&main, timeout))
+            let command = app.cfg.reviews_command.clone();
+            let state = tokio::task::spawn_blocking(move || reviews::fetch(&main, timeout, &command))
                 .await
                 .unwrap_or_else(|e| reviews::ReviewState::Degraded {
                     reason: format!("review poll task failed: {e}"),

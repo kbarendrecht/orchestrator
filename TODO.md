@@ -98,11 +98,15 @@ Everything outside that block is hand-written and survives.
 - **Make it run somewhere other than this machine.** Everything below is a
   hardcoded assumption about one monorepo, and each is a setting or a probe
   waiting to be written:
-  - **The review queue is acme's.** `reviews::fetch` shells out to `mise run
-    reviews --json` (`src/reviews.rs`) and the daemon consumes that repo's own
-    ranking, documented in `docs/reviews-json.md`. Anywhere else there is no such
-    task and the pane is permanently degraded. Needs a configurable command, or a
-    built-in fallback that asks GitHub directly.
+  - **The review queue has no built-in source.** The command is now config
+    (`reviews_command`, `src/config.rs`) — an argv whose JSON matches
+    `docs/reviews-json.md`, defaulting to acme's `mise run reviews --json` for
+    a config written before the field, empty on a fresh checkout so the pane reads
+    "not configured" (`ReviewState::Off`) rather than degraded. What is still
+    acme's: the JSON *shape* itself, and the fallback PR URL derived as
+    `acme/monorepo/pull/<n>` when the source omits `url` (`src/reviews.rs`).
+    The remaining want is a built-in fallback that asks GitHub directly, so a
+    repo with no such command still gets a queue.
   - **Docker and `ng` are assumed.** `main_processes` ships `mise run watch` and
     `docker compose up` as the two things a checkout has (`src/config.rs`). They
     are already config, but the defaults are a guess about someone else's stack;
