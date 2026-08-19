@@ -37,6 +37,26 @@ Everything outside that block is hand-written and survives.
   git primitive is strictly required. The per-PR-keyed guards
   (`authorship`/`branch_busy`) would need a chain-aware variant.
 
+- **The fix run asks to trust `~/development`.** Pressing `fix` starts the run and
+  Claude Code puts up its "Accessing workspace" prompt for `~/development`, which
+  is neither the worktree nor anything the daemon names. Not reproduced, and the
+  obvious causes are ruled out: `spawn_fix_pr_session` spawns with the PR's
+  worktree as cwd, that dialog prints the cwd verbatim, trust is inherited from an
+  ancestor so a worktree under a trusted checkout needs none (verified against a
+  throwaway repo with the same `.claude/worktrees` layout), and there is no
+  `~/.claude/projects/-home-kbarendrecht-development` directory, which there would
+  be if a session had ever started up there. The one thing a run touches outside
+  the checkout is its own instructions at `~/.config/orchd/fix-pr-<pr>/prompt.md`
+  (`spawn.rs`, deliberate: the repo's edit-boundary hook blocks writing them
+  inside, and a file in the worktree would dirty the tree). Next step is the exact
+  path the dialog names.
+
+- **Finish the rail row now the names mean something.** A session says which PR it
+  is on, or whatever Claude Code called the conversation, so the 8-character uuid
+  beside the name is no longer what tells two rows apart and the worktree is no
+  longer worth the headline. Move the id into a tooltip and put the workspace on
+  the second line next to the state.
+
 - **Audit the keyboard map for logical, consistent coverage.** Not two more
   chords — a pass over the whole scheme so it is predictable: same modifier
   idioms, obvious inverses, no orphan actions. Concrete gaps feeding it:
@@ -48,9 +68,9 @@ Everything outside that block is hand-written and survives.
   firing or spawning.
 
 - Enforce the 8-process cap on *every* spawn, not just `fix-pr`. §8b caps total
-  concurrent Claude processes at 8, but `MAX_CLAUDE_PROCESSES` is only checked in
-  the `fix-pr` guard (`src/fix_pr.rs`); ordinary interactive and `/resolve` spawns
-  bypass it.
+  concurrent Claude processes at 8. `MAX_CLAUDE_PROCESSES` is checked in the
+  `fix-pr` guard (`src/fix_pr.rs`) and by auto-resume on startup (`src/lib.rs`);
+  ordinary interactive, worktree and `/resolve` spawns all bypass it.
 
 - Paginate the *list/poll* `reviewThreads` past 50. The detailed overlay fetch
   now pages fully (`src/github.rs`, ~100/page), but the summary poll still caps
@@ -70,6 +90,27 @@ Everything outside that block is hand-written and survives.
   showing a tree that no longer exists seemed worse than one showing a long
   list. Say so if you want it pinned to a snapshot with an explicit refresh
   instead.
+
+- **Session names come from an undocumented transcript field.** `store::ai_title`
+  tails the `.jsonl` for `{"type":"ai-title","aiTitle":…}`, which is Claude Code's
+  own format and can change under us. It degrades to the workspace name rather
+  than failing, and the transcript slug rule has already been wrong once, so a
+  rail that goes back to reading `dfafdf` everywhere is the symptom to look for.
+
+- **The terminal keeps the WebGL renderer.** Glyphs coming back as garbage that a
+  scroll or a selection cleaned up were read as a paint fault after the canvas is
+  resized under the renderer, so a refit now clears the glyph atlas and refreshes,
+  and a lost context disposes the addon. Diagnosed from the symptom rather than
+  watched working. If it comes back the next step is no WebGL inside the webview
+  at all, keeping it for a browser tab: WebKitGTK is already the engine this repo
+  treats as the flaky one, and headless WebKit dies on that renderer outright.
+
+- **Sessions archived before the rename still say `green`.** `Kind::Automation`
+  carries the command as a free string, so records already in `sessions.json` keep
+  the old name and their rows read `green` until they are deleted. Nothing
+  switches on the value, so rewriting them on load would be churn for a label. The
+  `green-<pr>` prompt directories under `~/.config/orchd` are dead files for the
+  same reason.
 
 - **`gh auth token` fallback.** Works out of the box and is what the daemon uses
   today, but its scopes include write and §6 wants read-only. Superseded as soon
