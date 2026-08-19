@@ -358,6 +358,25 @@ pub async fn stop(
 /// rather than pinned: the title is regenerated as the conversation moves, and
 /// the newest one is the one that describes what is in the pane.
 async fn refresh_title(app: &Arc<AppState>, id: Uuid) {
+    // While we are here: a `--worktree` session's recorded transcript path names
+    // the worktree, and Claude Code wrote the file under the checkout it started
+    // in. Left uncorrected, the session drops out of the archive the moment it
+    // finishes, because nothing can find its conversation.
+    let stale = {
+        let inner = app.inner.read().await;
+        inner.sessions.get(&id).map(|s| {
+            crate::store::transcript_file(s.id, &s.cwd, s.transcript_path.as_deref()).is_none()
+        })
+    };
+    if stale == Some(true) {
+        if let Some(found) = crate::store::find_transcript(id) {
+            let mut inner = app.inner.write().await;
+            if let Some(s) = inner.sessions.get_mut(&id) {
+                s.transcript_path = Some(found);
+            }
+        }
+    }
+
     let found = {
         let inner = app.inner.read().await;
         inner

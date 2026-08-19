@@ -336,6 +336,32 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// The `--worktree` case: the record names a directory Claude Code never
+    /// wrote to, and the file is under the checkout the session started in.
+    #[test]
+    fn a_transcript_is_found_by_id_when_both_recorded_paths_are_wrong() {
+        let home = std::env::temp_dir().join(format!("orchd-find-{}", std::process::id()));
+        let real = home.join(".claude/projects/-home-dev-repo");
+        std::fs::create_dir_all(&real).unwrap();
+        let id = uuid::Uuid::new_v4();
+        std::fs::write(real.join(format!("{id}.jsonl")), "{}\n").unwrap();
+        std::env::set_var("HOME", &home);
+
+        // Neither cheap answer can see it: the recorded path names a worktree that
+        // was never written to, and so does the cwd.
+        let wrong = home.join(".claude/projects/-home-dev-repo--claude-worktrees-x");
+        assert!(transcript_file(
+            id,
+            Path::new("/home/dev/repo/.claude/worktrees/x"),
+            Some(&wrong.join(format!("{id}.jsonl")))
+        )
+        .is_none());
+
+        let found = find_transcript(id).expect("found by id");
+        assert!(found.ends_with(format!("-home-dev-repo/{id}.jsonl")), "{found:?}");
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
     #[test]
     fn a_transcript_without_a_title_is_not_an_error() {
         // The entry only appears after the first exchange, and the format is
@@ -466,6 +492,32 @@ pub fn transcript_file(id: uuid::Uuid, cwd: &Path, recorded: Option<&Path>) -> O
         .ok()?
         .join(format!("{id}.jsonl"));
     candidate.exists().then_some(candidate)
+}
+
+/// Hunt for a session's transcript anywhere Claude Code keeps them.
+///
+/// The last resort, and it exists because of `claude --worktree`: that session
+/// starts in the main checkout, so Claude Code files its transcript under
+/// *main's* slug, and then the daemon adopts the session into the worktree it
+/// just cut. From then on both of the cheap answers are wrong — the recorded path
+/// names the worktree and so does the cwd — while the file sits under a third
+/// name. The id is a uuid, so finding it by name is unambiguous.
+///
+/// Deliberately not part of [`transcript_file`]: that is asked once per session
+/// per snapshot, and a directory scan for every session that legitimately has no
+/// transcript would be a scan a second, forever. Callers use this once and record
+/// what it found.
+pub fn find_transcript(id: uuid::Uuid) -> Option<PathBuf> {
+    let home = std::env::var("HOME").ok()?;
+    let projects = PathBuf::from(home).join(".claude/projects");
+    let name = format!("{id}.jsonl");
+    for entry in std::fs::read_dir(projects).ok()?.flatten() {
+        let candidate = entry.path().join(&name);
+        if candidate.exists() {
+            return Some(candidate);
+        }
+    }
+    None
 }
 
 /// How much of the transcript's tail to read looking for a title.
