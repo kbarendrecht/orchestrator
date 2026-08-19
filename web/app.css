@@ -274,6 +274,42 @@ button.ctx-btn:hover{color:var(--text)}
 .termhost{position:absolute;inset:8px 6px 8px 12px}
 .termhost[hidden]{display:none}
 
+/* ---------- the open question ---------- */
+/* The session is stopped until this is answered, so it sits over the pty rather
+   than beside it. Amber throughout: this is the legend's "needs you", and a
+   blocked agent is the clearest case of it there is. */
+.oq{
+  position:absolute;left:12px;right:6px;top:8px;z-index:5;
+  background:var(--surface);border:1px solid var(--attn);border-radius:3px;
+  padding:13px 15px;display:flex;flex-direction:column;gap:11px;
+  box-shadow:0 10px 30px rgba(0,0,0,.5);max-height:calc(100% - 16px);overflow:auto;
+}
+.oq[hidden]{display:none}
+.oqh{
+  display:flex;align-items:center;gap:8px;
+  font-family:var(--label);font-size:calc(8.5px * var(--fs));font-weight:700;
+  letter-spacing:.16em;text-transform:uppercase;color:var(--attn);
+}
+.oqh .dia{font-size:calc(9px * var(--fs))}
+.oqh .oqt{margin-left:auto;font-family:var(--mono);letter-spacing:0;text-transform:none;
+  font-weight:400;font-size:calc(9.5px * var(--fs));color:var(--faint-solid)}
+.oqq{font-size:calc(13px * var(--fs));color:var(--text);line-height:1.5}
+.oqd{
+  font-family:var(--code);font-size:calc(11px * var(--fs));line-height:1.55;
+  color:var(--dim);background:var(--bg);border:1px solid var(--line);border-radius:2px;
+  padding:9px 11px;margin:0;white-space:pre;overflow-x:auto;max-height:220px;
+}
+.oqopts{display:flex;flex-direction:column;gap:5px}
+.oqopt{
+  text-align:left;width:100%;padding:8px 11px;border:1px solid var(--line);
+  border-radius:2px;background:var(--bg);
+}
+.oqopt:hover:not(:disabled){border-color:var(--attn);background:var(--raised)}
+.oqopt:disabled{color:var(--ghost);cursor:default}
+.oqopt .ol{font-size:calc(12px * var(--fs));color:var(--text)}
+.oqopt:disabled .ol{color:var(--ghost)}
+.oqopt .od{font-size:calc(11px * var(--fs));color:var(--faint-solid);margin-top:2px}
+
 /* ---------- process drawer ---------- */
 .drawer{border-top:1px solid var(--line);background:var(--surface);display:flex;flex-direction:column;height:var(--drawer);flex:0 0 auto;position:relative}
 .drawer.empty{height:auto}

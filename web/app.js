@@ -376,7 +376,62 @@ function render() {
   renderDrawer();
   renderFiles();
   renderReviews();
+  renderInteraction();
   renderUpdate();
+}
+
+/** The question the selected session is blocked on.
+ *
+ *  Rendered from the snapshot rather than held locally, so it survives a reload
+ *  and shows up in every window at once: the agent is stopped until somebody
+ *  answers, and which browser you happen to be looking at is not part of that.
+ *
+ *  Over the terminal on purpose. The agent could print the question into its own
+ *  pane, but then answering means typing into a wall of scrollback, and a
+ *  question that scrolls away is one nobody notices. */
+function renderInteraction() {
+  const host = $('oq');
+  const s = currentSession();
+  const q = s && s.interaction && !s.interaction.answer ? s.interaction : null;
+  if (!q) { host.hidden = true; host.replaceChildren(); return; }
+
+  host.replaceChildren();
+  const head = el('div', 'oqh');
+  head.appendChild(el('span', 'dia', '\u25C6'));
+  head.appendChild(el('span', null, 'needs your call'));
+  if (q.thread_id) head.appendChild(el('span', 'oqt', q.thread_id));
+  host.appendChild(head);
+
+  host.appendChild(el('div', 'oqq', q.question));
+  // Whatever the agent thought you needed to see to decide: a diff, a file, the
+  // reviewer's words. Shown verbatim, in the diff's own type.
+  if (q.detail) host.appendChild(el('pre', 'oqd', q.detail));
+
+  const opts = el('div', 'oqopts');
+  for (const o of q.options) {
+    const b = el('button', 'oqopt');
+    b.appendChild(el('div', 'ol', o.label));
+    if (o.sub) b.appendChild(el('div', 'od', o.sub));
+    b.onclick = () => answerInteraction(s.id, q.id, o.value, host);
+    opts.appendChild(b);
+  }
+  host.appendChild(opts);
+  host.hidden = false;
+}
+
+/** Answer it, and let the next snapshot take the card away.
+ *
+ *  The buttons go dead immediately: the agent is released the moment the daemon
+ *  has the answer, and a second click would be answering a question that is no
+ *  longer open. */
+async function answerInteraction(session, ask, answer, host) {
+  for (const b of host.querySelectorAll('.oqopt')) b.disabled = true;
+  try {
+    await call(`/api/session/${session}/answer`, { ask, answer });
+  } catch (e) {
+    toast(e.message, true);
+    for (const b of host.querySelectorAll('.oqopt')) b.disabled = false;
+  }
 }
 
 // The poll counter each pane captured when its refresh was pressed; the button

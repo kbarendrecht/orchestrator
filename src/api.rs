@@ -334,6 +334,13 @@ pub async fn ask(
             }
         }
         s.interaction = Some(interaction);
+        // Blocked on you is exactly what `YourTurn` means, so the rail, the
+        // waitbar and the dot all say it without learning a new state. The clock
+        // it starts is the one worth watching: how long the agent stood still.
+        s.set_state(crate::model::State::YourTurn {
+            since: std::time::SystemTime::now(),
+            reason: crate::model::TurnReason::AskedAQuestion,
+        });
     }
     app.notify().await;
     Ok(Json(json!({ "ask": ask_id })))
@@ -412,6 +419,9 @@ pub async fn answer(
             )));
         }
         open.answer = Some(body.answer.clone());
+        // Answered, so it is going again. `Stop` will correct this if the turn
+        // ends for real a moment later.
+        s.set_state(crate::model::State::Working);
     }
     app.answered.notify_waiters();
     app.notify().await;
