@@ -2198,11 +2198,14 @@ function rvCard(root) {
   readSec.appendChild(read);
   body.appendChild(readSec);
 
-  // -- the positions
-  const posSec = el('div', 'sec');
-  posSec.appendChild(el('div', 'eyebrow', 'how you are handling it'));
-  posSec.appendChild(rvPositions(item));
-  body.appendChild(posSec);
+  /* -- the three decisions, in the order they depend on each other: what you
+        are saying, the words that say it, and the code it implies. */
+  const decide = el('div', 'sec');
+  decide.appendChild(rvStance(item));
+  decide.appendChild(rvReply(item));
+  const fix = rvFix(item);
+  if (fix) decide.appendChild(fix);
+  body.appendChild(decide);
   root.appendChild(body);
 
   const hint = `thread ${reviewState.i + 1} of ${q.length} · ` +
@@ -2218,77 +2221,164 @@ function rvCard(root) {
   ], hint));
 }
 
-/** The option list. The reply and the proposed change live *inside* the
- *  position, not beside it: picking a stance, writing the words and choosing the
- *  edit are one act, so they are one control — you can never do A and say B. */
-function rvPositions(item) {
-  const wrap = el('div', 'pos');
-  const chosen = pickOf(item);
+/** A labelled field, the way the design lays the card out: a small caption, an
+ *  optional hint to its right, then the control. */
+function rvField(label, hint) {
+  const wrap = el('div', 'field');
+  const lab = el('div', 'flab', label);
+  if (hint) lab.appendChild(el('span', 'fhint', hint));
+  wrap.appendChild(lab);
+  return wrap;
+}
 
-  item.p.positions.forEach((pos, i) => {
-    // No tracker means nowhere to file, so the option is not shown at all — the
-    // overlay is not welded to one particular tracker. The daemon refuses it too
-    // if it arrives anyway; this is so it never has to.
-    if (!offered(pos)) return;
-    const opt = el('div', 'opt' + (i === chosen ? ' on' : ''));
-    const head = el('button', 'optHead');
-    head.appendChild(el('span', 'k', String(i + 1)));
+/** The stances this proposal actually offers, in the order the card shows them.
+ *
+ *  Derived rather than fixed: triage decides which ways out exist for a thread,
+ *  and offering `story` where it proposed none would be a button that picks
+ *  nothing. `skip` is always there because it is the one answer that needs no
+ *  proposal. */
+const STANCE_ORDER = ['reply', 'agree', 'story'];
+const STANCE_LABEL = { reply: 'Reply', agree: 'Agree 👍', story: 'Story' };
 
-    const t = el('span', 't', pos.label);
-    if (i === item.p.recommend) t.appendChild(el('span', 'rec', 'recommended'));
-    // "Is this my wording or the agent's?" is the first question on returning
-    // to a card, and the posted footer cannot answer it.
-    if (reviewState.drafts[draftKey(item.t.id, i)] !== undefined) {
-      t.appendChild(el('span', 'edited', 'edited'));
-    }
-    if (pos.sub) t.appendChild(el('em', null, pos.sub));
-    head.appendChild(t);
-    head.appendChild(el('span', 'does', effectLabel(item, pos)));
-    head.onclick = () => {
+function stancesOf(item) {
+  return STANCE_ORDER.filter((st) =>
+    item.p.positions.some((pos, i) => pos.stance === st && offered(pos)));
+}
+
+/** The position to select when you pick a stance: the recommendation if it is in
+ *  that stance, else its first. */
+function positionForStance(item, stance) {
+  const rec = item.p.positions[item.p.recommend];
+  if (rec && rec.stance === stance && offered(rec)) return item.p.recommend;
+  return item.p.positions.findIndex((pos) => pos.stance === stance && offered(pos));
+}
+
+/** What you are saying back. One row of peers, because they are alternatives to
+ *  each other and not a primary with escapes. */
+function rvStance(item) {
+  const wrap = rvField('Stance');
+  const seg = el('div', 'seg');
+  const chosen = reviewState.skipped[item.t.id] ? 'skip' : positionOf(item).stance;
+
+  for (const st of stancesOf(item)) {
+    const b = el('button', 'segbtn' + (st === chosen ? ' on' : ''), STANCE_LABEL[st]);
+    b.onclick = () => {
+      const i = positionForStance(item, st);
+      if (i < 0) return;
       reviewState.picks[item.t.id] = i;
       delete reviewState.skipped[item.t.id];
       renderReview();
     };
-    opt.appendChild(head);
+    seg.appendChild(b);
+  }
+  // Skip is a stance on this row and a button on the action row, deliberately:
+  // it is both an answer to "what are you saying" and a way past the card.
+  const sk = el('button', 'segbtn' + (chosen === 'skip' ? ' on' : ''), 'Skip');
+  sk.onclick = () => {
+    reviewState.skipped[item.t.id] = true;
+    delete reviewState.picks[item.t.id];
+    delete reviewState.modes[item.t.id];
+    renderReview();
+  };
+  seg.appendChild(sk);
+  wrap.appendChild(seg);
 
-    // Options stay collapsed: comparing them means expanding each in turn,
-    // which is the accepted cost of not letting a long diff push the choices
-    // off screen.
-    if (i === chosen) opt.appendChild(rvOptBody(item, pos, i));
-    wrap.appendChild(opt);
-  });
+  // Triage can offer two ways of taking the same stance — a short apology and a
+  // long one, two different fixes. The segment cannot say which, so when there
+  // is a choice left to make it stays on screen.
+  const alts = item.p.positions
+    .map((pos, i) => ({ pos, i }))
+    .filter(({ pos, i }) => pos.stance === chosen && offered(pos));
+  if (alts.length > 1) {
+    const row = el('div', 'alts');
+    for (const { pos, i } of alts) {
+      const b = el('button', 'alt' + (i === pickOf(item) ? ' on' : ''));
+      b.appendChild(el('span', 'k', String(i + 1)));
+      b.appendChild(el('span', 't', pos.label));
+      if (i === item.p.recommend) b.appendChild(el('span', 'rec', 'recommended'));
+      if (reviewState.drafts[draftKey(item.t.id, i)] !== undefined) {
+        b.appendChild(el('span', 'edited', 'edited'));
+      }
+      b.onclick = () => {
+        reviewState.picks[item.t.id] = i;
+        delete reviewState.skipped[item.t.id];
+        renderReview();
+      };
+      row.appendChild(b);
+    }
+    wrap.appendChild(row);
+  }
   return wrap;
 }
 
-/** What accepting this position actually does — so the option that rewrites a
- *  file cannot look as cheap as the one that posts a reaction. No thumbs-up glyph
- *  anywhere: the words.
- *
- *  Built from the three decisions rather than read off one field: the stance says
- *  what gets posted, the patch says whether code changes, and the mode says who
- *  writes it. */
-function effectLabel(item, pos) {
-  const says = { agree: 'thumbs up', reply: 'reply', story: 'story + reply' }[pos.stance]
-    || pos.stance;
-  if (!pos.patch) return says;
-  return modeOf(item) === 'manual' ? `by hand + ${says}` : `change + ${says}`;
+/** The words. A box when there are words to write, and an honest note when there
+ *  are not — a thumbs up posts none, and a hand-written thread's comment belongs
+ *  to the phase, after the work exists. */
+function rvReply(item) {
+  const pos = positionOf(item);
+  const i = pickOf(item);
+
+  if (reviewState.skipped[item.t.id]) {
+    const wrap = rvField('Reply');
+    wrap.appendChild(el('div', 'note', 'Skipped: the thread stays open and nothing is posted.'));
+    return wrap;
+  }
+  if (modeOf(item) === 'manual') {
+    const wrap = rvField('Reply', 'written in the phase, not now');
+    wrap.appendChild(el('div', 'note',
+      'You are writing this one live. The session stops here, and the comment is '
+      + 'written once the work exists.'));
+    return wrap;
+  }
+  if (!pos.stance || !['reply', 'story'].includes(pos.stance)) {
+    const wrap = rvField('Reply');
+    wrap.appendChild(el('div', 'note', 'A thumbs up posts no words.'));
+    return wrap;
+  }
+
+  const wrap = rvField('Reply', 'AI draft · edit freely');
+  const box = el('textarea', 'box');
+  box.setAttribute('aria-label', 'Reply');
+  box.value = replyOf(item);
+  /* A textarea, not a contenteditable: the text goes to GitHub as plain
+     markdown, so rich paste is pure liability and browsers insert <div>/<br>
+     where a newline belongs. `openEditor()` settled this. */
+  box.oninput = () => {
+    reviewState.drafts[draftKey(item.t.id, i)] = box.value;
+    // Repaint only the footer: re-rendering the card here would move focus out
+    // of the box mid-sentence.
+    rvFootState(wrap, item, pos, i);
+  };
+  wrap.appendChild(box);
+  wrap.appendChild(el('div', 'foot'));
+  rvFootState(wrap, item, pos, i);
+  return wrap;
 }
 
-function rvOptBody(item, pos, i) {
-  const bodyEl = el('div', 'optBody');
+/** The code the decision implies: the staged fix, and the story when there is
+ *  one. Absent entirely when the answer is words only, rather than an empty
+ *  heading. */
+function rvFix(item) {
+  if (reviewState.skipped[item.t.id]) return null;
+  const pos = positionOf(item);
+  if (!pos.patch && !pos.story) return null;
 
+  const manual = modeOf(item) === 'manual';
+  const wrap = rvField(
+    pos.patch ? 'Proposed fix' : 'Story',
+    pos.patch ? (manual ? 'staged, but you write it' : 'the session applies this') : null
+  );
   if (pos.patch) {
-    bodyEl.appendChild(willWriteLabel(pos.patch));
-    bodyEl.appendChild(hunkEl(pos.patch, false));
+    wrap.appendChild(willWriteLabel(pos.patch));
+    wrap.appendChild(hunkEl(pos.patch, false));
   }
   if (pos.story) {
-    // `willWriteLabel` derives its object from a diff, and a story has none —
-    // so the object is named here rather than leaving a verb with nothing after
-    // it.
+    // `willWriteLabel` derives its object from a diff, and a story has none — so
+    // the object is named here rather than leaving a verb with nothing after it.
     const says = el('div', 'willwrite');
     says.appendChild(document.createTextNode('will create'));
     says.appendChild(el('b', null, 'a Shortcut story'));
-    bodyEl.appendChild(says);
+    wrap.appendChild(says);
     const draft = el('div', 'storydraft');
     for (const [lbl, val] of [['title', pos.story.title], ['body', pos.story.body]]) {
       const l = el('div', 'sline');
@@ -2296,34 +2386,9 @@ function rvOptBody(item, pos, i) {
       l.appendChild(el('span', 'val', val));
       draft.appendChild(l);
     }
-    bodyEl.appendChild(draft);
+    wrap.appendChild(draft);
   }
-
-  if (pos.reply !== null && pos.reply !== undefined) {
-    /* A textarea, not a contenteditable: the text goes to GitHub as plain
-       markdown, so rich paste is pure liability and browsers insert
-       <div>/<br> where a newline belongs. `openEditor()` settled this. */
-    const box = el('textarea', 'box');
-    box.setAttribute('aria-label', 'Reply');
-    box.value = replyOf(item);
-    if (modeOf(item) === 'manual') {
-      box.placeholder = 'Written in the manual phase, once the work exists.';
-    }
-    // Recorded on input rather than on blur, or navigating away with the keys
-    // would drop what was typed.
-    box.oninput = () => {
-      reviewState.drafts[draftKey(item.t.id, i)] = box.value;
-      // Repaint only the footer: re-rendering the card here would move focus
-      // out of the box mid-sentence.
-      rvFootState(bodyEl, item, pos, i);
-    };
-    bodyEl.appendChild(box);
-
-    const foot = el('div', 'foot');
-    bodyEl.appendChild(foot);
-    rvFootState(bodyEl, item, pos, i);
-  }
-  return bodyEl;
+  return wrap;
 }
 
 /** The footer under a reply box: what gets appended, and — only once the text

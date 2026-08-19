@@ -730,30 +730,53 @@ body.row-resizing{cursor:row-resize;user-select:none}
 /* positions — the reply and the proposed change live inside the position, not
    beside it. Picking a stance, writing the words and choosing the edit are one
    act, so they are one control: you can never do A and say B. */
-.rv .pos{display:flex;flex-direction:column;gap:6px}
-.rv .opt{border:1px solid var(--line);border-radius:2px;background:#0D0D0D;overflow:hidden}
-.rv .opt:hover{border-color:var(--faint-solid)}
-.rv .opt.on{border-color:var(--attn);background:rgba(224,162,68,.06)}
-.rv .optHead{display:flex;align-items:flex-start;gap:9px;text-align:left;width:100%;padding:8px 10px}
-.rv .opt .k{
+/* One labelled decision: caption, optional hint, control. The card is three of
+   these in a row, which is what makes the three decisions legible as three. */
+.rv .field{display:flex;flex-direction:column;gap:7px}
+.rv .flab{
+  font-family:var(--label);font-size:calc(8.5px * var(--fs));font-weight:700;
+  letter-spacing:.16em;text-transform:uppercase;color:var(--faint-solid);
+}
+.rv .fhint{
+  margin-left:9px;font-family:var(--mono);font-size:calc(9.5px * var(--fs));
+  font-weight:400;letter-spacing:0;text-transform:none;color:var(--dim);
+}
+/* An answer to "what are you saying", not a primary and two escapes, so the
+   options sit in one row as peers of equal weight. */
+.rv .seg{display:flex;gap:0;border:1px solid var(--line);border-radius:2px;width:fit-content;overflow:hidden}
+.rv .segbtn{
+  font-size:calc(11.5px * var(--fs));color:var(--dim);padding:5px 13px;
+  border-right:1px solid var(--line);white-space:nowrap;
+}
+.rv .segbtn:last-child{border-right:0}
+.rv .segbtn:hover{color:var(--text);background:var(--raised)}
+.rv .segbtn.on{color:#1A1206;background:var(--attn)}
+/* Two ways of taking the same stance. Only on screen when there is actually a
+   choice left, so the row is never a list of one. */
+.rv .alts{display:flex;flex-direction:column;gap:4px}
+.rv .alt{
+  display:flex;align-items:center;gap:9px;text-align:left;width:100%;padding:6px 9px;
+  border:1px solid var(--line);border-radius:2px;background:#0D0D0D;
+}
+.rv .alt:hover{border-color:var(--faint-solid)}
+.rv .alt.on{border-color:var(--attn);background:rgba(224,162,68,.06)}
+.rv .alt .k{
   font-family:var(--mono);font-size:calc(9.5px * var(--fs));color:var(--faint-solid);
-  border:1px solid var(--line);border-radius:2px;padding:0 4px;flex:0 0 auto;margin-top:1px;
+  border:1px solid var(--line);border-radius:2px;padding:0 4px;flex:0 0 auto;
 }
-.rv .opt.on .k{color:var(--attn);border-color:rgba(224,162,68,.4)}
-.rv .opt .t{font-size:calc(12px * var(--fs));color:var(--text)}
-.rv .opt .t em{display:block;font-style:normal;color:var(--faint-solid);font-size:calc(11px * var(--fs));margin-top:2px}
-.rv .opt .does{
-  margin-left:auto;flex:0 0 auto;font-family:var(--label);font-size:calc(8px * var(--fs));font-weight:700;
-  letter-spacing:.12em;text-transform:uppercase;color:var(--faint-solid);padding-top:2px;
-  white-space:nowrap;
-}
-.rv .opt.on .does{color:var(--ok)}
+.rv .alt.on .k{color:var(--attn);border-color:rgba(224,162,68,.4)}
+.rv .alt .t{font-size:calc(12px * var(--fs));color:var(--text)}
 .rv .rec{
   font-family:var(--label);font-size:calc(8px * var(--fs));font-weight:700;letter-spacing:.12em;
   text-transform:uppercase;color:var(--attn);border:1px solid rgba(224,162,68,.35);
   border-radius:2px;padding:1px 5px;margin-left:8px;
 }
-.rv .optBody{padding:0 10px 10px 33px;display:flex;flex-direction:column;gap:7px}
+/* Said rather than left blank: a field with no control needs to explain why it
+   has none, or it reads as something that failed to render. */
+.rv .note{
+  font-size:calc(11.5px * var(--fs));color:var(--dim);line-height:1.55;
+  border-left:2px solid var(--line);padding-left:10px;
+}
 
 /* A textarea, not a contenteditable: the reply goes to GitHub as plain
    markdown, so rich paste is liability and browsers insert <div>/<br> rather
