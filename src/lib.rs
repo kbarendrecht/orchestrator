@@ -288,6 +288,8 @@ fn router(app: Arc<AppState>) -> Router {
         .route("/api/session", post(api::new_session))
         .route("/api/session/:id/kill", post(api::kill_session))
         .route("/api/session/:id/resume", post(api::resume_session))
+        .route("/api/session/:id/fork", post(api::fork_session))
+        .route("/api/session/:id/delete", post(api::delete_session))
         .route("/api/worktree", post(api::new_worktree))
         .route("/api/workspace/:id/shell", post(api::new_shell))
         .route("/api/workspace/:id/reconcile", post(api::reconcile))
@@ -550,7 +552,9 @@ fn auto_resume(app: Arc<AppState>, records: Vec<store::SessionRecord>) {
 
             // Its own kind, not `Interactive`: a resumed fix run is still the
             // automation the rail colours teal and the guard table counts.
-            match spawn::spawn_session(&app, &r.workspace, r.kind.clone(), Some(r.id)).await {
+            match spawn::spawn_session(&app, &r.workspace, r.kind.clone(), Some(spawn::Source::Resume(r.id)))
+                .await
+            {
                 Ok(id) => {
                     tracing::info!(session = %id, workspace = %r.workspace, "auto-resumed");
                     resumed += 1;

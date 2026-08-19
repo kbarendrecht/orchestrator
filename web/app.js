@@ -754,6 +754,10 @@ function archivedRow(s) {
     btn.appendChild(el('div', 'sess-sub', 'transcript only'));
   }
   btn.onclick = () => openArchived(s);
+  btn.oncontextmenu = (ev) => openMenu(ev, [
+    ['Fork session', null, s.has_transcript && s.resumable ? () => forkSession(s) : null],
+    ['Delete session', 'bad', () => deleteSession(s)],
+  ]);
   return btn;
 }
 
@@ -846,9 +850,47 @@ function sessionRow(s, w) {
   // The header's ✕ only ever closes the selected session, so closing any other
   // one meant switching to it first.
   btn.oncontextmenu = (ev) => openMenu(ev, [
+    // Nothing to branch off until the conversation has had a turn.
+    ['Fork session', null, s.has_transcript ? () => forkSession(s) : null],
     ['Close session', 'bad', s.alive ? () => closeSession(s.id) : null],
+    ['Delete session', 'bad', () => deleteSession(s)],
   ]);
   return btn;
+}
+
+/** Branch off a conversation: same context, new session, original untouched.
+ *
+ *  No `closeTerm` unlike resume, which keeps the old id and would otherwise hand
+ *  back the dead terminal. A fork has an id of its own and nothing to collide
+ *  with. */
+async function forkSession(s) {
+  try {
+    const r = await call(`/api/session/${s.id}/fork`);
+    pendingSelect = r.session;
+    toast('forked');
+    // The branch moved on since the conversation, same as resume: worth saying,
+    // not worth refusing over.
+    if (r.warning) toast(r.warning, true);
+  } catch (e) {
+    toast(e.message, true);
+  }
+}
+
+/** Forget a session: the row, the record, and the daemon's own copy of the
+ *  transcript.
+ *
+ *  Confirmed, unlike closing, because closing is reversible in the way that
+ *  matters — the conversation is still there to resume — and this is not. The
+ *  wording says what survives, so "delete" does not have to be read as deleting
+ *  the conversation itself. */
+function deleteSession(s) {
+  const name = railName(s, { id: s.workspace });
+  const ending = s.alive ? 'It is still running, so this ends it first. ' : '';
+  if (!confirm(`Delete "${name}"?\n\n${ending}The row and orchd's copy of the `
+    + "transcript go for good. Claude Code's own transcript is left where it is.")) return;
+  call(`/api/session/${s.id}/delete`)
+    .then(() => toast('deleted'))
+    .catch((e) => toast(e.message, true));
 }
 
 /** End a session: kills the pty, keeps the row and its scrollback (§2). */

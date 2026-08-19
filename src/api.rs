@@ -215,6 +215,58 @@ pub async fn kill_session(
     }
 }
 
+/// Forget a session outright.
+///
+/// [`kill_session`] is the other answer and the usual one: it ends the process
+/// and keeps the row, because the scrollback and the conversation are still
+/// worth something. This is for the ones that are not — a run you started by
+/// mistake, twelve dead rows in one worktree — so the record goes, and with it
+/// the copy of the transcript the daemon made for itself at teardown.
+///
+/// A live session is killed first: deleting the record while its pty runs would
+/// leave an agent working in a worktree with nothing in the rail pointing at it.
+/// Its own exit watcher still runs and still releases the locks and the
+/// automation slot, because it holds the pty handle rather than looking the
+/// session up again.
+///
+/// Claude Code's own transcript under `~/.claude/projects` is deliberately left
+/// alone. It is not the daemon's file, and `claude --resume` outside orchd still
+/// reads it.
+pub async fn delete_session(
+    State(app): State<Arc<AppState>>,
+    Path(id): Path<Uuid>,
+) -> ApiResult<serde_json::Value> {
+    let (pty, archived) = {
+        let inner = app.inner.read().await;
+        let s = inner
+            .sessions
+            .get(&id)
+            .ok_or_else(|| anyhow::anyhow!("no such session {id}"))?;
+        (s.pty.clone(), s.archived_transcript.clone())
+    };
+
+    if let Some(h) = pty {
+        // Best effort: a process that is already gone is not a reason to keep
+        // the row you asked to be rid of.
+        let _ = h.kill();
+    }
+    app.release_main(id).await;
+
+    {
+        let mut inner = app.inner.write().await;
+        inner.sessions.remove(&id);
+    }
+    if let Some(path) = archived {
+        if let Err(e) = std::fs::remove_file(&path) {
+            tracing::warn!("could not remove {}: {e}", path.display());
+        }
+    }
+
+    // Persists the records without the deleted one, so it stays gone.
+    app.notify().await;
+    Ok(Json(json!({ "deleted": id })))
+}
+
 /// Resume an archived session.
 ///
 /// A live worktree resumes trivially — relaunch with cwd set to the recorded
@@ -226,6 +278,29 @@ pub async fn resume_session(
     State(app): State<Arc<AppState>>,
     Path(id): Path<Uuid>,
 ) -> ApiResult<serde_json::Value> {
+    revive(&app, id, false).await
+}
+
+/// Branch off a conversation instead of continuing it.
+///
+/// Everything resume does to get a working tree back, and then `--fork-session`:
+/// the new run starts with the whole conversation behind it and writes to an id
+/// of its own, so the original is still sitting there to come back to. That is
+/// the "same context, new direction" case (§2) — reading the answer, then asking
+/// for something else, without losing the version that got you there.
+///
+/// It keeps the recorded kind for the same reason resume does: a fork of a fix
+/// run is still an agent working that PR's branch, and the guard table should
+/// count it as one.
+pub async fn fork_session(
+    State(app): State<Arc<AppState>>,
+    Path(id): Path<Uuid>,
+) -> ApiResult<serde_json::Value> {
+    revive(&app, id, true).await
+}
+
+/// The shared half of resume and fork: get the worktree back, then relaunch.
+async fn revive(app: &Arc<AppState>, id: Uuid, fork: bool) -> ApiResult<serde_json::Value> {
     let (workspace, recovery, cwd) = {
         let inner = app.inner.read().await;
         let s = inner
@@ -290,7 +365,12 @@ pub async fn resume_session(
             .map(|s| s.kind.clone())
             .unwrap_or(Kind::Interactive)
     };
-    let new_id = spawn::spawn_session(&app, &workspace, kind, Some(id)).await?;
+    let source = if fork {
+        spawn::Source::Fork(id)
+    } else {
+        spawn::Source::Resume(id)
+    };
+    let new_id = spawn::spawn_session(app, &workspace, kind, Some(source)).await?;
     Ok(Json(json!({ "session": new_id, "warning": warning })))
 }
 
@@ -918,7 +998,7 @@ pub async fn pr_post(
     Json(batch): Json<crate::post::Batch>,
 ) -> ApiResult<crate::post::PostReport> {
     // One batch per PR at a time, refused rather than queued — same shape as
-    // `green_pr`'s `branch_busy`.
+    // `fix_pr`'s `branch_busy`.
     //
     // This was invisible while every write was idempotent: two concurrent batches
     // would post the same reply twice and GitHub would collapse the reaction. A

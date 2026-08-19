@@ -37,11 +37,6 @@ Everything outside that block is hand-written and survives.
   git primitive is strictly required. The per-PR-keyed guards
   (`authorship`/`branch_busy`) would need a chain-aware variant.
 
-- **Fork on resume (`--fork-session`).** §2 wanted fork offered alongside resume
-  for the "same context, new direction" case; it arrives as `source: "fork"`.
-  Only `--resume` is wired today (`src/api.rs`, `src/spawn.rs`) — one extra
-  spawn flag and a second button.
-
 - **Audit the keyboard map for logical, consistent coverage.** Not two more
   chords — a pass over the whole scheme so it is predictable: same modifier
   idioms, obvious inverses, no orphan actions. Concrete gaps feeding it:

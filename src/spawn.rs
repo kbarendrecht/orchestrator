@@ -15,6 +15,17 @@ pub(crate) const DEFAULT_SIZE: (u16, u16) = (40, 140);
 /// yet. Replaced at `SessionStart`.
 pub const PENDING_WORKTREE: &str = "\u{2026}creating";
 
+/// How a spawn relates to a conversation that already exists.
+#[derive(Debug, Clone, Copy)]
+pub enum Source {
+    /// Carry on under the same id: one conversation, more turns. The rail row
+    /// comes back to life rather than gaining a sibling.
+    Resume(Uuid),
+    /// Branch off it. Same context, new id, and the original is left exactly
+    /// where it is — the "same context, new direction" case (§2).
+    Fork(Uuid),
+}
+
 /// Spawn an interactive Claude session in an existing workspace.
 ///
 /// The daemon spawns every session and never adopts a shell-started one. That
@@ -24,7 +35,7 @@ pub async fn spawn_session(
     app: &Arc<AppState>,
     workspace: &str,
     kind: Kind,
-    resume: Option<Uuid>,
+    resume: Option<Source>,
 ) -> Result<SessionId> {
     let path = app
         .workspace_path(workspace)
@@ -33,21 +44,34 @@ pub async fn spawn_session(
 
     // Main is exclusive, and the claim is taken before the process starts so a
     // failed spawn cannot leave the lease held.
-    let id = resume.unwrap_or_else(Uuid::new_v4);
+    let id = match resume {
+        Some(Source::Resume(prev)) => prev,
+        // A fork is a second conversation, so it needs an id of its own.
+        Some(Source::Fork(_)) | None => Uuid::new_v4(),
+    };
     if workspace == MAIN {
         app.claim_main(id).await?;
     }
 
     let settings = Config::hooks_settings_path()?;
     let mut cmd = vec!["claude".to_string()];
+    // Assigning the id keeps the daemon's session id and Claude's own the same
+    // value, so resume and transcript lookup need no mapping. `--resume` already
+    // decides the id; a fork does not, and `--session-id` is honoured alongside
+    // `--fork-session`, so the invariant survives there too.
     match resume {
-        Some(prev) => {
+        Some(Source::Resume(prev)) => {
             cmd.push("--resume".into());
             cmd.push(prev.to_string());
         }
+        Some(Source::Fork(prev)) => {
+            cmd.push("--session-id".into());
+            cmd.push(id.to_string());
+            cmd.push("--resume".into());
+            cmd.push(prev.to_string());
+            cmd.push("--fork-session".into());
+        }
         None => {
-            // Assigning the id makes the daemon's session id and Claude's own
-            // the same value, so resume and transcript lookup need no mapping.
             cmd.push("--session-id".into());
             cmd.push(id.to_string());
         }

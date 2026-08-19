@@ -730,8 +730,16 @@ impl SessionView {
             alive: s.pty.as_ref().map(|h| h.is_alive()).unwrap_or(false),
             dirty_count: s.dirty_paths.len(),
             boundary_violations: s.boundary_violations.clone(),
-            has_transcript: matches!(s.state, State::Archived { .. } | State::Exited)
-                && crate::store::transcript_exists(s.id, &s.cwd, s.transcript_path.as_deref()),
+            // Just the file question. It used to be ANDed with "and it has
+            // finished", which the one caller checks for itself anyway, and a
+            // live session needs the honest answer too: forking one that has
+            // not had a turn yet is offering something Claude answers with "no
+            // conversation found".
+            has_transcript: crate::store::transcript_exists(
+                s.id,
+                &s.cwd,
+                s.transcript_path.as_deref(),
+            ),
             resumable: matches!(s.recovery, Some(ArchiveState::Recoverable { .. }) | None)
                 && !matches!(s.recovery, Some(ArchiveState::TranscriptOnly)),
         }
