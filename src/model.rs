@@ -203,6 +203,15 @@ pub struct Session {
     /// editing outside its worktree is a prompt problem worth seeing.
     pub boundary_violations: Vec<String>,
     pub last_reconcile: Option<SystemTime>,
+    /// The agent's own credential, and only for asking.
+    ///
+    /// `ORCHD_TOKEN` opens all 41 API routes, including the ones that post to
+    /// GitHub and tear down worktrees. Handing that to the agent would make "the
+    /// daemon owns outward writes" a sentence in a prompt rather than something
+    /// the API enforces, so a session gets a token of its own that unlocks the
+    /// interaction routes and nothing else. Never serialized: it lives as long as
+    /// the process it was minted for.
+    pub ask_token: String,
     /// What this session is blocked on, waiting for you to answer.
     ///
     /// The one place the daemon holds state *for* a running agent rather than
@@ -239,6 +248,9 @@ impl Session {
             boundary_violations: Vec::new(),
             last_reconcile: None,
             pending_prompt: None,
+            // Always a real one, so an empty stored token can never match an
+            // empty header.
+            ask_token: crate::state::random_token(),
             interaction: None,
         }
     }

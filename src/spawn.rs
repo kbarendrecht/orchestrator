@@ -79,11 +79,15 @@ pub async fn spawn_session(
     cmd.push("--settings".into());
     cmd.push(settings.to_string_lossy().into_owned());
 
+    // Built before the spawn so the pty can carry the session's own ask token:
+    // it is minted with the session, and the agent reads it from its environment.
+    let mut session = Session::new(id, workspace.to_string(), path.clone(), kind);
+
     let (mut env, unset) = crate::config::transcript_env();
     env.push(("ORCH_SESSION_ID".to_string(), id.to_string()));
+    env.push(("ORCH_ASK_TOKEN".to_string(), session.ask_token.clone()));
     let spawned = PtyHandle::spawn(&cmd, &path, &env, &unset, DEFAULT_SIZE)?;
 
-    let mut session = Session::new(id, workspace.to_string(), path.clone(), kind);
     session.pty = Some(spawned.handle.clone());
     session.pid = spawned.pid;
 

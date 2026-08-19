@@ -122,8 +122,16 @@ pub async fn guard(
         .and_then(|v| v.to_str().ok())
         .is_some_and(|t| t == app.token);
 
+    /* The agent's own two routes authenticate differently: they carry the
+       session's `ask_token` rather than the app token, and the handlers do that
+       check because only they know which session the path names. Exempted here
+       the way hooks are, and for the same reason — the caller is a local process
+       with no Origin and no business holding the key to everything else. */
+    let is_ask = path.starts_with("/api/session/")
+        && (path.ends_with("/ask") || path.ends_with("/wait"));
+
     let is_get = req.method() == axum::http::Method::GET;
-    if !origin_ok(origin, port, is_hook, is_get, token_ok) {
+    if !origin_ok(origin, port, is_hook || is_ask, is_get, token_ok) {
         return (StatusCode::FORBIDDEN, "bad origin").into_response();
     }
 
@@ -145,7 +153,8 @@ pub async fn guard(
     const SPENDS_GITHUB_TOKEN: [&str; 2] = ["/threads", "/review"];
     let spends_github_token =
         path.starts_with("/api/pr/") && SPENDS_GITHUB_TOKEN.iter().any(|s| path.ends_with(s));
-    let needs_token = !is_hook && (req.method() != axum::http::Method::GET || spends_github_token);
+    let needs_token =
+        !is_hook && !is_ask && (req.method() != axum::http::Method::GET || spends_github_token);
     if needs_token && !token_ok {
         return (StatusCode::UNAUTHORIZED, "bad token").into_response();
     }
@@ -300,8 +309,10 @@ pub struct AskBody {
 pub async fn ask(
     State(app): State<Arc<AppState>>,
     Path(id): Path<Uuid>,
+    headers: axum::http::HeaderMap,
     Json(body): Json<AskBody>,
 ) -> ApiResult<serde_json::Value> {
+    ask_token_ok(&app, id, &headers).await?;
     if body.question.trim().is_empty() {
         return Err(ApiError(anyhow::anyhow!("a question with no words")));
     }
@@ -354,7 +365,9 @@ pub async fn ask(
 pub async fn ask_wait(
     State(app): State<Arc<AppState>>,
     Path((id, ask_id)): Path<(Uuid, Uuid)>,
+    headers: axum::http::HeaderMap,
 ) -> ApiResult<serde_json::Value> {
+    ask_token_ok(&app, id, &headers).await?;
     let deadline =
         tokio::time::Instant::now() + std::time::Duration::from_secs(WAIT_SECS);
     loop {
@@ -390,6 +403,32 @@ pub async fn ask_wait(
             }
         }
     }
+}
+
+/// Is this caller the agent whose session it claims to be?
+///
+/// The one place a credential other than the app token is accepted, so it is
+/// deliberately narrow: it authenticates *this* session, for *these* routes, and
+/// unlocks nothing else. The app token is taken as well, so the SPA and a test
+/// can drive the same endpoints.
+async fn ask_token_ok(app: &Arc<AppState>, id: Uuid, headers: &axum::http::HeaderMap) -> Result<(), ApiError> {
+    let given = headers
+        .get("x-orch-ask")
+        .and_then(|v| v.to_str().ok())
+        .or_else(|| headers.get("x-orch-token").and_then(|v| v.to_str().ok()))
+        .unwrap_or_default();
+    if given == app.token {
+        return Ok(());
+    }
+    let inner = app.inner.read().await;
+    let s = inner
+        .sessions
+        .get(&id)
+        .ok_or_else(|| ApiError(anyhow::anyhow!("no such session {id}")))?;
+    if given.is_empty() || given != s.ask_token {
+        return Err(ApiError(anyhow::anyhow!("bad ask token for session {id}")));
+    }
+    Ok(())
 }
 
 #[derive(Deserialize)]
@@ -773,11 +812,26 @@ mod tests {
             inner.sessions.insert(id, sess);
         }
 
+        let mut agent = axum::http::HeaderMap::new();
+        let token = app.inner.read().await.sessions[&id].ask_token.clone();
+        agent.insert("x-orch-ask", token.parse().unwrap());
+
+        // Another session's agent, or any local process, must not be able to read
+        // this one's answer.
+        let mut wrong = axum::http::HeaderMap::new();
+        wrong.insert("x-orch-ask", "not-the-token".parse().unwrap());
+        assert!(
+            ask_wait(State(app.clone()), Path((id, ask_id)), wrong)
+                .await
+                .is_err(),
+            "a wrong ask token was let through"
+        );
+
         // The agent is already waiting when the answer arrives, which is the
         // ordering that matters: a poll that started first must still be woken.
         let waiter = tokio::spawn({
             let app = app.clone();
-            async move { ask_wait(State(app), Path((id, ask_id))).await }
+            async move { ask_wait(State(app), Path((id, ask_id)), agent).await }
         });
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         answer(
