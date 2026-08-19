@@ -165,11 +165,6 @@ Everything outside that block is hand-written and survives.
   exists anywhere in `src/` or `web/`. One switch that stops automation from
   firing or spawning.
 
-- Paginate the *list/poll* `reviewThreads` past 50. The detailed overlay fetch
-  now pages fully (`src/github.rs`, ~100/page), but the summary poll still caps
-  at 50 and the PR row renders `50+` (`web/app.js`). An under-count cannot hide
-  work, which was the point, but the real number is still unknown on a
-  long-running PR.
 - Line numbers and syntax highlighting in the open question's detail block
   (`.oqd`). Same want as the diff viewer below, and probably the same answer, so
   do them together: whatever gets vendored for one should serve both.

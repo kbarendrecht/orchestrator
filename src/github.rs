@@ -274,7 +274,7 @@ fn query_for(owner: &str, name: &str) -> String {
         headRepositoryOwner {{ login }}
         commits(last: 1) {{ nodes {{ commit {{ oid statusCheckRollup {{ state }} }} }} }}
         reviewThreads(first: {PAGE}) {{
-          pageInfo {{ hasNextPage }}
+          pageInfo {{ hasNextPage endCursor }}
           nodes {{ isResolved isOutdated
             comments(last: 1) {{ nodes {{
               author {{ login }}
@@ -309,9 +309,120 @@ pub fn poll(token: &str, owner: &str, name: &str) -> Result<(String, Vec<Pr>)> {
         .cloned()
         .unwrap_or_default();
 
-    let mut prs: Vec<Pr> = nodes.iter().filter_map(|n| parse_pr(n, &viewer)).collect();
+    let mut prs: Vec<Pr> = Vec::with_capacity(nodes.len());
+    for n in &nodes {
+        let Some(mut pr) = parse_pr(n, &viewer) else { continue };
+        // The poll asks for one 50-thread page per PR to keep the fan-out cheap;
+        // a PR with more than that comes back a floor (`50+`). Page out the rest
+        // for just those PRs — the common case never pays for it — and recount so
+        // the number, and "waiting on you", are true rather than a floor.
+        if pr.unresolved_capped {
+            match all_summary_threads(token, owner, name, pr.number, n) {
+                Ok((threads, guard_hit)) => {
+                    let (unresolved, awaiting_you) = count_open(&threads, &viewer);
+                    pr.unresolved = unresolved;
+                    pr.awaiting_you = awaiting_you;
+                    pr.unresolved_capped = guard_hit;
+                    pr.needs_you = awaiting_you > 0
+                        || (pr.changes_requested && unresolved == 0)
+                        || guard_hit;
+                }
+                // A floor beats nothing: keep the first page's capped values and
+                // try again next poll, same as the detailed fetch's runaway guard.
+                Err(e) => tracing::warn!(pr = pr.number, "could not page review threads: {e:#}"),
+            }
+        }
+        prs.push(pr);
+    }
     link_stacks(&mut prs);
     Ok((viewer, prs))
+}
+
+/// One PR's remaining review-thread pages, with the poll's slim per-thread fields
+/// rather than the detailed fetch's comment bodies. Only issued for a PR the first
+/// page reported as capped, so the poll's fan-out over every PR stays one query.
+fn summary_threads_query(owner: &str, name: &str, pr: u64, after: &str) -> String {
+    // JSON-encode the cursor rather than pasting it in quotes, so a stray quote in
+    // GitHub's opaque string cannot break the document (as in `threads_query`).
+    let after = serde_json::Value::String(after.to_string()).to_string();
+    format!(
+        r#"{{
+  repository(owner: "{owner}", name: "{name}") {{
+    pullRequest(number: {pr}) {{
+      reviewThreads(first: {THREAD_PAGE}, after: {after}) {{
+        pageInfo {{ hasNextPage endCursor }}
+        nodes {{ isResolved isOutdated
+          comments(last: 1) {{ nodes {{
+            author {{ login }}
+            reactionGroups {{ content viewerHasReacted }}
+          }} }}
+        }}
+      }}
+    }}
+  }}
+}}"#
+    )
+}
+
+/// The raw thread nodes of one page plus the cursor for the next, or `None` if the
+/// PR is missing from the response. Split out so paging is testable without a round
+/// trip, matching [`parse_thread_page`].
+fn parse_summary_thread_page(v: &Value) -> Option<(Vec<Value>, Option<String>)> {
+    let root = v.pointer("/data/repository/pullRequest/reviewThreads")?;
+    let nodes = root
+        .pointer("/nodes")
+        .and_then(|n| n.as_array())
+        .cloned()
+        .unwrap_or_default();
+    // A `hasNextPage` with a null cursor would loop forever on the same page, so
+    // the cursor is what actually decides whether to continue (as in the detailed
+    // fetch).
+    let next = if root
+        .pointer("/pageInfo/hasNextPage")
+        .and_then(|b| b.as_bool())
+        .unwrap_or(false)
+    {
+        root.pointer("/pageInfo/endCursor")
+            .and_then(|c| c.as_str())
+            .map(|c| c.to_string())
+    } else {
+        None
+    };
+    Some((nodes, next))
+}
+
+/// Every review-thread node for one capped PR: the first page (already in `node`)
+/// plus every following page. The bool is whether the [`MAX_THREAD_PAGES`] runaway
+/// guard fired, in which case the count is still a floor.
+fn all_summary_threads(
+    token: &str,
+    owner: &str,
+    name: &str,
+    pr: u64,
+    node: &Value,
+) -> Result<(Vec<Value>, bool)> {
+    let mut all: Vec<Value> = node
+        .pointer("/reviewThreads/nodes")
+        .and_then(|n| n.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let mut cursor = node
+        .pointer("/reviewThreads/pageInfo/endCursor")
+        .and_then(|c| c.as_str())
+        .map(|c| c.to_string());
+
+    for _ in 0..MAX_THREAD_PAGES {
+        let Some(c) = cursor else {
+            return Ok((all, false));
+        };
+        let v = graphql(token, &summary_threads_query(owner, name, pr, &c))?;
+        let (nodes, next) = parse_summary_thread_page(&v)
+            .with_context(|| format!("no pull request {pr} in the response"))?;
+        all.extend(nodes);
+        cursor = next;
+    }
+    tracing::warn!("pr {pr}: stopped paging review threads at {MAX_THREAD_PAGES} pages");
+    Ok((all, true))
 }
 
 /// Whether a thread's last word is yours, one way or another.
@@ -339,6 +450,30 @@ fn acknowledged(thread: &Value, viewer: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Count open threads and, of those, the ones still waiting on you.
+///
+/// An outdated thread is about code that no longer exists, so it does not gate
+/// `/resolve`. And closing a thread is the reviewer's button, so "unresolved" is
+/// not the same question as "waiting on you" — answer every thread and the count
+/// does not move. What moves is who spoke last, and whether you acknowledged them:
+/// `/resolve` replies where there is something to say and leaves a 👍 where there
+/// is not, so both count as handled.
+///
+/// Shared between the first page (`parse_pr`) and the paged recount of a capped
+/// PR (`poll`), so the two can never disagree on what "unresolved" means.
+fn count_open(threads: &[Value], viewer: &str) -> (u32, u32) {
+    let open: Vec<&Value> = threads
+        .iter()
+        .filter(|t| {
+            t.get("isResolved").and_then(|b| b.as_bool()) == Some(false)
+                && t.get("isOutdated").and_then(|b| b.as_bool()) != Some(true)
+        })
+        .collect();
+    let unresolved = open.len() as u32;
+    let awaiting_you = open.iter().filter(|t| !acknowledged(t, viewer)).count() as u32;
+    (unresolved, awaiting_you)
+}
+
 fn parse_pr(n: &Value, viewer: &str) -> Option<Pr> {
     let number = n.get("number")?.as_u64()?;
 
@@ -353,29 +488,12 @@ fn parse_pr(n: &Value, viewer: &str) -> Option<Pr> {
         _ => Checks::Unknown,
     };
 
-    let threads = n.pointer("/reviewThreads/nodes").and_then(|t| t.as_array());
-    // A thread that is outdated is about code that no longer exists, so it does
-    // not gate `/resolve`.
-    let open_threads: Vec<&Value> = threads
-        .map(|ts| {
-            ts.iter()
-                .filter(|t| {
-                    t.get("isResolved").and_then(|b| b.as_bool()) == Some(false)
-                        && t.get("isOutdated").and_then(|b| b.as_bool()) != Some(true)
-                })
-                .collect()
-        })
+    let threads = n
+        .pointer("/reviewThreads/nodes")
+        .and_then(|t| t.as_array())
+        .cloned()
         .unwrap_or_default();
-    let unresolved = open_threads.len() as u32;
-    // Closing a thread is the reviewer's button, so "unresolved" is not the same
-    // question as "waiting on you" — answer every thread and the count does not
-    // move. What moves is who spoke last, and whether you acknowledged them:
-    // `/resolve` replies where there is something to say and leaves a 👍 where
-    // there is not, so both count as handled.
-    let awaiting_you = open_threads
-        .iter()
-        .filter(|t| !acknowledged(t, viewer))
-        .count() as u32;
+    let (unresolved, awaiting_you) = count_open(&threads, viewer);
     let capped = n
         .pointer("/reviewThreads/pageInfo/hasNextPage")
         .and_then(|b| b.as_bool())
@@ -923,6 +1041,72 @@ mod tests {
                 "reviewThreads":{"pageInfo":{"hasNextPage":true},"nodes":[]}}"#,
         );
         assert!(parse_pr(&n, "me").unwrap().unresolved_capped);
+    }
+
+    // -- summary paging (poll past 50) -------------------------------------
+
+    /// One page of the slim summary query, shaped like `summary_threads_query`.
+    fn summary_page(nodes: &str, next: Option<&str>) -> Value {
+        let page_info = match next {
+            Some(c) => format!(r#"{{"hasNextPage":true,"endCursor":"{c}"}}"#),
+            None => r#"{"hasNextPage":false,"endCursor":null}"#.to_string(),
+        };
+        node(&format!(
+            r#"{{"data":{{"repository":{{"pullRequest":{{
+                "reviewThreads":{{"pageInfo":{page_info},"nodes":[{nodes}]}}}}}}}}}}"#
+        ))
+    }
+
+    #[test]
+    fn a_summary_page_yields_its_nodes_and_the_next_cursor() {
+        let v = summary_page(
+            r#"{"isResolved":false,"isOutdated":false,
+                "comments":{"nodes":[{"author":{"login":"them"},"reactionGroups":[]}]}}"#,
+            Some("Y3Vy"),
+        );
+        let (nodes, next) = parse_summary_thread_page(&v).unwrap();
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(next.as_deref(), Some("Y3Vy"));
+        // The nodes carry exactly what `count_open` reads.
+        let (unresolved, awaiting) = count_open(&nodes, "me");
+        assert_eq!((unresolved, awaiting), (1, 1));
+    }
+
+    #[test]
+    fn a_summary_next_page_without_a_cursor_stops_rather_than_looping() {
+        // hasNextPage with a null endCursor would re-request the same page; the
+        // cursor, not the flag, is what continues the loop.
+        let v = node(
+            r#"{"data":{"repository":{"pullRequest":{"reviewThreads":{
+                "pageInfo":{"hasNextPage":true,"endCursor":null},"nodes":[]}}}}}"#,
+        );
+        assert_eq!(parse_summary_thread_page(&v).unwrap().1, None);
+    }
+
+    #[test]
+    fn a_missing_pull_request_in_a_summary_page_is_none() {
+        let v = node(r#"{"data":{"repository":{"pullRequest":null}}}"#);
+        assert!(parse_summary_thread_page(&v).is_none());
+    }
+
+    #[test]
+    fn count_open_matches_parse_pr_over_the_same_threads() {
+        // Two unresolved (one answered by you, one still theirs), one outdated,
+        // one resolved: unresolved counts 2, only the reviewer's is awaiting you.
+        let threads: Vec<Value> = serde_json::from_str(
+            r#"[
+              {"isResolved":false,"isOutdated":false,"comments":{"nodes":[
+                {"author":{"login":"me"},"reactionGroups":[]}]}},
+              {"isResolved":false,"isOutdated":false,"comments":{"nodes":[
+                {"author":{"login":"them"},"reactionGroups":[]}]}},
+              {"isResolved":false,"isOutdated":true,"comments":{"nodes":[
+                {"author":{"login":"them"},"reactionGroups":[]}]}},
+              {"isResolved":true,"isOutdated":false,"comments":{"nodes":[
+                {"author":{"login":"them"},"reactionGroups":[]}]}}
+            ]"#,
+        )
+        .unwrap();
+        assert_eq!(count_open(&threads, "me"), (2, 1));
     }
 
     // -- review threads ----------------------------------------------------
