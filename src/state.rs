@@ -40,6 +40,10 @@ pub struct AppState {
     pub window: RwLock<Option<Arc<dyn crate::window::WindowControl>>>,
     /// Pulsed by the refresh button to make the review poller fetch now rather
     /// than wait out the rest of its period.
+    /// Pulsed whenever an interaction is answered. Every waiting long poll wakes
+    /// and re-checks its own question; there are only ever a handful of waiters,
+    /// and one notify beats a channel per question.
+    pub answered: Arc<Notify>,
     pub review_refresh: Arc<Notify>,
     /// The same, for the PR poller.
     pub pr_refresh: Arc<Notify>,
@@ -203,6 +207,7 @@ impl AppState {
             events,
             chrome,
             window: RwLock::new(None),
+            answered: Arc::new(Notify::new()),
             review_refresh: Arc::new(Notify::new()),
             pr_refresh: Arc::new(Notify::new()),
         })
@@ -723,6 +728,9 @@ pub struct SessionView {
     /// sessions that have finished, so the cost is one stat per archived row
     /// rather than one per session on every snapshot.
     pub has_transcript: bool,
+    /// What this session is blocked on, waiting for you. The overlay renders it;
+    /// everything else ignores it.
+    pub interaction: Option<Interaction>,
 }
 
 impl SessionView {
@@ -761,6 +769,7 @@ impl SessionView {
             ),
             resumable: matches!(s.recovery, Some(ArchiveState::Recoverable { .. }) | None)
                 && !matches!(s.recovery, Some(ArchiveState::TranscriptOnly)),
+            interaction: s.interaction.clone(),
         }
     }
 }

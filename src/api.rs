@@ -267,6 +267,157 @@ pub async fn delete_session(
     Ok(Json(json!({ "deleted": id })))
 }
 
+// ---------------------------------------------------------------------------
+// The interaction channel
+// ---------------------------------------------------------------------------
+
+/// How long one poll waits before answering "not yet".
+///
+/// A blocking tool call survives well past this — a real session was held for
+/// 150s and resumed cleanly — but a bounded wait the agent loops on is strictly
+/// safer than betting on where the ceiling is. Whatever kills a long call, the
+/// agent asks again rather than losing the turn.
+const WAIT_SECS: u64 = 60;
+
+#[derive(Deserialize)]
+pub struct AskBody {
+    pub question: String,
+    #[serde(default)]
+    pub thread_id: Option<String>,
+    #[serde(default)]
+    pub detail: Option<String>,
+    pub options: Vec<crate::model::InteractionOption>,
+}
+
+/// A running session asks you something and blocks on the answer.
+///
+/// The first thing that travels from an agent *back* to the UI. Hooks are one-way
+/// observers and the only daemon-to-agent path is a pty write, so a question used
+/// to mean printing into a terminal and hoping; this makes it a card you answer.
+///
+/// One question per session at a time, deliberately: a queue of them would be a
+/// UI that hides what the agent is actually stuck on.
+pub async fn ask(
+    State(app): State<Arc<AppState>>,
+    Path(id): Path<Uuid>,
+    Json(body): Json<AskBody>,
+) -> ApiResult<serde_json::Value> {
+    if body.question.trim().is_empty() {
+        return Err(ApiError(anyhow::anyhow!("a question with no words")));
+    }
+    if body.options.is_empty() {
+        return Err(ApiError(anyhow::anyhow!(
+            "a question with no options: the overlay renders buttons, not a prompt"
+        )));
+    }
+    let interaction = crate::model::Interaction {
+        id: Uuid::new_v4(),
+        thread_id: body.thread_id,
+        question: body.question,
+        detail: body.detail,
+        options: body.options,
+        asked_at: std::time::SystemTime::now(),
+        answer: None,
+    };
+    let ask_id = interaction.id;
+    {
+        let mut inner = app.inner.write().await;
+        let s = inner
+            .sessions
+            .get_mut(&id)
+            .ok_or_else(|| anyhow::anyhow!("no such session {id}"))?;
+        if let Some(open) = &s.interaction {
+            if open.answer.is_none() {
+                return Err(ApiError(anyhow::anyhow!(
+                    "session {id} is already asking something else"
+                )));
+            }
+        }
+        s.interaction = Some(interaction);
+    }
+    app.notify().await;
+    Ok(Json(json!({ "ask": ask_id })))
+}
+
+/// Block until the question is answered, or say "not yet".
+///
+/// The agent loops on this. `answered: false` is a normal outcome, not an error:
+/// it means you have not decided yet, and the next call carries on waiting.
+pub async fn ask_wait(
+    State(app): State<Arc<AppState>>,
+    Path((id, ask_id)): Path<(Uuid, Uuid)>,
+) -> ApiResult<serde_json::Value> {
+    let deadline =
+        tokio::time::Instant::now() + std::time::Duration::from_secs(WAIT_SECS);
+    loop {
+        {
+            let inner = app.inner.read().await;
+            let s = inner
+                .sessions
+                .get(&id)
+                .ok_or_else(|| anyhow::anyhow!("no such session {id}"))?;
+            match &s.interaction {
+                Some(i) if i.id == ask_id => {
+                    if let Some(answer) = &i.answer {
+                        return Ok(Json(json!({ "answered": true, "answer": answer })));
+                    }
+                }
+                // Gone, or replaced by a later question: either way this one will
+                // never be answered, and looping would hang the agent forever.
+                _ => {
+                    return Err(ApiError(anyhow::anyhow!(
+                        "question {ask_id} is no longer open on session {id}"
+                    )))
+                }
+            }
+        }
+        tokio::select! {
+            _ = app.answered.notified() => {}
+            _ = tokio::time::sleep_until(deadline) => {
+                return Ok(Json(json!({ "answered": false })));
+            }
+        }
+    }
+}
+
+#[derive(Deserialize)]
+pub struct AnswerBody {
+    pub ask: Uuid,
+    pub answer: String,
+}
+
+/// Your answer, which releases the tool call the agent is sitting in.
+pub async fn answer(
+    State(app): State<Arc<AppState>>,
+    Path(id): Path<Uuid>,
+    Json(body): Json<AnswerBody>,
+) -> ApiResult<serde_json::Value> {
+    {
+        let mut inner = app.inner.write().await;
+        let s = inner
+            .sessions
+            .get_mut(&id)
+            .ok_or_else(|| anyhow::anyhow!("no such session {id}"))?;
+        let open = s
+            .interaction
+            .as_mut()
+            .filter(|i| i.id == body.ask)
+            .ok_or_else(|| anyhow::anyhow!("session {id} is not asking {}", body.ask))?;
+        // Only what was offered. A free-text answer would reach the agent as an
+        // instruction nobody wrote a branch for.
+        if !open.options.iter().any(|o| o.value == body.answer) {
+            return Err(ApiError(anyhow::anyhow!(
+                "{} is not one of the options",
+                body.answer
+            )));
+        }
+        open.answer = Some(body.answer.clone());
+    }
+    app.answered.notify_waiters();
+    app.notify().await;
+    Ok(Json(json!({ "answered": body.answer })))
+}
+
 /// Resume an archived session.
 ///
 /// A live worktree resumes trivially — relaunch with cwd set to the recorded
@@ -548,6 +699,127 @@ pub async fn merge_base(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The whole point of the channel: the agent's poll is released by the answer
+    /// rather than by a timeout, and it comes back carrying the choice.
+    #[tokio::test]
+    async fn an_answer_releases_the_poll_the_agent_is_sitting_in() {
+        use crate::config::Config;
+        use crate::model::{Interaction, InteractionOption, Kind, Session, MAIN};
+        use crate::state::AppState;
+
+        let dir = std::env::temp_dir().join(format!("orchd-ask-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("HOME", &dir);
+        let cfg: Config = serde_json::from_str(&format!(
+            r#"{{"main_checkout":"{}","port":7797}}"#,
+            dir.display()
+        ))
+        .unwrap();
+        let app = AppState::new(cfg, "t".into(), crate::window::Chrome::None);
+
+        let id = Uuid::new_v4();
+        let ask_id = Uuid::new_v4();
+        {
+            let mut inner = app.inner.write().await;
+            let mut sess = Session::new(id, MAIN.to_string(), dir.clone(), Kind::Interactive);
+            sess.interaction = Some(Interaction {
+                id: ask_id,
+                thread_id: None,
+                question: "rebase or stop?".into(),
+                detail: None,
+                options: vec![InteractionOption {
+                    value: "rebase".into(),
+                    label: "Rebase".into(),
+                    sub: String::new(),
+                }],
+                asked_at: std::time::SystemTime::now(),
+                answer: None,
+            });
+            inner.sessions.insert(id, sess);
+        }
+
+        // The agent is already waiting when the answer arrives, which is the
+        // ordering that matters: a poll that started first must still be woken.
+        let waiter = tokio::spawn({
+            let app = app.clone();
+            async move { ask_wait(State(app), Path((id, ask_id))).await }
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        answer(
+            State(app.clone()),
+            Path(id),
+            Json(AnswerBody {
+                ask: ask_id,
+                answer: "rebase".into(),
+            }),
+        )
+        .await
+        .map_err(|e| format!("{}", e.0))
+        .expect("answer accepted");
+
+        let got = tokio::time::timeout(std::time::Duration::from_secs(5), waiter)
+            .await
+            .expect("the poll was never released")
+            .unwrap()
+            .map_err(|e| format!("{}", e.0))
+            .expect("wait succeeded");
+        assert_eq!(got.0["answered"], true);
+        assert_eq!(got.0["answer"], "rebase");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An answer nobody offered would reach the agent as an instruction no branch
+    /// was written for.
+    #[tokio::test]
+    async fn an_answer_that_was_not_offered_is_refused() {
+        use crate::config::Config;
+        use crate::model::{Interaction, InteractionOption, Kind, Session, MAIN};
+        use crate::state::AppState;
+
+        let dir = std::env::temp_dir().join(format!("orchd-ask2-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("HOME", &dir);
+        let cfg: Config = serde_json::from_str(&format!(
+            r#"{{"main_checkout":"{}","port":7796}}"#,
+            dir.display()
+        ))
+        .unwrap();
+        let app = AppState::new(cfg, "t".into(), crate::window::Chrome::None);
+        let id = Uuid::new_v4();
+        let ask_id = Uuid::new_v4();
+        {
+            let mut inner = app.inner.write().await;
+            let mut sess = Session::new(id, MAIN.to_string(), dir.clone(), Kind::Interactive);
+            sess.interaction = Some(Interaction {
+                id: ask_id,
+                thread_id: None,
+                question: "rebase or stop?".into(),
+                detail: None,
+                options: vec![InteractionOption {
+                    value: "rebase".into(),
+                    label: "Rebase".into(),
+                    sub: String::new(),
+                }],
+                asked_at: std::time::SystemTime::now(),
+                answer: None,
+            });
+            inner.sessions.insert(id, sess);
+        }
+        let err = answer(
+            State(app.clone()),
+            Path(id),
+            Json(AnswerBody {
+                ask: ask_id,
+                answer: "force-push".into(),
+            }),
+        )
+        .await
+        .err()
+        .expect("refused");
+        assert!(format!("{}", err.0).contains("not one of the options"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn only_the_spas_own_origin_is_accepted() {

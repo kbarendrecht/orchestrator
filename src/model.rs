@@ -203,6 +203,12 @@ pub struct Session {
     /// editing outside its worktree is a prompt problem worth seeing.
     pub boundary_violations: Vec<String>,
     pub last_reconcile: Option<SystemTime>,
+    /// What this session is blocked on, waiting for you to answer.
+    ///
+    /// The one place the daemon holds state *for* a running agent rather than
+    /// about it: the agent asks, the SPA renders this from the snapshot, and the
+    /// answer releases the tool call the agent is sitting in.
+    pub interaction: Option<Interaction>,
     /// Written into the pty once `SessionStart` fires.
     ///
     /// `initialUserMessage` is only honoured in non-interactive mode, and a
@@ -233,6 +239,7 @@ impl Session {
             boundary_violations: Vec::new(),
             last_reconcile: None,
             pending_prompt: None,
+            interaction: None,
         }
     }
 
@@ -262,6 +269,47 @@ impl Session {
         }
         base
     }
+}
+
+// ---------------------------------------------------------------------------
+// Interaction
+// ---------------------------------------------------------------------------
+
+/// A question a running session is blocked on.
+///
+/// Hooks are one-way and the only daemon-to-agent path is a pty write, so this
+/// is the first thing that travels *back*: the agent posts a question, blocks on
+/// a long poll, and the answer you give in the overlay is what its tool call
+/// returns. Deliberately structured rather than free text, so the overlay renders
+/// buttons instead of asking you to type into a terminal you cannot see.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Interaction {
+    pub id: Uuid,
+    /// What the agent is working on, so the card can say which thread this is
+    /// about without the agent having to repeat it in the question.
+    #[serde(default)]
+    pub thread_id: Option<String>,
+    pub question: String,
+    /// Optional context: a diff, a file, the reviewer's words. Rendered as-is.
+    #[serde(default)]
+    pub detail: Option<String>,
+    /// What you may answer. Never empty: an open question with no options is a
+    /// prompt for prose the overlay has no box for.
+    pub options: Vec<InteractionOption>,
+    pub asked_at: SystemTime,
+    /// Set when you answer, which is what releases the agent's poll.
+    #[serde(default)]
+    pub answer: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct InteractionOption {
+    /// What comes back to the agent. Its own vocabulary, not the label, so the
+    /// prompt can branch on a stable word while the card stays readable.
+    pub value: String,
+    pub label: String,
+    #[serde(default)]
+    pub sub: String,
 }
 
 // ---------------------------------------------------------------------------
