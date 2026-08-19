@@ -3,7 +3,7 @@ members = ["desktop"]
 
 [package]
 name = "orchd"
-version = "2026.8.6"
+version = "2026.8.7"
 edition = "2021"
 
 # The daemon is a library so the desktop shell can embed it in-process, and a
