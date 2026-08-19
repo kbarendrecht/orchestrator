@@ -1,5 +1,8 @@
 [tools]
-claude = "latest"
+# `claude-code`, not `claude`: same tool and the same `claude` binary either way,
+# but acme pins it under this name, so one `mise up` there covers the agent
+# this daemon spawns instead of leaving a second copy to drift.
+claude-code = "latest"
 node = "latest"
 rust = "latest"
 zig = "latest"
