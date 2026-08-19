@@ -55,6 +55,7 @@
 
   --rail:290px;
   --files:296px;
+  --drawer:210px;
 }
 
 *{box-sizing:border-box;margin:0;padding:0}
@@ -271,10 +272,21 @@ button.ctx-btn:hover{color:var(--text)}
 .termhost[hidden]{display:none}
 
 /* ---------- process drawer ---------- */
-.drawer{border-top:1px solid var(--line);background:var(--surface);display:flex;flex-direction:column;height:210px;flex:0 0 auto}
+.drawer{border-top:1px solid var(--line);background:var(--surface);display:flex;flex-direction:column;height:var(--drawer);flex:0 0 auto;position:relative}
 .drawer.empty{height:auto}
 .drawer.empty .drawer-body{display:none}
 .drawer.empty .drawer-head{border-bottom:0}
+/* The colsplit gesture on the other axis, sitting over the drawer's own top
+   border. Above the head's z-index:2, or the strip would be unreachable across
+   most of its width. Hidden while the drawer is a bare header: there is no
+   height to drag when the body is not there. */
+.rowsplit{position:absolute;top:-3px;left:0;right:0;height:7px;z-index:3;cursor:row-resize}
+.rowsplit::after{
+  content:'';position:absolute;left:0;right:0;top:3px;height:1px;
+  background:transparent;transition:background .12s;
+}
+.rowsplit:hover::after,.rowsplit.dragging::after{background:var(--faint-solid)}
+.drawer.empty .rowsplit{display:none}
 /* Its own background and stacking context: the WebGL renderer below can
    composite outside its canvas on some drivers, and a transparent header then
    reads as a black band. */
@@ -347,6 +359,7 @@ button.ctx-btn:hover{color:var(--text)}
 /* Held on the body so the cursor survives leaving the 7px strip mid-drag, and a
    drag never selects the text it passes over. */
 body.col-resizing{cursor:col-resize;user-select:none}
+body.row-resizing{cursor:row-resize;user-select:none}
 
 /* ---------- settings ---------- */
 /* Positioned from script, under the sliders it belongs to. Outside `.app`, so it

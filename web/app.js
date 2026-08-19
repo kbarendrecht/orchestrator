@@ -3721,6 +3721,11 @@ const COLS = {
  * rail is not a layout anybody wants to be one drag away from. */
 const CENTRE_MIN = 420;
 
+/* Same idea on the other axis: the process drawer is one more variable, and the
+ * terminal above it gets the same protection the centre column gets. */
+const DRAWER = { prop: '--drawer', key: 'orch.drawerHeight', def: 210, min: 96 };
+const TERM_MIN = 150;
+
 const colWidth = (col) =>
   parseInt(getComputedStyle(document.documentElement).getPropertyValue(col.prop), 10) || col.def;
 
@@ -3731,6 +3736,19 @@ function setCol(col, px) {
   const width = Math.round(Math.max(col.min, Math.min(px, Math.max(col.min, room))));
   document.documentElement.style.setProperty(col.prop, `${width}px`);
   return width;
+}
+
+const drawerHeight = () =>
+  parseInt(getComputedStyle(document.documentElement).getPropertyValue(DRAWER.prop), 10)
+  || DRAWER.def;
+
+/** Set the drawer height, clamped so the terminal above it stays usable. */
+function setDrawer(px) {
+  const centre = document.querySelector('.center');
+  const room = (centre ? centre.clientHeight : window.innerHeight) - TERM_MIN;
+  const h = Math.round(Math.max(DRAWER.min, Math.min(px, Math.max(DRAWER.min, room))));
+  document.documentElement.style.setProperty(DRAWER.prop, `${h}px`);
+  return h;
 }
 
 /** xterm sizes itself to its host, and a column drag is not a window resize. */
@@ -3772,16 +3790,55 @@ function dragColumn(handle, col, fromLeft) {
   });
 }
 
+/* The drawer's own drag. Not `dragColumn` with a flag: it reads clientY against
+ * the centre pane rather than clientX against the window, and it has no sibling
+ * column to leave room for. */
+function dragDrawer(handle) {
+  handle.addEventListener('mousedown', (e) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    handle.classList.add('dragging');
+    document.body.classList.add('row-resizing');
+
+    const bottom = document.querySelector('.center').getBoundingClientRect().bottom;
+    const move = (ev) => setDrawer(bottom - ev.clientY);
+    const done = () => {
+      window.removeEventListener('mousemove', move);
+      handle.classList.remove('dragging');
+      document.body.classList.remove('row-resizing');
+      try {
+        localStorage.setItem(DRAWER.key, String(drawerHeight()));
+      } catch (err) { /* private mode: the drag still worked for this session */ }
+      refitTerms();
+    };
+    window.addEventListener('mousemove', move);
+    window.addEventListener('mouseup', done, { once: true });
+  });
+
+  handle.addEventListener('dblclick', () => {
+    setDrawer(DRAWER.def);
+    try {
+      localStorage.removeItem(DRAWER.key);
+    } catch (err) { /* nothing to forget */ }
+    refitTerms();
+  });
+}
+
 function setupColumns() {
   for (const col of Object.values(COLS)) {
     const saved = Number(localStorage.getItem(col.key));
     if (saved) setCol(col, saved);
   }
+  const savedDrawer = Number(localStorage.getItem(DRAWER.key));
+  if (savedDrawer) setDrawer(savedDrawer);
   dragColumn($('splitl'), COLS.rail, true);
   dragColumn($('splitr'), COLS.files, false);
-  // A window that got narrower can leave a stored width with no room for it.
+  dragDrawer($('splitd'));
+  // A window that got smaller can leave a stored size with no room for it.
   window.addEventListener('resize', () => {
     for (const col of Object.values(COLS)) setCol(col, colWidth(col));
+    setDrawer(drawerHeight());
   });
 }
 
