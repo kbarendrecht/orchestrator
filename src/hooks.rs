@@ -210,6 +210,8 @@ pub async fn post_tool_use(
     // It used to reconcile only when a path was there to attribute, so a whole
     // class of change waited for the end of the turn.
     let mut needs_reconcile = None;
+    // An edit is worth a snapshot on its own: the right-hand pane lists it.
+    let mut changed = edited.is_some();
     {
         let owner = match &edited {
             // `.plan/` in a worktree is a symlink to main's `.plan/`. Resolve every
@@ -228,6 +230,20 @@ pub async fn post_tool_use(
         };
         let mut inner = app.inner.write().await;
         if let Some(s) = inner.sessions.get_mut(&id) {
+            // Using a tool means the agent is going, whatever the last lifecycle
+            // event said. A turn does not only ever start from a prompt: a
+            // background task finishing, a scheduled wake-up or a hook
+            // continuation all resume the agent without one, and `UserPromptSubmit`
+            // was the only thing that cleared `YourTurn`. So a session polling for
+            // something sat in the rail saying "turn complete", counted in the
+            // waitbar, and answered Alt+b as if it wanted you.
+            //
+            // `BuildFailing` is left alone: it is a red build talking, not a
+            // guess about the turn, and `Stop` recomputes it either way.
+            if matches!(s.state, State::YourTurn { .. }) {
+                s.set_state(State::Working);
+                changed = true;
+            }
             if s.last_reconcile
                 .map(|t| t.elapsed().unwrap_or_default() > RECONCILE_EVERY)
                 .unwrap_or(true)
@@ -239,8 +255,13 @@ pub async fn post_tool_use(
 
     if let Some(ws) = needs_reconcile {
         let _ = app.reconcile(&ws).await;
+        changed = true;
     }
-    app.notify().await;
+    // Every tool call arrives here now, and a snapshot writes the session records
+    // and wakes every client. Only send one when there is something to see.
+    if changed {
+        app.notify().await;
+    }
     ok()
 }
 
@@ -574,7 +595,12 @@ pub fn write_settings(port: u16) -> Result<PathBuf> {
                     "timeout": 5,
                 }]},
             ],
-            "PostToolUse":      [matched("Edit|Write", "post-tool-use")],
+            // Every tool, not just the two that write files. `Bash` is the one
+            // that moves files the daemon cannot predict, and any tool at all is
+            // proof the agent is going (see `post_tool_use`). The handler only
+            // pushes a snapshot when something actually changed, so the extra
+            // events cost a lock and a comparison.
+            "PostToolUse":      [entry("post-tool-use")],
             "Notification": [
                 matched("agent_needs_input", "notification/agent_needs_input"),
                 matched("permission_prompt", "notification/permission_prompt"),
@@ -651,6 +677,48 @@ mod tests {
         assert!(inner.sessions.get(&id).unwrap().pending_prompt.is_none());
 
         let _ = spawned.handle.kill();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A session that resumed on its own must stop claiming it wants you.
+    #[tokio::test]
+    async fn a_tool_call_clears_a_finished_turn() {
+        use crate::config::Config;
+        use crate::state::AppState;
+
+        let dir = std::env::temp_dir().join(format!("orchd-tool-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("HOME", &dir);
+        let cfg: Config = serde_json::from_str(&format!(
+            r#"{{"main_checkout":"{}","port":7798}}"#,
+            dir.display()
+        ))
+        .unwrap();
+        let app = AppState::new(cfg, "t".into(), crate::window::Chrome::None);
+
+        let id = Uuid::new_v4();
+        {
+            let mut inner = app.inner.write().await;
+            let mut s = Session::new(id, MAIN.to_string(), dir.clone(), Kind::Interactive);
+            s.set_state(State::YourTurn {
+                since: SystemTime::now(),
+                reason: TurnReason::TurnComplete,
+            });
+            inner.sessions.insert(id, s);
+        }
+
+        let mut headers = HeaderMap::new();
+        headers.insert("x-orch-session", id.to_string().parse().unwrap());
+        // A `Bash` call: no `file_path`, which is exactly the shape the old
+        // `Edit|Write` matcher never delivered.
+        post_tool_use(AxState(app.clone()), headers, Json(HookPayload::default())).await;
+
+        let inner = app.inner.read().await;
+        assert!(
+            matches!(inner.sessions.get(&id).unwrap().state, State::Working),
+            "a tool call left the session claiming the turn was complete"
+        );
+        drop(inner);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
