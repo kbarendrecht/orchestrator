@@ -1,8 +1,8 @@
 # orchd
 
 Rust daemon + browser SPA that hosts several Claude Code sessions over one
-monorepo. Built from `orchestrator-spec.md`; the design comes from
-`orchestrator-ui.html`.
+monorepo. The spec and the design mockup it was built from are retired now the
+work has landed; `TODO.md` is the living record.
 
 All ten steps of the spec's build order are implemented, with one deliberate
 change: `fix-pr` is hand-triggered, never automatic.
