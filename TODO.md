@@ -95,23 +95,6 @@ Everything outside that block is hand-written and survives.
   inside, and a file in the worktree would dirty the tree). Next step is the exact
   path the dialog names.
 
-- **The update nudge cannot fire on this repo.** `github::latest_release`
-  (`src/github.rs:152`) asks `api.github.com/repos/.../releases/latest` through
-  plain `curl` with no token, and the release repo is private, so the call is a
-  404 and the poller sees `None`. Authenticated, the same request answers
-  `v2026.8.5`. The token ladder the PR poller already uses
-  (`ORCHD_GITHUB_TOKEN`, the token file, then `gh auth token`) is right there for
-  it to ride, or the repo goes public. Note also that a failed check and "no
-  update" are the same answer today, which is why this went unnoticed. The debug
-  gate in `lib.rs` is not the bug: `cargo run` deliberately never nags, and the
-  nudge would still not fire from a release build.
-
-- **Finish the rail row now the names mean something.** A session says which PR it
-  is on, or whatever Claude Code called the conversation, so the 8-character uuid
-  beside the name is no longer what tells two rows apart and the worktree is no
-  longer worth the headline. Move the id into a tooltip and put the workspace on
-  the second line next to the state.
-
 - **Make it run somewhere other than this machine.** Everything below is a
   hardcoded assumption about one monorepo, and each is a setting or a probe
   waiting to be written:
@@ -139,6 +122,18 @@ Everything outside that block is hand-written and survives.
   - The folder picker already exists (`desktop/src/main.rs`, shown when
     `Config::existing()` is `None`), so first-run has a start; what it does not
     have is the rest of the questions.
+
+- **The update nudge cannot fire on this repo.** Belongs after run-elsewhere: the
+  nudge only matters once orchd is distributed to someone who isn't building it
+  from source. `github::latest_release` (`src/github.rs:152`) asks
+  `api.github.com/repos/.../releases/latest` through plain `curl` with no token,
+  and the release repo is private, so the call is a 404 and the poller sees
+  `None`. Authenticated, the same request answers `v2026.8.5`. The token ladder
+  the PR poller already uses (`ORCHD_GITHUB_TOKEN`, the token file, then `gh auth
+  token`) is right there for it to ride, or the repo goes public. Note also that a
+  failed check and "no update" are the same answer today, which is why this went
+  unnoticed. The debug gate in `lib.rs` is not the bug: `cargo run` deliberately
+  never nags, and the nudge would still not fire from a release build.
 
 - **Is it macOS-compatible? Nobody knows.** The code has the paths — `Chrome::Overlay`
   for the traffic lights, `open` for URLs, `#[cfg(target_os = "macos")]` arms in
@@ -231,6 +226,11 @@ Everything outside that block is hand-written and survives.
   `$ORCH_SESSION_ID` correlation is exact (§2); adopting one would reintroduce
   the cwd/pid heuristics the spec rejects.
 - A generic "run this command" endpoint (§12).
+- Reworking the rail row (id into a tooltip, workspace onto the second line). The
+  naming work that motivated it — `railName` showing the PR title or the
+  conversation's ai-title — already made the row read well, and the 8-char id
+  still earns its inline place as the one thing that tells apart two untitled
+  sessions sharing a worktree (`web/app.js`). Not worth the churn.
 - A global kill switch / pause (§8's guards table). Nothing automatic fires on
   its own here — `fix-pr` and every spawn are hand-triggered — so the switch that
   stops all of it is closing the app: the daemon owns every pty and takes them
