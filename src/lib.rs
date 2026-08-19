@@ -292,6 +292,10 @@ fn router(app: Arc<AppState>) -> Router {
         .route("/api/session/:id/ask", post(api::ask))
         .route("/api/session/:id/ask/:ask/wait", get(api::ask_wait))
         .route("/api/session/:id/answer", post(api::answer))
+        .route(
+            "/api/session/:id/thread/:thread/committed",
+            post(api::thread_committed),
+        )
         .route("/api/session/:id/delete", post(api::delete_session))
         .route("/api/worktree", post(api::new_worktree))
         .route("/api/workspace/:id/shell", post(api::new_shell))

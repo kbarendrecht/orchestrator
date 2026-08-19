@@ -939,6 +939,19 @@ pub fn fold_in(cwd: &Path, amend: &Amend) -> Result<()> {
 }
 
 /// Commit the worktree as it stands — the gate's `commit…` button.
+/// One commit's own diff, for showing what an agent actually wrote.
+///
+/// `--format=` so the header does not ride along: the card wants the change, not
+/// the message it already knows. Capped, because a commit is agent output and the
+/// card is not the place to render a generated file.
+pub fn commit_diff(cwd: &Path, sha: &str, max: usize) -> Result<String> {
+    let out = git(cwd, &["show", "--format=", "--no-color", sha])?;
+    Ok(match out.char_indices().nth(max) {
+        Some((cut, _)) => format!("{}\n… truncated", &out[..cut]),
+        None => out,
+    })
+}
+
 pub fn commit_all(cwd: &Path, message: &str) -> Result<()> {
     anyhow::ensure!(!message.trim().is_empty(), "a commit needs a message");
     git(cwd, &["add", "-A"])?;

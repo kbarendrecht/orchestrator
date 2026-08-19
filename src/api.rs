@@ -440,6 +440,156 @@ pub struct AnswerBody {
     pub text: Option<String>,
 }
 
+#[derive(Deserialize)]
+pub struct CommittedBody {
+    /// The commit the session just made for this thread.
+    pub sha: String,
+}
+
+/// The session reports a thread's work is committed; the daemon shows it and,
+/// with your say-so, posts the reply.
+///
+/// This is the seam the whole design turns on. The agent wrote the code and knows
+/// nothing about GitHub credentials; the daemon holds them and has not read the
+/// code. Neither can answer a reviewer alone, and that is deliberate — the reply
+/// only goes out attached to a change you have just looked at.
+///
+/// Blocks like `ask` does, and for the same reason: the session must not run on to
+/// the next thread while this one's reply is still a question.
+pub async fn thread_committed(
+    State(app): State<Arc<AppState>>,
+    Path((id, thread_id)): Path<(Uuid, String)>,
+    headers: axum::http::HeaderMap,
+    Json(body): Json<CommittedBody>,
+) -> ApiResult<serde_json::Value> {
+    ask_token_ok(&app, id, &headers).await?;
+
+    let (number, planned, cwd) = {
+        let inner = app.inner.read().await;
+        let (number, run) = inner
+            .resolve_runs
+            .iter()
+            .find(|(_, r)| r.session == id)
+            .ok_or_else(|| anyhow::anyhow!("session {id} is not carrying out a resolve run"))?;
+        let planned = run
+            .plan
+            .threads
+            .iter()
+            .find(|t| t.thread_id == thread_id)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("thread {thread_id} is not in this run's plan"))?;
+        let cwd = inner
+            .sessions
+            .get(&id)
+            .map(|s| s.cwd.clone())
+            .ok_or_else(|| anyhow::anyhow!("no such session {id}"))?;
+        (*number, planned, cwd)
+    };
+
+    // The real diff, not the one triage staged: what the reviewer is about to be
+    // told happened is what actually landed, including whatever the agent had to
+    // change to make it apply.
+    let (sha, dir) = (body.sha.clone(), cwd.clone());
+    let diff = tokio::task::spawn_blocking(move || {
+        crate::git::commit_diff(&dir, &sha, crate::proposal::MAX_FIELD)
+    })
+    .await
+    .context("reading the commit panicked")??;
+
+    let Some(reply) = planned.reply.clone() else {
+        // Nothing to say: the stance was a bare thumbs up and it is posted with
+        // the rest, so there is nothing to confirm here.
+        return Ok(Json(json!({ "posted": false, "reason": "this thread posts no reply" })));
+    };
+
+    let ask_id = Uuid::new_v4();
+    {
+        let mut inner = app.inner.write().await;
+        let s = inner
+            .sessions
+            .get_mut(&id)
+            .ok_or_else(|| anyhow::anyhow!("no such session {id}"))?;
+        s.interaction = Some(crate::model::Interaction {
+            id: ask_id,
+            thread_id: Some(planned.location.clone()),
+            question: format!("Post this reply on {}?", planned.location),
+            detail: Some(format!("{diff}\n--- the reply ---\n{reply}")),
+            options: vec![
+                crate::model::InteractionOption {
+                    value: "post".into(),
+                    label: "Post it".into(),
+                    sub: "the change is on the branch; the reviewer is told".into(),
+                    free: false,
+                },
+                crate::model::InteractionOption {
+                    value: "hold".into(),
+                    label: "Hold it back".into(),
+                    sub: "keep the commit, say nothing — you answer this one yourself".into(),
+                    free: false,
+                },
+            ],
+            asked_at: std::time::SystemTime::now(),
+            answer: None,
+            answer_text: None,
+        });
+        s.set_state(crate::model::State::YourTurn {
+            since: std::time::SystemTime::now(),
+            reason: crate::model::TurnReason::AskedAQuestion,
+        });
+    }
+    app.notify().await;
+
+    // Wait it out. No deadline: unlike `ask`, the caller here is the daemon's own
+    // endpoint and the agent is looping on *this* request, so a timeout would only
+    // move the loop somewhere less obvious.
+    let verdict = loop {
+        {
+            let inner = app.inner.read().await;
+            let open = inner
+                .sessions
+                .get(&id)
+                .and_then(|s| s.interaction.as_ref())
+                .filter(|i| i.id == ask_id);
+            match open {
+                Some(i) => {
+                    if let Some(a) = &i.answer {
+                        break a.clone();
+                    }
+                }
+                None => return Err(ApiError(anyhow::anyhow!("the confirmation was dropped"))),
+            }
+        }
+        app.answered.notified().await;
+    };
+
+    if verdict != "post" {
+        return Ok(Json(json!({ "posted": false, "reason": "held back" })));
+    }
+
+    // Fetched now: the thread must still be there, and the ids the write needs are
+    // this fetch's, not the ones triage saw.
+    let fresh = fetch_threads(&app, number).await?;
+    let root = fresh
+        .root_for(&thread_id)
+        .ok_or_else(|| anyhow::anyhow!("thread {thread_id} has no comment to answer"))?;
+    let (owner, name) =
+        crate::resolve_repo(&app).context("no GitHub repo configured and none on the remote")?;
+    // `gh` runs in the main checkout, the way every other write does, so it picks
+    // up the same auth and config.
+    let target = crate::github_write::Target {
+        cwd: app.cfg.main_checkout.clone(),
+        owner,
+        name,
+    };
+    // `reply` applies the footer itself; handing it a footed body would post two.
+    tokio::task::spawn_blocking(move || target.reply(&root, &reply).map(|_| ()))
+        .await
+        .context("the write panicked")??;
+
+    app.notify().await;
+    Ok(Json(json!({ "posted": true })))
+}
+
 /// Your answer, which releases the tool call the agent is sitting in.
 pub async fn answer(
     State(app): State<Arc<AppState>>,
@@ -1498,6 +1648,15 @@ pub async fn pr_resolve_run(
     let fresh = fetch_threads(&app, number).await?;
     let plan = crate::post::plan(number, &proposals, &fresh, &batch, app.cfg.tracker)?;
     let session = spawn::spawn_resolve_run(&app, number, &pr.head_ref, &plan).await?;
+    // Kept so the daemon can answer "what does this thread say" when the session
+    // reports a commit. The agent is never told the reply is its to send.
+    app.inner.write().await.resolve_runs.insert(
+        number,
+        crate::state::ResolveRun {
+            session,
+            plan: plan.clone(),
+        },
+    );
     app.notify().await;
     Ok(Json(json!({ "session": session, "threads": plan.threads.len() })))
 }

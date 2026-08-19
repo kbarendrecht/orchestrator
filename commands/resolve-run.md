@@ -62,6 +62,21 @@ Then commit, one commit per thread, subject naming what changed and why in the
 reviewer's terms. Nothing else in that commit: a commit that carries two threads
 cannot be shown against either reply.
 
+Then tell the daemon, and wait:
+
+```bash
+curl -sS -X POST -H 'content-type: application/json' \
+  -H "x-orch-ask: $ORCH_ASK_TOKEN" \
+  -d "{\"sha\":\"$(git rev-parse HEAD)\"}" \
+  "{{ASK_BASE}}/$ORCH_SESSION_ID/thread/<thread_id>/committed"
+```
+
+This blocks. The human is shown your actual commit next to the reply that was
+drafted for it, and decides whether it goes out. `posted: true` means the reviewer
+has been answered; `posted: false` means they kept it back and will answer that
+one themselves. Either way the commit stands, and either way you carry on to the
+next thread. Do not re-send it and do not argue with a hold.
+
 **`mode: "manual"`.** You are not writing this one. Ask the question below to hand
 it over, wait, and carry on when it comes back. Do not helpfully do it anyway.
 

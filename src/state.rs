@@ -12,6 +12,13 @@ use crate::git;
 use crate::model::*;
 use crate::pty::pid_alive;
 
+/// A resolve run in flight: the session doing it, and the decisions it carries.
+#[derive(Debug, Clone)]
+pub struct ResolveRun {
+    pub session: Uuid,
+    pub plan: crate::post::Plan,
+}
+
 #[derive(Debug, Clone, Serialize, Default)]
 pub struct Repos {
     /// Where PRs are opened, e.g. `acme/monorepo`.
@@ -112,6 +119,11 @@ pub struct Inner {
     /// the other direction, which is the one that loses work silently.
     pub human_edits: HashMap<PathBuf, HumanEdit>,
     pub automation: crate::fix_pr::AutomationStore,
+    /// The plan a resolve-run session is working from, kept per PR so the daemon
+    /// can answer "what does this thread say" when the agent reports a commit.
+    /// In memory only: the plan is also on disk beside the prompt, and a daemon
+    /// that restarted has lost the session it belonged to anyway.
+    pub resolve_runs: HashMap<u64, ResolveRun>,
     /// (behind, ahead) per workspace against the upstream base.
     pub divergence: HashMap<WorkspaceId, (u32, u32)>,
     /// What each workspace changed since it branched, and the commit that is
@@ -188,6 +200,7 @@ impl AppState {
                 viewer: None,
                 pr_error: None,
                 pr_fetched: None,
+                resolve_runs: HashMap::new(),
                 pr_poll: 0,
                 pr_polling: false,
                 token_source: None,
