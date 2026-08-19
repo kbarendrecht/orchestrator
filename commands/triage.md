@@ -100,9 +100,9 @@ as a strawman. The human is in the loop precisely because you can be wrong about
 and they should not have to write that case from scratch. Skip this only where the answer is
 mechanical and there is no judgement to disagree with.
 
-The daemon appends two fixed options to whatever you return, so **do not include them
-yourself**: `Manual` (they write the code) and `Say something else` (their words, no code).
-Skip is an action, not a position — leave it out too.
+The daemon appends one fixed option to whatever you return, so **do not include it
+yourself**: `Say something else` (their words, no code). Skip is an action, not a position —
+leave it out too, and so is writing the code by hand, which is the mode above.
 
 Recommend exactly one option per thread by index. Recommending is not deciding — the
 human sees your patch and your words before they accept.
@@ -141,17 +141,17 @@ curl -sS -X POST '{{PROPOSALS_URL}}' \
       "options": [
         { "label": "Apply",
           "sub": "respond with thumbs up",
-          "does": "change+thumbsup",
+          "stance": "agree",
           "patch": "diff --git a/…",   // exactly what `git diff` printed
           "reply": null },
         { "label": "Apply, and name what it does not fix",
           "sub": "…",
-          "does": "change+reply",
+          "stance": "reply",
           "patch": "diff --git a/…",
           "reply": "…" },
         { "label": "File a story",
           "sub": "out of scope here — track it instead of promising it",
-          "does": "story+reply",
+          "stance": "story",
           "patch": null,
           "story": { "title": "…", "body": "…" },
           "reply": "Tracked as {story}." }
@@ -161,10 +161,17 @@ curl -sS -X POST '{{PROPOSALS_URL}}' \
 }
 ```
 
-- `does` is one of `thumbsup`, `reply`, `change+thumbsup`, `change+reply`, `story+reply`,
-  and must match the option's own fields: a `change+*` option needs a `patch`, a `*+reply`
-  option needs `reply` text, a `story+*` option needs a `story`. The daemon rejects the set
-  if they disagree — it is how "do A but say B" is kept impossible.
+- `stance` is what you are saying back, and only that: `agree` (a thumbs up on the opening
+  comment, no words), `reply` (words), or `story` (file a follow-up and reply with its id).
+  It must match the option's words: an `agree` option carries no `reply`, a `reply` or
+  `story` option must have one, and a `story` option must have a `story`. The daemon rejects
+  the set if they disagree — it is how "do A but say B" is kept impossible.
+- Whether an option changes code is simply whether it carries a `patch`. There is no
+  separate field to keep in step, and any stance may have one: agreeing with the reviewer
+  and fixing it in the same option is the ordinary case.
+- **Who writes that code is not yours to decide.** The human picks `agent` or `manual` per
+  thread when they triage. Propose the fix either way; if they choose manual they write it
+  themselves and your patch is not applied.
 - A `story+reply` reply must contain the literal `{story}`, which the daemon replaces with
   the id once the story exists. It cannot be written in advance.
 - {{TRACKER}}

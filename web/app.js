@@ -1616,6 +1616,9 @@ const reviewState = {
   screen: 'intake',    // intake | gate | overview | card | final | manual | report
   i: 0,                // index into queue()
   picks: {},           // thread_id -> position index
+  /* thread_id -> 'manual'. Who writes the code the decision implies. Absent means
+     the agent does, which is the ordinary case, so only the exceptions are held. */
+  modes: {},
   skipped: {},         // thread_id -> true
   /* Keyed per (thread, option), not per thread: looking at a second option must
      not be a punishment for having started typing. */
@@ -1646,6 +1649,14 @@ const manualState = {
 
 const draftKey = (id, pos) => `${id} ${pos}`;
 
+/** Who writes the code for this thread. The third of the three decisions, and
+ *  the one the agent has no say in. */
+const modeOf = (item) => reviewState.modes[item.t.id] || 'agent';
+
+/** Whether a position would have the agent change code. Under `manual` the same
+ *  position stages the same fix, but you are the one who writes it. */
+const writesCode = (item, pos) => !!pos.patch && modeOf(item) === 'agent';
+
 /** Compact age off an ISO timestamp: `4h`, `6d`. */
 function commentAge(iso) {
   const then = Date.parse(iso);
@@ -1670,7 +1681,7 @@ function queue() {
  *
  *  Only one thing makes a position unavailable: a story with no tracker
  *  configured. It is hidden rather than offered-and-refused. */
-const offered = (pos) => pos.does !== 'story+reply' || !!reviewState.data.tracker;
+const offered = (pos) => pos.stance !== 'story' || !!reviewState.data.tracker;
 
 /** Which position is selected on a card: your pick, else the recommendation.
  *
@@ -2051,11 +2062,11 @@ function rvOverview(root) {
      invent and keep consistent. */
   const buckets = [
     ['Straightforward', 'they are right and a diff is ready — one keystroke each',
-      (x) => positionOf(x).does === 'change+thumbsup' || positionOf(x).does === 'thumbsup'],
+      (x) => positionOf(x).stance === 'agree'],
     ['Wants a decision', 'the recommendation comes with words you should read first',
-      (x) => positionOf(x).does === 'change+reply' || positionOf(x).does === 'reply'],
+      (x) => positionOf(x).stance === 'reply'],
     ['Out of scope', 'fair, but it belongs in a story rather than this PR',
-      (x) => positionOf(x).does === 'story+reply'],
+      (x) => positionOf(x).stance === 'story'],
   ];
   for (const [label, why, match] of buckets) {
     const hits = q.filter(match);
@@ -2225,7 +2236,7 @@ function rvPositions(item) {
     }
     if (pos.sub) t.appendChild(el('em', null, pos.sub));
     head.appendChild(t);
-    head.appendChild(el('span', 'does', doesLabel(pos.does)));
+    head.appendChild(el('span', 'does', effectLabel(item, pos)));
     head.onclick = () => {
       reviewState.picks[item.t.id] = i;
       delete reviewState.skipped[item.t.id];
@@ -2242,18 +2253,18 @@ function rvPositions(item) {
   return wrap;
 }
 
-/** What accepting a position actually does — so the option that rewrites a file
- *  cannot look as cheap as the one that posts a reaction. No thumbs-up glyph
- *  anywhere: the words. */
-function doesLabel(does) {
-  return {
-    'thumbsup': 'thumbs up',
-    'reply': 'reply',
-    'change+thumbsup': 'change + thumbs up',
-    'change+reply': 'change + reply',
-    'story+reply': 'story + reply',
-    'manual': 'by hand',
-  }[does] || does;
+/** What accepting this position actually does — so the option that rewrites a
+ *  file cannot look as cheap as the one that posts a reaction. No thumbs-up glyph
+ *  anywhere: the words.
+ *
+ *  Built from the three decisions rather than read off one field: the stance says
+ *  what gets posted, the patch says whether code changes, and the mode says who
+ *  writes it. */
+function effectLabel(item, pos) {
+  const says = { agree: 'thumbs up', reply: 'reply', story: 'story + reply' }[pos.stance]
+    || pos.stance;
+  if (!pos.patch) return says;
+  return modeOf(item) === 'manual' ? `by hand + ${says}` : `change + ${says}`;
 }
 
 function rvOptBody(item, pos, i) {
@@ -2288,7 +2299,7 @@ function rvOptBody(item, pos, i) {
     const box = el('textarea', 'box');
     box.setAttribute('aria-label', 'Reply');
     box.value = replyOf(item);
-    if (pos.does === 'manual') {
+    if (modeOf(item) === 'manual') {
       box.placeholder = 'Written in the manual phase, once the work exists.';
     }
     // Recorded on input rather than on blur, or navigating away with the keys
@@ -2315,7 +2326,7 @@ function rvFootState(bodyEl, item, pos, i) {
   if (!foot) return;
   foot.replaceChildren();
 
-  if (pos.does === 'story+reply') {
+  if (pos.stance === 'story') {
     const said = el('span');
     const tok = el('span', 'm', '{story}');
     tok.style.color = 'var(--work)';
@@ -2365,10 +2376,10 @@ function rvFinal(root) {
     let word = 'reply';
     if (skipped) { kind = 'skip'; word = 'skipped'; }
     else if (!isHandled(item)) { kind = 'skip'; word = 'not handled'; }
-    else if (pos.does === 'manual') { kind = 'manual'; word = 'by hand'; }
-    else if (pos.does === 'story+reply') { kind = 'story'; word = 'story'; }
-    else if (pos.does === 'thumbsup') { kind = 'reply'; word = 'thumbs up'; }
+    else if (modeOf(item) === 'manual') { kind = 'manual'; word = 'by hand'; }
+    else if (pos.stance === 'story') { kind = 'story'; word = 'story'; }
     else if (pos.patch) { kind = 'apply'; word = 'apply'; }
+    else if (pos.stance === 'agree') { kind = 'reply'; word = 'thumbs up'; }
     row.appendChild(el('span', 'k ' + kind, word));
 
     const c = el('span', 'c');
@@ -2396,7 +2407,7 @@ function rvFinal(root) {
   // changes what pressing it does: the batch commits the rest and stops, and a
   // second screen finishes it. That cost was recorded deliberately, since "one go"
   // was a property the design bought and asking for a human step spends it.
-  const byHand = q.filter((x) => isHandled(x) && positionOf(x).does === 'manual');
+  const byHand = q.filter((x) => isHandled(x) && modeOf(x) === 'manual');
   const bits = [];
   if (out.commits) bits.push('push 1 commit');
   // Named separately from the GitHub count, because it is a write to another
@@ -2442,10 +2453,17 @@ function rvFinal(root) {
 function planLine(item, pos) {
   const reply = replyOf(item).trim();
   const short = reply.length > 90 ? reply.slice(0, 90).trimEnd() + '…' : reply;
-  if (pos.does === 'thumbsup') return 'Responds with a thumbs up, no written reply.';
-  if (pos.does === 'change+thumbsup') return `${pos.label}. Responds with a thumbs up, no written reply.`;
-  if (pos.does === 'story+reply') return `File “${pos.story?.title || 'a story'}”, then reply with its id.`;
-  if (pos.does === 'manual') return 'You write the code, then comment in the phase that follows.';
+  if (modeOf(item) === 'manual') {
+    return pos.stance === 'agree'
+      ? 'You write the code, then it responds with a thumbs up.'
+      : 'You write the code, then comment in the phase that follows.';
+  }
+  if (pos.stance === 'agree') {
+    return pos.patch
+      ? `${pos.label}. Responds with a thumbs up, no written reply.`
+      : 'Responds with a thumbs up, no written reply.';
+  }
+  if (pos.stance === 'story') return `File “${pos.story?.title || 'a story'}”, then reply with its id.`;
   if (pos.patch) return `${pos.label}. Replies “${short}”`;
   return `Replies “${short}”`;
 }
@@ -2566,6 +2584,7 @@ function outward(q) {
   const handled = q.filter(isHandled);
   const files = [];
   for (const item of handled) {
+    if (!writesCode(item, positionOf(item))) continue;
     for (const f of patchStats(positionOf(item).patch)) {
       const seen = files.find((x) => x.path === f.path);
       if (seen) { seen.added += f.added; seen.deleted += f.deleted; }
@@ -2573,12 +2592,11 @@ function outward(q) {
     }
   }
   const replies = handled.filter((x) => replyOf(x).trim() &&
-    ['reply', 'change+reply', 'story+reply', 'manual'].includes(positionOf(x).does)).length;
+    ['reply', 'story'].includes(positionOf(x).stance)).length;
   // Counted apart from the GitHub writes: a story goes to a different system, and
   // it is the one thing in the batch that is not re-derivable from the PR.
-  const stories = handled.filter((x) => positionOf(x).does === 'story+reply').length;
-  const thumbs = handled.filter((x) =>
-    ['thumbsup', 'change+thumbsup'].includes(positionOf(x).does)).length;
+  const stories = handled.filter((x) => positionOf(x).stance === 'story').length;
+  const thumbs = handled.filter((x) => positionOf(x).stance === 'agree').length;
 
   const viewer = reviewState.data.viewer;
   const open = new Set();
@@ -3161,7 +3179,7 @@ function acceptCard() {
 
   // A reply-only position with an empty box would post a blank comment, which
   // cannot be deleted from here — the daemon refuses it too.
-  if (['reply', 'change+reply', 'story+reply'].includes(pos.does) && !replyOf(item).trim()) {
+  if (pos.stance !== 'agree' && modeOf(item) === 'agent' && !replyOf(item).trim()) {
     return toast('this position posts a reply — write one, or pick another', true);
   }
   reviewState.picks[item.t.id] = pickOf(item);
@@ -3217,6 +3235,7 @@ function batchPayload() {
       thread_id: item.t.id,
       position: i,
       reply: typed === undefined ? null : typed,
+      mode: modeOf(item),
     };
   });
   return { base_sha: reviewState.data.proposals.base_sha, decisions };

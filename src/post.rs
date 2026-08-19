@@ -26,7 +26,7 @@ use std::sync::Arc;
 use crate::github::{Pr, ThreadRoot, Threads};
 use crate::github_write::{self, Target};
 use crate::patch::{FileStat, Patch, Written};
-use crate::proposal::{Does, Position};
+use crate::proposal::{Mode, Position, Stance};
 use crate::state::AppState;
 
 /// One handled thread: which position, and your wording if you changed it.
@@ -39,6 +39,10 @@ pub struct Decision {
     /// Overrides the drafted reply. `None` keeps what triage wrote.
     #[serde(default)]
     pub reply: Option<String>,
+    /// Who writes the code this decision implies. Defaults to the agent, so a
+    /// payload from before the mode split still means what it did.
+    #[serde(default)]
+    pub mode: Mode,
 }
 
 /// What the manual phase sends back to finish the batch.
@@ -267,7 +271,8 @@ struct Handled {
     thread_id: String,
     label: String,
     root: ThreadRoot,
-    does: Does,
+    stance: Stance,
+    mode: Mode,
     patch: Option<String>,
     reply: Option<String>,
     /// The story to file, for a `story+reply` position. Taken from the proposal
@@ -322,7 +327,7 @@ fn resolve(
             )
         })?;
 
-        if pos.does.files_story() && !tracker.is_configured() {
+        if pos.stance.files_story() && !tracker.is_configured() {
             bail!(
                 "thread {}: no tracker is configured, so there is nowhere to file this. \
                  Set `tracker` in the config, pick another position, or skip.",
@@ -344,7 +349,7 @@ fn resolve(
             .root_for(&d.thread_id)
             .with_context(|| format!("thread {} has no comment to answer", d.thread_id))?;
 
-        let touched = if pos.does == Does::Manual {
+        let touched = if d.mode == Mode::Manual {
             // The reviewer's own anchor, used to blame at in the phase. Absent on a
             // review summary, and that is allowed: answering one by hand is
             // legitimate, and with no line the fold degrades to a HEAD amend and
@@ -353,7 +358,7 @@ fn resolve(
                 (Some(p), Some(l)) => Some((p, l)),
                 _ => None,
             }
-        } else if pos.does.writes_code() {
+        } else if pos.writes_code() {
             let path = thread.path.clone().with_context(|| {
                 format!(
                     "thread {}: a patch was accepted on a thread with no file",
@@ -373,16 +378,20 @@ fn resolve(
             None
         };
 
-        // A Manual thread's comment is written in the phase, after the work exists —
+        // A manual thread's comment is written in the phase, after the work exists —
         // so on the way *in* the card's box is only a draft and may be empty. The
         // requirement is enforced where it can actually be met.
-        let reply = match (pos.does, comments) {
+        let reply = match (d.mode, pos.stance.writes_reply(), comments) {
+            // Manual and wordless. Now that mode is its own axis this is
+            // reachable: agreeing with the reviewer and fixing it by hand posts a
+            // thumbs up and nothing else, so there is no comment to demand.
+            (Mode::Manual, false, _) => None,
             // The first half: the phase has not opened, so there is nothing to post
             // yet and the card's box was only a draft.
-            (Does::Manual, None) => None,
+            (Mode::Manual, true, None) => None,
             // The resume. A comment is required, and *absent* has to fail exactly
             // like blank — anything else lets the thread through in silence.
-            (Does::Manual, Some(map)) => {
+            (Mode::Manual, true, Some(map)) => {
                 let text = map.get(&d.thread_id).map(String::as_str).unwrap_or("");
                 if text.trim().is_empty() {
                     bail!(
@@ -410,7 +419,7 @@ fn resolve(
         // it would file a story and never link to it. The draft is validated on
         // arrival; this catches the human deleting the token while editing. Refused
         // here, which is before the local half and long before anything is filed.
-        if pos.does.files_story() {
+        if pos.stance.files_story() {
             let text = reply.as_deref().unwrap_or_default();
             if !text.contains(crate::proposal::STORY_TOKEN) {
                 bail!(
@@ -438,10 +447,13 @@ fn resolve(
             thread_id: d.thread_id.clone(),
             label: label_for(thread),
             root,
-            does: pos.does,
-            patch: pos.patch.clone().filter(|_| pos.does.writes_code()),
+            stance: pos.stance,
+            mode: d.mode,
+            // A staged fix belongs to the agent. Under `Manual` you are writing it
+            // yourself, so carrying the patch here would apply it behind you.
+            patch: pos.patch.clone().filter(|_| d.mode == Mode::Agent),
             reply,
-            story: pos.story.clone().filter(|_| pos.does.files_story()),
+            story: pos.story.clone().filter(|_| pos.stance.files_story()),
             permalink: thread
                 .comments
                 .first()
@@ -461,7 +473,7 @@ fn resolve(
 
 /// The reply a non-manual position will post: your wording if you typed one.
 fn resolve_reply(pos: &Position, d: &Decision, thread_id: &str) -> Result<Option<String>> {
-    match (pos.does.writes_reply(), &d.reply) {
+    match (pos.stance.writes_reply(), &d.reply) {
         // Your wording wins over the draft. Empty is a refusal, not a blank
         // comment: a reply-only position that posts nothing does nothing.
         (true, Some(text)) if !text.trim().is_empty() => Ok(Some(text.clone())),
@@ -600,7 +612,7 @@ async fn run_inner(
     // and a live continue button asking for no comment.
     let waiting: Vec<ManualThread> = handled
         .iter()
-        .filter(|h| h.does == Does::Manual)
+        .filter(|h| h.mode == Mode::Manual)
         .map(|h| ManualThread {
             thread_id: h.thread_id.clone(),
             label: h.label.clone(),
@@ -853,7 +865,7 @@ async fn write_manual(
     // fold degrades to a HEAD amend and says so, which is the honest answer.
     let touched: Vec<(String, u32)> = handled
         .iter()
-        .filter(|h| h.does == Does::Manual)
+        .filter(|h| h.mode == Mode::Manual)
         .filter_map(|h| h.touched.clone())
         .collect();
 
@@ -1017,7 +1029,7 @@ async fn post_outward(
             }
         }
 
-        if h.does.gives_thumbs_up() {
+        if h.stance.gives_thumbs_up() {
             // Not re-derivable: the thread query does not select reactions.
             // GitHub is expected to treat one as unique per (user, content) and
             // return the existing one, so a retry is a no-op rather than a
@@ -1221,18 +1233,29 @@ mod tests {
         }
     }
 
-    fn position(does: Does) -> Position {
+    fn position(stance: Stance) -> Position {
+        with_patch(stance, false)
+    }
+
+    /// Stance and "does it carry a fix" are separate axes now, so the helper
+    /// takes both.
+    fn with_patch(stance: Stance, patch: bool) -> Position {
         Position {
             label: "Apply".into(),
             sub: String::new(),
-            does,
-            patch: does.writes_code().then(|| "--- a/f\n+++ b/f\n".to_string()),
-            reply: does.writes_reply().then(|| "Resolved.".to_string()),
-            story: does.files_story().then(|| StoryDraft {
+            stance,
+            patch: patch.then(|| "--- a/f\n+++ b/f\n".to_string()),
+            reply: stance.writes_reply().then(|| "Resolved.".to_string()),
+            story: stance.files_story().then(|| StoryDraft {
                 title: "t".into(),
                 body: "b".into(),
             }),
         }
+    }
+
+    /// A batch whose one decision is written by hand rather than by the agent.
+    fn manual_batch(thread_id: &str, position: usize, reply: Option<&str>) -> Batch {
+        batch_mode(thread_id, position, reply, Mode::Manual)
     }
 
     fn proposed(thread_id: &str, positions: Vec<Position>) -> ProposalSet {
@@ -1250,19 +1273,24 @@ mod tests {
     }
 
     fn batch(thread_id: &str, position: usize, reply: Option<&str>) -> Batch {
+        batch_mode(thread_id, position, reply, Mode::Agent)
+    }
+
+    fn batch_mode(thread_id: &str, position: usize, reply: Option<&str>, mode: Mode) -> Batch {
         Batch {
             base_sha: "abc123".into(),
             decisions: vec![Decision {
                 thread_id: thread_id.into(),
                 position,
                 reply: reply.map(str::to_string),
+                mode,
             }],
         }
     }
 
     #[test]
     fn a_patch_position_resolves_to_its_diff_and_a_blame_target() {
-        let set = proposed("PRRT_1", vec![position(Does::ChangeThumbsUp)]);
+        let set = proposed("PRRT_1", vec![with_patch(Stance::Agree, true)]);
         let fresh = fetched(vec![thread("PRRT_1", Some("src/Foo.php"), Some(42), "john")]);
         let got = resolve(&set, &fresh, &batch("PRRT_1", 0, None), TRACKER, FIRST_HALF).unwrap();
 
@@ -1271,13 +1299,13 @@ mod tests {
         assert_eq!(got[0].touched, Some(("src/Foo.php".into(), 42)));
         // change+thumbsup posts a reaction, not words.
         assert!(got[0].reply.is_none());
-        assert!(got[0].does.gives_thumbs_up());
+        assert!(got[0].stance.gives_thumbs_up());
         assert_eq!(got[0].root.comment_id(), 100);
     }
 
     #[test]
     fn your_wording_overrides_the_draft() {
-        let set = proposed("PRRT_1", vec![position(Does::Reply)]);
+        let set = proposed("PRRT_1", vec![position(Stance::Reply)]);
         let fresh = fetched(vec![thread("PRRT_1", Some("a.ts"), Some(1), "john")]);
 
         let kept = resolve(&set, &fresh, &batch("PRRT_1", 0, None), TRACKER, FIRST_HALF).unwrap();
@@ -1298,7 +1326,7 @@ mod tests {
     fn a_reply_position_with_an_emptied_box_is_refused_not_posted_blank() {
         // `Say something else` starts empty; sending it untouched would post a
         // blank comment that cannot be deleted from here.
-        let set = proposed("PRRT_1", vec![position(Does::Reply)]);
+        let set = proposed("PRRT_1", vec![position(Stance::Reply)]);
         let fresh = fetched(vec![thread("PRRT_1", Some("a.ts"), Some(1), "john")]);
         let err = resolve(
             &set,
@@ -1324,19 +1352,21 @@ mod tests {
                 recommend: 0,
                 positions: vec![Position {
                     reply: Some("Tracked as {story}.".into()),
-                    ..position(Does::StoryReply)
+                    ..position(Stance::Story)
                 }],
             }],
         }
     }
 
+    /// The proposal side of a hand-written thread. Nothing about the position
+    /// says "manual" any more — that is the decision's `mode`.
     fn manual_set(draft: &str) -> ProposalSet {
         proposed(
             "PRRT_1",
             vec![Position {
-                label: "Manual".into(),
+                label: "Apply".into(),
                 sub: String::new(),
-                does: Does::Manual,
+                stance: Stance::Reply,
                 patch: None,
                 reply: Some(draft.into()),
                 story: None,
@@ -1365,7 +1395,7 @@ mod tests {
             thread("PRRT_1", Some("a.ts"), Some(10), "john"),
             thread("PRRT_2", Some("b.ts"), Some(99), "dave"),
         ]);
-        let mut set = proposed("PRRT_1", vec![position(Does::ChangeReply)]);
+        let mut set = proposed("PRRT_1", vec![with_patch(Stance::Reply, true)]);
         set.proposals.push(Proposal {
             thread_id: "PRRT_2".into(),
             continued: false,
@@ -1373,11 +1403,11 @@ mod tests {
             verified: None,
             recommend: 0,
             positions: vec![Position {
-                label: "Manual".into(),
+                label: "Apply".into(),
                 sub: String::new(),
-                does: Does::Manual,
+                stance: Stance::Reply,
                 patch: None,
-                reply: Some(String::new()),
+                reply: Some("Resolved.".into()),
                 story: None,
             }],
         });
@@ -1388,11 +1418,15 @@ mod tests {
                     thread_id: "PRRT_1".into(),
                     position: 0,
                     reply: None,
+                    mode: Mode::Agent,
                 },
+                // Hand-written: it still gets an anchor for the phase to blame
+                // at, but nothing to apply.
                 Decision {
                     thread_id: "PRRT_2".into(),
                     position: 0,
                     reply: None,
+                    mode: Mode::Manual,
                 },
             ],
         };
@@ -1412,12 +1446,12 @@ mod tests {
         let got = resolve(
             &manual_set(""),
             &fresh,
-            &batch("PRRT_1", 0, None),
+            &manual_batch("PRRT_1", 0, None),
             TRACKER,
             FIRST_HALF,
         )
         .unwrap();
-        assert_eq!(got[0].does, Does::Manual);
+        assert_eq!(got[0].mode, Mode::Manual);
         assert!(got[0].reply.is_none(), "nothing to post on the way in");
         // The reviewer's anchor rides along, for the phase to blame at.
         assert_eq!(got[0].touched, Some(("a.ts".into(), 12)));
@@ -1441,7 +1475,7 @@ mod tests {
         let err = resolve(
             &manual_set(""),
             &fresh,
-            &batch("PRRT_1", 0, None),
+            &manual_batch("PRRT_1", 0, None),
             TRACKER,
             Some(&none),
         )
@@ -1454,7 +1488,7 @@ mod tests {
         let err = resolve(
             &manual_set(""),
             &fresh,
-            &batch("PRRT_1", 0, None),
+            &manual_batch("PRRT_1", 0, None),
             TRACKER,
             Some(&blank),
         )
@@ -1470,7 +1504,7 @@ mod tests {
         let got = resolve(
             &manual_set(""),
             &fresh,
-            &batch("PRRT_1", 0, None),
+            &manual_batch("PRRT_1", 0, None),
             TRACKER,
             Some(&written),
         )
@@ -1489,7 +1523,7 @@ mod tests {
         let got = resolve(
             &manual_set(""),
             &fresh,
-            &batch("PRRT_1", 0, None),
+            &manual_batch("PRRT_1", 0, None),
             TRACKER,
             FIRST_HALF,
         )
@@ -1514,7 +1548,7 @@ mod tests {
         assert!(got[0].reply.as_deref().unwrap().contains("{story}"));
         // A story writes no code and posts no reaction.
         assert!(got[0].patch.is_none());
-        assert!(!got[0].does.gives_thumbs_up());
+        assert!(!got[0].stance.gives_thumbs_up());
     }
 
     #[test]
@@ -1558,7 +1592,7 @@ mod tests {
     fn a_token_in_a_position_that_files_nothing_is_refused() {
         // The reverse mistake: there would be no id to substitute, so the literal
         // braces would be posted to GitHub.
-        let set = proposed("PRRT_1", vec![position(Does::Reply)]);
+        let set = proposed("PRRT_1", vec![position(Stance::Reply)]);
         let fresh = fetched(vec![thread("PRRT_1", Some("a.ts"), Some(1), "john")]);
         let err = resolve(
             &set,
@@ -1576,7 +1610,7 @@ mod tests {
     fn an_oversized_reply_override_is_refused() {
         // The one agent-or-human string the validator never sized, and it is about
         // to carry a public URL.
-        let set = proposed("PRRT_1", vec![position(Does::Reply)]);
+        let set = proposed("PRRT_1", vec![position(Stance::Reply)]);
         let fresh = fetched(vec![thread("PRRT_1", Some("a.ts"), Some(1), "john")]);
         let huge = "x".repeat(crate::proposal::MAX_FIELD + 1);
         let err = resolve(
@@ -1593,7 +1627,7 @@ mod tests {
 
     #[test]
     fn a_decision_the_human_never_saw_is_refused() {
-        let set = proposed("PRRT_1", vec![position(Does::Reply)]);
+        let set = proposed("PRRT_1", vec![position(Stance::Reply)]);
         let fresh = fetched(vec![thread("PRRT_1", Some("a.ts"), Some(1), "john")]);
 
         // An index past the list: the payload carries indices, so this is how a
@@ -1610,7 +1644,7 @@ mod tests {
     fn a_patch_needs_a_line_to_blame() {
         // A review summary has no file, so there is nowhere for a diff to go — that
         // case goes through the manual phase, not through a guessed anchor.
-        let set = proposed("PRRT_1", vec![position(Does::ChangeReply)]);
+        let set = proposed("PRRT_1", vec![with_patch(Stance::Reply, true)]);
         let fresh = fetched(vec![thread("PRRT_1", None, None, "acme-bot")]);
         let err = resolve(&set, &fresh, &batch("PRRT_1", 0, None), TRACKER, FIRST_HALF)
             .unwrap_err()

@@ -37,55 +37,53 @@ const MAX_TITLE: usize = 256;
 const MAX_POSITIONS: usize = 4;
 const MIN_POSITIONS: usize = 1;
 
-/// What accepting a position actually does. The card renders this as the
-/// right-hand label, so the option that rewrites a file cannot look as cheap as
-/// the one that posts a reaction.
+/// What you are saying back to the reviewer.
+///
+/// One of the three things decided per thread, and deliberately only that. It
+/// used to be `Does`, which bundled the stance together with whether code gets
+/// written and who writes it — so "agree, and I will fix it by hand" had no
+/// spelling. Code is now simply whether the position carries a patch, and who
+/// writes it is [`Mode`], chosen by the human rather than proposed by the agent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Does {
-    /// Agree, say nothing: a thumbs up on the thread's opening comment.
-    #[serde(rename = "thumbsup")]
-    ThumbsUp,
-    /// Words only, no code.
-    #[serde(rename = "reply")]
+#[serde(rename_all = "lowercase")]
+pub enum Stance {
+    /// The reviewer is right and there is nothing to add: a thumbs up on the
+    /// thread's opening comment, no words.
+    Agree,
+    /// Answer in words.
     Reply,
-    /// Write the patch, and thumbs up rather than write a reply.
-    #[serde(rename = "change+thumbsup")]
-    ChangeThumbsUp,
-    /// Write the patch and reply.
-    #[serde(rename = "change+reply")]
-    ChangeReply,
-    /// File a tracker story and reply with its id — for a fair point that is out
-    /// of scope here.
-    #[serde(rename = "story+reply")]
-    StoryReply,
-    /// You will write the code by hand. Appended by the daemon, never by the
-    /// agent; the comment is written in the manual phase, after the fact.
-    #[serde(rename = "manual")]
-    Manual,
+    /// A fair point, out of scope here: file a tracker story and reply with its
+    /// id.
+    Story,
 }
 
-impl Does {
-    pub fn writes_code(self) -> bool {
-        matches!(self, Does::ChangeThumbsUp | Does::ChangeReply)
-    }
+impl Stance {
+    /// Does this stance put words on the thread?
     pub fn writes_reply(self) -> bool {
-        matches!(
-            self,
-            Does::Reply | Does::ChangeReply | Does::StoryReply | Does::Manual
-        )
+        matches!(self, Stance::Reply | Stance::Story)
     }
-    /// A reaction on the thread's opening comment. The two `thumbsup` variants
-    /// differ in whether they also write code, never in what they post.
+    /// A reaction on the thread's opening comment.
     pub fn gives_thumbs_up(self) -> bool {
-        matches!(self, Does::ThumbsUp | Does::ChangeThumbsUp)
+        matches!(self, Stance::Agree)
     }
     pub fn files_story(self) -> bool {
-        matches!(self, Does::StoryReply)
+        matches!(self, Stance::Story)
     }
-    /// Appended by the daemon rather than proposed by the agent.
-    pub fn is_daemon_supplied(self) -> bool {
-        matches!(self, Does::Manual)
-    }
+}
+
+/// Who writes the code a decision implies.
+///
+/// The human's call at triage time, not the agent's, which is why it lives on
+/// the decision rather than on a position. It is meaningful on any stance: a
+/// thread you agree with can still be one you want to fix by hand.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Mode {
+    /// The session applies the staged fix, adapting it if the branch moved.
+    #[default]
+    Agent,
+    /// You write it, live, while the session waits.
+    Manual,
 }
 
 /// A story to file, when a position defers the point rather than answering it.
@@ -102,17 +100,25 @@ pub struct Position {
     /// The line under the label — why you would pick this one.
     #[serde(default)]
     pub sub: String,
-    pub does: Does,
+    pub stance: Stance,
     /// A unified diff, exactly as `git diff` printed it in the agent's scratch
-    /// worktree. Present iff `does.writes_code()`.
+    /// worktree. Its presence is what "this position changes code" means; there
+    /// is no second field that could disagree with it.
     #[serde(default)]
     pub patch: Option<String>,
-    /// Present iff `does.writes_reply()`. For a story position it must contain
+    /// Present iff `stance.writes_reply()`. For a story position it must contain
     /// `{story}`, substituted once the story exists.
     #[serde(default)]
     pub reply: Option<String>,
     #[serde(default)]
     pub story: Option<StoryDraft>,
+}
+
+impl Position {
+    /// Whether accepting this position writes to the worktree.
+    pub fn writes_code(&self) -> bool {
+        self.patch.as_deref().is_some_and(|p| !p.trim().is_empty())
+    }
 }
 
 /// The placeholder a story reply must carry, since the id does not exist until
@@ -152,42 +158,32 @@ pub struct ProposalSet {
 }
 
 impl Position {
-    /// Does this position's `does` agree with the fields it carries?
+    /// Does this position's stance agree with the fields it carries?
     ///
-    /// This is the check that keeps "do A but say B" impossible. The UI merges
-    /// stance, code and words into one control precisely so they cannot diverge;
-    /// if the agent hands back a `change+reply` with no patch, that guarantee is
-    /// already broken before anything renders.
+    /// This is the check that keeps "do A but say B" impossible. The words and
+    /// the code travel together in one position precisely so they cannot
+    /// diverge; if the agent hands back a `story` stance with no story, that
+    /// guarantee is already broken before anything renders.
+    ///
+    /// The patch is deliberately not checked against the stance any more: any
+    /// stance may carry a fix, including `agree`, and its presence is the only
+    /// statement that code changes. There is no second field left to disagree.
     fn check(&self, thread: &str, index: usize) -> Result<()> {
         let where_ = format!("thread {thread} position {index}");
         if self.label.trim().is_empty() {
             bail!("{where_}: empty label");
         }
-        if self.does.is_daemon_supplied() {
-            bail!(
-                "{where_}: `{:?}` is appended by the daemon and must not be proposed",
-                self.does
-            );
-        }
-        let has_patch = self.patch.as_deref().is_some_and(|p| !p.trim().is_empty());
-        if self.does.writes_code() != has_patch {
-            bail!(
-                "{where_}: `does` is {:?} but patch is {}",
-                self.does,
-                if has_patch { "present" } else { "missing" }
-            );
-        }
         let has_reply = self.reply.as_deref().is_some_and(|r| !r.trim().is_empty());
-        if self.does.writes_reply() != has_reply {
+        if self.stance.writes_reply() != has_reply {
             bail!(
-                "{where_}: `does` is {:?} but reply is {}",
-                self.does,
+                "{where_}: stance is {:?} but reply is {}",
+                self.stance,
                 if has_reply { "present" } else { "missing" }
             );
         }
-        if self.does.files_story() {
+        if self.stance.files_story() {
             match &self.story {
-                None => bail!("{where_}: `story+reply` without a story"),
+                None => bail!("{where_}: `story` stance without a story"),
                 Some(s) if s.title.trim().is_empty() => {
                     bail!("{where_}: story has no title")
                 }
@@ -251,7 +247,7 @@ impl Proposal {
         }
         // A position that changes code makes a claim about the code, and the
         // whole point of the scratch-worktree pass is that the claim was run.
-        if self.positions.iter().any(|p| p.does.writes_code())
+        if self.positions.iter().any(|p| p.writes_code())
             && !self
                 .verified
                 .as_deref()
@@ -264,7 +260,7 @@ impl Proposal {
 
     /// Whether any position would write to the worktree.
     pub fn changes_code(&self) -> bool {
-        self.positions.iter().any(|p| p.does.writes_code())
+        self.positions.iter().any(|p| p.writes_code())
     }
 }
 
@@ -309,19 +305,14 @@ impl ProposalSet {
         }
 
         for p in &mut self.proposals {
-            p.positions.push(Position {
-                label: "Manual".into(),
-                sub: "you write the code — comment after you have".into(),
-                does: Does::Manual,
-                patch: None,
-                // Written in the manual phase, once the work exists.
-                reply: Some(String::new()),
-                story: None,
-            });
+            // `Manual` used to be appended here as a position of its own. It is a
+            // `Mode` now: writing the code by hand is a fact about who does the
+            // work, not about what you are saying back, and as a position it made
+            // "agree, and I will fix it myself" unspellable.
             p.positions.push(Position {
                 label: "Say something else".into(),
                 sub: "your words, your stance — no code".into(),
-                does: Does::Reply,
+                stance: Stance::Reply,
                 patch: None,
                 reply: Some(String::new()),
                 story: None,
@@ -335,36 +326,40 @@ impl ProposalSet {
 mod tests {
     use super::*;
 
-    fn pos(does: Does) -> Position {
+    fn pos(stance: Stance) -> Position {
+        fixing(stance, false)
+    }
+
+    /// A position with, or without, a fix attached. Two axes now, so the helper
+    /// takes two.
+    fn fixing(stance: Stance, patch: bool) -> Position {
         Position {
             label: "L".into(),
             sub: "s".into(),
-            does,
-            patch: does
-                .writes_code()
-                .then(|| "diff --git a/f b/f\n".to_string()),
-            reply: does.writes_reply().then(|| {
-                if does.files_story() {
+            stance,
+            patch: patch.then(|| "diff --git a/f b/f\n".to_string()),
+            reply: stance.writes_reply().then(|| {
+                if stance.files_story() {
                     format!("see {STORY_TOKEN}")
                 } else {
                     "words".to_string()
                 }
             }),
-            story: does.files_story().then(|| StoryDraft {
+            story: stance.files_story().then(|| StoryDraft {
                 title: "t".into(),
                 body: "b".into(),
             }),
         }
     }
 
-    fn proposal(id: &str, does: Does) -> Proposal {
+    fn proposal(id: &str, stance: Stance) -> Proposal {
         Proposal {
             thread_id: id.into(),
             continued: false,
             read: "it is right".into(),
             verified: Some("grep showed one call".into()),
             recommend: 0,
-            positions: vec![pos(does)],
+            positions: vec![pos(stance)],
         }
     }
 
@@ -376,8 +371,10 @@ mod tests {
     }
 
     #[test]
-    fn the_daemon_appends_manual_and_say_something_else() {
-        let out = set(vec![proposal("T1", Does::ChangeReply)])
+    fn the_daemon_appends_say_something_else_and_nothing_more() {
+        // `Manual` used to be appended here too. It is a `Mode` now, so the tail
+        // is one position, not two.
+        let out = set(vec![proposal("T1", Stance::Reply)])
             .validate(&["T1".into()])
             .unwrap();
         let labels: Vec<&str> = out.proposals[0]
@@ -385,45 +382,45 @@ mod tests {
             .iter()
             .map(|p| p.label.as_str())
             .collect();
-        assert_eq!(labels, vec!["L", "Manual", "Say something else"]);
+        assert_eq!(labels, vec!["L", "Say something else"]);
     }
 
     #[test]
-    fn an_agent_may_not_propose_the_daemons_own_positions() {
-        // One source of truth for the fixed tail, or the two drift.
-        let mut p = proposal("T1", Does::Reply);
-        p.positions.push(pos(Does::Manual));
-        let err = set(vec![p])
-            .validate(&["T1".into()])
-            .unwrap_err()
-            .to_string();
-        assert!(err.contains("appended by the daemon"), "{err}");
+    fn a_fix_may_ride_any_stance_including_agree() {
+        // The combination `Does` could not spell: agree with the reviewer and
+        // still carry the change. Nothing about the stance forbids a patch.
+        let mut p = proposal("T1", Stance::Agree);
+        p.positions[0] = fixing(Stance::Agree, true);
+        let out = set(vec![p]).validate(&["T1".into()]).expect("valid");
+        assert!(out.proposals[0].positions[0].writes_code());
+        assert!(out.proposals[0].changes_code());
     }
 
     #[test]
-    fn does_must_agree_with_the_fields() {
-        // "change + reply" with no patch is the do-A-say-B bug arriving as data.
-        let mut p = proposal("T1", Does::ChangeReply);
-        p.positions[0].patch = None;
-        let err = set(vec![p])
-            .validate(&["T1".into()])
-            .unwrap_err()
-            .to_string();
-        assert!(err.contains("patch is missing"), "{err}");
-
-        // A thumbs-up-only position that also carries words.
-        let mut p = proposal("T2", Does::ChangeThumbsUp);
+    fn a_stance_must_agree_with_the_words() {
+        // An `agree` position that also carries words is the do-A-say-B bug
+        // arriving as data: a thumbs up posts nothing to read.
+        let mut p = proposal("T2", Stance::Agree);
         p.positions[0].reply = Some("words".into());
         let err = set(vec![p])
             .validate(&["T2".into()])
             .unwrap_err()
             .to_string();
         assert!(err.contains("reply is present"), "{err}");
+
+        // And the other way: words promised, none written.
+        let mut p = proposal("T1", Stance::Reply);
+        p.positions[0].reply = None;
+        let err = set(vec![p])
+            .validate(&["T1".into()])
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("reply is missing"), "{err}");
     }
 
     #[test]
     fn a_story_reply_must_leave_room_for_the_id() {
-        let mut p = proposal("T1", Does::StoryReply);
+        let mut p = proposal("T1", Stance::Story);
         p.positions[0].reply = Some("Tracked as sc-12345.".into());
         let err = set(vec![p])
             .validate(&["T1".into()])
@@ -436,7 +433,7 @@ mod tests {
     fn story_fields_are_bounded_like_every_other_agent_string() {
         // These were the last two with no cap. A title is one line, so it gets a
         // tighter one than the prose fields.
-        let mut p = proposal("T1", Does::StoryReply);
+        let mut p = proposal("T1", Stance::Story);
         p.positions[0].story = Some(StoryDraft {
             title: "t".repeat(MAX_TITLE + 1),
             body: "b".into(),
@@ -447,7 +444,7 @@ mod tests {
             .to_string();
         assert!(err.contains("title exceeds"), "{err}");
 
-        let mut p = proposal("T1", Does::StoryReply);
+        let mut p = proposal("T1", Stance::Story);
         p.positions[0].story = Some(StoryDraft {
             title: "t".into(),
             body: "b".repeat(MAX_FIELD + 1),
@@ -463,7 +460,8 @@ mod tests {
     fn a_change_without_evidence_is_refused() {
         // The scratch-worktree pass exists so the claim was run, not reasoned
         // about; a patch with no `verified` skipped it.
-        let mut p = proposal("T1", Does::ChangeThumbsUp);
+        let mut p = proposal("T1", Stance::Agree);
+        p.positions[0] = fixing(Stance::Agree, true);
         p.verified = None;
         let err = set(vec![p])
             .validate(&["T1".into()])
@@ -472,14 +470,14 @@ mod tests {
         assert!(err.contains("re-proved"), "{err}");
 
         // A words-only proposal needs none.
-        let mut p = proposal("T2", Does::Reply);
+        let mut p = proposal("T2", Stance::Reply);
         p.verified = None;
         assert!(set(vec![p]).validate(&["T2".into()]).is_ok());
     }
 
     #[test]
     fn a_thread_nobody_asked_about_is_refused() {
-        let err = set(vec![proposal("GHOST", Does::Reply)])
+        let err = set(vec![proposal("GHOST", Stance::Reply)])
             .validate(&["T1".into()])
             .unwrap_err()
             .to_string();
@@ -489,7 +487,7 @@ mod tests {
     #[test]
     fn a_silently_dropped_thread_is_named() {
         // The one failure the human cannot see on the cards.
-        let err = set(vec![proposal("T1", Does::Reply)])
+        let err = set(vec![proposal("T1", Stance::Reply)])
             .validate(&["T1".into(), "T2".into()])
             .unwrap_err()
             .to_string();
@@ -499,8 +497,8 @@ mod tests {
     #[test]
     fn two_proposals_for_one_thread_are_refused() {
         let err = set(vec![
-            proposal("T1", Does::Reply),
-            proposal("T1", Does::Reply),
+            proposal("T1", Stance::Reply),
+            proposal("T1", Stance::Reply),
         ])
         .validate(&["T1".into()])
         .unwrap_err()
@@ -510,7 +508,7 @@ mod tests {
 
     #[test]
     fn recommend_must_point_at_a_real_position() {
-        let mut p = proposal("T1", Does::Reply);
+        let mut p = proposal("T1", Stance::Reply);
         p.recommend = 3;
         let err = set(vec![p])
             .validate(&["T1".into()])
@@ -521,7 +519,7 @@ mod tests {
 
     #[test]
     fn oversized_fields_are_refused() {
-        let mut p = proposal("T1", Does::ChangeReply);
+        let mut p = proposal("T1", Stance::Reply);
         p.positions[0].patch = Some("x".repeat(MAX_FIELD + 1));
         let err = set(vec![p])
             .validate(&["T1".into()])
@@ -543,12 +541,12 @@ mod tests {
             "recommend": 0,
             "options": [
               { "label": "Apply", "sub": "respond with thumbs up",
-                "does": "change+thumbsup", "patch": "diff --git a/f b/f\n", "reply": null }
+                "stance": "agree", "patch": "diff --git a/f b/f\n", "reply": null }
             ]
           }]
         }"#;
         let s: ProposalSet = serde_json::from_str(json).unwrap();
-        assert_eq!(s.proposals[0].positions[0].does, Does::ChangeThumbsUp);
+        assert_eq!(s.proposals[0].positions[0].stance, Stance::Agree);
         assert!(s.proposals[0].changes_code());
         assert!(s.validate(&["T1".into()]).is_ok());
     }
