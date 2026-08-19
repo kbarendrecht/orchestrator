@@ -92,12 +92,17 @@ pub struct Inner {
     /// Bumped once per completed PR poll, so the refresh button can spin until
     /// the fetch it triggered has landed. Mirrors `reviews_poll`.
     pub pr_poll: u64,
+    /// A fetch is in flight right now. `pr_poll` says one *landed*, which is what
+    /// stops the spinner; this is what starts it when nobody pressed the button.
+    pub pr_polling: bool,
     pub token_source: Option<crate::github::TokenSource>,
     pub reviews: crate::reviews::ReviewState,
     /// Bumped once per completed review poll. The SPA watches it to spin the
     /// refresh button until the fetch its click triggered has actually landed,
     /// rather than until the next unrelated re-render.
     pub reviews_poll: u64,
+    /// As `pr_polling`, for the review queue.
+    pub reviews_polling: bool,
     /// Files rewritten through the diff editor, and which sessions have been
     /// told. Conflict detection on save protects you from the agent; this is
     /// the other direction, which is the one that loses work silently.
@@ -180,9 +185,11 @@ impl AppState {
                 pr_error: None,
                 pr_fetched: None,
                 pr_poll: 0,
+                pr_polling: false,
                 token_source: None,
                 reviews: Default::default(),
                 reviews_poll: 0,
+                reviews_polling: false,
                 human_edits: HashMap::new(),
                 automation: Default::default(),
                 divergence: HashMap::new(),
@@ -346,9 +353,11 @@ impl AppState {
                 .pr_fetched
                 .and_then(|t| now.duration_since(t).ok().map(|d| d.as_millis() as u64)),
             pr_poll: inner.pr_poll,
+            pr_polling: inner.pr_polling,
             token_source: inner.token_source,
             reviews: inner.reviews.clone(),
             reviews_poll: inner.reviews_poll,
+            reviews_polling: inner.reviews_polling,
             automation: inner.automation.by_pr.clone(),
             repos: self.repos.clone(),
             stack_up: inner.stack_up,
@@ -625,10 +634,14 @@ pub struct Snapshot {
     pub pr_age_ms: Option<u64>,
     /// Monotonic counter of completed PR polls; see `Inner::pr_poll`.
     pub pr_poll: u64,
+    /// A PR fetch is running. The pane spins its refresh icon while it is,
+    /// however the fetch was started.
+    pub pr_polling: bool,
     pub token_source: Option<crate::github::TokenSource>,
     pub reviews: crate::reviews::ReviewState,
     /// Monotonic counter of completed review polls; see `Inner::reviews_poll`.
     pub reviews_poll: u64,
+    pub reviews_polling: bool,
     pub automation: HashMap<u64, crate::fix_pr::PrAutomation>,
     pub repos: Repos,
     /// `docker compose` stack has running containers; `None` before first probe.

@@ -388,12 +388,15 @@ const spinFloor = { pr: null, review: null };
  * `pollCount` is the pane's monotonic poll counter from the snapshot; `endpoint`
  * is the POST that pulses that poller. Used by both the PR and review panes.
  */
-function refreshButton(kind, pollCount, endpoint) {
+function refreshButton(kind, pollCount, endpoint, polling) {
   const btn = el('span', 'rvrefresh', '↻');
   btn.title = 'Refresh now';
   btn.setAttribute('role', 'button');
   if (spinFloor[kind] != null && pollCount > spinFloor[kind]) spinFloor[kind] = null;
-  if (spinFloor[kind] != null) btn.classList.add('spin');
+  // Two reasons to spin, and the second is the honest one: the daemon says a
+  // fetch is running, whoever started it. `spinFloor` covers the gap between the
+  // click and the daemon reporting the fetch, which is a round trip away.
+  if (spinFloor[kind] != null || polling) btn.classList.add('spin');
   btn.onclick = (e) => {
     e.stopPropagation();               // the header's own click toggles the pane
     spinFloor[kind] = pollCount;
@@ -585,7 +588,7 @@ function prGroup() {
     if (needs) count.querySelector('b').classList.add('n');
   }
   head.appendChild(count);
-  head.appendChild(refreshButton('pr', snap.pr_poll ?? 0, '/api/prs/refresh'));
+  head.appendChild(refreshButton('pr', snap.pr_poll ?? 0, '/api/prs/refresh', snap.pr_polling));
   head.onclick = () => { showPrs = !showPrs; renderRail(); };
   group.appendChild(head);
 
@@ -3356,7 +3359,8 @@ function renderReviews() {
   head.appendChild(el('span', 'eyebrow', 'Review queue'));
   const count = el('span', 'rvcount');
 
-  const refresh = refreshButton('review', snap.reviews_poll ?? 0, '/api/reviews/refresh');
+  const refresh = refreshButton('review', snap.reviews_poll ?? 0, '/api/reviews/refresh',
+    snap.reviews_polling);
 
   if (!rv || rv.state !== 'ok') {
     // Never an empty queue: a broken command reads as broken (§6b). Startup is

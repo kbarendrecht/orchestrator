@@ -431,6 +431,8 @@ fn start_pr_poller(app: Arc<AppState>) {
             let _ = tokio::task::spawn_blocking(move || git::fetch_upstream(&main)).await;
             reconcile_all(&app).await;
 
+            app.inner.write().await.pr_polling = true;
+            app.notify().await;
             let token = github::resolve_token(app.cfg.github_token_file.as_deref());
             match token {
                 Ok(t) => {
@@ -485,7 +487,11 @@ fn start_pr_poller(app: Arc<AppState>) {
                 }
             }
             // Signals the refresh button that a fetch landed, success or not.
-            app.inner.write().await.pr_poll += 1;
+            {
+                let mut inner = app.inner.write().await;
+                inner.pr_poll += 1;
+                inner.pr_polling = false;
+            }
             app.notify().await;
             // A manual refresh cuts the wait short and restarts the period, so a
             // button press and the next scheduled poll never land back to back.
@@ -669,6 +675,8 @@ fn start_review_poller(app: Arc<AppState>) {
             // Fetch straight away on launch, so the queue is not blank for the
             // first period, then again on each period or whenever the refresh
             // button pulses `review_refresh`.
+            app.inner.write().await.reviews_polling = true;
+            app.notify().await;
             let main = app.cfg.main_checkout.clone();
             let timeout = app.cfg.review_timeout_seconds;
             let state = tokio::task::spawn_blocking(move || reviews::fetch(&main, timeout))
@@ -685,6 +693,7 @@ fn start_review_poller(app: Arc<AppState>) {
                 // Signals the refresh button that a fetch landed, even when the
                 // queue is byte-for-byte the same as before.
                 inner.reviews_poll = inner.reviews_poll.wrapping_add(1);
+                inner.reviews_polling = false;
             }
             app.notify().await;
 
