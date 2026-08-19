@@ -66,6 +66,10 @@ app forces the software paint path automatically (`WEBKIT_DISABLE_DMABUF_RENDERE
 and `WEBKIT_DISABLE_COMPOSITING_MODE`, set in `main`), skipped on a real desktop
 and overridable if you set either variable yourself.
 
+Terminals in the desktop window use xterm's DOM renderer, not the WebGL one:
+WebKitGTK garbles the glyph canvas, and the text only comes back when a scroll or
+a selection forces a redraw. A browser tab keeps the WebGL fast path.
+
 ## Install and update
 
 Releases are cut by tagging: `git tag v0.2.0 && git push origin v0.2.0` runs the

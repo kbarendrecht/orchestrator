@@ -159,15 +159,28 @@ function openTerm(target, parent) {
   const fit = new FitAddon.FitAddon();
   term.loadAddon(fit);
   term.open(host);
-  try {
-    const webgl = new WebglAddon.WebglAddon();
-    // A lost context leaves the canvas frozen on whatever it last painted, and
-    // nothing in xterm notices. Dropping the addon puts the DOM renderer back,
-    // which is slower and correct.
-    webgl.onContextLoss?.(() => webgl.dispose());
-    term.loadAddon(webgl);
-  } catch (e) {
-    // Software rendering is slower but correct; not worth failing over.
+  /* No WebGL in the webview. WebKitGTK is the engine this app actually runs on,
+   * and xterm's WebGL renderer garbles glyphs there: text arrives as noise and
+   * comes back only when a scroll or a selection forces a full redraw, which is
+   * the canvas being composited wrong rather than the buffer being wrong.
+   * Repainting after every refit and dropping the addon on context loss both
+   * failed to fix it, so the canvas goes instead: the DOM renderer draws real
+   * text, which cannot garble. It is slower under heavy output, and that is the
+   * trade.
+   *
+   * A browser tab is Chromium or Firefox, where the fast path is fine, so it
+   * keeps it. `chrome` comes from the daemon, which is the side that knows
+   * whether it is being shown in a window it owns. */
+  if (CHROME === 'none') {
+    try {
+      const webgl = new WebglAddon.WebglAddon();
+      // A lost context leaves the canvas frozen on whatever it last painted, and
+      // nothing in xterm notices. Dropping the addon puts the DOM renderer back.
+      webgl.onContextLoss?.(() => webgl.dispose());
+      term.loadAddon(webgl);
+    } catch (e) {
+      // Software rendering is slower but correct; not worth failing over.
+    }
   }
 
   const sock = new WebSocket(

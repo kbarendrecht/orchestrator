@@ -112,13 +112,14 @@ Everything outside that block is hand-written and survives.
   than failing, and the transcript slug rule has already been wrong once, so a
   rail that goes back to reading `dfafdf` everywhere is the symptom to look for.
 
-- **The terminal keeps the WebGL renderer.** Glyphs coming back as garbage that a
-  scroll or a selection cleaned up were read as a paint fault after the canvas is
-  resized under the renderer, so a refit now clears the glyph atlas and refreshes,
-  and a lost context disposes the addon. Diagnosed from the symptom rather than
-  watched working. If it comes back the next step is no WebGL inside the webview
-  at all, keeping it for a browser tab: WebKitGTK is already the engine this repo
-  treats as the flaky one, and headless WebKit dies on that renderer outright.
+- **No WebGL renderer in the desktop window.** Glyphs came back as garbage that a
+  scroll or a selection cleaned up. Two narrower fixes did not hold: clearing the
+  glyph atlas and refreshing after every refit, and disposing the addon on context
+  loss. So the canvas is gone in the webview and xterm draws real text, which
+  cannot garble; a browser tab keeps the fast path. The cost is the DOM renderer
+  under heavy output, unmeasured. If it ever feels slow, the fast path is worth
+  another look with only the *visible* terminal holding a context, since hidden
+  ones can be torn down and replayed from the daemon's ring buffer for free.
 
 - **Sessions archived before the rename still say `green`.** `Kind::Automation`
   carries the command as a free string, so records already in `sessions.json` keep
