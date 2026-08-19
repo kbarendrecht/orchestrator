@@ -539,13 +539,6 @@ fn auto_resume(app: Arc<AppState>, records: Vec<store::SessionRecord>) {
         let mut resumed = 0usize;
         let mut main_taken = false;
         for r in candidates {
-            if resumed >= fix_pr::MAX_CLAUDE_PROCESSES {
-                tracing::warn!(
-                    "stopping auto-resume at {} sessions (process cap)",
-                    fix_pr::MAX_CLAUDE_PROCESSES
-                );
-                break;
-            }
             if !r.cwd.exists() {
                 tracing::warn!(session = %r.id, "not resumed: {} is gone", r.cwd.display());
                 continue;

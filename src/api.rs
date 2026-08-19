@@ -2094,11 +2094,6 @@ pub async fn fix_pr(
             .values()
             .filter(|s| s.is_automation() && s.state.is_live())
             .count();
-        let live_claude_processes = inner
-            .sessions
-            .values()
-            .filter(|s| s.state.is_live())
-            .count();
         let locks = inner.locks_held.clone();
 
         evaluate(&GuardInput {
@@ -2108,7 +2103,6 @@ pub async fn fix_pr(
             viewer: pr.head_owner.as_deref().unwrap_or_default(),
             branch_busy,
             running_automations,
-            live_claude_processes,
             locks_held: &locks,
         })
     };

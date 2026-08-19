@@ -67,15 +67,13 @@ pub struct GuardInput<'a> {
     /// A live session on this PR's branch that is not merely idle.
     pub branch_busy: bool,
     pub running_automations: usize,
-    pub live_claude_processes: usize,
     /// Which session holds main, if any.
     /// Shared resources currently held.
     pub locks_held: &'a [String],
 }
 
-/// Cap on concurrent automation runs (§8), and the global process cap (§8b).
+/// Cap on concurrent automation runs (§8).
 pub const MAX_AUTOMATION: usize = 2;
-pub const MAX_CLAUDE_PROCESSES: usize = 8;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "verdict", rename_all = "snake_case")]
@@ -157,15 +155,6 @@ pub fn evaluate(input: &GuardInput) -> Verdict {
             input.running_automations
         ));
     }
-    // Automation yields first and defers; a deferred fix-pr costs nothing (§8b).
-    if input.live_claude_processes >= MAX_CLAUDE_PROCESSES {
-        return no(format!(
-            "{} Claude processes already running (cap {MAX_CLAUDE_PROCESSES}) — \
-             close one and trigger again",
-            input.live_claude_processes
-        ));
-    }
-
     // Shared resources (§7 rule 2). The conflict is between *runs*: two of them
     // taking `main:instances` would fight over one instances dir.
     //
@@ -258,7 +247,6 @@ mod tests {
             viewer: "kbarendrecht",
             branch_busy: false,
             running_automations: 0,
-            live_claude_processes: 1,
             locks_held: &[],
         }
     }
@@ -368,16 +356,12 @@ mod tests {
     }
 
     #[test]
-    fn caps_refuse_rather_than_queue() {
+    fn automation_cap_refuses_rather_than_queue() {
         let p = pr(1);
         let c = cap(Trust::Verified, Isolation::Isolated);
 
         let mut i = input(&p, &c);
         i.running_automations = MAX_AUTOMATION;
-        assert!(matches!(evaluate(&i), Verdict::No { .. }));
-
-        let mut i = input(&p, &c);
-        i.live_claude_processes = MAX_CLAUDE_PROCESSES;
         assert!(matches!(evaluate(&i), Verdict::No { .. }));
     }
 

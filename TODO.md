@@ -165,11 +165,6 @@ Everything outside that block is hand-written and survives.
   exists anywhere in `src/` or `web/`. One switch that stops automation from
   firing or spawning.
 
-- Enforce the 8-process cap on *every* spawn, not just `fix-pr`. §8b caps total
-  concurrent Claude processes at 8. `MAX_CLAUDE_PROCESSES` is checked in the
-  `fix-pr` guard (`src/fix_pr.rs`) and by auto-resume on startup (`src/lib.rs`);
-  ordinary interactive, worktree and `/resolve` spawns all bypass it.
-
 - Paginate the *list/poll* `reviewThreads` past 50. The detailed overlay fetch
   now pages fully (`src/github.rs`, ~100/page), but the summary poll still caps
   at 50 and the PR row renders `50+` (`web/app.js`). An under-count cannot hide
