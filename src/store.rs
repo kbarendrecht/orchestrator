@@ -309,6 +309,48 @@ mod tests {
     }
 
     #[test]
+    fn the_last_ai_title_in_the_transcript_wins() {
+        // Claude Code re-writes the entry on every append, so the file holds the
+        // whole history of what it has called this conversation. The newest one
+        // is the one that describes what is in the pane now.
+        let dir = std::env::temp_dir().join(format!("orchd-title-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("t.jsonl");
+        std::fs::write(
+            &file,
+            concat!(
+                r#"{"type":"user","message":"hi"}"#,
+                "\n",
+                r#"{"type":"ai-title","aiTitle":"First guess"}"#,
+                "\n",
+                r#"{"type":"assistant","message":"ok"}"#,
+                "\n",
+                r#"{"type":"ai-title","aiTitle":"Fix Ctrl+P not showing all filled pages"}"#,
+                "\n",
+            ),
+        )
+        .unwrap();
+
+        let got = ai_title(uuid::Uuid::new_v4(), Path::new("/nonexistent"), Some(&file));
+        assert_eq!(got.as_deref(), Some("Fix Ctrl+P not showing all filled pages"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_transcript_without_a_title_is_not_an_error() {
+        // The entry only appears after the first exchange, and the format is
+        // Claude Code's own. No title means the rail keeps the workspace name.
+        let dir = std::env::temp_dir().join(format!("orchd-notitle-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("t.jsonl");
+        std::fs::write(&file, "{\"type\":\"user\",\"message\":\"hi\"}\n").unwrap();
+
+        assert!(ai_title(uuid::Uuid::new_v4(), Path::new("/nonexistent"), Some(&file)).is_none());
+        assert!(ai_title(uuid::Uuid::new_v4(), Path::new("/nonexistent"), None).is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn a_restored_session_is_archived_never_live() {
         let s = Session::new(
             uuid::Uuid::new_v4(),
@@ -406,12 +448,78 @@ pub fn resumable(record: &SessionRecord) -> bool {
 /// and exits. Both the startup resume and the rail's archive ask this, so they
 /// ask it the same way.
 pub fn transcript_exists(id: uuid::Uuid, cwd: &Path, recorded: Option<&Path>) -> bool {
+    transcript_file(id, cwd, recorded).is_some()
+}
+
+/// The transcript on disk, if there is one.
+///
+/// The path the hook reported is preferred and the slug is the fallback, because
+/// a session adopted into a worktree changes cwd after it starts and the recorded
+/// path is the one that was actually written.
+pub fn transcript_file(id: uuid::Uuid, cwd: &Path, recorded: Option<&Path>) -> Option<PathBuf> {
     if let Some(p) = recorded {
         if p.exists() {
-            return true;
+            return Some(p.to_path_buf());
         }
     }
-    crate::config::transcript_dir_for(cwd)
-        .map(|d| d.join(format!("{id}.jsonl")).exists())
-        .unwrap_or(false)
+    let candidate = crate::config::transcript_dir_for(cwd)
+        .ok()?
+        .join(format!("{id}.jsonl"));
+    candidate.exists().then_some(candidate)
+}
+
+/// How much of the transcript's tail to read looking for a title.
+const TITLE_TAIL_BYTES: u64 = 128 * 1024;
+
+/// The longest title worth putting in a rail row.
+const TITLE_MAX: usize = 120;
+
+/// The name Claude Code gave this conversation.
+///
+/// Claude Code writes `{"type":"ai-title","aiTitle":"…"}` into the transcript and
+/// re-writes it on every append, so the last one in the file is the current
+/// answer and the tail is enough to find it. That beats anything the daemon
+/// could invent: it is the same sentence `claude --resume` lists the
+/// conversation under.
+///
+/// None is a normal answer, not a failure — the entry only appears after the
+/// first exchange, and the format is Claude Code's own and undocumented. The
+/// caller falls back to the workspace name, which is what the rail showed before
+/// this existed.
+pub fn ai_title(id: uuid::Uuid, cwd: &Path, recorded: Option<&Path>) -> Option<String> {
+    let path = transcript_file(id, cwd, recorded)?;
+    let tail = read_tail(&path, TITLE_TAIL_BYTES).ok()?;
+    let text = String::from_utf8_lossy(&tail);
+    // Skip the first line: a tail read almost always lands mid-record.
+    let mut lines = text.split('\n');
+    lines.next();
+    let mut found = None;
+    for line in lines {
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        if v.get("type").and_then(|t| t.as_str()) != Some("ai-title") {
+            continue;
+        }
+        if let Some(t) = v.get("aiTitle").and_then(|t| t.as_str()) {
+            let t = t.trim();
+            if !t.is_empty() {
+                found = Some(t.chars().take(TITLE_MAX).collect::<String>());
+            }
+        }
+    }
+    found
+}
+
+/// The last `n` bytes of a file, or the whole thing if it is shorter.
+fn read_tail(path: &Path, n: u64) -> std::io::Result<Vec<u8>> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut f = std::fs::File::open(path)?;
+    let len = f.metadata()?.len();
+    if len > n {
+        f.seek(SeekFrom::Start(len - n))?;
+    }
+    let mut buf = Vec::with_capacity(n.min(len) as usize);
+    f.read_to_end(&mut buf)?;
+    Ok(buf)
 }

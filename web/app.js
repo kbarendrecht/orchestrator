@@ -745,7 +745,7 @@ function archivedRow(s) {
 
   const row = el('div', 'sess-row');
   row.appendChild(el('span', 'dot archived'));
-  row.appendChild(el('span', 'sess-name', s.title || s.workspace));
+  row.appendChild(el('span', 'sess-name', railName(s, { id: s.workspace })));
   row.appendChild(el('span', 'sess-id', duration(sinceSnap(s.created_ms)) + ' ago'));
   btn.appendChild(row);
 
@@ -785,10 +785,24 @@ async function openArchived(s) {
  *  before it knows where it lives. */
 const pending = (s) => s.workspace === PENDING_WORKTREE;
 
-/** What the row calls itself. The placeholder workspace id is the daemon's own
- *  bookkeeping, so it says what is happening instead. */
+/** What the row calls itself.
+ *
+ *  In order of how much it tells you: the PR an automation run is working on, the
+ *  name Claude Code gave the conversation, then the workspace it sits in. The
+ *  workspace is last because several sessions share one, so on its own it is the
+ *  fact that distinguishes them least.
+ *
+ *  The placeholder workspace id is the daemon's own bookkeeping, so a worktree
+ *  still being cut says what is happening instead. */
 function railName(s, w) {
   if (pending(s)) return 'creating worktree';
+  // An automation row's workspace is `pr-10006`, which repeats the number it is
+  // about to print and says nothing else. The PR's own title is already in the
+  // snapshot, put there for the pane at the bottom of this rail.
+  if (s.kind.kind === 'automation') {
+    const pr = (snap.prs || []).find((p) => p.number === s.kind.pr);
+    return pr ? `#${s.kind.pr} ${pr.title}` : `#${s.kind.pr}`;
+  }
   return s.title || w.id;
 }
 
@@ -805,6 +819,9 @@ function sessionRow(s, w) {
   btn.appendChild(row);
 
   const sub = el('div', 'sess-sub');
+  // Which run it is. The name above says which PR, and `fix-pr` and `resolve` do
+  // very different things to it.
+  if (s.kind.kind === 'automation') sub.appendChild(el('span', 'sess-cmd', s.kind.command));
   sub.appendChild(el('span', 'sess-state ' + stateClass(s), stateLabel(s)));
   // The waiting duration is the number to optimise down (§2). A start has a
   // clock for a different reason: `claude --worktree` cuts the worktree and runs

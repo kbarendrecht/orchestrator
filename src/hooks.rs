@@ -323,9 +323,34 @@ pub async fn stop(
         }
     }
 
+    refresh_title(&app, id).await;
     let _ = app.reconcile(&workspace).await;
     app.notify().await;
     ok()
+}
+
+/// Take the conversation's name from its transcript.
+///
+/// Claude Code titles the conversation itself, so the rail does not have to make
+/// do with the worktree's name for every session sitting in it. Read at `Stop`
+/// because that is when a turn has just been written, and re-read every time
+/// rather than pinned: the title is regenerated as the conversation moves, and
+/// the newest one is the one that describes what is in the pane.
+async fn refresh_title(app: &Arc<AppState>, id: Uuid) {
+    let found = {
+        let inner = app.inner.read().await;
+        inner
+            .sessions
+            .get(&id)
+            .and_then(|s| crate::store::ai_title(s.id, &s.cwd, s.transcript_path.as_deref()))
+    };
+    let Some(title) = found else { return };
+    let mut inner = app.inner.write().await;
+    if let Some(s) = inner.sessions.get_mut(&id) {
+        if s.title.as_deref() != Some(title.as_str()) {
+            s.title = Some(title);
+        }
+    }
 }
 
 /// **Explicit no-op.**

@@ -232,6 +232,8 @@ button.ctx-btn:hover{color:var(--text)}
   display:flex;align-items:center;gap:13px;padding-left:14px;margin-top:2px;
   font-family:var(--mono);font-size:calc(10px * var(--fs));color:var(--faint-solid);
 }
+/* The automation's own name, in the accent its rows already wear. */
+.sess-cmd{color:var(--auto)}
 .sess-state{color:var(--dim)}
 .sess-state.blocked{color:var(--attn)}
 .sess-state.build{color:var(--bad)}
