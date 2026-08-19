@@ -6,6 +6,50 @@ Everything outside that block is hand-written and survives.
 
 ## Next
 
+- **The two-phase resolve flow — handover.** All four phases of
+  `docs/resolve-flow-plan.md` have landed, and none of it has answered a real
+  reviewer yet. Where it stands:
+
+  *Built and working.* The triage card is three decisions rather than one list of
+  positions (`rvStance` / `rvReply` / `rvFix` in `web/app.js`), backed by a model
+  where `Stance` is agree/reply/story, a patch is the only thing that says code
+  changes, and `Mode` (agent/manual) rides the decision because it is yours, not
+  the agent's (`src/proposal.rs`). The interaction channel is real and was driven
+  end to end against the running app: a session POSTs a question to
+  `/api/session/:id/ask`, long-polls `…/ask/:ask/wait` in bounded 60s loops, and
+  the card over the pty releases it. An option marked `free` opens a box instead
+  of answering, so "let me write it" can. The session holds `ORCH_ASK_TOKEN`,
+  which opens asking and nothing else — deliberately not `ORCHD_TOKEN`, which
+  would open all 41 routes and make "the daemon owns outward writes" a promise in
+  a prompt rather than a mechanism.
+
+  *Built, never executed.* `POST /api/pr/:n/resolve-run` resolves your decisions
+  through the same `post::resolve` the batch uses, writes `plan.json` beside the
+  prompt, and spawns a session on `commands/resolve-run.md`. The session commits
+  per thread and calls `…/thread/:id/committed`, which blocks while you look at
+  the *real* commit diff beside the drafted reply and decide; the daemon posts on
+  its own credentials or holds it back. The run's per-thread state is in the
+  snapshot as `resolve_runs` and rendered by `rvRun`, with push and re-request as
+  their own buttons. Every line of that path is typed and unit-tested and has
+  never met a real PR, because testing it needs a review comment from somebody
+  who is not you — `acknowledged()` in `src/github.rs` treats a thread whose last
+  comment is yours as answered, so you cannot self-review your way to a test.
+
+  *Deliberately still there.* The old batch (`/api/pr/:n/post` and the manual
+  phase) is the secondary button on the final screen. It is proven and a
+  words-only review does not need an agent. Retire it once a run has done real
+  work, not before — and that retirement is what finally answers the beta-gate
+  item below.
+
+  *Known gaps.* A run ends with commits and posted replies but nothing pushed
+  until you press the button, which is intended, but the overview does not yet
+  say "unpushed" anywhere. `needs_you` is never set on a thread — the session has
+  no way to report that it could not finish one, so a failed thread just stays
+  `pending`. The run record is memory-only, so a daemon restart mid-run loses the
+  account of it while the commits survive; the plan calls for that to be durable
+  and resumable. And nothing re-validates drift *per thread*: the prompt checks
+  `base_sha` once at the start.
+
 - **Promote the in-UI review overlay out of beta.** The overlay now does the
   real work: threads listed under the PR with their file, hunk, and a reply box,
   and replies/reactions/re-request go straight through the GitHub API
