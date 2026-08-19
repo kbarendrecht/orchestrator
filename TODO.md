@@ -159,13 +159,6 @@ Everything outside that block is hand-written and survives.
 - Line numbers and syntax highlighting in the open question's detail block
   (`.oqd`). Same want as the diff viewer below, and probably the same answer, so
   do them together: whatever gets vendored for one should serve both.
-- Syntax highlighting in the diff viewer. Lines render as plain text today
-  (`.ln s`); the only marks are the word-level `.w-add`/`.w-del` ranges the
-  daemon computes (`src/diff.rs`), which is change highlighting, not code
-  highlighting. Two constraints worth knowing before starting: there is no
-  frontend build step, so a highlighter has to be vendored the way xterm.js is,
-  and its spans have to interleave with the word-diff ranges rather than nest
-  inside them, since both want to wrap arbitrary slices of the same line.
 
 ## Decisions worth revisiting
 

@@ -1367,6 +1367,89 @@ const diffState = {
    the wrong span. */
 const ENC = new TextEncoder();
 const DEC = new TextDecoder();
+
+/* Prism is vendored whole (every grammar) and driven for its token stream only,
+ * never its markup: the daemon already marks the changed slices of a line, and
+ * those `.w-add`/`.w-del` ranges have to interleave with the syntax spans rather
+ * than nest inside them. So highlighting is flattened to ranges and merged with
+ * the word ranges below. Language is the file's extension; anything unmapped —
+ * or a grammar Prism does not carry — falls back to plain text, never an error. */
+const EXT_LANG = {
+  js: 'javascript', mjs: 'javascript', cjs: 'javascript', jsx: 'jsx',
+  ts: 'typescript', tsx: 'tsx', rs: 'rust', py: 'python', rb: 'ruby', go: 'go',
+  c: 'c', h: 'c', cpp: 'cpp', cc: 'cpp', cxx: 'cpp', hpp: 'cpp', cs: 'csharp',
+  java: 'java', kt: 'kotlin', swift: 'swift', php: 'php', sh: 'bash', bash: 'bash',
+  zsh: 'bash', fish: 'bash', css: 'css', scss: 'scss', sass: 'sass', less: 'less',
+  html: 'markup', htm: 'markup', xml: 'markup', svg: 'markup', vue: 'markup',
+  json: 'json', yaml: 'yaml', yml: 'yaml', toml: 'toml', ini: 'ini', cfg: 'ini',
+  md: 'markdown', markdown: 'markdown', sql: 'sql', graphql: 'graphql', gql: 'graphql',
+  lua: 'lua', pl: 'perl', r: 'r', dart: 'dart', scala: 'scala', clj: 'clojure',
+  ex: 'elixir', exs: 'elixir', erl: 'erlang', hs: 'haskell', ml: 'ocaml',
+  tf: 'hcl', hcl: 'hcl', proto: 'protobuf', diff: 'diff', patch: 'diff',
+  vim: 'vim', nix: 'nix', zig: 'zig', jl: 'julia', groovy: 'groovy', gradle: 'groovy',
+};
+const BASENAME_LANG = {
+  dockerfile: 'docker', makefile: 'makefile', 'cargo.lock': 'toml',
+  'go.mod': 'go', 'go.sum': 'go',
+};
+function langFor(path) {
+  if (!path || !window.Prism) return null;
+  const base = path.split('/').pop().toLowerCase();
+  const byName = BASENAME_LANG[base];
+  if (byName) return Prism.languages[byName] ? byName : null;
+  const dot = base.lastIndexOf('.');
+  const lang = EXT_LANG[dot >= 0 ? base.slice(dot + 1) : ''];
+  return lang && Prism.languages[lang] ? lang : null;
+}
+
+/** Prism's nested token tree, flattened to non-overlapping `{s,e,cls}` ranges in
+ *  character offsets. The deepest token wins, which is what falls out of only
+ *  emitting a range at each string leaf. */
+function hlTokens(text, lang) {
+  if (!lang) return [];
+  let tree;
+  try { tree = Prism.tokenize(text, Prism.languages[lang]); }
+  catch (e) { return []; }
+  const out = [];
+  let pos = 0;
+  (function walk(arr, inherited) {
+    for (const t of arr) {
+      if (typeof t === 'string') {
+        if (inherited) out.push({ s: pos, e: pos + t.length, cls: inherited });
+        pos += t.length;
+      } else {
+        const ty = (t.alias && (Array.isArray(t.alias) ? t.alias[0] : t.alias)) || t.type;
+        if (typeof t.content === 'string') {
+          out.push({ s: pos, e: pos + t.content.length, cls: ty });
+          pos += t.content.length;
+        } else {
+          walk(t.content, ty);
+        }
+      }
+    }
+  })(tree, null);
+  return out;
+}
+
+/** Split a line at every boundary — syntax-token edges and word-diff edges both
+ *  — so each segment can carry a token colour and a change background at once. */
+function lineSegments(text, words, lang) {
+  const toks = hlTokens(text, lang);
+  const bset = new Set([0, text.length]);
+  for (const t of toks) { bset.add(t.s); bset.add(t.e); }
+  for (const w of words) { bset.add(w.s); bset.add(w.e); }
+  const pts = [...bset].filter((p) => p >= 0 && p <= text.length).sort((a, b) => a - b);
+  const segs = [];
+  for (let k = 0; k < pts.length - 1; k++) {
+    const s = pts[k], e = pts[k + 1];
+    if (s === e) continue;
+    const tok = toks.find((t) => t.s <= s && t.e >= e);
+    const word = words.some((w) => w.s <= s && w.e >= e);
+    segs.push({ s, e, cls: tok ? tok.cls : null, word });
+  }
+  return segs;
+}
+
 function lineEl(row, side) {
   // side: 'old' | 'new'. In split view each pane shows only its own side.
   const empty = !row || (side === 'old' && row.kind === 'add') ||
@@ -1376,19 +1459,23 @@ function lineEl(row, side) {
   div.appendChild(num);
   const body = el('s');
   if (!empty) {
-    if (row.words && row.words.length) {
-      // Ranges arrive ordered and non-overlapping, so one pass covers them all.
-      const bytes = ENC.encode(row.text);
-      const cls = row.kind === 'add' ? 'w-add' : 'w-del';
-      let at = 0;
-      for (const [ws, we] of row.words) {
-        if (ws > at) body.appendChild(document.createTextNode(DEC.decode(bytes.slice(at, ws))));
-        body.appendChild(el('span', cls, DEC.decode(bytes.slice(ws, we))));
-        at = we;
-      }
-      if (at < bytes.length) body.appendChild(document.createTextNode(DEC.decode(bytes.slice(at))));
-    } else {
+    // Word ranges arrive as byte offsets (from Rust); Prism works on the JS
+    // string. Convert the ranges to character offsets so the two line up, then
+    // merge. A blank line still needs a space so the row has height.
+    const bytes = ENC.encode(row.text);
+    const b2c = (b) => DEC.decode(bytes.slice(0, b)).length;
+    const words = (row.words || []).map(([ws, we]) => ({ s: b2c(ws), e: b2c(we) }));
+    const segs = lineSegments(row.text, words, langFor(diffState.path));
+    if (!segs.length) {
       body.textContent = row.text || ' ';
+    } else {
+      const wcls = row.kind === 'add' ? 'w-add' : 'w-del';
+      for (const g of segs) {
+        const t = row.text.slice(g.s, g.e);
+        if (!g.cls && !g.word) { body.appendChild(document.createTextNode(t)); continue; }
+        const cls = (g.cls ? 'tok-' + g.cls : '') + (g.word ? (g.cls ? ' ' : '') + wcls : '');
+        body.appendChild(el('span', cls, t));
+      }
     }
   }
   div.appendChild(body);

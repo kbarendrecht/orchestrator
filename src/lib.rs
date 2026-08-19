@@ -988,6 +988,10 @@ async fn vendor(axum::extract::Path(file): axum::extract::Path<String>) -> Respo
         "xterm.css" => include_str!("../web/vendor/xterm.css"),
         "addon-fit.js" => include_str!("../web/vendor/addon-fit.js"),
         "addon-webgl.js" => include_str!("../web/vendor/addon-webgl.js"),
+        // All Prism grammars, dependency-ordered, for diff/open-question
+        // highlighting. Vendored whole rather than fetched: the daemon owns its
+        // assets and must work offline, wherever the repo lives.
+        "prism.min.js" => include_str!("../web/vendor/prism.min.js"),
         _ => return (StatusCode::NOT_FOUND, "no such asset").into_response(),
     };
     let ct = if file.ends_with(".css") {

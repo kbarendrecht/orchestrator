@@ -546,6 +546,22 @@ body.row-resizing{cursor:row-resize;user-select:none}
 .ln.empty s{background:#0B0B0B}
 .w-add{background:var(--add-hi);border-radius:2px}
 .w-del{background:var(--del-hi);border-radius:2px}
+/* Syntax colours — the "Muted" palette: orchd's own teal/amber/sage at low
+   saturation, so highlighting reads as part of the app and never fights the
+   green/red diff backgrounds. Colour only; a segment that is also a word-diff
+   slice carries `.w-add`/`.w-del` on the same span, so the two compose. Prism
+   token types (and aliases) map to these classes; anything unmapped inherits
+   the plain text colour, which is the right default. */
+.tok-keyword{color:#6ba6b8}
+.tok-string,.tok-char,.tok-template-string,.tok-attr-value,.tok-regex,.tok-url,.tok-inserted{color:#83a98c}
+.tok-comment,.tok-doc-comment,.tok-prolog,.tok-cdata{color:#6e6e6e;font-style:italic}
+.tok-number,.tok-boolean{color:#c98f6a}
+.tok-function,.tok-macro,.tok-function-variable{color:#93b9c4}
+.tok-class-name,.tok-builtin,.tok-type-definition,.tok-symbol,.tok-constant,.tok-atrule{color:#d0a85f}
+.tok-operator,.tok-entity{color:#9a9a9a}
+.tok-punctuation{color:#8e8e8e}
+.tok-property,.tok-attr-name,.tok-tag,.tok-property-access,.tok-selector,.tok-important{color:#b3b0a6}
+.tok-namespace,.tok-lifetime-annotation{color:#7fb3b0}
 /* `.hit` is the review overlay's name for the same mark: the line a thread is
    anchored to. Same rule, deliberately shared rather than copied under `.rv`. */
 .ln.cur s,.ln.hit s{box-shadow:inset 2px 0 0 var(--attn)}
