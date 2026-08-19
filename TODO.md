@@ -165,32 +165,6 @@ Everything outside that block is hand-written and survives.
   exists anywhere in `src/` or `web/`. One switch that stops automation from
   firing or spawning.
 
-- The rail's `build failing` does not clear when the watch recovers (seen on
-  `ng-watch`). `scan` (`src/spawn.rs`) latches a managed process to
-  `Health::Failing` on a `failure_pattern` and promotes a `YourTurn` session in
-  that workspace to `BuildFailing`; the Stop hook sets it too when a turn ends
-  with a process red (`src/hooks.rs`). The only thing that reverses it is health
-  transitioning to `Health::Ok`, which needs the watch to *print* an `ok_pattern`
-  — `Build at:` / `successfully` / `watching for file changes` (`src/config.rs`).
-  A recovering Angular rebuild does not reprint any of those, so `p.health` stays
-  `Failing`, the clear branch (`spawn.rs`, edge-triggered on Failing→Ok) never
-  fires, and the session stays `build_failing`: `sessionRow`/`dotClass` keep it
-  red (`web/app.js`) while the terminal shows a clean compile. More than cosmetic
-  — `BuildFailing` is `wants_attention` and rank 0 (`src/model.rs`), so it is
-  counted as needing you and sorts first in the flat `snap.sessions` order used
-  for keyboard nav. (The rail rows themselves are grouped by workspace and sorted
-  by creation time — `byNewest` in `web/app.js` — so the row does not jump; the
-  red dot and `build failing` label are the lingering signal.) Note the drawer dot
-  recomputes live
-  from `p.health` every render, so it and the rail can only ever both be red here
-  (same latched value), not disagree. Fixes worth weighing: widen `ok_patterns`
-  to the current esbuild builder's success line; or treat a rebuild whose output
-  no longer matches any `failure_pattern` as recovery, so a clean pass clears it
-  without needing a positive ok line. (Also: `scan` breaks on the first failure
-  line, leaving the rest of the chunk — including a trailing ok line — unparsed
-  until the next write; and the promote/demote only touches a session already in
-  `YourTurn`/`BuildFailing`, so a failure that lands mid-`Working` never colours
-  the rail and its later recovery is a no-op.)
 - Paginate the *list/poll* `reviewThreads` past 50. The detailed overlay fetch
   now pages fully (`src/github.rs`, ~100/page), but the summary poll still caps
   at 50 and the PR row renders `50+` (`web/app.js`). An under-count cannot hide

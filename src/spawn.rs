@@ -703,22 +703,24 @@ fn verdict(spec: &ManagedSpec, raw: &str) -> Option<Health> {
     None
 }
 
-/// Drain whole lines out of `pending` and apply the health verdict they imply.
-async fn scan(
-    app: &Arc<AppState>,
-    workspace: &str,
-    proc_id: &str,
-    spec: &ManagedSpec,
-    pending: &mut String,
-) {
+/// Drain whole lines out of `pending` and return the health verdict they imply.
+///
+/// Keeps draining past a failure rather than stopping on the first error line.
+/// A recovery line can sit in the buffer right after the failure — the esbuild
+/// watcher prints `…generation failed.` and then, on the next build, `…generation
+/// complete.` — and stopping early left that `complete` unparsed, so a build that
+/// was fixed stayed red in the rail until some unrelated output happened to drain
+/// it. The first error in a failing run still wins the summary; a later ok line
+/// overrides it, which is exactly the recovery that was being lost.
+fn scan_lines(spec: &ManagedSpec, pending: &mut String) -> Option<Health> {
     let mut changed = None;
     while let Some(nl) = pending.find('\n') {
         let line: String = pending.drain(..=nl).collect();
         match verdict(spec, &line) {
-            // First error line wins; later ones are the same block.
             Some(Health::Failing { summary }) => {
-                changed = Some(Health::Failing { summary });
-                break;
+                if !matches!(changed, Some(Health::Failing { .. })) {
+                    changed = Some(Health::Failing { summary });
+                }
             }
             Some(h) => changed = Some(h),
             None => {}
@@ -728,8 +730,18 @@ async fn scan(
     if pending.len() > 64 * 1024 {
         pending.clear();
     }
+    changed
+}
 
-    let Some(health) = changed else { return };
+/// Drain whole lines out of `pending` and apply the health verdict they imply.
+async fn scan(
+    app: &Arc<AppState>,
+    workspace: &str,
+    proc_id: &str,
+    spec: &ManagedSpec,
+    pending: &mut String,
+) {
+    let Some(health) = scan_lines(spec, pending) else { return };
     let mut dirty = false;
     {
         let mut inner = app.inner.write().await;
@@ -848,12 +860,25 @@ mod tests {
         assert!(validate_worktree_name("").is_err());
     }
 
+    // Mirrors the real ng-watch defaults (`config::default_for`) so these tests
+    // track the patterns actually shipped.
     fn ng() -> ManagedSpec {
         ManagedSpec {
             name: "ng-watch".into(),
             command: vec!["true".into()],
-            failure_patterns: vec!["Error:".into(), "error TS".into()],
-            ok_patterns: vec!["Build at:".into(), "watching for file changes".into()],
+            failure_patterns: vec![
+                "Error:".into(),
+                "ERROR in".into(),
+                "error TS".into(),
+                "✘ [ERROR]".into(),
+                "bundle generation failed".into(),
+            ],
+            ok_patterns: vec![
+                "Build at:".into(),
+                "successfully".into(),
+                "watching for file changes".into(),
+                "bundle generation complete".into(),
+            ],
             restart: crate::config::RestartPolicy::Never,
             autostart: false,
         }
@@ -881,6 +906,49 @@ mod tests {
             verdict(&ng(), "watching for file changes..."),
             Some(Health::Ok)
         );
+    }
+
+    #[test]
+    fn a_recovery_line_after_a_failure_in_the_same_buffer_still_wins() {
+        // The bug: scan stopped on the first failure line, so a `complete` sitting
+        // right after `failed` in the buffer was never read and the build stayed
+        // red until unrelated output happened to drain it.
+        let mut buf = "Application bundle generation failed. (0.9 seconds)\n\
+                       Application bundle generation complete. (1.1 seconds)\n"
+            .to_string();
+        assert_eq!(scan_lines(&ng(), &mut buf), Some(Health::Ok));
+        assert!(buf.is_empty(), "every whole line should be drained");
+    }
+
+    #[test]
+    fn the_first_error_of_a_failing_block_is_the_summary() {
+        let mut buf = "✘ [ERROR] first\n✘ [ERROR] second\n".to_string();
+        match scan_lines(&ng(), &mut buf) {
+            Some(Health::Failing { summary }) => assert_eq!(summary, "✘ [ERROR] first"),
+            other => panic!("expected Failing, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_incomplete_trailing_line_is_left_for_the_next_read() {
+        let mut buf = "watching for file changes...\n✘ [ERROR] half".to_string();
+        // The ok line is consumed; the errorless partial stays buffered.
+        assert_eq!(scan_lines(&ng(), &mut buf), Some(Health::Ok));
+        assert_eq!(buf, "✘ [ERROR] half");
+    }
+
+    #[test]
+    fn the_esbuild_builder_recovers_and_fails_on_its_own_summary_lines() {
+        // The success line carries none of the webpack markers, so before this was
+        // recognised a fixed build stayed red in the rail forever.
+        assert_eq!(
+            verdict(&ng(), "Application bundle generation complete. (1.2 seconds)"),
+            Some(Health::Ok)
+        );
+        match verdict(&ng(), "Application bundle generation failed. (0.9 seconds)") {
+            Some(Health::Failing { .. }) => {}
+            other => panic!("expected Failing, got {other:?}"),
+        }
     }
 
     #[test]

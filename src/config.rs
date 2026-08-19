@@ -235,11 +235,21 @@ impl Config {
                         "ERROR in".into(),
                         "error TS".into(),
                         "✘ [ERROR]".into(),
+                        // The esbuild builder's own summary line, in case an error
+                        // block ever lands without the ✘ prefix.
+                        "bundle generation failed".into(),
                     ],
+                    // Every builder has a different "all clear" line, and health is
+                    // latched until one is seen: miss the recovery line and a fixed
+                    // build stays red in the rail forever. `successfully` covers the
+                    // webpack builder (`Compiled successfully.`), but the esbuild one
+                    // says `Application bundle generation complete.` instead — which
+                    // was the lingering-error bug.
                     ok_patterns: vec![
                         "Build at:".into(),
                         "successfully".into(),
                         "watching for file changes".into(),
+                        "bundle generation complete".into(),
                     ],
                     restart: RestartPolicy::Never,
                     // The one process that starts by itself. A build watcher is
@@ -350,6 +360,22 @@ mod tests {
             transcript_slug(Path::new("/home/x/dev/acme/.claude/worktrees/dfafdf")),
             "-home-x-dev-acme--claude-worktrees-dfafdf"
         );
+    }
+
+    #[test]
+    fn the_default_watch_recognises_the_esbuild_recovery_line() {
+        // Its success line matches none of the older markers, so without this the
+        // rail's `build failing` never cleared after a fixed compile.
+        let cfg = Config::default_for(PathBuf::from("/tmp/x"));
+        let ng = cfg
+            .main_processes
+            .iter()
+            .find(|p| p.name == "ng-watch")
+            .expect("ng-watch is a default process");
+        assert!(ng
+            .ok_patterns
+            .iter()
+            .any(|p| p == "bundle generation complete"));
     }
 
     #[test]
