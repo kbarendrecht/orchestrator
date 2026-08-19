@@ -1355,6 +1355,10 @@ const diffState = {
   file: null,        // { path, hunks, binary }
   split: true,
   cursor: 0,         // index into the current file's change blocks
+  /* Where to land the cursor once the next file's blocks are built, when a step
+   * crossed a file boundary: 'first' arriving from below, 'last' from above.
+   * Null on a normal load so the cursor is just clamped to what fits. */
+  pendingCursor: null,
   context: 3,
 };
 
@@ -1491,7 +1495,11 @@ function renderDiff() {
   }
 
   diffState.anchors = anchors;
-  diffState.cursor = Math.min(diffState.cursor, Math.max(anchors.length - 1, 0));
+  const last = Math.max(anchors.length - 1, 0);
+  diffState.cursor = diffState.pendingCursor === 'last' ? last
+    : diffState.pendingCursor === 'first' ? 0
+      : Math.min(diffState.cursor, last);
+  diffState.pendingCursor = null;
   markCursor();
 }
 
@@ -1501,14 +1509,43 @@ function markCursor() {
   if (!a) return;
   a.classList.add('cur');
   a.scrollIntoView({ block: 'center', behavior: 'smooth' });
-  $('ovcount').textContent = `change ${diffState.cursor + 1} of ${diffState.anchors.length}`;
+  // Within-file position, plus which file of the changeset when there is more
+  // than one — the stepper walks the whole PR, so "3 of 7" alone would not say
+  // where in it you are.
+  const files = diffState.summary?.files || [];
+  const fi = files.findIndex((f) => f.path === diffState.path);
+  const where = files.length > 1 && fi >= 0 ? ` · file ${fi + 1} of ${files.length}` : '';
+  $('ovcount').textContent = `change ${diffState.cursor + 1} of ${diffState.anchors.length}${where}`;
 }
 
-function stepChange(delta) {
+/** Walk to the next/previous change block, carrying on into the next file in the
+ *  changeset's order rather than wrapping inside the current one. Files with no
+ *  change blocks (binary, or nothing textual) are hopped over, and the whole
+ *  changeset wraps end to end so the stepper never dead-ends. */
+async function stepChange(delta) {
   const n = (diffState.anchors || []).length;
-  if (!n) return;
-  diffState.cursor = (diffState.cursor + delta + n) % n;
-  markCursor();
+  const next = diffState.cursor + delta;
+  if (n && next >= 0 && next < n) {
+    diffState.cursor = next;
+    markCursor();
+    return;
+  }
+
+  const files = diffState.summary?.files || [];
+  if (files.length < 2) {
+    // Nowhere else to go: keep the old wrap so a single file still cycles.
+    if (n) { diffState.cursor = (next + n) % n; markCursor(); }
+    return;
+  }
+  let idx = files.findIndex((f) => f.path === diffState.path);
+  if (idx < 0) idx = 0;
+  // At most one lap; if every other file is blank we land back where we started.
+  for (let hop = 0; hop < files.length; hop++) {
+    idx = (idx + delta + files.length) % files.length;
+    diffState.pendingCursor = delta > 0 ? 'first' : 'last';
+    await loadFile(files[idx].path);
+    if ((diffState.anchors || []).length) return;
+  }
 }
 
 async function loadSummary() {
@@ -3876,7 +3913,7 @@ window.addEventListener('keydown', (e) => {
   }
   /* The overlay wants bare Enter, j/k and digits, and this handler is registered
      with capture:true — it runs before any element listener wherever focus is.
-     So the focus guard is not optional here the way it was for Escape/F7/Alt+d. */
+     So the focus guard is not optional here the way it was for Escape/Ctrl+←/Alt+d. */
   if (reviewState.open) {
     const typing = !!e.target.closest?.('textarea, input, [contenteditable="true"]');
     if (e.key === 'Escape') {
@@ -3904,9 +3941,11 @@ window.addEventListener('keydown', (e) => {
   }
   if (diffState.open) {
     if (e.key === 'Escape') { e.preventDefault(); closeDiff(); return; }
-    if (e.key === 'F7') {
+    // Ctrl+←/→ steps through the changeset. Was F7/⇧F7 — one key doing two jobs
+    // by modifier, and a reach; the arrows read as "next/previous" on their own.
+    if (e.ctrlKey && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
       e.preventDefault();
-      stepChange(e.shiftKey ? -1 : 1);
+      stepChange(e.key === 'ArrowLeft' ? -1 : 1);
       return;
     }
   }

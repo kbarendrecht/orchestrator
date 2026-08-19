@@ -170,14 +170,6 @@ Everything outside that block is hand-written and survives.
   at 50 and the PR row renders `50+` (`web/app.js`). An under-count cannot hide
   work, which was the point, but the real number is still unknown on a
   long-running PR.
-- The diff viewer's stepper should walk the whole changeset, not one file.
-  `stepChange` wraps around `diffState.anchors`, which `renderDiff` rebuilds per
-  loaded file (`web/app.js`), so `change 3 of 7` means the third of seven *in this
-  file* and the end of it wraps to the top rather than opening the next one. It
-  should carry on into the next file in the pane's order, and the count should say
-  where you are in the PR. Rebind while doing it: `ctrl+left` / `ctrl+right`
-  instead of `F7` and `shift+F7`, which are hard to reach and are one key doing
-  two jobs by modifier.
 - Line numbers and syntax highlighting in the open question's detail block
   (`.oqd`). Same want as the diff viewer below, and probably the same answer, so
   do them together: whatever gets vendored for one should serve both.
