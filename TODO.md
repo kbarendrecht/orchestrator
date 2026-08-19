@@ -68,6 +68,49 @@ Everything outside that block is hand-written and survives.
   longer worth the headline. Move the id into a tooltip and put the workspace on
   the second line next to the state.
 
+- **Make it run somewhere other than this machine.** Everything below is a
+  hardcoded assumption about one monorepo, and each is a setting or a probe
+  waiting to be written:
+  - **The review queue is acme's.** `reviews::fetch` shells out to `mise run
+    reviews --json` (`src/reviews.rs`) and the daemon consumes that repo's own
+    ranking, documented in `docs/reviews-json.md`. Anywhere else there is no such
+    task and the pane is permanently degraded. Needs a configurable command, or a
+    built-in fallback that asks GitHub directly.
+  - **Docker and `ng` are assumed.** `main_processes` ships `mise run watch` and
+    `docker compose up` as the two things a checkout has (`src/config.rs`). They
+    are already config, but the defaults are a guess about someone else's stack;
+    a first run should ask, or probe, rather than autostart a task that does not
+    exist.
+  - **The worktree layout is the repo's.** `worktrees_dir()` is hardcoded to
+    `<main>/.claude/worktrees`, which is where acme's own `worktree-create`
+    hook puts them. A repo without that hook gets Claude Code's default location
+    instead and the daemon will not recognise its own worktrees.
+  - **GitHub is the only forge.** `github.rs` is GraphQL against github.com and
+    `github_write.rs` shells `gh`. Other platforms were floated; the seam is the
+    two modules, not the callers.
+  - **Shortcut is the only tracker** (`Tracker` in `src/config.rs`), and the
+    prompts tell the agent to write stories **in Dutch**. Both belong in settings.
+  - **`upstream/develop`** as the base ref, and the fork-with-upstream remote
+    layout, are defaults that suit one workflow.
+  - The folder picker already exists (`desktop/src/main.rs`, shown when
+    `Config::existing()` is `None`), so first-run has a start; what it does not
+    have is the rest of the questions.
+
+- **Is it macOS-compatible? Nobody knows.** The code has the paths — `Chrome::Overlay`
+  for the traffic lights, `open` for URLs, `#[cfg(target_os = "macos")]` arms in
+  the desktop shell — but nothing builds or runs it there. `release.yml` builds
+  `ubuntu-22.04` only and ships one `x86_64-linux` tarball, so there is no macOS
+  artifact and no CI that would catch a break. Answering this means adding a macOS
+  job to the matrix first; until then the honest claim is "written with macOS in
+  mind, never executed on it".
+
+- **A README for other people.** The current one is written for whoever already
+  knows what orchd is: it opens on `§` references to a spec that no longer exists
+  in the repo, assumes the acme monorepo throughout, and documents the parts in
+  the order they were built. An open-sourced one needs the thing it is, a
+  screenshot, what it needs installed, what it assumes about your repo (see
+  above), and how to try it without a monorepo to point it at.
+
 - **Audit the keyboard map for logical, consistent coverage.** Not two more
   chords — a pass over the whole scheme so it is predictable: same modifier
   idioms, obvious inverses, no orphan actions. Concrete gaps feeding it:
