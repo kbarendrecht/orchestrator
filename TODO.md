@@ -161,10 +161,6 @@ Everything outside that block is hand-written and survives.
   jump-to-a-PR has no keybind at all, and `Alt+m` is a "take main" with no
   matching "release" (release today means ending the session).
 
-- **Global kill switch / pause.** §8 lists it in the guards table; no pause state
-  exists anywhere in `src/` or `web/`. One switch that stops automation from
-  firing or spawning.
-
 - Line numbers and syntax highlighting in the open question's detail block
   (`.oqd`). Same want as the diff viewer below, and probably the same answer, so
   do them together: whatever gets vendored for one should serve both.
@@ -235,6 +231,11 @@ Everything outside that block is hand-written and survives.
   `$ORCH_SESSION_ID` correlation is exact (§2); adopting one would reintroduce
   the cwd/pid heuristics the spec rejects.
 - A generic "run this command" endpoint (§12).
+- A global kill switch / pause (§8's guards table). Nothing automatic fires on
+  its own here — `fix-pr` and every spawn are hand-triggered — so the switch that
+  stops all of it is closing the app: the daemon owns every pty and takes them
+  with it. A separate pause state would guard against a machine that is already
+  not doing anything unbidden.
 
 <!-- >>> orchd live findings >>> -->
 
