@@ -1092,8 +1092,14 @@ function renderDrawer() {
   const drawer = $('drawer');
 
   // On a worktree the drawer starts empty and is a thin bar until you open
-  // something.
-  drawer.className = procs.length ? 'drawer' : 'drawer empty';
+  // something. `collapsed` is that same bar chosen on purpose while processes
+  // run — only offered, and only honoured, when there is a body to hide.
+  const collapsed = drawerCollapsed && procs.length > 0;
+  drawer.className = 'drawer' + (procs.length ? '' : ' empty') + (collapsed ? ' collapsed' : '');
+  const toggle = $('dcollapse');
+  toggle.hidden = procs.length === 0;
+  toggle.textContent = collapsed ? '▸' : '▾';
+  toggle.title = collapsed ? 'Expand processes' : 'Collapse processes';
 
   const alive = (p) =>
     p.kind.kind === 'shell' ? p.kind.exit_code == null : p.health.health !== 'dead';
@@ -1171,6 +1177,22 @@ function renderDrawer() {
 }
 
 let drawerTouched = false;
+/* Collapsed to its header on purpose, remembered across reloads like the column
+ * widths and the drawer height. Persisted so the next render (and the next boot)
+ * does not silently reopen it — the whole point, now that ng-watch means main
+ * always has a process and so the drawer is otherwise always open there. */
+let drawerCollapsed = localStorage.getItem('orch.drawerCollapsed') === '1';
+
+function setDrawerCollapsed(v) {
+  drawerCollapsed = v;
+  try {
+    localStorage.setItem('orch.drawerCollapsed', v ? '1' : '0');
+  } catch (e) { /* private mode: the toggle still holds for this session */ }
+  renderDrawer();
+  // The terminal above reclaims (or yields) the drawer's height; xterm only
+  // refits on an explicit nudge, not on a sibling's size change.
+  refitTerms();
+}
 /** A shell whose terminal should take the cursor as soon as it exists. */
 let pendingProcFocus = null;
 
@@ -3771,6 +3793,9 @@ async function newShell() {
   const wsId = currentWorkspaceId();
   if (!wsId) return;
   drawerTouched = true;
+  // You pressed + to work in a shell; a collapsed drawer would hide the one you
+  // just asked for.
+  if (drawerCollapsed) setDrawerCollapsed(false);
   try {
     const r = await call(`/api/workspace/${encodeURIComponent(wsId)}/shell`);
     selectedProc[wsId] = r.process;
@@ -3817,6 +3842,7 @@ $('ovsave').onclick = saveEditor;
 $('reposwitch').onclick = () =>
   toast('switching repositories is not implemented yet', true);
 $('addshell').onclick = newShell;
+$('dcollapse').onclick = () => setDrawerCollapsed(!drawerCollapsed);
 $('refreshbtn').onclick = () => {
   const wsId = currentWorkspaceId();
   if (wsId) call(`/api/workspace/${encodeURIComponent(wsId)}/reconcile`).catch((e) => toast(e.message, true));

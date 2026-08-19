@@ -170,15 +170,6 @@ Everything outside that block is hand-written and survives.
   at 50 and the PR row renders `50+` (`web/app.js`). An under-count cannot hide
   work, which was the point, but the real number is still unknown on a
   long-running PR.
-- Let the processes bar collapse to its header. The shape already exists:
-  `.drawer.empty` drops the body and lets the height go to `auto` when there are
-  no processes (`web/app.css`), and `renderDrawer` sets that class purely from
-  `procs.length` (`web/app.js`). What is missing is doing it on purpose — a toggle
-  on the header, remembered like the column widths and the drawer height are, and
-  not un-collapsed by the next render. It matters more now that `ng-watch`
-  autostarts: main always has a process, so the drawer is always open there and
-  permanently costs the terminal its height. The splitter only shrinks it to
-  96px, which is a small pane rather than no pane.
 - The diff viewer's stepper should walk the whole changeset, not one file.
   `stepChange` wraps around `diffState.anchors`, which `renderDiff` rebuilds per
   loaded file (`web/app.js`), so `change 3 of 7` means the third of seven *in this

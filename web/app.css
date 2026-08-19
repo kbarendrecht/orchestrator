@@ -334,9 +334,11 @@ button.ctx-btn:hover{color:var(--text)}
 
 /* ---------- process drawer ---------- */
 .drawer{border-top:1px solid var(--line);background:var(--surface);display:flex;flex-direction:column;height:var(--drawer);flex:0 0 auto;position:relative}
-.drawer.empty{height:auto}
-.drawer.empty .drawer-body{display:none}
-.drawer.empty .drawer-head{border-bottom:0}
+/* `empty` is the no-process bar; `collapsed` is the same shape chosen on purpose,
+   with processes still running behind the header. Both drop to just the head. */
+.drawer.empty,.drawer.collapsed{height:auto}
+.drawer.empty .drawer-body,.drawer.collapsed .drawer-body{display:none}
+.drawer.empty .drawer-head,.drawer.collapsed .drawer-head{border-bottom:0}
 /* The colsplit gesture on the other axis, sitting over the drawer's own top
    border. Above the head's z-index:2, or the strip would be unreachable across
    most of its width. Hidden while the drawer is a bare header: there is no
@@ -347,7 +349,7 @@ button.ctx-btn:hover{color:var(--text)}
   background:transparent;transition:background .12s;
 }
 .rowsplit:hover::after,.rowsplit.dragging::after{background:var(--faint-solid)}
-.drawer.empty .rowsplit{display:none}
+.drawer.empty .rowsplit,.drawer.collapsed .rowsplit{display:none}
 /* Its own background and stacking context: the WebGL renderer below can
    composite outside its canvas on some drivers, and a transparent header then
    reads as a black band. */
@@ -356,6 +358,11 @@ button.ctx-btn:hover{color:var(--text)}
   border-bottom:1px solid var(--line-soft);
   background:var(--surface);position:relative;z-index:2;
 }
+.dcollapse{
+  font-family:var(--mono);font-size:calc(10px * var(--fs));color:var(--faint-solid);
+  padding:0 3px;line-height:1;
+}
+.dcollapse:hover{color:var(--text)}
 .dtab{
   font-family:var(--mono);font-size:calc(10.5px * var(--fs));color:var(--faint-solid);
   padding:3px 8px;border-radius:2px;display:flex;align-items:center;gap:6px;
