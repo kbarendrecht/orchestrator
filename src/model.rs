@@ -127,7 +127,7 @@ impl State {
     ///
     /// Not the same as "live": a session waiting at its prompt, or one stopped
     /// on a red build, is live but idle. Actions that would fight a running
-    /// agent — rebasing under it, starting `/green` on its branch — ask this,
+    /// agent — rebasing under it, starting `fix-pr` on its branch — ask this,
     /// not `is_live`.
     pub fn is_busy(&self) -> bool {
         matches!(self, State::Working | State::Starting)

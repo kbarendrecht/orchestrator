@@ -1,4 +1,4 @@
-# Get a PR green — orchd run
+# fix-pr — get a PR green, an orchd run
 
 Adapted from `you/commands:claude/commands/green.md`. Vendored here so the
 daemon carries its own copy: it is substituted and passed to `claude -p` inline,

@@ -86,7 +86,7 @@ round-trip and resume cleanly? Build nothing else in Phase C until this is known
 - Spawn + guards: `src/spawn.rs` (`ensure_pr_worktree`, `spawn_command_session`,
   `start_with_prompt`, `spawn_session`), `hooks.rs` SessionStart `pending_prompt`,
   `guards/push.py`, and the single-run-per-PR / `branch_busy` / worktree-ownership
-  guards in `src/green.rs`.
+  guards in `src/fix_pr.rs`.
 - Overlay + keys: `web/app.js` `rvCard` / `rvFinal` / `rvReport` and `reviewKey`;
   `.rv` styles in `web/app.css`.
 
@@ -120,7 +120,7 @@ shows the real state mix (done / retry / conflicted / needs-you); `Push` and
 - Pushes use the agent's git creds under `guards/push.py`; the daemon PAT stays
   read-only (§6). `gh`-based outward writes keep using their own token as today.
 - Reuse single-run-per-PR + worktree-ownership guards so a resolve run can't
-  collide with `/green` on the same PR.
+  collide with `fix-pr` on the same PR.
 - New endpoints sit behind the existing Origin/Host + token guard (`api.rs`).
 
 ## Verification

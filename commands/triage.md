@@ -189,4 +189,4 @@ The daemon does these once the human approves. Do not do them, and do not offer 
 - **Resolving threads.** Closing a conversation is the comment author's button.
 
 CI red or the branch behind develop → say so in your final message and stop. That is
-`/green`'s job, not this pass.
+`fix-pr`'s job, not this pass.

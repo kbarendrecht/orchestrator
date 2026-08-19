@@ -15,7 +15,7 @@ use anyhow::{bail, Result};
 pub const TRIAGE: &str = include_str!("../commands/triage.md");
 
 /// The rebase-and-fix pass. Pushes, unlike triage.
-pub const GREEN: &str = include_str!("../commands/green.md");
+pub const FIX_PR: &str = include_str!("../commands/fix-pr.md");
 
 /// The story pass. Places records the human already approved, and reports back by
 /// writing one file — the only agent here whose *output* the daemon reads.
@@ -133,7 +133,7 @@ mod tests {
         // without being added here should fail this test, not a triage run.
         for (name, t) in [
             ("triage", TRIAGE),
-            ("green", GREEN),
+            ("fix-pr", FIX_PR),
             ("story", STORY),
             ("resolve", RESOLVE),
         ] {
@@ -221,8 +221,8 @@ mod tests {
     }
 
     #[test]
-    fn the_green_prompt_gets_the_upstream_ref() {
-        let out = render(GREEN, &vars()).unwrap();
+    fn the_fix_prompt_gets_the_upstream_ref() {
+        let out = render(FIX_PR, &vars()).unwrap();
         assert!(out.contains("upstream/develop"));
         assert!(!out.contains("{{UPSTREAM"));
     }

@@ -156,20 +156,20 @@ pub async fn spawn_worktree_session(app: &Arc<AppState>, name: Option<&str>) -> 
     Ok(id)
 }
 
-/// Start a headless `/green` run pinned to the PR's head branch.
+/// Start a headless `fix-pr` run pinned to the PR's head branch.
 ///
-/// §8 writes this as `claude -p "/green <pr>" --worktree`, but `--worktree`
+/// §8 writes this as a headless `--worktree` run, but `--worktree`
 /// always cuts a fresh branch from `upstream/develop` while the same section
 /// requires a worktree "pinned to that PR's head branch". The branch wins: the
 /// worktree is created here and `claude -p` runs inside it.
-pub async fn spawn_green_session(
+pub async fn spawn_fix_pr_session(
     app: &Arc<AppState>,
     pr: u64,
     head_ref: &str,
 ) -> Result<SessionId> {
     // One agent per worktree. `ensure_pr_worktree` hands back the worktree a
     // review session is already sitting in, so spawning here unconditionally puts
-    // two agents on one index, and green's first move is a rebase. Refusing is
+    // two agents on one index, and fix-pr's first move is a rebase. Refusing is
     // the honest answer of the three: reusing that session silently would leave
     // it running someone else's instructions, and retargeting it mid-flight is
     // not the daemon's call. Finish the review and press fix again, or tell that
@@ -193,7 +193,7 @@ pub async fn spawn_green_session(
     // The prompt is a file the session is told to read rather than a slash
     // command, so nothing depends on `you/commands` being installed and
     // nothing is written into the checkout being driven.
-    let prompt_file = vendored_prompt_file(app, pr, "green").await?;
+    let prompt_file = vendored_prompt_file(app, pr, "fix-pr").await?;
 
     let id = Uuid::new_v4();
     let settings = Config::hooks_settings_path()?;
@@ -222,7 +222,7 @@ pub async fn spawn_green_session(
         path,
         Kind::Automation {
             pr,
-            command: "green".to_string(),
+            command: "fix-pr".to_string(),
         },
     );
     session.pty = Some(spawned.handle.clone());
@@ -326,7 +326,7 @@ async fn start_with_prompt(
 async fn vendored_prompt_file(app: &Arc<AppState>, pr: u64, command: &str) -> Result<PathBuf> {
     let template = match command {
         "resolve" => crate::prompt::RESOLVE,
-        "green" => crate::prompt::GREEN,
+        "fix-pr" => crate::prompt::FIX_PR,
         other => bail!("no vendored prompt for /{other}"),
     };
     let (owner, repo) =

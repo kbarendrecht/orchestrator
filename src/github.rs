@@ -8,7 +8,7 @@ use std::process::Command;
 /// Where the daemon's GitHub token came from.
 ///
 /// §6 wants a fine-grained PAT with **read scopes only** — `pull_requests`,
-/// `checks`, `contents`, `metadata`. The daemon never pushes; `/green` pushes
+/// `checks`, `contents`, `metadata`. The daemon never pushes; `fix-pr` pushes
 /// through the agent's own git credentials, so any write scope here is
 /// unnecessary blast radius.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -202,7 +202,7 @@ pub struct Pr {
     pub mergeable: String,
     pub merge_state: String,
     pub checks: Checks,
-    /// Head commit. `/green` amends and rebases, so this moves on every
+    /// Head commit. `fix-pr` amends and rebases, so this moves on every
     /// internal attempt — it is an identity for "has the branch changed since
     /// the run gave up", not a provenance record (§8).
     pub head_sha: Option<String>,

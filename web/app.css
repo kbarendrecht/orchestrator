@@ -619,7 +619,7 @@ body.col-resizing{cursor:col-resize;user-select:none}
 
 /* Branch health, from data the poller already has. Never a gate — CI colour and
    a develop conflict are product signals that do not touch the apply/push
-   machinery, so they inform and offer /green, and that is all. The real gates
+   machinery, so they inform and offer fix-pr, and that is all. The real gates
    are worktree-readiness. */
 .rv .health{display:flex;align-items:center;gap:7px;font-family:var(--mono);font-size:calc(10.5px * var(--fs));flex:0 0 auto}
 .rv .health .hdot{width:6px;height:6px;border-radius:50%;background:var(--ghost);flex:0 0 auto}
@@ -844,7 +844,7 @@ body.col-resizing{cursor:col-resize;user-select:none}
 .rv .leaves{background:#0D0D0D;border-top:1px solid var(--line)}
 .rv .leaves .res .st{color:var(--faint-solid)}
 
-/* New comments arriving while you work. Amber, because unlike a /green run this
+/* New comments arriving while you work. Amber, because unlike a fix-pr run this
    may actually change what you were about to say. Still not blocking: the queue
    stays the set you agreed to triage. */
 .rv .autobar{

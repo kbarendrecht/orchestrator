@@ -443,7 +443,7 @@ async fn run_filer(
     let worktree = path.clone();
     let handle = spawned.handle.clone();
     // A real session, so its pty is there to read when a story goes wrong. It is
-    // automation like `/green` and triage, and archives the same way.
+    // automation like `fix-pr` and triage, and archives the same way.
     let mut session = Session::new(
         id,
         workspace,

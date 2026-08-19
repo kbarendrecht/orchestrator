@@ -106,7 +106,7 @@ fn automation_path() -> Result<PathBuf> {
 
 /// §8 says SQLite; a JSON file with the same write-and-rename discipline holds
 /// a handful of PR numbers just as safely and keeps the dependency list short.
-pub fn save_automation(store: &crate::green::AutomationStore) -> Result<()> {
+pub fn save_automation(store: &crate::fix_pr::AutomationStore) -> Result<()> {
     let p = automation_path()?;
     std::fs::create_dir_all(p.parent().unwrap())?;
     let tmp = p.with_extension("json.tmp");
@@ -116,14 +116,14 @@ pub fn save_automation(store: &crate::green::AutomationStore) -> Result<()> {
 }
 
 /// A restart must not resurrect a `Running` state whose session is gone (§8).
-pub fn load_automation() -> crate::green::AutomationStore {
+pub fn load_automation() -> crate::fix_pr::AutomationStore {
     let Ok(p) = automation_path() else {
         return Default::default();
     };
     let Ok(raw) = std::fs::read_to_string(&p) else {
         return Default::default();
     };
-    let mut store: crate::green::AutomationStore = match serde_json::from_str(&raw) {
+    let mut store: crate::fix_pr::AutomationStore = match serde_json::from_str(&raw) {
         Ok(v) => v,
         Err(e) => {
             tracing::warn!("could not parse {}: {e}", p.display());
@@ -133,8 +133,8 @@ pub fn load_automation() -> crate::green::AutomationStore {
     // Orphaned Running is demoted to Exhausted: the run is not going to finish,
     // and pretending it might would block the PR forever.
     for state in store.by_pr.values_mut() {
-        if let crate::green::PrAutomation::Running { .. } = state {
-            *state = crate::green::PrAutomation::Exhausted {
+        if let crate::fix_pr::PrAutomation::Running { .. } = state {
+            *state = crate::fix_pr::PrAutomation::Exhausted {
                 at_head: String::new(),
                 at: std::time::SystemTime::now(),
             };
@@ -348,7 +348,7 @@ mod tests {
             Path::new("/repo/.claude/worktrees/invoice").to_path_buf(),
             Kind::Automation {
                 pr: 4812,
-                command: "green".into(),
+                command: "fix-pr".into(),
             },
         );
         s.transcript_archived = true;
@@ -367,7 +367,7 @@ mod tests {
             r.kind,
             Kind::Automation {
                 pr: 4812,
-                command: "green".into()
+                command: "fix-pr".into()
             }
         );
         assert!(matches!(r.recovery, Some(ArchiveState::Recoverable { .. })));

@@ -598,7 +598,7 @@ pub fn push_with_lease(cwd: &Path, branch: &str) -> Result<()> {
     if err.contains("stale info") || err.contains("fetch first") || err.contains("rejected") {
         bail!(
             "push refused: {branch} moved on origin since this review started. \
-             Someone else pushed, or /green ran. Re-triage rather than overwrite it."
+             Someone else pushed, or fix-pr ran. Re-triage rather than overwrite it."
         );
     }
     bail!(

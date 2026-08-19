@@ -5,7 +5,7 @@ monorepo. Built from `orchestrator-spec.md`; the design comes from
 `orchestrator-ui.html`.
 
 All ten steps of the spec's build order are implemented, with one deliberate
-change: `/green` is hand-triggered, never automatic.
+change: `fix-pr` is hand-triggered, never automatic.
 
 ## Run
 
@@ -122,7 +122,7 @@ newer version is out it shows a dismissible nudge in the window. The nudge only
   path. Saving refuses if the file moved underneath you, and a `PreToolUse`
   deny tells the agent, once, that you rewrote a file so it re-reads instead of
   clobbering you.
-- **`/green`** — hand-triggered, with the whole §8 guard table: authorship,
+- **`fix-pr`** — hand-triggered, with the whole §8 guard table: authorship,
   one run per PR, capability trust, dep freshness, active-session suppression,
   concurrency and process caps, shared-resource locks. Push guards deny
   `push -u`, bare `--force`, and pushes to protected refs or upstream.
@@ -174,9 +174,9 @@ Two more, from using it rather than reading it:
   removed outright; one that exits non-zero keeps its buffer and code, which is
   the case the rule was written for.
 
-## `/green` is triggered, not automatic
+## `fix-pr` is triggered, not automatic
 
-§8 fires `/green` on a PR going red. It does not here — that was a deliberate
+§8 fires `fix-pr` on a PR going red. It does not here — that was a deliberate
 call, and it changes what the guard table is for: a gate you read before
 starting, rather than one that trips while you are looking elsewhere. Everything
 else in that table still applies, because those guards protect the machine and
@@ -188,7 +188,7 @@ fires on its own, so nothing needs serializing bottom-up), and the kill switch
 the row, because a run that stopped without turning the PR green is worth
 knowing about before you trigger another one.
 
-`/green` also creates the PR's worktree before it evaluates the guards. That is
+`fix-pr` also creates the PR's worktree before it evaluates the guards. That is
 not avoidable: lockfile drift and the autoload probe are questions about the
 worktree, and there is no worktree to ask about until it exists. It is reusable
 afterwards, including by `/resolve`.
@@ -222,7 +222,7 @@ src/
   github.rs     token resolution, GraphQL, PR model, stacks
   reviews.rs    `mise run reviews --json`, degraded states
   capability.rs suites, trust, dep drift, autoload probe, path mapping
-  green.rs      automation state and the /green guard table
+  fix_pr.rs     automation state and the fix-pr guard table
   edit.rs       file read/write with containment and conflict detection
   todo.rs       the generated block in TODO.md
 guards/push.py  PreToolUse deny for dangerous pushes

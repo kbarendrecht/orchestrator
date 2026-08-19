@@ -10,7 +10,7 @@ pub type SessionId = Uuid;
 
 /// Per-PR automation state (§8).
 ///
-/// Retry lives in the prompt, not here: `/green` amends and rebases, so the head
+/// Retry lives in the prompt, not here: `fix-pr` amends and rebases, so the head
 /// SHA changes on every internal attempt and SHA-based provenance is impossible
 /// *and* unnecessary. The daemon's job is only to avoid starting a second run
 /// and to be honest about a run that gave up.
@@ -84,12 +84,12 @@ pub enum Verdict {
         /// Shared resources to take before starting.
         locks: Vec<String>,
     },
-    /// Refused, with the reason shown verbatim. `/green` is triggered by hand,
+    /// Refused, with the reason shown verbatim. `fix-pr` is triggered by hand,
     /// so a refusal is something you read, not something swallowed.
     No { reason: String },
 }
 
-/// Decide whether a hand-triggered `/green` may start.
+/// Decide whether a hand-triggered `fix-pr` may start.
 ///
 /// Nothing here fires on its own: the user asked for manual-trigger only, so
 /// the transition rules from §8 ("fires immediately on checks failing") are
@@ -111,7 +111,7 @@ pub fn evaluate(input: &GuardInput) -> Verdict {
     // One live run per PR, keyed on the number.
     if let Some(PrAutomation::Running { session, .. }) = input.automation {
         return no(format!(
-            "#{} already has a /green session running ({})",
+            "#{} already has a fix-pr session running ({})",
             pr.number,
             &session.to_string()[..8]
         ));
@@ -121,12 +121,12 @@ pub fn evaluate(input: &GuardInput) -> Verdict {
     // live, non-idle session — you are working on it (§8).
     if input.branch_busy {
         return no(format!(
-            "you have a live session on {}; /green would fight it",
+            "you have a live session on {}; fix-pr would fight it",
             pr.head_ref
         ));
     }
 
-    // §7 rule 1, plus rule 3: a Stale result is one /green must not act on
+    // §7 rule 1, plus rule 3: a Stale result is one fix-pr must not act on
     // either, because it was frozen at copy time.
     for c in &input.capability.capabilities {
         if !c.runnable {
@@ -157,7 +157,7 @@ pub fn evaluate(input: &GuardInput) -> Verdict {
             input.running_automations
         ));
     }
-    // Automation yields first and defers; a deferred /green costs nothing (§8b).
+    // Automation yields first and defers; a deferred fix-pr costs nothing (§8b).
     if input.live_claude_processes >= MAX_CLAUDE_PROCESSES {
         return no(format!(
             "{} Claude processes already running (cap {MAX_CLAUDE_PROCESSES}) — \
@@ -244,8 +244,8 @@ mod tests {
                 reason: "test".into(),
             },
             container_path: None,
-            green_eligible: true,
-            green_blockers: vec![],
+            fix_pr_eligible: true,
+            fix_pr_blockers: vec![],
             locks_required: vec![],
         }
     }

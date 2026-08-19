@@ -188,10 +188,10 @@ pub struct CapabilityReport {
     /// Host path ↔ container path, for every command the daemon builds and
     /// every path it parses back out of test output (§7).
     pub container_path: Option<String>,
-    /// Whether §7 **rule 1** would let `/green` act here: every suite runnable
+    /// Whether §7 **rule 1** would let `fix-pr` act here: every suite runnable
     /// and none `Untrusted`. **Reporting only** — no automation is wired up.
-    pub green_eligible: bool,
-    pub green_blockers: Vec<String>,
+    pub fix_pr_eligible: bool,
+    pub fix_pr_blockers: Vec<String>,
     /// §7 **rule 2**, kept separate from eligibility: a shared resource needs a
     /// global lock before running, it does not make the PR ineligible. The lock
     /// conflicts with another *run* holding it, not with you working in main.
@@ -266,7 +266,7 @@ pub fn report(
         })
         .collect();
 
-    // §7 rule 1: `/green` may act only if **every** suite it would run is
+    // §7 rule 1: `fix-pr` may act only if **every** suite it would run is
     // runnable and not Untrusted. Otherwise the PR is NeedsMain — a button,
     // never an auto-run, because occupying main would interrupt your work.
     let mut blockers = Vec::new();
@@ -296,8 +296,8 @@ pub fn report(
     CapabilityReport {
         workspace: workspace.to_string(),
         is_main,
-        green_eligible: blockers.is_empty(),
-        green_blockers: blockers,
+        fix_pr_eligible: blockers.is_empty(),
+        fix_pr_blockers: blockers,
         locks_required,
         capabilities,
         deps,
@@ -523,7 +523,7 @@ mod tests {
     }
 
     #[test]
-    fn a_shared_resource_needs_a_lock_but_does_not_block_green() {
+    fn a_shared_resource_needs_a_lock_but_does_not_block_fix_pr() {
         // Rule 1 is about trust; rule 2 is about locking. Conflating them would
         // make every workspace with an e2e suite permanently ineligible.
         let (main, wt) = scratch("shared");
@@ -535,29 +535,29 @@ mod tests {
             &[],
         )]);
         let r = report(&cfg, "x", &wt, &main, false);
-        assert!(r.green_eligible, "blockers: {:?}", r.green_blockers);
+        assert!(r.fix_pr_eligible, "blockers: {:?}", r.fix_pr_blockers);
         assert_eq!(r.locks_required.len(), 1);
         assert!(r.locks_required[0].contains("main:instances"));
         let _ = std::fs::remove_dir_all(main.parent().unwrap());
     }
 
     #[test]
-    fn an_untrusted_suite_does_block_green() {
+    fn an_untrusted_suite_does_block_fix_pr() {
         let (main, wt) = scratch("untrusted");
         let mut sp = spec(Suite::Unit, Isolation::Isolated, &[]);
         sp.worktree_trust = Trust::Untrusted;
         let r = report(&cfg_with(vec![sp]), "x", &wt, &main, false);
-        assert!(!r.green_eligible);
-        assert!(r.green_blockers[0].contains("untrusted"));
+        assert!(!r.fix_pr_eligible);
+        assert!(r.fix_pr_blockers[0].contains("untrusted"));
         let _ = std::fs::remove_dir_all(main.parent().unwrap());
     }
 
     #[test]
-    fn an_isolated_verified_suite_is_green_eligible() {
+    fn an_isolated_verified_suite_is_fix_pr_eligible() {
         let (main, wt) = scratch("ok");
         let cfg = cfg_with(vec![spec(Suite::Unit, Isolation::Isolated, &[])]);
         let r = report(&cfg, "x", &wt, &main, false);
-        assert!(r.green_eligible, "blockers: {:?}", r.green_blockers);
+        assert!(r.fix_pr_eligible, "blockers: {:?}", r.fix_pr_blockers);
         let _ = std::fs::remove_dir_all(main.parent().unwrap());
     }
 
@@ -568,7 +568,7 @@ mod tests {
         s.command.clear();
         let r = report(&cfg_with(vec![s]), "x", &wt, &main, false);
         assert!(!r.capabilities[0].runnable);
-        assert!(!r.green_eligible);
+        assert!(!r.fix_pr_eligible);
         let _ = std::fs::remove_dir_all(main.parent().unwrap());
     }
 

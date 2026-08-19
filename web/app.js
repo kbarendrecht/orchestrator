@@ -570,11 +570,11 @@ function prGroup() {
 
     const auto0 = (snap.automation || {})[p.number];
     const needsResolve0 = p.needs_you;
-    const needsGreen0 = p.checks === 'failing' || p.mergeable === 'CONFLICTING';
+    const needsFix0 = p.checks === 'failing' || p.mergeable === 'CONFLICTING';
 
     // A reason chip next to a button just repeats it and steals width from the
     // title, which is the part you actually read.
-    if (!needsResolve0 && !needsGreen0) {
+    if (!needsResolve0 && !needsFix0) {
       const why = [];
       if (p.unresolved_capped) why.push('50+ threads');
       if (p.children && p.children.length) why.push(`${p.children.length} stacked`);
@@ -582,9 +582,9 @@ function prGroup() {
       if (why.length) row.appendChild(el('span', 'link', why[0]));
     }
 
-    // Both skills are hand-triggered. /green is deliberately not automatic:
+    // Both skills are hand-triggered. fix-pr is deliberately not automatic:
     // the guard table is a gate you read, not one that trips behind you.
-    const auto = auto0, needsResolve = needsResolve0, needsGreen = needsGreen0;
+    const auto = auto0, needsResolve = needsResolve0, needsFix = needsFix0;
 
     if (auto && auto.state === 'running') {
       const b = el('span', 'pract running', 'fixing');
@@ -597,7 +597,7 @@ function prGroup() {
         row.appendChild(el('span', 'why gaveup', 'gave up'));
       }
       if (needsResolve) row.appendChild(reviewButtons(p));
-      if (needsGreen) row.appendChild(actionButton(p, 'green', 'fix'));
+      if (needsFix) row.appendChild(actionButton(p, 'fix-pr', 'fix'));
     }
 
     // The row opens the PR; jumping to its session is the explicit chip, so
@@ -1737,7 +1737,7 @@ function rvHead(sub, count) {
 /** Branch health — CI colour and a develop conflict.
  *
  *  Information, never a gate: neither touches the apply/push machinery, which
- *  works inside the branch's own history. `/green` is offered only on the
+ *  works inside the branch's own history. `fix-pr` is offered only on the
  *  pre-decision screens, because the two flows are mutually exclusive and
  *  offering it from an active card would just be refused. */
 function rvHealth() {
@@ -1761,7 +1761,7 @@ function rvHealth() {
   if (preDecision && (d.checks === 'failing' || d.mergeable === 'CONFLICTING')) {
     const b = el('button', 'head-btn', 'fix');
     b.title = 'Rebase on develop and fix what CI says. It cannot run while a review is open.';
-    b.onclick = () => rvAct(() => call(`/api/pr/${reviewState.pr}/green`), 'started the fix run', true);
+    b.onclick = () => rvAct(() => call(`/api/pr/${reviewState.pr}/fix-pr`), 'started the fix run', true);
     wrap.appendChild(b);
   }
   return wrap;
@@ -3023,7 +3023,7 @@ function closeReview() {
 /** Run something that changes the daemon's side, then refetch.
  *
  *  `andClose` is for the two calls that hand you to a session — a triage run and
- *  `/green` — because the useful next screen is the pty, not this one. */
+ *  `fix-pr`, because the useful next screen is the pty, not this one. */
 async function rvAct(fn, said, andClose) {
   if (reviewState.busy) return;
   reviewState.busy = true;

@@ -102,7 +102,7 @@ pub struct Inner {
     /// told. Conflict detection on save protects you from the agent; this is
     /// the other direction, which is the one that loses work silently.
     pub human_edits: HashMap<PathBuf, HumanEdit>,
-    pub automation: crate::green::AutomationStore,
+    pub automation: crate::fix_pr::AutomationStore,
     /// (behind, ahead) per workspace against the upstream base.
     pub divergence: HashMap<WorkspaceId, (u32, u32)>,
     /// What each workspace changed since it branched, and the commit that is
@@ -607,7 +607,7 @@ pub struct Snapshot {
     pub reviews: crate::reviews::ReviewState,
     /// Monotonic counter of completed review polls; see `Inner::reviews_poll`.
     pub reviews_poll: u64,
-    pub automation: HashMap<u64, crate::green::PrAutomation>,
+    pub automation: HashMap<u64, crate::fix_pr::PrAutomation>,
     pub repos: Repos,
     /// `docker compose` stack has running containers; `None` before first probe.
     pub stack_up: Option<bool>,

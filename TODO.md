@@ -23,7 +23,7 @@ Everything outside that block is hand-written and survives.
   the `/resolve` spawn machinery pointed at a *new* branch off a PR head rather
   than the PR's own branch. The stack is then detected for free: `link_stacks`
   (`src/github.rs`) already matches `child.base_ref == parent.head_ref`. Second,
-  a semi-automation in the spirit of `/green` — a `/restack` (or `sync`) skill
+  a semi-automation in the spirit of `fix-pr` — a `/restack` (or `sync`) skill
   that keeps a stack in sync: when a base PR's head moves (amend/rebase), rebase
   the children onto it bottom-up and re-push, within the existing push guards
   (`--force-with-lease` only, `push -u` ban, protected refs). Reuses the
@@ -31,7 +31,7 @@ Everything outside that block is hand-written and survives.
   serialized ordering is the piece §8 described but never built. Two known
   wrinkles: the stack DAG is stored children-only (`Pr.children`), so a restack
   must derive the parent chain by inverting it — there is no `parent`/`base`
-  pointer; and if it rides an agent session like `/green`, the `git rebase
+  pointer; and if it rides an agent session like `fix-pr`, the `git rebase
   --onto <new-parent-head> <old-parent-head> <child>` logic lives in the skill
   prompt (a new `prompt::RESTACK` + `vendored_prompt_file` arm), so no new Rust
   git primitive is strictly required. The per-PR-keyed guards
@@ -52,9 +52,9 @@ Everything outside that block is hand-written and survives.
   exists anywhere in `src/` or `web/`. One switch that stops automation from
   firing or spawning.
 
-- Enforce the 8-process cap on *every* spawn, not just `/green`. §8b caps total
+- Enforce the 8-process cap on *every* spawn, not just `fix-pr`. §8b caps total
   concurrent Claude processes at 8, but `MAX_CLAUDE_PROCESSES` is only checked in
-  the `/green` guard (`src/green.rs`); ordinary interactive and `/resolve` spawns
+  the `fix-pr` guard (`src/fix_pr.rs`); ordinary interactive and `/resolve` spawns
   bypass it.
 
 - Paginate the *list/poll* `reviewThreads` past 50. The detailed overlay fetch
@@ -87,8 +87,8 @@ Everything outside that block is hand-written and survives.
   "until dismissed"; applied to every exit that made Ctrl+D leave a corpse. A
   non-zero exit still keeps its buffer.
 - **`main:instances` no longer conflicts with main occupancy.** §7 rule 2 said a
-  session occupying main should block a `/green` e2e run (its teardown reaches
-  into the main checkout). Narrowed to run-vs-run only (`src/green.rs:169-176`):
+  session occupying main should block a `fix-pr` e2e run (its teardown reaches
+  into the main checkout). Narrowed to run-vs-run only (`src/fix_pr.rs:169-176`):
   taking main never blocks a run and vice versa, so the rule 2a wait/kill
   preemption UX is moot and was dropped. The tradeoff accepted with it: an e2e
   teardown and a live main session can touch the main checkout's instances dir /

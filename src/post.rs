@@ -527,7 +527,7 @@ async fn run_inner(
     resume: Option<Finish>,
 ) -> Result<PostReport> {
     // The gates again. A review can sit open for hours: the tree can go dirty, a
-    // rebase can stop, or /green can start between opening the cards and pushing.
+    // rebase can stop, or fix-pr can start between opening the cards and pushing.
     let workspace = crate::api::workspace_for(app, &pr.head_ref)
         .await
         .with_context(|| format!("no worktree holding {} — re-triage", pr.head_ref))?;

@@ -12,7 +12,7 @@ pub mod edit;
 pub mod git;
 pub mod github;
 pub mod github_write;
-pub mod green;
+pub mod fix_pr;
 pub mod hooks;
 pub mod instance;
 pub mod model;
@@ -323,7 +323,7 @@ fn router(app: Arc<AppState>) -> Router {
         // The rail's default: spawn a session running `/resolve <pr>` in a pane.
         .route("/api/pr/:number/open", post(api::open_pr))
         .route("/api/pr/:number/resolve", post(api::resolve_pr))
-        .route("/api/pr/:number/green", post(api::green_pr))
+        .route("/api/pr/:number/fix-pr", post(api::fix_pr))
         .route("/ws/events", get(ws::events))
         .route("/ws/pty", get(ws::pty))
         // Hook endpoints live under their own prefix and are treated as
@@ -455,7 +455,7 @@ fn start_pr_poller(app: Arc<AppState>) {
                             for p in &prs {
                                 let alive = matches!(
                                     inner.automation.get(p.number),
-                                    Some(green::PrAutomation::Running { .. })
+                                    Some(fix_pr::PrAutomation::Running { .. })
                                 );
                                 if !alive {
                                     inner
@@ -521,10 +521,10 @@ fn auto_resume(app: Arc<AppState>, records: Vec<store::SessionRecord>) {
         let mut resumed = 0usize;
         let mut main_taken = false;
         for r in candidates {
-            if resumed >= green::MAX_CLAUDE_PROCESSES {
+            if resumed >= fix_pr::MAX_CLAUDE_PROCESSES {
                 tracing::warn!(
                     "stopping auto-resume at {} sessions (process cap)",
-                    green::MAX_CLAUDE_PROCESSES
+                    fix_pr::MAX_CLAUDE_PROCESSES
                 );
                 break;
             }

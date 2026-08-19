@@ -1,12 +1,12 @@
 //! The triage run: read the threads, propose, exit.
 //!
-//! Modelled on [`crate::spawn::spawn_green_session`], with one deliberate
+//! Modelled on [`crate::spawn::spawn_fix_pr_session`], with one deliberate
 //! difference — the prompt is rendered from `commands/triage.md` and passed to
 //! `claude -p` **inline**, rather than typed into a pty as `/triage <pr>`. A
 //! slash command resolves from the agent's own command path, which depends on a
 //! repo that is usually not installed; inline text depends on nothing.
 //!
-//! Following `/green`'s lesson (`watch_green` in `api.rs`): **the agent's stdout
+//! Following `fix-pr`'s lesson (`watch_fix_pr` in `api.rs`): **the agent's stdout
 //! is not parsed.** The pty stream stays raw for xterm.js, and the run reports by
 //! POSTing a [`crate::proposal::ProposalSet`] to the daemon. So "did it work" is
 //! answered by looking for proposals, not by reading an exit code — an agent can
@@ -38,8 +38,8 @@ pub enum Gate {
     Dirty { files: Vec<String> },
     /// A stopped rebase: the tree cannot take a patch at all.
     Rebasing,
-    /// `/green` is rewriting this same worktree. The two are exclusive.
-    GreenRunning,
+    /// `fix-pr` is rewriting this same worktree. The two are exclusive.
+    FixPrRunning,
 }
 
 impl Gate {
@@ -51,7 +51,7 @@ impl Gate {
                 files.len()
             ),
             Gate::Rebasing => "a rebase is stopped part-way in this worktree".into(),
-            Gate::GreenRunning => "/green is rewriting this branch".into(),
+            Gate::FixPrRunning => "fix-pr is rewriting this branch".into(),
         }
     }
 }
@@ -60,7 +60,7 @@ impl Gate {
 ///
 /// Checked before a triage starts *and* again immediately before the batch
 /// writes: a review can sit open for hours, and the tree can go dirty, a rebase
-/// can stop, or `/green` can start in between.
+/// can stop, or `fix-pr` can start in between.
 pub async fn gate(app: &Arc<AppState>, pr: u64, workspace: &str) -> Result<Option<Gate>> {
     gate_inner(app, pr, workspace, true).await
 }
@@ -68,7 +68,7 @@ pub async fn gate(app: &Arc<AppState>, pr: u64, workspace: &str) -> Result<Optio
 /// The same gates minus the clean-tree one.
 ///
 /// For the manual phase's second half only, where the tree is dirty **because you
-/// were asked to edit it**. `Rebasing` and `GreenRunning` still hold: one cannot
+/// were asked to edit it**. `Rebasing` and `FixPrRunning` still hold: one cannot
 /// take a commit at all, and the other is rewriting the same history.
 pub async fn gate_allowing_your_edits(
     app: &Arc<AppState>,
@@ -84,14 +84,14 @@ async fn gate_inner(
     workspace: &str,
     require_clean: bool,
 ) -> Result<Option<Gate>> {
-    // Only a *running* /green holds the worktree. An exhausted or finished one
+    // Only a *running* fix-pr holds the worktree. An exhausted or finished one
     // has a record but has let go, so it must not gate.
-    let green_running = matches!(
+    let fix_pr_running = matches!(
         app.inner.read().await.automation.get(pr),
-        Some(crate::green::PrAutomation::Running { .. })
+        Some(crate::fix_pr::PrAutomation::Running { .. })
     );
-    if green_running {
-        return Ok(Some(Gate::GreenRunning));
+    if fix_pr_running {
+        return Ok(Some(Gate::FixPrRunning));
     }
     let Some(path) = app.workspace_path(workspace).await else {
         return Ok(None);
@@ -233,7 +233,7 @@ mod tests {
     #[test]
     fn a_gate_says_what_is_wrong_in_one_line() {
         assert!(Gate::Rebasing.say().contains("rebase"));
-        assert!(Gate::GreenRunning.say().contains("/green"));
+        assert!(Gate::FixPrRunning.say().contains("fix-pr"));
         let d = Gate::Dirty {
             files: vec!["a.rs".into(), "b.rs".into()],
         };
@@ -249,7 +249,7 @@ mod tests {
         })
         .unwrap();
         assert!(j.contains(r#""gate":"dirty""#), "{j}");
-        let j = serde_json::to_string(&Gate::GreenRunning).unwrap();
-        assert!(j.contains(r#""gate":"green_running""#), "{j}");
+        let j = serde_json::to_string(&Gate::FixPrRunning).unwrap();
+        assert!(j.contains(r#""gate":"fix_pr_running""#), "{j}");
     }
 }

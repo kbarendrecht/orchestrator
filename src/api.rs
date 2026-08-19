@@ -864,7 +864,7 @@ pub async fn pr_review(
         "manual": manual,
         "gate": gate,
         // Shown in the header, never gating: a red or conflicting PR is still
-        // answerable, and `/green` is offered rather than required.
+        // answerable, and `fix-pr` is offered rather than required.
         "checks": pr.checks,
         "mergeable": pr.mergeable,
         // Whether a `story+reply` position can be acted on at all. The overlay
@@ -1136,7 +1136,7 @@ async fn gate_worktree(app: &Arc<AppState>, number: u64) -> Result<std::path::Pa
 
 /// What could be run here and how far it can be trusted.
 ///
-/// Nothing acts on this: §10 puts `/green` behind step 8 being correct for a
+/// Nothing acts on this: §10 puts `fix-pr` behind step 8 being correct for a
 /// week on real PRs, so the registry reports and stops.
 pub async fn capabilities(
     State(app): State<Arc<AppState>>,
@@ -1235,20 +1235,20 @@ pub async fn write_file(
 }
 
 // ---------------------------------------------------------------------------
-// /green (§8) — hand-triggered only
+// fix-pr (§8) — hand-triggered only
 // ---------------------------------------------------------------------------
 
-/// Start a `/green` run for a PR.
+/// Start a `fix-pr` run for a PR.
 ///
 /// Deliberately **not** automatic. §8 fires it on a PR going red; running it by
 /// hand instead means the guard table is a gate you read rather than one that
 /// trips behind you, and it is the difference between a tool that helps and one
 /// that rebases your branches while you are looking elsewhere.
-pub async fn green_pr(
+pub async fn fix_pr(
     State(app): State<Arc<AppState>>,
     Path(number): Path<u64>,
 ) -> ApiResult<serde_json::Value> {
-    use crate::green::{evaluate, GuardInput, PrAutomation, Verdict};
+    use crate::fix_pr::{evaluate, GuardInput, PrAutomation, Verdict};
 
     let pr = {
         let inner = app.inner.read().await;
@@ -1308,7 +1308,7 @@ pub async fn green_pr(
         Verdict::No { reason } => return Err(ApiError(anyhow::anyhow!("{reason}"))),
     };
 
-    let session = spawn::spawn_green_session(&app, number, &pr.head_ref).await?;
+    let session = spawn::spawn_fix_pr_session(&app, number, &pr.head_ref).await?;
     {
         let mut inner = app.inner.write().await;
         inner.automation.by_pr.insert(
@@ -1324,13 +1324,13 @@ pub async fn green_pr(
 
     // Releasing the locks and recording exhaustion belongs to whoever sees the
     // session end.
-    watch_green(app.clone(), number, session, locks);
+    watch_fix_pr(app.clone(), number, session, locks);
     app.notify().await;
     Ok(Json(json!({ "session": session })))
 }
 
-fn watch_green(app: Arc<AppState>, number: u64, session: uuid::Uuid, locks: Vec<String>) {
-    use crate::green::{ended_red, PrAutomation};
+fn watch_fix_pr(app: Arc<AppState>, number: u64, session: uuid::Uuid, locks: Vec<String>) {
+    use crate::fix_pr::{ended_red, PrAutomation};
     tokio::spawn(async move {
         let handle = {
             let inner = app.inner.read().await;

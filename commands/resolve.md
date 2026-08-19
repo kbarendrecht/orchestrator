@@ -132,5 +132,5 @@ Re-request each reviewer whose every thread is addressed, without asking:
 
 Resolving the threads stays an offer, it's the reviewer's button.
 
-CI still red or the branch behind `{{UPSTREAM}}` → hand off to `/green`, which the
+CI still red or the branch behind `{{UPSTREAM}}` → hand off to `fix-pr`, which the
 rail triggers. Do not rebase for it yourself unless the user asks.
