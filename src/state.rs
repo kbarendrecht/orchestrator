@@ -353,6 +353,7 @@ impl AppState {
             repos: self.repos.clone(),
             stack_up: inner.stack_up,
             update: inner.update.clone(),
+            version: env!("CARGO_PKG_VERSION"),
         }
     }
 
@@ -634,6 +635,11 @@ pub struct Snapshot {
     pub stack_up: Option<bool>,
     /// A newer release than the running build, or `None`.
     pub update: Option<UpdateInfo>,
+    /// The running build's own version, for the settings panel. Always here,
+    /// unlike `update`, which only appears when there is something newer: "which
+    /// build am I on" is a question worth answering when the answer is "the
+    /// latest one".
+    pub version: &'static str,
 }
 
 #[derive(Debug, Serialize)]

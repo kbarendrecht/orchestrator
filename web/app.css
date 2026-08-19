@@ -389,6 +389,12 @@ body.row-resizing{cursor:row-resize;user-select:none}
   font-family:var(--mono);font-size:calc(10px * var(--fs));color:var(--faint-solid);
 }
 .settings-reset:hover{color:var(--text)}
+/* Below a rule, quieter than the controls above it: it is information, not
+   something to press. */
+.settings-ver{
+  margin-top:9px;padding-top:8px;border-top:1px solid var(--line);
+  font-family:var(--mono);font-size:calc(9.5px * var(--fs));color:var(--faint-solid);
+}
 
 /* ---------- context menu ---------- */
 /* Right-click on a session row. Above the toast, because it is the thing you

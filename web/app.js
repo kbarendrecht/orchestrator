@@ -3974,6 +3974,9 @@ function closeSettings() {
 
 function openSettings() {
   const panel = $('settings');
+  // Read at open time rather than at setup: the first snapshot has usually not
+  // landed when the page wires itself up.
+  $('settingsver').textContent = snap.version ? `orchd ${snap.version}` : '';
   panel.hidden = false;
   $('gearbtn').setAttribute('aria-expanded', 'true');
   const r = $('gearbtn').getBoundingClientRect();
