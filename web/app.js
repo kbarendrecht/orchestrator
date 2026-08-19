@@ -182,6 +182,15 @@ function openTerm(target, parent) {
     entry.sent = null;
     entry.box = null;
     resize(entry);
+    // A session you just created is selected before there is anything to type
+    // into, so the focus `select` asked for landed on nothing. Take it once the
+    // pty is actually attached, but only if this is still the session you are
+    // in, or a slow one would steal the keyboard back later.
+    if (terms.get(`session:${selected}`) === entry) {
+      try {
+        term.focus();
+      } catch (e) { /* disposed while the socket was opening */ }
+    }
   };
   sock.onmessage = (ev) => {
     if (typeof ev.data === 'string') term.write(ev.data);
