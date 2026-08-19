@@ -88,6 +88,13 @@ Everything outside that block is hand-written and survives.
   at 50 and the PR row renders `50+` (`web/app.js`). An under-count cannot hide
   work, which was the point, but the real number is still unknown on a
   long-running PR.
+- Syntax highlighting in the diff viewer. Lines render as plain text today
+  (`.ln s`); the only marks are the word-level `.w-add`/`.w-del` ranges the
+  daemon computes (`src/diff.rs`), which is change highlighting, not code
+  highlighting. Two constraints worth knowing before starting: there is no
+  frontend build step, so a highlighter has to be vendored the way xterm.js is,
+  and its spans have to interleave with the word-diff ranges rather than nest
+  inside them, since both want to wrap arbitrary slices of the same line.
 - Bump `actions/checkout@v4` and `softprops/action-gh-release@v2` in
   `.github/workflows/release.yml`. GitHub is retiring Node 20 and both are being
   forced onto Node 24, which works but annotates every release run until one of
