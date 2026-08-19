@@ -175,10 +175,6 @@ Everything outside that block is hand-written and survives.
   frontend build step, so a highlighter has to be vendored the way xterm.js is,
   and its spans have to interleave with the word-diff ranges rather than nest
   inside them, since both want to wrap arbitrary slices of the same line.
-- Bump `actions/checkout@v4` and `softprops/action-gh-release@v2` in
-  `.github/workflows/release.yml`. GitHub is retiring Node 20 and both are being
-  forced onto Node 24, which works but annotates every release run until one of
-  them stops being forced.
 - `inotify` on `.git/HEAD` per workspace (§2). The branch set is refreshed on
   reconcile instead, which is correct but lags a branch switch.
 
