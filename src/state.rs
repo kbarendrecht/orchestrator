@@ -12,6 +12,42 @@ use crate::git;
 use crate::model::*;
 use crate::pty::pid_alive;
 
+/// What the overview shows about a run: one row per thread, in plan order.
+#[derive(Debug, Clone, Serialize)]
+pub struct RunView {
+    pub session: Uuid,
+    pub threads: Vec<RunThreadView>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct RunThreadView {
+    pub thread_id: String,
+    pub location: String,
+    pub status: crate::post::ThreadStatus,
+    pub commit: Option<String>,
+    pub note: Option<String>,
+}
+
+impl RunView {
+    fn of(r: &ResolveRun) -> Self {
+        RunView {
+            session: r.session,
+            threads: r
+                .plan
+                .threads
+                .iter()
+                .map(|t| RunThreadView {
+                    thread_id: t.thread_id.clone(),
+                    location: t.location.clone(),
+                    status: t.status,
+                    commit: t.commit.clone(),
+                    note: t.note.clone(),
+                })
+                .collect(),
+        }
+    }
+}
+
 /// A resolve run in flight: the session doing it, and the decisions it carries.
 #[derive(Debug, Clone)]
 pub struct ResolveRun {
@@ -380,6 +416,11 @@ impl AppState {
             repos: self.repos.clone(),
             stack_up: inner.stack_up,
             update: inner.update.clone(),
+            resolve_runs: inner
+                .resolve_runs
+                .iter()
+                .map(|(pr, r)| (*pr, RunView::of(r)))
+                .collect(),
             version: env!("CARGO_PKG_VERSION"),
         }
     }
@@ -666,6 +707,10 @@ pub struct Snapshot {
     pub stack_up: Option<bool>,
     /// A newer release than the running build, or `None`.
     pub update: Option<UpdateInfo>,
+    /// Resolve runs in flight, by PR: what each thread's outcome was so far. The
+    /// overview reads this rather than the report of a batch that has finished,
+    /// because a run is watchable while it happens.
+    pub resolve_runs: HashMap<u64, RunView>,
     /// The running build's own version, for the settings panel. Always here,
     /// unlike `update`, which only appears when there is something newer: "which
     /// build am I on" is a question worth answering when the answer is "the

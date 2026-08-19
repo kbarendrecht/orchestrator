@@ -501,6 +501,31 @@ fn label_for(t: &crate::github::Thread) -> String {
     }
 }
 
+/// Where one thread of a run has got to.
+///
+/// The states a thread can actually be in, rather than done/not-done: a run that
+/// answered four threads, held one back and could not apply a sixth has five
+/// different outcomes to account for, and an overview that says "5 of 6" about it
+/// is hiding the only rows worth reading.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ThreadStatus {
+    /// Not reached yet.
+    Pending,
+    /// The session committed for it, and you have not decided about the reply.
+    Committed,
+    /// Committed and the reviewer has been answered. Done.
+    Replied,
+    /// Committed, and you kept the reply back to write yourself.
+    Held,
+    /// Handed to you at triage; the session did not touch it.
+    Manual,
+    /// Words only: nothing to build, so the reply is the whole of it.
+    WordsOnly,
+    /// The session could not finish it and said why.
+    NeedsYou,
+}
+
 /// One thread as the implementing session sees it.
 ///
 /// Derived from the same [`resolve`] the batch path uses, so the session and the
@@ -523,6 +548,16 @@ pub struct PlannedThread {
     /// `manual`, where you are writing it.
     pub patch: Option<String>,
     pub story: Option<crate::proposal::StoryDraft>,
+    /// Where this thread has got to. Not sent to the session — it is the daemon's
+    /// account of the run, and the session is told one thread at a time.
+    #[serde(skip_serializing)]
+    pub status: ThreadStatus,
+    /// The commit the session made for it, once it reports one.
+    #[serde(skip_serializing)]
+    pub commit: Option<String>,
+    /// Why it stopped, when it did.
+    #[serde(skip_serializing)]
+    pub note: Option<String>,
 }
 
 /// The whole run, in the order the threads should be worked.
@@ -551,6 +586,14 @@ pub fn plan(
             .into_iter()
             .map(|h| PlannedThread {
                 location: h.label.clone(),
+                // What it starts as, rather than a blanket `Pending`: a thread the
+                // session will never touch should not sit in the overview looking
+                // like one it has not got to yet.
+                status: match (h.mode, h.patch.is_some()) {
+                    (crate::proposal::Mode::Manual, _) => ThreadStatus::Manual,
+                    (_, false) => ThreadStatus::WordsOnly,
+                    (_, true) => ThreadStatus::Pending,
+                },
                 thread_id: h.thread_id,
                 reviewer_said: h.reviewer_said,
                 stance: h.stance,
@@ -558,6 +601,8 @@ pub fn plan(
                 reply: h.reply.or(Some(h.draft).filter(|d| !d.is_empty())),
                 patch: h.patch,
                 story: h.story,
+                commit: None,
+                note: None,
             })
             .collect(),
     })
@@ -1498,6 +1543,55 @@ mod tests {
         assert_eq!(handled[1].touched, Some(("b.ts".into(), 99)));
         // ...but only the one with a patch is blamed.
         assert_eq!(blame_lines(&handled), vec![("a.ts".to_string(), 10)]);
+    }
+
+    /// The overview has to be able to tell six outcomes apart, and the ones that
+    /// were never the session's work must not read as work it has not reached.
+    #[test]
+    fn a_plan_starts_each_thread_where_it_actually_is() {
+        use crate::proposal::{Mode, Stance};
+        let fresh = fetched(vec![
+            thread("PRRT_1", Some("a.ts"), Some(10), "john"),
+            thread("PRRT_2", Some("b.ts"), Some(99), "john"),
+            thread("PRRT_3", Some("c.ts"), Some(12), "john"),
+        ]);
+        let mut set = proposed("PRRT_1", vec![with_patch(Stance::Reply, true)]);
+        for (id, pos) in [
+            ("PRRT_2", with_patch(Stance::Reply, true)),
+            ("PRRT_3", position(Stance::Reply)),
+        ] {
+            set.proposals.push(Proposal {
+                thread_id: id.into(),
+                continued: false,
+                read: "r".into(),
+                verified: Some("v".into()),
+                recommend: 0,
+                positions: vec![pos],
+            });
+        }
+        let batch = Batch {
+            base_sha: "abc123".into(),
+            decisions: vec![
+                // a fix for the agent
+                Decision { thread_id: "PRRT_1".into(), position: 0, reply: None, mode: Mode::Agent },
+                // the same, but you are writing it
+                Decision { thread_id: "PRRT_2".into(), position: 0, reply: None, mode: Mode::Manual },
+                // words only: nothing to build at all
+                Decision { thread_id: "PRRT_3".into(), position: 0, reply: None, mode: Mode::Agent },
+            ],
+        };
+        let plan = plan(4812, &set, &fresh, &batch, TRACKER).expect("planned");
+        let got: Vec<ThreadStatus> = plan.threads.iter().map(|t| t.status).collect();
+        assert_eq!(
+            got,
+            vec![
+                ThreadStatus::Pending,
+                ThreadStatus::Manual,
+                ThreadStatus::WordsOnly
+            ]
+        );
+        // And the manual one carries no patch for the session to apply behind you.
+        assert!(plan.threads[1].patch.is_none());
     }
 
     #[test]

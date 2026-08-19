@@ -326,6 +326,8 @@ fn router(app: Arc<AppState>) -> Router {
         // The only irreversible one. See `post::run` for the order.
         .route("/api/pr/:number/post", post(api::pr_post))
         .route("/api/pr/:number/resolve-run", post(api::pr_resolve_run))
+        .route("/api/pr/:number/run/push", post(api::pr_run_push))
+        .route("/api/pr/:number/run/rerequest", post(api::pr_run_rerequest))
         // ...unless a thread was answered by hand, in which case the batch stops
         // after the local commit and this finishes it.
         .route("/api/pr/:number/manual", get(api::pr_manual))

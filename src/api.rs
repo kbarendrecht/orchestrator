@@ -496,6 +496,12 @@ pub async fn thread_committed(
     .await
     .context("reading the commit panicked")??;
 
+    mark_thread(&app, number, &thread_id, |t| {
+        t.commit = Some(body.sha.clone());
+        t.status = crate::post::ThreadStatus::Committed;
+    })
+    .await;
+
     let Some(reply) = planned.reply.clone() else {
         // Nothing to say: the stance was a bare thumbs up and it is posted with
         // the rest, so there is nothing to confirm here.
@@ -563,6 +569,11 @@ pub async fn thread_committed(
     };
 
     if verdict != "post" {
+        mark_thread(&app, number, &thread_id, |t| {
+            t.status = crate::post::ThreadStatus::Held;
+        })
+        .await;
+        app.notify().await;
         return Ok(Json(json!({ "posted": false, "reason": "held back" })));
     }
 
@@ -586,8 +597,31 @@ pub async fn thread_committed(
         .await
         .context("the write panicked")??;
 
+    mark_thread(&app, number, &thread_id, |t| {
+        t.status = crate::post::ThreadStatus::Replied;
+    })
+    .await;
     app.notify().await;
     Ok(Json(json!({ "posted": true })))
+}
+
+/// Update one thread's place in the run, if the run is still there.
+///
+/// Silent when it is not: a run can be closed while its session is still winding
+/// down, and failing the agent's call over bookkeeping would be the tail wagging
+/// the dog.
+async fn mark_thread(
+    app: &Arc<AppState>,
+    pr: u64,
+    thread_id: &str,
+    f: impl FnOnce(&mut crate::post::PlannedThread),
+) {
+    let mut inner = app.inner.write().await;
+    if let Some(run) = inner.resolve_runs.get_mut(&pr) {
+        if let Some(t) = run.plan.threads.iter_mut().find(|t| t.thread_id == thread_id) {
+            f(t);
+        }
+    }
 }
 
 /// Your answer, which releases the tool call the agent is sitting in.
@@ -1659,6 +1693,75 @@ pub async fn pr_resolve_run(
     );
     app.notify().await;
     Ok(Json(json!({ "session": session, "threads": plan.threads.len() })))
+}
+
+/// Push the branch a run has been committing to.
+///
+/// Its own button, and deliberately not the end of the run: a run can answer four
+/// threads and leave two for you, and pushing that is a judgement about whether
+/// what is on the branch is worth showing. `--force-with-lease` only, through the
+/// same helper every other push here uses.
+pub async fn pr_run_push(
+    State(app): State<Arc<AppState>>,
+    Path(number): Path<u64>,
+) -> ApiResult<serde_json::Value> {
+    let pr = {
+        let inner = app.inner.read().await;
+        pr_from_poll(&inner.prs, number)?
+    };
+    let path = gate_worktree(&app, number).await?;
+    let branch = pr.head_ref.clone();
+    tokio::task::spawn_blocking(move || crate::git::push_with_lease(&path, &branch))
+        .await
+        .context("the push panicked")??;
+    app.notify().await;
+    Ok(Json(json!({ "pushed": pr.head_ref })))
+}
+
+/// Ask for a fresh review, from the reviewers whose threads are all answered.
+///
+/// Held back per reviewer rather than all-or-nothing: someone with an open thread
+/// of their own is not being asked to look again at work that has not answered
+/// them. Also its own button, because re-requesting is a claim that you are done.
+pub async fn pr_run_rerequest(
+    State(app): State<Arc<AppState>>,
+    Path(number): Path<u64>,
+) -> ApiResult<serde_json::Value> {
+    let fresh = fetch_threads(&app, number).await?;
+    let (owner, name) =
+        crate::resolve_repo(&app).context("no GitHub repo configured and none on the remote")?;
+    let target = crate::github_write::Target {
+        cwd: app.cfg.main_checkout.clone(),
+        owner,
+        name,
+    };
+
+    let all: Vec<&str> = fresh
+        .items
+        .iter()
+        .flat_map(|t| t.comments.first().map(|c| c.author.as_str()))
+        .filter(|a| *a != fresh.viewer)
+        .collect();
+    let open: Vec<&str> = fresh
+        .items
+        .iter()
+        .filter(|t| !t.is_resolved)
+        .flat_map(|t| t.comments.first().map(|c| c.author.as_str()))
+        .filter(|a| *a != fresh.viewer)
+        .collect();
+
+    let mut asked = Vec::new();
+    let mut failed = Vec::new();
+    for login in crate::github_write::ready_to_rerequest(&all, &open) {
+        let (t, who) = (target.clone(), login.to_string());
+        match tokio::task::spawn_blocking(move || t.rerequest(number, &who)).await {
+            Ok(Ok(())) => asked.push(login.to_string()),
+            Ok(Err(e)) => failed.push(format!("{login}: {e:#}")),
+            Err(e) => failed.push(format!("{login}: {e}")),
+        }
+    }
+    app.notify().await;
+    Ok(Json(json!({ "rerequested": asked, "failed": failed })))
 }
 
 /// What you have edited since the manual phase opened.
