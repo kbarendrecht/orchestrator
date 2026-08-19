@@ -354,6 +354,7 @@ async fn start_with_prompt(
 async fn vendored_prompt_file(app: &Arc<AppState>, pr: u64, command: &str) -> Result<PathBuf> {
     let template = match command {
         "resolve" => crate::prompt::RESOLVE,
+        "resolve-run" => crate::prompt::RESOLVE_RUN,
         "fix-pr" => crate::prompt::FIX_PR,
         other => bail!("no vendored prompt for /{other}"),
     };
@@ -373,6 +374,7 @@ async fn vendored_prompt_file(app: &Arc<AppState>, pr: u64, command: &str) -> Re
             login,
             upstream: app.cfg.upstream_ref.clone(),
             upstream_remote: app.cfg.upstream_remote.clone(),
+            ask_base: format!("http://127.0.0.1:{}/api/session", app.cfg.port),
             // The review flow's template uses none of triage's or story's vars.
             ..Default::default()
         },
@@ -418,6 +420,51 @@ pub async fn ensure_pr_worktree(app: &Arc<AppState>, pr: u64, head_ref: &str) ->
     app.register_worktree(&name, path, Some(head_ref.to_string()))
         .await;
     Ok(name)
+}
+
+/// Start the session that carries out a triaged PR: the plan, then the agent.
+///
+/// The plan is written beside the prompt rather than fetched, because it is fixed
+/// the moment you press the button: it is your decisions, resolved against a
+/// fetch taken then. A session that re-read it later would be working from a
+/// different set of answers than the one you approved.
+pub async fn spawn_resolve_run(
+    app: &Arc<AppState>,
+    pr: u64,
+    head_ref: &str,
+    plan: &crate::post::Plan,
+) -> Result<SessionId> {
+    let workspace = ensure_pr_worktree(app, pr, head_ref).await?;
+    if !app.live_sessions_in(&workspace).await.is_empty() {
+        bail!("{workspace} already has a live session for #{pr}; finish or close it first");
+    }
+
+    let dir = Config::config_dir()?.join(format!("resolve-run-{pr}"));
+    std::fs::create_dir_all(&dir)?;
+    let plan_file = dir.join("plan.json");
+    std::fs::write(&plan_file, serde_json::to_string_pretty(plan)?)
+        .with_context(|| format!("writing {}", plan_file.display()))?;
+
+    let prompt_file = vendored_prompt_file(app, pr, "resolve-run").await?;
+    let id = spawn_session(
+        app,
+        &workspace,
+        Kind::Automation {
+            pr,
+            command: "resolve-run".to_string(),
+        },
+        None,
+    )
+    .await?;
+    let mut inner = app.inner.write().await;
+    if let Some(s) = inner.sessions.get_mut(&id) {
+        s.pending_prompt = Some(format!(
+            "Read {} and follow it. Your plan for PR {pr} is {}.",
+            prompt_file.display(),
+            plan_file.display()
+        ));
+    }
+    Ok(id)
 }
 
 /// Worktree names become directory names and branch names (`worktree-<name>`),

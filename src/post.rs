@@ -296,7 +296,7 @@ struct Handled {
 /// Every lookup here is a containment check: the position must exist in the
 /// proposal the human read, the thread must be in the fresh fetch, and the
 /// comment id comes from [`Threads::root_for`] rather than from the payload.
-fn resolve(
+pub(crate) fn resolve(
     positions: &crate::proposal::ProposalSet,
     fresh: &Threads,
     batch: &Batch,
@@ -499,6 +499,68 @@ fn label_for(t: &crate::github::Thread) -> String {
         (Some(p), None) => format!("{p} · {who}"),
         (None, _) => format!("review summary · {who}"),
     }
+}
+
+/// One thread as the implementing session sees it.
+///
+/// Derived from the same [`resolve`] the batch path uses, so the session and the
+/// daemon are working from one reading of your decisions: the drift checks, the
+/// story/tracker refusal and the reply resolution have all already happened by
+/// the time this is written out.
+#[derive(Debug, Clone, Serialize)]
+pub struct PlannedThread {
+    pub thread_id: String,
+    /// `path:line`, or the thread's label when it is a review summary.
+    pub location: String,
+    pub reviewer_said: String,
+    pub stance: crate::proposal::Stance,
+    pub mode: crate::proposal::Mode,
+    /// The words the daemon will post once the work lands. The session does not
+    /// post them; it is told them so its commit message and its own reasoning
+    /// match what the reviewer will read.
+    pub reply: Option<String>,
+    /// The fix triage staged, for the session to apply and adapt. Absent under
+    /// `manual`, where you are writing it.
+    pub patch: Option<String>,
+    pub story: Option<crate::proposal::StoryDraft>,
+}
+
+/// The whole run, in the order the threads should be worked.
+#[derive(Debug, Clone, Serialize)]
+pub struct Plan {
+    pub pr: u64,
+    /// The head the decisions were taken against. The session re-checks it before
+    /// touching anything, because a force-push in between invalidates every patch.
+    pub base_sha: String,
+    pub threads: Vec<PlannedThread>,
+}
+
+/// Turn accepted decisions into the plan a session works from.
+pub fn plan(
+    pr: u64,
+    positions: &crate::proposal::ProposalSet,
+    fresh: &Threads,
+    batch: &Batch,
+    tracker: crate::config::Tracker,
+) -> Result<Plan> {
+    let handled = resolve(positions, fresh, batch, tracker, None)?;
+    Ok(Plan {
+        pr,
+        base_sha: batch.base_sha.clone(),
+        threads: handled
+            .into_iter()
+            .map(|h| PlannedThread {
+                location: h.label.clone(),
+                thread_id: h.thread_id,
+                reviewer_said: h.reviewer_said,
+                stance: h.stance,
+                mode: h.mode,
+                reply: h.reply.or(Some(h.draft).filter(|d| !d.is_empty())),
+                patch: h.patch,
+                story: h.story,
+            })
+            .collect(),
+    })
 }
 
 /// Run the batch.

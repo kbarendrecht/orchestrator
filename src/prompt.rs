@@ -25,6 +25,10 @@ pub const STORY: &str = include_str!("../commands/story.md");
 /// take over, so it reaches the session as a file to read rather than as `-p`.
 pub const RESOLVE: &str = include_str!("../commands/resolve.md");
 
+/// The session that carries out a triaged review: applies the fixes, commits, and
+/// stops to ask. It writes code and nothing outward.
+pub const RESOLVE_RUN: &str = include_str!("../commands/resolve-run.md");
+
 /// What `{{TRACKER}}` becomes when a tracker is configured.
 ///
 /// A sentence rather than a boolean, so the prompt reads as prose in both states
@@ -70,6 +74,9 @@ pub struct Vars {
     pub stories: String,
     /// The file a story run writes its answer into.
     pub drop_file: String,
+    /// Where a running session asks a question: the base the two interaction
+    /// routes hang off, since the session id itself comes from the environment.
+    pub ask_base: String,
 }
 
 /// Substitute every `{{PLACEHOLDER}}`, and refuse to ship one that is left.
@@ -91,6 +98,7 @@ pub fn render(template: &str, v: &Vars) -> Result<String> {
         ("{{TRACKER}}", v.tracker.as_str()),
         ("{{STORIES}}", v.stories.as_str()),
         ("{{DROP_FILE}}", v.drop_file.as_str()),
+        ("{{ASK_BASE}}", v.ask_base.as_str()),
     ]
     .iter()
     .fold(template.to_string(), |acc, (k, val)| acc.replace(k, val));
@@ -121,6 +129,7 @@ mod tests {
             upstream: "upstream/develop".into(),
             upstream_remote: "upstream".into(),
             proposals_url: "http://127.0.0.1:7777/api/pr/10001/proposals".into(),
+            ask_base: "http://127.0.0.1:7777/api/session".into(),
             tracker: TRACKER_ON.into(),
             stories: "[]".into(),
             drop_file: "/tmp/x/stories.json".into(),

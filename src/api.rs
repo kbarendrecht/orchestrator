@@ -781,7 +781,6 @@ mod tests {
 
         let dir = std::env::temp_dir().join(format!("orchd-ask-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        std::env::set_var("HOME", &dir);
         let cfg: Config = serde_json::from_str(&format!(
             r#"{{"main_checkout":"{}","port":7797}}"#,
             dir.display()
@@ -868,7 +867,6 @@ mod tests {
 
         let dir = std::env::temp_dir().join(format!("orchd-ask3-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        std::env::set_var("HOME", &dir);
         let cfg: Config = serde_json::from_str(&format!(
             r#"{{"main_checkout":"{}","port":7795}}"#,
             dir.display()
@@ -939,7 +937,6 @@ mod tests {
 
         let dir = std::env::temp_dir().join(format!("orchd-ask2-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        std::env::set_var("HOME", &dir);
         let cfg: Config = serde_json::from_str(&format!(
             r#"{{"main_checkout":"{}","port":7796}}"#,
             dir.display()
@@ -1467,6 +1464,42 @@ pub async fn pr_post(
     drop(released);
     app.notify().await;
     Ok(Json(report))
+}
+
+/// Start the session that carries out a triaged review.
+///
+/// The other half of `/post`, and deliberately the same payload: your decisions,
+/// resolved through the same [`crate::post::resolve`] the batch uses, so the two
+/// paths cannot read one set of answers differently. What changes is who does the
+/// work — an agent that adapts a fix to a branch that moved and stops to ask,
+/// rather than `git apply` and a refusal.
+///
+/// It writes no comment and pushes nothing. The session is handed a plan and the
+/// worktree; every outward write stays here, on your button.
+pub async fn pr_resolve_run(
+    State(app): State<Arc<AppState>>,
+    Path(number): Path<u64>,
+    Json(batch): Json<crate::post::Batch>,
+) -> ApiResult<serde_json::Value> {
+    let pr = {
+        let inner = app.inner.read().await;
+        pr_from_poll(&inner.prs, number)?
+    };
+    let proposals = {
+        let inner = app.inner.read().await;
+        inner
+            .proposals
+            .get(&number)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("PR #{number} has no triage to carry out"))?
+    };
+    // Fetched now, not from the cache: it is what makes the thread ids real and
+    // the drift check mean anything.
+    let fresh = fetch_threads(&app, number).await?;
+    let plan = crate::post::plan(number, &proposals, &fresh, &batch, app.cfg.tracker)?;
+    let session = spawn::spawn_resolve_run(&app, number, &pr.head_ref, &plan).await?;
+    app.notify().await;
+    Ok(Json(json!({ "session": session, "threads": plan.threads.len() })))
 }
 
 /// What you have edited since the manual phase opened.
