@@ -88,6 +88,9 @@ Everything outside that block is hand-written and survives.
   at 50 and the PR row renders `50+` (`web/app.js`). An under-count cannot hide
   work, which was the point, but the real number is still unknown on a
   long-running PR.
+- Line numbers and syntax highlighting in the open question's detail block
+  (`.oqd`). Same want as the diff viewer below, and probably the same answer, so
+  do them together: whatever gets vendored for one should serve both.
 - Syntax highlighting in the diff viewer. Lines render as plain text today
   (`.ln s`); the only marks are the word-level `.w-add`/`.w-del` ranges the
   daemon computes (`src/diff.rs`), which is change highlighting, not code

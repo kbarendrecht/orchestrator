@@ -318,6 +318,7 @@ pub async fn ask(
         options: body.options,
         asked_at: std::time::SystemTime::now(),
         answer: None,
+        answer_text: None,
     };
     let ask_id = interaction.id;
     {
@@ -366,7 +367,11 @@ pub async fn ask_wait(
             match &s.interaction {
                 Some(i) if i.id == ask_id => {
                     if let Some(answer) = &i.answer {
-                        return Ok(Json(json!({ "answered": true, "answer": answer })));
+                        return Ok(Json(json!({
+                            "answered": true,
+                            "answer": answer,
+                            "text": i.answer_text,
+                        })));
                     }
                 }
                 // Gone, or replaced by a later question: either way this one will
@@ -391,6 +396,9 @@ pub async fn ask_wait(
 pub struct AnswerBody {
     pub ask: Uuid,
     pub answer: String,
+    /// Required by an option that asked for words, refused by one that did not.
+    #[serde(default)]
+    pub text: Option<String>,
 }
 
 /// Your answer, which releases the tool call the agent is sitting in.
@@ -410,15 +418,29 @@ pub async fn answer(
             .as_mut()
             .filter(|i| i.id == body.ask)
             .ok_or_else(|| anyhow::anyhow!("session {id} is not asking {}", body.ask))?;
-        // Only what was offered. A free-text answer would reach the agent as an
-        // instruction nobody wrote a branch for.
-        if !open.options.iter().any(|o| o.value == body.answer) {
+        // Only what was offered. A free-text *value* would reach the agent as an
+        // instruction nobody wrote a branch for; words are carried separately, by
+        // an option that asked for them.
+        let picked = open
+            .options
+            .iter()
+            .find(|o| o.value == body.answer)
+            .ok_or_else(|| anyhow::anyhow!("{} is not one of the options", body.answer))?;
+        let text = body.text.as_deref().map(str::trim).filter(|t| !t.is_empty());
+        if picked.free && text.is_none() {
             return Err(ApiError(anyhow::anyhow!(
-                "{} is not one of the options",
-                body.answer
+                "\"{}\" is the option that asks for words, and none were written",
+                picked.label
+            )));
+        }
+        if !picked.free && text.is_some() {
+            return Err(ApiError(anyhow::anyhow!(
+                "\"{}\" takes no words",
+                picked.label
             )));
         }
         open.answer = Some(body.answer.clone());
+        open.answer_text = text.map(str::to_string);
         // Answered, so it is going again. `Stop` will correct this if the turn
         // ends for real a moment later.
         s.set_state(crate::model::State::Working);
@@ -742,9 +764,11 @@ mod tests {
                     value: "rebase".into(),
                     label: "Rebase".into(),
                     sub: String::new(),
+                    free: false,
                 }],
                 asked_at: std::time::SystemTime::now(),
                 answer: None,
+                answer_text: None,
             });
             inner.sessions.insert(id, sess);
         }
@@ -762,6 +786,7 @@ mod tests {
             Json(AnswerBody {
                 ask: ask_id,
                 answer: "rebase".into(),
+                text: None,
             }),
         )
         .await
@@ -776,6 +801,77 @@ mod tests {
             .expect("wait succeeded");
         assert_eq!(got.0["answered"], true);
         assert_eq!(got.0["answer"], "rebase");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The escape hatch: an option that asks for words is not answered by picking
+    /// it, and the words travel beside the value rather than as it.
+    #[tokio::test]
+    async fn the_option_that_asks_for_words_is_not_answered_without_them() {
+        use crate::config::Config;
+        use crate::model::{Interaction, InteractionOption, Kind, Session, MAIN};
+        use crate::state::AppState;
+
+        let dir = std::env::temp_dir().join(format!("orchd-ask3-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("HOME", &dir);
+        let cfg: Config = serde_json::from_str(&format!(
+            r#"{{"main_checkout":"{}","port":7795}}"#,
+            dir.display()
+        ))
+        .unwrap();
+        let app = AppState::new(cfg, "t".into(), crate::window::Chrome::None);
+        let id = Uuid::new_v4();
+        let ask_id = Uuid::new_v4();
+        {
+            let mut inner = app.inner.write().await;
+            let mut sess = Session::new(id, MAIN.to_string(), dir.clone(), Kind::Interactive);
+            sess.interaction = Some(Interaction {
+                id: ask_id,
+                thread_id: None,
+                question: "how should it be documented?".into(),
+                detail: None,
+                options: vec![InteractionOption {
+                    value: "mine".into(),
+                    label: "Let me write it…".into(),
+                    sub: String::new(),
+                    free: true,
+                }],
+                asked_at: std::time::SystemTime::now(),
+                answer: None,
+                answer_text: None,
+            });
+            inner.sessions.insert(id, sess);
+        }
+
+        let err = answer(
+            State(app.clone()),
+            Path(id),
+            Json(AnswerBody { ask: ask_id, answer: "mine".into(), text: None }),
+        )
+        .await
+        .err()
+        .expect("refused with no words");
+        assert!(format!("{}", err.0).contains("none were written"));
+
+        answer(
+            State(app.clone()),
+            Path(id),
+            Json(AnswerBody {
+                ask: ask_id,
+                answer: "mine".into(),
+                text: Some("put it under Pushing, but say why".into()),
+            }),
+        )
+        .await
+        .map_err(|e| format!("{}", e.0))
+        .expect("accepted with words");
+
+        let inner = app.inner.read().await;
+        let got = inner.sessions[&id].interaction.as_ref().unwrap();
+        assert_eq!(got.answer.as_deref(), Some("mine"));
+        assert_eq!(got.answer_text.as_deref(), Some("put it under Pushing, but say why"));
+        drop(inner);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -810,9 +906,11 @@ mod tests {
                     value: "rebase".into(),
                     label: "Rebase".into(),
                     sub: String::new(),
+                    free: false,
                 }],
                 asked_at: std::time::SystemTime::now(),
                 answer: None,
+                answer_text: None,
             });
             inner.sessions.insert(id, sess);
         }
@@ -822,6 +920,7 @@ mod tests {
             Json(AnswerBody {
                 ask: ask_id,
                 answer: "force-push".into(),
+                text: None,
             }),
         )
         .await

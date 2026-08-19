@@ -300,6 +300,9 @@ pub struct Interaction {
     /// Set when you answer, which is what releases the agent's poll.
     #[serde(default)]
     pub answer: Option<String>,
+    /// The words you typed, when the option you picked asked for some.
+    #[serde(default)]
+    pub answer_text: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -310,6 +313,11 @@ pub struct InteractionOption {
     pub label: String,
     #[serde(default)]
     pub sub: String,
+    /// This option wants words with it: the escape hatch, for when none of the
+    /// others fit. The *value* still comes from the agent's own vocabulary, so it
+    /// branches on a word it wrote; your text rides along as the reason.
+    #[serde(default)]
+    pub free: bool,
 }
 
 // ---------------------------------------------------------------------------

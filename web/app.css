@@ -299,7 +299,10 @@ button.ctx-btn:hover{color:var(--text)}
   color:var(--dim);background:var(--bg);border:1px solid var(--line);border-radius:2px;
   padding:9px 11px;margin:0;white-space:pre;overflow-x:auto;max-height:220px;
 }
-.oqopts{display:flex;flex-direction:column;gap:5px}
+/* Set apart from the detail above it: the block is something to read and these
+   are something to press, and at the same width they read as one list. */
+.oqopts{display:flex;flex-direction:column;gap:5px;margin-top:5px;
+  padding-top:12px;border-top:1px solid var(--line)}
 .oqopt{
   text-align:left;width:100%;padding:8px 11px;border:1px solid var(--line);
   border-radius:2px;background:var(--bg);
@@ -309,6 +312,25 @@ button.ctx-btn:hover{color:var(--text)}
 .oqopt .ol{font-size:calc(12px * var(--fs));color:var(--text)}
 .oqopt:disabled .ol{color:var(--ghost)}
 .oqopt .od{font-size:calc(11px * var(--fs));color:var(--faint-solid);margin-top:2px}
+/* The way out when none of the others fit, so it reads as the quieter one. */
+.oqopt.esc .ol{color:var(--dim);font-style:italic}
+.oqfree{display:flex;flex-direction:column;gap:8px}
+.oqfree .box{
+  resize:vertical;display:block;width:100%;min-height:74px;
+  font-family:var(--sans);font-size:calc(12px * var(--fs));line-height:1.5;
+  color:var(--text);background:var(--bg);border:1px solid var(--line);
+  border-radius:2px;padding:9px 11px;
+}
+.oqfree .box:focus{outline:none;border-color:var(--attn)}
+.oqfoot{display:flex;align-items:center;gap:8px}
+.oqsend{
+  font-family:var(--label);font-size:calc(8.5px * var(--fs));font-weight:700;
+  letter-spacing:.1em;text-transform:uppercase;padding:5px 12px;border-radius:2px;
+  color:#1A1206;background:var(--attn);
+}
+.oqsend:disabled{color:var(--ghost);background:none;border:1px solid var(--line);cursor:default}
+.oqback{font-family:var(--mono);font-size:calc(10px * var(--fs));color:var(--faint-solid)}
+.oqback:hover{color:var(--text)}
 
 /* ---------- process drawer ---------- */
 .drawer{border-top:1px solid var(--line);background:var(--surface);display:flex;flex-direction:column;height:var(--drawer);flex:0 0 auto;position:relative}

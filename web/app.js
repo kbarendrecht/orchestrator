@@ -409,14 +409,45 @@ function renderInteraction() {
 
   const opts = el('div', 'oqopts');
   for (const o of q.options) {
-    const b = el('button', 'oqopt');
+    const b = el('button', 'oqopt' + (o.free ? ' esc' : ''));
     b.appendChild(el('div', 'ol', o.label));
     if (o.sub) b.appendChild(el('div', 'od', o.sub));
-    b.onclick = () => answerInteraction(s.id, q.id, o.value, host);
+    // An option that asks for words does not answer on click: it opens the box.
+    // Answering straight through would be the button saying "let me write it"
+    // and then not letting you.
+    b.onclick = o.free
+      ? () => openFreeAnswer(opts, s.id, q.id, o)
+      : () => answerInteraction(s.id, q.id, o.value, host);
     opts.appendChild(b);
   }
   host.appendChild(opts);
   host.hidden = false;
+}
+
+/** The escape hatch's box. Replaces the option row it belongs to, so there is one
+ *  thing on screen to finish rather than a form beside a button that also works. */
+function openFreeAnswer(opts, session, ask, option) {
+  if (opts.querySelector('.oqfree')) return;
+  const wrap = el('div', 'oqfree');
+  const box = el('textarea', 'box');
+  box.setAttribute('aria-label', option.label);
+  box.placeholder = 'Say what you want instead. It reaches the agent as written.';
+  wrap.appendChild(box);
+
+  const row = el('div', 'oqfoot');
+  const send = el('button', 'oqsend', 'send');
+  send.onclick = () => {
+    if (!box.value.trim()) return toast('nothing written yet', true);
+    answerInteraction(session, ask, option.value, opts.parentElement, box.value);
+  };
+  const back = el('button', 'oqback', 'back to the options');
+  back.onclick = () => renderInteraction();
+  row.appendChild(send);
+  row.appendChild(back);
+  wrap.appendChild(row);
+
+  opts.replaceChildren(wrap);
+  box.focus();
 }
 
 /** Answer it, and let the next snapshot take the card away.
@@ -424,13 +455,14 @@ function renderInteraction() {
  *  The buttons go dead immediately: the agent is released the moment the daemon
  *  has the answer, and a second click would be answering a question that is no
  *  longer open. */
-async function answerInteraction(session, ask, answer, host) {
-  for (const b of host.querySelectorAll('.oqopt')) b.disabled = true;
+async function answerInteraction(session, ask, answer, host, text) {
+  const buttons = host.querySelectorAll('.oqopt, .oqsend');
+  for (const b of buttons) b.disabled = true;
   try {
-    await call(`/api/session/${session}/answer`, { ask, answer });
+    await call(`/api/session/${session}/answer`, { ask, answer, text: text ?? null });
   } catch (e) {
     toast(e.message, true);
-    for (const b of host.querySelectorAll('.oqopt')) b.disabled = false;
+    for (const b of buttons) b.disabled = false;
   }
 }
 
