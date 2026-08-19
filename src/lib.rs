@@ -220,6 +220,7 @@ pub async fn start(opts: StartOptions) -> Result<Server> {
     start_review_poller(app.clone());
     start_stack_poller(app.clone());
     start_workspace_watcher(app.clone());
+    start_head_poller(app.clone());
     start_todo_writer(app.clone());
     // A debug build is `cargo run` from a checkout; its version is whatever the
     // working tree is, so comparing it against a release only ever nags. Only a
@@ -740,6 +741,71 @@ fn start_workspace_watcher(app: Arc<AppState>) {
                 let _ = app.reconcile(&ws).await;
             }
             app.notify().await;
+        }
+    });
+}
+
+/// Catch a branch switch fast, without paying reconcile's git on a short timer.
+///
+/// A `git checkout` in any workspace — a shell tab, an editor, the agent — rewrites
+/// that workspace's HEAD file. The 15s watcher only looks at workspaces with a live
+/// session, and the PR poll is slower still, so a switch could sit unseen for the
+/// better part of a minute. This reads each workspace's tiny HEAD file every couple
+/// of seconds — a couple dozen bytes — and only when the contents change does it
+/// run the expensive reconcile + snapshot push. A poll rather than inotify on
+/// purpose: no dependency, no per-OS backend, and no watch to add and drop as
+/// worktrees come and go — and the reconcile it triggers is the same path every
+/// other refresh uses.
+fn start_head_poller(app: Arc<AppState>) {
+    use std::collections::hash_map::Entry;
+    use std::collections::{HashMap, HashSet};
+    use std::path::PathBuf;
+
+    tokio::spawn(async move {
+        let interval = std::time::Duration::from_secs(2);
+        // workspace id -> (its HEAD file, last-seen contents).
+        let mut seen: HashMap<String, (PathBuf, String)> = HashMap::new();
+        loop {
+            tokio::time::sleep(interval).await;
+            let spaces: Vec<(String, PathBuf)> = {
+                let inner = app.inner.read().await;
+                inner
+                    .workspaces
+                    .values()
+                    .map(|w| (w.id.clone(), w.path.clone()))
+                    .collect()
+            };
+            // Forget torn-down worktrees so the tracking map does not grow forever.
+            let live: HashSet<&String> = spaces.iter().map(|(id, _)| id).collect();
+            seen.retain(|id, _| live.contains(id));
+
+            let mut changed = false;
+            for (id, path) in spaces {
+                match seen.entry(id.clone()) {
+                    // First sight: cache the git-resolved HEAD path (a subprocess,
+                    // so only once) and its current contents, without reconciling —
+                    // the branch was already read when the workspace was registered.
+                    Entry::Vacant(e) => {
+                        let Ok(head) = git::head_file(&path) else { continue };
+                        let contents = std::fs::read_to_string(&head).unwrap_or_default();
+                        e.insert((head, contents));
+                    }
+                    Entry::Occupied(mut e) => {
+                        let (head, last) = e.get_mut();
+                        // A read can miss mid-rename; keep the old value and retry
+                        // next tick rather than treat a blip as a change.
+                        let Ok(contents) = std::fs::read_to_string(&*head) else { continue };
+                        if contents != *last {
+                            *last = contents;
+                            let _ = app.reconcile(&id).await;
+                            changed = true;
+                        }
+                    }
+                }
+            }
+            if changed {
+                app.notify().await;
+            }
         }
     });
 }

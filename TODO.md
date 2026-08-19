@@ -175,8 +175,6 @@ Everything outside that block is hand-written and survives.
   frontend build step, so a highlighter has to be vendored the way xterm.js is,
   and its spans have to interleave with the word-diff ranges rather than nest
   inside them, since both want to wrap arbitrary slices of the same line.
-- `inotify` on `.git/HEAD` per workspace (§2). The branch set is refreshed on
-  reconcile instead, which is correct but lags a branch switch.
 
 ## Decisions worth revisiting
 

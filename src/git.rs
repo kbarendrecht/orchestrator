@@ -1,5 +1,5 @@
 use anyhow::{bail, Context, Result};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::model::{ChangedFile, FileSet, FileStatus};
@@ -190,6 +190,18 @@ pub fn current_branch(cwd: &Path) -> Result<String> {
     Ok(git(cwd, &["rev-parse", "--abbrev-ref", "HEAD"])?
         .trim()
         .to_string())
+}
+
+/// The real `HEAD` file for this workspace, wherever git keeps it.
+///
+/// Not `<cwd>/.git/HEAD`: in a linked worktree `<cwd>/.git` is a pointer *file*,
+/// and the HEAD that a checkout rewrites lives under the common dir at
+/// `<main>/.git/worktrees/<id>/HEAD`. `--absolute-git-dir` resolves both — the
+/// checkout's `.git` for main, the worktree's admin dir for a worktree — so the
+/// HEAD poller watches the file that actually moves.
+pub fn head_file(cwd: &Path) -> Result<PathBuf> {
+    let dir = git(cwd, &["rev-parse", "--absolute-git-dir"])?;
+    Ok(PathBuf::from(dir.trim()).join("HEAD"))
 }
 
 pub fn head_sha(cwd: &Path) -> Result<String> {
@@ -1098,6 +1110,33 @@ mod tests {
             .trim()
             .to_string();
         (repo.join(".claude/worktrees/wt"), sha)
+    }
+
+    #[test]
+    fn head_file_resolves_and_tracks_the_branch_for_main_and_worktrees() {
+        let repo = scratch_repo();
+
+        // Main: HEAD is a real file directly under `.git`, and a checkout rewrites
+        // its contents — which is exactly the change the poller reads.
+        let main_head = head_file(&repo).unwrap();
+        assert!(main_head.exists(), "no HEAD at {main_head:?}");
+        assert!(main_head.starts_with(&repo) && main_head.ends_with("HEAD"));
+        let before = std::fs::read_to_string(&main_head).unwrap();
+        git(&repo, &["checkout", "-q", "-b", "other"]).unwrap();
+        assert_ne!(before, std::fs::read_to_string(&main_head).unwrap());
+
+        // Linked worktree: `<wt>/.git` is a pointer file, so the real HEAD lives
+        // under the common dir — `<wt>/.git/HEAD` does not exist.
+        let wt = repo.join(".claude/worktrees/wt");
+        std::fs::create_dir_all(wt.parent().unwrap()).unwrap();
+        git(&repo, &["worktree", "add", "-q", "-b", "wt", wt.to_str().unwrap()]).unwrap();
+        let wt_head = head_file(&wt).unwrap();
+        assert!(wt_head.exists(), "no worktree HEAD at {wt_head:?}");
+        assert!(!wt.join(".git/HEAD").exists());
+        assert!(
+            wt_head.to_string_lossy().contains(".git/worktrees/"),
+            "worktree HEAD should live under the common dir, got {wt_head:?}"
+        );
     }
 
     #[test]
