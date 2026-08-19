@@ -48,10 +48,11 @@
   --label:'Martian Mono',ui-monospace,monospace;
 
   /* One multiplier for every text size in this sheet, so the font-size setting
-     scales type without touching layout. 1.1 is the default: the design was drawn
-     a little small for a full-screen window, and this is what the setting calls
-     100%. */
-  --fs:1.1;
+     scales type without touching layout. 1.155 is the default: the design was
+     drawn a little small for a full-screen window, and this is what the setting
+     calls 100%. Kept in step with `FS_BASE` in app.js, which owns it once the
+     page has script; this value is what the first paint uses. */
+  --fs:1.155;
 
   --rail:290px;
   --files:296px;

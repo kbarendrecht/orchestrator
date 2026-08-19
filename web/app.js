@@ -3927,11 +3927,14 @@ function setupColumns() {
  *
  * Kept in localStorage, like the column widths — it is this browser's opinion,
  * not something the daemon owns. */
-/* What "100%" means: 1.1 of the stylesheet's own sizes, because the design was
- * drawn a little small for a full-screen window. Every text size in the sheet is
+/* What "100%" means: 1.155 of the stylesheet's own sizes, because the design was
+ * drawn a little small for a full-screen window. Was 1.1, which read a step small
+ * in practice: what used to be the 105% setting is now the default.
+ *
+ * Every text size in the sheet is
  * `calc(Npx * var(--fs))`, so this scales type and leaves layout alone — no
  * `zoom`, which is a legacy property that WebKitGTK mispaints at scale. */
-const FS_BASE = 1.1;
+const FS_BASE = 1.155;
 const ZOOM = { key: 'orch.uiZoom', def: 1, min: 0.8, max: 1.5, step: 0.05 };
 
 /** The user-facing scale, where 1 is the default. */
