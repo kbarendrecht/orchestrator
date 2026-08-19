@@ -2204,9 +2204,13 @@ function rvCard(root) {
 
   const hint = `thread ${reviewState.i + 1} of ${q.length} · ` +
     (q.some(isHandled) ? stagedCount() : 'nothing written yet');
+  /* Three peers, because they are three answers to the same question rather than
+     one action and two escapes. `manual` is not a lesser `accept`: it stages the
+     same stance and the same words, and says you are writing the code. */
   root.appendChild(rvActs([
-    actBtn('accept · enter', 'warm', () => acceptCard()),
-    actBtn('skip', null, () => skipCard()),
+    actBtn('accept · ⏎', 'warm', () => acceptCard()),
+    actBtn('manual · m', modeOf(item) === 'manual' ? 'on' : null, () => manualCard()),
+    actBtn('skip · s', null, () => skipCard()),
     reviewState.i > 0 ? actBtn('back', null, () => moveCard(-1)) : null,
   ], hint));
 }
@@ -3184,6 +3188,24 @@ function acceptCard() {
   }
   reviewState.picks[item.t.id] = pickOf(item);
   delete reviewState.skipped[item.t.id];
+  // Accepting is the agent doing the work. Says so out loud, so pressing it after
+  // `manual` takes the thread back rather than leaving the older answer standing.
+  delete reviewState.modes[item.t.id];
+  advance();
+}
+
+/** Same decision, different hands: you write the code, the session waits.
+ *
+ *  Deliberately not a fourth stance. The words and the position are unchanged —
+ *  only who implements them — and the reply is written later, in the phase, once
+ *  the work exists. So an empty box is not a refusal here the way it is under
+ *  `accept`. */
+function manualCard() {
+  const item = queue()[reviewState.i];
+  if (!item) return;
+  reviewState.picks[item.t.id] = pickOf(item);
+  reviewState.modes[item.t.id] = 'manual';
+  delete reviewState.skipped[item.t.id];
   advance();
 }
 
@@ -3195,6 +3217,7 @@ function skipCard() {
   if (!item) return;
   reviewState.skipped[item.t.id] = true;
   delete reviewState.picks[item.t.id];
+  delete reviewState.modes[item.t.id];
   advance();
 }
 
@@ -3280,6 +3303,7 @@ function reviewKey(e) {
     return true;
   }
   if (e.key === 's' && reviewState.screen === 'card') { skipCard(); return true; }
+  if (e.key === 'm' && reviewState.screen === 'card') { manualCard(); return true; }
   if (/^[1-9]$/.test(e.key) && reviewState.screen === 'card') {
     const item = queue()[reviewState.i];
     const i = +e.key - 1;

@@ -796,6 +796,9 @@ body.row-resizing{cursor:row-resize;user-select:none}
 }
 .rv .act:hover:not(:disabled){color:var(--text);border-color:var(--faint-solid)}
 .rv .act:disabled{color:var(--ghost);cursor:default}
+/* Staged, not pressed: `manual` is a state the thread is in until you accept it
+   back, so the button says which of the three answers is standing. */
+.rv .act.on{color:var(--text);border-color:var(--faint-solid);background:var(--raised)}
 .rv .act.pri{color:var(--text);border-color:var(--faint-solid)}
 .rv .act.warm{color:#1A1206;background:var(--attn);border-color:var(--attn)}
 .rv .act.warm:disabled{color:#1A1206;background:var(--ghost);border-color:var(--ghost)}
