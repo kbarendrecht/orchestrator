@@ -493,10 +493,11 @@ impl AppState {
 
     /// Kill everything running in a workspace nobody is in any more.
     ///
-    /// The build watcher and the shells exist for the session that opened them:
-    /// once it is gone they are a watcher nobody reads and a prompt nobody
-    /// types into, still holding the port and the CPU. Their own exit watchers
-    /// do the bookkeeping, so this only has to pull the trigger.
+    /// The shells and the hand-started processes exist for the session that
+    /// opened them: once it is gone they are output nobody reads and a prompt
+    /// nobody types into, still holding the port and the CPU. Their own exit
+    /// watchers do the bookkeeping, so this only has to pull the trigger.
+    /// Anything config autostarts is spared, see `is_autostart`.
     ///
     /// Containers are not reached, the same as at shutdown: `docker compose up`
     /// has already detached by the time its pty dies.
@@ -506,13 +507,33 @@ impl AppState {
             inner
                 .workspaces
                 .get(workspace)
-                .map(|w| w.processes.iter().filter_map(|p| p.pty.clone()).collect())
+                .map(|w| {
+                    w.processes
+                        .iter()
+                        .filter(|p| !self.is_autostart(workspace, &p.name))
+                        .filter_map(|p| p.pty.clone())
+                        .collect()
+                })
                 .unwrap_or_default()
         };
         for h in &handles {
             let _ = h.kill();
         }
         handles.len()
+    }
+
+    /// Does config start this process by itself?
+    ///
+    /// Such a process was never opened by a session, so it is not a session's to
+    /// take down with it: `ng-watch` in main is meant to be running whenever the
+    /// daemon is, not only while somebody happens to have a session open there.
+    fn is_autostart(&self, workspace: &str, name: &str) -> bool {
+        let specs = if workspace == MAIN {
+            &self.cfg.main_processes
+        } else {
+            &self.cfg.worktree_processes
+        };
+        specs.iter().any(|s| s.autostart && s.name == name)
     }
 
     // -----------------------------------------------------------------------

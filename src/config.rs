@@ -225,14 +225,9 @@ impl Config {
             main_processes: vec![
                 ManagedSpec {
                     name: "ng-watch".to_string(),
-                    command: vec![
-                        "mise".into(),
-                        "run".into(),
-                        "silent:exec:toolbox".into(),
-                        "ng".into(),
-                        "build".into(),
-                        "--watch".into(),
-                    ],
+                    // The repo's own task, rather than this daemon's idea of how
+                    // to invoke Angular: it is one name to keep in step.
+                    command: vec!["mise".into(), "run".into(), "watch".into()],
                     // Angular error blocks. The first matching line becomes the
                     // summary shown in the rail.
                     failure_patterns: vec![
@@ -247,7 +242,11 @@ impl Config {
                         "watching for file changes".into(),
                     ],
                     restart: RestartPolicy::Never,
-                    autostart: false,
+                    // The one process that starts by itself. A build watcher is
+                    // no use started by hand five minutes after you needed it,
+                    // and unlike `docker compose up` it touches nothing outside
+                    // the checkout.
+                    autostart: true,
                 },
                 ManagedSpec {
                     name: "docker".to_string(),

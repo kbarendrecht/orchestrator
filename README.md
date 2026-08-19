@@ -256,8 +256,10 @@ web/            SPA (vanilla, xterm.js vendored)
   rendering fault can be reproduced rather than guessed at. Stub
   `/vendor/addon-webgl.js` in such a test: headless WebKit dies on xterm's WebGL
   renderer.
-- Managed processes do not autostart. Flip `autostart` in config if you want
-  `docker compose up` on daemon start.
+- `ng-watch` autostarts in main; nothing else does. Flip `autostart` in config
+  if you want `docker compose up` on daemon start too. An autostarted process is
+  not killed when the last session in its workspace ends, because no session
+  started it.
 - **GitHub auth** resolves in order: `ORCHD_GITHUB_TOKEN`, a `0600`
   `github_token_file`, then `gh auth token`. §6 wants read scopes only
   (`pull_requests`, `checks`, `contents`, `metadata`); gh's token carries write,
