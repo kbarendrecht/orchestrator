@@ -905,6 +905,14 @@ body.row-resizing{cursor:row-resize;user-select:none}
 .rv .stage-row .k.skip{color:var(--faint-solid)}
 .rv .stage-row .k.req{color:var(--work)}
 .rv .stage-row .k.manual,.rv .stage-row .k.story{color:var(--work)}
+/* The run's own states. `work` is teal like every other automation in the app,
+   `done` green, `stop` red, and waiting stays quiet: a row nobody has reached is
+   not news. */
+.rv .stage-row .k.wait{color:var(--faint-solid)}
+.rv .stage-row .k.work{color:var(--auto)}
+.rv .stage-row .k.done{color:var(--ok)}
+.rv .stage-row .k.held{color:var(--attn)}
+.rv .stage-row .k.stop{color:var(--bad)}
 .rv .stage-row .c{display:flex;flex-direction:column;gap:3px;min-width:0}
 .rv .stage-row .c .p{font-family:var(--mono);font-size:calc(10.5px * var(--fs));color:var(--faint-solid)}
 .rv .stage-row .c .t{font-size:calc(12px * var(--fs));color:var(--dim)}

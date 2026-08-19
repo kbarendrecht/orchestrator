@@ -267,7 +267,7 @@ impl PostReport {
 
 /// One resolved decision: the position, plus what it is aimed at.
 #[derive(Debug)]
-struct Handled {
+pub(crate) struct Handled {
     thread_id: String,
     label: String,
     root: ThreadRoot,

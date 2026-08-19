@@ -2586,7 +2586,11 @@ function rvFinal(root) {
     ? `commit, then ${byHand.length === 1 ? 'your turn' : `your turn on ${byHand.length}`}`
     : label;
   root.appendChild(rvActs([
-    actBtn(goes, 'warm', () => sendBatch(), !bits.length && !byHand.length),
+    // The session is the way this is meant to go now: it adapts a fix to a branch
+    // that moved instead of refusing it, and it can ask. The batch stays because
+    // it is proven, and because a words-only review does not need an agent.
+    actBtn('hand it to a session', 'warm', () => startRun(), !bits.length && !byHand.length),
+    actBtn(`or ${goes}`, null, () => sendBatch(), !bits.length && !byHand.length),
     actBtn('back', null, () => { reviewState.screen = 'card'; renderReview(); }),
   ], byHand.length
     ? 'nothing is pushed or posted until you have written your comment'
@@ -3215,6 +3219,7 @@ function renderReview() {
     overview: rvOverview,
     card: rvCard,
     final: rvFinal,
+    run: rvRun,
     manual: rvManual,
     report: rvReport,
   })[reviewState.screen](root);
@@ -3434,6 +3439,115 @@ async function sendBatch() {
   } catch (e) {
     // A rejected request is the daemon refusing before it wrote anything —
     // a bad index, a thread that has gone, a gate that closed under you.
+    toast(e.message, true);
+  }
+  reviewState.busy = false;
+  renderReview();
+}
+
+/** Hand the decisions to a session and watch it work.
+ *
+ *  The other half of `sendBatch`, and the one the flow is being moved to: instead
+ *  of the daemon applying every patch in one go and refusing whatever will not
+ *  apply, a session works down the same plan, adapts each fix to the branch as it
+ *  is now, and stops to ask you when only you can answer. */
+async function startRun() {
+  if (reviewState.busy) return;
+  const { decisions } = batchPayload();
+  if (!decisions.length) return toast('nothing to hand over — every thread was skipped', true);
+
+  reviewState.busy = true;
+  renderReview();
+  try {
+    const r = await call(`/api/pr/${reviewState.pr}/resolve-run`, batchPayload());
+    reviewState.screen = 'run';
+    // The session is where the work is now, so the rail should be pointing at it
+    // when you close the overlay.
+    if (r.session) pendingSelect = r.session;
+  } catch (e) {
+    toast(e.message, true);
+  }
+  reviewState.busy = false;
+  renderReview();
+}
+
+/** What a thread's row says while the session works. Present tense until it is
+ *  settled, because a run is watched, not read afterwards. */
+const RUN_STATE = {
+  pending: ['wait', 'waiting its turn'],
+  committed: ['work', 'committed — your call on the reply'],
+  replied: ['done', 'answered'],
+  held: ['held', 'committed, reply kept back'],
+  manual: ['manual', 'yours to write'],
+  words_only: ['reply', 'words only'],
+  needs_you: ['stop', 'needs you'],
+};
+
+/** Phase 3: an account of what happened, while it is happening.
+ *
+ *  Reads the daemon's own record rather than a report handed back at the end, so
+ *  a run you are half-way through is as legible as a finished one — and a run
+ *  whose session died still shows exactly how far it got. */
+function rvRun(root) {
+  const run = (snap.resolve_runs || {})[reviewState.pr];
+  root.appendChild(rvHead('the session is working'));
+
+  const body = el('div', 'body');
+  if (!run) {
+    body.appendChild(el('div', 'note',
+      'No run on this PR. If you just started one, the daemon has not reported it yet.'));
+    root.appendChild(body);
+    return;
+  }
+
+  const sec = el('div', 'sec');
+  for (const t of run.threads) {
+    const [kind, word] = RUN_STATE[t.status] || ['wait', t.status];
+    const row = el('div', 'stage-row');
+    row.appendChild(el('span', 'k ' + kind, word));
+    const c = el('span', 'c');
+    c.appendChild(el('span', 'p', t.location));
+    if (t.commit) c.appendChild(el('span', 't', t.commit.slice(0, 7)));
+    if (t.note) c.appendChild(el('span', 't', t.note));
+    row.appendChild(c);
+    sec.appendChild(row);
+  }
+  body.appendChild(sec);
+
+  // The count that matters is not "how many done" but which kinds, so the tail
+  // buttons can be read against it.
+  const by = (st) => run.threads.filter((t) => t.status === st).length;
+  const left = by('pending') + by('committed');
+  const foot = el('div', 'sec');
+  foot.appendChild(el('div', 'note', left
+    ? `${left} still moving. The buttons below are yours whenever you want them; `
+      + 'nothing here fires on its own.'
+    : 'Nothing is moving. What is on the branch is what the session finished.'));
+  body.appendChild(foot);
+  root.appendChild(body);
+
+  root.appendChild(rvActs([
+    actBtn('push the branch', 'warm', () => runTail('push')),
+    actBtn('re-request review', null, () => runTail('rerequest')),
+    actBtn('back to the threads', null, () => { reviewState.screen = 'card'; renderReview(); }),
+  ], 'resolving a thread stays the reviewer\'s own button, by design'));
+}
+
+/** The two claims about the whole branch. Explicit, and never a side effect of
+ *  the last reply going out. */
+async function runTail(what) {
+  if (reviewState.busy) return;
+  reviewState.busy = true;
+  renderReview();
+  try {
+    const r = await call(`/api/pr/${reviewState.pr}/run/${what}`);
+    if (what === 'push') toast(`pushed ${r.pushed}`);
+    else {
+      const n = (r.rerequested || []).length;
+      toast(n ? `re-requested ${r.rerequested.join(', ')}` : 'nobody to re-request yet');
+      for (const f of r.failed || []) toast(f, true);
+    }
+  } catch (e) {
     toast(e.message, true);
   }
   reviewState.busy = false;
