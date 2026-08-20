@@ -32,7 +32,7 @@ Everything outside that block is hand-written and survives.
   snapshot as `resolve_runs` and rendered by `rvRun`, with push and re-request as
   their own buttons. Every line of that path is typed and unit-tested and has
   never met a real PR, because testing it needs a review comment from somebody
-  who is not you — `acknowledged()` in `src/github.rs` treats a thread whose last
+  who is not you — `acknowledged()` in `src/forge/github.rs` treats a thread whose last
   comment is yours as answered, so you cannot self-review your way to a test.
 
   *Deliberately still there.* The old batch (`/api/pr/:n/post` and the manual
@@ -53,11 +53,11 @@ Everything outside that block is hand-written and survives.
 - **Promote the in-UI review overlay out of beta.** The overlay now does the
   real work: threads listed under the PR with their file, hunk, and a reply box,
   and replies/reactions/re-request go straight through the GitHub API
-  (`src/github_write.rs`). It ships as the `resolve in ui [beta]` menu item
+  (`src/forge/github_write.rs`). It ships as the `resolve in ui [beta]` menu item
   beside the old `/resolve`-into-a-terminal path. What remains is deciding when
   to make the overlay the default and retire the terminal spawn. Resolving a
   thread is deliberately *not* an API call — that is the author's button, by
-  design (`github_write.rs:10-13`) — so this item is about the beta gate, not
+  design (`forge/github_write.rs:10-13`) — so this item is about the beta gate, not
   the missing action.
 
 - **Stacked-PR support.** Two halves. First, a context-menu `stack` action on a
@@ -66,7 +66,7 @@ Everything outside that block is hand-written and survives.
   `worktree-create`/`worktree-link` hooks), and an interactive session. This is
   the `/resolve` spawn machinery pointed at a *new* branch off a PR head rather
   than the PR's own branch. The stack is then detected for free: `link_stacks`
-  (`src/github.rs`) already matches `child.base_ref == parent.head_ref`. Second,
+  (`src/forge/github.rs`) already matches `child.base_ref == parent.head_ref`. Second,
   a semi-automation in the spirit of `fix-pr` — a `/restack` (or `sync`) skill
   that keeps a stack in sync: when a base PR's head moves (amend/rebase), rebase
   the children onto it bottom-up and re-push, within the existing push guards
@@ -151,49 +151,40 @@ Everything outside that block is hand-written and survives.
     it could not be settled empirically — the `requested` path has never run
     against real data with results.
 
-  Smaller ones from the same review, same kind as the `ForgeKind` note — each is
-  a thing that reads as working and is not quite:
+  Smaller ones from the same review, same kind as the `ForgeKind` note — all now
+  fixed except one deliberate keep:
 
-  - **A rule can say `always` *and* a condition, and the condition is ignored.**
-    `Predicate::matches` returns `true` on `always` before testing anything else,
-    so `{"when": {"always": true, "label": "Prio Stopper"}}` — a fair reading of
-    "always, when labelled" — matches every candidate and paints the whole queue
-    rank 0. Nothing rejects the combination. `Predicate` also has no
-    `deny_unknown_fields`, so a typo'd key (`lable`) deserializes to an all-`None`
-    predicate, which `matches` reports as unconstrained and therefore never fires:
-    the rule silently does nothing and its PRs fall through to the catch-all.
-  - **`Review::is_draft` is always false.** `is_review_work` drops every draft
-    before a `Review` is built, so the field it copies can only ever be `false`.
-    It is serialized on every row and reads as if drafts can reach the queue —
-    whoever adds a "show drafts" toggle will wire it to a dead flag.
-    `needs_re_review` is nearly the same shape: it is now exactly
-    `tone == Rereview`, so the SPA has two ways to ask one question.
-  - **Two sources of truth for the upstream remote.** `fetch_upstream` splits the
-    remote back out of `upstream_ref`, while repo detection reads
-    `cfg.upstream_remote` (`lib.rs`, `state.rs`). A config carrying
-    `upstream_ref: "upstream/develop"` with `upstream_remote: "origin"` — an easy
-    slip now the two defaults moved together — fetches one remote and resolves
-    the repo from another, with no error anywhere.
-  - **Three pagers, two of them the same.** Extracting `page_through`/`next_cursor`
-    for the review walks left `all_summary_threads` and `parse_thread_page` with
-    their own copies of the hasNextPage/endCursor dance. One of the three
-    (`page_through`) now warns at its cap; unify them rather than keep the rule in
-    three places.
-  - **`Config::default_for` re-lists every field's default by hand**, so each new
-    field has to be added twice — once as a `#[serde(default = …)]` and once here.
-    This diff paid that tax four times. A first run and the same config parsed
-    from disk can silently diverge; `parse_with_profile(&json!({"main_checkout":
-    p}))` would make them one path. `parse_with_profile` likewise hand-maps the
-    profile *name* strings, so adding a profile is three edits, not the two its
-    doc comment promises.
+  - **`always` no longer short-circuits a condition.** *Done.* `Predicate::matches`
+    seeds `constrained` with `always` rather than returning early, so `{"always":
+    true, "label": X}` still requires the label — `always` is a trivially-true
+    term, not an override. Deliberately *not* adding `deny_unknown_fields`: a
+    typo'd predicate key still no-ops rather than erroring, which matches the rest
+    of the config's tolerance (it drops unknown top-level keys too), and erroring
+    would let one stray key brick a load.
+  - **Dead `is_draft`/`needs_re_review` removed.** *Done.* Both were always-derivable
+    (`is_review_work` drops drafts; `needs_re_review == tone == Rereview`) and
+    unread by the SPA, so they are gone from `Review`.
+  - **Upstream-remote mismatch is surfaced.** *Done (surfaced, not unified).*
+    `parse_with_profile` warns when `upstream_ref`'s remote prefix disagrees with
+    `upstream_remote` — the two feed the base fetch and repo detection and were
+    silently divergable. Fully collapsing them to one field is a config-shape
+    decision left for later; they are equal in every profile and default.
+  - **Pager cursor logic unified.** *Done.* `all_summary_threads` and
+    `parse_thread_page` now use the shared `next_cursor`, so the
+    hasNextPage/endCursor rule lives in one place, not three.
+  - **`default_for` and the profile name go through one path.** *Done.*
+    `default_for` now builds through `parse_with_profile(json!({main_checkout}))`,
+    so field defaults live only in the `#[serde(default = …)]` attributes and a
+    first run cannot diverge from the same file parsed off disk; the profile name
+    is deserialized rather than hand-mapped, so adding a profile is a `Profile`
+    variant plus a `preset()` arm, no string arm.
   - ~~`resolve_repo` + `resolve_token` + `GitHubForge::new` repeated four times~~
     *Done as part of wiring the seam:* the two `api.rs` sites are now
     `read_forge`/`write_forge`, and construction everywhere goes through
     `ForgeImpl::for_kind`. The two `lib.rs` pollers still resolve token/repo
     inline because each has its own surrounding logic (token-source reporting;
     `Off`-vs-`Degraded`), which is fine.
-  - CLAUDE.md still says `cargo test # 214 tests`; it is 262. Stale before this
-    work, staler now.
+  - CLAUDE.md test count. *Done* — updated to 265.
 
 - **Make it run somewhere other than this machine.** Everything below is a
   hardcoded assumption about one monorepo, and each is a setting or a probe
@@ -289,7 +280,7 @@ Everything outside that block is hand-written and survives.
 
 - **The update nudge cannot fire on this repo.** Belongs after run-elsewhere: the
   nudge only matters once orchd is distributed to someone who isn't building it
-  from source. `github::latest_release` (`src/github.rs:152`) asks
+  from source. `github::latest_release` (`src/forge/github.rs:152`) asks
   `api.github.com/repos/.../releases/latest` through plain `curl` with no token,
   and the release repo is private, so the call is a 404 and the poller sees
   `None`. Authenticated, the same request answers `v2026.8.5`. The token ladder

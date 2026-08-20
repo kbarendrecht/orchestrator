@@ -9,7 +9,7 @@ the output of a design pass; the nine decisions it encodes are listed at the end
 Today the overlay stages decisions locally and the daemon applies everything in
 one non-interactive batch: `pr_post` → `crate::post::run` runs `git apply` +
 commit for staged patches, then posts replies/reactions/stories through
-`github_write.rs`, with a durable half-done model so a crash is resumable
+`forge/github_write.rs`, with a durable half-done model so a crash is resumable
 (`post.rs` — "everything before the outward step is local and undoable").
 
 That batch conflates *deciding* with *building* and hides code changes behind a
@@ -30,7 +30,7 @@ pushing, or resolving without you.
   and pushes (its own git creds, under `guards/push.py`). This is the "full
   agent session" decision — the agent writes the fix, not a daemon `git apply`.
 - **The daemon owns outward writes + bookkeeping**: replies, reactions, stories,
-  re-request stay in `github_write.rs` / `story.rs`, keeping token handling,
+  re-request stay in `forge/github_write.rs` / `story.rs`, keeping token handling,
   ordering (commit-before-reply), and story idempotency in one place — as today.
 - They coordinate **per thread**: agent commits → daemon shows the diff and posts
   the reply. The daemon's read-only PAT is never used to write.
@@ -77,7 +77,7 @@ round-trip and resume cleanly? Build nothing else in Phase C until this is known
 
 - Triage: `src/triage.rs::spawn`, `src/proposal.rs` (positions, `StoryDraft`,
   `STORY_TOKEN`), `pr_triage` / `pr_proposals` in `src/api.rs`.
-- Outward writes + ordering: `src/github_write.rs` (`reply`, `thumbs_up`,
+- Outward writes + ordering: `src/forge/github_write.rs` (`reply`, `thumbs_up`,
   `rerequest` — **no** `resolveReviewThread`, by design), `src/story.rs`
   (`file_all`, dedupe), and `post.rs`'s commit-before-reply + story-token rules.
 - Drift + patches: the branch-moved check in `post.rs` ("the branch moved since

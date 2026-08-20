@@ -116,8 +116,10 @@ newer version is out it shows a dismissible nudge in the window. The nudge only
 - **PR poller** — one GraphQL search per 5 minutes for your own open PRs on
   upstream. Rollup read off the head commit, outdated threads excluded, capped
   thread pages rendered `50+`, stacks detected by `baseRefName`.
-- **Review queue** — acme's own `mise run reviews --json` on an offset timer,
-  degrading to `unavailable` rather than to an empty queue.
+- **Review queue** — built in: the daemon asks the forge directly on an offset
+  timer and ranks the result with a config-driven rule engine (`review_ranking`;
+  `requested` or `all_open` coverage). Degrades to `unavailable` rather than to
+  an empty queue, and reads `not configured` when no forge repo resolves.
 - **`/resolve`** — worktree pinned to the PR's head branch, skill invocation
   typed into the pty once `SessionStart` lands.
 - **Test capabilities** — per-suite trust and isolation from config, lockfile
@@ -223,8 +225,12 @@ src/
   spawn.rs      session/worktree/process spawning, health parsing
   diff.rs       numstat, hunk parsing, word-level LCS
   git.rs        status parsing, refs, unpushed, worktree ops
-  github.rs     token resolution, GraphQL, PR model, stacks
-  reviews.rs    `mise run reviews --json`, degraded states
+  forge/        the Forge seam: trait + ForgeImpl dispatch (mod.rs), the
+                agnostic model (model.rs), and the GitHub impl (github.rs
+                token/GraphQL/PR model/stacks, github_write.rs the gh writes)
+  reviews.rs    built-in review queue: candidates from the forge, config-driven
+                ranking (coverage, rules, blockers, tiebreak), degraded states
+  profiles/     baked-in config bundles a machine merges over (acme.json)
   capability.rs suites, trust, dep drift, autoload probe, path mapping
   fix_pr.rs     automation state and the fix-pr guard table
   edit.rs       file read/write with containment and conflict detection
