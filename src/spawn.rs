@@ -860,8 +860,8 @@ mod tests {
         assert!(validate_worktree_name("").is_err());
     }
 
-    // Mirrors the real ng-watch defaults (`config::default_for`) so these tests
-    // track the patterns actually shipped.
+    // Mirrors the real ng-watch spec (the `acme` profile, `src/profiles/`) so
+    // these health-scan tests track the patterns actually shipped.
     fn ng() -> ManagedSpec {
         ManagedSpec {
             name: "ng-watch".into(),

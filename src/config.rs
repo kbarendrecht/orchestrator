@@ -10,6 +10,13 @@ use std::path::{Component, Path, PathBuf};
 pub struct Config {
     /// The privileged checkout. Worktrees live inside it at [`Config::worktrees_dir`].
     pub main_checkout: PathBuf,
+    /// A baked-in bundle of settings this config is merged *over*, so a machine
+    /// only writes what is machine-specific (and whatever it wants to override).
+    /// `default` is empty; `acme` supplies that stack's processes, test
+    /// capabilities, tracker, upstream refs and review ranking. See
+    /// [`Config::parse_with_profile`].
+    #[serde(default)]
+    pub profile: Profile,
     /// Where worktrees live, relative to `main_checkout`. Defaults to
     /// `.claude/worktrees`, which is both Claude Code's own `--worktree` default
     /// and where acme's `worktree-create` hook puts them — so a generic
@@ -125,6 +132,37 @@ fn default_worktrees_subdir() -> PathBuf {
     PathBuf::from(".claude/worktrees")
 }
 
+/// Merge `over` onto `base`: two objects merge key-by-key (recursively), and
+/// anything else — a scalar or an array — replaces wholesale. Arrays are not
+/// element-merged on purpose: "my `main_processes`" should mean exactly the list
+/// written, not the profile's list with edits spliced in.
+fn deep_merge(base: &mut serde_json::Value, over: serde_json::Value) {
+    use serde_json::Value::{Null, Object};
+    match (base, over) {
+        (Object(b), Object(o)) => {
+            for (k, v) in o {
+                deep_merge(b.entry(k).or_insert(Null), v);
+            }
+        }
+        (b, o) => *b = o,
+    }
+}
+
+/// Replace only `main_checkout` in a config file's raw JSON, leaving the rest —
+/// including a slim profile-based shape — untouched.
+fn rewrite_main_checkout(path: &Path, raw: &str, main: &Path) -> Result<()> {
+    let mut v: serde_json::Value = serde_json::from_str(raw)?;
+    let obj = v
+        .as_object_mut()
+        .context("config.json is not a JSON object")?;
+    obj.insert(
+        "main_checkout".into(),
+        serde_json::Value::String(main.to_string_lossy().into_owned()),
+    );
+    std::fs::write(path, serde_json::to_string_pretty(&v)? + "\n")?;
+    Ok(())
+}
+
 fn default_upstream() -> String {
     "upstream/develop".to_string()
 }
@@ -175,6 +213,35 @@ pub enum ForgeKind {
     GitHub,
 }
 
+/// A named bundle of baked-in config a machine's `config.json` is merged over.
+///
+/// `default` is empty — a fresh checkout gets serde defaults. `acme` carries
+/// that stack's processes, capabilities, tracker, upstream refs and review
+/// ranking, so its many machines write only `{ main_checkout, profile }` plus
+/// whatever they override. Adding a profile is a new arm here and a JSON file in
+/// `src/profiles/`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Profile {
+    #[default]
+    Default,
+    acme,
+}
+
+impl Profile {
+    /// The preset JSON this profile merges under a machine's config. `default` is
+    /// empty; the rest are baked in with `include_str!`.
+    fn preset(self) -> serde_json::Value {
+        match self {
+            Profile::Default => serde_json::json!({}),
+            // Parsed from a checked-in file, so a malformed preset is a build-time
+            // artefact we ship, not a runtime surprise; `expect` states that.
+            Profile::acme => serde_json::from_str(include_str!("profiles/acme.json"))
+                .expect("baked-in acme profile is valid JSON"),
+        }
+    }
+}
+
 impl Config {
     pub fn config_dir() -> Result<PathBuf> {
         let home = std::env::var("HOME").context("HOME is not set")?;
@@ -195,8 +262,8 @@ impl Config {
     pub fn existing() -> Option<Self> {
         let path = Self::path().ok()?;
         let raw = std::fs::read_to_string(&path).ok()?;
-        let cfg: Config = serde_json::from_str(&raw)
-            .map_err(|e| tracing::warn!("ignoring unparseable {}: {e}", path.display()))
+        let cfg = Config::parse_with_profile(&raw)
+            .map_err(|e| tracing::warn!("ignoring unparseable {}: {e:#}", path.display()))
             .ok()?;
         if !cfg.main_checkout.join(".git").exists() {
             tracing::warn!(
@@ -214,7 +281,7 @@ impl Config {
         if path.exists() {
             let raw = std::fs::read_to_string(&path)
                 .with_context(|| format!("reading {}", path.display()))?;
-            let mut cfg: Config = serde_json::from_str(&raw)
+            let mut cfg = Config::parse_with_profile(&raw)
                 .with_context(|| format!("parsing {}", path.display()))?;
             if let Some(main) = main_checkout {
                 // Remember it. The desktop app reaches here when the recorded
@@ -222,12 +289,12 @@ impl Config {
                 // in a dialog; being asked again on every launch would be the
                 // app forgetting an answer you already gave.
                 if cfg.main_checkout != main {
-                    cfg.main_checkout = main;
-                    if let Err(e) = std::fs::write(&path, serde_json::to_string_pretty(&cfg)?) {
-                        tracing::warn!(
-                            "could not record the new checkout in {}: {e}",
-                            path.display()
-                        );
+                    cfg.main_checkout = main.clone();
+                    // Rewrite only `main_checkout` in the *raw* JSON, not the
+                    // merged Config — re-serializing the whole thing would expand
+                    // a slim profile-based config back to every field.
+                    if let Err(e) = rewrite_main_checkout(&path, &raw, &main) {
+                        tracing::warn!("could not record the new checkout in {}: {e:#}", path.display());
                     }
                 }
             }
@@ -243,57 +310,43 @@ impl Config {
         Ok(cfg)
     }
 
+    /// Parse a `config.json` string, merged over its `profile`'s preset.
+    ///
+    /// The machine's keys win (deep object merge; arrays replace whole), so a
+    /// config writes only what differs from the profile. `profile` is read from
+    /// the raw JSON first, since it selects the base everything else merges onto;
+    /// an unknown value falls back to `default` rather than failing the load.
+    pub fn parse_with_profile(raw: &str) -> Result<Config> {
+        let user: serde_json::Value = serde_json::from_str(raw).context("config is not JSON")?;
+        let profile = match user.get("profile").and_then(|p| p.as_str()) {
+            Some("acme") => Profile::acme,
+            None | Some("default") => Profile::Default,
+            Some(other) => {
+                tracing::warn!("unknown profile {other:?}; using the default profile");
+                Profile::Default
+            }
+        };
+        let mut effective = profile.preset();
+        deep_merge(&mut effective, user);
+        // Pin the resolved profile so an unknown string cannot fail deserialize.
+        if let Some(obj) = effective.as_object_mut() {
+            obj.insert("profile".into(), serde_json::to_value(profile)?);
+        }
+        serde_json::from_value(effective).context("applying config over its profile")
+    }
+
     fn default_for(main_checkout: PathBuf) -> Self {
         Config {
             main_checkout,
+            profile: Profile::Default,
             worktrees_subdir: default_worktrees_subdir(),
             port: default_port(),
-            // Main declares the two long-running processes the spec names (§2).
-            main_processes: vec![
-                ManagedSpec {
-                    name: "ng-watch".to_string(),
-                    // The repo's own task, rather than this daemon's idea of how
-                    // to invoke Angular: it is one name to keep in step.
-                    command: vec!["mise".into(), "run".into(), "watch".into()],
-                    // Angular error blocks. The first matching line becomes the
-                    // summary shown in the rail.
-                    failure_patterns: vec![
-                        "Error:".into(),
-                        "ERROR in".into(),
-                        "error TS".into(),
-                        "✘ [ERROR]".into(),
-                        // The esbuild builder's own summary line, in case an error
-                        // block ever lands without the ✘ prefix.
-                        "bundle generation failed".into(),
-                    ],
-                    // Every builder has a different "all clear" line, and health is
-                    // latched until one is seen: miss the recovery line and a fixed
-                    // build stays red in the rail forever. `successfully` covers the
-                    // webpack builder (`Compiled successfully.`), but the esbuild one
-                    // says `Application bundle generation complete.` instead — which
-                    // was the lingering-error bug.
-                    ok_patterns: vec![
-                        "Build at:".into(),
-                        "successfully".into(),
-                        "watching for file changes".into(),
-                        "bundle generation complete".into(),
-                    ],
-                    restart: RestartPolicy::Never,
-                    // The one process that starts by itself. A build watcher is
-                    // no use started by hand five minutes after you needed it,
-                    // and unlike `docker compose up` it touches nothing outside
-                    // the checkout.
-                    autostart: true,
-                },
-                ManagedSpec {
-                    name: "docker".to_string(),
-                    command: vec!["docker".into(), "compose".into(), "up".into()],
-                    failure_patterns: vec!["exited with code".into(), "Error response".into()],
-                    ok_patterns: vec!["Started".into(), "Attaching to".into()],
-                    restart: RestartPolicy::Never,
-                    autostart: false,
-                },
-            ],
+            // No managed processes on a fresh checkout: the daemon does not know
+            // what a foreign repo runs, and autostarting a task that does not
+            // exist is worse than starting nothing. A stack that has them (see
+            // the `acme` profile) supplies its own; a first run can add them
+            // to config.json.
+            main_processes: vec![],
             worktree_processes: vec![],
             upstream_ref: default_upstream(),
             upstream_remote: default_upstream_remote(),
@@ -425,19 +478,76 @@ mod tests {
     }
 
     #[test]
-    fn the_default_watch_recognises_the_esbuild_recovery_line() {
+    fn the_acme_ng_watch_recognises_the_esbuild_recovery_line() {
         // Its success line matches none of the older markers, so without this the
-        // rail's `build failing` never cleared after a fixed compile.
-        let cfg = Config::default_for(PathBuf::from("/tmp/x"));
+        // rail's `build failing` never cleared after a fixed compile. ng-watch is
+        // a acme-profile process now, not a generic default.
+        let cfg = Config::parse_with_profile(
+            r#"{"main_checkout":"/tmp/x","profile":"acme"}"#,
+        )
+        .expect("parse");
         let ng = cfg
             .main_processes
             .iter()
             .find(|p| p.name == "ng-watch")
-            .expect("ng-watch is a default process");
-        assert!(ng
-            .ok_patterns
-            .iter()
-            .any(|p| p == "bundle generation complete"));
+            .expect("ng-watch comes from the acme profile");
+        assert!(ng.ok_patterns.iter().any(|p| p == "bundle generation complete"));
+        assert!(!ng.autostart, "started by hand, matching the real acme config");
+    }
+
+    #[test]
+    fn the_acme_profile_supplies_the_stacks_settings() {
+        // A acme machine writes almost nothing; the preset fills the rest.
+        let cfg = Config::parse_with_profile(
+            r#"{"main_checkout":"/tmp/x","profile":"acme"}"#,
+        )
+        .expect("parse");
+        assert_eq!(cfg.profile, Profile::acme);
+        assert_eq!(cfg.review_ranking.coverage, crate::reviews::Coverage::AllOpen);
+        assert_eq!(cfg.tracker, Tracker::Shortcut);
+        assert_eq!(cfg.upstream_ref, "upstream/develop");
+        assert_eq!(cfg.main_processes.len(), 2);
+        assert_eq!(cfg.capabilities.suites.len(), 4);
+    }
+
+    #[test]
+    fn a_machine_key_overrides_the_profile() {
+        // Deep-merge, config wins: a acme machine can still turn coverage down
+        // or move the port without abandoning the profile.
+        let cfg = Config::parse_with_profile(
+            r#"{"main_checkout":"/tmp/x","profile":"acme","port":9000,
+                "review_ranking":{"coverage":"requested"}}"#,
+        )
+        .expect("parse");
+        assert_eq!(cfg.port, 9000);
+        assert_eq!(cfg.review_ranking.coverage, crate::reviews::Coverage::Requested);
+        // ...but an unmentioned key still comes from the profile.
+        assert_eq!(cfg.tracker, Tracker::Shortcut);
+    }
+
+    #[test]
+    fn the_default_profile_is_generic() {
+        let cfg = Config::parse_with_profile(r#"{"main_checkout":"/tmp/x"}"#).expect("parse");
+        assert_eq!(cfg.profile, Profile::Default);
+        assert!(cfg.main_processes.is_empty(), "no processes assumed");
+        assert_eq!(cfg.tracker, Tracker::None);
+        assert!(Config::default_for(PathBuf::from("/tmp/x")).main_processes.is_empty());
+    }
+
+    #[test]
+    fn an_unknown_profile_falls_back_to_default() {
+        let cfg = Config::parse_with_profile(
+            r#"{"main_checkout":"/tmp/x","profile":"acme"}"#,
+        )
+        .expect("parse");
+        assert_eq!(cfg.profile, Profile::Default);
+    }
+
+    #[test]
+    fn deep_merge_recurses_objects_and_replaces_arrays() {
+        let mut base = serde_json::json!({"a":{"x":1,"y":2},"list":[1,2,3]});
+        deep_merge(&mut base, serde_json::json!({"a":{"y":9,"z":3},"list":[4]}));
+        assert_eq!(base, serde_json::json!({"a":{"x":1,"y":9,"z":3},"list":[4]}));
     }
 
     #[test]

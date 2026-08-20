@@ -98,19 +98,33 @@ Everything outside that block is hand-written and survives.
 - **Make it run somewhere other than this machine.** Everything below is a
   hardcoded assumption about one monorepo, and each is a setting or a probe
   waiting to be written:
+  - **Config profiles carry the stack-specific settings.** *Done.* A `profile`
+    setting (`default` | `acme`, `src/config.rs`) selects a baked-in bundle a
+    machine's `config.json` is deep-merged over — config keys win, arrays replace
+    whole (`Config::parse_with_profile`). `default` is empty; `acme`
+    (`src/profiles/acme.json`) supplies that stack's processes, capabilities,
+    tracker, upstream refs and review ranking, so its many machines write only
+    `{ main_checkout, profile }` plus whatever they override. Adding a profile is
+    a new arm plus a JSON file.
   - **The review queue is built in.** *Done.* It asks the forge directly
-    (`Forge::review_candidates`, GitHub via `review-requested:@me`) — no external
-    command, no acme JSON shape, no `acme/monorepo` fallback URL. Ranking
-    is config (`review_ranking`, `src/reviews.rs`): an ordered first-match-wins
-    rule list with a `blocked_when` set and tiebreak keys, defaulting to the
-    buckets the pane shipped with. A checkout with no resolvable forge repo reads
-    `ReviewState::Off` ("no forge repo") rather than degraded. What is still
-    GitHub-only is the *forge* itself — see the forge item below.
-  - **Docker and `ng` are assumed.** `main_processes` ships `mise run watch` and
-    `docker compose up` as the two things a checkout has (`src/config.rs`). They
-    are already config, but the defaults are a guess about someone else's stack;
-    a first run should ask, or probe, rather than autostart a task that does not
-    exist.
+    (`Forge::review_candidates`) — no external command, no acme JSON shape, no
+    `acme/monorepo` fallback URL. Everything opinionated is config
+    (`review_ranking`, `src/reviews.rs`): a `coverage` mode (`requested` default,
+    or `all_open` for a shared-pool repo that walks every open PR), a first-match
+    rule ladder, `blocked_when`, `tiebreak`, `skip_labels`, `bot_reviewers`, and a
+    `without_label` predicate escape. Portable defaults are generic and label-free;
+    acme's exact queue (its `.mise/review/queue`) lives in the `acme`
+    profile — verified byte-for-byte against `mise run reviews --json` (same
+    actionable/blocked sets, order, prio and blockers). A checkout with no
+    resolvable forge repo reads `ReviewState::Off`. What is still GitHub-only is
+    the *forge* itself — see the forge item below.
+  - **Docker and `ng` are no longer assumed.** *Done via profiles.*
+    `default_for` ships no `main_processes`, so a fresh checkout autostarts
+    nothing that does not exist; acme's `ng-watch` (the real
+    `silent:exec:toolbox ng build --watch`, `autostart:false`) and `docker` come
+    from the `acme` profile. A probe that *suggests* processes on first run
+    (compose file, package.json script) was scoped and deferred — the honest
+    default is to start nothing.
   - **The worktree layout is configurable.** *Done.* `worktrees_subdir`
     (`src/config.rs`, default `.claude/worktrees`) is the relative-in-main path
     `worktrees_dir()`/`worktree_path()` compose, and the changed-files exclude in
