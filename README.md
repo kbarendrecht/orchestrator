@@ -129,20 +129,17 @@ newer version is out it shows a dismissible nudge in the window. The nudge only
   bundle a machine's `config.json` is deep-merged over (config keys win), so a
   stack's many machines write just `{ main_checkout, profile }`. `default` is
   empty and generic; `acme` (`src/profiles/acme.json`) carries that stack's
-  processes, capabilities, tracker, upstream refs, review ranking and output
-  language.
+  processes, tracker, upstream refs, review ranking and output language.
 - **`/resolve`** — worktree pinned to the PR's head branch, skill invocation
   typed into the pty once `SessionStart` lands.
-- **Test capabilities** — per-suite trust and isolation from config, lockfile
-  drift by content hash, an autoload probe, host↔container path mapping.
 - **Editable diff pane** — the right side is a live buffer with a disk write
   path. Saving refuses if the file moved underneath you, and a `PreToolUse`
   deny tells the agent, once, that you rewrote a file so it re-reads instead of
   clobbering you.
-- **`fix-pr`** — hand-triggered, with the whole §8 guard table: authorship,
-  one run per PR, capability trust, dep freshness, active-session suppression,
-  concurrency and process caps, shared-resource locks. Push guards deny
-  `push -u`, bare `--force`, and pushes to protected refs or upstream.
+- **`fix-pr`** — hand-triggered, with the guards that protect the machine and
+  the repo: authorship, one run per PR, active-session suppression and a
+  concurrency cap. Push guards deny `push -u`, bare `--force`, and pushes to
+  protected refs or upstream.
 
 ## What the spec got wrong
 
@@ -175,16 +172,8 @@ literally they create a state nothing can escape:
   `.jsonl`, so requiring one stranded the worktree. "Nothing to copy" is now
   distinguished from "not copied yet".
 
-Two more, from using it rather than reading it:
+One more, from using it rather than reading it:
 
-- **`main:instances` and main occupancy.** §7 rule 2 makes the e2e lock conflict
-  with a session occupying main, because playwright teardown anchors its
-  instances dir there. That turned "somebody has main open" into "no fix run may
-  start anywhere" — and the run happens in the PR's own worktree, while a session
-  in main is normally just editing code. The lock now conflicts with another
-  *run* holding it, which is the collision that actually corrupts something. What
-  you give up: running playwright by hand in main while a fix run also reaches
-  e2e, where the two would fight over one instances dir.
 - **Dead shells.** §2 says a dead shell keeps its buffer "until dismissed".
   Applied to every exit that makes Ctrl+D leave a corpse tab behind, which is
   the opposite of what pressing it means. A shell that exits cleanly is now
@@ -205,22 +194,8 @@ fires on its own, so nothing needs serializing bottom-up), and the kill switch
 the row, because a run that stopped without turning the PR green is worth
 knowing about before you trigger another one.
 
-`fix-pr` also creates the PR's worktree before it evaluates the guards. That is
-not avoidable: lockfile drift and the autoload probe are questions about the
-worktree, and there is no worktree to ask about until it exists. It is reusable
-afterwards, including by `/resolve`.
-
-## What the capability probe found
-
-Pointed at the `dfafdf` worktree, the §7 rule 4 autoload probe reports every PHP
-suite as `Untrusted`: `vendor` there is a plain symlink to main's, so composer's
-`$baseDir` resolves to the main checkout and a suite run in the worktree would
-load main's `src/`.
-
-§7's "current state (post-WIP)" table says Unit and Integration are `Verified`
-in a worktree, on the basis that worktrees get a real `vendor/` with copied
-autoload files. That is not true of this checkout. Either the WIP is not in this
-tree yet, or it has regressed — which is exactly what §7 says the probe is for.
+`fix-pr` creates the PR's worktree before it spawns into it, reusing an existing
+one; the same worktree backs `/resolve`.
 
 ## Layout
 
@@ -242,7 +217,6 @@ src/
   reviews.rs    built-in review queue: candidates from the forge, config-driven
                 ranking (coverage, rules, blockers, tiebreak), degraded states
   profiles/     baked-in config bundles a machine merges over (acme.json)
-  capability.rs suites, trust, dep drift, autoload probe, path mapping
   fix_pr.rs     automation state and the fix-pr guard table
   edit.rs       file read/write with containment and conflict detection
   todo.rs       the generated block in TODO.md

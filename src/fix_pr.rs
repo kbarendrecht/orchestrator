@@ -3,7 +3,6 @@ use std::collections::HashMap;
 use std::time::SystemTime;
 use uuid::Uuid;
 
-use crate::capability::{CapabilityReport, Isolation, Trust};
 use crate::forge::{Checks, Pr};
 
 pub type SessionId = Uuid;
@@ -61,15 +60,11 @@ impl AutomationStore {
 pub struct GuardInput<'a> {
     pub pr: &'a Pr,
     pub automation: Option<&'a PrAutomation>,
-    pub capability: &'a CapabilityReport,
     /// Your login, for the authorship guard.
     pub viewer: &'a str,
     /// A live session on this PR's branch that is not merely idle.
     pub branch_busy: bool,
     pub running_automations: usize,
-    /// Which session holds main, if any.
-    /// Shared resources currently held.
-    pub locks_held: &'a [String],
 }
 
 /// Cap on concurrent automation runs (§8).
@@ -78,10 +73,7 @@ pub const MAX_AUTOMATION: usize = 2;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "verdict", rename_all = "snake_case")]
 pub enum Verdict {
-    Go {
-        /// Shared resources to take before starting.
-        locks: Vec<String>,
-    },
+    Go,
     /// Refused, with the reason shown verbatim. `fix-pr` is triggered by hand,
     /// so a refusal is something you read, not something swallowed.
     No { reason: String },
@@ -124,58 +116,14 @@ pub fn evaluate(input: &GuardInput) -> Verdict {
         ));
     }
 
-    // §7 rule 1, plus rule 3: a Stale result is one fix-pr must not act on
-    // either, because it was frozen at copy time.
-    for c in &input.capability.capabilities {
-        if !c.runnable {
-            return no(format!("{:?} has no command configured", c.suite));
-        }
-        match c.trust {
-            Trust::Untrusted => {
-                return no(match &c.note {
-                    Some(n) => format!("{:?} needs main — {n}", c.suite),
-                    None => format!("{:?} is untrusted here — this PR needs main", c.suite),
-                });
-            }
-            Trust::Stale => {
-                // The note already says what to do; repeating it just makes the
-                // refusal harder to read.
-                return no(match &c.note {
-                    Some(n) => format!("{:?}: {n}", c.suite),
-                    None => format!("{:?} is stale — re-link from main first", c.suite),
-                });
-            }
-            Trust::Verified => {}
-        }
-    }
-
     if input.running_automations >= MAX_AUTOMATION {
         return no(format!(
             "{} automation runs already going (cap {MAX_AUTOMATION})",
             input.running_automations
         ));
     }
-    // Shared resources (§7 rule 2). The conflict is between *runs*: two of them
-    // taking `main:instances` would fight over one instances dir.
-    //
-    // A session merely occupying main used to refuse this too, on the grounds
-    // that e2e teardown reaches into the main checkout. It costs more than it
-    // buys: the run happens in the PR's own worktree, a session in main is
-    // normally just editing code, and the rule turned "somebody has main open"
-    // into "no fix run may start anywhere".
-    let mut locks = Vec::new();
-    for c in &input.capability.capabilities {
-        if let Isolation::SharedResource { resource } = &c.isolation {
-            if input.locks_held.iter().any(|h| h == resource) {
-                return no(format!("{resource} is already held by another run"));
-            }
-            if !locks.contains(resource) {
-                locks.push(resource.clone());
-            }
-        }
-    }
 
-    Verdict::Go { locks }
+    Verdict::Go
 }
 
 fn no(reason: String) -> Verdict {
@@ -192,7 +140,6 @@ pub fn ended_red(pr: &Pr) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::capability::{Capability, Suite};
 
     fn pr(number: u64) -> Pr {
         Pr {
@@ -216,78 +163,30 @@ mod tests {
         }
     }
 
-    fn cap(trust: Trust, iso: Isolation) -> CapabilityReport {
-        CapabilityReport {
-            workspace: "x".into(),
-            is_main: false,
-            capabilities: vec![Capability {
-                suite: Suite::Unit,
-                runnable: true,
-                trust,
-                isolation: iso,
-                command: vec!["true".into()],
-                note: None,
-            }],
-            deps: vec![],
-            autoload: crate::capability::AutoloadProbe::Skipped {
-                reason: "test".into(),
-            },
-            container_path: None,
-            fix_pr_eligible: true,
-            fix_pr_blockers: vec![],
-            locks_required: vec![],
-        }
-    }
-
-    fn input<'a>(p: &'a Pr, c: &'a CapabilityReport) -> GuardInput<'a> {
+    fn input(p: &Pr) -> GuardInput<'_> {
         GuardInput {
             pr: p,
             automation: None,
-            capability: c,
             viewer: "kbarendrecht",
             branch_busy: false,
             running_automations: 0,
-            locks_held: &[],
         }
     }
 
     #[test]
-    fn a_clean_verified_pr_may_run() {
+    fn a_clean_pr_may_run() {
         let p = pr(1);
-        let c = cap(Trust::Verified, Isolation::Isolated);
-        assert_eq!(evaluate(&input(&p, &c)), Verdict::Go { locks: vec![] });
-    }
-
-    #[test]
-    fn an_untrusted_suite_refuses_and_says_it_needs_main() {
-        let p = pr(1);
-        let c = cap(Trust::Untrusted, Isolation::Isolated);
-        match evaluate(&input(&p, &c)) {
-            Verdict::No { reason } => assert!(reason.contains("needs main"), "{reason}"),
-            other => panic!("expected No, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn a_stale_suite_refuses_too() {
-        // §7 rule 3: a result frozen at copy time is not one to act on.
-        let p = pr(1);
-        let c = cap(Trust::Stale, Isolation::Isolated);
-        match evaluate(&input(&p, &c)) {
-            Verdict::No { reason } => assert!(reason.contains("stale"), "{reason}"),
-            other => panic!("expected No, got {other:?}"),
-        }
+        assert_eq!(evaluate(&input(&p)), Verdict::Go);
     }
 
     #[test]
     fn a_second_run_for_the_same_pr_is_refused() {
         let p = pr(1);
-        let c = cap(Trust::Verified, Isolation::Isolated);
         let a = PrAutomation::Running {
             session: Uuid::new_v4(),
             started: SystemTime::now(),
         };
-        let mut i = input(&p, &c);
+        let mut i = input(&p);
         i.automation = Some(&a);
         assert!(matches!(evaluate(&i), Verdict::No { .. }));
     }
@@ -295,8 +194,7 @@ mod tests {
     #[test]
     fn a_branch_you_are_working_on_is_left_alone() {
         let p = pr(1);
-        let c = cap(Trust::Verified, Isolation::Isolated);
-        let mut i = input(&p, &c);
+        let mut i = input(&p);
         i.branch_busy = true;
         match evaluate(&i) {
             Verdict::No { reason } => assert!(reason.contains("would fight it"), "{reason}"),
@@ -305,62 +203,9 @@ mod tests {
     }
 
     #[test]
-    fn a_shared_resource_is_taken_as_a_lock_when_main_is_free() {
-        let p = pr(1);
-        let c = cap(
-            Trust::Verified,
-            Isolation::SharedResource {
-                resource: "main:instances".into(),
-            },
-        );
-        assert_eq!(
-            evaluate(&input(&p, &c)),
-            Verdict::Go {
-                locks: vec!["main:instances".into()]
-            }
-        );
-    }
-
-    #[test]
-    fn working_in_main_does_not_block_a_run_in_a_worktree() {
-        // The run happens in the PR's own worktree. Refusing it because a session
-        // has main open turned "somebody is working" into "nothing may start".
-        let p = pr(1);
-        let c = cap(
-            Trust::Verified,
-            Isolation::SharedResource {
-                resource: "main:instances".into(),
-            },
-        );
-        assert_eq!(
-            evaluate(&input(&p, &c)),
-            Verdict::Go {
-                locks: vec!["main:instances".into()]
-            }
-        );
-    }
-
-    #[test]
-    fn a_lock_already_held_is_refused() {
-        let p = pr(1);
-        let c = cap(
-            Trust::Verified,
-            Isolation::SharedResource {
-                resource: "main:instances".into(),
-            },
-        );
-        let held = vec!["main:instances".to_string()];
-        let mut i = input(&p, &c);
-        i.locks_held = &held;
-        assert!(matches!(evaluate(&i), Verdict::No { .. }));
-    }
-
-    #[test]
     fn automation_cap_refuses_rather_than_queue() {
         let p = pr(1);
-        let c = cap(Trust::Verified, Isolation::Isolated);
-
-        let mut i = input(&p, &c);
+        let mut i = input(&p);
         i.running_automations = MAX_AUTOMATION;
         assert!(matches!(evaluate(&i), Verdict::No { .. }));
     }
@@ -369,8 +214,7 @@ mod tests {
     fn someone_elses_head_repo_is_refused() {
         let mut p = pr(1);
         p.head_owner = Some("someone-else".into());
-        let c = cap(Trust::Verified, Isolation::Isolated);
-        assert!(matches!(evaluate(&input(&p, &c)), Verdict::No { .. }));
+        assert!(matches!(evaluate(&input(&p)), Verdict::No { .. }));
     }
 
     #[test]
@@ -378,8 +222,7 @@ mod tests {
         // Single-run-per-PR and exhaustion carry the load instead (§8).
         let mut p = pr(1);
         p.is_draft = true;
-        let c = cap(Trust::Verified, Isolation::Isolated);
-        assert!(matches!(evaluate(&input(&p, &c)), Verdict::Go { .. }));
+        assert!(matches!(evaluate(&input(&p)), Verdict::Go));
     }
 
     #[test]

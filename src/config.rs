@@ -4,17 +4,16 @@ use std::path::{Component, Path, PathBuf};
 
 /// Everything the daemon needs to know about the machine it runs on.
 ///
-/// Managed processes and test capabilities are config rather than hardcoded on
-/// purpose (§7 rule 6) — the capability table has already changed once.
+/// Managed processes are config rather than hardcoded on purpose, so a heavier
+/// stack is a set of values rather than a special case baked into the daemon.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     /// The privileged checkout. Worktrees live inside it at [`Config::worktrees_dir`].
     pub main_checkout: PathBuf,
     /// A baked-in bundle of settings this config is merged *over*, so a machine
     /// only writes what is machine-specific (and whatever it wants to override).
-    /// `default` is empty; `acme` supplies that stack's processes, test
-    /// capabilities, tracker, upstream refs and review ranking. See
-    /// [`Config::parse_with_profile`].
+    /// `default` is empty; `acme` supplies that stack's processes, tracker,
+    /// upstream refs and review ranking. See [`Config::parse_with_profile`].
     #[serde(default)]
     pub profile: Profile,
     /// Where worktrees live, relative to `main_checkout`. Defaults to
@@ -91,10 +90,6 @@ pub struct Config {
     /// / requested-of-you / of-your-team / re-review / other / sidequest).
     #[serde(default)]
     pub review_ranking: crate::reviews::ReviewRanking,
-    /// Test capabilities per suite. Config rather than hardcoded, because the
-    /// table has already changed once (§7 rule 6).
-    #[serde(default)]
-    pub capabilities: crate::capability::CapabilityConfig,
     /// Where the auto-updated findings block lives. Defaults to the
     /// orchestrator's own TODO.md.
     #[serde(default)]
@@ -262,7 +257,7 @@ pub enum ForgeKind {
 /// A named bundle of baked-in config a machine's `config.json` is merged over.
 ///
 /// `default` is empty — a fresh checkout gets serde defaults. `acme` carries
-/// that stack's processes, capabilities, tracker, upstream refs and review
+/// that stack's processes, tracker, upstream refs and review
 /// ranking, so its many machines write only `{ main_checkout, profile }` plus
 /// whatever they override. Adding a profile is a new arm here and a JSON file in
 /// `src/profiles/`.
@@ -564,7 +559,6 @@ mod tests {
         assert_eq!(cfg.upstream_ref, "upstream/develop");
         assert_eq!(cfg.output_language, "Dutch");
         assert_eq!(cfg.main_processes.len(), 2);
-        assert_eq!(cfg.capabilities.suites.len(), 4);
     }
 
     #[test]

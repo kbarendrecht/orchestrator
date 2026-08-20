@@ -1941,38 +1941,6 @@ async fn gate_worktree(app: &Arc<AppState>, number: u64) -> Result<std::path::Pa
 }
 
 // ---------------------------------------------------------------------------
-// Test capabilities (§7) — reporting only
-// ---------------------------------------------------------------------------
-
-/// What could be run here and how far it can be trusted.
-///
-/// Nothing acts on this: §10 puts `fix-pr` behind step 8 being correct for a
-/// week on real PRs, so the registry reports and stops.
-pub async fn capabilities(
-    State(app): State<Arc<AppState>>,
-    Path(workspace): Path<String>,
-) -> ApiResult<crate::capability::CapabilityReport> {
-    let (path, is_main) = {
-        let inner = app.inner.read().await;
-        let w = inner
-            .workspaces
-            .get(&workspace)
-            .ok_or_else(|| anyhow::anyhow!("unknown workspace {workspace}"))?;
-        (w.path.clone(), w.is_main())
-    };
-    let cfg = app.cfg.capabilities.clone();
-    let main = app.cfg.main_checkout.clone();
-    let ws = workspace.clone();
-    // Shells out to php, so it does not belong on the async runtime.
-    let report = tokio::task::spawn_blocking(move || {
-        crate::capability::report(&cfg, &ws, &path, &main, is_main)
-    })
-    .await
-    .map_err(|e| anyhow::anyhow!("capability probe failed: {e}"))?;
-    Ok(Json(report))
-}
-
-// ---------------------------------------------------------------------------
 // Editable right pane (§5, step 9)
 // ---------------------------------------------------------------------------
 
@@ -2066,22 +2034,8 @@ pub async fn fix_pr(
     }
     .ok_or_else(|| anyhow::anyhow!("PR #{number} is not in the current poll"))?;
 
-    // The worktree has to exist before its capabilities can be probed, and the
-    // probe is what decides whether the run may happen at all.
+    // The worktree has to exist before the run can be spawned into it.
     let workspace = spawn::ensure_pr_worktree(&app, number, &pr.head_ref).await?;
-    let path = app
-        .workspace_path(&workspace)
-        .await
-        .ok_or_else(|| anyhow::anyhow!("worktree for #{number} vanished"))?;
-
-    let cfg = app.cfg.capabilities.clone();
-    let main = app.cfg.main_checkout.clone();
-    let ws = workspace.clone();
-    let capability = tokio::task::spawn_blocking(move || {
-        crate::capability::report(&cfg, &ws, &path, &main, false)
-    })
-    .await
-    .map_err(|e| anyhow::anyhow!("capability probe failed: {e}"))?;
 
     let verdict = {
         let inner = app.inner.read().await;
@@ -2094,21 +2048,18 @@ pub async fn fix_pr(
             .values()
             .filter(|s| s.is_automation() && s.state.is_live())
             .count();
-        let locks = inner.locks_held.clone();
 
         evaluate(&GuardInput {
             pr: &pr,
             automation: inner.automation.get(number),
-            capability: &capability,
             viewer: pr.head_owner.as_deref().unwrap_or_default(),
             branch_busy,
             running_automations,
-            locks_held: &locks,
         })
     };
 
-    let locks = match verdict {
-        Verdict::Go { locks } => locks,
+    match verdict {
+        Verdict::Go => {}
         Verdict::No { reason } => return Err(ApiError(anyhow::anyhow!("{reason}"))),
     };
 
@@ -2122,18 +2073,16 @@ pub async fn fix_pr(
                 started: std::time::SystemTime::now(),
             },
         );
-        inner.locks_held.extend(locks.iter().cloned());
         let _ = crate::store::save_automation(&inner.automation);
     }
 
-    // Releasing the locks and recording exhaustion belongs to whoever sees the
-    // session end.
-    watch_fix_pr(app.clone(), number, session, locks);
+    // Recording exhaustion belongs to whoever sees the session end.
+    watch_fix_pr(app.clone(), number, session);
     app.notify().await;
     Ok(Json(json!({ "session": session })))
 }
 
-fn watch_fix_pr(app: Arc<AppState>, number: u64, session: uuid::Uuid, locks: Vec<String>) {
+fn watch_fix_pr(app: Arc<AppState>, number: u64, session: uuid::Uuid) {
     use crate::fix_pr::{ended_red, PrAutomation};
     tokio::spawn(async move {
         let handle = {
@@ -2145,7 +2094,6 @@ fn watch_fix_pr(app: Arc<AppState>, number: u64, session: uuid::Uuid, locks: Vec
         }
 
         let mut inner = app.inner.write().await;
-        inner.locks_held.retain(|l| !locks.contains(l));
 
         // A run that ends with the PR still red means the run is asking for
         // you. Record it and never re-fire on its own (§8).

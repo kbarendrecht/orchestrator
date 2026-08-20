@@ -5,7 +5,6 @@
 //! pollers — lives here so neither can drift from the other.
 
 pub mod api;
-pub mod capability;
 pub mod config;
 pub mod diff;
 pub mod edit;
@@ -304,7 +303,6 @@ fn router(app: Arc<AppState>) -> Router {
         .route("/api/workspace/:id/rebase", post(api::rebase))
         .route("/api/workspace/:id/rebase/abort", post(api::rebase_abort))
         .route("/api/workspace/:id/preflight", get(api::preflight))
-        .route("/api/workspace/:id/capabilities", get(api::capabilities))
         .route("/api/workspace/:id/archive", post(api::archive_workspace))
         .route("/api/workspace/:id/teardown", post(api::teardown))
         .route(
@@ -600,14 +598,9 @@ fn start_todo_writer(app: Arc<AppState>) {
 async fn live_findings(app: &Arc<AppState>) -> Vec<todo::Finding> {
     let mut out = Vec::new();
 
-    let (workspaces, token, review_bad) = {
+    let (token, review_bad) = {
         let inner = app.inner.read().await;
         (
-            inner
-                .workspaces
-                .values()
-                .map(|w| (w.id.clone(), w.path.clone(), w.is_main()))
-                .collect::<Vec<_>>(),
             inner.token_source,
             match &inner.reviews {
                 crate::reviews::ReviewState::Degraded { reason } => Some(reason.clone()),
@@ -630,39 +623,6 @@ async fn live_findings(app: &Arc<AppState>) -> Vec<todo::Finding> {
             what: "review queue is unavailable".into(),
             why: format!("the forge is not answering the review query: {}", reason.trim()),
         });
-    }
-
-    // The capability probe is the one that finds real drift, so it drives the
-    // per-workspace entries.
-    for (id, path, is_main) in workspaces {
-        if is_main {
-            continue;
-        }
-        let cfg = app.cfg.capabilities.clone();
-        let main = app.cfg.main_checkout.clone();
-        let ws = id.clone();
-        let report =
-            tokio::task::spawn_blocking(move || capability::report(&cfg, &ws, &path, &main, false))
-                .await;
-        let Ok(report) = report else { continue };
-
-        if let capability::AutoloadProbe::Outside { file } = &report.autoload {
-            out.push(todo::Finding {
-                what: format!("`{id}` cannot be trusted to run PHP suites"),
-                why: format!(
-                    "autoload resolves to `{file}`, outside the worktree, so a suite run there \
-                     loads main's code. §7's post-WIP table assumes otherwise."
-                ),
-            });
-        }
-        for d in report.deps.iter().filter(|d| d.present && !d.matches_main) {
-            out.push(todo::Finding {
-                what: format!("`{id}` has a stale `{}`", d.file),
-                why: "re-link from main; results from a frozen lockfile are not this \
-                      workspace's (§7 rule 3)."
-                    .into(),
-            });
-        }
     }
 
     out

@@ -193,7 +193,7 @@ Everything outside that block is hand-written and survives.
     setting (`default` | `acme`, `src/config.rs`) selects a baked-in bundle a
     machine's `config.json` is deep-merged over — config keys win, arrays replace
     whole (`Config::parse_with_profile`). `default` is empty; `acme`
-    (`src/profiles/acme.json`) supplies that stack's processes, capabilities,
+    (`src/profiles/acme.json`) supplies that stack's processes,
     tracker, upstream refs and review ranking, so its many machines write only
     `{ main_checkout, profile }` plus whatever they override. Adding a profile is
     a new arm plus a JSON file.
@@ -300,7 +300,7 @@ Everything outside that block is hand-written and survives.
 - **A README for other people.** The current one is written for whoever already
   knows what orchd is: it is threaded with `§` references to a spec that no longer
   exists in the repo, assumes the acme monorepo throughout (the run example, the
-  `ng-watch`/`docker` asides, the `§7` capability walkthrough), and documents the
+  `ng-watch`/`docker` asides), and documents the
   parts in the order they were built. An open-sourced one needs the thing it is, a
   screenshot, what it needs installed, what it assumes about your repo (now largely
   a `profile` — see above), and how to try it without a monorepo to point it at.
@@ -354,15 +354,19 @@ Everything outside that block is hand-written and survives.
 - **Dead shells close on a clean exit.** §2 says a dead shell keeps its buffer
   "until dismissed"; applied to every exit that made Ctrl+D leave a corpse. A
   non-zero exit still keeps its buffer.
-- **`main:instances` no longer conflicts with main occupancy.** §7 rule 2 said a
-  session occupying main should block a `fix-pr` e2e run (its teardown reaches
-  into the main checkout). Narrowed to run-vs-run only (`src/fix_pr.rs:169-176`):
-  taking main never blocks a run and vice versa, so the rule 2a wait/kill
-  preemption UX is moot and was dropped. The tradeoff accepted with it: an e2e
-  teardown and a live main session can touch the main checkout's instances dir /
-  docker resources at the same time, unguarded. Revisit if that overlap ever
-  actually bites — a non-blocking "e2e touching main" indicator would be the
-  lighter fix.
+- **The test-capability subsystem is gone.** orchd used to carry a `Suite` model
+  (static/unit/integration/e2e), a composer autoload probe, lockfile-drift
+  detection and per-suite trust/isolation — a whole `capability.rs` — so it could
+  tell whether a command in a worktree reflected that worktree or silently main's.
+  That question is a shared-stack artifact (acme's symlinked `vendor/`); every
+  other repo ran it empty. Removed wholesale for open source. `fix-pr` keeps only
+  the guards that protect the machine and the repo (authorship, one run per PR,
+  branch-busy, the `MAX_AUTOMATION` cap). Two things go with it, both accepted:
+  the pre-run trust gate (`fix-pr` is hand-triggered and watched, so a bad run is
+  read, not swallowed), and the `main:instances` e2e lock — two concurrent fix
+  runs that both reach e2e can now collide on acme's one instances dir. If that
+  ever bites, set `MAX_AUTOMATION = 1` (serialize fix runs) rather than rebuild any
+  of this.
 
 ## Won't do without a reason
 
