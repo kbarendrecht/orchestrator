@@ -584,17 +584,12 @@ pub async fn thread_committed(
     let root = fresh
         .root_for(&thread_id)
         .ok_or_else(|| anyhow::anyhow!("thread {thread_id} has no comment to answer"))?;
-    let (owner, name) =
-        crate::resolve_repo(&app).context("no GitHub repo configured and none on the remote")?;
+    let forge = write_forge(&app)?;
     // `gh` runs in the main checkout, the way every other write does, so it picks
-    // up the same auth and config.
-    let target = crate::forge::Target {
-        cwd: app.cfg.main_checkout.clone(),
-        owner,
-        name,
-    };
-    // `reply` applies the footer itself; handing it a footed body would post two.
-    tokio::task::spawn_blocking(move || target.reply(&root, &reply).map(|_| ()))
+    // up the same auth and config. `reply` applies the footer itself; handing it
+    // a footed body would post two.
+    let at = app.cfg.main_checkout.clone();
+    tokio::task::spawn_blocking(move || forge.reply(&at, &root, &reply))
         .await
         .context("the write panicked")??;
 
@@ -1385,12 +1380,8 @@ pub async fn pr_threads(
     State(app): State<Arc<AppState>>,
     Path(number): Path<u64>,
 ) -> ApiResult<serde_json::Value> {
-    let (owner, name) = crate::resolve_repo(&app)
-        .ok_or_else(|| anyhow::anyhow!("no GitHub repo configured and none on the remote"))?;
-    let token = crate::forge::resolve_token(app.cfg.github_token_file.as_deref())?;
-
     // The forge shells curl, so it must not run on the async runtime.
-    let forge = crate::forge::GitHubForge::new(owner, name, token.value);
+    let forge = read_forge(&app)?;
     let fetched = tokio::task::spawn_blocking(move || forge.threads(number))
         .await
         .context("the thread fetch panicked")??;
@@ -1424,11 +1415,26 @@ pub async fn pr_threads(
 /// Shared by the endpoints that need to know what is awaiting an answer *now*
 /// rather than what a cache said earlier. Always refetches: a stale thread list
 /// is the one thing this flow must never act on.
-async fn fetch_threads(app: &Arc<AppState>, pr: u64) -> Result<crate::forge::Threads, ApiError> {
+/// The forge the config selects, built for reads: repo + read token. The one
+/// spot the four-line resolve/token/build dance lived; now the same for every
+/// read endpoint, and dispatched by `cfg.forge`.
+fn read_forge(app: &Arc<AppState>) -> Result<crate::forge::ForgeImpl, ApiError> {
     let (owner, name) = crate::resolve_repo(app)
         .ok_or_else(|| anyhow::anyhow!("no GitHub repo configured and none on the remote"))?;
     let token = crate::forge::resolve_token(app.cfg.github_token_file.as_deref())?;
-    let forge = crate::forge::GitHubForge::new(owner, name, token.value);
+    Ok(crate::forge::ForgeImpl::for_kind(app.cfg.forge, owner, name, token.value))
+}
+
+/// The same, for writes. Writes shell their own tool, so no read token is
+/// needed — the forge carries only the repo it writes to.
+fn write_forge(app: &Arc<AppState>) -> Result<crate::forge::ForgeImpl, ApiError> {
+    let (owner, name) =
+        crate::resolve_repo(app).context("no GitHub repo configured and none on the remote")?;
+    Ok(crate::forge::ForgeImpl::for_kind(app.cfg.forge, owner, name, String::new()))
+}
+
+async fn fetch_threads(app: &Arc<AppState>, pr: u64) -> Result<crate::forge::Threads, ApiError> {
+    let forge = read_forge(app)?;
     let fetched = tokio::task::spawn_blocking(move || forge.threads(pr))
         .await
         .context("the thread fetch panicked")??;
@@ -1727,13 +1733,8 @@ pub async fn pr_run_rerequest(
     Path(number): Path<u64>,
 ) -> ApiResult<serde_json::Value> {
     let fresh = fetch_threads(&app, number).await?;
-    let (owner, name) =
-        crate::resolve_repo(&app).context("no GitHub repo configured and none on the remote")?;
-    let target = crate::forge::Target {
-        cwd: app.cfg.main_checkout.clone(),
-        owner,
-        name,
-    };
+    let forge = write_forge(&app)?;
+    let at = app.cfg.main_checkout.clone();
 
     let all: Vec<&str> = fresh
         .items
@@ -1752,8 +1753,8 @@ pub async fn pr_run_rerequest(
     let mut asked = Vec::new();
     let mut failed = Vec::new();
     for login in crate::forge::ready_to_rerequest(&all, &open) {
-        let (t, who) = (target.clone(), login.to_string());
-        match tokio::task::spawn_blocking(move || t.rerequest(number, &who)).await {
+        let (f, at, who) = (forge.clone(), at.clone(), login.to_string());
+        match tokio::task::spawn_blocking(move || f.rerequest(&at, number, &who)).await {
             Ok(Ok(())) => asked.push(login.to_string()),
             Ok(Err(e)) => failed.push(format!("{login}: {e:#}")),
             Err(e) => failed.push(format!("{login}: {e}")),

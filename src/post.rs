@@ -24,7 +24,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use crate::forge::{Pr, ThreadRoot, Threads};
-use crate::forge::{self, Target};
+use crate::forge::{self, Forge, ForgeImpl};
 use crate::patch::{FileStat, Patch, Written};
 use crate::proposal::{Mode, Position, Stance};
 use crate::state::AppState;
@@ -853,12 +853,9 @@ async fn run_inner(
 
     let (owner, name) =
         crate::resolve_repo(app).context("no GitHub repo configured and none on the remote")?;
-    let target = Target {
-        cwd: path.clone(),
-        owner,
-        name,
-    };
-    post_outward(&target, pr.number, fresh, &handled, &filed, &mut report).await;
+    // Writes shell `gh`, so no read token; `path` is the worktree it runs in.
+    let forge = ForgeImpl::for_kind(app.cfg.forge, owner, name, String::new());
+    post_outward(&forge, &path, pr.number, fresh, &handled, &filed, &mut report).await;
 
     // The batch is over. Keeping the phase would offer to finish something that
     // already finished — and a later batch on this PR would inherit its digest.
@@ -1055,7 +1052,8 @@ async fn write_local(
 /// story is not there, because posting a literal `{story}` is worse than posting
 /// nothing.
 async fn post_outward(
-    target: &Target,
+    forge: &ForgeImpl,
+    at: &Path,
     pr: u64,
     fresh: &Threads,
     handled: &[Handled],
@@ -1115,7 +1113,7 @@ async fn post_outward(
                     already: true,
                     story: None,
                 }),
-                false => match blocking(target, &h.root, Send::Reply(text.clone())).await {
+                false => match blocking(forge, at, &h.root, Send::Reply(text.clone())).await {
                     Ok(()) => report.landed.push(Landed {
                         thread_id: h.thread_id.clone(),
                         label: h.label.clone(),
@@ -1142,7 +1140,7 @@ async fn post_outward(
             // return the existing one, so a retry is a no-op rather than a
             // duplicate. Unverified until the scratch PR settles it; the fallback
             // is selecting `reactions` in the thread query, never a ledger.
-            match blocking(target, &h.root, Send::ThumbsUp).await {
+            match blocking(forge, at, &h.root, Send::ThumbsUp).await {
                 Ok(()) => report.landed.push(Landed {
                     thread_id: h.thread_id.clone(),
                     label: h.label.clone(),
@@ -1167,7 +1165,7 @@ async fn post_outward(
         }
     }
 
-    rerequest(target, pr, fresh, &done, report).await;
+    rerequest(forge, at, pr, fresh, &done, report).await;
 }
 
 /// The reviewers of a PR, split by whether anything of theirs is still open.
@@ -1211,7 +1209,8 @@ fn split_reviewers<'a>(fresh: &'a Threads, done: &[&str]) -> Split<'a> {
 
 /// Ask every reviewer with nothing of theirs left open to look again.
 async fn rerequest(
-    target: &Target,
+    forge: &ForgeImpl,
+    at: &Path,
     pr: u64,
     fresh: &Threads,
     done: &[&str],
@@ -1220,7 +1219,7 @@ async fn rerequest(
     let Split { all, open, holding } = split_reviewers(fresh, done);
 
     for login in forge::ready_to_rerequest(&all, &open) {
-        match blocking_rerequest(target, pr, login).await {
+        match blocking_rerequest(forge, at, pr, login).await {
             Ok(()) => report.rerequested.push(login.to_string()),
             Err(e) => report.failed.push(Failed {
                 thread_id: String::new(),
@@ -1272,19 +1271,19 @@ enum Send {
 
 /// `gh` is a subprocess, so every write goes through the blocking pool rather
 /// than stalling the runtime for the length of an HTTP round trip.
-async fn blocking(target: &Target, root: &ThreadRoot, send: Send) -> Result<()> {
-    let (t, root) = (target.clone(), root.clone());
+async fn blocking(forge: &ForgeImpl, at: &Path, root: &ThreadRoot, send: Send) -> Result<()> {
+    let (f, at, root) = (forge.clone(), at.to_path_buf(), root.clone());
     tokio::task::spawn_blocking(move || match send {
-        Send::Reply(body) => t.reply(&root, &body).map(|_| ()),
-        Send::ThumbsUp => t.thumbs_up(&root).map(|_| ()),
+        Send::Reply(body) => f.reply(&at, &root, &body),
+        Send::ThumbsUp => f.thumbs_up(&at, &root),
     })
     .await
     .context("the write panicked")?
 }
 
-async fn blocking_rerequest(target: &Target, pr: u64, login: &str) -> Result<()> {
-    let (t, login) = (target.clone(), login.to_string());
-    tokio::task::spawn_blocking(move || t.rerequest(pr, &login))
+async fn blocking_rerequest(forge: &ForgeImpl, at: &Path, pr: u64, login: &str) -> Result<()> {
+    let (f, at, login) = (forge.clone(), at.to_path_buf(), login.to_string());
+    tokio::task::spawn_blocking(move || f.rerequest(&at, pr, &login))
         .await
         .context("the re-request panicked")?
 }

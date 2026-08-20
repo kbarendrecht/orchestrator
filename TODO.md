@@ -133,12 +133,18 @@ Everything outside that block is hand-written and survives.
     entries (:35, :69, :191) and `docs/resolve-flow-plan.md` (:12, :33, :80) still
     name the pre-`forge/` paths. CLAUDE.md points a new reader at README for the
     module map, so this is the one a stranger hits first.
-  - **The forge seam is narrower than it reads.** `ForgeKind` is parsed and
-    documented but never branched on, and `Forge::reply`/`thumbs_up`/`rerequest`
-    have no production callers — every write still goes through the concrete
-    `forge::Target`. So the claim below that "every read and write goes through
-    the `Forge` trait" overstates it: a second impl would still need the four
-    concrete `GitHubForge::new` sites made generic and the write path rerouted.
+  - **The forge seam is now real, not nominal.** *Done.* `ForgeKind` is read by
+    `ForgeImpl::for_kind` (`src/forge/mod.rs`), the enum-dispatch handle every
+    caller now holds instead of a concrete `GitHubForge` — reads *and* writes go
+    through the `Forge` trait, including `post.rs` (which threads the forge + the
+    worktree `at` rather than a `Target`) and the two `api.rs` write endpoints.
+    The four `GitHubForge::new` sites collapsed into one factory plus `read_forge`
+    /`write_forge` helpers in `api.rs`. A second platform is a `ForgeKind` arm, a
+    variant, and a `Forge` impl — no call-site edits. Enum rather than `dyn`
+    because the trait is `Clone` (the write helpers move a copy into
+    `spawn_blocking`). The two GitHub-shaped leaks still stand for a real second
+    forge: `ThreadRoot`'s `comment_id` is a REST id, and the read token ladder is
+    GitHub's.
   - Unverified, not a finding: whether `review-requested:@me` matches PRs
     requested of a *team* you are on. It decides whether the default coverage
     quietly misses team-assigned reviews. acme currently has zero of both, so
@@ -180,10 +186,12 @@ Everything outside that block is hand-written and survives.
     p}))` would make them one path. `parse_with_profile` likewise hand-maps the
     profile *name* strings, so adding a profile is three edits, not the two its
     doc comment promises.
-  - **`resolve_repo` + `resolve_token` + `GitHubForge::new` appears four times**
-    (`lib.rs` twice, `api.rs` twice) and wants one `fn forge(app) -> Result<…>`.
-    That is also the seam where dyn/enum dispatch would go once `ForgeKind` is
-    actually read.
+  - ~~`resolve_repo` + `resolve_token` + `GitHubForge::new` repeated four times~~
+    *Done as part of wiring the seam:* the two `api.rs` sites are now
+    `read_forge`/`write_forge`, and construction everywhere goes through
+    `ForgeImpl::for_kind`. The two `lib.rs` pollers still resolve token/repo
+    inline because each has its own surrounding logic (token-source reporting;
+    `Off`-vs-`Degraded`), which is fine.
   - CLAUDE.md still says `cargo test # 214 tests`; it is 262. Stale before this
     work, staler now.
 
@@ -246,16 +254,17 @@ Everything outside that block is hand-written and survives.
     hook-observer plumbing (`--settings` injection, SessionStart/PostToolUse/Stop).
     Hosting another agent means abstracting *that* layer, not just worktree
     creation; this bullet is the first, self-contained step, not the whole job.
-  - **GitHub is the only forge.** The seam is now a real one: every read and
-    write goes through the `Forge` trait (`src/forge/mod.rs`), with `GitHubForge`
-    the sole impl (`forge/github.rs` GraphQL against github.com, `forge/github_write.rs`
-    shelling `gh`). Callers name `crate::forge::` and the model types are
-    forge-agnostic (`forge/model.rs`). A `config.forge` enum (`ForgeKind`, GitHub
-    only) picks the impl. What remains for a second platform: another `Forge`
-    impl, a `ForgeKind` arm, and dyn/enum dispatch at the (currently concrete)
-    construction sites. Two known GitHub-shaped leaks to generalise then —
-    `ThreadRoot`'s `comment_id` is a REST id, and `GitHubForge::detect`'s
-    URL-parsing is github.com-specific.
+  - **GitHub is the only forge, but the seam is wired.** Every read and write
+    goes through the `Forge` trait (`src/forge/mod.rs`), and `ForgeImpl` —
+    enum-dispatch keyed on `config.forge` (`ForgeKind`) via `ForgeImpl::for_kind`
+    — is what every caller holds; `GitHubForge` (`forge/github.rs` GraphQL,
+    `forge/github_write.rs` shelling `gh`) is its one variant. Model types are
+    forge-agnostic (`forge/model.rs`). A second platform is a `ForgeKind` arm, a
+    `ForgeImpl` variant and a `Forge` impl — no call-site edits. Two known
+    GitHub-shaped leaks to generalise then: `ThreadRoot`'s `comment_id` is a REST
+    id, and both `GitHubForge::detect`'s URL-parsing and the read-token ladder are
+    github.com-specific (a real second forge wants its own credential resolution,
+    which `for_kind`'s single `token` arg does not yet model).
   - **Output language is a setting; the tracker is config already.** *Done for
     the language.* `output_language` (`src/config.rs`, default `English`, the
     `acme` profile sets `Dutch`) fills a `{{LANGUAGE}}` placeholder the triage

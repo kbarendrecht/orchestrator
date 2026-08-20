@@ -31,7 +31,7 @@ pub use github::{
     graphql, latest_release, remote_url, repo_from_remote, resolve_token, warn_if_world_readable,
     GitHubForge, Token, TokenSource,
 };
-pub use github_write::{ready_to_rerequest, with_footer, Target};
+pub use github_write::{ready_to_rerequest, with_footer};
 pub use model::{Checks, Comment, Pr, ReviewCandidate, ReviewRef, Thread, ThreadRoot, Threads};
 
 /// Read + write against one repo on one forge.
@@ -74,4 +74,83 @@ pub trait Forge: Send + Sync + Clone + 'static {
 
     /// Ask one reviewer to look again.
     fn rerequest(&self, at: &Path, pr: u64, login: &str) -> Result<()>;
+}
+
+/// The forge the config selected, dispatched at runtime.
+///
+/// Enum rather than `Box<dyn Forge>` because the trait is `Clone` (the write
+/// helpers move a copy into `spawn_blocking`), which is not object-safe. This is
+/// the seam `ForgeKind` turns: every caller holds a `ForgeImpl` and never names
+/// a concrete forge, so a second platform is a variant here plus its own `Forge`
+/// impl — no call site changes.
+#[derive(Debug, Clone)]
+pub enum ForgeImpl {
+    GitHub(GitHubForge),
+}
+
+impl ForgeImpl {
+    /// Build the forge `kind` names. The one place a `ForgeKind` becomes a
+    /// concrete forge; `token` is the read credential (a write-only handle can
+    /// pass an empty one, since writes shell their own tool).
+    pub fn for_kind(
+        kind: crate::config::ForgeKind,
+        owner: impl Into<String>,
+        name: impl Into<String>,
+        token: impl Into<String>,
+    ) -> Self {
+        match kind {
+            crate::config::ForgeKind::GitHub => {
+                ForgeImpl::GitHub(GitHubForge::new(owner, name, token))
+            }
+        }
+    }
+}
+
+impl Forge for ForgeImpl {
+    fn poll_prs(&self) -> Result<(String, Vec<Pr>)> {
+        match self {
+            ForgeImpl::GitHub(f) => f.poll_prs(),
+        }
+    }
+    fn threads(&self, pr: u64) -> Result<Threads> {
+        match self {
+            ForgeImpl::GitHub(f) => f.threads(pr),
+        }
+    }
+    fn review_candidates(&self, all_open: bool) -> Result<(String, Vec<ReviewCandidate>)> {
+        match self {
+            ForgeImpl::GitHub(f) => f.review_candidates(all_open),
+        }
+    }
+    fn reply(&self, at: &Path, root: &ThreadRoot, body: &str) -> Result<()> {
+        match self {
+            ForgeImpl::GitHub(f) => f.reply(at, root, body),
+        }
+    }
+    fn thumbs_up(&self, at: &Path, root: &ThreadRoot) -> Result<()> {
+        match self {
+            ForgeImpl::GitHub(f) => f.thumbs_up(at, root),
+        }
+    }
+    fn rerequest(&self, at: &Path, pr: u64, login: &str) -> Result<()> {
+        match self {
+            ForgeImpl::GitHub(f) => f.rerequest(at, pr, login),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn for_kind_builds_the_configured_forge_and_dispatches() {
+        // The one place `ForgeKind` becomes a concrete forge; a second platform
+        // is a variant plus its impl, and no caller changes.
+        let f = ForgeImpl::for_kind(crate::config::ForgeKind::GitHub, "o", "n", "t");
+        assert!(matches!(f, ForgeImpl::GitHub(_)));
+        // And it is usable through the trait — reads and writes both dispatch.
+        fn read_and_write(_: &impl Forge) {}
+        read_and_write(&f);
+    }
 }

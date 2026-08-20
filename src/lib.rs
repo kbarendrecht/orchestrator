@@ -456,7 +456,8 @@ fn start_pr_poller(app: Arc<AppState>) {
                         );
                     }
                     let source = t.source;
-                    let forge = forge::GitHubForge::new(repo.0.clone(), repo.1.clone(), t.value);
+                    let forge =
+                        forge::ForgeImpl::for_kind(app.cfg.forge, repo.0.clone(), repo.1.clone(), t.value);
                     let result = tokio::task::spawn_blocking(move || forge.poll_prs()).await;
                     let mut inner = app.inner.write().await;
                     inner.token_source = Some(source);
@@ -688,7 +689,7 @@ fn start_review_poller(app: Arc<AppState>) {
                             reason: format!("{e:#}"),
                         },
                         Ok(t) => {
-                            let f = forge::GitHubForge::new(owner, name, t.value);
+                            let f = forge::ForgeImpl::for_kind(app.cfg.forge, owner, name, t.value);
                             let ranking = app.cfg.review_ranking.clone();
                             tokio::task::spawn_blocking(move || reviews::fetch(&f, &ranking))
                                 .await
