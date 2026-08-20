@@ -10,8 +10,7 @@ pub mod config;
 pub mod diff;
 pub mod edit;
 pub mod git;
-pub mod github;
-pub mod github_write;
+pub mod forge;
 pub mod fix_pr;
 pub mod hooks;
 pub mod instance;
@@ -46,6 +45,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use config::Config;
+use forge::Forge;
 use model::*;
 use state::AppState;
 
@@ -444,10 +444,10 @@ fn start_pr_poller(app: Arc<AppState>) {
 
             app.inner.write().await.pr_polling = true;
             app.notify().await;
-            let token = github::resolve_token(app.cfg.github_token_file.as_deref());
+            let token = forge::resolve_token(app.cfg.github_token_file.as_deref());
             match token {
                 Ok(t) => {
-                    if t.source == github::TokenSource::GhCli {
+                    if t.source == forge::TokenSource::GhCli {
                         // §6 wants read scopes only; gh's token carries write.
                         tracing::warn!(
                             "using `gh auth token`, which has broader scopes than orchd needs. \
@@ -455,10 +455,8 @@ fn start_pr_poller(app: Arc<AppState>) {
                         );
                     }
                     let source = t.source;
-                    let (owner, name) = (repo.0.clone(), repo.1.clone());
-                    let result =
-                        tokio::task::spawn_blocking(move || github::poll(&t.value, &owner, &name))
-                            .await;
+                    let forge = forge::GitHubForge::new(repo.0.clone(), repo.1.clone(), t.value);
+                    let result = tokio::task::spawn_blocking(move || forge.poll_prs()).await;
                     let mut inner = app.inner.write().await;
                     inner.token_source = Some(source);
                     match result {
@@ -617,7 +615,7 @@ async fn live_findings(app: &Arc<AppState>) -> Vec<todo::Finding> {
         )
     };
 
-    if token == Some(github::TokenSource::GhCli) {
+    if token == Some(forge::TokenSource::GhCli) {
         out.push(todo::Finding {
             what: "GitHub token is gh's".into(),
             why: "it carries write scopes; §6 wants a read-only PAT in `ORCHD_GITHUB_TOKEN` \
@@ -628,10 +626,7 @@ async fn live_findings(app: &Arc<AppState>) -> Vec<todo::Finding> {
     if let Some(reason) = review_bad {
         out.push(todo::Finding {
             what: "review queue is unavailable".into(),
-            why: format!(
-                "the configured review-queue command is not answering: {}",
-                reason.trim()
-            ),
+            why: format!("the forge is not answering the review query: {}", reason.trim()),
         });
     }
 
@@ -681,14 +676,28 @@ fn start_review_poller(app: Arc<AppState>) {
             // button pulses `review_refresh`.
             app.inner.write().await.reviews_polling = true;
             app.notify().await;
-            let main = app.cfg.main_checkout.clone();
-            let timeout = app.cfg.review_timeout_seconds;
-            let command = app.cfg.reviews_command.clone();
-            let state = tokio::task::spawn_blocking(move || reviews::fetch(&main, timeout, &command))
-                .await
-                .unwrap_or_else(|e| reviews::ReviewState::Degraded {
-                    reason: format!("review poll task failed: {e}"),
-                });
+            // No repo resolves → nothing to query, and the pane says so rather
+            // than reading as broken. A repo but a bad/absent token → Degraded,
+            // the same way the PR poll surfaces an auth failure.
+            let state = match resolve_repo(&app) {
+                None => reviews::ReviewState::Off,
+                Some((owner, name)) => {
+                    match forge::resolve_token(app.cfg.github_token_file.as_deref()) {
+                        Err(e) => reviews::ReviewState::Degraded {
+                            reason: format!("{e:#}"),
+                        },
+                        Ok(t) => {
+                            let f = forge::GitHubForge::new(owner, name, t.value);
+                            let ranking = app.cfg.review_ranking.clone();
+                            tokio::task::spawn_blocking(move || reviews::fetch(&f, &ranking))
+                                .await
+                                .unwrap_or_else(|e| reviews::ReviewState::Degraded {
+                                    reason: format!("review poll task failed: {e}"),
+                                })
+                        }
+                    }
+                }
+            };
             if let reviews::ReviewState::Degraded { reason } = &state {
                 tracing::warn!("review queue degraded: {reason}");
             }
@@ -885,7 +894,7 @@ fn start_update_poller(app: Arc<AppState>) {
         loop {
             let cur = current.clone();
             if let Ok(Some((tag, url))) = tokio::task::spawn_blocking(|| {
-                github::latest_release(RELEASE_REPO.0, RELEASE_REPO.1)
+                forge::latest_release(RELEASE_REPO.0, RELEASE_REPO.1)
             })
             .await
             {
@@ -928,8 +937,8 @@ pub(crate) fn resolve_repo(app: &Arc<AppState>) -> Option<(String, String)> {
         let (o, n) = r.split_once('/')?;
         return Some((o.to_string(), n.to_string()));
     }
-    let url = github::remote_url(&app.cfg.main_checkout, &app.cfg.upstream_remote)?;
-    github::repo_from_remote(&url)
+    let url = forge::remote_url(&app.cfg.main_checkout, &app.cfg.upstream_remote)?;
+    forge::repo_from_remote(&url)
 }
 
 // ---------------------------------------------------------------------------

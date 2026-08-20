@@ -98,15 +98,14 @@ Everything outside that block is hand-written and survives.
 - **Make it run somewhere other than this machine.** Everything below is a
   hardcoded assumption about one monorepo, and each is a setting or a probe
   waiting to be written:
-  - **The review queue has no built-in source.** The command is now config
-    (`reviews_command`, `src/config.rs`) — an argv whose JSON matches
-    `docs/reviews-json.md`, defaulting to acme's `mise run reviews --json` for
-    a config written before the field, empty on a fresh checkout so the pane reads
-    "not configured" (`ReviewState::Off`) rather than degraded. What is still
-    acme's: the JSON *shape* itself, and the fallback PR URL derived as
-    `acme/monorepo/pull/<n>` when the source omits `url` (`src/reviews.rs`).
-    The remaining want is a built-in fallback that asks GitHub directly, so a
-    repo with no such command still gets a queue.
+  - **The review queue is built in.** *Done.* It asks the forge directly
+    (`Forge::review_candidates`, GitHub via `review-requested:@me`) — no external
+    command, no acme JSON shape, no `acme/monorepo` fallback URL. Ranking
+    is config (`review_ranking`, `src/reviews.rs`): an ordered first-match-wins
+    rule list with a `blocked_when` set and tiebreak keys, defaulting to the
+    buckets the pane shipped with. A checkout with no resolvable forge repo reads
+    `ReviewState::Off` ("no forge repo") rather than degraded. What is still
+    GitHub-only is the *forge* itself — see the forge item below.
   - **Docker and `ng` are assumed.** `main_processes` ships `mise run watch` and
     `docker compose up` as the two things a checkout has (`src/config.rs`). They
     are already config, but the defaults are a guess about someone else's stack;
@@ -116,9 +115,16 @@ Everything outside that block is hand-written and survives.
     `<main>/.claude/worktrees`, which is where acme's own `worktree-create`
     hook puts them. A repo without that hook gets Claude Code's default location
     instead and the daemon will not recognise its own worktrees.
-  - **GitHub is the only forge.** `github.rs` is GraphQL against github.com and
-    `github_write.rs` shells `gh`. Other platforms were floated; the seam is the
-    two modules, not the callers.
+  - **GitHub is the only forge.** The seam is now a real one: every read and
+    write goes through the `Forge` trait (`src/forge/mod.rs`), with `GitHubForge`
+    the sole impl (`forge/github.rs` GraphQL against github.com, `forge/github_write.rs`
+    shelling `gh`). Callers name `crate::forge::` and the model types are
+    forge-agnostic (`forge/model.rs`). A `config.forge` enum (`ForgeKind`, GitHub
+    only) picks the impl. What remains for a second platform: another `Forge`
+    impl, a `ForgeKind` arm, and dyn/enum dispatch at the (currently concrete)
+    construction sites. Two known GitHub-shaped leaks to generalise then —
+    `ThreadRoot`'s `comment_id` is a REST id, and `GitHubForge::detect`'s
+    URL-parsing is github.com-specific.
   - **Shortcut is the only tracker** (`Tracker` in `src/config.rs`), and the
     prompts tell the agent to write stories **in Dutch**. Both belong in settings.
   - **`upstream/develop`** as the base ref, and the fork-with-upstream remote

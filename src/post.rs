@@ -23,8 +23,8 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::sync::Arc;
 
-use crate::github::{Pr, ThreadRoot, Threads};
-use crate::github_write::{self, Target};
+use crate::forge::{Pr, ThreadRoot, Threads};
+use crate::forge::{self, Target};
 use crate::patch::{FileStat, Patch, Written};
 use crate::proposal::{Mode, Position, Stance};
 use crate::state::AppState;
@@ -492,7 +492,7 @@ fn resolve_reply(pos: &Position, d: &Decision, thread_id: &str) -> Result<Option
 
 /// `renovate.json5:161 · carol`, or `review summary · acme-bot` for a
 /// thread with no file.
-fn label_for(t: &crate::github::Thread) -> String {
+fn label_for(t: &crate::forge::Thread) -> String {
     let who = t.author().unwrap_or("ghost");
     match (&t.path, t.line.or(t.original_line)) {
         (Some(p), Some(l)) => format!("{p}:{l} · {who}"),
@@ -1219,7 +1219,7 @@ async fn rerequest(
 ) {
     let Split { all, open, holding } = split_reviewers(fresh, done);
 
-    for login in github_write::ready_to_rerequest(&all, &open) {
+    for login in forge::ready_to_rerequest(&all, &open) {
         match blocking_rerequest(target, pr, login).await {
             Ok(()) => report.rerequested.push(login.to_string()),
             Err(e) => report.failed.push(Failed {
@@ -1253,7 +1253,7 @@ async fn rerequest(
 /// is byte-for-byte what would be sent. A reply the human edited between attempts
 /// posts again, which is correct — it is different words.
 fn already_replied(fresh: &Threads, thread_id: &str, body: &str) -> bool {
-    let want = github_write::with_footer(body);
+    let want = forge::with_footer(body);
     fresh
         .items
         .iter()
@@ -1303,7 +1303,7 @@ mod tests {
 
     /// The first half: no phase has opened.
     const FIRST_HALF: Option<&std::collections::HashMap<String, String>> = None;
-    use crate::github::{Comment, Thread};
+    use crate::forge::{Comment, Thread};
     use crate::proposal::{Proposal, ProposalSet, StoryDraft};
 
     fn comment(id: u64, author: &str, body: &str) -> Comment {
@@ -1816,7 +1816,7 @@ mod tests {
         t.comments.push(comment(
             101,
             "kars",
-            &github_write::with_footer("Resolved."),
+            &forge::with_footer("Resolved."),
         ));
         let fresh = fetched(vec![t]);
 
@@ -1829,7 +1829,7 @@ mod tests {
     fn someone_elses_identical_comment_does_not_count_as_our_reply() {
         let mut t = thread("PRRT_1", Some("a.ts"), Some(1), "john");
         t.comments
-            .push(comment(101, "john", &github_write::with_footer("Resolved.")));
+            .push(comment(101, "john", &forge::with_footer("Resolved.")));
         assert!(!already_replied(&fetched(vec![t]), "PRRT_1", "Resolved."));
     }
 
@@ -1844,7 +1844,7 @@ mod tests {
         // Dave's one thread is settled; one of carol's is not.
         let split = split_reviewers(&fresh, &["PRRT_1", "PRRT_3"]);
         assert_eq!(
-            github_write::ready_to_rerequest(&split.all, &split.open),
+            forge::ready_to_rerequest(&split.all, &split.open),
             vec!["dave"]
         );
         assert_eq!(split.holding.len(), 1);
@@ -1855,7 +1855,7 @@ mod tests {
         // With everything settled, both go.
         let split = split_reviewers(&fresh, &["PRRT_1", "PRRT_2", "PRRT_3"]);
         assert_eq!(
-            github_write::ready_to_rerequest(&split.all, &split.open),
+            forge::ready_to_rerequest(&split.all, &split.open),
             vec!["carol", "dave"]
         );
         assert!(split.holding.is_empty());
@@ -1871,7 +1871,7 @@ mod tests {
             thread("PRRT_new", Some("c.ts"), Some(3), "carol"),
         ]);
         let split = split_reviewers(&fresh, &["PRRT_1"]);
-        assert!(github_write::ready_to_rerequest(&split.all, &split.open).is_empty());
+        assert!(forge::ready_to_rerequest(&split.all, &split.open).is_empty());
     }
 
     #[test]

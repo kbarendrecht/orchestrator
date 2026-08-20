@@ -4,7 +4,7 @@ use std::time::SystemTime;
 use uuid::Uuid;
 
 use crate::capability::{CapabilityReport, Isolation, Trust};
-use crate::github::{Checks, Pr};
+use crate::forge::{Checks, Pr};
 
 pub type SessionId = Uuid;
 

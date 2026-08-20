@@ -54,20 +54,16 @@ pub struct Config {
     /// 288 queries/day is negligible against 5000 points/hour (§6).
     #[serde(default = "default_poll_seconds")]
     pub poll_seconds: u64,
-    /// `mise run reviews` walks every open PR, so it needs a generous ceiling
-    /// but must not hang the poller forever.
-    #[serde(default = "default_review_timeout")]
-    pub review_timeout_seconds: u64,
-    /// The command whose JSON output feeds the review-queue pane (the shape in
-    /// `docs/reviews-json.md`). An argv, run under `timeout` in the main checkout.
-    ///
-    /// Empty means "no review queue here", and the pane says so rather than
-    /// reading as a broken command. The serde default is acme's own
-    /// `mise run reviews --json` so a config written before this field existed
-    /// keeps working; `default_for` leaves it empty, because a fresh checkout on
-    /// another machine has no such task and should not pretend to.
-    #[serde(default = "default_reviews_command")]
-    pub reviews_command: Vec<String>,
+    /// Which forge the repo lives on. Only GitHub is implemented; the field
+    /// exists so a second platform is a config choice rather than a rebuild.
+    #[serde(default)]
+    pub forge: ForgeKind,
+    /// How the review queue is classified and ordered. Config, not hardcoded, so
+    /// a repo with different labels or priorities does not need a patched daemon.
+    /// The default reproduces the buckets the queue shipped with (stopper / prio
+    /// / requested-of-you / of-your-team / re-review / other / sidequest).
+    #[serde(default)]
+    pub review_ranking: crate::reviews::ReviewRanking,
     /// Test capabilities per suite. Config rather than hardcoded, because the
     /// table has already changed once (§7 rule 6).
     #[serde(default)]
@@ -155,15 +151,14 @@ fn default_story_timeout() -> u64 {
     300
 }
 
-fn default_review_timeout() -> u64 {
-    240
-}
-
-fn default_reviews_command() -> Vec<String> {
-    ["mise", "run", "reviews", "--json"]
-        .into_iter()
-        .map(String::from)
-        .collect()
+/// Which code-hosting platform the repo lives on. The read/write seam is
+/// `crate::forge`; adding a platform is a new arm here plus a new `Forge` impl,
+/// not a change to any caller.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ForgeKind {
+    #[default]
+    GitHub,
 }
 
 impl Config {
@@ -290,10 +285,11 @@ impl Config {
             repo: None,
             github_token_file: None,
             poll_seconds: default_poll_seconds(),
-            review_timeout_seconds: default_review_timeout(),
-            // Empty on a fresh checkout: the review queue is acme's task, not
-            // something every repo has. Set it in config.json to turn the pane on.
-            reviews_command: Vec::new(),
+            forge: ForgeKind::default(),
+            // The queue is built in and asks the forge directly, so a fresh
+            // checkout needs no setup; the default ranking reproduces the buckets
+            // it shipped with.
+            review_ranking: Default::default(),
             tracker: Tracker::None,
             shortcut_token_file: None,
             story_timeout_seconds: default_story_timeout(),
@@ -422,18 +418,22 @@ mod tests {
     }
 
     #[test]
-    fn a_config_without_a_reviews_command_keeps_the_old_behaviour() {
-        // Existing configs predate the field; they must still drive acme's
-        // `mise run reviews --json` rather than silently turning the pane off.
-        let cfg: Config = serde_json::from_str(r#"{"main_checkout":"/tmp"}"#).expect("parse");
-        assert_eq!(cfg.reviews_command, vec!["mise", "run", "reviews", "--json"]);
+    fn an_old_config_with_a_reviews_command_still_parses() {
+        // `reviews_command` was a config key until the queue became built in; a
+        // file written back then must still load, its stale key ignored.
+        let cfg: Config = serde_json::from_str(
+            r#"{"main_checkout":"/tmp","reviews_command":["mise","run","reviews","--json"],
+                "review_timeout_seconds":240}"#,
+        )
+        .expect("parse");
+        assert_eq!(cfg.main_checkout, PathBuf::from("/tmp"));
     }
 
     #[test]
-    fn a_fresh_config_leaves_the_reviews_command_empty() {
-        // A new checkout elsewhere has no such task, so the default written on
-        // first run is off, not a acme assumption.
+    fn a_fresh_config_gets_the_default_forge_and_ranking() {
+        // A new checkout anywhere gets a working queue with no setup.
         let cfg = Config::default_for(PathBuf::from("/tmp/x"));
-        assert!(cfg.reviews_command.is_empty());
+        assert_eq!(cfg.forge, ForgeKind::GitHub);
+        assert!(!cfg.review_ranking.rules.is_empty());
     }
 }

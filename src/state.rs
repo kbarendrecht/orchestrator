@@ -95,7 +95,7 @@ pub struct AppState {
 /// One PR's review threads as of a particular fetch.
 pub struct ThreadCache {
     pub fetched: SystemTime,
-    pub threads: crate::github::Threads,
+    pub threads: crate::forge::Threads,
 }
 
 #[derive(Default)]
@@ -103,7 +103,7 @@ pub struct Inner {
     pub workspaces: HashMap<WorkspaceId, Workspace>,
     pub sessions: HashMap<SessionId, Session>,
     pub files: FileSets,
-    pub prs: Vec<crate::github::Pr>,
+    pub prs: Vec<crate::forge::Pr>,
     /// Review threads fetched on demand, per PR number. The 5-minute poll only
     /// counts threads; this holds the bodies the review overlay renders, and
     /// the `head_sha` they were read at — which is what a later post step
@@ -142,7 +142,7 @@ pub struct Inner {
     /// A fetch is in flight right now. `pr_poll` says one *landed*, which is what
     /// stops the spinner; this is what starts it when nobody pressed the button.
     pub pr_polling: bool,
-    pub token_source: Option<crate::github::TokenSource>,
+    pub token_source: Option<crate::forge::TokenSource>,
     pub reviews: crate::reviews::ReviewState,
     /// Bumped once per completed review poll. The SPA watches it to spin the
     /// refresh button until the fetch its click triggered has actually landed,
@@ -213,11 +213,11 @@ impl AppState {
             },
         );
         let repos = Repos {
-            upstream: crate::github::remote_url(&cfg.main_checkout, &cfg.upstream_remote)
-                .and_then(|u| crate::github::repo_from_remote(&u))
+            upstream: crate::forge::remote_url(&cfg.main_checkout, &cfg.upstream_remote)
+                .and_then(|u| crate::forge::repo_from_remote(&u))
                 .map(|(o, n)| format!("{o}/{n}")),
-            fork: crate::github::remote_url(&cfg.main_checkout, "origin")
-                .and_then(|u| crate::github::repo_from_remote(&u))
+            fork: crate::forge::remote_url(&cfg.main_checkout, "origin")
+                .and_then(|u| crate::forge::repo_from_remote(&u))
                 .map(|(o, n)| format!("{o}/{n}")),
         };
         Arc::new(AppState {
@@ -705,7 +705,7 @@ pub struct Snapshot {
     /// A PR fetch is running. The pane spins its refresh icon while it is,
     /// however the fetch was started.
     pub pr_polling: bool,
-    pub token_source: Option<crate::github::TokenSource>,
+    pub token_source: Option<crate::forge::TokenSource>,
     pub reviews: crate::reviews::ReviewState,
     /// Monotonic counter of completed review polls; see `Inner::reviews_poll`.
     pub reviews_poll: u64,
@@ -730,7 +730,7 @@ pub struct Snapshot {
 #[derive(Debug, Serialize)]
 pub struct PrView {
     #[serde(flatten)]
-    pub pr: crate::github::Pr,
+    pub pr: crate::forge::Pr,
     pub rank: u8,
     /// The workspace whose branch set contains this PR's head ref.
     pub workspace: Option<String>,

@@ -3787,17 +3787,6 @@ function reviewAge(hours) {
   return `${Math.round(hours / 24)}d`;
 }
 
-/** Why this row is in your queue, when there is a reason worth the width. */
-function reviewReason(r) {
-  if (r.blockers && r.blockers.length) return r.blockers.join(', ');
-  if (r.needs_re_review) return 're-requested';
-  if (r.is_draft) return 'draft';
-  if (r.prio === 0) return 'prio stopper';
-  if (r.prio === 1) return 'prio';
-  if (r.prio === 3) return 'team';
-  return '';
-}
-
 function renderReviews() {
   const block = $('rvblock');
   const head = $('rvhead');
@@ -3816,8 +3805,8 @@ function renderReviews() {
     snap.reviews_polling);
 
   if (!rv || rv.state !== 'ok') {
-    // Never an empty queue: a broken command reads as broken (§6b). Startup and
-    // "no such command here" are not broken, so they each say so differently.
+    // Never an empty queue: a broken source reads as broken (§6b). Startup and
+    // "no repo here" are not broken, so they each say so differently.
     const pending = !rv || rv.state === 'pending';
     const off = rv && rv.state === 'off';
     // Only a real fault gets the red `f`; pending and off are neutral.
@@ -3829,7 +3818,7 @@ function renderReviews() {
     list.appendChild(el('div', 'fempty', pending
       ? 'waiting for the first poll'
       : off
-        ? 'no review queue configured\nset `reviews_command` in config.json'
+        ? 'no forge repo for this checkout\nadd a GitHub remote to turn the queue on'
         : `reviews unavailable\n${(rv?.reason || '').slice(0, 160)}`));
     head.onclick = () => { showReviews = !showReviews; renderReviews(); };
     return;
@@ -3855,14 +3844,12 @@ function renderReviews() {
     a.href = r.url;
     a.target = '_blank';
     a.rel = 'noreferrer';
-    /* Grey unless it is a re-review: the source only sets `needsReReview` for
-     * rows in *your* queue, so it is the one thing here that is waiting on you
-     * rather than on a colleague. Amber is the legend's "needs you" (§9).
-     * It cannot tell a personal re-request from a team one — `prio` splits that
-     * only for first requests.
-     * A `prio` or `prio stopper` label outranks both: red, because that queue is
-     * somebody's release waiting on you. */
-    const dot = r.prio <= 1 ? ' prio' : r.needs_re_review ? ' blocked' : '';
+    /* The dot colour comes from the server's `tone`, not from a magic `prio`
+     * number: the ranking is configurable, so a rank of 1 no longer implies
+     * "red" on its own. `prio` (red) is somebody's release waiting on you;
+     * `rereview` (amber) is a re-request waiting on you rather than on a
+     * colleague; anything else is neutral. */
+    const dot = r.tone === 'prio' ? ' prio' : r.tone === 'rereview' ? ' blocked' : '';
     a.appendChild(el('span', 'dot' + dot));
     // Age, not the PR number: how long it has waited is what tells you to pick
     // it up. The whole row already links to the PR, so the number earns nothing.
@@ -3874,7 +3861,7 @@ function renderReviews() {
     // File count stands in for review cost — 37 files is a different
     // commitment from 1 — but an empty column just steals width from the title.
     if (anyFiles) a.appendChild(el('span', 'fc', r.changed_files != null ? String(r.changed_files) : '·'));
-    const why = reviewReason(r);
+    const why = r.reason || '';
     if (why) a.appendChild(el('span', 'why', why));
     return a;
   };

@@ -5,6 +5,10 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::process::Command;
 
+use super::github_write::Target;
+use super::model::{Checks, Comment, Pr, ReviewCandidate, Thread, ThreadRoot, Threads};
+use super::Forge;
+
 /// Where the daemon's GitHub token came from.
 ///
 /// §6 wants a fine-grained PAT with **read scopes only** — `pull_requests`,
@@ -104,6 +108,12 @@ pub fn graphql(token: &str, query: &str) -> Result<Value> {
         .args([
             "-sS",
             "--fail-with-body",
+            // A hung request must not pin a poll thread forever. The review query
+            // is one server-side search and the PR poll a handful of requests, so
+            // a generous ceiling never bites a healthy call but bounds a stuck one
+            // — this is where the old external `review_timeout_seconds` went.
+            "--max-time",
+            "120",
             "-X",
             "POST",
             "-H",
@@ -177,78 +187,80 @@ pub fn latest_release(owner: &str, name: &str) -> Option<(String, String)> {
 }
 
 // ---------------------------------------------------------------------------
-// Model
+// The GitHub forge
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum Checks {
-    Passing,
-    Failing,
-    Pending,
-    Unknown,
+/// One repo on github.com. Reads go through the curl+PAT transport
+/// ([`graphql`]); writes shell `gh`, which carries its own credential — so
+/// `token` is the read half only, and a repo can have one without the other.
+///
+/// Cheap to clone (three `String`s) and holds no borrows, so it can be moved
+/// into a `spawn_blocking`: every method here blocks on a subprocess and must
+/// not run on the async runtime. Constructed per operation, not held, so a
+/// rotated token file is picked up on the next poll.
+#[derive(Debug, Clone)]
+pub struct GitHubForge {
+    owner: String,
+    name: String,
+    /// Read-path PAT. Empty is allowed to construct — the first read then fails
+    /// with GitHub's own auth error, which is the same path a bad token takes.
+    token: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
-pub struct Pr {
-    pub number: u64,
-    pub title: String,
-    pub url: String,
-    pub head_ref: String,
-    pub head_owner: Option<String>,
-    pub base_ref: String,
-    pub is_draft: bool,
-    /// `MERGEABLE` / `CONFLICTING` / `UNKNOWN`.
-    pub mergeable: String,
-    pub merge_state: String,
-    pub checks: Checks,
-    /// Head commit. `fix-pr` amends and rebases, so this moves on every
-    /// internal attempt — it is an identity for "has the branch changed since
-    /// the run gave up", not a provenance record (§8).
-    pub head_sha: Option<String>,
-    /// GitHub's sense of resolved — a conversation the comment author closed.
-    /// Not to be confused with `/api/pr/:n/resolve`, which is *our* flow for
-    /// answering threads and deliberately never closes one.
-    pub unresolved: u32,
-    /// True when `reviewThreads` had another page, so `unresolved` is a floor.
-    /// Rendered as `50+` rather than `50`, so an under-count cannot silently
-    /// hide work (§6).
-    pub unresolved_capped: bool,
-    /// Of those, the ones whose last word is not yours and which you have not
-    /// 👍'd. This is the number the rail acts on; `unresolved` is GitHub's.
-    pub awaiting_you: u32,
-    pub changes_requested: bool,
-    /// Whether this PR is waiting on you, decided here rather than in four
-    /// places that each got it slightly differently.
-    ///
-    /// A thread you have answered is not your turn even though GitHub still
-    /// calls it unresolved — closing it is the reviewer's button. A
-    /// changes-requested review counts only when there are no threads to answer,
-    /// which is the shape of an objection written in the review body: with
-    /// threads present it stays set until the reviewer looks again, and treating
-    /// that as your turn is what made an answered PR sit there amber.
-    pub needs_you: bool,
-    /// PRs stacked directly on this one.
-    pub children: Vec<u64>,
+impl GitHubForge {
+    pub fn new(owner: impl Into<String>, name: impl Into<String>, token: impl Into<String>) -> Self {
+        GitHubForge {
+            owner: owner.into(),
+            name: name.into(),
+            token: token.into(),
+        }
+    }
+
+    /// `owner/name` from a git remote. Off the trait because it must run before
+    /// an instance exists — it is how the caller learns what repo to build one
+    /// for. github.com-specific by nature (URL shapes), which is why it belongs
+    /// to the GitHub forge rather than to a generic seam.
+    pub fn detect(cwd: &Path, remote: &str) -> Option<(String, String)> {
+        repo_from_remote(&remote_url(cwd, remote)?)
+    }
 }
 
-impl Pr {
-    /// Sort key for the rail PR group (§9):
-    /// needs-resolving → failing → open and clean → draft.
-    pub fn rank(&self) -> u8 {
-        if self.is_draft {
-            return 4;
+impl Forge for GitHubForge {
+    fn poll_prs(&self) -> Result<(String, Vec<Pr>)> {
+        poll(&self.token, &self.owner, &self.name)
+    }
+
+    fn threads(&self, pr: u64) -> Result<Threads> {
+        fetch_threads(&self.token, &self.owner, &self.name, pr)
+    }
+
+    fn review_candidates(&self) -> Result<(String, Vec<ReviewCandidate>)> {
+        fetch_review_candidates(&self.token, &self.owner, &self.name)
+    }
+
+    fn reply(&self, at: &Path, root: &ThreadRoot, body: &str) -> Result<()> {
+        self.target(at).reply(root, body).map(|_| ())
+    }
+
+    fn thumbs_up(&self, at: &Path, root: &ThreadRoot) -> Result<()> {
+        self.target(at).thumbs_up(root).map(|_| ())
+    }
+
+    fn rerequest(&self, at: &Path, pr: u64, login: &str) -> Result<()> {
+        self.target(at).rerequest(pr, login)
+    }
+}
+
+impl GitHubForge {
+    /// A `gh`-shelling write handle rooted at `at`. The working dir varies per
+    /// caller — the resolve run writes from the worktree, the API from main — so
+    /// it is a parameter, never baked into the forge.
+    fn target(&self, at: &Path) -> Target {
+        Target {
+            cwd: at.to_path_buf(),
+            owner: self.owner.clone(),
+            name: self.name.clone(),
         }
-        if self.needs_you {
-            return 0;
-        }
-        if self.checks == Checks::Failing || self.mergeable == "CONFLICTING" {
-            return 1;
-        }
-        if self.checks == Checks::Pending {
-            return 2;
-        }
-        3
     }
 }
 
@@ -478,15 +490,10 @@ fn parse_pr(n: &Value, viewer: &str) -> Option<Pr> {
     let number = n.get("number")?.as_u64()?;
 
     // The rollup hangs off the head commit, not off the PR (§6).
-    let rollup = n
-        .pointer("/commits/nodes/0/commit/statusCheckRollup/state")
-        .and_then(|s| s.as_str());
-    let checks = match rollup {
-        Some("SUCCESS") => Checks::Passing,
-        Some("FAILURE") | Some("ERROR") => Checks::Failing,
-        Some("PENDING") | Some("EXPECTED") => Checks::Pending,
-        _ => Checks::Unknown,
-    };
+    let checks = checks_from(
+        n.pointer("/commits/nodes/0/commit/statusCheckRollup/state")
+            .and_then(|s| s.as_str()),
+    );
 
     let threads = n
         .pointer("/reviewThreads/nodes")
@@ -548,116 +555,158 @@ fn parse_pr(n: &Value, viewer: &str) -> Option<Pr> {
     })
 }
 
+/// GitHub's status-check rollup enum → our four states. Shared by the PR poll
+/// and the review queue so the two never disagree on what "failing" means.
+fn checks_from(state: Option<&str>) -> Checks {
+    match state {
+        Some("SUCCESS") => Checks::Passing,
+        Some("FAILURE") | Some("ERROR") => Checks::Failing,
+        Some("PENDING") | Some("EXPECTED") => Checks::Pending,
+        _ => Checks::Unknown,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Review queue
+// ---------------------------------------------------------------------------
+
+fn review_candidates_query(owner: &str, name: &str) -> String {
+    // `review-requested:@me` matches PRs asked of you directly *or* via a team
+    // you are on — GitHub resolves your team membership server-side. That is the
+    // whole trick behind `requested_team` below: if the search matched but your
+    // login is not in `reviewRequests`, it matched through a team, and we never
+    // had to enumerate your teams to know it.
+    format!(
+        r#"{{
+  viewer {{ login }}
+  search(query: "repo:{owner}/{name} is:pr is:open review-requested:@me", type: ISSUE, first: {PAGE}) {{
+    nodes {{
+      ... on PullRequest {{
+        number
+        title
+        url
+        createdAt
+        isDraft
+        changedFiles
+        mergeable
+        reviewDecision
+        author {{ login }}
+        labels(first: 20) {{ nodes {{ name }} }}
+        commits(last: 1) {{ nodes {{ commit {{ statusCheckRollup {{ state }} }} }} }}
+        reviewRequests(first: 20) {{ nodes {{ requestedReviewer {{ __typename ... on User {{ login }} }} }} }}
+        reviews(first: 50) {{ nodes {{ author {{ login }} }} }}
+      }}
+    }}
+  }}
+}}"#
+    )
+}
+
+/// PRs where your review is requested, plus your own login. Ranking is not done
+/// here — that is [`crate::reviews`]'s job and is config-driven, so it is the
+/// same whatever forge produced these. Reached through
+/// [`GitHubForge::review_candidates`].
+fn fetch_review_candidates(
+    token: &str,
+    owner: &str,
+    name: &str,
+) -> Result<(String, Vec<ReviewCandidate>)> {
+    let v = graphql(token, &review_candidates_query(owner, name))?;
+    let viewer = v
+        .pointer("/data/viewer/login")
+        .and_then(|s| s.as_str())
+        .unwrap_or_default()
+        .to_string();
+    let nodes = v
+        .pointer("/data/search/nodes")
+        .and_then(|n| n.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let candidates = nodes
+        .iter()
+        .filter_map(|n| parse_review_candidate(n, &viewer))
+        .collect();
+    Ok((viewer, candidates))
+}
+
+fn parse_review_candidate(n: &Value, viewer: &str) -> Option<ReviewCandidate> {
+    // A search over issues-and-PRs can return a non-PR node with no `number`;
+    // `is:pr` should exclude those, but the fragment leaves a bare `{}` if it
+    // ever does, so bail rather than invent a row.
+    let number = n.get("number")?.as_u64()?;
+
+    let strings_at = |ptr: &str, key: &str| -> Vec<String> {
+        n.pointer(ptr)
+            .and_then(|a| a.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|x| x.pointer(key).and_then(|s| s.as_str()).map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+
+    // Humans who have already reviewed — deduped, since one reviewer leaves many
+    // reviews. Used only as a review-cost tiebreak.
+    let mut review_authors = strings_at("/reviews/nodes", "/author/login");
+    let re_review = review_authors.iter().any(|a| a == viewer);
+    review_authors.sort();
+    review_authors.dedup();
+    let reviewers = review_authors.len() as u32;
+
+    // Directly requested = your login sits in reviewRequests as a User. If it
+    // does not but the search still returned this PR, the request reached you
+    // through a team.
+    let requested_personally = n
+        .pointer("/reviewRequests/nodes")
+        .and_then(|a| a.as_array())
+        .map(|a| {
+            a.iter().any(|r| {
+                r.pointer("/requestedReviewer/__typename").and_then(|t| t.as_str()) == Some("User")
+                    && r.pointer("/requestedReviewer/login").and_then(|l| l.as_str())
+                        == Some(viewer)
+            })
+        })
+        .unwrap_or(false);
+
+    Some(ReviewCandidate {
+        number,
+        title: n.get("title").and_then(|s| s.as_str()).unwrap_or("").to_string(),
+        url: n.get("url").and_then(|s| s.as_str()).unwrap_or("").to_string(),
+        author: n
+            .pointer("/author/login")
+            .and_then(|s| s.as_str())
+            .unwrap_or("unknown")
+            .to_string(),
+        created_at: n
+            .get("createdAt")
+            .and_then(|s| s.as_str())
+            .unwrap_or("")
+            .to_string(),
+        is_draft: n.get("isDraft").and_then(|b| b.as_bool()).unwrap_or(false),
+        mergeable: n
+            .get("mergeable")
+            .and_then(|s| s.as_str())
+            .unwrap_or("UNKNOWN")
+            .to_string(),
+        checks: checks_from(
+            n.pointer("/commits/nodes/0/commit/statusCheckRollup/state")
+                .and_then(|s| s.as_str()),
+        ),
+        labels: strings_at("/labels/nodes", "/name"),
+        requested_personally,
+        requested_team: !requested_personally,
+        re_review,
+        changes_requested: n.get("reviewDecision").and_then(|s| s.as_str())
+            == Some("CHANGES_REQUESTED"),
+        changed_files: n.get("changedFiles").and_then(|c| c.as_u64()).map(|c| c as u32),
+        reviewers,
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Review threads
 // ---------------------------------------------------------------------------
-
-/// One comment in a review thread.
-#[derive(Debug, Clone, Serialize)]
-pub struct Comment {
-    /// REST id. The reply endpoint is keyed on this, not on the GraphQL node id.
-    pub database_id: u64,
-    pub author: String,
-    pub body: String,
-    pub created_at: String,
-    pub url: String,
-    /// The anchored patch text. GitHub hangs it off every comment; only the
-    /// first one's is worth rendering, so `Thread::diff_hunk` reads that.
-    pub diff_hunk: Option<String>,
-}
-
-/// An unresolved conversation on a PR.
-#[derive(Debug, Clone, Serialize)]
-pub struct Thread {
-    /// `PRRT_…`. **Not** a resolve target — closing a thread is the comment
-    /// author's button, never ours — but the join key between a thread and the
-    /// finding the triage agent returns for it.
-    pub id: String,
-    pub path: Option<String>,
-    /// `null` on an outdated thread; the finding can still stand.
-    pub line: Option<u32>,
-    pub start_line: Option<u32>,
-    pub original_line: Option<u32>,
-    pub is_resolved: bool,
-    pub is_outdated: bool,
-    pub comments: Vec<Comment>,
-    /// [`Thread::is_answerable`] against the fetch's own viewer, resolved by
-    /// [`threads`] so the SPA does not have to reimplement the rule. Always
-    /// false straight out of [`parse_thread`], which has no viewer to judge by.
-    pub answerable: bool,
-}
-
-impl Thread {
-    /// The patch the thread is anchored to, off the opening comment.
-    pub fn diff_hunk(&self) -> Option<&str> {
-        self.comments.first()?.diff_hunk.as_deref()
-    }
-
-    /// Who opened it.
-    pub fn author(&self) -> Option<&str> {
-        self.comments.first().map(|c| c.author.as_str())
-    }
-
-    /// Whether this thread still wants something from you.
-    ///
-    /// Resolved threads are done. **Outdated ones are not skipped** — the code
-    /// moved, but the point may still stand. A thread whose last comment is
-    /// already yours has been answered; re-answering it is noise.
-    pub fn is_answerable(&self, viewer: &str) -> bool {
-        if self.is_resolved {
-            return false;
-        }
-        match self.comments.last() {
-            Some(last) => last.author != viewer,
-            // A thread with no comments cannot be answered.
-            None => false,
-        }
-    }
-}
-
-/// Everything one on-demand thread fetch yields.
-#[derive(Debug, Clone, Serialize)]
-pub struct Threads {
-    /// Which PR this was fetched for. Carried so [`Threads::root_for`] can stamp
-    /// it onto a [`ThreadRoot`] — the reply endpoint is nested under a PR number,
-    /// and taking it from anywhere but the fetch that produced the comment id
-    /// would let the two disagree.
-    pub pr: u64,
-    /// Your own login, for `Thread::is_answerable` and the triage prompt.
-    pub viewer: String,
-    /// Head at fetch time. A force-push between triage and posting invalidates
-    /// every proposal derived from the earlier diff, so this is recorded and
-    /// re-checked rather than trusted.
-    pub head_sha: Option<String>,
-    pub items: Vec<Thread>,
-}
-
-/// A comment id proven to belong to a specific PR's review threads.
-///
-/// Every write in [`crate::github_write`] takes one of these instead of a bare
-/// `u64`. The fields are private and the only constructor is
-/// [`Threads::root_for`], so an id the triage agent invented — or one lifted out
-/// of a review comment someone else wrote — cannot reach `gh` on your
-/// credential. Same shape as `resolve_in_workspace` (`src/edit.rs`): hand back a
-/// safe value or nothing, rather than checking at each call site.
-///
-/// It lives here rather than beside the write methods because privacy in Rust is
-/// per-module: only the module holding [`Threads`] can build one from a lookup,
-/// which is exactly the property wanted.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ThreadRoot {
-    pr: u64,
-    comment_id: u64,
-}
-
-impl ThreadRoot {
-    pub fn pr(&self) -> u64 {
-        self.pr
-    }
-    pub fn comment_id(&self) -> u64 {
-        self.comment_id
-    }
-}
 
 /// Threads come back 100 at a time. The poll query stays at [`PAGE`]; this is
 /// the on-demand fetch for one PR, and it pages to the end rather than
@@ -706,7 +755,8 @@ fn threads_query(owner: &str, name: &str, pr: u64, after: Option<&str>) -> Strin
 /// Separate from [`poll`] on purpose: the 5-minute poll only needs a count, and
 /// pulling every comment body for every open PR to get one would be a large
 /// query on a short timer. This runs when the review overlay opens, for one PR.
-pub fn threads(token: &str, owner: &str, name: &str, pr: u64) -> Result<Threads> {
+/// Reached through [`GitHubForge::threads`].
+fn fetch_threads(token: &str, owner: &str, name: &str, pr: u64) -> Result<Threads> {
     let mut out = Threads {
         pr,
         viewer: String::new(),
@@ -743,65 +793,6 @@ pub fn threads(token: &str, owner: &str, name: &str, pr: u64) -> Result<Threads>
     out.mark_answerable();
     out.sort_for_review();
     Ok(out)
-}
-
-impl Threads {
-    /// Resolve each thread's [`Thread::answerable`] against this fetch's viewer.
-    fn mark_answerable(&mut self) {
-        // Destructured so the viewer read and the thread writes are disjoint
-        // borrows of self rather than an overlapping one.
-        let Threads { viewer, items, .. } = self;
-        for t in items {
-            t.answerable = t.is_answerable(viewer);
-        }
-    }
-
-    /// Put the threads in GitHub's Files-changed order.
-    ///
-    /// The API returns them **chronologically** — the Conversation tab's order,
-    /// jumping between files — but people review in the Files tab, whose order is
-    /// the diff's, and a diff's file order is a plain path sort. So sorting by
-    /// `(path, line)` reproduces the view they already read in, and puts two
-    /// comments a few lines apart in one file back to back, where the second
-    /// usually changes what the first deserves as an answer.
-    ///
-    /// Two traps: an outdated thread has no `line` and must sort on the line it
-    /// was originally left at; and the comparison is plain byte order on the full
-    /// path, matching git (`-` is 0x2D and `/` is 0x2F, so `foo-baz.ts` sorts
-    /// before `foo/bar.ts` — which looks wrong and is what git does). A thread
-    /// with no path at all is a review summary: it is about the PR rather than a
-    /// file, so it sorts last.
-    fn sort_for_review(&mut self) {
-        self.items.sort_by(|a, b| {
-            let key = |t: &Thread| {
-                (
-                    t.path.is_none(),
-                    t.path.clone().unwrap_or_default(),
-                    t.line.or(t.original_line).unwrap_or(0),
-                )
-            };
-            key(a).cmp(&key(b))
-        });
-    }
-
-    /// The comment a reply or reaction for this thread must be aimed at.
-    ///
-    /// Always the **opening** comment: the replies sub-resource threads under it,
-    /// and it is the only comment in the conversation we ever legitimately post
-    /// to. `None` for an unknown thread id or an empty thread, so a bad id
-    /// becomes a refusal rather than a write somewhere unintended.
-    pub fn root_for(&self, thread_id: &str) -> Option<ThreadRoot> {
-        let t = self.items.iter().find(|t| t.id == thread_id)?;
-        Some(ThreadRoot {
-            pr: self.pr,
-            comment_id: t.comments.first()?.database_id,
-        })
-    }
-
-    /// How many threads still want something from you.
-    pub fn answerable_count(&self) -> usize {
-        self.items.iter().filter(|t| t.answerable).count()
-    }
 }
 
 /// One page of the thread query, plus the cursor for the next one.
@@ -1251,7 +1242,9 @@ mod tests {
     #[ignore = "hits the GitHub API"]
     fn fetches_real_threads() {
         let token = resolve_token(None).expect("a token");
-        let got = threads(&token.value, "acme-org", "acme", 10001).expect("the fetch");
+        let got = GitHubForge::new("acme-org", "acme", token.value)
+            .threads(10001)
+            .expect("the fetch");
 
         assert!(!got.viewer.is_empty(), "viewer login came back empty");
         assert!(got.head_sha.is_some(), "no head sha");
@@ -1272,74 +1265,81 @@ mod tests {
         );
     }
 
+    // -- review candidates -------------------------------------------------
+
     #[test]
-    fn threads_sort_into_files_changed_order() {
-        // The API hands these back chronologically; people review in the Files
-        // tab, whose order is the diff's.
-        let mut t = Threads {
-            pr: 10001,
-            viewer: "kars".into(),
-            head_sha: None,
-            items: vec![
-                thread_at(Some("b.ts"), Some(9)),
-                thread_at(None, None), // review summary: no file
-                thread_at(Some("a.ts"), Some(20)),
-                thread_at(Some("a.ts"), Some(3)),
-                thread_at(Some("a-z.ts"), Some(1)),
-            ],
-        };
-        t.sort_for_review();
-        let order: Vec<(Option<&str>, Option<u32>)> = t
-            .items
-            .iter()
-            .map(|x| (x.path.as_deref(), x.line))
-            .collect();
-        assert_eq!(
-            order,
-            vec![
-                // Plain byte order on the path, matching git: '-' (0x2D) sorts
-                // before '/' and before 'a'..'z' continues.
-                (Some("a-z.ts"), Some(1)),
-                (Some("a.ts"), Some(3)),
-                (Some("a.ts"), Some(20)),
-                (Some("b.ts"), Some(9)),
-                // A summary is about the PR, not a file, so it goes last.
-                (None, None),
-            ]
+    fn a_review_candidate_reads_team_re_review_and_cost_off_one_node() {
+        // A team-requested PR you already reviewed: `reviewRequests` names a
+        // Team not you, so `requested_personally` is false and — since the search
+        // only returns PRs requested of you — `requested_team` is true. Your own
+        // prior review makes it a re-review, deduped reviewers is 2, and the
+        // rollup and file count come straight off the node.
+        let n = node(
+            r#"{"number":2001,"title":"Refactor a config loader","url":"https://x/pull/2001",
+                "createdAt":"2026-08-01T00:00:00Z","isDraft":false,"changedFiles":37,
+                "mergeable":"MERGEABLE","reviewDecision":"CHANGES_REQUESTED",
+                "author":{"login":"erin"},
+                "labels":{"nodes":[{"name":"prio"}]},
+                "commits":{"nodes":[{"commit":{"statusCheckRollup":{"state":"SUCCESS"}}}]},
+                "reviewRequests":{"nodes":[{"requestedReviewer":{"__typename":"Team"}}]},
+                "reviews":{"nodes":[{"author":{"login":"kars"}},{"author":{"login":"kars"}},
+                    {"author":{"login":"ada"}}]}}"#,
         );
+        let c = parse_review_candidate(&n, "kars").expect("a candidate");
+        assert_eq!(c.number, 2001);
+        assert_eq!(c.author, "erin");
+        assert_eq!(c.changed_files, Some(37));
+        assert_eq!(c.labels, vec!["prio"]);
+        assert!(!c.requested_personally);
+        assert!(c.requested_team, "matched the search but not personally");
+        assert!(c.re_review, "your own prior review");
+        assert!(c.changes_requested);
+        assert_eq!(c.reviewers, 2, "two distinct reviewers, kars deduped");
+        assert_eq!(c.checks, Checks::Passing);
     }
 
     #[test]
-    fn an_outdated_thread_sorts_on_the_line_it_was_left_at() {
-        // `line` is null once the code moved; without the fallback it would sort
-        // to the top of its file instead of where the reviewer was looking.
-        let mut t = Threads {
-            pr: 10001,
-            viewer: "kars".into(),
-            head_sha: None,
-            items: vec![thread_at(Some("a.ts"), Some(5)), {
-                let mut o = thread_at(Some("a.ts"), None);
-                o.original_line = Some(2);
-                o.is_outdated = true;
-                o
-            }],
-        };
-        t.sort_for_review();
-        assert_eq!(t.items[0].original_line, Some(2), "outdated :2 sorts first");
-        assert_eq!(t.items[1].line, Some(5));
+    fn a_personally_requested_candidate_is_not_a_team_one() {
+        let n = node(
+            r#"{"number":1,"title":"t","url":"u","createdAt":"2026-08-01T00:00:00Z",
+                "author":{"login":"a"},
+                "reviewRequests":{"nodes":[{"requestedReviewer":{"__typename":"User","login":"kars"}}]},
+                "reviews":{"nodes":[]}}"#,
+        );
+        let c = parse_review_candidate(&n, "kars").unwrap();
+        assert!(c.requested_personally);
+        assert!(!c.requested_team);
+        assert!(!c.re_review, "no prior review of yours");
     }
 
-    fn thread_at(path: Option<&str>, line: Option<u32>) -> Thread {
-        Thread {
-            id: format!("PRRT_{}_{:?}", path.unwrap_or("none"), line),
-            path: path.map(|p| p.to_string()),
-            line,
-            start_line: None,
-            original_line: None,
-            is_resolved: false,
-            is_outdated: false,
-            comments: Vec::new(),
-            answerable: true,
+    /// Smoke-test the live review query, the way `fetches_real_threads` does the
+    /// thread one. Ignored: it needs the network and a `gh` login, and it asserts
+    /// against whatever is actually in your queue.
+    ///
+    /// `cargo test --lib -- --ignored --nocapture fetches_real_review_candidates`
+    #[test]
+    #[ignore = "hits the GitHub API"]
+    fn fetches_real_review_candidates() {
+        let token = resolve_token(None).expect("a token");
+        let (viewer, cands) = GitHubForge::new("acme-org", "acme", token.value)
+            .review_candidates()
+            .expect("the fetch");
+        assert!(!viewer.is_empty(), "viewer login came back empty");
+        for c in &cands {
+            assert!(c.number > 0);
+            assert!(!c.url.is_empty());
+            assert!(
+                c.requested_personally || c.requested_team,
+                "#{} matched the search but is neither personal nor team",
+                c.number
+            );
+        }
+        eprintln!("viewer={viewer} candidates={}", cands.len());
+        for c in &cands {
+            eprintln!(
+                "  #{} personal={} team={} re_review={} files={:?} {:?}",
+                c.number, c.requested_personally, c.requested_team, c.re_review, c.changed_files, c.checks
+            );
         }
     }
 
@@ -1455,23 +1455,4 @@ mod tests {
         assert!(!branches.contains(&other.head_ref));
     }
 
-    #[test]
-    fn ranks_needing_you_above_failing_and_drafts_last() {
-        let mut needs = pr(1, "a", "develop");
-        // Two open threads, one of them still waiting on a word from you.
-        needs.unresolved = 2;
-        needs.awaiting_you = 1;
-        needs.needs_you = true;
-        let mut failing = pr(2, "b", "develop");
-        failing.checks = Checks::Failing;
-        let clean = pr(3, "c", "develop");
-        let mut draft = pr(4, "d", "develop");
-        draft.is_draft = true;
-        draft.checks = Checks::Failing;
-
-        assert!(needs.rank() < failing.rank());
-        assert!(failing.rank() < clean.rank());
-        // A draft stays at the bottom even when it is red.
-        assert!(draft.rank() > clean.rank());
-    }
 }

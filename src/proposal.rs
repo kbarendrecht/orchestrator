@@ -9,7 +9,7 @@
 //! its own input is: review comments are written by other people, and a model
 //! reading them can be confused by them. So the shape is validated here, and the
 //! thread ids are validated against a fresh fetch before anything is posted (see
-//! `github_write::ThreadRoot`). Nothing in this module trusts a field because it
+//! `forge::model::ThreadRoot`). Nothing in this module trusts a field because it
 //! parsed.
 //!
 //! `Proposal`, deliberately not `Finding`: [`crate::todo::Finding`] already owns

@@ -1,6 +1,6 @@
 //! Posting back to a PR: thread replies, 👍, and re-requesting a review.
 //!
-//! Everything here shells `gh` rather than going through [`crate::github`]'s
+//! Everything here shells `gh` rather than going through [`super::github`]'s
 //! curl transport. §6 built that path around a read-only PAT; these are writes,
 //! and `gh` already holds a credential that can make them. The unified auth
 //! story is a later pass — until then the read path keeps its token and the
@@ -20,7 +20,7 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
-use crate::github::ThreadRoot;
+use super::model::ThreadRoot;
 
 /// Appended to every written reply the daemon posts, on its own line.
 ///
@@ -190,6 +190,9 @@ pub fn reaction_path(owner: &str, name: &str, comment_id: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // `posts_for_real` drives a real fetch through the forge trait.
+    #[allow(unused_imports)]
+    use crate::forge::Forge;
 
     #[test]
     fn the_footer_goes_on_its_own_paragraph() {
@@ -262,9 +265,10 @@ mod tests {
             .expect("a PR number");
         let (owner, name) = slug.split_once('/').expect("owner/name");
 
-        let token = crate::github::resolve_token(None).expect("a token");
-        let fetched =
-            crate::github::threads(&token.value, owner, name, pr).expect("the thread fetch");
+        let token = crate::forge::resolve_token(None).expect("a token");
+        let fetched = crate::forge::GitHubForge::new(owner, name, token.value)
+            .threads(pr)
+            .expect("the thread fetch");
         let thread = fetched.items.first().expect("a review thread to answer");
         let root = fetched.root_for(&thread.id).expect("its root comment");
 

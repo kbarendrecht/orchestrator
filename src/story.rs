@@ -33,7 +33,7 @@ use std::path::Path;
 
 /// The Shortcut API token, for the MCP server's `Authorization` header.
 ///
-/// Same ladder as [`crate::github::resolve_token`] — env, then a `0600` file —
+/// Same ladder as [`crate::forge::resolve_token`] — env, then a `0600` file —
 /// and deliberately **not** a reader for `acme/.env`, where the team's copy
 /// actually lives. That file is shell-ish, and the line as it stands is
 /// `SHORTCUT_API_TOKEN='' # can be generated in …`; a naive split yields
@@ -51,7 +51,7 @@ pub fn resolve_token(token_file: Option<&Path>) -> Result<String> {
             .map_err(|e| anyhow::anyhow!("reading {}: {e}", p.display()))?;
         let v = raw.trim().to_string();
         if !v.is_empty() {
-            crate::github::warn_if_world_readable(p);
+            crate::forge::warn_if_world_readable(p);
             return Ok(v);
         }
         bail!("{} is empty", p.display());
@@ -547,7 +547,7 @@ mod tests {
     /// previous run created instead of making a second one.
     ///
     /// It deliberately does **not** post to GitHub. The reply path is already
-    /// proven by `github_write::posts_for_real`, and pointing this at a real PR
+    /// proven by `forge::github_write::posts_for_real`, and pointing this at a real PR
     /// would notify a colleague to verify a stub.
     ///
     /// ```text
@@ -726,8 +726,8 @@ mod tests {
         assert!(app.inner.read().await.stories.is_empty());
     }
 
-    fn fake_pr(number: u64, head_ref: &str) -> crate::github::Pr {
-        crate::github::Pr {
+    fn fake_pr(number: u64, head_ref: &str) -> crate::forge::Pr {
+        crate::forge::Pr {
             number,
             title: "story test".into(),
             url: String::new(),
@@ -737,7 +737,7 @@ mod tests {
             is_draft: false,
             mergeable: "MERGEABLE".into(),
             merge_state: "CLEAN".into(),
-            checks: crate::github::Checks::Unknown,
+            checks: crate::forge::Checks::Unknown,
             head_sha: None,
             unresolved: 0,
             unresolved_capped: false,
