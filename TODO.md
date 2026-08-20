@@ -111,13 +111,13 @@ Everything outside that block is hand-written and survives.
     is exactly what acme's own `rankOf` does too. Left in place with a comment
     explaining why it is sound; the one real edge (a personal request past the
     Nth reviewer reading as team) was closed by raising `reviewRequests` to 100.
-  - **`worktrees_subdir` accepts `""`, `"."` and `"./x"`.** The guard refuses
-    absolute and `..` but not these: `""` collapses the worktrees dir onto main
-    and makes the changed-files exclude prefix `/`, which no porcelain path
-    matches, so main's pane lists every sibling worktree's edits — the §2 leak the
-    exclude exists to prevent. Normalising components at parse time (dropping
-    `CurDir`, rejecting empty) would close it, and would also move validation out
-    of an accessor that re-warns on every hook event.
+  - **`worktrees_subdir` normalisation.** *Done.* `parse_with_profile` now
+    sanitises the field once via `normalize_worktrees_subdir` — drop `.`
+    components, refuse absolute / `..` / anything that normalises to nothing —
+    and stores the clean path, so `""`/`"."`/`"./x"` no longer collapse the
+    worktrees dir onto main or make the exclude prefix `/` (the §2 sibling leak).
+    Validation moved out of the per-call accessor that re-warned on every hook
+    event; the accessors now trust the field.
   - **The `all_open` walk has no whole-fetch deadline.** `review_timeout_seconds`
     used to bound the entire external fetch; `--max-time 120` bounds one request,
     and the walk can issue up to 200 of them plus the teams query. A slow-but-not

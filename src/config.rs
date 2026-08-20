@@ -138,6 +138,29 @@ fn default_worktrees_subdir() -> PathBuf {
     PathBuf::from(".claude/worktrees")
 }
 
+/// A clean relative in-main worktrees subdir, or `None` when the configured
+/// value is unusable and the default should stand in.
+///
+/// The whole model breaks if worktrees are not under main — the container
+/// mapping, the changed-files exclude and path attribution all assume it — so an
+/// absolute path, one climbing out with `..`, or one that normalises to nothing
+/// (`""`, `"."`, `"./"`) is refused. `.` components are dropped, so `./worktrees`
+/// and `worktrees` mean the same thing; without that the exclude prefix would be
+/// `./worktrees/` while git porcelain emits `worktrees/…`, and the §2 sibling
+/// leak the exclude prevents would silently reopen.
+fn normalize_worktrees_subdir(sub: &Path) -> Option<PathBuf> {
+    let mut out = PathBuf::new();
+    for c in sub.components() {
+        match c {
+            Component::Normal(p) => out.push(p),
+            Component::CurDir => {}
+            // Absolute (RootDir/Prefix) or climbing (ParentDir): not in-main.
+            _ => return None,
+        }
+    }
+    (!out.as_os_str().is_empty()).then_some(out)
+}
+
 /// Merge `over` onto `base`: two objects merge key-by-key (recursively), and
 /// anything else — a scalar or an array — replaces wholesale. Arrays are not
 /// element-merged on purpose: "my `main_processes`" should mean exactly the list
@@ -351,7 +374,22 @@ impl Config {
         if let Some(obj) = effective.as_object_mut() {
             obj.insert("profile".into(), serde_json::to_value(profile)?);
         }
-        serde_json::from_value(effective).context("applying config over its profile")
+        let mut cfg: Config =
+            serde_json::from_value(effective).context("applying config over its profile")?;
+        // Sanitise once, here, so every accessor can trust the field and the
+        // warning fires at load rather than on every hook event.
+        cfg.worktrees_subdir = match normalize_worktrees_subdir(&cfg.worktrees_subdir) {
+            Some(clean) => clean,
+            None => {
+                tracing::warn!(
+                    "worktrees_subdir {} is not a relative in-main path; using {}",
+                    cfg.worktrees_subdir.display(),
+                    default_worktrees_subdir().display()
+                );
+                default_worktrees_subdir()
+            }
+        };
+        Ok(cfg)
     }
 
     fn default_for(main_checkout: PathBuf) -> Self {
@@ -388,7 +426,9 @@ impl Config {
     }
 
     pub fn worktrees_dir(&self) -> PathBuf {
-        self.main_checkout.join(self.safe_worktrees_subdir())
+        // The field is sanitised in `parse_with_profile`, so it is a clean
+        // relative in-main path here.
+        self.main_checkout.join(&self.worktrees_subdir)
     }
 
     pub fn worktree_path(&self, name: &str) -> PathBuf {
@@ -400,7 +440,7 @@ impl Config {
     /// directory prefix rather than a sibling whose name merely starts the same.
     pub fn worktrees_subdir_str(&self) -> String {
         let s = self
-            .safe_worktrees_subdir()
+            .worktrees_subdir
             .components()
             .filter_map(|c| c.as_os_str().to_str())
             .collect::<Vec<_>>()
@@ -415,25 +455,7 @@ impl Config {
     /// worktree the daemon will then find when the two agree. Anywhere else, the
     /// daemon cuts the worktree itself (`spawn::spawn_worktree_session`).
     pub fn worktrees_subdir_is_claude_default(&self) -> bool {
-        self.safe_worktrees_subdir() == default_worktrees_subdir()
-    }
-
-    /// The configured subdir, or the default when it is not a relative in-main
-    /// path. The whole model breaks if worktrees are not under main — the
-    /// container mapping, the changed-files exclude and path attribution all
-    /// assume it — so an absolute path or one climbing out with `..` is refused
-    /// rather than trusted, the same tolerant-but-loud stance as `Config::existing`.
-    fn safe_worktrees_subdir(&self) -> PathBuf {
-        let sub = &self.worktrees_subdir;
-        if sub.is_absolute() || sub.components().any(|c| matches!(c, Component::ParentDir)) {
-            tracing::warn!(
-                "worktrees_subdir {} is not a relative in-main path; using {}",
-                sub.display(),
-                default_worktrees_subdir().display()
-            );
-            return default_worktrees_subdir();
-        }
-        sub.clone()
+        self.worktrees_subdir == default_worktrees_subdir()
     }
 
     /// Path of the daemon-owned settings file handed to every spawned session.
@@ -650,34 +672,65 @@ mod tests {
 
     #[test]
     fn a_custom_subdir_moves_the_dir_and_the_exclude_prefix() {
-        let mut cfg = Config::default_for(PathBuf::from("/repo"));
-        cfg.worktrees_subdir = PathBuf::from(".worktrees");
+        let cfg = Config::parse_with_profile(
+            r#"{"main_checkout":"/repo","worktrees_subdir":".worktrees"}"#,
+        )
+        .unwrap();
         assert_eq!(cfg.worktrees_dir(), PathBuf::from("/repo/.worktrees"));
         assert_eq!(cfg.worktrees_subdir_str(), ".worktrees/");
+    }
+
+    #[test]
+    fn a_subdir_that_normalises_to_nothing_or_has_a_dot_is_cleaned_at_parse() {
+        let dir = |json: &str| Config::parse_with_profile(json).unwrap().worktrees_dir();
+        let prefix = |json: &str| Config::parse_with_profile(json).unwrap().worktrees_subdir_str();
+        // `""`, `"."` and `"./"` all normalise to nothing → the default, so the
+        // worktrees dir never collapses onto main and the exclude prefix is never
+        // `/` (which matches no porcelain path — the §2 sibling leak).
+        for empty in [r#"{"main_checkout":"/repo","worktrees_subdir":""}"#,
+                      r#"{"main_checkout":"/repo","worktrees_subdir":"."}"#,
+                      r#"{"main_checkout":"/repo","worktrees_subdir":"./"}"#] {
+            assert_eq!(dir(empty), PathBuf::from("/repo/.claude/worktrees"), "{empty}");
+            assert_eq!(prefix(empty), ".claude/worktrees/", "{empty}");
+        }
+        // A leading `./` is dropped, so `./wt` and `wt` mean the same thing and
+        // the exclude prefix matches the paths git actually reports.
+        let c = r#"{"main_checkout":"/repo","worktrees_subdir":"./wt"}"#;
+        assert_eq!(dir(c), PathBuf::from("/repo/wt"));
+        assert_eq!(prefix(c), "wt/");
     }
 
     #[test]
     fn only_the_claude_default_subdir_delegates_worktree_creation() {
         // `claude --worktree` always writes to `.claude/worktrees/`, so it can
         // only create a worktree the daemon will find when the two agree.
-        let mut cfg = Config::default_for(PathBuf::from("/repo"));
-        assert!(cfg.worktrees_subdir_is_claude_default());
-        cfg.worktrees_subdir = PathBuf::from(".worktrees");
-        assert!(!cfg.worktrees_subdir_is_claude_default());
+        let default = |sub: &str| {
+            Config::parse_with_profile(&format!(
+                r#"{{"main_checkout":"/repo","worktrees_subdir":"{sub}"}}"#
+            ))
+            .unwrap()
+            .worktrees_subdir_is_claude_default()
+        };
+        assert!(default(".claude/worktrees"));
+        assert!(!default(".worktrees"));
         // A refused subdir falls back to the default, so it delegates again.
-        cfg.worktrees_subdir = PathBuf::from("/tmp/elsewhere");
-        assert!(cfg.worktrees_subdir_is_claude_default());
+        assert!(default("/tmp/elsewhere"));
     }
 
     #[test]
     fn a_subdir_outside_main_falls_back_to_the_default() {
         // The container mapping, the exclude and path attribution all assume
         // worktrees sit under main, so an absolute or climbing path is refused.
-        let mut cfg = Config::default_for(PathBuf::from("/repo"));
-        cfg.worktrees_subdir = PathBuf::from("/tmp/elsewhere");
-        assert_eq!(cfg.worktrees_dir(), PathBuf::from("/repo/.claude/worktrees"));
-        cfg.worktrees_subdir = PathBuf::from("../escape");
-        assert_eq!(cfg.worktrees_dir(), PathBuf::from("/repo/.claude/worktrees"));
+        let dir = |sub: &str| {
+            Config::parse_with_profile(&format!(
+                r#"{{"main_checkout":"/repo","worktrees_subdir":"{sub}"}}"#
+            ))
+            .unwrap()
+            .worktrees_dir()
+        };
+        assert_eq!(dir("/tmp/elsewhere"), PathBuf::from("/repo/.claude/worktrees"));
+        assert_eq!(dir("../escape"), PathBuf::from("/repo/.claude/worktrees"));
+        assert_eq!(dir("wt/../../escape"), PathBuf::from("/repo/.claude/worktrees"));
     }
 
     #[test]
