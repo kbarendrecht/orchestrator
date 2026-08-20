@@ -108,18 +108,27 @@ pub struct ReviewCandidate {
     pub labels: Vec<String>,
     /// You are named directly on the review request.
     pub requested_personally: bool,
-    /// The search matched you but not personally, so it is via a team you are on.
-    /// Derived without enumerating your teams — the forge already resolved
-    /// membership when it answered `review-requested:@me`.
+    /// A team you are on is requested. In `requested` coverage this is
+    /// "matched the search but not personally"; in `all_open` it is resolved
+    /// against your team memberships.
     pub requested_team: bool,
-    /// You reviewed this before and are being asked again. Only meaningful
-    /// because the candidate set is already "review requested of you".
-    pub re_review: bool,
-    /// A reviewer asked for changes (`reviewDecision == CHANGES_REQUESTED`).
-    pub changes_requested: bool,
     pub changed_files: Option<u32>,
-    /// Distinct humans who have already reviewed — a review-cost tiebreak.
-    pub reviewers: u32,
+    /// The head commit's oid — the "current head" a review is measured against.
+    pub head_oid: Option<String>,
+    /// Every review left on the PR. `re_review`, the reviewer count, "approved"
+    /// and "reviewed the current head" are all derived from these in
+    /// [`crate::reviews`], where the bot list and the viewer live.
+    pub reviews: Vec<ReviewRef>,
+}
+
+/// One review on a PR, slimmed to what ranking needs.
+#[derive(Debug, Clone, Serialize)]
+pub struct ReviewRef {
+    pub author: String,
+    /// `APPROVED` / `CHANGES_REQUESTED` / `COMMENTED` / `DISMISSED` / `PENDING`.
+    pub state: String,
+    /// The commit this review was left on, for "have I seen the current head".
+    pub commit_oid: Option<String>,
 }
 
 // ---------------------------------------------------------------------------

@@ -6,7 +6,7 @@ use std::path::Path;
 use std::process::Command;
 
 use super::github_write::Target;
-use super::model::{Checks, Comment, Pr, ReviewCandidate, Thread, ThreadRoot, Threads};
+use super::model::{Checks, Comment, Pr, ReviewCandidate, ReviewRef, Thread, ThreadRoot, Threads};
 use super::Forge;
 
 /// Where the daemon's GitHub token came from.
@@ -234,8 +234,8 @@ impl Forge for GitHubForge {
         fetch_threads(&self.token, &self.owner, &self.name, pr)
     }
 
-    fn review_candidates(&self) -> Result<(String, Vec<ReviewCandidate>)> {
-        fetch_review_candidates(&self.token, &self.owner, &self.name)
+    fn review_candidates(&self, all_open: bool) -> Result<(String, Vec<ReviewCandidate>)> {
+        fetch_review_candidates(&self.token, &self.owner, &self.name, all_open)
     }
 
     fn reply(&self, at: &Path, root: &ThreadRoot, body: &str) -> Result<()> {
@@ -570,18 +570,11 @@ fn checks_from(state: Option<&str>) -> Checks {
 // Review queue
 // ---------------------------------------------------------------------------
 
-fn review_candidates_query(owner: &str, name: &str) -> String {
-    // `review-requested:@me` matches PRs asked of you directly *or* via a team
-    // you are on — GitHub resolves your team membership server-side. That is the
-    // whole trick behind `requested_team` below: if the search matched but your
-    // login is not in `reviewRequests`, it matched through a team, and we never
-    // had to enumerate your teams to know it.
-    format!(
-        r#"{{
-  viewer {{ login }}
-  search(query: "repo:{owner}/{name} is:pr is:open review-requested:@me", type: ISSUE, first: {PAGE}) {{
-    nodes {{
-      ... on PullRequest {{
+/// The per-PR selection shared by both coverage queries. Everything ranking
+/// needs: the labels and requests that decide rank, the reviews (with state and
+/// the commit each was left on) that decide "seen the current head", and the
+/// head oid they are measured against.
+const PR_FIELDS: &str = r#"
         number
         title
         url
@@ -589,12 +582,42 @@ fn review_candidates_query(owner: &str, name: &str) -> String {
         isDraft
         changedFiles
         mergeable
-        reviewDecision
-        author {{ login }}
-        labels(first: 20) {{ nodes {{ name }} }}
-        commits(last: 1) {{ nodes {{ commit {{ statusCheckRollup {{ state }} }} }} }}
-        reviewRequests(first: 20) {{ nodes {{ requestedReviewer {{ __typename ... on User {{ login }} }} }} }}
-        reviews(first: 50) {{ nodes {{ author {{ login }} }} }}
+        author { login }
+        labels(first: 20) { nodes { name } }
+        commits(last: 1) { nodes { commit { oid statusCheckRollup { state } } } }
+        reviewRequests(first: 20) {
+          nodes { requestedReviewer { __typename ... on User { login } ... on Team { slug } } }
+        }
+        reviews(first: 50) { nodes { author { login } state commit { oid } } }"#;
+
+/// `requested` coverage: the PRs GitHub says your review is requested on, direct
+/// or via a team. `requested_team` here is "matched but not personally".
+fn requested_query(owner: &str, name: &str) -> String {
+    format!(
+        r#"{{
+  viewer {{ login }}
+  search(query: "repo:{owner}/{name} is:pr is:open review-requested:@me", type: ISSUE, first: {PAGE}) {{
+    nodes {{ ... on PullRequest {{{PR_FIELDS}
+    }} }}
+  }}
+}}"#
+    )
+}
+
+/// `all_open` coverage: one page of every open PR, for a repo that treats review
+/// as a shared pool. Paged to the end.
+fn all_open_query(owner: &str, name: &str, after: Option<&str>) -> String {
+    let after = match after {
+        Some(c) => serde_json::Value::String(c.to_string()).to_string(),
+        None => "null".to_string(),
+    };
+    format!(
+        r#"{{
+  viewer {{ login }}
+  repository(owner: "{owner}", name: "{name}") {{
+    pullRequests(states: OPEN, first: {PAGE}, after: {after}) {{
+      pageInfo {{ hasNextPage endCursor }}
+      nodes {{{PR_FIELDS}
       }}
     }}
   }}
@@ -602,105 +625,178 @@ fn review_candidates_query(owner: &str, name: &str) -> String {
     )
 }
 
-/// PRs where your review is requested, plus your own login. Ranking is not done
-/// here — that is [`crate::reviews`]'s job and is config-driven, so it is the
-/// same whatever forge produced these. Reached through
+/// The teams in `owner`'s org that `viewer` belongs to, for `all_open`'s
+/// `requested_team`. Its own query because `userLogins` needs the viewer login,
+/// which the first page reports. Empty (not an error) when the repo is
+/// user-owned or the token lacks org read — the PR still ranks, just not as
+/// "team".
+fn viewer_team_slugs(token: &str, owner: &str, viewer: &str) -> Vec<String> {
+    let login = serde_json::Value::String(viewer.to_string()).to_string();
+    let q = format!(
+        r#"{{ organization(login: "{owner}") {{ teams(first: 100, userLogins: [{login}]) {{ nodes {{ slug }} }} }} }}"#
+    );
+    match graphql(token, &q) {
+        Ok(v) => v
+            .pointer("/data/organization/teams/nodes")
+            .and_then(|a| a.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|t| t.get("slug").and_then(|s| s.as_str()).map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default(),
+        Err(e) => {
+            tracing::debug!("viewer teams for {owner} unavailable, ranking without them: {e:#}");
+            Vec::new()
+        }
+    }
+}
+
+/// A runaway guard for the all-open walk, matching the thread pager's.
+const MAX_PR_PAGES: usize = 200;
+
+/// Review candidates, plus your login. Ranking and filtering happen in
+/// [`crate::reviews`]; this only fetches. Reached through
 /// [`GitHubForge::review_candidates`].
 fn fetch_review_candidates(
     token: &str,
     owner: &str,
     name: &str,
+    all_open: bool,
 ) -> Result<(String, Vec<ReviewCandidate>)> {
-    let v = graphql(token, &review_candidates_query(owner, name))?;
-    let viewer = v
-        .pointer("/data/viewer/login")
-        .and_then(|s| s.as_str())
-        .unwrap_or_default()
-        .to_string();
-    let nodes = v
-        .pointer("/data/search/nodes")
-        .and_then(|n| n.as_array())
-        .cloned()
-        .unwrap_or_default();
+    if !all_open {
+        let v = graphql(token, &requested_query(owner, name))?;
+        let viewer = viewer_login(&v);
+        let nodes = v
+            .pointer("/data/search/nodes")
+            .and_then(|n| n.as_array())
+            .cloned()
+            .unwrap_or_default();
+        // No team slugs: in this mode "matched but not personal" is the team signal.
+        let candidates = nodes
+            .iter()
+            .filter_map(|n| parse_review_candidate(n, &viewer, None))
+            .collect();
+        return Ok((viewer, candidates));
+    }
+
+    // all_open: walk every open PR, then resolve the viewer's teams once so a
+    // pool PR requesting a team you are on ranks as "team".
+    let mut viewer = String::new();
+    let mut cursor: Option<String> = None;
+    let mut nodes: Vec<Value> = Vec::new();
+    for _ in 0..MAX_PR_PAGES {
+        let v = graphql(token, &all_open_query(owner, name, cursor.as_deref()))?;
+        if viewer.is_empty() {
+            viewer = viewer_login(&v);
+        }
+        let root = v
+            .pointer("/data/repository/pullRequests")
+            .context("no repository in the response")?;
+        if let Some(page) = root.pointer("/nodes").and_then(|n| n.as_array()) {
+            nodes.extend(page.iter().cloned());
+        }
+        cursor = if root.pointer("/pageInfo/hasNextPage").and_then(|b| b.as_bool()) == Some(true) {
+            root.pointer("/pageInfo/endCursor").and_then(|c| c.as_str()).map(String::from)
+        } else {
+            None
+        };
+        if cursor.is_none() {
+            break;
+        }
+    }
+    let teams = viewer_team_slugs(token, owner, &viewer);
     let candidates = nodes
         .iter()
-        .filter_map(|n| parse_review_candidate(n, &viewer))
+        .filter_map(|n| parse_review_candidate(n, &viewer, Some(&teams)))
         .collect();
     Ok((viewer, candidates))
 }
 
-fn parse_review_candidate(n: &Value, viewer: &str) -> Option<ReviewCandidate> {
-    // A search over issues-and-PRs can return a non-PR node with no `number`;
-    // `is:pr` should exclude those, but the fragment leaves a bare `{}` if it
-    // ever does, so bail rather than invent a row.
+fn viewer_login(v: &Value) -> String {
+    v.pointer("/data/viewer/login")
+        .and_then(|s| s.as_str())
+        .unwrap_or_default()
+        .to_string()
+}
+
+/// `team_slugs` is `None` in `requested` coverage (team = matched-but-not-you)
+/// and `Some(your teams)` in `all_open` (team = the PR requests one of them).
+fn parse_review_candidate(
+    n: &Value,
+    viewer: &str,
+    team_slugs: Option<&[String]>,
+) -> Option<ReviewCandidate> {
     let number = n.get("number")?.as_u64()?;
 
-    let strings_at = |ptr: &str, key: &str| -> Vec<String> {
-        n.pointer(ptr)
-            .and_then(|a| a.as_array())
-            .map(|a| {
-                a.iter()
-                    .filter_map(|x| x.pointer(key).and_then(|s| s.as_str()).map(String::from))
-                    .collect()
-            })
-            .unwrap_or_default()
+    let str_at = |v: &Value, key: &str| {
+        v.get(key).and_then(|s| s.as_str()).unwrap_or_default().to_string()
     };
 
-    // Humans who have already reviewed — deduped, since one reviewer leaves many
-    // reviews. Used only as a review-cost tiebreak.
-    let mut review_authors = strings_at("/reviews/nodes", "/author/login");
-    let re_review = review_authors.iter().any(|a| a == viewer);
-    review_authors.sort();
-    review_authors.dedup();
-    let reviewers = review_authors.len() as u32;
-
-    // Directly requested = your login sits in reviewRequests as a User. If it
-    // does not but the search still returned this PR, the request reached you
-    // through a team.
-    let requested_personally = n
-        .pointer("/reviewRequests/nodes")
+    let labels = n
+        .pointer("/labels/nodes")
         .and_then(|a| a.as_array())
+        .map(|a| a.iter().filter_map(|x| x.get("name").and_then(|s| s.as_str()).map(String::from)).collect())
+        .unwrap_or_default();
+
+    let reviews: Vec<ReviewRef> = n
+        .pointer("/reviews/nodes")
+        .and_then(|a| a.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|r| {
+                    Some(ReviewRef {
+                        author: r.pointer("/author/login").and_then(|s| s.as_str())?.to_string(),
+                        state: str_at(r, "state"),
+                        commit_oid: r.pointer("/commit/oid").and_then(|s| s.as_str()).map(String::from),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let requests = n.pointer("/reviewRequests/nodes").and_then(|a| a.as_array());
+    let requested_personally = requests
         .map(|a| {
             a.iter().any(|r| {
                 r.pointer("/requestedReviewer/__typename").and_then(|t| t.as_str()) == Some("User")
-                    && r.pointer("/requestedReviewer/login").and_then(|l| l.as_str())
-                        == Some(viewer)
+                    && r.pointer("/requestedReviewer/login").and_then(|l| l.as_str()) == Some(viewer)
             })
         })
         .unwrap_or(false);
+    let requested_team = match team_slugs {
+        // requested coverage: it matched the search, so a non-personal match is a team.
+        None => !requested_personally,
+        // all_open: the PR requests a team the viewer is on.
+        Some(slugs) => requests
+            .map(|a| {
+                a.iter().any(|r| {
+                    r.pointer("/requestedReviewer/__typename").and_then(|t| t.as_str()) == Some("Team")
+                        && r.pointer("/requestedReviewer/slug")
+                            .and_then(|s| s.as_str())
+                            .is_some_and(|slug| slugs.iter().any(|s| s == slug))
+                })
+            })
+            .unwrap_or(false),
+    };
 
     Some(ReviewCandidate {
         number,
-        title: n.get("title").and_then(|s| s.as_str()).unwrap_or("").to_string(),
-        url: n.get("url").and_then(|s| s.as_str()).unwrap_or("").to_string(),
-        author: n
-            .pointer("/author/login")
-            .and_then(|s| s.as_str())
-            .unwrap_or("unknown")
-            .to_string(),
-        created_at: n
-            .get("createdAt")
-            .and_then(|s| s.as_str())
-            .unwrap_or("")
-            .to_string(),
+        title: str_at(n, "title"),
+        url: str_at(n, "url"),
+        author: n.pointer("/author/login").and_then(|s| s.as_str()).unwrap_or("unknown").to_string(),
+        created_at: str_at(n, "createdAt"),
         is_draft: n.get("isDraft").and_then(|b| b.as_bool()).unwrap_or(false),
-        mergeable: n
-            .get("mergeable")
-            .and_then(|s| s.as_str())
-            .unwrap_or("UNKNOWN")
-            .to_string(),
+        mergeable: n.get("mergeable").and_then(|s| s.as_str()).unwrap_or("UNKNOWN").to_string(),
         checks: checks_from(
-            n.pointer("/commits/nodes/0/commit/statusCheckRollup/state")
-                .and_then(|s| s.as_str()),
+            n.pointer("/commits/nodes/0/commit/statusCheckRollup/state").and_then(|s| s.as_str()),
         ),
-        labels: strings_at("/labels/nodes", "/name"),
+        labels,
         requested_personally,
-        requested_team: !requested_personally,
-        re_review,
-        changes_requested: n.get("reviewDecision").and_then(|s| s.as_str())
-            == Some("CHANGES_REQUESTED"),
+        requested_team,
         changed_files: n.get("changedFiles").and_then(|c| c.as_u64()).map(|c| c as u32),
-        reviewers,
+        head_oid: n.pointer("/commits/nodes/0/commit/oid").and_then(|s| s.as_str()).map(String::from),
+        reviews,
     })
 }
 
@@ -1268,34 +1364,52 @@ mod tests {
     // -- review candidates -------------------------------------------------
 
     #[test]
-    fn a_review_candidate_reads_team_re_review_and_cost_off_one_node() {
-        // A team-requested PR you already reviewed: `reviewRequests` names a
-        // Team not you, so `requested_personally` is false and — since the search
-        // only returns PRs requested of you — `requested_team` is true. Your own
-        // prior review makes it a re-review, deduped reviewers is 2, and the
-        // rollup and file count come straight off the node.
+    fn a_candidate_carries_the_raw_reviews_head_and_labels() {
+        // The forge only reads; `re_review`/reviewers/approved are derived later
+        // in `reviews.rs`. So this checks the raw carry: reviews with state and
+        // the commit each was left on, the head oid, labels, and the rollup.
         let n = node(
             r#"{"number":2001,"title":"Refactor a config loader","url":"https://x/pull/2001",
                 "createdAt":"2026-08-01T00:00:00Z","isDraft":false,"changedFiles":37,
-                "mergeable":"MERGEABLE","reviewDecision":"CHANGES_REQUESTED",
-                "author":{"login":"erin"},
-                "labels":{"nodes":[{"name":"prio"}]},
-                "commits":{"nodes":[{"commit":{"statusCheckRollup":{"state":"SUCCESS"}}}]},
-                "reviewRequests":{"nodes":[{"requestedReviewer":{"__typename":"Team"}}]},
-                "reviews":{"nodes":[{"author":{"login":"kars"}},{"author":{"login":"kars"}},
-                    {"author":{"login":"ada"}}]}}"#,
+                "mergeable":"MERGEABLE","author":{"login":"erin"},
+                "labels":{"nodes":[{"name":"Prio"}]},
+                "commits":{"nodes":[{"commit":{"oid":"head9","statusCheckRollup":{"state":"SUCCESS"}}}]},
+                "reviewRequests":{"nodes":[{"requestedReviewer":{"__typename":"Team","slug":"developers"}}]},
+                "reviews":{"nodes":[
+                    {"author":{"login":"kars"},"state":"CHANGES_REQUESTED","commit":{"oid":"old1"}},
+                    {"author":{"login":"ada"},"state":"APPROVED","commit":{"oid":"head9"}}]}}"#,
         );
-        let c = parse_review_candidate(&n, "kars").expect("a candidate");
+        // requested coverage: team = matched-but-not-personal.
+        let c = parse_review_candidate(&n, "kars", None).expect("a candidate");
         assert_eq!(c.number, 2001);
         assert_eq!(c.author, "erin");
         assert_eq!(c.changed_files, Some(37));
-        assert_eq!(c.labels, vec!["prio"]);
+        assert_eq!(c.labels, vec!["Prio"]);
+        assert_eq!(c.head_oid.as_deref(), Some("head9"));
         assert!(!c.requested_personally);
         assert!(c.requested_team, "matched the search but not personally");
-        assert!(c.re_review, "your own prior review");
-        assert!(c.changes_requested);
-        assert_eq!(c.reviewers, 2, "two distinct reviewers, kars deduped");
         assert_eq!(c.checks, Checks::Passing);
+        assert_eq!(c.reviews.len(), 2);
+        assert_eq!(c.reviews[0].author, "kars");
+        assert_eq!(c.reviews[0].state, "CHANGES_REQUESTED");
+        assert_eq!(c.reviews[0].commit_oid.as_deref(), Some("old1"));
+        assert_eq!(c.reviews[1].state, "APPROVED");
+    }
+
+    #[test]
+    fn all_open_team_is_resolved_against_the_viewers_teams() {
+        // In all_open there is no search to lean on: a PR requesting a team ranks
+        // as "team" only when the viewer is actually in that team.
+        let n = node(
+            r#"{"number":1,"title":"t","url":"u","createdAt":"2026-08-01T00:00:00Z",
+                "author":{"login":"a"},
+                "reviewRequests":{"nodes":[{"requestedReviewer":{"__typename":"Team","slug":"developers"}}]},
+                "reviews":{"nodes":[]}}"#,
+        );
+        let mine = ["developers".to_string()];
+        let theirs = ["platform".to_string()];
+        assert!(parse_review_candidate(&n, "kars", Some(&mine)).unwrap().requested_team);
+        assert!(!parse_review_candidate(&n, "kars", Some(&theirs)).unwrap().requested_team);
     }
 
     #[test]
@@ -1306,10 +1420,10 @@ mod tests {
                 "reviewRequests":{"nodes":[{"requestedReviewer":{"__typename":"User","login":"kars"}}]},
                 "reviews":{"nodes":[]}}"#,
         );
-        let c = parse_review_candidate(&n, "kars").unwrap();
+        let c = parse_review_candidate(&n, "kars", None).unwrap();
         assert!(c.requested_personally);
         assert!(!c.requested_team);
-        assert!(!c.re_review, "no prior review of yours");
+        assert!(c.reviews.is_empty());
     }
 
     /// Smoke-test the live review query, the way `fetches_real_threads` does the
@@ -1322,7 +1436,7 @@ mod tests {
     fn fetches_real_review_candidates() {
         let token = resolve_token(None).expect("a token");
         let (viewer, cands) = GitHubForge::new("acme-org", "acme", token.value)
-            .review_candidates()
+            .review_candidates(false)
             .expect("the fetch");
         assert!(!viewer.is_empty(), "viewer login came back empty");
         for c in &cands {
@@ -1337,8 +1451,8 @@ mod tests {
         eprintln!("viewer={viewer} candidates={}", cands.len());
         for c in &cands {
             eprintln!(
-                "  #{} personal={} team={} re_review={} files={:?} {:?}",
-                c.number, c.requested_personally, c.requested_team, c.re_review, c.changed_files, c.checks
+                "  #{} personal={} team={} reviews={} files={:?} {:?}",
+                c.number, c.requested_personally, c.requested_team, c.reviews.len(), c.changed_files, c.checks
             );
         }
     }

@@ -32,7 +32,7 @@ pub use github::{
     GitHubForge, Token, TokenSource,
 };
 pub use github_write::{ready_to_rerequest, with_footer, Target};
-pub use model::{Checks, Comment, Pr, ReviewCandidate, Thread, ThreadRoot, Threads};
+pub use model::{Checks, Comment, Pr, ReviewCandidate, ReviewRef, Thread, ThreadRoot, Threads};
 
 /// Read + write against one repo on one forge.
 ///
@@ -55,10 +55,15 @@ pub trait Forge: Send + Sync + Clone + 'static {
     /// a comment lives.
     fn threads(&self, pr: u64) -> Result<Threads>;
 
-    /// PRs where your review is requested, raw and unranked, plus your login.
-    /// Ranking is [`crate::reviews`]'s job and is config-driven, so it is the
-    /// same whatever forge answered here.
-    fn review_candidates(&self) -> Result<(String, Vec<ReviewCandidate>)>;
+    /// Review candidates, raw and unranked, plus your login. Ranking and
+    /// filtering are [`crate::reviews`]'s job and are config-driven, so they are
+    /// the same whatever forge answered here.
+    ///
+    /// `all_open` selects coverage: `false` asks only for PRs where your review
+    /// is requested (the lean default); `true` returns every open PR so a repo
+    /// that treats review as a shared pool can rank the lot. The heavier query is
+    /// off by default and opt-in per repo.
+    fn review_candidates(&self, all_open: bool) -> Result<(String, Vec<ReviewCandidate>)>;
 
     /// Reply in an existing review thread.
     fn reply(&self, at: &Path, root: &ThreadRoot, body: &str) -> Result<()>;

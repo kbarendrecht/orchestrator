@@ -1,16 +1,22 @@
-//! The review queue — PRs where your review is requested (§6b).
+//! The review queue — the PRs waiting on you to review (§6b).
 //!
-//! The candidates come from the forge ([`crate::forge::Forge::review_candidates`]);
-//! the *ranking* is here and is config-driven ([`ReviewRanking`]), so it is the
-//! same whatever forge produced them and so a repo that ranks review work
-//! differently can say so without a patch. There is no external command any more:
-//! the daemon asks the forge directly, and a checkout with no resolvable repo
-//! reads as `Off`, not as a broken tool.
+//! Candidates come from the forge ([`crate::forge::Forge::review_candidates`]);
+//! everything opinionated — which PRs count, how they rank, what blocks them —
+//! is here and is config-driven ([`ReviewRanking`]), so it is the same whatever
+//! forge produced them and a repo that reviews differently can say so without a
+//! patch. There is no external command: the daemon asks the forge directly.
+//!
+//! **Coverage** is the one choice that changes *what* is fetched. `requested`
+//! (the default) asks only for PRs where your review is requested. `all_open`
+//! walks every open PR and keeps the ones you have not already settled — the
+//! shape a repo uses when review is a shared pool rather than a personal
+//! assignment.
 
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::time::SystemTime;
 
-use crate::forge::{Checks, Forge, ReviewCandidate};
+use crate::forge::{Checks, Forge, ReviewCandidate, ReviewRef};
 
 /// One row in the queue, ranked and ready to render.
 #[derive(Debug, Clone, Serialize)]
@@ -30,6 +36,7 @@ pub struct Review {
     /// `conflicts`, `failing checks`, … — non-empty means it is waiting on
     /// someone else and sinks to the `blocked` list.
     pub blockers: Vec<String>,
+    /// Distinct humans who have already reviewed — a review-cost tiebreak.
     pub reviewers: u32,
     /// Review cost. `None` if the forge did not report a file count.
     pub changed_files: Option<u32>,
@@ -65,8 +72,6 @@ pub enum ReviewState {
     /// not read as a broken source — and so it never becomes a TODO entry.
     Pending,
     /// No forge repo resolves for this checkout, so there is nothing to query.
-    /// Not a fault — like `Pending` it never becomes a TODO finding, and the
-    /// pane says "not configured" rather than "unavailable".
     Off,
 }
 
@@ -80,21 +85,41 @@ impl Default for ReviewState {
 // The ranking engine (forge-agnostic)
 // ---------------------------------------------------------------------------
 
-/// How review candidates are classified and ordered. Lives in config so a repo
-/// with different labels or priorities does not need a patched daemon.
+/// Which PRs the review queue fetches.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Coverage {
+    /// Only PRs where your review is requested (direct or via a team). Lean and
+    /// the default.
+    #[default]
+    Requested,
+    /// Every open PR, minus the ones you have already settled — a shared-pool
+    /// queue. One query per open-PR page, so it is opt-in per repo.
+    AllOpen,
+}
+
+/// How the review queue is filtered, classified and ordered. Config, not
+/// hardcoded, so a repo with different labels, bots or priorities does not need
+/// a patched daemon.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReviewRanking {
+    #[serde(default)]
+    pub coverage: Coverage,
+    /// A PR carrying any of these labels is not review work and never appears.
+    #[serde(default)]
+    pub skip_labels: Vec<String>,
+    /// Logins whose reviews do not count toward the reviewer tally or "someone
+    /// has looked". Any login ending in `[bot]` is excluded regardless.
+    #[serde(default)]
+    pub bot_reviewers: Vec<String>,
     /// **First match wins, so order is precedence.** Each candidate takes the
     /// rank of the first rule whose `when` it satisfies; a trailing `always`
-    /// rule is the catch-all. Because it is first-match, a demotion (a
-    /// `sidequest` label) is placed *after* any label that should override it —
-    /// the defaults list `stopper` before `sidequest` so a PR carrying both
-    /// still ranks as a stopper.
+    /// rule is the catch-all. A demotion (a `sidequest` label) belongs *after*
+    /// the request rules so a requested sidequest still ranks as a request.
     #[serde(default = "default_rules")]
     pub rules: Vec<Rule>,
     /// A candidate matching any of these is waiting on its author, not on you:
-    /// it goes to the `blocked` list carrying the named blocker, and no ranking
-    /// rule applies.
+    /// it goes to the `blocked` list carrying the named blocker.
     #[serde(default = "default_blocked")]
     pub blocked_when: Vec<BlockedRule>,
     /// Ties within a rank, applied in order.
@@ -105,6 +130,9 @@ pub struct ReviewRanking {
 impl Default for ReviewRanking {
     fn default() -> Self {
         ReviewRanking {
+            coverage: Coverage::default(),
+            skip_labels: Vec::new(),
+            bot_reviewers: Vec::new(),
             rules: default_rules(),
             blocked_when: default_blocked(),
             tiebreak: default_tiebreak(),
@@ -121,7 +149,7 @@ pub struct Rule {
     /// absent.
     #[serde(default)]
     pub reason: Option<String>,
-    /// The dot colour. Derived from the rank/candidate when absent.
+    /// The dot colour. Derived from the candidate when absent.
     #[serde(default)]
     pub tone: Option<Tone>,
 }
@@ -134,22 +162,24 @@ pub struct BlockedRule {
 
 /// A condition over one candidate. Every field that is set must hold (implicit
 /// AND); an unset field does not constrain. An empty predicate matches nothing —
-/// use `always` for a catch-all, which is explicit on purpose so a typo cannot
-/// accidentally match every PR.
+/// use `always` for a catch-all, which is explicit so a typo cannot match every
+/// PR.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Predicate {
     #[serde(default)]
     pub always: bool,
     #[serde(default)]
     pub label: Option<String>,
+    /// The PR must **not** carry this label. Lets a blocked rule carve out an
+    /// escape (a "known-unrelated red check" label, say).
+    #[serde(default)]
+    pub without_label: Option<String>,
     #[serde(default)]
     pub requested: Option<Requested>,
     #[serde(default)]
     pub re_review: Option<bool>,
     #[serde(default)]
     pub draft: Option<bool>,
-    #[serde(default)]
-    pub changes_requested: Option<bool>,
     /// `MERGEABLE` / `CONFLICTING` / `UNKNOWN`.
     #[serde(default)]
     pub mergeable: Option<String>,
@@ -161,11 +191,10 @@ pub struct Predicate {
 }
 
 impl Predicate {
-    fn matches(&self, c: &ReviewCandidate) -> bool {
+    fn matches(&self, c: &ReviewCandidate, re_review: bool) -> bool {
         if self.always {
             return true;
         }
-        // An otherwise-empty predicate matches nothing.
         let mut constrained = false;
         let mut check = |cond: bool| -> bool {
             constrained = true;
@@ -173,6 +202,11 @@ impl Predicate {
         };
         if let Some(l) = &self.label {
             if !check(c.labels.iter().any(|x| x == l)) {
+                return false;
+            }
+        }
+        if let Some(l) = &self.without_label {
+            if !check(!c.labels.iter().any(|x| x == l)) {
                 return false;
             }
         }
@@ -187,17 +221,12 @@ impl Predicate {
             }
         }
         if let Some(b) = self.re_review {
-            if !check(c.re_review == b) {
+            if !check(re_review == b) {
                 return false;
             }
         }
         if let Some(b) = self.draft {
             if !check(c.is_draft == b) {
-                return false;
-            }
-        }
-        if let Some(b) = self.changes_requested {
-            if !check(c.changes_requested == b) {
                 return false;
             }
         }
@@ -260,104 +289,152 @@ fn checks_name(c: &Checks) -> &'static str {
     }
 }
 
+/// Generic, label-free defaults — no repo's label names are assumed. A repo with
+/// a `prio`/`stopper` convention (or a shared-pool `all_open` queue) puts its own
+/// rules in `config.json`; these just rank requests above re-reviews above the
+/// rest.
 fn default_rules() -> Vec<Rule> {
-    let rule = |when: Predicate, rank: u32, reason: Option<&str>, tone: Tone| Rule {
-        when,
+    let requested = |r: Requested, rank: u32, reason: Option<&str>| Rule {
+        when: Predicate {
+            requested: Some(r),
+            ..Default::default()
+        },
         rank,
         reason: reason.map(String::from),
-        tone: Some(tone),
-    };
-    let label = |l: &str| Predicate {
-        label: Some(l.to_string()),
-        ..Default::default()
-    };
-    let requested = |r: Requested| Predicate {
-        requested: Some(r),
-        ..Default::default()
+        tone: None,
     };
     vec![
-        rule(label("stopper"), 0, Some("prio stopper"), Tone::Prio),
-        rule(label("prio"), 1, Some("prio"), Tone::Prio),
-        // A demotion: after the labels that outrank it, before request type, so a
-        // sidequest sinks even when it is requested of you.
-        rule(label("sidequest"), 6, Some("sidequest"), Tone::Normal),
-        rule(requested(Requested::Personal), 2, None, Tone::Normal),
-        rule(
-            Predicate {
+        requested(Requested::Personal, 0, None),
+        requested(Requested::Team, 1, Some("team")),
+        Rule {
+            when: Predicate {
                 re_review: Some(true),
                 ..Default::default()
             },
-            4,
-            Some("re-requested"),
-            Tone::Rereview,
-        ),
-        rule(requested(Requested::Team), 3, Some("team"), Tone::Normal),
-        rule(
-            Predicate {
+            rank: 2,
+            reason: None, // the re-review overlay names it
+            tone: None,
+        },
+        Rule {
+            when: Predicate {
                 always: true,
                 ..Default::default()
             },
-            5,
-            None,
-            Tone::Normal,
-        ),
+            rank: 3,
+            reason: None,
+            tone: None,
+        },
     ]
 }
 
+/// For other people's PRs, only conflicts and a red rollup are blockers; a draft
+/// is filtered out of the queue entirely, and a changes-requested review is the
+/// author's work, not yours.
 fn default_blocked() -> Vec<BlockedRule> {
-    let blocked = |when: Predicate, blocker: &str| BlockedRule {
-        when,
-        blocker: blocker.to_string(),
-    };
     vec![
-        blocked(
-            Predicate {
-                draft: Some(true),
-                ..Default::default()
-            },
-            "draft",
-        ),
-        blocked(
-            Predicate {
+        BlockedRule {
+            when: Predicate {
                 mergeable: Some("CONFLICTING".to_string()),
                 ..Default::default()
             },
-            "conflicts",
-        ),
-        blocked(
-            Predicate {
+            blocker: "conflicts".to_string(),
+        },
+        BlockedRule {
+            when: Predicate {
                 checks: Some("failing".to_string()),
                 ..Default::default()
             },
-            "failing checks",
-        ),
-        blocked(
-            Predicate {
-                changes_requested: Some(true),
-                ..Default::default()
-            },
-            "changes requested",
-        ),
+            blocker: "failing checks".to_string(),
+        },
     ]
 }
 
 fn default_tiebreak() -> Vec<TieKey> {
-    vec![TieKey::FewestReviewers, TieKey::Oldest]
+    vec![TieKey::Oldest, TieKey::FewestReviewers]
 }
 
 // ---------------------------------------------------------------------------
 // Fetch + classify
 // ---------------------------------------------------------------------------
 
-/// Ask the forge for review candidates and rank them. `Degraded` on a forge
-/// error — never an empty queue. The `Off`/`Pending` states are the caller's:
-/// they depend on whether a repo resolves, which `fetch` is not given.
+/// Ask the forge for candidates (in the configured coverage) and rank them.
+/// `Degraded` on a forge error — never an empty queue. The `Off`/`Pending`
+/// states are the caller's: they depend on whether a repo resolves.
 pub fn fetch(forge: &impl Forge, ranking: &ReviewRanking) -> ReviewState {
-    match forge.review_candidates() {
+    let all_open = ranking.coverage == Coverage::AllOpen;
+    match forge.review_candidates(all_open) {
         Ok((login, cands)) => ReviewState::Ok(rank(login, &cands, ranking, SystemTime::now())),
         Err(e) => ReviewState::Degraded {
             reason: format!("{e:#}"),
         },
+    }
+}
+
+/// What ranking derives about one candidate from its raw reviews, given the
+/// viewer and the bot list. Kept together so include/rank/tiebreak all read the
+/// same numbers.
+struct Derived {
+    /// PR author ≠ you and you have reviewed it before.
+    re_review: bool,
+    /// Your standing review is an approval — it settles the PR for you.
+    approved: bool,
+    /// You reviewed the exact commit that is now head — nothing new to look at.
+    reviewed_current_head: bool,
+    /// Distinct humans who have reviewed, bots and dismissals excluded.
+    reviewers: u32,
+}
+
+fn is_bot(login: &str, bots: &[String]) -> bool {
+    login.ends_with("[bot]") || bots.iter().any(|b| b == login)
+}
+
+fn derive(c: &ReviewCandidate, viewer: &str, bots: &[String]) -> Derived {
+    let mine = |r: &ReviewRef| r.author == viewer;
+    let re_review = c.author != viewer && c.reviews.iter().any(mine);
+    let approved = c.reviews.iter().any(|r| mine(r) && r.state == "APPROVED");
+    let reviewed_current_head = c.head_oid.as_deref().is_some_and(|head| {
+        c.reviews
+            .iter()
+            .any(|r| mine(r) && r.commit_oid.as_deref() == Some(head))
+    });
+    // Distinct authors whose review currently counts.
+    let mut seen = HashSet::new();
+    for r in &c.reviews {
+        if r.state == "DISMISSED" || r.state == "PENDING" {
+            continue;
+        }
+        if is_bot(&r.author, bots) || r.author == c.author {
+            continue;
+        }
+        seen.insert(r.author.as_str());
+    }
+    Derived {
+        re_review,
+        approved,
+        reviewed_current_head,
+        reviewers: seen.len() as u32,
+    }
+}
+
+/// Whether this candidate is review work for `viewer`.
+///
+/// Never your own PR, never a draft, never one wearing a skip label. Beyond
+/// that, `requested` coverage trusts the forge's filter and keeps everything;
+/// `all_open` keeps a PR only while it still wants your eyes — a standing
+/// personal request always does, otherwise not once you have approved it or
+/// reviewed its current head.
+fn is_review_work(c: &ReviewCandidate, viewer: &str, d: &Derived, r: &ReviewRanking) -> bool {
+    if c.author == viewer || c.is_draft {
+        return false;
+    }
+    if c.labels.iter().any(|l| r.skip_labels.iter().any(|s| s == l)) {
+        return false;
+    }
+    match r.coverage {
+        Coverage::Requested => true,
+        Coverage::AllOpen => {
+            c.requested_personally || (!d.approved && !d.reviewed_current_head)
+        }
     }
 }
 
@@ -367,26 +444,41 @@ fn rank(login: String, cands: &[ReviewCandidate], ranking: &ReviewRanking, now: 
     let total = cands.len() as u32;
     let mut actionable = Vec::new();
     let mut blocked = Vec::new();
+    let mut kept = 0u32;
 
     for c in cands {
+        let d = derive(c, &login, &ranking.bot_reviewers);
+        if !is_review_work(c, &login, &d, ranking) {
+            continue;
+        }
+        kept += 1;
+
         let blockers: Vec<String> = ranking
             .blocked_when
             .iter()
-            .filter(|b| b.when.matches(c))
+            .filter(|b| b.when.matches(c, d.re_review))
             .map(|b| b.blocker.clone())
             .collect();
 
-        let matched = ranking.rules.iter().find(|r| r.when.matches(c));
-        let prio = matched.map(|r| r.rank).unwrap_or(u32::MAX);
-        let tone = matched
-            .and_then(|r| r.tone)
-            .unwrap_or_else(|| derived_tone(prio, c));
+        let matched = ranking.rules.iter().find(|rule| rule.when.matches(c, d.re_review));
+        let prio = matched.map(|rule| rule.rank).unwrap_or(u32::MAX);
+        // The pane's precedence, kept exactly: red for a prio rule, then amber
+        // for a re-review, then the rule's own tone or neutral.
+        let tone = if matched.and_then(|r| r.tone) == Some(Tone::Prio) {
+            Tone::Prio
+        } else if d.re_review {
+            Tone::Rereview
+        } else {
+            matched.and_then(|r| r.tone).unwrap_or(Tone::Normal)
+        };
+        // And the pane's "why": blockers, then the re-review note, then the
+        // matched rule's reason.
         let reason = if !blockers.is_empty() {
             blockers.join(", ")
+        } else if d.re_review {
+            "re-requested".to_string()
         } else {
-            matched
-                .and_then(|r| r.reason.clone())
-                .unwrap_or_else(|| derived_reason(c))
+            matched.and_then(|r| r.reason.clone()).unwrap_or_default()
         };
 
         let review = Review {
@@ -396,9 +488,9 @@ fn rank(login: String, cands: &[ReviewCandidate], ranking: &ReviewRanking, now: 
             author: c.author.clone(),
             age_hours: age_hours_from(&c.created_at, now),
             prio,
-            needs_re_review: c.re_review,
+            needs_re_review: d.re_review,
             is_draft: c.is_draft,
-            reviewers: c.reviewers,
+            reviewers: d.reviewers,
             changed_files: c.changed_files,
             reason,
             tone,
@@ -420,29 +512,7 @@ fn rank(login: String, cands: &[ReviewCandidate], ranking: &ReviewRanking, now: 
         actionable,
         blocked,
         total,
-        skipped: 0,
-    }
-}
-
-/// When a rule sets no tone: red for the top ranks, amber for a re-request,
-/// neutral otherwise. Mirrors what the SPA used to derive from `prio` itself.
-fn derived_tone(prio: u32, c: &ReviewCandidate) -> Tone {
-    if prio <= 1 {
-        Tone::Prio
-    } else if c.re_review {
-        Tone::Rereview
-    } else {
-        Tone::Normal
-    }
-}
-
-fn derived_reason(c: &ReviewCandidate) -> String {
-    if c.re_review {
-        "re-requested".to_string()
-    } else if c.is_draft {
-        "draft".to_string()
-    } else {
-        String::new()
+        skipped: total - kept,
     }
 }
 
@@ -469,7 +539,7 @@ fn sort(rows: &mut [Review], tiebreak: &[TieKey]) {
 ///
 /// Parsed by hand rather than pulling in a date crate — the daemon shells out
 /// instead of linking heavy dependencies elsewhere, and GitHub's format is
-/// fixed. An unparseable stamp is `0.0` (reads as brand new), which is the safe
+/// fixed. An unparseable stamp is `0.0` (reads as brand new), the safe
 /// direction: it sorts to the bottom of an oldest-first tiebreak rather than
 /// jumping the queue.
 fn age_hours_from(created_at: &str, now: SystemTime) -> f64 {
@@ -491,7 +561,6 @@ fn epoch_secs(s: &str) -> Option<i64> {
     let month: u32 = d.next()?.parse().ok()?;
     let day: u32 = d.next()?.parse().ok()?;
 
-    // Trim the zone/fraction: GitHub emits `Z`, but tolerate a fraction too.
     let time = time.trim_end_matches('Z');
     let time = time.split('.').next().unwrap_or(time);
     let mut t = time.split(':');
@@ -532,10 +601,17 @@ mod tests {
             labels: vec![],
             requested_personally: false,
             requested_team: false,
-            re_review: false,
-            changes_requested: false,
             changed_files: None,
-            reviewers: 0,
+            head_oid: Some("HEAD".into()),
+            reviews: vec![],
+        }
+    }
+
+    fn review(author: &str, state: &str, oid: &str) -> ReviewRef {
+        ReviewRef {
+            author: author.into(),
+            state: state.into(),
+            commit_oid: Some(oid.into()),
         }
     }
 
@@ -554,110 +630,215 @@ mod tests {
         personal.requested_personally = true;
         let mut team = cand(2);
         team.requested_team = true;
-        let q = ranked(&[team.clone(), personal.clone()]);
+        let q = ranked(&[team, personal]);
         assert_eq!(q.actionable[0].number, 1, "personal first");
         assert_eq!(q.actionable[1].number, 2);
     }
 
     #[test]
-    fn a_stopper_beats_a_sidequest_even_on_the_same_pr() {
-        // First-match with `stopper` listed before `sidequest`: a PR carrying
-        // both is a stopper, not a sidequest sunk to the bottom.
-        let mut both = cand(1);
-        both.labels = vec!["sidequest".into(), "stopper".into()];
-        both.requested_personally = true;
-        let plain = {
-            let mut c = cand(2);
-            c.requested_personally = true;
-            c
-        };
-        let q = ranked(&[plain, both]);
-        assert_eq!(q.actionable[0].number, 1, "the stopper leads");
-        assert_eq!(q.actionable[0].prio, 0);
-        assert_eq!(q.actionable[0].tone, Tone::Prio);
-    }
-
-    #[test]
-    fn a_sidequest_sinks_below_an_ordinary_request() {
-        let mut side = cand(1);
-        side.labels = vec!["sidequest".into()];
-        side.requested_personally = true;
-        let mut ordinary = cand(2);
-        ordinary.requested_team = true;
-        let q = ranked(&[side, ordinary]);
-        assert_eq!(q.actionable[0].number, 2, "the team request leads");
-        assert_eq!(q.actionable[1].number, 1, "the sidequest sinks");
-    }
-
-    #[test]
-    fn conflicts_and_failing_checks_go_to_the_blocked_list() {
+    fn conflicts_and_failing_checks_block_but_a_draft_is_dropped_entirely() {
         let mut conflicting = cand(1);
         conflicting.mergeable = "CONFLICTING".into();
         conflicting.requested_personally = true;
         let mut failing = cand(2);
         failing.checks = Checks::Failing;
         failing.requested_personally = true;
-        let ok = {
-            let mut c = cand(3);
-            c.requested_personally = true;
-            c
-        };
-        let q = ranked(&[conflicting, failing, ok]);
+        let mut draft = cand(3);
+        draft.is_draft = true;
+        draft.requested_personally = true;
+        let mut ok = cand(4);
+        ok.requested_personally = true;
+        let q = ranked(&[conflicting, failing, draft, ok]);
         assert_eq!(q.actionable.len(), 1);
-        assert_eq!(q.actionable[0].number, 3);
-        assert_eq!(q.blocked.len(), 2);
-        assert!(q.blocked.iter().any(|r| r.blockers == vec!["conflicts"]));
-        assert!(q
-            .blocked
-            .iter()
-            .any(|r| r.blockers == vec!["failing checks"]));
+        assert_eq!(q.actionable[0].number, 4);
+        assert_eq!(q.blocked.len(), 2, "conflicts + failing, the draft is not here");
+        assert!(q.blocked.iter().all(|r| r.number != 3), "draft filtered out, not blocked");
     }
 
     #[test]
-    fn fewest_reviewers_breaks_a_rank_tie_then_oldest() {
-        let mut a = cand(1);
-        a.requested_personally = true;
-        a.reviewers = 2;
-        a.created_at = "2026-01-01T00:00:00Z".into(); // older
-        let mut b = cand(2);
-        b.requested_personally = true;
-        b.reviewers = 0;
-        b.created_at = "2026-07-01T00:00:00Z".into(); // newer
-        let q = ranked(&[a, b]);
-        // Same rank (both personal); the one with fewer reviewers wins the tie.
-        assert_eq!(q.actionable[0].number, 2);
-        assert_eq!(q.actionable[1].number, 1);
+    fn a_re_review_is_amber_and_derived_from_your_prior_review() {
+        let mut c = cand(1);
+        c.requested_personally = true;
+        c.reviews = vec![review("me", "CHANGES_REQUESTED", "old")]; // you looked at an older head
+        let q = ranked(&[c]);
+        let row = &q.actionable[0];
+        assert!(row.needs_re_review);
+        assert_eq!(row.tone, Tone::Rereview);
+        assert_eq!(row.reason, "re-requested");
     }
 
     #[test]
-    fn oldest_breaks_a_tie_when_reviewer_counts_match() {
-        let mut older = cand(1);
-        older.requested_personally = true;
-        older.created_at = "2026-01-01T00:00:00Z".into();
-        let mut newer = cand(2);
-        newer.requested_personally = true;
-        newer.created_at = "2026-07-01T00:00:00Z".into();
-        let q = ranked(&[newer, older]);
-        assert_eq!(q.actionable[0].number, 1, "older first");
+    fn reviewers_excludes_bots_dismissed_and_the_author() {
+        let mut c = cand(1);
+        c.author = "erin".into();
+        c.requested_personally = true;
+        c.reviews = vec![
+            review("ada", "APPROVED", "x"),
+            review("ada", "COMMENTED", "x"),   // same human, still one
+            review("acme-bot[bot]", "APPROVED", "x"), // bot suffix
+            review("erin", "COMMENTED", "x"), // the author
+            review("bob", "DISMISSED", "x"),  // no longer counts
+        ];
+        let ranking = ReviewRanking::default();
+        let d = derive(&c, "me", &ranking.bot_reviewers);
+        assert_eq!(d.reviewers, 1, "only ada counts");
     }
 
     #[test]
-    fn a_re_review_is_amber_and_ranks_below_a_team_first_request() {
-        let mut re = cand(1);
-        re.requested_team = true;
-        re.re_review = true;
-        let mut team = cand(2);
+    fn all_open_keeps_a_standing_request_but_drops_approved_and_seen_head() {
+        let ranking = ReviewRanking {
+            coverage: Coverage::AllOpen,
+            ..Default::default()
+        };
+        // Approved by you → settled, dropped.
+        let mut approved = cand(1);
+        approved.reviews = vec![review("me", "APPROVED", "old")];
+        // You reviewed the current head → nothing new, dropped.
+        let mut seen = cand(2);
+        seen.reviews = vec![review("me", "COMMENTED", "HEAD")];
+        // You reviewed an older head → still wants you, kept (re-review).
+        let mut moved = cand(3);
+        moved.reviews = vec![review("me", "COMMENTED", "old")];
+        // Never touched, not requested → still review work in a shared pool.
+        let fresh = cand(4);
+        // Approved, but a standing personal request means they asked again → kept.
+        let mut re_asked = cand(5);
+        re_asked.requested_personally = true;
+        re_asked.reviews = vec![review("me", "APPROVED", "old")];
+
+        let q = rank("me".into(), &[approved, seen, moved, fresh, re_asked], &ranking, SystemTime::now());
+        let nums: Vec<u64> = q.actionable.iter().map(|r| r.number).collect();
+        assert!(!nums.contains(&1), "approved is settled");
+        assert!(!nums.contains(&2), "current head already seen");
+        assert!(nums.contains(&3), "older head still wants you");
+        assert!(nums.contains(&4), "shared-pool PR is review work");
+        assert!(nums.contains(&5), "a standing request outranks your stale approval");
+    }
+
+    #[test]
+    fn requested_coverage_keeps_even_a_seen_head() {
+        // In requested mode the forge already scoped it; don't second-guess.
+        let mut c = cand(1);
+        c.requested_personally = true;
+        c.reviews = vec![review("me", "APPROVED", "HEAD")];
+        let q = ranked(&[c]);
+        assert_eq!(q.actionable.len(), 1);
+    }
+
+    #[test]
+    fn a_skip_label_removes_a_pr_from_the_queue() {
+        let ranking = ReviewRanking {
+            skip_labels: vec!["on-hold".into()],
+            ..Default::default()
+        };
+        let mut c = cand(1);
+        c.requested_personally = true;
+        c.labels = vec!["on-hold".into()];
+        let q = rank("me".into(), &[c], &ranking, SystemTime::now());
+        assert!(q.actionable.is_empty());
+        assert_eq!(q.skipped, 1);
+    }
+
+    #[test]
+    fn oldest_then_fewest_reviewers_breaks_a_rank_tie() {
+        // Same rank (both personal). Default tiebreak is oldest first, then fewer
+        // reviewers — the order the real queue used, not reviewers-first.
+        let mut old_busy = cand(1);
+        old_busy.requested_personally = true;
+        old_busy.created_at = "2026-01-01T00:00:00Z".into(); // older
+        old_busy.reviews = vec![review("ada", "COMMENTED", "x"), review("bob", "COMMENTED", "x")];
+        let mut newer_quiet = cand(2);
+        newer_quiet.requested_personally = true;
+        newer_quiet.created_at = "2026-07-01T00:00:00Z".into(); // newer, no reviewers
+        let q = ranked(&[newer_quiet, old_busy]);
+        assert_eq!(q.actionable[0].number, 1, "older wins the tie even with more reviewers");
+    }
+
+    // A acme-shaped rule set, to prove the config can reproduce it.
+    fn acme_ranking() -> ReviewRanking {
+        let label = |l: &str, rank: u32, reason: Option<&str>, tone: Option<Tone>| Rule {
+            when: Predicate { label: Some(l.into()), ..Default::default() },
+            rank,
+            reason: reason.map(String::from),
+            tone,
+        };
+        let requested = |r: Requested, rank: u32, reason: Option<&str>| Rule {
+            when: Predicate { requested: Some(r), ..Default::default() },
+            rank,
+            reason: reason.map(String::from),
+            tone: None,
+        };
+        ReviewRanking {
+            coverage: Coverage::AllOpen,
+            skip_labels: vec!["on-hold".into()],
+            bot_reviewers: vec!["acme-bot".into()],
+            rules: vec![
+                label("Prio Stopper", 0, Some("prio stopper"), Some(Tone::Prio)),
+                label("Prio", 1, Some("prio"), Some(Tone::Prio)),
+                requested(Requested::Personal, 2, None),
+                requested(Requested::Team, 3, Some("team requested")),
+                Rule { when: Predicate { re_review: Some(true), ..Default::default() }, rank: 4, reason: None, tone: None },
+                label("sidequest :compass:", 6, Some("sidequest"), None),
+                Rule { when: Predicate { always: true, ..Default::default() }, rank: 5, reason: None, tone: None },
+            ],
+            blocked_when: vec![
+                BlockedRule { when: Predicate { mergeable: Some("CONFLICTING".into()), ..Default::default() }, blocker: "conflicts".into() },
+                BlockedRule {
+                    when: Predicate {
+                        checks: Some("failing".into()),
+                        without_label: Some("Failed check can be ignored".into()),
+                        ..Default::default()
+                    },
+                    blocker: "failing checks".into(),
+                },
+            ],
+            tiebreak: vec![TieKey::Oldest, TieKey::FewestReviewers],
+        }
+    }
+
+    #[test]
+    fn a_requested_sidequest_ranks_as_a_request_not_sunk() {
+        // acme's whole point: being asked personally beats the label that
+        // would otherwise sink it. Sidequest is last in the ladder.
+        let r = acme_ranking();
+        let mut side_requested = cand(1);
+        side_requested.labels = vec!["sidequest :compass:".into()];
+        side_requested.requested_personally = true;
+        let mut side_alone = cand(2);
+        side_alone.labels = vec!["sidequest :compass:".into()];
+        // Reaches the queue in all_open as a shared-pool PR (nothing settled).
+        let q = rank("me".into(), &[side_alone, side_requested], &r, SystemTime::now());
+        let by = |n: u64| q.actionable.iter().find(|x| x.number == n).unwrap();
+        assert_eq!(by(1).prio, 2, "a requested sidequest ranks as the request");
+        assert_eq!(by(2).prio, 6, "an unrequested sidequest sinks to the bottom");
+        assert!(by(1).prio < by(2).prio);
+    }
+
+    #[test]
+    fn a_team_request_ranks_above_a_re_review() {
+        let r = acme_ranking();
+        let mut team = cand(1);
         team.requested_team = true;
-        let q = ranked(&[re, team]);
-        assert_eq!(q.actionable[0].number, 2, "team first-request leads");
-        let re_row = q.actionable.iter().find(|r| r.number == 1).unwrap();
-        assert_eq!(re_row.tone, Tone::Rereview);
-        assert!(re_row.needs_re_review);
+        let mut re = cand(2);
+        re.reviews = vec![review("me", "COMMENTED", "old")]; // re-review, not requested
+        let q = rank("me".into(), &[re, team], &r, SystemTime::now());
+        assert_eq!(q.actionable[0].number, 1, "team-request (3) above re-review (4)");
+    }
+
+    #[test]
+    fn the_ignore_label_lets_a_red_check_through_as_actionable() {
+        let r = acme_ranking();
+        let mut red = cand(1);
+        red.requested_personally = true;
+        red.checks = Checks::Failing;
+        red.labels = vec!["Failed check can be ignored".into()];
+        let q = rank("me".into(), &[red], &r, SystemTime::now());
+        assert_eq!(q.actionable.len(), 1, "the escape label keeps it actionable");
+        assert!(q.blocked.is_empty());
     }
 
     #[test]
     fn age_is_computed_from_created_at() {
-        // 2026-08-01T00:00:00Z + 48h == 2026-08-03.
         let now = SystemTime::UNIX_EPOCH
             + std::time::Duration::from_secs(epoch_secs("2026-08-03T00:00:00Z").unwrap() as u64);
         let h = age_hours_from("2026-08-01T00:00:00Z", now);
@@ -665,13 +846,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unparseable_timestamp_reads_as_new_rather_than_panicking() {
-        assert_eq!(age_hours_from("not a date", SystemTime::now()), 0.0);
-    }
-
-    #[test]
     fn epoch_matches_a_known_instant() {
-        // 2001-09-09T01:46:40Z is exactly 1_000_000_000.
         assert_eq!(epoch_secs("2001-09-09T01:46:40Z"), Some(1_000_000_000));
         assert_eq!(epoch_secs("1970-01-01T00:00:00Z"), Some(0));
     }
@@ -679,28 +854,8 @@ mod tests {
     #[test]
     fn an_empty_predicate_matches_nothing_but_always_matches_all() {
         let c = cand(1);
-        assert!(!Predicate::default().matches(&c));
-        assert!(Predicate {
-            always: true,
-            ..Default::default()
-        }
-        .matches(&c));
-    }
-
-    #[test]
-    fn a_multi_field_predicate_is_an_and() {
-        let mut c = cand(1);
-        c.labels = vec!["prio".into()];
-        c.requested_personally = true;
-        let both = Predicate {
-            label: Some("prio".into()),
-            requested: Some(Requested::Personal),
-            ..Default::default()
-        };
-        assert!(both.matches(&c));
-        c.requested_personally = false;
-        c.requested_team = true;
-        assert!(!both.matches(&c), "personal no longer holds");
+        assert!(!Predicate::default().matches(&c, false));
+        assert!(Predicate { always: true, ..Default::default() }.matches(&c, false));
     }
 
     #[test]
@@ -709,37 +864,11 @@ mod tests {
     }
 
     #[test]
-    fn a_custom_ranking_reorders_the_queue() {
-        // A repo that wants team requests on top can say so without a patch.
-        let ranking = ReviewRanking {
-            rules: vec![
-                Rule {
-                    when: Predicate {
-                        requested: Some(Requested::Team),
-                        ..Default::default()
-                    },
-                    rank: 0,
-                    reason: Some("team".into()),
-                    tone: Some(Tone::Prio),
-                },
-                Rule {
-                    when: Predicate {
-                        always: true,
-                        ..Default::default()
-                    },
-                    rank: 1,
-                    reason: None,
-                    tone: None,
-                },
-            ],
-            blocked_when: vec![],
-            tiebreak: vec![],
-        };
-        let mut personal = cand(1);
-        personal.requested_personally = true;
-        let mut team = cand(2);
-        team.requested_team = true;
-        let q = rank("me".into(), &[personal, team], &ranking, SystemTime::now());
-        assert_eq!(q.actionable[0].number, 2, "team was promoted to the top");
+    fn an_old_config_ranking_still_parses_with_only_some_fields() {
+        // Forward-compat: a config written before coverage/skip_labels existed.
+        let r: ReviewRanking = serde_json::from_str(r#"{"tiebreak":["newest"]}"#).expect("parse");
+        assert_eq!(r.coverage, Coverage::Requested);
+        assert!(!r.rules.is_empty(), "rules defaulted");
+        assert_eq!(r.tiebreak, vec![TieKey::Newest]);
     }
 }
