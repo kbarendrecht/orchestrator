@@ -95,6 +95,50 @@ Everything outside that block is hand-written and survives.
   inside, and a file in the worktree would dirty the tree). Next step is the exact
   path the dialog names.
 
+- **Unsettled review findings on the portability work.** A high-effort review of
+  `559c803..ff387df` confirmed eight problems; four were fixed in `ff387df`, and
+  these are the ones left, held deliberately because each wants a decision rather
+  than an obvious patch. To work through together:
+  - **`requested_team` means two different things.** In `requested` coverage it is
+    "matched the search but not by name"; in `all_open` it is real team
+    membership. So a machine that flips `review_ranking.coverage` while inheriting
+    the acme rule ladder silently reorders its whole queue — every
+    non-personally-requested PR satisfies `requested: team`, takes rank 3, and the
+    re-review, sidequest and catch-all rules below it become unreachable. The test
+    `a_machine_key_overrides_the_profile` blesses exactly that combination. Either
+    make the field truthful in both modes or split it (`matched_only`).
+  - **`worktrees_subdir` accepts `""`, `"."` and `"./x"`.** The guard refuses
+    absolute and `..` but not these: `""` collapses the worktrees dir onto main
+    and makes the changed-files exclude prefix `/`, which no porcelain path
+    matches, so main's pane lists every sibling worktree's edits — the §2 leak the
+    exclude exists to prevent. Normalising components at parse time (dropping
+    `CurDir`, rejecting empty) would close it, and would also move validation out
+    of an accessor that re-warns on every hook event.
+  - **The `all_open` walk has no whole-fetch deadline.** `review_timeout_seconds`
+    used to bound the entire external fetch; `--max-time 120` bounds one request,
+    and the walk can issue up to 200 of them plus the teams query. A slow-but-not
+    -erroring GitHub can hold the poll far past its interval with the pane
+    spinning instead of going `Degraded`. Also worth sizing the point cost: a
+    shared-pool repo with ~1,000 open PRs is ~20 pages of a heavy selection every
+    5 minutes, against a 5,000/hour budget `config.rs` still calls negligible.
+  - **The prose maps are stale.** `README.md` (:119, :226-227) still lists
+    `github.rs`/`github_write.rs` and describes the queue as `mise run reviews
+    --json` backed by the deleted `docs/reviews-json.md`; hand-written TODO
+    entries (:35, :69, :191) and `docs/resolve-flow-plan.md` (:12, :33, :80) still
+    name the pre-`forge/` paths. CLAUDE.md points a new reader at README for the
+    module map, so this is the one a stranger hits first.
+  - **The forge seam is narrower than it reads.** `ForgeKind` is parsed and
+    documented but never branched on, and `Forge::reply`/`thumbs_up`/`rerequest`
+    have no production callers — every write still goes through the concrete
+    `forge::Target`. So the claim below that "every read and write goes through
+    the `Forge` trait" overstates it: a second impl would still need the four
+    concrete `GitHubForge::new` sites made generic and the write path rerouted.
+  - Unverified, not a finding: whether `review-requested:@me` matches PRs
+    requested of a *team* you are on. It decides whether the default coverage
+    quietly misses team-assigned reviews. acme currently has zero of both, so
+    it could not be settled empirically — the `requested` path has never run
+    against real data with results.
+
 - **Make it run somewhere other than this machine.** Everything below is a
   hardcoded assumption about one monorepo, and each is a setting or a probe
   waiting to be written:
