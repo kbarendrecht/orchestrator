@@ -94,7 +94,10 @@ pub enum Coverage {
     #[default]
     Requested,
     /// Every open PR, minus the ones you have already settled — a shared-pool
-    /// queue. One query per open-PR page, so it is opt-in per repo.
+    /// queue. Walks the whole open set, so on a large repo it is many heavy
+    /// GraphQL pages per poll (a real rate-limit cost) and is bounded by a
+    /// whole-walk deadline; opt-in per repo, and a reason to raise `poll_seconds`
+    /// there.
     AllOpen,
 }
 

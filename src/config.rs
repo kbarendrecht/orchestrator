@@ -74,7 +74,11 @@ pub struct Config {
     /// that is unclear. Defaults to English; the `acme` profile sets Dutch.
     #[serde(default = "default_output_language")]
     pub output_language: String,
-    /// 288 queries/day is negligible against 5000 points/hour (§6).
+    /// The PR poll is one query per period, negligible against 5000 points/hour
+    /// (§6). The review poll is one query in `requested` coverage; `all_open`
+    /// instead walks every open PR, so on a large shared-pool repo it is many
+    /// heavy pages per period — a real point cost, and a reason to raise this
+    /// there rather than leave it at the default.
     #[serde(default = "default_poll_seconds")]
     pub poll_seconds: u64,
     /// Which forge the repo lives on. Only GitHub is implemented; the field

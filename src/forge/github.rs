@@ -4,6 +4,7 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::path::Path;
 use std::process::Command;
+use std::time::{Duration, Instant};
 
 use super::github_write::Target;
 use super::model::{Checks, Comment, Pr, ReviewCandidate, ReviewRef, Thread, ThreadRoot, Threads};
@@ -675,6 +676,12 @@ fn viewer_team_slugs(token: &str, owner: &str, viewer: &str) -> Vec<String> {
 /// A runaway guard for the all-open walk, matching the thread pager's.
 const MAX_PR_PAGES: usize = 200;
 
+/// Whole-walk deadline for a review fetch. `--max-time` bounds one request; this
+/// bounds the sequence, the job the removed `review_timeout_seconds` used to do.
+/// Generous on purpose — a healthy walk of even a large repo is far under it, so
+/// it only catches a GitHub that is slow without erroring.
+const REVIEW_FETCH_BUDGET: Duration = Duration::from_secs(240);
+
 /// Review candidates, plus your login. Ranking and filtering happen in
 /// [`crate::reviews`]; this only fetches. Reached through
 /// [`GitHubForge::review_candidates`].
@@ -723,7 +730,20 @@ fn page_through(
     let mut viewer = String::new();
     let mut cursor: Option<String> = None;
     let mut nodes: Vec<Value> = Vec::new();
-    for _ in 0..MAX_PR_PAGES {
+    let start = Instant::now();
+    for page in 0..MAX_PR_PAGES {
+        // A whole-walk deadline, since `--max-time` only bounds one request:
+        // without it a slow-but-not-erroring GitHub could hold this blocking
+        // thread past the poll interval while the pane spins. Bail to an error
+        // (→ `Degraded`) rather than serve a short queue — §6b's "never silently
+        // wrong". The ceiling is generous, so it trips on pathology, not size;
+        // real size is bounded by `MAX_PR_PAGES` below.
+        if start.elapsed() > REVIEW_FETCH_BUDGET {
+            bail!(
+                "review fetch exceeded {}s after {page} page(s)",
+                REVIEW_FETCH_BUDGET.as_secs()
+            );
+        }
         let v = graphql(token, &query(cursor.as_deref()))?;
         if viewer.is_empty() {
             viewer = viewer_login(&v);

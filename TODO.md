@@ -118,13 +118,15 @@ Everything outside that block is hand-written and survives.
     worktrees dir onto main or make the exclude prefix `/` (the §2 sibling leak).
     Validation moved out of the per-call accessor that re-warned on every hook
     event; the accessors now trust the field.
-  - **The `all_open` walk has no whole-fetch deadline.** `review_timeout_seconds`
-    used to bound the entire external fetch; `--max-time 120` bounds one request,
-    and the walk can issue up to 200 of them plus the teams query. A slow-but-not
-    -erroring GitHub can hold the poll far past its interval with the pane
-    spinning instead of going `Degraded`. Also worth sizing the point cost: a
-    shared-pool repo with ~1,000 open PRs is ~20 pages of a heavy selection every
-    5 minutes, against a 5,000/hour budget `config.rs` still calls negligible.
+  - **The `all_open` walk's deadline and cost.** *Done.* `page_through` now
+    enforces a whole-walk deadline (`REVIEW_FETCH_BUDGET`, 240s) inside the
+    blocking work, so a slow-but-not-erroring GitHub makes the fetch bail to
+    `Degraded` rather than hold the thread for hours with the pane spinning; the
+    thread self-terminates instead of leaking. The generous ceiling trips on
+    pathology, not size (size is bounded by `MAX_PR_PAGES`, which warns). The
+    point cost is real on a large shared-pool repo and is no longer papered over:
+    `config.rs`'s `poll_seconds` comment and the `Coverage::AllOpen` doc now say
+    `all_open` is many heavy pages per poll and a reason to raise the interval.
   - **The prose maps are stale.** `README.md` (:119, :226-227) still lists
     `github.rs`/`github_write.rs` and describes the queue as `mise run reviews
     --json` backed by the deleted `docs/reviews-json.md`; hand-written TODO
