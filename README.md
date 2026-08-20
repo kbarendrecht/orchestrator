@@ -40,8 +40,9 @@ chosen at bind time, and opening IPC to that origin means whitelisting
 there. `POST /api/window/*` carries the same token as the rest of the UI and the
 Rust side calls Tauri's window API directly.
 
-Closing the window kills the Claude sessions and `ng-watch`. It does not touch
-containers: `docker compose up -d` has already detached by then. Sessions that
+Closing the window kills the Claude sessions and any managed process the daemon
+started (a build watcher, say). It does not touch containers: a `docker compose
+up -d` has already detached by then. Sessions that
 were live are recorded first, so `auto_resume` rebuilds the rail next launch.
 
 ### Building it
@@ -101,9 +102,13 @@ newer version is out it shows a dismissible nudge in the window. The nudge only
 - **Main exclusivity** — one session at a time, no queue.
 - **Process drawer** — managed processes with health parsed from output, plus
   `$SHELL` on demand in any workspace.
-- **Worktrees** — created by launching `claude --worktree` from the main
-  checkout, so the repo's own `worktree-create` / `worktree-link` hooks do the
-  work. Six-check teardown preflight; `git worktree remove` only, never `rm -rf`.
+- **Worktrees** — at Claude Code's own layout (`.claude/worktrees`, the default)
+  created by launching `claude --worktree` from the main checkout, so the repo's
+  own `worktree-create` / `worktree-link` hooks do the work; at any other
+  `worktrees_subdir` the daemon cuts the worktree itself with `git worktree add`
+  (that command only ever writes to `.claude/worktrees`, so delegating there would
+  put it where the daemon does not look). Six-check teardown preflight; `git
+  worktree remove` only, never `rm -rf`.
 - **Changed files** — `PostToolUse` for the exact path, `git status
   --porcelain=v2` reconcile on `Stop` and at most once per 30s while working.
 - **Restart recovery** — session records persist. With `auto_resume` on (the
@@ -120,6 +125,12 @@ newer version is out it shows a dismissible nudge in the window. The nudge only
   timer and ranks the result with a config-driven rule engine (`review_ranking`;
   `requested` or `all_open` coverage). Degrades to `unavailable` rather than to
   an empty queue, and reads `not configured` when no forge repo resolves.
+- **Config profiles** — `profile` (`default` | `acme`) selects a baked-in
+  bundle a machine's `config.json` is deep-merged over (config keys win), so a
+  stack's many machines write just `{ main_checkout, profile }`. `default` is
+  empty and generic; `acme` (`src/profiles/acme.json`) carries that stack's
+  processes, capabilities, tracker, upstream refs, review ranking and output
+  language.
 - **`/resolve`** — worktree pinned to the PR's head branch, skill invocation
   typed into the pty once `SessionStart` lands.
 - **Test capabilities** — per-suite trust and isolation from config, lockfile
@@ -216,7 +227,7 @@ tree yet, or it has regressed — which is exactly what §7 says the probe is fo
 ```
 src/
   main.rs       wiring, routes, startup recovery, SPA serving
-  config.rs     config file, managed process specs, transcript path slug
+  config.rs     config file, profiles + deep-merge, settings, transcript slug
   model.rs      Workspace / Session / Process, State, ArchiveState
   state.rs      the daemon's owned state, snapshots, occupancy, reconcile
   pty.rs        portable-pty host
@@ -266,10 +277,12 @@ web/            SPA (vanilla, xterm.js vendored)
   rendering fault can be reproduced rather than guessed at. Stub
   `/vendor/addon-webgl.js` in such a test: headless WebKit dies on xterm's WebGL
   renderer.
-- `ng-watch` autostarts in main; nothing else does. Flip `autostart` in config
-  if you want `docker compose up` on daemon start too. An autostarted process is
-  not killed when the last session in its workspace ends, because no session
-  started it.
+- Nothing autostarts by default. Managed processes come from config or a profile,
+  each with an `autostart` flag that is off unless set; the `acme` profile
+  ships `ng-watch` and `docker` but leaves both manual, started from the drawer.
+  Flip `autostart` if you want one on daemon start. An autostarted process is not
+  killed when the last session in its workspace ends, because no session started
+  it.
 - **GitHub auth** resolves in order: `ORCHD_GITHUB_TOKEN`, a `0600`
   `github_token_file`, then `gh auth token`. §6 wants read scopes only
   (`pull_requests`, `checks`, `contents`, `metadata`); gh's token carries write,

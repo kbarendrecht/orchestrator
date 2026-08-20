@@ -226,25 +226,24 @@ Everything outside that block is hand-written and survives.
     `claude --worktree <name>` already targets `<repo>/.claude/worktrees/<name>`
     on branch `worktree-<name>`, so a generic checkout needs no `worktree-create`
     hook to be recognised — the only real gap was that the path was a constant.
+    Off the default subdir, creation is daemon-owned rather than delegated (see
+    the worktree-creation item below), so a relocated layout is created where the
+    daemon looks for it.
 
-  - **Worktree creation, and the session model, still assume Claude.** Interactive
-    worktrees are made by `claude --worktree` (`spawn::spawn_worktree_session`), so
-    the *coding agent* is what cuts the worktree — which pins orchd to Claude Code
-    even for that step. The daemon already knows how to do it agent-free: PR
-    worktrees use plain `git worktree add` (`ensure_pr_worktree` →
-    `git::worktree_add_existing`) and only rely on `worktree-link` at SessionStart,
-    not on `worktree-create`. So interactive creation could become a configurable
-    strategy — a `git` mode (daemon cuts `git worktree add -b worktree-<name>
-    <dir>/<name> <upstream_ref>`, no agent) versus today's `agent` mode — with
-    fresh checkouts defaulting to `git` (portable) and acme's existing config
-    keeping `agent` so its `worktree-create` push/base setup is untouched (same
-    serde-default-vs-`default_for` split used for the review queue). But note the
-    honest scope: creation is one Claude coupling among the load-bearing ones. The
-    session model is Claude-specific throughout — `--session-id` correlation,
+  - **Worktree creation is half-decoupled; the session model still assumes Claude.**
+    `spawn::spawn_worktree_session` now branches: at Claude Code's default layout
+    it delegates to `claude --worktree` (the repo's `worktree-create` hooks do the
+    work), but at any other `worktrees_subdir` the daemon cuts the worktree itself
+    with `git::worktree_add_new` (`-b worktree-<name> … <upstream_ref>`) and spawns
+    a plain session — so the *coding agent* no longer has to be the thing that
+    creates the worktree. What is not done: forcing daemon-`git` creation even at
+    the default layout (acme stays on `--worktree` by using that layout), which
+    would want an explicit mode rather than keying off the subdir. And the real
+    coupling is the *session model*, untouched: `--session-id` correlation,
     transcript slug lookup, the `ai-title` field, `--resume`, and the whole
     hook-observer plumbing (`--settings` injection, SessionStart/PostToolUse/Stop).
-    Hosting another agent means abstracting *that* layer, not just worktree
-    creation; this bullet is the first, self-contained step, not the whole job.
+    Hosting another agent means abstracting *that* layer; the worktree-creation
+    split was the first, self-contained step, not the whole job.
   - **GitHub is the only forge, but the seam is wired.** Every read and write
     goes through the `Forge` trait (`src/forge/mod.rs`), and `ForgeImpl` —
     enum-dispatch keyed on `config.forge` (`ForgeKind`) via `ForgeImpl::for_kind`
@@ -280,7 +279,7 @@ Everything outside that block is hand-written and survives.
 
 - **The update nudge cannot fire on this repo.** Belongs after run-elsewhere: the
   nudge only matters once orchd is distributed to someone who isn't building it
-  from source. `github::latest_release` (`src/forge/github.rs:152`) asks
+  from source. `github::latest_release` (`src/forge/github.rs`) asks
   `api.github.com/repos/.../releases/latest` through plain `curl` with no token,
   and the release repo is private, so the call is a 404 and the poller sees
   `None`. Authenticated, the same request answers `v2026.8.5`. The token ladder
@@ -299,11 +298,12 @@ Everything outside that block is hand-written and survives.
   mind, never executed on it".
 
 - **A README for other people.** The current one is written for whoever already
-  knows what orchd is: it opens on `§` references to a spec that no longer exists
-  in the repo, assumes the acme monorepo throughout, and documents the parts in
-  the order they were built. An open-sourced one needs the thing it is, a
-  screenshot, what it needs installed, what it assumes about your repo (see
-  above), and how to try it without a monorepo to point it at.
+  knows what orchd is: it is threaded with `§` references to a spec that no longer
+  exists in the repo, assumes the acme monorepo throughout (the run example, the
+  `ng-watch`/`docker` asides, the `§7` capability walkthrough), and documents the
+  parts in the order they were built. An open-sourced one needs the thing it is, a
+  screenshot, what it needs installed, what it assumes about your repo (now largely
+  a `profile` — see above), and how to try it without a monorepo to point it at.
 
 - **Audit the keyboard map for logical, consistent coverage.** Not two more
   chords — a pass over the whole scheme so it is predictable: same modifier
