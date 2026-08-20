@@ -592,11 +592,13 @@ const PR_FIELDS: &str = r#"
 
 /// `requested` coverage: the PRs GitHub says your review is requested on, direct
 /// or via a team. `requested_team` here is "matched but not personally".
-fn requested_query(owner: &str, name: &str) -> String {
+fn requested_query(owner: &str, name: &str, after: Option<&str>) -> String {
+    let after = cursor_arg(after);
     format!(
         r#"{{
   viewer {{ login }}
-  search(query: "repo:{owner}/{name} is:pr is:open review-requested:@me", type: ISSUE, first: {PAGE}) {{
+  search(query: "repo:{owner}/{name} is:pr is:open review-requested:@me", type: ISSUE, first: {PAGE}, after: {after}) {{
+    pageInfo {{ hasNextPage endCursor }}
     nodes {{ ... on PullRequest {{{PR_FIELDS}
     }} }}
   }}
@@ -604,13 +606,31 @@ fn requested_query(owner: &str, name: &str) -> String {
     )
 }
 
+/// A GraphQL cursor argument. JSON-encoded rather than pasted in quotes, so a
+/// stray quote in GitHub's opaque string cannot break the document.
+fn cursor_arg(after: Option<&str>) -> String {
+    match after {
+        Some(c) => serde_json::Value::String(c.to_string()).to_string(),
+        None => "null".to_string(),
+    }
+}
+
+/// The next page's cursor, or `None` when this was the last page. A
+/// `hasNextPage` with a null cursor would re-request the same page forever, so
+/// the cursor is what decides. Shared by both coverage walks.
+fn next_cursor(root: &Value) -> Option<String> {
+    if root.pointer("/pageInfo/hasNextPage").and_then(|b| b.as_bool()) != Some(true) {
+        return None;
+    }
+    root.pointer("/pageInfo/endCursor")
+        .and_then(|c| c.as_str())
+        .map(String::from)
+}
+
 /// `all_open` coverage: one page of every open PR, for a repo that treats review
 /// as a shared pool. Paged to the end.
 fn all_open_query(owner: &str, name: &str, after: Option<&str>) -> String {
-    let after = match after {
-        Some(c) => serde_json::Value::String(c.to_string()).to_string(),
-        None => "null".to_string(),
-    };
+    let after = cursor_arg(after);
     format!(
         r#"{{
   viewer {{ login }}
@@ -664,53 +684,65 @@ fn fetch_review_candidates(
     name: &str,
     all_open: bool,
 ) -> Result<(String, Vec<ReviewCandidate>)> {
-    if !all_open {
-        let v = graphql(token, &requested_query(owner, name))?;
-        let viewer = viewer_login(&v);
-        let nodes = v
-            .pointer("/data/search/nodes")
-            .and_then(|n| n.as_array())
-            .cloned()
-            .unwrap_or_default();
-        // No team slugs: in this mode "matched but not personal" is the team signal.
-        let candidates = nodes
-            .iter()
-            .filter_map(|n| parse_review_candidate(n, &viewer, None))
-            .collect();
-        return Ok((viewer, candidates));
-    }
+    // Both coverages page to the end. The requested search used to take only its
+    // first page, which silently dropped rows 51..n and read as a complete queue
+    // — the one failure §6b says must never happen quietly.
+    let (viewer, nodes) = if all_open {
+        page_through(token, "/data/repository/pullRequests", |after| {
+            all_open_query(owner, name, after)
+        })?
+    } else {
+        page_through(token, "/data/search", |after| {
+            requested_query(owner, name, after)
+        })?
+    };
 
-    // all_open: walk every open PR, then resolve the viewer's teams once so a
-    // pool PR requesting a team you are on ranks as "team".
+    // `all_open` has no search to lean on, so a PR requesting a team ranks as
+    // "team" only against the viewer's real memberships; in `requested` coverage
+    // "matched but not personally" is itself the team signal.
+    let teams = all_open.then(|| viewer_team_slugs(token, owner, &viewer));
+    let candidates = nodes
+        .iter()
+        .filter_map(|n| parse_review_candidate(n, &viewer, teams.as_deref()))
+        .collect();
+    Ok((viewer, candidates))
+}
+
+/// Walk a paged connection to the end, returning the viewer login and every
+/// node. `root` is the JSON pointer to the connection (which carries `pageInfo`
+/// and `nodes`); `query` builds one page's document from a cursor.
+///
+/// Stopping at [`MAX_PR_PAGES`] is a runaway guard, and it *warns* — a silently
+/// short queue is the failure this module exists to avoid, and the thread pagers
+/// warn in the same situation.
+fn page_through(
+    token: &str,
+    root: &str,
+    query: impl Fn(Option<&str>) -> String,
+) -> Result<(String, Vec<Value>)> {
     let mut viewer = String::new();
     let mut cursor: Option<String> = None;
     let mut nodes: Vec<Value> = Vec::new();
     for _ in 0..MAX_PR_PAGES {
-        let v = graphql(token, &all_open_query(owner, name, cursor.as_deref()))?;
+        let v = graphql(token, &query(cursor.as_deref()))?;
         if viewer.is_empty() {
             viewer = viewer_login(&v);
         }
-        let root = v
-            .pointer("/data/repository/pullRequests")
-            .context("no repository in the response")?;
-        if let Some(page) = root.pointer("/nodes").and_then(|n| n.as_array()) {
-            nodes.extend(page.iter().cloned());
+        let page = v
+            .pointer(root)
+            .with_context(|| format!("no {root} in the response"))?;
+        if let Some(ns) = page.pointer("/nodes").and_then(|n| n.as_array()) {
+            nodes.extend(ns.iter().cloned());
         }
-        cursor = if root.pointer("/pageInfo/hasNextPage").and_then(|b| b.as_bool()) == Some(true) {
-            root.pointer("/pageInfo/endCursor").and_then(|c| c.as_str()).map(String::from)
-        } else {
-            None
-        };
+        cursor = next_cursor(page);
         if cursor.is_none() {
-            break;
+            return Ok((viewer, nodes));
         }
     }
-    let teams = viewer_team_slugs(token, owner, &viewer);
-    let candidates = nodes
-        .iter()
-        .filter_map(|n| parse_review_candidate(n, &viewer, Some(&teams)))
-        .collect();
-    Ok((viewer, candidates))
+    tracing::warn!(
+        "stopped paging {root} at {MAX_PR_PAGES} pages; the review queue is short"
+    );
+    Ok((viewer, nodes))
 }
 
 fn viewer_login(v: &Value) -> String {

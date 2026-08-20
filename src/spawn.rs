@@ -103,13 +103,19 @@ pub async fn spawn_session(
 
 /// Create a worktree and start a session in it.
 ///
-/// Creation is delegated to the repo's own `worktree-create` / `worktree-link`
-/// hooks by launching `claude --worktree` rather than running `git worktree add`
-/// here (§11) — those hooks already base on a freshly fetched `upstream/develop`
-/// and configure triangular push, and reimplementing that would fight them.
+/// Two paths, decided by where this repo keeps its worktrees:
 ///
-/// **Spawned with cwd = main**: `worktree-create` refuses to nest a worktree
-/// inside a worktree (§2).
+/// - **At Claude Code's own default** (`.claude/worktrees`), creation is
+///   delegated to `claude --worktree` rather than `git worktree add` here (§11).
+///   The repo's `worktree-create` / `worktree-link` hooks already base on a
+///   freshly fetched upstream and configure triangular push, and reimplementing
+///   that would fight them. Spawned with **cwd = main**, because
+///   `worktree-create` refuses to nest a worktree inside a worktree (§2).
+/// - **Anywhere else**, the daemon cuts the worktree itself and spawns a plain
+///   session in it. `claude --worktree` always writes to `.claude/worktrees/`,
+///   so delegating there would create the worktree somewhere the daemon does not
+///   look: it would register a path that does not exist, reconcile against a
+///   missing directory, and fail to adopt the real one at `SessionStart`.
 pub async fn spawn_worktree_session(app: &Arc<AppState>, name: Option<&str>) -> Result<SessionId> {
     if let Some(name) = name {
         validate_worktree_name(name)?;
@@ -140,24 +146,55 @@ pub async fn spawn_worktree_session(app: &Arc<AppState>, name: Option<&str>) -> 
 
     let id = Uuid::new_v4();
     let settings = Config::hooks_settings_path()?;
-    let mut cmd = vec!["claude".to_string(), "--worktree".to_string()];
-    // With no name, Claude Code generates one. That is also the only path that
-    // cannot collide with an archived worktree by construction, since it has
-    // never been used before.
-    if let Some(name) = name {
-        cmd.push(name.to_string());
-    }
+    let (mut env, unset) = crate::config::transcript_env();
+    env.push(("ORCH_SESSION_ID".to_string(), id.to_string()));
+
+    // Where the daemon looks for worktrees decides who creates this one.
+    let delegated = app.cfg.worktrees_subdir_is_claude_default();
+
+    // A name is required when the daemon cuts the worktree: only
+    // `claude --worktree` can invent one, and the daemon must know the path up
+    // front to create it.
+    let owned_name = match (delegated, name) {
+        (false, None) => Some(format!("wt-{}", &id.simple().to_string()[..8])),
+        _ => None,
+    };
+    let name = name.or(owned_name.as_deref());
+
+    let (spawn_cwd, cmd) = if delegated {
+        let mut cmd = vec!["claude".to_string(), "--worktree".to_string()];
+        // With no name, Claude Code generates one. That is also the only path
+        // that cannot collide with an archived worktree by construction, since
+        // it has never been used before.
+        if let Some(name) = name {
+            cmd.push(name.to_string());
+        }
+        // cwd is the main checkout, not the worktree-to-be.
+        (app.cfg.main_checkout.clone(), cmd)
+    } else {
+        let name = name.context("a worktree name is required")?;
+        let path = app.cfg.worktree_path(name);
+        let (main, branch, base) = (
+            app.cfg.main_checkout.clone(),
+            format!("worktree-{name}"),
+            app.cfg.upstream_ref.clone(),
+        );
+        let p = path.clone();
+        tokio::task::spawn_blocking(move || crate::git::worktree_add_new(&main, &p, &branch, &base))
+            .await
+            .context("the worktree add panicked")??;
+        // The session runs *in* the worktree, so it needs no `--worktree`.
+        (path, vec!["claude".to_string()])
+    };
+
+    let mut cmd = cmd;
     cmd.extend([
         "--session-id".to_string(),
         id.to_string(),
         "--settings".to_string(),
         settings.to_string_lossy().into_owned(),
     ]);
-    let (mut env, unset) = crate::config::transcript_env();
-    env.push(("ORCH_SESSION_ID".to_string(), id.to_string()));
-
-    // cwd is the main checkout, not the worktree-to-be.
-    let spawned = PtyHandle::spawn(&cmd, &app.cfg.main_checkout, &env, &unset, DEFAULT_SIZE)?;
+    let spawned = PtyHandle::spawn(&cmd, &spawn_cwd, &env, &unset, DEFAULT_SIZE)?;
 
     // Without a name the path is not known until `SessionStart` reports the
     // cwd, so the workspace is registered there instead.

@@ -222,7 +222,13 @@ fn default_output_language() -> String {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ForgeKind {
+    /// Spelled out rather than left to `rename_all`, which would make this
+    /// `git_hub`: nobody writes that, and the obvious `"github"` would then be
+    /// an unknown variant — a hard parse error that reads as "no config at all"
+    /// (the desktop app re-shows the folder picker). The alias keeps a config
+    /// already written with the generated spelling loading.
     #[default]
+    #[serde(rename = "github", alias = "git_hub")]
     GitHub,
 }
 
@@ -402,6 +408,16 @@ impl Config {
         format!("{s}/")
     }
 
+    /// Whether worktrees live where `claude --worktree` puts them.
+    ///
+    /// That command has no flag for the location — it always writes to
+    /// `<repo>/.claude/worktrees/<name>` — so it can only be trusted to create a
+    /// worktree the daemon will then find when the two agree. Anywhere else, the
+    /// daemon cuts the worktree itself (`spawn::spawn_worktree_session`).
+    pub fn worktrees_subdir_is_claude_default(&self) -> bool {
+        self.safe_worktrees_subdir() == default_worktrees_subdir()
+    }
+
     /// The configured subdir, or the default when it is not a relative in-main
     /// path. The whole model breaks if worktrees are not under main — the
     /// container mapping, the changed-files exclude and path attribution all
@@ -554,6 +570,26 @@ mod tests {
     }
 
     #[test]
+    fn the_forge_is_spelled_the_way_a_person_would_write_it() {
+        // `rename_all = "snake_case"` would make this `git_hub`, so `"github"`
+        // was an unknown variant — and a deserialize error here reads as "no
+        // config", sending the desktop app back to the folder picker.
+        let cfg = Config::parse_with_profile(
+            r#"{"main_checkout":"/tmp/x","forge":"github"}"#,
+        )
+        .expect("`github` must parse");
+        assert_eq!(cfg.forge, ForgeKind::GitHub);
+        // What `default_for` writes into a first-run config.json.
+        let written = serde_json::to_value(ForgeKind::GitHub).unwrap();
+        assert_eq!(written, serde_json::json!("github"));
+        // A config written with the old generated spelling still loads.
+        assert!(Config::parse_with_profile(
+            r#"{"main_checkout":"/tmp/x","forge":"git_hub"}"#
+        )
+        .is_ok());
+    }
+
+    #[test]
     fn an_unknown_profile_falls_back_to_default() {
         let cfg = Config::parse_with_profile(
             r#"{"main_checkout":"/tmp/x","profile":"acme"}"#,
@@ -618,6 +654,19 @@ mod tests {
         cfg.worktrees_subdir = PathBuf::from(".worktrees");
         assert_eq!(cfg.worktrees_dir(), PathBuf::from("/repo/.worktrees"));
         assert_eq!(cfg.worktrees_subdir_str(), ".worktrees/");
+    }
+
+    #[test]
+    fn only_the_claude_default_subdir_delegates_worktree_creation() {
+        // `claude --worktree` always writes to `.claude/worktrees/`, so it can
+        // only create a worktree the daemon will find when the two agree.
+        let mut cfg = Config::default_for(PathBuf::from("/repo"));
+        assert!(cfg.worktrees_subdir_is_claude_default());
+        cfg.worktrees_subdir = PathBuf::from(".worktrees");
+        assert!(!cfg.worktrees_subdir_is_claude_default());
+        // A refused subdir falls back to the default, so it delegates again.
+        cfg.worktrees_subdir = PathBuf::from("/tmp/elsewhere");
+        assert!(cfg.worktrees_subdir_is_claude_default());
     }
 
     #[test]

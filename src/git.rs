@@ -404,6 +404,25 @@ pub fn worktree_remove(main: &Path, path: &Path) -> Result<()> {
 /// not involved here, but `worktree-link` still runs at `SessionStart` and does
 /// the symlinks, which is the same path §2 describes for rebuilding a worktree
 /// on resume.
+/// Cut a worktree on a **new** branch, based on `base`.
+///
+/// The daemon's own version of what `claude --worktree` does, for a repo whose
+/// worktrees do not live where that command puts them. Mirrors its naming
+/// (`worktree-<name>`) so a worktree is recognisable whichever path created it.
+pub fn worktree_add_new(main: &Path, path: &Path, branch: &str, base: &str) -> Result<()> {
+    if branch_exists(main, branch) {
+        bail!("branch {branch} already exists");
+    }
+    let path_str = path.to_string_lossy().into_owned();
+    // A base that does not resolve would otherwise cut from HEAD silently, which
+    // is a different branch than the caller asked for.
+    if !git_ok(main, &["rev-parse", "--verify", "--quiet", base]) {
+        bail!("base ref {base} does not resolve");
+    }
+    git(main, &["worktree", "add", &path_str, "-b", branch, base])?;
+    Ok(())
+}
+
 pub fn worktree_add_existing(main: &Path, path: &Path, branch: &str) -> Result<()> {
     let path_str = path.to_string_lossy().into_owned();
     if branch_exists(main, branch) {
@@ -574,28 +593,62 @@ pub fn conflicted_files(cwd: &Path) -> Result<Vec<String>> {
 /// than a hardcoded `upstream develop`.
 ///
 /// `upstream_ref` is `remote/branch` (e.g. `upstream/develop`, `origin/HEAD`).
-/// A concrete branch is fetched by name — one branch, cheap, the common case. A
-/// `HEAD` branch means "the remote's default branch, whatever it is", so the
-/// whole remote is fetched to keep its `HEAD` symref fresh; that is the portable
-/// default for a repo with no fork and no `develop`.
+/// A concrete branch is fetched by name — one branch, cheap, the common case.
+///
+/// **`HEAD` is not a branch you can fetch.** It is a symref under
+/// `refs/remotes/<remote>/` that only `git clone` and `git remote set-head`
+/// write — a plain `git fetch <remote>` does *not* create or refresh it, so on a
+/// checkout whose remote was added by hand `origin/HEAD` never resolves and
+/// every consumer (merge-base, divergence, rebase, the prompts' `{{UPSTREAM}}`)
+/// silently fails. So the `HEAD` arm asks the remote what its default branch is,
+/// records it in the symref, and then fetches that one branch by name — correct
+/// on a fresh checkout and no more expensive than the named case.
 pub fn fetch_upstream(main: &Path, upstream_ref: &str) -> Result<()> {
-    let argv = upstream_fetch_argv(upstream_ref);
-    git(main, &argv)?;
+    let (remote, branch) = split_upstream(upstream_ref);
+    if !branch.eq_ignore_ascii_case("HEAD") {
+        git(main, &upstream_fetch_argv(upstream_ref))?;
+        return Ok(());
+    }
+    // Steady state: the symref is already recorded, so fetch just the branch it
+    // names — no dearer than the named case. If that fetch fails the recorded
+    // branch is gone (renamed or deleted upstream), so fall through and re-record.
+    if let Some(b) = default_branch(main, remote) {
+        if git(main, &["fetch", remote, &b, "--no-tags"]).is_ok() {
+            return Ok(());
+        }
+        tracing::debug!("{remote}/HEAD named {b}, which no longer fetches; re-recording");
+    }
+    // Bootstrap: `git remote set-head -a` picks from the remote-tracking refs, so
+    // they have to exist first — which is why this fetches the whole remote
+    // before recording. Only the first poll on a checkout pays for it.
+    git(main, &["fetch", remote, "--no-tags"])?;
+    if let Err(e) = git(main, &["remote", "set-head", remote, "-a"]) {
+        // Not fatal: the refs are fetched, only the symref is missing, and the
+        // caller's merge-base will report the real problem.
+        tracing::debug!("could not record {remote}/HEAD: {e:#}");
+    }
     Ok(())
 }
 
-/// Split out so the ref-to-argv rule is testable without a network fetch.
+/// `remote/branch`, defaulting the remote to `origin` for a bare branch name.
+/// `split_once` keeps a nested branch like `origin/release/2026` intact.
+fn split_upstream(upstream_ref: &str) -> (&str, &str) {
+    upstream_ref.split_once('/').unwrap_or(("origin", upstream_ref))
+}
+
+/// The branch `<remote>/HEAD` points at, as a plain name (`main`), or `None`
+/// when the symref does not exist.
+fn default_branch(main: &Path, remote: &str) -> Option<String> {
+    let out = git(main, &["symbolic-ref", "--short", &format!("refs/remotes/{remote}/HEAD")]).ok()?;
+    let full = out.trim();
+    // `origin/main` -> `main`.
+    Some(full.strip_prefix(&format!("{remote}/"))?.to_string())
+}
+
+/// Split out so the named-branch rule is testable without a network fetch.
 fn upstream_fetch_argv(upstream_ref: &str) -> Vec<&str> {
-    let (remote, branch) = upstream_ref.split_once('/').unwrap_or(("origin", upstream_ref));
-    if branch.eq_ignore_ascii_case("HEAD") {
-        // The remote's default branch, whatever it is: fetch the remote so its
-        // HEAD symref stays fresh.
-        vec!["fetch", remote, "--no-tags"]
-    } else {
-        // A named branch — one branch, cheap. `split_once` keeps a nested branch
-        // like `origin/feature/x` intact.
-        vec!["fetch", remote, branch, "--no-tags"]
-    }
+    let (remote, branch) = split_upstream(upstream_ref);
+    vec!["fetch", remote, branch, "--no-tags"]
 }
 
 // ---------------------------------------------------------------------------
@@ -1133,11 +1186,6 @@ mod tests {
             upstream_fetch_argv("upstream/develop"),
             vec!["fetch", "upstream", "develop", "--no-tags"]
         );
-        // The portable default fetches the whole remote to refresh its HEAD.
-        assert_eq!(
-            upstream_fetch_argv("origin/HEAD"),
-            vec!["fetch", "origin", "--no-tags"]
-        );
         // A nested branch name stays intact.
         assert_eq!(
             upstream_fetch_argv("origin/release/2026"),
@@ -1147,6 +1195,48 @@ mod tests {
         assert_eq!(
             upstream_fetch_argv("main"),
             vec!["fetch", "origin", "main", "--no-tags"]
+        );
+    }
+
+    #[test]
+    fn a_head_base_ref_is_recorded_and_then_resolves() {
+        // The regression this guards: `git fetch <remote>` does not create
+        // `refs/remotes/<remote>/HEAD`, so `origin/HEAD` did not resolve on a
+        // checkout whose remote was added by hand — and every merge-base,
+        // divergence and rebase against it failed silently.
+        // Its own tree, not `scratch_repo`'s: these are three sibling repos and
+        // nesting them inside another checkout confuses the remote plumbing.
+        let dir = std::env::temp_dir().join(format!(
+            "orchd-head-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let upstream = dir.join("up.git");
+        let work = dir.join("work");
+        git(&dir, &["init", "-q", "--bare", "-b", "main", "up.git"]).unwrap();
+        git(&dir, &["init", "-q", "work"]).unwrap();
+        git(&work, &["config", "user.email", "t@t"]).unwrap();
+        git(&work, &["config", "user.name", "t"]).unwrap();
+        std::fs::write(work.join("a.txt"), "x").unwrap();
+        git(&work, &["add", "-A"]).unwrap();
+        git(&work, &["commit", "-qm", "init"]).unwrap();
+        git(&work, &["branch", "-M", "main"]).unwrap();
+        git(&work, &["remote", "add", "origin", upstream.to_str().unwrap()]).unwrap();
+        git(&work, &["push", "-q", "origin", "main"]).unwrap();
+
+        // A *hand-added* remote: `git init` + `git remote add`, never cloned.
+        let hand = dir.join("hand");
+        git(&dir, &["init", "-q", "hand"]).unwrap();
+        git(&hand, &["remote", "add", "origin", upstream.to_str().unwrap()]).unwrap();
+
+        fetch_upstream(&hand, "origin/HEAD").expect("the fetch");
+        assert_eq!(default_branch(&hand, "origin").as_deref(), Some("main"));
+        // The whole point: the ref every consumer resolves against now exists.
+        assert!(
+            git(&hand, &["rev-parse", "--verify", "origin/HEAD"]).is_ok(),
+            "origin/HEAD must resolve after fetch_upstream"
         );
     }
 
@@ -1337,6 +1427,27 @@ mod tests {
         run(&["add", "-A"]);
         run(&["commit", "-qm", "one"]);
         dir
+    }
+
+    #[test]
+    fn cuts_a_new_worktree_at_a_custom_subdir() {
+        // The daemon's own creation path, used when worktrees do not live where
+        // `claude --worktree` would put them — the case where delegating created
+        // the worktree somewhere the daemon never looked.
+        let repo = scratch_repo();
+        let wt = repo.join(".worktrees/inv");
+        std::fs::create_dir_all(wt.parent().unwrap()).unwrap();
+        worktree_add_new(&repo, &wt, "worktree-inv", "main").expect("worktree add");
+
+        assert!(wt.join("f.txt").exists(), "the worktree is checked out");
+        assert_eq!(current_branch(&wt).unwrap(), "worktree-inv");
+        // Re-cutting the same branch must refuse rather than silently reuse it.
+        let again = repo.join(".worktrees/inv2");
+        assert!(worktree_add_new(&repo, &again, "worktree-inv", "main").is_err());
+        // A base that does not resolve must not quietly cut from HEAD.
+        let bad = repo.join(".worktrees/bad");
+        assert!(worktree_add_new(&repo, &bad, "worktree-bad", "origin/nope").is_err());
+        let _ = std::fs::remove_dir_all(&repo);
     }
 
     #[test]
