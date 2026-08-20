@@ -65,80 +65,40 @@ fn isolated() -> Isolation {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CapabilityConfig {
-    #[serde(default = "default_suites")]
+    #[serde(default)]
     pub suites: Vec<SuiteSpec>,
     /// Host `<main>` maps to this path inside the containers.
-    #[serde(default = "default_container_root")]
-    pub container_root: String,
+    ///
+    /// `None` — the default — means nothing here runs in a container, so there
+    /// is no mapping to state. It is only meaningful alongside a suite that
+    /// names a `container`; a suite that names one while this is unset is a
+    /// misconfiguration and reports `Untrusted` rather than quietly running the
+    /// command on the host, which would test the wrong tree.
+    #[serde(default)]
+    pub container_root: Option<String>,
     /// Class the autoload probe resolves. Anything outside the worktree is a
     /// hard failure, not a warning (§7 rule 4).
     ///
-    /// Defaults to composer's own loader, which exists in any composer project
-    /// and answers the question directly: which `vendor/` tree is actually in
-    /// play. Point it at an application class (`acme\\...`) for the stronger
-    /// check of which `src/` is in play.
-    #[serde(default = "default_probe_class")]
+    /// `None` by default: the probe is a composer/PHP question, and asking it of
+    /// a repo that is neither answers nothing. A composer project points it at
+    /// composer's own loader (`Composer\\Autoload\\ClassLoader`) to learn which
+    /// `vendor/` is in play, or at an application class for the stronger check of
+    /// which `src/` is.
+    #[serde(default)]
     pub autoload_probe_class: Option<String>,
 }
 
 impl Default for CapabilityConfig {
+    /// Empty: the daemon knows nothing about a strange repo's test suites, and a
+    /// guessed table would report trust for commands that do not exist. A stack
+    /// with suites declares them (see the `acme` profile).
     fn default() -> Self {
         CapabilityConfig {
-            suites: default_suites(),
-            container_root: default_container_root(),
-            autoload_probe_class: default_probe_class(),
+            suites: Vec::new(),
+            container_root: None,
+            autoload_probe_class: None,
         }
     }
-}
-
-fn default_container_root() -> String {
-    "/acme".to_string()
-}
-
-fn default_probe_class() -> Option<String> {
-    Some("Composer\\Autoload\\ClassLoader".to_string())
-}
-
-/// The post-WIP table from §7. Config overrides it; this is only the shape.
-fn default_suites() -> Vec<SuiteSpec> {
-    vec![
-        SuiteSpec {
-            suite: Suite::Static,
-            command: vec!["mise".into(), "run".into(), "static".into()],
-            worktree_trust: Trust::Verified,
-            isolation: Isolation::Isolated,
-            depends_on: vec!["composer.lock".into()],
-            container: Some("toolbox".to_string()),
-        },
-        SuiteSpec {
-            suite: Suite::Unit,
-            command: vec!["mise".into(), "run".into(), "test:phpunit".into()],
-            worktree_trust: Trust::Verified,
-            isolation: Isolation::Isolated,
-            depends_on: vec!["composer.lock".into()],
-            container: Some("toolbox".to_string()),
-        },
-        SuiteSpec {
-            suite: Suite::Integration,
-            command: vec!["mise".into(), "run".into(), "test:integration".into()],
-            worktree_trust: Trust::Verified,
-            isolation: Isolation::Isolated,
-            depends_on: vec!["composer.lock".into()],
-            container: Some("toolbox".to_string()),
-        },
-        SuiteSpec {
-            suite: Suite::E2E,
-            command: vec!["mise".into(), "run".into(), "test:playwright".into()],
-            worktree_trust: Trust::Verified,
-            // Teardown anchors the instances dir on the main checkout, so this
-            // reaches outside the worktree (§7).
-            isolation: Isolation::SharedResource {
-                resource: "main:instances".into(),
-            },
-            depends_on: vec!["pnpm-lock.yaml".into(), "composer.lock".into()],
-            container: None,
-        },
-    ]
 }
 
 // ---------------------------------------------------------------------------
@@ -252,7 +212,18 @@ pub fn report(
             // project from a worktree dir (§7 rule 5).
             let command = match (&spec.container, container_path(cfg, path, main)) {
                 (Some(c), Some(workdir)) => container_command(c, &workdir, &spec.command),
-                _ => spec.command.clone(),
+                // A suite that wants a container but has no path mapping cannot
+                // be run: falling back to the bare command would execute it on
+                // the host, against a different tree than the one asked about,
+                // and report the answer as if it were this workspace's.
+                (Some(c), None) => {
+                    trust = Trust::Untrusted;
+                    note = Some(format!(
+                        "suite runs in container `{c}` but no `container_root` is configured"
+                    ));
+                    spec.command.clone()
+                }
+                (None, _) => spec.command.clone(),
             };
 
             Capability {
@@ -398,12 +369,15 @@ fn probe_autoload(cfg: &CapabilityConfig, path: &Path) -> AutoloadProbe {
 /// Host `<main>/.claude/worktrees/<name>` ↔ container
 /// `<container_root>/.claude/worktrees/<name>` (§7).
 pub fn container_path(cfg: &CapabilityConfig, path: &Path, main: &Path) -> Option<String> {
+    // No configured root means nothing here is containerized, so there is no
+    // mapping — not an empty one.
+    let root = cfg.container_root.as_deref()?;
     let rel = path.strip_prefix(main).ok()?;
     let rel = rel.to_string_lossy();
     Some(if rel.is_empty() {
-        cfg.container_root.clone()
+        root.to_string()
     } else {
-        format!("{}/{}", cfg.container_root, rel)
+        format!("{root}/{rel}")
     })
 }
 
@@ -427,16 +401,62 @@ pub fn container_command(container: &str, workdir: &str, argv: &[String]) -> Vec
 mod tests {
     use super::*;
 
+    /// A repo that maps its checkout into containers, as a containerized stack
+    /// configures it. Not the default — the default containerizes nothing.
+    fn cfg_rooted_at(root: &str) -> CapabilityConfig {
+        CapabilityConfig {
+            container_root: Some(root.to_string()),
+            ..Default::default()
+        }
+    }
+
     #[test]
     fn maps_a_worktree_path_into_the_container() {
-        let cfg = CapabilityConfig::default();
-        let main = Path::new("/home/k/development/acme");
-        let wt = Path::new("/home/k/development/acme/.claude/worktrees/invoice");
+        let cfg = cfg_rooted_at("/app");
+        let main = Path::new("/home/k/development/repo");
+        let wt = Path::new("/home/k/development/repo/.claude/worktrees/invoice");
         assert_eq!(
             container_path(&cfg, wt, main).as_deref(),
-            Some("/acme/.claude/worktrees/invoice")
+            Some("/app/.claude/worktrees/invoice")
         );
-        assert_eq!(container_path(&cfg, main, main).as_deref(), Some("/acme"));
+        assert_eq!(container_path(&cfg, main, main).as_deref(), Some("/app"));
+    }
+
+    #[test]
+    fn no_container_root_means_no_mapping_at_all() {
+        // The portable default: nothing is containerized, so there is no path to
+        // map — and `None` is what stops a container command being built.
+        let cfg = CapabilityConfig::default();
+        assert_eq!(cfg.container_root, None);
+        let main = Path::new("/repo");
+        assert_eq!(container_path(&cfg, main, main), None);
+    }
+
+    #[test]
+    fn the_default_capability_table_is_empty_not_a_guess() {
+        // A strange repo's suites are unknowable; a guessed table would report
+        // trust for commands that do not exist.
+        let cfg = CapabilityConfig::default();
+        assert!(cfg.suites.is_empty());
+        assert_eq!(cfg.autoload_probe_class, None);
+    }
+
+    #[test]
+    fn a_container_suite_without_a_root_is_untrusted_not_run_on_the_host() {
+        // The dangerous case: falling back to the bare command would run the
+        // suite on the host against a different tree and report it as this
+        // workspace's answer.
+        let (main, wt) = scratch("noroot");
+        let mut s = spec(Suite::Unit, Isolation::Isolated, &[]);
+        s.container = Some("toolbox".into());
+        let r = report(&cfg_with(vec![s]), "x", &wt, &main, false);
+        assert_eq!(r.capabilities[0].trust, Trust::Untrusted);
+        assert!(r.capabilities[0]
+            .note
+            .as_deref()
+            .unwrap_or_default()
+            .contains("container_root"));
+        let _ = std::fs::remove_dir_all(main.parent().unwrap());
     }
 
     #[test]
@@ -477,12 +497,17 @@ mod tests {
         let mut s = spec(Suite::Unit, Isolation::Isolated, &[]);
         s.container = Some("toolbox".into());
         s.command = vec!["php".into(), "vendor/bin/phpunit".into()];
-        let r = report(&cfg_with(vec![s]), "x", &wt, &main, false);
+        let cfg = CapabilityConfig {
+            suites: vec![s],
+            container_root: Some("/app".into()),
+            ..Default::default()
+        };
+        let r = report(&cfg, "x", &wt, &main, false);
         let cmd = &r.capabilities[0].command;
         assert_eq!(cmd[0], "docker");
         assert_eq!(cmd[1], "exec");
         // The working directory is the container path, not the host path.
-        assert!(cmd.contains(&"/acme/.claude/worktrees/x".to_string()), "{cmd:?}");
+        assert!(cmd.contains(&"/app/.claude/worktrees/x".to_string()), "{cmd:?}");
         assert!(!cmd.iter().any(|a| a.contains("/tmp")), "leaked a host path: {cmd:?}");
         let _ = std::fs::remove_dir_all(main.parent().unwrap());
     }
@@ -580,5 +605,33 @@ mod tests {
         assert_eq!(r.capabilities[0].trust, Trust::Verified);
         assert!(r.deps.is_empty());
         let _ = std::fs::remove_dir_all(main.parent().unwrap());
+    }
+
+    #[test]
+    fn the_acme_profile_still_declares_the_whole_table() {
+        // The generic defaults used to supply this; they are empty now, so the
+        // profile has to carry it all or acme silently loses its suites.
+        let cfg = crate::config::Config::parse_with_profile(
+            r#"{"main_checkout":"/tmp/x","profile":"acme"}"#,
+        )
+        .expect("parse");
+        let c = &cfg.capabilities;
+        assert_eq!(c.suites.len(), 4, "all four suites come from the profile");
+        assert_eq!(c.container_root.as_deref(), Some("/acme"));
+        assert!(c.autoload_probe_class.is_some());
+        let unit = c.suites.iter().find(|s| s.suite == Suite::Unit).unwrap();
+        assert_eq!(unit.container.as_deref(), Some("toolbox"));
+        assert!(c.suites.iter().any(|s| matches!(
+            &s.isolation,
+            Isolation::SharedResource { resource } if resource == "main:instances"
+        )));
+    }
+
+    #[test]
+    fn a_default_profile_declares_no_suites_and_no_container() {
+        let cfg = crate::config::Config::parse_with_profile(r#"{"main_checkout":"/tmp/x"}"#)
+            .expect("parse");
+        assert!(cfg.capabilities.suites.is_empty());
+        assert_eq!(cfg.capabilities.container_root, None);
     }
 }
