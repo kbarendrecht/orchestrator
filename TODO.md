@@ -139,6 +139,48 @@ Everything outside that block is hand-written and survives.
     it could not be settled empirically — the `requested` path has never run
     against real data with results.
 
+  Smaller ones from the same review, same kind as the `ForgeKind` note — each is
+  a thing that reads as working and is not quite:
+
+  - **A rule can say `always` *and* a condition, and the condition is ignored.**
+    `Predicate::matches` returns `true` on `always` before testing anything else,
+    so `{"when": {"always": true, "label": "Prio Stopper"}}` — a fair reading of
+    "always, when labelled" — matches every candidate and paints the whole queue
+    rank 0. Nothing rejects the combination. `Predicate` also has no
+    `deny_unknown_fields`, so a typo'd key (`lable`) deserializes to an all-`None`
+    predicate, which `matches` reports as unconstrained and therefore never fires:
+    the rule silently does nothing and its PRs fall through to the catch-all.
+  - **`Review::is_draft` is always false.** `is_review_work` drops every draft
+    before a `Review` is built, so the field it copies can only ever be `false`.
+    It is serialized on every row and reads as if drafts can reach the queue —
+    whoever adds a "show drafts" toggle will wire it to a dead flag.
+    `needs_re_review` is nearly the same shape: it is now exactly
+    `tone == Rereview`, so the SPA has two ways to ask one question.
+  - **Two sources of truth for the upstream remote.** `fetch_upstream` splits the
+    remote back out of `upstream_ref`, while repo detection reads
+    `cfg.upstream_remote` (`lib.rs`, `state.rs`). A config carrying
+    `upstream_ref: "upstream/develop"` with `upstream_remote: "origin"` — an easy
+    slip now the two defaults moved together — fetches one remote and resolves
+    the repo from another, with no error anywhere.
+  - **Three pagers, two of them the same.** Extracting `page_through`/`next_cursor`
+    for the review walks left `all_summary_threads` and `parse_thread_page` with
+    their own copies of the hasNextPage/endCursor dance. One of the three
+    (`page_through`) now warns at its cap; unify them rather than keep the rule in
+    three places.
+  - **`Config::default_for` re-lists every field's default by hand**, so each new
+    field has to be added twice — once as a `#[serde(default = …)]` and once here.
+    This diff paid that tax four times. A first run and the same config parsed
+    from disk can silently diverge; `parse_with_profile(&json!({"main_checkout":
+    p}))` would make them one path. `parse_with_profile` likewise hand-maps the
+    profile *name* strings, so adding a profile is three edits, not the two its
+    doc comment promises.
+  - **`resolve_repo` + `resolve_token` + `GitHubForge::new` appears four times**
+    (`lib.rs` twice, `api.rs` twice) and wants one `fn forge(app) -> Result<…>`.
+    That is also the seam where dyn/enum dispatch would go once `ForgeKind` is
+    actually read.
+  - CLAUDE.md still says `cargo test # 214 tests`; it is 262. Stale before this
+    work, staler now.
+
 - **Make it run somewhere other than this machine.** Everything below is a
   hardcoded assumption about one monorepo, and each is a setting or a probe
   waiting to be written:
