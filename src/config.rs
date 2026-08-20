@@ -10,12 +10,6 @@ use std::path::{Component, Path, PathBuf};
 pub struct Config {
     /// The privileged checkout. Worktrees live inside it at [`Config::worktrees_dir`].
     pub main_checkout: PathBuf,
-    /// A baked-in bundle of settings this config is merged *over*, so a machine
-    /// only writes what is machine-specific (and whatever it wants to override).
-    /// `default` is empty; `acme` supplies that stack's processes, tracker,
-    /// upstream refs and review ranking. See [`Config::parse_with_profile`].
-    #[serde(default)]
-    pub profile: Profile,
     /// Where worktrees live, relative to `main_checkout`. Defaults to
     /// `.claude/worktrees`, which is both Claude Code's own `--worktree` default
     /// and where acme's `worktree-create` hook puts them — so a generic
@@ -29,8 +23,10 @@ pub struct Config {
     #[serde(default = "default_port")]
     pub port: u16,
     /// Managed processes declared for the main workspace. Worktrees declare none
-    /// by default; a shell is opened on demand instead.
-    #[serde(default)]
+    /// by default; a shell is opened on demand instead. The default is the two a
+    /// acme checkout wants (a build watcher and `docker compose`), both
+    /// `autostart:false`; edit them in the settings panel.
+    #[serde(default = "default_main_processes")]
     pub main_processes: Vec<ManagedSpec>,
     #[serde(default)]
     pub worktree_processes: Vec<ManagedSpec>,
@@ -49,11 +45,12 @@ pub struct Config {
     pub github_token_file: Option<PathBuf>,
     /// Which tracker a `story+reply` position files into.
     ///
-    /// Explicit, and defaulting to `None`, rather than auto-detected from whether
-    /// a token happens to resolve. Auto-detection would let an expired token
-    /// silently remove an option from every triage run, leaving "triage did not
-    /// propose a story" indistinguishable from "the daemon hid it".
-    #[serde(default)]
+    /// Explicit rather than auto-detected from whether a token happens to resolve.
+    /// Auto-detection would let an expired token silently remove an option from
+    /// every triage run, leaving "triage did not propose a story" indistinguishable
+    /// from "the daemon hid it". Defaults to Shortcut; set it to `none` for a repo
+    /// with no tracker.
+    #[serde(default = "default_tracker")]
     pub tracker: Tracker,
     /// A `0600` file holding the Shortcut API token. `ORCHD_SHORTCUT_TOKEN` wins
     /// over it, mirroring the GitHub ladder.
@@ -70,7 +67,8 @@ pub struct Config {
     /// The language the agent *writes* in — reviewer replies and story text.
     /// Prompts and code stay English; this is only the outward prose. The agent
     /// still matches a thread's own language first and falls back to this when
-    /// that is unclear. Defaults to English; the `acme` profile sets Dutch.
+    /// that is unclear. Defaults to Dutch; set it to `English` (or any language)
+    /// in the settings panel.
     #[serde(default = "default_output_language")]
     pub output_language: String,
     /// The PR poll is one query per period, negligible against 5000 points/hour
@@ -90,11 +88,10 @@ pub struct Config {
     /// The command whose JSON output feeds the review-queue pane (the shape in
     /// `docs/reviews-json.md`). An argv, run under `timeout` in the main checkout.
     ///
-    /// Empty means "no review queue here", and the pane says so rather than
-    /// reading as a broken command. The `default` profile leaves it empty — a
-    /// fresh checkout on another machine has no such task and should not pretend
-    /// to; the `acme` profile sets it to `mise run reviews --json`.
-    #[serde(default)]
+    /// Defaults to `mise run reviews --json`. Empty means "no review queue here",
+    /// and the pane says so rather than reading as a broken command — clear the
+    /// field in settings for a repo with no such task.
+    #[serde(default = "default_reviews_command")]
     pub reviews_command: Vec<String>,
     /// Where the auto-updated findings block lives. Defaults to the
     /// orchestrator's own TODO.md.
@@ -166,24 +163,8 @@ fn normalize_worktrees_subdir(sub: &Path) -> Option<PathBuf> {
     (!out.as_os_str().is_empty()).then_some(out)
 }
 
-/// Merge `over` onto `base`: two objects merge key-by-key (recursively), and
-/// anything else — a scalar or an array — replaces wholesale. Arrays are not
-/// element-merged on purpose: "my `main_processes`" should mean exactly the list
-/// written, not the profile's list with edits spliced in.
-fn deep_merge(base: &mut serde_json::Value, over: serde_json::Value) {
-    use serde_json::Value::{Null, Object};
-    match (base, over) {
-        (Object(b), Object(o)) => {
-            for (k, v) in o {
-                deep_merge(b.entry(k).or_insert(Null), v);
-            }
-        }
-        (b, o) => *b = o,
-    }
-}
-
-/// Replace only `main_checkout` in a config file's raw JSON, leaving the rest —
-/// including a slim profile-based shape — untouched.
+/// Replace only `main_checkout` in a config file's raw JSON, leaving every other
+/// key — and a slim `{ main_checkout }` shape — untouched.
 fn rewrite_main_checkout(path: &Path, raw: &str, main: &Path) -> Result<()> {
     let mut v: serde_json::Value = serde_json::from_str(raw)?;
     let obj = v
@@ -197,11 +178,67 @@ fn rewrite_main_checkout(path: &Path, raw: &str, main: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Portable default: the remote's own default branch, whatever it is named. A
-/// fork workflow (PRs against an `upstream/develop`) sets its own — the `acme`
-/// profile does.
+/// The subset of [`Config`] the settings panel reads and writes.
+///
+/// A distinct struct so the editable surface is explicit: a POST from the panel
+/// can set these six and nothing else — not the port, the token paths, or the
+/// forge. Field names match the `config.json` keys they persist to.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Settings {
+    pub output_language: String,
+    pub tracker: Tracker,
+    pub upstream_ref: String,
+    pub upstream_remote: String,
+    pub reviews_command: Vec<String>,
+    pub main_processes: Vec<ManagedSpec>,
+}
+
+impl Settings {
+    pub fn of(cfg: &Config) -> Self {
+        Settings {
+            output_language: cfg.output_language.clone(),
+            tracker: cfg.tracker,
+            upstream_ref: cfg.upstream_ref.clone(),
+            upstream_remote: cfg.upstream_remote.clone(),
+            reviews_command: cfg.reviews_command.clone(),
+            main_processes: cfg.main_processes.clone(),
+        }
+    }
+
+    /// Persist these into `config.json`, touching only their six keys — the same
+    /// reparse-the-raw-file reason as [`rewrite_main_checkout`], so a slim
+    /// `{ main_checkout }` config stays slim. Takes effect on the next start;
+    /// nothing here mutates the running `cfg`.
+    pub fn write(&self) -> Result<()> {
+        let path = Config::path()?;
+        let raw = std::fs::read_to_string(&path).unwrap_or_else(|_| "{}".to_string());
+        std::fs::write(&path, self.merge_into(&raw)?)?;
+        Ok(())
+    }
+
+    /// Set these six keys on a raw `config.json` string, returning the new file
+    /// text. Split from [`Settings::write`] so it is testable without the real
+    /// config path.
+    pub fn merge_into(&self, raw: &str) -> Result<String> {
+        let mut v: serde_json::Value =
+            serde_json::from_str(raw).context("config.json is not JSON")?;
+        let obj = v
+            .as_object_mut()
+            .context("config.json is not a JSON object")?;
+        obj.insert("output_language".into(), serde_json::to_value(&self.output_language)?);
+        obj.insert("tracker".into(), serde_json::to_value(self.tracker)?);
+        obj.insert("upstream_ref".into(), serde_json::to_value(&self.upstream_ref)?);
+        obj.insert("upstream_remote".into(), serde_json::to_value(&self.upstream_remote)?);
+        obj.insert("reviews_command".into(), serde_json::to_value(&self.reviews_command)?);
+        obj.insert("main_processes".into(), serde_json::to_value(&self.main_processes)?);
+        Ok(serde_json::to_string_pretty(&v)? + "\n")
+    }
+}
+
+/// The fork-workflow base: PRs against `upstream/develop`. A repo that merges to
+/// its origin's default branch sets `upstream_ref`/`upstream_remote` in settings.
 fn default_upstream() -> String {
-    "origin/HEAD".to_string()
+    "upstream/develop".to_string()
 }
 
 fn default_auto_resume() -> bool {
@@ -209,7 +246,71 @@ fn default_auto_resume() -> bool {
 }
 
 fn default_upstream_remote() -> String {
-    "origin".to_string()
+    "upstream".to_string()
+}
+
+fn default_tracker() -> Tracker {
+    Tracker::Shortcut
+}
+
+fn default_reviews_command() -> Vec<String> {
+    ["mise", "run", "reviews", "--json"]
+        .into_iter()
+        .map(String::from)
+        .collect()
+}
+
+/// The two processes a acme main checkout wants, both started by hand: the
+/// Angular build watcher and the `docker compose` stack. The former runs through
+/// the repo's toolbox wrapper; the patterns are what the health dot reads.
+fn default_main_processes() -> Vec<ManagedSpec> {
+    vec![
+        ManagedSpec {
+            name: "ng-watch".to_string(),
+            command: ["mise", "run", "silent:exec:toolbox", "ng", "build", "--watch"]
+                .into_iter()
+                .map(String::from)
+                .collect(),
+            failure_patterns: [
+                "Error:",
+                "ERROR in",
+                "error TS",
+                "✘ [ERROR]",
+                "bundle generation failed",
+            ]
+            .into_iter()
+            .map(String::from)
+            .collect(),
+            ok_patterns: [
+                "Build at:",
+                "successfully",
+                "watching for file changes",
+                "bundle generation complete",
+            ]
+            .into_iter()
+            .map(String::from)
+            .collect(),
+            restart: RestartPolicy::Never,
+            autostart: false,
+        },
+        ManagedSpec {
+            name: "docker".to_string(),
+            command: ["docker", "compose", "up"]
+                .into_iter()
+                .map(String::from)
+                .collect(),
+            failure_patterns: ["exited with code", "Error response"]
+                .into_iter()
+                .map(String::from)
+                .collect(),
+            ok_patterns: ["Started", "Attaching to"]
+                .into_iter()
+                .map(String::from)
+                .collect(),
+            restart: RestartPolicy::Never,
+            autostart: false,
+        },
+    ]
 }
 
 fn default_poll_seconds() -> u64 {
@@ -245,7 +346,7 @@ fn default_story_timeout() -> u64 {
 }
 
 fn default_output_language() -> String {
-    "English".to_string()
+    "Dutch".to_string()
 }
 
 /// Which code-hosting platform the repo lives on. The read/write seam is
@@ -262,35 +363,6 @@ pub enum ForgeKind {
     #[default]
     #[serde(rename = "github", alias = "git_hub")]
     GitHub,
-}
-
-/// A named bundle of baked-in config a machine's `config.json` is merged over.
-///
-/// `default` is empty — a fresh checkout gets serde defaults. `acme` carries
-/// that stack's processes, tracker, upstream refs and review
-/// ranking, so its many machines write only `{ main_checkout, profile }` plus
-/// whatever they override. Adding a profile is a new arm here and a JSON file in
-/// `src/profiles/`.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Profile {
-    #[default]
-    Default,
-    acme,
-}
-
-impl Profile {
-    /// The preset JSON this profile merges under a machine's config. `default` is
-    /// empty; the rest are baked in with `include_str!`.
-    fn preset(self) -> serde_json::Value {
-        match self {
-            Profile::Default => serde_json::json!({}),
-            // Parsed from a checked-in file, so a malformed preset is a build-time
-            // artefact we ship, not a runtime surprise; `expect` states that.
-            Profile::acme => serde_json::from_str(include_str!("profiles/acme.json"))
-                .expect("baked-in acme profile is valid JSON"),
-        }
-    }
 }
 
 impl Config {
@@ -313,7 +385,7 @@ impl Config {
     pub fn existing() -> Option<Self> {
         let path = Self::path().ok()?;
         let raw = std::fs::read_to_string(&path).ok()?;
-        let cfg = Config::parse_with_profile(&raw)
+        let cfg = Config::parse(&raw)
             .map_err(|e| tracing::warn!("ignoring unparseable {}: {e:#}", path.display()))
             .ok()?;
         if !cfg.main_checkout.join(".git").exists() {
@@ -332,7 +404,7 @@ impl Config {
         if path.exists() {
             let raw = std::fs::read_to_string(&path)
                 .with_context(|| format!("reading {}", path.display()))?;
-            let mut cfg = Config::parse_with_profile(&raw)
+            let mut cfg = Config::parse(&raw)
                 .with_context(|| format!("parsing {}", path.display()))?;
             if let Some(main) = main_checkout {
                 // Remember it. The desktop app reaches here when the recorded
@@ -342,8 +414,8 @@ impl Config {
                 if cfg.main_checkout != main {
                     cfg.main_checkout = main.clone();
                     // Rewrite only `main_checkout` in the *raw* JSON, not the
-                    // merged Config — re-serializing the whole thing would expand
-                    // a slim profile-based config back to every field.
+                    // parsed Config — re-serializing the whole thing would expand
+                    // a slim `{ main_checkout }` file back to every field.
                     if let Err(e) = rewrite_main_checkout(&path, &raw, &main) {
                         tracing::warn!("could not record the new checkout in {}: {e:#}", path.display());
                     }
@@ -361,32 +433,13 @@ impl Config {
         Ok(cfg)
     }
 
-    /// Parse a `config.json` string, merged over its `profile`'s preset.
+    /// Parse a `config.json` string into a [`Config`].
     ///
-    /// The machine's keys win (deep object merge; arrays replace whole), so a
-    /// config writes only what differs from the profile. `profile` is read from
-    /// the raw JSON first, since it selects the base everything else merges onto;
-    /// an unknown value falls back to `default` rather than failing the load.
-    pub fn parse_with_profile(raw: &str) -> Result<Config> {
-        let user: serde_json::Value = serde_json::from_str(raw).context("config is not JSON")?;
-        // Deserialize the profile name rather than hand-map it, so adding a
-        // profile is just a `Profile` variant and a `preset()` arm. An unknown
-        // value falls back to `default` rather than failing the load.
-        let profile = match user.get("profile") {
-            None => Profile::Default,
-            Some(v) => serde_json::from_value::<Profile>(v.clone()).unwrap_or_else(|_| {
-                tracing::warn!("unknown profile {v}; using the default profile");
-                Profile::Default
-            }),
-        };
-        let mut effective = profile.preset();
-        deep_merge(&mut effective, user);
-        // Pin the resolved profile so an unknown string cannot fail deserialize.
-        if let Some(obj) = effective.as_object_mut() {
-            obj.insert("profile".into(), serde_json::to_value(profile)?);
-        }
-        let mut cfg: Config =
-            serde_json::from_value(effective).context("applying config over its profile")?;
+    /// Everything unset falls back to the `#[serde(default = …)]` attributes,
+    /// which now carry the values a acme checkout wants. An old file with a
+    /// stale `"profile"` key still loads — serde ignores the unknown field.
+    pub fn parse(raw: &str) -> Result<Config> {
+        let mut cfg: Config = serde_json::from_str(raw).context("config is not JSON")?;
         // Sanitise once, here, so every accessor can trust the field and the
         // warning fires at load rather than on every hook event.
         cfg.worktrees_subdir = match normalize_worktrees_subdir(&cfg.worktrees_subdir) {
@@ -419,23 +472,22 @@ impl Config {
         Ok(cfg)
     }
 
-    /// The config a first run writes: a `default`-profile config that sets only
-    /// the checkout, everything else its serde default. Built *through*
-    /// `parse_with_profile` rather than by hand so a first run and the same file
-    /// parsed from disk can never diverge — the field defaults live in one place
-    /// (the `#[serde(default = …)]` attributes), not two.
+    /// The config a first run writes: only the checkout, everything else its serde
+    /// default. Built *through* `parse` rather than by hand so a first run and the
+    /// same file parsed from disk can never diverge — the field defaults live in
+    /// one place (the `#[serde(default = …)]` attributes), not two.
     ///
-    /// The default profile ships no `main_processes` (a fresh checkout must not
-    /// autostart a task a foreign repo lacks) and an empty `upstream`/tracker —
-    /// all of that falls out of the serde defaults, no special-casing here.
+    /// Those defaults are now acme's (Dutch, Shortcut, `upstream/develop`, the
+    /// two managed processes, `mise run reviews`); a checkout that wants otherwise
+    /// edits them in the settings panel. No special-casing here.
     fn default_for(main_checkout: PathBuf) -> Self {
         let raw = serde_json::json!({ "main_checkout": main_checkout }).to_string();
         // Cannot fail: the JSON is a single known-valid key.
-        Self::parse_with_profile(&raw).expect("the default config is valid")
+        Self::parse(&raw).expect("the default config is valid")
     }
 
     pub fn worktrees_dir(&self) -> PathBuf {
-        // The field is sanitised in `parse_with_profile`, so it is a clean
+        // The field is sanitised in `parse`, so it is a clean
         // relative in-main path here.
         self.main_checkout.join(&self.worktrees_subdir)
     }
@@ -539,64 +591,59 @@ mod tests {
     }
 
     #[test]
-    fn the_acme_ng_watch_recognises_the_esbuild_recovery_line() {
+    fn the_default_ng_watch_recognises_the_esbuild_recovery_line() {
         // Its success line matches none of the older markers, so without this the
         // rail's `build failing` never cleared after a fixed compile. ng-watch is
-        // a acme-profile process now, not a generic default.
-        let cfg = Config::parse_with_profile(
-            r#"{"main_checkout":"/tmp/x","profile":"acme"}"#,
-        )
-        .expect("parse");
+        // a built-in default now, present without any profile.
+        let cfg = Config::parse(r#"{"main_checkout":"/tmp/x"}"#).expect("parse");
         let ng = cfg
             .main_processes
             .iter()
             .find(|p| p.name == "ng-watch")
-            .expect("ng-watch comes from the acme profile");
+            .expect("ng-watch is a default process");
         assert!(ng.ok_patterns.iter().any(|p| p == "bundle generation complete"));
         assert!(!ng.autostart, "started by hand, matching the real acme config");
     }
 
     #[test]
-    fn the_acme_profile_supplies_the_stacks_settings() {
-        // A acme machine writes almost nothing; the preset fills the rest.
-        let cfg = Config::parse_with_profile(
-            r#"{"main_checkout":"/tmp/x","profile":"acme"}"#,
-        )
-        .expect("parse");
-        assert_eq!(cfg.profile, Profile::acme);
+    fn a_bare_config_gets_the_acme_defaults() {
+        // The six settings the acme profile used to carry are the defaults now,
+        // so a checkout writes only `main_checkout` and gets the lot.
+        let cfg = Config::parse(r#"{"main_checkout":"/tmp/x"}"#).expect("parse");
         assert_eq!(cfg.reviews_command, vec!["mise", "run", "reviews", "--json"]);
         assert_eq!(cfg.tracker, Tracker::Shortcut);
         assert_eq!(cfg.upstream_ref, "upstream/develop");
+        assert_eq!(cfg.upstream_remote, "upstream");
         assert_eq!(cfg.output_language, "Dutch");
         assert_eq!(cfg.main_processes.len(), 2);
+        // `default_for` (the first-run write) goes through the same path.
+        assert_eq!(Config::default_for(PathBuf::from("/tmp/x")).main_processes.len(), 2);
     }
 
     #[test]
-    fn a_machine_key_overrides_the_profile() {
-        // Deep-merge, config wins: a acme machine can still move the port or
-        // point the review command elsewhere without abandoning the profile.
-        let cfg = Config::parse_with_profile(
-            r#"{"main_checkout":"/tmp/x","profile":"acme","port":9000,
-                "reviews_command":["mise","run","reviews:mine"]}"#,
+    fn a_written_key_overrides_the_default() {
+        let cfg = Config::parse(
+            r#"{"main_checkout":"/tmp/x","port":9000,"output_language":"English",
+                "tracker":"none","reviews_command":["mise","run","reviews:mine"]}"#,
         )
         .expect("parse");
         assert_eq!(cfg.port, 9000);
+        assert_eq!(cfg.output_language, "English");
+        assert_eq!(cfg.tracker, Tracker::None);
         assert_eq!(cfg.reviews_command, vec!["mise", "run", "reviews:mine"]);
-        // ...but an unmentioned key still comes from the profile.
-        assert_eq!(cfg.tracker, Tracker::Shortcut);
+        // ...but an unmentioned key still comes from the defaults.
+        assert_eq!(cfg.upstream_ref, "upstream/develop");
     }
 
     #[test]
-    fn the_default_profile_is_generic() {
-        let cfg = Config::parse_with_profile(r#"{"main_checkout":"/tmp/x"}"#).expect("parse");
-        assert_eq!(cfg.profile, Profile::Default);
-        assert!(cfg.main_processes.is_empty(), "no processes assumed");
-        assert_eq!(cfg.tracker, Tracker::None);
-        // Portable base ref: the remote's default branch, not acme's fork.
-        assert_eq!(cfg.upstream_ref, "origin/HEAD");
-        assert_eq!(cfg.upstream_remote, "origin");
-        assert_eq!(cfg.output_language, "English", "outward prose defaults to English");
-        assert!(Config::default_for(PathBuf::from("/tmp/x")).main_processes.is_empty());
+    fn an_old_config_with_a_profile_key_still_loads() {
+        // `profile` was a config key until the six settings became defaults; a file
+        // written back then must still load, its stale key ignored.
+        let cfg = Config::parse(
+            r#"{"main_checkout":"/tmp/x","profile":"acme"}"#,
+        )
+        .expect("parse");
+        assert_eq!(cfg.main_checkout, PathBuf::from("/tmp/x"));
     }
 
     #[test]
@@ -604,7 +651,7 @@ mod tests {
         // `rename_all = "snake_case"` would make this `git_hub`, so `"github"`
         // was an unknown variant — and a deserialize error here reads as "no
         // config", sending the desktop app back to the folder picker.
-        let cfg = Config::parse_with_profile(
+        let cfg = Config::parse(
             r#"{"main_checkout":"/tmp/x","forge":"github"}"#,
         )
         .expect("`github` must parse");
@@ -613,26 +660,33 @@ mod tests {
         let written = serde_json::to_value(ForgeKind::GitHub).unwrap();
         assert_eq!(written, serde_json::json!("github"));
         // A config written with the old generated spelling still loads.
-        assert!(Config::parse_with_profile(
+        assert!(Config::parse(
             r#"{"main_checkout":"/tmp/x","forge":"git_hub"}"#
         )
         .is_ok());
     }
 
     #[test]
-    fn an_unknown_profile_falls_back_to_default() {
-        let cfg = Config::parse_with_profile(
-            r#"{"main_checkout":"/tmp/x","profile":"acme"}"#,
-        )
-        .expect("parse");
-        assert_eq!(cfg.profile, Profile::Default);
-    }
-
-    #[test]
-    fn deep_merge_recurses_objects_and_replaces_arrays() {
-        let mut base = serde_json::json!({"a":{"x":1,"y":2},"list":[1,2,3]});
-        deep_merge(&mut base, serde_json::json!({"a":{"y":9,"z":3},"list":[4]}));
-        assert_eq!(base, serde_json::json!({"a":{"x":1,"y":9,"z":3},"list":[4]}));
+    fn writing_settings_touches_only_its_keys_and_round_trips() {
+        // A slim config must stay slim: merging settings sets the six keys and
+        // leaves everything else (here, just main_checkout) alone.
+        let s = Settings {
+            output_language: "English".into(),
+            tracker: Tracker::None,
+            upstream_ref: "origin/main".into(),
+            upstream_remote: "origin".into(),
+            reviews_command: vec!["gh".into(), "pr".into()],
+            main_processes: vec![],
+        };
+        let out = s.merge_into(r#"{"main_checkout":"/tmp/x","port":8080}"#).expect("merge");
+        let cfg = Config::parse(&out).expect("re-parse");
+        assert_eq!(cfg.main_checkout, PathBuf::from("/tmp/x"), "untouched key kept");
+        assert_eq!(cfg.port, 8080, "untouched key kept");
+        assert_eq!(cfg.output_language, "English");
+        assert_eq!(cfg.tracker, Tracker::None);
+        assert_eq!(cfg.upstream_ref, "origin/main");
+        assert_eq!(cfg.reviews_command, vec!["gh", "pr"]);
+        assert!(cfg.main_processes.is_empty());
     }
 
     #[test]
@@ -679,7 +733,7 @@ mod tests {
 
     #[test]
     fn a_custom_subdir_moves_the_dir_and_the_exclude_prefix() {
-        let cfg = Config::parse_with_profile(
+        let cfg = Config::parse(
             r#"{"main_checkout":"/repo","worktrees_subdir":".worktrees"}"#,
         )
         .unwrap();
@@ -689,8 +743,8 @@ mod tests {
 
     #[test]
     fn a_subdir_that_normalises_to_nothing_or_has_a_dot_is_cleaned_at_parse() {
-        let dir = |json: &str| Config::parse_with_profile(json).unwrap().worktrees_dir();
-        let prefix = |json: &str| Config::parse_with_profile(json).unwrap().worktrees_subdir_str();
+        let dir = |json: &str| Config::parse(json).unwrap().worktrees_dir();
+        let prefix = |json: &str| Config::parse(json).unwrap().worktrees_subdir_str();
         // `""`, `"."` and `"./"` all normalise to nothing → the default, so the
         // worktrees dir never collapses onto main and the exclude prefix is never
         // `/` (which matches no porcelain path — the §2 sibling leak).
@@ -712,7 +766,7 @@ mod tests {
         // `claude --worktree` always writes to `.claude/worktrees/`, so it can
         // only create a worktree the daemon will find when the two agree.
         let default = |sub: &str| {
-            Config::parse_with_profile(&format!(
+            Config::parse(&format!(
                 r#"{{"main_checkout":"/repo","worktrees_subdir":"{sub}"}}"#
             ))
             .unwrap()
@@ -729,7 +783,7 @@ mod tests {
         // The container mapping, the exclude and path attribution all assume
         // worktrees sit under main, so an absolute or climbing path is refused.
         let dir = |sub: &str| {
-            Config::parse_with_profile(&format!(
+            Config::parse(&format!(
                 r#"{{"main_checkout":"/repo","worktrees_subdir":"{sub}"}}"#
             ))
             .unwrap()
@@ -747,11 +801,11 @@ mod tests {
     }
 
     #[test]
-    fn a_fresh_config_gets_the_default_forge_and_no_review_command() {
-        // A new checkout anywhere talks to GitHub, but has no review-queue command
-        // until one is configured — the pane reads "off", not broken.
+    fn a_fresh_config_gets_the_default_forge_and_review_command() {
+        // Talks to GitHub, and the review queue defaults to `mise run reviews`;
+        // clear the command in settings for a repo with no such task.
         let cfg = Config::default_for(PathBuf::from("/tmp/x"));
         assert_eq!(cfg.forge, ForgeKind::GitHub);
-        assert!(cfg.reviews_command.is_empty());
+        assert_eq!(cfg.reviews_command, vec!["mise", "run", "reviews", "--json"]);
     }
 }

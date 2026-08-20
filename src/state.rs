@@ -431,7 +431,6 @@ impl AppState {
                 .map(|(pr, r)| (*pr, RunView::of(r)))
                 .collect(),
             version: env!("CARGO_PKG_VERSION"),
-            profile: self.cfg.profile,
         }
     }
 
@@ -729,8 +728,6 @@ pub struct Snapshot {
     /// build am I on" is a question worth answering when the answer is "the
     /// latest one".
     pub version: &'static str,
-    /// The active config profile (`default` / `acme`), for the settings panel.
-    pub profile: crate::config::Profile,
 }
 
 #[derive(Debug, Serialize)]

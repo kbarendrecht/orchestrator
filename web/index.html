@@ -185,10 +185,46 @@
       </span>
     </div>
     <button class="settings-reset" id="fsreset">Reset to 100%</button>
-    <div class="settings-row settings-info">
-      <span class="settings-k">Profile</span>
-      <span class="settings-v" id="settingsprofile">&#8212;</span>
+
+    <div class="settings-sep"></div>
+
+    <label class="settings-field">
+      <span class="settings-k">Output language</span>
+      <input class="settings-in" id="setlang" type="text" spellcheck="false">
+    </label>
+    <label class="settings-field">
+      <span class="settings-k">Tracker</span>
+      <select class="settings-in" id="settracker">
+        <option value="none">none</option>
+        <option value="shortcut">shortcut</option>
+        <option value="stub">stub</option>
+      </select>
+    </label>
+    <label class="settings-field">
+      <span class="settings-k">Upstream ref</span>
+      <input class="settings-in" id="setupref" type="text" spellcheck="false">
+    </label>
+    <label class="settings-field">
+      <span class="settings-k">Upstream remote</span>
+      <input class="settings-in" id="setupremote" type="text" spellcheck="false">
+    </label>
+    <label class="settings-field">
+      <span class="settings-k">Review command</span>
+      <input class="settings-in" id="setreviews" type="text" spellcheck="false"
+             placeholder="empty = no review queue">
+    </label>
+
+    <div class="settings-field settings-procs-head">
+      <span class="settings-k">Processes</span>
+      <button class="settings-add" id="setprocadd" type="button">+ add</button>
     </div>
+    <div id="setprocs"></div>
+
+    <div class="settings-actions">
+      <button class="settings-save" id="setsave" type="button">Save</button>
+      <span class="settings-note" id="setnote"></span>
+    </div>
+
     <!-- Not a setting: the answer to "am I on the build with the fix in it". -->
     <div class="settings-ver" id="settingsver"></div>
   </div>

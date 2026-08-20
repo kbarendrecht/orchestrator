@@ -172,6 +172,26 @@ pub async fn get_state(State(app): State<Arc<AppState>>) -> impl IntoResponse {
 }
 
 // ---------------------------------------------------------------------------
+// Editable settings
+// ---------------------------------------------------------------------------
+
+/// The six settings the panel edits, as the running daemon has them.
+pub async fn get_config(State(app): State<Arc<AppState>>) -> ApiResult<crate::config::Settings> {
+    Ok(Json(crate::config::Settings::of(&app.cfg)))
+}
+
+/// Persist edited settings to `config.json`. Validation is serde's — a bad
+/// tracker or a malformed process rejects the whole POST. Applied on the next
+/// start; the running config is not mutated, so the panel says "restart to apply".
+pub async fn set_config(
+    State(_app): State<Arc<AppState>>,
+    Json(body): Json<crate::config::Settings>,
+) -> ApiResult<serde_json::Value> {
+    body.write()?;
+    Ok(Json(json!({ "ok": true, "restart_required": true })))
+}
+
+// ---------------------------------------------------------------------------
 // Sessions
 // ---------------------------------------------------------------------------
 

@@ -280,6 +280,7 @@ fn router(app: Arc<AppState>) -> Router {
         .route("/vendor/:file", get(vendor))
         .route("/vendor/fonts/:file", get(font))
         .route("/api/state", get(api::get_state))
+        .route("/api/config", get(api::get_config).post(api::set_config))
         .route("/api/merge-base", get(api::merge_base))
         .route("/api/diff", get(api::diff_summary))
         .route("/api/diff/file", get(api::diff_file))

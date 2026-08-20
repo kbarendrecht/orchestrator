@@ -126,11 +126,12 @@ newer version is out it shows a dismissible nudge in the window. The nudge only
   all. Degrades to `unavailable` rather than to an empty queue when the command
   fails, and reads `not configured` when none is set. `acme` points it at
   `mise run reviews --json`; a plain checkout leaves it off.
-- **Config profiles** — `profile` (`default` | `acme`) selects a baked-in
-  bundle a machine's `config.json` is deep-merged over (config keys win), so a
-  stack's many machines write just `{ main_checkout, profile }`. `default` is
-  empty and generic; `acme` (`src/profiles/acme.json`) carries that stack's
-  processes, tracker, upstream refs, review command and output language.
+- **Editable settings** — output language, tracker, upstream ref/remote, review
+  command and the managed-process list are read from `config.json` and edited in
+  the settings panel (`GET`/`POST /api/config`), which writes only those keys back.
+  Their defaults are acme's (Dutch, Shortcut, `upstream/develop`, ng-watch +
+  docker, `mise run reviews`), so a acme machine writes just `{ main_checkout }`.
+  Changes take effect on restart.
 - **`/resolve`** — worktree pinned to the PR's head branch, skill invocation
   typed into the pty once `SessionStart` lands.
 - **Editable diff pane** — the right side is a live buffer with a disk write
@@ -203,7 +204,7 @@ one; the same worktree backs `/resolve`.
 ```
 src/
   main.rs       wiring, routes, startup recovery, SPA serving
-  config.rs     config file, profiles + deep-merge, settings, transcript slug
+  config.rs     config file, acme defaults, Settings read/write, transcript slug
   model.rs      Workspace / Session / Process, State, ArchiveState
   state.rs      the daemon's owned state, snapshots, occupancy, reconcile
   pty.rs        portable-pty host
@@ -217,7 +218,6 @@ src/
                 token/GraphQL/PR model/stacks, github_write.rs the gh writes)
   reviews.rs    review queue: runs `reviews_command`, parses its JSON, degraded
                 states when it exits non-zero or emits the wrong shape
-  profiles/     baked-in config bundles a machine merges over (acme.json)
   fix_pr.rs     automation state and the fix-pr guard table
   edit.rs       file read/write with containment and conflict detection
   todo.rs       the generated block in TODO.md
@@ -252,10 +252,10 @@ web/            SPA (vanilla, xterm.js vendored)
   rendering fault can be reproduced rather than guessed at. Stub
   `/vendor/addon-webgl.js` in such a test: headless WebKit dies on xterm's WebGL
   renderer.
-- Nothing autostarts by default. Managed processes come from config or a profile,
-  each with an `autostart` flag that is off unless set; the `acme` profile
-  ships `ng-watch` and `docker` but leaves both manual, started from the drawer.
-  Flip `autostart` if you want one on daemon start. An autostarted process is not
+- Nothing autostarts by default. Managed processes come from config, each with an
+  `autostart` flag that is off unless set; the defaults ship `ng-watch` and
+  `docker` but leave both manual, started from the drawer. Flip `autostart` (in
+  settings) if you want one on daemon start. An autostarted process is not
   killed when the last session in its workspace ends, because no session started
   it.
 - **GitHub auth** resolves in order: `ORCHD_GITHUB_TOKEN`, a `0600`

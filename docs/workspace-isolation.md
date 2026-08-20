@@ -110,6 +110,6 @@ tree".
 
 Verification: on a plain repo, a new session lands in a fresh worktree and
 disappears on clean exit but survives once it has a commit; the main checkout
-runs in place and refuses a second session; a `acme`-profile daemon still
-nests worktrees exactly as today (the existing review-parity and isolated-daemon
-smokes cover that path).
+runs in place and refuses a second session; a daemon with the acme defaults
+still nests worktrees exactly as today (the existing review-parity and
+isolated-daemon smokes cover that path).

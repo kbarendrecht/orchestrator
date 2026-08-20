@@ -99,7 +99,7 @@ Everything outside that block is hand-written and survives.
   review of `559c803..ff387df` surfaced these; the ones about the built-in review
   ranking are gone now the queue is back to a command, and what remains is
   recorded below.
-  - **`worktrees_subdir` normalisation.** *Done.* `parse_with_profile` now
+  - **`worktrees_subdir` normalisation.** *Done.* `parse` now
     sanitises the field once via `normalize_worktrees_subdir` — drop `.`
     components, refuse absolute / `..` / anything that normalises to nothing —
     and stores the clean path, so `""`/`"."`/`"./x"` no longer collapse the
@@ -123,19 +123,17 @@ Everything outside that block is hand-written and survives.
   fixed:
 
   - **Upstream-remote mismatch is surfaced.** *Done (surfaced, not unified).*
-    `parse_with_profile` warns when `upstream_ref`'s remote prefix disagrees with
+    `parse` warns when `upstream_ref`'s remote prefix disagrees with
     `upstream_remote` — the two feed the base fetch and repo detection and were
     silently divergable. Fully collapsing them to one field is a config-shape
-    decision left for later; they are equal in every profile and default.
+    decision left for later; they agree in the defaults.
   - **Pager cursor logic unified.** *Done.* `all_summary_threads` and
     `parse_thread_page` now use the shared `next_cursor`, so the
     hasNextPage/endCursor rule lives in one place, not three.
-  - **`default_for` and the profile name go through one path.** *Done.*
-    `default_for` now builds through `parse_with_profile(json!({main_checkout}))`,
-    so field defaults live only in the `#[serde(default = …)]` attributes and a
-    first run cannot diverge from the same file parsed off disk; the profile name
-    is deserialized rather than hand-mapped, so adding a profile is a `Profile`
-    variant plus a `preset()` arm, no string arm.
+  - **`default_for` goes through the same parse as a real load.** *Done.*
+    `default_for` builds through `parse(json!({main_checkout}))`, so field
+    defaults live only in the `#[serde(default = …)]` attributes and a first run
+    cannot diverge from the same file parsed off disk.
   - ~~`resolve_repo` + `resolve_token` + `GitHubForge::new` repeated four times~~
     *Done as part of wiring the seam:* the two `api.rs` sites are now
     `read_forge`/`write_forge`, and construction everywhere goes through
@@ -147,14 +145,17 @@ Everything outside that block is hand-written and survives.
 - **Make it run somewhere other than this machine.** Everything below is a
   hardcoded assumption about one monorepo, and each is a setting or a probe
   waiting to be written:
-  - **Config profiles carry the stack-specific settings.** *Done.* A `profile`
-    setting (`default` | `acme`, `src/config.rs`) selects a baked-in bundle a
-    machine's `config.json` is deep-merged over — config keys win, arrays replace
-    whole (`Config::parse_with_profile`). `default` is empty; `acme`
-    (`src/profiles/acme.json`) supplies that stack's processes,
-    tracker, upstream refs and review ranking, so its many machines write only
-    `{ main_checkout, profile }` plus whatever they override. Adding a profile is
-    a new arm plus a JSON file.
+  - **The stack-specific settings are the defaults, editable in settings.**
+    *Landed, then simplified.* This was a `default`/`acme` profile split; it
+    was retired in favour of making the six settings acme carried (upstream
+    ref/remote, tracker, output language, `main_processes`, review command) the
+    built-in `#[serde(default = …)]` values, and exposing them in the settings
+    panel (`GET`/`POST /api/config`, `config::Settings`) which writes only those
+    keys back to `config.json`. A acme machine writes `{ main_checkout }` and
+    gets the lot; anyone else edits them in the panel. Deliberately acme-first
+    — the open-source defaults are now Dutch/Shortcut/upstream-develop/ng+docker/
+    mise-reviews, not generic. Apply is on restart (the running `cfg` is immutable;
+    live-apply would be a sweeping refactor, left for later).
   - **The review queue runs a configured command.** *Reverted to this on
     purpose.* A built-in GraphQL queue with a config-driven ranking engine was
     built and worked, but it was more machinery than the one real user wanted to
@@ -167,13 +168,12 @@ Everything outside that block is hand-written and survives.
     free is gone. The `Forge` seam stays (PRs, threads, writes); only its
     `review_candidates` arm was removed. Revisit only if a second consumer ever
     wants a queue without a script.
-  - **Docker and `ng` are no longer assumed.** *Done via profiles.*
-    `default_for` ships no `main_processes`, so a fresh checkout autostarts
-    nothing that does not exist; acme's `ng-watch` (the real
-    `silent:exec:toolbox ng build --watch`, `autostart:false`) and `docker` come
-    from the `acme` profile. A probe that *suggests* processes on first run
-    (compose file, package.json script) was scoped and deferred — the honest
-    default is to start nothing.
+  - **Docker and `ng` are managed processes, not hardcoded.** *Done.* `ng-watch`
+    (`silent:exec:toolbox ng build --watch`) and `docker` are `ManagedSpec`s in
+    `default_main_processes`, both `autostart:false`, editable in settings — so a
+    fresh checkout starts nothing behind your back, and a repo without them clears
+    the list. A probe that *suggests* processes on first run (compose file,
+    package.json script) was scoped and deferred.
   - **The worktree layout is configurable.** *Done.* `worktrees_subdir`
     (`src/config.rs`, default `.claude/worktrees`) is the relative-in-main path
     `worktrees_dir()`/`worktree_path()` compose, and the changed-files exclude in
@@ -213,24 +213,22 @@ Everything outside that block is hand-written and survives.
     id, and both `GitHubForge::detect`'s URL-parsing and the read-token ladder are
     github.com-specific (a real second forge wants its own credential resolution,
     which `for_kind`'s single `token` arg does not yet model).
-  - **Output language is a setting; the tracker is config already.** *Done for
-    the language.* `output_language` (`src/config.rs`, default `English`, the
-    `acme` profile sets `Dutch`) fills a `{{LANGUAGE}}` placeholder the triage
-    and resolve prompts use for the prose the agent *writes* — replies and story
-    text. Prompts and code stay English, and a thread's own language still wins
+  - **Output language is a setting; the tracker is config already.** *Done.*
+    `output_language` (`src/config.rs`, default `Dutch`, editable in settings)
+    fills a `{{LANGUAGE}}` placeholder the triage and resolve prompts use for the
+    prose the agent *writes* — replies and story text. Prompts and code stay English, and a thread's own language still wins
     when it is clear. The `tracker` (`Tracker` enum) is already a config field
     (`none`/`shortcut`/`stub`); Shortcut is still the only real backend, and
     adding another (Jira, Linear, …) is a separate integration, not a setting —
     it would want a tracker seam the way the forge has one.
-  - **The base ref default is portable.** *Done.* The generic default is
-    `origin/HEAD` + remote `origin` (`src/config.rs`) — the remote's own default
-    branch, no `develop`, no fork. `fetch_upstream` (`src/git.rs`) is now
-    config-driven (it split `remote/branch` out of `upstream_ref` instead of the
-    old hardcoded `git fetch upstream develop`); a `HEAD` branch fetches the whole
-    remote to keep its symref fresh, a named branch fetches just that. The
-    fork-with-`upstream/develop` layout is the `acme` profile's, not a global
-    default. (A rarely-hit `parse_pr` baseRefName fallback still says `develop`;
-    left as out-of-scope — GitHub reliably supplies the field.)
+  - **The base ref is config-driven.** *Done, though the default is now acme's.*
+    `fetch_upstream` (`src/git.rs`) splits `remote/branch` out of `upstream_ref`
+    instead of the old hardcoded `git fetch upstream develop`: a `HEAD` branch
+    fetches the whole remote to keep its symref fresh, a named branch fetches just
+    that. The mechanism is portable; the *default* is the fork layout
+    (`upstream/develop` + remote `upstream`), edited in settings for a repo that
+    merges to its origin's default branch. (A rarely-hit `parse_pr` baseRefName
+    fallback still says `develop`; out-of-scope — GitHub reliably supplies it.)
   - The folder picker already exists (`desktop/src/main.rs`, shown when
     `Config::existing()` is `None`), so first-run has a start; what it does not
     have is the rest of the questions.
@@ -260,8 +258,9 @@ Everything outside that block is hand-written and survives.
   exists in the repo, assumes the acme monorepo throughout (the run example, the
   `ng-watch`/`docker` asides), and documents the
   parts in the order they were built. An open-sourced one needs the thing it is, a
-  screenshot, what it needs installed, what it assumes about your repo (now largely
-  a `profile` — see above), and how to try it without a monorepo to point it at.
+  screenshot, what it needs installed, what it assumes about your repo (the
+  editable settings, which currently default to acme's), and how to try it
+  without a monorepo to point it at.
 
 - **Audit the keyboard map for logical, consistent coverage.** Not two more
   chords — a pass over the whole scheme so it is predictable: same modifier
