@@ -4510,16 +4510,14 @@ function closeSettings() {
 }
 
 function openSettings() {
-  const panel = $('settings');
   // Read at open time rather than at setup: the first snapshot has usually not
   // landed when the page wires itself up.
   $('settingsver').textContent = snap.version ? `orchd ${snap.version}` : '';
-  panel.hidden = false;
+  $('settingsprofile').textContent = snap.profile
+    ? snap.profile[0].toUpperCase() + snap.profile.slice(1)
+    : '—';
+  $('settings').hidden = false;
   $('gearbtn').setAttribute('aria-expanded', 'true');
-  const r = $('gearbtn').getBoundingClientRect();
-  const box = panel.getBoundingClientRect();
-  panel.style.left = `${Math.min(r.left, window.innerWidth - box.width - 8)}px`;
-  panel.style.top = `${r.bottom + 6}px`;
 }
 
 function setupSettings() {
@@ -4534,9 +4532,13 @@ function setupSettings() {
   $('fsup').onclick = () => saveZoom(setZoom(zoomScale + ZOOM.step));
   $('fsreset').onclick = () => saveZoom(setZoom(ZOOM.def));
 
-  // Same dismissal as the context menu: a click anywhere else puts it away.
+  // A click on the scrim (the modal's backdrop, which is `#settings` itself) or
+  // anywhere outside both the card and the gear puts it away.
   document.addEventListener('mousedown', (e) => {
-    if (settingsOpen() && !e.target.closest('#settings, #gearbtn')) closeSettings();
+    if (!settingsOpen()) return;
+    if (e.target === $('settings') || !e.target.closest('#settings, #gearbtn')) {
+      closeSettings();
+    }
   }, true);
 }
 

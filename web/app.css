@@ -430,14 +430,26 @@ body.col-resizing{cursor:col-resize;user-select:none}
 body.row-resizing{cursor:row-resize;user-select:none}
 
 /* ---------- settings ---------- */
-/* Positioned from script, under the sliders it belongs to. Outside `.app`, so it
-   is not itself scaled by the setting it carries. */
+/* A centred modal over the panes. `.settings` is the full-viewport scrim; the
+   card is centred in it. Outside `.app`, so the font-size control it carries does
+   not rescale itself as you press it. */
 .settings{
-  position:fixed;z-index:100;min-width:210px;padding:10px 11px;
-  background:var(--raised);border:1px solid var(--line);border-radius:4px;
-  box-shadow:0 6px 18px rgba(0,0,0,.45);
+  position:fixed;inset:0;z-index:100;display:grid;place-items:center;
+  background:rgba(0,0,0,.42);
+}
+.settings-card{
+  min-width:240px;padding:14px 15px;
+  background:var(--raised);border:1px solid var(--line);border-radius:5px;
+  box-shadow:0 12px 34px rgba(0,0,0,.5);
+}
+.settings-title{
+  font-family:var(--label);font-size:calc(8.5px * var(--fs));font-weight:700;
+  letter-spacing:.16em;text-transform:uppercase;color:var(--faint-solid);
+  margin-bottom:11px;
 }
 .settings-row{display:flex;align-items:center;gap:12px}
+.settings-info{margin-top:9px}
+.settings-v{margin-left:auto;font-family:var(--mono);font-size:calc(11px * var(--fs));color:var(--dim)}
 .settings-k{font-family:var(--mono);font-size:calc(11px * var(--fs));color:var(--text)}
 .settings-step{margin-left:auto;display:flex;align-items:center;gap:2px}
 .stepbtn{

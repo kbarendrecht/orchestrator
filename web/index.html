@@ -171,19 +171,27 @@
 <div class="colsplit colsplit-r" id="splitr" role="separator" aria-orientation="vertical"
      title="Drag to resize · double-click to reset"></div>
 
-<!-- Settings. One panel, opened from the sliders in the top-left. -->
+<!-- Settings. A centered modal over the panes, opened from the gear top-left.
+     `#settings` is the full-viewport scrim; the card is centred within it. -->
 <div class="settings" id="settings" hidden>
-  <div class="settings-row">
-    <span class="settings-k">Font size</span>
-    <span class="settings-step">
-      <button class="stepbtn" id="fsdown" title="Smaller">&#8722;</button>
-      <span class="stepval" id="fsval">100%</span>
-      <button class="stepbtn" id="fsup" title="Bigger">+</button>
-    </span>
+  <div class="settings-card">
+    <div class="settings-title">Settings</div>
+    <div class="settings-row">
+      <span class="settings-k">Font size</span>
+      <span class="settings-step">
+        <button class="stepbtn" id="fsdown" title="Smaller">&#8722;</button>
+        <span class="stepval" id="fsval">100%</span>
+        <button class="stepbtn" id="fsup" title="Bigger">+</button>
+      </span>
+    </div>
+    <button class="settings-reset" id="fsreset">Reset to 100%</button>
+    <div class="settings-row settings-info">
+      <span class="settings-k">Profile</span>
+      <span class="settings-v" id="settingsprofile">&#8212;</span>
+    </div>
+    <!-- Not a setting: the answer to "am I on the build with the fix in it". -->
+    <div class="settings-ver" id="settingsver"></div>
   </div>
-  <button class="settings-reset" id="fsreset">Reset to 100%</button>
-  <!-- Not a setting: the answer to "am I on the build with the fix in it". -->
-  <div class="settings-ver" id="settingsver"></div>
 </div>
 
 <div class="ctxmenu" id="ctxmenu" role="menu" hidden></div>
