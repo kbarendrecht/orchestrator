@@ -633,7 +633,7 @@ fn paths_changed_between(
 /// The one source of path strings for the manual phase. A rename appears once, as its
 /// new path, because that is what `--porcelain=v2` reports.
 pub fn dirty_paths(cwd: &Path) -> Result<Vec<String>> {
-    let set = crate::git::status(cwd, false, crate::git::Untracked::Each)?;
+    let set = crate::git::status(cwd, None, crate::git::Untracked::Each)?;
     Ok(set
         .staged
         .iter()

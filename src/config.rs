@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 /// Everything the daemon needs to know about the machine it runs on.
 ///
@@ -8,8 +8,18 @@ use std::path::{Path, PathBuf};
 /// purpose (§7 rule 6) — the capability table has already changed once.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
-    /// The privileged checkout. Worktrees live inside it at `.claude/worktrees/`.
+    /// The privileged checkout. Worktrees live inside it at [`Config::worktrees_dir`].
     pub main_checkout: PathBuf,
+    /// Where worktrees live, relative to `main_checkout`. Defaults to
+    /// `.claude/worktrees`, which is both Claude Code's own `--worktree` default
+    /// and where acme's `worktree-create` hook puts them — so a generic
+    /// checkout needs no setting. A repo that relocates them (a `WorktreeCreate`
+    /// hook) points this at the same place, so the daemon still recognises its
+    /// own worktrees. Kept relative and in-main on purpose: the container path
+    /// mapping, the changed-files exclude, and path attribution all assume
+    /// worktrees sit under main.
+    #[serde(default = "default_worktrees_subdir")]
+    pub worktrees_subdir: PathBuf,
     #[serde(default = "default_port")]
     pub port: u16,
     /// Managed processes declared for the main workspace. Worktrees declare none
@@ -109,6 +119,10 @@ pub enum RestartPolicy {
 
 fn default_port() -> u16 {
     7777
+}
+
+fn default_worktrees_subdir() -> PathBuf {
+    PathBuf::from(".claude/worktrees")
 }
 
 fn default_upstream() -> String {
@@ -232,6 +246,7 @@ impl Config {
     fn default_for(main_checkout: PathBuf) -> Self {
         Config {
             main_checkout,
+            worktrees_subdir: default_worktrees_subdir(),
             port: default_port(),
             // Main declares the two long-running processes the spec names (§2).
             main_processes: vec![
@@ -300,11 +315,42 @@ impl Config {
     }
 
     pub fn worktrees_dir(&self) -> PathBuf {
-        self.main_checkout.join(".claude/worktrees")
+        self.main_checkout.join(self.safe_worktrees_subdir())
     }
 
     pub fn worktree_path(&self, name: &str) -> PathBuf {
         self.worktrees_dir().join(name)
+    }
+
+    /// The subdir as a git-porcelain-relative prefix (forward slashes), for the
+    /// changed-files exclude in `git::status`. Ends with `/` so it matches a
+    /// directory prefix rather than a sibling whose name merely starts the same.
+    pub fn worktrees_subdir_str(&self) -> String {
+        let s = self
+            .safe_worktrees_subdir()
+            .components()
+            .filter_map(|c| c.as_os_str().to_str())
+            .collect::<Vec<_>>()
+            .join("/");
+        format!("{s}/")
+    }
+
+    /// The configured subdir, or the default when it is not a relative in-main
+    /// path. The whole model breaks if worktrees are not under main — the
+    /// container mapping, the changed-files exclude and path attribution all
+    /// assume it — so an absolute path or one climbing out with `..` is refused
+    /// rather than trusted, the same tolerant-but-loud stance as `Config::existing`.
+    fn safe_worktrees_subdir(&self) -> PathBuf {
+        let sub = &self.worktrees_subdir;
+        if sub.is_absolute() || sub.components().any(|c| matches!(c, Component::ParentDir)) {
+            tracing::warn!(
+                "worktrees_subdir {} is not a relative in-main path; using {}",
+                sub.display(),
+                default_worktrees_subdir().display()
+            );
+            return default_worktrees_subdir();
+        }
+        sub.clone()
     }
 
     /// Path of the daemon-owned settings file handed to every spawned session.
@@ -427,6 +473,39 @@ mod tests {
         )
         .expect("parse");
         assert_eq!(cfg.main_checkout, PathBuf::from("/tmp"));
+    }
+
+    #[test]
+    fn the_default_worktrees_dir_is_claude_worktrees_under_main() {
+        let cfg = Config::default_for(PathBuf::from("/repo"));
+        assert_eq!(cfg.worktrees_dir(), PathBuf::from("/repo/.claude/worktrees"));
+        assert_eq!(cfg.worktree_path("inv"), PathBuf::from("/repo/.claude/worktrees/inv"));
+        assert_eq!(cfg.worktrees_subdir_str(), ".claude/worktrees/");
+    }
+
+    #[test]
+    fn a_custom_subdir_moves_the_dir_and_the_exclude_prefix() {
+        let mut cfg = Config::default_for(PathBuf::from("/repo"));
+        cfg.worktrees_subdir = PathBuf::from(".worktrees");
+        assert_eq!(cfg.worktrees_dir(), PathBuf::from("/repo/.worktrees"));
+        assert_eq!(cfg.worktrees_subdir_str(), ".worktrees/");
+    }
+
+    #[test]
+    fn a_subdir_outside_main_falls_back_to_the_default() {
+        // The container mapping, the exclude and path attribution all assume
+        // worktrees sit under main, so an absolute or climbing path is refused.
+        let mut cfg = Config::default_for(PathBuf::from("/repo"));
+        cfg.worktrees_subdir = PathBuf::from("/tmp/elsewhere");
+        assert_eq!(cfg.worktrees_dir(), PathBuf::from("/repo/.claude/worktrees"));
+        cfg.worktrees_subdir = PathBuf::from("../escape");
+        assert_eq!(cfg.worktrees_dir(), PathBuf::from("/repo/.claude/worktrees"));
+    }
+
+    #[test]
+    fn an_old_config_without_a_worktrees_subdir_gets_the_default() {
+        let cfg: Config = serde_json::from_str(r#"{"main_checkout":"/repo"}"#).expect("parse");
+        assert_eq!(cfg.worktrees_subdir, PathBuf::from(".claude/worktrees"));
     }
 
     #[test]

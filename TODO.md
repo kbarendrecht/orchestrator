@@ -111,10 +111,35 @@ Everything outside that block is hand-written and survives.
     are already config, but the defaults are a guess about someone else's stack;
     a first run should ask, or probe, rather than autostart a task that does not
     exist.
-  - **The worktree layout is the repo's.** `worktrees_dir()` is hardcoded to
-    `<main>/.claude/worktrees`, which is where acme's own `worktree-create`
-    hook puts them. A repo without that hook gets Claude Code's default location
-    instead and the daemon will not recognise its own worktrees.
+  - **The worktree layout is configurable.** *Done.* `worktrees_subdir`
+    (`src/config.rs`, default `.claude/worktrees`) is the relative-in-main path
+    `worktrees_dir()`/`worktree_path()` compose, and the changed-files exclude in
+    `git::status` follows it (`worktrees_subdir_str`) rather than a hardcoded
+    literal. An absolute or `..` value is refused back to the default, because the
+    container mapping, the exclude and path attribution all assume worktrees sit
+    under main. The old premise here was half wrong: Claude Code's built-in
+    `claude --worktree <name>` already targets `<repo>/.claude/worktrees/<name>`
+    on branch `worktree-<name>`, so a generic checkout needs no `worktree-create`
+    hook to be recognised — the only real gap was that the path was a constant.
+
+  - **Worktree creation, and the session model, still assume Claude.** Interactive
+    worktrees are made by `claude --worktree` (`spawn::spawn_worktree_session`), so
+    the *coding agent* is what cuts the worktree — which pins orchd to Claude Code
+    even for that step. The daemon already knows how to do it agent-free: PR
+    worktrees use plain `git worktree add` (`ensure_pr_worktree` →
+    `git::worktree_add_existing`) and only rely on `worktree-link` at SessionStart,
+    not on `worktree-create`. So interactive creation could become a configurable
+    strategy — a `git` mode (daemon cuts `git worktree add -b worktree-<name>
+    <dir>/<name> <upstream_ref>`, no agent) versus today's `agent` mode — with
+    fresh checkouts defaulting to `git` (portable) and acme's existing config
+    keeping `agent` so its `worktree-create` push/base setup is untouched (same
+    serde-default-vs-`default_for` split used for the review queue). But note the
+    honest scope: creation is one Claude coupling among the load-bearing ones. The
+    session model is Claude-specific throughout — `--session-id` correlation,
+    transcript slug lookup, the `ai-title` field, `--resume`, and the whole
+    hook-observer plumbing (`--settings` injection, SessionStart/PostToolUse/Stop).
+    Hosting another agent means abstracting *that* layer, not just worktree
+    creation; this bullet is the first, self-contained step, not the whole job.
   - **GitHub is the only forge.** The seam is now a real one: every read and
     write goes through the `Forge` trait (`src/forge/mod.rs`), with `GitHubForge`
     the sole impl (`forge/github.rs` GraphQL against github.com, `forge/github_write.rs`

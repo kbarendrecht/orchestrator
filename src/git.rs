@@ -75,18 +75,20 @@ pub enum Untracked {
 
 /// Changed files for a workspace, grouped staged / unstaged / untracked (§4).
 ///
-/// `exclude_worktrees` is set for main: main's file tree contains every
-/// worktree, so without it you see every sibling session's work (§2).
-pub fn status(cwd: &Path, exclude_worktrees: bool, untracked: Untracked) -> Result<FileSet> {
+/// `exclude` is `Some(prefix)` for main: main's file tree contains every
+/// worktree, so without dropping paths under the worktrees dir you see every
+/// sibling session's work (§2). The prefix is the repo-relative worktrees
+/// subdir (`Config::worktrees_subdir_str`), so it follows a relocated layout.
+pub fn status(cwd: &Path, exclude: Option<&str>, untracked: Untracked) -> Result<FileSet> {
     let mode = match untracked {
         Untracked::Collapsed => "--untracked-files=normal",
         Untracked::Each => "--untracked-files=all",
     };
     let raw = git_raw(cwd, &["status", "--porcelain=v2", mode, "-z"])?;
-    Ok(parse_status(&raw, exclude_worktrees))
+    Ok(parse_status(&raw, exclude))
 }
 
-fn parse_status(raw: &[u8], exclude_worktrees: bool) -> FileSet {
+fn parse_status(raw: &[u8], exclude: Option<&str>) -> FileSet {
     let mut set = FileSet::default();
     let mut records = raw
         .split(|b| *b == 0)
@@ -105,7 +107,7 @@ fn parse_status(raw: &[u8], exclude_worktrees: bool) -> FileSet {
                 if fields.len() < 9 {
                     continue;
                 }
-                push_xy(&mut set, fields[1], fields[8], exclude_worktrees);
+                push_xy(&mut set, fields[1], fields[8], exclude);
             }
             // Renamed or copied:
             //   2 <XY> ... <X><score> <path>\0<origPath>
@@ -117,13 +119,13 @@ fn parse_status(raw: &[u8], exclude_worktrees: bool) -> FileSet {
                 if fields.len() < 10 {
                     continue;
                 }
-                push_xy(&mut set, fields[1], fields[9], exclude_worktrees);
+                push_xy(&mut set, fields[1], fields[9], exclude);
             }
             // Unmerged. Both sides count as unstaged work.
             'u' => {
                 let fields: Vec<&str> = rec.splitn(11, ' ').collect();
                 if let Some(path) = fields.last() {
-                    if !skip(path, exclude_worktrees) {
+                    if !skip(path, exclude) {
                         set.unstaged.push(ChangedFile {
                             path: (*path).to_string(),
                             status: FileStatus::Unstaged,
@@ -134,7 +136,7 @@ fn parse_status(raw: &[u8], exclude_worktrees: bool) -> FileSet {
             }
             '?' => {
                 let path = rec.strip_prefix("? ").unwrap_or("");
-                if !path.is_empty() && !skip(path, exclude_worktrees) {
+                if !path.is_empty() && !skip(path, exclude) {
                     set.untracked.push(ChangedFile {
                         path: path.to_string(),
                         status: FileStatus::Untracked,
@@ -155,8 +157,8 @@ fn parse_status(raw: &[u8], exclude_worktrees: bool) -> FileSet {
 
 /// `XY`: X is the staged status, Y the unstaged one. `.` means unmodified, and
 /// a file can legitimately appear in both groups.
-fn push_xy(set: &mut FileSet, xy: &str, path: &str, exclude_worktrees: bool) {
-    if skip(path, exclude_worktrees) {
+fn push_xy(set: &mut FileSet, xy: &str, path: &str, exclude: Option<&str>) {
+    if skip(path, exclude) {
         return;
     }
     let mut it = xy.chars();
@@ -178,8 +180,8 @@ fn push_xy(set: &mut FileSet, xy: &str, path: &str, exclude_worktrees: bool) {
     }
 }
 
-fn skip(path: &str, exclude_worktrees: bool) -> bool {
-    exclude_worktrees && path.starts_with(".claude/worktrees/")
+fn skip(path: &str, exclude: Option<&str>) -> bool {
+    exclude.is_some_and(|prefix| path.starts_with(prefix))
 }
 
 // ---------------------------------------------------------------------------
@@ -1212,7 +1214,7 @@ mod tests {
     fn splits_staged_and_unstaged_from_one_entry() {
         // XY = "MM": staged modification and a further unstaged one.
         let raw = rec(&["1 MM N... 100644 100644 100644 aaa bbb src/Foo.php"]);
-        let set = parse_status(&raw, false);
+        let set = parse_status(&raw, None);
         assert_eq!(set.staged.len(), 1);
         assert_eq!(set.unstaged.len(), 1);
         assert_eq!(set.staged[0].path, "src/Foo.php");
@@ -1221,7 +1223,7 @@ mod tests {
     #[test]
     fn a_staged_only_entry_does_not_appear_as_unstaged() {
         let raw = rec(&["1 M. N... 100644 100644 100644 aaa bbb src/Foo.php"]);
-        let set = parse_status(&raw, false);
+        let set = parse_status(&raw, None);
         assert_eq!(set.staged.len(), 1);
         assert!(set.unstaged.is_empty());
     }
@@ -1233,7 +1235,7 @@ mod tests {
             "src/Old.php",
             "? untracked.txt",
         ]);
-        let set = parse_status(&raw, false);
+        let set = parse_status(&raw, None);
         assert_eq!(set.staged.len(), 1);
         assert_eq!(set.staged[0].path, "src/New.php");
         // The old path must not be read back as an entry of its own.
@@ -1244,7 +1246,7 @@ mod tests {
     #[test]
     fn excludes_sibling_worktrees_from_mains_view() {
         let raw = rec(&["? .claude/worktrees/other/file.php", "? src/Mine.php"]);
-        let set = parse_status(&raw, true);
+        let set = parse_status(&raw, Some(".claude/worktrees/"));
         assert_eq!(set.untracked.len(), 1);
         assert_eq!(set.untracked[0].path, "src/Mine.php");
     }
@@ -1252,8 +1254,18 @@ mod tests {
     #[test]
     fn keeps_worktree_paths_when_not_excluding() {
         let raw = rec(&["? .claude/worktrees/other/file.php"]);
-        let set = parse_status(&raw, false);
+        let set = parse_status(&raw, None);
         assert_eq!(set.untracked.len(), 1);
+    }
+
+    #[test]
+    fn excludes_the_configured_prefix_not_a_hardcoded_one() {
+        // A repo whose worktrees live under a different subdir excludes *that*,
+        // and leaves the old default's path alone.
+        let raw = rec(&["? .worktrees/other/file.php", "? .claude/worktrees/x.php"]);
+        let set = parse_status(&raw, Some(".worktrees/"));
+        assert_eq!(set.untracked.len(), 1);
+        assert_eq!(set.untracked[0].path, ".claude/worktrees/x.php");
     }
 
     fn scratch_repo() -> std::path::PathBuf {

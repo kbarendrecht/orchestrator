@@ -631,7 +631,10 @@ impl AppState {
                 .ok_or_else(|| anyhow::anyhow!("unknown workspace {workspace}"))?;
             (w.path.clone(), w.is_main())
         };
-        let set = git::status(&path, is_main, git::Untracked::Collapsed)?;
+        // Main's tree contains every worktree, so drop paths under the worktrees
+        // dir; a worktree sees only its own. The prefix follows a relocated layout.
+        let exclude = is_main.then(|| self.cfg.worktrees_subdir_str());
+        let set = git::status(&path, exclude.as_deref(), git::Untracked::Collapsed)?;
         // Recomputed alongside the file list, so the two always describe the
         // same moment.
         let divergence = git::divergence(&path, &self.cfg.upstream_ref).ok();
