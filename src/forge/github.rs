@@ -387,20 +387,7 @@ fn parse_summary_thread_page(v: &Value) -> Option<(Vec<Value>, Option<String>)> 
         .and_then(|n| n.as_array())
         .cloned()
         .unwrap_or_default();
-    // A `hasNextPage` with a null cursor would loop forever on the same page, so
-    // the cursor is what actually decides whether to continue (as in the detailed
-    // fetch).
-    let next = if root
-        .pointer("/pageInfo/hasNextPage")
-        .and_then(|b| b.as_bool())
-        .unwrap_or(false)
-    {
-        root.pointer("/pageInfo/endCursor")
-            .and_then(|c| c.as_str())
-            .map(|c| c.to_string())
-    } else {
-        None
-    };
+    let next = next_cursor(root);
     Some((nodes, next))
 }
 
@@ -963,19 +950,7 @@ fn parse_thread_page(v: &Value, pr: u64) -> Option<(Threads, Option<String>)> {
         .map(|ns| ns.iter().filter_map(parse_thread).collect())
         .unwrap_or_default();
 
-    // A `hasNextPage` with no cursor would loop forever on the same page, so
-    // the cursor is what actually decides whether to continue.
-    let next = if root
-        .pointer("/pageInfo/hasNextPage")
-        .and_then(|b| b.as_bool())
-        .unwrap_or(false)
-    {
-        root.pointer("/pageInfo/endCursor")
-            .and_then(|c| c.as_str())
-            .map(|c| c.to_string())
-    } else {
-        None
-    };
+    let next = next_cursor(root);
 
     Some((
         Threads {

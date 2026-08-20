@@ -364,13 +364,15 @@ impl Config {
     /// an unknown value falls back to `default` rather than failing the load.
     pub fn parse_with_profile(raw: &str) -> Result<Config> {
         let user: serde_json::Value = serde_json::from_str(raw).context("config is not JSON")?;
-        let profile = match user.get("profile").and_then(|p| p.as_str()) {
-            Some("acme") => Profile::acme,
-            None | Some("default") => Profile::Default,
-            Some(other) => {
-                tracing::warn!("unknown profile {other:?}; using the default profile");
+        // Deserialize the profile name rather than hand-map it, so adding a
+        // profile is just a `Profile` variant and a `preset()` arm. An unknown
+        // value falls back to `default` rather than failing the load.
+        let profile = match user.get("profile") {
+            None => Profile::Default,
+            Some(v) => serde_json::from_value::<Profile>(v.clone()).unwrap_or_else(|_| {
+                tracing::warn!("unknown profile {v}; using the default profile");
                 Profile::Default
-            }
+            }),
         };
         let mut effective = profile.preset();
         deep_merge(&mut effective, user);
@@ -393,40 +395,38 @@ impl Config {
                 default_worktrees_subdir()
             }
         };
+        // The base fetch (`git::fetch_upstream`) splits its remote out of
+        // `upstream_ref`, while repo detection reads `upstream_remote`; if they
+        // name different remotes the merge-base and the resolved repo drift apart
+        // with nothing to say so. They are equal in every profile and default, so
+        // a mismatch is a hand-edit slip worth surfacing.
+        if let Some((ref_remote, _)) = cfg.upstream_ref.split_once('/') {
+            if ref_remote != cfg.upstream_remote {
+                tracing::warn!(
+                    "upstream_ref {:?} uses remote {:?}, but upstream_remote is {:?}; \
+                     the base fetch and repo detection will disagree",
+                    cfg.upstream_ref,
+                    ref_remote,
+                    cfg.upstream_remote
+                );
+            }
+        }
         Ok(cfg)
     }
 
+    /// The config a first run writes: a `default`-profile config that sets only
+    /// the checkout, everything else its serde default. Built *through*
+    /// `parse_with_profile` rather than by hand so a first run and the same file
+    /// parsed from disk can never diverge — the field defaults live in one place
+    /// (the `#[serde(default = …)]` attributes), not two.
+    ///
+    /// The default profile ships no `main_processes` (a fresh checkout must not
+    /// autostart a task a foreign repo lacks) and an empty `upstream`/tracker —
+    /// all of that falls out of the serde defaults, no special-casing here.
     fn default_for(main_checkout: PathBuf) -> Self {
-        Config {
-            main_checkout,
-            profile: Profile::Default,
-            worktrees_subdir: default_worktrees_subdir(),
-            port: default_port(),
-            // No managed processes on a fresh checkout: the daemon does not know
-            // what a foreign repo runs, and autostarting a task that does not
-            // exist is worse than starting nothing. A stack that has them (see
-            // the `acme` profile) supplies its own; a first run can add them
-            // to config.json.
-            main_processes: vec![],
-            worktree_processes: vec![],
-            upstream_ref: default_upstream(),
-            upstream_remote: default_upstream_remote(),
-            repo: None,
-            github_token_file: None,
-            poll_seconds: default_poll_seconds(),
-            forge: ForgeKind::default(),
-            // The queue is built in and asks the forge directly, so a fresh
-            // checkout needs no setup; the default ranking reproduces the buckets
-            // it shipped with.
-            review_ranking: Default::default(),
-            tracker: Tracker::None,
-            shortcut_token_file: None,
-            story_timeout_seconds: default_story_timeout(),
-            output_language: default_output_language(),
-            capabilities: Default::default(),
-            todo_path: None,
-            auto_resume: default_auto_resume(),
-        }
+        let raw = serde_json::json!({ "main_checkout": main_checkout }).to_string();
+        // Cannot fail: the JSON is a single known-valid key.
+        Self::parse_with_profile(&raw).expect("the default config is valid")
     }
 
     pub fn worktrees_dir(&self) -> PathBuf {

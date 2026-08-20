@@ -31,8 +31,6 @@ pub struct Review {
     /// sort and for anyone reading the API; the SPA colours off [`Review::tone`]
     /// rather than off magic numbers here.
     pub prio: u32,
-    pub needs_re_review: bool,
-    pub is_draft: bool,
     /// `conflicts`, `failing checks`, … — non-empty means it is waiting on
     /// someone else and sinks to the `blocked` list.
     pub blockers: Vec<String>,
@@ -195,10 +193,11 @@ pub struct Predicate {
 
 impl Predicate {
     fn matches(&self, c: &ReviewCandidate, re_review: bool) -> bool {
-        if self.always {
-            return true;
-        }
-        let mut constrained = false;
+        // `always` is a trivially-true term, not an override: a predicate that
+        // sets it *and* a condition still has to satisfy the condition. Seeding
+        // `constrained` with it means a bare `always` matches (the catch-all)
+        // while an empty predicate still matches nothing.
+        let mut constrained = self.always;
         let mut check = |cond: bool| -> bool {
             constrained = true;
             cond
@@ -491,8 +490,6 @@ fn rank(login: String, cands: &[ReviewCandidate], ranking: &ReviewRanking, now: 
             author: c.author.clone(),
             age_hours: age_hours_from(&c.created_at, now),
             prio,
-            needs_re_review: d.re_review,
-            is_draft: c.is_draft,
             reviewers: d.reviewers,
             changed_files: c.changed_files,
             reason,
@@ -665,7 +662,6 @@ mod tests {
         c.reviews = vec![review("me", "CHANGES_REQUESTED", "old")]; // you looked at an older head
         let q = ranked(&[c]);
         let row = &q.actionable[0];
-        assert!(row.needs_re_review);
         assert_eq!(row.tone, Tone::Rereview);
         assert_eq!(row.reason, "re-requested");
     }
@@ -859,6 +855,26 @@ mod tests {
         let c = cand(1);
         assert!(!Predicate::default().matches(&c, false));
         assert!(Predicate { always: true, ..Default::default() }.matches(&c, false));
+    }
+
+    #[test]
+    fn always_does_not_override_a_failing_condition() {
+        // "always, when labelled X" must still require the label, not paint the
+        // whole queue — `always` is a trivially-true term, not a short-circuit.
+        let mut c = cand(1);
+        c.labels = vec!["prio".into()];
+        let with_label = Predicate {
+            always: true,
+            label: Some("prio".into()),
+            ..Default::default()
+        };
+        assert!(with_label.matches(&c, false), "label present → matches");
+        let missing = Predicate {
+            always: true,
+            label: Some("stopper".into()),
+            ..Default::default()
+        };
+        assert!(!missing.matches(&c, false), "label absent → does not match");
     }
 
     #[test]
