@@ -570,9 +570,32 @@ pub fn conflicted_files(cwd: &Path) -> Result<Vec<String>> {
     Ok(out.lines().map(|l| l.to_string()).collect())
 }
 
-pub fn fetch_upstream(main: &Path) -> Result<()> {
-    git(main, &["fetch", "upstream", "develop", "--no-tags"])?;
+/// Refresh the base ref the context bar measures against, from config rather
+/// than a hardcoded `upstream develop`.
+///
+/// `upstream_ref` is `remote/branch` (e.g. `upstream/develop`, `origin/HEAD`).
+/// A concrete branch is fetched by name — one branch, cheap, the common case. A
+/// `HEAD` branch means "the remote's default branch, whatever it is", so the
+/// whole remote is fetched to keep its `HEAD` symref fresh; that is the portable
+/// default for a repo with no fork and no `develop`.
+pub fn fetch_upstream(main: &Path, upstream_ref: &str) -> Result<()> {
+    let argv = upstream_fetch_argv(upstream_ref);
+    git(main, &argv)?;
     Ok(())
+}
+
+/// Split out so the ref-to-argv rule is testable without a network fetch.
+fn upstream_fetch_argv(upstream_ref: &str) -> Vec<&str> {
+    let (remote, branch) = upstream_ref.split_once('/').unwrap_or(("origin", upstream_ref));
+    if branch.eq_ignore_ascii_case("HEAD") {
+        // The remote's default branch, whatever it is: fetch the remote so its
+        // HEAD symref stays fresh.
+        vec!["fetch", remote, "--no-tags"]
+    } else {
+        // A named branch — one branch, cheap. `split_once` keeps a nested branch
+        // like `origin/feature/x` intact.
+        vec!["fetch", remote, branch, "--no-tags"]
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1102,6 +1125,30 @@ fn hash_one(cwd: &Path, rel: &str) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn upstream_fetch_argv_is_config_driven_not_hardcoded() {
+        // A fork workflow fetches one named branch (as before).
+        assert_eq!(
+            upstream_fetch_argv("upstream/develop"),
+            vec!["fetch", "upstream", "develop", "--no-tags"]
+        );
+        // The portable default fetches the whole remote to refresh its HEAD.
+        assert_eq!(
+            upstream_fetch_argv("origin/HEAD"),
+            vec!["fetch", "origin", "--no-tags"]
+        );
+        // A nested branch name stays intact.
+        assert_eq!(
+            upstream_fetch_argv("origin/release/2026"),
+            vec!["fetch", "origin", "release/2026", "--no-tags"]
+        );
+        // A bare ref assumes origin.
+        assert_eq!(
+            upstream_fetch_argv("main"),
+            vec!["fetch", "origin", "main", "--no-tags"]
+        );
+    }
 
     /// A `feature` branch on the scratch repo, and the sha a conversation on it
     /// would have recorded.

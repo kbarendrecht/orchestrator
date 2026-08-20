@@ -2211,7 +2211,7 @@ pub async fn rebase(
     }
 
     // Refresh the base first, or "behind" is answered from a stale ref.
-    let _ = crate::git::fetch_upstream(&app.cfg.main_checkout);
+    let _ = crate::git::fetch_upstream(&app.cfg.main_checkout, &app.cfg.upstream_ref);
 
     let upstream = app.cfg.upstream_ref.clone();
     let p = path.clone();

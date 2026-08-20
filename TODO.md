@@ -166,8 +166,15 @@ Everything outside that block is hand-written and survives.
     URL-parsing is github.com-specific.
   - **Shortcut is the only tracker** (`Tracker` in `src/config.rs`), and the
     prompts tell the agent to write stories **in Dutch**. Both belong in settings.
-  - **`upstream/develop`** as the base ref, and the fork-with-upstream remote
-    layout, are defaults that suit one workflow.
+  - **The base ref default is portable.** *Done.* The generic default is
+    `origin/HEAD` + remote `origin` (`src/config.rs`) — the remote's own default
+    branch, no `develop`, no fork. `fetch_upstream` (`src/git.rs`) is now
+    config-driven (it split `remote/branch` out of `upstream_ref` instead of the
+    old hardcoded `git fetch upstream develop`); a `HEAD` branch fetches the whole
+    remote to keep its symref fresh, a named branch fetches just that. The
+    fork-with-`upstream/develop` layout is the `acme` profile's, not a global
+    default. (A rarely-hit `parse_pr` baseRefName fallback still says `develop`;
+    left as out-of-scope — GitHub reliably supplies the field.)
   - The folder picker already exists (`desktop/src/main.rs`, shown when
     `Config::existing()` is `None`), so first-run has a start; what it does not
     have is the rest of the questions.

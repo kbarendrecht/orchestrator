@@ -163,8 +163,11 @@ fn rewrite_main_checkout(path: &Path, raw: &str, main: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Portable default: the remote's own default branch, whatever it is named. A
+/// fork workflow (PRs against an `upstream/develop`) sets its own — the `acme`
+/// profile does.
 fn default_upstream() -> String {
-    "upstream/develop".to_string()
+    "origin/HEAD".to_string()
 }
 
 fn default_auto_resume() -> bool {
@@ -172,7 +175,7 @@ fn default_auto_resume() -> bool {
 }
 
 fn default_upstream_remote() -> String {
-    "upstream".to_string()
+    "origin".to_string()
 }
 
 fn default_poll_seconds() -> u64 {
@@ -531,6 +534,9 @@ mod tests {
         assert_eq!(cfg.profile, Profile::Default);
         assert!(cfg.main_processes.is_empty(), "no processes assumed");
         assert_eq!(cfg.tracker, Tracker::None);
+        // Portable base ref: the remote's default branch, not acme's fork.
+        assert_eq!(cfg.upstream_ref, "origin/HEAD");
+        assert_eq!(cfg.upstream_remote, "origin");
         assert!(Config::default_for(PathBuf::from("/tmp/x")).main_processes.is_empty());
     }
 

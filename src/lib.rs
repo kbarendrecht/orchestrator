@@ -172,9 +172,9 @@ pub async fn start(opts: StartOptions) -> Result<Server> {
     let token = state::random_token();
     let app = AppState::new(cfg, token.clone(), opts.chrome);
 
-    // Keep `upstream/develop` fresh or the merge-base the context bar shows
-    // drifts (§5). Offline is not fatal — the last-known ref still resolves.
-    if let Err(e) = git::fetch_upstream(&app.cfg.main_checkout) {
+    // Keep the base ref fresh or the merge-base the context bar shows drifts
+    // (§5). Offline is not fatal — the last-known ref still resolves.
+    if let Err(e) = git::fetch_upstream(&app.cfg.main_checkout, &app.cfg.upstream_ref) {
         tracing::warn!("upstream fetch failed, using last-known ref: {e:#}");
     }
 
@@ -439,7 +439,8 @@ fn start_pr_poller(app: Arc<AppState>) {
             // Piggyback the upstream fetch on this timer (§5): the merge-base
             // and the behind count are both answered from that ref.
             let main = app.cfg.main_checkout.clone();
-            let _ = tokio::task::spawn_blocking(move || git::fetch_upstream(&main)).await;
+            let base = app.cfg.upstream_ref.clone();
+            let _ = tokio::task::spawn_blocking(move || git::fetch_upstream(&main, &base)).await;
             reconcile_all(&app).await;
 
             app.inner.write().await.pr_polling = true;
