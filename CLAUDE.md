@@ -10,7 +10,7 @@ are already in there with the reason they were not done.
 
 ```
 cargo check                         # the daemon
-cargo test                          # 265 tests, all in-tree
+cargo test                          # 237 tests, all in-tree
 cargo run -p orchestrator-desktop   # the app, daemon embedded in-process
 mise run shot                       # screenshot the running SPA (drives Chrome)
 ```

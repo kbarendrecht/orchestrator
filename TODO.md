@@ -95,22 +95,10 @@ Everything outside that block is hand-written and survives.
   inside, and a file in the worktree would dirty the tree). Next step is the exact
   path the dialog names.
 
-- **Unsettled review findings on the portability work.** A high-effort review of
-  `559c803..ff387df` confirmed eight problems; four were fixed in `ff387df`, and
-  these are the ones left, held deliberately because each wants a decision rather
-  than an obvious patch. To work through together:
-  - **`requested_team`'s two derivations — looked into, sound, hardened.** The
-    review flagged that it means "matched the search but not by name" in
-    `requested` coverage and real membership in `all_open`, and feared a machine
-    flipping `coverage` would silently reorder its queue. On inspection it does
-    not: `review-requested:@me` matches only a direct or team request, so in that
-    set `!requested_personally` genuinely *is* "via a team", and the two
-    derivations never contradict for a PR present in both. The rules that go
-    unreachable in `requested` mode (`re_review`/`sidequest`/`always`) are
-    unreachable because their PRs — non-requested ones — are not in the set, which
-    is exactly what acme's own `rankOf` does too. Left in place with a comment
-    explaining why it is sound; the one real edge (a personal request past the
-    Nth reviewer reading as team) was closed by raising `reviewRequests` to 100.
+- **Findings from the portability review still worth keeping.** A high-effort
+  review of `559c803..ff387df` surfaced these; the ones about the built-in review
+  ranking are gone now the queue is back to a command, and what remains is
+  recorded below.
   - **`worktrees_subdir` normalisation.** *Done.* `parse_with_profile` now
     sanitises the field once via `normalize_worktrees_subdir` — drop `.`
     components, refuse absolute / `..` / anything that normalises to nothing —
@@ -118,21 +106,6 @@ Everything outside that block is hand-written and survives.
     worktrees dir onto main or make the exclude prefix `/` (the §2 sibling leak).
     Validation moved out of the per-call accessor that re-warned on every hook
     event; the accessors now trust the field.
-  - **The `all_open` walk's deadline and cost.** *Done.* `page_through` now
-    enforces a whole-walk deadline (`REVIEW_FETCH_BUDGET`, 240s) inside the
-    blocking work, so a slow-but-not-erroring GitHub makes the fetch bail to
-    `Degraded` rather than hold the thread for hours with the pane spinning; the
-    thread self-terminates instead of leaking. The generous ceiling trips on
-    pathology, not size (size is bounded by `MAX_PR_PAGES`, which warns). The
-    point cost is real on a large shared-pool repo and is no longer papered over:
-    `config.rs`'s `poll_seconds` comment and the `Coverage::AllOpen` doc now say
-    `all_open` is many heavy pages per poll and a reason to raise the interval.
-  - **The prose maps are stale.** `README.md` (:119, :226-227) still lists
-    `github.rs`/`github_write.rs` and describes the queue as `mise run reviews
-    --json` backed by the deleted `docs/reviews-json.md`; hand-written TODO
-    entries (:35, :69, :191) and `docs/resolve-flow-plan.md` (:12, :33, :80) still
-    name the pre-`forge/` paths. CLAUDE.md points a new reader at README for the
-    module map, so this is the one a stranger hits first.
   - **The forge seam is now real, not nominal.** *Done.* `ForgeKind` is read by
     `ForgeImpl::for_kind` (`src/forge/mod.rs`), the enum-dispatch handle every
     caller now holds instead of a concrete `GitHubForge` — reads *and* writes go
@@ -145,25 +118,10 @@ Everything outside that block is hand-written and survives.
     `spawn_blocking`). The two GitHub-shaped leaks still stand for a real second
     forge: `ThreadRoot`'s `comment_id` is a REST id, and the read token ladder is
     GitHub's.
-  - Unverified, not a finding: whether `review-requested:@me` matches PRs
-    requested of a *team* you are on. It decides whether the default coverage
-    quietly misses team-assigned reviews. acme currently has zero of both, so
-    it could not be settled empirically — the `requested` path has never run
-    against real data with results.
 
   Smaller ones from the same review, same kind as the `ForgeKind` note — all now
-  fixed except one deliberate keep:
+  fixed:
 
-  - **`always` no longer short-circuits a condition.** *Done.* `Predicate::matches`
-    seeds `constrained` with `always` rather than returning early, so `{"always":
-    true, "label": X}` still requires the label — `always` is a trivially-true
-    term, not an override. Deliberately *not* adding `deny_unknown_fields`: a
-    typo'd predicate key still no-ops rather than erroring, which matches the rest
-    of the config's tolerance (it drops unknown top-level keys too), and erroring
-    would let one stray key brick a load.
-  - **Dead `is_draft`/`needs_re_review` removed.** *Done.* Both were always-derivable
-    (`is_review_work` drops drafts; `needs_re_review == tone == Rereview`) and
-    unread by the SPA, so they are gone from `Review`.
   - **Upstream-remote mismatch is surfaced.** *Done (surfaced, not unified).*
     `parse_with_profile` warns when `upstream_ref`'s remote prefix disagrees with
     `upstream_remote` — the two feed the base fetch and repo detection and were
@@ -181,10 +139,10 @@ Everything outside that block is hand-written and survives.
   - ~~`resolve_repo` + `resolve_token` + `GitHubForge::new` repeated four times~~
     *Done as part of wiring the seam:* the two `api.rs` sites are now
     `read_forge`/`write_forge`, and construction everywhere goes through
-    `ForgeImpl::for_kind`. The two `lib.rs` pollers still resolve token/repo
-    inline because each has its own surrounding logic (token-source reporting;
-    `Off`-vs-`Degraded`), which is fine.
-  - CLAUDE.md test count. *Done* — updated to 265.
+    `ForgeImpl::for_kind`. The PR poller still resolves token/repo inline for its
+    token-source reporting; the review poller no longer touches the forge at all
+    now the queue is a command.
+  - CLAUDE.md test count. *Done* — updated to 237 after the review-queue revert.
 
 - **Make it run somewhere other than this machine.** Everything below is a
   hardcoded assumption about one monorepo, and each is a setting or a probe
