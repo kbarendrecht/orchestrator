@@ -121,15 +121,16 @@ newer version is out it shows a dismissible nudge in the window. The nudge only
 - **PR poller** — one GraphQL search per 5 minutes for your own open PRs on
   upstream. Rollup read off the head commit, outdated threads excluded, capped
   thread pages rendered `50+`, stacks detected by `baseRefName`.
-- **Review queue** — built in: the daemon asks the forge directly on an offset
-  timer and ranks the result with a config-driven rule engine (`review_ranking`;
-  `requested` or `all_open` coverage). Degrades to `unavailable` rather than to
-  an empty queue, and reads `not configured` when no forge repo resolves.
+- **Review queue** — shells out to a configured `reviews_command` on an offset
+  timer and renders its JSON (the shape in `docs/reviews-json.md`), ranking and
+  all. Degrades to `unavailable` rather than to an empty queue when the command
+  fails, and reads `not configured` when none is set. `acme` points it at
+  `mise run reviews --json`; a plain checkout leaves it off.
 - **Config profiles** — `profile` (`default` | `acme`) selects a baked-in
   bundle a machine's `config.json` is deep-merged over (config keys win), so a
   stack's many machines write just `{ main_checkout, profile }`. `default` is
   empty and generic; `acme` (`src/profiles/acme.json`) carries that stack's
-  processes, tracker, upstream refs, review ranking and output language.
+  processes, tracker, upstream refs, review command and output language.
 - **`/resolve`** — worktree pinned to the PR's head branch, skill invocation
   typed into the pty once `SessionStart` lands.
 - **Editable diff pane** — the right side is a live buffer with a disk write
@@ -214,8 +215,8 @@ src/
   forge/        the Forge seam: trait + ForgeImpl dispatch (mod.rs), the
                 agnostic model (model.rs), and the GitHub impl (github.rs
                 token/GraphQL/PR model/stacks, github_write.rs the gh writes)
-  reviews.rs    built-in review queue: candidates from the forge, config-driven
-                ranking (coverage, rules, blockers, tiebreak), degraded states
+  reviews.rs    review queue: runs `reviews_command`, parses its JSON, degraded
+                states when it exits non-zero or emits the wrong shape
   profiles/     baked-in config bundles a machine merges over (acme.json)
   fix_pr.rs     automation state and the fix-pr guard table
   edit.rs       file read/write with containment and conflict detection

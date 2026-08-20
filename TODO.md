@@ -197,18 +197,18 @@ Everything outside that block is hand-written and survives.
     tracker, upstream refs and review ranking, so its many machines write only
     `{ main_checkout, profile }` plus whatever they override. Adding a profile is
     a new arm plus a JSON file.
-  - **The review queue is built in.** *Done.* It asks the forge directly
-    (`Forge::review_candidates`) — no external command, no acme JSON shape, no
-    `acme/monorepo` fallback URL. Everything opinionated is config
-    (`review_ranking`, `src/reviews.rs`): a `coverage` mode (`requested` default,
-    or `all_open` for a shared-pool repo that walks every open PR), a first-match
-    rule ladder, `blocked_when`, `tiebreak`, `skip_labels`, `bot_reviewers`, and a
-    `without_label` predicate escape. Portable defaults are generic and label-free;
-    acme's exact queue (its `.mise/review/queue`) lives in the `acme`
-    profile — verified byte-for-byte against `mise run reviews --json` (same
-    actionable/blocked sets, order, prio and blockers). A checkout with no
-    resolvable forge repo reads `ReviewState::Off`. What is still GitHub-only is
-    the *forge* itself — see the forge item below.
+  - **The review queue runs a configured command.** *Reverted to this on
+    purpose.* A built-in GraphQL queue with a config-driven ranking engine was
+    built and worked, but it was more machinery than the one real user wanted to
+    own, so the daemon went back to shelling out to `reviews_command` and
+    rendering its JSON (`docs/reviews-json.md`, `src/reviews.rs`). `acme`
+    points it at `mise run reviews --json`, where the ranking already lives and is
+    edited as bash; a plain checkout leaves it empty and the pane reads `off`. The
+    trade-off, accepted: a fresh checkout on another machine gets **no** queue
+    until it configures a command — the portability the built-in version gave for
+    free is gone. The `Forge` seam stays (PRs, threads, writes); only its
+    `review_candidates` arm was removed. Revisit only if a second consumer ever
+    wants a queue without a script.
   - **Docker and `ng` are no longer assumed.** *Done via profiles.*
     `default_for` ships no `main_processes`, so a fresh checkout autostarts
     nothing that does not exist; acme's `ng-watch` (the real
@@ -391,6 +391,6 @@ Everything outside that block is hand-written and survives.
 
 Rewritten by the daemon on every poll. Edit anything outside this block.
 
-Nothing outstanding.
+- **GitHub token is gh's** — it carries write scopes; §6 wants a read-only PAT in `ORCHD_GITHUB_TOKEN` or `github_token_file`.
 
 <!-- <<< orchd live findings <<< -->

@@ -638,28 +638,17 @@ fn start_review_poller(app: Arc<AppState>) {
             // button pulses `review_refresh`.
             app.inner.write().await.reviews_polling = true;
             app.notify().await;
-            // No repo resolves → nothing to query, and the pane says so rather
-            // than reading as broken. A repo but a bad/absent token → Degraded,
-            // the same way the PR poll surfaces an auth failure.
-            let state = match resolve_repo(&app) {
-                None => reviews::ReviewState::Off,
-                Some((owner, name)) => {
-                    match forge::resolve_token(app.cfg.github_token_file.as_deref()) {
-                        Err(e) => reviews::ReviewState::Degraded {
-                            reason: format!("{e:#}"),
-                        },
-                        Ok(t) => {
-                            let f = forge::ForgeImpl::for_kind(app.cfg.forge, owner, name, t.value);
-                            let ranking = app.cfg.review_ranking.clone();
-                            tokio::task::spawn_blocking(move || reviews::fetch(&f, &ranking))
-                                .await
-                                .unwrap_or_else(|e| reviews::ReviewState::Degraded {
-                                    reason: format!("review poll task failed: {e}"),
-                                })
-                        }
-                    }
-                }
-            };
+            // The command answers for itself: no `reviews_command` configured →
+            // `Off`, a non-zero exit or unparseable output → `Degraded`. It shells
+            // out, so it runs off the async runtime.
+            let main = app.cfg.main_checkout.clone();
+            let timeout = app.cfg.review_timeout_seconds;
+            let command = app.cfg.reviews_command.clone();
+            let state = tokio::task::spawn_blocking(move || reviews::fetch(&main, timeout, &command))
+                .await
+                .unwrap_or_else(|e| reviews::ReviewState::Degraded {
+                    reason: format!("review poll task failed: {e}"),
+                });
             if let reviews::ReviewState::Degraded { reason } = &state {
                 tracing::warn!("review queue degraded: {reason}");
             }

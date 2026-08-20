@@ -87,50 +87,6 @@ impl Pr {
     }
 }
 
-/// A PR where your review is requested — raw, unranked forge output.
-///
-/// The policy that turns this into a ranked [`crate::reviews::Review`] lives in
-/// [`crate::reviews`] and is config-driven, so it is the same whatever forge
-/// produced the candidate.
-#[derive(Debug, Clone, Serialize)]
-pub struct ReviewCandidate {
-    pub number: u64,
-    pub title: String,
-    pub url: String,
-    pub author: String,
-    /// ISO-8601, e.g. `2026-08-20T12:34:56Z`. Turned into an age in
-    /// [`crate::reviews`], where "now" lives.
-    pub created_at: String,
-    pub is_draft: bool,
-    /// `MERGEABLE` / `CONFLICTING` / `UNKNOWN`.
-    pub mergeable: String,
-    pub checks: Checks,
-    pub labels: Vec<String>,
-    /// You are named directly on the review request.
-    pub requested_personally: bool,
-    /// A team you are on is requested. In `requested` coverage this is
-    /// "matched the search but not personally"; in `all_open` it is resolved
-    /// against your team memberships.
-    pub requested_team: bool,
-    pub changed_files: Option<u32>,
-    /// The head commit's oid — the "current head" a review is measured against.
-    pub head_oid: Option<String>,
-    /// Every review left on the PR. `re_review`, the reviewer count, "approved"
-    /// and "reviewed the current head" are all derived from these in
-    /// [`crate::reviews`], where the bot list and the viewer live.
-    pub reviews: Vec<ReviewRef>,
-}
-
-/// One review on a PR, slimmed to what ranking needs.
-#[derive(Debug, Clone, Serialize)]
-pub struct ReviewRef {
-    pub author: String,
-    /// `APPROVED` / `CHANGES_REQUESTED` / `COMMENTED` / `DISMISSED` / `PENDING`.
-    pub state: String,
-    /// The commit this review was left on, for "have I seen the current head".
-    pub commit_oid: Option<String>,
-}
-
 // ---------------------------------------------------------------------------
 // Review threads
 // ---------------------------------------------------------------------------
