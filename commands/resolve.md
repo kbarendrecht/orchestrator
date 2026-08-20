@@ -106,8 +106,8 @@ gh api -X POST repos/{{OWNER}}/{{REPO}}/pulls/comments/<id>/reactions -f content
 
 Written replies:
 
-- Match the thread's language. This team reviews in Dutch, so replies are Dutch by
-  default, English tech terms intact.
+- Match the thread's language. When it is unclear, default to {{LANGUAGE}}; keep
+  technical terms in their conventional form.
 - Say what changed and why. Nothing about mechanics: no rebasing, no amending, no
   "good catch", no restating their comment back at them.
 - One or two sentences. A reject states the fact that refutes it and where to see it.

@@ -375,6 +375,7 @@ async fn vendored_prompt_file(app: &Arc<AppState>, pr: u64, command: &str) -> Re
             upstream: app.cfg.upstream_ref.clone(),
             upstream_remote: app.cfg.upstream_remote.clone(),
             ask_base: format!("http://127.0.0.1:{}/api/session", app.cfg.port),
+            language: app.cfg.output_language.clone(),
             // The review flow's template uses none of triage's or story's vars.
             ..Default::default()
         },

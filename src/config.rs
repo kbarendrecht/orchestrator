@@ -68,6 +68,12 @@ pub struct Config {
     /// so minutes, not seconds.
     #[serde(default = "default_story_timeout")]
     pub story_timeout_seconds: u64,
+    /// The language the agent *writes* in — reviewer replies and story text.
+    /// Prompts and code stay English; this is only the outward prose. The agent
+    /// still matches a thread's own language first and falls back to this when
+    /// that is unclear. Defaults to English; the `acme` profile sets Dutch.
+    #[serde(default = "default_output_language")]
+    pub output_language: String,
     /// 288 queries/day is negligible against 5000 points/hour (§6).
     #[serde(default = "default_poll_seconds")]
     pub poll_seconds: u64,
@@ -204,6 +210,10 @@ impl Tracker {
 
 fn default_story_timeout() -> u64 {
     300
+}
+
+fn default_output_language() -> String {
+    "English".to_string()
 }
 
 /// Which code-hosting platform the repo lives on. The read/write seam is
@@ -364,6 +374,7 @@ impl Config {
             tracker: Tracker::None,
             shortcut_token_file: None,
             story_timeout_seconds: default_story_timeout(),
+            output_language: default_output_language(),
             capabilities: Default::default(),
             todo_path: None,
             auto_resume: default_auto_resume(),
@@ -509,6 +520,7 @@ mod tests {
         assert_eq!(cfg.review_ranking.coverage, crate::reviews::Coverage::AllOpen);
         assert_eq!(cfg.tracker, Tracker::Shortcut);
         assert_eq!(cfg.upstream_ref, "upstream/develop");
+        assert_eq!(cfg.output_language, "Dutch");
         assert_eq!(cfg.main_processes.len(), 2);
         assert_eq!(cfg.capabilities.suites.len(), 4);
     }
@@ -537,6 +549,7 @@ mod tests {
         // Portable base ref: the remote's default branch, not acme's fork.
         assert_eq!(cfg.upstream_ref, "origin/HEAD");
         assert_eq!(cfg.upstream_remote, "origin");
+        assert_eq!(cfg.output_language, "English", "outward prose defaults to English");
         assert!(Config::default_for(PathBuf::from("/tmp/x")).main_processes.is_empty());
     }
 

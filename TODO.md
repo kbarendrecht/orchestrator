@@ -164,8 +164,15 @@ Everything outside that block is hand-written and survives.
     construction sites. Two known GitHub-shaped leaks to generalise then —
     `ThreadRoot`'s `comment_id` is a REST id, and `GitHubForge::detect`'s
     URL-parsing is github.com-specific.
-  - **Shortcut is the only tracker** (`Tracker` in `src/config.rs`), and the
-    prompts tell the agent to write stories **in Dutch**. Both belong in settings.
+  - **Output language is a setting; the tracker is config already.** *Done for
+    the language.* `output_language` (`src/config.rs`, default `English`, the
+    `acme` profile sets `Dutch`) fills a `{{LANGUAGE}}` placeholder the triage
+    and resolve prompts use for the prose the agent *writes* — replies and story
+    text. Prompts and code stay English, and a thread's own language still wins
+    when it is clear. The `tracker` (`Tracker` enum) is already a config field
+    (`none`/`shortcut`/`stub`); Shortcut is still the only real backend, and
+    adding another (Jira, Linear, …) is a separate integration, not a setting —
+    it would want a tracker seam the way the forge has one.
   - **The base ref default is portable.** *Done.* The generic default is
     `origin/HEAD` + remote `origin` (`src/config.rs`) — the remote's own default
     branch, no `develop`, no fork. `fetch_upstream` (`src/git.rs`) is now

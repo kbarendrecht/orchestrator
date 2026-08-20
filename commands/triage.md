@@ -109,7 +109,8 @@ human sees your patch and your words before they accept.
 
 ### Replies
 
-- Dutch by default, matching the thread's language, English tech terms intact.
+- Match the thread's language; default to {{LANGUAGE}} when unclear. Keep technical
+  terms in their conventional form.
 - Say what changed and why. No mechanics: no rebasing, no amending, no "good catch", no
   restating their comment back at them.
 - One or two sentences. A pushback states the fact that refutes it and where to see it.
@@ -175,7 +176,7 @@ curl -sS -X POST '{{PROPOSALS_URL}}' \
 - A `story+reply` reply must contain the literal `{story}`, which the daemon replaces with
   the id once the story exists. It cannot be written in advance.
 - {{TRACKER}}
-- A `story` is `title` and `body` only. Write both in Dutch, as the repo does. **No em
+- A `story` is `title` and `body` only. Write both in {{LANGUAGE}}. **No em
   dashes and no `.plan/` or other internal labels** — the tracker rejects the first and
   nobody outside this session understands the second. Say what the follow-up work is, and
   why it is out of scope for this PR; the daemon appends the link back to the thread, so

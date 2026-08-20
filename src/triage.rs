@@ -151,6 +151,7 @@ pub async fn spawn(app: &Arc<AppState>, pr: u64, head_ref: &str, login: &str) ->
             } else {
                 prompt::TRACKER_OFF.to_string()
             },
+            language: app.cfg.output_language.clone(),
             ..Default::default()
         },
     )?;

@@ -74,6 +74,10 @@ pub struct Vars {
     pub stories: String,
     /// The file a story run writes its answer into.
     pub drop_file: String,
+    /// The language the agent writes replies and story text in — `{{LANGUAGE}}`.
+    /// Prompts stay English; this is the outward prose only, and the thread's own
+    /// language still wins when it is clear.
+    pub language: String,
     /// Where a running session asks a question: the base the two interaction
     /// routes hang off, since the session id itself comes from the environment.
     pub ask_base: String,
@@ -99,6 +103,7 @@ pub fn render(template: &str, v: &Vars) -> Result<String> {
         ("{{STORIES}}", v.stories.as_str()),
         ("{{DROP_FILE}}", v.drop_file.as_str()),
         ("{{ASK_BASE}}", v.ask_base.as_str()),
+        ("{{LANGUAGE}}", v.language.as_str()),
     ]
     .iter()
     .fold(template.to_string(), |acc, (k, val)| acc.replace(k, val));
@@ -133,6 +138,7 @@ mod tests {
             tracker: TRACKER_ON.into(),
             stories: "[]".into(),
             drop_file: "/tmp/x/stories.json".into(),
+            language: "Dutch".into(),
         }
     }
 
@@ -198,6 +204,15 @@ mod tests {
         // Both halves must come from the tool, or a fabricated pair could be
         // reported and posted.
         assert!(out.contains("must both come from the tool response"));
+    }
+
+    #[test]
+    fn the_output_language_is_substituted_and_no_language_is_hardcoded() {
+        // Prompts stay English; the language the agent *writes* in is a setting.
+        let out = render(TRIAGE, &Vars { language: "Portuguese".into(), ..vars() }).unwrap();
+        assert!(out.contains("default to Portuguese"), "reply language substituted");
+        assert!(out.contains("Write both in Portuguese"), "story language substituted");
+        assert!(!out.contains("Dutch"), "no language is baked into the prompt");
     }
 
     #[test]
