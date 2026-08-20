@@ -1,17 +1,19 @@
 //! The triage run: read the threads, propose, exit.
 //!
-//! Modelled on [`crate::spawn::spawn_fix_pr_session`], with one deliberate
-//! difference — the prompt is rendered from `commands/triage.md` and passed to
-//! `claude -p` **inline**, rather than typed into a pty as `/triage <pr>`. A
-//! slash command resolves from the agent's own command path, which depends on a
-//! repo that is usually not installed; inline text depends on nothing.
+//! Modelled on [`crate::spawn::spawn_fix_pr_session`], and headed the same way —
+//! a `claude` session you can watch and take over, not a `-p` run that happens
+//! out of sight. The prompt is rendered from `commands/triage.md`, written to a
+//! file, and the session is told to *read* that file. Not a `/triage <pr>` slash
+//! command (that resolves from the agent's own command path, which depends on a
+//! repo usually not installed) and not typed inline (it is multi-line, so it
+//! would submit at the first newline).
 //!
 //! Following `fix-pr`'s lesson (`watch_fix_pr` in `api.rs`): **the agent's stdout
 //! is not parsed.** The pty stream stays raw for xterm.js, and the run reports by
 //! POSTing a [`crate::proposal::ProposalSet`] to the daemon. So "did it work" is
 //! answered by looking for proposals, not by reading an exit code — an agent can
-//! exit 0 having said nothing useful, and a `stream-json` parser would be a
-//! second, worse source of truth.
+//! exit 0 having said nothing useful, and parsing its output would be a second,
+//! worse source of truth.
 
 use anyhow::{Context, Result};
 use std::sync::Arc;
@@ -115,7 +117,7 @@ async fn gate_inner(
     Ok(None)
 }
 
-/// Start a headless triage run pinned to the PR's head branch.
+/// Start a triage run pinned to the PR's head branch.
 ///
 /// `login` is the viewer whose PR this is; it comes from the thread fetch that
 /// preceded this, rather than a second `gh api user` call.
@@ -158,13 +160,19 @@ pub async fn spawn(app: &Arc<AppState>, pr: u64, head_ref: &str, login: &str) ->
 
     let id = Uuid::new_v4();
     let settings = Config::hooks_settings_path()?;
+
+    // Written to a file the session is told to read, not typed in: the prompt is
+    // multi-line and typing it would submit at the first newline. Under the
+    // daemon's own config dir, never inside the checkout, so the tree the review
+    // flow inspects stays clean — the same reasoning as `vendored_prompt_file`.
+    let dir = Config::config_dir()?.join(format!("triage-{pr}"));
+    std::fs::create_dir_all(&dir)?;
+    let prompt_file = dir.join("prompt.md");
+    std::fs::write(&prompt_file, body)
+        .with_context(|| format!("writing {}", prompt_file.display()))?;
+
     let cmd = vec![
         "claude".to_string(),
-        "-p".to_string(),
-        body,
-        "--output-format".to_string(),
-        "stream-json".to_string(),
-        "--verbose".to_string(),
         "--session-id".to_string(),
         id.to_string(),
         "--settings".to_string(),
@@ -189,6 +197,10 @@ pub async fn spawn(app: &Arc<AppState>, pr: u64, head_ref: &str, login: &str) ->
     );
     session.pty = Some(spawned.handle.clone());
     session.pid = spawned.pid;
+    session.pending_prompt = Some(format!(
+        "Read {} and follow it. Those are your instructions for PR {pr}.",
+        prompt_file.display()
+    ));
     {
         let mut inner = app.inner.write().await;
         // A fresh run supersedes whatever the last one proposed; keeping stale

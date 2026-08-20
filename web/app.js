@@ -4222,6 +4222,7 @@ function connect() {
       }
     }
     render();
+    nudgeWebkitInput();
   };
   sock.onclose = () => {
     toast('daemon disconnected — retrying', true);
@@ -4240,6 +4241,28 @@ function connect() {
 // and the daemon — running inside the desktop process — calls Tauri's window
 // API in Rust. No IPC bridge, so nothing here depends on which port we bound.
 const CHROME = window.__ORCH__.chrome || 'none';
+
+// WebKitGTK (the desktop webview) can leave its input region stale on first
+// paint: on launch, clicking a rail row and grabbing the frameless resize edges
+// both do nothing until a layout-changing DOM mutation (collapsing a drawer)
+// forces a full repaint. Do that repaint ourselves, once, right after the first
+// snapshot renders, so the first interaction already lands. A browser tab
+// (chrome 'none') does not have the fault and is left alone.
+let inputNudged = false;
+function nudgeWebkitInput() {
+  if (inputNudged || CHROME === 'none') return;
+  inputNudged = true;
+  const root = document.documentElement;
+  root.style.transform = 'translateZ(0)';
+  void root.offsetHeight; // force the relayout now, not at the next paint
+  requestAnimationFrame(() => {
+    root.style.transform = '';
+    void root.offsetHeight;
+    // A synthetic resize re-establishes the webview's hit regions and refits
+    // the visible terminal, the same path the drawer toggle takes.
+    window.dispatchEvent(new Event('resize'));
+  });
+}
 
 function setupChrome() {
   document.body.dataset.chrome = CHROME;

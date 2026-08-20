@@ -203,6 +203,38 @@ fn open(app_handle: &AppHandle, rt: &tokio::runtime::Handle, main: Option<std::p
 
     builder.build().context("opening the window")?;
 
+    // WebKitGTK (WSLg especially) gives the webview no live input region until the
+    // native window is resized once: on launch, clicks and the frameless resize
+    // edges are dead until something nudges the window — collapsing a drawer is
+    // what happens to do it by hand. A DOM repaint is not enough; it has to be a
+    // real native resize. So grow the window a pixel and set it straight back,
+    // just after it has had a moment to realise. Marshalled onto the main thread
+    // because GTK window calls must not come from another one.
+    #[cfg(not(target_os = "macos"))]
+    {
+        let ah = app_handle.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            let grow = ah.clone();
+            let _ = ah.run_on_main_thread(move || {
+                if let Some(w) = grow.get_webview_window("main") {
+                    if let Ok(s) = w.inner_size() {
+                        let _ = w.set_size(tauri::PhysicalSize::new(s.width, s.height + 1));
+                    }
+                }
+            });
+            std::thread::sleep(std::time::Duration::from_millis(60));
+            let back = ah.clone();
+            let _ = ah.run_on_main_thread(move || {
+                if let Some(w) = back.get_webview_window("main") {
+                    if let Ok(s) = w.inner_size() {
+                        let _ = w.set_size(tauri::PhysicalSize::new(s.width, s.height - 1));
+                    }
+                }
+            });
+        });
+    }
+
     let control: Arc<dyn WindowControl> = Arc::new(TauriWindow {
         app: app_handle.clone(),
     });
