@@ -585,7 +585,7 @@ const PR_FIELDS: &str = r#"
         author { login }
         labels(first: 20) { nodes { name } }
         commits(last: 1) { nodes { commit { oid statusCheckRollup { state } } } }
-        reviewRequests(first: 20) {
+        reviewRequests(first: 100) {
           nodes { requestedReviewer { __typename ... on User { login } ... on Team { slug } } }
         }
         reviews(first: 50) { nodes { author { login } state commit { oid } } }"#;
@@ -797,7 +797,13 @@ fn parse_review_candidate(
         })
         .unwrap_or(false);
     let requested_team = match team_slugs {
-        // requested coverage: it matched the search, so a non-personal match is a team.
+        // `requested` coverage: this PR is here because `review-requested:@me`
+        // matched, and that search matches only a direct request or one via a
+        // team you are on — so "not personally" is a *sound* team signal for this
+        // set, not a guess. (It is not sound in `all_open`, where most PRs are
+        // requested of nobody; that path takes the membership branch below.)
+        // `requested_personally` reads the first 100 request nodes, so this only
+        // misfires for a personal request past the 100th reviewer on one PR.
         None => !requested_personally,
         // all_open: the PR requests a team the viewer is on.
         Some(slugs) => requests

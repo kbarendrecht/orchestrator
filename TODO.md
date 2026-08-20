@@ -99,14 +99,18 @@ Everything outside that block is hand-written and survives.
   `559c803..ff387df` confirmed eight problems; four were fixed in `ff387df`, and
   these are the ones left, held deliberately because each wants a decision rather
   than an obvious patch. To work through together:
-  - **`requested_team` means two different things.** In `requested` coverage it is
-    "matched the search but not by name"; in `all_open` it is real team
-    membership. So a machine that flips `review_ranking.coverage` while inheriting
-    the acme rule ladder silently reorders its whole queue — every
-    non-personally-requested PR satisfies `requested: team`, takes rank 3, and the
-    re-review, sidequest and catch-all rules below it become unreachable. The test
-    `a_machine_key_overrides_the_profile` blesses exactly that combination. Either
-    make the field truthful in both modes or split it (`matched_only`).
+  - **`requested_team`'s two derivations — looked into, sound, hardened.** The
+    review flagged that it means "matched the search but not by name" in
+    `requested` coverage and real membership in `all_open`, and feared a machine
+    flipping `coverage` would silently reorder its queue. On inspection it does
+    not: `review-requested:@me` matches only a direct or team request, so in that
+    set `!requested_personally` genuinely *is* "via a team", and the two
+    derivations never contradict for a PR present in both. The rules that go
+    unreachable in `requested` mode (`re_review`/`sidequest`/`always`) are
+    unreachable because their PRs — non-requested ones — are not in the set, which
+    is exactly what acme's own `rankOf` does too. Left in place with a comment
+    explaining why it is sound; the one real edge (a personal request past the
+    Nth reviewer reading as team) was closed by raising `reviewRequests` to 100.
   - **`worktrees_subdir` accepts `""`, `"."` and `"./x"`.** The guard refuses
     absolute and `..` but not these: `""` collapses the worktrees dir onto main
     and makes the changed-files exclude prefix `/`, which no porcelain path
