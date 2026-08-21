@@ -207,17 +207,22 @@ button.ctx-btn:hover{color:var(--text)}
 }
 /* Sits at the right of the bar it lives in, so the count stays the thing you
    read and this is the thing you press. */
+/* The one thing on this bar worth pressing, so it is filled rather than another
+   line of small grey type. A touch larger than the count beside it: the count is
+   read, this is aimed at. */
 .waitall{
-  margin-left:auto;font-family:var(--mono);font-size:calc(9.5px * var(--fs));
-  color:var(--bg);background:var(--attn);border-radius:2px;padding:1px 7px;
+  margin-left:auto;font-family:var(--label);font-size:calc(9px * var(--fs));
+  font-weight:700;letter-spacing:.1em;text-transform:uppercase;
+  color:#1A1206;background:var(--attn);border-radius:2px;padding:3px 9px;
 }
-.waitall:hover{filter:brightness(1.1)}
+.waitall:hover{filter:brightness(1.12)}
 .waitbar.on{display:flex}
 /* Ready, not waiting: the same bar without the amber, because nothing here is
    asking for you. */
-.waitbar.calm{color:var(--faint-solid)}
-.waitbar.calm .waitall{background:var(--raised);color:var(--dim)}
-.waitbar.calm .waitall:hover{color:var(--text)}
+/* Ready, not waiting: the bar drops the amber, because nothing here is asking
+   for you. The button keeps it — it is the offer, and the one thing on this bar
+   worth noticing. */
+.waitbar.calm{color:var(--dim)}
 
 .plus{
   font-family:var(--mono);font-size:calc(14px * var(--fs));line-height:1;color:var(--ghost);

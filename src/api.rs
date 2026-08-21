@@ -727,6 +727,12 @@ pub async fn nudge_sessions(
             let Some(pty) = s.pty.clone().filter(|p| p.is_alive()) else {
                 continue;
             };
+            // Nothing to continue: a session that has never had a turn would take
+            // the word as its opening instruction, which is not what anyone
+            // pressing this meant.
+            if !crate::store::transcript_exists(s.id, &s.cwd, s.transcript_path.as_deref()) {
+                continue;
+            }
             match &s.state {
                 crate::model::State::YourTurn { reason, .. } => match reason {
                     crate::model::TurnReason::NeedsPermission => {

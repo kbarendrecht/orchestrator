@@ -1035,7 +1035,11 @@ function closeSession(id) {
  *  `ready`, which `wants_attention` excludes because an idle agent is not
  *  something to shout about — but it is exactly the one you want to send on. */
 const isNudgeable = (s) =>
-  s.alive && s.state.state === 'your_turn' && s.state.reason !== 'needs_permission';
+  s.alive && s.state.state === 'your_turn' && s.state.reason !== 'needs_permission'
+  // A session with no conversation behind it has nothing to continue, and would
+  // read the word as its opening instruction. The daemon skips those too, so the
+  // count here is what pressing the button actually does.
+  && s.has_transcript;
 
 function renderWaitbar() {
   const waiting = snap.sessions.filter(isWaiting);
@@ -1059,15 +1063,16 @@ function renderWaitbar() {
        empty prompt. Quieter than the waiting bar, because this is an offer rather
        than a queue: the whole point of `ready` not counting as attention. */
     bar.className = 'waitbar on calm';
-    bar.appendChild(el('span', null, `${ready.length} ready to carry on`));
+    bar.appendChild(el('span', null,
+      `${ready.length} session${ready.length === 1 ? '' : 's'} paused mid-work`));
     bar.onclick = () => select(ready[0].id);
   }
 
   /* One poke for the lot. Typing the same word into each of them is the tax on
      auto-resume being worth having. */
   if (ready.length > 1) {
-    const all = el('button', 'waitall', `nudge ${ready.length}`);
-    all.title = 'Type "continue" into every session parked at a prompt';
+    const all = el('button', 'waitall', 'continue all');
+    all.title = 'Type "continue" into every session paused mid-work';
     all.onclick = (ev) => { ev.stopPropagation(); nudgeAll(); };
     bar.appendChild(all);
   }
