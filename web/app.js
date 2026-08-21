@@ -4560,9 +4560,28 @@ function procField(label, p, key) {
   return row;
 }
 
+/* Folded by default once there are more than a couple: six fields per process
+   is most of the panel, and it is the section you look at least. Remembered like
+   every other pane preference. */
+let procsFolded = localStorage.getItem('orch.settingsProcsFolded') === '1';
+
 function renderProcs() {
   const host = $('setprocs');
   host.replaceChildren();
+  const fold = $('setprocfold');
+  fold.setAttribute('aria-expanded', String(!procsFolded));
+  fold.onclick = () => {
+    procsFolded = !procsFolded;
+    try {
+      localStorage.setItem('orch.settingsProcsFolded', procsFolded ? '1' : '0');
+    } catch (e) { /* private mode: it still folds for this session */ }
+    renderProcs();
+  };
+  $('setproccount').textContent = procDraft.length
+    ? `${procDraft.length}${procsFolded ? ' hidden' : ''}`
+    : 'none';
+  if (procsFolded) return;
+
   procDraft.forEach((p, i) => {
     const box = el('div', 'settings-proc');
 
@@ -4646,6 +4665,7 @@ function setupSettings() {
   $('fsdown').onclick = () => saveZoom(setZoom(zoomScale - ZOOM.step));
   $('fsup').onclick = () => saveZoom(setZoom(zoomScale + ZOOM.step));
   $('fsreset').onclick = () => saveZoom(setZoom(ZOOM.def));
+  $('setclose').onclick = () => closeSettings();
 
   $('setprocadd').onclick = () => {
     procDraft.push({

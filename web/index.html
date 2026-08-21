@@ -175,7 +175,11 @@
      `#settings` is the full-viewport scrim; the card is centred within it. -->
 <div class="settings" id="settings" hidden>
   <div class="settings-card">
-    <div class="settings-title">Settings</div>
+    <div class="settings-title">
+      Settings
+      <button class="settings-x" id="setclose" type="button"
+              title="Close · Esc" aria-label="Close settings">&#10005;</button>
+    </div>
     <div class="settings-row">
       <span class="settings-k">Font size</span>
       <span class="settings-step">
@@ -192,6 +196,9 @@
       <span class="settings-k">Output language</span>
       <input class="settings-in" id="setlang" type="text" spellcheck="false">
     </label>
+    <p class="settings-help">What the agents write replies and stories in. Blank
+      leaves it to the repo's own convention.</p>
+
     <label class="settings-field">
       <span class="settings-k">Tracker</span>
       <select class="settings-in" id="settracker">
@@ -200,24 +207,43 @@
         <option value="stub">stub</option>
       </select>
     </label>
+    <p class="settings-help">Where a "file a story" answer goes. With none, that
+      option is never offered rather than offered and refused.</p>
+
     <label class="settings-field">
       <span class="settings-k">Upstream ref</span>
       <input class="settings-in" id="setupref" type="text" spellcheck="false">
     </label>
+    <p class="settings-help">The branch your work is measured against: the
+      merge-base for every diff, and what a rebase lands on. Usually
+      <code>origin/HEAD</code>.</p>
+
     <label class="settings-field">
       <span class="settings-k">Upstream remote</span>
-      <input class="settings-in" id="setupremote" type="text" spellcheck="false">
+      <input class="settings-in" id="setupremote" type="text" spellcheck="false"
+             placeholder="blank = taken from the ref above">
     </label>
+    <p class="settings-help">Only for a ref that names no remote. Left blank it is
+      the part of the ref before the slash, which is what you want unless you
+      fetch from one remote and diff against another.</p>
+
     <label class="settings-field">
       <span class="settings-k">Review command</span>
       <input class="settings-in" id="setreviews" type="text" spellcheck="false"
-             placeholder="empty = no review queue">
+             placeholder="empty = built-in queue">
     </label>
+    <p class="settings-help">Run instead of the built-in review queue, printing
+      the same JSON. For a repo that already ranks its own reviews.</p>
 
     <div class="settings-field settings-procs-head">
+      <button class="settings-fold" id="setprocfold" type="button"
+              aria-expanded="true"><span class="caretr">&#8250;</span></button>
       <span class="settings-k">Processes</span>
+      <span class="settings-count" id="setproccount"></span>
       <button class="settings-add" id="setprocadd" type="button">+ add</button>
     </div>
+    <p class="settings-help">Long-running commands this checkout owns, shown in
+      the drawer under the terminal. Health is read from their output.</p>
     <div id="setprocs"></div>
 
     <div class="settings-actions">

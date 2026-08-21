@@ -450,8 +450,13 @@ body.row-resizing{cursor:row-resize;user-select:none}
 .settings-title{
   font-family:var(--label);font-size:calc(8.5px * var(--fs));font-weight:700;
   letter-spacing:.16em;text-transform:uppercase;color:var(--faint-solid);
-  margin-bottom:11px;
+  margin-bottom:11px;display:flex;align-items:center;
 }
+.settings-x{
+  margin-left:auto;font-size:calc(12px * var(--fs));line-height:1;
+  color:var(--faint-solid);padding:0 2px;letter-spacing:0;
+}
+.settings-x:hover{color:var(--text)}
 .settings-row{display:flex;align-items:center;gap:12px}
 .settings-info{margin-top:9px}
 .settings-v{margin-left:auto;font-family:var(--mono);font-size:calc(11px * var(--fs));color:var(--dim)}
@@ -487,8 +492,27 @@ body.row-resizing{cursor:row-resize;user-select:none}
   font-family:var(--mono);font-size:calc(11px * var(--fs));
 }
 .settings-in:focus{outline:none;border-color:var(--dim)}
-select.settings-in{flex:0 0 auto}
-.settings-procs-head{margin-top:12px}
+/* A `select` takes its colours from the platform unless every part is named, so
+   on a dark card WebKitGTK renders black-on-black. The option list is drawn by
+   the OS and needs telling separately. */
+select.settings-in{flex:0 0 auto;color:var(--text);background:var(--bg)}
+select.settings-in option{color:var(--text);background:var(--bg)}
+/* What a field is for, under the field rather than in a tooltip nobody hovers. */
+.settings-help{
+  margin:3px 0 0;padding-left:1px;max-width:62ch;
+  font-size:calc(10.5px * var(--fs));line-height:1.5;color:var(--faint-solid);
+}
+.settings-help code{font-family:var(--mono);color:var(--dim)}
+.settings-procs-head{margin-top:12px;gap:8px}
+/* The same caret the rail's groups use, so folding reads the same everywhere. */
+.settings-fold{color:var(--faint-solid);display:flex;align-items:center;padding:0}
+.settings-fold:hover{color:var(--text)}
+.settings-fold .caretr{
+  display:inline-block;font-size:calc(13px * var(--fs));line-height:1;
+  transition:transform .13s;
+}
+.settings-fold[aria-expanded="true"] .caretr{transform:rotate(90deg)}
+.settings-count{font-family:var(--mono);font-size:calc(10px * var(--fs));color:var(--faint-solid)}
 .settings-add,.settings-proc-del{
   font-family:var(--mono);font-size:calc(10px * var(--fs));color:var(--faint-solid);
 }
