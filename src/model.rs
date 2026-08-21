@@ -218,6 +218,12 @@ pub struct Session {
     /// about it: the agent asks, the SPA renders this from the snapshot, and the
     /// answer releases the tool call the agent is sitting in.
     pub interaction: Option<Interaction>,
+    /// The conversation this one was cut from, if it was forked.
+    ///
+    /// Kept as the id rather than a flag: the fork shares every earlier turn with
+    /// it, so knowing *which* one is the difference between two rows that read
+    /// identically and two you can tell apart.
+    pub forked_from: Option<SessionId>,
     /// Written into the pty once `SessionStart` fires.
     ///
     /// `initialUserMessage` is only honoured in non-interactive mode, and a
@@ -247,6 +253,7 @@ impl Session {
             dirty_paths: HashSet::new(),
             boundary_violations: Vec::new(),
             last_reconcile: None,
+            forked_from: None,
             pending_prompt: None,
             // Always a real one, so an empty stored token can never match an
             // empty header.

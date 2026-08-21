@@ -804,6 +804,9 @@ pub struct SessionView {
     /// What this session is blocked on, waiting for you. The overlay renders it;
     /// everything else ignores it.
     pub interaction: Option<Interaction>,
+    /// The conversation this one was cut from. A fork inherits its parent's
+    /// title, so without this two rows read the same and neither says why.
+    pub forked_from: Option<crate::model::SessionId>,
 }
 
 impl SessionView {
@@ -843,6 +846,7 @@ impl SessionView {
             resumable: matches!(s.recovery, Some(ArchiveState::Recoverable { .. }) | None)
                 && !matches!(s.recovery, Some(ArchiveState::TranscriptOnly)),
             interaction: s.interaction.clone(),
+            forked_from: s.forked_from,
         }
     }
 }

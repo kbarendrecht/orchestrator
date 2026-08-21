@@ -87,6 +87,9 @@ pub async fn spawn_session(
     // Built before the spawn so the pty can carry the session's own ask token:
     // it is minted with the session, and the agent reads it from its environment.
     let mut session = Session::new(id, workspace.to_string(), path.clone(), kind);
+    if let Some(Source::Fork(prev)) = resume {
+        session.forked_from = Some(prev);
+    }
 
     let (mut env, unset) = crate::config::transcript_env();
     env.push(("ORCH_SESSION_ID".to_string(), id.to_string()));
@@ -127,7 +130,17 @@ pub async fn spawn_session(
 ///   so delegating there would create the worktree somewhere the daemon does not
 ///   look: it would register a path that does not exist, reconcile against a
 ///   missing directory, and fail to adopt the real one at `SessionStart`.
-pub async fn spawn_worktree_session(app: &Arc<AppState>, name: Option<&str>) -> Result<SessionId> {
+///
+/// `fork` carries a conversation into the new worktree. It composes with both
+/// paths — `claude --worktree --resume <prev> --fork-session --session-id <new>`
+/// cuts the tree and replays the conversation into it — and `--resume` finds a
+/// session by id wherever it was recorded, so the fork does not need the
+/// original's working directory to exist.
+pub async fn spawn_worktree_session(
+    app: &Arc<AppState>,
+    name: Option<&str>,
+    fork: Option<SessionId>,
+) -> Result<SessionId> {
     if let Some(name) = name {
         validate_worktree_name(name)?;
 
@@ -199,6 +212,11 @@ pub async fn spawn_worktree_session(app: &Arc<AppState>, name: Option<&str>) -> 
     };
 
     let mut cmd = cmd;
+    if let Some(prev) = fork {
+        cmd.push("--resume".into());
+        cmd.push(prev.to_string());
+        cmd.push("--fork-session".into());
+    }
     cmd.extend([
         "--session-id".to_string(),
         id.to_string(),
@@ -220,6 +238,7 @@ pub async fn spawn_worktree_session(app: &Arc<AppState>, name: Option<&str>) -> 
     };
 
     let mut session = Session::new(id, workspace, cwd, Kind::Interactive);
+    session.forked_from = fork;
     session.pty = Some(spawned.handle.clone());
     session.pid = spawned.pid;
     {

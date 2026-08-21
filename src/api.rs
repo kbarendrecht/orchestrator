@@ -224,7 +224,7 @@ pub async fn new_worktree(
         .as_deref()
         .map(str::trim)
         .filter(|n| !n.is_empty());
-    let id = spawn::spawn_worktree_session(&app, name).await?;
+    let id = spawn::spawn_worktree_session(&app, name, None).await?;
     Ok(Json(json!({ "session": id })))
 }
 
@@ -851,20 +851,40 @@ pub async fn resume_session(
 
 /// Branch off a conversation instead of continuing it.
 ///
-/// Everything resume does to get a working tree back, and then `--fork-session`:
-/// the new run starts with the whole conversation behind it and writes to an id
+/// The new run starts with the whole conversation behind it and writes to an id
 /// of its own, so the original is still sitting there to come back to. That is
 /// the "same context, new direction" case (§2) — reading the answer, then asking
 /// for something else, without losing the version that got you there.
 ///
-/// It keeps the recorded kind for the same reason resume does: a fork of a fix
-/// run is still an agent working that PR's branch, and the guard table should
-/// count it as one.
+/// **In a worktree of its own.** Sharing the parent's tree made "new direction"
+/// a lie: two agents editing one checkout, and whichever wrote last decided what
+/// the other was looking at. `--resume` resolves a session by id wherever it was
+/// recorded, not by working directory, so the fork carries the conversation into
+/// a tree the parent has never touched.
+///
+/// That also makes a fork cheaper than a resume: nothing has to be rebuilt, so a
+/// conversation whose branch is long gone can still be forked.
+///
+/// **Except an automation.** A fix or resolve run is an agent working that PR's
+/// branch, and a fresh worktree is cut from upstream — the fork would come back
+/// on the wrong code entirely. Those stay in the workspace they were run in.
 pub async fn fork_session(
     State(app): State<Arc<AppState>>,
     Path(id): Path<Uuid>,
 ) -> ApiResult<serde_json::Value> {
-    revive(&app, id, true).await
+    let automation = {
+        let inner = app.inner.read().await;
+        inner
+            .sessions
+            .get(&id)
+            .ok_or_else(|| anyhow::anyhow!("no such session {id}"))?
+            .is_automation()
+    };
+    if automation {
+        return revive(&app, id, true).await;
+    }
+    let new_id = spawn::spawn_worktree_session(&app, None, Some(id)).await?;
+    Ok(Json(json!({ "session": new_id, "warning": None::<String> })))
 }
 
 /// The shared half of resume and fork: get the worktree back, then relaunch.

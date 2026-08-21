@@ -940,6 +940,8 @@ function archivedRow(s) {
   const row = el('div', 'sess-row');
   row.appendChild(el('span', 'dot archived'));
   row.appendChild(el('span', 'sess-name', railName(s, { id: s.workspace })));
+  const forked = forkBadge(s);
+  if (forked) row.appendChild(forked);
   row.appendChild(el('span', 'sess-id', duration(sinceSnap(s.created_ms)) + ' ago'));
   btn.appendChild(row);
 
@@ -949,7 +951,9 @@ function archivedRow(s) {
   }
   btn.onclick = () => openArchived(s);
   btn.oncontextmenu = (ev) => openMenu(ev, [
-    ['Fork session', null, s.has_transcript && s.resumable ? () => forkSession(s) : null],
+    // Not gated on `resumable` the way opening it is: a fork cuts its own
+    // worktree, so a conversation whose branch is gone can still be branched off.
+    ['Fork session', null, s.has_transcript ? () => forkSession(s) : null],
     ['Delete session', 'bad', () => deleteSession(s)],
   ]);
   return btn;
@@ -1004,6 +1008,15 @@ function railName(s, w) {
   return s.title || w.id;
 }
 
+/** Marks a conversation that was cut from another one.
+ *
+ *  A fork keeps its parent's title, so two rows read identically and the only
+ *  thing telling them apart is an eight-character id. This says which is the
+ *  copy, and the title says what it is a copy of. */
+function forkBadge(s) {
+  return s.forked_from ? el('span', 'forked', 'forked') : null;
+}
+
 function sessionRow(s, w) {
   const btn = el('button', 'sess' + (s.kind.kind === 'automation' ? ' auto' : ''));
   btn.setAttribute('aria-current', String(s.id === selected));
@@ -1011,6 +1024,8 @@ function sessionRow(s, w) {
   const row = el('div', 'sess-row');
   row.appendChild(el('span', 'dot ' + dotClass(s)));
   row.appendChild(el('span', 'sess-name' + (pending(s) ? ' pending' : ''), railName(s, w)));
+  const forked = forkBadge(s);
+  if (forked) row.appendChild(forked);
   // Worktree rows all carry their worktree's name, so without this the ones
   // sharing a worktree read identically.
   row.appendChild(el('span', 'sess-id', s.id.slice(0, 8)));
@@ -1052,7 +1067,10 @@ function sessionRow(s, w) {
   return btn;
 }
 
-/** Branch off a conversation: same context, new session, original untouched.
+/** Branch off a conversation: same context, new worktree, original untouched.
+ *
+ *  The new session appears under worktrees rather than next to its parent, which
+ *  is the point — the two are no longer editing the same files.
  *
  *  No `closeTerm` unlike resume, which keeps the old id and would otherwise hand
  *  back the dead terminal. A fork has an id of its own and nothing to collide
@@ -1200,6 +1218,7 @@ function renderContext() {
   $('repofork').textContent = repos.fork || '';
   $('ctxdot').className = 'dot ' + (s ? dotClass(s) : 'idle');
   $('ctxname').textContent = s ? railName(s, { id: wsId }) : (wsId || 'no session');
+  $('ctxforked').hidden = !(s && s.forked_from);
   $('ctxbranch').textContent = w ? (w.branches[0] || '') : '';
   const pr = wsId ? prForWorkspace(wsId) : null;
   const bits = [];

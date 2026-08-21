@@ -34,6 +34,10 @@ pub struct SessionRecord {
     /// afterwards which sessions were actually going.
     #[serde(default)]
     pub was_live: bool,
+    /// Survives a restart, or every fork in the archive loses the one thing that
+    /// explains why two rows share a title.
+    #[serde(default)]
+    pub forked_from: Option<SessionId>,
 }
 
 impl SessionRecord {
@@ -51,6 +55,7 @@ impl SessionRecord {
             created_at: s.created_at,
             pid: s.pid,
             was_live: s.state.is_live(),
+            forked_from: s.forked_from,
         }
     }
 
@@ -66,6 +71,7 @@ impl SessionRecord {
         s.recovery = self.recovery;
         s.created_at = self.created_at;
         s.pid = self.pid;
+        s.forked_from = self.forked_from;
         s.state = State::Archived { resumable };
         s
     }
