@@ -371,6 +371,9 @@ button.ctx-btn:hover{color:var(--text)}
   display:flex;align-items:center;gap:6px;color:var(--faint-solid);
   padding:0 2px 0 3px;margin-right:2px;
 }
+/* An author `display` beats the `hidden` attribute, so without this the toggle
+   stayed on a pane with no processes and its label sat beside the plain one. */
+.dcollapse[hidden]{display:none}
 .dcollapse .eyebrow{color:inherit}
 .dcollapse:hover{color:var(--text)}
 .dcollapse .caretr{
