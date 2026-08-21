@@ -280,7 +280,7 @@ fn query_for(owner: &str, name: &str) -> String {
         mergeable
         mergeStateStatus
         headRepositoryOwner {{ login }}
-        commits(last: 1) {{ nodes {{ commit {{ oid statusCheckRollup {{ state }} }} }} }}
+        commits(last: 1) {{ nodes {{ commit {{ oid committedDate statusCheckRollup {{ state }} }} }} }}
         reviewThreads(first: {PAGE}) {{
           pageInfo {{ hasNextPage endCursor }}
           nodes {{ isResolved isOutdated
@@ -290,7 +290,7 @@ fn query_for(owner: &str, name: &str) -> String {
             }} }}
           }}
         }}
-        reviews(states: CHANGES_REQUESTED, first: 20) {{ nodes {{ author {{ login }} }} }}
+        reviews(states: CHANGES_REQUESTED, first: 20) {{ nodes {{ author {{ login }} submittedAt }} }}
       }}
     }}
   }}
@@ -332,7 +332,7 @@ pub fn poll(token: &str, owner: &str, name: &str) -> Result<(String, Vec<Pr>)> {
                     pr.awaiting_you = awaiting_you;
                     pr.unresolved_capped = guard_hit;
                     pr.needs_you = awaiting_you > 0
-                        || (pr.changes_requested && unresolved == 0)
+                        || (pr.changes_requested && unresolved == 0 && !answered_by_pushing(n))
                         || guard_hit;
                 }
                 // A floor beats nothing: keep the first page's capped values and
@@ -469,6 +469,39 @@ fn count_open(threads: &[Value], viewer: &str) -> (u32, u32) {
     (unresolved, awaiting_you)
 }
 
+/// Whether you already answered a change request with code.
+///
+/// "Changes requested" is not the same question as "waiting on you". GitHub keeps
+/// the review listed until the reviewer comes back and re-reads, so a PR you have
+/// pushed a fix to still reports one — and the rail kept the ball amber for work
+/// that was done, with the next move squarely on the reviewer.
+///
+/// Pushing is the answer available when the objection lives in the review body,
+/// where there is no thread to reply to and nothing to 👍. It is also what
+/// outdates the threads there *were*, which is how a PR whose comments you all
+/// handled arrives here looking like a PR that never had any.
+///
+/// Timestamps are GitHub's ISO-8601 in UTC, so they order lexicographically and
+/// nothing has to parse a date. Either one missing is no opinion, which leaves
+/// the answer where it was.
+fn answered_by_pushing(n: &Value) -> bool {
+    let pushed = n
+        .pointer("/commits/nodes/0/commit/committedDate")
+        .and_then(|d| d.as_str());
+    let asked = n
+        .pointer("/reviews/nodes")
+        .and_then(|r| r.as_array())
+        .and_then(|r| {
+            r.iter()
+                .filter_map(|v| v.get("submittedAt").and_then(|d| d.as_str()))
+                .max()
+        });
+    match (pushed, asked) {
+        (Some(pushed), Some(asked)) => pushed > asked,
+        _ => false,
+    }
+}
+
 fn parse_pr(n: &Value, viewer: &str) -> Option<Pr> {
     let number = n.get("number")?.as_u64()?;
 
@@ -533,7 +566,9 @@ fn parse_pr(n: &Value, viewer: &str) -> Option<Pr> {
         unresolved_capped: capped,
         awaiting_you,
         changes_requested,
-        needs_you: awaiting_you > 0 || (changes_requested && unresolved == 0) || capped,
+        needs_you: awaiting_you > 0
+            || (changes_requested && unresolved == 0 && !answered_by_pushing(n))
+            || capped,
         children: Vec::new(),
     })
 }
@@ -868,6 +903,37 @@ mod tests {
         let pr = parse_pr(&n, "me").unwrap();
         assert!(pr.changes_requested);
         assert!(pr.needs_you);
+    }
+
+    /// PR 10002: two threads answered with a 👍 and a push, which outdated both.
+    /// The change request is still listed, so the rail kept saying "you" for work
+    /// that was waiting on the reviewer.
+    #[test]
+    fn a_change_request_you_pushed_a_fix_for_is_not_waiting_on_you() {
+        let n = node(
+            r#"{"number":1,"title":"t","headRefName":"a","baseRefName":"develop",
+                "commits":{"nodes":[{"commit":{"oid":"abc","committedDate":"2026-08-21T09:00:00Z"}}]},
+                "reviews":{"nodes":[{"author":{"login":"them"},"submittedAt":"2026-08-20T12:00:00Z"}]},
+                "reviewThreads":{"pageInfo":{"hasNextPage":false},"nodes":[
+                  {"isResolved":false,"isOutdated":true,"comments":{"nodes":[
+                    {"author":{"login":"them"},"reactionGroups":[
+                      {"content":"THUMBS_UP","viewerHasReacted":true}]}]}}]}}"#,
+        );
+        let pr = parse_pr(&n, "me").unwrap();
+        assert!(pr.changes_requested, "the review is still on the PR");
+        assert!(!pr.needs_you, "but the next move is the reviewer's");
+    }
+
+    /// The other order: they read the push and asked again.
+    #[test]
+    fn a_change_request_newer_than_your_push_is_still_yours() {
+        let n = node(
+            r#"{"number":1,"title":"t","headRefName":"a","baseRefName":"develop",
+                "commits":{"nodes":[{"commit":{"oid":"abc","committedDate":"2026-08-20T12:00:00Z"}}]},
+                "reviews":{"nodes":[{"author":{"login":"them"},"submittedAt":"2026-08-21T09:00:00Z"}]},
+                "reviewThreads":{"pageInfo":{"hasNextPage":false},"nodes":[]}}"#,
+        );
+        assert!(parse_pr(&n, "me").unwrap().needs_you);
     }
 
     #[test]
