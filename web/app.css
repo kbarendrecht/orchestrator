@@ -359,10 +359,14 @@ button.ctx-btn:hover{color:var(--text)}
   background:var(--surface);position:relative;z-index:2;
 }
 .dcollapse{
-  font-family:var(--mono);font-size:calc(10px * var(--fs));color:var(--faint-solid);
-  padding:0 3px;line-height:1;
+  display:flex;align-items:center;color:var(--faint-solid);padding:0 3px;
 }
 .dcollapse:hover{color:var(--text)}
+.dcollapse .caretr{
+  display:inline-block;font-size:calc(13px * var(--fs));line-height:1;
+  transition:transform .13s;
+}
+.dcollapse[aria-expanded="true"] .caretr{transform:rotate(90deg)}
 .dtab{
   font-family:var(--mono);font-size:calc(10.5px * var(--fs));color:var(--faint-solid);
   padding:3px 8px;border-radius:2px;display:flex;align-items:center;gap:6px;
@@ -548,6 +552,12 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
   display:flex;flex-direction:column;gap:6px;
 }
 .settings-proc .settings-field{margin-top:0}
+/* Collapsed, a process is its name and what it runs. Enough to recognise it
+   without opening it, and it is the field that identifies one. */
+.settings-proc-gist{
+  font-family:var(--mono);font-size:calc(10px * var(--fs));color:var(--faint-solid);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
 .settings-proc-top{display:flex;align-items:center;gap:10px}
 .settings-proc-auto{display:flex;align-items:center;gap:5px;margin-left:auto;
   font-family:var(--mono);font-size:calc(10px * var(--fs));color:var(--dim)}

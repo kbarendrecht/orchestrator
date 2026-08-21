@@ -1098,7 +1098,11 @@ function renderDrawer() {
   drawer.className = 'drawer' + (procs.length ? '' : ' empty') + (collapsed ? ' collapsed' : '');
   const toggle = $('dcollapse');
   toggle.hidden = procs.length === 0;
-  toggle.textContent = collapsed ? '▸' : '▾';
+  // The same rotating caret the PR and review panes use. It was a pair of filled
+  // triangles, which is a second vocabulary for the one gesture the app already
+  // had a glyph for.
+  toggle.replaceChildren(el('span', 'caretr', '\u203a'));
+  toggle.setAttribute('aria-expanded', String(!collapsed));
   toggle.title = collapsed ? 'Expand processes' : 'Collapse processes';
 
   const alive = (p) =>
@@ -4567,32 +4571,21 @@ function procField(label, p, key) {
   return row;
 }
 
-/* Folded by default once there are more than a couple: six fields per process
-   is most of the panel, and it is the section you look at least. Remembered like
-   every other pane preference. */
-let procsFolded = localStorage.getItem('orch.settingsProcsFolded') === '1';
-
 function renderProcs() {
   const host = $('setprocs');
   host.replaceChildren();
-  const fold = $('setprocfold');
-  fold.setAttribute('aria-expanded', String(!procsFolded));
-  fold.onclick = () => {
-    procsFolded = !procsFolded;
-    try {
-      localStorage.setItem('orch.settingsProcsFolded', procsFolded ? '1' : '0');
-    } catch (e) { /* private mode: it still folds for this session */ }
-    renderProcs();
-  };
-  $('setproccount').textContent = procDraft.length
-    ? `${procDraft.length}${procsFolded ? ' hidden' : ''}`
-    : 'none';
-  if (procsFolded) return;
+  $('setproccount').textContent = procDraft.length ? String(procDraft.length) : 'none';
 
   procDraft.forEach((p, i) => {
     const box = el('div', 'settings-proc');
 
     const top = el('div', 'settings-proc-top');
+    const fold = el('button', 'settings-fold');
+    fold.type = 'button';
+    fold.setAttribute('aria-expanded', String(!!p.open));
+    fold.appendChild(el('span', 'caretr', '\u203a'));
+    fold.onclick = () => { p.open = !p.open; renderProcs(); };
+    top.appendChild(fold);
     const name = el('input', 'settings-in');
     name.type = 'text';
     name.spellcheck = false;
@@ -4613,6 +4606,17 @@ function renderProcs() {
     del.onclick = () => { procDraft.splice(i, 1); renderProcs(); };
     top.appendChild(del);
     box.appendChild(top);
+
+    // Collapsed shows what it is and whether it starts itself; the four fields
+    // underneath are the ones you set once and then scroll past forever.
+    if (!p.open) {
+      const gist = el('div', 'settings-proc-gist');
+      gist.textContent = p.command || 'no command';
+      gist.title = p.command || '';
+      box.appendChild(gist);
+      host.appendChild(box);
+      return;
+    }
 
     box.appendChild(procField('command', p, 'command'));
     box.appendChild(procField('ok when', p, 'ok_patterns'));
@@ -4677,7 +4681,7 @@ function setupSettings() {
   $('setprocadd').onclick = () => {
     procDraft.push({
       name: '', command: '', ok_patterns: '', failure_patterns: '',
-      restart: 'never', autostart: false,
+      restart: 'never', autostart: false, open: true,
     });
     renderProcs();
   };
