@@ -213,7 +213,12 @@ fn run(cmd: &str, args: &[String]) -> Result<String, String> {
                 // Deliberately crude: id, workspace and state, for a shell loop
                 // rather than for reading. Anything richer wants the real API.
                 let ws = field(chunk, "workspace").unwrap_or("?");
-                let st = field(chunk, "state").unwrap_or("?");
+                // `state` is an object whose first key is also `state`, so the
+                // plain lookup finds the key rather than the value.
+                let st = chunk
+                    .find("\"state\":{")
+                    .and_then(|at| field(&chunk[at + 8..], "state"))
+                    .unwrap_or("?");
                 lines.push(format!("{id}  {ws}  {st}"));
             }
             Ok(lines.join("\n"))
