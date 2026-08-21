@@ -689,6 +689,74 @@ pub async fn answer(
     Ok(Json(json!({ "answered": body.answer })))
 }
 
+#[derive(Deserialize)]
+pub struct NudgeBody {
+    /// What to type. Defaults to `continue`, which is the whole point.
+    #[serde(default)]
+    pub text: Option<String>,
+}
+
+/// Type one word into every session that is sitting waiting on you.
+///
+/// After a restart the rail comes back full of agents that were mid-something and
+/// are now parked at an empty prompt. Poking each one by hand is the tax on
+/// auto-resume being any good, so this pays it once.
+///
+/// **A session showing a permission prompt is skipped**, and that is the whole
+/// safety of it: that prompt takes a keystroke as an answer, so typing into it
+/// would be approving something on your behalf, chosen by whichever option
+/// happens to be under the cursor. Skipped and named, rather than nudged and
+/// hoped for.
+pub async fn nudge_sessions(
+    State(app): State<Arc<AppState>>,
+    Json(body): Json<NudgeBody>,
+) -> ApiResult<serde_json::Value> {
+    let text = body
+        .text
+        .as_deref()
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .unwrap_or("continue")
+        .to_string();
+
+    let (targets, held) = {
+        let inner = app.inner.read().await;
+        let mut targets = Vec::new();
+        let mut held = Vec::new();
+        for s in inner.sessions.values() {
+            let Some(pty) = s.pty.clone().filter(|p| p.is_alive()) else {
+                continue;
+            };
+            match &s.state {
+                crate::model::State::YourTurn { reason, .. } => match reason {
+                    crate::model::TurnReason::NeedsPermission => {
+                        held.push(s.title.clone().unwrap_or_else(|| s.workspace.clone()));
+                    }
+                    _ => targets.push((s.id, pty)),
+                },
+                // Working, starting, failing: not waiting on you, so not yours to
+                // interrupt. A nudge into a running turn is a stray line of input.
+                _ => {}
+            }
+        }
+        (targets, held)
+    };
+
+    let nudged: Vec<String> = targets.iter().map(|(id, _)| id.to_string()).collect();
+    for (_, pty) in targets {
+        let text = text.clone();
+        tokio::spawn(async move {
+            let _ = pty.write(text.as_bytes());
+            // The return goes separately, for the reason `SessionStart` learned:
+            // text and newline in one burst read as a paste, and a pasted newline
+            // is a line break in the box rather than a send.
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            let _ = pty.write(b"\r");
+        });
+    }
+    Ok(Json(json!({ "nudged": nudged, "needs_permission": held })))
+}
+
 /// Resume an archived session.
 ///
 /// A live worktree resumes trivially — relaunch with cwd set to the recorded

@@ -1039,8 +1039,37 @@ function renderWaitbar() {
   const longest = waiting.reduce(
     (a, b) => ((a.waiting_ms ?? 0) >= (b.waiting_ms ?? 0) ? a : b));
   bar.className = 'waitbar on';
-  bar.textContent = `${waiting.length} waiting · longest ${duration(sinceSnap(longest.waiting_ms) ?? 0)}`;
+  bar.replaceChildren();
+  bar.appendChild(el('span', null,
+    `${waiting.length} waiting · longest ${duration(sinceSnap(longest.waiting_ms) ?? 0)}`));
+
+  /* One poke for the lot. After a restart the rail is full of agents parked at an
+     empty prompt, and typing the same word into each of them is the tax on
+     auto-resume being worth having. */
+  if (waiting.length > 1) {
+    const all = el('button', 'waitall', `nudge ${waiting.length}`);
+    all.title = 'Type "continue" into every waiting session';
+    all.onclick = (ev) => { ev.stopPropagation(); nudgeAll(); };
+    bar.appendChild(all);
+  }
   bar.onclick = () => select(longest.id);
+}
+
+/** Send them all on. */
+async function nudgeAll() {
+  try {
+    const r = await call('/api/sessions/nudge');
+    const n = (r.nudged || []).length;
+    toast(n ? `nudged ${n}` : 'nothing to nudge');
+    // Named, not silently skipped: a permission prompt takes a keystroke as an
+    // answer, so typing into one would be approving something for you.
+    const held = r.needs_permission || [];
+    if (held.length) {
+      toast(`${held.join(', ')} ${held.length === 1 ? 'is' : 'are'} asking permission — answer those yourself`, true);
+    }
+  } catch (e) {
+    toast(e.message, true);
+  }
 }
 
 function currentSession() {

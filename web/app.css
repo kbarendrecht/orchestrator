@@ -205,6 +205,13 @@ button.ctx-btn:hover{color:var(--text)}
   padding:5px 15px;background:var(--surface);border-bottom:1px solid var(--line-soft);
   font-family:var(--mono);font-size:calc(10px * var(--fs));color:var(--attn);width:100%;text-align:left;
 }
+/* Sits at the right of the bar it lives in, so the count stays the thing you
+   read and this is the thing you press. */
+.waitall{
+  margin-left:auto;font-family:var(--mono);font-size:calc(9.5px * var(--fs));
+  color:var(--bg);background:var(--attn);border-radius:2px;padding:1px 7px;
+}
+.waitall:hover{filter:brightness(1.1)}
 .waitbar.on{display:flex}
 
 .plus{
