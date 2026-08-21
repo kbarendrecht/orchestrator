@@ -348,6 +348,6 @@ Everything outside that block is hand-written and survives.
 
 Rewritten by the daemon on every poll. Edit anything outside this block.
 
-- **GitHub token is gh's** — it carries write scopes; §6 wants a read-only PAT in `ORCHD_GITHUB_TOKEN` or `github_token_file`.
+Nothing outstanding.
 
 <!-- <<< orchd live findings <<< -->
