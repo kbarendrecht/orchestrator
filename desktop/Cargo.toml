@@ -1,6 +1,6 @@
 [package]
 name = "orchestrator-desktop"
-version = "2026.8.8"
+version = "2026.8.9"
 edition = "2021"
 
 [build-dependencies]
