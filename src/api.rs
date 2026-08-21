@@ -759,14 +759,20 @@ pub async fn nudge_sessions(
     };
 
     let nudged: Vec<String> = targets.iter().map(|(id, _)| id.to_string()).collect();
-    for (_, pty) in targets {
+    for (n, (_, pty)) in targets.into_iter().enumerate() {
         let text = text.clone();
         tokio::spawn(async move {
+            // Staggered, the way auto-resume staggers its spawns: four agents all
+            // being typed into on the same tick is four prompt boxes competing for
+            // the same instant, and one of them swallowed the return.
+            tokio::time::sleep(std::time::Duration::from_millis(250 * n as u64)).await;
             let _ = pty.write(text.as_bytes());
             // The return goes separately, for the reason `SessionStart` learned:
             // text and newline in one burst read as a paste, and a pasted newline
-            // is a line break in the box rather than a send.
-            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            // is a line break in the box rather than a send. 500ms rather than
+            // 300: the shorter gap left one session in four holding typed text it
+            // never sent.
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             let _ = pty.write(b"\r");
         });
     }
