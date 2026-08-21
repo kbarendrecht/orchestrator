@@ -1029,30 +1029,48 @@ function closeSession(id) {
 }
 
 /** The rail exists to surface idle agents, so the count sits at the top of it. */
+/** Sessions a nudge would reach: parked at a prompt, and not mid-question.
+ *
+ *  Wider than `isWaiting`, on purpose. A session that has only just resumed is
+ *  `ready`, which `wants_attention` excludes because an idle agent is not
+ *  something to shout about — but it is exactly the one you want to send on. */
+const isNudgeable = (s) =>
+  s.alive && s.state.state === 'your_turn' && s.state.reason !== 'needs_permission';
+
 function renderWaitbar() {
   const waiting = snap.sessions.filter(isWaiting);
+  const ready = snap.sessions.filter(isNudgeable);
   const bar = $('waitbar');
-  if (!waiting.length) {
+  if (!waiting.length && ready.length < 2) {
     bar.className = 'waitbar';
     return;
   }
-  const longest = waiting.reduce(
-    (a, b) => ((a.waiting_ms ?? 0) >= (b.waiting_ms ?? 0) ? a : b));
-  bar.className = 'waitbar on';
   bar.replaceChildren();
-  bar.appendChild(el('span', null,
-    `${waiting.length} waiting · longest ${duration(sinceSnap(longest.waiting_ms) ?? 0)}`));
 
-  /* One poke for the lot. After a restart the rail is full of agents parked at an
-     empty prompt, and typing the same word into each of them is the tax on
+  if (waiting.length) {
+    const longest = waiting.reduce(
+      (a, b) => ((a.waiting_ms ?? 0) >= (b.waiting_ms ?? 0) ? a : b));
+    bar.className = 'waitbar on';
+    bar.appendChild(el('span', null,
+      `${waiting.length} waiting · longest ${duration(sinceSnap(longest.waiting_ms) ?? 0)}`));
+    bar.onclick = () => select(longest.id);
+  } else {
+    /* Nobody is asking for you; a restart has just put several agents back at an
+       empty prompt. Quieter than the waiting bar, because this is an offer rather
+       than a queue: the whole point of `ready` not counting as attention. */
+    bar.className = 'waitbar on calm';
+    bar.appendChild(el('span', null, `${ready.length} ready to carry on`));
+    bar.onclick = () => select(ready[0].id);
+  }
+
+  /* One poke for the lot. Typing the same word into each of them is the tax on
      auto-resume being worth having. */
-  if (waiting.length > 1) {
-    const all = el('button', 'waitall', `nudge ${waiting.length}`);
-    all.title = 'Type "continue" into every waiting session';
+  if (ready.length > 1) {
+    const all = el('button', 'waitall', `nudge ${ready.length}`);
+    all.title = 'Type "continue" into every session parked at a prompt';
     all.onclick = (ev) => { ev.stopPropagation(); nudgeAll(); };
     bar.appendChild(all);
   }
-  bar.onclick = () => select(longest.id);
 }
 
 /** Send them all on. */
@@ -4743,13 +4761,14 @@ function setupSettings() {
   };
   $('setsave').onclick = saveSettings;
 
-  // A click on the scrim (the modal's backdrop, which is `#settings` itself) or
-  // anywhere outside both the card and the gear puts it away.
+  /* A click on another pane puts it away; a click anywhere inside this one does
+     not. The scrim clause that used to be here was right while settings floated
+     over the window as a modal — its own backdrop was the way out. It fills the
+     centre column now, so that backdrop is just the empty half of a form, and
+     missing an input closed the panel. */
   document.addEventListener('mousedown', (e) => {
     if (!settingsOpen()) return;
-    if (e.target === $('settings') || !e.target.closest('#settings, #gearbtn')) {
-      closeSettings();
-    }
+    if (!e.target.closest('#settings, #gearbtn')) closeSettings();
   }, true);
 }
 

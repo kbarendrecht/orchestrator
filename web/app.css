@@ -213,6 +213,11 @@ button.ctx-btn:hover{color:var(--text)}
 }
 .waitall:hover{filter:brightness(1.1)}
 .waitbar.on{display:flex}
+/* Ready, not waiting: the same bar without the amber, because nothing here is
+   asking for you. */
+.waitbar.calm{color:var(--faint-solid)}
+.waitbar.calm .waitall{background:var(--raised);color:var(--dim)}
+.waitbar.calm .waitall:hover{color:var(--text)}
 
 .plus{
   font-family:var(--mono);font-size:calc(14px * var(--fs));line-height:1;color:var(--ghost);
