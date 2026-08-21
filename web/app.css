@@ -445,9 +445,12 @@ body.row-resizing{cursor:row-resize;user-select:none}
    it, and unclosable, because `settingsOpen()` asks the attribute, which still
    says hidden. Any element with an author `display` needs this line. */
 .settings[hidden]{display:none}
+/* Capped and centred. Full-bleed would stretch a two-column form across a
+   1400px window, which is why the measure exists; without the auto margins the
+   cap put every gutter on one side. */
 .settings-card{
   flex:1;min-height:0;overflow-y:auto;padding:14px 18px 22px;
-  max-width:640px;width:100%;
+  max-width:640px;width:100%;margin:0 auto;
 }
 /* Its own bar across the pane, like the diff's head, rather than a caption on a
    card that no longer exists. */
@@ -463,7 +466,7 @@ body.row-resizing{cursor:row-resize;user-select:none}
   letter-spacing:.16em;text-transform:uppercase;color:var(--dim);
   margin:20px 0 2px;padding-bottom:6px;border-bottom:1px solid var(--line-soft);
 }
-.settings-group:first-of-type{margin-top:6px}
+.settings-group:first-of-type{margin-top:14px}
 .settings-x{
   margin-left:auto;font-size:calc(12px * var(--fs));line-height:1;
   color:var(--faint-solid);padding:0 2px;letter-spacing:0;
@@ -548,7 +551,9 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
 .settings-proc-top{display:flex;align-items:center;gap:10px}
 .settings-proc-auto{display:flex;align-items:center;gap:5px;margin-left:auto;
   font-family:var(--mono);font-size:calc(10px * var(--fs));color:var(--dim)}
-.settings-actions{margin-top:13px;display:flex;align-items:center;gap:11px}
+.settings-actions{margin-top:16px;display:flex;align-items:center;gap:11px}
+.settings-actions .settings-save{margin-left:auto;order:2}
+.settings-actions .settings-note{order:1}
 .settings-save{
   padding:5px 13px;border:1px solid var(--line);border-radius:3px;
   background:var(--bg);color:var(--text);
