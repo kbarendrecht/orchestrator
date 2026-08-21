@@ -174,12 +174,13 @@
 <!-- Settings. A centered modal over the panes, opened from the gear top-left.
      `#settings` is the full-viewport scrim; the card is centred within it. -->
 <div class="settings" id="settings" hidden>
+  <div class="settings-title">
+    Settings
+    <button class="settings-x" id="setclose" type="button"
+            title="Close · Esc" aria-label="Close settings">&#10005;</button>
+  </div>
   <div class="settings-card">
-    <div class="settings-title">
-      Settings
-      <button class="settings-x" id="setclose" type="button"
-              title="Close · Esc" aria-label="Close settings">&#10005;</button>
-    </div>
+    <div class="settings-group">Appearance</div>
     <div class="settings-row">
       <span class="settings-k">Font size</span>
       <span class="settings-step">
@@ -190,14 +191,7 @@
     </div>
     <button class="settings-reset" id="fsreset">Reset to 100%</button>
 
-    <div class="settings-sep"></div>
-
-    <label class="settings-field">
-      <span class="settings-k">Output language</span>
-      <input class="settings-in" id="setlang" type="text" spellcheck="false">
-    </label>
-    <p class="settings-help">What the agents write replies and stories in. Blank
-      leaves it to the repo's own convention.</p>
+    <div class="settings-group">Tracker</div>
 
     <label class="settings-field">
       <span class="settings-k">Tracker</span>
@@ -209,6 +203,15 @@
     </label>
     <p class="settings-help">Where a "file a story" answer goes. With none, that
       option is never offered rather than offered and refused.</p>
+
+    <label class="settings-field">
+      <span class="settings-k">Output language</span>
+      <input class="settings-in" id="setlang" type="text" spellcheck="false">
+    </label>
+    <p class="settings-help">What the agents write replies and stories in. Blank
+      leaves it to the repo's own convention.</p>
+
+    <div class="settings-group">Git</div>
 
     <label class="settings-field">
       <span class="settings-k">Upstream ref</span>
@@ -235,10 +238,12 @@
     <p class="settings-help">Run instead of the built-in review queue, printing
       the same JSON. For a repo that already ranks its own reviews.</p>
 
+    <div class="settings-group">Processes</div>
+
     <div class="settings-field settings-procs-head">
       <button class="settings-fold" id="setprocfold" type="button"
               aria-expanded="true"><span class="caretr">&#8250;</span></button>
-      <span class="settings-k">Processes</span>
+      <span class="settings-k">Configured</span>
       <span class="settings-count" id="setproccount"></span>
       <button class="settings-add" id="setprocadd" type="button">+ add</button>
     </div>
