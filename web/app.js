@@ -1071,7 +1071,7 @@ function renderWaitbar() {
   /* One poke for the lot. Typing the same word into each of them is the tax on
      auto-resume being worth having. */
   if (ready.length > 1) {
-    const all = el('button', 'waitall', 'continue all');
+    const all = el('button', 'waitall', 'continue');
     all.title = 'Type "continue" into every session paused mid-work';
     all.onclick = (ev) => { ev.stopPropagation(); nudgeAll(); };
     bar.appendChild(all);
