@@ -262,6 +262,23 @@ Everything outside that block is hand-written and survives.
   editable settings, which currently default to acme's), and how to try it
   without a monorepo to point it at.
 
+- Have a quick look at where the memory goes. Nothing is wrong — measured with
+  four sessions and `ng-watch` up, the app itself is ~287 MB PSS against Tabby's
+  529 MB idle — but two numbers look higher than they should and neither has been
+  looked at:
+  - **orchd itself is 76 MB PSS** (169 MB RSS) for a daemon whose live state is a
+    few hundred session records and five 512KB ring buffers. Worth an hour with
+    a heap profiler before assuming it is fine. First suspects: glibc holding
+    freed arenas rather than returning them, and the 128KB transcript tails now
+    read for every untitled session at restore, which is ~11 MB of transient
+    `Vec` across 87 records.
+  - **WebKit is 211 MB PSS** for one page. Terminals keep 10,000 lines of
+    scrollback each in `xterm` on top of the daemon's own ring buffer, which is
+    the same bytes held twice; the daemon replays on reattach anyway, so the
+    client scrollback could be far shorter.
+  Do not turn this into a project. If neither is a one-line win, write down what
+  it actually is and move on.
+
 - A file in the diff should offer "open on GitHub". Right-click a row in the
   changed-files pane (`.dfrow` / `.frow`, built in `renderFiles`) and get the
   file on the forge, the way a PR row already offers its menu (`prMenu`). Those
