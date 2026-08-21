@@ -464,7 +464,8 @@ body.row-resizing{cursor:row-resize;user-select:none}
   font-family:var(--label);font-size:calc(8.5px * var(--fs));font-weight:700;
   letter-spacing:.16em;text-transform:uppercase;color:var(--faint-solid);
   display:flex;align-items:center;gap:12px;flex:0 0 auto;
-  padding:9px 18px;border-bottom:1px solid var(--line);background:var(--surface);
+  height:46px;padding:0 18px;border-bottom:1px solid var(--line);
+  background:var(--surface);
 }
 /* One group of settings: a heading, then its fields. */
 .settings-group{
@@ -632,7 +633,10 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
   display:none;flex-direction:column;
 }
 .overlay.on{display:flex}
-.ov-head{display:flex;align-items:center;gap:12px;padding:9px 15px;border-bottom:1px solid var(--line);background:var(--surface);flex:0 0 auto}
+.ov-head{
+  display:flex;align-items:center;gap:12px;height:46px;padding:0 15px;
+  border-bottom:1px solid var(--line);background:var(--surface);flex:0 0 auto;
+}
 .ov-path{font-family:var(--mono);font-size:calc(12px * var(--fs));white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .ov-path span{color:var(--faint-solid)}
 .ov-nav{margin-left:auto;display:flex;align-items:center;gap:8px;flex:0 0 auto}
