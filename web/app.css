@@ -240,6 +240,9 @@ button.ctx-btn:hover{color:var(--text)}
 .sess-row{display:flex;align-items:center;gap:8px}
 .dot{width:6px;height:6px;border-radius:50%;flex:0 0 auto;background:#6B6B6B}
 .dot.blocked{background:var(--attn)}
+/* Handed to a PR: the work is elsewhere now, so it reads as in-flight rather
+   than as something wanting you. */
+.dot.pr{background:var(--work)}
 .dot.build{background:var(--bad)}
 .dot.auto{background:var(--auto)}
 .dot.working{background:#6A6A6A}
@@ -263,6 +266,7 @@ button.ctx-btn:hover{color:var(--text)}
 .sess-cmd{color:var(--auto)}
 .sess-state{color:var(--dim)}
 .sess-state.blocked{color:var(--attn)}
+.sess-state.pr{color:var(--work)}
 .sess-state.build{color:var(--bad)}
 .sess-pad{height:11px}
 .sess-id{font-family:var(--mono);font-size:calc(9px * var(--fs));color:var(--faint-solid);flex:0 0 auto}

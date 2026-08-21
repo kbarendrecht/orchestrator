@@ -77,7 +77,42 @@ function duration(ms) {
 // State presentation
 // ---------------------------------------------------------------------------
 
+/** The PR this session's work ended up on, if any.
+ *
+ *  An automation row's workspace is the placeholder `pr-10006`, which matches no
+ *  real workspace, so it is asked by number instead. */
+function prOf(s) {
+  if (!s) return null;
+  if (s.kind.kind === 'automation') {
+    return (snap.prs || []).find((p) => p.number === s.kind.pr) || null;
+  }
+  return prForWorkspace(s.workspace);
+}
+
+/** What a PR is doing, in the two or three words a row has space for. */
+function prState(p) {
+  if (p.awaiting_you) return `${p.awaiting_you} waiting on you`;
+  if (p.mergeable === 'CONFLICTING') return 'conflicted';
+  if (p.checks === 'failing') return 'checks failing';
+  if (p.checks === 'pending') return 'checks running';
+  if (p.is_draft) return 'draft';
+  return 'open';
+}
+
+/** A stopped session whose work sits on a PR is not waiting on you *here* — the
+ *  next move is on the PR, and the PR's own state is the useful thing to show.
+ *  A question or a permission prompt is still about this session, so those keep
+ *  the amber and their own words. */
+function handedToPr(s) {
+  if (s.state.state !== 'your_turn') return null;
+  const r = s.state.reason;
+  if (r === 'asked_a_question' || r === 'needs_permission') return null;
+  return prOf(s);
+}
+
 function stateLabel(s) {
+  const handed = handedToPr(s);
+  if (handed) return `#${handed.number} ${prState(handed)}`;
   switch (s.state.state) {
     case 'starting': return 'starting';
     case 'working': return 'working';
@@ -100,6 +135,7 @@ function stateLabel(s) {
 function dotClass(s) {
   const k = s.state.state;
   if (k === 'build_failing' || k === 'error') return 'build';
+  if (handedToPr(s)) return 'pr';
   if (k === 'your_turn') return 'blocked';
   // Teal outranks the underlying state: while automation holds a session,
   // "already being handled" is the more useful signal.
@@ -112,6 +148,7 @@ function dotClass(s) {
 function stateClass(s) {
   const k = s.state.state;
   if (k === 'build_failing' || k === 'error') return 'build';
+  if (handedToPr(s)) return 'pr';
   if (k === 'your_turn' && s.state.reason !== 'ready') return 'blocked';
   return '';
 }
@@ -1167,14 +1204,8 @@ function renderContext() {
   const pr = wsId ? prForWorkspace(wsId) : null;
   const bits = [];
   if (s) bits.push(stateLabel(s));
-  if (pr) {
-    const state = pr.awaiting_you ? `${pr.awaiting_you} waiting on you`
-      : pr.mergeable === 'CONFLICTING' ? 'conflicted'
-        : pr.checks === 'failing' ? 'checks failing'
-          : pr.checks === 'pending' ? 'checks running'
-            : pr.is_draft ? 'draft' : 'clean';
-    bits.push(`#${pr.number} ${state}`);
-  }
+  // Not when the session label is already the PR's, or the header says it twice.
+  if (pr && !handedToPr(s)) bits.push(`#${pr.number} ${prState(pr)}`);
   $('ctxstate').textContent = bits.join(' · ');
   $('killbtn').style.display = s && s.alive ? '' : 'none';
 
