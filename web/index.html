@@ -114,9 +114,13 @@
       <div class="rowsplit" id="splitd" role="separator" aria-orientation="horizontal"
            title="Drag to resize · double-click to reset"></div>
       <div class="drawer-head">
+        <!-- The caret and the word are one control: the label is the obvious
+             thing to click and a 13px chevron is not a target. -->
         <button class="dcollapse" id="dcollapse" title="Collapse processes"
-                aria-expanded="true" hidden></button>
-        <span class="eyebrow" style="margin-right:2px">Processes</span>
+                aria-expanded="true" hidden>
+          <span class="eyebrow">Processes</span>
+        </button>
+        <span class="eyebrow" id="dlabel" style="margin-right:2px">Processes</span>
         <span id="dtabs" style="display:flex;gap:4px"></span>
         <button class="addsh" id="addshell">+ Shell <kbd>⌃`</kbd></button>
         <span class="dcwd" id="dcwd"></span>

@@ -359,8 +359,10 @@ button.ctx-btn:hover{color:var(--text)}
   background:var(--surface);position:relative;z-index:2;
 }
 .dcollapse{
-  display:flex;align-items:center;color:var(--faint-solid);padding:0 3px;
+  display:flex;align-items:center;gap:6px;color:var(--faint-solid);
+  padding:0 2px 0 3px;margin-right:2px;
 }
+.dcollapse .eyebrow{color:inherit}
 .dcollapse:hover{color:var(--text)}
 .dcollapse .caretr{
   display:inline-block;font-size:calc(13px * var(--fs));line-height:1;

@@ -281,11 +281,15 @@ fn default_main_processes() -> Vec<ManagedSpec> {
             .into_iter()
             .map(String::from)
             .collect(),
+            // Matching is case-sensitive and Angular writes "Watching for file
+            // changes", so the lowercase spelling here never fired; the esbuild
+            // line below is what actually reports a healthy watch today. The two
+            // webpack-era strings stay for an older builder.
             ok_patterns: [
+                "bundle generation complete",
+                "Watching for file changes",
                 "Build at:",
                 "successfully",
-                "watching for file changes",
-                "bundle generation complete",
             ]
             .into_iter()
             .map(String::from)

@@ -1101,9 +1101,12 @@ function renderDrawer() {
   // The same rotating caret the PR and review panes use. It was a pair of filled
   // triangles, which is a second vocabulary for the one gesture the app already
   // had a glyph for.
-  toggle.replaceChildren(el('span', 'caretr', '\u203a'));
+  toggle.replaceChildren(el('span', 'caretr', '\u203a'), el('span', 'eyebrow', 'Processes'));
   toggle.setAttribute('aria-expanded', String(!collapsed));
   toggle.title = collapsed ? 'Expand processes' : 'Collapse processes';
+  // The plain label only stands in while there is nothing to collapse; otherwise
+  // the same word would sit on screen twice.
+  $('dlabel').hidden = procs.length > 0;
 
   const alive = (p) =>
     p.kind.kind === 'shell' ? p.kind.exit_code == null : p.health.health !== 'dead';
