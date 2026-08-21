@@ -547,6 +547,11 @@ fn watch_session_exit(app: Arc<AppState>, id: SessionId, handle: Arc<PtyHandle>)
                     if s.state.is_live() {
                         s.set_state(State::Exited);
                     }
+                    // Last chance to find the conversation. A session closed
+                    // between two `Stop`s can be carrying a transcript path
+                    // Claude Code reported and never wrote to, and once it is
+                    // archived nothing else goes looking.
+                    crate::store::pin_transcript(s.id, &s.cwd, &mut s.transcript_path);
                     Some(s.workspace.clone())
                 }
                 None => None,

@@ -317,11 +317,7 @@ impl AppState {
             // never wrote to; see `store::find_transcript`. Corrected once here,
             // where it costs one scan per restored session at startup, rather than
             // per snapshot forever.
-            if crate::store::transcript_file(s.id, &s.cwd, s.transcript_path.as_deref()).is_none() {
-                if let Some(found) = crate::store::find_transcript(s.id) {
-                    s.transcript_path = Some(found);
-                }
-            }
+            crate::store::pin_transcript(s.id, &s.cwd, &mut s.transcript_path);
             // Records written before the daemon read titles have none, and an
             // archived session never fires the `Stop` that would fill one in. Its
             // conversation is over, so the answer cannot change: read it once here

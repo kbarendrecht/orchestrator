@@ -125,8 +125,16 @@ pub async fn session_start(
     {
         let mut inner = app.inner.write().await;
         if let Some(s) = inner.sessions.get_mut(&id) {
-            if let Some(tp) = payload.transcript_path.as_deref() {
-                s.transcript_path = Some(PathBuf::from(tp));
+            // Only if it is really there. A `--worktree` session reports the
+            // worktree's project dir, which Claude Code creates and then never
+            // writes to, having filed the conversation under the checkout it
+            // started in. Taking that on every hook undid the correction
+            // `refresh_title` had just made, and the session dropped out of the
+            // archive when it finished.
+            if let Some(tp) = payload.transcript_path.as_deref().map(PathBuf::from) {
+                if tp.exists() {
+                    s.transcript_path = Some(tp);
+                }
             }
             if let Some(cwd) = payload.cwd.as_deref() {
                 s.cwd = PathBuf::from(cwd);
@@ -367,18 +375,10 @@ async fn refresh_title(app: &Arc<AppState>, id: Uuid) {
     // the worktree, and Claude Code wrote the file under the checkout it started
     // in. Left uncorrected, the session drops out of the archive the moment it
     // finishes, because nothing can find its conversation.
-    let stale = {
-        let inner = app.inner.read().await;
-        inner.sessions.get(&id).map(|s| {
-            crate::store::transcript_file(s.id, &s.cwd, s.transcript_path.as_deref()).is_none()
-        })
-    };
-    if stale == Some(true) {
-        if let Some(found) = crate::store::find_transcript(id) {
-            let mut inner = app.inner.write().await;
-            if let Some(s) = inner.sessions.get_mut(&id) {
-                s.transcript_path = Some(found);
-            }
+    {
+        let mut inner = app.inner.write().await;
+        if let Some(s) = inner.sessions.get_mut(&id) {
+            crate::store::pin_transcript(s.id, &s.cwd, &mut s.transcript_path);
         }
     }
 

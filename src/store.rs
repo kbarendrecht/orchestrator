@@ -359,6 +359,21 @@ mod tests {
 
         let found = find_transcript(id).expect("found by id");
         assert!(found.ends_with(format!("-home-dev-repo/{id}.jsonl")), "{found:?}");
+
+        // And that is what `pin_transcript` records, so the session stops
+        // reporting no transcript and stays in the archive. Asserted here rather
+        // than in a test of its own: `find_transcript` reads `$HOME`, which is
+        // process-wide, and a second test setting it races this one.
+        let cwd = Path::new("/home/dev/repo/.claude/worktrees/x");
+        let mut recorded = Some(wrong.join(format!("{id}.jsonl")));
+        pin_transcript(id, cwd, &mut recorded);
+        assert!(transcript_exists(id, cwd, recorded.as_deref()));
+
+        // A path that is already right is left alone, so the scan is not paid for
+        // on every call.
+        let pinned = recorded.clone();
+        pin_transcript(id, cwd, &mut recorded);
+        assert_eq!(recorded, pinned);
         let _ = std::fs::remove_dir_all(&home);
     }
 
@@ -518,6 +533,22 @@ pub fn find_transcript(id: uuid::Uuid) -> Option<PathBuf> {
         }
     }
     None
+}
+
+/// Point a session at the transcript it actually has, when the cheap answers are
+/// wrong.
+///
+/// Wraps [`find_transcript`] with the check that says whether the scan is needed
+/// at all, so the three callers cannot disagree about when to pay for it: at
+/// startup, at the first `Stop`, and when the process ends. Those are the moments
+/// the answer can change, and each of them records what it found.
+pub fn pin_transcript(id: uuid::Uuid, cwd: &Path, recorded: &mut Option<PathBuf>) {
+    if transcript_file(id, cwd, recorded.as_deref()).is_some() {
+        return;
+    }
+    if let Some(found) = find_transcript(id) {
+        *recorded = Some(found);
+    }
 }
 
 /// How much of the transcript's tail to read looking for a title.
