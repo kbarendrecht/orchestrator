@@ -1122,10 +1122,17 @@ function renderDrawer() {
 
     const tab = el('button', 'dtab' + (dead ? ' dead' : ''));
     tab.setAttribute('aria-selected', String(p.id === active));
+    /* Green means a process parsed its own output and said it is fine; red means
+     * it said otherwise, or it is not running at all. Grey is reserved for "no
+     * claim": a shell, which has no health parsing, and a managed process that
+     * has not printed anything conclusive yet. Health used to render grey when
+     * `ok`, so a green build looked exactly like one nobody had heard from. */
     const health = p.health.health;
-    const cls = health === 'failing' ? 'build'
-      : health === 'ok' ? 'working'
-        : health === 'dead' ? 'idle' : 'working';
+    const cls = dead ? 'build'
+      : isShell ? 'working'
+        : health === 'failing' ? 'build'
+          : health === 'ok' ? 'ok'
+            : 'working';
     tab.appendChild(el('span', 'dot ' + cls));
     const label = isShell
       ? (dead ? `shell ${shellNo} · exit ${p.kind.exit_code}` : `shell ${shellNo}`)
