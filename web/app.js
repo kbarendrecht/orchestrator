@@ -140,6 +140,34 @@ const THEME = {
 const TERM_FONT = 12;
 const termFontSize = () => Math.round(TERM_FONT * uiScale());
 
+/** Put text on the clipboard, whatever the webview allows.
+ *
+ *  WebKitGTK refuses the async clipboard API in a webview often enough that its
+ *  `NotAllowedError` was showing up as a toast that read like a bug. The old
+ *  `execCommand` path has no permission to refuse: inside a user gesture it just
+ *  copies, which is what a keypress in a terminal is. */
+async function copyText(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch (e) { /* fall through to the one that works */ }
+  try {
+    const ta = el('textarea');
+    ta.value = text;
+    // Off-screen rather than hidden: a `display:none` textarea cannot be selected.
+    ta.style.cssText = 'position:fixed;top:-1000px;opacity:0';
+    document.body.appendChild(ta);
+    ta.select();
+    const ok = document.execCommand('copy');
+    ta.remove();
+    if (!ok) throw new Error('refused');
+    return true;
+  } catch (e) {
+    toast('this window is not allowed to write to the clipboard', true);
+    return false;
+  }
+}
+
 /** Attach to a pty, replaying the daemon's buffer first. */
 function openTerm(target, parent) {
   if (terms.has(target)) return terms.get(target);
@@ -171,13 +199,16 @@ function openTerm(target, parent) {
     const key = e.key.toLowerCase();
     if (key === 'c') {
       const text = term.getSelection();
-      if (text) navigator.clipboard.writeText(text).catch((err) => toast(String(err), true));
+      if (text) copyText(text);
       return false;
     }
     if (key === 'v') {
       navigator.clipboard.readText()
         .then((text) => { if (text) term.paste(text); })
-        .catch((err) => toast(String(err), true));
+        // Reading the clipboard needs a permission the webview does not grant,
+        // and the raw `NotAllowedError` reads like a fault in the app rather than
+        // a rule of the platform.
+        .catch(() => toast('this window is not allowed to read the clipboard', true));
       return false;
     }
     return true;
