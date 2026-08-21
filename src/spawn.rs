@@ -79,6 +79,11 @@ pub async fn spawn_session(
     cmd.push("--settings".into());
     cmd.push(settings.to_string_lossy().into_owned());
 
+    // Asked before anything is created, and for every spawn rather than only the
+    // ones an agent asks for: the button in the rail can be the last straw just
+    // as easily as a CLI call.
+    crate::headroom::check().map_err(|why| anyhow::anyhow!("not starting a session: {why}"))?;
+
     // Built before the spawn so the pty can carry the session's own ask token:
     // it is minted with the session, and the agent reads it from its environment.
     let mut session = Session::new(id, workspace.to_string(), path.clone(), kind);
@@ -86,6 +91,12 @@ pub async fn spawn_session(
     let (mut env, unset) = crate::config::transcript_env();
     env.push(("ORCH_SESSION_ID".to_string(), id.to_string()));
     env.push(("ORCH_ASK_TOKEN".to_string(), session.ask_token.clone()));
+    // So `orch` needs no configuration: the session's own environment says where
+    // the daemon is and who it is.
+    env.push((
+        "ORCH_URL".to_string(),
+        format!("http://127.0.0.1:{}", app.cfg.port),
+    ));
     let spawned = PtyHandle::spawn(&cmd, &path, &env, &unset, DEFAULT_SIZE)?;
 
     session.pty = Some(spawned.handle.clone());

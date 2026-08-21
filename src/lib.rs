@@ -11,6 +11,7 @@ pub mod edit;
 pub mod git;
 pub mod forge;
 pub mod fix_pr;
+pub mod headroom;
 pub mod hooks;
 pub mod instance;
 pub mod model;
@@ -291,6 +292,7 @@ fn router(app: Arc<AppState>) -> Router {
         .route("/api/session/:id/resume", post(api::resume_session))
         .route("/api/sessions/nudge", post(api::nudge_sessions))
         .route("/api/session/:id/fork", post(api::fork_session))
+        .route("/api/session/:id/spawn", post(api::spawn_from_session))
         .route("/api/session/:id/ask", post(api::ask))
         .route("/api/session/:id/ask/:ask/wait", get(api::ask_wait))
         .route("/api/session/:id/answer", post(api::answer))

@@ -129,7 +129,7 @@ pub async fn guard(
        the way hooks are, and for the same reason — the caller is a local process
        with no Origin and no business holding the key to everything else. */
     let is_ask = path.starts_with("/api/session/")
-        && (path.ends_with("/ask") || path.ends_with("/wait"));
+        && (path.ends_with("/ask") || path.ends_with("/wait") || path.ends_with("/spawn"));
 
     let is_get = req.method() == axum::http::Method::GET;
     if !origin_ok(origin, port, is_hook || is_ask, is_get, token_ok) {
@@ -687,6 +687,57 @@ pub async fn answer(
     app.answered.notify_waiters();
     app.notify().await;
     Ok(Json(json!({ "answered": body.answer })))
+}
+
+#[derive(Deserialize)]
+pub struct SpawnBody {
+    /// Where to work. Defaults to the caller's own workspace, which is what you
+    /// mean when you want a hand with the thing you are already doing.
+    #[serde(default)]
+    pub workspace: Option<String>,
+    /// Typed into the new session once it is up. Without one it sits at a prompt.
+    #[serde(default)]
+    pub prompt: Option<String>,
+}
+
+/// One session starts another.
+///
+/// Authenticated by the caller's own ask token, so the daemon knows who asked and
+/// an agent cannot spawn on behalf of a session it is not. The child gets a token
+/// of its own and can spawn in turn — deliberately, since a session that can hand
+/// work off is the point — which is exactly why the headroom check in
+/// `spawn_session` is not optional: recursion plus no limit is how a machine dies.
+pub async fn spawn_from_session(
+    State(app): State<Arc<AppState>>,
+    Path(id): Path<Uuid>,
+    headers: axum::http::HeaderMap,
+    Json(body): Json<SpawnBody>,
+) -> ApiResult<serde_json::Value> {
+    ask_token_ok(&app, id, &headers).await?;
+
+    let workspace = match body.workspace {
+        Some(w) => w,
+        None => {
+            let inner = app.inner.read().await;
+            inner
+                .sessions
+                .get(&id)
+                .map(|s| s.workspace.clone())
+                .ok_or_else(|| anyhow::anyhow!("no such session {id}"))?
+        }
+    };
+
+    let child = spawn::spawn_session(&app, &workspace, Kind::Interactive, None).await?;
+    if let Some(prompt) = body.prompt.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
+        let mut inner = app.inner.write().await;
+        if let Some(s) = inner.sessions.get_mut(&child) {
+            // The same path a vendored prompt takes: typed in at `SessionStart`,
+            // because an interactive session honours nothing else.
+            s.pending_prompt = Some(prompt.to_string());
+        }
+    }
+    app.notify().await;
+    Ok(Json(json!({ "session": child, "workspace": workspace })))
 }
 
 #[derive(Deserialize)]

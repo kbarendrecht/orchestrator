@@ -50,16 +50,22 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Build
-        run: cargo build --release -p orchestrator-desktop
+        run: |
+          cargo build --release -p orchestrator-desktop
+          # The CLI a session uses to reach the daemon. Same tarball, because a
+          # binary that has to be installed separately is one that is not there
+          # when an agent reaches for it.
+          cargo build --release --bin orch
 
       - name: Package
         id: pkg
         run: |
           tag="${GITHUB_REF_NAME}"
           asset="orchestrator-${tag}-x86_64-linux.tar.gz"
-          # The binary embeds the SPA (include_str!), so the tarball is the one
-          # executable and nothing else. ubi extracts it by the exe name below.
-          tar -C target/release -czf "$asset" orchestrator-desktop
+          # The app embeds the SPA (include_str!), so the tarball is two
+          # executables and nothing else: the app, and the `orch` CLI its sessions
+          # use to talk back to it. ubi extracts by the exe name below.
+          tar -C target/release -czf "$asset" orchestrator-desktop orch
           sha256sum "$asset" > "$asset.sha256"
           echo "asset=$asset" >> "$GITHUB_OUTPUT"
 
