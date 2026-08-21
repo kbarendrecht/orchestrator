@@ -277,6 +277,11 @@ fn default_main_processes() -> Vec<ManagedSpec> {
                 "error TS",
                 "✘ [ERROR]",
                 "bundle generation failed",
+                // The runner's own failures, which none of the compiler patterns
+                // above catch: mise prefixes them `mise ERROR`, so a task that
+                // dies before Angular ever prints anything used to leave the
+                // watch looking healthy.
+                "mise ERROR",
             ]
             .into_iter()
             .map(String::from)

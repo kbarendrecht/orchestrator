@@ -152,11 +152,20 @@ body[data-chrome="custom"] .resizers{display:block}
 .ctx-sep{color:var(--ghost);font-size:calc(10px * var(--fs))}
 .ctx-right{margin-left:auto;display:flex;align-items:center;gap:12px;flex:0 0 auto}
 .ctx-btn{font-family:var(--mono);font-size:calc(10.5px * var(--fs));color:var(--faint-solid)}
-.ctx-close{
+/* Every dismiss control, in one place. They were four sizes, two glyphs and
+   four hover treatments, so a close button looked like a different kind of thing
+   depending on which pane it was in.
+   What stays different is the only thing that should: hovering red means the
+   click destroys something — the session, the process — while a panel you are
+   putting away goes light. Padding adapts to whether the control stands alone or
+   sits inside a chip. */
+.ctx-close,.settings-x,.updatebar-x,.dtab .x{
   font-size:calc(12px * var(--fs));line-height:1;color:var(--faint-solid);
-  padding:2px 6px;border-radius:2px;
+  border-radius:2px;transition:color .12s,background .12s;
 }
-.ctx-close:hover{color:var(--bad);background:var(--raised)}
+.ctx-close,.settings-x,.updatebar-x{padding:2px 6px}
+.ctx-close:hover,.dtab .x:hover{color:var(--bad);background:var(--raised)}
+.settings-x:hover,.updatebar-x:hover{color:var(--text);background:var(--raised)}
 button.ctx-btn:hover{color:var(--text)}
 .repo-switch{
   display:flex;flex-direction:column;align-items:flex-start;gap:1px;
@@ -378,8 +387,7 @@ button.ctx-btn:hover{color:var(--text)}
 .dtab.dead{color:var(--ghost)}
 .dtab.dead[aria-selected="true"]{color:var(--faint-solid)}
 .dtab .dot{width:5px;height:5px}
-.dtab .x{color:var(--ghost);margin-left:1px}
-.dtab .x:hover{color:var(--bad)}
+.dtab .x{margin-left:1px;padding:0 3px}
 .addsh{
   font-family:var(--mono);font-size:calc(10.5px * var(--fs));color:var(--faint-solid);
   padding:3px 8px;display:flex;align-items:center;gap:7px;
@@ -474,11 +482,7 @@ body.row-resizing{cursor:row-resize;user-select:none}
   margin:20px 0 2px;padding-bottom:6px;border-bottom:1px solid var(--line-soft);
 }
 .settings-group:first-of-type{margin-top:14px}
-.settings-x{
-  margin-left:auto;font-size:calc(12px * var(--fs));line-height:1;
-  color:var(--faint-solid);padding:0 2px;letter-spacing:0;
-}
-.settings-x:hover{color:var(--text)}
+.settings-x{margin-left:auto;letter-spacing:0}
 .settings-row{display:flex;align-items:center;gap:12px}
 .settings-info{margin-top:9px}
 .settings-v{margin-left:auto;font-family:var(--mono);font-size:calc(11px * var(--fs));color:var(--dim)}
@@ -617,9 +621,7 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
 .updatebar[hidden]{display:none}
 .updatebar-link{color:var(--work);text-decoration:none}
 .updatebar-link:hover{text-decoration:underline}
-.updatebar-x{color:var(--faint-solid);cursor:pointer;font-size:calc(11px * var(--fs));line-height:1;
-  padding:2px 5px;border-radius:50%;transition:color .12s,background .12s}
-.updatebar-x:hover{color:var(--text);background:var(--surface)}
+.updatebar-x{cursor:pointer}
 
 /* ---------- diff overlay (§5) ---------- */
 /* Fixed to the centre column rather than filling the pane, so it covers the

@@ -159,6 +159,29 @@ function openTerm(target, parent) {
   const fit = new FitAddon.FitAddon();
   term.loadAddon(fit);
   term.open(host);
+
+  /* Ctrl+Shift+C / Ctrl+Shift+V, the terminal convention. xterm passes every
+   * keystroke to the pty, so without this the copy shortcut reached the agent as
+   * a control code and the selection stayed where it was. Plain Ctrl+C has to go
+   * on reaching the pty: interrupting is what it means in a terminal.
+   *
+   * Returning false tells xterm not to handle the event itself. */
+  term.attachCustomKeyEventHandler((e) => {
+    if (e.type !== 'keydown' || !e.ctrlKey || !e.shiftKey) return true;
+    const key = e.key.toLowerCase();
+    if (key === 'c') {
+      const text = term.getSelection();
+      if (text) navigator.clipboard.writeText(text).catch((err) => toast(String(err), true));
+      return false;
+    }
+    if (key === 'v') {
+      navigator.clipboard.readText()
+        .then((text) => { if (text) term.paste(text); })
+        .catch((err) => toast(String(err), true));
+      return false;
+    }
+    return true;
+  });
   /* No WebGL in the webview. WebKitGTK is the engine this app actually runs on,
    * and xterm's WebGL renderer garbles glyphs there: text arrives as noise and
    * comes back only when a scroll or a selection forces a full redraw, which is
@@ -1147,7 +1170,8 @@ function renderDrawer() {
     tab.appendChild(el('span', null, label));
     tab.onclick = () => { selectedProc[wsId] = p.id; drawerTouched = true; renderDrawer(); };
 
-    const x = el('span', 'x', '×');
+    // The same glyph every other dismiss uses; this one was a multiplication sign.
+    const x = el('span', 'x', '\u2715');
     x.title = dead ? 'Dismiss' : 'Close';
     x.onclick = (ev) => {
       ev.stopPropagation();
