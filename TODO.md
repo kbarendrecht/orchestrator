@@ -262,6 +262,17 @@ Everything outside that block is hand-written and survives.
   editable settings, which currently default to acme's), and how to try it
   without a monorepo to point it at.
 
+- A file in the diff should offer "open on GitHub". Right-click a row in the
+  changed-files pane (`.dfrow` / `.frow`, built in `renderFiles`) and get the
+  file on the forge, the way a PR row already offers its menu (`prMenu`). Those
+  rows carry no context menu at all today. Everything needed is already in the
+  snapshot: `snap.repos.upstream` for the slug, the PR's `head_sha`, and the
+  path. Worth deciding which link is wanted — the blob at that sha reads the file
+  as it is, while the PR's Files-changed tab shows it as a review, but anchoring
+  to a file there needs GitHub's own hash of the path. Blob first, and route it
+  through `/api/open` like every other external link, since the webview opens no
+  `target=_blank` of its own.
+
 - **Audit the keyboard map for logical, consistent coverage.** Not two more
   chords — a pass over the whole scheme so it is predictable: same modifier
   idioms, obvious inverses, no orphan actions. Concrete gaps feeding it:
