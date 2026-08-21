@@ -785,7 +785,7 @@ pub async fn nudge_sessions(
                 continue;
             }
             match &s.state {
-                // `Ready` and only `Ready`: relaunched with its conversation
+                // `Ready` and interrupted: relaunched with an unfinished turn
                 // behind it and never prompted since, which is the one state
                 // where "continue" is both true and what you meant.
                 //
@@ -795,7 +795,12 @@ pub async fn nudge_sessions(
                 // work; a thread asking you something would get a non-answer; a
                 // permission prompt or a question takes the keystroke as consent.
                 crate::model::State::YourTurn { reason, .. } => match reason {
-                    crate::model::TurnReason::Ready => targets.push((s.id, pty)),
+                    // And only one that was cut off mid-turn. A conversation that
+                    // had finished before the restart comes back at the same empty
+                    // prompt, and "continue" there invents the next piece of work.
+                    crate::model::TurnReason::Ready if s.interrupted => {
+                        targets.push((s.id, pty))
+                    }
                     // Both take a keystroke as an answer: a permission prompt as
                     // consent, a question as whichever choice is highlighted.
                     // Named rather than skipped, so pressing the button does not

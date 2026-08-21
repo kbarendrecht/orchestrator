@@ -38,6 +38,13 @@ pub struct SessionRecord {
     /// explains why two rows share a title.
     #[serde(default)]
     pub forked_from: Option<SessionId>,
+    /// Whether the last turn was cut off rather than finished.
+    ///
+    /// The one thing a resumed session cannot work out for itself: it comes back
+    /// at an empty prompt either way. Recorded so the restart can tell a
+    /// conversation that was interrupted from one that was done.
+    #[serde(default)]
+    pub interrupted: bool,
 }
 
 impl SessionRecord {
@@ -56,6 +63,7 @@ impl SessionRecord {
             pid: s.pid,
             was_live: s.state.is_live(),
             forked_from: s.forked_from,
+            interrupted: s.interrupted,
         }
     }
 
@@ -72,6 +80,7 @@ impl SessionRecord {
         s.created_at = self.created_at;
         s.pid = self.pid;
         s.forked_from = self.forked_from;
+        s.interrupted = self.interrupted;
         s.state = State::Archived { resumable };
         s
     }
@@ -395,6 +404,26 @@ mod tests {
         assert!(ai_title(uuid::Uuid::new_v4(), Path::new("/nonexistent"), Some(&file)).is_none());
         assert!(ai_title(uuid::Uuid::new_v4(), Path::new("/nonexistent"), None).is_none());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Without this the flag dies with the daemon, and every session comes back
+    /// looking equally unfinished — which is the bug it exists to fix.
+    #[test]
+    fn an_interrupted_turn_survives_the_record() {
+        let mut s = Session::new(
+            uuid::Uuid::new_v4(),
+            "wt".into(),
+            Path::new("/tmp").to_path_buf(),
+            Kind::Interactive,
+        );
+        s.set_state(State::Working);
+        assert!(SessionRecord::of(&s).restore().interrupted);
+
+        s.set_state(State::YourTurn {
+            since: std::time::SystemTime::now(),
+            reason: TurnReason::TurnComplete,
+        });
+        assert!(!SessionRecord::of(&s).restore().interrupted);
     }
 
     #[test]

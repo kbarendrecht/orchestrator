@@ -807,6 +807,9 @@ pub struct SessionView {
     /// The conversation this one was cut from. A fork inherits its parent's
     /// title, so without this two rows read the same and neither says why.
     pub forked_from: Option<crate::model::SessionId>,
+    /// Whether this session still owes you the rest of a turn. The nudge is only
+    /// true of these; every other resumed session is sitting at its prompt done.
+    pub interrupted: bool,
 }
 
 impl SessionView {
@@ -847,6 +850,7 @@ impl SessionView {
                 && !matches!(s.recovery, Some(ArchiveState::TranscriptOnly)),
             interaction: s.interaction.clone(),
             forked_from: s.forked_from,
+            interrupted: s.interrupted,
         }
     }
 }

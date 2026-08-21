@@ -1128,7 +1128,11 @@ const isNudgeable = (s) =>
   // A session with no conversation behind it has nothing to continue, and would
   // read the word as its opening instruction. The daemon skips those too, so the
   // count here is what pressing the button actually does.
-  && s.has_transcript;
+  && s.has_transcript
+  // And it has to have been cut off mid-turn. `ready` alone cannot tell that
+  // from a conversation that had finished before the restart — they come back
+  // at the same empty prompt — so the bar was calling finished work "paused".
+  && s.interrupted;
 
 function renderWaitbar() {
   const waiting = snap.sessions.filter(isWaiting);

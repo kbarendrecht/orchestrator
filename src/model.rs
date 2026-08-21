@@ -218,6 +218,18 @@ pub struct Session {
     /// about it: the agent asks, the SPA renders this from the snapshot, and the
     /// answer releases the tool call the agent is sitting in.
     pub interaction: Option<Interaction>,
+    /// Whether the last turn was cut off rather than allowed to finish.
+    ///
+    /// Every resumed session comes back `YourTurn { Ready }`: `SessionStart`
+    /// cannot tell what the conversation was doing before the daemon went down,
+    /// so one that was killed mid-sentence and one that had finished look
+    /// identical at the prompt. This is the difference, carried across the
+    /// restart, and it is what makes "continue" a true thing to say to some of
+    /// them and an invented instruction to the rest.
+    ///
+    /// Maintained by [`Session::set_state`], because a turn starting and a turn
+    /// ending are the only two things that change the answer.
+    pub interrupted: bool,
     /// The conversation this one was cut from, if it was forked.
     ///
     /// Kept as the id rather than a flag: the fork shares every earlier turn with
@@ -253,6 +265,7 @@ impl Session {
             dirty_paths: HashSet::new(),
             boundary_violations: Vec::new(),
             last_reconcile: None,
+            interrupted: false,
             forked_from: None,
             pending_prompt: None,
             // Always a real one, so an empty stored token can never match an
@@ -267,6 +280,18 @@ impl Session {
     }
 
     pub fn set_state(&mut self, state: State) {
+        // A turn in flight is a turn that can be lost: closing the app or killing
+        // the process takes whatever the agent was part-way through with it. Only
+        // a turn that actually ends clears it — `Ready` deliberately does not,
+        // since that is the state a resumed session comes back in and the whole
+        // point is that it still owes you the rest of the turn.
+        match &state {
+            State::Working => self.interrupted = true,
+            State::YourTurn { reason, .. } if *reason != TurnReason::Ready => {
+                self.interrupted = false;
+            }
+            _ => {}
+        }
         if self.state != state {
             tracing::debug!(session = %self.id, from = ?self.state, to = ?state, "state");
             self.state = state;
@@ -425,6 +450,36 @@ mod tests {
             since: SystemTime::now(),
             reason,
         }
+    }
+
+    /// The rail called four resumed sessions "paused mid-work" when one of them
+    /// had finished before the restart. `Ready` cannot tell them apart; this can.
+    #[test]
+    fn only_a_turn_that_was_cut_off_survives_as_interrupted() {
+        let mut s = Session::new(
+            uuid::Uuid::new_v4(),
+            "wt".into(),
+            std::path::Path::new("/tmp").to_path_buf(),
+            Kind::Interactive,
+        );
+        assert!(!s.interrupted, "a session that has done nothing owes no turn");
+
+        s.set_state(State::Working);
+        assert!(s.interrupted);
+
+        // Killed mid-turn: `Exited` must not clear it, or the record loses the
+        // one fact the restart needs.
+        s.set_state(State::Exited);
+        assert!(s.interrupted);
+
+        // A resumed one stays interrupted at its prompt, which is what makes it
+        // the session "continue" is true of.
+        s.set_state(your_turn(TurnReason::Ready));
+        assert!(s.interrupted);
+
+        // A turn that ends is not an interrupted one.
+        s.set_state(your_turn(TurnReason::TurnComplete));
+        assert!(!s.interrupted);
     }
 
     #[test]

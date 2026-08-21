@@ -86,7 +86,22 @@ pub async fn spawn_session(
 
     // Built before the spawn so the pty can carry the session's own ask token:
     // it is minted with the session, and the agent reads it from its environment.
+    // Read before the insert below replaces it: a resume keeps the id, so the
+    // record of what the conversation was doing is about to be overwritten by the
+    // session that continues it.
+    let interrupted = match resume {
+        Some(Source::Resume(prev)) => app
+            .inner
+            .read()
+            .await
+            .sessions
+            .get(&prev)
+            .is_some_and(|s| s.interrupted),
+        _ => false,
+    };
+
     let mut session = Session::new(id, workspace.to_string(), path.clone(), kind);
+    session.interrupted = interrupted;
     if let Some(Source::Fork(prev)) = resume {
         session.forked_from = Some(prev);
     }
