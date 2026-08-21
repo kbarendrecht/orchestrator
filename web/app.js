@@ -1035,7 +1035,10 @@ function closeSession(id) {
  *  `ready`, which `wants_attention` excludes because an idle agent is not
  *  something to shout about — but it is exactly the one you want to send on. */
 const isNudgeable = (s) =>
-  s.alive && s.state.state === 'your_turn' && s.state.reason !== 'needs_permission'
+  // `ready` alone: resumed mid-conversation and not prompted since. A finished
+  // turn is not paused mid-work, it is done, and telling it to continue would
+  // invent the next thing for you.
+  s.alive && s.state.state === 'your_turn' && s.state.reason === 'ready'
   // A session with no conversation behind it has nothing to continue, and would
   // read the word as its opening instruction. The daemon skips those too, so the
   // count here is what pressing the button actually does.

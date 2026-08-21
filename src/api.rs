@@ -734,11 +734,21 @@ pub async fn nudge_sessions(
                 continue;
             }
             match &s.state {
+                // `Ready` and only `Ready`: relaunched with its conversation
+                // behind it and never prompted since, which is the one state
+                // where "continue" is both true and what you meant.
+                //
+                // The word is a real instruction that lands in the transcript, so
+                // the other waiting states are wrong targets rather than merely
+                // unnecessary ones. A finished turn would be told to invent more
+                // work; a thread asking you something would get a non-answer; a
+                // permission prompt takes a keystroke as consent.
                 crate::model::State::YourTurn { reason, .. } => match reason {
+                    crate::model::TurnReason::Ready => targets.push((s.id, pty)),
                     crate::model::TurnReason::NeedsPermission => {
                         held.push(s.title.clone().unwrap_or_else(|| s.workspace.clone()));
                     }
-                    _ => targets.push((s.id, pty)),
+                    _ => {}
                 },
                 // Working, starting, failing: not waiting on you, so not yours to
                 // interrupt. A nudge into a running turn is a stray line of input.
