@@ -143,6 +143,11 @@ pub async fn session_start(
         }
     }
 
+    // A resumed session already has a conversation behind it, and Claude Code has
+    // already named it. Waiting for the next `Stop` to read that would leave every
+    // row you just resumed showing its worktree until you happen to use it.
+    refresh_title(&app, id).await;
+
     // The prompt is typed in rather than passed as an argument:
     // `initialUserMessage` is only honoured in non-interactive mode, and a
     // `/resolve` session is interactive so you can take it over mid-flight (§8).

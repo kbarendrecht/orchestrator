@@ -322,6 +322,13 @@ impl AppState {
                     s.transcript_path = Some(found);
                 }
             }
+            // Records written before the daemon read titles have none, and an
+            // archived session never fires the `Stop` that would fill one in. Its
+            // conversation is over, so the answer cannot change: read it once here
+            // rather than leaving the whole archive reading as worktree names.
+            if s.title.is_none() {
+                s.title = crate::store::ai_title(s.id, &s.cwd, s.transcript_path.as_deref());
+            }
             inner.sessions.entry(s.id).or_insert(s);
         }
     }
