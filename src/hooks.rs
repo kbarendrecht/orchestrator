@@ -278,6 +278,19 @@ pub async fn post_tool_use(
     ok()
 }
 
+/// Which of the two a `permission_prompt` really is.
+///
+/// Claude Code runs `AskUserQuestion` through the permission system, so a
+/// multiple choice arrives as "Claude needs your permission to use
+/// AskUserQuestion". Taken literally it sent you to the pane looking for a y/n
+/// prompt that was not there.
+fn permission_reason(message: Option<&str>) -> TurnReason {
+    match message {
+        Some(m) if m.contains("AskUserQuestion") => TurnReason::AskedAQuestion,
+        _ => TurnReason::NeedsPermission,
+    }
+}
+
 pub async fn notification(
     AxState(app): AxState<Arc<AppState>>,
     AxPath(kind): AxPath<String>,
@@ -289,7 +302,7 @@ pub async fn notification(
     };
     let reason = match kind.as_str() {
         "agent_needs_input" => TurnReason::AskedAQuestion,
-        "permission_prompt" => TurnReason::NeedsPermission,
+        "permission_prompt" => permission_reason(payload.message.as_deref()),
         _ => TurnReason::TurnComplete,
     };
     {
@@ -648,6 +661,22 @@ pub fn write_settings(port: u16) -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The rail said "needs permission" for a multiple choice, which is a
+    /// different thing to walk over to.
+    #[test]
+    fn a_question_arriving_as_a_permission_prompt_is_still_a_question() {
+        assert_eq!(
+            permission_reason(Some("Claude needs your permission to use AskUserQuestion")),
+            TurnReason::AskedAQuestion
+        );
+        assert_eq!(
+            permission_reason(Some("Claude needs your permission to use Bash")),
+            TurnReason::NeedsPermission
+        );
+        // No message at all is the old behaviour, not a question.
+        assert_eq!(permission_reason(None), TurnReason::NeedsPermission);
+    }
 
     /// The pending prompt has to reach the pty, or the review button starts a session
     /// that just sits there. Exercised against a real pty running `cat`, so no Claude

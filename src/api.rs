@@ -793,10 +793,15 @@ pub async fn nudge_sessions(
                 // the other waiting states are wrong targets rather than merely
                 // unnecessary ones. A finished turn would be told to invent more
                 // work; a thread asking you something would get a non-answer; a
-                // permission prompt takes a keystroke as consent.
+                // permission prompt or a question takes the keystroke as consent.
                 crate::model::State::YourTurn { reason, .. } => match reason {
                     crate::model::TurnReason::Ready => targets.push((s.id, pty)),
-                    crate::model::TurnReason::NeedsPermission => {
+                    // Both take a keystroke as an answer: a permission prompt as
+                    // consent, a question as whichever choice is highlighted.
+                    // Named rather than skipped, so pressing the button does not
+                    // quietly leave the sessions that most need you behind.
+                    crate::model::TurnReason::NeedsPermission
+                    | crate::model::TurnReason::AskedAQuestion => {
                         held.push(s.title.clone().unwrap_or_else(|| s.workspace.clone()));
                     }
                     _ => {}
@@ -827,7 +832,7 @@ pub async fn nudge_sessions(
             let _ = pty.write(b"\r");
         });
     }
-    Ok(Json(json!({ "nudged": nudged, "needs_permission": held })))
+    Ok(Json(json!({ "nudged": nudged, "held": held })))
 }
 
 /// Resume an archived session.

@@ -1118,11 +1118,11 @@ async function nudgeAll() {
     const r = await call('/api/sessions/nudge');
     const n = (r.nudged || []).length;
     toast(n ? `nudged ${n}` : 'nothing to nudge');
-    // Named, not silently skipped: a permission prompt takes a keystroke as an
-    // answer, so typing into one would be approving something for you.
-    const held = r.needs_permission || [];
+    // Named, not silently skipped: a permission prompt or a question takes a
+    // keystroke as its answer, so typing into one would be answering for you.
+    const held = r.held || [];
     if (held.length) {
-      toast(`${held.join(', ')} ${held.length === 1 ? 'is' : 'are'} asking permission — answer those yourself`, true);
+      toast(`${held.join(', ')} ${held.length === 1 ? 'is' : 'are'} waiting on an answer from you`, true);
     }
   } catch (e) {
     toast(e.message, true);
