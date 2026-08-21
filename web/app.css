@@ -437,6 +437,11 @@ body.row-resizing{cursor:row-resize;user-select:none}
   position:fixed;inset:0;z-index:100;display:grid;place-items:center;
   background:rgba(0,0,0,.42);
 }
+/* `hidden` is only a UA rule, so the `display` above beats it and the panel is
+   on screen from first paint: empty, because nothing has loaded the config into
+   it, and unclosable, because `settingsOpen()` asks the attribute, which still
+   says hidden. Any element with an author `display` needs this line. */
+.settings[hidden]{display:none}
 .settings-card{
   width:min(480px, 92vw);max-height:88vh;overflow-y:auto;padding:14px 15px;
   background:var(--raised);border:1px solid var(--line);border-radius:5px;
