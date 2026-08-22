@@ -12,8 +12,10 @@
 //! - **Repo detection** ([`GitHubForge::detect`]) — it runs before an instance
 //!   exists, to learn which repo to build one for, and it is inherently
 //!   platform-specific (remote-URL shapes).
-//! - **The update nudge** ([`latest_release`]) — an unauthenticated one-off
-//!   against github.com's releases, scoped by TODO.md to after run-elsewhere.
+//! - **The update nudge** ([`latest_release`]) — a one-off against github.com's
+//!   releases, riding the read-token ladder because the release repo is private.
+//!   It asks about *orchd's own* release repo, not the hosted monorepo, so it
+//!   belongs to no forge instance.
 //!
 //! The model types ([`Pr`], [`Threads`], …) live in [`model`] so they carry no
 //! GitHub dependency; the write handle and the token ladder are re-exported from
@@ -64,6 +66,19 @@ pub trait Forge: Send + Sync + Clone + 'static {
 
     /// Ask one reviewer to look again.
     fn rerequest(&self, at: &Path, pr: u64, login: &str) -> Result<()>;
+
+    /// A browser URL for one file at one ref.
+    ///
+    /// On the trait rather than built in the SPA because the path grammar is the
+    /// forge's, not ours — GitHub's `/blob/`, GitLab's `/-/blob/`, Bitbucket's
+    /// `/src/`. Every other external URL the SPA opens came *from* a forge read
+    /// (`Pr::url`), so this is the one link we have to mint, and minting it here
+    /// keeps the client ignorant of URL shape.
+    ///
+    /// Pure string work, no request: the URL is handed to the OS opener, so a
+    /// wrong one costs a 404 in the browser, not a failed call. Hence no
+    /// `Result` — there is nothing to fail.
+    fn blob_url(&self, r#ref: &str, path: &str) -> String;
 }
 
 /// The forge the config selected, dispatched at runtime.
@@ -120,6 +135,11 @@ impl Forge for ForgeImpl {
     fn rerequest(&self, at: &Path, pr: u64, login: &str) -> Result<()> {
         match self {
             ForgeImpl::GitHub(f) => f.rerequest(at, pr, login),
+        }
+    }
+    fn blob_url(&self, r#ref: &str, path: &str) -> String {
+        match self {
+            ForgeImpl::GitHub(f) => f.blob_url(r#ref, path),
         }
     }
 }

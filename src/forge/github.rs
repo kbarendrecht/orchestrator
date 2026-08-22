@@ -155,24 +155,33 @@ pub fn graphql(token: &str, query: &str) -> Result<Value> {
 
 /// The latest published release of `owner/name`, as `(tag, html_url)`.
 ///
-/// Unauthenticated: releases are public and the check must work before any token
-/// is configured. Anything short of a clean answer — no network, no `curl`, a
-/// repo with no releases (404), unparseable JSON — is `None`, never an error;
-/// the update nudge is a nicety and must never be able to break startup.
-pub fn latest_release(owner: &str, name: &str) -> Option<(String, String)> {
-    let out = Command::new("curl")
-        .args([
-            "-sS",
-            "--max-time",
-            "10",
-            "-H",
-            "Accept: application/vnd.github+json",
-            "-H",
-            "User-Agent: orchd",
-            &format!("https://api.github.com/repos/{owner}/{name}/releases/latest"),
-        ])
-        .output()
-        .ok()?;
+/// A `token`, when present, is sent as a bearer credential: the release repo is
+/// private, so an unauthenticated call 404s and the nudge silently never fires.
+/// The token is optional because a public release repo needs none, and the
+/// caller passes what its ladder happens to resolve.
+///
+/// Anything short of a clean answer — no network, no `curl`, a repo with no
+/// releases (404), unparseable JSON — is `None`, never an error; the update
+/// nudge is a nicety and must never be able to break startup.
+pub fn latest_release(owner: &str, name: &str, token: Option<&str>) -> Option<(String, String)> {
+    let url = format!("https://api.github.com/repos/{owner}/{name}/releases/latest");
+    let mut cmd = Command::new("curl");
+    cmd.args([
+        "-sS",
+        "--max-time",
+        "10",
+        "-H",
+        "Accept: application/vnd.github+json",
+        "-H",
+        "User-Agent: orchd",
+    ]);
+    // On the command line the header shows in the process table, but a one-off
+    // read of a release tag is not worth the stdin dance graphql() does, and this
+    // token is read-scoped.
+    if let Some(t) = token.map(str::trim).filter(|t| !t.is_empty()) {
+        cmd.arg("-H").arg(format!("Authorization: Bearer {t}"));
+    }
+    let out = cmd.arg(&url).output().ok()?;
     if !out.status.success() {
         return None;
     }
@@ -244,6 +253,41 @@ impl Forge for GitHubForge {
 
     fn rerequest(&self, at: &Path, pr: u64, login: &str) -> Result<()> {
         self.target(at).rerequest(pr, login)
+    }
+
+    /// github.com's blob grammar. The host is a constant rather than carried on
+    /// the forge because `repo_from_remote` only recognises github.com remotes
+    /// in the first place — an Enterprise host never gets this far, so storing
+    /// one here would be dead state pretending to be support.
+    ///
+    /// Path segments are escaped individually: a `/` in a path is structure and
+    /// must stay a separator, while a `#` or `?` in a filename would otherwise
+    /// truncate the URL at the fragment or query.
+    fn blob_url(&self, r#ref: &str, path: &str) -> String {
+        // Byte-wise, not char-wise: a percent escape encodes UTF-8 bytes, so an
+        // accented filename needs one `%XX` per byte and `c as u32` would emit
+        // one per codepoint and produce a URL nothing resolves.
+        let esc = |s: &str| {
+            s.split('/')
+                .map(|seg| {
+                    seg.bytes()
+                        .map(|b| match b {
+                            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'-' | b'_' | b'.'
+                            | b'~' => (b as char).to_string(),
+                            _ => format!("%{b:02X}"),
+                        })
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join("/")
+        };
+        format!(
+            "https://github.com/{}/{}/blob/{}/{}",
+            self.owner,
+            self.name,
+            esc(r#ref),
+            esc(path)
+        )
     }
 }
 
@@ -833,6 +877,26 @@ mod tests {
             Some(("acme-org".into(), "acme".into()))
         );
         assert_eq!(repo_from_remote("git@gitlab.com:x/y.git"), None);
+    }
+
+    #[test]
+    fn blob_url_keeps_separators_and_escapes_the_rest() {
+        let f = GitHubForge::new("acme-org", "acme", "t");
+        assert_eq!(
+            f.blob_url("abc123", "src/forge/github.rs"),
+            "https://github.com/acme/monorepo/blob/abc123/src/forge/github.rs"
+        );
+        // A slash is structure and stays one; a space and a `#` would otherwise
+        // break the URL or truncate it at the fragment.
+        assert_eq!(
+            f.blob_url("worktree-a", "a dir/b#c.txt"),
+            "https://github.com/acme/monorepo/blob/worktree-a/a%20dir/b%23c.txt"
+        );
+        // Non-ASCII is one escape per UTF-8 byte, not per codepoint.
+        assert_eq!(
+            f.blob_url("main", "café.rs"),
+            "https://github.com/acme/monorepo/blob/main/caf%C3%A9.rs"
+        );
     }
 
     fn node(json: &str) -> Value {

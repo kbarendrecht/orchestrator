@@ -1511,6 +1511,61 @@ pub async fn open_url(
     Ok(Json(json!({ "opened": url })))
 }
 
+#[derive(Deserialize)]
+pub struct OpenFile {
+    pub workspace: String,
+    pub path: String,
+}
+
+/// Open one changed file on the forge, in the browser.
+///
+/// The URL is minted here rather than in the SPA so the client carries no
+/// knowledge of a forge's path grammar — see [`crate::forge::Forge::blob_url`].
+/// The daemon already owns outward navigation (`/api/open`), so this is the same
+/// boundary with the link-building moved behind the seam.
+///
+/// The ref is the PR's head sha when a PR holds this workspace, because that
+/// reads the file exactly as the review sees it; otherwise the workspace's own
+/// branch, which 404s until the branch is pushed. That is the honest answer —
+/// better a link that says "not pushed" than a silently wrong sha.
+pub async fn open_file(
+    State(app): State<Arc<AppState>>,
+    Json(body): Json<OpenFile>,
+) -> ApiResult<serde_json::Value> {
+    let path = body.path.trim();
+    if path.is_empty() {
+        return Err(ApiError(anyhow::anyhow!("no path given")));
+    }
+    let (head_sha, at) = {
+        let inner = app.inner.read().await;
+        let w = inner
+            .workspaces
+            .get(&body.workspace)
+            .ok_or_else(|| anyhow::anyhow!("no such workspace: {}", body.workspace))?;
+        // The PR holding this workspace, matched the way `workspace_for` does in
+        // reverse: by head branch.
+        let sha = inner
+            .prs
+            .iter()
+            .find(|p| w.branches.contains(&p.head_ref))
+            .and_then(|p| p.head_sha.clone());
+        (sha, w.path.clone())
+    };
+    // `branches` is a set with no order, so it cannot answer "which branch" —
+    // ask git what is actually checked out, the way the teardown gate does.
+    let r#ref = match head_sha {
+        Some(sha) => sha,
+        None => tokio::task::spawn_blocking(move || crate::git::current_branch(&at))
+            .await
+            .context("resolving the branch panicked")?
+            .context("no PR holds this workspace and it is on no branch")?,
+    };
+    let forge = write_forge(&app)?;
+    let url = forge.blob_url(&r#ref, path);
+    open_external(&url)?;
+    Ok(Json(json!({ "opened": url })))
+}
+
 /// Hand a URL to the platform browser opener, detached.
 ///
 /// On WSL the standard `xdg-open` often resolves to a portal that silently does

@@ -319,6 +319,7 @@ fn router(app: Arc<AppState>) -> Router {
         .route("/api/reviews/refresh", post(api::refresh_reviews))
         .route("/api/prs/refresh", post(api::refresh_prs))
         .route("/api/open", post(api::open_url))
+        .route("/api/open/file", post(api::open_file))
         .route("/api/pr/:number/threads", get(api::pr_threads))
         .route("/api/pr/:number/review", get(api::pr_review))
         .route("/api/pr/:number/triage", post(api::pr_triage))
@@ -844,12 +845,19 @@ fn start_update_poller(app: Arc<AppState>) {
     // The repo the binary is released from, not the monorepo it hosts.
     const RELEASE_REPO: (&str, &str) = ("kbarendrecht", "orchestrator");
     let current = env!("CARGO_PKG_VERSION").to_string();
+    let token_file = app.cfg.github_token_file.clone();
     tokio::spawn(async move {
         let interval = std::time::Duration::from_secs(6 * 60 * 60);
         loop {
             let cur = current.clone();
-            if let Ok(Some((tag, url))) = tokio::task::spawn_blocking(|| {
-                forge::latest_release(RELEASE_REPO.0, RELEASE_REPO.1)
+            // The release repo is private, so the check rides the same token
+            // ladder the PR poller uses. Resolved per poll, off-thread, so a
+            // rotated token is picked up and a slow `gh auth token` never blocks
+            // the runtime.
+            let tf = token_file.clone();
+            if let Ok(Some((tag, url))) = tokio::task::spawn_blocking(move || {
+                let token = forge::resolve_token(tf.as_deref()).ok().map(|t| t.value);
+                forge::latest_release(RELEASE_REPO.0, RELEASE_REPO.1, token.as_deref())
             })
             .await
             {

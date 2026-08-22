@@ -1427,6 +1427,17 @@ async function act(path, verb) {
   }
 }
 
+/** Open a changed file on the forge.
+ *
+ *  The URL is built by the daemon, not here: which ref to read the file at and
+ *  what a blob URL looks like are both the forge's business, and a second forge
+ *  is meant to be a `ForgeKind` arm rather than an edit to this file. So the
+ *  client says only which file it wants. */
+function openFileOnForge(w, path) {
+  call('/api/open/file', { workspace: w.id, path })
+    .catch((err) => toast(err.message, true));
+}
+
 function renderFiles() {
   // The diff overlay is opened against a workspace and keeps describing it while
   // it is open, session or no session.
@@ -1491,6 +1502,12 @@ function renderFiles() {
       } else {
         openDiff(f.path);
       }
+    };
+    // These rows carry no menu of their own, and the one thing worth reaching
+    // for is the file on the forge. Whether it can be linked is the daemon's
+    // answer, so the item is always live and a refusal comes back as a toast.
+    row.oncontextmenu = (ev) => {
+      openMenu(ev, [['open on forge', null, () => openFileOnForge(w, f.path)]]);
     };
     panes.appendChild(row);
   }

@@ -81,20 +81,6 @@ Everything outside that block is hand-written and survives.
   git primitive is strictly required. The per-PR-keyed guards
   (`authorship`/`branch_busy`) would need a chain-aware variant.
 
-- **The fix run asks to trust `~/development`.** Pressing `fix` starts the run and
-  Claude Code puts up its "Accessing workspace" prompt for `~/development`, which
-  is neither the worktree nor anything the daemon names. Not reproduced, and the
-  obvious causes are ruled out: `spawn_fix_pr_session` spawns with the PR's
-  worktree as cwd, that dialog prints the cwd verbatim, trust is inherited from an
-  ancestor so a worktree under a trusted checkout needs none (verified against a
-  throwaway repo with the same `.claude/worktrees` layout), and there is no
-  `~/.claude/projects/-home-kbarendrecht-development` directory, which there would
-  be if a session had ever started up there. The one thing a run touches outside
-  the checkout is its own instructions at `~/.config/orchd/fix-pr-<pr>/prompt.md`
-  (`spawn.rs`, deliberate: the repo's edit-boundary hook blocks writing them
-  inside, and a file in the worktree would dirty the tree). Next step is the exact
-  path the dialog names.
-
 - **Findings from the portability review still worth keeping.** A high-effort
   review of `559c803..ff387df` surfaced these; the ones about the built-in review
   ranking are gone now the queue is back to a command, and what remains is
@@ -233,17 +219,15 @@ Everything outside that block is hand-written and survives.
     `Config::existing()` is `None`), so first-run has a start; what it does not
     have is the rest of the questions.
 
-- **The update nudge cannot fire on this repo.** Belongs after run-elsewhere: the
-  nudge only matters once orchd is distributed to someone who isn't building it
-  from source. `github::latest_release` (`src/forge/github.rs`) asks
-  `api.github.com/repos/.../releases/latest` through plain `curl` with no token,
-  and the release repo is private, so the call is a 404 and the poller sees
-  `None`. Authenticated, the same request answers `v2026.8.5`. The token ladder
-  the PR poller already uses (`ORCHD_GITHUB_TOKEN`, the token file, then `gh auth
-  token`) is right there for it to ride, or the repo goes public. Note also that a
-  failed check and "no update" are the same answer today, which is why this went
-  unnoticed. The debug gate in `lib.rs` is not the bug: `cargo run` deliberately
-  never nags, and the nudge would still not fire from a release build.
+- **The update nudge now authenticates.** *Fixed.* `latest_release`
+  (`src/forge/github.rs`) takes an optional bearer token and
+  `start_update_poller` (`lib.rs`) resolves one off-thread per poll through the
+  same ladder the PR poller uses (`ORCHD_GITHUB_TOKEN`, the token file, then `gh
+  auth token`), so the private release repo answers instead of 404ing to `None`.
+  Two things unchanged and worth remembering: a failed check and "no update" are
+  still the same answer (the nudge stays silent on error by design), and the
+  debug gate means `cargo run` never nags — the nudge only fires from a release
+  build. Superseded whenever the release repo goes public.
 
 - **Is it macOS-compatible? Nobody knows.** The code has the paths — `Chrome::Overlay`
   for the traffic lights, `open` for URLs, `#[cfg(target_os = "macos")]` arms in
@@ -278,17 +262,6 @@ Everything outside that block is hand-written and survives.
     client scrollback could be far shorter.
   Do not turn this into a project. If neither is a one-line win, write down what
   it actually is and move on.
-
-- A file in the diff should offer "open on GitHub". Right-click a row in the
-  changed-files pane (`.dfrow` / `.frow`, built in `renderFiles`) and get the
-  file on the forge, the way a PR row already offers its menu (`prMenu`). Those
-  rows carry no context menu at all today. Everything needed is already in the
-  snapshot: `snap.repos.upstream` for the slug, the PR's `head_sha`, and the
-  path. Worth deciding which link is wanted — the blob at that sha reads the file
-  as it is, while the PR's Files-changed tab shows it as a review, but anchoring
-  to a file there needs GitHub's own hash of the path. Blob first, and route it
-  through `/api/open` like every other external link, since the webview opens no
-  `target=_blank` of its own.
 
 - **Audit the keyboard map for logical, consistent coverage.** Not two more
   chords — a pass over the whole scheme so it is predictable: same modifier
