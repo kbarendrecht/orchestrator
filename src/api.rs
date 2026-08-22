@@ -1524,10 +1524,17 @@ pub struct OpenFile {
 /// The daemon already owns outward navigation (`/api/open`), so this is the same
 /// boundary with the link-building moved behind the seam.
 ///
-/// The ref is the PR's head sha when a PR holds this workspace, because that
-/// reads the file exactly as the review sees it; otherwise the workspace's own
-/// branch, which 404s until the branch is pushed. That is the honest answer —
-/// better a link that says "not pushed" than a silently wrong sha.
+/// The ref is always a **sha**, never a branch name, and that is load-bearing:
+/// this is a triangular setup where branches are pushed to the fork while PRs
+/// (and so `resolve_repo`, and so the URL host) name upstream. A fork's branch
+/// does not exist on upstream, so `blob/<branch>/…` 404s for every worktree —
+/// verified against a live PR branch. A sha is shared across a fork network, so
+/// it resolves under either repo's URL.
+///
+/// The PR's head sha wins when a PR holds the workspace: it is guaranteed to be
+/// pushed, and it reads the file as the review sees it. Otherwise local `HEAD`,
+/// which is exactly the commit the changed-files pane measured — and 404s while
+/// it is unpushed, which is the honest answer rather than a silently older one.
 pub async fn open_file(
     State(app): State<Arc<AppState>>,
     Json(body): Json<OpenFile>,
@@ -1551,14 +1558,12 @@ pub async fn open_file(
             .and_then(|p| p.head_sha.clone());
         (sha, w.path.clone())
     };
-    // `branches` is a set with no order, so it cannot answer "which branch" —
-    // ask git what is actually checked out, the way the teardown gate does.
     let r#ref = match head_sha {
         Some(sha) => sha,
-        None => tokio::task::spawn_blocking(move || crate::git::current_branch(&at))
+        None => tokio::task::spawn_blocking(move || crate::git::head_sha(&at))
             .await
-            .context("resolving the branch panicked")?
-            .context("no PR holds this workspace and it is on no branch")?,
+            .context("resolving HEAD panicked")?
+            .context("could not resolve HEAD for this workspace")?,
     };
     let forge = write_forge(&app)?;
     let url = forge.blob_url(&r#ref, path);
