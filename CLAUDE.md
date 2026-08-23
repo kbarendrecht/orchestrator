@@ -150,12 +150,21 @@ port, so a second instance refuses to start rather than fighting over
   `with_stories`, which persist and log with the caller's own context. Do not
   reach for `store::save_*` at a call site — that is the shape where one site gets
   the fix and the others quietly do not.
-- **You cannot self-review your way to a testable review thread.**
-  `acknowledged()` (`forge/github.rs`) treats a thread whose last comment is yours
-  as answered, so a PR you comment on yourself has nothing awaiting an answer.
-  Every attempt to verify the resolve flow ends here; TODO.md's fixture-PR item is
-  what would unblock it. Until then that whole path is unit-tested and has never
-  made a real round trip — do not read a green suite as more than that.
+- **You cannot self-review your way to a testable review thread — use the
+  fixture.** `acknowledged()` (`forge/github.rs`) treats a thread whose last
+  comment is yours as answered, so a PR you comment on yourself has nothing
+  awaiting an answer, and `query_for` polls `author:@me` so the PR must still be
+  yours. `mise run fixture` builds a throwaway private repo whose threads are
+  posted by `github-actions[bot]`, which satisfies both; `docs/fixture-pr.md` has
+  the why and the two GitHub behaviours that cost an afternoon. It does not cover
+  `rerequest()` — a bot cannot be a requested reviewer. The resolve run itself is
+  still unit-tested only and has never made a real round trip, so do not read a
+  green suite as more than that.
+- **`ORCHD_CONFIG_DIR` relocates every piece of durable state**, which is what
+  makes a fixture daemon safe: config, `sessions.json`, `automation.json`,
+  `hooks.json`, the instance lock and the findings block all follow it. Overriding
+  `HOME` would do the same for free and is wrong — `claude` reads its credentials
+  from there, so every spawned session would come up unauthenticated.
 - **`POST /api/pr/:n/fix-pr` starts a run immediately.** No confirmation: the
   guard table refuses on authorship, a run already going, a busy branch and the
   concurrency cap, and *nothing else*. "The PR looks fine" is not a refusal,

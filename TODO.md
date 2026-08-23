@@ -6,13 +6,35 @@ Everything outside that block is hand-written and survives.
 
 ## Next
 
-- **A fixture PR to test the review flow against.** This is the thing blocking
-  every other item here from being *verified* rather than reasoned about. Four
-  separate attempts to drive real behaviour stalled on the same wall: there is no
-  PR in the monorepo with the preconditions the code needs, and the ones that
-  exist cannot be made to have them.
+- **A fixture PR to test the review flow against.** *Built — `mise run fixture`,
+  `tools/fixture-pr.mjs`, written up in `docs/fixture-pr.md`.* The wall was that
+  `query_for` polls `author:@me` while `acknowledged()` reads a thread whose last
+  comment is yours as answered, so one account cannot both own the PR and leave a
+  thread waiting on it. The second identity is `github-actions[bot]`: a
+  `workflow_dispatch` workflow on the fixture's default branch posts the threads
+  with its own `GITHUB_TOKEN`, which needs no second account and no stored
+  credential.
 
-  What has actually been unverifiable, each found by trying:
+  Driven once, and this is what a daemon on it reports — the state four earlier
+  attempts could not produce: `unresolved: 3, awaiting_you: 3`, `answerable: 3`,
+  `gate: null`, `head_sha` populated, every thread's last comment by
+  `github-actions`. `ORCHD_CONFIG_DIR` keeps all of that off the real
+  `sessions.json` and out of this repo's TODO.md.
+
+  **The items below are now unblocked but still unverified** — the target exists;
+  nothing has been driven against it yet:
+  - the resolve run end to end (commit per thread, `…/thread/:id/committed`, the
+    daemon posting on its own credentials),
+  - `triage::gate`'s refusal on a dirty worktree, now safe to dirty on purpose,
+  - `open_file`'s `head_sha` arm, once a workspace sits on the PR branch,
+  - teardown and the archive it runs, which delete a real worktree,
+  - the thumbs-up idempotency assumption in `post.rs`.
+
+  One thing the fixture deliberately does **not** cover: `rerequest()`. A bot
+  cannot be a requested reviewer, so that button still wants a second human
+  identity — a throwaway account or a fine-grained token for one.
+
+  What was unverifiable before it existed, each found by trying:
   - **The whole resolve flow.** `acknowledged()` (`src/forge/github.rs`) treats a
     thread whose last comment is yours as answered, so you cannot self-review your
     way to a testable thread. Everything downstream — triage, the per-thread card,
@@ -29,17 +51,6 @@ Everything outside that block is hand-written and survives.
   Also outstanding for the same reason: the thumbs-up idempotency assumption
   (`post.rs` — "unverified until the scratch PR settles it"), which is currently a
   guess about GitHub returning the existing reaction rather than a second one.
-
-  What it wants is a throwaway repo — not the monorepo — with a PR the daemon can
-  see, carrying review threads whose last word is somebody else's. Two ways to get
-  the second reviewer: a second GitHub account, or a fine-grained token for one,
-  since the constraint is only ever "the last comment is not the viewer's". Then
-  the settings already make it reachable: point `main_checkout` at the fixture
-  clone and `upstream_ref` at its default branch, and the poller finds it. Worth
-  building as a scripted fixture (create repo, branch, PR, post N threads as the
-  other identity, print the PR number) rather than a hand-made one, because every
-  destructive test wants it fresh. Keep it out of the monorepo so a bad run cannot
-  touch real work.
 
 - **The two-phase resolve flow — handover.** All four phases of
   `docs/resolve-flow-plan.md` have landed, and none of it has answered a real
@@ -66,9 +77,10 @@ Everything outside that block is hand-written and survives.
   its own credentials or holds it back. The run's per-thread state is in the
   snapshot as `resolve_runs` and rendered by `rvRun`, with push and re-request as
   their own buttons. Every line of that path is typed and unit-tested and has
-  never met a real PR, because testing it needs a review comment from somebody
-  who is not you — `acknowledged()` in `src/forge/github.rs` treats a thread whose last
-  comment is yours as answered, so you cannot self-review your way to a test.
+  never met a real PR. It now has one to meet: `mise run fixture` builds a PR
+  whose threads really are awaiting you, which is the thing that was missing.
+  Driving a run against it is the next step, and the first thing that would settle
+  the known gaps below.
 
   *Deliberately still there.* The old batch (`/api/pr/:n/post` and the manual
   phase) is the secondary button on the final screen. It is proven and a
@@ -161,7 +173,7 @@ Everything outside that block is hand-written and survives.
     `ForgeImpl::for_kind`. The PR poller still resolves token/repo inline for its
     token-source reporting; the review poller no longer touches the forge at all
     now the queue is a command.
-  - CLAUDE.md test count. *Done* — updated to 237 after the review-queue revert.
+  - CLAUDE.md test count. *Done* — 283 passing, 4 ignored.
 
 - **Make it run somewhere other than this machine.** Everything below is a
   hardcoded assumption about one monorepo, and each is a setting or a probe

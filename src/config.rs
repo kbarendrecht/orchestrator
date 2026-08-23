@@ -375,7 +375,24 @@ pub enum ForgeKind {
 }
 
 impl Config {
+    /// Everything durable hangs off here: the config, the session store, the
+    /// automation and story records, the hook settings, the instance lock.
+    ///
+    /// `ORCHD_CONFIG_DIR` moves the lot, which is what makes the review fixture
+    /// (`tools/fixture-pr.mjs`) safe to point a daemon at. Without it a fixture
+    /// run writes throwaway sessions into the real `sessions.json`, rewrites
+    /// `main_checkout` to a scratch clone, and — because `todo_path` defaults to
+    /// this repo's own TODO.md — puts the live-findings block of a fake repo into
+    /// a tracked file. Overriding `HOME` would relocate all of it for free and is
+    /// the wrong lever: `claude` reads its credentials from there, so every
+    /// session the fixture daemon spawned would come up unauthenticated.
+    ///
+    /// An empty value is ignored rather than honoured, because `PathBuf::from("")`
+    /// is a relative path and the state would land wherever the daemon was started.
     pub fn config_dir() -> Result<PathBuf> {
+        if let Some(dir) = std::env::var_os("ORCHD_CONFIG_DIR").filter(|d| !d.is_empty()) {
+            return Ok(PathBuf::from(dir));
+        }
         let home = std::env::var("HOME").context("HOME is not set")?;
         Ok(PathBuf::from(home).join(".config/orchd"))
     }

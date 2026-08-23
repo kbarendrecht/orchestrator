@@ -37,3 +37,15 @@ npx --prefix tools depcruise --config tools/.dependency-cruiser.cjs web/app.js
 description = "Screenshot the running SPA (optionally one selector)"
 dir = "{{config_root}}"
 run = "node tools/shot.mjs"
+
+# Build a throwaway PR with review threads whose last word is not yours, which is
+# the one precondition the resolve flow cannot be verified without. Creates a
+# private GitHub repo and a daemon config dir under ~/.cache; see docs/fixture-pr.md.
+#
+#   mise run fixture
+#   mise run fixture -- --threads 5
+#   mise run fixture -- --destroy
+[tasks.fixture]
+description = "Build a throwaway PR to drive the review flow against"
+dir = "{{config_root}}"
+run = "node tools/fixture-pr.mjs"
