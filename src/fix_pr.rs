@@ -15,14 +15,17 @@ pub type SessionId = Uuid;
 /// and to be honest about a run that gave up.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "state", rename_all = "snake_case")]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
 pub enum PrAutomation {
     Running {
         session: SessionId,
+        #[cfg_attr(test, ts(type = "{ secs_since_epoch: number, nanos_since_epoch: number }"))]
         started: SystemTime,
     },
     /// The run stopped without turning the PR green. It wants you.
     Exhausted {
         at_head: String,
+        #[cfg_attr(test, ts(type = "{ secs_since_epoch: number, nanos_since_epoch: number }"))]
         at: SystemTime,
     },
 }

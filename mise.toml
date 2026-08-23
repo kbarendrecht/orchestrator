@@ -14,6 +14,18 @@ zig = "latest"
 #   mise run shot
 #   mise run shot -- '.drawer-head'
 #   mise run shot -- '.rvblock' --click '#rvhead'
+# The SPA's view of the daemon's Snapshot is generated from the Rust structs, so
+# a renamed field is a type error rather than an `undefined` that renders as
+# nothing. `cargo test` rewrites web/snapshot.d.ts; this checks it still compiles
+# and fails if the checked-in copy has drifted from the types.
+[tasks.types]
+description = "Regenerate the SPA's snapshot types and check they are current"
+run = """
+cargo test --lib export_bindings >/dev/null
+npx --prefix tools tsc -p tools/tsconfig.json
+git diff --exit-code --stat web/snapshot.d.ts   || { echo 'web/snapshot.d.ts was stale — the regenerated copy is now in your tree; commit it.'; exit 1; }
+"""
+
 [tasks.shot]
 description = "Screenshot the running SPA (optionally one selector)"
 dir = "{{config_root}}"

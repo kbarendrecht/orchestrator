@@ -11,7 +11,9 @@ use std::process::Command;
 /// request, re-review detection, reviewer-count tiebreak. The daemon consumes
 /// that shape rather than imposing the one §6b invented.
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
 pub struct Review {
+    #[cfg_attr(test, ts(type = "number"))]
     pub number: u64,
     pub title: String,
     pub url: String,
@@ -34,6 +36,7 @@ pub struct Review {
 }
 
 #[derive(Debug, Clone, Serialize, Default)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
 pub struct ReviewQueue {
     pub login: String,
     pub actionable: Vec<Review>,
@@ -49,6 +52,7 @@ pub struct ReviewQueue {
 /// unparseable output or an unknown `version` all land here instead.
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
 pub enum ReviewState {
     Ok(ReviewQueue),
     Degraded { reason: String },

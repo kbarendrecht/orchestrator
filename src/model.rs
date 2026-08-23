@@ -19,6 +19,7 @@ pub const MAIN: &str = "main";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
 pub enum WorkspaceKind {
     /// Docker stack, dev URL, `ng build --watch`.
     Main,
@@ -80,6 +81,7 @@ impl Workspace {
 /// not a quiet success, it is an idle agent.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
 pub enum TurnReason {
     /// `Stop` — the common case under auto-accept.
     TurnComplete,
@@ -94,10 +96,12 @@ pub enum TurnReason {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "state", rename_all = "snake_case")]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
 pub enum State {
     Starting,
     Working,
     YourTurn {
+        #[cfg_attr(test, ts(type = "{ secs_since_epoch: number, nanos_since_epoch: number }"))]
         since: SystemTime,
         reason: TurnReason,
     },
@@ -174,6 +178,7 @@ impl State {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
 pub enum Kind {
     Interactive,
     /// An ordinary session whose first prompt is one of the vendored prompts in
@@ -182,6 +187,7 @@ pub enum Kind {
     /// `alias = "skill"` so records written before the rename still load: these
     /// were called skills when they resolved from the agent's command path.
     Automation {
+        #[cfg_attr(test, ts(type = "number"))]
         pr: u64,
         #[serde(alias = "skill")]
         command: String,
@@ -191,6 +197,7 @@ pub enum Kind {
 /// How to rebuild a torn-down worktree so an archived session can be resumed (§2).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "recovery", rename_all = "snake_case")]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
 pub enum ArchiveState {
     Recoverable {
         name: String,
@@ -352,6 +359,7 @@ impl Session {
 /// returns. Deliberately structured rather than free text, so the overlay renders
 /// buttons instead of asking you to type into a terminal you cannot see.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
 pub struct Interaction {
     pub id: Uuid,
     /// What the agent is working on, so the card can say which thread this is
@@ -365,6 +373,7 @@ pub struct Interaction {
     /// What you may answer. Never empty: an open question with no options is a
     /// prompt for prose the overlay has no box for.
     pub options: Vec<InteractionOption>,
+    #[cfg_attr(test, ts(type = "{ secs_since_epoch: number, nanos_since_epoch: number }"))]
     pub asked_at: SystemTime,
     /// Set when you answer, which is what releases the agent's poll.
     #[serde(default)]
@@ -375,6 +384,7 @@ pub struct Interaction {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
 pub struct InteractionOption {
     /// What comes back to the agent. Its own vocabulary, not the label, so the
     /// prompt can branch on a stable word while the card stays readable.
@@ -395,6 +405,7 @@ pub struct InteractionOption {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "health", rename_all = "snake_case")]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
 pub enum Health {
     Starting,
     Ok,
@@ -404,6 +415,7 @@ pub enum Health {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
 pub enum ProcKind {
     /// Declared per workspace in config. Health is parsed from output.
     Managed { command: Vec<String> },
@@ -443,6 +455,7 @@ impl Process {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
 pub enum FileStatus {
     Staged,
     Unstaged,
@@ -450,6 +463,7 @@ pub enum FileStatus {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
 pub struct ChangedFile {
     pub path: String,
     pub status: FileStatus,
@@ -458,6 +472,7 @@ pub struct ChangedFile {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
 pub struct FileSet {
     pub staged: Vec<ChangedFile>,
     pub unstaged: Vec<ChangedFile>,

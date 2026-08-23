@@ -6,7 +6,20 @@
 const TOKEN = window.__ORCH__.token;
 const WS_BASE = `ws://${location.host}`;
 
-let snap = { workspaces: [], sessions: [] };
+/* The daemon's `Snapshot`, replaced whole on every websocket tick.
+ *
+ * The type comes from `snapshot.d.ts`, which `cargo test` generates from the Rust
+ * structs — so renaming a field there and reading the old name here is a type
+ * error rather than an `undefined` that renders as nothing. Editors pick it up
+ * with no build step; `mise run types` is the check.
+ *
+ * The cast is the one untruth: before the first message arrives there is no
+ * snapshot, and the honest type would make every reader handle null. The rail
+ * renders on a 1s interval from load, so it *does* read this early — which is why
+ * the readers that run then guard with `|| []`. Cast in one place, deliberately,
+ * rather than spread `?.` through every access. */
+/** @type {import("./snapshot").Snapshot} */
+let snap = /** @type {any} */ ({ workspaces: [], sessions: [] });
 let selected = null;          // session id
 let selectedProc = {};        // workspace id -> process id
 const terms = new Map();      // target -> { term, fit, sock, host }

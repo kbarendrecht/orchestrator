@@ -10,7 +10,8 @@ are already in there with the reason they were not done.
 
 ```
 cargo check                         # the daemon
-cargo test                          # 253 tests, all in-tree
+cargo test                          # 283 tests, all in-tree
+mise run types                      # regenerate + check the SPA snapshot types
 cargo run -p orchestrator-desktop   # the app, daemon embedded in-process
 mise run shot                       # screenshot the running SPA (drives Chrome)
 ```
@@ -28,6 +29,15 @@ port, so a second instance refuses to start rather than fighting over
 - **The SPA is compiled in.** `web/*` is `include_str!`d into the binary, so a
   CSS or JS change is invisible until the daemon is rebuilt *and* restarted. No
   amount of reloading the page helps.
+- **The SPA's view of the snapshot is generated, not hand-written.**
+  `web/snapshot.d.ts` comes from the Rust structs via `ts-rs` (a dev-dependency,
+  derived under `cfg(test)`, so nothing of it reaches the binary). `cargo test`
+  rewrites it; `mise run types` regenerates, type-checks and **fails if the
+  checked-in copy has drifted**. Rename a snapshot field in Rust and the diff
+  shows up there — which is the point, since the old failure mode was a renamed
+  field reading as `undefined` and rendering as nothing. Commit the regenerated
+  file with the Rust change. It is a type file: never `include_str!`d, never
+  served.
 - **`app.js` is one file with six seams.** `Term`, `Rail`, `Diff`, `Review`,
   `Queue` and `Settings` are IIFEs that return only the handful of names other
   sections call. Everything else in them is unreachable from outside on purpose,

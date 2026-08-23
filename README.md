@@ -251,6 +251,9 @@ src/
   api.rs        HTTP surface and the origin/token guards
   ws.rs         event stream and pty attach
   todo.rs       the generated block in TODO.md
+web/snapshot.d.ts  the SPA's view of the daemon's `Snapshot`, generated from the
+                Rust structs by `cargo test` (`ts-rs`, dev-only). Type file: not
+                served, not compiled in. `mise run types` fails if it has drifted
 web/            SPA (vanilla, xterm.js vendored). One file, six seams: `Term`,
                 `Rail`, `Diff`, `Review`, `Queue`, `Settings` are IIFEs that
                 export only what other sections call, so reaching across a

@@ -1,0 +1,15 @@
+{
+  "//": "Checks the generated snapshot types compile, and that app.js agrees with them.",
+  "//2": "Full `checkJs` over app.js is not on yet: it reports ~42 DOM/ambient issues",
+  "//3": "(vendored globals, Element vs HTMLElement) and none about the snapshot. That",
+  "//4": "is a follow-up, best done per-module once the SPA is real ES modules.",
+  "compilerOptions": {
+    "noEmit": true,
+    "strict": true,
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "preserve",
+    "skipLibCheck": false
+  },
+  "files": ["../web/snapshot.d.ts"]
+}

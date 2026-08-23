@@ -17,6 +17,7 @@ use serde::Serialize;
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
 pub enum Checks {
     Passing,
     Failing,
@@ -25,7 +26,9 @@ pub enum Checks {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
 pub struct Pr {
+    #[cfg_attr(test, ts(type = "number"))]
     pub number: u64,
     pub title: String,
     pub url: String,
@@ -64,6 +67,7 @@ pub struct Pr {
     /// that as your turn is what made an answered PR sit there amber.
     pub needs_you: bool,
     /// PRs stacked directly on this one.
+    #[cfg_attr(test, ts(type = "Array<number>"))]
     pub children: Vec<u64>,
 }
 

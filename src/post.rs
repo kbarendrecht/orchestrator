@@ -509,6 +509,7 @@ fn label_for(t: &crate::forge::Thread) -> String {
 /// is hiding the only rows worth reading.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
 pub enum ThreadStatus {
     /// Not reached yet.
     Pending,

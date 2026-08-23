@@ -17,6 +17,7 @@ use super::Forge;
 /// unnecessary blast radius.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
 pub enum TokenSource {
     /// `ORCHD_GITHUB_TOKEN`, injected at daemon start.
     Env,

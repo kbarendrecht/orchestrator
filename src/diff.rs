@@ -74,6 +74,7 @@ pub fn resolve_base(cwd: &Path, base: Base, upstream: &str, pr_base: Option<&str
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
 pub struct DiffFile {
     pub path: String,
     /// Verbatim from `--name-status`: M, A, D, R…, C…

@@ -14,12 +14,14 @@ use crate::pty::pid_alive;
 
 /// What the overview shows about a run: one row per thread, in plan order.
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
 pub struct RunView {
     pub session: Uuid,
     pub threads: Vec<RunThreadView>,
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
 pub struct RunThreadView {
     pub thread_id: String,
     pub location: String,
@@ -56,6 +58,7 @@ pub struct ResolveRun {
 }
 
 #[derive(Debug, Clone, Serialize, Default)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
 pub struct Repos {
     /// Where PRs are opened, e.g. `acme/monorepo`.
     pub upstream: Option<String>,
@@ -223,6 +226,7 @@ impl Inner {
 /// A release newer than what is running. `mise` does the upgrade; this only tells
 /// you it is there.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
 pub struct UpdateInfo {
     pub current: String,
     pub latest: String,
@@ -741,7 +745,16 @@ impl AppState {
 // Views
 // ---------------------------------------------------------------------------
 
+/// What the SPA receives on every tick.
+///
+/// `TS` is derived under `cfg(test)` only, so `ts-rs` is a dev-dependency and
+/// nothing about it reaches the shipped binary. `cargo test` writes
+/// `web/snapshot.d.ts` from these definitions, and `web/app.js` type-checks
+/// against it — which is what stops a field being renamed here and read by the
+/// old name there, the way `pr_age_ms` sat unread and the divergence strip named
+/// a ref it had not measured.
 #[derive(Debug, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
 pub struct Snapshot {
     pub workspaces: Vec<WorkspaceView>,
     pub sessions: Vec<SessionView>,
@@ -749,8 +762,10 @@ pub struct Snapshot {
     /// Set when the last poll failed; the pane says so rather than showing an
     /// empty list.
     pub pr_error: Option<String>,
+    #[cfg_attr(test, ts(type = "number"))]
     pub pr_age_ms: Option<u64>,
     /// Monotonic counter of completed PR polls; see `Inner::pr_poll`.
+    #[cfg_attr(test, ts(type = "number"))]
     pub pr_poll: u64,
     /// A PR fetch is running. The pane spins its refresh icon while it is,
     /// however the fetch was started.
@@ -758,8 +773,10 @@ pub struct Snapshot {
     pub token_source: Option<crate::forge::TokenSource>,
     pub reviews: crate::reviews::ReviewState,
     /// Monotonic counter of completed review polls; see `Inner::reviews_poll`.
+    #[cfg_attr(test, ts(type = "number"))]
     pub reviews_poll: u64,
     pub reviews_polling: bool,
+    #[cfg_attr(test, ts(as = "std::collections::HashMap<String, crate::fix_pr::PrAutomation>"))]
     pub automation: HashMap<u64, crate::fix_pr::PrAutomation>,
     pub repos: Repos,
     /// The base `behind`/`ahead` are measured against, e.g. `upstream/develop`.
@@ -775,6 +792,7 @@ pub struct Snapshot {
     /// Resolve runs in flight, by PR: what each thread's outcome was so far. The
     /// overview reads this rather than the report of a batch that has finished,
     /// because a run is watchable while it happens.
+    #[cfg_attr(test, ts(as = "std::collections::HashMap<String, RunView>"))]
     pub resolve_runs: HashMap<u64, RunView>,
     /// The running build's own version, for the settings panel. Always here,
     /// unlike `update`, which only appears when there is something newer: "which
@@ -784,6 +802,7 @@ pub struct Snapshot {
 }
 
 #[derive(Debug, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
 pub struct PrView {
     #[serde(flatten)]
     pub pr: crate::forge::Pr,
@@ -795,6 +814,7 @@ pub struct PrView {
 }
 
 #[derive(Debug, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
 pub struct WorkspaceView {
     pub id: String,
     pub path: String,
@@ -817,6 +837,7 @@ pub struct WorkspaceView {
 }
 
 #[derive(Debug, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
 pub struct ProcessView {
     pub id: String,
     pub name: String,
@@ -828,6 +849,7 @@ pub struct ProcessView {
 }
 
 #[derive(Debug, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
 pub struct SessionView {
     pub id: Uuid,
     pub workspace: String,
@@ -841,7 +863,9 @@ pub struct SessionView {
     pub wants_attention: bool,
     /// How long this session has been waiting on you. With 4-6 sessions the
     /// cost of the whole tool is measured in agent-minutes spent idle (§2).
+    #[cfg_attr(test, ts(type = "number"))]
     pub waiting_ms: Option<u64>,
+    #[cfg_attr(test, ts(type = "number"))]
     pub created_ms: u64,
     pub alive: bool,
     pub dirty_count: usize,
