@@ -13,8 +13,24 @@ permissions:
 
 jobs:
   build:
-    # 22.04 is the WebKitGTK 4.1 baseline; 20.04 ships only 4.0 and cannot build.
-    runs-on: ubuntu-22.04
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # One artifact per platform, and a break on either fails the release rather
+      # than shipping half of it.
+      fail-fast: false
+      matrix:
+        include:
+          # 22.04 is the WebKitGTK 4.1 baseline; 20.04 ships only 4.0 and cannot
+          # build.
+          - os: ubuntu-22.04
+            slug: x86_64-linux
+          # macos-14 is the Apple Silicon runner, so the host target is
+          # aarch64-apple-darwin and no `--target` is needed. Intel Macs are not
+          # built for: every Mac sold since 2020 is arm64, and a second runner
+          # doubles macOS minutes for machines nobody here has. Tauri uses the
+          # system WKWebView, so unlike Linux there are no libraries to install.
+          - os: macos-14
+            slug: aarch64-macos
     steps:
       - uses: actions/checkout@v7
 
@@ -32,6 +48,7 @@ jobs:
           fi
 
       - name: System libraries (Tauri/WebKitGTK)
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -61,12 +78,17 @@ jobs:
         id: pkg
         run: |
           tag="${GITHUB_REF_NAME}"
-          asset="orchestrator-${tag}-x86_64-linux.tar.gz"
+          asset="orchestrator-${tag}-${{ matrix.slug }}.tar.gz"
           # The app embeds the SPA (include_str!), so the tarball is two
           # executables and nothing else: the app, and the `orch` CLI its sessions
           # use to talk back to it. ubi extracts by the exe name below.
           tar -C target/release -czf "$asset" orchestrator-desktop orch
-          sha256sum "$asset" > "$asset.sha256"
+          # macOS has `shasum`, not GNU coreutils' `sha256sum`.
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "$asset" > "$asset.sha256"
+          else
+            shasum -a 256 "$asset" > "$asset.sha256"
+          fi
           echo "asset=$asset" >> "$GITHUB_OUTPUT"
 
       - name: Release

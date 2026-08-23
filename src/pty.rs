@@ -201,11 +201,33 @@ impl PtyHandle {
 
 /// Whether a pid is still in the process table.
 ///
-/// Teardown's "no live session" preflight consults `/proc` rather than
-/// in-memory state (§8b) — a crashed daemon is exactly the moment a stale
-/// in-memory answer would let you delete a worktree with a live agent in it.
+/// Teardown's "no live session" preflight asks the kernel rather than the
+/// daemon's in-memory state (§8b) — a crashed daemon is exactly the moment a
+/// stale in-memory answer would let you delete a worktree with a live agent in
+/// it.
+///
+/// `kill(pid, 0)` sends no signal and only reports whether the pid could be
+/// signalled, which is the POSIX way to ask this and works on macOS as well as
+/// Linux. It replaced a `/proc/<pid>` stat that was silently **always false**
+/// off Linux: this guard fails *open*, so on macOS every session read as dead
+/// and the check it exists to perform was not being performed at all.
+///
+/// `EPERM` counts as alive. A pid we are not allowed to signal is still a
+/// running process, and treating "permission denied" as "gone" would put the
+/// hole straight back.
 pub fn pid_alive(pid: u32) -> bool {
-    Path::new(&format!("/proc/{pid}")).exists()
+    // pid 0 means "every process in our group" to `kill`, which would be a wildly
+    // different question — and no session ever has it.
+    if pid == 0 {
+        return false;
+    }
+    // SAFETY: `kill` with signal 0 performs error checking only; it touches no
+    // memory and delivers nothing.
+    let rc = unsafe { libc::kill(pid as libc::pid_t, 0) };
+    if rc == 0 {
+        return true;
+    }
+    std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
 }
 
 #[cfg(test)]
@@ -251,5 +273,47 @@ mod tests {
         let pid = spawned.pid.expect("pid");
         assert!(pid_alive(pid));
         spawned.handle.kill().expect("kill");
+    }
+
+    /// The guard fails *open*, so "says dead when it is not" is the dangerous
+    /// direction: it lets teardown delete a worktree with a live agent in it.
+    /// These are the answers that were wrong off Linux, where the `/proc` stat
+    /// this replaced returned false for everything.
+    #[test]
+    fn answers_the_liveness_edges_the_proc_stat_got_wrong() {
+        // Ourselves: alive, trivially, and the one pid a test can be sure of.
+        assert!(pid_alive(std::process::id()), "our own pid must read alive");
+
+        // pid 1 is init/launchd — always running, and never signallable by a
+        // normal user. It is the EPERM case, which must read alive rather than
+        // dead: "cannot signal" is not "not there".
+        assert!(pid_alive(1), "pid 1 must read alive even when unsignallable");
+
+        // 0 means "my process group" to `kill`, a different question entirely,
+        // and no session ever carries it.
+        assert!(!pid_alive(0), "pid 0 is not a session");
+
+        // Reaped and gone. Spawn, kill, reap, then ask.
+        let spawned = PtyHandle::spawn(
+            &["sh".to_string(), "-c".to_string(), "sleep 30".to_string()],
+            Path::new("/tmp"),
+            &[],
+            &[],
+            (24, 80),
+        )
+        .expect("spawn");
+        let pid = spawned.pid.expect("pid");
+        spawned.handle.kill().expect("kill");
+        // Wait for the child to be reaped: until it is, it lingers as a zombie
+        // and `kill(pid, 0)` still succeeds, which would make this flaky.
+        let mut gone = false;
+        for _ in 0..200 {
+            if spawned.handle.exit_code().is_some() && !pid_alive(pid) {
+                gone = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(gone, "a killed and reaped pid must read dead");
     }
 }

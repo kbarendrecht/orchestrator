@@ -1,0 +1,64 @@
+name: check
+
+# Does it still build and pass on both platforms?
+#
+# This exists because `release.yml` only runs on a tag, which made cutting a
+# release the only way to discover a macOS break — and the macOS build cannot be
+# checked locally at all: the desktop crate compiles Objective-C through
+# `objc2-exception-helper`, so `cargo check --target aarch64-apple-darwin` fails
+# on a Linux box for want of a toolchain, not for want of working code. The
+# daemon crate *does* cross-check, so what only CI can answer is whether the
+# Tauri shell builds on a Mac.
+#
+# `workflow_dispatch` is deliberate: run it by hand before tagging.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # Never fail-fast: "Linux is fine, macOS is broken" is the answer being
+      # asked for, and cancelling the other job hides half of it.
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+          - os: macos-14
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: System libraries (Tauri/WebKitGTK)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libjavascriptcoregtk-4.1-dev \
+            libsoup-3.0-dev \
+            libgtk-3-dev \
+            libdbus-1-dev \
+            librsvg2-dev \
+            libxdo-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            patchelf
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # Or the two platforms share one cache key and evict each other.
+          key: ${{ matrix.os }}
+
+      # The daemon carries every test, including the pid-liveness and
+      # instance-lock guards that used to read `/proc` and answered wrongly off
+      # Linux. Those are the ones worth running on a Mac.
+      - name: Test the daemon
+        run: cargo test -p orchd
+
+      # The part no Linux box can answer.
+      - name: Build the app
+        run: cargo build -p orchestrator-desktop

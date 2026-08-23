@@ -21,6 +21,9 @@ anyhow = "1"
 axum = { version = "0.7", features = ["ws", "macros"] }
 bytes = "1"
 futures = "0.3"
+# `kill(pid, 0)` for the pid-liveness guards. The /proc stat it replaced was
+# silently always-false off Linux, and those guards fail open.
+libc = "0.2"
 portable-pty = "0.8"
 rand = "0.8"
 serde = { version = "1", features = ["derive"] }

@@ -80,9 +80,29 @@ fn acquire_at(path: PathBuf) -> Result<Lock> {
 /// with no way to tell why. So the command line has to look like us too.
 fn holder(path: &PathBuf) -> Option<u32> {
     let pid: u32 = std::fs::read_to_string(path).ok()?.trim().parse().ok()?;
-    let cmdline = std::fs::read(format!("/proc/{pid}/cmdline")).ok()?;
-    let cmdline = String::from_utf8_lossy(&cmdline);
+    let cmdline = process_command(pid)?;
     (cmdline.contains("orchd") || cmdline.contains("orchestrator")).then_some(pid)
+}
+
+/// The command line of a running pid, or `None` if it is gone.
+///
+/// `ps` rather than `/proc/<pid>/cmdline`, which does not exist on macOS: there
+/// the read failed, every lock file read as stale, and a second daemon would
+/// start beside a running one — the precise thing the lock exists to stop. One
+/// short-lived process per lock acquisition, which happens once at startup.
+///
+/// A non-zero exit (no such pid) and empty output are both `None`, so a dead or
+/// unreadable pid is never mistaken for a holder.
+fn process_command(pid: u32) -> Option<String> {
+    let out = std::process::Command::new("ps")
+        .args(["-p", &pid.to_string(), "-o", "command="])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (!text.is_empty()).then_some(text)
 }
 
 impl Drop for Lock {
@@ -100,9 +120,23 @@ mod tests {
         let d = std::env::temp_dir().join(format!("orchd-lock-{}", std::process::id()));
         std::fs::create_dir_all(&d).unwrap();
         let p = d.join("dead.pid");
-        // pid 0 is never a process, so /proc/0/cmdline never resolves.
+        // `ps -p 0` reports no such process on Linux, and kernel_task on macOS —
+        // which is not an orchd either, so both answer None.
         std::fs::write(&p, "0").unwrap();
         assert_eq!(holder(&p), None);
+    }
+
+    /// The lookup itself, since the whole guard rests on it. It read nothing on
+    /// macOS before (`/proc/<pid>/cmdline`), which made every lock file look
+    /// stale and let a second daemon start beside a running one.
+    #[test]
+    fn a_live_pid_resolves_to_a_command_line() {
+        let mine = process_command(std::process::id())
+            .expect("our own pid must resolve to a command line");
+        assert!(!mine.is_empty());
+        // A pid that cannot exist resolves to nothing rather than to something
+        // empty that `holder` might read as a name.
+        assert_eq!(process_command(u32::MAX), None, "no such pid");
     }
 
     #[test]

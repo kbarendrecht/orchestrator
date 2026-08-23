@@ -305,13 +305,45 @@ Everything outside that block is hand-written and survives.
   debug gate means `cargo run` never nags — the nudge only fires from a release
   build. Superseded whenever the release repo goes public.
 
-- **Is it macOS-compatible? Nobody knows.** The code has the paths — `Chrome::Overlay`
-  for the traffic lights, `open` for URLs, `#[cfg(target_os = "macos")]` arms in
-  the desktop shell — but nothing builds or runs it there. `release.yml` builds
-  `ubuntu-22.04` only and ships one `x86_64-linux` tarball, so there is no macOS
-  artifact and no CI that would catch a break. Answering this means adding a macOS
-  job to the matrix first; until then the honest claim is "written with macOS in
-  mind, never executed on it".
+- **Is it macOS-compatible? Now partly answered — and the answer was "no, twice".**
+  The plan here was "add a macOS job to the matrix", and doing that first would
+  have shipped a broken app: both bugs **compile cleanly and fail at runtime**, so
+  no amount of CI would have caught them. Found by reading for Linux-isms instead.
+  - **`pty::pid_alive` stat'd `/proc/<pid>`**, which does not exist on macOS, so it
+    returned `false` for everything. It backs teardown's "no live session" check
+    and **fails open** — on a Mac you could delete a worktree with a live agent in
+    it, the exact thing its comment says it prevents. Now `kill(pid, 0)`, the POSIX
+    spelling, with `EPERM` counted as alive (a pid you may not signal is still
+    running). New dependency: `libc`.
+  - **`instance::holder` read `/proc/<pid>/cmdline`**, so on macOS every lock file
+    read as stale and **a second daemon would start beside a running one** —
+    defeating the whole one-instance invariant. Now `ps -p <pid> -o command=`,
+    which both platforms answer.
+  - **`headroom::available_mb` reads `/proc/meminfo` and is left alone**: it is
+    documented to return `None` when it cannot read, and every caller treats that
+    as "no opinion" and allows the spawn. So the headroom guard is simply *off* on
+    macOS, by design rather than by accident.
+
+  Shipping: `release.yml` is a matrix and builds `aarch64-macos` beside
+  `x86_64-linux` (Apple Silicon only — every Mac since 2020; Intel doubles macOS
+  minutes for machines nobody here has). Tauri uses the system WKWebView, so the
+  apt step is Linux-gated and macOS installs nothing; `sha256sum` falls back to
+  `shasum -a 256`. No `.app`, `.dmg` or code signing, because the release was
+  already a bare-binary tarball and keeping that shape avoids Gatekeeper entirely.
+  A new `check.yml` builds and tests both platforms on push and by hand, which
+  exists because `release.yml` only fires on a tag — cutting a release was
+  otherwise the only way to find out.
+
+  **What is still unproven, and cannot be proven from here.** The daemon crate and
+  its tests cross-check clean for `aarch64-apple-darwin`, so the fixes above are
+  verified at the type level. The *desktop* crate cannot be cross-checked at all:
+  `objc2-exception-helper` compiles Objective-C (`try_catch.m`), which needs a real
+  macOS toolchain — on Linux it dies in `cc-rs`, for want of an SDK rather than
+  for want of working code. So the Tauri shell's macOS build is untested until
+  `check.yml` runs on the macos-14 runner, and **nothing has been executed on a
+  Mac**: `Chrome::Overlay`'s traffic lights, `open` for URLs, and the window
+  chrome are still written-not-run. Run `check.yml` before believing the matrix,
+  and the honest claim until someone launches it on a Mac is "it should build".
 
 - **A README for other people.** The current one is written for whoever already
   knows what orchd is: it is threaded with `§` references to a spec that no longer

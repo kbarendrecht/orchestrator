@@ -2326,6 +2326,7 @@ dependencies = [
  "axum",
  "bytes",
  "futures",
+ "libc",
  "portable-pty",
  "rand",
  "serde",

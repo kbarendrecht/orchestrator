@@ -136,6 +136,20 @@ port, so a second instance refuses to start rather than fighting over
 - **TODO.md has a daemon-written block.** Everything between the `orchd live
   findings` markers is rewritten on every poll. Edit outside it, and never commit
   the block's churn.
+- **A `/proc` read is a portability bug that compiles.** Two guards stat'd `/proc`
+  and so answered *wrongly*, not loudly, off Linux: `pid_alive` read every session
+  as dead (teardown would delete a worktree with a live agent — it fails open), and
+  `instance::holder` read every lock as stale (a second daemon starts). Both are
+  now portable — `kill(pid, 0)` and `ps -p <pid> -o command=`. `headroom` still
+  reads `/proc/meminfo` on purpose, because it is documented to mean "no opinion"
+  when it cannot read. Before adding a `/proc` read, ask which way it fails when
+  the file is absent; CI cannot catch this, since it compiles everywhere.
+- **The daemon cross-checks for macOS; the app cannot.** `cargo check --target
+  aarch64-apple-darwin -p orchd` works and is worth running after touching
+  anything platform-shaped. `-p orchestrator-desktop` does *not*:
+  `objc2-exception-helper` compiles Objective-C and needs a real macOS SDK, so it
+  fails in `cc-rs` on Linux for reasons that say nothing about your code. That
+  half is only answered by `check.yml` on the macos-14 runner.
 - **Hooks are observers, not gatekeepers.** They answer immediately and finish
   their work detached, because Claude gives a hook one second and a dropped
   future silently loses the state change. Do not make a hook wait on anything.
