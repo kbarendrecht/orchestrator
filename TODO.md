@@ -27,8 +27,13 @@ Everything outside that block is hand-written and survives.
     daemon posting on its own credentials),
   - `triage::gate`'s refusal on a dirty worktree, now safe to dirty on purpose,
   - `open_file`'s `head_sha` arm, once a workspace sits on the PR branch,
-  - teardown and the archive it runs, which delete a real worktree,
   - the thumbs-up idempotency assumption in `post.rs`.
+
+  **Teardown and the archive it runs — done, and it found a bug.** Driven live
+  against a fixture worktree; see the teardown item under "Decisions worth
+  revisiting". The archive auto-run is exactly right; the removal after it was
+  broken on the default `claude --worktree` layout by a stale lock, now fixed in
+  `src/git.rs`.
 
   One thing the fixture deliberately does **not** cover: `rerequest()`. A bot
   cannot be a requested reviewer, so that button still wants a second human
@@ -334,9 +339,24 @@ Everything outside that block is hand-written and survives.
   itself when those two are the *only* failing checks and re-runs preflight; a
   live session, dirty tree, unpushed commits or an attached process still refuse
   and never see an archive run under them. The `POST …/archive` route stays as
-  the explicit entry point. Verified by construction (archive sets exactly the
-  flags preflight reads) and compile, **not** by a live removal — teardown
-  deletes a real worktree and there was no disposable target to drive it on.
+  the explicit entry point.
+
+  *Now driven live against the fixture*, which the disposable target finally
+  allowed — and it found a real bug the compile could not. The archive half is
+  exactly right: kill an exited session's worktree and teardown auto-archives
+  (transcript copied into `config_dir/transcripts`, recovery record persisted,
+  all six checks flip to pass). But the removal that follows *never worked* on the
+  default layout: `claude --worktree` locks every worktree it cuts, and the lock
+  outlives the session the daemon kills, so `git worktree remove` refused with
+  "cannot remove a locked working tree" forever. `git::worktree_remove` now clears
+  a lock whose owning pid is dead and retries — still a plain remove, so a dirty
+  tree still refuses and nothing does a filesystem delete (`src/git.rs`, two new
+  tests). Verified end to end: a stale-locked worktree that 400'd on the old
+  binary tore down cleanly on the new one, gone from disk, git and the daemon.
+  (Two adjacent observations, neither a bug: a fresh clone needs Claude Code's
+  workspace trust accepted once or every `claude --worktree` spawn fails silently;
+  and a *clean* `/quit` has claude remove its own worktree, which the daemon
+  absorbs on reload as an archived, resumable session.)
 
 - **Two genuinely dead routes — removed.** `GET /api/merge-base` (the
   changed-files pane computes the merge-base server-side) and `GET

@@ -377,23 +377,75 @@ pub fn worktree_list(main: &Path) -> Result<Vec<WorktreeEntry>> {
     Ok(entries)
 }
 
-/// Removal is `git worktree remove` followed by `git worktree prune` (§2).
+/// Removal is `git worktree remove` followed by `git worktree prune` (§2), with
+/// one narrow retry: a worktree stale-locked by a dead `claude --worktree` is
+/// unlocked and removed, still without `--force`. See the body for why that is
+/// not an escalation.
 ///
 /// **Never `rm -rf` a worktree.** It contains `.plan/` symlinked to main's
 /// `.plan/`, and a `vendor/` full of per-package symlinks into main. A recursive
-/// delete that follows symlinks destroys the main checkout. If this refuses, the
-/// refusal is surfaced — it is never escalated to `--force` and never falls back
-/// to a filesystem delete.
+/// delete that follows symlinks destroys the main checkout. If this refuses for
+/// any reason other than a stale lock, the refusal is surfaced — it is never
+/// escalated to `--force` and never falls back to a filesystem delete.
 pub fn worktree_remove(main: &Path, path: &Path) -> Result<()> {
     let path_str = path.to_string_lossy().into_owned();
-    git(main, &["worktree", "remove", &path_str]).with_context(|| {
-        format!(
-            "git worktree remove refused for {}; not escalating to --force",
-            path.display()
-        )
-    })?;
+    if let Err(e) = git(main, &["worktree", "remove", &path_str]) {
+        // A plain `git worktree remove` refuses for exactly two reasons: a dirty
+        // tree, or a lock. Teardown's preflight already guaranteed the tree is
+        // clean and no session is live, so the only thing left to trip on is a
+        // *stale* lock — and `claude --worktree` leaves one on every worktree it
+        // cuts, orphaned the moment the daemon kills the session (which is how
+        // sessions end). Clearing a lock whose owner is dead is not the same as
+        // `--force`: the retry is still a plain remove, so a dirty tree still
+        // refuses, and nothing does a filesystem delete that could follow the
+        // symlinks into main. A lock whose pid is still alive, or one with no pid
+        // to check, is left to refuse — surfacing it beats unlocking something
+        // that might mean what it says.
+        if stale_lock_pid(main, path).is_some_and(|pid| !crate::pty::pid_alive(pid)) {
+            let _ = git(main, &["worktree", "unlock", &path_str]);
+            git(main, &["worktree", "remove", &path_str]).with_context(|| {
+                format!(
+                    "git worktree remove refused for {} even after clearing a stale claude lock",
+                    path.display()
+                )
+            })?;
+        } else {
+            return Err(e).with_context(|| {
+                format!(
+                    "git worktree remove refused for {}; not escalating to --force",
+                    path.display()
+                )
+            });
+        }
+    }
     let _ = git(main, &["worktree", "prune"]);
     Ok(())
+}
+
+/// The pid holding a worktree's lock, if it is locked and the lock reason names
+/// one. `claude --worktree` writes `claude session <name> (pid <PID> start <N>)`,
+/// which is the only lock this daemon ever expects to see — a plain checkout
+/// never locks a worktree itself. Returns `None` when the worktree is not
+/// locked or the reason carries no `pid`, both of which mean "do not touch it".
+fn stale_lock_pid(main: &Path, path: &Path) -> Option<u32> {
+    let list = git(main, &["worktree", "list", "--porcelain"]).ok()?;
+    let want = path.to_string_lossy();
+    // Records are blank-line separated; find the one for this path and read its
+    // `locked` line without letting a later record's lock leak into the answer.
+    let mut in_record = false;
+    for line in list.lines() {
+        if let Some(p) = line.strip_prefix("worktree ") {
+            in_record = p == want;
+        } else if in_record {
+            if let Some(reason) = line.strip_prefix("locked") {
+                return reason
+                    .split_once("pid ")
+                    .and_then(|(_, rest)| rest.split(|c: char| !c.is_ascii_digit()).next())
+                    .and_then(|d| d.parse().ok());
+            }
+        }
+    }
+    None
 }
 
 /// Add a worktree checked out on an **existing** branch.
@@ -1319,6 +1371,60 @@ mod tests {
         // A base that does not resolve must not quietly cut from HEAD.
         let bad = repo.join(".worktrees/bad");
         assert!(worktree_add_new(&repo, &bad, "worktree-bad", "origin/nope").is_err());
+        let _ = std::fs::remove_dir_all(&repo);
+    }
+
+    #[test]
+    fn removes_a_worktree_stale_locked_by_a_dead_claude() {
+        // The finding the review fixture surfaced: `claude --worktree` locks every
+        // worktree it cuts, and the lock outlives the session the daemon kills, so
+        // a plain `git worktree remove` refuses forever. Teardown's preflight has
+        // already proven the tree clean and no session live, so a lock whose pid
+        // is dead is stale — clearing it is not `--force`.
+        let repo = scratch_repo();
+        let wt = repo.join(".claude/worktrees/wt");
+        std::fs::create_dir_all(wt.parent().unwrap()).unwrap();
+        worktree_add_new(&repo, &wt, "worktree-wt", "main").expect("worktree add");
+
+        // pid 2^31-ish is not in the table — the closest a test can get to
+        // "claude died" without racing a real one. Mirrors claude's own reason
+        // string so the parser is exercised on the real shape.
+        let reason = "claude session wt (pid 2147480000 start 1)";
+        git(&repo, &["worktree", "lock", "--reason", reason, wt.to_str().unwrap()])
+            .expect("lock");
+        assert!(stale_lock_pid(&repo, &wt).is_some(), "the lock pid parses");
+
+        worktree_remove(&repo, &wt).expect("remove clears the stale lock");
+        assert!(!wt.exists(), "the worktree is gone from disk");
+        assert!(
+            !git(&repo, &["worktree", "list", "--porcelain"])
+                .unwrap()
+                .contains("worktrees/wt"),
+            "and gone from git's record"
+        );
+        let _ = std::fs::remove_dir_all(&repo);
+    }
+
+    #[test]
+    fn keeps_refusing_a_worktree_locked_by_a_live_process() {
+        // The safety half: a lock whose owner is alive must still refuse, or the
+        // stale-lock path would become a rename for `--force`. Our own pid stands
+        // in for a live claude.
+        let repo = scratch_repo();
+        let wt = repo.join(".claude/worktrees/live");
+        std::fs::create_dir_all(wt.parent().unwrap()).unwrap();
+        worktree_add_new(&repo, &wt, "worktree-live", "main").expect("worktree add");
+
+        let reason = format!("claude session live (pid {} start 1)", std::process::id());
+        git(&repo, &["worktree", "lock", "--reason", &reason, wt.to_str().unwrap()])
+            .expect("lock");
+
+        let err = worktree_remove(&repo, &wt).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("not escalating to --force"),
+            "a live lock must surface, not be cleared: {err:#}"
+        );
+        assert!(wt.exists(), "the worktree is left in place");
         let _ = std::fs::remove_dir_all(&repo);
     }
 

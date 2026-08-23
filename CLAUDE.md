@@ -165,6 +165,19 @@ port, so a second instance refuses to start rather than fighting over
   `hooks.json`, the instance lock and the findings block all follow it. Overriding
   `HOME` would do the same for free and is wrong — `claude` reads its credentials
   from there, so every spawned session would come up unauthenticated.
+- **A fresh checkout the daemon points at needs Claude Code's workspace trust
+  accepted once.** Until then `claude --worktree` refuses ("Workspace trust not
+  yet accepted") and the spawned session exits instantly, leaving a workspace
+  record for a worktree that was never created. Accept it in the dialog or set
+  `hasTrustDialogAccepted` for that dir in `~/.claude.json`. The monorepo hides
+  this by having been trusted long ago; `docs/fixture-pr.md` has it.
+- **`claude --worktree` leaves a lock the daemon must clear at teardown.** Every
+  worktree it cuts is `git worktree lock`ed, and the lock outlives the session the
+  daemon kills — so a plain `git worktree remove` refuses it forever.
+  `git::worktree_remove` clears a lock whose owning pid is dead and retries, still
+  never `--force` and never a filesystem delete (preflight already proved the tree
+  clean, so a stale lock is the only thing left to trip on). Do not "simplify" the
+  retry away.
 - **`POST /api/pr/:n/fix-pr` starts a run immediately.** No confirmation: the
   guard table refuses on authorship, a run already going, a busy branch and the
   concurrency cap, and *nothing else*. "The PR looks fine" is not a refusal,

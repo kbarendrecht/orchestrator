@@ -66,6 +66,16 @@ The fixture config sets `todo_path` to a file in the config dir rather than
 anywhere inside the clone, because the daemon rewrites that block on every poll
 and a dirty fixture worktree silently changes what `triage::gate` sees.
 
+## A fresh clone needs Claude Code's trust accepted once
+
+A daemon on a just-cloned fixture cannot create worktrees: `claude --worktree`
+refuses with "Workspace trust not yet accepted" and the spawned session exits
+instantly, leaving a workspace record pointing at a path that was never created.
+Accept trust once for the clone — run `claude` in it and accept the dialog, or
+set `hasTrustDialogAccepted: true` for that directory in `~/.claude.json`. The
+monorepo never shows this because it was trusted long ago; a fixture is the first
+untrusted checkout the daemon points at.
+
 ## Two things that cost an afternoon
 
 - **GitHub only indexes workflow files a push actually touches, and the first
@@ -91,8 +101,14 @@ Each of these was listed in TODO.md as unverifiable, and each now has a target:
 - The resolve flow end to end, against threads that really are awaiting you.
 - `triage::gate`'s refusal on a dirty worktree — now safe to dirty on purpose.
 - `open_file`'s `head_sha` arm, once a workspace sits on the PR branch.
-- Teardown and the archive it runs, which delete a real worktree.
 - The thumbs-up idempotency assumption in `post.rs`, still a guess about whether
   GitHub returns the existing reaction or a second one.
+
+Teardown and its archive are **done** — the first thing driven against the
+fixture. Creating a worktree, killing its session and tearing it down proved the
+archive auto-run correct and, in the same pass, turned up a bug the compile
+could not: `claude --worktree` locks every worktree it cuts, the lock outlives
+the killed session, and `git worktree remove` refused it forever. `worktree_remove`
+now clears a lock whose pid is dead and retries, still without `--force`.
 
 Rebuild before anything destructive. Every build is meant to be disposable.
