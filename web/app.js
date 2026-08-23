@@ -782,8 +782,7 @@ function prGroup() {
     // like the rail's other ages, so a poller that is stuck without erroring
     // reads as stale rather than current. Hidden while a fetch is in flight.
     if (snap.pr_age_ms != null && !snap.pr_polling) {
-      const age = duration(snap.pr_age_ms + (Date.now() - snapAt));
-      if (age) count.appendChild(el('span', 'prage', ` · ${age} ago`));
+      count.appendChild(el('span', 'prage', ` · ${duration(sinceSnap(snap.pr_age_ms))} ago`));
     }
   }
   head.appendChild(count);
@@ -1451,10 +1450,11 @@ function renderDivergence(w) {
 async function act(path, verb) {
   try {
     const r = await call(path);
+    toast(verb);
     // An endpoint can succeed and still have something to say — a rebase onto a
-    // base whose fetch failed, say. Show it as a warning rather than swallow it.
-    if (r && r.warning) toast(`${verb} — ${r.warning}`, true);
-    else toast(verb);
+    // base whose fetch failed, say. Surface it as its own warning toast, the way
+    // openArchived and forkSession already do.
+    if (r && r.warning) toast(r.warning, true);
   } catch (e) {
     toast(e.message, true);
   }

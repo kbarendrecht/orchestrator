@@ -28,6 +28,12 @@ impl Preflight {
     }
 }
 
+/// The two preflight checks teardown can satisfy on its own by archiving. Named
+/// rather than spelled inline at both the check and the gate that keys off them,
+/// so relabelling one for the UI cannot silently turn the auto-archive off.
+const CHECK_TRANSCRIPT: &str = "transcript copied";
+const CHECK_RECOVERY: &str = "recovery record written";
+
 /// Teardown preflight — **all** must pass (§2).
 ///
 /// Nothing here is advisory. The unpushed check fails closed on anything that
@@ -111,7 +117,7 @@ pub async fn preflight(app: &Arc<AppState>, workspace: &str) -> Result<Preflight
     //    collision (§2).
     let copied = transcripts_archived(app, workspace).await;
     checks.push(Check {
-        name: "transcript copied",
+        name: CHECK_TRANSCRIPT,
         passed: copied.0,
         detail: copied.1,
     });
@@ -119,7 +125,7 @@ pub async fn preflight(app: &Arc<AppState>, workspace: &str) -> Result<Preflight
     // 5. Recovery record written.
     let recovery = recovery_recorded(app, workspace).await;
     checks.push(Check {
-        name: "recovery record written",
+        name: CHECK_RECOVERY,
         passed: recovery.0,
         detail: recovery.1,
     });
@@ -291,9 +297,10 @@ pub async fn teardown(app: &Arc<AppState>, workspace: &str) -> Result<Preflight>
     // else failing: a live session, a dirty tree, unpushed commits or an attached
     // process must still refuse, and must never see an archive run under them.
     if !pf.can_remove {
-        let only_archive_blocks = pf.checks.iter().all(|c| {
-            c.passed || c.name == "transcript copied" || c.name == "recovery record written"
-        });
+        let only_archive_blocks = pf
+            .checks
+            .iter()
+            .all(|c| c.passed || matches!(c.name, CHECK_TRANSCRIPT | CHECK_RECOVERY));
         if only_archive_blocks {
             archive(app, workspace).await?;
             pf = preflight(app, workspace).await?;
