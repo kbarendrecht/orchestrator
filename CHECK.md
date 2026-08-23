@@ -140,8 +140,20 @@ comments, not code. The bodies keep their old indentation on purpose, so the
 change is 21 insertions rather than a whole-file reflow. Driven in Chrome
 against the running daemon: the four entries exist, the other 65 names are gone
 from `window`, `Review.open(10007)` renders the intake screen, `Review.close()`
-empties it, and a real Escape keystroke still closes it. Six sections remain
-(rail, terminals, diff, editable pane, review queue, settings).
+empties it, and a real Escape keystroke still closes it.
+
+The diff viewer went next, and the measurement decided its shape: the editable
+pane is the right half of the diff and reads `diffState` for which file it is on,
+so the two are one `Diff` namespace rather than two — sealing them apart would
+have turned that reach into a public call. Folding the *files* pane in as well
+was measured and rejected: it drags in `act` and `prForWorkspace`, which are
+general helpers that merely live in that range. Eleven names leave, more than
+the overlay's four, because the file list drives the diff and the keyboard drives
+both. Driven in Chrome: 1 hunk parsed and 124 nodes rendered, split toggles and
+re-renders, the editor opens and closes, `Diff.close()` clears the overlay, no
+page errors, nothing leaked to `window`.
+
+Four sections remain (rail, terminals, review queue, settings).
 
 - **Problem:** seven feature areas (rail, terminals, diff, editable pane, review
   overlay at ~1900 lines, review queue, settings) are flat top-level functions

@@ -467,9 +467,9 @@ function sessionsOf(wsId) {
  *  meant a switch silently swapped the file under you — and a diff is a thing you
  *  opened deliberately, not a pane that should follow you around. */
 function syncDiffToSession() {
-  if (!diffState.open) return;
+  if (!Diff.state.open) return;
   const ws = activeWorkspaceId();
-  if (!ws || ws !== diffState.ws) closeDiff();
+  if (!ws || ws !== Diff.state.ws) Diff.close();
 }
 
 function render() {
@@ -508,7 +508,7 @@ function renderInteraction() {
   host.appendChild(el('div', 'oqq', q.question));
   // Whatever the agent thought you needed to see to decide: a diff, a file, the
   // reviewer's words. Shown verbatim, in the diff's own type.
-  if (q.detail) host.appendChild(detailEl(q.detail));
+  if (q.detail) host.appendChild(Diff.detailEl(q.detail));
 
   const opts = el('div', 'oqopts');
   for (const o of q.options) {
@@ -1474,13 +1474,13 @@ function openFileOnForge(w, path) {
 function renderFiles() {
   // The diff overlay is opened against a workspace and keeps describing it while
   // it is open, session or no session.
-  const wsId = diffState.open ? diffState.ws : activeWorkspaceId();
+  const wsId = Diff.state.open ? Diff.state.ws : activeWorkspaceId();
   const w = snap.workspaces.find((x) => x.id === wsId);
   renderDivergence(w);
   const panes = $('filepanes');
   panes.replaceChildren();
 
-  $('filestitle').textContent = diffState.open ? 'Changeset' : 'Changes';
+  $('filestitle').textContent = Diff.state.open ? 'Changeset' : 'Changes';
 
   if (!w) {
     const s = currentSession();
@@ -1501,13 +1501,13 @@ function renderFiles() {
    *
    * With the diff open the same question is asked of the diff's own summary,
    * which carries line counts per file and a cursor. */
-  const sum = diffState.open ? diffState.summary : null;
+  const sum = Diff.state.open ? Diff.state.summary : null;
   const files = sum ? sum.files : (w.changed || []);
   const since = sum ? sum.base : w.changed_since;
 
   for (const f of files) {
     const row = el('button', sum ? 'dfrow' : 'frow');
-    if (sum) row.setAttribute('aria-current', String(f.path === diffState.path));
+    if (sum) row.setAttribute('aria-current', String(f.path === Diff.state.path));
     const letter = (f.status || 'M')[0];
     row.appendChild(el('span', 'fst ' + letter, letter));
     const n = el('span', 'fname');
@@ -1529,11 +1529,11 @@ function renderFiles() {
     row.appendChild(nums);
     row.onclick = () => {
       if (sum) {
-        diffState.cursor = 0;
-        diffState.context = 3;
-        loadFile(f.path);
+        Diff.state.cursor = 0;
+        Diff.state.context = 3;
+        Diff.loadFile(f.path);
       } else {
-        openDiff(f.path);
+        Diff.open(f.path);
       }
     };
     // These rows carry no menu of their own, and the one thing worth reaching
@@ -1567,6 +1567,18 @@ function prForWorkspace(wsId) {
 // ---------------------------------------------------------------------------
 // Diff (§5)
 // ---------------------------------------------------------------------------
+
+/** The diff viewer and its editable right pane, behind one seam.
+ *
+ *  One namespace rather than two: the editable pane *is* the right half of the
+ *  diff, reads `diffState` for which file it is on, and splitting them would
+ *  have made that reach a public call. Eleven names leave, which is more than
+ *  the overlay needed — the file list drives the diff and the keyboard drives
+ *  both, so they are genuinely somebody else's business.
+ *
+ *  Bodies keep their indentation, for the same reason as `Review`.
+ */
+const Diff = (() => {
 
 // Kept short: the right header also carries the title and the refresh control,
 // and a long label wraps it onto two lines.
@@ -2099,6 +2111,14 @@ async function saveEditor() {
   }
 }
 
+return {
+  state: diffState, edit: editState,
+  open: openDiff, close: closeDiff, render: renderDiff, step: stepChange,
+  loadFile, detailEl,
+  openEditor, closeEditor, saveEditor,
+};
+})();
+
 // ---------------------------------------------------------------------------
 // Review overlay
 // ---------------------------------------------------------------------------
@@ -2119,7 +2139,7 @@ const Review = (() => {
    `design/review-overlay.html` is the spec for anything visual here.
 
    Local state is NOT derived from the snapshot. `render()` redraws from a full
-   Snapshot on every websocket tick, and `diffState`/`editState` survive only
+   Snapshot on every websocket tick, and `Diff.state`/`Diff.edit` survive only
    because `render()` never touches them; this follows that idiom, or every tick
    would reset the scroll position and drop focus out of a half-typed reply. */
 const reviewState = {
@@ -2853,7 +2873,7 @@ function rvReply(item) {
   box.value = replyOf(item);
   /* A textarea, not a contenteditable: the text goes to GitHub as plain
      markdown, so rich paste is pure liability and browsers insert <div>/<br>
-     where a newline belongs. `openEditor()` settled this. */
+     where a newline belongs. `Diff.openEditor()` settled this. */
   box.oninput = () => {
     reviewState.drafts[draftKey(item.t.id, i)] = box.value;
     // Repaint only the footer: re-rendering the card here would move focus out
@@ -3705,7 +3725,7 @@ async function loadReview(pr) {
 
 async function openReview(pr) {
   // Two overlays at the same z-index would stack; the diff viewer goes first.
-  if (diffState.open) closeDiff();
+  if (Diff.state.open) Diff.close();
   if (reviewState.pr !== pr) {
     manualState.comments = {};
     manualState.changed = null;
@@ -4242,16 +4262,16 @@ async function teardown(wsId) {
   }
 }
 
-$('ovclose').onclick = closeDiff;
-$('ovprev').onclick = () => stepChange(-1);
-$('ovnext').onclick = () => stepChange(1);
+$('ovclose').onclick = Diff.close;
+$('ovprev').onclick = () => Diff.step(-1);
+$('ovnext').onclick = () => Diff.step(1);
 $('ovmode').onclick = () => {
-  if (editState.on && !closeEditor()) return;
-  diffState.split = !diffState.split;
-  renderDiff();
+  if (Diff.edit.on && !Diff.closeEditor()) return;
+  Diff.state.split = !Diff.state.split;
+  Diff.render();
 };
-$('ovedit').onclick = () => (editState.on ? closeEditor() : openEditor());
-$('ovsave').onclick = saveEditor;
+$('ovedit').onclick = () => (Diff.edit.on ? Diff.closeEditor() : Diff.openEditor());
+$('ovsave').onclick = Diff.saveEditor;
 $('reposwitch').onclick = () =>
   toast('switching repositories is not implemented yet', true);
 $('addshell').onclick = newShell;
@@ -4282,9 +4302,9 @@ window.addEventListener('keydown', (e) => {
     closeSettings();
     return;
   }
-  if ((e.metaKey || e.ctrlKey) && e.key === 's' && editState.on) {
+  if ((e.metaKey || e.ctrlKey) && e.key === 's' && Diff.edit.on) {
     e.preventDefault();
-    saveEditor();
+    Diff.saveEditor();
     return;
   }
   /* The overlay wants bare Enter, j/k and digits, and this handler is registered
@@ -4315,20 +4335,20 @@ window.addEventListener('keydown', (e) => {
       return;
     }
   }
-  if (diffState.open) {
-    if (e.key === 'Escape') { e.preventDefault(); closeDiff(); return; }
+  if (Diff.state.open) {
+    if (e.key === 'Escape') { e.preventDefault(); Diff.close(); return; }
     // Ctrl+←/→ steps through the changeset. Was F7/⇧F7 — one key doing two jobs
     // by modifier, and a reach; the arrows read as "next/previous" on their own.
     if (e.ctrlKey && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
       e.preventDefault();
-      stepChange(e.key === 'ArrowLeft' ? -1 : 1);
+      Diff.step(e.key === 'ArrowLeft' ? -1 : 1);
       return;
     }
   }
   if (e.altKey && e.key === 'd') {
     e.preventDefault();
     if (Review.state.open) return toast('close the review first');
-    diffState.open ? closeDiff() : openDiff();
+    Diff.state.open ? Diff.close() : Diff.open();
     return;
   }
   // Modifier combinations xterm does not claim, so they work with the terminal
