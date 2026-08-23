@@ -429,13 +429,21 @@ pub fn worktree_remove(main: &Path, path: &Path) -> Result<()> {
 /// locked or the reason carries no `pid`, both of which mean "do not touch it".
 fn stale_lock_pid(main: &Path, path: &Path) -> Option<u32> {
     let list = git(main, &["worktree", "list", "--porcelain"]).ok()?;
-    let want = path.to_string_lossy();
+    // Both sides resolved before comparing, because **git reports the real path**
+    // and the caller's may be reached through a symlink. On macOS that is the
+    // normal case rather than the exotic one — `/tmp`, `/var` and `$TMPDIR` all
+    // live under `/private` — and a string compare simply missed, so the lock was
+    // never recognised as stale and teardown refused forever: the very bug this
+    // function exists to fix, back again on one platform. Caught by CI on the
+    // macos runner, not by reading.
+    let resolve = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    let want = resolve(path);
     // Records are blank-line separated; find the one for this path and read its
     // `locked` line without letting a later record's lock leak into the answer.
     let mut in_record = false;
     for line in list.lines() {
         if let Some(p) = line.strip_prefix("worktree ") {
-            in_record = p == want;
+            in_record = resolve(Path::new(p)) == want;
         } else if in_record {
             if let Some(reason) = line.strip_prefix("locked") {
                 return reason
@@ -1350,7 +1358,12 @@ mod tests {
         std::fs::write(dir.join("f.txt"), "one\n").unwrap();
         run(&["add", "-A"]);
         run(&["commit", "-qm", "one"]);
-        dir
+        // Resolved, because git reports resolved paths and a test comparing its
+        // output against this one has to agree with it. `$TMPDIR` on macOS is
+        // under `/var`, which is a symlink into `/private`, so unresolved it
+        // matched nothing there — while on Linux `/tmp` is a real directory and
+        // the difference never showed.
+        std::fs::canonicalize(&dir).unwrap_or(dir)
     }
 
     #[test]
@@ -1402,6 +1415,43 @@ mod tests {
                 .contains("worktrees/wt"),
             "and gone from git's record"
         );
+        let _ = std::fs::remove_dir_all(&repo);
+    }
+
+    /// The same stale lock, but named through a symlink — because `git worktree
+    /// list` answers with the *real* path and the caller's may not be one. This is
+    /// what failed on the macOS runner while passing on Linux: `$TMPDIR` is under
+    /// `/var`, a symlink into `/private`, so the string compare missed and the
+    /// lock was never seen as stale. Now that `scratch_repo` hands back a resolved
+    /// path, this is the only test that still exercises that comparison.
+    #[test]
+    fn a_stale_lock_is_found_even_when_the_worktree_is_named_through_a_symlink() {
+        let repo = scratch_repo();
+        let wt = repo.join(".claude/worktrees/linked");
+        std::fs::create_dir_all(wt.parent().unwrap()).unwrap();
+        worktree_add_new(&repo, &wt, "worktree-linked", "main").expect("worktree add");
+        let reason = "claude session linked (pid 2147480000 start 1)";
+        git(&repo, &["worktree", "lock", "--reason", reason, wt.to_str().unwrap()])
+            .expect("lock");
+
+        // A second route to the very same worktree.
+        let link = repo.parent().unwrap().join(format!(
+            "orchd-wtlink-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_file(&link);
+        std::os::unix::fs::symlink(&repo, &link).expect("symlink");
+        let via_link = link.join(".claude/worktrees/linked");
+
+        assert!(
+            stale_lock_pid(&repo, &via_link).is_some(),
+            "a symlinked path must still find the lock git reports under its real name"
+        );
+        worktree_remove(&repo, &via_link).expect("remove through the symlink");
+        assert!(!wt.exists(), "the worktree is gone from disk");
+
+        let _ = std::fs::remove_file(&link);
         let _ = std::fs::remove_dir_all(&repo);
     }
 

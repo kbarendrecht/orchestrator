@@ -59,6 +59,10 @@ jobs:
       - name: Test the daemon
         run: cargo test -p orchd
 
-      # The part no Linux box can answer.
+      # The part no Linux box can answer, so it runs even when the tests above
+      # failed: a red test would otherwise skip this step and hide the one signal
+      # that cannot be got anywhere else. Learned the hard way — the first macOS
+      # run failed its tests and reported nothing at all about the Tauri build.
       - name: Build the app
+        if: always()
         run: cargo build -p orchestrator-desktop

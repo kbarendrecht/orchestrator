@@ -396,6 +396,25 @@ Everything outside that block is hand-written and survives.
   exists because `release.yml` only fires on a tag — cutting a release was
   otherwise the only way to find out.
 
+  **CI ran, went red on macOS, and was right to.** The first `check.yml` run had
+  the Linux leg green and macOS failing two `git.rs` tests — both the same
+  resolved-vs-unresolved path class as above, and one a **real bug in the
+  stale-lock fix itself**: `stale_lock_pid` compared `git worktree list`'s output
+  as a raw string, and git answers with the *real* path. Under macOS's `$TMPDIR`
+  (which lives under `/var`, a symlink into `/private`) the compare missed, the
+  lock was never seen as stale, and teardown refused forever — the exact bug that
+  function exists to fix, back again on one platform. Both sides are resolved
+  before comparing now. The second failure was a pre-existing test asserting
+  git's output starts with `scratch_repo`'s path; the helper now hands back a
+  resolved path, since that is what git will agree with.
+
+  Two things learned about the workflow itself. `cargo test` ran *before* the app
+  build, so the red tests **skipped** the Tauri build — hiding the one signal only
+  CI can give; the build step is `if: always()` now. And because
+  `scratch_repo` resolves, the stale-lock test no longer exercises the comparison,
+  so there is a dedicated symlinked-path test — checked against the unfixed code in
+  the failing direction, since reverting the other half left it passing happily.
+
   **What is still unproven, and cannot be proven from here.** The daemon crate and
   its tests cross-check clean for `aarch64-apple-darwin`, so the fixes above are
   verified at the type level. The *desktop* crate cannot be cross-checked at all:
