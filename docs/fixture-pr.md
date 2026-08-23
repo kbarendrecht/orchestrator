@@ -99,8 +99,6 @@ untrusted checkout the daemon points at.
 Each of these was listed in TODO.md as unverifiable, and each now has a target:
 
 - The resolve flow end to end, against threads that really are awaiting you.
-- The thumbs-up idempotency assumption in `post.rs`, still a guess about whether
-  GitHub returns the existing reaction or a second one.
 
 `triage::gate`'s dirty-worktree refusal is **verified** — the second thing driven
 against the fixture. A polled PR with a `pr-4` worktree, dirtied on purpose, made
@@ -114,6 +112,19 @@ sha rather than local HEAD — shown distinct by a local-only commit that moved 
 worktree's HEAD while the URL kept the pushed sha. The local-HEAD fallback still
 serves a workspace no PR names. No code change; the arm just needed a workspace
 whose branch matched a polled PR, which no monorepo checkout offered.
+
+The **thumbs-up idempotency** guess is **settled**. The ignored `posts_for_real`
+test (`forge/github_write.rs`), pointed at this PR, 👍'd a comment twice and got
+the same reaction id both times — GitHub is idempotent per (user, content), so
+`post.rs`'s retry needs no ledger:
+
+```
+ORCHD_LIVE_REPO=kbarendrecht/orchd-fixture ORCHD_LIVE_PR=<n> \
+  cargo test --lib -- --ignored --nocapture posts_for_real
+```
+
+It posts a real reply and reaction to the PR's first thread, so **rebuild the
+fixture after running it** to restore clean awaiting-you threads.
 
 Teardown and its archive are **done** — the first thing driven against the
 fixture. Creating a worktree, killing its session and tearing it down proved the

@@ -1228,11 +1228,13 @@ async fn post_outward(
         }
 
         if h.stance.gives_thumbs_up() {
-            // Not re-derivable: the thread query does not select reactions.
-            // GitHub is expected to treat one as unique per (user, content) and
-            // return the existing one, so a retry is a no-op rather than a
-            // duplicate. Unverified until the scratch PR settles it; the fallback
-            // is selecting `reactions` in the thread query, never a ledger.
+            // Not re-derivable: the thread query does not select reactions. But a
+            // retry is a no-op rather than a duplicate — GitHub treats a reaction
+            // as unique per (user, content) and returns the existing one.
+            // Settled against a live PR (`posts_for_real` in `forge/github_write`):
+            // 👍-ing the same comment twice returned the same reaction id both
+            // times. So no ledger and no `reactions` in the thread query are
+            // needed to make this idempotent.
             match blocking(forge, at, &h.root, Send::ThumbsUp).await {
                 Ok(()) => report.landed.push(Landed {
                     thread_id: h.thread_id.clone(),

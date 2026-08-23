@@ -21,11 +21,17 @@ Everything outside that block is hand-written and survives.
   `github-actions`. `ORCHD_CONFIG_DIR` keeps all of that off the real
   `sessions.json` and out of this repo's TODO.md.
 
-  **The items below are now unblocked but still unverified** — the target exists;
-  nothing has been driven against it yet:
-  - the resolve run end to end (commit per thread, `…/thread/:id/committed`, the
-    daemon posting on its own credentials),
-  - the thumbs-up idempotency assumption in `post.rs`.
+  **The one item still unverified** — the target exists; nothing has been driven
+  against it yet: the resolve run end to end (commit per thread,
+  `…/thread/:id/committed`, the daemon posting on its own credentials).
+
+  **The thumbs-up idempotency guess — settled, and it was right.** The ignored
+  `posts_for_real` test (`forge/github_write.rs`), pointed at the fixture PR,
+  👍'd the same comment twice and got the same reaction id both times
+  (`429129039`). So GitHub treats a reaction as unique per (user, content) and a
+  retry is a no-op — no ledger, no `reactions` in the thread query. The hedge in
+  `post.rs` is gone; the reply path (`with_footer`, `in_reply_to_id`) came back
+  correct in the same run.
 
   **`open_file`'s `head_sha` arm — done, no code change.** With a `pr-4` workspace
   on `fixture/pricing`, `POST /api/open/file` minted a blob URL against the PR's
@@ -72,9 +78,8 @@ Everything outside that block is hand-written and survives.
   - **Teardown, and the archive it now runs.** Both only fire on a worktree with a
     session's transcript in it, and the only ones to hand are real work.
 
-  Also outstanding for the same reason: the thumbs-up idempotency assumption
-  (`post.rs` — "unverified until the scratch PR settles it"), which is currently a
-  guess about GitHub returning the existing reaction rather than a second one.
+  Settled once the fixture existed: the thumbs-up idempotency assumption
+  (`post.rs`) — GitHub returns the existing reaction, not a second one (see above).
 
 - **The two-phase resolve flow — handover.** All four phases of
   `docs/resolve-flow-plan.md` have landed, and none of it has answered a real
