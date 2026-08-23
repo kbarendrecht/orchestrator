@@ -420,11 +420,17 @@ Everything outside that block is hand-written and survives.
   verified at the type level. The *desktop* crate cannot be cross-checked at all:
   `objc2-exception-helper` compiles Objective-C (`try_catch.m`), which needs a real
   macOS toolchain — on Linux it dies in `cc-rs`, for want of an SDK rather than
-  for want of working code. So the Tauri shell's macOS build is untested until
-  `check.yml` runs on the macos-14 runner, and **nothing has been executed on a
-  Mac**: `Chrome::Overlay`'s traffic lights, `open` for URLs, and the window
-  chrome are still written-not-run. Run `check.yml` before believing the matrix,
-  and the honest claim until someone launches it on a Mac is "it should build".
+  for want of working code — so only the runner can answer for it, and it now has:
+  `check.yml` is **green on macos-14** (daemon tests *and* the Tauri build), and
+  `v2026.8.11` shipped an `aarch64-macos` tarball beside the Linux one, the first
+  release to carry one.
+
+  What remains is the last mile and it cannot be closed from here: **nothing has
+  been executed on a Mac.** `Chrome::Overlay`'s traffic lights, `open` for URLs
+  and the window chrome are still written-not-run, and a binary that compiles is
+  not a window that draws. The honest claim is now "it builds and its tests pass
+  there", which is a good deal more than "nobody knows" — but launching it is
+  somebody's afternoon with a Mac, not a CI job.
 
 - **A README for other people.** The current one is written for whoever already
   knows what orchd is: it is threaded with `§` references to a spec that no longer
@@ -571,11 +577,16 @@ Everything outside that block is hand-written and survives.
   still proceeds — a rebase onto a known-old base is sometimes wanted — but it
   can no longer look identical to a clean one.
 
-- **`token_source` and `pr_age_ms` are surfaced.** *Fixed.* The PR-pane header
-  now shows a live "· N ago" from `pr_age_ms` (ticked off the snapshot clock, so
-  a stuck-but-not-erroring poller reads as stale), and a `⚠` with an
-  explanatory title when `token_source` is `gh_cli` — the write-scope fallback
-  flagged under "Decisions worth revisiting". Env/file say nothing.
+- **`pr_age_ms` is surfaced; `token_source` no longer is.** *Fixed, then half
+  reverted.* The PR-pane header shows a live "· N ago" from `pr_age_ms` (ticked
+  off the snapshot clock, so a stuck-but-not-erroring poller reads as stale).
+  The `⚠` beside it for a `gh_cli` token is **gone**: `gh auth token` is the
+  fallback that makes the app work out of the box, so the mark was permanent and
+  could not be acted on without setting up a PAT — a warning you cannot clear is
+  furniture. The fact is not lost. `token_source` is still in the snapshot for
+  anyone diagnosing over the API, and the daemon's own live-findings block below
+  reports it, which is a list you read deliberately rather than a badge you stop
+  seeing.
 
 - **`save_automation` failures are logged, not dropped.** *Fixed.* Both sites
   (`src/api.rs`, fix-pr run start and end) now `tracing::error!` on a failed
