@@ -210,11 +210,8 @@ pub async fn spawn(app: &Arc<AppState>, pr: u64, head_ref: &str, login: &str) ->
         // point at positions that no longer exist, so finishing it is impossible and
         // offering to would be a screen whose button always fails. The local commit it
         // left behind is not silently lost — the next batch's own gate names it.
-        if inner.manual.remove(&pr).is_some() {
+        if inner.with_manual("re-triage abandoned a phase", |m| m.remove(&pr).is_some()) {
             tracing::warn!(pr, "a manual phase was open; re-triaging abandons it");
-            if let Err(e) = crate::store::save_manual(&inner.manual) {
-                tracing::warn!("could not save manual.json: {e:#}");
-            }
         }
         inner.sessions.insert(id, session);
     }

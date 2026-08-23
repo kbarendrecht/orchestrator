@@ -333,10 +333,20 @@ since the panel was never saved. No page errors anywhere.
 
 ### LOW
 
-- **L1 · Durability is a call-site property.** `sessions.json` re-persists on
-  every `notify()`, but `manual`/`automation`/`stories` persist only because
-  each mutation site remembers its `save_*`. Disciplined today, structurally
-  unenforced. A `mutate-and-persist` wrapper would harden it.
+- **L1 · Durability was a call-site property.** *Fixed.* `Inner::with_automation`
+  / `with_manual` / `with_stories` mutate and write in one call, and all seven
+  sites go through them — no bare `store::save_*` remains outside `store.rs` and
+  `state.rs`. Each takes the caller's own `why`, because "could not persist
+  automation" is far less useful than knowing which PR and which moment, and the
+  closure returns whether it changed anything so a no-op does not rewrite the
+  file (`update_phase_head` used to write on every commit landing on the same
+  head). The PR poller's `let _ = save_automation(...)` — the last silently
+  dropped write — went with it.
+
+  Not privatised: reads outnumber mutations ten to one per store and requiring an
+  accessor for each would be noise. So this is mutation-carries-the-write by
+  construction at every existing site, rather than a type that makes the old
+  shape impossible.
 - **L2 · resolve-run record is memory-only** — lost on restart while its commits
   survive. Already a TODO known-gap; located here for precision. Persist beside
   `plan.json` with the pattern `manual`/`automation` already use.
@@ -345,9 +355,19 @@ since the panel was never saved. No page errors anywhere.
   over" guard. Checked the guard actually bites: appending a bogus `{{…}}` to
   `commands/resolve-run.md` fails the test, so it is covering the file rather
   than passing on a template with nothing to substitute.
-- **L4 · Stringly-typed route classification.** `is_ask` (path suffix) and
-  `SPENDS_GITHUB_TOKEN` (hand-maintained list) grow by convention; the list's
-  own comment records once being forgotten. Advisory only.
+- **L4 · Stringly-typed route classification.** *Fixed as advised — a note, not a
+  mechanism.* `router()` in `lib.rs` now carries a doc comment naming the two
+  lists in `api.rs::guard` that have to be kept in step with the route table and
+  will not fail loudly if they are not: `is_ask` (suffix-matched, decides what an
+  agent's narrow token can reach) and `SPENDS_GITHUB_TOKEN` (the GETs that need
+  the daemon token because they spend the GitHub credential outbound). Making it
+  structural would mean restructuring the route table, which is more than the
+  risk warrants.
+
+  Found while doing it: `SPENDS_GITHUB_TOKEN` still listed `/threads`, a route
+  deleted earlier in this pass — a dead entry that reads as a route that exists.
+  Dropped. Verified after: `/api/pr/:n/review` is still 401 without a token and
+  200 with one, and a plain GET is still exempt.
 - **L5 · Unbounded growth.** `human_edits` never prunes; `spinFloor` is an
   ad-hoc per-kind flag map. Low blast radius; watch-items.
 

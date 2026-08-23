@@ -273,13 +273,12 @@ pub async fn file_all(
                 .collect();
             if !filed.is_empty() {
                 let mut inner = app.inner.write().await;
-                for (thread, story) in filed {
-                    inner.stories.put(pr, &thread, story);
-                }
-                if let Err(e) = crate::store::save_stories(&inner.stories) {
-                    // A cache that failed to persist costs a search next time.
-                    tracing::warn!("could not save stories.json: {e:#}");
-                }
+                inner.with_stories("stories filed", |c| {
+                    for (thread, story) in filed {
+                        c.put(pr, &thread, story);
+                    }
+                    true
+                });
             }
         }
         Err(e) => {

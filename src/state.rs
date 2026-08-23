@@ -159,6 +159,67 @@ pub struct Inner {
     pub update: Option<UpdateInfo>,
 }
 
+/// Mutating the three stores that outlive the daemon.
+///
+/// `sessions.json` is written by every `notify()`, so a session record cannot be
+/// changed without being persisted. `automation`, `manual` and `stories` had no
+/// such guarantee: each was durable only because every mutation site remembered
+/// to call the matching `store::save_*` afterwards. That held, but it made
+/// durability a property of the caller's memory — and a lost automation write in
+/// particular defeats the one-run-per-PR cap rather than merely losing a label.
+///
+/// So the write lives with the mutation. `why` is the caller's own context, kept
+/// because "could not persist automation" is far less useful than knowing which
+/// PR and which moment. The closure returns whether it changed anything, so a
+/// no-op does not rewrite the file.
+///
+/// Reads still go straight at the fields: they are many, harmless, and requiring
+/// an accessor for each would be noise. It is *mutation* that has to carry the
+/// write with it.
+impl Inner {
+    pub fn with_automation(
+        &mut self,
+        why: &str,
+        f: impl FnOnce(&mut crate::fix_pr::AutomationStore) -> bool,
+    ) -> bool {
+        let changed = f(&mut self.automation);
+        if changed {
+            if let Err(e) = crate::store::save_automation(&self.automation) {
+                tracing::error!("could not persist automation ({why}): {e:#}");
+            }
+        }
+        changed
+    }
+
+    pub fn with_manual(
+        &mut self,
+        why: &str,
+        f: impl FnOnce(&mut HashMap<u64, crate::post::ManualPhase>) -> bool,
+    ) -> bool {
+        let changed = f(&mut self.manual);
+        if changed {
+            // A warning, not an error: failing to persist costs the resume after a
+            // restart, and turning that into a failed batch would be worse than
+            // the thing it protects against.
+            if let Err(e) = crate::store::save_manual(&self.manual) {
+                tracing::warn!("could not save manual.json ({why}): {e:#}");
+            }
+        }
+        changed
+    }
+
+    pub fn with_stories(&mut self, why: &str, f: impl FnOnce(&mut crate::story::Cache) -> bool) -> bool {
+        let changed = f(&mut self.stories);
+        if changed {
+            // A cache that failed to persist costs a search next time, nothing more.
+            if let Err(e) = crate::store::save_stories(&self.stories) {
+                tracing::warn!("could not save stories.json ({why}): {e:#}");
+            }
+        }
+        changed
+    }
+}
+
 /// A release newer than what is running. `mise` does the upgrade; this only tells
 /// you it is there.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

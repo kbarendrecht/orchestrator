@@ -154,19 +154,20 @@ pub const COMMAND: &str = "fix-pr";
 pub async fn settle(app: &std::sync::Arc<crate::state::AppState>, pr: u64) {
     let mut inner = app.inner.write().await;
     let found = inner.prs.iter().find(|p| p.number == pr).cloned();
-    match verdict(found.as_ref()) {
-        Some(v) => {
-            inner.automation.by_pr.insert(pr, v);
+    let v = verdict(found.as_ref());
+    // The write rides with the mutation: a lost one makes a restart mis-remember
+    // whether this PR is exhausted, which defeats the one-run-per-PR cap.
+    inner.with_automation(&format!("PR #{pr} at run end"), |a| {
+        match v {
+            Some(v) => {
+                a.by_pr.insert(pr, v);
+            }
+            None => {
+                a.by_pr.remove(&pr);
+            }
         }
-        None => {
-            inner.automation.by_pr.remove(&pr);
-        }
-    }
-    // A lost write means a restart mis-remembers whether this PR is exhausted,
-    // which defeats the one-run-per-PR cap rather than losing a label.
-    if let Err(e) = crate::store::save_automation(&inner.automation) {
-        tracing::error!("could not persist automation for PR #{pr} at run end: {e:#}");
-    }
+        true
+    });
 }
 
 /// What a finished run means for the record: `Some` to remember, `None` to forget.

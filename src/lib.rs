@@ -275,6 +275,21 @@ async fn bind(port: u16, fallback: bool) -> Result<(tokio::net::TcpListener, u16
     }
 }
 
+/// The HTTP surface.
+///
+/// **Two lists in `api.rs::guard` have to be kept in step with this table**, and
+/// neither will fail loudly if you forget:
+///
+/// - `is_ask` decides which routes an *agent* may call with its own narrow token,
+///   and it matches by path **suffix** (`/ask`, `/wait`, `/spawn`) under
+///   `/api/session/`. A new route ending in one of those is silently
+///   agent-reachable.
+/// - `SPENDS_GITHUB_TOKEN` lists the GETs that spend the GitHub credential
+///   outbound and therefore need the daemon token despite being GETs. Its own
+///   comment records `/review` having been added without it once.
+///
+/// Adding a route is otherwise a one-liner; adding one that touches either of
+/// those two properties is not.
 fn router(app: Arc<AppState>) -> Router {
     Router::new()
         .route("/", get(index))
@@ -470,18 +485,24 @@ fn start_pr_poller(app: Arc<AppState>) {
                                 tracing::info!(login = %viewer, "github viewer");
                                 inner.viewer = Some(viewer);
                             }
-                            for p in &prs {
-                                let alive = matches!(
-                                    inner.automation.get(p.number),
-                                    Some(fix_pr::PrAutomation::Running { .. })
-                                );
-                                if !alive {
-                                    inner
-                                        .automation
-                                        .reconcile_head(p.number, p.head_sha.as_deref());
+                            // Exhaustion clears when a head moves with no run
+                            // alive. Through `with_automation` so the write is not
+                            // a thing this poller has to remember — it used to
+                            // drop the error entirely.
+                            let heads: Vec<(u64, Option<String>)> =
+                                prs.iter().map(|p| (p.number, p.head_sha.clone())).collect();
+                            inner.with_automation("pr poll", |a| {
+                                for (number, head) in heads {
+                                    let alive = matches!(
+                                        a.get(number),
+                                        Some(fix_pr::PrAutomation::Running { .. })
+                                    );
+                                    if !alive {
+                                        a.reconcile_head(number, head.as_deref());
+                                    }
                                 }
-                            }
-                            let _ = store::save_automation(&inner.automation);
+                                true
+                            });
                             inner.prs = prs;
                             inner.pr_error = None;
                             inner.pr_fetched = Some(std::time::SystemTime::now());

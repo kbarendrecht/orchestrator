@@ -150,8 +150,9 @@ pub async fn guard(
     // Every GET that reaches GitHub on our credential, not just the first one.
     // This started as a match on `/threads` alone and `/review` was added later
     // without it — so the list is named here, with the rule, rather than left as
-    // a suffix nobody notices they have to extend.
-    const SPENDS_GITHUB_TOKEN: [&str; 2] = ["/threads", "/review"];
+    // a suffix nobody notices they have to extend. `/threads` itself is gone now
+    // (nothing called it); a dead entry here would read as a route that exists.
+    const SPENDS_GITHUB_TOKEN: [&str; 1] = ["/review"];
     let spends_github_token =
         path.starts_with("/api/pr/") && SPENDS_GITHUB_TOKEN.iter().any(|s| path.ends_with(s));
     let needs_token =
@@ -2339,18 +2340,18 @@ pub async fn fix_pr(
     let session = spawn::spawn_fix_pr_session(&app, number, &pr.head_ref).await?;
     {
         let mut inner = app.inner.write().await;
-        inner.automation.by_pr.insert(
-            number,
-            PrAutomation::Running {
-                session,
-                started: std::time::SystemTime::now(),
-            },
-        );
         // If this never reaches disk, a restart forgets the run started and the
-        // one-run-per-PR cap can re-fire — worth a log, not just a dropped error.
-        if let Err(e) = crate::store::save_automation(&inner.automation) {
-            tracing::error!("could not persist automation for PR #{number}; a restart may re-run it: {e:#}");
-        }
+        // one-run-per-PR cap can re-fire, so the write is not optional.
+        inner.with_automation(&format!("PR #{number} run started"), |a| {
+            a.by_pr.insert(
+                number,
+                PrAutomation::Running {
+                    session,
+                    started: std::time::SystemTime::now(),
+                },
+            );
+            true
+        });
     }
 
     // Exhaustion is recorded by the session's own exit watcher, which is the

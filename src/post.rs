@@ -786,8 +786,11 @@ async fn run_inner(
         // already committed.
         {
             let mut inner = app.inner.write().await;
-            inner.manual.insert(pr.number, phase.clone());
-            persist_phases(&inner);
+            let p = phase.clone();
+            inner.with_manual("phase opened", |m| {
+                m.insert(pr.number, p);
+                true
+            });
         }
         report.manual = Some(phase);
         return Ok(report);
@@ -862,9 +865,7 @@ async fn run_inner(
     // Anything still failed is retried through the report, not the phase.
     if report.failed.is_empty() {
         let mut inner = app.inner.write().await;
-        if inner.manual.remove(&pr.number).is_some() {
-            persist_phases(&inner);
-        }
+        inner.with_manual("batch finished", |m| m.remove(&pr.number).is_some());
     } else {
         update_phase_head(app, pr.number, &path).await;
     }
@@ -919,23 +920,15 @@ async fn update_phase_head(app: &Arc<AppState>, pr: u64, path: &Path) {
         return;
     };
     let mut inner = app.inner.write().await;
-    let Some(phase) = inner.manual.get_mut(&pr) else {
-        return;
-    };
-    if phase.committed == head {
-        return;
-    }
-    phase.committed = head;
-    persist_phases(&inner);
-}
-
-/// Write the phases out. Best effort by design: failing to persist costs the resume
-/// after a restart, and turning that into a failed batch would be worse than the thing
-/// it protects against.
-fn persist_phases(inner: &crate::state::Inner) {
-    if let Err(e) = crate::store::save_manual(&inner.manual) {
-        tracing::warn!("could not save manual.json: {e:#}");
-    }
+    // Returning `false` when nothing moved keeps this from rewriting the file on
+    // every commit that happens to land on the same head.
+    inner.with_manual("phase head moved", |m| match m.get_mut(&pr) {
+        Some(phase) if phase.committed != head => {
+            phase.committed = head;
+            true
+        }
+        _ => false,
+    });
 }
 
 /// The lines half one blames to pick a fixup target.
