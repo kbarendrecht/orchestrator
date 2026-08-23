@@ -273,11 +273,31 @@ since the panel was never saved. No page errors anywhere.
   Left over: `git.rs`'s `// The review flow's writes` section still holds the
   write half. Defensible now the policy is gone, but worth revisiting if
   `patch.rs` ever grows a second consumer.
-- **M3 · `spawn.rs`'s health parser mutates session state, duplicating
-  `hooks.rs`.** `scan()` flips `BuildFailing`/`YourTurn` from inside the process
-  module — the same transition `hooks.rs::stop` derives independently, with
-  duplicated build-failure logic. *Direction:* extract a `health.rs`; reconcile
-  the health→session-state rule in one place.
+- **M3 · `spawn.rs`'s health parser mutated session state, duplicating
+  `hooks.rs`.** *Fixed.* `src/health.rs` now holds both halves that were
+  misplaced: the **parser** (`verdict`, `scan_lines`, `strip_ansi` — classifying a
+  build watcher's output is not spawning anything, and was in `spawn.rs` only
+  because `start_managed` happened to call it), and the **rule** (`at_rest`).
+
+  The rule was the real finding. "A session at rest is `BuildFailing` if the build
+  beside it is red, otherwise it is an idle agent" was written twice — once in
+  `hooks.rs` when a turn ends, once in `spawn.rs` when health changes. Same rule,
+  two triggers, two copies. Both now call `health::at_rest`, and `hooks.rs`'s
+  workspace scan became `health::build_failure_in`.
+
+  What deliberately stayed different: *which* sessions each trigger applies the
+  rule to. `hooks.rs` acts on the one session that stopped; the health watcher
+  acts on sessions already at rest in that workspace, and keys off the health that
+  just changed rather than re-scanning the workspace. Those are genuinely
+  different questions, so each keeps its own guard — only the mapping is shared.
+  `hooks.rs`'s "do not re-stamp `YourTurn`" nuance is preserved and now says why:
+  it would restart the waiting clock the rail sorts on.
+
+  Driven live with a contrived managed process under an isolated `HOME`:
+  `starting` → `failing` carrying the exact summary off the error line → `ok` on
+  the recovery line. The session-flip half was not driven — that needs a live
+  agent session sitting at `YourTurn` — but the mapping it now shares is the same
+  code the parser path exercised, and the nine parser tests moved with it.
 - **M4 · api.rs handlers inline orchestration owned elsewhere.** `revive()`
   inlines worktree rebuild (`worktree.rs` owns every other worktree verb);
   `open_pr`'s `"main"` arm inlines occupancy + `is_clean` + `switch_branch`

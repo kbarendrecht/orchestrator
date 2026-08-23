@@ -341,31 +341,25 @@ pub async fn stop(
         return ok();
     };
 
-    // A main-workspace session that reached Stop while a managed process is red
-    // is not waiting on a prompt, it is broken. Red outranks ochre (§2).
+    // A session that reached Stop while a managed process is red is not waiting
+    // on a prompt, it is broken. Red outranks ochre (§2) — the rule itself lives
+    // in `health::at_rest`, because the health watcher applies the same one from
+    // the other direction.
     let build_failure = {
         let inner = app.inner.read().await;
-        inner.workspaces.get(&workspace).and_then(|w| {
-            w.processes.iter().find_map(|p| match &p.health {
-                Health::Failing { summary } if p.is_managed() => Some(summary.clone()),
-                _ => None,
-            })
-        })
+        crate::health::build_failure_in(&inner, &workspace)
     };
 
     {
         let mut inner = app.inner.write().await;
         if let Some(s) = inner.sessions.get_mut(&id) {
-            match build_failure {
-                Some(summary) => s.set_state(State::BuildFailing { summary }),
-                None => {
-                    if !matches!(s.state, State::YourTurn { .. }) {
-                        s.set_state(State::YourTurn {
-                            since: SystemTime::now(),
-                            reason: TurnReason::TurnComplete,
-                        });
-                    }
-                }
+            let want = crate::health::at_rest(build_failure.as_deref());
+            // Re-stamping `YourTurn` would restart the waiting clock on a session
+            // that was already waiting, and that clock is what the rail sorts on.
+            let already_waiting =
+                matches!(want, State::YourTurn { .. }) && matches!(s.state, State::YourTurn { .. });
+            if !already_waiting {
+                s.set_state(want);
             }
         }
     }

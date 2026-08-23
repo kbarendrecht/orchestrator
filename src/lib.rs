@@ -12,6 +12,7 @@ pub mod git;
 pub mod forge;
 pub mod fix_pr;
 pub mod headroom;
+pub mod health;
 pub mod hooks;
 pub mod instance;
 pub mod model;
