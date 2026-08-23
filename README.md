@@ -88,7 +88,9 @@ mise up          # upgrade to the newest release
 A running app also checks the releases page on launch and every six hours; when a
 newer version is out it shows a dismissible nudge in the window. The nudge only
 *notices* — `mise up` is what installs it. The check is release-builds only, so
-`cargo run` from a checkout never nags.
+`cargo run` from a checkout never nags. It authenticates: the release repo is
+private, so the check rides the same read-token ladder the PR poller uses rather
+than 404ing and reading as "no update".
 
 ## What works
 
@@ -108,7 +110,10 @@ newer version is out it shows a dismissible nudge in the window. The nudge only
   `worktrees_subdir` the daemon cuts the worktree itself with `git worktree add`
   (that command only ever writes to `.claude/worktrees`, so delegating there would
   put it where the daemon does not look). Six-check teardown preflight; `git
-  worktree remove` only, never `rm -rf`.
+  worktree remove` only, never `rm -rf`. Teardown runs the archive its own
+  preflight requires — copying transcripts and writing the recovery record — but
+  only when those are the sole failing checks: a live session, a dirty tree or
+  unpushed commits still refuse, and never see an archive run under them.
 - **Changed files** — `PostToolUse` for the exact path, `git status
   --porcelain=v2` reconcile on `Stop` and at most once per 30s while working.
 - **Restart recovery** — session records persist. With `auto_resume` on (the
@@ -131,7 +136,8 @@ newer version is out it shows a dismissible nudge in the window. The nudge only
   the settings panel (`GET`/`POST /api/config`), which writes only those keys back.
   Their defaults are acme's (Dutch, Shortcut, `upstream/develop`, ng-watch +
   docker, `mise run reviews`), so a acme machine writes just `{ main_checkout }`.
-  Changes take effect on restart.
+  Changes take effect on restart. The UI names the configured base rather than the
+  default, so an edited `upstream_ref` reads correctly in the divergence strip.
 - **`/resolve`** — worktree pinned to the PR's head branch, skill invocation
   typed into the pty once `SessionStart` lands.
 - **Editable diff pane** — the right side is a live buffer with a disk write
@@ -203,30 +209,53 @@ one; the same worktree backs `/resolve`.
 
 ```
 src/
-  main.rs       wiring, routes, startup recovery, SPA serving
+  lib.rs        wiring, the router, the pollers, startup recovery, SPA serving
+  main.rs       the headless CLI over the library; desktop/ is the other caller
   config.rs     config file, acme defaults, Settings read/write, transcript slug
-  model.rs      Workspace / Session / Process, State, ArchiveState
-  state.rs      the daemon's owned state, snapshots, occupancy, reconcile
+  model.rs      Workspace / Session / Process, State, ArchiveState, the tree a
+                reconcile measured
+  state.rs      the daemon's owned state, snapshots, occupancy, reconcile, and the
+                mutate-and-persist wrappers for the three durable stores
+  instance.rs   the one-daemon-at-a-time pid lock
+  headroom.rs   the pre-spawn resource check every session goes through
+  window.rs     Chrome, and the handle the desktop shell registers
   pty.rs        portable-pty host
   ring.rs       scrollback
   hooks.rs      hook receiver and the generated settings file
-  spawn.rs      session/worktree/process spawning, health parsing
+  spawn.rs      session / worktree / process spawning
+  health.rs     a managed process's output, and where a resting session belongs
+                when the build beside it is red
   diff.rs       numstat, hunk parsing, word-level LCS
-  git.rs        status parsing, refs, unpushed, worktree ops
+  edit.rs       file read/write with containment and conflict detection
+  git.rs        status parsing, refs, unpushed, worktree ops, the review flow's
+                writes
+  review_commit.rs  which commit a batch's work may be folded into — a decision
+                about whose history may be rewritten, not a git operation
   forge/        the Forge seam: trait + ForgeImpl dispatch (mod.rs), the
                 agnostic model (model.rs), and the GitHub impl (github.rs
                 token/GraphQL/PR model/stacks, github_write.rs the gh writes)
+  triage.rs     the triage run, and the gates a worktree must pass first
+  proposal.rs   what triage proposes: Stance x Mode, positions, patches, stories
+  post.rs       the review batch end to end — resolve, write, the manual phase,
+                push, then the outward writes
+  patch.rs      applying and committing what you approved, with the staleness and
+                overlap checks that decide it still applies
+  prompt.rs     rendering the vendored prompts in commands/
+  story.rs      filing a tracker story for a point that is fair but out of scope
   reviews.rs    review queue: runs `reviews_command`, parses its JSON, degraded
                 states when it exits non-zero or emits the wrong shape
-  fix_pr.rs     automation state and the fix-pr guard table
-  edit.rs       file read/write with containment and conflict detection
-  todo.rs       the generated block in TODO.md
-guards/push.py  PreToolUse deny for dangerous pushes
-  worktree.rs   teardown preflight, archive, removal
+  fix_pr.rs     automation state, the fix-pr guard table, and a finished run's
+                verdict
+  worktree.rs   teardown preflight, archive, revive, removal
   store.rs      session record persistence, orphan reaping
   api.rs        HTTP surface and the origin/token guards
   ws.rs         event stream and pty attach
-web/            SPA (vanilla, xterm.js vendored)
+  todo.rs       the generated block in TODO.md
+web/            SPA (vanilla, xterm.js vendored). One file, six seams: `Term`,
+                `Rail`, `Diff`, `Review`, `Queue`, `Settings` are IIFEs that
+                export only what other sections call, so reaching across a
+                boundary has to be spelled out
+guards/push.py  PreToolUse deny for dangerous pushes
 ```
 
 ## Notes
@@ -261,9 +290,11 @@ web/            SPA (vanilla, xterm.js vendored)
 - **GitHub auth** resolves in order: `ORCHD_GITHUB_TOKEN`, a `0600`
   `github_token_file`, then `gh auth token`. §6 wants read scopes only
   (`pull_requests`, `checks`, `contents`, `metadata`); gh's token carries write,
-  so falling back to it logs a warning rather than passing quietly. GraphQL goes
-  out through `curl` with the token on stdin, which keeps an HTTP+TLS stack (and
-  its C toolchain) out of the build and the token out of the process table.
+  so falling back to it logs a warning rather than passing quietly — and the PR
+  pane shows a ⚠ while that is the rung in use, since a warning in a log nobody
+  is reading is not a warning. GraphQL goes out through `curl` with the token on
+  stdin, which keeps an HTTP+TLS stack (and its C toolchain) out of the build and
+  the token out of the process table.
 - **TODO.md** carries a generated block the daemon rewrites each poll with
   conditions that are true right now. Everything outside the markers is yours.
 - Bound to `127.0.0.1` only, with Origin/Host validation and a per-start token

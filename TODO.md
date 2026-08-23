@@ -295,6 +295,11 @@ Everything outside that block is hand-written and survives.
     scrollback each in `xterm` on top of the daemon's own ring buffer, which is
     the same bytes held twice; the daemon replays on reattach anyway, so the
     client scrollback could be far shorter.
+  Two smaller things to check while in there, neither yet measured: `human_edits`
+  (`state.rs`) is never pruned, so it grows one entry per hand-edited file for the
+  life of the daemon; and each terminal's `xterm` scrollback is the second copy of
+  bytes the daemon's ring buffer already holds.
+
   Do not turn this into a project. If neither is a one-line win, write down what
   it actually is and move on.
 

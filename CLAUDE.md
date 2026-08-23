@@ -10,7 +10,7 @@ are already in there with the reason they were not done.
 
 ```
 cargo check                         # the daemon
-cargo test                          # 237 tests, all in-tree
+cargo test                          # 253 tests, all in-tree
 cargo run -p orchestrator-desktop   # the app, daemon embedded in-process
 mise run shot                       # screenshot the running SPA (drives Chrome)
 ```
@@ -28,6 +28,18 @@ port, so a second instance refuses to start rather than fighting over
 - **The SPA is compiled in.** `web/*` is `include_str!`d into the binary, so a
   CSS or JS change is invisible until the daemon is rebuilt *and* restarted. No
   amount of reloading the page helps.
+- **`app.js` is one file with six seams.** `Term`, `Rail`, `Diff`, `Review`,
+  `Queue` and `Settings` are IIFEs that return only the handful of names other
+  sections call. Everything else in them is unreachable from outside on purpose,
+  so a new feature belongs *inside* the seam it touches, and reaching across is
+  spelled `Diff.state` rather than happening by accident. The single file is
+  deliberate (no bundler, `include_str!`); the internal boundaries are what keeps
+  it from being a monolith. Bodies are left at their old indentation so the seams
+  cost twenty lines of diff instead of a whole-file reflow.
+- **Never rewrite an identifier across `app.js` with a regex.** Three of the four
+  apparent uses of `resize` were the *string* `'resize'` — an event name and a URL
+  path — and a blind substitution would have broken window resizing with nothing
+  failing. Rewrite by line number, asserting each line really is a call.
 - **The app is WebKitGTK, not Chrome.** `mise run shot` drives Chrome and is fine
   for layout and copy, but the two engines disagree often enough to matter.
   `tools/` pins `playwright-core` to the version whose WebKit build is on disk so
@@ -58,6 +70,26 @@ port, so a second instance refuses to start rather than fighting over
   future silently loses the state change. Do not make a hook wait on anything.
 - **`github_write.rs` will not resolve a thread, approve, merge or open a PR.**
   That is a design boundary, not a gap. Resolving is the comment author's button.
+- **One pty exit, one observer.** `spawn::watch_session_exit` is the only thing
+  that waits on a session's handle; it dispatches onward (a fix run's verdict goes
+  to `fix_pr::settle`). A second `pty.wait()` on the same handle would work and
+  then rot, because "is this over" would have two answers maintained apart.
+- **Mutating a durable store carries its own write.** `automation`, `manual` and
+  `stories` are changed through `Inner::with_automation` / `with_manual` /
+  `with_stories`, which persist and log with the caller's own context. Do not
+  reach for `store::save_*` at a call site — that is the shape where one site gets
+  the fix and the others quietly do not.
+- **You cannot self-review your way to a testable review thread.**
+  `acknowledged()` (`forge/github.rs`) treats a thread whose last comment is yours
+  as answered, so a PR you comment on yourself has nothing awaiting an answer.
+  Every attempt to verify the resolve flow ends here; TODO.md's fixture-PR item is
+  what would unblock it. Until then that whole path is unit-tested and has never
+  made a real round trip — do not read a green suite as more than that.
+- **`POST /api/pr/:n/fix-pr` starts a run immediately.** No confirmation: the
+  guard table refuses on authorship, a run already going, a busy branch and the
+  concurrency cap, and *nothing else*. "The PR looks fine" is not a refusal,
+  because a run is also how a PR that has fallen behind gets rebased. Easy to fire
+  by accident while poking at the API.
 - **Pushes are guarded.** `--force-with-lease` only, no `push -u`, no protected
   refs; `guards/push.py` denies the rest at `PreToolUse`. Never `git merge` into a
   branch here, rebase.
