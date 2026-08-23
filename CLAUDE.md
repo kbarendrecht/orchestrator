@@ -49,7 +49,20 @@ port, so a second instance refuses to start rather than fighting over
   then refuses to execute), and modules come from `include_str!` like everything
   else, so **each new module needs an entry in the route's match and a rebuild** —
   adding a JS file stops being a JS-only change.
-- **`app.js` is one file with six seams.** `Term`, `Rail`, `Diff`, `Review`,
+- **The SPA is ES modules now, and `app.js` is one of them.** `index.html` loads
+  it with `type="module"`, so its top-level names are module-scoped rather than
+  global: reaching across a boundary has to be an `import`, and a typo in one is a
+  load-time failure instead of a silent `undefined`. `web/js/core.js` holds the
+  primitives (`$`, `el`, `call`, `get`, `toast`, `duration`, `keyActivate`,
+  `refreshButton`) and the snapshot itself; `web/js/queue.js` is the first seam
+  extracted whole. Every module needs a line in `module()` in `lib.rs` and a
+  rebuild — `include_str!` again, so adding a JS file is not a JS-only change.
+- **`snap` is a live binding, and only `receive()` may replace it.** It is
+  `export let` in `core.js`, so a hundred readers keep saying `snap.x` and see the
+  new snapshot without re-importing. The websocket handler calls `receive(next)`,
+  which sets the snapshot and the clock it is measured against together — those
+  two drifting apart is what made durations freeze.
+- **`app.js` still holds five seams as IIFEs.** `Term`, `Rail`, `Diff`, `Review`,
   `Queue` and `Settings` are IIFEs that return only the handful of names other
   sections call. Everything else in them is unreachable from outside on purpose,
   so a new feature belongs *inside* the seam it touches, and reaching across is

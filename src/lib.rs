@@ -295,6 +295,7 @@ fn router(app: Arc<AppState>) -> Router {
         .route("/", get(index))
         .route("/app.js", get(asset_js))
         .route("/app.css", get(asset_css))
+        .route("/js/:file", get(module))
         .route("/vendor/:file", get(vendor))
         .route("/vendor/fonts/:file", get(font))
         .route("/api/state", get(api::get_state))
@@ -969,6 +970,27 @@ async fn asset_js() -> Response {
 
 async fn asset_css() -> Response {
     asset("text/css; charset=utf-8", APP_CSS)
+}
+
+/// The SPA's own ES modules.
+///
+/// A flat, known set exactly like `vendor`: no traversal, and the compiled-in
+/// file is the only thing servable. The content type must be a JavaScript one or
+/// a `type="module"` script fetches it and then refuses to run it.
+///
+/// Every module needs a line here — `include_str!` means adding one is a Rust
+/// change and a rebuild, not a JS-only change. That cost is why the modules track
+/// the seams rather than being cut finer.
+async fn module(axum::extract::Path(file): axum::extract::Path<String>) -> Response {
+    if file.contains('/') || file.contains("..") {
+        return (StatusCode::BAD_REQUEST, "bad asset").into_response();
+    }
+    let body = match file.as_str() {
+        "core.js" => include_str!("../web/js/core.js"),
+        "queue.js" => include_str!("../web/js/queue.js"),
+        _ => return (StatusCode::NOT_FOUND, "no such module").into_response(),
+    };
+    asset("text/javascript; charset=utf-8", body)
 }
 
 /// xterm's own dist files, copied in at build time.

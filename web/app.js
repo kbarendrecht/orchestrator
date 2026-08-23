@@ -1,25 +1,16 @@
 'use strict';
 
+// The SPA is a module now, so what it reaches for is written down. `core.js` holds
+// the primitives every part needs; `queue.js` is the first seam extracted whole.
+import {
+  TOKEN, WS_BASE, $, el, toast, call, get, duration,
+  snap, receive, sinceSnap, refreshButton, keyActivate,
+} from './js/core.js';
+
 // The daemon owns all state. This SPA is stateless and disposable: closing the
 // browser kills nothing, and reopening replays from the daemon's buffers (§1).
 
-const TOKEN = window.__ORCH__.token;
-const WS_BASE = `ws://${location.host}`;
 
-/* The daemon's `Snapshot`, replaced whole on every websocket tick.
- *
- * The type comes from `snapshot.d.ts`, which `cargo test` generates from the Rust
- * structs — so renaming a field there and reading the old name here is a type
- * error rather than an `undefined` that renders as nothing. Editors pick it up
- * with no build step; `mise run types` is the check.
- *
- * The cast is the one untruth: before the first message arrives there is no
- * snapshot, and the honest type would make every reader handle null. The rail
- * renders on a 1s interval from load, so it *does* read this early — which is why
- * the readers that run then guard with `|| []`. Cast in one place, deliberately,
- * rather than spread `?.` through every access. */
-/** @type {import("./snapshot").Snapshot} */
-let snap = /** @type {any} */ ({ workspaces: [], sessions: [] });
 let selected = null;          // session id
 let selectedProc = {};        // workspace id -> process id
 const terms = new Map();      // target -> { term, fit, sock, host }
@@ -27,64 +18,6 @@ const terms = new Map();      // target -> { term, fit, sock, host }
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-const $ = (id) => document.getElementById(id);
-
-function el(tag, cls, text) {
-  const n = document.createElement(tag);
-  if (cls) n.className = cls;
-  if (text !== undefined) n.textContent = text;
-  return n;
-}
-
-let toastTimer = null;
-function toast(message, bad) {
-  const t = $('toast');
-  t.textContent = message;
-  t.className = 'toast on' + (bad ? ' bad' : '');
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { t.className = 'toast'; }, bad ? 7000 : 2600);
-}
-
-async function call(path, body) {
-  const res = await fetch(path, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', 'x-orch-token': TOKEN },
-    body: JSON.stringify(body ?? {}),
-  });
-  const json = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(json.error || res.statusText);
-  return json;
-}
-
-async function get(path) {
-  const res = await fetch(path, { headers: { 'x-orch-token': TOKEN } });
-  const json = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(json.error || res.statusText);
-  return json;
-}
-
-/** Compact enough to sit on a rail row without pushing the name out. */
-/* When the snapshot the current numbers came from landed. Durations are computed
- * server-side as the snapshot is built, so rendering them raw freezes the clock
- * between events: a session waiting on a permission prompt sat at "0s" until
- * something unrelated pushed a snapshot, then jumped to "1m". The rail redraws
- * every second; this is what makes those seconds mean anything. */
-let snapAt = Date.now();
-const sinceSnap = (ms) => (ms == null ? null : ms + (Date.now() - snapAt));
-
-function duration(ms) {
-  if (ms == null) return '';
-  const s = Math.floor(ms / 1000);
-  if (s < 60) return `${s}s`;
-  const m = Math.floor(s / 60);
-  if (m < 60) return `${m}m`;
-  const h = Math.floor(m / 60);
-  if (h < 24) return `${h}h ${m % 60}m`;
-  // Archived conversations are days old soon enough, and "51h 0m" is not a
-  // number anybody reads as two days.
-  return `${Math.floor(h / 24)}d ${h % 24}h`;
-}
 
 // ---------------------------------------------------------------------------
 // State presentation
@@ -455,17 +388,6 @@ function closeMenu() {
   $('ctxmenu').hidden = true;
 }
 
-/** Give a `role="button"` span what a real <button> has for free: a tab stop and
- *  Enter/Space activation. Without this a span-button is mouse-only, which is a
- *  keyboard trap for the refresh icons and the update-nudge dismiss. */
-function keyActivate(el) {
-  el.tabIndex = 0;
-  // Property assignment, not addEventListener: renderUpdate re-wires #updatex on
-  // every snapshot, and a stacked listener would fire click N times.
-  el.onkeydown = (e) => {
-    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); el.click(); }
-  };
-}
 
 const menuOpen = () => !$('ctxmenu').hidden;
 
@@ -595,33 +517,6 @@ async function answerInteraction(session, ask, answer, host, text) {
   }
 }
 
-// The poll counter each pane captured when its refresh was pressed; the button
-// spins until the live counter moves past it. null = not spinning.
-const spinFloor = { pr: null, review: null };
-
-/**
- * A ↻ that forces a poll and spins until the poll it triggered lands.
- * `pollCount` is the pane's monotonic poll counter from the snapshot; `endpoint`
- * is the POST that pulses that poller. Used by both the PR and review panes.
- */
-function refreshButton(kind, pollCount, endpoint, polling) {
-  const btn = el('span', 'rvrefresh', '↻');
-  btn.title = 'Refresh now';
-  btn.setAttribute('role', 'button');
-  keyActivate(btn);
-  if (spinFloor[kind] != null && pollCount > spinFloor[kind]) spinFloor[kind] = null;
-  // Two reasons to spin, and the second is the honest one: the daemon says a
-  // fetch is running, whoever started it. `spinFloor` covers the gap between the
-  // click and the daemon reporting the fetch, which is a round trip away.
-  if (spinFloor[kind] != null || polling) btn.classList.add('spin');
-  btn.onclick = (e) => {
-    e.stopPropagation();               // the header's own click toggles the pane
-    spinFloor[kind] = pollCount;
-    btn.classList.add('spin');
-    call(endpoint).catch((err) => { spinFloor[kind] = null; toast(err.message, true); });
-  };
-  return btn;
-}
 
 // The version the user dismissed this session. A newer release than this shows
 // again; the same one stays hidden until the next launch.
@@ -4086,134 +3981,7 @@ return { state: reviewState, open: openReview, close: closeReview, key: reviewKe
 // Review queue (§6b)
 // ---------------------------------------------------------------------------
 
-
-/** The review queue, behind one seam.
- *
- *  Five names and one leaves — the smallest section, and the last one sealed.
- */
-const Queue = (() => {
-let showReviews = true;
-let showBlockedReviews = false;
-
-/** Compact age: `just now`, `5h`, `2d`. */
-function reviewAge(hours) {
-  if (hours < 1) return 'now';
-  if (hours < 48) return `${Math.round(hours)}h`;
-  return `${Math.round(hours / 24)}d`;
-}
-
-/** Why this row is in your queue, when there is a reason worth the width. */
-function reviewReason(r) {
-  if (r.blockers && r.blockers.length) return r.blockers.join(', ');
-  if (r.needs_re_review) return 're-requested';
-  if (r.is_draft) return 'draft';
-  if (r.prio === 0) return 'prio stopper';
-  if (r.prio === 1) return 'prio';
-  if (r.prio === 3) return 'team';
-  return '';
-}
-
-function renderReviews() {
-  const block = $('rvblock');
-  const head = $('rvhead');
-  const list = $('rvlist');
-  head.replaceChildren();
-  list.replaceChildren();
-  block.classList.toggle('closed', !showReviews);
-
-  const rv = snap.reviews;
-  head.setAttribute('aria-expanded', String(showReviews));
-  head.appendChild(el('span', 'caretr', '\u203a'));
-  head.appendChild(el('span', 'eyebrow', 'Review queue'));
-  const count = el('span', 'rvcount');
-
-  const refresh = refreshButton('review', snap.reviews_poll ?? 0, '/api/reviews/refresh',
-    snap.reviews_polling);
-
-  if (!rv || rv.state !== 'ok') {
-    // Never an empty queue: a broken command reads as broken (§6b). Startup and
-    // "no such command here" are not broken, so they each say so differently.
-    const pending = !rv || rv.state === 'pending';
-    const off = rv && rv.state === 'off';
-    // Only a real fault gets the red `f`; pending and off are neutral.
-    const label = pending ? 'polling…' : off ? 'off' : 'unavailable';
-    count.appendChild(el('span', pending || off ? null : 'f', label));
-    head.appendChild(count);
-    head.appendChild(refresh);
-    head.title = rv?.reason || '';
-    list.appendChild(el('div', 'fempty', pending
-      ? 'waiting for the first poll'
-      : off
-        ? 'no review queue configured\nset `reviews_command` in config.json'
-        : `reviews unavailable\n${(rv?.reason || '').slice(0, 160)}`));
-    head.onclick = () => { showReviews = !showReviews; renderReviews(); };
-    return;
-  }
-
-  const rows = rv.actionable || [];
-  const blocked = rv.blocked || [];
-  count.appendChild(el('span', rows.length ? 'n' : null,
-    rows.length ? `${rows.length} waiting` : 'clear'));
-  head.appendChild(count);
-  head.appendChild(refresh);
-  head.onclick = () => { showReviews = !showReviews; renderReviews(); };
-
-  // The file-count column only earns its width once the source emits it.
-  const anyFiles = [...rows, ...blocked].some((r) => r.changed_files != null);
-
-  const rowFor = (r, dim) => {
-    // Rows are anchors, so ⌘-click and copy-link behave, and the browser
-    // already holds the GitHub session (§6b).
-    const a = el('a', 'rvrow' + (dim ? ' dim' : ''));
-    // The conversation tab: what a reviewer needs first is the description and
-    // what has already been said, not a wall of diff with none of the context.
-    a.href = r.url;
-    a.target = '_blank';
-    a.rel = 'noreferrer';
-    /* Grey unless it is a re-review: the source only sets `needsReReview` for
-     * rows in *your* queue, so it is the one thing here that is waiting on you
-     * rather than on a colleague. Amber is the legend's "needs you" (§9).
-     * It cannot tell a personal re-request from a team one — `prio` splits that
-     * only for first requests.
-     * A `prio` or `prio stopper` label outranks both: red, because that queue is
-     * somebody's release waiting on you. */
-    const dot = r.prio <= 1 ? ' prio' : r.needs_re_review ? ' blocked' : '';
-    a.appendChild(el('span', 'dot' + dot));
-    // Age, not the PR number: how long it has waited is what tells you to pick
-    // it up. The whole row already links to the PR, so the number earns nothing.
-    const age = el('span', 'num', reviewAge(r.age_hours || 0));
-    age.title = `#${r.number}`;
-    a.appendChild(age);
-    a.appendChild(el('span', 'ttl', r.title));
-    a.appendChild(el('span', 'who', r.author));
-    // File count stands in for review cost — 37 files is a different
-    // commitment from 1 — but an empty column just steals width from the title.
-    if (anyFiles) a.appendChild(el('span', 'fc', r.changed_files != null ? String(r.changed_files) : '·'));
-    const why = reviewReason(r);
-    if (why) a.appendChild(el('span', 'why', why));
-    return a;
-  };
-
-  for (const r of rows) list.appendChild(rowFor(r, false));
-  if (!rows.length) list.appendChild(el('div', 'fempty', 'Nothing waiting on you.'));
-
-  // Blocked on conflicts or red checks: waiting on their author, not on you.
-  // Sunk rather than dropped, because sometimes you still want to look — but
-  // folded, so they do not pad the queue you actually work from.
-  if (blocked.length) {
-    const t = el('button', 'arctoggle');
-    t.setAttribute('aria-expanded', String(showBlockedReviews));
-    t.appendChild(el('span', 'caretr', '\u203a'));
-    t.appendChild(el('span', null, `${blocked.length} not reviewable`));
-    t.title = blocked.map((r) => `#${r.number} — ${r.blockers.join(', ')}`).join('\n');
-    t.onclick = () => { showBlockedReviews = !showBlockedReviews; renderReviews(); };
-    list.appendChild(t);
-    if (showBlockedReviews) for (const r of blocked) list.appendChild(rowFor(r, true));
-  }
-}
-
-return { render: renderReviews };
-})();
+import * as Queue from './js/queue.js';
 
 
 
@@ -4493,8 +4261,9 @@ document.addEventListener('visibilitychange', refreshOnReturn);
 function connect() {
   const sock = new WebSocket(`${WS_BASE}/ws/events?token=${encodeURIComponent(TOKEN)}`);
   sock.onmessage = (ev) => {
-    snap = JSON.parse(ev.data);
-    snapAt = Date.now();
+    // Through `receive` so the snapshot and the clock it is measured against move
+    // together; `snap` is a live binding, so every reader sees this.
+    receive(JSON.parse(ev.data));
     // A session whose pty is gone keeps its scrollback until it is dismissed,
     // so terminals are only torn down when the session disappears entirely.
     const liveProcs = new Set(
@@ -5026,3 +4795,4 @@ connect();
 setInterval(() => { Rail.render(); }, 1000);
 
 window.orchTeardown = teardown;
+
