@@ -172,7 +172,27 @@ for a real session, and a right-click still opens the PR menu — which is
 `prMenu` inside `Rail` reaching `Review.open` inside another seam, so the seams
 compose.
 
-Three sections remain (terminals, review queue, settings).
+The terminals went fourth: nine names, four out (`show`, `close`, `resize`,
+`fontSize`). `terms` stays outside deliberately — the zoom and the window chrome
+iterate the map too, so the map is the app's and only the behaviour around it is
+this section's.
+
+This one nearly went wrong in a way worth writing down. Three of the four
+apparent external uses of `resize` were **string literals** — two `'resize'`
+events and a `resize/<edge>` URL path — so the regex rewrite used for the earlier
+seams would have turned `new Event('resize')` into `new Event('Term.resize')` and
+broken window resizing silently. Rewriting by explicit line number, asserting
+each line really contains a *call*, is the safe form. The earlier three seams
+were checked for the same damage afterwards and are clean, but they were lucky
+rather than careful.
+
+Verified against a real pty rather than a mock: a shell created in main,
+`Term.show` attached it (7 rows, 104 cols, socket open), typing `echo
+seam-alive-42` came back through the pty and rendered, `Term.resize` refit
+104→74 cols, `Term.close` removed it from `terms`, no page errors, all nine
+internals private and `terms`/`uiScale`/`toast` still shared.
+
+Two sections remain (review queue, settings), both small.
 
 - **Problem:** seven feature areas (rail, terminals, diff, editable pane, review
   overlay at ~1900 lines, review queue, settings) are flat top-level functions

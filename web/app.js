@@ -161,6 +161,16 @@ const isWaiting = (s) => s.wants_attention;
 // Terminals
 // ---------------------------------------------------------------------------
 
+/** The terminals, behind one seam.
+ *
+ *  Nine names and four leave. `terms` stays outside on purpose: the zoom and
+ *  the chrome iterate it too, so the map is the app's and only the behaviour
+ *  around it is this section's.
+ *
+ *  Bodies keep their indentation, as in the other three.
+ */
+const Term = (() => {
+
 const THEME = {
   background: '#101010', foreground: '#D2D2D2', cursor: '#D2D2D2',
   black: '#101010', red: '#C9615A', green: '#5FA97C', yellow: '#E0A244',
@@ -391,6 +401,9 @@ function showTerm(target, parent) {
   }
   return entry;
 }
+
+return { show: showTerm, close: closeTerm, resize, fontSize: termFontSize };
+})();
 
 // ---------------------------------------------------------------------------
 // Context menu
@@ -1015,7 +1028,7 @@ async function openArchived(s) {
     // that same conversation. So the dead terminal is still in `terms` under the
     // key the new pty wants, and `openTerm` would hand back the corpse — you
     // resume and stare at the old scrollback with a closed socket.
-    closeTerm(`session:${r.session}`);
+    Term.close(`session:${r.session}`);
     pendingSelect = r.session;
     // The branch moved since the conversation happened, so the files it talks
     // about are not the files on disk. Worth saying, not worth refusing over.
@@ -1359,7 +1372,7 @@ function renderDrawer() {
     x.title = dead ? 'Dismiss' : 'Close';
     x.onclick = (ev) => {
       ev.stopPropagation();
-      closeTerm(`proc:${p.id}`);
+      Term.close(`proc:${p.id}`);
       call(`/api/process/${encodeURIComponent(p.id)}/close`).catch((e) => toast(e.message, true));
     };
     tab.appendChild(x);
@@ -1369,7 +1382,7 @@ function renderDrawer() {
       r.title = 'Restart';
       r.onclick = (ev) => {
         ev.stopPropagation();
-        closeTerm(`proc:${p.id}`);
+        Term.close(`proc:${p.id}`);
         call(`/api/workspace/${encodeURIComponent(wsId)}/process/${encodeURIComponent(p.name)}/restart`)
           .catch((e) => toast(e.message, true));
       };
@@ -1378,7 +1391,7 @@ function renderDrawer() {
     tabs.appendChild(tab);
   }
 
-  const shown = showTerm(active ? `proc:${active}` : null, $('drawerbody'));
+  const shown = Term.show(active ? `proc:${active}` : null, $('drawerbody'));
   if (shown && pendingProcFocus && active === pendingProcFocus) {
     pendingProcFocus = null;
     // After the frame that un-hides it: xterm refuses focus while its host has no
@@ -1394,7 +1407,7 @@ function renderDrawer() {
   const failing = procs.find((p) => p.health.health === 'failing');
   if (failing && selectedProc[wsId] !== failing.id && !drawerTouched) {
     selectedProc[wsId] = failing.id;
-    showTerm(`proc:${failing.id}`, $('drawerbody'));
+    Term.show(`proc:${failing.id}`, $('drawerbody'));
   }
 }
 
@@ -4187,7 +4200,7 @@ function select(id) {
   // A session created a moment ago is not in the snapshot yet. Blanking the
   // terminal here would strand it: the next snapshot sees `selected` already
   // set and never opens one.
-  const shown = s ? showTerm(`session:${s.id}`, $('termwrap')) : null;
+  const shown = s ? Term.show(`session:${s.id}`, $('termwrap')) : null;
   render();
   // Picking a session is picking where you are about to type. After the frame
   // that un-hides it, for the same reason the drawer waits: xterm refuses focus
@@ -4463,11 +4476,11 @@ function connect() {
     for (const target of [...terms.keys()]) {
       if (target.startsWith('session:')) {
         const id = target.slice('session:'.length);
-        if (!snap.sessions.some((s) => s.id === id)) closeTerm(target);
+        if (!snap.sessions.some((s) => s.id === id)) Term.close(target);
       } else if (!liveProcs.has(target)) {
         // A shell that closed cleanly is gone from the snapshot; drop its
         // terminal rather than leaving a hidden host behind forever.
-        closeTerm(target);
+        Term.close(target);
       }
     }
     // The three panes describe one thing: the session you are in. The rail says
@@ -4494,9 +4507,9 @@ function connect() {
       const pick = first.find(isWaiting) || first[0];
       if (pick) {
         selected = pick.id;
-        showTerm(`session:${pick.id}`, $('termwrap'));
+        Term.show(`session:${pick.id}`, $('termwrap'));
       } else {
-        showTerm(null, $('termwrap'));
+        Term.show(null, $('termwrap'));
       }
     }
     render();
@@ -4640,7 +4653,7 @@ function setDrawer(px) {
 
 /** xterm sizes itself to its host, and a column drag is not a window resize. */
 function refitTerms() {
-  for (const entry of terms.values()) resize(entry);
+  for (const entry of terms.values()) Term.resize(entry);
 }
 
 function dragColumn(handle, col, fromLeft) {
@@ -4765,7 +4778,7 @@ function setZoom(z) {
   $('fsup').disabled = next >= ZOOM.max;
   // xterm draws its own text, so its font is set rather than inherited, and the
   // new glyph size means new rows and cols.
-  const px = termFontSize();
+  const px = Term.fontSize();
   for (const entry of terms.values()) {
     if (entry.term.options.fontSize !== px) entry.term.options.fontSize = px;
   }
