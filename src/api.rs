@@ -1109,35 +1109,6 @@ pub async fn teardown(
     Ok(Json(worktree::teardown(&app, &workspace).await?))
 }
 
-// ---------------------------------------------------------------------------
-// Diff base, for the context bar
-// ---------------------------------------------------------------------------
-
-#[derive(Deserialize)]
-pub struct BaseQuery {
-    #[serde(default)]
-    pub workspace: Option<String>,
-}
-
-pub async fn merge_base(
-    State(app): State<Arc<AppState>>,
-    Query(q): Query<BaseQuery>,
-) -> ApiResult<serde_json::Value> {
-    let ws = q.workspace.unwrap_or_else(|| MAIN.to_string());
-    let path = app
-        .workspace_path(&ws)
-        .await
-        .ok_or_else(|| anyhow::anyhow!("unknown workspace {ws}"))?;
-    let base = crate::git::merge_base(&path, &app.cfg.upstream_ref)?;
-    let branch = crate::git::current_branch(&path).unwrap_or_default();
-    Ok(Json(json!({
-        "workspace": ws,
-        "branch": branch,
-        "upstream": app.cfg.upstream_ref,
-        "merge_base": base,
-    })))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1617,55 +1588,10 @@ fn open_external(url: &str) -> anyhow::Result<()> {
     anyhow::bail!("no browser opener found (tried {})", candidates.join(", "))
 }
 
-/// Every review thread on a PR, with bodies.
-///
-/// Deliberately not part of the 5-minute poll: that needs a count, and pulling
-/// every comment on every open PR to get one would be a large query on a short
-/// timer (§6). This runs when the review overlay opens, for a single PR, and
-/// pages past 50 so the `50+` the rail shows becomes a real number here.
-///
-/// Always refetches. The cache it writes exists so the later post step can
-/// check the `head_sha` it replied against, not to serve reads — a stale thread
-/// list is exactly the thing this endpoint must never hand back.
-pub async fn pr_threads(
-    State(app): State<Arc<AppState>>,
-    Path(number): Path<u64>,
-) -> ApiResult<serde_json::Value> {
-    // The forge shells curl, so it must not run on the async runtime.
-    let forge = read_forge(&app)?;
-    let fetched = tokio::task::spawn_blocking(move || forge.threads(number))
-        .await
-        .context("the thread fetch panicked")??;
-
-    let body = json!({
-        "viewer": fetched.viewer,
-        "head_sha": fetched.head_sha,
-        "answerable": fetched.answerable_count(),
-        "threads": fetched.items,
-    });
-
-    {
-        let mut inner = app.inner.write().await;
-        inner.threads.insert(
-            number,
-            crate::state::ThreadCache {
-                fetched: std::time::SystemTime::now(),
-                threads: fetched,
-            },
-        );
-    }
-    Ok(Json(body))
-}
-
 // ---------------------------------------------------------------------------
 // Review overlay
 // ---------------------------------------------------------------------------
 
-/// Fetch a PR's threads, cache them, and hand back the parsed set.
-///
-/// Shared by the endpoints that need to know what is awaiting an answer *now*
-/// rather than what a cache said earlier. Always refetches: a stale thread list
-/// is the one thing this flow must never act on.
 /// The forge the config selects, built for reads: repo + read token. The one
 /// spot the four-line resolve/token/build dance lived; now the same for every
 /// read endpoint, and dispatched by `cfg.forge`.
@@ -1684,19 +1610,16 @@ fn write_forge(app: &Arc<AppState>) -> Result<crate::forge::ForgeImpl, ApiError>
     Ok(crate::forge::ForgeImpl::for_kind(app.cfg.forge, owner, name, String::new()))
 }
 
+/// Fetch a PR's threads and hand back the parsed set.
+///
+/// Shared by the endpoints that need to know what is awaiting an answer *now*.
+/// Always refetches straight from the forge: a stale thread list is the one
+/// thing this flow must never act on, which is why nothing here caches.
 async fn fetch_threads(app: &Arc<AppState>, pr: u64) -> Result<crate::forge::Threads, ApiError> {
     let forge = read_forge(app)?;
     let fetched = tokio::task::spawn_blocking(move || forge.threads(pr))
         .await
         .context("the thread fetch panicked")??;
-    let mut inner = app.inner.write().await;
-    inner.threads.insert(
-        pr,
-        crate::state::ThreadCache {
-            fetched: std::time::SystemTime::now(),
-            threads: fetched.clone(),
-        },
-    );
     Ok(fetched)
 }
 
@@ -2324,7 +2247,11 @@ pub async fn fix_pr(
                 started: std::time::SystemTime::now(),
             },
         );
-        let _ = crate::store::save_automation(&inner.automation);
+        // If this never reaches disk, a restart forgets the run started and the
+        // one-run-per-PR cap can re-fire — worth a log, not just a dropped error.
+        if let Err(e) = crate::store::save_automation(&inner.automation) {
+            tracing::error!("could not persist automation for PR #{number}; a restart may re-run it: {e:#}");
+        }
     }
 
     // Recording exhaustion belongs to whoever sees the session end.
@@ -2364,7 +2291,11 @@ fn watch_fix_pr(app: Arc<AppState>, number: u64, session: uuid::Uuid) {
                 inner.automation.by_pr.remove(&number);
             }
         }
-        let _ = crate::store::save_automation(&inner.automation);
+        // Same as the start path: a lost write means a restart mis-remembers
+        // whether PR #{number} is exhausted, so surface it rather than drop it.
+        if let Err(e) = crate::store::save_automation(&inner.automation) {
+            tracing::error!("could not persist automation for PR #{number} at run end: {e:#}");
+        }
         drop(inner);
         app.notify().await;
     });
@@ -2410,8 +2341,18 @@ pub async fn rebase(
         }
     }
 
-    // Refresh the base first, or "behind" is answered from a stale ref.
-    let _ = crate::git::fetch_upstream(&app.cfg.main_checkout, &app.cfg.upstream_ref);
+    // Refresh the base first, or "behind" is answered from a stale ref. A failed
+    // fetch is not fatal — rebasing onto a known-old base is sometimes what you
+    // want — but it must not be silent: a network blip would otherwise look
+    // identical to a clean rebase onto nothing new, which is the one outcome the
+    // button exists to save you from thinking about.
+    let warning = match crate::git::fetch_upstream(&app.cfg.main_checkout, &app.cfg.upstream_ref) {
+        Ok(_) => None,
+        Err(e) => {
+            tracing::warn!("rebase {workspace}: upstream fetch failed, base may be stale: {e:#}");
+            Some(format!("upstream fetch failed — rebased onto the last-known base ({e})"))
+        }
+    };
 
     let upstream = app.cfg.upstream_ref.clone();
     let p = path.clone();
@@ -2421,7 +2362,7 @@ pub async fn rebase(
     app.notify().await;
 
     match result {
-        Ok(Ok(())) => Ok(Json(json!({ "rebased": workspace }))),
+        Ok(Ok(())) => Ok(Json(json!({ "rebased": workspace, "warning": warning }))),
         Ok(Err(e)) => Err(ApiError(e)),
         Err(e) => Err(ApiError(anyhow::anyhow!("rebase task failed: {e}"))),
     }

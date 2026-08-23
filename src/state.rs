@@ -92,24 +92,12 @@ pub struct AppState {
     pub pr_refresh: Arc<Notify>,
 }
 
-/// One PR's review threads as of a particular fetch.
-pub struct ThreadCache {
-    pub fetched: SystemTime,
-    pub threads: crate::forge::Threads,
-}
-
 #[derive(Default)]
 pub struct Inner {
     pub workspaces: HashMap<WorkspaceId, Workspace>,
     pub sessions: HashMap<SessionId, Session>,
     pub files: FileSets,
     pub prs: Vec<crate::forge::Pr>,
-    /// Review threads fetched on demand, per PR number. The 5-minute poll only
-    /// counts threads; this holds the bodies the review overlay renders, and
-    /// the `head_sha` they were read at — which is what a later post step
-    /// re-checks before replying against a diff that may have been force-pushed
-    /// away.
-    pub threads: HashMap<u64, ThreadCache>,
     /// What the last triage run proposed, per PR. A run costs a full agent pass,
     /// so this outlives the session that produced it — you can close the overlay
     /// and come back. Its absence after a run exits is how a failed run is
@@ -229,7 +217,6 @@ impl AppState {
                 sessions: HashMap::new(),
                 files: HashMap::new(),
                 prs: Vec::new(),
-                threads: HashMap::new(),
                 proposals: HashMap::new(),
                 manual: HashMap::new(),
                 stories: Default::default(),

@@ -768,6 +768,8 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
 .prcount b{font-weight:400}
 .prcount .n{color:var(--attn)}
 .prcount .f{color:var(--bad)}
+.prage{color:var(--dim)}
+.toksrc{font-size:calc(11px * var(--fs));color:var(--attn);cursor:default;margin-left:4px;line-height:1}
 .prrow{
   display:flex;align-items:center;gap:8px;padding:4px 12px 4px 15px;width:100%;
   position:relative;text-decoration:none;color:inherit;

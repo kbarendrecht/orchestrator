@@ -267,57 +267,52 @@ Everything outside that block is hand-written and survives.
   chords — a pass over the whole scheme so it is predictable: same modifier
   idioms, obvious inverses, no orphan actions. Concrete gaps feeding it:
   jump-to-a-PR has no keybind at all, and `Alt+m` is a "take main" with no
-  matching "release" (release today means ending the session). Two shipped
-  controls also fail it outright: `refreshButton` (`web/app.js:570`) and the
-  update nudge's dismiss `×` (`web/index.html:169`) are `<span role="button">`
-  with no `tabindex` and no Enter/Space handler — `grep -c tabindex` over the
-  whole SPA is zero — so both are mouse-only by accident rather than choice.
+  matching "release" (release today means ending the session). *The two
+  `role="button"` keyboard traps this once listed are fixed:* a `keyActivate`
+  helper (`web/app.js`) gives the refresh icons and the update-nudge `×` a tab
+  stop and Enter/Space, driven end to end (Enter on the refresh icon fires the
+  poll). The broader predictability pass is still open.
 
-- **Three routes nobody calls.** Each is either a missing button or a deletion,
-  and the point of writing them down is that "dead" and "not wired yet" look
-  identical from the code. Checked against `web/app.js`, `src/bin/orch.rs` and
-  `commands/` — unlike `/spawn` and `/proposals`, which look dead from the SPA
-  but are called by the CLI and by `commands/triage.md` respectively.
-  - `POST /api/workspace/:id/archive` (`api.rs:1097`, route `lib.rs:310`) is the
-    interesting one: `worktree::archive` is a *real* feature that preserves
-    transcripts and records the branch and head sha before removing the
-    worktree, and the UI only ever offers plain `/teardown`. So the careful path
-    exists and is unreachable.
-  - `GET /api/pr/:number/threads` (`api.rs:1625`, route `lib.rs:323`). Its own
-    doc comment says it runs when the review overlay opens; the overlay actually
-    calls `/api/pr/:n/review`, which reuses the shared `fetch_threads` helper
-    directly. The comment describes behaviour (paging past 50, always refetch)
-    that nothing exercises.
-  - `GET /api/merge-base` (`api.rs:1122`, route `lib.rs:285`). The changed-files
-    pane computes the same thing server-side instead (`state.rs:657`).
+- **Teardown auto-archives its own prerequisite.** *Fixed.* This was read as a
+  dead route but is the opposite: `worktree::archive` (transcripts copied,
+  recovery record written) is what satisfies preflight checks 4 and 5, those
+  flags are set *only* inside it (`worktree.rs`; the `store.rs` sets are
+  disk-load), and its one caller was a route the SPA never invoked — so teardown
+  refused on any worktree that had held a session. `teardown` now runs `archive`
+  itself when those two are the *only* failing checks and re-runs preflight; a
+  live session, dirty tree, unpushed commits or an attached process still refuse
+  and never see an archive run under them. The `POST …/archive` route stays as
+  the explicit entry point. Verified by construction (archive sets exactly the
+  flags preflight reads) and compile, **not** by a live removal — teardown
+  deletes a real worktree and there was no disposable target to drive it on.
 
-- **A failed upstream fetch rebases onto a stale base, silently.** `rebase`
-  (`src/api.rs:2409`) opens with `let _ = git::fetch_upstream(…)`, so a fetch
-  that fails — network, expired credential, a misconfigured `upstream_remote` —
-  falls straight through and rebases onto whatever `upstream/develop` pointed at
-  last time. Nothing distinguishes that from a clean rebase, which is the whole
-  problem: the one-click affordance exists precisely so you do not think about
-  the base. The fetch failing is not obviously fatal (a rebase onto a known-old
-  base is sometimes what you want), so the fix is probably to report it, not to
-  refuse.
+- **Two genuinely dead routes — removed.** `GET /api/merge-base` (the
+  changed-files pane computes the merge-base server-side) and `GET
+  /api/pr/:number/threads` (the overlay uses `/review`, which shares the
+  `fetch_threads` helper). Both handlers, their routes, and — found while
+  verifying — the write-only `ThreadCache` map both `pr_threads` and
+  `fetch_threads` fed (no reader anywhere; its doc comment claimed the post step
+  used it, the post step reads `plan.threads` instead) are gone. Confirmed at
+  runtime: both paths now hit the daemon's `{}` catch-all while `/review` still
+  answers.
 
-- **Two snapshot fields are computed every poll and never shown.** Both are
-  cheap, so this is about whether they were meant to be surfaced.
-  - `token_source` (`state.rs:145`/`423`/`714`) already records which rung of the
-    ladder answered. "Decisions worth revisiting" below notes that the `gh auth
-    token` fallback carries write scopes — and the daemon knows when it is on
-    that rung but tells nobody outside the logs.
-  - `pr_age_ms` (`state.rs:418`/`708`) is milliseconds since the last *successful*
-    PR poll. The pane shows `pr_error` and `pr_poll` but never an age, so a
-    poller that is stuck without erroring (rate-limited, say) reads as current.
+- **A failed upstream fetch no longer rebases silently onto a stale base.**
+  *Fixed.* `rebase` (`src/api.rs`) captures the `fetch_upstream` result: on
+  failure it logs and returns a `warning` in the response, which `act` in
+  `web/app.js` now shows as a warning toast rather than the bare "rebased". It
+  still proceeds — a rebase onto a known-old base is sometimes wanted — but it
+  can no longer look identical to a clean one.
 
-- **`save_automation` failures are dropped on the two paths that matter.**
-  `src/api.rs:2322` and `:2362` — right after a `fix-pr` run starts, and right
-  after one is recorded exhausted. A failed write leaves memory correct and disk
-  wrong, so a restart forgets that a run happened or that a PR was capped, and
-  re-triggers automation the cap was meant to stop. Rare, but it defeats a guard
-  rather than merely losing a label, which is why it is here and the archived
-  `green` naming below is not.
+- **`token_source` and `pr_age_ms` are surfaced.** *Fixed.* The PR-pane header
+  now shows a live "· N ago" from `pr_age_ms` (ticked off the snapshot clock, so
+  a stuck-but-not-erroring poller reads as stale), and a `⚠` with an
+  explanatory title when `token_source` is `gh_cli` — the write-scope fallback
+  flagged under "Decisions worth revisiting". Env/file say nothing.
+
+- **`save_automation` failures are logged, not dropped.** *Fixed.* Both sites
+  (`src/api.rs`, fix-pr run start and end) now `tracing::error!` on a failed
+  write, naming the PR and that a restart may re-run past the cap, instead of
+  `let _ =`.
 
 ## Decisions worth revisiting
 

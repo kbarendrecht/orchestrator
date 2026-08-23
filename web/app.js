@@ -429,6 +429,18 @@ function closeMenu() {
   $('ctxmenu').hidden = true;
 }
 
+/** Give a `role="button"` span what a real <button> has for free: a tab stop and
+ *  Enter/Space activation. Without this a span-button is mouse-only, which is a
+ *  keyboard trap for the refresh icons and the update-nudge dismiss. */
+function keyActivate(el) {
+  el.tabIndex = 0;
+  // Property assignment, not addEventListener: renderUpdate re-wires #updatex on
+  // every snapshot, and a stacked listener would fire click N times.
+  el.onkeydown = (e) => {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); el.click(); }
+  };
+}
+
 const menuOpen = () => !$('ctxmenu').hidden;
 
 // Anything that moves what the menu is pointing at dismisses it. On mousedown
@@ -570,6 +582,7 @@ function refreshButton(kind, pollCount, endpoint, polling) {
   const btn = el('span', 'rvrefresh', '↻');
   btn.title = 'Refresh now';
   btn.setAttribute('role', 'button');
+  keyActivate(btn);
   if (spinFloor[kind] != null && pollCount > spinFloor[kind]) spinFloor[kind] = null;
   // Two reasons to spin, and the second is the honest one: the daemon says a
   // fetch is running, whoever started it. `spinFloor` covers the gap between the
@@ -595,6 +608,7 @@ function renderUpdate() {
   link.textContent = `Update available — v${u.latest} (you have v${u.current}). Run mise up`;
   link.href = u.url || '#';
   $('updatex').onclick = () => { updateDismissed = u.latest; bar.hidden = true; };
+  keyActivate($('updatex'));
   bar.hidden = false;
 }
 
@@ -764,8 +778,24 @@ function prGroup() {
     if (failing) bits.push(`${failing} failing`);
     count.appendChild(el('b', null, bits.join(' · ')));
     if (needs) count.querySelector('b').classList.add('n');
+    // How long since a poll actually landed. Live-ticked off the snapshot clock
+    // like the rail's other ages, so a poller that is stuck without erroring
+    // reads as stale rather than current. Hidden while a fetch is in flight.
+    if (snap.pr_age_ms != null && !snap.pr_polling) {
+      const age = duration(snap.pr_age_ms + (Date.now() - snapAt));
+      if (age) count.appendChild(el('span', 'prage', ` · ${age} ago`));
+    }
   }
   head.appendChild(count);
+  // The read token's source, only when it is the `gh auth token` fallback —
+  // which carries write scopes orchd does not want (see TODO). Env/file are fine
+  // and say nothing.
+  if (snap.token_source === 'gh_cli') {
+    const w = el('span', 'toksrc', '⚠');
+    w.title = 'GitHub token is from `gh auth token` — broader (write) scopes than orchd needs. '
+      + 'Set ORCHD_GITHUB_TOKEN or github_token_file to a read-only PAT.';
+    head.appendChild(w);
+  }
   head.appendChild(refreshButton('pr', snap.pr_poll ?? 0, '/api/prs/refresh', snap.pr_polling));
   head.onclick = () => { showPrs = !showPrs; renderRail(); };
   group.appendChild(head);
@@ -1420,8 +1450,11 @@ function renderDivergence(w) {
 
 async function act(path, verb) {
   try {
-    await call(path);
-    toast(verb);
+    const r = await call(path);
+    // An endpoint can succeed and still have something to say — a rebase onto a
+    // base whose fetch failed, say. Show it as a warning rather than swallow it.
+    if (r && r.warning) toast(`${verb} — ${r.warning}`, true);
+    else toast(verb);
   } catch (e) {
     toast(e.message, true);
   }

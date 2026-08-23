@@ -282,7 +282,6 @@ fn router(app: Arc<AppState>) -> Router {
         .route("/vendor/fonts/:file", get(font))
         .route("/api/state", get(api::get_state))
         .route("/api/config", get(api::get_config).post(api::set_config))
-        .route("/api/merge-base", get(api::merge_base))
         .route("/api/diff", get(api::diff_summary))
         .route("/api/diff/file", get(api::diff_file))
         .route("/api/file", get(api::read_file))
@@ -320,7 +319,6 @@ fn router(app: Arc<AppState>) -> Router {
         .route("/api/prs/refresh", post(api::refresh_prs))
         .route("/api/open", post(api::open_url))
         .route("/api/open/file", post(api::open_file))
-        .route("/api/pr/:number/threads", get(api::pr_threads))
         .route("/api/pr/:number/review", get(api::pr_review))
         .route("/api/pr/:number/triage", post(api::pr_triage))
         // The one route a subprocess calls. Hostile input; see `pr_proposals`.

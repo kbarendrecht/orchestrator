@@ -282,7 +282,24 @@ pub async fn archive(app: &Arc<AppState>, workspace: &str) -> Result<()> {
 /// delete — the worktree is full of symlinks into main, so a recursive delete
 /// that follows them destroys the main checkout (§2).
 pub async fn teardown(app: &Arc<AppState>, workspace: &str) -> Result<Preflight> {
-    let pf = preflight(app, workspace).await?;
+    let mut pf = preflight(app, workspace).await?;
+
+    // Copying transcripts and writing recovery records is a prerequisite of
+    // removal (preflight checks 4 and 5), and this button is the only thing that
+    // triggers it — nothing archives on its own. So when those are the *only*
+    // blockers, do the archive here and re-check. Deliberately gated on nothing
+    // else failing: a live session, a dirty tree, unpushed commits or an attached
+    // process must still refuse, and must never see an archive run under them.
+    if !pf.can_remove {
+        let only_archive_blocks = pf.checks.iter().all(|c| {
+            c.passed || c.name == "transcript copied" || c.name == "recovery record written"
+        });
+        if only_archive_blocks {
+            archive(app, workspace).await?;
+            pf = preflight(app, workspace).await?;
+        }
+    }
+
     if !pf.can_remove {
         let failed: Vec<String> = pf
             .failed()
