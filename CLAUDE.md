@@ -136,6 +136,12 @@ port, so a second instance refuses to start rather than fighting over
 - **TODO.md has a daemon-written block.** Everything between the `orchd live
   findings` markers is rewritten on every poll. Edit outside it, and never commit
   the block's churn.
+- **Shelling out to coreutils is the other portability trap.** The review queue
+  ran its command under `timeout`, which is GNU and not on a Mac, so it failed at
+  the spawn and the pane blamed the review command for a missing binary it never
+  named. `reviews::run_bounded` enforces the deadline in Rust instead. Every other
+  command the daemon spawns is POSIX (`git`, `curl`, `gh`, `ps`, `which`, `kill`) —
+  keep it that way, and check `command -v` before reaching for a GNU flag.
 - **A `/proc` read is a portability bug that compiles.** Two guards stat'd `/proc`
   and so answered *wrongly*, not loudly, off Linux: `pid_alive` read every session
   as dead (teardown would delete a worktree with a live agent — it fails open), and

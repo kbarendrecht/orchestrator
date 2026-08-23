@@ -1,8 +1,10 @@
 use anyhow::{bail, Context, Result};
 use serde::Serialize;
 use serde_json::Value;
+use std::io::Read;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Output, Stdio};
+use std::time::{Duration, Instant};
 
 /// PRs where your review is requested — other people's work (§6b).
 ///
@@ -88,14 +90,7 @@ pub fn fetch(main: &Path, timeout_secs: u64, command: &[String]) -> ReviewState 
 }
 
 fn run(main: &Path, timeout_secs: u64, command: &[String]) -> Result<ReviewQueue> {
-    // `timeout` rather than a thread: the child may be a process that talks to
-    // GitHub, and orphaning it would leave the next poll racing this one.
-    let out = Command::new("timeout")
-        .arg(timeout_secs.to_string())
-        .args(command)
-        .current_dir(main)
-        .output()
-        .with_context(|| format!("running `{}`", command.join(" ")))?;
+    let out = run_bounded(main, timeout_secs, command)?;
 
     if !out.status.success() {
         let tail: String = String::from_utf8_lossy(&out.stderr)
@@ -125,6 +120,75 @@ fn run(main: &Path, timeout_secs: u64, command: &[String]) -> Result<ReviewQueue
         }
     }
     parse(&v)
+}
+
+/// Run the review command in `main`, killed if it outlives `timeout_secs`.
+///
+/// The bound used to be `timeout <secs> <command>`, which is GNU coreutils and
+/// simply **not on a Mac**. That failed at the spawn, so the pane read
+/// "running `mise run reviews --json`: No such file or directory" and blamed the
+/// review command for a binary it never mentioned. Enforcing the deadline here
+/// needs no coreutils and gives a straight answer when it fires.
+///
+/// The child gets **its own process group**, and the group is what gets
+/// signalled. That is stricter than what it replaced: `timeout` signals only the
+/// direct child, so a review script that shells out to `gh` could leave those
+/// behind, and an orphan still talking to GitHub is exactly what the next poll
+/// would race.
+///
+/// Both pipes are drained on threads. A child that fills one and blocks would
+/// never reach the deadline, which would make it not a deadline.
+fn run_bounded(main: &Path, timeout_secs: u64, command: &[String]) -> Result<Output> {
+    use std::os::unix::process::CommandExt;
+
+    let (exe, args) = command.split_first().context("the reviews command is empty")?;
+    let mut child = Command::new(exe)
+        .args(args)
+        .current_dir(main)
+        // No stdin: a command that stops to prompt would otherwise hang until the
+        // deadline rather than failing.
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        // Makes the child a group leader, so its pid *is* the group id below.
+        .process_group(0)
+        .spawn()
+        .with_context(|| format!("running `{}`", command.join(" ")))?;
+
+    let pgid = child.id() as libc::pid_t;
+    let mut out_pipe = child.stdout.take().context("no stdout pipe")?;
+    let mut err_pipe = child.stderr.take().context("no stderr pipe")?;
+    let out_thread = std::thread::spawn(move || {
+        let mut v = Vec::new();
+        let _ = out_pipe.read_to_end(&mut v);
+        v
+    });
+    let err_thread = std::thread::spawn(move || {
+        let mut v = Vec::new();
+        let _ = err_pipe.read_to_end(&mut v);
+        v
+    });
+
+    let deadline = Instant::now() + Duration::from_secs(timeout_secs);
+    let status = loop {
+        if let Some(status) = child.try_wait().context("waiting on the reviews command")? {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            // SAFETY: a group this call created, and SIGKILL takes the whole of
+            // it — a review script's own children included.
+            unsafe { libc::killpg(pgid, libc::SIGKILL) };
+            let _ = child.wait();
+            bail!("reviews timed out after {timeout_secs}s");
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+
+    Ok(Output {
+        status,
+        stdout: out_thread.join().unwrap_or_default(),
+        stderr: err_thread.join().unwrap_or_default(),
+    })
 }
 
 fn parse(v: &Value) -> Result<ReviewQueue> {
@@ -216,6 +280,85 @@ mod tests {
 
     fn v(s: &str) -> Value {
         serde_json::from_str(s).unwrap()
+    }
+
+    /// The bound has to hold without `timeout`, which is not on a Mac, and it has
+    /// to take the command's *children* with it — a review script shelling out to
+    /// `gh` is the normal case, and an orphan still talking to GitHub is what the
+    /// next poll would race.
+    #[test]
+    fn the_deadline_fires_and_takes_the_whole_process_group() {
+        let dir = std::env::temp_dir();
+        // The child writes its grandchild's pid out, then both outlive the
+        // deadline. `sh` backgrounds the sleep, so killing the direct child only
+        // would leave it running — which is the case `timeout` did not cover.
+        let marker = dir.join(format!("orchd-reviews-{}.pid", std::process::id()));
+        let _ = std::fs::remove_file(&marker);
+        let script = format!(
+            "sleep 30 & echo $! > {}; sleep 30",
+            marker.to_string_lossy()
+        );
+        let cmd = vec!["sh".to_string(), "-c".to_string(), script];
+
+        let start = Instant::now();
+        let err = run_bounded(&dir, 1, &cmd).expect_err("must time out");
+        assert!(
+            format!("{err:#}").contains("timed out after 1s"),
+            "unexpected error: {err:#}"
+        );
+        // Bounded by the deadline, not by the 30s sleeps.
+        assert!(start.elapsed() < Duration::from_secs(10), "did not stop at the deadline");
+
+        // The backgrounded grandchild must be gone too.
+        let grandchild: u32 = std::fs::read_to_string(&marker)
+            .expect("the script recorded its child")
+            .trim()
+            .parse()
+            .expect("a pid");
+        let mut alive = true;
+        for _ in 0..100 {
+            if !crate::pty::pid_alive(grandchild) {
+                alive = false;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let _ = std::fs::remove_file(&marker);
+        assert!(!alive, "the group's grandchild survived the deadline");
+    }
+
+    #[test]
+    fn a_command_that_finishes_in_time_comes_back_whole() {
+        let out = run_bounded(
+            &std::env::temp_dir(),
+            10,
+            &["sh".to_string(), "-c".to_string(), "echo hi; echo bad >&2".to_string()],
+        )
+        .expect("ran");
+        assert!(out.status.success());
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "hi");
+        assert_eq!(String::from_utf8_lossy(&out.stderr).trim(), "bad");
+    }
+
+    /// A command bigger than the pipe buffer would deadlock a naive
+    /// wait-then-read, and a deadline it cannot reach is not a deadline.
+    #[test]
+    fn output_larger_than_a_pipe_buffer_does_not_deadlock() {
+        let out = run_bounded(
+            &std::env::temp_dir(),
+            30,
+            &[
+                "sh".to_string(),
+                "-c".to_string(),
+                // ~1MB, well past the 64K pipe buffer.
+                "i=0; while [ $i -lt 16384 ]; do printf '%s\\n' \
+                 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa; \
+                 i=$((i+1)); done".to_string(),
+            ],
+        )
+        .expect("ran");
+        assert!(out.status.success());
+        assert!(out.stdout.len() > 900_000, "got {} bytes", out.stdout.len());
     }
 
     #[test]

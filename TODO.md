@@ -323,6 +323,21 @@ Everything outside that block is hand-written and survives.
     documented to return `None` when it cannot read, and every caller treats that
     as "no opinion" and allows the spawn. So the headroom guard is simply *off* on
     macOS, by design rather than by accident.
+  - **The review queue shelled out to `timeout`**, GNU coreutils, absent on a Mac.
+    It failed at the *spawn*, so the pane read "running `mise run reviews --json`:
+    No such file or directory" and blamed the review command for a binary it never
+    named. The deadline is enforced in Rust now (`reviews::run_bounded`) and is
+    stricter than what it replaced: the child gets its own process group and the
+    **group** is signalled, where `timeout` only ever signalled the direct child —
+    so a review script shelling out to `gh` no longer leaves those behind, which
+    is the orphan the next poll would have raced. Both pipes are drained on
+    threads, because a child that fills one would never reach the deadline.
+
+  A sweep for the same class of thing found nothing else: every other external
+  command is POSIX (`git`, `curl`, `gh`, `ps`, `which`, `kill <pid>` for SIGTERM),
+  the only hardcoded absolute path is a `/bin/bash` fallback for an unset `$SHELL`,
+  and `~/.config` is unconventional on macOS but works and is overridable with
+  `ORCHD_CONFIG_DIR`.
 
   Shipping: `release.yml` is a matrix and builds `aarch64-macos` beside
   `x86_64-linux` (Apple Silicon only — every Mac since 2020; Intel doubles macOS
