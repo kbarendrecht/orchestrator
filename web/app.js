@@ -491,7 +491,7 @@ function render() {
   renderContext();
   renderDrawer();
   renderFiles();
-  renderReviews();
+  Queue.render();
   renderInteraction();
   renderUpdate();
 }
@@ -4068,6 +4068,12 @@ return { state: reviewState, open: openReview, close: closeReview, key: reviewKe
 // Review queue (§6b)
 // ---------------------------------------------------------------------------
 
+
+/** The review queue, behind one seam.
+ *
+ *  Five names and one leaves — the smallest section, and the last one sealed.
+ */
+const Queue = (() => {
 let showReviews = true;
 let showBlockedReviews = false;
 
@@ -4187,6 +4193,9 @@ function renderReviews() {
     if (showBlockedReviews) for (const r of blocked) list.appendChild(rowFor(r, true));
   }
 }
+
+return { render: renderReviews };
+})();
 
 
 
@@ -4325,9 +4334,9 @@ window.addEventListener('keydown', (e) => {
     closeMenu();
     return;
   }
-  if (e.key === 'Escape' && settingsOpen()) {
+  if (e.key === 'Escape' && Settings.isOpen()) {
     e.preventDefault();
-    closeSettings();
+    Settings.close();
     return;
   }
   if ((e.metaKey || e.ctrlKey) && e.key === 's' && Diff.edit.on) {
@@ -4793,6 +4802,16 @@ function saveZoom(z) {
   } catch (e) { /* private mode: it still applies for this session */ }
 }
 
+
+/** The settings panel, behind one seam.
+ *
+ *  Nine names, three out. The zoom just above stays outside: `uiScale` is read
+ *  by `Term`, so it is the app's rather than the panel's — the panel only offers
+ *  the control that changes it.
+ *
+ *  Bodies keep their indentation, as in the other seams.
+ */
+const Settings = (() => {
 const settingsOpen = () => !$('settings').hidden;
 
 function closeSettings() {
@@ -4978,7 +4997,10 @@ function setupSettings() {
   }, true);
 }
 
-setupSettings();
+return { isOpen: settingsOpen, close: closeSettings, setup: setupSettings };
+})();
+
+Settings.setup();
 setupColumns();
 setupChrome();
 connect();

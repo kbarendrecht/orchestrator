@@ -192,7 +192,30 @@ seam-alive-42` came back through the pty and rendered, `Term.resize` refit
 104→74 cols, `Term.close` removed it from `terms`, no page errors, all nine
 internals private and `terms`/`uiScale`/`toast` still shared.
 
-Two sections remain (review queue, settings), both small.
+The last two closed it out. The review queue is the smallest section — five
+names, one out (`render`, which is all `render()` ever wanted from it). The
+settings panel is nine names and three out (`isOpen`, `close`, `setup`), with the
+*zoom* block deliberately left outside it: `uiScale` is read by `Term`, so it is
+the app's rather than the panel's, and the panel merely offers the control that
+changes it. That is the third time the same shape decided a boundary, after
+`pending` for `Rail` and `act`/`prForWorkspace` for `Diff`.
+
+**H3 is done: six seams, and nothing leaks.** `Term` (4 out of 9), `Rail` (3 of
+24), `Diff` (11 of 26), `Review` (4 of 69), `Queue` (1 of 5), `Settings` (3 of
+9). Every internal name throws `ReferenceError` from outside; the genuinely
+app-level ones — `terms`, `pending`, `isArchived`, `uiScale`, `currentSession`,
+`activeWorkspaceId`, `currentWorkspaceId`, `refreshButton`, `render`, `toast` —
+are still shared, checked from both sides so the test cannot pass by
+over-sealing. The file is the same length it was; what changed is that a new
+feature now has an obvious place to go, and reaching across a boundary has to be
+spelled `Diff.state` rather than happening by accident.
+
+Verified in Chrome against the running daemon, per seam and then all six
+together: the rail draws and re-renders on its 1s tick, a real pty attaches and
+echoes, a real diff parses and folds, the overlay walks its screens, the queue
+renders its rows, and the settings panel opens on the gear, loads real config
+(`upstream/develop`) and closes — with `config.json` byte-identical afterwards,
+since the panel was never saved. No page errors anywhere.
 
 - **Problem:** seven feature areas (rail, terminals, diff, editable pane, review
   overlay at ~1900 lines, review queue, settings) are flat top-level functions
