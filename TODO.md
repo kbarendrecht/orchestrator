@@ -6,6 +6,41 @@ Everything outside that block is hand-written and survives.
 
 ## Next
 
+- **A fixture PR to test the review flow against.** This is the thing blocking
+  every other item here from being *verified* rather than reasoned about. Four
+  separate attempts to drive real behaviour stalled on the same wall: there is no
+  PR in the monorepo with the preconditions the code needs, and the ones that
+  exist cannot be made to have them.
+
+  What has actually been unverifiable, each found by trying:
+  - **The whole resolve flow.** `acknowledged()` (`src/forge/github.rs`) treats a
+    thread whose last comment is yours as answered, so you cannot self-review your
+    way to a testable thread. Everything downstream — triage, the per-thread card,
+    `post_one`'s story substitution and idempotency, `sweep_words_only`, the 👍
+    path — is unit-tested and has never made a real round trip.
+  - **The `triage::gate` refusal on a run.** Needs a PR that is in the poll, has a
+    triage, *and* whose worktree is dirty. No PR satisfies all three, and
+    manufacturing it means dirtying a real worktree.
+  - **A PR head sha in a link.** `open_file`'s `head_sha` arm never ran because no
+    workspace's branch matched a polled PR; only the local-`HEAD` fallback did.
+  - **Teardown, and the archive it now runs.** Both only fire on a worktree with a
+    session's transcript in it, and the only ones to hand are real work.
+
+  Also outstanding for the same reason: the thumbs-up idempotency assumption
+  (`post.rs` — "unverified until the scratch PR settles it"), which is currently a
+  guess about GitHub returning the existing reaction rather than a second one.
+
+  What it wants is a throwaway repo — not the monorepo — with a PR the daemon can
+  see, carrying review threads whose last word is somebody else's. Two ways to get
+  the second reviewer: a second GitHub account, or a fine-grained token for one,
+  since the constraint is only ever "the last comment is not the viewer's". Then
+  the settings already make it reachable: point `main_checkout` at the fixture
+  clone and `upstream_ref` at its default branch, and the poller finds it. Worth
+  building as a scripted fixture (create repo, branch, PR, post N threads as the
+  other identity, print the PR number) rather than a hand-made one, because every
+  destructive test wants it fresh. Keep it out of the monorepo so a bad run cannot
+  touch real work.
+
 - **The two-phase resolve flow — handover.** All four phases of
   `docs/resolve-flow-plan.md` have landed, and none of it has answered a real
   reviewer yet. Where it stands:
