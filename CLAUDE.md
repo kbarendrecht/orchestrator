@@ -38,6 +38,17 @@ port, so a second instance refuses to start rather than fighting over
   field reading as `undefined` and rendering as nothing. Commit the regenerated
   file with the Rust change. It is a type file: never `include_str!`d, never
   served.
+- **ES modules work in the real webview — measured, not assumed.** WebKitGTK
+  **2.50.4** ships here, and a spike drove the actual desktop window (not Chrome,
+  not playwright's WebKit): a `type="module"` script imported a second module over
+  a `/js/:file` route, the relative import resolved, strict mode was on, and the
+  vendored classic globals (`window.__ORCH__`, `Terminal`, `Prism`) were all
+  present by the time the module ran — module deferral happens *after* the classic
+  scripts, so the ordering is safe. Two things the spike settled that matter for
+  the migration: the content type must be a JavaScript one (`text/plain` loads and
+  then refuses to execute), and modules come from `include_str!` like everything
+  else, so **each new module needs an entry in the route's match and a rebuild** —
+  adding a JS file stops being a JS-only change.
 - **`app.js` is one file with six seams.** `Term`, `Rail`, `Diff`, `Review`,
   `Queue` and `Settings` are IIFEs that return only the handful of names other
   sections call. Everything else in them is unreachable from outside on purpose,
