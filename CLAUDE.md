@@ -26,9 +26,12 @@ port, so a second instance refuses to start rather than fighting over
 
 ## Things that will bite you
 
-- **The SPA is compiled in.** `web/*` is `include_str!`d into the binary, so a
+- **The SPA is compiled in.** Everything under `web/` is `include_str!`d, so a
   CSS or JS change is invisible until the daemon is rebuilt *and* restarted. No
-  amount of reloading the page helps.
+  amount of reloading the page helps — and a stale process holding the port makes
+  this worse, because you are then debugging a build from ten minutes ago.
+  `pkill -x orchd` will not always do it: Linux truncates the process name to 15
+  characters, so `orchestrator-desktop` needs killing by pid.
 - **There is a pre-commit hook, and it needs enabling once per clone.**
   `git config core.hooksPath .githooks` — git will not let a repo point at its own
   hooks, so a fresh clone has none until you say this. It runs the SPA checks only
@@ -57,7 +60,7 @@ port, so a second instance refuses to start rather than fighting over
 - **The SPA's view of the snapshot is generated, not hand-written.**
   `web/snapshot.d.ts` comes from the Rust structs via `ts-rs` (a dev-dependency,
   derived under `cfg(test)`, so nothing of it reaches the binary). `cargo test`
-  rewrites it; `mise run types` regenerates, type-checks and **fails if the
+  rewrites it; `mise run check-web` regenerates it and **fails if the
   checked-in copy has drifted**. Rename a snapshot field in Rust and the diff
   shows up there — which is the point, since the old failure mode was a renamed
   field reading as `undefined` and rendering as nothing. Commit the regenerated
@@ -74,12 +77,14 @@ port, so a second instance refuses to start rather than fighting over
   then refuses to execute), and modules come from `include_str!` like everything
   else, so **each new module needs an entry in the route's match and a rebuild** —
   adding a JS file stops being a JS-only change.
-- **The SPA is seven ES modules.** `web/js/core.js` is the shared layer — the
-  fetch wrappers, the DOM shorthands, the snapshot, the selection, the UI scale,
-  and the vocabulary every pane needs to describe a session (`stateLabel`,
-  `dotClass`, `isArchived`, `pending`, …). The six features are `term`, `rail`,
-  `diff`, `review`, `queue`, `settings`. `app.js` is what is left: boot order, the
-  websocket, the keyboard map, the window chrome — 922 lines, down from 4798.
+- **The SPA is a module graph, not a file.** `web/js/core.js` is the shared layer
+  — the fetch wrappers, the DOM shorthands, the snapshot, the selection, the UI
+  scale, and the vocabulary every pane needs to describe a session (`stateLabel`,
+  `dotClass`, `isArchived`, `pending`, …). The features beside it are `term`,
+  `rail`, `diff`, `review` (+ `review-diff`), `queue` and `settings`. `app.js` is
+  what is left over: boot order, the websocket, the keyboard map, the window
+  chrome — under a thousand lines, from 4798 before the split.
+  `mise run check-web` prints the current module and dependency count.
 - **The module graph is a DAG, and it was made one on purpose.** `app.js` → the
   six; `rail` → `term`, `review`; `review` → `diff`; everything → `core`. Three
   cycles had to be broken first, and each inversion is the reason a boundary is
@@ -100,10 +105,12 @@ port, so a second instance refuses to start rather than fighting over
   `export let` in `core.js`, so a hundred readers keep saying `snap.x` and see the
   new snapshot without re-importing. `receive` sets the snapshot and the clock it
   is measured against together — those drifting apart is what froze durations.
-- **Never rewrite an identifier across `app.js` with a regex.** Three of the four
-  apparent uses of `resize` were the *string* `'resize'` — an event name and a URL
-  path — and a blind substitution would have broken window resizing with nothing
-  failing. Rewrite by line number, asserting each line really is a call.
+- **Never rewrite an identifier across an SPA file with a regex.** Three of the
+  four apparent uses of `resize` were the *string* `'resize'` — an event name and a
+  URL path — and a blind substitution would have broken window resizing with
+  nothing failing. Rewrite by line number, asserting each line really is a call.
+  `mise run check-web` catches a *renamed* identifier; it cannot catch a string
+  that changed meaning.
 - **The app is WebKitGTK, not Chrome.** `mise run shot` drives Chrome and is fine
   for layout and copy, but the two engines disagree often enough to matter.
   `tools/` pins `playwright-core` to the version whose WebKit build is on disk so

@@ -25,7 +25,9 @@ The app reads the same config and asks for the checkout in a folder dialog when
 there is none — or when the one on record has moved.
 
 The SPA is compiled into the binary with `include_str!`, so editing anything
-under `web/` needs a `cargo build` before it takes effect.
+under `web/` needs a `cargo build` before it takes effect — and *adding* a module
+needs a line in `module()` in `lib.rs` as well, so a new JS file is a Rust change
+too.
 
 ## Desktop app
 
@@ -59,8 +61,11 @@ sudo apt install libwebkit2gtk-4.1-dev build-essential curl wget file \
 
 `cargo run -p orchestrator-desktop` is enough for development. Bundling a `.deb`
 or AppImage needs the CLI: `cargo install tauri-cli --version "^2"`, then
-`cargo tauri build`. No Node anywhere — there is no frontend build step, because
-the daemon serves the page.
+`cargo tauri build`. **No Node in the build**: the daemon serves the page and the
+SPA ships exactly as written, so there is no bundler and no emit step. Node is a
+development dependency only — `tools/` holds playwright for driving the UI,
+`tsc` for type-checking it, and dependency-cruiser for its module graph
+(`mise run check-web`). None of them produce anything that ships.
 
 On a virtualised GPU — WSLg especially — WebKitGTK's accelerated compositing can
 render as stray white tiles (a white box, hover leaving smears). Under WSL the
@@ -255,7 +260,7 @@ src/
 web/globals.d.ts   the vendored classic-script globals (Terminal, Prism, …)
 web/snapshot.d.ts  the SPA's view of the daemon's `Snapshot`, generated from the
                 Rust structs by `cargo test` (`ts-rs`, dev-only). Type file: not
-                served, not compiled in. `mise run types` fails if it has drifted
+                served, not compiled in. `mise run check-web` fails if it has drifted
 web/            SPA (vanilla, xterm.js vendored)
   app.js        boot order, the websocket, the keyboard map, the window chrome
   js/core.js    the shared layer: fetch wrappers, DOM shorthands, the snapshot,
@@ -264,6 +269,8 @@ web/            SPA (vanilla, xterm.js vendored)
   js/rail.js    what is running, what waits on you, and the PRs beside it
   js/diff.js    the diff viewer, its editable pane, and the changed-files list
   js/review.js  the review overlay: triage, a card per thread, one batch
+  js/review-diff.js  reading a unified diff, for the cards — the one part of the
+                overlay with no overlay state in it
   js/queue.js   the review queue pane
   js/settings.js  the settings panel
 guards/push.py  PreToolUse deny for dangerous pushes
