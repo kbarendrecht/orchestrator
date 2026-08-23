@@ -333,11 +333,28 @@ Everything outside that block is hand-written and survives.
     is the orphan the next poll would have raced. Both pipes are drained on
     threads, because a child that fills one would never reach the deadline.
 
+  - **State lives where the platform keeps it.** `config_dir` is
+    `~/Library/Application Support/orchd` on macOS and `~/.config/orchd` elsewhere
+    (`default_config_dir`, injected `home` so it is testable without mutating the
+    process's `HOME`). Nothing is migrated because there is nothing to migrate —
+    the app has never run on a Mac, so no `~/.config/orchd` exists there.
+    `ORCHD_CONFIG_DIR` still overrides both.
+
+    That move carried a trap worth remembering: **the macOS path has a space in
+    it**, and the push guard's hook is a *shell string* (`type: "command"`, which
+    is why the `SessionStart` one can use a pipe and `|| true`). Unquoted, the
+    space splits the path and the hook runs a command that is not there — the
+    guard fails open and silently stops existing, the one thing §8 says it must
+    not do. `hooks::sh_quote` single-quotes it, apostrophes included, and the
+    tests prove it through a real `sh` in a directory with a space — with the
+    unquoted form asserted to fail, or the test would prove nothing.
+
   A sweep for the same class of thing found nothing else: every other external
   command is POSIX (`git`, `curl`, `gh`, `ps`, `which`, `kill <pid>` for SIGTERM),
-  the only hardcoded absolute path is a `/bin/bash` fallback for an unset `$SHELL`,
-  and `~/.config` is unconventional on macOS but works and is overridable with
-  `ORCHD_CONFIG_DIR`.
+  and the only hardcoded absolute path is a `/bin/bash` fallback for an unset
+  `$SHELL`. One thing left alone: APFS is case-insensitive by default, so two
+  worktrees differing only in case would collide — theoretical, and the daemon
+  already refuses a duplicate name.
 
   Shipping: `release.yml` is a matrix and builds `aarch64-macos` beside
   `x86_64-linux` (Apple Silicon only — every Mac since 2020; Intel doubles macOS

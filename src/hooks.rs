@@ -548,6 +548,22 @@ pub async fn boundary_block(
 /// rather than a string literal so it can be read, tested and diffed.
 const PUSH_GUARD: &str = include_str!("../guards/push.py");
 
+/// Single-quote a string for a shell.
+///
+/// Claude Code runs a `type: "command"` hook as a **shell string** — the
+/// `SessionStart` one below relies on that, with its pipe and `|| true` — so an
+/// unquoted path is word-split. That became load-bearing when the macOS config
+/// dir moved to `~/Library/Application Support/orchd`: the space would split the
+/// push guard's path and the hook would run a command that does not exist, which
+/// is the one failure mode a guard must not have (it fails *open*, silently).
+///
+/// Single quotes take everything literally. The only thing they cannot contain is
+/// a single quote, which is closed, escaped and reopened — a home directory
+/// belonging to an O'Brien is not a reason for the guard to stop working.
+fn sh_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', r"'\''"))
+}
+
 fn write_push_guard() -> Result<PathBuf> {
     let path = Config::config_dir()?.join("guard-push.py");
     std::fs::create_dir_all(path.parent().unwrap())?;
@@ -622,7 +638,7 @@ pub fn write_settings(port: u16) -> Result<PathBuf> {
                 // blocks, so both sets of rules apply (§11).
                 { "matcher": "Bash", "hooks": [{
                     "type": "command",
-                    "command": guard.to_string_lossy(),
+                    "command": sh_quote(&guard.to_string_lossy()),
                     "timeout": 5,
                 }]},
             ],
@@ -803,6 +819,76 @@ mod tests {
         assert!(cmd.contains("|| true"), "must not fail the turn");
         assert!(cmd.contains("-m 1"), "must not stall the turn");
 
+        // The guard is a shell string, so its path must arrive quoted whatever
+        // the config dir is called. Unquoted, the macOS default's space would
+        // split it and the guard would silently not run.
+        let guard = v["hooks"]["PreToolUse"]
+            .as_array()
+            .expect("PreToolUse")
+            .iter()
+            .find_map(|e| e["hooks"][0]["command"].as_str())
+            .expect("a guard command");
+        assert!(
+            guard.starts_with('\'') && guard.ends_with('\''),
+            "the guard path must be shell-quoted, got {guard}"
+        );
+        assert!(
+            std::path::Path::new(guard.trim_matches('\'')).exists(),
+            "the quoted path must name the script that was written"
+        );
+
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Proven through a real shell, in a directory whose name has a space —
+    /// which is the macOS config dir (`~/Library/Application Support/orchd`), and
+    /// the reason this quoting exists at all.
+    #[test]
+    fn a_quoted_path_survives_a_shell_even_with_a_space_in_it() {
+        let dir = std::env::temp_dir()
+            .join(format!("orchd quote {}", std::process::id()))
+            .join("Application Support");
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let script = dir.join("guard-push.py");
+        std::fs::write(&script, "#!/bin/sh\nexit 0\n").expect("write");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        let quoted = sh_quote(&script.to_string_lossy());
+        let ok = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(&quoted)
+            .status()
+            .expect("spawn sh")
+            .success();
+        assert!(ok, "a shell could not run {quoted}");
+
+        // And the unquoted form is what would have been broken — the shell splits
+        // it and runs something that is not there.
+        let bare = script.to_string_lossy().to_string();
+        let broken = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(&bare)
+            .status()
+            .expect("spawn sh")
+            .success();
+        assert!(!broken, "unquoted should fail, or this test proves nothing");
+
+        let _ = std::fs::remove_dir_all(std::env::temp_dir().join(format!("orchd quote {}", std::process::id())));
+    }
+
+    #[test]
+    fn quoting_holds_for_an_apostrophe_in_a_home_directory() {
+        // `/Users/O'Brien/...` must not end the quoted string early.
+        assert_eq!(sh_quote("/Users/O'Brien/x"), r"'/Users/O'\''Brien/x'");
+        let echoed = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(format!("printf %s {}", sh_quote("/Users/O'Brien/x")))
+            .output()
+            .expect("sh");
+        assert_eq!(String::from_utf8_lossy(&echoed.stdout), "/Users/O'Brien/x");
     }
 }

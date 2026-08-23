@@ -185,6 +185,13 @@ port, so a second instance refuses to start rather than fighting over
   `hooks.json`, the instance lock and the findings block all follow it. Overriding
   `HOME` would do the same for free and is wrong — `claude` reads its credentials
   from there, so every spawned session would come up unauthenticated.
+- **The config dir has a space in it on macOS**, and anything from it that reaches
+  a shell must be quoted. `config_dir` is `~/Library/Application Support/orchd`
+  there and `~/.config/orchd` elsewhere. The push guard's hook is a shell string
+  (`type: "command"` — that is how `SessionStart` gets a pipe and `|| true`), so an
+  unquoted path splits at the space and the hook runs nothing: the guard fails
+  open and silently stops existing. Use `hooks::sh_quote`. Prompt-file paths are
+  fine — they go into prose the agent reads, not a shell.
 - **A fresh checkout the daemon points at needs Claude Code's workspace trust
   accepted once.** Until then `claude --worktree` refuses ("Workspace trust not
   yet accepted") and the spawned session exits instantly, leaving a workspace

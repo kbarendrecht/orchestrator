@@ -374,6 +374,19 @@ pub enum ForgeKind {
     GitHub,
 }
 
+/// Where state lives under a given home, with the platform split in one place.
+///
+/// Split out from [`Config::config_dir`] with `home` injected so it is testable:
+/// the alternative is a test that mutates `HOME`, which is process-global and
+/// races every other test in a parallel suite.
+fn default_config_dir(home: &Path) -> PathBuf {
+    if cfg!(target_os = "macos") {
+        home.join("Library/Application Support/orchd")
+    } else {
+        home.join(".config/orchd")
+    }
+}
+
 impl Config {
     /// Everything durable hangs off here: the config, the session store, the
     /// automation and story records, the hook settings, the instance lock.
@@ -389,12 +402,24 @@ impl Config {
     ///
     /// An empty value is ignored rather than honoured, because `PathBuf::from("")`
     /// is a relative path and the state would land wherever the daemon was started.
+    ///
+    /// The default is per-platform: `~/.config/orchd` is a Linux convention, and a
+    /// Mac keeps application state under `~/Library/Application Support`, where a
+    /// Mac user would actually look for it. Nothing is migrated between the two
+    /// because there is nothing to migrate — the app has never run on macOS, so no
+    /// `~/.config/orchd` exists there to find. Anyone who prefers one spelling on
+    /// either platform sets `ORCHD_CONFIG_DIR`.
+    ///
+    /// **That macOS path contains a space**, which is not merely cosmetic: any
+    /// place a path from here reaches a shell has to quote it. See `sh_quote` in
+    /// `hooks.rs` — the push guard's hook is a shell string, and an unquoted path
+    /// there means the guard silently stops existing.
     pub fn config_dir() -> Result<PathBuf> {
         if let Some(dir) = std::env::var_os("ORCHD_CONFIG_DIR").filter(|d| !d.is_empty()) {
             return Ok(PathBuf::from(dir));
         }
-        let home = std::env::var("HOME").context("HOME is not set")?;
-        Ok(PathBuf::from(home).join(".config/orchd"))
+        let home = PathBuf::from(std::env::var("HOME").context("HOME is not set")?);
+        Ok(default_config_dir(&home))
     }
 
     pub fn path() -> Result<PathBuf> {
@@ -833,5 +858,23 @@ mod tests {
         let cfg = Config::default_for(PathBuf::from("/tmp/x"));
         assert_eq!(cfg.forge, ForgeKind::GitHub);
         assert_eq!(cfg.reviews_command, vec!["mise", "run", "reviews", "--json"]);
+    }
+
+    #[test]
+    fn state_lands_where_the_platform_keeps_it() {
+        let dir = default_config_dir(Path::new("/home/someone"));
+        if cfg!(target_os = "macos") {
+            assert_eq!(
+                dir,
+                Path::new("/home/someone/Library/Application Support/orchd"),
+                "a Mac keeps application state in Library, not ~/.config"
+            );
+            // The space is one path component, not two. Anything that hands this
+            // to a shell must quote it (`hooks::sh_quote`).
+            assert_eq!(dir.file_name().unwrap(), "orchd");
+            assert!(dir.to_string_lossy().contains("Application Support"));
+        } else {
+            assert_eq!(dir, Path::new("/home/someone/.config/orchd"));
+        }
     }
 }
