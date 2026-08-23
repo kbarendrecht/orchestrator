@@ -182,7 +182,7 @@ function renderUpdate() {
   const bar = $('updatebar');
   const u = snap.update;
   if (!u || updateDismissed === u.latest) { bar.hidden = true; return; }
-  const link = $('updatelink');
+  const link = /** @type {HTMLAnchorElement} */ ($('updatelink'));
   link.textContent = `Update available — v${u.latest} (you have v${u.current}). Run mise up`;
   link.href = u.url || '#';
   $('updatex').onclick = () => { updateDismissed = u.latest; bar.hidden = true; };
@@ -207,7 +207,7 @@ function renderContext() {
 
   // PRs are opened against upstream while branches live on the fork (§6), so
   // the header names both rather than collapsing them into one path.
-  const repos = snap.repos || {};
+  const repos = snap.repos || { upstream: null, fork: null };
   $('repoupstream').textContent = repos.upstream
     || (w ? w.path.split('/').slice(-2).join('/') : '—');
   $('repofork').textContent = repos.fork || '';
@@ -279,7 +279,9 @@ function renderDrawer() {
   for (const p of procs) {
     const isShell = p.kind.kind === 'shell';
     if (isShell) shellNo += 1;
-    const dead = isShell ? p.kind.exit_code != null : p.health.health === 'dead';
+    const dead = p.kind.kind === 'shell'
+      ? p.kind.exit_code != null
+      : p.health.health === 'dead';
 
     const tab = el('button', 'dtab' + (dead ? ' dead' : ''));
     tab.setAttribute('aria-selected', String(p.id === active));
@@ -296,7 +298,9 @@ function renderDrawer() {
             : 'working';
     tab.appendChild(el('span', 'dot ' + cls));
     const label = isShell
-      ? (dead ? `shell ${shellNo} · exit ${p.kind.exit_code}` : `shell ${shellNo}`)
+      ? (dead && p.kind.kind === 'shell'
+        ? `shell ${shellNo} · exit ${p.kind.exit_code}`
+        : `shell ${shellNo}`)
       : p.name;
     tab.appendChild(el('span', null, label));
     tab.onclick = () => { setSelectedProc(wsId, p.id); setDrawerTouched(true); renderDrawer(); };
@@ -468,11 +472,11 @@ window.addEventListener('keydown', (e) => {
      with capture:true — it runs before any element listener wherever focus is.
      So the focus guard is not optional here the way it was for Escape/Ctrl+←/Alt+d. */
   if (Review.state.open) {
-    const typing = !!e.target.closest?.('textarea, input, [contenteditable="true"]');
+    const typing = !!/** @type {HTMLElement} */ (e.target).closest?.('textarea, input, [contenteditable="true"]');
     if (e.key === 'Escape') {
       e.preventDefault();
       // Blur rather than close, or Escape out of a half-typed reply discards it.
-      if (typing) e.target.blur();
+      if (typing) /** @type {HTMLElement} */ (e.target).blur();
       else Review.close();
       return;
     }
@@ -481,7 +485,8 @@ window.addEventListener('keydown', (e) => {
       // Through the button rather than straight to `sendBatch`, or the shortcut
       // sends a batch the button itself refuses — which it did until now.
       if (Review.state.screen === 'final') {
-        const send = $('rvoverlay').querySelector('.acts .act.warm');
+        const send = /** @type {HTMLButtonElement} */ (
+          $('rvoverlay').querySelector('.acts .act.warm'));
         if (send && !send.disabled) send.click();
       }
       return;
@@ -687,7 +692,8 @@ function setupChrome() {
   // under WSLg especially. Route them through the daemon's OS opener. A browser
   // tab (chrome 'none') returns above and opens them natively.
   document.addEventListener('click', (e) => {
-    const a = e.target.closest && e.target.closest('a[target="_blank"]');
+    const t = /** @type {HTMLElement} */ (e.target);
+    const a = /** @type {HTMLAnchorElement} */ (t.closest && t.closest('a[target="_blank"]'));
     if (!a || !/^https?:/i.test(a.href || '')) return;
     e.preventDefault();
     call('/api/open', { url: a.href }).catch((err) => toast(err.message, true));
@@ -695,17 +701,18 @@ function setupChrome() {
 
   const wcmd = (cmd) => call(`/api/window/${cmd}`).catch((e) => toast(e.message, true));
 
-  for (const b of document.querySelectorAll('.wctl-btn')) {
+  for (const b of /** @type {NodeListOf<HTMLElement>} */ (
+    document.querySelectorAll('.wctl-btn'))) {
     b.addEventListener('click', () => wcmd(b.dataset.cmd));
   }
 
   for (const bar of document.querySelectorAll('.top')) {
-    bar.addEventListener('mousedown', (e) => {
+    bar.addEventListener('mousedown', (/** @type {MouseEvent} */ e) => {
       // Left button only, and only on the bar's own background: a drag that
       // swallowed clicks on the session name or the close button would make
       // the header unusable.
       if (e.button !== 0) return;
-      if (e.target.closest('button, input, a, kbd, .ctx-btn')) return;
+      if (/** @type {HTMLElement} */ (e.target).closest('button, input, a, kbd, .ctx-btn')) return;
       // A double-click is the OS gesture for maximise, so it must not also
       // start a drag; the compositor keeps the drag alive past mouseup, which
       // would eat the second click.
@@ -713,13 +720,14 @@ function setupChrome() {
       wcmd('start-drag');
     });
     bar.addEventListener('dblclick', (e) => {
-      if (e.target.closest('button, input, a, kbd, .ctx-btn')) return;
+      if (/** @type {HTMLElement} */ (e.target).closest('button, input, a, kbd, .ctx-btn')) return;
       wcmd('toggle-maximize');
     });
   }
 
-  for (const rz of document.querySelectorAll('.rz')) {
-    rz.addEventListener('mousedown', (e) => {
+  for (const rz of /** @type {NodeListOf<HTMLElement>} */ (
+    document.querySelectorAll('.rz'))) {
+    rz.addEventListener('mousedown', (/** @type {MouseEvent} */ e) => {
       if (e.button !== 0) return;
       // Stop the browser starting a text selection that outlives the resize.
       e.preventDefault();

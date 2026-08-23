@@ -7,6 +7,7 @@
     "playwright-core": "1.49.1"
   },
   "devDependencies": {
+    "dependency-cruiser": "^16.10.4",
     "typescript": "^5.7.2"
   }
 }

@@ -53,12 +53,14 @@ function renderReviews() {
     count.appendChild(el('span', pending || off ? null : 'f', label));
     head.appendChild(count);
     head.appendChild(refresh);
-    head.title = rv?.reason || '';
+    // `reason` belongs to the degraded variant alone; the others simply have none.
+    const why = rv && 'reason' in rv ? rv.reason : '';
+    head.title = why;
     list.appendChild(el('div', 'fempty', pending
       ? 'waiting for the first poll'
       : off
         ? 'no review queue configured\nset `reviews_command` in config.json'
-        : `reviews unavailable\n${(rv?.reason || '').slice(0, 160)}`));
+        : `reviews unavailable\n${why.slice(0, 160)}`));
     head.onclick = () => { showReviews = !showReviews; renderReviews(); };
     return;
   }

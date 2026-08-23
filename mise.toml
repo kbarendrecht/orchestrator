@@ -14,16 +14,23 @@ zig = "latest"
 #   mise run shot
 #   mise run shot -- '.drawer-head'
 #   mise run shot -- '.rvblock' --click '#rvhead'
-# The SPA's view of the daemon's Snapshot is generated from the Rust structs, so
-# a renamed field is a type error rather than an `undefined` that renders as
-# nothing. `cargo test` rewrites web/snapshot.d.ts; this checks it still compiles
-# and fails if the checked-in copy has drifted from the types.
-[tasks.types]
-description = "Regenerate the SPA's snapshot types and check they are current"
+# The SPA is hand-written JavaScript that ships exactly as written — no bundler,
+# no emit. These are the two checks that keep it honest:
+#
+#   * `tsc --noEmit` type-checks it against `web/snapshot.d.ts`, which `cargo test`
+#     generates from the Rust structs. Rename a snapshot field on the daemon side
+#     and this fails, instead of the field reading `undefined` and rendering blank.
+#   * `depcruise` holds the module graph acyclic. ES modules allow cycles, so
+#     nothing else would notice one coming back — and three had to be broken to
+#     make these modules a layering rather than six files that call each other.
+[tasks.check-web]
+description = "Type-check the SPA and enforce its module graph"
 run = """
 cargo test --lib export_bindings >/dev/null
+git diff --exit-code --stat web/snapshot.d.ts \
+  || { echo 'web/snapshot.d.ts was stale — the regenerated copy is in your tree; commit it.'; exit 1; }
 npx --prefix tools tsc -p tools/tsconfig.json
-git diff --exit-code --stat web/snapshot.d.ts   || { echo 'web/snapshot.d.ts was stale — the regenerated copy is now in your tree; commit it.'; exit 1; }
+npx --prefix tools depcruise --config tools/.dependency-cruiser.cjs web/app.js
 """
 
 [tasks.shot]

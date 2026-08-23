@@ -11,7 +11,7 @@ are already in there with the reason they were not done.
 ```
 cargo check                         # the daemon
 cargo test                          # 283 tests, all in-tree
-mise run types                      # regenerate + check the SPA snapshot types
+mise run check-web                  # type-check the SPA + enforce its module graph
 cargo run -p orchestrator-desktop   # the app, daemon embedded in-process
 mise run shot                       # screenshot the running SPA (drives Chrome)
 ```
@@ -29,6 +29,23 @@ port, so a second instance refuses to start rather than fighting over
 - **The SPA is compiled in.** `web/*` is `include_str!`d into the binary, so a
   CSS or JS change is invisible until the daemon is rebuilt *and* restarted. No
   amount of reloading the page helps.
+- **`mise run check-web` is the SPA's gate, and it bites.** Three things in one:
+  it regenerates `web/snapshot.d.ts` and fails if the committed copy drifted, it
+  runs `tsc --noEmit --checkJs` over every SPA file, and it runs
+  `dependency-cruiser` over the module graph. All three were checked against
+  deliberate breakage — a `#[serde(rename)]`, a typo'd `snap.` field, and an added
+  cycle each fail it. There is still **no build step**: `tsc` only checks, and the
+  files ship exactly as written.
+- **Type-checking found bugs clicking around did not.** Turning `checkJs` on after
+  the module split surfaced five modules referencing names that had stayed behind
+  in `app.js` (`pendingSelect`, `TOKEN`, `WS_BASE`, `selected`, `prOf`) — every one
+  a `ReferenceError` waiting for a code path the browser checks never hit. Treat a
+  green page as weaker evidence than a green `check-web`.
+- **`ctl(id)` is the one deliberate `any` in the SPA.** `getElementById` can only
+  promise `HTMLElement`, so reading `.value` through `$` is a type error even when
+  the id certainly names an `<input>`. `ctl` is the named escape hatch for form
+  controls; `$` stays typed so everything else fetched through it keeps being
+  checked. Do not widen `$`.
 - **The SPA's view of the snapshot is generated, not hand-written.**
   `web/snapshot.d.ts` comes from the Rust structs via `ts-rs` (a dev-dependency,
   derived under `cfg(test)`, so nothing of it reaches the binary). `cargo test`

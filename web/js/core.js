@@ -51,6 +51,16 @@ export const WS_BASE = `ws://${location.host}`;
 
 export const $ = (id) => document.getElementById(id);
 
+/** `$` for a form control, where the caller wants `.value` or `.disabled`.
+ *
+ *  `getElementById` can only promise `HTMLElement`, so every read of `.value`
+ *  through `$` is a type error even when the id certainly names an `<input>`.
+ *  Deliberately untyped rather than a union of input/button/select: TypeScript
+ *  reduces that intersection to `never`, and a union only offers what all three
+ *  share. So this is one named escape hatch for controls — `$` stays typed, and
+ *  everything fetched through it keeps being checked. */
+export const ctl = (id) => /** @type {any} */ (document.getElementById(id));
+
 export function el(tag, cls, text) {
   const n = document.createElement(tag);
   if (cls) n.className = cls;
@@ -175,8 +185,8 @@ export function setZoom(z) {
   zoomScale = next;
   document.documentElement.style.setProperty('--fs', String(next * FS_BASE));
   $('fsval').textContent = `${Math.round(next * 100)}%`;
-  $('fsdown').disabled = next <= ZOOM.min;
-  $('fsup').disabled = next >= ZOOM.max;
+  ctl('fsdown').disabled = next <= ZOOM.min;
+  ctl('fsup').disabled = next >= ZOOM.max;
   // Announced rather than applied: the terminals' own font is xterm's business,
   // and reaching into it from here is what made zoom and the terminals depend on
   // each other. Whoever owns a scalable thing registers for this.
@@ -390,7 +400,7 @@ export const menuOpen = () => !$('ctxmenu').hidden;
 // click; a rail that rebuilds every second would otherwise leave the menu
 // hanging over a row that no longer exists.
 document.addEventListener('mousedown', (e) => {
-  if (menuOpen() && !e.target.closest('#ctxmenu')) closeMenu();
+  if (menuOpen() && !/** @type {HTMLElement} */ (e.target).closest('#ctxmenu')) closeMenu();
 }, true);
 document.addEventListener('scroll', closeMenu, true);
 window.addEventListener('blur', closeMenu);

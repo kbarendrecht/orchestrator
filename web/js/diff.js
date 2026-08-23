@@ -674,7 +674,7 @@ async function saveEditor() {
     out = await call('/api/file', {
       workspace: currentWorkspaceId(),
       path: editState.path,
-      content: ta.value,
+      content: /** @type {HTMLTextAreaElement} */ (ta).value,
       version: editState.version,
     });
   } catch (e) {

@@ -1,7 +1,7 @@
 // The settings panel. The zoom control it offers lives in core, because the
 // terminals read the scale too.
 
-import { $, ZOOM, call, el, get, saveZoom, setZoom, snap, zoomScale } from './core.js';
+import { ctl, $, ZOOM, call, el, get, saveZoom, setZoom, snap, zoomScale } from './core.js';
 
 const settingsOpen = () => !$('settings').hidden;
 
@@ -32,11 +32,11 @@ async function loadConfigInto() {
     $('setnote').textContent = e.message;
     return;
   }
-  $('setlang').value = cfg.output_language || '';
-  $('settracker').value = cfg.tracker || 'none';
-  $('setupref').value = cfg.upstream_ref || '';
-  $('setupremote').value = cfg.upstream_remote || '';
-  $('setreviews').value = (cfg.reviews_command || []).join(' ');
+  ctl('setlang').value = cfg.output_language || '';
+  ctl('settracker').value = cfg.tracker || 'none';
+  ctl('setupref').value = cfg.upstream_ref || '';
+  ctl('setupremote').value = cfg.upstream_remote || '';
+  ctl('setreviews').value = (cfg.reviews_command || []).join(' ');
   procDraft = (cfg.main_processes || []).map((p) => ({
     name: p.name || '',
     command: (p.command || []).join(' '),
@@ -133,11 +133,11 @@ async function saveSettings() {
   const argv = (s) => (s.trim() ? s.trim().split(/\s+/) : []);
   const list = (s) => s.split(',').map((x) => x.trim()).filter(Boolean);
   const body = {
-    output_language: $('setlang').value.trim(),
-    tracker: $('settracker').value,
-    upstream_ref: $('setupref').value.trim(),
-    upstream_remote: $('setupremote').value.trim(),
-    reviews_command: argv($('setreviews').value),
+    output_language: ctl('setlang').value.trim(),
+    tracker: ctl('settracker').value,
+    upstream_ref: ctl('setupref').value.trim(),
+    upstream_remote: ctl('setupremote').value.trim(),
+    reviews_command: argv(ctl('setreviews').value),
     main_processes: procDraft.map((p) => ({
       name: p.name.trim(),
       command: argv(p.command),
@@ -184,7 +184,7 @@ function setupSettings() {
      missing an input closed the panel. */
   document.addEventListener('mousedown', (e) => {
     if (!settingsOpen()) return;
-    if (!e.target.closest('#settings, #gearbtn')) closeSettings();
+    if (!(/** @type {HTMLElement} */ (e.target)).closest('#settings, #gearbtn')) closeSettings();
   }, true);
 }
 

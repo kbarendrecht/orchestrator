@@ -1,15 +1,19 @@
 {
-  "//": "Checks the generated snapshot types compile, and that app.js agrees with them.",
-  "//2": "Full `checkJs` over app.js is not on yet: it reports ~42 DOM/ambient issues",
-  "//3": "(vendored globals, Element vs HTMLElement) and none about the snapshot. That",
-  "//4": "is a follow-up, best done per-module once the SPA is real ES modules.",
+  "//": "Type-checks the SPA without building it. The shipped files stay hand-written",
+  "//2": "JavaScript — there is no emit step and no bundler; `noEmit` is the point.",
+  "//3": "`snapshot.d.ts` is generated from the Rust structs by `cargo test`, so a",
+  "//4": "renamed field on the daemon side fails here rather than rendering as blank.",
   "compilerOptions": {
     "noEmit": true,
-    "strict": true,
+    "allowJs": true,
+    "checkJs": true,
+    "strict": false,
     "target": "ES2022",
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
-    "module": "preserve",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
     "skipLibCheck": false
   },
-  "files": ["../web/snapshot.d.ts"]
+  "include": ["../web/**/*.js", "../web/**/*.d.ts"],
+  "exclude": ["../web/vendor/**"]
 }

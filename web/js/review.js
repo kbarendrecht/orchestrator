@@ -1410,7 +1410,7 @@ function rvManualRow(th) {
     const send = $('rvoverlay').querySelector('.acts .act.warm');
     if (send) {
       const m = reviewState.report.manual;
-      send.disabled = !m.threads.every((x) => (manualState.comments[x.thread_id] || '').trim());
+      /** @type {HTMLButtonElement} */ (send).disabled = !m.threads.every((x) => (manualState.comments[x.thread_id] || '').trim());
     }
     // The row's own chip tracks the same thing, so it is flipped by hand rather
     // than by a repaint that would take the focus with it.
