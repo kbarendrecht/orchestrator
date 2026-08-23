@@ -451,29 +451,38 @@ $('killbtn').onclick = () => {
 // Keyboard (§9)
 // ---------------------------------------------------------------------------
 //
-// The scheme is layered so a new binding has a rule to obey rather than a
-// precedent to copy. Four layers, and which modifier a key wears says which one
-// it is:
+// Two layers, and which modifier a key wears says which one it is. A new binding
+// belongs to one of them; there is no third to invent.
 //
-//   • bare keys  — belong to the overlay that is open (review, diff). Nothing
-//     bare is global, because bare keys reach the terminal.
-//   • Alt+…      — in-app navigation (j/k sessions, m main, d diff). The app
-//     already steals Alt+<letter> from the pty, so this layer is safe with a
-//     terminal focused, and it is where vim-style motion lives.
-//   • Ctrl+…     — the desktop-app idioms a user brings from elsewhere: new
-//     (n / Shift+n), switch tab (Tab / Shift+Tab), jump to what needs you
-//     (Space), zoom (= − 0), new shell (`), save (s). These *are* claimed by
-//     terminal programs (Ctrl+n is readline next-history, Ctrl+Space is NUL),
-//     so binding one shadows it in the pty — a deliberate trade the owner asked
-//     for, not an oversight. Ctrl+n and Ctrl+Tab are also browser-reserved in a
-//     plain tab and only reach us in the desktop webview; that is the primary
-//     target.
-//   • Escape     — dismiss the topmost thing: menu, then settings, then the
-//     open overlay.
+//   • bare keys  — the overlay that is open, and only while it is open (review
+//     cards, diff files). Nothing bare is global, because bare keys reach the
+//     terminal.
+//   • Ctrl+…     — the whole app: new (n / Shift+n / Shift+t), switch session
+//     (Tab / Shift+Tab), jump to what needs you (Space), the diff (Shift+d),
+//     zoom (= − 0), save (s).
+//   • Escape is not a layer, it is one rule: dismiss the topmost thing —
+//     legend, then menu, then settings, then the open overlay.
 //
-//   ? opens the legend, which is the single source of truth a user can see.
-//   Keep it in step with these bindings — a scheme nobody can read is not
-//   predictable however consistent it is.
+// There is deliberately **no Alt layer**. It held the vim-style motion (Alt+j/k
+// sessions, Alt+m main, Alt+d diff) and was removed: every action it carried had
+// a Ctrl spelling doing the same job, so it was a second vocabulary for one set
+// of verbs. Do not reintroduce it to dodge a collision — pick Ctrl+Shift instead.
+//
+// Two properties of the Ctrl layer worth knowing before extending it:
+//
+//   * Plain Ctrl+<letter> shadows the pty. `Ctrl+n` is readline next-history and
+//     `Ctrl+Space` is NUL, and binding them here takes them from every session.
+//     That is a deliberate trade, not an oversight. `Ctrl+Shift+…` is the zone
+//     terminals leave alone (which is why copy/paste live there), so prefer it
+//     when the terminal's own key is worth keeping — `Ctrl+Shift+d` for the diff
+//     rather than `Ctrl+d`, which is EOF and still exits a shell.
+//   * `Ctrl+n` and `Ctrl+Tab` are browser-reserved and never arrive in a plain
+//     tab; they work in the desktop webview, which is the primary target. The
+//     legend says so rather than leaving it to be discovered.
+//
+// `?` opens that legend, the one source of truth a user can see. Keep it in step
+// with these bindings — a scheme nobody can read is not predictable however
+// consistent it is.
 
 window.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && !$('keyhelp').hidden) {
@@ -500,7 +509,7 @@ window.addEventListener('keydown', (e) => {
   }
   /* The overlay wants bare Enter, j/k and digits, and this handler is registered
      with capture:true — it runs before any element listener wherever focus is.
-     So the focus guard is not optional here the way it was for Escape/Ctrl+←/Alt+d. */
+     So the focus guard is not optional here the way it was for Escape/Ctrl+←. */
   if (Review.state.open) {
     const typing = !!/** @type {HTMLElement} */ (e.target).closest?.('textarea, input, [contenteditable="true"]');
     if (e.key === 'Escape') {
@@ -521,7 +530,7 @@ window.addEventListener('keydown', (e) => {
       }
       return;
     }
-    // Alt is left alone so the session switcher keeps working underneath.
+    // Bare only: a modified key is the app's (the Ctrl layer), never a card's.
     if (!typing && !e.altKey && !e.ctrlKey && !e.metaKey && Review.key(e)) {
       e.preventDefault();
       return;
@@ -546,19 +555,25 @@ window.addEventListener('keydown', (e) => {
       return;
     }
   }
-  if (e.altKey && e.key === 'd') {
-    e.preventDefault();
-    if (Review.state.open) return toast('close the review first');
-    Diff.state.open ? Diff.close() : Diff.open();
-    return;
-  }
-  // The Ctrl layer: the desktop-app idioms (see the header). These knowingly
-  // shadow terminal keys, so the block ends with a bare `return` — any Ctrl
-  // combo it does not claim falls through to the pty *without* preventDefault,
-  // which is what keeps Ctrl+C an interrupt and Ctrl+S flow-control.
+  // The Ctrl layer: the whole app (see the header). Some of these knowingly
+  // shadow terminal keys, so the block ends with a bare `return` — any Ctrl combo
+  // it does not claim falls through to the pty *without* preventDefault, which is
+  // what keeps Ctrl+C an interrupt, Ctrl+D an EOF and Ctrl+S flow-control.
   if (e.ctrlKey && !e.altKey && !e.metaKey) {
     const k = e.key.toLowerCase();
-    if (e.key === '`') { e.preventDefault(); newShell(); return; }
+    // Ctrl+Shift+T beside Ctrl+`: the terminal-emulator "new tab" key, in the
+    // Ctrl+Shift zone terminals leave alone. A shell is a process in the drawer,
+    // so this is the third rung of the same ladder as Ctrl+N / Ctrl+Shift+N.
+    if (e.key === '`' || (e.shiftKey && k === 't')) {
+      e.preventDefault(); newShell(); return;
+    }
+    // Shift, not plain: Ctrl+D is EOF and still has to exit a shell.
+    if (e.shiftKey && k === 'd') {
+      e.preventDefault();
+      if (Review.state.open) return toast('close the review first');
+      Diff.state.open ? Diff.close() : Diff.open();
+      return;
+    }
     if (k === 'n') {
       e.preventDefault();
       if (e.shiftKey) {
@@ -580,7 +595,8 @@ window.addEventListener('keydown', (e) => {
       return;
     }
     if (e.key === 'Tab') {
-      // Conventional tab-switch, beside Alt+j/k's vim motion. Cyclic.
+      // The one way to walk sessions, since the Alt layer went. Cyclic, so it
+      // needs no separate "wrap" or first/last key.
       e.preventDefault();
       const ordered = snap.sessions;
       if (!ordered.length) return;
@@ -603,25 +619,11 @@ window.addEventListener('keydown', (e) => {
   }
 
   // `?` opens the legend — bare, so guarded against firing while you type one.
+  // The last binding, and the only global bare key: everything else bare belongs
+  // to an overlay and was handled above.
   if (e.key === '?') {
     const typing = !!/** @type {HTMLElement} */ (e.target).closest?.('textarea, input, [contenteditable="true"]');
     if (!typing) { e.preventDefault(); $('keyhelp').hidden = !$('keyhelp').hidden; return; }
-  }
-
-  if (!e.altKey || e.ctrlKey || e.metaKey) return;
-
-  const ordered = snap.sessions;
-  const idx = ordered.findIndex((s) => s.id === selected);
-
-  if (e.key === 'j' || e.key === 'k') {
-    e.preventDefault();
-    if (!ordered.length) return;
-    const next = e.key === 'j' ? idx + 1 : idx - 1;
-    setSelected(ordered[(next + ordered.length) % ordered.length].id);
-  } else if (e.key === 'm') {
-    e.preventDefault();
-    const main = snap.workspaces.find((w) => w.is_main);
-    if (main) newSession(main.id);
   }
 }, true);
 

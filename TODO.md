@@ -357,30 +357,39 @@ Everything outside that block is hand-written and survives.
   2.5 MB at worst, consistent with the 1.1 MB idle heap.
 
 - **Audit the keyboard map for logical, consistent coverage.** *Done, and the
-  scheme is now written down.* The map was implicitly layered and nearly
-  consistent; the audit named the rule as a contract above the keydown handler
-  (`web/app.js`) — bare keys belong to the open overlay, `Alt` is in-app vim-style
-  nav, `Ctrl` is the desktop-app idioms a user brings from elsewhere, `Esc`
-  dismisses the topmost thing — so the next binding has a rule to obey rather than
-  a precedent to copy. What changed:
-  - The orphan actions got bound: `Ctrl+N` new worktree, `Ctrl+Shift+N` new
-    session on main, `Ctrl+Space` jump to the first session waiting on you
-    (replacing `Alt+b`'s cycle), `Ctrl+Tab`/`Ctrl+Shift+Tab` switch sessions
-    beside `Alt+j/k`, and `Ctrl+=`/`−`/`0` for zoom, which was mouse-only.
+  scheme is now written down, and it is smaller than it was.* The audit found the
+  map already implicitly layered but carrying **two vocabularies for one set of
+  verbs**, so the fix was subtraction: the whole `Alt` layer is gone (`Alt+j/k`
+  sessions, `Alt+b` blocked, `Alt+m` main, `Alt+d` diff), because every action it
+  held had a `Ctrl` spelling doing the same job. What is left is a contract above
+  the keydown handler (`web/app.js`) — **bare keys belong to the open overlay,
+  `Ctrl` is the whole app, `Esc` dismisses the topmost thing** — so the next
+  binding has a rule to obey rather than a precedent to copy. Do not reintroduce
+  `Alt` to dodge a collision; `Ctrl+Shift` is the escape hatch.
+  - Orphan actions bound: `Ctrl+N` new worktree, `Ctrl+Shift+N` new session on
+    main, `Ctrl+Shift+T` (and `Ctrl+`` `) new shell, `Ctrl+Shift+D` the diff,
+    `Ctrl+Space` the first session waiting on you, `Ctrl+Tab`/`Ctrl+Shift+Tab`
+    session switch, `Ctrl+=`/`−`/`0` zoom — which was mouse-only.
   - List motion is one idiom: the diff overlay took bare `j/k` like the review
-    overlay, with `Ctrl+←/→` kept as an alias.
+    overlay, `Ctrl+←/→` kept as an alias.
   - A legend (`?`, `web/index.html` `#keyhelp`) is the visible source of truth,
     because a scheme nobody can read is not predictable however consistent.
-  Owner's call, recorded so it is not read later as an oversight: the `Ctrl`
-  layer knowingly shadows terminal keys (`Ctrl+N` is readline next-history,
-  `Ctrl+Space` is NUL), and `Ctrl+N`/`Ctrl+Tab` only reach the desktop webview —
-  a browser tab keeps them. Driven in a real browser: `?`/`Esc` toggle the
-  legend, `Ctrl+=`/`0` zoom and reset, `Ctrl+N` hits `/api/worktree`,
-  `Ctrl+Space`/`Tab` are claimed, `Alt+b` falls through. Still open, deliberately
-  deferred: a jump-*to-a-PR* key and an inverse for `Alt+m` (its release is still
-  ending the session). *The two `role="button"` keyboard traps once listed here
-  are fixed:* a `keyActivate` helper gives the refresh icons and the update-nudge
-  `×` a tab stop and Enter/Space.
+
+  Two properties of the `Ctrl` layer, recorded so they do not read later as
+  oversights. Plain `Ctrl+<letter>` **shadows the pty** — `Ctrl+N` is readline
+  next-history, `Ctrl+Space` is NUL — a deliberate trade; `Ctrl+Shift+…` is the
+  zone terminals leave alone, which is why the diff is `Ctrl+Shift+D` and not
+  `Ctrl+D` (still EOF, still exits a shell). And `Ctrl+N`/`Ctrl+Tab` are
+  browser-reserved, so they only arrive in the desktop webview; the legend says so.
+
+  Driven in a real browser, both rounds: `?`/`Esc` toggle the legend, `Ctrl+=`/`0`
+  zoom and reset, `Ctrl+N` hits `/api/worktree`, `Ctrl+Shift+D`/`Shift+T`/`Tab`/
+  `Space` are claimed, plain `Ctrl+D` is left to the terminal, and all four
+  removed `Alt` chords fall through. Still open, deliberately deferred: a
+  jump-*to-a-PR* key, and there is no longer any "take main" chord to want an
+  inverse for. *The two `role="button"` keyboard traps once listed here are
+  fixed:* a `keyActivate` helper gives the refresh icons and the update-nudge `×`
+  a tab stop and Enter/Space.
 
 - **Teardown auto-archives its own prerequisite.** *Fixed.* This was read as a
   dead route but is the opposite: `worktree::archive` (transcripts copied,
