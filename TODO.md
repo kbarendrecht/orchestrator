@@ -356,15 +356,31 @@ Everything outside that block is hand-written and survives.
   map is theoretical, not a leak worth code. The **five 512KB ring buffers** are
   2.5 MB at worst, consistent with the 1.1 MB idle heap.
 
-- **Audit the keyboard map for logical, consistent coverage.** Not two more
-  chords — a pass over the whole scheme so it is predictable: same modifier
-  idioms, obvious inverses, no orphan actions. Concrete gaps feeding it:
-  jump-to-a-PR has no keybind at all, and `Alt+m` is a "take main" with no
-  matching "release" (release today means ending the session). *The two
-  `role="button"` keyboard traps this once listed are fixed:* a `keyActivate`
-  helper (`web/app.js`) gives the refresh icons and the update-nudge `×` a tab
-  stop and Enter/Space, driven end to end (Enter on the refresh icon fires the
-  poll). The broader predictability pass is still open.
+- **Audit the keyboard map for logical, consistent coverage.** *Done, and the
+  scheme is now written down.* The map was implicitly layered and nearly
+  consistent; the audit named the rule as a contract above the keydown handler
+  (`web/app.js`) — bare keys belong to the open overlay, `Alt` is in-app vim-style
+  nav, `Ctrl` is the desktop-app idioms a user brings from elsewhere, `Esc`
+  dismisses the topmost thing — so the next binding has a rule to obey rather than
+  a precedent to copy. What changed:
+  - The orphan actions got bound: `Ctrl+N` new worktree, `Ctrl+Shift+N` new
+    session on main, `Ctrl+Space` jump to the first session waiting on you
+    (replacing `Alt+b`'s cycle), `Ctrl+Tab`/`Ctrl+Shift+Tab` switch sessions
+    beside `Alt+j/k`, and `Ctrl+=`/`−`/`0` for zoom, which was mouse-only.
+  - List motion is one idiom: the diff overlay took bare `j/k` like the review
+    overlay, with `Ctrl+←/→` kept as an alias.
+  - A legend (`?`, `web/index.html` `#keyhelp`) is the visible source of truth,
+    because a scheme nobody can read is not predictable however consistent.
+  Owner's call, recorded so it is not read later as an oversight: the `Ctrl`
+  layer knowingly shadows terminal keys (`Ctrl+N` is readline next-history,
+  `Ctrl+Space` is NUL), and `Ctrl+N`/`Ctrl+Tab` only reach the desktop webview —
+  a browser tab keeps them. Driven in a real browser: `?`/`Esc` toggle the
+  legend, `Ctrl+=`/`0` zoom and reset, `Ctrl+N` hits `/api/worktree`,
+  `Ctrl+Space`/`Tab` are claimed, `Alt+b` falls through. Still open, deliberately
+  deferred: a jump-*to-a-PR* key and an inverse for `Alt+m` (its release is still
+  ending the session). *The two `role="button"` keyboard traps once listed here
+  are fixed:* a `keyActivate` helper gives the refresh icons and the update-nudge
+  `×` a tab stop and Enter/Space.
 
 - **Teardown auto-archives its own prerequisite.** *Fixed.* This was read as a
   dead route but is the opposite: `worktree::archive` (transcripts copied,

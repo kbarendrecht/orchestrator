@@ -520,6 +520,20 @@ body.row-resizing{cursor:row-resize;user-select:none}
 }
 .settings-group:first-of-type{margin-top:14px}
 .settings-x{margin-left:auto;letter-spacing:0}
+/* The shortcut legend: a two-column list of chord -> what it does. Chords are
+   right-aligned against the descriptions so the eye runs down one edge. */
+.keys{display:grid;grid-template-columns:max-content 1fr;gap:6px 16px;margin:8px 0 0}
+.keys dt{
+  font-family:var(--mono);font-size:calc(11px * var(--fs));color:var(--text);
+  text-align:right;white-space:nowrap;
+}
+.keys dd{
+  margin:0;font-size:calc(11px * var(--fs));color:var(--dim);align-self:center;
+}
+.settings-help kbd,.keys dt kbd{
+  font-family:var(--mono);font-size:.9em;padding:0 4px;border-radius:3px;
+  border:1px solid var(--line);background:var(--raised);color:var(--text);
+}
 .settings-row{display:flex;align-items:center;gap:12px}
 .settings-info{margin-top:9px}
 .settings-v{margin-left:auto;font-family:var(--mono);font-size:calc(11px * var(--fs));color:var(--dim)}

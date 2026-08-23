@@ -436,6 +436,7 @@ $('ovsave').onclick = Diff.saveEditor;
 $('reposwitch').onclick = () =>
   toast('switching repositories is not implemented yet', true);
 $('addshell').onclick = newShell;
+$('keyhelpx').onclick = () => { $('keyhelp').hidden = true; };
 $('dcollapse').onclick = () => setDrawerCollapsed(!drawerCollapsed);
 $('refreshbtn').onclick = () => {
   const wsId = currentWorkspaceId();
@@ -449,8 +450,37 @@ $('killbtn').onclick = () => {
 // ---------------------------------------------------------------------------
 // Keyboard (§9)
 // ---------------------------------------------------------------------------
+//
+// The scheme is layered so a new binding has a rule to obey rather than a
+// precedent to copy. Four layers, and which modifier a key wears says which one
+// it is:
+//
+//   • bare keys  — belong to the overlay that is open (review, diff). Nothing
+//     bare is global, because bare keys reach the terminal.
+//   • Alt+…      — in-app navigation (j/k sessions, m main, d diff). The app
+//     already steals Alt+<letter> from the pty, so this layer is safe with a
+//     terminal focused, and it is where vim-style motion lives.
+//   • Ctrl+…     — the desktop-app idioms a user brings from elsewhere: new
+//     (n / Shift+n), switch tab (Tab / Shift+Tab), jump to what needs you
+//     (Space), zoom (= − 0), new shell (`), save (s). These *are* claimed by
+//     terminal programs (Ctrl+n is readline next-history, Ctrl+Space is NUL),
+//     so binding one shadows it in the pty — a deliberate trade the owner asked
+//     for, not an oversight. Ctrl+n and Ctrl+Tab are also browser-reserved in a
+//     plain tab and only reach us in the desktop webview; that is the primary
+//     target.
+//   • Escape     — dismiss the topmost thing: menu, then settings, then the
+//     open overlay.
+//
+//   ? opens the legend, which is the single source of truth a user can see.
+//   Keep it in step with these bindings — a scheme nobody can read is not
+//   predictable however consistent it is.
 
 window.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !$('keyhelp').hidden) {
+    e.preventDefault();
+    $('keyhelp').hidden = true;
+    return;
+  }
   // First, or Escape closes the overlay underneath and leaves the menu floating
   // over it.
   if (e.key === 'Escape' && menuOpen()) {
@@ -499,8 +529,17 @@ window.addEventListener('keydown', (e) => {
   }
   if (Diff.state.open) {
     if (e.key === 'Escape') { e.preventDefault(); Diff.close(); return; }
-    // Ctrl+←/→ steps through the changeset. Was F7/⇧F7 — one key doing two jobs
-    // by modifier, and a reach; the arrows read as "next/previous" on their own.
+    // j/k steps through the changeset, matching the review overlay's motion so
+    // "next/previous in a list" is one idiom everywhere. Guarded on not-typing
+    // because the diff hosts an editor. Ctrl+←/→ stays as an alias — it was the
+    // only binding before, so muscle memory keeps working; it was itself once
+    // F7/⇧F7, one key doing two jobs by modifier.
+    const typingInDiff = !!/** @type {HTMLElement} */ (e.target).closest?.('textarea, input, [contenteditable="true"]');
+    if (!typingInDiff && !e.ctrlKey && !e.altKey && !e.metaKey && (e.key === 'j' || e.key === 'k')) {
+      e.preventDefault();
+      Diff.step(e.key === 'j' ? 1 : -1);
+      return;
+    }
     if (e.ctrlKey && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
       e.preventDefault();
       Diff.step(e.key === 'ArrowLeft' ? -1 : 1);
@@ -513,13 +552,62 @@ window.addEventListener('keydown', (e) => {
     Diff.state.open ? Diff.close() : Diff.open();
     return;
   }
-  // Modifier combinations xterm does not claim, so they work with the terminal
-  // focused.
-  if (e.ctrlKey && e.key === '`') {
-    e.preventDefault();
-    newShell();
+  // The Ctrl layer: the desktop-app idioms (see the header). These knowingly
+  // shadow terminal keys, so the block ends with a bare `return` — any Ctrl
+  // combo it does not claim falls through to the pty *without* preventDefault,
+  // which is what keeps Ctrl+C an interrupt and Ctrl+S flow-control.
+  if (e.ctrlKey && !e.altKey && !e.metaKey) {
+    const k = e.key.toLowerCase();
+    if (e.key === '`') { e.preventDefault(); newShell(); return; }
+    if (k === 'n') {
+      e.preventDefault();
+      if (e.shiftKey) {
+        const main = snap.workspaces.find((w) => w.is_main);
+        if (main) newSession(main.id);
+      } else {
+        // The rail's + is the named variant (Shift+click); a hotkey takes the
+        // common case and lets Claude Code name it.
+        newWorktree(false);
+      }
+      return;
+    }
+    if (e.code === 'Space') {
+      // The first session waiting on you — the one costing you the most.
+      e.preventDefault();
+      const first = snap.sessions.find(isWaiting);
+      if (first) setSelected(first.id);
+      else toast('nothing waiting on you');
+      return;
+    }
+    if (e.key === 'Tab') {
+      // Conventional tab-switch, beside Alt+j/k's vim motion. Cyclic.
+      e.preventDefault();
+      const ordered = snap.sessions;
+      if (!ordered.length) return;
+      const idx = ordered.findIndex((s) => s.id === selected);
+      const step = e.shiftKey ? -1 : 1;
+      setSelected(ordered[(idx + step + ordered.length) % ordered.length].id);
+      return;
+    }
+    // Zoom. '=' shares its key with '+'; '_' rides '-'; the numpad spells both.
+    if (k === '=' || e.key === '+' || e.code === 'NumpadAdd') {
+      e.preventDefault(); saveZoom(setZoom(zoomScale + ZOOM.step)); return;
+    }
+    if (k === '-' || e.code === 'NumpadSubtract') {
+      e.preventDefault(); saveZoom(setZoom(zoomScale - ZOOM.step)); return;
+    }
+    if (e.key === '0' || e.code === 'Numpad0') {
+      e.preventDefault(); saveZoom(setZoom(ZOOM.def)); return;
+    }
     return;
   }
+
+  // `?` opens the legend — bare, so guarded against firing while you type one.
+  if (e.key === '?') {
+    const typing = !!/** @type {HTMLElement} */ (e.target).closest?.('textarea, input, [contenteditable="true"]');
+    if (!typing) { e.preventDefault(); $('keyhelp').hidden = !$('keyhelp').hidden; return; }
+  }
+
   if (!e.altKey || e.ctrlKey || e.metaKey) return;
 
   const ordered = snap.sessions;
@@ -530,13 +618,6 @@ window.addEventListener('keydown', (e) => {
     if (!ordered.length) return;
     const next = e.key === 'j' ? idx + 1 : idx - 1;
     setSelected(ordered[(next + ordered.length) % ordered.length].id);
-  } else if (e.key === 'b') {
-    // Next *blocked* session, which is the one costing you the most.
-    e.preventDefault();
-    const blocked = ordered.filter(isWaiting);
-    if (!blocked.length) return toast('nothing waiting on you');
-    const after = blocked.find((s) => ordered.indexOf(s) > idx) || blocked[0];
-    setSelected(after.id);
   } else if (e.key === 'm') {
     e.preventDefault();
     const main = snap.workspaces.find((w) => w.is_main);

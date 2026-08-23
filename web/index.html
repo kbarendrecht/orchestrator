@@ -265,6 +265,51 @@
   </div>
 </div>
 
+<div class="settings keyhelp" id="keyhelp" hidden>
+  <div class="settings-title">
+    Keyboard
+    <button class="settings-x" id="keyhelpx" type="button"
+            title="Close · Esc" aria-label="Close shortcuts">&#10005;</button>
+  </div>
+  <div class="settings-card">
+    <div class="settings-group">Navigate</div>
+    <dl class="keys">
+      <dt>Alt&nbsp;J&nbsp;/&nbsp;K</dt><dd>previous / next session</dd>
+      <dt>Ctrl&nbsp;Tab</dt><dd>next session (Shift: previous)</dd>
+      <dt>Ctrl&nbsp;Space</dt><dd>jump to the first session waiting on you</dd>
+      <dt>Alt&nbsp;M</dt><dd>focus main</dd>
+    </dl>
+
+    <div class="settings-group">Create</div>
+    <dl class="keys">
+      <dt>Ctrl&nbsp;N</dt><dd>new worktree</dd>
+      <dt>Ctrl&nbsp;Shift&nbsp;N</dt><dd>new session on main</dd>
+      <dt>Ctrl&nbsp;`</dt><dd>new shell</dd>
+    </dl>
+
+    <div class="settings-group">Overlays</div>
+    <dl class="keys">
+      <dt>Alt&nbsp;D</dt><dd>toggle the diff</dd>
+      <dt>J&nbsp;/&nbsp;K</dt><dd>previous / next changed file or review card</dd>
+      <dt>Enter</dt><dd>accept the review card</dd>
+      <dt>1&ndash;9 · S · M</dt><dd>pick a position · skip · do it yourself</dd>
+      <dt>Ctrl&nbsp;Enter</dt><dd>send the review batch</dd>
+      <dt>Esc</dt><dd>close the topmost overlay or menu</dd>
+    </dl>
+
+    <div class="settings-group">View</div>
+    <dl class="keys">
+      <dt>Ctrl&nbsp;=&nbsp;/&nbsp;&minus;</dt><dd>zoom in / out</dd>
+      <dt>Ctrl&nbsp;0</dt><dd>reset zoom</dd>
+      <dt>Ctrl&nbsp;Shift&nbsp;C&nbsp;/&nbsp;V</dt><dd>copy / paste in the terminal</dd>
+      <dt>Ctrl&nbsp;S</dt><dd>save the file being edited</dd>
+    </dl>
+
+    <p class="settings-help">Ctrl&nbsp;N and Ctrl&nbsp;Tab need the desktop app; a
+      browser tab keeps those for itself. Press <kbd>?</kbd> to toggle this list.</p>
+  </div>
+</div>
+
 <div class="ctxmenu" id="ctxmenu" role="menu" hidden></div>
 
 <div class="toast" id="toast"></div>
