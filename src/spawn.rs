@@ -719,17 +719,49 @@ pub async fn start_managed(
 /// This is what makes the drawer agnostic: it hosts whatever pty you point at
 /// it, and `ng-watch` is just the one main happens to declare (§2).
 pub async fn spawn_shell(app: &Arc<AppState>, workspace: &str) -> Result<String> {
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
+    spawn_in_drawer(app, workspace, "shell", &[shell], AfterDrawerExit::Nothing).await
+}
+
+/// What happens once a drawer job ends.
+///
+/// Dispatched by the *one* observer already waiting on that pty. §8b's rule —
+/// one pty exit, one observer — is what this exists to respect: a second
+/// `handle.wait()` for the follow-up would work today and rot the moment "is this
+/// over" has two answers maintained apart.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum AfterDrawerExit {
+    Nothing,
+    /// Re-check the agent version, so a successful upgrade clears the nudge that
+    /// prompted it instead of nagging until the next six-hourly poll.
+    RecheckAgentUpdate,
+}
+
+/// Run one command as a drawer process, with a shell's lifecycle.
+///
+/// Split out of `spawn_shell` so a one-off job — upgrading the agent, so far —
+/// gets the same hosting as a shell without a second exit observer: §8b's "one
+/// pty exit, one observer" is exactly the rule a copy-pasted watcher breaks, and
+/// the semantics wanted here are the shell's already. A clean exit removes the
+/// tab, a failure keeps it with its output, which is what you want from a job you
+/// pressed a button for and might need to read afterwards.
+pub async fn spawn_in_drawer(
+    app: &Arc<AppState>,
+    workspace: &str,
+    name: &str,
+    argv: &[String],
+    after: AfterDrawerExit,
+) -> Result<String> {
     let path = app
         .workspace_path(workspace)
         .await
         .with_context(|| format!("unknown workspace {workspace}"))?;
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
-    let spawned = PtyHandle::spawn(&[shell], &path, &[], &[], DEFAULT_SIZE)?;
-    let proc_id = format!("{workspace}:shell:{}", Uuid::new_v4().simple());
+    let spawned = PtyHandle::spawn(argv, &path, &[], &[], DEFAULT_SIZE)?;
+    let proc_id = format!("{workspace}:{name}:{}", Uuid::new_v4().simple());
 
     let process = Process {
         id: proc_id.clone(),
-        name: "shell".to_string(),
+        name: name.to_string(),
         kind: ProcKind::Shell { exit_code: None },
         // Shells get no health parsing and no restart policy.
         health: Health::Ok,
@@ -768,6 +800,15 @@ pub async fn spawn_shell(app: &Arc<AppState>, workspace: &str) -> Result<String>
                     };
                     p.health = Health::Dead;
                 }
+            }
+        }
+        // Onward, from the one place that knows this pty is finished. A failed run
+        // is re-checked too: the check is what decides whether the nudge stays, so
+        // asking after a failure is how the bar comes back honestly rather than
+        // being cleared on the assumption that a button press worked.
+        if after == AfterDrawerExit::RecheckAgentUpdate {
+            if let Err(e) = crate::agent_update::refresh(&app2).await {
+                tracing::warn!("re-checking the agent version after an upgrade failed: {e:#}");
             }
         }
         app2.notify().await;

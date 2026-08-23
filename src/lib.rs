@@ -4,6 +4,7 @@
 //! the other caller. Everything the two share — startup order, the router, the
 //! pollers — lives here so neither can drift from the other.
 
+pub mod agent_update;
 pub mod api;
 pub mod config;
 pub mod diff;
@@ -260,6 +261,8 @@ pub async fn start(opts: StartOptions) -> Result<Server> {
     // release build — which is what a downloaded/`mise`-installed one is — checks.
     if !cfg!(debug_assertions) {
         start_update_poller(app.clone());
+        // The agent's own version, which is the one that nags you in a terminal.
+        agent_update::start_poller(app.clone());
     }
 
     let router = router(app.clone());
@@ -366,6 +369,9 @@ fn router(app: Arc<AppState>) -> Router {
         .route("/api/window/:cmd", post(api::window_cmd))
         .route("/api/reviews/refresh", post(api::refresh_reviews))
         .route("/api/prs/refresh", post(api::refresh_prs))
+        // The agent's own version: check it now, and install it in the drawer.
+        .route("/api/agent/update/refresh", post(api::refresh_agent_update))
+        .route("/api/agent/upgrade", post(api::upgrade_agent))
         .route("/api/open", post(api::open_url))
         .route("/api/open/file", post(api::open_file))
         .route("/api/pr/:number/review", get(api::pr_review))

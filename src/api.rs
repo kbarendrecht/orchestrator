@@ -990,6 +990,49 @@ pub async fn new_shell(
     Ok(Json(json!({ "process": id })))
 }
 
+/// Upgrade the agent binary, in the drawer where you can watch it.
+///
+/// Deliberately not a blocking call that reports a toast: mise fetches and
+/// unpacks, so it takes long enough to want progress, and an upgrade that failed
+/// halfway is exactly the thing you need the output of.
+///
+/// Safe to press with sessions running, which is the whole reason it is a button:
+/// mise installs into a versioned directory and repoints, so a running `claude`
+/// keeps the image it loaded. Sessions in flight finish on the old version; the
+/// next one spawned gets the new. Nothing is restarted and nothing is asked of
+/// you afterwards.
+///
+/// Refuses when the poller has not found an update, rather than running `mise
+/// upgrade` on a hunch — the tool name comes from what mise reported, so without
+/// that there is nothing to name.
+pub async fn upgrade_agent(State(app): State<Arc<AppState>>) -> ApiResult<serde_json::Value> {
+    let pending = app.inner.read().await.agent_update.clone();
+    let Some(u) = pending else {
+        return Err(ApiError(anyhow::anyhow!(
+            "no agent update to install — refresh the check first"
+        )));
+    };
+    let argv = crate::agent_update::upgrade_argv(&u.tool);
+    // In main: the version mise resolves is the one that checkout's config pins,
+    // and the check that found this update ran there too.
+    let id = spawn::spawn_in_drawer(
+        &app,
+        MAIN,
+        "upgrade",
+        &argv,
+        spawn::AfterDrawerExit::RecheckAgentUpdate,
+    )
+    .await?;
+    Ok(Json(json!({ "process": id, "from": u.current, "to": u.latest })))
+}
+
+/// Re-run the agent version check now.
+pub async fn refresh_agent_update(State(app): State<Arc<AppState>>) -> ApiResult<serde_json::Value> {
+    crate::agent_update::refresh(&app).await?;
+    let now = app.inner.read().await.agent_update.clone();
+    Ok(Json(json!({ "update": now })))
+}
+
 pub async fn restart_process(
     State(app): State<Arc<AppState>>,
     Path((workspace, name)): Path<(String, String)>,

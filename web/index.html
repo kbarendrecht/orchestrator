@@ -174,6 +174,16 @@
   <span class="updatebar-x" id="updatex" role="button" title="Dismiss">&#10005;</span>
 </div>
 
+<!-- A newer Claude Code. Unlike the bar above this one acts: mise installs into a
+     versioned directory and repoints, so upgrading cannot disturb a session
+     already running — those finish on the old version and the next one spawned
+     gets the new. Hence a button rather than a link to instructions. -->
+<div class="updatebar agentbar" id="agentbar" hidden>
+  <span class="updatebar-link" id="agentmsg"></span>
+  <button class="agentgo" id="agentgo" type="button">Upgrade</button>
+  <span class="updatebar-x" id="agentx" role="button" title="Dismiss">&#10005;</span>
+</div>
+
 <!-- Right-click on a session row. Positioned at the cursor from script. -->
 <!-- Column splitters. Drag to resize, double-click to reset. Fixed strips over
      the grid's own boundaries, so the grid itself stays two variables wide. -->

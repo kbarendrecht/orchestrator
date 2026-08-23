@@ -693,6 +693,19 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
 .updatebar-link{color:var(--work);text-decoration:none}
 .updatebar-link:hover{text-decoration:underline}
 .updatebar-x{cursor:pointer}
+/* Both bars are fixed to the same spot, so the second drops below the first —
+   but only when the first is actually there, or it floats at an offset with
+   nothing above it. `renderUpdate` owns the class, since it is the thing that
+   knows whether the release bar is showing. */
+.agentbar.stacked{top:52px}
+.agentgo{
+  padding:2px 9px;border-radius:11px;border:1px solid var(--line);
+  background:var(--bg);color:var(--text);font-family:var(--mono);
+  font-size:calc(10px * var(--fs));cursor:pointer;
+  transition:background .12s,border-color .12s;
+}
+.agentgo:hover{background:var(--raised);border-color:var(--work)}
+.agentgo[disabled]{opacity:.55;cursor:default}
 
 /* ---------- diff overlay (§5) ---------- */
 /* Fixed to the centre column rather than filling the pane, so it covers the

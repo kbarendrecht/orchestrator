@@ -86,6 +86,9 @@ function render() {
   Queue.render();
   renderInteraction();
   renderUpdate();
+  // After `renderUpdate`, which decides whether the bar above this one is there
+  // and therefore whether this one is stacked.
+  renderAgentUpdate();
 }
 
 /** The question the selected session is blocked on.
@@ -185,8 +188,50 @@ function renderUpdate() {
   const link = /** @type {HTMLAnchorElement} */ ($('updatelink'));
   link.textContent = `Update available — v${u.latest} (you have v${u.current}). Run mise up`;
   link.href = u.url || '#';
-  $('updatex').onclick = () => { updateDismissed = u.latest; bar.hidden = true; };
+  $('updatex').onclick = () => { updateDismissed = u.latest; bar.hidden = true; renderAgentUpdate(); };
   keyActivate($('updatex'));
+  bar.hidden = false;
+}
+
+// As `updateDismissed`, for the agent: a newer version than the one waved away
+// speaks up again, the same one stays quiet until the next launch.
+let agentDismissed = null;
+
+function renderAgentUpdate() {
+  const bar = $('agentbar');
+  const u = snap.agent_update;
+  if (!u || agentDismissed === u.latest) { bar.hidden = true; return; }
+  // Below the release bar when that one is up, at the top when it is not.
+  bar.classList.toggle('stacked', !$('updatebar').hidden);
+  $('agentmsg').textContent = `Claude Code ${u.latest} available (you have ${u.current})`;
+  const go = /** @type {HTMLButtonElement} */ ($('agentgo'));
+  /* Derived from the drawer, not from a flag set on click. A local "in progress"
+     boolean has no way to learn that the run died, so it would sit disabled
+     forever; the process itself is the truth, and it removes itself on success or
+     stays as a dead tab on failure. */
+  const upgrading = (snap.workspaces.find((w) => w.is_main)?.processes ?? [])
+    .some((p) => p.name === 'upgrade' && p.alive);
+  go.disabled = upgrading;
+  go.textContent = upgrading ? 'Upgrading…' : 'Upgrade';
+  // Says the safe thing out loud, because "upgrade the tool my agents are
+  // running" reads risky and is not: mise repoints a versioned install, so a
+  // session already going keeps the binary it loaded.
+  go.title = `Runs \`mise upgrade ${u.tool}\` in the drawer. `
+    + 'Sessions already running are unaffected — they finish on the version they '
+    + 'started with, and the next session you open gets the new one.';
+  go.onclick = async () => {
+    try {
+      await call('/api/agent/upgrade');
+      // The drawer now has the run in it; watching it is the point. The button
+      // disables itself on the next snapshot, which is the one that carries the
+      // process — no local flag to get out of step with.
+      toast(`upgrading Claude Code to ${u.latest} — watch the drawer`);
+    } catch (e) {
+      toast(e.message, true);
+    }
+  };
+  $('agentx').onclick = () => { agentDismissed = u.latest; bar.hidden = true; };
+  keyActivate($('agentx'));
   bar.hidden = false;
 }
 

@@ -160,6 +160,10 @@ pub struct Inner {
     /// found one. Surfaced to the SPA as a dismissible nudge; the actual upgrade
     /// is `mise up`.
     pub update: Option<UpdateInfo>,
+    /// A newer Claude Code than the one installed, if the agent poller has found
+    /// one. Unlike `update` this one is actionable in place: upgrading cannot
+    /// disturb a running session, so the SPA offers a button rather than a link.
+    pub agent_update: Option<crate::agent_update::AgentUpdate>,
 }
 
 /// Mutating the three stores that outlive the daemon.
@@ -292,6 +296,7 @@ impl AppState {
                 locks_held: Vec::new(),
                 stack_up: None,
                 update: None,
+                agent_update: None,
             }),
             events,
             chrome,
@@ -469,6 +474,7 @@ impl AppState {
             upstream_ref: self.cfg.upstream_ref.clone(),
             stack_up: inner.stack_up,
             update: inner.update.clone(),
+            agent_update: inner.agent_update.clone(),
             resolve_runs: inner
                 .resolve_runs
                 .iter()
@@ -789,6 +795,9 @@ pub struct Snapshot {
     pub stack_up: Option<bool>,
     /// A newer release than the running build, or `None`.
     pub update: Option<UpdateInfo>,
+    /// A newer Claude Code than the installed one, or `None`. Actionable in the
+    /// UI: the upgrade cannot disturb a session already running.
+    pub agent_update: Option<crate::agent_update::AgentUpdate>,
     /// Resolve runs in flight, by PR: what each thread's outcome was so far. The
     /// overview reads this rather than the report of a batch that has finished,
     /// because a run is watchable while it happens.
