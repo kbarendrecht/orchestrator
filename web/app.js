@@ -697,7 +697,7 @@ function prMenu(p, btn) {
     ['open in main checkout', null, () => openPr(p.number, 'main')],
     ['open in worktree', null, () => openPr(p.number, 'worktree')],
     ['resolve', null, () => runResolve(p.number, btn)],
-    ['resolve in ui [beta]', null, () => openReview(p.number)],
+    ['resolve in ui [beta]', null, () => Review.open(p.number)],
   ];
 }
 
@@ -2102,6 +2102,15 @@ async function saveEditor() {
 // ---------------------------------------------------------------------------
 // Review overlay
 // ---------------------------------------------------------------------------
+
+/** The overlay, behind one seam.
+ *
+ *  Nineteen hundred lines and sixty-nine names, of which four are anybody
+ *  else's business — so they are the only ones that leave. The bodies are
+ *  deliberately left at their old indentation: re-indenting would turn a
+ *  reviewable ten-line change into a whole-file diff and prove nothing.
+ */
+const Review = (() => {
 
 /* Replaces typing `/resolve <pr>` into a terminal pane. The agent reads every
    thread and proposes; you go through them and decide. Nothing is written until
@@ -4001,6 +4010,12 @@ function reviewKey(e) {
   return false;
 }
 
+// The public surface. Everything else above is private by construction now,
+// which is the point: the rail reaches the overlay through these four or not
+// at all.
+return { state: reviewState, open: openReview, close: closeReview, key: reviewKey };
+})();
+
 // ---------------------------------------------------------------------------
 // Review queue (§6b)
 // ---------------------------------------------------------------------------
@@ -4275,27 +4290,27 @@ window.addEventListener('keydown', (e) => {
   /* The overlay wants bare Enter, j/k and digits, and this handler is registered
      with capture:true — it runs before any element listener wherever focus is.
      So the focus guard is not optional here the way it was for Escape/Ctrl+←/Alt+d. */
-  if (reviewState.open) {
+  if (Review.state.open) {
     const typing = !!e.target.closest?.('textarea, input, [contenteditable="true"]');
     if (e.key === 'Escape') {
       e.preventDefault();
       // Blur rather than close, or Escape out of a half-typed reply discards it.
       if (typing) e.target.blur();
-      else closeReview();
+      else Review.close();
       return;
     }
     if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
       e.preventDefault();
       // Through the button rather than straight to `sendBatch`, or the shortcut
       // sends a batch the button itself refuses — which it did until now.
-      if (reviewState.screen === 'final') {
+      if (Review.state.screen === 'final') {
         const send = $('rvoverlay').querySelector('.acts .act.warm');
         if (send && !send.disabled) send.click();
       }
       return;
     }
     // Alt is left alone so the session switcher keeps working underneath.
-    if (!typing && !e.altKey && !e.ctrlKey && !e.metaKey && reviewKey(e)) {
+    if (!typing && !e.altKey && !e.ctrlKey && !e.metaKey && Review.key(e)) {
       e.preventDefault();
       return;
     }
@@ -4312,7 +4327,7 @@ window.addEventListener('keydown', (e) => {
   }
   if (e.altKey && e.key === 'd') {
     e.preventDefault();
-    if (reviewState.open) return toast('close the review first');
+    if (Review.state.open) return toast('close the review first');
     diffState.open ? closeDiff() : openDiff();
     return;
   }

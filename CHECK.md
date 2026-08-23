@@ -131,7 +131,17 @@ the token, the idempotency and the branch coverage, not the round trip.
   consolidate now.
 - **Risk:** low — unit-tested, unexercised; adding the gate is additive.
 
-**H3 · `web/app.js` is a 4925-line monolith with no internal seams**
+**H3 · `web/app.js` is a 4925-line monolith with no internal seams** — *First
+section done.* The review overlay (~1900 lines, 69 names) is now behind
+`const Review = (() => { … })()` exporting exactly four: `state`, `open`,
+`close`, `key`. Measured before touching it — only those four were reached from
+outside, and the `queue`/`offered` hits the first pass reported were prose in
+comments, not code. The bodies keep their old indentation on purpose, so the
+change is 21 insertions rather than a whole-file reflow. Driven in Chrome
+against the running daemon: the four entries exist, the other 65 names are gone
+from `window`, `Review.open(10007)` renders the intake screen, `Review.close()`
+empties it, and a real Escape keystroke still closes it. Six sections remain
+(rail, terminals, diff, editable pane, review queue, settings).
 
 - **Problem:** seven feature areas (rail, terminals, diff, editable pane, review
   overlay at ~1900 lines, review queue, settings) are flat top-level functions
