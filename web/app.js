@@ -457,9 +457,9 @@ $('killbtn').onclick = () => {
 //   • bare keys  — the overlay that is open, and only while it is open (review
 //     cards, diff files). Nothing bare is global, because bare keys reach the
 //     terminal.
-//   • Ctrl+…     — the whole app: new worktree / session / shell (Shift+n,
-//     Shift+m, Shift+t), switch session (Tab / Shift+Tab), jump to what needs
-//     you (Space), the diff (Shift+d), zoom (= − 0), save (s).
+//   • Ctrl+…     — the whole app: new worktree / session / shell (n, Shift+n,
+//     Shift+t), switch session (Tab / Shift+Tab), jump to what needs you
+//     (Space), the diff (Shift+d), zoom (= − 0), save (s).
 //   • Escape is not a layer, it is one rule: dismiss the topmost thing —
 //     legend, then menu, then settings, then the open overlay.
 //
@@ -470,17 +470,17 @@ $('killbtn').onclick = () => {
 //
 // Two properties of the Ctrl layer worth knowing before extending it:
 //
-//   * Plain Ctrl+<letter> shadows the pty, so **prefer `Ctrl+Shift+…`** — the
-//     zone terminals leave alone, which is why copy/paste already live there.
-//     Every action worth a letter is spelled that way for exactly this reason:
-//     `Ctrl+Shift+d` for the diff, not `Ctrl+d`, which is EOF and still exits a
-//     shell; `Ctrl+Shift+n`/`m`/`t` for the three "new"s, not `Ctrl+n`, which is
-//     readline's next-history. `Ctrl+Space` (NUL, emacs set-mark) is the one
-//     plain-Ctrl key here that does take something from the terminal.
-//   * `Ctrl+Tab` and the `Ctrl+Shift+n`/`m` pair are browser-reserved (tab
-//     switch, incognito, profile) and never arrive in a plain tab; they work in
-//     the desktop webview, which is the primary target. The legend says so rather
-//     than leaving it to be discovered.
+//   * Plain Ctrl+<letter> shadows the pty, so **default to `Ctrl+Shift+…`** — the
+//     zone terminals leave alone, which is why copy/paste already live there. Take
+//     a plain letter only when the idiom is worth the key it costs, and say what
+//     the cost was: `Ctrl+n` is worth it (universal "new", costs readline's
+//     next-history), `Ctrl+d` is not (the diff is `Ctrl+Shift+d`, because `Ctrl+d`
+//     is EOF and still has to exit a shell). `Ctrl+n` and `Ctrl+Space` (NUL,
+//     emacs set-mark) are the two that currently take something.
+//   * `Ctrl+n`, `Ctrl+Shift+n` and `Ctrl+Tab` are browser-reserved (new window,
+//     incognito, tab switch) and never arrive in a plain tab; they work in the
+//     desktop webview, which is the primary target. The legend says so rather than
+//     leaving it to be discovered.
 //
 // `Ctrl+Shift+?` opens the legend, the one source of truth a user can see. Keep
 // it in step with these bindings — a scheme nobody can read is not predictable
@@ -576,20 +576,21 @@ window.addEventListener('keydown', (e) => {
       Diff.state.open ? Diff.close() : Diff.open();
       return;
     }
-    /* Both "new" chords wear Shift so plain Ctrl+N stays with the terminal, where
-       it is readline's next-history. That asymmetry is the reason: Ctrl+P
-       (previous-history) was never taken, so binding Ctrl+N left a half-working
-       pair — history that walks back but not forward — which is worse than
-       breaking neither. */
-    if (e.shiftKey && k === 'n') {
-      // The rail's + is the named variant (Shift+click); a hotkey takes the
-      // common case and lets Claude Code name it.
-      e.preventDefault(); newWorktree(false); return;
-    }
-    if (e.shiftKey && k === 'm') {
+    /* Ctrl+N keeps the "new" idiom every other app has trained into your fingers,
+       and that is worth its one cost: it is readline's next-history, so a shell
+       here walks history back with Ctrl+P but not forward. Weighed and accepted
+       (see the TODO entry) rather than overlooked — the sole user does not use it,
+       and a rebindable map is the real answer if that ever stops being true. */
+    if (k === 'n') {
       e.preventDefault();
-      const main = snap.workspaces.find((w) => w.is_main);
-      if (main) newSession(main.id);
+      if (e.shiftKey) {
+        const main = snap.workspaces.find((w) => w.is_main);
+        if (main) newSession(main.id);
+      } else {
+        // The rail's + is the named variant (Shift+click); a hotkey takes the
+        // common case and lets Claude Code name it.
+        newWorktree(false);
+      }
       return;
     }
     if (e.code === 'Space') {

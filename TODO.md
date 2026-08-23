@@ -366,8 +366,8 @@ Everything outside that block is hand-written and survives.
   `Ctrl` is the whole app, `Esc` dismisses the topmost thing** — so the next
   binding has a rule to obey rather than a precedent to copy. Do not reintroduce
   `Alt` to dodge a collision; `Ctrl+Shift` is the escape hatch.
-  - Orphan actions bound: `Ctrl+Shift+N` new worktree, `Ctrl+Shift+M` new session
-    on main, `Ctrl+Shift+T` (and `Ctrl+`` `) new shell, `Ctrl+Shift+D` the diff,
+  - Orphan actions bound: `Ctrl+N` new worktree, `Ctrl+Shift+N` new session on
+    main, `Ctrl+Shift+T` (and `Ctrl+`` `) new shell, `Ctrl+Shift+D` the diff,
     `Ctrl+Space` the first session waiting on you, `Ctrl+Tab`/`Ctrl+Shift+Tab`
     session switch, `Ctrl+=`/`−`/`0` zoom — which was mouse-only.
   - List motion is one idiom: the diff overlay took bare `j/k` like the review
@@ -376,15 +376,26 @@ Everything outside that block is hand-written and survives.
     because a scheme nobody can read is not predictable however consistent.
 
   Two properties of the `Ctrl` layer, recorded so they do not read later as
-  oversights. Plain `Ctrl+<letter>` **shadows the pty**, so every action worth a
-  letter is spelled `Ctrl+Shift+…`, the zone terminals do not send: the diff is
-  `Ctrl+Shift+D` not `Ctrl+D` (still EOF), and the three "new"s are
-  `Ctrl+Shift+N`/`M`/`T` not `Ctrl+N` — which was bound first and was the audit's
-  own worst offender, being readline's next-history *while `Ctrl+P` stayed free*,
-  so history walked back but not forward. `Ctrl+Space` (NUL, emacs set-mark) is
-  the one plain-Ctrl key that still takes something. And `Ctrl+Tab` plus
-  `Ctrl+Shift+N`/`M` are browser-reserved, so they only arrive in the desktop
-  webview; the legend says so.
+  oversights. Plain `Ctrl+<letter>` **shadows the pty**, so the default is
+  `Ctrl+Shift+…` — the zone terminals do not send — and a plain letter is taken
+  only where the idiom earns the key: the diff is `Ctrl+Shift+D` because `Ctrl+D`
+  is EOF and still has to exit a shell, while `Ctrl+N` **is** taken, because
+  "Ctrl+N is new" is worth more than what it costs. What it costs, stated plainly
+  and decided rather than missed: `Ctrl+N` is readline's next-history and `Ctrl+P`
+  is not bound, so a shell here walks history back but not forward. It was briefly
+  moved to `Ctrl+Shift+N`/`M` to avoid that and moved back — the sole user does not
+  use `Ctrl+N` at a prompt, and the muscle memory is worth more than the asymmetry.
+  `Ctrl+Space` (NUL, emacs set-mark) is the other plain-Ctrl key that takes
+  something. `Ctrl+N`, `Ctrl+Shift+N` and `Ctrl+Tab` are browser-reserved, so they
+  only arrive in the desktop webview; the legend says so, and says the `Ctrl+N`
+  trade too.
+
+  **The real answer, when there is a second user: make the map rebindable.** Every
+  binding lives in one `keydown` handler with a stated layer rule, so the shape is
+  already right for it — a table of action → chord, a settings pane over it, and
+  the legend rendered from the same table instead of hand-written HTML (which is
+  the one thing today that can silently drift from the code). Not worth building
+  for one user who can edit `app.js`.
 
   The legend itself moved off a bare `?` for the reason the contract already
   gave and the first implementation ignored: xterm's input is a `<textarea>`, so
