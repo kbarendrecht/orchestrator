@@ -151,6 +151,10 @@ mod tests {
             ("fix-pr", FIX_PR),
             ("story", STORY),
             ("resolve", RESOLVE),
+            // The newest and most interpolated of them, and the one this guard
+            // was missing: `resolve-run.md` carries three built URLs, so it is
+            // the likeliest to gain a placeholder nobody substitutes.
+            ("resolve-run", RESOLVE_RUN),
         ] {
             let out = render(t, &vars()).unwrap_or_else(|e| panic!("{name}: {e}"));
             assert!(!out.contains("{{"), "{name} still has a placeholder");

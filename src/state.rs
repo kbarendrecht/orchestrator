@@ -401,6 +401,7 @@ impl AppState {
             reviews_polling: inner.reviews_polling,
             automation: inner.automation.by_pr.clone(),
             repos: self.repos.clone(),
+            upstream_ref: self.cfg.upstream_ref.clone(),
             stack_up: inner.stack_up,
             update: inner.update.clone(),
             resolve_runs: inner
@@ -700,6 +701,12 @@ pub struct Snapshot {
     pub reviews_polling: bool,
     pub automation: HashMap<u64, crate::fix_pr::PrAutomation>,
     pub repos: Repos,
+    /// The base `behind`/`ahead` are measured against, e.g. `upstream/develop`.
+    ///
+    /// Sent because it is a setting: the divergence strip used to print the
+    /// default as a literal, so on any repo that had edited it the UI named a ref
+    /// the numbers did not come from.
+    pub upstream_ref: String,
     /// `docker compose` stack has running containers; `None` before first probe.
     pub stack_up: Option<bool>,
     /// A newer release than the running build, or `None`.

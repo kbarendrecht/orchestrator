@@ -256,11 +256,14 @@ since the panel was never saved. No page errors anywhere.
   `open_pr`'s `"main"` arm inlines occupancy + `is_clean` + `switch_branch`
   while its `"worktree"` arm is a one-line delegate. *Direction:*
   `worktree::revive` and `spawn::switch_main_to_pr` so both arms are delegates.
-- **M5 · Divergence banner hardcodes `upstream/develop`.** `app.js` prints the
-  literal string although `upstream_ref` is an editable setting and the daemon
-  computes behind/ahead against the configured ref — so on any non-default
-  config the UI lies. *Direction:* put `upstream_ref` in the snapshot and
-  interpolate it.
+- **M5 · Divergence banner hardcoded `upstream/develop`.** *Fixed.* The ref is a
+  snapshot field now and the strip interpolates it, so the name beside the
+  numbers is the ref they were measured against. Verified the only way it could
+  be: a daemon started against an isolated `HOME` whose config named
+  `origin/develop` — a real ref, deliberately not the default — where the strip
+  reads `1 behind origin/develop, 288 ahead` and the button `git rebase
+  origin/develop in main`. Against the default config the bug was invisible,
+  which is why it survived.
 
 ### LOW
 
@@ -271,9 +274,11 @@ since the panel was never saved. No page errors anywhere.
 - **L2 · resolve-run record is memory-only** — lost on restart while its commits
   survive. Already a TODO known-gap; located here for precision. Persist beside
   `plan.json` with the pattern `manual`/`automation` already use.
-- **L3 · `prompt.rs`'s render test omits `RESOLVE_RUN`** — the newest, most
-  interpolated prompt is the one not covered by the "nothing left over" guard.
-  One line.
+- **L3 · `prompt.rs`'s render test omitted `RESOLVE_RUN`.** *Fixed.* The newest
+  and most interpolated prompt (three built URLs) is now in the "nothing left
+  over" guard. Checked the guard actually bites: appending a bogus `{{…}}` to
+  `commands/resolve-run.md` fails the test, so it is covering the file rather
+  than passing on a template with nothing to substitute.
 - **L4 · Stringly-typed route classification.** `is_ask` (path suffix) and
   `SPENDS_GITHUB_TOKEN` (hand-maintained list) grow by convention; the list's
   own comment records once being forgotten. Advisory only.

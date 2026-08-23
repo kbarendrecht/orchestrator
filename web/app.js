@@ -1435,10 +1435,14 @@ let pendingProcFocus = null;
 // Files — changed files for the selected session's workspace (§9)
 // ---------------------------------------------------------------------------
 
-/** Behind/ahead against upstream/develop, with the one action worth offering.
+/** Behind/ahead against the configured base, with the one action worth offering.
  *
  *  The changed-file list is a poor summary of a branch that has simply fallen
- *  behind: what you want then is to take develop in, not to read a list. */
+ *  behind: what you want then is to take the base in, not to read a list.
+ *
+ *  The ref comes from the snapshot rather than being written here: it is a
+ *  setting, and this used to print the default as a literal — so a repo that had
+ *  edited it read the wrong ref beside numbers measured against the right one. */
 function renderDivergence(w) {
   const box = $('diverge');
   box.replaceChildren();
@@ -1462,11 +1466,12 @@ function renderDivergence(w) {
 
   box.className = 'diverge on';
   const ahead = w.ahead ? `, ${w.ahead} ahead` : '';
+  const base = snap.upstream_ref || 'the base';
   box.appendChild(el('span', 'dvtext',
-    `${w.behind} behind upstream/develop${ahead}`));
+    `${w.behind} behind ${base}${ahead}`));
   const b = el('button', 'dvbtn', 'Rebase');
   // Never a merge: history stays linear.
-  b.title = `git rebase upstream/develop in ${w.id}`;
+  b.title = `git rebase ${base} in ${w.id}`;
   b.onclick = async () => {
     b.disabled = true;
     await act(`/api/workspace/${encodeURIComponent(w.id)}/rebase`, 'rebased');
