@@ -20,6 +20,7 @@ pub mod post;
 pub mod prompt;
 pub mod proposal;
 pub mod pty;
+pub mod review_commit;
 pub mod reviews;
 pub mod ring;
 pub mod spawn;

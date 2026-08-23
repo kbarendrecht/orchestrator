@@ -253,11 +253,26 @@ since the panel was never saved. No page errors anywhere.
   PR (see the note under M4 about the guard), and killing it exercised exactly
   this path — the single watcher saw the exit, dispatched to `settle`, and because
   the PR was green the record was correctly removed rather than marked exhausted.
-- **M2 · `git.rs` carries review-batch commit policy (~500 lines).**
-  `amend_target`/`fold_in`/`pre_commit`/`Amend`/`PreCommit` encode batch domain
-  policy, and `patch.rs` is their only caller; the file's own section comment
-  (`// The review flow's writes`) admits it. *Direction:* move to
-  `review_commit.rs` or into `patch.rs`. Pure code motion.
+- **M2 · `git.rs` carried review-batch commit policy.** *Partly fixed, and the
+  compiler drew the line.* `Amend`, `head_or_on_top` and `amend_target` are now
+  `src/review_commit.rs` — the *decision* about whose commit may be rewritten and
+  when a fixup has to degrade to a plain commit on top. Pure motion: the bodies
+  are byte-identical apart from qualifying the five read-only query helpers they
+  lean on (`authors_in`, `is_merge`, `short`, `rev_exists`, `is_ancestor`, now
+  `pub(crate)`).
+
+  The first attempt also moved `fold_in` and `pre_commit`, as the direction said,
+  and the compiler listed the price: `git`, `git_ok`, `conflicted_files`,
+  `rebase_in_progress`, `rebase_abort`. Those two are *mechanism* — they execute
+  the decision and handle rebase and hook plumbing — so moving them would have
+  meant widening six more of `git.rs`'s internals to the crate in order to take
+  code out of it, trading one altitude problem for a worse one. They stayed, and
+  `fold_in` now takes `&review_commit::Amend`: decide here, do there, with the
+  dependency pointing the right way.
+
+  Left over: `git.rs`'s `// The review flow's writes` section still holds the
+  write half. Defensible now the policy is gone, but worth revisiting if
+  `patch.rs` ever grows a second consumer.
 - **M3 · `spawn.rs`'s health parser mutates session state, duplicating
   `hooks.rs`.** `scan()` flips `BuildFailing`/`YourTurn` from inside the process
   module — the same transition `hooks.rs::stop` derives independently, with

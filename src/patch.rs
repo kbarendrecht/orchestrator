@@ -259,7 +259,7 @@ pub fn write_batch(
     // 1. Blame before anything touches the tree.
     // No rev: nothing has been applied yet, so the working tree *is* the
     // committed state and blaming it is correct.
-    let amend = crate::git::amend_target(cwd, None, merge_base, touched, my_email)?;
+    let amend = crate::review_commit::amend_target(cwd, None, merge_base, touched, my_email)?;
 
     // 2. The ladder.
     let files = match check(cwd, patches)? {
@@ -311,13 +311,13 @@ pub fn write_batch(
     Ok(Written::Committed {
         files,
         amend: match amend {
-            crate::git::Amend::Fixup(sha) => {
+            crate::review_commit::Amend::Fixup(sha) => {
                 format!("folded into {}", sha.chars().take(7).collect::<String>())
             }
-            crate::git::Amend::Head(why) => format!("amended HEAD — {why}"),
+            crate::review_commit::Amend::Head(why) => format!("amended HEAD — {why}"),
             // Worth naming differently: an amend leaves the branch's shape alone
             // and a new commit does not.
-            crate::git::Amend::OnTop(why) => format!("committed on top — {why}"),
+            crate::review_commit::Amend::OnTop(why) => format!("committed on top — {why}"),
         },
     })
 }
@@ -429,7 +429,7 @@ pub fn write_manual(
         // Through the shared constructor, never `Amend::Head` directly: it is the
         // only thing that checks whether HEAD is ours to rewrite, and building one
         // here walked straight past it.
-        crate::git::head_or_on_top(
+        crate::review_commit::head_or_on_top(
             cwd,
             crate::git::effective_email(cwd).as_deref(),
             format!(
@@ -439,7 +439,7 @@ pub fn write_manual(
             ),
         )
     } else {
-        crate::git::amend_target(cwd, Some("HEAD"), merge_base, &usable, my_email)?
+        crate::review_commit::amend_target(cwd, Some("HEAD"), merge_base, &usable, my_email)?
     };
 
     match crate::git::pre_commit(cwd, &paths)? {
@@ -469,13 +469,13 @@ pub fn write_manual(
     Ok(Written::Committed {
         files,
         amend: match amend {
-            crate::git::Amend::Fixup(sha) => {
+            crate::review_commit::Amend::Fixup(sha) => {
                 format!("folded into {}", sha.chars().take(7).collect::<String>())
             }
-            crate::git::Amend::Head(why) => format!("amended HEAD — {why}"),
+            crate::review_commit::Amend::Head(why) => format!("amended HEAD — {why}"),
             // Worth naming differently: an amend leaves the branch's shape alone
             // and a new commit does not.
-            crate::git::Amend::OnTop(why) => format!("committed on top — {why}"),
+            crate::review_commit::Amend::OnTop(why) => format!("committed on top — {why}"),
         },
     })
 }

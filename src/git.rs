@@ -751,20 +751,6 @@ pub fn blame_line(cwd: &Path, rev: Option<&str>, path: &str, line: u32) -> Resul
     }))
 }
 
-/// Where the accepted changes should be folded.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Amend {
-    /// Fold into this commit of the PR's own history, keeping the subject of
-    /// each commit true to what it contains.
-    Fixup(String),
-    /// Amend `HEAD` instead, with the reason — shown so the fallback is visible
-    /// rather than silent.
-    Head(String),
-    /// Make a **new** commit, because rewriting anything here would rewrite work
-    /// that is not ours. The reason is shown for the same purpose.
-    OnTop(String),
-}
-
 /// Who git will actually author a commit as, asked of git rather than of config.
 ///
 /// `git config user.email` is empty in a container that never set one — and git
@@ -797,7 +783,7 @@ pub fn effective_email(cwd: &Path) -> Option<String> {
 /// involved" and authorise a rewrite. Takes the arguments as a slice because
 /// `["-1 HEAD"]` is one argument git cannot parse — which is how the first draft of
 /// this check silently never fired.
-fn authors_in(cwd: &Path, args: &[&str]) -> Option<Vec<String>> {
+pub(crate) fn authors_in(cwd: &Path, args: &[&str]) -> Option<Vec<String>> {
     let mut argv = vec!["log", "--format=%ae"];
     argv.extend_from_slice(args);
     let out = Command::new("git")
@@ -816,7 +802,7 @@ fn authors_in(cwd: &Path, args: &[&str]) -> Option<Vec<String>> {
 }
 
 /// Does `rev` have more than one parent?
-fn is_merge(cwd: &Path, rev: &str) -> bool {
+pub(crate) fn is_merge(cwd: &Path, rev: &str) -> bool {
     Command::new("git")
         .args(["rev-list", "--parents", "-n", "1", rev])
         .current_dir(cwd)
@@ -832,135 +818,17 @@ fn is_merge(cwd: &Path, rev: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// The **only** way to build an [`Amend::Head`].
-///
-/// Amending `HEAD` rewrites it, so the "someone else authored it" guard above is
-/// worthless if the fallback then rewrites `HEAD` regardless — which is exactly
-/// what happened: `Amend::Head("<sha> is <email>'s commit")` was a value whose own
-/// text said it had refused, handed to a `git commit --amend`.
-///
-/// Note the discriminator is **authorship, not publication**. It has to be: a batch
-/// only starts when the branch is level with origin, so `HEAD` is always already
-/// pushed. The question is never "has anyone seen this commit", it is "is it mine
-/// to rewrite".
-pub fn head_or_on_top(cwd: &Path, my_email: Option<&str>, why: String) -> Amend {
-    let Some(mine) = my_email else {
-        return Amend::OnTop(format!(
-            "{why}, and git has no identity here so no commit can be shown to be yours"
-        ));
-    };
-    if is_merge(cwd, "HEAD") {
-        return Amend::OnTop(format!("{why}, and HEAD is a merge"));
-    }
-    match authors_in(cwd, &["-n", "1", "HEAD"]).as_deref() {
-        Some([author, ..]) if author != mine => {
-            Amend::OnTop(format!("{why}, and HEAD is {author}'s commit"))
-        }
-        Some(_) => Amend::Head(why),
-        None => Amend::OnTop(format!("{why}, and who wrote HEAD could not be read")),
-    }
-}
-
-/// Decide the fixup target for a set of touched lines, degrading to `HEAD`.
-///
-/// The original command asked a human to fold each change "into the commit that
-/// owns it"; `git blame` answers that mechanically. Three cases degrade, each
-/// deliberately:
-///
-/// - **the lines disagree** — one commit cannot be two, and splitting the batch
-///   per target is more history surgery than this is worth;
-/// - **the line came from the base branch** — it is not the PR's commit to
-///   rewrite;
-/// - **someone else authored it** — rewriting a colleague's commit under your own
-///   force-push is not ours to do, and it changes a sha they may have checked out.
-pub fn amend_target(
-    cwd: &Path,
-    rev: Option<&str>,
-    merge_base: &str,
-    touched: &[(String, u32)],
-    my_email: &str,
-) -> Result<Amend> {
-    // The caller's identity wins; `effective_email` is the fallback for when it is
-    // empty, which is what `git config user.email` returns in a container that never
-    // set one — git still commits there, as `you@hostname`, so "no identity" must not
-    // be read as "every commit belongs to somebody else".
-    let mine = Some(my_email.trim().to_lowercase())
-        .filter(|e| !e.is_empty())
-        .or_else(|| effective_email(cwd));
-    let degrade = |why: String| head_or_on_top(cwd, mine.as_deref(), why);
-
-    if touched.is_empty() {
-        return Ok(degrade("nothing to attribute".into()));
-    }
-
-    let mut target: Option<Blame> = None;
-    for (path, line) in touched {
-        let Some(b) = blame_line(cwd, rev, path, *line)? else {
-            return Ok(degrade(format!("{path}:{line} is not in any commit yet")));
-        };
-        match &target {
-            None => target = Some(b),
-            Some(t) if t.sha == b.sha => {}
-            Some(t) => {
-                return Ok(degrade(format!(
-                    "the changes span {} and {}",
-                    short(&t.sha),
-                    short(&b.sha)
-                )))
-            }
-        }
-    }
-    let hit = target.expect("non-empty touched set");
-
-    // An ancestor of the merge base came from the base branch, not this PR.
-    if is_ancestor(cwd, &hit.sha, merge_base) {
-        return Ok(degrade(format!("{} predates this branch", short(&hit.sha))));
-    }
-
-    // **The whole range, not just the target.** `fold_in` autosquashes with
-    // `rebase -i <sha>~1`, which replays every commit from `<sha>` to `HEAD` and
-    // gives each a new sha — so a colleague's commit sitting *on top* of the one
-    // that owns this line is rewritten and force-pushed, without this path ever
-    // being taken. Checking only `hit.author_email` guarded the target and left
-    // its descendants wide open.
-    let range = format!("{}^..HEAD", hit.sha);
-    let in_range = authors_in(cwd, &[&range]).or_else(|| {
-        // No `^` on a root commit, so ask for the commit itself.
-        authors_in(cwd, &["-n", "1", &hit.sha])
-    });
-    match in_range {
-        None => return Ok(degrade("who wrote this branch could not be read".into())),
-        Some(authors) => {
-            if let Some(other) = authors.iter().find(|a| Some(a.as_str()) != mine.as_deref()) {
-                return Ok(degrade(format!(
-                    "folding into {} would rewrite {}'s commit above it",
-                    short(&hit.sha),
-                    other
-                )));
-            }
-        }
-    }
-    // A root commit has no `~1` for the rebase to start from.
-    if !rev_exists(cwd, &format!("{}~1", hit.sha)) {
-        return Ok(degrade(format!(
-            "{} is the first commit, so there is nothing to rebase onto",
-            short(&hit.sha)
-        )));
-    }
-    Ok(Amend::Fixup(hit.sha))
-}
-
-fn short(sha: &str) -> String {
+pub(crate) fn short(sha: &str) -> String {
     sha.chars().take(7).collect()
 }
 
 /// Does this revision resolve?
-fn rev_exists(cwd: &Path, rev: &str) -> bool {
+pub(crate) fn rev_exists(cwd: &Path, rev: &str) -> bool {
     git_ok(cwd, &["rev-parse", "--verify", "--quiet", rev])
 }
 
 /// Is `a` an ancestor of `b`? Exit status only, so a failure means "no".
-fn is_ancestor(cwd: &Path, a: &str, b: &str) -> bool {
+pub(crate) fn is_ancestor(cwd: &Path, a: &str, b: &str) -> bool {
     Command::new("git")
         .args(["merge-base", "--is-ancestor", a, b])
         .current_dir(cwd)
@@ -979,7 +847,8 @@ fn is_ancestor(cwd: &Path, a: &str, b: &str) -> bool {
 /// A conflict during the rebase aborts and reports: there is no session attached
 /// to a button press to resolve one, and leaving a stopped rebase behind would
 /// strand the worktree.
-pub fn fold_in(cwd: &Path, amend: &Amend) -> Result<()> {
+pub fn fold_in(cwd: &Path, amend: &crate::review_commit::Amend) -> Result<()> {
+    use crate::review_commit::Amend;
     git(cwd, &["add", "-A"])?;
     match amend {
         Amend::OnTop(why) => {
@@ -1178,6 +1047,9 @@ fn hash_one(cwd: &Path, rel: &str) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // The amend-target cases moved with nothing but their names: the fixture they
+    // share with the blame tests stayed here, so they reach across for `Amend`.
+    use crate::review_commit::*;
 
     #[test]
     fn upstream_fetch_argv_is_config_driven_not_hardcoded() {
