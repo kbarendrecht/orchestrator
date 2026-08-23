@@ -520,6 +520,27 @@ impl Config {
                 );
             }
         }
+        /* Resolved once, here, so every path derived from it is resolved too —
+           `worktrees_dir`, `worktree_path`, and so the workspace paths that
+           `workspace_for_path` matches hook paths against.
+
+           That match is the reason. A `PostToolUse` path goes through
+           `canonicalize` before it is attributed (`hooks.rs`, so a `.plan/`
+           symlink lands in the right pane), and comparing a resolved path against
+           an unresolved workspace root simply fails: the edit is attributed to no
+           workspace and quietly never reaches the changed-files pane. Only the
+           `--main` argument was resolved before this, so a checkout named in
+           `config.json` was not.
+
+           Latent on Linux, where `$HOME` rarely contains a symlink, and much less
+           so on macOS: `/tmp`, `/var` and therefore `$TMPDIR` are all symlinks
+           into `/private`.
+
+           Falling back to the value as written is deliberate — a path that does
+           not resolve yet is `validate`'s complaint to make, with the checkout it
+           actually names, not something this silently rewrites. */
+        cfg.main_checkout =
+            std::fs::canonicalize(&cfg.main_checkout).unwrap_or(cfg.main_checkout);
         Ok(cfg)
     }
 
@@ -858,6 +879,53 @@ mod tests {
         let cfg = Config::default_for(PathBuf::from("/tmp/x"));
         assert_eq!(cfg.forge, ForgeKind::GitHub);
         assert_eq!(cfg.reviews_command, vec!["mise", "run", "reviews", "--json"]);
+    }
+
+    /// A checkout reached through a symlink has to resolve to the real path, or
+    /// hook attribution silently stops working: `PostToolUse` resolves the edited
+    /// path, and comparing that against an unresolved workspace root matches
+    /// nothing, so the edit never reaches the changed-files pane. Only `--main`
+    /// was resolved before; a `config.json` checkout was not.
+    ///
+    /// macOS makes this ordinary rather than exotic — `/tmp`, `/var` and `$TMPDIR`
+    /// are symlinks into `/private`.
+    #[test]
+    fn a_checkout_reached_through_a_symlink_resolves_to_the_real_path() {
+        let base = std::env::temp_dir().join(format!(
+            "orchd-symlink-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&base);
+        let real = base.join("real-checkout");
+        std::fs::create_dir_all(&real).expect("mkdir");
+        let link = base.join("via-link");
+        std::os::unix::fs::symlink(&real, &link).expect("symlink");
+
+        let cfg = Config::parse(&format!(
+            r#"{{"main_checkout":"{}"}}"#,
+            link.to_string_lossy()
+        ))
+        .expect("parse");
+
+        let expected = std::fs::canonicalize(&real).expect("canonicalize");
+        assert_eq!(
+            cfg.main_checkout, expected,
+            "the symlink must be resolved, or hook paths match no workspace"
+        );
+        // And the derived paths inherit it, which is the point — those are what
+        // `workspace_for_path` compares against.
+        assert!(cfg.worktrees_dir().starts_with(&expected));
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn a_checkout_that_does_not_exist_is_left_as_written() {
+        // `validate` is what complains about a missing checkout, and it should
+        // name the path the user wrote rather than something rewritten here.
+        let cfg = Config::parse(r#"{"main_checkout":"/nope/not/here"}"#).expect("parse");
+        assert_eq!(cfg.main_checkout, Path::new("/nope/not/here"));
     }
 
     #[test]

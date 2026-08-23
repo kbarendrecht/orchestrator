@@ -142,6 +142,15 @@ port, so a second instance refuses to start rather than fighting over
   named. `reviews::run_bounded` enforces the deadline in Rust instead. Every other
   command the daemon spawns is POSIX (`git`, `curl`, `gh`, `ps`, `which`, `kill`) —
   keep it that way, and check `command -v` before reaching for a GNU flag.
+- **Paths are resolved at one boundary, and comparing across it silently fails.**
+  `main_checkout` is `canonicalize`d in `Config::parse`, so `worktrees_dir` and
+  `worktree_path` are resolved too, and the agent-reported cwd is resolved where a
+  delegated worktree is adopted. That is what lets `workspace_for_path` match the
+  resolved paths `PostToolUse` hands it — an unresolved workspace root matches
+  nothing, and the symptom is not an error but an edit that never appears in the
+  changed-files pane. Do not introduce a workspace path that skipped that step.
+  Barely visible on Linux; on macOS `/tmp`, `/var` and `$TMPDIR` are symlinks into
+  `/private`, so it is the normal case.
 - **A `/proc` read is a portability bug that compiles.** Two guards stat'd `/proc`
   and so answered *wrongly*, not loudly, off Linux: `pid_alive` read every session
   as dead (teardown would delete a worktree with a live agent — it fails open), and

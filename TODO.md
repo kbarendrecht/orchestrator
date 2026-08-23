@@ -349,12 +349,28 @@ Everything outside that block is hand-written and survives.
     tests prove it through a real `sh` in a directory with a space — with the
     unquoted form asserted to fail, or the test would prove nothing.
 
+  - **Symlinked checkouts resolve once, at parse.** `PostToolUse` runs the edited
+    path through `canonicalize` before attributing it (so a `.plan/` symlink lands
+    in the right pane), but `workspace_for_path` compared that against workspace
+    roots that were *not* resolved — only the `--main` argument ever was, so a
+    checkout named in `config.json` was not. A resolved path against an unresolved
+    root matches nothing, so the edit was attributed to no workspace and never
+    reached the changed-files pane. `parse` now resolves `main_checkout` once, so
+    `worktrees_dir`/`worktree_path` inherit it, and the agent-reported cwd that
+    adopts a delegated worktree is resolved at the same boundary. A path that does
+    not resolve is left as written, because that is `validate`'s complaint to make.
+    Latent on Linux; ordinary on macOS, where `/tmp`, `/var` and `$TMPDIR` are all
+    symlinks into `/private`. There was no test for `workspace_for_path` at all;
+    the new one was checked against the unfixed code and does fail without it.
+
   A sweep for the same class of thing found nothing else: every other external
   command is POSIX (`git`, `curl`, `gh`, `ps`, `which`, `kill <pid>` for SIGTERM),
   and the only hardcoded absolute path is a `/bin/bash` fallback for an unset
-  `$SHELL`. One thing left alone: APFS is case-insensitive by default, so two
-  worktrees differing only in case would collide — theoretical, and the daemon
-  already refuses a duplicate name.
+  `$SHELL`. Two things left alone deliberately: APFS is case-insensitive by
+  default, so two worktrees differing only in case would collide — theoretical, and
+  the daemon already refuses a duplicate name; and `ps -o command=` can truncate to
+  terminal width on macOS, which does not matter while the check is a `contains`
+  against a binary path that appears at the front.
 
   Shipping: `release.yml` is a matrix and builds `aarch64-macos` beside
   `x86_64-linux` (Apple Silicon only — every Mac since 2020; Intel doubles macOS

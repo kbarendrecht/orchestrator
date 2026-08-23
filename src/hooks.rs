@@ -111,7 +111,15 @@ pub async fn session_start(
     // A worktree the daemon did not name only reveals its path here, so this is
     // where it gets adopted.
     if let Some(cwd) = payload.cwd.as_deref() {
+        // Resolved, because it is compared against `worktrees_dir` — which comes
+        // from `main_checkout` and is resolved at parse — and because the path
+        // registered here is what `workspace_for_path` matches resolved hook
+        // paths against. An agent reporting `/var/…` where the config resolved to
+        // `/private/var/…` would be adopted as no worktree at all, or as one whose
+        // edits never attribute. Falls back to what was reported: a cwd that does
+        // not resolve is not a reason to drop the adoption.
         let path = PathBuf::from(cwd);
+        let path = std::fs::canonicalize(&path).unwrap_or(path);
         if let Some(name) = crate::spawn::worktree_name_of(&path, &app.cfg.worktrees_dir()) {
             let branch = crate::git::current_branch(&path).ok();
             app.register_worktree(&name, path.clone(), branch).await;
