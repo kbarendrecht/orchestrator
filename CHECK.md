@@ -298,11 +298,23 @@ since the panel was never saved. No page errors anywhere.
   the recovery line. The session-flip half was not driven — that needs a live
   agent session sitting at `YourTurn` — but the mapping it now shares is the same
   code the parser path exercised, and the nine parser tests moved with it.
-- **M4 · api.rs handlers inline orchestration owned elsewhere.** `revive()`
-  inlines worktree rebuild (`worktree.rs` owns every other worktree verb);
-  `open_pr`'s `"main"` arm inlines occupancy + `is_clean` + `switch_branch`
-  while its `"worktree"` arm is a one-line delegate. *Direction:*
-  `worktree::revive` and `spawn::switch_main_to_pr` so both arms are delegates.
+- **M4 · api.rs handlers inlined orchestration owned elsewhere.** *Fixed.*
+  `worktree::revive` now rebuilds a torn-down worktree, sitting next to the
+  `archive` that recorded it — `worktree.rs` owned every other worktree verb and
+  this one was inlined in the handler that resumes a session. And
+  `spawn::switch_main_to_pr` is the sibling of `ensure_pr_worktree`, so
+  `open_pr`'s `match` is now a dispatch table of two one-line delegates instead of
+  one call and one inlined git sequence. `api.rs` lost 63 lines and keeps what is
+  genuinely HTTP-adjacent: which session kind to respawn as, and turning a
+  refusal into a status code.
+
+  Verified by compile, the suite, and the *non-mutating* paths only: `PR not in
+  the current poll`, `unknown place nowhere`, `no such session <uuid>` all still
+  refuse from the thinned handlers, and main was confirmed still on `develop`
+  afterwards. Driving the success paths would mean either switching the real main
+  checkout onto a PR branch or spawning an agent to resume, neither of which is
+  worth doing to test code motion — the git calls inside are unchanged, only their
+  address is.
 
   Worth knowing while working near this: `POST /api/pr/:n/fix-pr` on a green PR
   of your own **starts a run immediately**, no confirmation. That is the design

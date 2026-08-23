@@ -505,6 +505,40 @@ pub async fn ensure_pr_worktree(app: &Arc<AppState>, pr: u64, head_ref: &str) ->
     Ok(name)
 }
 
+/// Move the main checkout onto a PR's branch, so a session can open there.
+///
+/// The sibling of [`ensure_pr_worktree`]: both answer "get me onto this PR's
+/// code", and they returned asymmetric shapes only because this one was inlined
+/// in the handler while the other was a call. Refuses rather than half-doing it
+/// — main is exclusive, and switching the one tree every worktree is cut from
+/// under uncommitted work is not recoverable by pressing back.
+pub async fn switch_main_to_pr(app: &Arc<AppState>, head_ref: &str) -> Result<String> {
+    if let Some(held) = {
+        let inner = app.inner.read().await;
+        inner.workspaces.get(MAIN).and_then(|w| w.occupant)
+    } {
+        bail!(
+            "a session already holds main ({}); end it before moving the checkout",
+            &held.to_string()[..8]
+        );
+    }
+
+    let path = app.cfg.main_checkout.clone();
+    let branch = head_ref.to_string();
+    tokio::task::spawn_blocking(move || -> Result<()> {
+        if !crate::git::is_clean(&path)? {
+            bail!("the main checkout has uncommitted changes; commit or stash them first");
+        }
+        crate::git::switch_branch(&path, &branch)
+    })
+    .await
+    .map_err(|e| anyhow::anyhow!("switch task failed: {e}"))??;
+
+    // The pane must be right about what is checked out the moment it changes.
+    let _ = app.reconcile(MAIN).await;
+    Ok(MAIN.to_string())
+}
+
 /// Start the session that carries out a triaged PR: the plan, then the agent.
 ///
 /// The plan is written beside the prompt rather than fetched, because it is fixed

@@ -205,6 +205,51 @@ async fn recovery_recorded(app: &Arc<AppState>, workspace: &str) -> (bool, Strin
     }
 }
 
+/// Rebuild a torn-down worktree so an archived session can be resumed.
+///
+/// The counterpart to [`archive`], and it lives here for that reason: every other
+/// worktree verb — preflight, archive, teardown — is this module's, and this one
+/// was inlined in the HTTP handler that resumes a session.
+///
+/// Rebuilt at the **same absolute path**, because transcripts are keyed by working
+/// directory and a different path resumes nothing (§2).
+///
+/// The `Some` return is a warning, not a failure: the branch having moved on since
+/// the conversation is the normal case for work that landed, so it is said rather
+/// than refused.
+pub async fn revive(
+    app: &Arc<AppState>,
+    cwd: &std::path::Path,
+    recovery: Option<ArchiveState>,
+) -> Result<Option<String>> {
+    let Some(ArchiveState::Recoverable {
+        name,
+        branch,
+        head_sha,
+    }) = recovery
+    else {
+        bail!("no recovery record, so the worktree cannot be rebuilt");
+    };
+
+    let main = app.cfg.main_checkout.clone();
+    let (path, b, sha) = (cwd.to_path_buf(), branch.clone(), head_sha.clone());
+    let moved =
+        tokio::task::spawn_blocking(move || git::worktree_rebuild(&main, &path, &b, &sha))
+            .await
+            .map_err(|e| anyhow::anyhow!("rebuild task failed: {e}"))??;
+
+    app.register_worktree(&name, cwd.to_path_buf(), Some(branch))
+        .await;
+
+    Ok(moved.map(|tip| {
+        format!(
+            "{name} moved since this conversation: recorded {}, branch now {}",
+            &head_sha[..head_sha.len().min(7)],
+            &tip[..tip.len().min(7)]
+        )
+    }))
+}
+
 /// Copy transcripts into daemon storage and persist a recovery record, so the
 /// worktree can be rebuilt for `--resume` later (§2).
 pub async fn archive(app: &Arc<AppState>, workspace: &str) -> Result<()> {

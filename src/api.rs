@@ -946,43 +946,17 @@ async fn revive(app: &Arc<AppState>, id: Uuid, fork: bool) -> ApiResult<serde_js
         )));
     }
 
-    // A worktree that was torn down is rebuilt here, at the same absolute path:
-    // transcripts are keyed by working directory, so a different path resumes
-    // nothing (§2).
-    let mut warning = None;
-    if !path_exists {
-        let Some(ArchiveState::Recoverable {
-            name,
-            branch,
-            head_sha,
-        }) = recovery
-        else {
-            return Err(ApiError(anyhow::anyhow!(
-                "session {id} has no recovery record, so its worktree cannot be rebuilt"
-            )));
-        };
-        let main = app.cfg.main_checkout.clone();
-        let (path, b, sha) = (cwd.clone(), branch.clone(), head_sha.clone());
-        let moved = tokio::task::spawn_blocking(move || {
-            crate::git::worktree_rebuild(&main, &path, &b, &sha)
-        })
-        .await
-        .map_err(|e| anyhow::anyhow!("rebuild task failed: {e}"))??;
-
-        app.register_worktree(&name, cwd.clone(), Some(branch.clone()))
-            .await;
-
-        // The conversation happened on a different commit than the one now
-        // checked out, so it describes files that are not there. Said rather than
-        // refused: the branch moving on is the normal case for work that landed.
-        if let Some(tip) = moved {
-            warning = Some(format!(
-                "{name} moved since this conversation: recorded {}, branch now {}",
-                &head_sha[..head_sha.len().min(7)],
-                &tip[..tip.len().min(7)]
-            ));
-        }
-    }
+    // A worktree that was torn down is rebuilt before the session goes back into
+    // it. `worktree::revive` owns that, next to the archive that recorded it; the
+    // warning it hands back means the branch moved on, which is worth saying and
+    // not worth refusing.
+    let warning = if path_exists {
+        None
+    } else {
+        crate::worktree::revive(app, &cwd, recovery)
+            .await
+            .with_context(|| format!("session {id}"))?
+    };
 
     // Its recorded kind, not `Interactive`: reopening a fix run should come back as
     // the automation the rail colours and the guard table counts.
@@ -2176,32 +2150,7 @@ pub async fn open_pr(
 
     let workspace = match body.place.as_str() {
         "worktree" => spawn::ensure_pr_worktree(&app, number, &pr.head_ref).await?,
-        "main" => {
-            if let Some(held) = {
-                let inner = app.inner.read().await;
-                inner.workspaces.get(MAIN).and_then(|w| w.occupant)
-            } {
-                return Err(ApiError(anyhow::anyhow!(
-                    "a session already holds main ({}); end it before moving the checkout",
-                    &held.to_string()[..8]
-                )));
-            }
-            let main = app.cfg.main_checkout.clone();
-            let branch = pr.head_ref.clone();
-            let path = main.clone();
-            tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
-                if !crate::git::is_clean(&path)? {
-                    anyhow::bail!(
-                        "the main checkout has uncommitted changes; commit or stash them first"
-                    );
-                }
-                crate::git::switch_branch(&path, &branch)
-            })
-            .await
-            .map_err(|e| anyhow::anyhow!("switch task failed: {e}"))??;
-            let _ = app.reconcile(MAIN).await;
-            MAIN.to_string()
-        }
+        "main" => spawn::switch_main_to_pr(&app, &pr.head_ref).await?,
         other => return Err(ApiError(anyhow::anyhow!("unknown place {other}"))),
     };
 
