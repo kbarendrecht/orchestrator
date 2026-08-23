@@ -49,27 +49,32 @@ port, so a second instance refuses to start rather than fighting over
   then refuses to execute), and modules come from `include_str!` like everything
   else, so **each new module needs an entry in the route's match and a rebuild** —
   adding a JS file stops being a JS-only change.
-- **The SPA is ES modules now, and `app.js` is one of them.** `index.html` loads
-  it with `type="module"`, so its top-level names are module-scoped rather than
-  global: reaching across a boundary has to be an `import`, and a typo in one is a
-  load-time failure instead of a silent `undefined`. `web/js/core.js` holds the
-  primitives (`$`, `el`, `call`, `get`, `toast`, `duration`, `keyActivate`,
-  `refreshButton`) and the snapshot itself; `web/js/queue.js` is the first seam
-  extracted whole. Every module needs a line in `module()` in `lib.rs` and a
-  rebuild — `include_str!` again, so adding a JS file is not a JS-only change.
+- **The SPA is seven ES modules.** `web/js/core.js` is the shared layer — the
+  fetch wrappers, the DOM shorthands, the snapshot, the selection, the UI scale,
+  and the vocabulary every pane needs to describe a session (`stateLabel`,
+  `dotClass`, `isArchived`, `pending`, …). The six features are `term`, `rail`,
+  `diff`, `review`, `queue`, `settings`. `app.js` is what is left: boot order, the
+  websocket, the keyboard map, the window chrome — 922 lines, down from 4798.
+- **The module graph is a DAG, and it was made one on purpose.** `app.js` → the
+  six; `rail` → `term`, `review`; `review` → `diff`; everything → `core`. Three
+  cycles had to be broken first, and each inversion is the reason a boundary is
+  real rather than decorative:
+  - zoom used to resize the terminals directly while they read the scale back.
+    `core.setZoom` now announces through `onScaleChange`, and `term` registers.
+  - the rail called `select()` which called `render()` which redrew the rail.
+    `core` owns `selected`/`setSelected` and announces through `onSelection`;
+    `app.js` registers what picking a session *means*.
+  - the changed-files pane and the diff called each other, so the pane moved
+    *inside* `diff` — two modules that call each other are one module with a line
+    drawn through it.
+  Adding a cycle back would work (ESM allows it) and would quietly undo this.
+- **Each module needs a line in `module()` in `lib.rs` and a rebuild.**
+  `include_str!` again: adding a JS file is a Rust change. That cost is why the
+  modules track features rather than being cut finer.
 - **`snap` is a live binding, and only `receive()` may replace it.** It is
   `export let` in `core.js`, so a hundred readers keep saying `snap.x` and see the
-  new snapshot without re-importing. The websocket handler calls `receive(next)`,
-  which sets the snapshot and the clock it is measured against together — those
-  two drifting apart is what made durations freeze.
-- **`app.js` still holds five seams as IIFEs.** `Term`, `Rail`, `Diff`, `Review`,
-  `Queue` and `Settings` are IIFEs that return only the handful of names other
-  sections call. Everything else in them is unreachable from outside on purpose,
-  so a new feature belongs *inside* the seam it touches, and reaching across is
-  spelled `Diff.state` rather than happening by accident. The single file is
-  deliberate (no bundler, `include_str!`); the internal boundaries are what keeps
-  it from being a monolith. Bodies are left at their old indentation so the seams
-  cost twenty lines of diff instead of a whole-file reflow.
+  new snapshot without re-importing. `receive` sets the snapshot and the clock it
+  is measured against together — those drifting apart is what froze durations.
 - **Never rewrite an identifier across `app.js` with a regex.** Three of the four
   apparent uses of `resize` were the *string* `'resize'` — an event name and a URL
   path — and a blind substitution would have broken window resizing with nothing

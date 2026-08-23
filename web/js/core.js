@@ -190,3 +190,207 @@ export function saveZoom(z) {
     else localStorage.setItem(ZOOM.key, String(z));
   } catch (e) { /* private mode: it still applies for this session */ }
 }
+
+// ---------------------------------------------------------------------------
+// The shared vocabulary
+// ---------------------------------------------------------------------------
+//
+// What every pane needs to say about a session, a workspace or a menu. It lived
+// in `app.js` because that was the only file; the seams all reached for it, which
+// is what made them seams rather than modules.
+
+export const terms = new Map();      // target -> { term, fit, sock, host }
+
+export function stateLabel(s) {
+  const handed = handedToPr(s);
+  if (handed) return `#${handed.number} ${prState(handed)}`;
+  switch (s.state.state) {
+    case 'starting': return 'starting';
+    case 'working': return 'working';
+    case 'your_turn':
+      if (s.state.reason === 'asked_a_question') return 'asked a question';
+      if (s.state.reason === 'needs_permission') return 'needs permission';
+      if (s.state.reason === 'ready') return 'ready';
+      return 'turn complete';
+    case 'build_failing': return s.state.summary || 'build failing';
+    case 'error': return s.state.message || 'error';
+    // One word for both: a session whose process ended and one archived by a
+    // restart are the same thing to you, a conversation you are not in.
+    case 'exited': return 'archived';
+    case 'archived': return s.state.resumable ? 'archived' : 'archived, transcript only';
+    default: return s.state.state;
+  }
+}
+
+/** Dot colours are shared across every row so one legend covers them all (§9). */
+export function dotClass(s) {
+  const k = s.state.state;
+  if (k === 'build_failing' || k === 'error') return 'build';
+  if (handedToPr(s)) return 'pr';
+  if (k === 'your_turn') return 'blocked';
+  // Teal outranks the underlying state: while automation holds a session,
+  // "already being handled" is the more useful signal.
+  if (s.kind.kind === 'automation') return 'auto';
+  if (k === 'working' || k === 'starting') return 'working';
+  if (k === 'archived' || k === 'exited') return 'archived';
+  return 'idle';
+}
+
+export function stateClass(s) {
+  const k = s.state.state;
+  if (k === 'build_failing' || k === 'error') return 'build';
+  if (handedToPr(s)) return 'pr';
+  if (k === 'your_turn' && s.state.reason !== 'ready') return 'blocked';
+  return '';
+}
+
+/** Idle time worth surfacing. A session you opened and have not typed into is
+ *  idle, but shouting about it the moment you open it is noise. */
+export const isWaiting = (s) => s.wants_attention;
+
+/**
+ * A menu at the cursor. `items` are `[label, extraClass, handler]`; a null
+ * handler renders the row disabled, so right-clicking a session that has
+ * already ended still says what the menu would have offered.
+ */
+export function openMenu(ev, items) {
+  ev.preventDefault();
+  const menu = $('ctxmenu');
+  menu.replaceChildren();
+  for (const [label, cls, handler] of items) {
+    const item = el('button', 'ctxmenu-item' + (cls ? ` ${cls}` : ''), label);
+    if (handler) item.onclick = () => { closeMenu(); handler(); };
+    else item.disabled = true;
+    menu.appendChild(item);
+  }
+  // Un-hidden before it is measured, or there is no box to clamp.
+  menu.hidden = false;
+  const box = menu.getBoundingClientRect();
+  // Keyboard activation reports no cursor, so hang it off the button instead of
+  // pinning it to the top-left corner.
+  let { clientX: x, clientY: y } = ev;
+  if (!x && !y) {
+    const r = (ev.currentTarget || ev.target).getBoundingClientRect();
+    [x, y] = [r.left, r.bottom];
+  }
+  menu.style.left = `${Math.min(x, window.innerWidth - box.width - 6)}px`;
+  menu.style.top = `${Math.min(y, window.innerHeight - box.height - 6)}px`;
+}
+
+export function closeMenu() {
+  $('ctxmenu').hidden = true;
+}
+
+export function sessionsOf(wsId) {
+  return snap.sessions.filter((s) => s.workspace === wsId);
+}
+
+/* A session is one of two things: active, or a past conversation you can come
+ * back to. The daemon's `exited` and `archived` are the same fact from here, and
+ * neither is a state worth a word of its own in the rail. */
+export const isArchived = (s) => s.state.state === 'archived' || s.state.state === 'exited';
+
+/** `spawn::PENDING_WORKTREE`: the workspace a worktree session sits in until
+ *  `SessionStart` reports the name Claude Code gave it. */
+const PENDING_WORKTREE = '\u2026creating';
+
+/** A worktree Claude Code has not named yet (§2): the daemon knows the session
+ *  before it knows where it lives. */
+export const pending = (s) => s.workspace === PENDING_WORKTREE;
+
+/* A finished session that never had a turn wrote no transcript, so there is no
+ * conversation to come back to — `claude --resume` answers "no conversation
+ * found" and exits. Listing one is offering something that cannot work, so the
+ * archive is conversations, not every session that ever stopped. */
+export const isConversation = (s) => isArchived(s) && s.has_transcript;
+
+/** Newest first: `created_ms` is an age, so the smallest number is the newest. */
+export const byNewest = (a, b) => a.created_ms - b.created_ms;
+
+export function currentSession() {
+  return snap.sessions.find((s) => s.id === selected) || null;
+}
+
+/** The workspace the right pane describes: the one you are working in.
+ *
+ *  Deliberately not `currentWorkspaceId`, which falls back to main so the drawer
+ *  and the shell button always have somewhere to act. A file list has no such
+ *  duty: main's tree is not "your changes" just because you closed your session,
+ *  and a pane still listing a finished session's work reads as live. */
+export function activeWorkspaceId() {
+  const s = currentSession();
+  return s && !isArchived(s) ? s.workspace : null;
+}
+
+export function currentWorkspaceId() {
+  const s = currentSession();
+  if (s) return s.workspace;
+  return snap.workspaces.find((w) => w.is_main)?.id ?? null;
+}
+
+export async function newSession(workspace) {
+  try {
+    const r = await call('/api/session', { workspace });
+    pendingSelect = r.session;
+  } catch (e) {
+    toast(e.message, true);
+  }
+}
+
+/** Claude Code names the worktree unless you shift-click and name it yourself.
+ *  Naming one every time is friction for something you rarely refer to by
+ *  name, and an unnamed one cannot collide with an archived worktree either. */
+export async function newWorktree(named) {
+  let name = null;
+  if (named) {
+    name = prompt('Worktree name (blank to let Claude name it)');
+    // Cancel means cancel; blank means auto.
+    if (name === null) return;
+    name = name.trim() || null;
+  }
+  try {
+    const r = await call('/api/worktree', name ? { name } : {});
+    pendingSelect = r.session;
+    toast(name ? `creating worktree ${name}` : 'creating worktree');
+  } catch (e) {
+    toast(e.message, true);
+  }
+}
+
+export async function newShell() {
+  const wsId = currentWorkspaceId();
+  if (!wsId) return;
+  drawerTouched = true;
+  // You pressed + to work in a shell; a collapsed drawer would hide the one you
+  // just asked for.
+  if (drawerCollapsed) setDrawerCollapsed(false);
+  try {
+    const r = await call(`/api/workspace/${encodeURIComponent(wsId)}/shell`);
+    selectedProc[wsId] = r.process;
+    // You pressed + to type in it. The pty does not exist until the daemon says
+    // so, so this is claimed here and spent when the terminal appears.
+    pendingProcFocus = r.process;
+  } catch (e) {
+    toast(e.message, true);
+  }
+}
+
+// The daemon decides this, not the user agent string: it is the side that knows
+// whether it is being shown in a window it owns or in somebody's browser tab.
+//
+// The commands go over the same authenticated HTTP the rest of the UI uses,
+// and the daemon — running inside the desktop process — calls Tauri's window
+// API in Rust. No IPC bridge, so nothing here depends on which port we bound.
+export const CHROME = window.__ORCH__.chrome || 'none';
+
+export const menuOpen = () => !$('ctxmenu').hidden;
+
+// Anything that moves what the menu is pointing at dismisses it. On mousedown
+// rather than click, and captured, so the row underneath still gets its own
+// click; a rail that rebuilds every second would otherwise leave the menu
+// hanging over a row that no longer exists.
+document.addEventListener('mousedown', (e) => {
+  if (menuOpen() && !e.target.closest('#ctxmenu')) closeMenu();
+}, true);
+document.addEventListener('scroll', closeMenu, true);
+window.addEventListener('blur', closeMenu);

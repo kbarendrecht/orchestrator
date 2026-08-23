@@ -987,7 +987,12 @@ async fn module(axum::extract::Path(file): axum::extract::Path<String>) -> Respo
     }
     let body = match file.as_str() {
         "core.js" => include_str!("../web/js/core.js"),
+        "term.js" => include_str!("../web/js/term.js"),
+        "rail.js" => include_str!("../web/js/rail.js"),
+        "diff.js" => include_str!("../web/js/diff.js"),
+        "review.js" => include_str!("../web/js/review.js"),
         "queue.js" => include_str!("../web/js/queue.js"),
+        "settings.js" => include_str!("../web/js/settings.js"),
         _ => return (StatusCode::NOT_FOUND, "no such module").into_response(),
     };
     asset("text/javascript; charset=utf-8", body)

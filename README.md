@@ -254,10 +254,16 @@ src/
 web/snapshot.d.ts  the SPA's view of the daemon's `Snapshot`, generated from the
                 Rust structs by `cargo test` (`ts-rs`, dev-only). Type file: not
                 served, not compiled in. `mise run types` fails if it has drifted
-web/            SPA (vanilla, xterm.js vendored). One file, six seams: `Term`,
-                `Rail`, `Diff`, `Review`, `Queue`, `Settings` are IIFEs that
-                export only what other sections call, so reaching across a
-                boundary has to be spelled out
+web/            SPA (vanilla, xterm.js vendored)
+  app.js        boot order, the websocket, the keyboard map, the window chrome
+  js/core.js    the shared layer: fetch wrappers, DOM shorthands, the snapshot,
+                the selection, the UI scale, and the vocabulary every pane uses
+  js/term.js    one xterm per session or process, attached over a websocket
+  js/rail.js    what is running, what waits on you, and the PRs beside it
+  js/diff.js    the diff viewer, its editable pane, and the changed-files list
+  js/review.js  the review overlay: triage, a card per thread, one batch
+  js/queue.js   the review queue pane
+  js/settings.js  the settings panel
 guards/push.py  PreToolUse deny for dangerous pushes
 ```
 
