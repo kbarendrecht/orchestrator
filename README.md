@@ -14,6 +14,7 @@ headless binary is the faster way to debug the daemon itself.
 
 ```
 mise install
+git config core.hooksPath .githooks        # once per clone: the pre-commit checks
 cargo run -p orchestrator-desktop          # the app
 cargo run -p orchd -- --main /path/to/acme   # headless, browser at the printed URL
 ```

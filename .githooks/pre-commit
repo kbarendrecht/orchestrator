@@ -1,0 +1,52 @@
+#!/bin/sh
+# The SPA's two checks, before the commit rather than after the bug.
+#
+# Kept honest about cost: each check runs only when something it could possibly
+# fail on is staged, because a hook that takes half a minute on a docs commit is
+# a hook everybody learns to pass `--no-verify` to. Warm, this is ~2s.
+#
+# It checks the *working tree*, not the staged content. Committing a subset of
+# your changes can therefore pass a check the commit itself would not — the
+# tradeoff for not shuffling files into a temp index on every commit. CI is what
+# checks the commit as it lands.
+#
+# Enable per clone (git will not let a repo point at its own hooks):
+#     git config core.hooksPath .githooks
+#
+# Skip deliberately with `git commit --no-verify` — that is a fine thing to do
+# mid-refactor; the gate is `mise run check-web` and CI, not this.
+
+set -e
+
+staged=$(git diff --cached --name-only --diff-filter=ACMR)
+[ -n "$staged" ] || exit 0
+
+web=0
+rust=0
+if printf '%s\n' "$staged" | grep -qE '^web/'; then web=1; fi
+if printf '%s\n' "$staged" | grep -qE '\.rs$'; then rust=1; fi
+[ "$web" = 1 ] || [ "$rust" = 1 ] || exit 0
+
+if [ ! -d tools/node_modules ]; then
+  echo "pre-commit: tools/node_modules is missing — run 'npm install --prefix tools'" >&2
+  echo "            (or commit with --no-verify)" >&2
+  exit 1
+fi
+
+# A Rust change can move the snapshot the SPA is typed against. Regenerate and
+# refuse if the committed copy no longer matches the structs.
+if [ "$rust" = 1 ]; then
+  cargo test --lib export_bindings >/dev/null 2>&1 || {
+    echo "pre-commit: the snapshot type export failed to build" >&2; exit 1; }
+  if ! git diff --quiet web/snapshot.d.ts; then
+    echo "pre-commit: web/snapshot.d.ts is out of date with the Rust structs." >&2
+    echo "            The regenerated file is in your tree — stage it:" >&2
+    echo "              git add web/snapshot.d.ts" >&2
+    exit 1
+  fi
+fi
+
+if [ "$web" = 1 ]; then
+  npx --prefix tools tsc -p tools/tsconfig.json
+  npx --prefix tools depcruise --config tools/.dependency-cruiser.cjs web/app.js >/dev/null
+fi

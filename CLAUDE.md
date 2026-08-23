@@ -29,6 +29,14 @@ port, so a second instance refuses to start rather than fighting over
 - **The SPA is compiled in.** `web/*` is `include_str!`d into the binary, so a
   CSS or JS change is invisible until the daemon is rebuilt *and* restarted. No
   amount of reloading the page helps.
+- **There is a pre-commit hook, and it needs enabling once per clone.**
+  `git config core.hooksPath .githooks` — git will not let a repo point at its own
+  hooks, so a fresh clone has none until you say this. It runs the SPA checks only
+  when something they could fail on is staged: ~2s on a `web/` change, nothing at
+  all on a docs commit. A Rust change also re-checks `web/snapshot.d.ts` and
+  refuses if the committed copy no longer matches the structs.
+  `--no-verify` is a fine thing to reach for mid-refactor; the real gate is
+  `mise run check-web`.
 - **`mise run check-web` is the SPA's gate, and it bites.** Three things in one:
   it regenerates `web/snapshot.d.ts` and fails if the committed copy drifted, it
   runs `tsc --noEmit --checkJs` over every SPA file, and it runs
