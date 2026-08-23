@@ -153,7 +153,26 @@ both. Driven in Chrome: 1 hunk parsed and 124 nodes rendered, split toggles and
 re-renders, the editor opens and closes, `Diff.close()` clears the overlay, no
 page errors, nothing leaked to `window`.
 
-Four sections remain (rail, terminals, review queue, settings).
+The rail went third and came out the cleanest of the three: twenty-four names,
+three out (`render`, `rowName`, `closeSession`). Getting there needed one move
+first — `pending` lived in the rail but the drawer, the files pane, the overlay
+and the review queue all ask it, so it went to sit with `PENDING_WORKTREE`
+outside the seam. Same shape of finding as `act`/`prForWorkspace` keeping the
+files pane out of `Diff`: what a section *contains* and what it *owns* are not
+the same list, and only measuring tells them apart.
+
+The privacy check got better here too, and it matters for the earlier two: `n in
+window` cannot see a top-level `const`, so it passes vacuously for half the
+names. Evaluating the bare name and requiring a `ReferenceError` is the real
+test. Under it all sixteen rail internals are private and all seven app-level
+names (`pending`, `isArchived`, `currentSession`, `activeWorkspaceId`,
+`currentWorkspaceId`, `refreshButton`, `render`) are still reachable. The rail
+draws (4 PR rows, 3 groups), survives its 1s re-render, `Rail.rowName` answers
+for a real session, and a right-click still opens the PR menu — which is
+`prMenu` inside `Rail` reaching `Review.open` inside another seam, so the seams
+compose.
+
+Three sections remain (terminals, review queue, settings).
 
 - **Problem:** seven feature areas (rail, terminals, diff, editable pane, review
   overlay at ~1900 lines, review queue, settings) are flat top-level functions

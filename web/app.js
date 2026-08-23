@@ -474,7 +474,7 @@ function syncDiffToSession() {
 
 function render() {
   syncDiffToSession();
-  renderRail();
+  Rail.render();
   renderContext();
   renderDrawer();
   renderFiles();
@@ -621,6 +621,10 @@ const isArchived = (s) => s.state.state === 'archived' || s.state.state === 'exi
  *  `SessionStart` reports the name Claude Code gave it. */
 const PENDING_WORKTREE = '\u2026creating';
 
+/** A worktree Claude Code has not named yet (§2): the daemon knows the session
+ *  before it knows where it lives. */
+const pending = (s) => s.workspace === PENDING_WORKTREE;
+
 /* A finished session that never had a turn wrote no transcript, so there is no
  * conversation to come back to — `claude --resume` answers "no conversation
  * found" and exits. Listing one is offering something that cannot work, so the
@@ -630,6 +634,17 @@ const isConversation = (s) => isArchived(s) && s.has_transcript;
 /** Newest first: `created_ms` is an age, so the smallest number is the newest. */
 const byNewest = (a, b) => a.created_ms - b.created_ms;
 
+
+/** The rail, behind one seam.
+ *
+ *  Twenty-four names and three leave. `pending` used to live in here and now
+ *  sits with `PENDING_WORKTREE` outside it: the drawer, the files pane, the
+ *  overlay and the review queue all ask it, so it was never the rail's — the
+ *  same way `act` and `prForWorkspace` kept the files pane out of `Diff`.
+ *
+ *  Bodies keep their indentation, for the same reason as `Review` and `Diff`.
+ */
+const Rail = (() => {
 /* Expanded per group and kept across renders. Main's two conversations and the
  * worktrees' twenty are not the same question. */
 const showArchived = { main: false, worktrees: false };
@@ -1012,9 +1027,6 @@ async function openArchived(s) {
 
 /** Two lines: dot + name, then state and duration. No dirty-file count — that
  *  lives in the right column, one click away (§9). */
-/** A worktree Claude Code has not named yet (§2): the daemon knows the session
- *  before it knows where it lives. */
-const pending = (s) => s.workspace === PENDING_WORKTREE;
 
 /** What the row calls itself.
  *
@@ -1217,6 +1229,9 @@ async function nudgeAll() {
   }
 }
 
+return { render: renderRail, rowName: railName, closeSession };
+})();
+
 function currentSession() {
   return snap.sessions.find((s) => s.id === selected) || null;
 }
@@ -1250,7 +1265,7 @@ function renderContext() {
     || (w ? w.path.split('/').slice(-2).join('/') : '—');
   $('repofork').textContent = repos.fork || '';
   $('ctxdot').className = 'dot ' + (s ? dotClass(s) : 'idle');
-  $('ctxname').textContent = s ? railName(s, { id: wsId }) : (wsId || 'no session');
+  $('ctxname').textContent = s ? Rail.rowName(s, { id: wsId }) : (wsId || 'no session');
   $('ctxforked').hidden = !(s && s.forked_from);
   $('ctxbranch').textContent = w ? (w.branches[0] || '') : '';
   const pr = wsId ? prForWorkspace(wsId) : null;
@@ -4282,7 +4297,7 @@ $('refreshbtn').onclick = () => {
 };
 $('killbtn').onclick = () => {
   const s = currentSession();
-  if (s) closeSession(s.id);
+  if (s) Rail.closeSession(s.id);
 };
 
 // ---------------------------------------------------------------------------
@@ -4955,6 +4970,6 @@ setupColumns();
 setupChrome();
 connect();
 // The waiting clock has to tick even when nothing else changes.
-setInterval(() => { renderRail(); }, 1000);
+setInterval(() => { Rail.render(); }, 1000);
 
 window.orchTeardown = teardown;
