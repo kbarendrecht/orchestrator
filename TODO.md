@@ -25,8 +25,15 @@ Everything outside that block is hand-written and survives.
   nothing has been driven against it yet:
   - the resolve run end to end (commit per thread, `…/thread/:id/committed`, the
     daemon posting on its own credentials),
-  - `open_file`'s `head_sha` arm, once a workspace sits on the PR branch,
   - the thumbs-up idempotency assumption in `post.rs`.
+
+  **`open_file`'s `head_sha` arm — done, no code change.** With a `pr-4` workspace
+  on `fixture/pricing`, `POST /api/open/file` minted a blob URL against the PR's
+  pushed head sha (`c01649a…`). To prove it was the head-sha arm and not the
+  local-`HEAD` fallback, a local-only commit moved the worktree's HEAD to
+  `1c7c8f5…`; the URL still used `c01649a…`, so the arm at `api.rs:1543` won as
+  designed. The fallback still holds too: `open_file` on `main` (no PR names it)
+  used main's local HEAD. This is the arm the note below said had never run.
 
   **Teardown and the archive it runs — done, and it found a bug.** Driven live
   against a fixture worktree; see the teardown item under "Decisions worth
@@ -58,8 +65,10 @@ Everything outside that block is hand-written and survives.
     a dirtied `pr-4` worktree, refused with the real file list. It needed a PR in
     the poll with a worktree that could be dirtied without touching real work,
     which no monorepo PR could offer.
-  - **A PR head sha in a link.** `open_file`'s `head_sha` arm never ran because no
-    workspace's branch matched a polled PR; only the local-`HEAD` fallback did.
+  - **A PR head sha in a link.** *Now verified* — a `pr-4` worktree on the PR's
+    head branch made `open_file` mint the URL against the PR's pushed sha, proven
+    distinct from local HEAD by a local-only commit. Before the fixture, no
+    workspace's branch matched a polled PR, so only the local-`HEAD` fallback ran.
   - **Teardown, and the archive it now runs.** Both only fire on a worktree with a
     session's transcript in it, and the only ones to hand are real work.
 

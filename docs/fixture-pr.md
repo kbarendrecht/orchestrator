@@ -99,7 +99,6 @@ untrusted checkout the daemon points at.
 Each of these was listed in TODO.md as unverifiable, and each now has a target:
 
 - The resolve flow end to end, against threads that really are awaiting you.
-- `open_file`'s `head_sha` arm, once a workspace sits on the PR branch.
 - The thumbs-up idempotency assumption in `post.rs`, still a guess about whether
   GitHub returns the existing reaction or a second one.
 
@@ -108,6 +107,13 @@ against the fixture. A polled PR with a `pr-4` worktree, dirtied on purpose, mad
 `POST …/triage` refuse with the real file list and `GET …/review` report the
 `dirty` gate; cleaning the tree cleared it. No code change — the gate was already
 right; it had just never met a worktree safe to dirty.
+
+`open_file`'s `head_sha` arm is **verified** too. With a `pr-4` worktree on the
+PR's head branch, `POST /api/open/file` minted a blob URL against the PR's pushed
+sha rather than local HEAD — shown distinct by a local-only commit that moved the
+worktree's HEAD while the URL kept the pushed sha. The local-HEAD fallback still
+serves a workspace no PR names. No code change; the arm just needed a workspace
+whose branch matched a polled PR, which no monorepo checkout offered.
 
 Teardown and its archive are **done** — the first thing driven against the
 fixture. Creating a worktree, killing its session and tearing it down proved the
