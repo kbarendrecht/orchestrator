@@ -530,6 +530,16 @@ body.row-resizing{cursor:row-resize;user-select:none}
 .keys dd{
   margin:0;font-size:calc(11px * var(--fs));color:var(--dim);align-self:center;
 }
+/* In the legend the help text is a footnote closing the list, not a caption
+   under the field above it, so it needs the room `.settings-help`'s 3px
+   deliberately withholds — and a rule, or it reads as another description. */
+/* `max-width` off so the rule lines up with the group rules above it: inherited,
+   the 62ch measure stopped it short and the ragged edge read as a mistake. Safe
+   here because the footnote is two lines, not a paragraph of prose. */
+.keyhelp .settings-help{
+  margin-top:22px;padding-top:12px;border-top:1px solid var(--line-soft);
+  max-width:none;
+}
 .settings-help kbd,.keys dt kbd{
   font-family:var(--mono);font-size:.9em;padding:0 4px;border-radius:3px;
   border:1px solid var(--line);background:var(--raised);color:var(--text);

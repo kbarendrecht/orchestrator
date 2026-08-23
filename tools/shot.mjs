@@ -7,6 +7,11 @@
 //   mise run shot                     # whole window
 //   mise run shot -- '.drawer-head'   # just that element, tight crop
 //   mise run shot -- '.drawer-head' --click '#rvhead'   # click first, then shoot
+//   mise run shot -- '#keyhelp' --key '?'               # press first, then shoot
+//
+// `--key` exists because an overlay opened by a chord had no other way in: the
+// legend has a close button and no open button, so `--click` could not reach it.
+// Takes playwright key syntax, so 'Control+Shift+D' works as well as '?'.
 //
 // Chrome is used via playwright-core's `channel`, so nothing is downloaded.
 import { chromium } from 'playwright-core';
@@ -24,6 +29,7 @@ const selector = args[0] && !args[0].startsWith('--') ? args[0] : null;
 const port = flag('--port', process.env.ORCHD_PORT || '7777');
 const outDir = flag('--out', 'target/shots');
 const clickSel = flag('--click', null);
+const pressKey = flag('--key', null);
 const waitMs = Number(flag('--wait', '0'));
 const base = `http://127.0.0.1:${port}`;
 
@@ -71,6 +77,12 @@ await page.waitForFunction(() => document.querySelectorAll('.rail-scroll *').len
 
 if (clickSel) {
   await page.click(clickSel, { timeout: 5000 });
+  await page.waitForTimeout(250);
+}
+if (pressKey) {
+  // On body, not a focused control: the app's handler is registered on `window`
+  // with capture, and pressing into an input would be typing instead.
+  await page.locator('body').press(pressKey);
   await page.waitForTimeout(250);
 }
 if (waitMs) await page.waitForTimeout(waitMs);
