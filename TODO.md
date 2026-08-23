@@ -264,6 +264,19 @@ Everything outside that block is hand-written and survives.
     hook-observer plumbing (`--settings` injection, SessionStart/PostToolUse/Stop).
     Hosting another agent means abstracting *that* layer; the worktree-creation
     split was the first, self-contained step, not the whole job.
+
+    *Re-checked against the code, and it is accurate — with two things worth
+    adding.* **Only interactive worktrees ever delegate.** `ensure_pr_worktree`
+    calls `git::worktree_add_existing` unconditionally, whatever the subdir, and
+    resume rebuilds with `git::worktree_rebuild` — so every worktree the *review*
+    flow makes is already daemon-cut, and `claude --worktree` is reached from one
+    place only (`spawn_worktree_session`, default layout, no PR). The daemon-git
+    path is therefore the exercised one, not the theoretical one. And **both arms
+    still spawn `claude`** — the non-delegated arm runs a bare `["claude"]` — which
+    is what "half" means here: creation is decoupled, the session is not. Also
+    worth knowing when comparing the two: only the delegated arm leaves a
+    `git worktree lock` behind, which is why teardown needs the stale-lock clear
+    at all.
   - **GitHub is the only forge, but the seam is wired.** Every read and write
     goes through the `Forge` trait (`src/forge/mod.rs`), and `ForgeImpl` —
     enum-dispatch keyed on `config.forge` (`ForgeKind`) via `ForgeImpl::for_kind`
@@ -526,11 +539,11 @@ Everything outside that block is hand-written and survives.
   Driven in a real browser, both rounds: `?`/`Esc` toggle the legend, `Ctrl+=`/`0`
   zoom and reset, `Ctrl+N` hits `/api/worktree`, `Ctrl+Shift+D`/`Shift+T`/`Tab`/
   `Space` are claimed, plain `Ctrl+D` is left to the terminal, and all four
-  removed `Alt` chords fall through. Still open, deliberately deferred: a
-  jump-*to-a-PR* key, and there is no longer any "take main" chord to want an
-  inverse for. *The two `role="button"` keyboard traps once listed here are
-  fixed:* a `keyActivate` helper gives the refresh icons and the update-nudge `×`
-  a tab stop and Enter/Space.
+  removed `Alt` chords fall through. Nothing is left open here: the jump-to-a-PR
+  key that fed this item is not wanted (see "Won't do"), and there is no longer
+  any "take main" chord to want an inverse for. *The two `role="button"` keyboard
+  traps once listed here are fixed:* a `keyActivate` helper gives the refresh
+  icons and the update-nudge `×` a tab stop and Enter/Space.
 
 - **Teardown auto-archives its own prerequisite.** *Fixed.* This was read as a
   dead route but is the opposite: `worktree::archive` (transcripts copied,
@@ -652,6 +665,11 @@ Everything outside that block is hand-written and survives.
 
 ## Won't do without a reason
 
+- A jump-to-a-PR key. It was the one concrete gap left by the keyboard audit and
+  is declined: PRs are picked by eye from a short list, so the chord would save a
+  click you were going to aim anyway, and the audit's own finding was that the
+  scheme wins by being *smaller*. Add it only if the PR pane ever grows long
+  enough to scroll.
 - Adopting shell-started sessions. The daemon spawns every session so that
   `$ORCH_SESSION_ID` correlation is exact (§2); adopting one would reintroduce
   the cwd/pid heuristics the spec rejects.
