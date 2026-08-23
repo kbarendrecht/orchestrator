@@ -3,6 +3,7 @@
 
 import { $, call, el, get, newShell, pending, snap, toast, setPendingSelect } from './core.js';
 import * as Diff from './diff.js';
+import { patchStats, hunkEl, fileListLabel, willWriteLabel } from './review-diff.js';
 
 
 /* Replaces typing `/resolve <pr>` into a terminal pane. The agent reads every
@@ -122,121 +123,6 @@ function threadLabel(t) {
   const line = t.line ?? t.original_line;
   if (!t.path) return `review summary · ${who}`;
   return line ? `${t.path}:${line} · ${who}` : `${t.path} · ${who}`;
-}
-
-/* ---------- diffs ---------- */
-
-/** Parse a unified diff into per-path counts — the same arithmetic as
- *  `git apply --numstat`, which is what the daemon re-derives authoritatively
- *  before it writes. Done here so a card can label what it would write without
- *  a round trip. */
-function patchStats(diff) {
-  const out = [];
-  let cur = null;
-  for (const line of (diff || '').split('\n')) {
-    const to = /^\+\+\+ (?:b\/)?(.+)$/.exec(line);
-    if (to) {
-      const path = to[1].trim();
-      cur = out.find((f) => f.path === path);
-      if (!cur) out.push((cur = { path, added: 0, deleted: 0 }));
-      continue;
-    }
-    if (!cur || line.startsWith('---') || line.startsWith('@@')) continue;
-    if (line.startsWith('+')) cur.added++;
-    else if (line.startsWith('-')) cur.deleted++;
-  }
-  return out;
-}
-
-/** `will write renovate.json5 +3 -1`, every path, derived rather than
- *  hand-written — there is no deny-list, so showing what will be written is
- *  what stands in for one. */
-function willWriteLabel(diff, verb) {
-  return fileListLabel(patchStats(diff), verb || 'will write');
-}
-
-/** `<verb> renovate.json5 +3 −1`, every path.
- *
- *  Shared by the card (from a proposed patch) and the manual phase (from
- *  `git diff`), because in both places the point is the same: the list is derived,
- *  so it cannot be wrong about what is being written. */
-function fileListLabel(files, verb) {
-  const row = el('div', 'willwrite');
-  row.appendChild(document.createTextNode(verb));
-  for (const f of files) {
-    const b = el('b');
-    b.appendChild(document.createTextNode(f.path + ' '));
-    if (f.added) {
-      const a = el('span', null, `+${f.added}`);
-      a.style.color = 'var(--ok)';
-      b.appendChild(a);
-      b.appendChild(document.createTextNode(' '));
-    }
-    if (f.deleted) {
-      const d = el('span', null, `−${f.deleted}`);
-      d.style.color = 'var(--bad)';
-      b.appendChild(d);
-    }
-    row.appendChild(b);
-  }
-  return row;
-}
-
-/** Render diff text as hunk rows.
- *
- *  Takes both shapes it is given: GitHub's `diffHunk` (one hunk, no file
- *  headers) and a full `git diff` (headers, possibly several files). The row
- *  classes are app.css's — `.ln`/`.add`/`.del` — not copies of them.
- *
- *  `hitLast` marks the final row with `.hit`: on a GitHub diff hunk that is the
- *  line the comment is anchored to. */
-function hunkEl(text, hitLast) {
-  const box = el('div', 'hunk');
-  let oldNo = 0;
-  let newNo = 0;
-  let last = null;
-  for (const line of (text || '').split('\n')) {
-    /* A file boundary, and the states that have no hunk at all. Skipping these
-       rendered a binary replacement, a pure rename and a deletion as *nothing* —
-       on the manual phase's screen, whose whole premise is that you looked at what
-       is about to be committed — and ran multi-file diffs together with line numbers
-       that jump at the seam. */
-    const file = /^diff --git (?:a\/)?(.+?) (?:b\/)?(.+)$/.exec(line);
-    if (file) {
-      const [, from, to] = file;
-      box.appendChild(el('div', 'hh', from === to ? from : `${from} → ${to}`));
-      oldNo = 0;
-      newNo = 0;
-      continue;
-    }
-    const said = /^(new file|deleted file|Binary files|rename from|rename to)/.exec(line);
-    if (said) {
-      box.appendChild(el('div', 'hh', line));
-      continue;
-    }
-    if (/^(index |old mode|new mode|similarity|dissimilarity)/.test(line)) continue;
-    if (/^(--- |\+\+\+ )/.test(line)) continue;
-    const at = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(line);
-    if (at) {
-      oldNo = +at[1];
-      newNo = +at[2];
-      box.appendChild(el('div', 'hh', line));
-      continue;
-    }
-    const kind = line[0];
-    // A "\ No newline at end of file" marker is not a line of the file.
-    if (kind !== '+' && kind !== '-' && kind !== ' ') continue;
-    const row = el('div', 'ln' + (kind === '+' ? ' add' : kind === '-' ? ' del' : ''));
-    row.appendChild(el('i', null, kind === '-' ? String(oldNo) : String(newNo)));
-    row.appendChild(el('s', null, line.slice(1)));
-    if (kind === '-') oldNo++;
-    else if (kind === '+') newNo++;
-    else { oldNo++; newNo++; }
-    box.appendChild(row);
-    last = row;
-  }
-  if (hitLast && last) last.classList.add('hit');
-  return box;
 }
 
 /* ---------- chrome shared by every screen ---------- */

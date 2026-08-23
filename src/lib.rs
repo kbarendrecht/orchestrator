@@ -991,6 +991,7 @@ async fn module(axum::extract::Path(file): axum::extract::Path<String>) -> Respo
         "rail.js" => include_str!("../web/js/rail.js"),
         "diff.js" => include_str!("../web/js/diff.js"),
         "review.js" => include_str!("../web/js/review.js"),
+        "review-diff.js" => include_str!("../web/js/review-diff.js"),
         "queue.js" => include_str!("../web/js/queue.js"),
         "settings.js" => include_str!("../web/js/settings.js"),
         _ => return (StatusCode::NOT_FOUND, "no such module").into_response(),
