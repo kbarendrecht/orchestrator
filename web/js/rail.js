@@ -1,7 +1,7 @@
 // The rail: what is running, what is waiting on you, and the PRs beside it.
 // Twenty-four names, three out; the rest is how a row decides what it says.
 
-import { $, byNewest, call, dotClass, duration, el, isArchived, isConversation, isWaiting, newSession, newWorktree, openMenu, pending, refreshButton, selected, sessionsOf, setSelected, sinceSnap, snap, stateClass, stateLabel, toast } from './core.js';
+import { $, byNewest, call, dotClass, duration, el, isArchived, isConversation, isWaiting, newSession, newWorktree, openMenu, pending, refreshButton, selected, sessionsOf, setSelected, sinceSnap, snap, stateClass, stateLabel, toast, setPendingSelect } from './core.js';
 import * as Review from './review.js';
 import * as Term from './term.js';
 
@@ -81,7 +81,7 @@ function prMenu(p, btn) {
 async function openPr(number, where) {
   try {
     const r = await call(`/api/pr/${number}/open`, { where });
-    pendingSelect = r.session;
+    setPendingSelect(r.session);
     toast(`#${number} in ${r.workspace}`);
   } catch (e) {
     toast(e.message, true);
@@ -94,7 +94,7 @@ async function runResolve(number, btn) {
   if (btn) btn.disabled = true;
   try {
     const r = await call(`/api/pr/${number}/resolve`);
-    pendingSelect = r.session;
+    setPendingSelect(r.session);
     toast(`resolve ${number}`);
   } catch (e) {
     toast(e.message, true);
@@ -116,7 +116,7 @@ function actionButton(p, action, label) {
     b.disabled = true;
     try {
       const r = await call(`/api/pr/${p.number}/${action}`);
-      pendingSelect = r.session;
+      setPendingSelect(r.session);
       toast(`${label} ${p.number}`);
     } catch (e) {
       toast(e.message, true);
@@ -376,7 +376,7 @@ async function openArchived(s) {
     // key the new pty wants, and `openTerm` would hand back the corpse — you
     // resume and stare at the old scrollback with a closed socket.
     Term.close(`session:${r.session}`);
-    pendingSelect = r.session;
+    setPendingSelect(r.session);
     // The branch moved since the conversation happened, so the files it talks
     // about are not the files on disk. Worth saying, not worth refusing over.
     if (r.warning) toast(r.warning, true);
@@ -479,7 +479,7 @@ function sessionRow(s, w) {
 async function forkSession(s) {
   try {
     const r = await call(`/api/session/${s.id}/fork`);
-    pendingSelect = r.session;
+    setPendingSelect(r.session);
     toast('forked');
     // The branch moved on since the conversation, same as resume: worth saying,
     // not worth refusing over.

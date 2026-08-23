@@ -1,7 +1,7 @@
 // The review overlay: read a PR's threads, decide each one, then one batch of
 // outward writes. The largest single feature in the SPA.
 
-import { $, call, el, get, newShell, pending, snap, toast } from './core.js';
+import { $, call, el, get, newShell, pending, snap, toast, setPendingSelect } from './core.js';
 import * as Diff from './diff.js';
 
 
@@ -1637,7 +1637,7 @@ async function rvAct(fn, said, andClose) {
     const r = await fn();
     if (said) toast(said);
     if (andClose) {
-      if (r?.session) pendingSelect = r.session;
+      if (r?.session) setPendingSelect(r.session);
       reviewState.busy = false;
       return closeReview();
     }
@@ -1780,7 +1780,7 @@ async function startRun() {
     reviewState.screen = 'run';
     // The session is where the work is now, so the rail should be pointing at it
     // when you close the overlay.
-    if (r.session) pendingSelect = r.session;
+    if (r.session) setPendingSelect(r.session);
   } catch (e) {
     toast(e.message, true);
   }

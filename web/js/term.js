@@ -1,7 +1,7 @@
 // The terminals: one xterm per session or process, attached to the daemon's pty
 // over a websocket. The DOM renderer is deliberate in the webview — see CLAUDE.md.
 
-import { $, CHROME, el, terms, toast, uiScale } from './core.js';
+import { $, CHROME, TOKEN, WS_BASE, el, selected, terms, toast, uiScale } from './core.js';
 
 
 const THEME = {

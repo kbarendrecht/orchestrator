@@ -394,3 +394,79 @@ document.addEventListener('mousedown', (e) => {
 }, true);
 document.addEventListener('scroll', closeMenu, true);
 window.addEventListener('blur', closeMenu);
+
+// ---------------------------------------------------------------------------
+// Shared UI state
+// ---------------------------------------------------------------------------
+
+export let selectedProc = {};        // workspace id -> process id
+
+/** What a PR is doing, in the two or three words a row has space for. */
+export function prState(p) {
+  if (p.awaiting_you) return `${p.awaiting_you} waiting on you`;
+  if (p.mergeable === 'CONFLICTING') return 'conflicted';
+  if (p.checks === 'failing') return 'checks failing';
+  if (p.checks === 'pending') return 'checks running';
+  if (p.is_draft) return 'draft';
+  return 'open';
+}
+
+/** A stopped session whose work sits on a PR is not waiting on you *here* — the
+ *  next move is on the PR, and the PR's own state is the useful thing to show.
+ *  A question or a permission prompt is still about this session, so those keep
+ *  the amber and their own words. */
+/** The PR a session's work belongs to, whether by branch or by automation. */
+export function prOf(s) {
+  if (!s) return null;
+  if (s.kind.kind === 'automation') {
+    return (snap.prs || []).find((p) => p.number === s.kind.pr) || null;
+  }
+  return prForWorkspace(s.workspace);
+}
+
+export function handedToPr(s) {
+  if (s.state.state !== 'your_turn') return null;
+  const r = s.state.reason;
+  if (r === 'asked_a_question' || r === 'needs_permission') return null;
+  return prOf(s);
+}
+
+export let drawerTouched = false;
+
+/* Collapsed to its header on purpose, remembered across reloads like the column
+ * widths and the drawer height. Persisted so the next render (and the next boot)
+ * does not silently reopen it — the whole point, now that ng-watch means main
+ * always has a process and so the drawer is otherwise always open there. */
+export let drawerCollapsed = localStorage.getItem('orch.drawerCollapsed') === '1';
+
+const drawerListeners = [];
+export function onDrawerChange(fn) { drawerListeners.push(fn); }
+
+export function setDrawerCollapsed(v) {
+  drawerCollapsed = v;
+  try {
+    localStorage.setItem('orch.drawerCollapsed', v ? '1' : '0');
+  } catch (e) { /* private mode: the toggle still holds for this session */ }
+  // Announced, not applied: redrawing the drawer and nudging xterm to refit are
+  // the app's business, and reaching for them from here would make this layer
+  // depend on the panes that sit on it.
+  for (const fn of drawerListeners) fn(v);
+}
+
+/** A shell whose terminal should take the cursor as soon as it exists. */
+export let pendingProcFocus = null;
+
+/** A session the daemon has just been asked to create.
+ *
+ *  Setting `selected` alone is not enough: the terminal is only opened when a
+ *  session is shown, and the snapshot handler skips that once something is
+ *  already selected. */
+export let pendingSelect = null;
+
+/* Written from more than one module, and an imported binding is read-only, so the
+ * writes come through here. The alternative — leaving the state in `app.js` and
+ * letting modules reach back for it — is the coupling the modules exist to end. */
+export function setPendingSelect(id) { pendingSelect = id; }
+export function setPendingProcFocus(id) { pendingProcFocus = id; }
+export function setDrawerTouched(v) { drawerTouched = v; }
+export function setSelectedProc(wsId, procId) { selectedProc[wsId] = procId; }

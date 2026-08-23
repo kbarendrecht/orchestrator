@@ -11,13 +11,16 @@ import {
   pending, isConversation, byNewest, sessionsOf, currentSession,
   activeWorkspaceId, currentWorkspaceId, openMenu, closeMenu, menuOpen,
   newSession, newWorktree, newShell,
+  selectedProc, setSelectedProc, prState, handedToPr,
+  drawerTouched, setDrawerTouched, drawerCollapsed, setDrawerCollapsed,
+  pendingProcFocus, setPendingProcFocus, pendingSelect, setPendingSelect,
+  prOf, onDrawerChange,
 } from './js/core.js';
 
 // The daemon owns all state. This SPA is stateless and disposable: closing the
 // browser kills nothing, and reopening replays from the daemon's buffers (§1).
 
 
-let selectedProc = {};        // workspace id -> process id
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -31,34 +34,8 @@ let selectedProc = {};        // workspace id -> process id
  *
  *  An automation row's workspace is the placeholder `pr-10006`, which matches no
  *  real workspace, so it is asked by number instead. */
-function prOf(s) {
-  if (!s) return null;
-  if (s.kind.kind === 'automation') {
-    return (snap.prs || []).find((p) => p.number === s.kind.pr) || null;
-  }
-  return prForWorkspace(s.workspace);
-}
 
-/** What a PR is doing, in the two or three words a row has space for. */
-function prState(p) {
-  if (p.awaiting_you) return `${p.awaiting_you} waiting on you`;
-  if (p.mergeable === 'CONFLICTING') return 'conflicted';
-  if (p.checks === 'failing') return 'checks failing';
-  if (p.checks === 'pending') return 'checks running';
-  if (p.is_draft) return 'draft';
-  return 'open';
-}
 
-/** A stopped session whose work sits on a PR is not waiting on you *here* — the
- *  next move is on the PR, and the PR's own state is the useful thing to show.
- *  A question or a permission prompt is still about this session, so those keep
- *  the amber and their own words. */
-function handedToPr(s) {
-  if (s.state.state !== 'your_turn') return null;
-  const r = s.state.reason;
-  if (r === 'asked_a_question' || r === 'needs_permission') return null;
-  return prOf(s);
-}
 
 
 
@@ -71,6 +48,10 @@ import * as Term from './js/term.js';
 
 // The terminals are the scalable thing zoom used to reach into; now they ask.
 onScaleChange(() => Term.applyScale());
+
+// Collapsing the drawer redraws it and gives the terminal above its height back;
+// xterm only refits on an explicit nudge, not on a sibling's size change.
+onDrawerChange(() => { renderDrawer(); Term.refit(); });
 
 // ---------------------------------------------------------------------------
 // Context menu
@@ -318,7 +299,7 @@ function renderDrawer() {
       ? (dead ? `shell ${shellNo} · exit ${p.kind.exit_code}` : `shell ${shellNo}`)
       : p.name;
     tab.appendChild(el('span', null, label));
-    tab.onclick = () => { selectedProc[wsId] = p.id; drawerTouched = true; renderDrawer(); };
+    tab.onclick = () => { setSelectedProc(wsId, p.id); setDrawerTouched(true); renderDrawer(); };
 
     // The same glyph every other dismiss uses; this one was a multiplication sign.
     const x = el('span', 'x', '\u2715');
@@ -346,7 +327,7 @@ function renderDrawer() {
 
   const shown = Term.show(active ? `proc:${active}` : null, $('drawerbody'));
   if (shown && pendingProcFocus && active === pendingProcFocus) {
-    pendingProcFocus = null;
+    setPendingProcFocus(null);
     // After the frame that un-hides it: xterm refuses focus while its host has no
     // dimensions, which is exactly the state it is in right now.
     requestAnimationFrame(() => {
@@ -364,25 +345,7 @@ function renderDrawer() {
   }
 }
 
-let drawerTouched = false;
-/* Collapsed to its header on purpose, remembered across reloads like the column
- * widths and the drawer height. Persisted so the next render (and the next boot)
- * does not silently reopen it — the whole point, now that ng-watch means main
- * always has a process and so the drawer is otherwise always open there. */
-let drawerCollapsed = localStorage.getItem('orch.drawerCollapsed') === '1';
 
-function setDrawerCollapsed(v) {
-  drawerCollapsed = v;
-  try {
-    localStorage.setItem('orch.drawerCollapsed', v ? '1' : '0');
-  } catch (e) { /* private mode: the toggle still holds for this session */ }
-  renderDrawer();
-  // The terminal above reclaims (or yields) the drawer's height; xterm only
-  // refits on an explicit nudge, not on a sibling's size change.
-  Term.refit();
-}
-/** A shell whose terminal should take the cursor as soon as it exists. */
-let pendingProcFocus = null;
 
 
 
@@ -430,12 +393,6 @@ onSelection(() => {
   }
 });
 
-/** A session the daemon has just been asked to create.
- *
- *  Setting `selected` alone is not enough: the terminal is only opened when a
- *  session is shown, and the snapshot handler skips that once something is
- *  already selected. */
-let pendingSelect = null;
 
 
 
@@ -669,7 +626,7 @@ function connect() {
     // Switch to a session we asked for as soon as the daemon reports it.
     if (pendingSelect && snap.sessions.some((s) => s.id === pendingSelect)) {
       const id = pendingSelect;
-      pendingSelect = null;
+      setPendingSelect(null);
       setSelected(id);
       return;
     }
