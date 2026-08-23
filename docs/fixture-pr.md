@@ -99,10 +99,15 @@ untrusted checkout the daemon points at.
 Each of these was listed in TODO.md as unverifiable, and each now has a target:
 
 - The resolve flow end to end, against threads that really are awaiting you.
-- `triage::gate`'s refusal on a dirty worktree — now safe to dirty on purpose.
 - `open_file`'s `head_sha` arm, once a workspace sits on the PR branch.
 - The thumbs-up idempotency assumption in `post.rs`, still a guess about whether
   GitHub returns the existing reaction or a second one.
+
+`triage::gate`'s dirty-worktree refusal is **verified** — the second thing driven
+against the fixture. A polled PR with a `pr-4` worktree, dirtied on purpose, made
+`POST …/triage` refuse with the real file list and `GET …/review` report the
+`dirty` gate; cleaning the tree cleared it. No code change — the gate was already
+right; it had just never met a worktree safe to dirty.
 
 Teardown and its archive are **done** — the first thing driven against the
 fixture. Creating a worktree, killing its session and tearing it down proved the

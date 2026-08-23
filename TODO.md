@@ -25,7 +25,6 @@ Everything outside that block is hand-written and survives.
   nothing has been driven against it yet:
   - the resolve run end to end (commit per thread, `…/thread/:id/committed`, the
     daemon posting on its own credentials),
-  - `triage::gate`'s refusal on a dirty worktree, now safe to dirty on purpose,
   - `open_file`'s `head_sha` arm, once a workspace sits on the PR branch,
   - the thumbs-up idempotency assumption in `post.rs`.
 
@@ -34,6 +33,16 @@ Everything outside that block is hand-written and survives.
   revisiting". The archive auto-run is exactly right; the removal after it was
   broken on the default `claude --worktree` layout by a stale lock, now fixed in
   `src/git.rs`.
+
+  **`triage::gate`'s refusal on a dirty worktree — done, no code change.** The
+  precondition the daemon could never assemble before: a polled PR (#4) with a
+  `pr-4` worktree, dirtied on purpose. `POST /api/pr/4/triage` on it returned
+  `400 "2 uncommitted file(s) in this worktree — commit or stash first"` — the
+  real refusal at `triage.rs:127`, not a reasoned one — and `GET …/review`
+  reported `gate: {"gate":"dirty","files":["debug.js","src/pricing.js"]}`, the
+  actual list with both a modified tracked file and an untracked one. Cleaning the
+  tree cleared the gate back to `null`. All three callers share the one
+  `gate_inner`, so the resolve-run refusal (`api.rs:1876`) is the same check.
 
   One thing the fixture deliberately does **not** cover: `rerequest()`. A bot
   cannot be a requested reviewer, so that button still wants a second human
@@ -45,9 +54,10 @@ Everything outside that block is hand-written and survives.
     way to a testable thread. Everything downstream — triage, the per-thread card,
     `post_one`'s story substitution and idempotency, `sweep_words_only`, the 👍
     path — is unit-tested and has never made a real round trip.
-  - **The `triage::gate` refusal on a run.** Needs a PR that is in the poll, has a
-    triage, *and* whose worktree is dirty. No PR satisfies all three, and
-    manufacturing it means dirtying a real worktree.
+  - **The `triage::gate` refusal on a run.** *Now verified* against the fixture —
+    a dirtied `pr-4` worktree, refused with the real file list. It needed a PR in
+    the poll with a worktree that could be dirtied without touching real work,
+    which no monorepo PR could offer.
   - **A PR head sha in a link.** `open_file`'s `head_sha` arm never ran because no
     workspace's branch matched a polled PR; only the local-`HEAD` fallback did.
   - **Teardown, and the archive it now runs.** Both only fire on a worktree with a
