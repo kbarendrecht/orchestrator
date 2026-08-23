@@ -601,24 +601,46 @@ pub async fn thread_committed(
     // Fetched now: the thread must still be there, and the ids the write needs are
     // this fetch's, not the ones triage saw.
     let fresh = fetch_threads(&app, number).await?;
-    let root = fresh
-        .root_for(&thread_id)
-        .ok_or_else(|| anyhow::anyhow!("thread {thread_id} has no comment to answer"))?;
     let forge = write_forge(&app)?;
     // `gh` runs in the main checkout, the way every other write does, so it picks
-    // up the same auth and config. `reply` applies the footer itself; handing it
-    // a footed body would post two.
-    let at = app.cfg.main_checkout.clone();
-    tokio::task::spawn_blocking(move || forge.reply(&at, &root, &reply))
-        .await
-        .context("the write panicked")??;
+    // up the same auth and config. Through `post::post_one` rather than
+    // `forge.reply` directly, so this path files the story its reply links to,
+    // substitutes the token, and stays idempotent — the same three rules the
+    // batch obeys, from the same code.
+    let posted = crate::post::post_one(
+        &app,
+        &forge,
+        &app.cfg.main_checkout.clone(),
+        number,
+        &thread_id,
+        &reply,
+        planned.story.as_ref(),
+        &fresh,
+    )
+    .await?;
+
+    // A reply that could not be written is not "answered": leave the thread
+    // committed-but-unanswered so the overview still shows it as yours.
+    if let crate::post::Posted::HeldNoStory(why) = &posted {
+        mark_thread(&app, number, &thread_id, |t| {
+            t.note = Some(format!("story not filed — {why}"));
+        })
+        .await;
+        app.notify().await;
+        return Ok(Json(
+            json!({ "posted": false, "reason": "the story it links to was not filed" }),
+        ));
+    }
 
     mark_thread(&app, number, &thread_id, |t| {
         t.status = crate::post::ThreadStatus::Replied;
     })
     .await;
     app.notify().await;
-    Ok(Json(json!({ "posted": true })))
+    Ok(Json(json!({
+        "posted": true,
+        "already": posted == crate::post::Posted::AlreadyThere,
+    })))
 }
 
 /// Update one thread's place in the run, if the run is still there.
@@ -1856,6 +1878,16 @@ pub async fn pr_resolve_run(
             .cloned()
             .ok_or_else(|| anyhow::anyhow!("PR #{number} has no triage to carry out"))?
     };
+    // The same gates the batch refuses on, for the same reasons: uncommitted work
+    // of yours would end up in the run's commits, a stopped rebase cannot take a
+    // commit at all, and `fix-pr` is rewriting this very history. A run puts an
+    // agent in the worktree for minutes, so this is worth refusing before it
+    // starts rather than discovering per thread.
+    if let Some(ws) = workspace_for(&app, &pr.head_ref).await {
+        if let Some(g) = crate::triage::gate(&app, number, &ws).await? {
+            return Err(ApiError(anyhow::anyhow!("{}", g.say())));
+        }
+    }
     // Fetched now, not from the cache: it is what makes the thread ids real and
     // the drift check mean anything.
     let fresh = fetch_threads(&app, number).await?;

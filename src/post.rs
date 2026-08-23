@@ -1042,6 +1042,87 @@ async fn write_local(
     })
 }
 
+/// What became of one thread's outward words.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Posted {
+    Sent,
+    /// The identical body is already on the thread, so this was a retry rather
+    /// than a second post.
+    AlreadyThere,
+    /// The story the reply links to could not be filed, so nothing was said. A
+    /// literal `{story}` on a reviewer's thread is worse than silence.
+    HeldNoStory(String),
+}
+
+/// File the story a reply links to, substitute the token, and post it — once.
+///
+/// The single-thread twin of [`post_outward`]'s per-thread body, extracted so the
+/// resolve run cannot drift from the batch on the three rules that matter:
+/// a story is filed *before* the reply that links to it, [`STORY_TOKEN`] never
+/// reaches GitHub, and a repeated call does not post twice.
+///
+/// [`STORY_TOKEN`]: crate::proposal::STORY_TOKEN
+///
+/// `fresh` must be a fetch from *now*: it supplies the comment ids the write
+/// needs, the permalink a story is keyed on, and the answer to "did I already say
+/// this". Everything the batch reports per thread (`landed`/`failed`/`skipped`)
+/// stays the batch's business — a run answers one thread at a time and has the
+/// card in front of you instead.
+pub(crate) async fn post_one(
+    app: &Arc<AppState>,
+    forge: &ForgeImpl,
+    at: &Path,
+    pr: u64,
+    thread_id: &str,
+    reply: &str,
+    story: Option<&crate::proposal::StoryDraft>,
+    fresh: &Threads,
+) -> Result<Posted> {
+    let root = fresh
+        .root_for(thread_id)
+        .with_context(|| format!("thread {thread_id} has no comment to answer"))?;
+
+    let mut text = reply.to_string();
+    if let Some(draft) = story {
+        // Keyed on the thread's own URL, which is what makes a retry find the
+        // story it already filed rather than open a second one.
+        let permalink = fresh
+            .items
+            .iter()
+            .find(|t| t.id == thread_id)
+            .and_then(|t| t.comments.first())
+            .map(|c| c.url.clone())
+            .unwrap_or_default();
+        let wanted = [crate::story::Wanted {
+            thread_id: thread_id.to_string(),
+            draft: draft.clone(),
+            permalink,
+        }];
+        let filed = crate::story::file_all(app, pr, &wanted).await;
+        match filed.get(thread_id) {
+            Some(Ok(f)) => {
+                // `replace`, not `replacen`: a reply that names the story twice
+                // stays consistent.
+                text = text.replace(crate::proposal::STORY_TOKEN, &f.story.link());
+            }
+            other => {
+                return Ok(Posted::HeldNoStory(match other {
+                    Some(Err(e)) => e.clone(),
+                    // `file_all` answers for every thread it is given, so this is
+                    // unreachable rather than expected.
+                    _ => "the story run answered nothing for this thread".to_string(),
+                }));
+            }
+        }
+    }
+
+    if already_replied(fresh, thread_id, &text) {
+        return Ok(Posted::AlreadyThere);
+    }
+    blocking(forge, at, &root, Send::Reply(text)).await?;
+    Ok(Posted::Sent)
+}
+
 /// The outward writes, in the order the design settled: stories, then replies,
 /// then reactions, then re-requests.
 ///
@@ -1892,5 +1973,119 @@ mod tests {
         outdated.is_outdated = true;
         // Outdated: no current line, so it is named by where the reviewer looked.
         assert_eq!(label_for(&outdated), "a.ts:9 · alice");
+    }
+
+    async fn app() -> Arc<AppState> {
+        let dir = std::env::temp_dir().join(format!("orchd-post-one-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cfg: crate::config::Config = serde_json::from_str(&format!(
+            r#"{{"main_checkout":"{}","port":7799}}"#,
+            dir.display()
+        ))
+        .unwrap();
+        AppState::new(cfg, "t".into(), crate::window::Chrome::None)
+    }
+
+    /// A forge is needed to call `post_one`, but these cases all return before any
+    /// write, so it is never used — an empty repo is enough and nothing goes out.
+    fn no_write_forge() -> ForgeImpl {
+        ForgeImpl::for_kind(
+            crate::config::ForgeKind::GitHub,
+            "o",
+            "n",
+            String::new(),
+        )
+    }
+
+    /// The resolve run reaches GitHub one thread at a time, so idempotency cannot
+    /// be a batch-level property: a retried `…/committed` must not say it twice.
+    #[tokio::test]
+    async fn a_reply_already_on_the_thread_is_not_posted_again() {
+        let app = app().await;
+        let mut t = thread("PRRT_1", Some("a.ts"), Some(1), "john");
+        // The viewer's own answer, footed the way the forge writes it.
+        t.comments
+            .push(comment(101, "kars", &crate::forge::with_footer("Resolved.")));
+        let fresh = fetched(vec![t]);
+
+        let out = post_one(
+            &app,
+            &no_write_forge(),
+            &app.cfg.main_checkout.clone(),
+            10001,
+            "PRRT_1",
+            "Resolved.",
+            None,
+            &fresh,
+        )
+        .await
+        .unwrap();
+        assert_eq!(out, Posted::AlreadyThere);
+    }
+
+    /// The token is why the story is filed first. A cached story answers without
+    /// spawning the filer, which is what makes this testable at all — and the
+    /// substituted text is what the idempotency check then compares, so seeing
+    /// `AlreadyThere` proves the link went in.
+    #[tokio::test]
+    async fn the_story_token_is_replaced_by_the_link_before_anything_is_posted() {
+        let app = app().await;
+        let story = crate::story::StoryRef {
+            id: "sc-1".into(),
+            url: "https://tracker/story/1".into(),
+        };
+        app.inner
+            .write()
+            .await
+            .stories
+            .put(10001, "PRRT_1", story.clone());
+
+        let mut t = thread("PRRT_1", Some("a.ts"), Some(1), "john");
+        t.comments.push(comment(
+            101,
+            "kars",
+            &crate::forge::with_footer(&format!("Tracked: {}", story.link())),
+        ));
+        let fresh = fetched(vec![t]);
+
+        let draft = StoryDraft {
+            title: "t".into(),
+            body: "b".into(),
+        };
+        let out = post_one(
+            &app,
+            &no_write_forge(),
+            &app.cfg.main_checkout.clone(),
+            10001,
+            "PRRT_1",
+            &format!("Tracked: {}", crate::proposal::STORY_TOKEN),
+            Some(&draft),
+            &fresh,
+        )
+        .await
+        .unwrap();
+        // Matched the substituted body, so `{story}` never reached the write.
+        assert_eq!(out, Posted::AlreadyThere);
+    }
+
+    /// A thread the fetch no longer carries has no comment to answer, and that is
+    /// an error rather than a silent skip.
+    #[tokio::test]
+    async fn a_vanished_thread_refuses_rather_than_posting_nowhere() {
+        let app = app().await;
+        let fresh = fetched(vec![thread("PRRT_9", Some("a.ts"), Some(1), "john")]);
+        let err = post_one(
+            &app,
+            &no_write_forge(),
+            &app.cfg.main_checkout.clone(),
+            10001,
+            "PRRT_1",
+            "Resolved.",
+            None,
+            &fresh,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("PRRT_1"), "{err}");
     }
 }

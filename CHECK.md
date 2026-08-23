@@ -82,7 +82,16 @@ the running daemon.
   `Inner` maps feature-by-feature rather than attached to its entity.
 
 **H2 · resolve-run re-implements the batch's write/post ladder instead of
-sharing it**
+sharing it** — *Partly fixed.* `post::post_one` is now the single-thread twin of
+`post_outward`'s per-thread body, and `thread_committed` goes through it instead
+of calling `forge.reply` bare — so the run files the story its reply links to,
+substitutes `{story}`, and is idempotent on a retry, from the same code the batch
+uses. `pr_resolve_run` now refuses on `triage::gate` before spawning, the way the
+batch does. **Still open:** words-only threads have no trigger that ever posts
+them (needs a decision — sweep at plan time, or its own button); the ask/wait
+poll loop in `thread_committed` is still hand-rolled, and on reading it that
+looks justified rather than drift (its own comment explains why it has no
+deadline, unlike `ask`).
 
 - **Location:** `api.rs` (`pr_resolve_run`, `thread_committed`), `spawn.rs`
   (`spawn_resolve_run`) vs `post.rs` (`run_inner`, `post_outward`,
