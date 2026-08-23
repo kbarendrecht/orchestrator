@@ -322,27 +322,39 @@ Everything outside that block is hand-written and survives.
   editable settings, which currently default to acme's), and how to try it
   without a monorepo to point it at.
 
-- Have a quick look at where the memory goes. Nothing is wrong — measured with
-  four sessions and `ng-watch` up, the app itself is ~287 MB PSS against Tabby's
-  529 MB idle — but two numbers look higher than they should and neither has been
-  looked at:
-  - **orchd itself is 76 MB PSS** (169 MB RSS) for a daemon whose live state is a
-    few hundred session records and five 512KB ring buffers. Worth an hour with
-    a heap profiler before assuming it is fine. First suspects: glibc holding
-    freed arenas rather than returning them, and the 128KB transcript tails now
-    read for every untitled session at restore, which is ~11 MB of transient
-    `Vec` across 87 records.
-  - **WebKit is 211 MB PSS** for one page. Terminals keep 10,000 lines of
-    scrollback each in `xterm` on top of the daemon's own ring buffer, which is
-    the same bytes held twice; the daemon replays on reattach anyway, so the
-    client scrollback could be far shorter.
-  Two smaller things to check while in there, neither yet measured: `human_edits`
-  (`state.rs`) is never pruned, so it grows one entry per hand-edited file for the
-  life of the daemon; and each terminal's `xterm` scrollback is the second copy of
-  bytes the daemon's ring buffer already holds.
+- **Where the memory goes — looked at, and one of the two numbers was measuring
+  the wrong thing.** *Done, one line changed.* Both suspects are settled:
 
-  Do not turn this into a project. If neither is a one-line win, write down what
-  it actually is and move on.
+  - **orchd is not 76 MB. It is 7.6 MB RSS / 5.3 MB PSS**, release build, idle,
+    polling a PR — of which the *heap* (`RssAnon`) is **1.1 MB**. The old figure
+    was a `cargo run` debug build, whose binary is 113 MB against release's 11 MB,
+    and it is nearly all `RssFile`: paged-in debug text, not data. Same daemon
+    built debug measured 15.3 MB RSS / 13.2 MB PSS idle with `RssAnon` still only
+    1.7 MB. So the 76 MB was the cost of the *build profile*, and the shipped app
+    never paid it. Both first suspects were wrong for the same reason — there is
+    no arena to hold and no tail to blame when anonymous memory is one megabyte.
+    Nothing to fix; measure release before believing a daemon number again.
+  - **WebKit's scrollback was real, and it was a one-line win.** `xterm` keeps
+    each line as a `Uint32Array` of `cols * 3` words, so depth costs process
+    memory: at 40x140, one fully-scrolled terminal took **+36.7 MB RSS at 10000
+    lines against +13.3 MB at 2000** (measured in Chrome over the vendored xterm;
+    the curve is monotonic — 0/1000/2000/5000/10000 → 87.4/92.2/100.7/109.6/124.1
+    MB of process-tree RSS). `web/js/term.js` is now `scrollback: 2000`, saving
+    ~23 MB per terminal — and buffers are held whether or not a terminal paints,
+    so parked drawer sessions were paying it too. The depth also was not durable:
+    `BUFFER_BYTES` is a 512KB ring ≈ 3600 dense lines, so anything past that
+    vanished on reload while still costing memory. The two are now in the same
+    range on purpose.
+
+  Measuring note for next time: JS-heap metrics are useless here. CDP's
+  `JSHeapUsedSize` reported 0.9 MB for 9000 lines that cost ~23 MB, because
+  typed-array backing stores are external memory. Process RSS, or nothing.
+
+  Checked and dismissed: **`human_edits`** (`state.rs`) is never pruned, but an
+  entry is a `PathBuf` + `SystemTime` + a `HashSet` of session ids — it would take
+  hundreds of thousands of hand-edited files to reach a megabyte, so the unbounded
+  map is theoretical, not a leak worth code. The **five 512KB ring buffers** are
+  2.5 MB at worst, consistent with the 1.1 MB idle heap.
 
 - **Audit the keyboard map for logical, consistent coverage.** Not two more
   chords — a pass over the whole scheme so it is predictable: same modifier

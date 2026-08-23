@@ -61,7 +61,21 @@ function openTerm(target, parent) {
     fontSize: termFontSize(),
     lineHeight: 1.25,
     cursorBlink: true,
-    scrollback: 10000,
+    /* Sized to what the daemon can actually replay, not to the largest number
+     * that felt generous. Two reasons, both measured:
+     *
+     * xterm keeps every line as a `Uint32Array` of `cols * 3` words, so depth
+     * costs real memory — at 40x140, a fully-scrolled terminal held +36.7 MB of
+     * process RSS at 10000 lines against +13.3 MB at 2000. That is ~23 MB per
+     * terminal, and buffers are held whether or not the terminal paints, so a
+     * drawer full of parked sessions paid it too.
+     *
+     * And the depth beyond this was never durable: `BUFFER_BYTES` (`pty.rs`) is
+     * a 512KB ring, which is ~3600 lines of dense 140-column output, so anything
+     * deeper vanished at the next reload while still costing memory in the
+     * meantime. Keeping the two in the same range makes scrollback survive a
+     * reattach instead of silently shortening. Raise both or neither. */
+    scrollback: 2000,
     allowProposedApi: true,
   });
   const fit = new FitAddon.FitAddon();
