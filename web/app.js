@@ -5,13 +5,14 @@
 import {
   TOKEN, WS_BASE, $, el, toast, call, get, duration,
   snap, receive, sinceSnap, refreshButton, keyActivate,
+  uiScale, setZoom, saveZoom, onScaleChange, ZOOM, zoomScale,
+  selected, setSelected, onSelection, prForWorkspace,
 } from './js/core.js';
 
 // The daemon owns all state. This SPA is stateless and disposable: closing the
 // browser kills nothing, and reopening replays from the daemon's buffers (§1).
 
 
-let selected = null;          // session id
 let selectedProc = {};        // workspace id -> process id
 const terms = new Map();      // target -> { term, fit, sock, host }
 
@@ -348,8 +349,27 @@ function showTerm(target, parent) {
   return entry;
 }
 
-return { show: showTerm, close: closeTerm, resize, fontSize: termFontSize };
+/** Re-fit every attached terminal. Lives with the terminals rather than with the
+ *  zoom control, which is what stopped the two depending on each other. */
+function refit() {
+  for (const entry of terms.values()) resize(entry);
+}
+
+/** Apply a new UI scale here: xterm draws its own text, so its font is set
+ *  rather than inherited, and a new glyph size means new rows and cols. */
+function applyScale() {
+  const px = termFontSize();
+  for (const entry of terms.values()) {
+    if (entry.term.options.fontSize !== px) entry.term.options.fontSize = px;
+  }
+  refit();
+}
+
+return { show: showTerm, close: closeTerm, resize, fontSize: termFontSize, refit, applyScale };
 })();
+
+// The terminals are the scalable thing zoom used to reach into; now they ask.
+onScaleChange(() => Term.applyScale());
 
 // ---------------------------------------------------------------------------
 // Context menu
@@ -425,7 +445,7 @@ function render() {
   Rail.render();
   renderContext();
   renderDrawer();
-  renderFiles();
+  Diff.renderFiles();
   Queue.render();
   renderInteraction();
   renderUpdate();
@@ -782,7 +802,7 @@ function prGroup() {
     if (auto && auto.state === 'running') {
       const b = el('span', 'pract running', 'fixing');
       b.title = 'Jump to the run';
-      b.onclick = (ev) => { ev.preventDefault(); ev.stopPropagation(); select(auto.session); };
+      b.onclick = (ev) => { ev.preventDefault(); ev.stopPropagation(); setSelected(auto.session); };
       row.appendChild(b);
     } else {
       if (auto && auto.state === 'exhausted') {
@@ -801,7 +821,7 @@ function prGroup() {
       j.onclick = (ev) => {
         ev.preventDefault();
         ev.stopPropagation();
-        select(p.session);
+        setSelected(p.session);
       };
       row.appendChild(j);
     }
@@ -1017,7 +1037,7 @@ function sessionRow(s, w) {
   }
 
   btn.appendChild(el('div', 'sess-pad'));
-  btn.onclick = () => select(s.id);
+  btn.onclick = () => setSelected(s.id);
   // The header's ✕ only ever closes the selected session, so closing any other
   // one meant switching to it first.
   btn.oncontextmenu = (ev) => openMenu(ev, [
@@ -1112,7 +1132,7 @@ function renderWaitbar() {
     bar.className = 'waitbar on';
     bar.appendChild(el('span', null,
       `${waiting.length} waiting · longest ${duration(sinceSnap(longest.waiting_ms) ?? 0)}`));
-    bar.onclick = () => select(longest.id);
+    bar.onclick = () => setSelected(longest.id);
   } else {
     /* Nobody is asking for you; a restart has just put several agents back at an
        empty prompt. Quieter than the waiting bar, because this is an offer rather
@@ -1120,7 +1140,7 @@ function renderWaitbar() {
     bar.className = 'waitbar on calm';
     bar.appendChild(el('span', null,
       `${ready.length} session${ready.length === 1 ? '' : 's'} paused mid-work`));
-    bar.onclick = () => select(ready[0].id);
+    bar.onclick = () => setSelected(ready[0].id);
   }
 
   /* One poke for the lot. Typing the same word into each of them is the tax on
@@ -1334,13 +1354,33 @@ function setDrawerCollapsed(v) {
   renderDrawer();
   // The terminal above reclaims (or yields) the drawer's height; xterm only
   // refits on an explicit nudge, not on a sibling's size change.
-  refitTerms();
+  Term.refit();
 }
 /** A shell whose terminal should take the cursor as soon as it exists. */
 let pendingProcFocus = null;
 
+
+
 // ---------------------------------------------------------------------------
-// Files — changed files for the selected session's workspace (§9)
+// Diff (§5)
+// ---------------------------------------------------------------------------
+
+/** The diff viewer and its editable right pane, behind one seam.
+ *
+ *  One namespace rather than two: the editable pane *is* the right half of the
+ *  diff, reads `diffState` for which file it is on, and splitting them would
+ *  have made that reach a public call. Eleven names leave, which is more than
+ *  the overlay needed — the file list drives the diff and the keyboard drives
+ *  both, so they are genuinely somebody else's business.
+ *
+ *  Bodies keep their indentation, for the same reason as `Review`.
+ */
+const Diff = (() => {
+
+// ---------------------------------------------------------------------------
+// The changed-files pane. Inside this seam rather than beside it: the list is
+// what drives the diff, and the diff redraws the list when it closes — two
+// modules that call each other are one module with a line drawn through it.
 // ---------------------------------------------------------------------------
 
 /** Behind/ahead against the configured base, with the one action worth offering.
@@ -1499,27 +1539,6 @@ function renderFiles() {
   // thing you need to know to read the list, and it is not a choice.
   $('filesbase').textContent = since ? `since ${since.slice(0, 7)}` : '';
 }
-
-/** The PR whose head ref this workspace holds, if any. */
-function prForWorkspace(wsId) {
-  return (snap.prs || []).find((p) => p.workspace === wsId) || null;
-}
-
-// ---------------------------------------------------------------------------
-// Diff (§5)
-// ---------------------------------------------------------------------------
-
-/** The diff viewer and its editable right pane, behind one seam.
- *
- *  One namespace rather than two: the editable pane *is* the right half of the
- *  diff, reads `diffState` for which file it is on, and splitting them would
- *  have made that reach a public call. Eleven names leave, which is more than
- *  the overlay needed — the file list drives the diff and the keyboard drives
- *  both, so they are genuinely somebody else's business.
- *
- *  Bodies keep their indentation, for the same reason as `Review`.
- */
-const Diff = (() => {
 
 // Kept short: the right header also carries the title and the refresh control,
 // and a long label wraps it onto two lines.
@@ -2055,7 +2074,7 @@ async function saveEditor() {
 return {
   state: diffState, edit: editState,
   open: openDiff, close: closeDiff, render: renderDiff, step: stepChange,
-  loadFile, detailEl,
+  loadFile, detailEl, renderFiles,
   openEditor, closeEditor, saveEditor,
 };
 })();
@@ -3989,8 +4008,10 @@ import * as Queue from './js/queue.js';
 // Actions
 // ---------------------------------------------------------------------------
 
-function select(id) {
-  selected = id;
+// What picking a session means: open its terminal, redraw, and put the cursor
+// where you are about to type. Registered rather than called by the rail, so the
+// rail does not have to know about rendering.
+onSelection(() => {
   const s = currentSession();
   // A session created a moment ago is not in the snapshot yet. Blanking the
   // terminal here would strand it: the next snapshot sees `selected` already
@@ -4007,7 +4028,7 @@ function select(id) {
       } catch (e) { /* disposed while we waited */ }
     });
   }
-}
+});
 
 /** A session the daemon has just been asked to create.
  *
@@ -4190,14 +4211,14 @@ window.addEventListener('keydown', (e) => {
     e.preventDefault();
     if (!ordered.length) return;
     const next = e.key === 'j' ? idx + 1 : idx - 1;
-    select(ordered[(next + ordered.length) % ordered.length].id);
+    setSelected(ordered[(next + ordered.length) % ordered.length].id);
   } else if (e.key === 'b') {
     // Next *blocked* session, which is the one costing you the most.
     e.preventDefault();
     const blocked = ordered.filter(isWaiting);
     if (!blocked.length) return toast('nothing waiting on you');
     const after = blocked.find((s) => ordered.indexOf(s) > idx) || blocked[0];
-    select(after.id);
+    setSelected(after.id);
   } else if (e.key === 'm') {
     e.preventDefault();
     const main = snap.workspaces.find((w) => w.is_main);
@@ -4221,7 +4242,7 @@ function queueRefit() {
   if (refitTimer) clearTimeout(refitTimer);
   refitTimer = setTimeout(() => {
     refitTimer = null;
-    refitTerms();
+    Term.refit();
   }, 120);
 }
 
@@ -4286,14 +4307,14 @@ function connect() {
     // for once it has stopped.
     if (selected) {
       const cur = snap.sessions.find((s) => s.id === selected);
-      if (!cur || isArchived(cur)) selected = null;
+      if (!cur || isArchived(cur)) setSelected(null);
     }
 
     // Switch to a session we asked for as soon as the daemon reports it.
     if (pendingSelect && snap.sessions.some((s) => s.id === pendingSelect)) {
       const id = pendingSelect;
       pendingSelect = null;
-      select(id);
+      setSelected(id);
       return;
     }
 
@@ -4302,7 +4323,7 @@ function connect() {
       const first = snap.sessions.filter((x) => !isArchived(x));
       const pick = first.find(isWaiting) || first[0];
       if (pick) {
-        selected = pick.id;
+        setSelected(pick.id);
         Term.show(`session:${pick.id}`, $('termwrap'));
       } else {
         Term.show(null, $('termwrap'));
@@ -4448,10 +4469,6 @@ function setDrawer(px) {
 }
 
 /** xterm sizes itself to its host, and a column drag is not a window resize. */
-function refitTerms() {
-  for (const entry of terms.values()) Term.resize(entry);
-}
-
 function dragColumn(handle, col, fromLeft) {
   handle.addEventListener('mousedown', (e) => {
     if (e.button !== 0) return;
@@ -4471,7 +4488,7 @@ function dragColumn(handle, col, fromLeft) {
       } catch (err) { /* private mode: the drag still worked for this session */ }
       // Once, at the end: fitting on every mousemove means a pty resize per
       // mouse event, and the terminal reflows fine on release.
-      refitTerms();
+      Term.refit();
     };
     window.addEventListener('mousemove', move);
     window.addEventListener('mouseup', done, { once: true });
@@ -4482,7 +4499,7 @@ function dragColumn(handle, col, fromLeft) {
     try {
       localStorage.removeItem(col.key);
     } catch (err) { /* nothing to forget */ }
-    refitTerms();
+    Term.refit();
   });
 }
 
@@ -4506,7 +4523,7 @@ function dragDrawer(handle) {
       try {
         localStorage.setItem(DRAWER.key, String(drawerHeight()));
       } catch (err) { /* private mode: the drag still worked for this session */ }
-      refitTerms();
+      Term.refit();
     };
     window.addEventListener('mousemove', move);
     window.addEventListener('mouseup', done, { once: true });
@@ -4517,7 +4534,7 @@ function dragDrawer(handle) {
     try {
       localStorage.removeItem(DRAWER.key);
     } catch (err) { /* nothing to forget */ }
-    refitTerms();
+    Term.refit();
   });
 }
 
@@ -4542,52 +4559,6 @@ function setupColumns() {
 // Settings
 // ---------------------------------------------------------------------------
 
-/* One panel, one setting so far. Font size is a `zoom` on the grid rather than a
- * sweep of every px in the stylesheet: it scales the terminal, the rail and the
- * diff together, which is what "font size" means when the whole window is text.
- *
- * Kept in localStorage, like the column widths — it is this browser's opinion,
- * not something the daemon owns. */
-/* What "100%" means: 1.155 of the stylesheet's own sizes, because the design was
- * drawn a little small for a full-screen window. Was 1.1, which read a step small
- * in practice: what used to be the 105% setting is now the default.
- *
- * Every text size in the sheet is
- * `calc(Npx * var(--fs))`, so this scales type and leaves layout alone — no
- * `zoom`, which is a legacy property that WebKitGTK mispaints at scale. */
-const FS_BASE = 1.155;
-const ZOOM = { key: 'orch.uiZoom', def: 1, min: 0.8, max: 1.5, step: 0.05 };
-
-/** The user-facing scale, where 1 is the default. */
-let zoomScale = ZOOM.def;
-
-/** The multiplier the stylesheet and the terminal both read. */
-const uiScale = () =>
-  Number(getComputedStyle(document.documentElement).getPropertyValue('--fs')) || FS_BASE;
-
-function setZoom(z) {
-  const next = Math.min(ZOOM.max, Math.max(ZOOM.min, Math.round(z * 100) / 100));
-  zoomScale = next;
-  document.documentElement.style.setProperty('--fs', String(next * FS_BASE));
-  $('fsval').textContent = `${Math.round(next * 100)}%`;
-  $('fsdown').disabled = next <= ZOOM.min;
-  $('fsup').disabled = next >= ZOOM.max;
-  // xterm draws its own text, so its font is set rather than inherited, and the
-  // new glyph size means new rows and cols.
-  const px = Term.fontSize();
-  for (const entry of terms.values()) {
-    if (entry.term.options.fontSize !== px) entry.term.options.fontSize = px;
-  }
-  refitTerms();
-  return next;
-}
-
-function saveZoom(z) {
-  try {
-    if (z === ZOOM.def) localStorage.removeItem(ZOOM.key);
-    else localStorage.setItem(ZOOM.key, String(z));
-  } catch (e) { /* private mode: it still applies for this session */ }
-}
 
 
 /** The settings panel, behind one seam.

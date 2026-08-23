@@ -27,6 +27,25 @@ export function receive(next) {
 
 export const sinceSnap = (ms) => (ms == null ? null : ms + (Date.now() - snapAt));
 
+/** The PR whose head ref this workspace holds, if any. */
+export function prForWorkspace(wsId) {
+  return (snap.prs || []).find((p) => p.workspace === wsId) || null;
+}
+
+/* Which session the centre pane is showing. Owned here because the rail picks it
+ * and the terminals and the render both react — leaving the state in `app.js`
+ * meant the rail had to reach back into the module that renders it. */
+export let selected = null;
+
+const selectionListeners = [];
+export function onSelection(fn) { selectionListeners.push(fn); }
+
+/** Pick a session. What *happens* next is whoever registered's business. */
+export function setSelected(id) {
+  selected = id;
+  for (const fn of selectionListeners) fn(id);
+}
+
 export const TOKEN = window.__ORCH__.token;
 export const WS_BASE = `ws://${location.host}`;
 
@@ -117,4 +136,57 @@ export function refreshButton(kind, pollCount, endpoint, polling) {
     call(endpoint).catch((err) => { spinFloor[kind] = null; toast(err.message, true); });
   };
   return btn;
+}
+
+// ---------------------------------------------------------------------------
+// UI scale
+// ---------------------------------------------------------------------------
+
+/* One panel, one setting so far. Font size is a `zoom` on the grid rather than a
+ * sweep of every px in the stylesheet: it scales the terminal, the rail and the
+ * diff together, which is what "font size" means when the whole window is text.
+ *
+ * Kept in localStorage, like the column widths — it is this browser's opinion,
+ * not something the daemon owns. */
+/* What "100%" means: 1.155 of the stylesheet's own sizes, because the design was
+ * drawn a little small for a full-screen window. Was 1.1, which read a step small
+ * in practice: what used to be the 105% setting is now the default.
+ *
+ * Every text size in the sheet is
+ * `calc(Npx * var(--fs))`, so this scales type and leaves layout alone — no
+ * `zoom`, which is a legacy property that WebKitGTK mispaints at scale. */
+/* Who wants to know the UI scale changed. A list rather than a direct call so
+ * `setZoom` needs no opinion about what is scalable. */
+const scaleListeners = [];
+export function onScaleChange(fn) { scaleListeners.push(fn); }
+
+export const FS_BASE = 1.155;
+export const ZOOM = { key: 'orch.uiZoom', def: 1, min: 0.8, max: 1.5, step: 0.05 };
+
+/** The user-facing scale, where 1 is the default. */
+export let zoomScale = ZOOM.def;
+
+/** The multiplier the stylesheet and the terminal both read. */
+export const uiScale = () =>
+  Number(getComputedStyle(document.documentElement).getPropertyValue('--fs')) || FS_BASE;
+
+export function setZoom(z) {
+  const next = Math.min(ZOOM.max, Math.max(ZOOM.min, Math.round(z * 100) / 100));
+  zoomScale = next;
+  document.documentElement.style.setProperty('--fs', String(next * FS_BASE));
+  $('fsval').textContent = `${Math.round(next * 100)}%`;
+  $('fsdown').disabled = next <= ZOOM.min;
+  $('fsup').disabled = next >= ZOOM.max;
+  // Announced rather than applied: the terminals' own font is xterm's business,
+  // and reaching into it from here is what made zoom and the terminals depend on
+  // each other. Whoever owns a scalable thing registers for this.
+  for (const fn of scaleListeners) fn(next);
+  return next;
+}
+
+export function saveZoom(z) {
+  try {
+    if (z === ZOOM.def) localStorage.removeItem(ZOOM.key);
+    else localStorage.setItem(ZOOM.key, String(z));
+  } catch (e) { /* private mode: it still applies for this session */ }
 }
