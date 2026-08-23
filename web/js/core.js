@@ -314,6 +314,19 @@ export const pending = (s) => s.workspace === PENDING_WORKTREE;
  * archive is conversations, not every session that ever stopped. */
 export const isConversation = (s) => isArchived(s) && s.has_transcript;
 
+/**
+ * Whether the rail has a row for this session — the only ones worth switching to.
+ *
+ * The rail draws two kinds: live sessions, and archived ones that left a
+ * transcript. An archived session with **no** transcript is drawn nowhere, so
+ * landing on one shows an empty terminal with nothing highlighted and no way back
+ * except pressing the key again. `snap.sessions` still contains it, which is why
+ * the switcher has to ask rather than iterate the snapshot.
+ *
+ * @param {{state: {state: string}, has_transcript: boolean}} s
+ */
+export const inRail = (s) => !isArchived(s) || isConversation(s);
+
 /** Newest first: `created_ms` is an age, so the smallest number is the newest. */
 export const byNewest = (a, b) => a.created_ms - b.created_ms;
 

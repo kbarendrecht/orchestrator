@@ -178,6 +178,16 @@ button.ctx-btn:hover{color:var(--text)}
   transition:color .12s,background .12s;
 }
 .gear:hover,.gear[aria-expanded="true"]{color:var(--text);background:var(--raised)}
+/* Two-thirds of the gear's box and a dimmer glyph: present enough to find once,
+   quiet enough not to compete with the controls that get used daily. */
+.helpbtn{
+  flex:0 0 auto;display:flex;align-items:center;justify-content:center;
+  width:17px;height:17px;margin-left:1px;border-radius:3px;
+  font-family:var(--label);font-size:calc(10px * var(--fs));font-weight:700;
+  color:var(--faint-solid);opacity:.75;
+  transition:color .12s,background .12s,opacity .12s;
+}
+.helpbtn:hover,.helpbtn[aria-expanded="true"]{color:var(--text);background:var(--raised);opacity:1}
 .repo-switch:hover{background:var(--raised);border-color:var(--line)}
 .repo-main{
   font-family:var(--mono);font-size:calc(11px * var(--fs));color:var(--text);
@@ -793,7 +803,6 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
 .prcount .n{color:var(--attn)}
 .prcount .f{color:var(--bad)}
 .prage{color:var(--dim)}
-.toksrc{font-size:calc(11px * var(--fs));color:var(--attn);cursor:default;margin-left:4px;line-height:1}
 .prrow{
   display:flex;align-items:center;gap:8px;padding:4px 12px 4px 15px;width:100%;
   position:relative;text-decoration:none;color:inherit;

@@ -186,6 +186,37 @@ pub async fn start(opts: StartOptions) -> Result<Server> {
     if orphans > 0 {
         tracing::warn!("reaped {orphans} orphan session(s) from a crashed daemon");
     }
+    // Before restoring, not after: a record with no transcript has nothing behind
+    // it and no row in the rail, so restoring one only adds something invisible to
+    // the snapshot. Written back so they go for good rather than being re-read and
+    // re-dropped on every start.
+    let (records, gone) = {
+        // Who they were, before the vector is consumed — this deletes durable
+        // state, and the first version of it deleted every record on a real
+        // machine, so the log names them rather than counting them.
+        let was: Vec<(model::SessionId, String)> =
+            records.iter().map(|r| (r.id, r.workspace.clone())).collect();
+        let (kept, _) = store::prune_ghosts(records);
+        let ids: std::collections::HashSet<_> = kept.iter().map(|r| r.id).collect();
+        let gone: Vec<String> = was
+            .into_iter()
+            .filter(|(id, _)| !ids.contains(id))
+            .map(|(id, ws)| format!("{} ({ws})", &id.to_string()[..8]))
+            .collect();
+        (kept, gone)
+    };
+    if !gone.is_empty() {
+        tracing::info!(
+            "dropped {} session record(s) with no transcript to return to: {}",
+            gone.len(),
+            gone.join(", ")
+        );
+        // Written back pinned as well as pruned, so the survivors' transcript
+        // paths stop being re-hunted on every start.
+        if let Err(e) = store::save(&records) {
+            tracing::error!("could not write the pruned session store: {e:#}");
+        }
+    }
     adopt_existing_worktrees(&app).await?;
     app.restore_sessions(records.clone()).await;
     {
@@ -467,13 +498,13 @@ fn start_pr_poller(app: Arc<AppState>) {
             let token = forge::resolve_token(app.cfg.github_token_file.as_deref());
             match token {
                 Ok(t) => {
-                    if t.source == forge::TokenSource::GhCli {
-                        // §6 wants read scopes only; gh's token carries write.
-                        tracing::warn!(
-                            "using `gh auth token`, which has broader scopes than orchd needs. \
-                             Set ORCHD_GITHUB_TOKEN or github_token_file to a read-only PAT."
-                        );
-                    }
+                    // No warning for a `gh auth token`. §6 wants read scopes only
+                    // and gh's carries write, but it is also the fallback that
+                    // makes the app work out of the box — so saying so *on every
+                    // poll* was a line that could not be acted on and could not be
+                    // silenced, which is noise rather than information. The fact
+                    // still reaches you where it is useful: `token_source` is in
+                    // the snapshot and the PR pane marks it with a `⚠`.
                     let source = t.source;
                     let forge =
                         forge::ForgeImpl::for_kind(app.cfg.forge, repo.0.clone(), repo.1.clone(), t.value);

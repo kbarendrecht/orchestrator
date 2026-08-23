@@ -260,6 +260,58 @@ pub fn load() -> Vec<SessionRecord> {
     }
 }
 
+/// Drop records with nothing left to come back to.
+///
+/// A session whose transcript is not on disk has no conversation, and ring
+/// buffers are not persisted, so its record carries no scrollback either — there
+/// is literally nothing behind it. The rail knows this and draws no row for one
+/// (`isArchived && !has_transcript` lands in neither group), so these accumulate
+/// as records that exist, count, and cannot be seen or reached. Three had built up
+/// on the author's machine and were only noticed because `Ctrl+Tab` used to step
+/// onto them and show an empty terminal.
+///
+/// Only ever the ones with no transcript **and** no archived copy: those are the
+/// two places a conversation can be, and a session that still has either is a
+/// resume offer, not a ghost. The worktree is not the record's to lose —
+/// `adopt_existing_worktrees` finds those on disk independently — so dropping a
+/// ghost cannot orphan work.
+///
+/// Returns the records worth keeping, and how many went.
+pub fn prune_ghosts(mut records: Vec<SessionRecord>) -> (Vec<SessionRecord>, usize) {
+    let before = records.len();
+    /* Pin first, exactly as `restore_sessions` does, and for the reason its own
+       comment gives: a worktree session files its transcript under the checkout it
+       started in, not the worktree, so `transcript_path` is usually `None` on disk
+       and the cwd-derived slug finds nothing either. Only `find_transcript`'s hunt
+       does.
+
+       This is not a hypothetical. The first version of this checked the narrow
+       path *before* pinning, decided all five records on a real machine had no
+       transcript, and deleted every one of them — while the unit test passed,
+       because it set `transcript_path` explicitly and so never exercised the case
+       that actually occurs. Pinning here also repairs the record, so the path is
+       written back correct rather than re-hunted on every start. */
+    for r in &mut records {
+        pin_transcript(r.id, &r.cwd, &mut r.transcript_path);
+    }
+    let kept: Vec<SessionRecord> = records
+        .into_iter()
+        .filter(|r| {
+            // `was_live` outranks the transcript: this is a record `auto_resume`
+            // is about to relaunch, so it is interrupted rather than archived and
+            // dropping it would remove a session from under the thing bringing it
+            // back. Measured — the two records here with no transcript at all came
+            // back as live rows in the rail, which is why the first version's
+            // "no transcript, therefore dead" was wrong about them.
+            r.was_live
+                || transcript_exists(r.id, &r.cwd, r.transcript_path.as_deref())
+                || r.archived_transcript.as_deref().is_some_and(Path::exists)
+        })
+        .collect();
+    let dropped = before - kept.len();
+    (kept, dropped)
+}
+
 /// Kill processes left behind by a crashed daemon.
 ///
 /// Anything still alive from a previous run is an orphan: the daemon spawns
@@ -290,6 +342,66 @@ pub fn reap_orphans(records: &[SessionRecord]) -> usize {
 mod tests {
     use super::*;
     use std::path::Path;
+
+    /// This one deletes durable records, so the line between "nothing to return
+    /// to" and "a resume offer" has to be exact in both directions.
+    #[test]
+    fn pruning_drops_only_the_records_with_nothing_behind_them() {
+        let dir = std::env::temp_dir().join(format!(
+            "orchd-prune-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let record = |name: &str, transcript: Option<PathBuf>, archived: Option<PathBuf>| {
+            SessionRecord {
+                id: uuid::Uuid::new_v4(),
+                workspace: name.to_string(),
+                // A cwd with no transcript directory of its own, so only the paths
+                // set explicitly below can make a record worth keeping.
+                cwd: dir.clone(),
+                kind: crate::model::Kind::Interactive,
+                title: None,
+                transcript_path: transcript,
+                archived_transcript: archived,
+                transcript_archived: false,
+                recovery: None,
+                created_at: SystemTime::now(),
+                pid: None,
+                was_live: false,
+                forked_from: None,
+                interrupted: false,
+            }
+        };
+
+        let live_transcript = dir.join("live.jsonl");
+        std::fs::write(&live_transcript, "{}\n").unwrap();
+        let archived_copy = dir.join("archived.jsonl");
+        std::fs::write(&archived_copy, "{}\n").unwrap();
+
+        let records = vec![
+            record("has-transcript", Some(live_transcript.clone()), None),
+            // The archive is the *other* place a conversation can be: teardown
+            // copies it out and the original may be pruned by Claude Code.
+            record("has-archived-copy", None, Some(archived_copy.clone())),
+            // Recorded paths that no longer resolve are the same as none.
+            record("dangling-paths", Some(dir.join("gone.jsonl")), Some(dir.join("gone2.jsonl"))),
+            record("ghost", None, None),
+            // No transcript either, but `auto_resume` is about to relaunch it —
+            // interrupted, not archived. Dropping this one removed a session from
+            // under the thing bringing it back, which is what the first version did.
+            SessionRecord { was_live: true, ..record("was-live", None, None) },
+        ];
+
+        let (kept, dropped) = prune_ghosts(records);
+        assert_eq!(dropped, 2, "the ghost and the dangling one, and nothing else");
+        let names: Vec<&str> = kept.iter().map(|r| r.workspace.as_str()).collect();
+        assert_eq!(names, vec!["has-transcript", "has-archived-copy", "was-live"]);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn a_manual_phase_survives_a_round_trip() {

@@ -418,8 +418,26 @@ impl Config {
         if let Some(dir) = std::env::var_os("ORCHD_CONFIG_DIR").filter(|d| !d.is_empty()) {
             return Ok(PathBuf::from(dir));
         }
-        let home = PathBuf::from(std::env::var("HOME").context("HOME is not set")?);
-        Ok(default_config_dir(&home))
+        /* Never the real one from a test binary. `AppState::persist` writes the
+           whole session set on every state change, so any test that built an
+           `AppState` and touched a session **overwrote the developer's own
+           `sessions.json`** with the one record it had invented — silently, and on
+           every `cargo test`. Found by watching five real records become one.
+
+           A temp dir keyed to the process rather than a no-op, so `save`/`load`
+           still round-trip honestly; and after the `ORCHD_CONFIG_DIR` check, so a
+           test that wants a specific dir can still say so. */
+        #[cfg(test)]
+        {
+            let dir = std::env::temp_dir().join(format!("orchd-test-cfg-{}", std::process::id()));
+            std::fs::create_dir_all(&dir)?;
+            return Ok(dir);
+        }
+        #[cfg(not(test))]
+        {
+            let home = PathBuf::from(std::env::var("HOME").context("HOME is not set")?);
+            Ok(default_config_dir(&home))
+        }
     }
 
     pub fn path() -> Result<PathBuf> {

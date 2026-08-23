@@ -14,7 +14,7 @@ import {
   selectedProc, setSelectedProc, prState, handedToPr,
   drawerTouched, setDrawerTouched, drawerCollapsed, setDrawerCollapsed,
   pendingProcFocus, setPendingProcFocus, pendingSelect, setPendingSelect,
-  prOf, onDrawerChange, appMod, IS_MAC, MOD_LABEL,
+  prOf, onDrawerChange, appMod, IS_MAC, MOD_LABEL, inRail,
 } from './js/core.js';
 
 // The daemon owns all state. This SPA is stateless and disposable: closing the
@@ -437,6 +437,14 @@ $('reposwitch').onclick = () =>
   toast('switching repositories is not implemented yet', true);
 $('addshell').onclick = newShell;
 $('keyhelpx').onclick = () => { $('keyhelp').hidden = true; };
+// The visible way in, beside the gear. Its tooltip names the chord — the whole
+// point is that finding the button once is how you stop needing it.
+$('keysbtn').title = `Keyboard shortcuts · ${MOD_LABEL} Shift ?`;
+$('keysbtn').onclick = (ev) => {
+  ev.stopPropagation();
+  $('keyhelp').hidden = !$('keyhelp').hidden;
+};
+keyActivate($('keysbtn'));
 
 /* The legend is written once in `index.html` with `MOD` standing in for whichever
  * key this platform uses, resolved here — a hand-written second copy of the map
@@ -522,12 +530,23 @@ $('killbtn').onclick = () => {
 // it in step with these bindings — a scheme nobody can read is not predictable
 // however consistent it is.
 
-/** Move the selection `step` sessions along, wrapping. */
+/**
+ * Move the selection `step` sessions along, wrapping.
+ *
+ * Only over sessions the rail actually draws (`inRail`), and in the order it
+ * draws them (`byNewest`). Iterating `snap.sessions` raw stepped onto archived
+ * sessions with no transcript, which have no row anywhere: the centre pane went
+ * blank with nothing selected in the rail, and the only way out was pressing the
+ * key again. A switcher has to walk what you can see.
+ */
 function switchSession(step) {
-  const ordered = snap.sessions;
+  const ordered = snap.sessions.filter(inRail).sort(byNewest);
   if (!ordered.length) return;
   const idx = ordered.findIndex((s) => s.id === selected);
-  setSelected(ordered[(idx + step + ordered.length) % ordered.length].id);
+  // Nothing selected yet (or the selection is off-rail): step in from the end so
+  // `next` lands on the first row rather than the second.
+  const from = idx === -1 ? (step > 0 ? -1 : 0) : idx;
+  setSelected(ordered[(from + step + ordered.length) % ordered.length].id);
 }
 
 window.addEventListener('keydown', (e) => {

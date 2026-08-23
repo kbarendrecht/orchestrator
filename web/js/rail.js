@@ -161,15 +161,12 @@ function prGroup() {
     }
   }
   head.appendChild(count);
-  // The read token's source, only when it is the `gh auth token` fallback —
-  // which carries write scopes orchd does not want (see TODO). Env/file are fine
-  // and say nothing.
-  if (snap.token_source === 'gh_cli') {
-    const w = el('span', 'toksrc', '⚠');
-    w.title = 'GitHub token is from `gh auth token` — broader (write) scopes than orchd needs. '
-      + 'Set ORCHD_GITHUB_TOKEN or github_token_file to a read-only PAT.';
-    head.appendChild(w);
-  }
+  /* No badge for the token's source. It used to carry a `⚠` when the token came
+     from `gh auth token`, whose scopes are wider than §6 wants — but that is the
+     fallback which makes the app work at all, so the mark was permanent, could not
+     be acted on without setting up a PAT, and sat next to the PR count as if
+     something were wrong. `token_source` is still in the snapshot for anyone
+     diagnosing over the API; it is just not a thing to look at every day. */
   head.appendChild(refreshButton('pr', snap.pr_poll ?? 0, '/api/prs/refresh', snap.pr_polling));
   head.onclick = () => { showPrs = !showPrs; renderRail(); };
   group.appendChild(head);
