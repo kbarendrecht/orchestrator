@@ -942,7 +942,12 @@ async fn index(State(app): State<Arc<AppState>>) -> Response {
         Html(
             INDEX
                 .replace("__ORCH_TOKEN__", &app.token)
-                .replace("__ORCH_CHROME__", app.chrome.as_str()),
+                .replace("__ORCH_CHROME__", app.chrome.as_str())
+                // Which key the app's own chords wear: ⌘ on a Mac, Ctrl
+                // elsewhere. Told rather than sniffed — the daemon knows at
+                // compile time, and `navigator.platform` is both deprecated and
+                // a lie under a webview.
+                .replace("__ORCH_PLATFORM__", if cfg!(target_os = "macos") { "mac" } else { "other" }),
         ),
     )
         .into_response()

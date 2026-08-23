@@ -1,7 +1,7 @@
 // The terminals: one xterm per session or process, attached to the daemon's pty
 // over a websocket. The DOM renderer is deliberate in the webview — see CLAUDE.md.
 
-import { $, CHROME, TOKEN, WS_BASE, el, selected, terms, toast, uiScale } from './core.js';
+import { $, CHROME, IS_MAC, TOKEN, WS_BASE, el, selected, terms, toast, uiScale } from './core.js';
 
 
 const THEME = {
@@ -82,14 +82,20 @@ function openTerm(target, parent) {
   term.loadAddon(fit);
   term.open(host);
 
-  /* Ctrl+Shift+C / Ctrl+Shift+V, the terminal convention. xterm passes every
-   * keystroke to the pty, so without this the copy shortcut reached the agent as
-   * a control code and the selection stayed where it was. Plain Ctrl+C has to go
-   * on reaching the pty: interrupting is what it means in a terminal.
+  /* Copy and paste, in whichever spelling the platform uses: ⌘C/⌘V on a Mac,
+   * Ctrl+Shift+C/V elsewhere — the terminal convention, because plain Ctrl+C has
+   * to go on reaching the pty, where interrupting is what it means. xterm passes
+   * every keystroke through, so without this the copy shortcut arrived at the
+   * agent as a control code and the selection stayed where it was.
+   *
+   * On a Mac ⌘ needs no Shift precisely because it never reaches the pty, so
+   * there is no interrupt to protect it from.
    *
    * Returning false tells xterm not to handle the event itself. */
   term.attachCustomKeyEventHandler((e) => {
-    if (e.type !== 'keydown' || !e.ctrlKey || !e.shiftKey) return true;
+    if (e.type !== 'keydown') return true;
+    const combo = IS_MAC ? e.metaKey && !e.ctrlKey : e.ctrlKey && e.shiftKey;
+    if (!combo) return true;
     const key = e.key.toLowerCase();
     if (key === 'c') {
       const text = term.getSelection();

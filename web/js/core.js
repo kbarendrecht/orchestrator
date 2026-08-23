@@ -393,6 +393,25 @@ export async function newShell() {
 // API in Rust. No IPC bridge, so nothing here depends on which port we bound.
 export const CHROME = window.__ORCH__.chrome || 'none';
 
+/** Whether the daemon is running on macOS. Told, not sniffed. */
+export const IS_MAC = window.__ORCH__.platform === 'mac';
+
+/** The modifier the app's own chords wear: ⌘ on a Mac, Ctrl elsewhere. */
+export const MOD_LABEL = IS_MAC ? '⌘' : 'Ctrl';
+
+/**
+ * Whether `e` carries the app modifier and nothing that would make it a
+ * different chord.
+ *
+ * The split is not only convention. On a Mac ⌘ never reaches the pty, so the
+ * app layer costs the terminal *nothing* there — which is why `⌘N` is free while
+ * `Ctrl+N` on Linux has to shadow readline's next-history to exist. Keeping Ctrl
+ * for the terminal on macOS is the whole point: `Ctrl+C` must stay an interrupt.
+ *
+ * @param {KeyboardEvent} e
+ */
+export const appMod = (e) => (IS_MAC ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey) && !e.altKey;
+
 export const menuOpen = () => !$('ctxmenu').hidden;
 
 // Anything that moves what the menu is pointing at dismisses it. On mousedown

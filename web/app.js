@@ -14,7 +14,7 @@ import {
   selectedProc, setSelectedProc, prState, handedToPr,
   drawerTouched, setDrawerTouched, drawerCollapsed, setDrawerCollapsed,
   pendingProcFocus, setPendingProcFocus, pendingSelect, setPendingSelect,
-  prOf, onDrawerChange,
+  prOf, onDrawerChange, appMod, IS_MAC, MOD_LABEL,
 } from './js/core.js';
 
 // The daemon owns all state. This SPA is stateless and disposable: closing the
@@ -437,6 +437,37 @@ $('reposwitch').onclick = () =>
   toast('switching repositories is not implemented yet', true);
 $('addshell').onclick = newShell;
 $('keyhelpx').onclick = () => { $('keyhelp').hidden = true; };
+
+/* The legend is written once in `index.html` with `MOD` standing in for whichever
+ * key this platform uses, resolved here — a hand-written second copy of the map
+ * is the one thing that can silently drift from the bindings, and two of them
+ * would be worse. A row whose macOS spelling differs in shape rather than just in
+ * modifier carries `data-mac` and is replaced wholesale (terminal copy/paste
+ * needs no Shift on a Mac, because ⌘ never reaches the pty).
+ *
+ * Ctrl+Tab is left alone on purpose: it is Ctrl on both platforms, since ⌘Tab is
+ * the macOS application switcher and never arrives. */
+for (const dt of $('keyhelp').querySelectorAll('dt[data-mod]')) {
+  const mac = dt.getAttribute('data-mac');
+  if (IS_MAC && mac) dt.innerHTML = mac;
+  else dt.innerHTML = dt.innerHTML.replace(/MOD/g, MOD_LABEL);
+}
+/* Descriptions too, not only the chords: one of them names a second spelling
+   ("also MOD `"), and substituting the `dt` alone left the placeholder on screen.
+   Found by looking at the rendered legend — the test that checked the chords read
+   `dt` text and passed happily. */
+for (const dd of $('keyhelp').querySelectorAll('.keys dd')) {
+  if (dd.innerHTML.includes('MOD')) {
+    dd.innerHTML = dd.innerHTML.replace(/MOD/g, MOD_LABEL);
+  }
+}
+if (IS_MAC) {
+  // Neither caveat applies to ⌘: a browser tab does not reserve ⌘N, and ⌘ never
+  // reaches the pty, so nothing of readline's is taken.
+  $('keyhelpnote').textContent =
+    'Ctrl stays with the terminal, so nothing here takes a shell key. '
+    + 'Ctrl Tab switches sessions because ⌘ Tab belongs to macOS.';
+}
 $('dcollapse').onclick = () => setDrawerCollapsed(!drawerCollapsed);
 $('refreshbtn').onclick = () => {
   const wsId = currentWorkspaceId();
@@ -457,9 +488,11 @@ $('killbtn').onclick = () => {
 //   • bare keys  — the overlay that is open, and only while it is open (review
 //     cards, diff files). Nothing bare is global, because bare keys reach the
 //     terminal.
-//   • Ctrl+…     — the whole app: new worktree / session / shell (n, Shift+n,
-//     Shift+t), switch session (Tab / Shift+Tab), jump to what needs you
-//     (Space), the diff (Shift+d), zoom (= − 0), save (s).
+//   • the app modifier — **⌘ on macOS, Ctrl elsewhere** (`core.appMod`): new
+//     worktree / session / shell (n, Shift+n, Shift+t), switch session (Tab /
+//     Shift+Tab), jump to what needs you (Space), the diff (Shift+d), zoom
+//     (= − 0), save (s). The platform comes from the daemon, which knows it at
+//     compile time, not from a sniffed user agent.
 //   • Escape is not a layer, it is one rule: dismiss the topmost thing —
 //     legend, then menu, then settings, then the open overlay.
 //
@@ -470,6 +503,9 @@ $('killbtn').onclick = () => {
 //
 // Two properties of the Ctrl layer worth knowing before extending it:
 //
+//   * **This tension is Linux-only.** On macOS ⌘ never reaches the pty, so the
+//     app layer there costs the terminal nothing and Ctrl stays entirely the
+//     terminal's. Everything below is about the Ctrl spelling.
 //   * Plain Ctrl+<letter> shadows the pty, so **default to `Ctrl+Shift+…`** — the
 //     zone terminals leave alone, which is why copy/paste already live there. Take
 //     a plain letter only when the idiom is worth the key it costs, and say what
@@ -485,6 +521,14 @@ $('killbtn').onclick = () => {
 // `Ctrl+Shift+?` opens the legend, the one source of truth a user can see. Keep
 // it in step with these bindings — a scheme nobody can read is not predictable
 // however consistent it is.
+
+/** Move the selection `step` sessions along, wrapping. */
+function switchSession(step) {
+  const ordered = snap.sessions;
+  if (!ordered.length) return;
+  const idx = ordered.findIndex((s) => s.id === selected);
+  setSelected(ordered[(idx + step + ordered.length) % ordered.length].id);
+}
 
 window.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && !$('keyhelp').hidden) {
@@ -557,11 +601,22 @@ window.addEventListener('keydown', (e) => {
       return;
     }
   }
-  // The Ctrl layer: the whole app (see the header). Some of these knowingly
-  // shadow terminal keys, so the block ends with a bare `return` — any Ctrl combo
-  // it does not claim falls through to the pty *without* preventDefault, which is
-  // what keeps Ctrl+C an interrupt, Ctrl+D an EOF and Ctrl+S flow-control.
-  if (e.ctrlKey && !e.altKey && !e.metaKey) {
+  /* Session switching is Ctrl+Tab on **both** platforms, the one place the app
+     modifier does not apply. ⌘Tab is the macOS application switcher: the OS takes
+     it before any app sees it, so binding it there would be a key that silently
+     does nothing. Ctrl+Tab is safe to take on a Mac even though Ctrl is otherwise
+     the terminal's, because Tab is `^I` and Ctrl+Tab is not a distinct control
+     code — there is nothing to shadow. */
+  if (e.key === 'Tab' && e.ctrlKey && !e.altKey && !e.metaKey) {
+    e.preventDefault();
+    switchSession(e.shiftKey ? -1 : 1);
+    return;
+  }
+  // The app layer (see the header). Some of these knowingly shadow terminal keys
+  // on Linux, so the block ends with a bare `return` — any combo it does not
+  // claim falls through to the pty *without* preventDefault, which is what keeps
+  // Ctrl+C an interrupt, Ctrl+D an EOF and Ctrl+S flow-control.
+  if (appMod(e)) {
     const k = e.key.toLowerCase();
     // Ctrl+Shift+T beside Ctrl+`: the terminal-emulator "new tab" key, in the
     // Ctrl+Shift zone terminals leave alone. A shell is a process in the drawer,
@@ -601,17 +656,8 @@ window.addEventListener('keydown', (e) => {
       else toast('nothing waiting on you');
       return;
     }
-    if (e.key === 'Tab') {
-      // The one way to walk sessions, since the Alt layer went. Cyclic, so it
-      // needs no separate "wrap" or first/last key.
-      e.preventDefault();
-      const ordered = snap.sessions;
-      if (!ordered.length) return;
-      const idx = ordered.findIndex((s) => s.id === selected);
-      const step = e.shiftKey ? -1 : 1;
-      setSelected(ordered[(idx + step + ordered.length) % ordered.length].id);
-      return;
-    }
+    // Tab is deliberately not here: it is caught above, on Ctrl for both
+    // platforms, because ⌘Tab belongs to the OS.
     // Zoom. '=' shares its key with '+'; '_' rides '-'; the numpad spells both.
     if (k === '=' || e.key === '+' || e.code === 'NumpadAdd') {
       e.preventDefault(); saveZoom(setZoom(zoomScale + ZOOM.step)); return;

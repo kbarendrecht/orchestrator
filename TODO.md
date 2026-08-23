@@ -349,6 +349,20 @@ Everything outside that block is hand-written and survives.
     tests prove it through a real `sh` in a directory with a space — with the
     unquoted form asserted to fail, or the test would prove nothing.
 
+  - **The keyboard map was Ctrl-only, so ⌘ did nothing on a Mac.** The whole app
+    layer was gated `e.ctrlKey && !e.metaKey`; only save and send-batch accepted
+    Meta, and terminal copy/paste was `Ctrl+Shift` alone where macOS is ⌘C/⌘V. The
+    modifier is now `core.appMod` — ⌘ on macOS, Ctrl elsewhere — from a platform
+    flag the daemon substitutes into the served page (`__ORCH_PLATFORM__`, told
+    rather than sniffed, since `navigator.platform` is deprecated and lies under a
+    webview). The nice part: **on a Mac ⌘ never reaches the pty**, so the whole
+    Ctrl-shadows-readline tension is Linux-only — `⌘N` costs nothing where
+    `Ctrl+N` costs next-history, and Ctrl stays entirely the terminal's there.
+    One documented exception: session switching is `Ctrl+Tab` on *both*, because
+    ⌘Tab is the macOS application switcher and the OS takes it before any app sees
+    it. The legend renders from `MOD` placeholders resolved at boot, so there is
+    one map rather than two to keep in step, and both branches were driven with the
+    platform forced.
   - **Symlinked checkouts resolve once, at parse.** `PostToolUse` runs the edited
     path through `canonicalize` before attributing it (so a `.plan/` symlink lands
     in the right pane), but `workspace_for_path` compared that against workspace

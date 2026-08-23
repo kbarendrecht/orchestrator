@@ -10,8 +10,13 @@ declare const WebglAddon: any;
 declare const Prism: any;
 
 interface Window {
-  /** Injected into the served page: the API token and how to draw the titlebar. */
-  __ORCH__: { token: string; chrome: string };
+  /**
+   * Injected into the served page: the API token, how to draw the titlebar, and
+   * which platform the daemon runs on — `"mac"` or `"other"`, which decides
+   * whether the app's chords wear ⌘ or Ctrl. Told rather than sniffed, because
+   * the daemon knows at compile time.
+   */
+  __ORCH__: { token: string; chrome: string; platform: string };
   /** Prism is driven manually; this switches its auto-highlight off. */
   Prism: any;
   WebglAddon: any;

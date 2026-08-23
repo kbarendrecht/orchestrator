@@ -194,6 +194,14 @@ port, so a second instance refuses to start rather than fighting over
   `hooks.json`, the instance lock and the findings block all follow it. Overriding
   `HOME` would do the same for free and is wrong — `claude` reads its credentials
   from there, so every spawned session would come up unauthenticated.
+- **The app's modifier is ⌘ on macOS and Ctrl elsewhere** (`core.appMod`, from the
+  `__ORCH_PLATFORM__` the daemon substitutes into the page — told, not sniffed).
+  Worth knowing why rather than just that: on a Mac ⌘ never reaches the pty, so the
+  Ctrl-shadows-the-terminal trade-off the layer contract agonises over is
+  Linux-only. Two exceptions, both deliberate: session switching is `Ctrl+Tab`
+  everywhere because ⌘Tab is the macOS app switcher and never arrives, and the
+  legend's rows carry `MOD` placeholders resolved at boot — including in the
+  descriptions, not just the chords, which is a bug that shipped once.
 - **The config dir has a space in it on macOS**, and anything from it that reaches
   a shell must be quoted. `config_dir` is `~/Library/Application Support/orchd`
   there and `~/.config/orchd` elsewhere. The push guard's hook is a shell string
