@@ -457,9 +457,9 @@ $('killbtn').onclick = () => {
 //   • bare keys  — the overlay that is open, and only while it is open (review
 //     cards, diff files). Nothing bare is global, because bare keys reach the
 //     terminal.
-//   • Ctrl+…     — the whole app: new (n / Shift+n / Shift+t), switch session
-//     (Tab / Shift+Tab), jump to what needs you (Space), the diff (Shift+d),
-//     zoom (= − 0), save (s).
+//   • Ctrl+…     — the whole app: new worktree / session / shell (Shift+n,
+//     Shift+m, Shift+t), switch session (Tab / Shift+Tab), jump to what needs
+//     you (Space), the diff (Shift+d), zoom (= − 0), save (s).
 //   • Escape is not a layer, it is one rule: dismiss the topmost thing —
 //     legend, then menu, then settings, then the open overlay.
 //
@@ -470,19 +470,21 @@ $('killbtn').onclick = () => {
 //
 // Two properties of the Ctrl layer worth knowing before extending it:
 //
-//   * Plain Ctrl+<letter> shadows the pty. `Ctrl+n` is readline next-history and
-//     `Ctrl+Space` is NUL, and binding them here takes them from every session.
-//     That is a deliberate trade, not an oversight. `Ctrl+Shift+…` is the zone
-//     terminals leave alone (which is why copy/paste live there), so prefer it
-//     when the terminal's own key is worth keeping — `Ctrl+Shift+d` for the diff
-//     rather than `Ctrl+d`, which is EOF and still exits a shell.
-//   * `Ctrl+n` and `Ctrl+Tab` are browser-reserved and never arrive in a plain
-//     tab; they work in the desktop webview, which is the primary target. The
-//     legend says so rather than leaving it to be discovered.
+//   * Plain Ctrl+<letter> shadows the pty, so **prefer `Ctrl+Shift+…`** — the
+//     zone terminals leave alone, which is why copy/paste already live there.
+//     Every action worth a letter is spelled that way for exactly this reason:
+//     `Ctrl+Shift+d` for the diff, not `Ctrl+d`, which is EOF and still exits a
+//     shell; `Ctrl+Shift+n`/`m`/`t` for the three "new"s, not `Ctrl+n`, which is
+//     readline's next-history. `Ctrl+Space` (NUL, emacs set-mark) is the one
+//     plain-Ctrl key here that does take something from the terminal.
+//   * `Ctrl+Tab` and the `Ctrl+Shift+n`/`m` pair are browser-reserved (tab
+//     switch, incognito, profile) and never arrive in a plain tab; they work in
+//     the desktop webview, which is the primary target. The legend says so rather
+//     than leaving it to be discovered.
 //
-// `?` opens that legend, the one source of truth a user can see. Keep it in step
-// with these bindings — a scheme nobody can read is not predictable however
-// consistent it is.
+// `Ctrl+Shift+?` opens the legend, the one source of truth a user can see. Keep
+// it in step with these bindings — a scheme nobody can read is not predictable
+// however consistent it is.
 
 window.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && !$('keyhelp').hidden) {
@@ -574,16 +576,20 @@ window.addEventListener('keydown', (e) => {
       Diff.state.open ? Diff.close() : Diff.open();
       return;
     }
-    if (k === 'n') {
+    /* Both "new" chords wear Shift so plain Ctrl+N stays with the terminal, where
+       it is readline's next-history. That asymmetry is the reason: Ctrl+P
+       (previous-history) was never taken, so binding Ctrl+N left a half-working
+       pair — history that walks back but not forward — which is worse than
+       breaking neither. */
+    if (e.shiftKey && k === 'n') {
+      // The rail's + is the named variant (Shift+click); a hotkey takes the
+      // common case and lets Claude Code name it.
+      e.preventDefault(); newWorktree(false); return;
+    }
+    if (e.shiftKey && k === 'm') {
       e.preventDefault();
-      if (e.shiftKey) {
-        const main = snap.workspaces.find((w) => w.is_main);
-        if (main) newSession(main.id);
-      } else {
-        // The rail's + is the named variant (Shift+click); a hotkey takes the
-        // common case and lets Claude Code name it.
-        newWorktree(false);
-      }
+      const main = snap.workspaces.find((w) => w.is_main);
+      if (main) newSession(main.id);
       return;
     }
     if (e.code === 'Space') {
@@ -615,16 +621,20 @@ window.addEventListener('keydown', (e) => {
     if (e.key === '0' || e.code === 'Numpad0') {
       e.preventDefault(); saveZoom(setZoom(ZOOM.def)); return;
     }
+    /* The legend, on Ctrl+Shift+? rather than a bare `?`. It was bare first, and
+       that was a straight violation of the rule at the top of this file: xterm's
+       input is a `<textarea>`, so with a terminal focused — the normal state —
+       the typing guard swallowed it and the legend was unreachable by keyboard.
+       Dropping the guard would have been worse: `?` is a character you type.
+       Matched on `code` because the key's name depends on the layout. */
+    if (e.shiftKey && (e.code === 'Slash' || e.key === '?')) {
+      e.preventDefault();
+      $('keyhelp').hidden = !$('keyhelp').hidden;
+      return;
+    }
     return;
   }
 
-  // `?` opens the legend — bare, so guarded against firing while you type one.
-  // The last binding, and the only global bare key: everything else bare belongs
-  // to an overlay and was handled above.
-  if (e.key === '?') {
-    const typing = !!/** @type {HTMLElement} */ (e.target).closest?.('textarea, input, [contenteditable="true"]');
-    if (!typing) { e.preventDefault(); $('keyhelp').hidden = !$('keyhelp').hidden; return; }
-  }
 }, true);
 
 /* A terminal sizes itself to its host, and the host changes size for more reasons
