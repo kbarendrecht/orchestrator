@@ -366,8 +366,8 @@ Everything outside that block is hand-written and survives.
   `Ctrl` is the whole app, `Esc` dismisses the topmost thing** — so the next
   binding has a rule to obey rather than a precedent to copy. Do not reintroduce
   `Alt` to dodge a collision; `Ctrl+Shift` is the escape hatch.
-  - Orphan actions bound: `Ctrl+N` new worktree, `Ctrl+Shift+N` new session on
-    main, `Ctrl+Shift+T` (and `Ctrl+`` `) new shell, `Ctrl+Shift+D` the diff,
+  - Orphan actions bound: `Ctrl+Shift+N` new worktree, `Ctrl+Shift+M` new session
+    on main, `Ctrl+Shift+T` (and `Ctrl+`` `) new shell, `Ctrl+Shift+D` the diff,
     `Ctrl+Space` the first session waiting on you, `Ctrl+Tab`/`Ctrl+Shift+Tab`
     session switch, `Ctrl+=`/`−`/`0` zoom — which was mouse-only.
   - List motion is one idiom: the diff overlay took bare `j/k` like the review
@@ -376,11 +376,22 @@ Everything outside that block is hand-written and survives.
     because a scheme nobody can read is not predictable however consistent.
 
   Two properties of the `Ctrl` layer, recorded so they do not read later as
-  oversights. Plain `Ctrl+<letter>` **shadows the pty** — `Ctrl+N` is readline
-  next-history, `Ctrl+Space` is NUL — a deliberate trade; `Ctrl+Shift+…` is the
-  zone terminals leave alone, which is why the diff is `Ctrl+Shift+D` and not
-  `Ctrl+D` (still EOF, still exits a shell). And `Ctrl+N`/`Ctrl+Tab` are
-  browser-reserved, so they only arrive in the desktop webview; the legend says so.
+  oversights. Plain `Ctrl+<letter>` **shadows the pty**, so every action worth a
+  letter is spelled `Ctrl+Shift+…`, the zone terminals do not send: the diff is
+  `Ctrl+Shift+D` not `Ctrl+D` (still EOF), and the three "new"s are
+  `Ctrl+Shift+N`/`M`/`T` not `Ctrl+N` — which was bound first and was the audit's
+  own worst offender, being readline's next-history *while `Ctrl+P` stayed free*,
+  so history walked back but not forward. `Ctrl+Space` (NUL, emacs set-mark) is
+  the one plain-Ctrl key that still takes something. And `Ctrl+Tab` plus
+  `Ctrl+Shift+N`/`M` are browser-reserved, so they only arrive in the desktop
+  webview; the legend says so.
+
+  The legend itself moved off a bare `?` for the reason the contract already
+  gave and the first implementation ignored: xterm's input is a `<textarea>`, so
+  with a terminal focused — the normal state — the typing guard swallowed it and
+  the list was unreachable by keyboard, while dropping the guard would have eaten
+  a character you type. `Ctrl+Shift+?` needs no guard. Found by trying to
+  screenshot it, not by reading the code.
 
   Driven in a real browser, both rounds: `?`/`Esc` toggle the legend, `Ctrl+=`/`0`
   zoom and reset, `Ctrl+N` hits `/api/worktree`, `Ctrl+Shift+D`/`Shift+T`/`Tab`/
