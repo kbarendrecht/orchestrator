@@ -234,13 +234,25 @@ since the panel was never saved. No page errors anywhere.
 
 ### MEDIUM
 
-- **M1 · "This session is done" is observed twice.** `watch_fix_pr` (`api.rs`)
-  does its own `pty.wait()` to decide `Exhausted`, parallel to the session's own
-  `SessionEnd`→`Exited` machine (`spawn.rs::watch_session_exit`). Correct only
-  by coincidence — both happen to key off the same pty exit. The run lifecycle
-  also lives in the HTTP layer rather than `fix_pr.rs`. *Direction:* await the
-  session's published transition (a `Notify`, as `answered` already does); move
-  it to `fix_pr::watch`.
+- **M1 · "This session is done" was observed twice.** *Fixed, and more simply
+  than the direction first suggested.* No `Notify` was needed: `watch_session_exit`
+  already exists, already runs for every session including a fix run, and is
+  already the one thing that sees a pty end. It now reads the exiting session's
+  `Kind` and, for a fix run, calls the new `fix_pr::settle` — so the verdict lives
+  in `fix_pr.rs` where the guard table is, `watch_fix_pr` is gone from `api.rs`,
+  and there is exactly one observer. The `"fix-pr"` command string is now
+  `fix_pr::COMMAND`, since the spawn site and the place reacting to the exit have
+  to agree and two literals is how they stop agreeing quietly.
+
+  `settle` splits into a pure `verdict` plus the write, because the first version
+  of its test called `settle` — which persists — and wrote a fake record into the
+  *real* `automation.json`. A unit test must not touch the config dir; the
+  decision is what is worth pinning, so `verdict` is what the tests call.
+
+  Verified end to end, by accident: a genuine fix run was started against a real
+  PR (see the note under M4 about the guard), and killing it exercised exactly
+  this path — the single watcher saw the exit, dispatched to `settle`, and because
+  the PR was green the record was correctly removed rather than marked exhausted.
 - **M2 · `git.rs` carries review-batch commit policy (~500 lines).**
   `amend_target`/`fold_in`/`pre_commit`/`Amend`/`PreCommit` encode batch domain
   policy, and `patch.rs` is their only caller; the file's own section comment
@@ -256,6 +268,13 @@ since the panel was never saved. No page errors anywhere.
   `open_pr`'s `"main"` arm inlines occupancy + `is_clean` + `switch_branch`
   while its `"worktree"` arm is a one-line delegate. *Direction:*
   `worktree::revive` and `spawn::switch_main_to_pr` so both arms are delegates.
+
+  Worth knowing while working near this: `POST /api/pr/:n/fix-pr` on a green PR
+  of your own **starts a run immediately**, no confirmation. That is the design
+  (hand-triggered means the trigger is the confirmation), but the guard table only
+  refuses on authorship, an existing run, a busy branch and the concurrency cap —
+  "the PR is fine" is not a refusal, because a run is also how you rebase a PR
+  that has simply fallen behind. Easy to fire by accident when poking at the API.
 - **M5 · Divergence banner hardcoded `upstream/develop`.** *Fixed.* The ref is a
   snapshot field now and the strip interpolates it, so the name beside the
   numbers is the ref they were measured against. Verified the only way it could

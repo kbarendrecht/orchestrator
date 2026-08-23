@@ -332,7 +332,7 @@ pub async fn spawn_fix_pr_session(
         path,
         Kind::Automation {
             pr,
-            command: "fix-pr".to_string(),
+            command: crate::fix_pr::COMMAND.to_string(),
         },
     );
     session.pty = Some(spawned.handle.clone());
@@ -574,12 +574,20 @@ pub fn validate_worktree_name(name: &str) -> Result<()> {
 fn watch_session_exit(app: Arc<AppState>, id: SessionId, handle: Arc<PtyHandle>) {
     tokio::spawn(async move {
         handle.wait().await;
+        // What this session *was* decides whether anything else has to be settled
+        // now it is over. Read while the lock is already held; acted on below.
+        let mut fix_pr_for: Option<u64> = None;
         let workspace = {
             let mut inner = app.inner.write().await;
             match inner.sessions.get_mut(&id) {
                 Some(s) => {
                     if s.state.is_live() {
                         s.set_state(State::Exited);
+                    }
+                    if let Kind::Automation { pr, command } = &s.kind {
+                        if command == crate::fix_pr::COMMAND {
+                            fix_pr_for = Some(*pr);
+                        }
                     }
                     // Last chance to find the conversation. A session closed
                     // between two `Stop`s can be carrying a transcript path
@@ -591,6 +599,11 @@ fn watch_session_exit(app: Arc<AppState>, id: SessionId, handle: Arc<PtyHandle>)
                 None => None,
             }
         };
+        // A fix run's verdict belongs to `fix_pr`, and this is the only place that
+        // learns the run is over.
+        if let Some(pr) = fix_pr_for {
+            crate::fix_pr::settle(&app, pr).await;
+        }
         app.release_main(id).await;
         if let Some(ws) = workspace {
             // The drawer's processes belong to whoever was working here. Only

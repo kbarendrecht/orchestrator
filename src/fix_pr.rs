@@ -137,6 +137,57 @@ pub fn ended_red(pr: &Pr) -> bool {
     pr.checks == Checks::Failing || pr.mergeable == "CONFLICTING"
 }
 
+/// The `Kind::Automation` command a fix run carries.
+///
+/// Named rather than spelled at the spawn site and again at the place that reacts
+/// to the exit: those two have to agree, and a literal in both is how they stop
+/// agreeing without anything failing.
+pub const COMMAND: &str = "fix-pr";
+
+/// Write down how a finished run left the PR.
+///
+/// Called by the session's own exit watcher, which is the *one* observer of a pty
+/// ending. This used to be a second `pty.wait()` on the same handle from inside
+/// the HTTP layer: both saw the same real event, so it worked, but "is this run
+/// over" had two answers maintained independently and the automation record lived
+/// nowhere in particular.
+pub async fn settle(app: &std::sync::Arc<crate::state::AppState>, pr: u64) {
+    let mut inner = app.inner.write().await;
+    let found = inner.prs.iter().find(|p| p.number == pr).cloned();
+    match verdict(found.as_ref()) {
+        Some(v) => {
+            inner.automation.by_pr.insert(pr, v);
+        }
+        None => {
+            inner.automation.by_pr.remove(&pr);
+        }
+    }
+    // A lost write means a restart mis-remembers whether this PR is exhausted,
+    // which defeats the one-run-per-PR cap rather than losing a label.
+    if let Err(e) = crate::store::save_automation(&inner.automation) {
+        tracing::error!("could not persist automation for PR #{pr} at run end: {e:#}");
+    }
+}
+
+/// What a finished run means for the record: `Some` to remember, `None` to forget.
+///
+/// Split from [`settle`] so the decision can be tested without an `AppState` — and
+/// without a test writing `automation.json` into the real config directory, which
+/// is what `settle` does by design and what a unit test must never do.
+///
+/// `None` covers two different clean endings: the PR went green, or it left the
+/// poll entirely (merged, closed, no longer yours). Neither is evidence a run gave
+/// up, so neither is worth remembering.
+fn verdict(found: Option<&Pr>) -> Option<PrAutomation> {
+    match found {
+        Some(p) if ended_red(p) => Some(PrAutomation::Exhausted {
+            at_head: p.head_sha.clone().unwrap_or_default(),
+            at: SystemTime::now(),
+        }),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -253,5 +304,40 @@ mod tests {
         );
         store.reconcile_head(7, None);
         assert!(store.get(7).is_some());
+    }
+
+    /// The verdict a finished run leaves behind. Moved here out of a second
+    /// `pty.wait()` in the HTTP layer, so it is worth pinning where it now lives.
+    /// Tested through `verdict` rather than `settle`: `settle` persists, and a unit
+    /// test has no business writing the real `automation.json`.
+    #[test]
+    fn a_run_that_ends_red_is_remembered_as_exhausted() {
+        let p = pr(7); // `pr()` is red: checks Failing
+        match verdict(Some(&p)) {
+            Some(PrAutomation::Exhausted { at_head, .. }) => assert_eq!(at_head, "abc"),
+            other => panic!("red at the end must be remembered, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_conflicting_pr_counts_as_exhausted_too() {
+        let mut p = pr(7);
+        p.checks = Checks::Passing;
+        p.mergeable = "CONFLICTING".into();
+        assert!(verdict(Some(&p)).is_some(), "green checks but unmergeable is still stuck");
+    }
+
+    #[test]
+    fn a_run_that_ends_green_is_forgotten() {
+        let mut p = pr(7);
+        p.checks = Checks::Passing;
+        assert_eq!(verdict(Some(&p)), None, "green leaves nothing to remember");
+    }
+
+    /// A PR that fell out of the poll while the run was going is not evidence of
+    /// exhaustion — merged, closed, or simply not ours any more.
+    #[test]
+    fn a_pr_gone_from_the_poll_is_forgotten_too() {
+        assert_eq!(verdict(None), None);
     }
 }

@@ -8,7 +8,7 @@
 //! repo usually not installed) and not typed inline (it is multi-line, so it
 //! would submit at the first newline).
 //!
-//! Following `fix-pr`'s lesson (`watch_fix_pr` in `api.rs`): **the agent's stdout
+//! Following `fix-pr`'s lesson ([`crate::fix_pr::settle`]): **the agent's stdout
 //! is not parsed.** The pty stream stays raw for xterm.js, and the run reports by
 //! POSTing a [`crate::proposal::ProposalSet`] to the daemon. So "did it work" is
 //! answered by looking for proposals, not by reading an exit code — an agent can

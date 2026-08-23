@@ -2404,51 +2404,10 @@ pub async fn fix_pr(
         }
     }
 
-    // Recording exhaustion belongs to whoever sees the session end.
-    watch_fix_pr(app.clone(), number, session);
+    // Exhaustion is recorded by the session's own exit watcher, which is the
+    // one place that sees a pty end (`fix_pr::settle`).
     app.notify().await;
     Ok(Json(json!({ "session": session })))
-}
-
-fn watch_fix_pr(app: Arc<AppState>, number: u64, session: uuid::Uuid) {
-    use crate::fix_pr::{ended_red, PrAutomation};
-    tokio::spawn(async move {
-        let handle = {
-            let inner = app.inner.read().await;
-            inner.sessions.get(&session).and_then(|s| s.pty.clone())
-        };
-        if let Some(h) = handle {
-            h.wait().await;
-        }
-
-        let mut inner = app.inner.write().await;
-
-        // A run that ends with the PR still red means the run is asking for
-        // you. Record it and never re-fire on its own (§8).
-        let pr = inner.prs.iter().find(|p| p.number == number).cloned();
-        match pr {
-            Some(pr) if ended_red(&pr) => {
-                inner.automation.by_pr.insert(
-                    number,
-                    PrAutomation::Exhausted {
-                        at_head: pr.head_sha.clone().unwrap_or_default(),
-                        at: std::time::SystemTime::now(),
-                    },
-                );
-            }
-            // Green, or the PR is gone from the poll: nothing to remember.
-            _ => {
-                inner.automation.by_pr.remove(&number);
-            }
-        }
-        // Same as the start path: a lost write means a restart mis-remembers
-        // whether PR #{number} is exhausted, so surface it rather than drop it.
-        if let Err(e) = crate::store::save_automation(&inner.automation) {
-            tracing::error!("could not persist automation for PR #{number} at run end: {e:#}");
-        }
-        drop(inner);
-        app.notify().await;
-    });
 }
 
 // ---------------------------------------------------------------------------
