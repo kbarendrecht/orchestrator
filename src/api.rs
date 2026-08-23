@@ -524,9 +524,23 @@ pub async fn thread_committed(
     .await;
 
     let Some(reply) = planned.reply.clone() else {
-        // Nothing to say: the stance was a bare thumbs up and it is posted with
-        // the rest, so there is nothing to confirm here.
-        return Ok(Json(json!({ "posted": false, "reason": "this thread posts no reply" })));
+        // No words: the stance was a bare thumbs up. This used to return saying it
+        // was "posted with the rest" — nothing posted it, and the run has no
+        // "rest", so the reaction never left. Send it here, without a card: you
+        // approved the stance at triage and there is no diff to weigh it against.
+        if planned.stance.gives_thumbs_up() {
+            // Its own fetch: the reaction needs a comment id from now, and the one
+            // the reply path uses is taken after the confirmation this case skips.
+            let fresh = fetch_threads(&app, number).await?;
+            let forge = write_forge(&app)?;
+            crate::post::react_one(&forge, &app.cfg.main_checkout, &thread_id, &fresh).await?;
+        }
+        mark_thread(&app, number, &thread_id, |t| {
+            t.status = crate::post::ThreadStatus::Replied;
+        })
+        .await;
+        app.notify().await;
+        return Ok(Json(json!({ "posted": false, "reacted": planned.stance.gives_thumbs_up() })));
     };
 
     let ask_id = Uuid::new_v4();
@@ -1903,7 +1917,111 @@ pub async fn pr_resolve_run(
         },
     );
     app.notify().await;
-    Ok(Json(json!({ "session": session, "threads": plan.threads.len() })))
+
+    let answered = sweep_words_only(&app, number, &plan, &fresh).await;
+    Ok(Json(json!({
+        "session": session,
+        "threads": plan.threads.len(),
+        "answered": answered,
+    })))
+}
+
+/// Answer the threads that need no code, now rather than never.
+///
+/// A words-only thread has nothing for the session to build — the prompt tells it
+/// exactly that ("the daemon posts the reply. Move on.") — so no report from the
+/// run will ever arrive for it, and `thread_committed` only fires on a commit.
+/// Left alone these sat at `WordsOnly` for the life of the run with no button to
+/// finish them.
+///
+/// No per-thread confirmation, unlike a committed thread: that card exists to
+/// show the *real* diff beside the drafted reply, because a commit can differ
+/// from what triage staged. Here there is no commit and nothing can drift — the
+/// words are the ones approved on the card — so asking again would be ceremony.
+///
+/// One thread failing does not stop the others, for the same reason `post_outward`
+/// keeps going: each is an independent write, and a run that answered three of
+/// four should say so rather than lose all four.
+async fn sweep_words_only(
+    app: &Arc<AppState>,
+    number: u64,
+    plan: &crate::post::Plan,
+    fresh: &crate::forge::Threads,
+) -> usize {
+    use crate::post::{Posted, ThreadStatus};
+
+    let todo: Vec<_> = plan
+        .threads
+        .iter()
+        .filter(|t| t.status == ThreadStatus::WordsOnly)
+        .cloned()
+        .collect();
+    if todo.is_empty() {
+        return 0;
+    }
+    let forge = match write_forge(app) {
+        Ok(f) => f,
+        Err(e) => {
+            tracing::error!(
+                "resolve run #{number}: no forge to answer words-only threads: {:#}",
+                e.0
+            );
+            return 0;
+        }
+    };
+    let at = app.cfg.main_checkout.clone();
+
+    let mut answered = 0;
+    for t in todo {
+        // A stance with no words is a bare thumbs up; the two are never both.
+        let outcome = match &t.reply {
+            Some(reply) => crate::post::post_one(
+                app,
+                &forge,
+                &at,
+                number,
+                &t.thread_id,
+                reply,
+                t.story.as_ref(),
+                fresh,
+            )
+            .await
+            .map(Some),
+            None if t.stance.gives_thumbs_up() => {
+                crate::post::react_one(&forge, &at, &t.thread_id, fresh)
+                    .await
+                    .map(|()| None)
+            }
+            // Neither words nor a reaction: nothing was ever going to leave for
+            // this one, so it is done rather than stuck.
+            None => Ok(None),
+        };
+
+        match outcome {
+            Ok(Some(Posted::HeldNoStory(why))) => {
+                mark_thread(app, number, &t.thread_id, |x| {
+                    x.note = Some(format!("story not filed — {why}"));
+                })
+                .await;
+            }
+            Ok(_) => {
+                answered += 1;
+                mark_thread(app, number, &t.thread_id, |x| {
+                    x.status = ThreadStatus::Replied;
+                })
+                .await;
+            }
+            Err(e) => {
+                tracing::error!("resolve run #{number}: {} — {e:#}", t.location);
+                mark_thread(app, number, &t.thread_id, |x| {
+                    x.note = Some(format!("could not answer — {e:#}"));
+                })
+                .await;
+            }
+        }
+    }
+    app.notify().await;
+    answered
 }
 
 /// Push the branch a run has been committing to.

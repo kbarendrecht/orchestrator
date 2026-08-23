@@ -1123,6 +1123,24 @@ pub(crate) async fn post_one(
     Ok(Posted::Sent)
 }
 
+/// 👍 one thread, the plain-adoption case.
+///
+/// The reaction half of [`post_one`]'s job, split off because the two are chosen
+/// by stance and never both: `Agree` reacts and says nothing, `Reply`/`Story`
+/// write words. Shared for the same reason — so a run and a batch adopt a
+/// reviewer's point identically.
+pub(crate) async fn react_one(
+    forge: &ForgeImpl,
+    at: &Path,
+    thread_id: &str,
+    fresh: &Threads,
+) -> Result<()> {
+    let root = fresh
+        .root_for(thread_id)
+        .with_context(|| format!("thread {thread_id} has no comment to react to"))?;
+    blocking(forge, at, &root, Send::ThumbsUp).await
+}
+
 /// The outward writes, in the order the design settled: stories, then replies,
 /// then reactions, then re-requests.
 ///
@@ -1672,6 +1690,23 @@ mod tests {
         );
         // And the manual one carries no patch for the session to apply behind you.
         assert!(plan.threads[1].patch.is_none());
+        // The words-only one carries the words: `sweep_words_only` answers it off
+        // the plan, so a `WordsOnly` thread with nothing to say would be a thread
+        // nothing ever posts.
+        assert!(plan.threads[2].reply.is_some());
+    }
+
+    /// The two branches `sweep_words_only` chooses between. Every stance takes
+    /// exactly one of them, which is what makes the sweep total: `Agree` reacts
+    /// and says nothing, `Reply`/`Story` write words and do not react.
+    #[test]
+    fn a_words_only_thread_is_either_words_or_a_reaction_never_neither() {
+        for stance in [Stance::Agree, Stance::Reply, Stance::Story] {
+            assert!(
+                stance.writes_reply() ^ stance.gives_thumbs_up(),
+                "{stance:?} would be answered twice or not at all"
+            );
+        }
     }
 
     #[test]

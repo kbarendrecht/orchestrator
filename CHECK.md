@@ -87,11 +87,24 @@ sharing it** — *Partly fixed.* `post::post_one` is now the single-thread twin 
 of calling `forge.reply` bare — so the run files the story its reply links to,
 substitutes `{story}`, and is idempotent on a retry, from the same code the batch
 uses. `pr_resolve_run` now refuses on `triage::gate` before spawning, the way the
-batch does. **Still open:** words-only threads have no trigger that ever posts
-them (needs a decision — sweep at plan time, or its own button); the ask/wait
-poll loop in `thread_committed` is still hand-rolled, and on reading it that
-looks justified rather than drift (its own comment explains why it has no
-deadline, unlike `ask`).
+batch does.
+
+Words-only threads are answered too: `sweep_words_only` runs off the plan once
+the session is spawned, because no report will ever arrive for a thread with
+nothing to build — the prompt tells the agent exactly that. No per-thread card
+for them, deliberately: that card exists to show the real commit diff beside the
+drafted reply, and here there is no commit and nothing can drift. It covers both
+shapes a words-only thread takes — words (via `post_one`) or a bare 👍 (via
+`react_one`) — and a test asserts every stance takes exactly one of the two, so
+the sweep cannot silently skip one. The same reaction gap in `thread_committed`
+went with it: its early return claimed a thumbs up was "posted with the rest",
+and there was no rest.
+
+**Still open:** the ask/wait poll loop in `thread_committed` is hand-rolled
+rather than reusing `ask`/`ask_wait`. On reading it that looks justified rather
+than drift — its own comment explains why it has no deadline, unlike `ask` — so
+it is left alone. And none of this has met a real PR yet; the unit tests cover
+the token, the idempotency and the branch coverage, not the round trip.
 
 - **Location:** `api.rs` (`pr_resolve_run`, `thread_committed`), `spawn.rs`
   (`spawn_resolve_run`) vs `post.rs` (`run_inner`, `post_outward`,
