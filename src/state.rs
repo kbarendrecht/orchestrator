@@ -148,15 +148,6 @@ pub struct Inner {
     /// In memory only: the plan is also on disk beside the prompt, and a daemon
     /// that restarted has lost the session it belonged to anyway.
     pub resolve_runs: HashMap<u64, ResolveRun>,
-    /// (behind, ahead) per workspace against the upstream base.
-    pub divergence: HashMap<WorkspaceId, (u32, u32)>,
-    /// What each workspace changed since it branched, and the commit that is
-    /// measured from. Computed in `reconcile` beside the status, so the two
-    /// always describe the same moment.
-    pub changed: HashMap<WorkspaceId, Vec<crate::diff::DiffFile>>,
-    pub base: HashMap<WorkspaceId, String>,
-    /// Workspaces with a rebase stopped part-way.
-    pub rebasing: std::collections::HashSet<WorkspaceId>,
     /// Shared resources currently held by a run (§7 rule 2).
     pub locks_held: Vec<String>,
     /// Whether the main checkout's `docker compose` stack has running containers.
@@ -198,6 +189,7 @@ impl AppState {
                 branches: HashSet::new(),
                 processes: Vec::new(),
                 occupant: None,
+                tree: Default::default(),
             },
         );
         let repos = Repos {
@@ -232,10 +224,6 @@ impl AppState {
                 reviews_polling: false,
                 human_edits: HashMap::new(),
                 automation: Default::default(),
-                divergence: HashMap::new(),
-                changed: HashMap::new(),
-                base: HashMap::new(),
-                rebasing: Default::default(),
                 locks_held: Vec::new(),
                 stack_up: None,
                 update: None,
@@ -358,11 +346,11 @@ impl AppState {
                     })
                     .collect(),
                 files: inner.files.get(&w.id).cloned().unwrap_or_default(),
-                changed: inner.changed.get(&w.id).cloned().unwrap_or_default(),
-                changed_since: inner.base.get(&w.id).cloned(),
-                behind: inner.divergence.get(&w.id).map(|d| d.0).unwrap_or(0),
-                ahead: inner.divergence.get(&w.id).map(|d| d.1).unwrap_or(0),
-                rebasing: inner.rebasing.contains(&w.id),
+                changed: w.tree.changed.clone(),
+                changed_since: w.tree.base.clone(),
+                behind: w.tree.divergence.0,
+                ahead: w.tree.divergence.1,
+                rebasing: w.tree.rebasing,
             })
             .collect();
         workspaces.sort_by(|a, b| b.is_main.cmp(&a.is_main).then(a.id.cmp(&b.id)));
@@ -520,6 +508,10 @@ impl AppState {
                 branches,
                 processes: Vec::new(),
                 occupant: None,
+                // A re-registered id starts from nothing measured, which is the
+                // whole point of the tree living here: the old incarnation's
+                // numbers went with it.
+                tree: Default::default(),
             });
     }
 
@@ -652,23 +644,26 @@ impl AppState {
         });
 
         let mut inner = self.inner.write().await;
-        if let (Some(b), Some(w)) = (branch, inner.workspaces.get_mut(workspace)) {
-            w.branches.insert(b);
-        }
         inner.files.insert(workspace.to_string(), set);
-        if let Some(b) = base {
-            inner.base.insert(workspace.to_string(), b);
-        }
-        if let Some(c) = changed {
-            inner.changed.insert(workspace.to_string(), c);
-        }
-        if let Some(d) = divergence {
-            inner.divergence.insert(workspace.to_string(), d);
-        }
-        if rebasing {
-            inner.rebasing.insert(workspace.to_string());
-        } else {
-            inner.rebasing.remove(workspace);
+        if let Some(w) = inner.workspaces.get_mut(workspace) {
+            if let Some(b) = branch {
+                w.branches.insert(b);
+            }
+            // Each measurement keeps its previous value when git could not
+            // answer, so a transient failure (an unfetched upstream, a lock
+            // contended by a session) leaves the pane as it was rather than
+            // blanking it. `rebasing` is the exception: it is a plain yes/no
+            // that `rebase_in_progress` always answers.
+            if let Some(b) = base {
+                w.tree.base = Some(b);
+            }
+            if let Some(c) = changed {
+                w.tree.changed = c;
+            }
+            if let Some(d) = divergence {
+                w.tree.divergence = d;
+            }
+            w.tree.rebasing = rebasing;
         }
         for s in inner.sessions.values_mut() {
             if s.workspace == workspace {
@@ -914,5 +909,55 @@ mod tests {
             .await
             .is_none());
         let _ = std::fs::remove_file(&other);
+    }
+
+    /// Worktree ids are deterministic and reused (`pr-<n>`), so the measurements
+    /// have to die with the workspace. They used to live in maps keyed by id
+    /// beside it, and teardown removed only the workspace — so recreating the
+    /// same id served the previous incarnation's file list and counts.
+    #[tokio::test]
+    async fn a_recreated_workspace_does_not_inherit_the_old_ones_measurements() {
+        let app = app().await;
+        let path = std::env::temp_dir().join("orchd-tree-reuse");
+
+        app.register_worktree("pr-1", path.clone(), Some("feat/a".into()))
+            .await;
+        {
+            let mut inner = app.inner.write().await;
+            let w = inner.workspaces.get_mut("pr-1").unwrap();
+            w.tree.changed = vec![crate::diff::DiffFile::untracked(
+                &crate::model::ChangedFile {
+                    path: "only-in-the-old-one.rs".into(),
+                    status: crate::model::FileStatus::Untracked,
+                    code: "??".into(),
+                },
+            )];
+            w.tree.base = Some("deadbeef".into());
+            w.tree.divergence = (3, 4);
+            w.tree.rebasing = true;
+        }
+
+        // Re-registering a workspace that is still there keeps what was measured
+        // — the same live worktree, not a new one.
+        app.register_worktree("pr-1", path.clone(), None).await;
+        {
+            let inner = app.inner.read().await;
+            assert_eq!(inner.workspaces["pr-1"].tree.divergence, (3, 4));
+        }
+
+        // Teardown takes the workspace, and with it the tree.
+        {
+            let mut inner = app.inner.write().await;
+            inner.workspaces.remove("pr-1");
+        }
+        app.register_worktree("pr-1", path, Some("feat/b".into()))
+            .await;
+
+        let inner = app.inner.read().await;
+        let tree = &inner.workspaces["pr-1"].tree;
+        assert!(tree.changed.is_empty(), "stale file list survived teardown");
+        assert_eq!(tree.base, None, "stale base survived teardown");
+        assert_eq!(tree.divergence, (0, 0), "stale counts survived teardown");
+        assert!(!tree.rebasing, "stale rebase flag survived teardown");
     }
 }

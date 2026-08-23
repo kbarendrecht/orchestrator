@@ -27,6 +27,28 @@ pub enum WorkspaceKind {
     },
 }
 
+/// What `reconcile` last measured about a workspace's tree.
+///
+/// One struct on the `Workspace` rather than four maps keyed by workspace id
+/// beside it. The maps were the older shape and leaked: teardown removed the
+/// workspace but not its entries, and worktree ids are deterministic and reused
+/// (`pr-<n>`), so recreating a torn-down workspace served the previous
+/// incarnation's file list and counts until the next reconcile overwrote them.
+/// Living on the entity, this cannot outlive what it describes.
+///
+/// `Default` is "measured nothing yet", which is also what a fresh workspace
+/// shows before its first reconcile.
+#[derive(Debug, Default, Clone)]
+pub struct Tree {
+    /// Everything changed since the branch point, committed and untracked both.
+    pub changed: Vec<crate::diff::DiffFile>,
+    /// `merge-base(upstream, HEAD)` — the commit `changed` is measured from.
+    pub base: Option<String>,
+    /// (behind, ahead) against the upstream base.
+    pub divergence: (u32, u32),
+    pub rebasing: bool,
+}
+
 pub struct Workspace {
     pub id: WorkspaceId,
     pub path: PathBuf,
@@ -36,6 +58,9 @@ pub struct Workspace {
     /// Main only: the exclusivity mutex. The dev URL is bound to main, so
     /// occupancy *is* the lease — there is no separate mechanism (§2).
     pub occupant: Option<SessionId>,
+    /// Last reconcile's measurements. See [`Tree`] for why this is not a set of
+    /// side maps.
+    pub tree: Tree,
 }
 
 impl Workspace {
