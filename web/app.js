@@ -14,7 +14,7 @@ import {
   selectedProc, setSelectedProc, prState, handedToPr,
   drawerTouched, setDrawerTouched, drawerCollapsed, setDrawerCollapsed,
   pendingProcFocus, setPendingProcFocus, pendingSelect, setPendingSelect,
-  prOf, onDrawerChange, appMod, IS_MAC, MOD_LABEL, inRail,
+  prOf, onDrawerChange, appMod, IS_MAC, MOD_LABEL,
 } from './js/core.js';
 
 // The daemon owns all state. This SPA is stateless and disposable: closing the
@@ -578,14 +578,21 @@ $('killbtn').onclick = () => {
 /**
  * Move the selection `step` sessions along, wrapping.
  *
- * Only over sessions the rail actually draws (`inRail`), and in the order it
- * draws them (`byNewest`). Iterating `snap.sessions` raw stepped onto archived
- * sessions with no transcript, which have no row anywhere: the centre pane went
- * blank with nothing selected in the rail, and the only way out was pressing the
- * key again. A switcher has to walk what you can see.
+ * Live sessions only, in the order the rail draws them (`byNewest`). Iterating
+ * `snap.sessions` raw stepped onto archived sessions with no transcript, which
+ * have no row anywhere: the centre pane went blank with nothing selected in the
+ * rail, and the only way out was pressing the key again.
+ *
+ * `inRail` fixed that and went one row too far. It also matches archived
+ * conversations, which do have a row — folded inside the archive toggle, so
+ * normally not on screen — and tabbing into one drops you in a conversation that
+ * is over, mid-cycle through the ones that are not. Switching is for the sessions
+ * you are working in; the archive is a place you go on purpose.
+ *
+ * Every live session has a row, so the original bug cannot come back through here.
  */
 function switchSession(step) {
-  const ordered = snap.sessions.filter(inRail).sort(byNewest);
+  const ordered = snap.sessions.filter((s) => !isArchived(s)).sort(byNewest);
   if (!ordered.length) return;
   const idx = ordered.findIndex((s) => s.id === selected);
   // Nothing selected yet (or the selection is off-rail): step in from the end so
