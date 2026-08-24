@@ -216,10 +216,13 @@
 
     <label class="settings-field">
       <span class="settings-k">Tracker</span>
+      <!-- `stub` is deliberately not here: it is a test-only backend
+           (`--strict-mcp-config` against a recording server) for proving the
+           plumbing, not a tracker anyone runs. The enum still has it; the panel
+           just does not offer it. -->
       <select class="settings-in" id="settracker">
         <option value="none">none</option>
         <option value="shortcut">shortcut</option>
-        <option value="stub">stub</option>
       </select>
     </label>
     <p class="settings-help">Where a "file a story" answer goes. With none, that

@@ -310,8 +310,27 @@ Everything outside that block is hand-written and survives.
     prose the agent *writes* — replies and story text. Prompts and code stay English, and a thread's own language still wins
     when it is clear. The `tracker` (`Tracker` enum) is already a config field
     (`none`/`shortcut`/`stub`); Shortcut is still the only real backend, and
-    adding another (Jira, Linear, …) is a separate integration, not a setting —
-    it would want a tracker seam the way the forge has one.
+    adding another (Jira, Linear, …) wants a seam, not a setting — see the next
+    item.
+  - **Give the tracker the same seam the forge has.** Right now the tracker is
+    Shortcut, nominally behind a `Tracker` enum but not behind a trait — the
+    Shortcut specifics are spread through `story.rs`: the MCP server name in the
+    allowlist (`mcp__shortcut Read Write`), the `SHORTCUT_API_TOKEN` env the MCP
+    entry reads, and `Story::url`'s knowledge of Shortcut's URL scheme. Mirror the
+    forge: a `Tracker` trait plus a `TrackerImpl` enum-dispatch keyed on
+    `config.tracker` via `TrackerImpl::for_kind`, holding what a tracker needs to
+    be described — the MCP server id and tool allowlist, the token env/file, the
+    story-URL grammar, and whatever the prompt needs to name the destination — with
+    a tracker-agnostic `Story` model beside it (the way `forge/model.rs` sits next
+    to the trait). Then a second tracker is a `Tracker` arm, a `TrackerImpl`
+    variant and an impl — no `story.rs` edits — exactly as a second forge is today.
+    Two things to settle while doing it, both the tracker analogues of the forge's
+    known leaks: the token ladder (`ORCHD_SHORTCUT_TOKEN` → file) is Shortcut-named
+    and would want per-tracker resolution like `for_kind`'s single `token` arg does
+    not yet model; and `Stub` should become the trait's test double rather than the
+    `--strict-mcp-config` special-case it is now, so the seam is what the stub
+    proves. Not worth building until a second tracker is actually wanted — the same
+    bar the forge seam was held to before it earned its keep.
   - **The base ref is config-driven.** *Done, though the default is now acme's.*
     `fetch_upstream` (`src/git.rs`) splits `remote/branch` out of `upstream_ref`
     instead of the old hardcoded `git fetch upstream develop`: a `HEAD` branch
