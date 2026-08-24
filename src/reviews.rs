@@ -74,6 +74,41 @@ impl Default for ReviewState {
 /// absence is accepted; a *different* one is not.
 const KNOWN_VERSION: u64 = 1;
 
+/// The queue that ships, kept as a real script rather than a string literal so it
+/// can be read, run and diffed. No dependencies, so it works from the config dir
+/// where nothing has been installed.
+const DEFAULT_SCRIPT: &str = include_str!("../reviews/default.js");
+
+/// Where the ejected copy lives.
+pub fn default_script_path() -> Result<std::path::PathBuf> {
+    Ok(crate::config::Config::config_dir()?.join("reviews.js"))
+}
+
+/// Eject the built-in queue to the config dir, **without ever clobbering it.**
+///
+/// Written once, then yours: the whole point is that the ranking is an opinion you
+/// can edit, and a daemon that rewrote it on every start would silently undo that.
+/// Absent is the one case it writes, which also means deleting the file is how you
+/// ask for the default back.
+///
+/// Returns the path either way, so a caller can point `reviews_command` at it
+/// whether this run created it or a previous one did.
+pub fn eject_default_script() -> Result<std::path::PathBuf> {
+    let path = default_script_path()?;
+    if path.exists() {
+        return Ok(path);
+    }
+    std::fs::create_dir_all(path.parent().unwrap())?;
+    std::fs::write(&path, DEFAULT_SCRIPT)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))?;
+    }
+    tracing::info!(path = %path.display(), "ejected the default review queue; edit it or point reviews_command elsewhere");
+    Ok(path)
+}
+
 pub fn fetch(main: &Path, timeout_secs: u64, command: &[String], repo: Option<&str>) -> ReviewState {
     if command.is_empty() {
         return ReviewState::Off;
@@ -292,6 +327,48 @@ mod tests {
     fn an_empty_but_valid_queue_is_ok_not_degraded() {
         let q = parse_t(&v(r#"{"forLogin":"me","actionable":[],"blocked":[]}"#)).unwrap();
         assert!(q.actionable.is_empty());
+    }
+
+    /// The shipped script and the parser have to agree, and nothing else checks
+    /// that: `fetch` shells out, so a shape change in `reviews/default.py` would
+    /// surface as a degraded pane at runtime rather than a red test.
+    ///
+    /// This is real output, captured from the script against a live repo — not a
+    /// hand-written approximation of it, which is the version that stays passing
+    /// while the script drifts.
+    #[test]
+    fn the_ejected_script_prints_what_the_parser_reads() {
+        let real = r#"{"forLogin":"kbarendrecht","total":1,"skipped":0,"actionable":[
+            {"pr":{"number":10003,
+                   "title":"Rename a widget helper",
+                   "url":"https://github.com/acme/monorepo/pull/10003",
+                   "author":"carol","isDraft":false,
+                   "mergeable":"MERGEABLE","checks":"SUCCESS"},
+             "prio":3,"ageHours":70.4,"reviewers":0,"needsReReview":false,
+             "blockers":[]}],"blocked":[]}"#;
+        let q = parse(&v(real), Some("acme/monorepo")).expect("the shipped shape parses");
+        assert_eq!(q.login, "kbarendrecht");
+        assert_eq!(q.total, 1);
+        let e = &q.actionable[0];
+        assert_eq!(e.number, 10003);
+        assert_eq!(e.author, "carol");
+        assert_eq!(e.prio, 3);
+        assert_eq!(e.age_hours, 70.4);
+        assert_eq!(e.checks.as_deref(), Some("SUCCESS"));
+        assert!(e.blockers.is_empty());
+        // The url came from the script, so the repo-derived fallback stayed out.
+        assert!(e.url.ends_with("/pull/10003"));
+    }
+
+    /// A repo with nothing waiting is not a broken command.
+    #[test]
+    fn an_empty_queue_from_the_script_is_ok() {
+        let q = parse(
+            &v(r#"{"forLogin":"me","total":0,"skipped":0,"actionable":[],"blocked":[]}"#),
+            None,
+        )
+        .expect("empty is valid");
+        assert!(q.actionable.is_empty() && q.blocked.is_empty());
     }
 
     #[test]

@@ -106,9 +106,11 @@ pub struct Config {
     /// `proc::run_bounded` — not coreutils `timeout`, which is GNU and absent on a
     /// Mac, where it failed at the spawn and blamed the review command.
     ///
-    /// Empty by default, which means "no review queue here": the pane says so
-    /// rather than reading as a broken command. Point it at whatever task your repo
-    /// has.
+    /// Defaults to the queue the daemon ships, ejected to the config dir as
+    /// `reviews.js` and never overwritten after that — so it works on a fresh
+    /// install and the ranking is still yours to edit. Point it at your own task
+    /// instead, or clear it: empty means "no review queue here", and the pane says
+    /// so rather than reading as a broken command.
     #[serde(default = "default_reviews_command")]
     pub reviews_command: Vec<String>,
     /// Where the auto-updated findings block lives. Defaults to the
@@ -314,13 +316,23 @@ fn default_tracker() -> TrackerKind {
     TrackerKind::None
 }
 
-/// Empty: there is no command every repo has.
+/// The ejected default queue, so the pane works on a fresh install.
 ///
-/// The pane reads "not configured" rather than "unavailable" for an empty one, so
-/// a repo with no such source says so instead of looking broken. `docs/reviews-json.md`
-/// has the shape one has to print.
+/// There is no *repo task* every repo has, which is why this used to be empty and
+/// a new checkout got no queue at all. The answer is not daemon code — a built-in
+/// GraphQL queue with a ranking engine was built and deliberately reverted for
+/// being more machinery than anyone wanted to own — but a script the daemon ships
+/// and then stops owning: `reviews::eject_default_script` writes it once and never
+/// again, so the ranking is yours to edit.
+///
+/// Empty if the config dir cannot be resolved. That is the honest fallback: the
+/// pane reads "not configured" rather than pointing at a path that is not there.
+/// `docs/reviews-json.md` has the contract, for replacing it outright.
 fn default_reviews_command() -> Vec<String> {
-    Vec::new()
+    match crate::reviews::default_script_path() {
+        Ok(p) => vec![p.to_string_lossy().into_owned()],
+        Err(_) => Vec::new(),
+    }
 }
 
 /// Empty: a managed process is whatever *this* repo runs long-term, and no two
@@ -724,8 +736,15 @@ mod tests {
         // its build watcher and docker stack, its tracker, its language. A repo
         // without those read as broken rather than as not having them.
         let cfg = Config::parse(r#"{"main_checkout":"/tmp/x"}"#).expect("parse");
-        assert!(cfg.reviews_command.is_empty(), "no command every repo has");
         assert!(cfg.main_processes.is_empty(), "no process every repo runs");
+        // The review queue is the exception, and it asks nothing of the repo
+        // either: the ejected script talks to the forge, not to a repo task.
+        assert_eq!(cfg.reviews_command.len(), 1);
+        assert!(
+            cfg.reviews_command[0].ends_with("reviews.js"),
+            "the ejected default, not a repo task: {:?}",
+            cfg.reviews_command
+        );
         assert_eq!(cfg.tracker, TrackerKind::None);
         assert_eq!(cfg.default_language, "English");
         // `default_for` (the first-run write) goes through the same path, so a
@@ -992,13 +1011,14 @@ mod tests {
     }
 
     #[test]
-    fn a_fresh_config_talks_to_github_and_no_review_queue() {
-        // The forge has a defensible default — GitHub is where the PRs are for
-        // most repos, and it is the only impl. The review queue does not: it runs
-        // a command this repo would have to already have.
+    fn a_fresh_config_talks_to_github_and_gets_the_ejected_queue() {
+        // Both defaults are defensible: GitHub is where the PRs are for most repos
+        // and the only impl, and the queue is a script the daemon ships rather than
+        // a repo task it hopes exists. It lands *in the file*, so it is visible and
+        // replaceable rather than hidden in code.
         let cfg = Config::default_for(PathBuf::from("/tmp/x"));
         assert_eq!(cfg.forge, ForgeKind::GitHub);
-        assert!(cfg.reviews_command.is_empty());
+        assert!(cfg.reviews_command[0].ends_with("reviews.js"));
     }
 
     /// A checkout reached through a symlink has to resolve to the real path, or

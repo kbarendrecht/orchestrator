@@ -182,6 +182,15 @@ pub async fn start(opts: StartOptions) -> Result<Server> {
     };
     tracing::info!("hook settings at {}", settings.display());
 
+    // Put the default queue on disk if it is not there. Every start, not just the
+    // first: deleting the file is how you ask for the shipped version back, and a
+    // config pointing at a script that has gone would otherwise read as a broken
+    // command rather than repairing itself. Never overwrites, so an edited copy is
+    // safe (`reviews::eject_default_script`).
+    if let Err(e) = reviews::eject_default_script() {
+        tracing::warn!("could not write the default review queue: {e:#}");
+    }
+
     // Repo config from §4. fsmonitor is deliberately main-only.
     let _ = git::configure_repo(&cfg.main_checkout);
 

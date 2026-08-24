@@ -96,7 +96,7 @@ back to `config.json`; changes take effect on restart.
 | Setting | Default | What it is |
 | --- | --- | --- |
 | `upstream_ref` / `upstream_remote` | `origin/HEAD`, `origin` | the base every diff and worktree is measured against. On a **fork workflow** — an `upstream` remote beside `origin` — a first run detects it and writes `upstream/<default branch>` instead, so there is nothing to set by hand. |
-| `reviews_command` | *(empty)* | argv printing the review queue as JSON (shape in [`docs/reviews-json.md`](docs/reviews-json.md)). Empty means the pane reads "not configured" rather than "unavailable". |
+| `reviews_command` | the ejected `reviews.py` | argv printing the review queue as JSON. See below. Empty means the pane reads "not configured" rather than "unavailable". |
 | `main_processes` | *(empty)* | long-running processes shown in the drawer. See below. |
 | `tracker` | `none` | where an out-of-scope review point can be filed as a story. `shortcut` is the one implementation; the seam for adding others is `src/tracker/`. Its token is **not** a config key — set `ORCHD_TRACKER_TOKEN` in the daemon's environment. |
 | `default_language` | `English` | the language the agent *writes* replies and stories in. Prompts and code stay English regardless. |
@@ -120,6 +120,30 @@ inferred from it.
 
 Either way the base ref is one setting and both halves of it agree, which is what
 `git::detect_base` and the reconciliation in `Config::parse` are for.
+
+### The review queue
+
+A queue ships, so the pane works on a fresh install: on first start the daemon
+writes `reviews.js` into its config dir and points `reviews_command` at it. It
+asks `gh` for open PRs in your repo where your review is requested, ranks them,
+and prints the JSON in [`docs/reviews-json.md`](docs/reviews-json.md). Needs `gh`
+authenticated; no npm install, it has no dependencies.
+
+It is **ejected, not embedded** — three consequences worth knowing:
+
+- **Edit it.** The ranking is one opinion (it guesses at `stopper` and `prio`
+  labels). It is a normal file in your config dir; change it and the daemon leaves
+  your version alone forever.
+- **Delete it** to get the shipped version back. Absent is the only case the
+  daemon writes, so removing the file is how you ask for a reset.
+- **Replace it** by pointing `reviews_command` anywhere else — your own script, a
+  `mise` task, whatever already knows your team's real ranking. Clear the setting
+  entirely and the pane reads "not configured" rather than pretending.
+
+The one contract is the JSON on stdout. A non-zero exit shows the pane as
+*degraded* with the command's own stderr, deliberately distinct from "no reviews",
+because silently showing an empty queue when the command is broken is the failure
+that would actually cost a colleague a day.
 
 ### Worktree hooks
 
