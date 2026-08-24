@@ -73,6 +73,19 @@ pub struct AppState {
     /// WebSocket and every mutating endpoint (§12).
     pub token: String,
     pub inner: RwLock<Inner>,
+    /// The worktree main currently holds the branch of, if a swap put it there.
+    ///
+    /// Exists to stop two features undoing each other. `park_main` returns main to
+    /// its base branch when the last session there closes, which is right for
+    /// *incidental* placement — "open PR in main" leaves main on a branch nobody
+    /// chose to keep. A swap is the opposite: you asked for that branch to be in
+    /// main, and having it silently swapped back when you close the pane would be
+    /// the feature fighting itself.
+    ///
+    /// Cleared by swapping back, so the pair is symmetric. Deliberately *not*
+    /// persisted: on a restart main is wherever it was left, and the daemon
+    /// re-reads that from git rather than remembering an intention.
+    pub swapped_with_main: RwLock<Option<String>>,
     /// Set the moment shutdown begins.
     ///
     /// A session's exit watcher cannot otherwise tell "you closed this pane" from
@@ -305,6 +318,7 @@ impl AppState {
                 update: None,
                 agent_update: None,
             }),
+            swapped_with_main: RwLock::new(None),
             shutting_down: std::sync::atomic::AtomicBool::new(false),
             events,
             chrome,

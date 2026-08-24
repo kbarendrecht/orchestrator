@@ -382,6 +382,7 @@ fn router(app: Arc<AppState>) -> Router {
         .route("/api/workspace/:id/preflight", get(api::preflight))
         .route("/api/workspace/:id/archive", post(api::archive_workspace))
         .route("/api/workspace/:id/teardown", post(api::teardown))
+        .route("/api/workspace/:id/swap-main", post(api::swap_with_main))
         .route(
             "/api/workspace/:id/process/:name/restart",
             post(api::restart_process),

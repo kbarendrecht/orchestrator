@@ -336,6 +336,27 @@ pub fn is_clean(cwd: &Path) -> Result<bool> {
     Ok(raw.iter().all(|b| b.is_ascii_whitespace()))
 }
 
+/// Is this tree clean, ignoring one path prefix?
+///
+/// [`is_clean`] counts untracked files, which is right for a worktree and wrong
+/// for **main**: main *contains* the worktrees dir, so on any repo that has not
+/// gitignored `.claude/worktrees/` main is permanently dirty and every gate that
+/// asks "is main clean" refuses forever. That is invisible on a repo whose own
+/// hooks add the exclude, which is exactly how it stayed unnoticed.
+///
+/// So: `is_clean` for a worktree, this for main, with
+/// `Config::worktrees_subdir_str` as the prefix — the same exclude `reconcile`
+/// already passes to [`status`] for the changed-file pane.
+/// `Untracked::Each`, not `Collapsed`, and that is the whole trick. Git collapses
+/// an untracked directory to its topmost entry, so a repo where nothing under
+/// `.claude/` is tracked reports `.claude/` — *above* the exclude prefix, which
+/// therefore never matches and main reads dirty anyway. Listing every untracked
+/// file costs more, but this runs at a gate, not on every poll.
+pub fn is_clean_excluding(cwd: &Path, exclude: Option<&str>) -> Result<bool> {
+    let set = status(cwd, exclude, Untracked::Each)?;
+    Ok(set.staged.is_empty() && set.unstaged.is_empty() && set.untracked.is_empty())
+}
+
 // ---------------------------------------------------------------------------
 // Worktrees
 // ---------------------------------------------------------------------------
@@ -758,6 +779,76 @@ pub fn base_checkout_branch(main: &Path, upstream_ref: &str) -> Option<String> {
     Some(branch.to_string())
 }
 
+/// Exchange the branches checked out in two trees.
+///
+/// The tree a worktree *is* cannot be swapped with main — worktrees live inside
+/// main, so one would have to contain its own parent, and git will not move the
+/// main worktree anyway. What can be exchanged is what each has checked out, which
+/// is what the swap is actually for: getting the work into main, where the managed
+/// processes and the dev stack live.
+///
+/// # Why three steps
+///
+/// Git refuses a branch that is already checked out elsewhere, so the obvious
+/// `switch` in each tree fails on the first one:
+///
+/// ```text
+/// fatal: 'feature/b' is already used by worktree at '…/.claude/worktrees/w'
+/// ```
+///
+/// So the worktree detaches first, which frees its branch; main takes it, which
+/// frees main's; the worktree takes that. Measured, not assumed — the sequence and
+/// its failure are both pinned by a test.
+///
+/// # On failure
+///
+/// The rollback matters more than the happy path. Step two is the one that can
+/// fail on real repos (a stale index, a file that would be overwritten), and it
+/// fails with the worktree *detached* — a state nobody asked for. So a failure
+/// there puts the worktree back on its own branch before returning the error, and
+/// the caller sees "nothing happened" rather than a repo it has to unpick.
+pub fn swap_branches(main: &Path, worktree: &Path) -> Result<(String, String)> {
+    let main_branch = current_branch(main)?;
+    let tree_branch = current_branch(worktree)?;
+    if main_branch == tree_branch {
+        bail!("both are on {main_branch}, so there is nothing to exchange");
+    }
+
+    // Detaching is the only free move: it takes a branch out of use without
+    // needing another one to be available.
+    switch_detach(worktree)?;
+
+    if let Err(e) = switch_branch(main, &tree_branch) {
+        // Undo the detach, or the worktree is left off its branch for a failure
+        // that changed nothing else.
+        if let Err(back) = switch_branch(worktree, &tree_branch) {
+            bail!(
+                "{e:#} — and {} could not be put back on {tree_branch}: {back:#}",
+                worktree.display()
+            );
+        }
+        return Err(e.context(format!("{} could not take {tree_branch}", main.display())));
+    }
+
+    if let Err(e) = switch_branch(worktree, &main_branch) {
+        // Main already moved. Putting it back frees `tree_branch` again, so the
+        // worktree can return to it and the pair is where it started.
+        let _ = switch_branch(main, &main_branch);
+        let _ = switch_branch(worktree, &tree_branch);
+        return Err(e.context(format!(
+            "{} could not take {main_branch}; both were put back",
+            worktree.display()
+        )));
+    }
+
+    Ok((tree_branch, main_branch))
+}
+
+/// Detach a tree at its current commit, releasing the branch it held.
+fn switch_detach(cwd: &Path) -> Result<()> {
+    git(cwd, &["switch", "--detach", "-q"]).map(|_| ())
+}
+
 /// Put a checkout back on `base`, unless something says not to.
 ///
 /// Returns the branch it left, or `None` when it did nothing: already there, or
@@ -768,12 +859,15 @@ pub fn base_checkout_branch(main: &Path, upstream_ref: &str) -> Option<String> {
 /// Blocking and repo-only on purpose: the daemon-side caller owns the "is anyone
 /// still working here" half, and this half is what a test can drive against a real
 /// repo.
-pub fn park_on_base(cwd: &Path, base: &str) -> Result<Option<String>> {
+pub fn park_on_base(cwd: &Path, base: &str, exclude: Option<&str>) -> Result<Option<String>> {
     let on = current_branch(cwd)?;
     if on == base {
         return Ok(None);
     }
-    if !is_clean(cwd)? {
+    // Excluding, not plain: this only ever runs on main, which contains the
+    // worktrees dir. Plain `is_clean` reads that as dirty and parking never
+    // happens — silently, since "not clean" is a legitimate reason to do nothing.
+    if !is_clean_excluding(cwd, exclude)? {
         return Ok(None);
     }
     switch_branch(cwd, base)?;
@@ -1238,17 +1332,17 @@ mod tests {
         git(&repo, &["commit", "-qm", "init"]).unwrap();
 
         // Already home: nothing to do, and no needless checkout.
-        assert_eq!(park_on_base(&repo, "develop").unwrap(), None);
+        assert_eq!(park_on_base(&repo, "develop", None).unwrap(), None);
 
         git(&repo, &["checkout", "-q", "-b", "feature/x"]).unwrap();
         std::fs::write(repo.join("a.txt"), "edited").unwrap();
         // Dirty: the work would ride along to develop, so it stays put.
-        assert_eq!(park_on_base(&repo, "develop").unwrap(), None);
+        assert_eq!(park_on_base(&repo, "develop", None).unwrap(), None);
         assert_eq!(current_branch(&repo).unwrap(), "feature/x");
 
         git(&repo, &["checkout", "-q", "--", "a.txt"]).unwrap();
         assert_eq!(
-            park_on_base(&repo, "develop").unwrap().as_deref(),
+            park_on_base(&repo, "develop", None).unwrap().as_deref(),
             Some("feature/x")
         );
         assert_eq!(current_branch(&repo).unwrap(), "develop");
@@ -1292,6 +1386,67 @@ mod tests {
 
         // Not a git repo at all is also no opinion, not a panic.
         assert_eq!(detect_base(&dir.join("nope")), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The swap, and the refusal it is built around: git will not check one branch
+    /// out twice, so the naive "switch each tree" fails on the first move. Both
+    /// halves are pinned here because the three-step order *is* the feature.
+    #[test]
+    fn swapping_exchanges_two_branches_and_is_its_own_inverse() {
+        let dir = std::env::temp_dir().join(format!(
+            "orchd-swap-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let main = dir.join("repo");
+        git(&dir, &["init", "-q", "-b", "main", "repo"]).unwrap();
+        git(&main, &["config", "user.email", "t@t"]).unwrap();
+        git(&main, &["config", "user.name", "t"]).unwrap();
+        std::fs::write(main.join("f.txt"), "base\n").unwrap();
+        git(&main, &["add", "-A"]).unwrap();
+        git(&main, &["commit", "-qm", "base"]).unwrap();
+        git(&main, &["branch", "feature/b"]).unwrap();
+        let tree = main.join(".claude/worktrees/w");
+        git(&main, &["worktree", "add", "-q", tree.to_str().unwrap(), "feature/b"]).unwrap();
+
+        assert_eq!(current_branch(&main).unwrap(), "main");
+        assert_eq!(current_branch(&tree).unwrap(), "feature/b");
+
+        // The refusal the three steps exist for: one branch, one tree.
+        let naive = git(&main, &["switch", "feature/b"])
+            .expect_err("git must refuse a branch already checked out");
+        assert!(
+            format!("{naive:#}").contains("already used by worktree"),
+            "unexpected refusal: {naive:#}"
+        );
+
+        let (to_main, to_tree) = swap_branches(&main, &tree).expect("the swap");
+        assert_eq!((to_main.as_str(), to_tree.as_str()), ("feature/b", "main"));
+        assert_eq!(current_branch(&main).unwrap(), "feature/b");
+        assert_eq!(current_branch(&tree).unwrap(), "main");
+        // Neither tree is left detached or dirty.
+        assert!(
+            is_clean_excluding(&main, Some(".claude/worktrees/")).unwrap()
+                && is_clean(&tree).unwrap(),
+            "excluding for main, which contains the worktrees dir"
+        );
+
+        // Swapping again is the undo, which is what makes the menu item safe to
+        // press twice.
+        swap_branches(&main, &tree).expect("swap back");
+        assert_eq!(current_branch(&main).unwrap(), "main");
+        assert_eq!(current_branch(&tree).unwrap(), "feature/b");
+
+        // Same branch both sides is refused rather than silently doing nothing.
+        let same = main.join(".claude/worktrees/same");
+        git(&main, &["worktree", "add", "-q", "--detach", same.to_str().unwrap()]).unwrap();
+        git(&same, &["switch", "-q", "-c", "third"]).unwrap();
+        git(&same, &["switch", "-q", "--detach"]).unwrap();
+        assert!(swap_branches(&main, &main).is_err(), "main against itself");
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 

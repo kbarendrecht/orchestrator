@@ -1156,6 +1156,113 @@ pub async fn archive_workspace(
     Ok(Json(json!({ "archived": workspace })))
 }
 
+/// Exchange the branches checked out in main and a worktree.
+///
+/// What it is *for*: main is where the managed processes and the dev stack live,
+/// so work that needs them has to be *in* main. Before this the only way was to
+/// commit, push, and check the branch out by hand.
+///
+/// # What it is not
+///
+/// Not a swap of roles. Worktrees live inside main, so one cannot become the
+/// primary checkout without containing its own parent, and git will not move the
+/// main worktree anyway. Only what each has checked out is exchanged; both paths,
+/// and therefore every transcript and archive entry, stay exactly where they are
+/// (`config::transcript_slug` keys on the path).
+///
+/// # The refusals
+///
+/// An unclean tree, a stopped rebase, or a session **mid-turn** in either.
+///
+/// Mid-turn, not merely open: swapping is a regular move, and a session sitting at
+/// its prompt in main is the normal state to do it from. Refusing on any live
+/// session would make the ordinary case fail. An idle session's next turn re-reads
+/// the tree; an agent that is *writing* into one that changes under it is the case
+/// worth stopping, and it is the same distinction `nudge_sessions` already draws
+/// with `is_busy`.
+///
+/// Main having no session at all is equally fine — nothing here requires one.
+pub async fn swap_with_main(
+    State(app): State<Arc<AppState>>,
+    Path(workspace): Path<String>,
+) -> ApiResult<serde_json::Value> {
+    if workspace == MAIN {
+        return Err(ApiError(anyhow::anyhow!(
+            "main cannot be swapped with itself"
+        )));
+    }
+    let tree = app
+        .workspace_path(&workspace)
+        .await
+        .ok_or_else(|| anyhow::anyhow!("unknown workspace {workspace}"))?;
+    let main = app.cfg.main_checkout.clone();
+
+    // Sessions first: the cheapest refusal. Only the ones actually working — an
+    // idle session at its prompt is the normal place to swap from.
+    {
+        let inner = app.inner.read().await;
+        let busy = |ws: &str| -> Option<String> {
+            inner
+                .sessions
+                .values()
+                .find(|s| s.workspace == ws && s.state.is_busy())
+                .map(|s| s.title.clone().unwrap_or_else(|| s.id.to_string()[..8].to_string()))
+        };
+        for (label, ws) in [("main", MAIN), ("this worktree", workspace.as_str())] {
+            if let Some(who) = busy(ws) {
+                return Err(ApiError(anyhow::anyhow!(
+                    "{label} has an agent mid-turn ({who}); the swap replaces every file \
+                     under it, so let that turn finish first"
+                )));
+            }
+        }
+    }
+
+    // Then the trees. Main excludes the worktrees dir it contains, or it reads as
+    // dirty on any repo that has not gitignored it.
+    let exclude = app.cfg.worktrees_subdir_str();
+    let (m, t) = (main.clone(), tree.clone());
+    let swapped = tokio::task::spawn_blocking(move || -> anyhow::Result<(String, String)> {
+        for (label, path, ex) in [
+            ("the main checkout", &m, Some(exclude.as_str())),
+            (&format!("{}", t.display()), &t, None),
+        ] {
+            if crate::git::rebase_in_progress(path) {
+                anyhow::bail!("{label} has a rebase stopped part-way; finish or abort it first");
+            }
+            if !crate::git::is_clean_excluding(path, ex)? {
+                anyhow::bail!("{label} has uncommitted changes; commit or stash them first");
+            }
+        }
+        crate::git::swap_branches(&m, &t)
+    })
+    .await
+    .map_err(|e| anyhow::anyhow!("the swap task panicked: {e}"))??;
+
+    // Swapping back clears the flag, so pressing the item twice is a true undo and
+    // parking is allowed again.
+    {
+        let mut held = app.swapped_with_main.write().await;
+        *held = if held.as_deref() == Some(workspace.as_str()) {
+            None
+        } else {
+            Some(workspace.clone())
+        };
+    }
+
+    // Both panes describe a tree whose every file just changed.
+    let _ = app.reconcile(MAIN).await;
+    let _ = app.reconcile(&workspace).await;
+    app.notify().await;
+
+    tracing::info!(%workspace, main_now = %swapped.0, worktree_now = %swapped.1, "swapped branches with main");
+    Ok(Json(json!({
+        "main": swapped.0,
+        "worktree": swapped.1,
+        "workspace": workspace,
+    })))
+}
+
 pub async fn teardown(
     State(app): State<Arc<AppState>>,
     Path(workspace): Path<String>,

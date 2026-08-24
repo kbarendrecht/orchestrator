@@ -459,10 +459,44 @@ function sessionRow(s, w) {
   btn.oncontextmenu = (ev) => openMenu(ev, [
     // Nothing to branch off until the conversation has had a turn.
     ['Fork session', null, s.has_transcript ? () => forkSession(s) : null],
+    // The worktree, not the session: the row is the only place a worktree is
+    // visible, so its workspace-level action lives here too.
+    //
+    // Asked of the snapshot rather than of `w`, which is a `{ id }` stub for a
+    // worktree row — `w.is_main` is `undefined` there, and relying on that being
+    // falsy would make this right by accident. Main cannot swap with itself, and
+    // a worktree Claude Code has not named yet has no path to swap.
+    ['Swap branch with main', null,
+      s.workspace !== snap.workspaces.find((x) => x.is_main)?.id && !pending(s)
+        ? () => swapWithMain(s.workspace)
+        : null],
     ['Close session', 'bad', s.alive ? () => closeSession(s.id) : null],
     ['Delete session', 'bad', () => deleteSession(s)],
   ]);
   return btn;
+}
+
+/** Put this worktree's branch in main, and main's here.
+ *
+ *  Main is where the managed processes and the dev stack live, so work that needs
+ *  them has to be *in* main. Both paths stay put — only what each has checked out
+ *  is exchanged — so every transcript and archive entry survives untouched.
+ *
+ *  Confirmed rather than immediate: every file under two trees changes, and the
+ *  daemon's refusals (mid-turn agent, dirty tree, stopped rebase) are about what
+ *  it can see, not about whether you meant it. */
+async function swapWithMain(wsId) {
+  if (!confirm(
+    `Swap branches between main and ${wsId}?\n\n`
+    + `main takes this worktree's branch, and this worktree takes main's. `
+    + `Both checkouts change completely; neither conversation moves.`
+  )) return;
+  try {
+    const r = await call(`/api/workspace/${encodeURIComponent(wsId)}/swap-main`);
+    toast(`main is on ${r.main}; ${wsId} is on ${r.worktree}`);
+  } catch (e) {
+    toast(e.message, true);
+  }
 }
 
 /** Branch off a conversation: same context, new worktree, original untouched.
