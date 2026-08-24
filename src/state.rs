@@ -634,6 +634,23 @@ impl AppState {
 
     /// Sessions in a workspace that are neither `Exited` nor `Archived`, checked
     /// against `/proc` rather than in-memory state (§8b).
+    /// Drop a branch a workspace no longer has checked out.
+    ///
+    /// `reconcile` only ever *adds* to a workspace's branch set, which was safe
+    /// while a worktree kept one branch for life — the set could only grow for
+    /// main, and `spawn::worktree_holding` excludes main for exactly that reason.
+    ///
+    /// A swap breaks that: the worktree gives its branch away and would go on
+    /// claiming it, so a PR flow for that branch would be pointed at a tree that no
+    /// longer holds it — silently, since the mapping is by branch set. Nothing else
+    /// removes from the set, so the swap has to.
+    pub async fn forget_branch(&self, workspace: &str, branch: &str) {
+        let mut inner = self.inner.write().await;
+        if let Some(w) = inner.workspaces.get_mut(workspace) {
+            w.branches.remove(branch);
+        }
+    }
+
     pub async fn live_sessions_in(&self, workspace: &str) -> Vec<SessionId> {
         let inner = self.inner.read().await;
         inner

@@ -1250,6 +1250,14 @@ pub async fn swap_with_main(
         };
     }
 
+    // Each tree gave a branch away, and `reconcile` only adds. Left in, the
+    // worktree would go on claiming the branch main now holds, and a PR flow for it
+    // would be pointed at the wrong tree — found by driving this against a real
+    // daemon, not by reading it.
+    let (main_now, tree_now) = &swapped;
+    app.forget_branch(&workspace, main_now).await;
+    app.forget_branch(MAIN, tree_now).await;
+
     // Both panes describe a tree whose every file just changed.
     let _ = app.reconcile(MAIN).await;
     let _ = app.reconcile(&workspace).await;
