@@ -102,15 +102,11 @@ function openTerm(target, parent) {
       if (text) copyText(text);
       return false;
     }
-    if (key === 'v') {
-      navigator.clipboard.readText()
-        .then((text) => { if (text) term.paste(text); })
-        // Reading the clipboard needs a permission the webview does not grant,
-        // and the raw `NotAllowedError` reads like a fault in the app rather than
-        // a rule of the platform.
-        .catch(() => toast('this window is not allowed to read the clipboard', true));
-      return false;
-    }
+    // Paste is deliberately *not* claimed here. Both spellings already reach
+    // xterm's textarea as a native `paste` event, so the text lands either way —
+    // and reading the clipboard ourselves needs a permission the webview does not
+    // grant, which meant every paste worked and then toasted "this window is not
+    // allowed to read the clipboard" on top of it.
     return true;
   });
   /* No WebGL in the webview. WebKitGTK is the engine this app actually runs on,
