@@ -489,11 +489,18 @@ async function swapWithMain(wsId) {
   if (!confirm(
     `Swap branches between main and ${wsId}?\n\n`
     + `main takes this worktree's branch, and this worktree takes main's. `
-    + `Both checkouts change completely; neither conversation moves.`
+    + `This conversation is forked into main so the work carries across; the `
+    + `original stays here, untouched.`
   )) return;
   try {
     const r = await call(`/api/workspace/${encodeURIComponent(wsId)}/swap-main`);
+    // Select the fork, so the rail lands you in main where the branch now is —
+    // which is the whole point of pressing this.
+    if (r.session) setPendingSelect(r.session);
     toast(`main is on ${r.main}; ${wsId} is on ${r.worktree}`);
+    // The branches moved even if the conversation could not follow, so this is a
+    // second line rather than an error over the top of a success.
+    if (r.session_error) toast(`the branches swapped, but ${r.session_error}`, true);
   } catch (e) {
     toast(e.message, true);
   }
