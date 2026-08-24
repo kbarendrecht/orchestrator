@@ -139,9 +139,20 @@ port, so a second instance refuses to start rather than fighting over
 - **Shelling out to coreutils is the other portability trap.** The review queue
   ran its command under `timeout`, which is GNU and not on a Mac, so it failed at
   the spawn and the pane blamed the review command for a missing binary it never
-  named. `reviews::run_bounded` enforces the deadline in Rust instead. Every other
+  named. `proc::run_bounded` enforces the deadline in Rust instead — one
+  bounded-exec primitive (own process group, SIGKILL the group, pipes drained on
+  threads), used by both the review queue and `worktree_setup`. Every other
   command the daemon spawns is POSIX (`git`, `curl`, `gh`, `ps`, `which`, `kill`) —
   keep it that way, and check `command -v` before reaching for a GNU flag.
+- **A daemon-cut worktree fires no `WorktreeCreate` hook, so repo setup runs
+  through `worktree_setup` instead.** Claude's `WorktreeCreate` fires only for
+  `claude --worktree`; PR worktrees, resumes and relocated layouts are cut by the
+  daemon's own `git worktree add`, which Claude knows nothing about — so anything
+  the repo's hook did at creation (acme's `claudeMdExcludes` write) was silently
+  skipped. `spawn::run_worktree_setup` runs the configured command in each
+  daemon-cut worktree, before the session, non-fatal. Do **not** add it to the
+  `claude --worktree` arm — the repo's hook already ran there. A relative script
+  path resolves against `main_checkout`; cwd is the worktree.
 - **Paths are resolved at one boundary, and comparing across it silently fails.**
   `main_checkout` is `canonicalize`d in `Config::parse`, so `worktrees_dir` and
   `worktree_path` are resolved too, and the agent-reported cwd is resolved where a

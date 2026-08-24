@@ -37,6 +37,7 @@ async function loadConfigInto() {
   ctl('setupref').value = cfg.upstream_ref || '';
   ctl('setupremote').value = cfg.upstream_remote || '';
   ctl('setreviews').value = (cfg.reviews_command || []).join(' ');
+  ctl('setwtsetup').value = (cfg.worktree_setup || []).join(' ');
   procDraft = (cfg.main_processes || []).map((p) => ({
     name: p.name || '',
     command: (p.command || []).join(' '),
@@ -138,6 +139,7 @@ async function saveSettings() {
     upstream_ref: ctl('setupref').value.trim(),
     upstream_remote: ctl('setupremote').value.trim(),
     reviews_command: argv(ctl('setreviews').value),
+    worktree_setup: argv(ctl('setwtsetup').value),
     main_processes: procDraft.map((p) => ({
       name: p.name.trim(),
       command: argv(p.command),

@@ -19,6 +19,7 @@ pub mod instance;
 pub mod model;
 pub mod patch;
 pub mod post;
+pub mod proc;
 pub mod prompt;
 pub mod proposal;
 pub mod pty;

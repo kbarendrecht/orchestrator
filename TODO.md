@@ -277,6 +277,22 @@ Everything outside that block is hand-written and survives.
     worth knowing when comparing the two: only the delegated arm leaves a
     `git worktree lock` behind, which is why teardown needs the stale-lock clear
     at all.
+
+    *Repo worktree setup is now first-class, whoever cut the tree.* The gap this
+    left — a daemon-cut worktree fires no `WorktreeCreate`, so it skipped whatever
+    creation-time setup the repo does — is closed by a `worktree_setup` command
+    (`config.rs`, editable in settings). `spawn::run_worktree_setup` runs it in
+    every worktree the daemon cuts (PR, resume, relocated), after creation and
+    before the session, bounded and non-fatal (`proc::run_bounded`, extracted from
+    the reviews timeout so there is one bounded-exec primitive). A relative script
+    path resolves against main while cwd is the worktree — the acme hook idiom.
+    It is deliberately *not* run on the `claude --worktree` path, where the repo's
+    own `WorktreeCreate` already ran. Driven against the fixture: the marker landed
+    in a daemon-cut `pr-N` worktree. The concrete symptom that motivated it —
+    acme's `pr-*` worktrees missing the `claudeMdExcludes` file and so loading
+    rules twice — is being fixed on the acme side too (moving that write to the
+    `SessionStart` hook), so the two approaches converge: the repo makes its own
+    setup idempotent, and orchd guarantees a creation-time hook point regardless.
   - **GitHub is the only forge, but the seam is wired.** Every read and write
     goes through the `Forge` trait (`src/forge/mod.rs`), and `ForgeImpl` —
     enum-dispatch keyed on `config.forge` (`ForgeKind`) via `ForgeImpl::for_kind`

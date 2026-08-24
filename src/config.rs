@@ -104,6 +104,24 @@ pub struct Config {
     /// you the scrollback rather than the conversation.
     #[serde(default = "default_auto_resume")]
     pub auto_resume: bool,
+    /// A command run in every worktree the daemon cuts itself, right after
+    /// creation and before the session spawns. An argv, run with cwd set to the
+    /// new worktree.
+    ///
+    /// This is the seam that makes a repo's worktree setup a first-class thing
+    /// rather than an accident of who created the tree. Claude Code's own
+    /// `WorktreeCreate` hook fires only for `claude --worktree`, so a PR worktree
+    /// or a resumed one — both cut by the daemon with plain `git worktree add` —
+    /// silently skips whatever that hook does. acme's, for one, writes the
+    /// `claudeMdExcludes` file that stops rules double-loading, and its PR
+    /// worktrees were missing it. Point this at a script that does the
+    /// creation-time setup and every daemon-cut worktree gets it.
+    ///
+    /// Empty by default: a plain checkout needs nothing here, and it never runs on
+    /// the `claude --worktree` path, where the repo's own `WorktreeCreate` already
+    /// did the work — running both would double it.
+    #[serde(default)]
+    pub worktree_setup: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -181,7 +199,7 @@ fn rewrite_main_checkout(path: &Path, raw: &str, main: &Path) -> Result<()> {
 /// The subset of [`Config`] the settings panel reads and writes.
 ///
 /// A distinct struct so the editable surface is explicit: a POST from the panel
-/// can set these six and nothing else — not the port, the token paths, or the
+/// can set these seven and nothing else — not the port, the token paths, or the
 /// forge. Field names match the `config.json` keys they persist to.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Settings {
@@ -191,6 +209,7 @@ pub struct Settings {
     pub upstream_remote: String,
     pub reviews_command: Vec<String>,
     pub main_processes: Vec<ManagedSpec>,
+    pub worktree_setup: Vec<String>,
 }
 
 impl Settings {
@@ -202,6 +221,7 @@ impl Settings {
             upstream_remote: cfg.upstream_remote.clone(),
             reviews_command: cfg.reviews_command.clone(),
             main_processes: cfg.main_processes.clone(),
+            worktree_setup: cfg.worktree_setup.clone(),
         }
     }
 
@@ -216,7 +236,7 @@ impl Settings {
         Ok(())
     }
 
-    /// Set these six keys on a raw `config.json` string, returning the new file
+    /// Set these seven keys on a raw `config.json` string, returning the new file
     /// text. Split from [`Settings::write`] so it is testable without the real
     /// config path.
     pub fn merge_into(&self, raw: &str) -> Result<String> {
@@ -231,6 +251,7 @@ impl Settings {
         obj.insert("upstream_remote".into(), serde_json::to_value(&self.upstream_remote)?);
         obj.insert("reviews_command".into(), serde_json::to_value(&self.reviews_command)?);
         obj.insert("main_processes".into(), serde_json::to_value(&self.main_processes)?);
+        obj.insert("worktree_setup".into(), serde_json::to_value(&self.worktree_setup)?);
         Ok(serde_json::to_string_pretty(&v)? + "\n")
     }
 }
@@ -758,8 +779,8 @@ mod tests {
 
     #[test]
     fn writing_settings_touches_only_its_keys_and_round_trips() {
-        // A slim config must stay slim: merging settings sets the six keys and
-        // leaves everything else (here, just main_checkout) alone.
+        // A slim config must stay slim: merging settings sets the editable keys
+        // and leaves everything else (here, just main_checkout) alone.
         let s = Settings {
             output_language: "English".into(),
             tracker: Tracker::None,
@@ -767,6 +788,7 @@ mod tests {
             upstream_remote: "origin".into(),
             reviews_command: vec!["gh".into(), "pr".into()],
             main_processes: vec![],
+            worktree_setup: vec![".claude/hooks/worktree-setup".into()],
         };
         let out = s.merge_into(r#"{"main_checkout":"/tmp/x","port":8080}"#).expect("merge");
         let cfg = Config::parse(&out).expect("re-parse");
@@ -777,6 +799,7 @@ mod tests {
         assert_eq!(cfg.upstream_ref, "origin/main");
         assert_eq!(cfg.reviews_command, vec!["gh", "pr"]);
         assert!(cfg.main_processes.is_empty());
+        assert_eq!(cfg.worktree_setup, vec![".claude/hooks/worktree-setup"]);
     }
 
     #[test]

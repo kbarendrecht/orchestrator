@@ -11,6 +11,90 @@ use crate::state::AppState;
 
 pub(crate) const DEFAULT_SIZE: (u16, u16) = (40, 140);
 
+/// How long a `worktree_setup` command may run before it is killed.
+///
+/// Generous — a setup step might install or codegen — but bounded, because it
+/// runs *before* the session spawns, so a hang here is a worktree that never
+/// opens. The deadline is enforced in Rust (`proc::run_bounded`), which also
+/// takes any children the script left behind.
+const WORKTREE_SETUP_TIMEOUT_SECS: u64 = 300;
+
+/// Run the configured `worktree_setup` in a worktree the daemon just cut.
+///
+/// The seam that makes a repo's worktree setup independent of who created the
+/// tree. `claude --worktree` fires the repo's `WorktreeCreate` hook; the daemon's
+/// own `git worktree add` (PR worktrees, resume, a relocated layout) fires
+/// nothing, so without this those worktrees silently skip whatever creation-time
+/// setup the repo does — acme's `claudeMdExcludes` file, for one, and its PR
+/// worktrees were missing it.
+///
+/// **Non-fatal.** Setup failing must not strand the worktree: the session is more
+/// useful open-with-a-warning than refused, and the same reasoning is why the
+/// repo's own hook treats its settings write as best-effort. A failure is logged
+/// with the command's own stderr tail, never swallowed.
+///
+/// Not called on the `claude --worktree` path — the repo's `WorktreeCreate`
+/// already ran there, and running both would double the work.
+/// Resolve `worktree_setup`'s command word.
+///
+/// The command runs *in* the worktree (cwd), but a **relative script path** is
+/// resolved against main, not the worktree. That is the acme idiom made to
+/// work — its hooks are `$CLAUDE_PROJECT_DIR/.claude/hooks/…` operating on the
+/// worktree — and without it `.claude/hooks/setup` would be looked up inside a
+/// just-created worktree that may not carry it. A bare command name (no slash,
+/// e.g. `just`) is left alone for a normal PATH lookup; an absolute path is
+/// already unambiguous.
+fn resolve_setup_exe(main: &std::path::Path, exe: &str) -> String {
+    let p = std::path::Path::new(exe);
+    if p.is_relative() && exe.contains('/') {
+        main.join(exe).to_string_lossy().into_owned()
+    } else {
+        exe.to_string()
+    }
+}
+
+pub(crate) async fn run_worktree_setup(app: &Arc<AppState>, path: &std::path::Path) {
+    let mut argv = app.cfg.worktree_setup.clone();
+    if argv.is_empty() {
+        return;
+    }
+    if let Some(exe) = argv.first_mut() {
+        *exe = resolve_setup_exe(&app.cfg.main_checkout, exe);
+    }
+    let at = path.to_path_buf();
+    let shown = argv.join(" ");
+    let result = tokio::task::spawn_blocking(move || {
+        crate::proc::run_bounded(&at, WORKTREE_SETUP_TIMEOUT_SECS, &argv, "worktree setup")
+    })
+    .await;
+
+    match result {
+        Ok(Ok(out)) if out.status.success() => {
+            tracing::info!(worktree = %path.display(), "ran worktree setup: {shown}");
+        }
+        Ok(Ok(out)) => {
+            let tail: String = String::from_utf8_lossy(&out.stderr)
+                .lines()
+                .rev()
+                .take(3)
+                .collect::<Vec<_>>()
+                .join(" / ");
+            tracing::error!(
+                worktree = %path.display(),
+                "worktree setup `{shown}` exited {}: {}",
+                out.status.code().unwrap_or(-1),
+                if tail.is_empty() { "no stderr" } else { &tail }
+            );
+        }
+        Ok(Err(e)) => {
+            tracing::error!(worktree = %path.display(), "worktree setup `{shown}` failed: {e:#}");
+        }
+        Err(e) => {
+            tracing::error!(worktree = %path.display(), "worktree setup task panicked: {e}");
+        }
+    }
+}
+
 /// Placeholder workspace for a worktree whose name Claude Code has not reported
 /// yet. Replaced at `SessionStart`.
 pub const PENDING_WORKTREE: &str = "\u{2026}creating";
@@ -222,6 +306,9 @@ pub async fn spawn_worktree_session(
         tokio::task::spawn_blocking(move || crate::git::worktree_add_new(&main, &p, &branch, &base))
             .await
             .context("the worktree add panicked")??;
+        // The daemon cut this tree, so nothing fired the repo's WorktreeCreate —
+        // run the setup seam before the session opens.
+        run_worktree_setup(app, &path).await;
         // The session runs *in* the worktree, so it needs no `--worktree`.
         (path, vec!["claude".to_string()])
     };
@@ -499,6 +586,11 @@ pub async fn ensure_pr_worktree(app: &Arc<AppState>, pr: u64, head_ref: &str) ->
     let path = app.cfg.worktree_path(&name);
     if !path.exists() {
         crate::git::worktree_add_existing(&app.cfg.main_checkout, &path, head_ref)?;
+        // Only when we actually cut it. A PR worktree is always daemon-cut, so it
+        // never saw the repo's WorktreeCreate — this is the gap that left acme's
+        // pr-* worktrees without their rule-dedup file. Skipped when the tree was
+        // already there, since setup ran when it was first created.
+        run_worktree_setup(app, &path).await;
     }
     app.register_worktree(&name, path, Some(head_ref.to_string()))
         .await;
@@ -923,6 +1015,22 @@ pub fn worktree_name_of(path: &PathBuf, worktrees_dir: &PathBuf) -> Option<Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn worktree_setup_resolves_a_repo_script_but_leaves_commands_alone() {
+        let main = std::path::Path::new("/home/me/repo");
+        // A repo-relative script path resolves against main, so it is found even
+        // though the command runs with cwd set to the worktree.
+        assert_eq!(
+            resolve_setup_exe(main, ".claude/hooks/wt-setup"),
+            "/home/me/repo/.claude/hooks/wt-setup"
+        );
+        assert_eq!(resolve_setup_exe(main, "scripts/setup.sh"), "/home/me/repo/scripts/setup.sh");
+        // A bare command is a PATH lookup — untouched.
+        assert_eq!(resolve_setup_exe(main, "just"), "just");
+        // An absolute path is already unambiguous.
+        assert_eq!(resolve_setup_exe(main, "/usr/local/bin/setup"), "/usr/local/bin/setup");
+    }
 
     #[test]
     fn rejects_worktree_names_that_would_escape_the_worktrees_dir() {

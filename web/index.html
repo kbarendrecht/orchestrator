@@ -259,6 +259,16 @@
     <p class="settings-help">Run instead of the built-in review queue, printing
       the same JSON. For a repo that already ranks its own reviews.</p>
 
+    <label class="settings-field">
+      <span class="settings-k">Worktree setup</span>
+      <input class="settings-in" id="setwtsetup" type="text" spellcheck="false"
+             placeholder="empty = nothing">
+    </label>
+    <p class="settings-help">Run in every worktree the daemon cuts itself (PR,
+      resumed, relocated), just after creation. The seam for setup that Claude's
+      own WorktreeCreate hook would do — it only fires for interactive worktrees,
+      so PR ones would otherwise miss it. cwd is the new worktree.</p>
+
     <div class="settings-group">Processes</div>
 
     <div class="settings-field settings-procs-head">

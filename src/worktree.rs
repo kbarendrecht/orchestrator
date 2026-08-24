@@ -238,6 +238,11 @@ pub async fn revive(
             .await
             .map_err(|e| anyhow::anyhow!("rebuild task failed: {e}"))??;
 
+    // A rebuilt worktree is a fresh checkout at the old path — its symlinks and
+    // creation-time files are gone with the tree that was torn down, so the setup
+    // seam has to run again, the same as on first creation.
+    crate::spawn::run_worktree_setup(app, cwd).await;
+
     app.register_worktree(&name, cwd.to_path_buf(), Some(branch))
         .await;
 
