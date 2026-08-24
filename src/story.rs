@@ -31,35 +31,26 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
 
-/// The Shortcut API token, for the MCP server's `Authorization` header.
+/// The tracker's API token, for its MCP server's `Authorization` header.
 ///
-/// Same ladder as [`crate::forge::resolve_token`] — env, then a `0600` file —
-/// and deliberately **not** a reader for the repo's `.env`, where a team's copy
+/// **Environment only.** The forge keeps a file ladder because its token is read
+/// on every poll from the daemon's own process; this one is only ever handed to a
+/// child, so a file bought nothing but a second place for a credential to sit at
+/// the wrong mode. One source, and it is the one already in your shell.
+///
+/// Deliberately **not** a reader for the repo's `.env`, where a team's copy
 /// actually lives. That file is shell-ish, and the line as it stands is
 /// `SHORTCUT_API_TOKEN='' # can be generated in …`; a naive split yields
-/// `'' # can be` and injects a garbage Bearer, which surfaces later as "Shortcut
-/// is down" rather than "the token is not set".
-pub fn resolve_token(token_file: Option<&Path>) -> Result<String> {
+/// `'' # can be` and injects a garbage Bearer, which surfaces later as "the
+/// tracker is down" rather than "the token is not set".
+pub fn resolve_token() -> Result<String> {
     if let Ok(v) = std::env::var("ORCHD_TRACKER_TOKEN") {
         let v = v.trim().to_string();
         if !v.is_empty() {
             return Ok(v);
         }
     }
-    if let Some(p) = token_file {
-        let raw = std::fs::read_to_string(p)
-            .map_err(|e| anyhow::anyhow!("reading {}: {e}", p.display()))?;
-        let v = raw.trim().to_string();
-        if !v.is_empty() {
-            crate::forge::warn_if_world_readable(p);
-            return Ok(v);
-        }
-        bail!("{} is empty", p.display());
-    }
-    bail!(
-        "no tracker token: set ORCHD_TRACKER_TOKEN or point `tracker_token_file` at a \
-         0600 file holding one"
-    )
+    bail!("no tracker token: set ORCHD_TRACKER_TOKEN in the daemon's environment")
 }
 
 /// A story that exists in the tracker.
@@ -332,7 +323,7 @@ async fn run_filer(
     use crate::tracker::Tracker as _;
     let tracker = crate::tracker::TrackerImpl::for_kind(app.cfg.tracker)
         .context("no tracker configured, so there is nothing to file into")?;
-    let token = resolve_token(app.cfg.tracker_token_file.as_deref())?;
+    let token = resolve_token()?;
     let head_ref = {
         let inner = app.inner.read().await;
         inner
@@ -570,11 +561,10 @@ mod tests {
             main.display()
         );
 
-        let token_file = std::env::temp_dir().join("orchd-story-test-token");
-        std::fs::write(&token_file, "stub-token-not-used-by-the-stub").unwrap();
+        // The stub ignores the value, but `resolve_token` still has to find one.
+        std::env::set_var("ORCHD_TRACKER_TOKEN", "stub-token-not-used-by-the-stub");
         let cfg = Config {
             tracker: TrackerKind::Stub,
-            tracker_token_file: Some(token_file),
             // Long enough for a cold start plus the skill read.
             story_timeout_seconds: 300,
             ..cfg
@@ -676,11 +666,9 @@ mod tests {
 
         let cfg = Config::load_or_init(None).expect("config");
         let main = cfg.main_checkout.clone();
-        let token_file = std::env::temp_dir().join("orchd-story-test-token");
-        std::fs::write(&token_file, "stub-token").unwrap();
+        std::env::set_var("ORCHD_TRACKER_TOKEN", "stub-token");
         let cfg = Config {
             tracker: TrackerKind::Stub,
-            tracker_token_file: Some(token_file),
             story_timeout_seconds: 5,
             ..cfg
         };

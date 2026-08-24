@@ -249,7 +249,7 @@ pub async fn start(opts: StartOptions) -> Result<Server> {
         // "triage never proposes stories".
         match app.cfg.tracker {
             config::TrackerKind::None => tracing::info!("tracker: none — `story+reply` is off"),
-            t => match story::resolve_token(app.cfg.tracker_token_file.as_deref()) {
+            t => match story::resolve_token() {
                 Ok(_) => tracing::info!(
                     "tracker: {t:?}, token resolved, {} story/ies cached",
                     inner.stories.len()

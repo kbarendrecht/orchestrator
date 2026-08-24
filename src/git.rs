@@ -1328,6 +1328,89 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Both supported layouts, through the two functions the panes actually run on
+    /// the base ref: the merge-base the changed-file list is computed from, and the
+    /// behind/ahead the divergence strip shows.
+    ///
+    /// Neither had a test against a *configured* base at all, so `origin/HEAD`
+    /// becoming the default rested on it being "a valid rev". It is, but a symref
+    /// is not the same shape as a branch name and that is exactly the assumption
+    /// worth pinning.
+    #[test]
+    fn both_a_fork_and_a_plain_layout_answer_merge_base_and_divergence() {
+        let dir = std::env::temp_dir().join(format!(
+            "orchd-flows-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // A remote to be the origin, and a clone of it.
+        git(&dir, &["init", "-q", "--bare", "-b", "main", "origin.git"]).unwrap();
+        let origin = dir.join("origin.git");
+        let work = dir.join("work");
+        git(&dir, &["init", "-q", "-b", "main", "work"]).unwrap();
+        git(&work, &["config", "user.email", "t@t"]).unwrap();
+        git(&work, &["config", "user.name", "t"]).unwrap();
+        std::fs::write(work.join("a.txt"), "base\n").unwrap();
+        git(&work, &["add", "-A"]).unwrap();
+        git(&work, &["commit", "-qm", "base"]).unwrap();
+        let base_sha = git(&work, &["rev-parse", "HEAD"]).unwrap().trim().to_string();
+        git(&work, &["remote", "add", "origin", origin.to_str().unwrap()]).unwrap();
+        git(&work, &["push", "-q", "origin", "main"]).unwrap();
+
+        // --- plain layout: one remote, base is its own default branch ---
+        // `fetch_upstream` is what records the symref; without it `origin/HEAD`
+        // does not resolve, which is the trap it was written for.
+        fetch_upstream(&work, "origin/HEAD").expect("fetch");
+        git(&work, &["checkout", "-q", "-b", "feature/x"]).unwrap();
+        std::fs::write(work.join("a.txt"), "mine\n").unwrap();
+        git(&work, &["commit", "-qam", "mine"]).unwrap();
+
+        assert_eq!(
+            merge_base(&work, "origin/HEAD").expect("merge-base against a symref"),
+            base_sha,
+            "the changed-file list is computed from this"
+        );
+        assert_eq!(
+            divergence(&work, "origin/HEAD").expect("divergence against a symref"),
+            (0, 1),
+            "one commit ahead of the remote's default branch, none behind"
+        );
+
+        // --- fork layout: a second remote, base is a named branch on it ---
+        git(&dir, &["init", "-q", "--bare", "-b", "develop", "upstream.git"]).unwrap();
+        let upstream = dir.join("upstream.git");
+        git(&work, &["remote", "add", "upstream", upstream.to_str().unwrap()]).unwrap();
+        git(&work, &["push", "-q", "upstream", "main:develop"]).unwrap();
+        fetch_upstream(&work, "upstream/develop").expect("fetch the named base");
+
+        assert_eq!(
+            merge_base(&work, "upstream/develop").expect("merge-base against a branch"),
+            base_sha
+        );
+        assert_eq!(divergence(&work, "upstream/develop").expect("divergence"), (0, 1));
+
+        // Detection sees the fork, and answers with the symref rather than the
+        // branch — because fetching a *named* base does not record
+        // `upstream/HEAD`, and only a clone or the HEAD arm ever does. That is the
+        // better answer anyway: `upstream/HEAD` is self-correcting when the remote
+        // renames its default branch, where a recorded `develop` would rot.
+        assert_eq!(
+            detect_base(&work),
+            Some(("upstream/HEAD".to_string(), "upstream".to_string()))
+        );
+        // And it resolves, once something records the symref.
+        fetch_upstream(&work, "upstream/HEAD").expect("the HEAD arm records it");
+        assert_eq!(
+            base_checkout_branch(&work, "upstream/HEAD").as_deref(),
+            Some("develop")
+        );
+        assert_eq!(merge_base(&work, "upstream/HEAD").expect("merge-base"), base_sha);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn the_base_branch_is_the_configured_ref_without_its_remote() {
         assert_eq!(base_branch("upstream/develop"), "develop");

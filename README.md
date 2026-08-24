@@ -98,11 +98,46 @@ back to `config.json`; changes take effect on restart.
 | `upstream_ref` / `upstream_remote` | `origin/HEAD`, `origin` | the base every diff and worktree is measured against. On a **fork workflow** — an `upstream` remote beside `origin` — a first run detects it and writes `upstream/<default branch>` instead, so there is nothing to set by hand. |
 | `reviews_command` | *(empty)* | argv printing the review queue as JSON (shape in [`docs/reviews-json.md`](docs/reviews-json.md)). Empty means the pane reads "not configured" rather than "unavailable". |
 | `main_processes` | *(empty)* | long-running processes shown in the drawer. See below. |
-| `tracker` | `none` | where an out-of-scope review point can be filed as a story. `shortcut` is the one implementation; the seam for adding others is `src/tracker/`. |
-| `tracker_token_file` | *(unset)* | a `0600` file holding the tracker's API token. `ORCHD_TRACKER_TOKEN` wins over it. |
+| `tracker` | `none` | where an out-of-scope review point can be filed as a story. `shortcut` is the one implementation; the seam for adding others is `src/tracker/`. Its token is **not** a config key — set `ORCHD_TRACKER_TOKEN` in the daemon's environment. |
 | `output_language` | `English` | the language the agent *writes* replies and stories in. Prompts and code stay English regardless. |
 | `shared_worktree_paths` | *(empty)* | directories inside a worktree that are allowed to be symlinks *out* of it, e.g. a plan dir shared back to main. The editable diff pane refuses every other path that resolves outside the workspace. |
-| `worktree_setup` | *(empty)* | a command run in every worktree the daemon cuts itself, for repos whose `WorktreeCreate` hook does setup that PR and resumed worktrees would otherwise miss. |
+| `worktree_init` / `worktree_setup` | *(empty)* | two commands run in every worktree the daemon cuts itself. See below. |
+
+### Fork workflow, or not
+
+Both are supported and neither needs configuring by hand.
+
+**Not a fork** — one remote, branches pushed to it. This is the default:
+`origin/HEAD` is the base, so diffs and worktrees are measured against whatever
+your remote's default branch is, whether that is `main`, `master` or something
+else. Nothing to set.
+
+**A fork** — `origin` is yours, `upstream` is the one PRs are opened against. A
+first run sees the `upstream` remote and writes `upstream/<its default branch>`
+into `config.json` itself. If you add the remote later, set the two keys in
+settings; naming the remote in `upstream_ref` is enough, since the other is
+inferred from it.
+
+Either way the base ref is one setting and both halves of it agree, which is what
+`git::detect_base` and the reconciliation in `Config::parse` are for.
+
+### Worktree hooks
+
+The daemon cuts worktrees itself for PR worktrees, resumes, and relocated layouts.
+Claude Code's own `WorktreeCreate` hook fires only for `claude --worktree`, so
+those trees would otherwise skip whatever your repo does at creation. These two
+run there, in order, with cwd set to the new worktree:
+
+| | Mirrors | For |
+| --- | --- | --- |
+| `worktree_init` | `worktree-create` | the tree *as a checkout* — basing it on a fresh upstream, triangular push |
+| `worktree_setup` | `worktree-link` | what it needs *beside* the code — symlinks back to main, generated config |
+
+Two rather than one so a repo with two hooks points each setting straight at the
+script it already has. Both are non-fatal and the second runs even if the first
+failed: a tree that is merely un-based is still worth linking. A relative script
+path resolves against the main checkout, not the worktree, since the worktree may
+not carry it yet.
 
 ### Declaring a managed process
 

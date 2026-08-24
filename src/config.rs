@@ -62,15 +62,13 @@ pub struct Config {
     /// Explicit rather than auto-detected from whether a token happens to resolve.
     /// Auto-detection would let an expired token silently remove an option from
     /// every triage run, leaving "triage did not propose a story" indistinguishable
-    /// from "the daemon hid it". Defaults to Shortcut; set it to `none` for a repo
-    /// with no tracker.
+    /// from "the daemon hid it". `none` by default; the implementations live in
+    /// `src/tracker/`.
+    ///
+    /// Its credential is **not** a config key: `ORCHD_TRACKER_TOKEN` in the
+    /// daemon's environment, and nowhere else. See `story::resolve_token`.
     #[serde(default = "default_tracker")]
     pub tracker: TrackerKind,
-    /// A `0600` file holding the Shortcut API token. `ORCHD_SHORTCUT_TOKEN` wins
-    /// over it, mirroring the GitHub ladder.
-    #[serde(default)]
-    #[serde(alias = "shortcut_token_file")]
-    pub tracker_token_file: Option<PathBuf>,
     /// How long the borrowed story-filing agent gets before it is killed.
     ///
     /// The one timeout in this daemon, because it is the one agent whose caller is
@@ -119,22 +117,40 @@ pub struct Config {
     /// you the scrollback rather than the conversation.
     #[serde(default = "default_auto_resume")]
     pub auto_resume: bool,
-    /// A command run in every worktree the daemon cuts itself, right after
-    /// creation and before the session spawns. An argv, run with cwd set to the
-    /// new worktree.
+    /// Shadows the repo's `worktree-create` hook: **make the tree usable.**
     ///
-    /// This is the seam that makes a repo's worktree setup a first-class thing
-    /// rather than an accident of who created the tree. Claude Code's own
-    /// `WorktreeCreate` hook fires only for `claude --worktree`, so a PR worktree
-    /// or a resumed one — both cut by the daemon with plain `git worktree add` —
-    /// silently skips whatever that hook does. The case this was written for
-    /// wrote a file that stops the repo's rules double-loading, and the PR
-    /// worktrees were missing it. Point this at a script that does the
-    /// creation-time setup and every daemon-cut worktree gets it.
+    /// First of the two, run with cwd set to the new worktree, before
+    /// [`Self::worktree_setup`]. This is the half about the tree *as a checkout* —
+    /// basing it on a freshly fetched upstream, configuring triangular push,
+    /// whatever the repo does to a branch before anyone works on it.
     ///
-    /// Empty by default: a plain checkout needs nothing here, and it never runs on
-    /// the `claude --worktree` path, where the repo's own `WorktreeCreate` already
-    /// did the work — running both would double it.
+    /// See [`Self::worktree_setup`] for why there are two of these and when they
+    /// run at all.
+    #[serde(default)]
+    pub worktree_init: Vec<String>,
+    /// Shadows the repo's `worktree-link` hook: **put the shared files in place.**
+    ///
+    /// Second of the two, same cwd. This is the half about what the tree *needs
+    /// beside the code* — symlinks back to main, a rules-dedup file, generated
+    /// config. It runs even if `worktree_init` failed, because the two answer
+    /// different questions and a tree that is merely un-based is still worth
+    /// linking.
+    ///
+    /// # Why two
+    ///
+    /// Claude Code's `WorktreeCreate` hook fires only for `claude --worktree`, so a
+    /// PR worktree or a resumed one — both cut by the daemon with plain
+    /// `git worktree add` — silently skips whatever the repo does at creation. The
+    /// case this was written for wrote a file that stops the repo's rules
+    /// double-loading, and the PR worktrees were missing it.
+    ///
+    /// One command had to cover both concerns, which meant a repo with two hooks
+    /// needed a wrapper script to fan back out. Two settings mirror the two hooks,
+    /// so each points straight at the script that already exists.
+    ///
+    /// Empty by default: a plain checkout needs neither. Neither runs on the
+    /// `claude --worktree` path, where the repo's own hooks already did the work —
+    /// running both would double it.
     #[serde(default)]
     pub worktree_setup: Vec<String>,
 }
