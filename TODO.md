@@ -235,23 +235,23 @@ Everything outside that block is hand-written and survives.
   hardcoded assumption about one monorepo, and each is a setting or a probe
   waiting to be written:
   - **The stack-specific settings are the defaults, editable in settings.**
-    *Landed, then simplified.* This was a `default`/`acme` profile split; it
-    was retired in favour of making the six settings acme carried (upstream
-    ref/remote, tracker, output language, `main_processes`, review command) the
-    built-in `#[serde(default = …)]` values, and exposing them in the settings
-    panel (`GET`/`POST /api/config`, `config::Settings`) which writes only those
-    keys back to `config.json`. A acme machine writes `{ main_checkout }` and
-    gets the lot; anyone else edits them in the panel. Deliberately acme-first
-    — the open-source defaults are now Dutch/Shortcut/upstream-develop/ng+docker/
-    mise-reviews, not generic. Apply is on restart (the running `cfg` is immutable;
-    live-apply would be a sweeping refactor, left for later).
+    *Landed, then simplified, then made generic.* This was a two-profile split; it
+    was retired in favour of making the six settings (upstream ref/remote,
+    tracker, output language, `main_processes`, review command) built-in
+    `#[serde(default = …)]` values, and exposing them in the settings panel
+    (`GET`/`POST /api/config`, `config::Settings`) which writes only those keys
+    back to `config.json`. Those defaults carried one monorepo's toolchain for a
+    while, which made every other repo read as broken rather than as not having
+    it; they now ask nothing of the repo they point at. Apply is on restart (the
+    running `cfg` is immutable; live-apply would be a sweeping refactor, left for
+    later).
   - **The review queue runs a configured command.** *Reverted to this on
     purpose.* A built-in GraphQL queue with a config-driven ranking engine was
     built and worked, but it was more machinery than the one real user wanted to
     own, so the daemon went back to shelling out to `reviews_command` and
-    rendering its JSON (`docs/reviews-json.md`, `src/reviews.rs`). `acme`
-    points it at `mise run reviews --json`, where the ranking already lives and is
-    edited as bash; a plain checkout leaves it empty and the pane reads `off`. The
+    rendering its JSON (`docs/reviews-json.md`, `src/reviews.rs`). A repo with such
+    a task points this at it, where the ranking already lives and is edited as
+    bash; a plain checkout leaves it empty and the pane reads `off`. The
     trade-off, accepted: a fresh checkout on another machine gets **no** queue
     until it configures a command — the portability the built-in version gave for
     free is gone. The `Forge` seam stays (PRs, threads, writes); only its
@@ -284,7 +284,8 @@ Everything outside that block is hand-written and survives.
     with `git::worktree_add_new` (`-b worktree-<name> … <upstream_ref>`) and spawns
     a plain session — so the *coding agent* no longer has to be the thing that
     creates the worktree. What is not done: forcing daemon-`git` creation even at
-    the default layout (acme stays on `--worktree` by using that layout), which
+    the default layout (staying on `--worktree` is what using that layout means),
+    which
     would want an explicit mode rather than keying off the subdir. And the real
     coupling is the *session model*, untouched: `--session-id` correlation,
     transcript slug lookup, the `ai-title` field, `--resume`, and the whole
@@ -312,12 +313,12 @@ Everything outside that block is hand-written and survives.
     every worktree the daemon cuts (PR, resume, relocated), after creation and
     before the session, bounded and non-fatal (`proc::run_bounded`, extracted from
     the reviews timeout so there is one bounded-exec primitive). A relative script
-    path resolves against main while cwd is the worktree — the acme hook idiom.
+    path resolves against main while cwd is the worktree — the usual hook idiom.
     It is deliberately *not* run on the `claude --worktree` path, where the repo's
     own `WorktreeCreate` already ran. Driven against the fixture: the marker landed
     in a daemon-cut `pr-N` worktree. The concrete symptom that motivated it —
-    acme's `pr-*` worktrees missing the `claudeMdExcludes` file and so loading
-    rules twice — is being fixed on the acme side too (moving that write to the
+    `pr-*` worktrees missing a rules-dedup file and so loading rules twice — is
+    being fixed on the repo side too (moving that write to the
     `SessionStart` hook), so the two approaches converge: the repo makes its own
     setup idempotent, and orchd guarantees a creation-time hook point regardless.
   - **GitHub is the only forge, but the seam is wired.** Every read and write
@@ -358,7 +359,7 @@ Everything outside that block is hand-written and survives.
     `--strict-mcp-config` special-case it is now, so the seam is what the stub
     proves. Not worth building until a second tracker is actually wanted — the same
     bar the forge seam was held to before it earned its keep.
-  - **The base ref is config-driven.** *Done, though the default is now acme's.*
+  - **The base ref is config-driven.** *Done; the default still assumes a fork.*
     `fetch_upstream` (`src/git.rs`) splits `remote/branch` out of `upstream_ref`
     instead of the old hardcoded `git fetch upstream develop`: a `HEAD` branch
     fetches the whole remote to keep its symref fresh, a named branch fetches just
@@ -508,7 +509,7 @@ Everything outside that block is hand-written and survives.
   somebody's afternoon with a Mac, not a CI job.
 
 - **A README for other people.** *Rewritten.* The old one was for whoever already
-  knew orchd — `§` references to a spec no longer in the repo, acme assumed
+  knew orchd — `§` references to a spec not then in the repo, one monorepo assumed
   throughout, sections in build order. The new one leads with what it is and a
   screenshot (`docs/screenshot.png`, the fixture board so no real repo leaks),
   then install for both platforms (the private-repo token, the macOS
@@ -718,13 +719,13 @@ Everything outside that block is hand-written and survives.
   (static/unit/integration/e2e), a composer autoload probe, lockfile-drift
   detection and per-suite trust/isolation — a whole `capability.rs` — so it could
   tell whether a command in a worktree reflected that worktree or silently main's.
-  That question is a shared-stack artifact (acme's symlinked `vendor/`); every
+  That question is a shared-stack artifact (a symlinked `vendor/`); every
   other repo ran it empty. Removed wholesale for open source. `fix-pr` keeps only
   the guards that protect the machine and the repo (authorship, one run per PR,
   branch-busy, the `MAX_AUTOMATION` cap). Two things go with it, both accepted:
   the pre-run trust gate (`fix-pr` is hand-triggered and watched, so a bad run is
   read, not swallowed), and the `main:instances` e2e lock — two concurrent fix
-  runs that both reach e2e can now collide on acme's one instances dir. If that
+  runs that both reach e2e can now collide on a single shared instances dir. If that
   ever bites, set `MAX_AUTOMATION = 1` (serialize fix runs) rather than rebuild any
   of this.
 

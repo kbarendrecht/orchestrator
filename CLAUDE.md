@@ -148,8 +148,8 @@ port, so a second instance refuses to start rather than fighting over
   through `worktree_setup` instead.** Claude's `WorktreeCreate` fires only for
   `claude --worktree`; PR worktrees, resumes and relocated layouts are cut by the
   daemon's own `git worktree add`, which Claude knows nothing about — so anything
-  the repo's hook did at creation (acme's `claudeMdExcludes` write) was silently
-  skipped. `spawn::run_worktree_setup` runs the configured command in each
+  the repo's hook did at creation (a rules-dedup file, in the case this was
+  written for) was silently skipped. `spawn::run_worktree_setup` runs the configured command in each
   daemon-cut worktree, before the session, non-fatal. Do **not** add it to the
   `claude --worktree` arm — the repo's hook already ran there. A relative script
   path resolves against `main_checkout`; cwd is the worktree.

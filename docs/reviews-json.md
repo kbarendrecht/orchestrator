@@ -1,7 +1,7 @@
 # `mise run reviews --json` — what the daemon needs
 
 **§6b of the spec is wrong on its premise.** It says "this mode does not exist yet"
-and then invents a JSON contract. The mode exists: `.mise/review/queue` in acme,
+and then invents a JSON contract. The mode already existed as a `queue` task,
 `//MISE alias=["reviews"]`, and it already takes `--json`.
 
 Its ranking is also better than the one §6b describes: prio labels, personal vs
@@ -140,7 +140,7 @@ the human and Slack output see.
 
 ---
 
-## Daemon side (orchestrator, not acme)
+## Daemon side (orchd, not the queue task)
 
 - Treat non-zero exit, unparseable stdout, or an unknown `version` as a **degraded**
   pane — `reviews unavailable`, stderr tail on hover. Never an empty queue. This is

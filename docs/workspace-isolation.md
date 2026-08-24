@@ -11,7 +11,7 @@ letting a heavier setup be **a set of values** rather than a special case.
 Every difference between a plain repo and a container-heavy monorepo is one of
 these settings. A "profile" is just a column.
 
-| Question | Setting | Default | `acme` |
+| Question | Setting | Default | A container-heavy monorepo |
 |---|---|---|---|
 | Where does a new session work? | *(session default)* | its own worktree | same |
 | Where do worktrees live? | `worktrees_subdir` | `.claude/worktrees` | same |
@@ -110,6 +110,6 @@ tree".
 
 Verification: on a plain repo, a new session lands in a fresh worktree and
 disappears on clean exit but survives once it has a commit; the main checkout
-runs in place and refuses a second session; a daemon with the acme defaults
+runs in place and refuses a second session; a daemon with the heavier defaults
 still nests worktrees exactly as today (the existing review-parity and
 isolated-daemon smokes cover that path).
