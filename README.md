@@ -48,13 +48,11 @@ Releases attach two binaries per platform.
   can open a helper session for a subtask, or ask you something and wait rather
   than bury the question in its own scrollback. Nothing requires it.
 
-Apple Silicon and x86-64 Linux are built. The release repository is private, so
-installs need a GitHub token that can read it.
+Apple Silicon and x86-64 Linux are built.
 
 ### Through mise (with the `ubi` backend)
 
 ```
-export GITHUB_TOKEN=$(gh auth token)
 mise use -g "ubi:kbarendrecht/orchestrator[exe=orchestrator-desktop]"
 mise up          # upgrade to the newest release later
 ```
@@ -218,8 +216,16 @@ The app runs in **WebKitGTK**, so `mise run shot` (Chrome) is good for layout bu
 not the last word — the two engines disagree often enough to matter.
 [`CLAUDE.md`](CLAUDE.md) has the working notes and the traps worth knowing;
 [`TODO.md`](TODO.md) is the living record of what is open, with a block the daemon
-rewrites each poll.
+rewrites each poll. The `(§N)` scattered through the comments point at
+[`docs/spec.md`](docs/spec.md), the requirements this was built against — §2 is
+the object model, §6b the review queue, §8 the automation rules.
 
 Versions are CalVer (`year.month.n`). Cut a release by bumping `Cargo.toml`,
 `desktop/Cargo.toml`, `desktop/tauri.conf.json` and `Cargo.lock`, then tagging
 `v<version>` — the workflow refuses a tag that disagrees with the crate version.
+
+## Licence
+
+[AGPL-3.0-only](LICENSE). Use it, run it, change it. If you distribute it, or run
+a modified version as a network service, the source has to go with it under the
+same terms.
