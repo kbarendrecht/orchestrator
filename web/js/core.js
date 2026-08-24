@@ -467,6 +467,10 @@ export function prOf(s) {
 }
 
 export function handedToPr(s) {
+  // `renderContext` asks this about `currentSession()`, which is null whenever
+  // nothing is selected — the state the app opens in. Without this the context
+  // bar threw on every render until you clicked a row.
+  if (!s) return null;
   if (s.state.state !== 'your_turn') return null;
   const r = s.state.reason;
   if (r === 'asked_a_question' || r === 'needs_permission') return null;
