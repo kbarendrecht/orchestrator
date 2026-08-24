@@ -122,6 +122,39 @@ pub enum Source {
     Fork(Uuid),
 }
 
+/// Spawn a session and return only once the process has *stayed* up.
+///
+/// [`spawn_session`] answering `Ok` is a weaker claim than it looks: the pty
+/// started, and `claude` can still exit a moment later — which is exactly what a
+/// `--resume` that finds no conversation does. Any caller that commits something
+/// on the strength of the new session (closing the one it forked from, keeping a
+/// worktree it just cut) has to ask this instead, or a spawn that died leaves it
+/// having paid for a session that is already gone.
+///
+/// Waits on the exit channel rather than polling it, and only *reads* it:
+/// deciding what a death means stays `watch_session_exit`'s job, so there is
+/// still one observer of the exit itself. Timing out is the good answer.
+pub async fn spawn_session_confirmed(
+    app: &Arc<AppState>,
+    workspace: &str,
+    kind: Kind,
+    resume: Option<Source>,
+    grace: std::time::Duration,
+) -> Result<SessionId> {
+    let id = spawn_session(app, workspace, kind, resume).await?;
+    let handle = {
+        let inner = app.inner.read().await;
+        inner.sessions.get(&id).and_then(|s| s.pty.clone())
+    };
+    let Some(handle) = handle else {
+        bail!("session {} was gone before it could be confirmed", &id.to_string()[..8]);
+    };
+    if let Ok(code) = tokio::time::timeout(grace, handle.wait()).await {
+        bail!("session {} exited immediately, code {code}", &id.to_string()[..8]);
+    }
+    Ok(id)
+}
+
 /// Spawn an interactive Claude session in an existing workspace.
 ///
 /// The daemon spawns every session and never adopts a shell-started one. That

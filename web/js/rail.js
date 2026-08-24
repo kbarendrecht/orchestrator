@@ -489,8 +489,9 @@ async function swapWithMain(wsId) {
   if (!confirm(
     `Swap branches between main and ${wsId}?\n\n`
     + `main takes this worktree's branch, and this worktree takes main's. `
-    + `Uncommitted changes travel with their branch, and this conversation is `
-    + `forked into main so the work carries across; the original stays here.`
+    + `Uncommitted changes travel with their branch, and this conversation `
+    + `continues in main. The session here closes — its history stays and is `
+    + `resumable, so nothing is lost.`
   )) return;
   try {
     const r = await call(`/api/workspace/${encodeURIComponent(wsId)}/swap-main`);

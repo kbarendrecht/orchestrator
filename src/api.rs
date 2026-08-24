@@ -1301,23 +1301,68 @@ async fn carry_session_into_main(
     app: &Arc<AppState>,
     workspace: &str,
 ) -> anyhow::Result<crate::model::SessionId> {
-    let source = {
+    // Newest first, and the transcripts are read outside the guard: these are file
+    // reads, and the lock is fair, so a writer queued behind them would block
+    // every reader queued behind it in turn.
+    let candidates = {
         let inner = app.inner.read().await;
-        inner
+        let mut v = inner
             .sessions
             .values()
             .filter(|s| s.workspace == workspace)
             .filter(|s| matches!(s.kind, Kind::Interactive))
-            // Nothing to fork until a conversation has had a turn — `--resume`
-            // answers "no conversation found" and the session exits instantly.
-            .filter(|s| {
-                crate::store::transcript_exists(s.id, &s.cwd, s.transcript_path.as_deref())
-            })
-            .max_by_key(|s| s.created_at)
-            .map(|s| s.id)
+            .map(|s| (s.created_at, s.id, s.cwd.clone(), s.transcript_path.clone()))
+            .collect::<Vec<_>>();
+        v.sort_by_key(|(created, ..)| std::cmp::Reverse(*created));
+        v
     };
+    // Nothing to fork until a conversation has had a turn: `--resume` answers "no
+    // conversation found" and the session exits instantly. A file does not prove
+    // one — a session that started but never spoke owns a file of headers — so
+    // this asks `has_conversation`. Newest-first, stopping at the first hit, so
+    // the usual cost is one read rather than one per session to then discard all
+    // but the newest.
+    let source = candidates
+        .into_iter()
+        .find(|(_, id, cwd, recorded)| crate::store::has_conversation(*id, cwd, recorded.as_deref()))
+        .map(|(_, id, ..)| id);
     let source = source.context("no conversation in this worktree to carry into main")?;
-    spawn::spawn_session(app, MAIN, Kind::Interactive, Some(spawn::Source::Fork(source))).await
+
+    // Two seconds is a grace window, not a health check: what has to be ruled out
+    // is the *instant* exit, because the source is closed on the strength of this
+    // and a fork that died would leave nothing running at all.
+    let forked = spawn::spawn_session_confirmed(
+        app,
+        MAIN,
+        Kind::Interactive,
+        Some(spawn::Source::Fork(source)),
+        std::time::Duration::from_secs(2),
+    )
+    .await
+    .with_context(|| {
+        format!(
+            "the fork into main did not stay up, so {} was left running — nothing was closed",
+            &source.to_string()[..8]
+        )
+    })?;
+
+    // End the one it came from, or the swap leaves two live sessions on one
+    // conversation and the rail shows the work in two places at once. A *move* is
+    // what was asked for, so the original stops being live — but its row and its
+    // transcript stay, and it is resumable, which is why this kills rather than
+    // deletes.
+    let handle = {
+        let inner = app.inner.read().await;
+        inner.sessions.get(&source).and_then(|s| s.pty.clone())
+    };
+    if let Some(h) = handle {
+        if let Err(e) = h.kill() {
+            // Not fatal, and not rolled back: the fork is live and holds the
+            // conversation. A stray live row is untidy, not lost work.
+            tracing::warn!(%source, "carried the conversation into main but could not close the original: {e:#}");
+        }
+    }
+    Ok(forked)
 }
 
 pub async fn teardown(
