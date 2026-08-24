@@ -654,15 +654,22 @@ async fn park_main(app: &Arc<AppState>) {
     if !app.live_sessions_in(MAIN).await.is_empty() {
         return;
     }
+    // A swap put that branch in main on purpose. Parking is for placement nobody
+    // chose to keep; undoing a deliberate one would be the two features fighting.
+    if let Some(with) = app.swapped_with_main.read().await.clone() {
+        tracing::debug!(%with, "main holds a swapped branch; not parking it");
+        return;
+    }
     let path = app.cfg.main_checkout.clone();
     let base_ref = app.cfg.upstream_ref.clone();
     // Resolved, not the raw branch part: the default base is `origin/HEAD`, and
     // `git switch HEAD` fails with "a branch is expected". Unresolvable means the
     // symref has not been fetched yet, so there is nowhere to park — say so once
     // at debug rather than failing inside the checkout.
+    let exclude = app.cfg.worktrees_subdir_str();
     let moved = tokio::task::spawn_blocking(move || {
         let base = crate::git::base_checkout_branch(&path, &base_ref)?;
-        crate::git::park_on_base(&path, &base).ok().flatten()
+        crate::git::park_on_base(&path, &base, Some(&exclude)).ok().flatten()
     })
     .await
     .ok()
@@ -719,8 +726,11 @@ pub async fn switch_main_to_pr(app: &Arc<AppState>, head_ref: &str) -> Result<St
 
     let path = app.cfg.main_checkout.clone();
     let branch = head_ref.to_string();
+    // Excluding the worktrees dir: main contains it, so plain `is_clean` reads main
+    // as dirty on any repo that has not gitignored it, and this refused forever.
+    let exclude = app.cfg.worktrees_subdir_str();
     tokio::task::spawn_blocking(move || -> Result<()> {
-        if !crate::git::is_clean(&path)? {
+        if !crate::git::is_clean_excluding(&path, Some(&exclude))? {
             bail!("the main checkout has uncommitted changes; commit or stash them first");
         }
         crate::git::switch_branch(&path, &branch)
