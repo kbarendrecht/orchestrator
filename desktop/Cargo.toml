@@ -2,6 +2,10 @@
 name = "orchestrator-desktop"
 version = "2026.8.12"
 edition = "2021"
+description = "Desktop shell for orchd: the daemon and its web UI in one window"
+repository = "https://github.com/kbarendrecht/orchestrator"
+license = "AGPL-3.0-only"
+publish = false
 
 [build-dependencies]
 tauri-build = "2.6"
