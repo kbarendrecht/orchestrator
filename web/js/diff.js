@@ -540,8 +540,19 @@ async function loadFile(path) {
 }
 
 async function openDiff(path) {
+  // No falling back to `currentWorkspaceId`, which answers main when nothing is
+  // selected. `activeWorkspaceId` already decided what the file pane does with a
+  // finished session — nothing — and this fallback walked around that decision:
+  // pressing the key with an archived session selected, or none at all, filled
+  // the right pane with main's tree while the rail and the centre pane showed
+  // there was nothing open.
+  const ws = activeWorkspaceId();
+  if (!ws) {
+    toast('no session open');
+    return;
+  }
   diffState.open = true;
-  diffState.ws = activeWorkspaceId() || currentWorkspaceId();
+  diffState.ws = ws;
   diffState.context = 3;
   $('overlay').classList.add('on');
   await loadSummary();
