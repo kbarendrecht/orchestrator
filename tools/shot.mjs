@@ -8,6 +8,7 @@
 //   mise run shot -- '.drawer-head'   # just that element, tight crop
 //   mise run shot -- '.drawer-head' --click '#rvhead'   # click first, then shoot
 //   mise run shot -- '#keyhelp' --key '?'               # press first, then shoot
+//   mise run shot -- --dpr 1                            # terminal at its true size
 //
 // `--key` exists because an overlay opened by a chord had no other way in: the
 // legend has a close button and no open button, so `--click` could not reach it.
@@ -31,6 +32,12 @@ const outDir = flag('--out', 'target/shots');
 const clickSel = flag('--click', null);
 const pressKey = flag('--key', null);
 const waitMs = Number(flag('--wait', '0'));
+// 2 gives a crisp image of everything the browser lays out in CSS pixels. The
+// terminal is the exception: a browser tab renders xterm through WebGL, and its
+// glyphs come out at the device scale rather than the CSS one, so a 2x shot has
+// a terminal at double the size of the UI around it. Drop to 1 for anything the
+// terminal has to look right in.
+const dpr = Number(flag('--dpr', '2'));
 const base = `http://127.0.0.1:${port}`;
 
 // The token is embedded in the served page; read it back rather than making the
@@ -56,7 +63,7 @@ const path = `${outDir}/${name}-${stamp}.png`;
 const browser = await chromium.launch({ channel: 'chrome', args: ['--no-sandbox'] });
 const page = await browser.newPage({
   viewport: { width: Number(flag('--width', '1440')), height: Number(flag('--height', '900')) },
-  deviceScaleFactor: 2,
+  deviceScaleFactor: dpr,
 });
 page.on('pageerror', (e) => console.error('page error:', e.message));
 
