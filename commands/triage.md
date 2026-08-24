@@ -177,8 +177,8 @@ curl -sS -X POST '{{PROPOSALS_URL}}' \
   the id once the story exists. It cannot be written in advance.
 - {{TRACKER}}
 - A `story` is `title` and `body` only. Write both in {{LANGUAGE}}. **No em
-  dashes and no `.plan/` or other internal labels** — the tracker rejects the first and
-  nobody outside this session understands the second. Say what the follow-up work is, and
+  dashes and no internal path or label references** — the tracker rejects the first
+  and nobody outside this session understands the second. Say what the follow-up work is, and
   why it is out of scope for this PR; the daemon appends the link back to the thread, so
   do not write one yourself.
 - **Every unresolved thread needs an entry.** A thread you silently drop is the one
