@@ -136,6 +136,33 @@ Everything outside that block is hand-written and survives.
   design (`forge/github_write.rs:10-13`) — so this item is about the beta gate, not
   the missing action.
 
+- **Rewind a session from the rail.** Claude Code already has this: a double
+  `Escape` at the prompt opens its own rewind picker, and the strings in the
+  bundle show what it can do — `rewindToMessageIndex`, `rewindAnchorUuid`,
+  `rewind-files` / `rewindDirectory` (it can put the files back too), plus
+  `rewind-refusal` and `rewind-unavailable` for when it cannot. So the daemon
+  does not need to build a picker, only a way to reach the one that exists.
+
+  The cheap version is a context-menu item on a session row — `rewind`, or
+  `time travel` — that selects the session and writes `\x1b\x1b` into its
+  terminal. That is a pure SPA change: `term.onData` (`web/js/term.js:164`)
+  already sends keystrokes down the attach socket, so a menu item can send the
+  two escapes the same way. No route, no daemon state, nothing to persist.
+
+  Two caveats worth checking before building it. The picker only opens at the
+  prompt, so the item wants the same gating the nudge uses — a session mid-turn
+  should not get it, and one at `asked_a_question` would answer the question with
+  an escape. And a rewind that restores files changes the worktree under the
+  changed-file pane, so it should be followed by a reconcile the way
+  `watch_session_exit` does.
+
+  A modal of our own is the alternative, and it is a bigger thing: the daemon
+  would list the conversation's turns (it already tails the transcript for
+  `store::ai_title`) and offer them as rewind points. That only pays off if the
+  native picker turns out to be hard to reach or too coarse, and it would need a
+  way to select a message index from outside the TUI, which the CLI does not
+  expose — `--resume` resumes at the end and nothing else.
+
 - **Stacked-PR support.** Two halves. First, a context-menu `stack` action on a
   PR row that opens a session starting from that PR's code — a new branch based
   on the selected PR's head, its own worktree (cwd = main, via the existing
