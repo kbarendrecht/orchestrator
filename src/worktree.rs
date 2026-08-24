@@ -222,13 +222,28 @@ pub async fn revive(
     cwd: &std::path::Path,
     recovery: Option<ArchiveState>,
 ) -> Result<Option<String>> {
+    // No record at all is not the same as "unrecoverable". A record is only written
+    // by `archive`, so a worktree removed any other way — by hand, or lost with the
+    // checkout it lived in — leaves the conversation intact and the instructions
+    // missing. That refused a session that was perfectly rebuildable, and said
+    // "no recovery record", which describes the daemon's bookkeeping rather than
+    // anything the reader can act on.
+    //
+    // The tree is still describable without a record: its name is the directory it
+    // ran in, and the branch follows by the same `worktree-<name>` convention
+    // `register_worktree` uses. So derive one and let `worktree_rebuild` decide —
+    // it already looks for the branch in the checkout, then on origin, then at the
+    // recorded commit, and names whichever is missing.
+    let derived = recovery.is_none();
+    let recovery = recovery.or_else(|| derive_recovery(cwd));
+
     let Some(ArchiveState::Recoverable {
         name,
         branch,
         head_sha,
     }) = recovery
     else {
-        bail!("no recovery record, so the worktree cannot be rebuilt");
+        bail!("no recovery record, and the worktree's name cannot be read off its path");
     };
 
     let main = app.cfg.main_checkout.clone();
@@ -243,8 +258,19 @@ pub async fn revive(
     // seam has to run again, the same as on first creation.
     crate::spawn::run_worktree_hooks(app, cwd).await;
 
-    app.register_worktree(&name, cwd.to_path_buf(), Some(branch))
+    app.register_worktree(&name, cwd.to_path_buf(), Some(branch.clone()))
         .await;
+
+    // A derived record never knew where the conversation left off, so every rebuild
+    // would look like the branch had moved. Saying "recorded  , branch now abc1234"
+    // is worse than saying nothing: it invents a comparison that was never made.
+    if derived {
+        return Ok(Some(format!(
+            "{name} was rebuilt from branch {branch} — no recovery record was written \
+             when it went, so this is the branch as it stands, not necessarily the code \
+             the conversation ran on"
+        )));
+    }
 
     Ok(moved.map(|tip| {
         format!(
@@ -253,6 +279,21 @@ pub async fn revive(
             &tip[..tip.len().min(7)]
         )
     }))
+}
+
+/// A recovery record for a worktree that never got one.
+///
+/// Only the *shape* is recovered, not the history: `head_sha` is empty because
+/// nothing recorded it. `worktree_rebuild` reaches for that value only when the
+/// branch is gone from both the checkout and origin, and in that case the branch
+/// is the honest thing to name as missing — which is what it does.
+fn derive_recovery(cwd: &std::path::Path) -> Option<ArchiveState> {
+    let name = cwd.file_name()?.to_string_lossy().into_owned();
+    Some(ArchiveState::Recoverable {
+        branch: format!("worktree-{name}"),
+        name,
+        head_sha: String::new(),
+    })
 }
 
 /// Copy transcripts into daemon storage and persist a recovery record, so the
@@ -385,4 +426,41 @@ pub async fn teardown(app: &Arc<AppState>, workspace: &str) -> Result<Preflight>
     }
     app.notify().await;
     Ok(pf)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The gap this closes: a worktree removed by hand leaves no recovery record,
+    /// and resuming its session refused with "no recovery record" — a fact about
+    /// the daemon's bookkeeping, not something the reader can act on. The tree is
+    /// still describable from the path it ran in.
+    #[test]
+    fn a_missing_recovery_record_is_derived_from_the_path() {
+        let got = derive_recovery(std::path::Path::new(
+            "/home/me/repo/.claude/worktrees/compressed-singing-lerdorf",
+        ));
+        match got {
+            Some(ArchiveState::Recoverable {
+                name,
+                branch,
+                head_sha,
+            }) => {
+                assert_eq!(name, "compressed-singing-lerdorf");
+                // The convention `register_worktree` uses, so the branch a
+                // daemon-cut or `claude --worktree` tree is on.
+                assert_eq!(branch, "worktree-compressed-singing-lerdorf");
+                // Never recorded, and `worktree_rebuild` only consults it once the
+                // branch is gone from the checkout *and* origin — where naming the
+                // branch is the honest answer anyway.
+                assert!(head_sha.is_empty());
+            }
+            other => panic!("expected a derived record, got {other:?}"),
+        }
+
+        // A path with no final component gives nothing to derive from, and the
+        // caller says so rather than inventing a name.
+        assert!(derive_recovery(std::path::Path::new("/")).is_none());
+    }
 }
