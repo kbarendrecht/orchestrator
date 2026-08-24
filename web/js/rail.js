@@ -489,8 +489,8 @@ async function swapWithMain(wsId) {
   if (!confirm(
     `Swap branches between main and ${wsId}?\n\n`
     + `main takes this worktree's branch, and this worktree takes main's. `
-    + `This conversation is forked into main so the work carries across; the `
-    + `original stays here, untouched.`
+    + `Uncommitted changes travel with their branch, and this conversation is `
+    + `forked into main so the work carries across; the original stays here.`
   )) return;
   try {
     const r = await call(`/api/workspace/${encodeURIComponent(wsId)}/swap-main`);
@@ -498,9 +498,18 @@ async function swapWithMain(wsId) {
     // which is the whole point of pressing this.
     if (r.session) setPendingSelect(r.session);
     toast(`main is on ${r.main}; ${wsId} is on ${r.worktree}`);
-    // The branches moved even if the conversation could not follow, so this is a
-    // second line rather than an error over the top of a success.
+    // The branches moved even if the conversation could not follow, so these are
+    // second lines rather than errors over the top of a success.
     if (r.session_error) toast(`the branches swapped, but ${r.session_error}`, true);
+    // Untracked files cannot be carried, so say which stayed rather than leaving
+    // you to notice that half the work did not travel.
+    if (r.untracked_left && r.untracked_left.length) {
+      toast(
+        `left in ${wsId} (untracked, so not carried): ${r.untracked_left.slice(0, 4).join(', ')}`
+        + (r.untracked_left.length > 4 ? ` and ${r.untracked_left.length - 4} more` : ''),
+        true,
+      );
+    }
   } catch (e) {
     toast(e.message, true);
   }
