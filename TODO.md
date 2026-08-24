@@ -461,14 +461,17 @@ Everything outside that block is hand-written and survives.
   there", which is a good deal more than "nobody knows" — but launching it is
   somebody's afternoon with a Mac, not a CI job.
 
-- **A README for other people.** The current one is written for whoever already
-  knows what orchd is: it is threaded with `§` references to a spec that no longer
-  exists in the repo, assumes the acme monorepo throughout (the run example, the
-  `ng-watch`/`docker` asides), and documents the
-  parts in the order they were built. An open-sourced one needs the thing it is, a
-  screenshot, what it needs installed, what it assumes about your repo (the
-  editable settings, which currently default to acme's), and how to try it
-  without a monorepo to point it at.
+- **A README for other people.** *Rewritten.* The old one was for whoever already
+  knew orchd — `§` references to a spec no longer in the repo, acme assumed
+  throughout, sections in build order. The new one leads with what it is and a
+  screenshot (`docs/screenshot.png`, the fixture board so no real repo leaks),
+  then install for both platforms (the private-repo token, the macOS
+  builds-but-never-launched caveat), a first run, and a table of what it assumes
+  about your repo — the defaults are the author's, editable in settings, said
+  plainly. Internals trimmed to a short "How it works"; the module map stays,
+  since CLAUDE.md points here for it. Written for a stranger evaluating it, not an
+  adopter wiring it to their own repo — if this ever needs an onboarding guide for
+  the latter, that is a different, longer document.
 
 - **Where the memory goes — looked at, and one of the two numbers was measuring
   the wrong thing.** *Done, one line changed.* Both suspects are settled:
