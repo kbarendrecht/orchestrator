@@ -463,6 +463,51 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// The line the swap's carry closes a live session on, so it has to hold in
+    /// both directions.
+    #[test]
+    fn a_transcript_of_headers_is_not_yet_a_conversation() {
+        let dir = std::env::temp_dir().join(format!("orchd-conv-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let id = uuid::Uuid::new_v4();
+        let nowhere = Path::new("/nonexistent");
+
+        // A session that spawned and was never typed into: the file exists, and
+        // `--resume` on it still answers "no conversation found".
+        let headers = dir.join("headers.jsonl");
+        std::fs::write(
+            &headers,
+            concat!(
+                r#"{"type":"mode","mode":"default"}"#,
+                "\n",
+                r#"{"type":"permission-mode","permissionMode":"default"}"#,
+                "\n",
+                r#"{"type":"ai-title","aiTitle":"worktree-x"}"#,
+                "\n",
+            ),
+        )
+        .unwrap();
+        assert!(transcript_exists(id, nowhere, Some(&headers)), "the file is there");
+        assert!(
+            !has_conversation(id, nowhere, Some(&headers)),
+            "but nothing has been said in it"
+        );
+
+        // One turn is enough, and stays enough however much tool output buries it.
+        // This is the case a tail read gets wrong: 128KB of the end of this file
+        // holds no `user` line, so tailing would refuse a real conversation.
+        let buried = dir.join("buried.jsonl");
+        let mut text = String::from("{\"type\":\"user\",\"message\":\"hi\"}\n");
+        while text.len() < 300 * 1024 {
+            text.push_str(r#"{"type":"assistant","message":"tool output"}"#);
+            text.push('\n');
+        }
+        std::fs::write(&buried, &text).unwrap();
+        assert!(has_conversation(id, nowhere, Some(&buried)));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// The `--worktree` case: the record names a directory Claude Code never
     /// wrote to, and the file is under the checkout the session started in.
     #[test]
@@ -629,12 +674,42 @@ pub fn resumable(record: &SessionRecord) -> bool {
     transcript_exists(record.id, &record.cwd, record.transcript_path.as_deref())
 }
 
+/// Whether there is a conversation here, not merely a file.
+///
+/// [`transcript_exists`] is the weaker question and it is not enough before a
+/// `--resume`: a session that has started but never had a turn *does* have a
+/// `.jsonl`, holding only its `mode` / `permission-mode` / `ai-title` headers —
+/// 266 bytes of it. Resuming that answers "no conversation found" and the process
+/// exits instantly, which cost a live session when the swap's carry trusted the
+/// file's existence and then closed the original.
+///
+/// A `user` entry is the cheapest proof that somebody said something, and the
+/// first one sits just past those headers and never moves — so this reads the
+/// *head*, unlike [`ai_title`], whose answer is rewritten on every append and so
+/// is only ever current at the tail. Tailing here would also answer *wrongly*: a
+/// conversation whose last 128KB is one long run of tool output holds no `user`
+/// line in it at all.
+pub fn has_conversation(id: uuid::Uuid, cwd: &Path, recorded: Option<&Path>) -> bool {
+    let Some(path) = transcript_file(id, cwd, recorded) else {
+        return false;
+    };
+    let Ok(head) = read_head(&path, FIRST_TURN_BYTES) else {
+        return false;
+    };
+    // The pattern holds no newline, so searching the buffer whole is the same
+    // search as scanning it by line, without the split.
+    String::from_utf8_lossy(&head).contains(r#""type":"user""#)
+}
+
 /// Whether a conversation was ever written to disk.
 ///
 /// A session killed before its first turn has no `.jsonl` at all, and there is
 /// nothing to come back to: `claude --resume` answers "no conversation found"
 /// and exits. Both the startup resume and the rail's archive ask this, so they
 /// ask it the same way.
+///
+/// Says nothing about whether the file holds a *turn* — see [`has_conversation`]
+/// for that, which is what anything about to `--resume` should ask.
 pub fn transcript_exists(id: uuid::Uuid, cwd: &Path, recorded: Option<&Path>) -> bool {
     transcript_file(id, cwd, recorded).is_some()
 }
@@ -698,6 +773,11 @@ pub fn pin_transcript(id: uuid::Uuid, cwd: &Path, recorded: &mut Option<PathBuf>
     }
 }
 
+/// How much of the transcript's head to read looking for a first turn. The
+/// headers ahead of it are ~266 bytes, so this is slack for a longer preamble
+/// rather than a window that has to grow with the conversation.
+const FIRST_TURN_BYTES: u64 = 8 * 1024;
+
 /// How much of the transcript's tail to read looking for a title.
 const TITLE_TAIL_BYTES: u64 = 128 * 1024;
 
@@ -739,6 +819,14 @@ pub fn ai_title(id: uuid::Uuid, cwd: &Path, recorded: Option<&Path>) -> Option<S
         }
     }
     found
+}
+
+/// The first `n` bytes of a file, or the whole thing if it is shorter.
+fn read_head(path: &Path, n: u64) -> std::io::Result<Vec<u8>> {
+    use std::io::Read;
+    let mut buf = Vec::new();
+    std::fs::File::open(path)?.take(n).read_to_end(&mut buf)?;
+    Ok(buf)
 }
 
 /// The last `n` bytes of a file, or the whole thing if it is shorter.
