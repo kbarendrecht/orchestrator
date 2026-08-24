@@ -1,4 +1,4 @@
-# orchd
+# orchestrator
 
 Run several Claude Code sessions over one repository, from a single window — and
 see at a glance which ones are working, which are waiting on you, and which of
@@ -10,7 +10,7 @@ the browser tab loses nothing at all. Beside the sessions it polls your open PRs
 lists the reviews waiting on you, and drives a review-resolve flow that drafts
 replies you approve before anything is posted.
 
-![orchd](docs/screenshot.png)
+![orchestrator](docs/screenshot.png)
 
 ## What it is
 
@@ -37,10 +37,16 @@ The pieces:
 
 ## Install
 
-Releases attach two binaries per platform: `orchestrator-desktop` (the app, with
-the daemon and the web UI compiled in) and `orch` (a small CLI that spawned
-sessions use to call back to the daemon). The app is all you need to run it; add
-`orch` if your repo's skills or agents shell out to it.
+Releases attach two binaries per platform.
+
+- **`orchestrator-desktop`** is the app. The daemon and the web UI are compiled
+  into it, so this one binary on its own is a complete install.
+- **`orch` is optional.** A small CLI against a running daemon: `orch new` starts
+  another session with a prompt, `orch ask` puts a question in front of you and
+  blocks until you answer, `orch ls` lists what is running. Useful from your own
+  shell, and it is how an *agent* reaches the daemon that spawned it — a session
+  can open a helper session for a subtask, or ask you something and wait rather
+  than bury the question in its own scrollback. Nothing requires it.
 
 Apple Silicon and x86-64 Linux are built. The release repository is private, so
 installs need a GitHub token that can read it.
@@ -53,8 +59,8 @@ mise use -g "ubi:kbarendrecht/orchestrator[exe=orchestrator-desktop]"
 mise up          # upgrade to the newest release later
 ```
 
-`ubi` picks the right asset for your platform. For the `orch` CLI too, add a
-second entry with `[exe=orch]`.
+`ubi` picks the right asset for your platform. If you want the optional `orch`
+CLI as well, add a second entry with `[exe=orch]`.
 
 ### From a release tarball
 
@@ -64,7 +70,8 @@ tar -xzf orchestrator-<version>-<platform>.tar.gz   # → orchestrator-desktop, 
 xattr -dr com.apple.quarantine orchestrator-desktop orch
 ```
 
-Put both on your `PATH` and run `orchestrator-desktop`.
+Put them on your `PATH` (`orch` only if you want it) and run
+`orchestrator-desktop`.
 
 **Linux** needs **WebKitGTK 4.1** at runtime (Ubuntu 22.04 / Debian 12 or newer;
 20.04 ships only 4.0 and will not work). **macOS** uses the system WebView and
@@ -74,23 +81,11 @@ needs nothing extra.
 > CI, but nobody has launched the app on a Mac yet. Treat the first run as the
 > test. Everything below is exercised daily on Linux.
 
-## First run
-
-Launch the app and point it at a git checkout when it asks (it shows a folder
+Then launch it and point it at a git checkout when it asks (it shows a folder
 picker when it has no config, or when the one on record has moved). That checkout
-is *main*; worktrees are cut inside it under `.claude/worktrees/`.
-
-Prefer a terminal, or debugging the daemon itself? Run it headless from a source
-checkout and open the printed URL — the release ships the app and `orch`, not this
-binary:
-
-```
-cargo run -p orchd -- --main /path/to/your/repo
-```
-
-The URL carries a per-start token; the app and the headless binary share the same
-config. State lives in `~/.config/orchd/` on Linux and
-`~/Library/Application Support/orchd/` on macOS — move it with `ORCHD_CONFIG_DIR`.
+is *main*; worktrees are cut inside it under `.claude/worktrees/`. State lives in
+`~/.config/orchd/` on Linux and `~/Library/Application Support/orchd/` on macOS —
+move it with `ORCHD_CONFIG_DIR`.
 
 ## What it assumes about your repo
 
@@ -209,6 +204,14 @@ mise run check-web                       # type-check the SPA + its module graph
 cargo run -p orchestrator-desktop        # the app, daemon embedded
 mise run shot                            # screenshot the running app (drives Chrome)
 mise run fixture                         # a throwaway PR to drive the review flow
+```
+
+Prefer a terminal, or debugging the daemon itself? Run it headless and open the
+printed URL, which carries a per-start token. The release ships the app and
+`orch`, not this binary, and it shares the app's config:
+
+```
+cargo run -p orchd -- --main /path/to/your/repo
 ```
 
 The app runs in **WebKitGTK**, so `mise run shot` (Chrome) is good for layout but
