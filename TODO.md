@@ -674,6 +674,24 @@ Everything outside that block is hand-written and survives.
 
 ## Decisions worth revisiting
 
+- **History keeps its AI attribution, and 14 commits still name the monorepo.**
+  *Decided, not overlooked.* The working tree is clean of both, and author history
+  was rewritten onto one identity — but 208 of 286 commit messages carry
+  `Generated with Claude Code` / `Co-Authored-By: Claude` / `happy.engineering`
+  trailers, 14 name the monorepo in subject or body, and a 226 KB
+  `design/review-overlay.artifact.html` with 12 internal mentions survives in
+  history alone. Scrubbing all three is one `filter-repo --message-callback` pass,
+  and the cost is the same as the author rewrite: every SHA changes and the 13
+  release tags need re-pushing. (Re-pushing them is free — tag *updates* do not
+  retrigger the release workflow, only tag *creation* does, measured when the
+  author rewrite moved all 13 and nothing built.) Judged not worth it; say so if
+  that changes.
+
+  Two things that would quietly undo the author rewrite:
+  `../orchestrator-pre-rewrite.bundle` still holds the old commits, and another
+  machine still has the pre-rewrite history with the personal address configured —
+  commit `1092a8f` came from there.
+
 - **The changed-files pane still refreshes.** The divergence strip now carries
   the thing worth acting on when a branch has fallen behind, but the list under
   it is recomputed on reconcile. It is no longer `git status`: it is the
