@@ -705,6 +705,36 @@ fn default_branch(main: &Path, remote: &str) -> Option<String> {
     Some(full.strip_prefix(&format!("{remote}/"))?.to_string())
 }
 
+/// The local branch `upstream_ref` names, e.g. `develop` for `upstream/develop`.
+///
+/// The one place that turns the configured base into something you can check out,
+/// so nothing has to hard-code "develop" or guess where the remote prefix ends.
+pub fn base_branch(upstream_ref: &str) -> &str {
+    split_upstream(upstream_ref).1
+}
+
+/// Put a checkout back on `base`, unless something says not to.
+///
+/// Returns the branch it left, or `None` when it did nothing: already there, or
+/// carrying uncommitted work. Refusing on a dirty tree is the whole safety
+/// argument — a checkout takes uncommitted changes with it, and finding your work
+/// sitting on the base branch is not recoverable by pressing back.
+///
+/// Blocking and repo-only on purpose: the daemon-side caller owns the "is anyone
+/// still working here" half, and this half is what a test can drive against a real
+/// repo.
+pub fn park_on_base(cwd: &Path, base: &str) -> Result<Option<String>> {
+    let on = current_branch(cwd)?;
+    if on == base {
+        return Ok(None);
+    }
+    if !is_clean(cwd)? {
+        return Ok(None);
+    }
+    switch_branch(cwd, base)?;
+    Ok(Some(on))
+}
+
 /// Split out so the named-branch rule is testable without a network fetch.
 fn upstream_fetch_argv(upstream_ref: &str) -> Vec<&str> {
     let (remote, branch) = split_upstream(upstream_ref);
@@ -1110,6 +1140,84 @@ mod tests {
     // The amend-target cases moved with nothing but their names: the fixture they
     // share with the blame tests stayed here, so they reach across for `Amend`.
     use crate::review_commit::*;
+
+    /// The assumption `spawn::refuse_if_main_is_on` exists for: git will not check
+    /// one branch out into two trees. Pinned here because the guard's whole value
+    /// is turning this refusal into a sentence that says what to do, and a git
+    /// that stopped refusing would leave two agents on one branch instead.
+    #[test]
+    fn a_branch_checked_out_in_main_cannot_be_cut_into_a_worktree() {
+        let dir = std::env::temp_dir().join(format!(
+            "orchd-wt-twice-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let main = dir.join("main");
+        git(&dir, &["init", "-q", "main"]).unwrap();
+        git(&main, &["config", "user.email", "t@t"]).unwrap();
+        git(&main, &["config", "user.name", "t"]).unwrap();
+        std::fs::write(main.join("a.txt"), "x").unwrap();
+        git(&main, &["add", "-A"]).unwrap();
+        git(&main, &["commit", "-qm", "init"]).unwrap();
+        git(&main, &["checkout", "-q", "-b", "feature/x"]).unwrap();
+
+        assert_eq!(current_branch(&main).unwrap(), "feature/x");
+        let err = worktree_add_existing(&main, &dir.join("pr-1"), "feature/x")
+            .expect_err("git must refuse a second checkout of one branch");
+        assert!(
+            format!("{err:#}").contains("already used by worktree"),
+            "unexpected refusal: {err:#}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The guards that stand between "you closed the last pane in main" and
+    /// someone's uncommitted work landing on develop.
+    #[test]
+    fn parking_leaves_a_dirty_checkout_exactly_where_it_is() {
+        let dir = std::env::temp_dir().join(format!(
+            "orchd-park-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let repo = dir.join("repo");
+        git(&dir, &["init", "-q", "-b", "develop", "repo"]).unwrap();
+        git(&repo, &["config", "user.email", "t@t"]).unwrap();
+        git(&repo, &["config", "user.name", "t"]).unwrap();
+        std::fs::write(repo.join("a.txt"), "x").unwrap();
+        git(&repo, &["add", "-A"]).unwrap();
+        git(&repo, &["commit", "-qm", "init"]).unwrap();
+
+        // Already home: nothing to do, and no needless checkout.
+        assert_eq!(park_on_base(&repo, "develop").unwrap(), None);
+
+        git(&repo, &["checkout", "-q", "-b", "feature/x"]).unwrap();
+        std::fs::write(repo.join("a.txt"), "edited").unwrap();
+        // Dirty: the work would ride along to develop, so it stays put.
+        assert_eq!(park_on_base(&repo, "develop").unwrap(), None);
+        assert_eq!(current_branch(&repo).unwrap(), "feature/x");
+
+        git(&repo, &["checkout", "-q", "--", "a.txt"]).unwrap();
+        assert_eq!(
+            park_on_base(&repo, "develop").unwrap().as_deref(),
+            Some("feature/x")
+        );
+        assert_eq!(current_branch(&repo).unwrap(), "develop");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_base_branch_is_the_configured_ref_without_its_remote() {
+        assert_eq!(base_branch("upstream/develop"), "develop");
+        // A nested branch name keeps every segment but the remote.
+        assert_eq!(base_branch("origin/release/2026"), "release/2026");
+        // A bare ref is already the branch.
+        assert_eq!(base_branch("main"), "main");
+    }
 
     #[test]
     fn upstream_fetch_argv_is_config_driven_not_hardcoded() {

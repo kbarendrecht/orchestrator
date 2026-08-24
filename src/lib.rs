@@ -111,6 +111,13 @@ impl Server {
     /// are infrastructure; `ng-watch` is a process this app started and should
     /// therefore finish.
     pub async fn shutdown(&self) {
+        // Before anything is killed: every pty about to die wakes an exit watcher,
+        // and one of them would otherwise read a restart as "you finished with
+        // main" and move the checkout out from under auto-resume.
+        self.app
+            .shutting_down
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+
         // Before the killing, not after: `was_live` is read off session state,
         // which the exit watchers are about to rewrite.
         self.app.persist_now().await;

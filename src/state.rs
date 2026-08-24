@@ -73,6 +73,13 @@ pub struct AppState {
     /// WebSocket and every mutating endpoint (§12).
     pub token: String,
     pub inner: RwLock<Inner>,
+    /// Set the moment shutdown begins.
+    ///
+    /// A session's exit watcher cannot otherwise tell "you closed this pane" from
+    /// "the app is going down", and the two want opposite things: closing the last
+    /// session in main parks the checkout back on its base branch, while a restart
+    /// must leave it exactly where auto-resume will expect to find it.
+    pub shutting_down: std::sync::atomic::AtomicBool,
     /// Fan-out of state snapshots to connected SPAs.
     pub events: broadcast::Sender<String>,
     /// How the SPA should draw its top bar.
@@ -298,6 +305,7 @@ impl AppState {
                 update: None,
                 agent_update: None,
             }),
+            shutting_down: std::sync::atomic::AtomicBool::new(false),
             events,
             chrome,
             window: RwLock::new(None),

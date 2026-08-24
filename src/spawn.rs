@@ -576,6 +576,86 @@ async fn worktree_holding(app: &Arc<AppState>, head_ref: &str) -> Option<String>
         .map(|w| w.id.clone())
 }
 
+/// The one case where a PR has nowhere to go, said in words.
+///
+/// Git will not check one branch out twice, and `worktree_holding` deliberately
+/// does not count main (§2: a PR run must never rebase or force-push the tree
+/// every worktree is cut from). So a PR whose branch main is standing on has
+/// nowhere to go, and left to git it arrives as `is already used by worktree at
+/// <main>` — true, and no help at all about what to do next.
+///
+/// [`park_main`] normally makes this unreachable by sending main back as the last
+/// session there closes. What is left is the case it cannot handle: main is dirty,
+/// or someone is still working in it.
+///
+/// Asked of git rather than of `Workspace::branches`, which accumulates every
+/// branch main has ever been on and never drops one; only the live `HEAD` says
+/// where the checkout actually is. An unreadable one is no opinion: the spawn goes
+/// ahead and git gives its own answer, as it did before this existed.
+async fn refuse_if_main_is_on(app: &Arc<AppState>, pr: u64, head_ref: &str) -> Result<()> {
+    let main = app.cfg.main_checkout.clone();
+    let on = tokio::task::spawn_blocking(move || crate::git::current_branch(&main))
+        .await
+        .map_err(|e| anyhow::anyhow!("reading main's branch panicked: {e}"))?;
+    if on.as_deref().ok() != Some(head_ref) {
+        return Ok(());
+    }
+    let base = crate::git::base_branch(&app.cfg.upstream_ref);
+    let why = if !app.live_sessions_in(MAIN).await.is_empty() {
+        "a session is still open there"
+    } else {
+        "it has uncommitted changes"
+    };
+    bail!(
+        "the main checkout is on {head_ref} and {why}, so it cannot be sent back to {base} — \
+         and git will not check a branch out twice, which leaves no worktree to cut for #{pr}. \
+         Close that session, or commit or stash the changes, and try again."
+    )
+}
+
+/// Send the main checkout back to the base branch once nobody is working in it.
+///
+/// "Open in main" moves the checkout onto a PR's branch and, before this, nothing
+/// ever moved it off: main would stand on a feature branch for days, quietly
+/// making every PR flow for that branch impossible, because the worktree those
+/// flows need cannot be cut while main holds the branch.
+///
+/// Deliberately at the *last* session's exit rather than at the moment a PR flow
+/// wants the branch. Both fix the collision; this one stops it existing, and it
+/// moves the checkout when you have just finished with it rather than in the
+/// middle of something else.
+///
+/// Refuses in exactly the cases [`switch_main_to_pr`] refuses to move it the other
+/// way. Uncommitted work is not ours to carry to another branch, and a session
+/// still open there is someone still using it. Silence is the right answer to
+/// both: nothing was promised, and the pre-flight above explains it if a PR flow
+/// later needs the branch.
+async fn park_main(app: &Arc<AppState>) {
+    // A restart is not "you are done with main". Auto-resume brings that session
+    // back expecting the branch it was working on, and moving the checkout here
+    // would hand it someone else's code.
+    if app.shutting_down.load(std::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
+    if !app.live_sessions_in(MAIN).await.is_empty() {
+        return;
+    }
+    let path = app.cfg.main_checkout.clone();
+    let base = crate::git::base_branch(&app.cfg.upstream_ref).to_string();
+    let moved = tokio::task::spawn_blocking(move || crate::git::park_on_base(&path, &base))
+        .await
+        .ok()
+        .and_then(|r| r.unwrap_or(None));
+
+    if let Some(was) = moved {
+        // Said out loud: the checkout under every worktree just changed, and the
+        // rail showing `develop` with no explanation is a worse surprise than a
+        // line in the log.
+        tracing::info!(from = %was, "the last session in main closed; main is back on its base");
+        let _ = app.reconcile(MAIN).await;
+    }
+}
+
 pub async fn ensure_pr_worktree(app: &Arc<AppState>, pr: u64, head_ref: &str) -> Result<String> {
     if let Some(ws) = worktree_holding(app, head_ref).await {
         return Ok(ws);
@@ -585,6 +665,7 @@ pub async fn ensure_pr_worktree(app: &Arc<AppState>, pr: u64, head_ref: &str) ->
     validate_worktree_name(&name)?;
     let path = app.cfg.worktree_path(&name);
     if !path.exists() {
+        refuse_if_main_is_on(app, pr, head_ref).await?;
         crate::git::worktree_add_existing(&app.cfg.main_checkout, &path, head_ref)?;
         // Only when we actually cut it. A PR worktree is always daemon-cut, so it
         // never saw the repo's WorktreeCreate — this is the gap that left acme's
@@ -740,6 +821,11 @@ fn watch_session_exit(app: Arc<AppState>, id: SessionId, handle: Arc<PtyHandle>)
                 let killed = app.kill_processes_in(&ws).await;
                 if killed > 0 {
                     tracing::info!(workspace = %ws, "stopped {killed} process(es) with the last session");
+                }
+                // And main goes back to its base branch, so it stops holding a
+                // PR's branch hostage the moment you are done with it.
+                if ws == MAIN {
+                    park_main(&app).await;
                 }
             }
             // Closing Claude is a moment the changed-file pane must be right
