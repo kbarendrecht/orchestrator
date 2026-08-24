@@ -13,7 +13,7 @@ pub struct Config {
     /// Where worktrees live, relative to `main_checkout`. Defaults to
     /// `.claude/worktrees`, which is both Claude Code's own `--worktree` default
     /// and where a repo's own `worktree-create` hook is most likely to put them,
-    /// checkout needs no setting. A repo that relocates them (a `WorktreeCreate`
+    /// so a generic checkout needs no setting. A repo that relocates them (a `WorktreeCreate`
     /// hook) points this at the same place, so the daemon still recognises its
     /// own worktrees. Kept relative and in-main on purpose: the container path
     /// mapping, the changed-files exclude, and path attribution all assume
@@ -22,10 +22,6 @@ pub struct Config {
     pub worktrees_subdir: PathBuf,
     #[serde(default = "default_port")]
     pub port: u16,
-    /// Managed processes declared for the main workspace. Worktrees declare none
-    /// by default; a shell is opened on demand instead. Empty by default — see
-    /// the README for the shape and a worked example — and edited in the settings
-    /// panel.
     /// Directories inside a worktree that are allowed to be symlinks *out* of it.
     ///
     /// The editable diff pane is the one endpoint that writes arbitrary bytes to
@@ -40,6 +36,9 @@ pub struct Config {
     /// root, matched after canonicalisation, so `..` in the *value* buys nothing.
     #[serde(default)]
     pub shared_worktree_paths: Vec<String>,
+    /// Managed processes declared for the main workspace. Worktrees declare none
+    /// by default; a shell is opened on demand instead. Empty by default — see the
+    /// README for the shape and a worked example — and edited in the settings panel.
     #[serde(default = "default_main_processes")]
     pub main_processes: Vec<ManagedSpec>,
     #[serde(default)]
@@ -78,12 +77,16 @@ pub struct Config {
     #[serde(default = "default_story_timeout")]
     pub story_timeout_seconds: u64,
     /// The language the agent *writes* in — reviewer replies and story text.
-    /// Prompts and code stay English; this is only the outward prose. The agent
-    /// still matches a thread's own language first and falls back to this when
-    /// that is unclear. Defaults to Dutch; set it to `English` (or any language)
-    /// in the settings panel.
-    #[serde(default = "default_output_language")]
-    pub output_language: String,
+    ///
+    /// A **fallback**, which is what the name says: the agent matches a thread's
+    /// own language first and only reaches for this when that is unclear. Prompts
+    /// and code stay English regardless; this is the outward prose only.
+    ///
+    /// Named `default_language` rather than `output_language` because it is not
+    /// only the tracker's, and not a mandate — replies to a PR thread are the
+    /// other, larger half of what it governs.
+    #[serde(default = "default_language_value")]
+    pub default_language: String,
     /// The PR poll is one query per period, negligible against 5000 points/hour
     /// (§6). The review poll shells out to [`Config::reviews_command`], whose cost
     /// is that command's business, bounded by [`Config::review_timeout_seconds`].
@@ -93,17 +96,19 @@ pub struct Config {
     /// exists so a second platform is a config choice rather than a rebuild.
     #[serde(default)]
     pub forge: ForgeKind,
-    /// How long the review-queue command may run before the poller gives up on
-    /// it. `mise run reviews` walks every open PR, so it needs a generous ceiling
+    /// How long the review-queue command may run before the poller gives up on it.
+    /// Such a command typically walks every open PR, so it needs a generous ceiling
     /// but must not hang the poller forever.
     #[serde(default = "default_review_timeout")]
     pub review_timeout_seconds: u64,
     /// The command whose JSON output feeds the review-queue pane (the shape in
-    /// `docs/reviews-json.md`). An argv, run under `timeout` in the main checkout.
+    /// `docs/reviews-json.md`). An argv, run in the main checkout under
+    /// `proc::run_bounded` — not coreutils `timeout`, which is GNU and absent on a
+    /// Mac, where it failed at the spawn and blamed the review command.
     ///
-    /// Defaults to `mise run reviews --json`. Empty means "no review queue here",
-    /// and the pane says so rather than reading as a broken command — clear the
-    /// field in settings for a repo with no such task.
+    /// Empty by default, which means "no review queue here": the pane says so
+    /// rather than reading as a broken command. Point it at whatever task your repo
+    /// has.
     #[serde(default = "default_reviews_command")]
     pub reviews_command: Vec<String>,
     /// Where the auto-updated findings block lives. Defaults to the
@@ -234,7 +239,7 @@ fn rewrite_main_checkout(path: &Path, raw: &str, main: &Path) -> Result<()> {
 /// forge. Field names match the `config.json` keys they persist to.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Settings {
-    pub output_language: String,
+    pub default_language: String,
     pub tracker: TrackerKind,
     pub upstream_ref: String,
     pub upstream_remote: String,
@@ -246,7 +251,7 @@ pub struct Settings {
 impl Settings {
     pub fn of(cfg: &Config) -> Self {
         Settings {
-            output_language: cfg.output_language.clone(),
+            default_language: cfg.default_language.clone(),
             tracker: cfg.tracker,
             upstream_ref: cfg.upstream_ref.clone(),
             upstream_remote: cfg.upstream_remote.clone(),
@@ -276,7 +281,7 @@ impl Settings {
         let obj = v
             .as_object_mut()
             .context("config.json is not a JSON object")?;
-        obj.insert("output_language".into(), serde_json::to_value(&self.output_language)?);
+        obj.insert("default_language".into(), serde_json::to_value(&self.default_language)?);
         obj.insert("tracker".into(), serde_json::to_value(self.tracker)?);
         obj.insert("upstream_ref".into(), serde_json::to_value(&self.upstream_ref)?);
         obj.insert("upstream_remote".into(), serde_json::to_value(&self.upstream_remote)?);
@@ -360,7 +365,7 @@ fn default_story_timeout() -> u64 {
     300
 }
 
-fn default_output_language() -> String {
+fn default_language_value() -> String {
     "English".to_string()
 }
 
@@ -722,7 +727,7 @@ mod tests {
         assert!(cfg.reviews_command.is_empty(), "no command every repo has");
         assert!(cfg.main_processes.is_empty(), "no process every repo runs");
         assert_eq!(cfg.tracker, TrackerKind::None);
-        assert_eq!(cfg.output_language, "English");
+        assert_eq!(cfg.default_language, "English");
         // `default_for` (the first-run write) goes through the same path, so a
         // fresh install writes the same nothing.
         assert!(Config::default_for(PathBuf::from("/tmp/x")).main_processes.is_empty());
@@ -751,12 +756,12 @@ mod tests {
     #[test]
     fn a_written_key_overrides_the_default() {
         let cfg = Config::parse(
-            r#"{"main_checkout":"/tmp/x","port":9000,"output_language":"English",
+            r#"{"main_checkout":"/tmp/x","port":9000,"default_language":"English",
                 "tracker":"none","reviews_command":["mise","run","reviews:mine"]}"#,
         )
         .expect("parse");
         assert_eq!(cfg.port, 9000);
-        assert_eq!(cfg.output_language, "English");
+        assert_eq!(cfg.default_language, "English");
         assert_eq!(cfg.tracker, TrackerKind::None);
         assert_eq!(cfg.reviews_command, vec!["mise", "run", "reviews:mine"]);
         // ...but an unmentioned key still comes from the defaults.
@@ -855,7 +860,7 @@ mod tests {
         // A slim config must stay slim: merging settings sets the editable keys
         // and leaves everything else (here, just main_checkout) alone.
         let s = Settings {
-            output_language: "English".into(),
+            default_language: "English".into(),
             tracker: TrackerKind::None,
             upstream_ref: "origin/main".into(),
             upstream_remote: "origin".into(),
@@ -867,7 +872,7 @@ mod tests {
         let cfg = Config::parse(&out).expect("re-parse");
         assert_eq!(cfg.main_checkout, PathBuf::from("/tmp/x"), "untouched key kept");
         assert_eq!(cfg.port, 8080, "untouched key kept");
-        assert_eq!(cfg.output_language, "English");
+        assert_eq!(cfg.default_language, "English");
         assert_eq!(cfg.tracker, TrackerKind::None);
         assert_eq!(cfg.upstream_ref, "origin/main");
         assert_eq!(cfg.reviews_command, vec!["gh", "pr"]);

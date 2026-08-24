@@ -32,7 +32,7 @@ async function loadConfigInto() {
     $('setnote').textContent = e.message;
     return;
   }
-  ctl('setlang').value = cfg.output_language || '';
+  ctl('setlang').value = cfg.default_language || '';
   ctl('settracker').value = cfg.tracker || 'none';
   ctl('setupref').value = cfg.upstream_ref || '';
   ctl('setupremote').value = cfg.upstream_remote || '';
@@ -134,7 +134,7 @@ async function saveSettings() {
   const argv = (s) => (s.trim() ? s.trim().split(/\s+/) : []);
   const list = (s) => s.split(',').map((x) => x.trim()).filter(Boolean);
   const body = {
-    output_language: ctl('setlang').value.trim(),
+    default_language: ctl('setlang').value.trim(),
     tracker: ctl('settracker').value,
     upstream_ref: ctl('setupref').value.trim(),
     upstream_remote: ctl('setupremote').value.trim(),

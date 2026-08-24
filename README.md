@@ -99,7 +99,7 @@ back to `config.json`; changes take effect on restart.
 | `reviews_command` | *(empty)* | argv printing the review queue as JSON (shape in [`docs/reviews-json.md`](docs/reviews-json.md)). Empty means the pane reads "not configured" rather than "unavailable". |
 | `main_processes` | *(empty)* | long-running processes shown in the drawer. See below. |
 | `tracker` | `none` | where an out-of-scope review point can be filed as a story. `shortcut` is the one implementation; the seam for adding others is `src/tracker/`. Its token is **not** a config key — set `ORCHD_TRACKER_TOKEN` in the daemon's environment. |
-| `output_language` | `English` | the language the agent *writes* replies and stories in. Prompts and code stay English regardless. |
+| `default_language` | `English` | the language the agent *writes* replies and stories in. Prompts and code stay English regardless. |
 | `shared_worktree_paths` | *(empty)* | directories inside a worktree that are allowed to be symlinks *out* of it, e.g. a plan dir shared back to main. The editable diff pane refuses every other path that resolves outside the workspace. |
 | `worktree_init` / `worktree_setup` | *(empty)* | two commands run in every worktree the daemon cuts itself. See below. |
 
