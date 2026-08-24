@@ -101,6 +101,7 @@ back to `config.json`; changes take effect on restart.
 | `tracker` | `none` | where an out-of-scope review point can be filed as a story. `shortcut` is the one implementation; the seam for adding others is `src/tracker/`. |
 | `tracker_token_file` | *(unset)* | a `0600` file holding the tracker's API token. `ORCHD_TRACKER_TOKEN` wins over it. |
 | `output_language` | `English` | the language the agent *writes* replies and stories in. Prompts and code stay English regardless. |
+| `shared_worktree_paths` | *(empty)* | directories inside a worktree that are allowed to be symlinks *out* of it, e.g. a plan dir shared back to main. The editable diff pane refuses every other path that resolves outside the workspace. |
 | `worktree_setup` | *(empty)* | a command run in every worktree the daemon cuts itself, for repos whose `WorktreeCreate` hook does setup that PR and resumed worktrees would otherwise miss. |
 
 ### Declaring a managed process

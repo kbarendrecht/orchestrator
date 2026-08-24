@@ -26,6 +26,20 @@ pub struct Config {
     /// by default; a shell is opened on demand instead. Empty by default — see
     /// the README for the shape and a worked example — and edited in the settings
     /// panel.
+    /// Directories inside a worktree that are allowed to be symlinks *out* of it.
+    ///
+    /// The editable diff pane is the one endpoint that writes arbitrary bytes to
+    /// disk, so it refuses any path that resolves outside the workspace — a
+    /// symlink pointing out must not become a write primitive. A repo that
+    /// deliberately shares a directory across worktrees (a plan or notes dir
+    /// symlinked back to main, say) names it here and writes through it stay
+    /// allowed.
+    ///
+    /// Empty by default, which is the tight answer: a repo that shares nothing
+    /// gets no exception at all. Each entry is a path relative to the worktree
+    /// root, matched after canonicalisation, so `..` in the *value* buys nothing.
+    #[serde(default)]
+    pub shared_worktree_paths: Vec<String>,
     #[serde(default = "default_main_processes")]
     pub main_processes: Vec<ManagedSpec>,
     #[serde(default)]
@@ -515,7 +529,7 @@ impl Config {
            `workspace_for_path` matches hook paths against.
 
            That match is the reason. A `PostToolUse` path goes through
-           `canonicalize` before it is attributed (`hooks.rs`, so a `.plan/`
+           `canonicalize` before it is attributed (`hooks.rs`, so a shared
            symlink lands in the right pane), and comparing a resolved path against
            an unresolved workspace root simply fails: the edit is attributed to no
            workspace and quietly never reaches the changed-files pane. Only the

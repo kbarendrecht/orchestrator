@@ -382,8 +382,8 @@ pub fn worktree_list(main: &Path) -> Result<Vec<WorktreeEntry>> {
 /// unlocked and removed, still without `--force`. See the body for why that is
 /// not an escalation.
 ///
-/// **Never `rm -rf` a worktree.** It contains `.plan/` symlinked to main's
-/// `.plan/`, and a `vendor/` full of per-package symlinks into main. A recursive
+/// **Never `rm -rf` a worktree.** It can contain directories symlinked back to
+/// main — a shared plan dir, a `vendor/` full of per-package symlinks. A recursive
 /// delete that follows symlinks destroys the main checkout. If this refuses for
 /// any reason other than a stale lock, the refusal is surfaced — it is never
 /// escalated to `--force` and never falls back to a filesystem delete.

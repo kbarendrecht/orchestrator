@@ -2294,7 +2294,7 @@ pub async fn read_file(
             content,
         }));
     }
-    Ok(Json(crate::edit::read(&root, &q.path)?))
+    Ok(Json(crate::edit::read(&root, &q.path, &app.cfg.shared_worktree_paths)?))
 }
 
 #[derive(Deserialize)]
@@ -2315,12 +2315,18 @@ pub async fn write_file(
         .workspace_path(&body.workspace)
         .await
         .ok_or_else(|| anyhow::anyhow!("unknown workspace {}", body.workspace))?;
-    let out = crate::edit::write(&root, &body.path, &body.content, &body.version)?;
+    let out = crate::edit::write(
+        &root,
+        &body.path,
+        &body.content,
+        &body.version,
+        &app.cfg.shared_worktree_paths,
+    )?;
     if matches!(out, crate::edit::WriteOutcome::Written { .. }) {
         // Agents working in this workspace hold a stale copy now, and will
         // overwrite it unless they are told (§5's invalidation, in the
         // direction that actually loses work).
-        let resolved = crate::edit::resolve_in_workspace(&root, &body.path)?;
+        let resolved = crate::edit::resolve_in_workspace(&root, &body.path, &app.cfg.shared_worktree_paths)?;
         app.record_human_edit(resolved).await;
         // The changed-file pane and the diff must both reflect the write.
         let _ = app.reconcile(&body.workspace).await;

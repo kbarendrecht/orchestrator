@@ -235,7 +235,7 @@ pub async fn post_tool_use(
     let mut changed = edited.is_some();
     {
         let owner = match &edited {
-            // `.plan/` in a worktree is a symlink to main's `.plan/`. Resolve every
+            // A shared dir in a worktree can be a symlink back to main. Resolve every
             // hook path through realpath before attributing it, or the edit shows
             // as a phantom untracked file in the wrong pane (§4).
             Some(path) => {
