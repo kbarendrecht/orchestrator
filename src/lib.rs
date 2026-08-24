@@ -721,7 +721,12 @@ fn start_review_poller(app: Arc<AppState>) {
             let main = app.cfg.main_checkout.clone();
             let timeout = app.cfg.review_timeout_seconds;
             let command = app.cfg.reviews_command.clone();
-            let state = tokio::task::spawn_blocking(move || reviews::fetch(&main, timeout, &command))
+            // For the URL fallback when a row omits one; `None` just means the
+            // row does not link.
+            let repo = app.repos.upstream.clone();
+            let state = tokio::task::spawn_blocking(move || {
+                reviews::fetch(&main, timeout, &command, repo.as_deref())
+            })
                 .await
                 .unwrap_or_else(|e| reviews::ReviewState::Degraded {
                     reason: format!("review poll task failed: {e}"),

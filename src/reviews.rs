@@ -5,7 +5,7 @@ use std::path::Path;
 
 /// PRs where your review is requested — other people's work (§6b).
 ///
-/// The source is acme's own `mise run reviews --json`, which already applies
+/// The shape came from an existing `mise run reviews --json` task, which applies
 /// a richer ranking than §6b describes: prio labels, personal versus team
 /// request, re-review detection, reviewer-count tiebreak. The daemon consumes
 /// that shape rather than imposing the one §6b invented.
@@ -74,11 +74,11 @@ impl Default for ReviewState {
 /// absence is accepted; a *different* one is not.
 const KNOWN_VERSION: u64 = 1;
 
-pub fn fetch(main: &Path, timeout_secs: u64, command: &[String]) -> ReviewState {
+pub fn fetch(main: &Path, timeout_secs: u64, command: &[String], repo: Option<&str>) -> ReviewState {
     if command.is_empty() {
         return ReviewState::Off;
     }
-    match run(main, timeout_secs, command) {
+    match run(main, timeout_secs, command, repo) {
         Ok(q) => ReviewState::Ok(q),
         Err(e) => ReviewState::Degraded {
             reason: format!("{e:#}"),
@@ -86,7 +86,7 @@ pub fn fetch(main: &Path, timeout_secs: u64, command: &[String]) -> ReviewState 
     }
 }
 
-fn run(main: &Path, timeout_secs: u64, command: &[String]) -> Result<ReviewQueue> {
+fn run(main: &Path, timeout_secs: u64, command: &[String], repo: Option<&str>) -> Result<ReviewQueue> {
     let out = crate::proc::run_bounded(main, timeout_secs, command, "reviews")?;
 
     if !out.status.success() {
@@ -116,14 +116,14 @@ fn run(main: &Path, timeout_secs: u64, command: &[String]) -> Result<ReviewQueue
             bail!("reviews reported version {ver}, which this daemon does not understand");
         }
     }
-    parse(&v)
+    parse(&v, repo)
 }
 
-fn parse(v: &Value) -> Result<ReviewQueue> {
+fn parse(v: &Value, repo: Option<&str>) -> Result<ReviewQueue> {
     let entries = |key: &str| -> Vec<Review> {
         v.get(key)
             .and_then(|a| a.as_array())
-            .map(|a| a.iter().filter_map(parse_entry).collect())
+            .map(|a| a.iter().filter_map(|e| parse_entry(e, repo)).collect())
             .unwrap_or_default()
     };
     let actionable = entries("actionable");
@@ -144,7 +144,7 @@ fn parse(v: &Value) -> Result<ReviewQueue> {
     })
 }
 
-fn parse_entry(e: &Value) -> Option<Review> {
+fn parse_entry(e: &Value, repo: Option<&str>) -> Option<Review> {
     let pr = e.get("pr")?;
     let number = pr.get("number")?.as_u64()?;
 
@@ -160,11 +160,16 @@ fn parse_entry(e: &Value) -> Option<Review> {
         number,
         title: pr.get("title").and_then(|s| s.as_str()).unwrap_or("").to_string(),
         // Deriving the url keeps a row clickable even if the field is dropped.
+        // From the *configured* repo: this used to name one hardcoded repo, so
+        // every other user's rows linked somewhere they could not see. GitHub's
+        // URL shape, which is the only forge there is an impl for; with no repo
+        // known the row simply does not link.
         url: pr
             .get("url")
             .and_then(|s| s.as_str())
             .map(|s| s.to_string())
-            .unwrap_or_else(|| format!("https://github.com/acme/monorepo/pull/{number}")),
+            .or_else(|| repo.map(|r| format!("https://github.com/{r}/pull/{number}")))
+            .unwrap_or_default(),
         author: pr
             .get("author")
             .and_then(|s| s.as_str())
@@ -204,6 +209,11 @@ fn parse_entry(e: &Value) -> Option<Review> {
 
 #[cfg(test)]
 mod tests {
+    /// The tests that do not care about link derivation.
+    fn parse_t(v: &Value) -> Result<ReviewQueue> {
+        parse(v, Some("acme/monorepo"))
+    }
+
     use super::*;
 
     fn v(s: &str) -> Value {
@@ -213,7 +223,7 @@ mod tests {
 
     #[test]
     fn reads_the_shape_the_source_actually_emits() {
-        let q = parse(&v(r#"{
+        let q = parse_t(&v(r#"{
             "forLogin":"kbarendrecht","total":16,"skipped":4,
             "actionable":[{"pr":{"number":2001,"title":"Refactor a config loader",
                 "url":"https://github.com/x/y/pull/2001","author":"erin","isDraft":false},
@@ -235,24 +245,40 @@ mod tests {
 
     #[test]
     fn accepts_age_in_days_as_well_as_hours() {
-        let q = parse(&v(r#"{"actionable":[{"pr":{"number":1,"title":"t","author":"a"},
+        let q = parse_t(&v(r#"{"actionable":[{"pr":{"number":1,"title":"t","author":"a"},
             "ageDays":2}],"blocked":[]}"#))
         .unwrap();
         assert!((q.actionable[0].age_hours - 48.0).abs() < 0.01);
     }
 
     #[test]
-    fn derives_a_url_when_the_field_is_missing() {
-        let q = parse(&v(r#"{"actionable":[{"pr":{"number":99,"title":"t","author":"a"}}],
-            "blocked":[]}"#))
+    fn derives_a_url_from_the_configured_repo_when_the_field_is_missing() {
+        let q = parse(
+            &v(r#"{"actionable":[{"pr":{"number":99,"title":"t","author":"a"}}],
+            "blocked":[]}"#),
+            Some("acme/monorepo"),
+        )
         .unwrap();
-        assert!(q.actionable[0].url.ends_with("/pull/99"));
+        assert_eq!(q.actionable[0].url, "https://github.com/acme/monorepo/pull/99");
+    }
+
+    /// It used to name one hardcoded repo here, so everyone else's rows linked
+    /// into a repo they could not open. No repo known is now no link.
+    #[test]
+    fn an_unknown_repo_yields_no_link_rather_than_a_wrong_one() {
+        let q = parse(
+            &v(r#"{"actionable":[{"pr":{"number":99,"title":"t","author":"a"}}],
+            "blocked":[]}"#),
+            None,
+        )
+        .unwrap();
+        assert!(q.actionable[0].url.is_empty());
     }
 
     #[test]
     fn output_of_the_wrong_shape_is_an_error_not_an_empty_queue() {
         // The failure that would cost a colleague a day.
-        assert!(parse(&v(r#"{"something":"else"}"#)).is_err());
+        assert!(parse_t(&v(r#"{"something":"else"}"#)).is_err());
     }
 
     #[test]
@@ -264,7 +290,7 @@ mod tests {
 
     #[test]
     fn an_empty_but_valid_queue_is_ok_not_degraded() {
-        let q = parse(&v(r#"{"forLogin":"me","actionable":[],"blocked":[]}"#)).unwrap();
+        let q = parse_t(&v(r#"{"forLogin":"me","actionable":[],"blocked":[]}"#)).unwrap();
         assert!(q.actionable.is_empty());
     }
 
@@ -273,7 +299,7 @@ mod tests {
         // A repo with no review-queue source must not read as a broken command —
         // that would nag in the TODO block and colour the pane red for nothing.
         assert!(matches!(
-            fetch(Path::new("/nonexistent"), 1, &[]),
+            fetch(Path::new("/nonexistent"), 1, &[], None),
             ReviewState::Off
         ));
     }

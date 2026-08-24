@@ -210,14 +210,14 @@ export type Repos = {
  */
 upstream: string | null, 
 /**
- * Where branches are pushed, e.g. `kbarendrecht/acme` (§6's fork flow).
+ * Where branches are pushed, e.g. `you/monorepo` (§6's fork flow).
  */
 fork: string | null, };
 
 /**
  * PRs where your review is requested — other people's work (§6b).
  *
- * The source is acme's own `mise run reviews --json`, which already applies
+ * The shape came from an existing `mise run reviews --json` task, which applies
  * a richer ranking than §6b describes: prio labels, personal versus team
  * request, re-review detection, reviewer-count tiebreak. The daemon consumes
  * that shape rather than imposing the one §6b invented.

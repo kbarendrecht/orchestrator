@@ -62,7 +62,7 @@ pub struct ResolveRun {
 pub struct Repos {
     /// Where PRs are opened, e.g. `acme/monorepo`.
     pub upstream: Option<String>,
-    /// Where branches are pushed, e.g. `kbarendrecht/acme` (§6's fork flow).
+    /// Where branches are pushed, e.g. `you/monorepo` (§6's fork flow).
     pub fork: Option<String>,
 }
 

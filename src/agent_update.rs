@@ -56,7 +56,7 @@ pub fn check(main: &Path) -> Option<AgentUpdate> {
 ///
 /// Asked rather than guessed, and this is not pedantry — it is the difference
 /// between a nudge that clears and one that does not. The same binary is pinned
-/// under two names here: `claude-code` (this repo and acme) and `claude` (a
+/// under two names here: `claude-code` (what this repo pins) and `claude` (a
 /// parent directory's config). Both were listed as outdated, upgrading one left
 /// the other stale, and the bar came straight back asking for a tool whose
 /// install is *shadowed on PATH and never executed*.

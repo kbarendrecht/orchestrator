@@ -224,7 +224,7 @@ mod tests {
         // The bare `pulls/:n/comments` endpoint would open a new conversation
         // instead of replying in the existing one.
         assert_eq!(
-            reply_path("acme-org", "acme", 10001, 9000000001),
+            reply_path("acme", "monorepo", 10001, 9000000001),
             "repos/acme/monorepo/pulls/10001/comments/9000000001/replies"
         );
     }
@@ -232,7 +232,7 @@ mod tests {
     #[test]
     fn a_reaction_path_is_not_nested_under_the_pr() {
         assert_eq!(
-            reaction_path("acme-org", "acme", 9000000001),
+            reaction_path("acme", "monorepo", 9000000001),
             "repos/acme/monorepo/pulls/comments/9000000001/reactions"
         );
     }

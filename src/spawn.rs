@@ -25,7 +25,7 @@ const WORKTREE_SETUP_TIMEOUT_SECS: u64 = 300;
 /// tree. `claude --worktree` fires the repo's `WorktreeCreate` hook; the daemon's
 /// own `git worktree add` (PR worktrees, resume, a relocated layout) fires
 /// nothing, so without this those worktrees silently skip whatever creation-time
-/// setup the repo does — acme's `claudeMdExcludes` file, for one, and its PR
+/// setup the repo does — a rules-dedup file, for one, and its PR
 /// worktrees were missing it.
 ///
 /// **Non-fatal.** Setup failing must not strand the worktree: the session is more
@@ -38,7 +38,7 @@ const WORKTREE_SETUP_TIMEOUT_SECS: u64 = 300;
 /// Resolve `worktree_setup`'s command word.
 ///
 /// The command runs *in* the worktree (cwd), but a **relative script path** is
-/// resolved against main, not the worktree. That is the acme idiom made to
+/// resolved against main, not the worktree. That is the common idiom made to
 /// work — its hooks are `$CLAUDE_PROJECT_DIR/.claude/hooks/…` operating on the
 /// worktree — and without it `.claude/hooks/setup` would be looked up inside a
 /// just-created worktree that may not carry it. A bare command name (no slash,
@@ -668,7 +668,7 @@ pub async fn ensure_pr_worktree(app: &Arc<AppState>, pr: u64, head_ref: &str) ->
         refuse_if_main_is_on(app, pr, head_ref).await?;
         crate::git::worktree_add_existing(&app.cfg.main_checkout, &path, head_ref)?;
         // Only when we actually cut it. A PR worktree is always daemon-cut, so it
-        // never saw the repo's WorktreeCreate — this is the gap that left acme's
+        // never saw the repo's WorktreeCreate — this is the gap that left the
         // pr-* worktrees without their rule-dedup file. Skipped when the tree was
         // already there, since setup ran when it was first created.
         run_worktree_setup(app, &path).await;

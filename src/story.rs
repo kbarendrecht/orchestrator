@@ -34,7 +34,7 @@ use std::path::Path;
 /// The Shortcut API token, for the MCP server's `Authorization` header.
 ///
 /// Same ladder as [`crate::forge::resolve_token`] — env, then a `0600` file —
-/// and deliberately **not** a reader for `acme/.env`, where the team's copy
+/// and deliberately **not** a reader for the repo's `.env`, where a team's copy
 /// actually lives. That file is shell-ish, and the line as it stands is
 /// `SHORTCUT_API_TOKEN='' # can be generated in …`; a naive split yields
 /// `'' # can be` and injects a garbage Bearer, which surfaces later as "Shortcut
@@ -65,7 +65,7 @@ pub fn resolve_token(token_file: Option<&Path>) -> Result<String> {
 /// A story that exists in the tracker.
 ///
 /// Both halves come from the tool response and neither is ever constructed by
-/// `format!`: the org slug in the URL is acme-specific and the daemon has no
+/// `format!`: the org slug in the URL belongs to your tracker workspace and the daemon has no
 /// business knowing it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StoryRef {

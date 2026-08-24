@@ -12,7 +12,7 @@ pub struct Config {
     pub main_checkout: PathBuf,
     /// Where worktrees live, relative to `main_checkout`. Defaults to
     /// `.claude/worktrees`, which is both Claude Code's own `--worktree` default
-    /// and where acme's `worktree-create` hook puts them — so a generic
+    /// and where a repo's own `worktree-create` hook is most likely to put them,
     /// checkout needs no setting. A repo that relocates them (a `WorktreeCreate`
     /// hook) points this at the same place, so the daemon still recognises its
     /// own worktrees. Kept relative and in-main on purpose: the container path
@@ -23,9 +23,9 @@ pub struct Config {
     #[serde(default = "default_port")]
     pub port: u16,
     /// Managed processes declared for the main workspace. Worktrees declare none
-    /// by default; a shell is opened on demand instead. The default is the two a
-    /// acme checkout wants (a build watcher and `docker compose`), both
-    /// `autostart:false`; edit them in the settings panel.
+    /// by default; a shell is opened on demand instead. Empty by default — see
+    /// the README for the shape and a worked example — and edited in the settings
+    /// panel.
     #[serde(default = "default_main_processes")]
     pub main_processes: Vec<ManagedSpec>,
     #[serde(default)]
@@ -113,8 +113,8 @@ pub struct Config {
     /// rather than an accident of who created the tree. Claude Code's own
     /// `WorktreeCreate` hook fires only for `claude --worktree`, so a PR worktree
     /// or a resumed one — both cut by the daemon with plain `git worktree add` —
-    /// silently skips whatever that hook does. acme's, for one, writes the
-    /// `claudeMdExcludes` file that stops rules double-loading, and its PR
+    /// silently skips whatever that hook does. The case this was written for
+    /// wrote a file that stops the repo's rules double-loading, and the PR
     /// worktrees were missing it. Point this at a script that does the
     /// creation-time setup and every daemon-cut worktree gets it.
     ///
@@ -284,9 +284,6 @@ fn default_reviews_command() -> Vec<String> {
     Vec::new()
 }
 
-/// The two processes a acme main checkout wants, both started by hand: the
-/// Angular build watcher and the `docker compose` stack. The former runs through
-/// the repo's toolbox wrapper; the patterns are what the health dot reads.
 /// Empty: a managed process is whatever *this* repo runs long-term, and no two
 /// repos agree.
 ///
@@ -480,8 +477,8 @@ impl Config {
     /// Parse a `config.json` string into a [`Config`].
     ///
     /// Everything unset falls back to the `#[serde(default = …)]` attributes,
-    /// which now carry the values a acme checkout wants. An old file with a
-    /// stale `"profile"` key still loads — serde ignores the unknown field.
+    /// which are deliberately generic. An old file with a stale `"profile"` key
+    /// still loads — serde ignores the unknown field.
     pub fn parse(raw: &str) -> Result<Config> {
         let mut cfg: Config = serde_json::from_str(raw).context("config is not JSON")?;
         // Sanitise once, here, so every accessor can trust the field and the
@@ -542,9 +539,9 @@ impl Config {
     /// same file parsed from disk can never diverge — the field defaults live in
     /// one place (the `#[serde(default = …)]` attributes), not two.
     ///
-    /// Those defaults are now acme's (Dutch, Shortcut, `upstream/develop`, the
-    /// two managed processes, `mise run reviews`); a checkout that wants otherwise
-    /// edits them in the settings panel. No special-casing here.
+    /// Those defaults ask nothing of the repo being pointed at: no review-queue
+    /// command, no managed processes, no tracker. A checkout that has those turns
+    /// them on in the settings panel. No special-casing here.
     fn default_for(main_checkout: PathBuf) -> Self {
         let raw = serde_json::json!({ "main_checkout": main_checkout }).to_string();
         // Cannot fail: the JSON is a single known-valid key.
@@ -623,7 +620,7 @@ pub fn transcript_env() -> (Vec<(String, String)>, Vec<&'static str>) {
 ///
 /// The dots matter here more than anywhere else: worktrees live under
 /// `.claude/worktrees/`, so slugging only the slashes produced
-/// `…-acme-.claude-worktrees-x` against a real `…-acme--claude-worktrees-x`
+/// `…-repo-.claude-worktrees-x` against a real `…-repo--claude-worktrees-x`
 /// — a directory that never exists. Every worktree session therefore looked like
 /// it had no transcript, which is what auto-resume and the teardown transcript
 /// check both read to decide there was nothing to resume or copy.
@@ -650,8 +647,8 @@ mod tests {
         // Slugging only the slashes gave `-.claude-`, which exists nowhere, so
         // every worktree session read as having no transcript.
         assert_eq!(
-            transcript_slug(Path::new("/home/x/dev/acme/.claude/worktrees/dfafdf")),
-            "-home-x-dev-acme--claude-worktrees-dfafdf"
+            transcript_slug(Path::new("/home/x/dev/monorepo/.claude/worktrees/dfafdf")),
+            "-home-x-dev-monorepo--claude-worktrees-dfafdf"
         );
     }
 
@@ -710,7 +707,7 @@ mod tests {
         // `profile` was a config key until the six settings became defaults; a file
         // written back then must still load, its stale key ignored.
         let cfg = Config::parse(
-            r#"{"main_checkout":"/tmp/x","profile":"acme"}"#,
+            r#"{"main_checkout":"/tmp/x","profile":"monorepo"}"#,
         )
         .expect("parse");
         assert_eq!(cfg.main_checkout, PathBuf::from("/tmp/x"));

@@ -128,8 +128,8 @@ mod tests {
     fn vars() -> Vars {
         Vars {
             pr: 10001,
-            owner: "acme-org".into(),
-            repo: "acme".into(),
+            owner: "acme".into(),
+            repo: "monorepo".into(),
             login: "kbarendrecht".into(),
             upstream: "upstream/develop".into(),
             upstream_remote: "upstream".into(),

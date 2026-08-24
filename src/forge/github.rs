@@ -871,18 +871,18 @@ mod tests {
     fn reads_owner_and_name_from_either_remote_form() {
         assert_eq!(
             repo_from_remote("git@github.com:acme/monorepo.git"),
-            Some(("acme-org".into(), "acme".into()))
+            Some(("acme".into(), "monorepo".into()))
         );
         assert_eq!(
             repo_from_remote("https://github.com/acme/monorepo"),
-            Some(("acme-org".into(), "acme".into()))
+            Some(("acme".into(), "monorepo".into()))
         );
         assert_eq!(repo_from_remote("git@gitlab.com:x/y.git"), None);
     }
 
     #[test]
     fn blob_url_keeps_separators_and_escapes_the_rest() {
-        let f = GitHubForge::new("acme-org", "acme", "t");
+        let f = GitHubForge::new("acme", "monorepo", "t");
         assert_eq!(
             f.blob_url("abc123", "src/forge/github.rs"),
             "https://github.com/acme/monorepo/blob/abc123/src/forge/github.rs"
@@ -1218,7 +1218,7 @@ mod tests {
     #[ignore = "hits the GitHub API"]
     fn fetches_real_threads() {
         let token = resolve_token(None).expect("a token");
-        let got = GitHubForge::new("acme-org", "acme", token.value)
+        let got = GitHubForge::new("acme", "monorepo", token.value)
             .threads(10001)
             .expect("the fetch");
 

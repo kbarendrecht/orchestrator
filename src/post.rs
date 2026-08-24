@@ -490,7 +490,7 @@ fn resolve_reply(pos: &Position, d: &Decision, thread_id: &str) -> Result<Option
     }
 }
 
-/// `renovate.json5:161 · carol`, or `review summary · acme-bot` for a
+/// `renovate.json5:161 · carol`, or `review summary · reviewbot` for a
 /// thread with no file.
 fn label_for(t: &crate::forge::Thread) -> String {
     let who = t.author().unwrap_or("ghost");
@@ -1786,7 +1786,7 @@ mod tests {
     fn manual_on_a_review_summary_has_no_line_to_blame_and_is_allowed() {
         // No anchor, so the fold degrades to a HEAD amend and says so — rather than
         // refusing an answer that is perfectly legitimate.
-        let fresh = fetched(vec![thread("PRRT_1", None, None, "acme-bot")]);
+        let fresh = fetched(vec![thread("PRRT_1", None, None, "reviewbot")]);
         let got = resolve(
             &manual_set(""),
             &fresh,
@@ -1800,7 +1800,7 @@ mod tests {
 
     #[test]
     fn a_story_resolves_to_its_draft_and_keeps_the_token() {
-        let fresh = fetched(vec![thread("PRRT_1", None, None, "acme-bot")]);
+        let fresh = fetched(vec![thread("PRRT_1", None, None, "reviewbot")]);
         let got = resolve(
             &story_set(),
             &fresh,
@@ -1822,7 +1822,7 @@ mod tests {
     fn a_story_with_no_tracker_configured_is_refused_by_name() {
         // The overlay hides the option when `tracker` is off, but the payload is
         // not the overlay — so the daemon says so rather than filing into nowhere.
-        let fresh = fetched(vec![thread("PRRT_1", None, None, "acme-bot")]);
+        let fresh = fetched(vec![thread("PRRT_1", None, None, "reviewbot")]);
         let err = resolve(
             &story_set(),
             &fresh,
@@ -1841,7 +1841,7 @@ mod tests {
         // token. Filing a story that nothing links to is worse than not filing it,
         // and this refusal lands before the local half — nothing written, nothing
         // filed, decisions kept.
-        let fresh = fetched(vec![thread("PRRT_1", None, None, "acme-bot")]);
+        let fresh = fetched(vec![thread("PRRT_1", None, None, "reviewbot")]);
         let err = resolve(
             &story_set(),
             &fresh,
@@ -1912,7 +1912,7 @@ mod tests {
         // A review summary has no file, so there is nowhere for a diff to go — that
         // case goes through the manual phase, not through a guessed anchor.
         let set = proposed("PRRT_1", vec![with_patch(Stance::Reply, true)]);
-        let fresh = fetched(vec![thread("PRRT_1", None, None, "acme-bot")]);
+        let fresh = fetched(vec![thread("PRRT_1", None, None, "reviewbot")]);
         let err = resolve(&set, &fresh, &batch("PRRT_1", 0, None), TRACKER, FIRST_HALF)
             .unwrap_err()
             .to_string();
@@ -1996,8 +1996,8 @@ mod tests {
     #[test]
     fn a_summary_thread_is_labelled_by_what_it_is() {
         assert_eq!(
-            label_for(&thread("PRRT_1", None, None, "acme-bot")),
-            "review summary · acme-bot"
+            label_for(&thread("PRRT_1", None, None, "reviewbot")),
+            "review summary · reviewbot"
         );
         let mut outdated = thread("PRRT_2", Some("a.ts"), None, "john");
         outdated.original_line = Some(9);
