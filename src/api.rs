@@ -1261,6 +1261,18 @@ pub async fn swap_with_main(
     // Both panes describe a tree whose every file just changed.
     let _ = app.reconcile(MAIN).await;
     let _ = app.reconcile(&workspace).await;
+
+    // Carry the conversation across, or the swap only moves half of what you meant.
+    //
+    // A session cannot *move*: its cwd is fixed at spawn and its transcript is
+    // filed under that path (`config::transcript_slug`), so relocating one would
+    // orphan its history. A fork can, though — `--resume` resolves a session by id
+    // from any working directory, so the new one starts in main with the whole
+    // conversation behind it, and the original stays exactly where it was.
+    //
+    // Best effort: the swap has already happened and is the thing you asked for, so
+    // a failure here is reported beside it rather than rolling the branches back.
+    let carried = carry_session_into_main(&app, &workspace).await;
     app.notify().await;
 
     tracing::info!(%workspace, main_now = %swapped.0, worktree_now = %swapped.1, "swapped branches with main");
@@ -1268,7 +1280,39 @@ pub async fn swap_with_main(
         "main": swapped.0,
         "worktree": swapped.1,
         "workspace": workspace,
+        "session": carried.as_ref().ok().map(|id| id.to_string()),
+        "session_error": carried.as_ref().err().map(|e| format!("{e:#}")),
     })))
+}
+
+/// Fork the worktree's own conversation into main, so work continues where the
+/// branch now is.
+///
+/// Picks the newest **interactive** session that has a transcript. Automation is
+/// left alone deliberately: a fix or resolve run belongs to its PR's worktree, and
+/// forking one into main would put an agent that rebases and force-pushes on the
+/// tree every worktree is cut from.
+async fn carry_session_into_main(
+    app: &Arc<AppState>,
+    workspace: &str,
+) -> anyhow::Result<crate::model::SessionId> {
+    let source = {
+        let inner = app.inner.read().await;
+        inner
+            .sessions
+            .values()
+            .filter(|s| s.workspace == workspace)
+            .filter(|s| matches!(s.kind, Kind::Interactive))
+            // Nothing to fork until a conversation has had a turn — `--resume`
+            // answers "no conversation found" and the session exits instantly.
+            .filter(|s| {
+                crate::store::transcript_exists(s.id, &s.cwd, s.transcript_path.as_deref())
+            })
+            .max_by_key(|s| s.created_at)
+            .map(|s| s.id)
+    };
+    let source = source.context("no conversation in this worktree to carry into main")?;
+    spawn::spawn_session(app, MAIN, Kind::Interactive, Some(spawn::Source::Fork(source))).await
 }
 
 pub async fn teardown(
