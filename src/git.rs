@@ -814,6 +814,17 @@ pub fn swap_branches(main: &Path, worktree: &Path) -> Result<(String, String)> {
         bail!("both are on {main_branch}, so there is nothing to exchange");
     }
 
+    // Uncommitted work travels with its branch, or the swap moves the code and
+    // leaves the edits behind — which is worse than refusing, because you would
+    // find out by looking.
+    //
+    // Captured *before* anything moves, and crosswise afterwards: what was on top
+    // of `tree_branch` is re-applied in main, which by then has `tree_branch`
+    // checked out. Same base both sides, so an apply cannot conflict — that is what
+    // makes this safe rather than hopeful.
+    let main_wip = capture_wip(main)?;
+    let tree_wip = capture_wip(worktree)?;
+
     // Detaching is the only free move: it takes a branch out of use without
     // needing another one to be available.
     switch_detach(worktree)?;
@@ -841,12 +852,74 @@ pub fn swap_branches(main: &Path, worktree: &Path) -> Result<(String, String)> {
         )));
     }
 
+    // Crosswise, and after both branches are in place. A failure here is reported,
+    // not rolled back: the WIP commit still holds the work and is named in the
+    // error, so nothing is lost even in the case that should not happen.
+    let mut carried = Ok(());
+    if let Some(wip) = &tree_wip {
+        carried = carried.and(apply_wip(main, wip));
+    }
+    if let Some(wip) = &main_wip {
+        carried = carried.and(apply_wip(worktree, wip));
+    }
+    carried?;
+
     Ok((tree_branch, main_branch))
 }
 
 /// Detach a tree at its current commit, releasing the branch it held.
 fn switch_detach(cwd: &Path) -> Result<()> {
     git(cwd, &["switch", "--detach", "-q"]).map(|_| ())
+}
+
+/// Untracked paths in a tree, which a swap cannot carry.
+///
+/// `stash create` banks tracked changes only, so these stay where they are. Named
+/// so the caller can say which, rather than leaving you to notice that half your
+/// work did not travel.
+pub fn untracked_in(cwd: &Path, exclude: Option<&str>) -> Result<Vec<String>> {
+    let set = status(cwd, exclude, Untracked::Each)?;
+    Ok(set.untracked.iter().map(|f| f.path.clone()).collect())
+}
+
+/// Bank a tree's uncommitted work as a commit object, then clean the tree.
+///
+/// `stash create` rather than `stash push`, deliberately: it writes the WIP commit
+/// and hands back its sha **without touching `refs/stash`**. That stack is shared
+/// by every worktree of the repo and other sessions push and pop it concurrently,
+/// so a swap that used it could hand someone else's work to the wrong tree.
+///
+/// `None` means the tree was clean and nothing was touched — including no reset,
+/// which is what keeps a clean swap from ever running a destructive command.
+///
+/// Tracked changes only, staged and unstaged. `stash create` has no
+/// `--include-untracked`, so untracked files stay where they are; the caller says
+/// so rather than pretending they moved.
+fn capture_wip(cwd: &Path) -> Result<Option<String>> {
+    let sha = git(cwd, &["stash", "create"])?.trim().to_string();
+    if sha.is_empty() {
+        return Ok(None);
+    }
+    // Only reset once the object is real. A `reset --hard` against a sha that does
+    // not resolve is the one way this could destroy the work it exists to carry.
+    if !git_ok(cwd, &["cat-file", "-e", &format!("{sha}^{{commit}}")]) {
+        bail!("git stash create returned {sha}, which does not resolve — refusing to reset");
+    }
+    git(cwd, &["reset", "--hard", "-q"])?;
+    Ok(Some(sha))
+}
+
+/// Re-apply banked work onto whatever this tree now has checked out.
+fn apply_wip(cwd: &Path, sha: &str) -> Result<()> {
+    git(cwd, &["stash", "apply", "--index", sha])
+        .with_context(|| {
+            format!(
+                "the branches swapped but the uncommitted work did not re-apply in {}; \
+                 it is still in commit {sha} — `git stash apply {sha}` there to recover it",
+                cwd.display()
+            )
+        })
+        .map(|_| ())
 }
 
 /// Put a checkout back on `base`, unless something says not to.
@@ -1439,6 +1512,47 @@ mod tests {
         swap_branches(&main, &tree).expect("swap back");
         assert_eq!(current_branch(&main).unwrap(), "main");
         assert_eq!(current_branch(&tree).unwrap(), "feature/b");
+
+        // --- and the uncommitted work travels with its branch ---
+        //
+        // Both sides dirty, so the crosswise apply is exercised in both directions
+        // rather than only the one anybody would test by hand.
+        std::fs::write(main.join("f.txt"), "main was editing this\n").unwrap();
+        std::fs::write(tree.join("f.txt"), "the worktree was editing this\n").unwrap();
+        // One staged as well, since `stash create` banks the index too and
+        // `stash apply --index` is what restores that distinction.
+        std::fs::write(tree.join("staged.txt"), "staged in the worktree\n").unwrap();
+        git(&tree, &["add", "staged.txt"]).unwrap();
+
+        swap_branches(&main, &tree).expect("swap with work in both trees");
+
+        assert_eq!(current_branch(&main).unwrap(), "feature/b");
+        assert_eq!(current_branch(&tree).unwrap(), "main");
+        assert_eq!(
+            std::fs::read_to_string(main.join("f.txt")).unwrap(),
+            "the worktree was editing this\n",
+            "the worktree's edit followed its branch into main"
+        );
+        assert_eq!(
+            std::fs::read_to_string(tree.join("f.txt")).unwrap(),
+            "main was editing this\n",
+            "and main's edit went the other way"
+        );
+        assert!(
+            main.join("staged.txt").exists(),
+            "a staged addition travels too"
+        );
+        // Still staged, not merely present: `--index` is the difference.
+        let staged = git(&main, &["diff", "--cached", "--name-only"]).unwrap();
+        assert!(staged.contains("staged.txt"), "index preserved, got {staged:?}");
+
+        // Nothing was left banked behind either: a clean tree means no reset ran.
+        swap_branches(&main, &tree).expect("swap back with the work");
+        assert_eq!(
+            std::fs::read_to_string(tree.join("f.txt")).unwrap(),
+            "the worktree was editing this\n",
+            "and it comes home again"
+        );
 
         // Same branch both sides is refused rather than silently doing nothing.
         let same = main.join(".claude/worktrees/same");

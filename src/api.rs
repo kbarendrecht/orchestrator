@@ -1218,26 +1218,28 @@ pub async fn swap_with_main(
         }
     }
 
-    // Then the trees. Main excludes the worktrees dir it contains, or it reads as
-    // dirty on any repo that has not gitignored it.
-    let exclude = app.cfg.worktrees_subdir_str();
+    // Uncommitted work is carried, not refused — see `git::swap_branches`. Only a
+    // stopped rebase is still a refusal: a tree mid-rebase cannot switch at all.
     let (m, t) = (main.clone(), tree.clone());
-    let swapped = tokio::task::spawn_blocking(move || -> anyhow::Result<(String, String)> {
-        for (label, path, ex) in [
-            ("the main checkout", &m, Some(exclude.as_str())),
-            (&format!("{}", t.display()), &t, None),
-        ] {
-            if crate::git::rebase_in_progress(path) {
-                anyhow::bail!("{label} has a rebase stopped part-way; finish or abort it first");
+    let (swapped, untracked) =
+        tokio::task::spawn_blocking(move || -> anyhow::Result<((String, String), Vec<String>)> {
+            for (label, path) in [("the main checkout", &m), ("this worktree", &t)] {
+                if crate::git::rebase_in_progress(path) {
+                    anyhow::bail!(
+                        "{label} has a rebase stopped part-way; finish or abort it first"
+                    );
+                }
             }
-            if !crate::git::is_clean_excluding(path, ex)? {
-                anyhow::bail!("{label} has uncommitted changes; commit or stash them first");
-            }
-        }
-        crate::git::swap_branches(&m, &t)
-    })
-    .await
-    .map_err(|e| anyhow::anyhow!("the swap task panicked: {e}"))??;
+            // Listed before the swap, because afterwards they are indistinguishable
+            // from whatever the other branch leaves untracked. `stash create` does
+            // not take untracked files, so these stay put and are named rather than
+            // quietly not moving.
+            let left = crate::git::untracked_in(&t, None)?;
+            let swapped = crate::git::swap_branches(&m, &t)?;
+            Ok((swapped, left))
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("the swap task panicked: {e}"))??;
 
     // Swapping back clears the flag, so pressing the item twice is a true undo and
     // parking is allowed again.
@@ -1282,6 +1284,9 @@ pub async fn swap_with_main(
         "workspace": workspace,
         "session": carried.as_ref().ok().map(|id| id.to_string()),
         "session_error": carried.as_ref().err().map(|e| format!("{e:#}")),
+        // Named, not counted: knowing *which* files stayed behind is the difference
+        // between going to fetch them and wondering what you lost.
+        "untracked_left": untracked,
     })))
 }
 
