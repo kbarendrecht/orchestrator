@@ -731,12 +731,31 @@ pub fn detect_base(main: &Path) -> Option<(String, String)> {
     Some((format!("upstream/{branch}"), "upstream".to_string()))
 }
 
-/// The local branch `upstream_ref` names, e.g. `develop` for `upstream/develop`.
+/// The branch part of `upstream_ref`, e.g. `develop` for `upstream/develop`.
 ///
-/// The one place that turns the configured base into something you can check out,
-/// so nothing has to hard-code "develop" or guess where the remote prefix ends.
+/// Pure string work, so for `origin/HEAD` it answers `HEAD` — which is a symref,
+/// not a branch anyone can check out. Anything that *checks the base out* wants
+/// [`base_checkout_branch`] instead; this is for naming it.
 pub fn base_branch(upstream_ref: &str) -> &str {
     split_upstream(upstream_ref).1
+}
+
+/// The local branch to check out for `upstream_ref`, resolving a `HEAD` symref.
+///
+/// `git switch HEAD` fails outright — "a branch is expected" — so a base ref of
+/// `origin/HEAD`, which is the default, needs the name behind the symref before
+/// it can be checked out. That needs the repo, which is why this is separate from
+/// [`base_branch`] rather than folded into it.
+///
+/// `None` when the symref has never been recorded, which happens on a checkout
+/// whose remote was added by hand and not yet fetched. Callers treat that as
+/// "cannot", not as an error: [`fetch_upstream`] records it on the next poll.
+pub fn base_checkout_branch(main: &Path, upstream_ref: &str) -> Option<String> {
+    let (remote, branch) = split_upstream(upstream_ref);
+    if branch.eq_ignore_ascii_case("HEAD") {
+        return default_branch(main, remote);
+    }
+    Some(branch.to_string())
 }
 
 /// Put a checkout back on `base`, unless something says not to.
@@ -1273,6 +1292,39 @@ mod tests {
 
         // Not a git repo at all is also no opinion, not a panic.
         assert_eq!(detect_base(&dir.join("nope")), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `origin/HEAD` is the default base, and `git switch HEAD` fails with "a
+    /// branch is expected" — so anything that checks the base out has to resolve
+    /// the symref first. `park_main` did not, and silently never parked.
+    #[test]
+    fn a_head_base_resolves_to_a_real_branch_before_anyone_checks_it_out() {
+        let dir = std::env::temp_dir().join(format!(
+            "orchd-basebranch-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let repo = dir.join("repo");
+        git(&dir, &["init", "-q", "repo"]).unwrap();
+        git(&repo, &["remote", "add", "origin", "git@github.com:acme/monorepo.git"]).unwrap();
+
+        // The string answer is the symref name, which is not checkout-able.
+        assert_eq!(base_branch("origin/HEAD"), "HEAD");
+        // And unresolvable until the symref exists, which is "cannot", not "HEAD".
+        assert_eq!(base_checkout_branch(&repo, "origin/HEAD"), None);
+
+        git(&repo, &["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"])
+            .unwrap();
+        assert_eq!(base_checkout_branch(&repo, "origin/HEAD").as_deref(), Some("main"));
+
+        // A named base needs no repo lookup and passes straight through.
+        assert_eq!(
+            base_checkout_branch(&repo, "upstream/develop").as_deref(),
+            Some("develop")
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

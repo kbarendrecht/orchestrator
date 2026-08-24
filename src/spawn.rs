@@ -600,6 +600,8 @@ async fn refuse_if_main_is_on(app: &Arc<AppState>, pr: u64, head_ref: &str) -> R
     if on.as_deref().ok() != Some(head_ref) {
         return Ok(());
     }
+    // Named for the message only, so the unresolved form is fine here: it reads
+    // as the configured base, which is what you would go and change.
     let base = crate::git::base_branch(&app.cfg.upstream_ref);
     let why = if !app.live_sessions_in(MAIN).await.is_empty() {
         "a session is still open there"
@@ -641,11 +643,18 @@ async fn park_main(app: &Arc<AppState>) {
         return;
     }
     let path = app.cfg.main_checkout.clone();
-    let base = crate::git::base_branch(&app.cfg.upstream_ref).to_string();
-    let moved = tokio::task::spawn_blocking(move || crate::git::park_on_base(&path, &base))
-        .await
-        .ok()
-        .and_then(|r| r.unwrap_or(None));
+    let base_ref = app.cfg.upstream_ref.clone();
+    // Resolved, not the raw branch part: the default base is `origin/HEAD`, and
+    // `git switch HEAD` fails with "a branch is expected". Unresolvable means the
+    // symref has not been fetched yet, so there is nowhere to park — say so once
+    // at debug rather than failing inside the checkout.
+    let moved = tokio::task::spawn_blocking(move || {
+        let base = crate::git::base_checkout_branch(&path, &base_ref)?;
+        crate::git::park_on_base(&path, &base).ok().flatten()
+    })
+    .await
+    .ok()
+    .flatten();
 
     if let Some(was) = moved {
         // Said out loud: the checkout under every worktree just changed, and the

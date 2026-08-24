@@ -513,19 +513,27 @@ impl Config {
             }
         };
         // The base fetch (`git::fetch_upstream`) splits its remote out of
-        // `upstream_ref`, while repo detection reads `upstream_remote`; if they
-        // name different remotes the merge-base and the resolved repo drift apart
-        // with nothing to say so. They are equal in every profile and default, so
-        // a mismatch is a hand-edit slip worth surfacing.
+        // `upstream_ref`, while repo detection reads `upstream_remote`. If they
+        // name different remotes the merge-base and the resolved repo drift apart,
+        // and the symptom is PRs polled from the wrong repository — not an error,
+        // just the wrong answer.
+        //
+        // The ref wins, rather than warning and carrying on. It names its remote
+        // explicitly, whereas `upstream_remote` defaults to `origin` — so a config
+        // that pins only `upstream_ref: upstream/develop` is stating a fork layout
+        // and merely omitting the half it should not have to repeat. Warning there
+        // would nag about a config that is not wrong, and honouring `origin` would
+        // silently poll the fork.
         if let Some((ref_remote, _)) = cfg.upstream_ref.split_once('/') {
             if ref_remote != cfg.upstream_remote {
-                tracing::warn!(
-                    "upstream_ref {:?} uses remote {:?}, but upstream_remote is {:?}; \
-                     the base fetch and repo detection will disagree",
+                tracing::info!(
+                    "upstream_ref {:?} names remote {:?}; using that rather than \
+                     upstream_remote {:?}, so the base fetch and repo detection agree",
                     cfg.upstream_ref,
                     ref_remote,
                     cfg.upstream_remote
                 );
+                cfg.upstream_remote = ref_remote.to_string();
             }
         }
         /* Resolved once, here, so every path derived from it is resolved too —
@@ -737,6 +745,28 @@ mod tests {
         assert_eq!(cfg.reviews_command, vec!["mise", "run", "reviews:mine"]);
         // ...but an unmentioned key still comes from the defaults.
         assert_eq!(cfg.upstream_ref, "origin/HEAD");
+    }
+
+    /// The hazard the generic default introduced: `upstream_remote` now defaults
+    /// to `origin`, so a config pinning only `upstream_ref: upstream/develop` — a
+    /// fork layout stated once — would have polled PRs from the fork.
+    #[test]
+    fn a_ref_naming_its_own_remote_wins_over_the_defaulted_one() {
+        let cfg = Config::parse(r#"{"main_checkout":"/tmp/x","upstream_ref":"upstream/develop"}"#)
+            .expect("parse");
+        assert_eq!(cfg.upstream_remote, "upstream", "taken from the ref, not the default");
+
+        // A bare branch name says nothing about a remote, so the default stands.
+        let bare = Config::parse(r#"{"main_checkout":"/tmp/x","upstream_ref":"main"}"#)
+            .expect("parse");
+        assert_eq!(bare.upstream_remote, "origin");
+
+        // And an explicit pair that agrees is left exactly alone.
+        let both = Config::parse(
+            r#"{"main_checkout":"/tmp/x","upstream_ref":"fork/trunk","upstream_remote":"fork"}"#,
+        )
+        .expect("parse");
+        assert_eq!(both.upstream_remote, "fork");
     }
 
     /// The detection has to reach the file a first run writes, not merely exist.
