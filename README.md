@@ -95,7 +95,7 @@ back to `config.json`; changes take effect on restart.
 
 | Setting | Default | What it is |
 | --- | --- | --- |
-| `upstream_ref` / `upstream_remote` | `upstream/develop`, `upstream` | the base every diff and worktree is measured against. This one assumes a **fork workflow**; a repo that merges into its origin's default branch wants `origin/HEAD` / `origin`. |
+| `upstream_ref` / `upstream_remote` | `origin/HEAD`, `origin` | the base every diff and worktree is measured against. On a **fork workflow** — an `upstream` remote beside `origin` — a first run detects it and writes `upstream/<default branch>` instead, so there is nothing to set by hand. |
 | `reviews_command` | *(empty)* | argv printing the review queue as JSON (shape in [`docs/reviews-json.md`](docs/reviews-json.md)). Empty means the pane reads "not configured" rather than "unavailable". |
 | `main_processes` | *(empty)* | long-running processes shown in the drawer. See below. |
 | `tracker` | `none` | where an out-of-scope review point can be filed as a story. `shortcut` is the one implementation; the seam for adding others is `src/tracker/`. |

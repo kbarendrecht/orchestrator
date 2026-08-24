@@ -705,6 +705,32 @@ fn default_branch(main: &Path, remote: &str) -> Option<String> {
     Some(full.strip_prefix(&format!("{remote}/"))?.to_string())
 }
 
+fn has_remote(main: &Path, name: &str) -> bool {
+    git(main, &["remote", "get-url", name]).is_ok()
+}
+
+/// The base ref a first run should adopt, when the checkout already answers.
+///
+/// A fork workflow is not the common case, but it is unmistakable when it is
+/// there: an `upstream` remote beside `origin` means branches are pushed to one
+/// and measured against the other. Detecting it means a fork user never has to
+/// learn that there are two keys to set, while everyone else gets the generic
+/// pair and never sees this.
+///
+/// `None` is "no opinion" — not a git repo, or no `upstream` — and the caller
+/// keeps the defaults. Only ever consulted when writing a *first* config; an
+/// existing `config.json` is never second-guessed.
+pub fn detect_base(main: &Path) -> Option<(String, String)> {
+    if !has_remote(main, "upstream") {
+        return None;
+    }
+    // `upstream/HEAD` only resolves once that remote has been fetched, so fall
+    // back to the symbolic form rather than guessing a branch name.
+    // `fetch_upstream` refreshes the symref either way.
+    let branch = default_branch(main, "upstream").unwrap_or_else(|| "HEAD".to_string());
+    Some((format!("upstream/{branch}"), "upstream".to_string()))
+}
+
 /// The local branch `upstream_ref` names, e.g. `develop` for `upstream/develop`.
 ///
 /// The one place that turns the configured base into something you can check out,
@@ -1207,6 +1233,46 @@ mod tests {
             Some("feature/x")
         );
         assert_eq!(current_branch(&repo).unwrap(), "develop");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A fork layout is the one thing a first run can work out for itself, so it
+    /// has to be right about both answers: present, and absent.
+    #[test]
+    fn a_fork_layout_is_detected_and_nothing_else_is_assumed() {
+        let dir = std::env::temp_dir().join(format!(
+            "orchd-detect-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let repo = dir.join("repo");
+        git(&dir, &["init", "-q", "repo"]).unwrap();
+        git(&repo, &["remote", "add", "origin", "git@github.com:you/monorepo.git"]).unwrap();
+
+        // origin alone is not a fork: no opinion, so the generic default stands.
+        assert_eq!(detect_base(&repo), None);
+
+        git(&repo, &["remote", "add", "upstream", "git@github.com:acme/monorepo.git"]).unwrap();
+        // Never fetched, so `upstream/HEAD` does not resolve yet — the symbolic
+        // form is the honest answer rather than a guessed branch name.
+        assert_eq!(
+            detect_base(&repo),
+            Some(("upstream/HEAD".to_string(), "upstream".to_string()))
+        );
+
+        // Once the symref exists it is used, which is what makes a
+        // develop-defaulting fork come out as `upstream/develop`.
+        git(&repo, &["symbolic-ref", "refs/remotes/upstream/HEAD", "refs/remotes/upstream/develop"])
+            .unwrap();
+        assert_eq!(
+            detect_base(&repo),
+            Some(("upstream/develop".to_string(), "upstream".to_string()))
+        );
+
+        // Not a git repo at all is also no opinion, not a panic.
+        assert_eq!(detect_base(&dir.join("nope")), None);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

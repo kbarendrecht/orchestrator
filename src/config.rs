@@ -271,10 +271,14 @@ impl Settings {
     }
 }
 
-/// The fork-workflow base: PRs against `upstream/develop`. A repo that merges to
-/// its origin's default branch sets `upstream_ref`/`upstream_remote` in settings.
+/// The remote's own default branch, no fork assumed.
+///
+/// `origin/HEAD` rather than a branch name because nothing universal is called
+/// `develop` or `main`, and the symref answers for the repo. A fork layout is
+/// *detected* on first run rather than assumed — see `git::detect_base` — so a
+/// fork user never has to learn there are two keys to set.
 fn default_upstream() -> String {
-    "upstream/develop".to_string()
+    "origin/HEAD".to_string()
 }
 
 fn default_auto_resume() -> bool {
@@ -282,7 +286,7 @@ fn default_auto_resume() -> bool {
 }
 
 fn default_upstream_remote() -> String {
-    "upstream".to_string()
+    "origin".to_string()
 }
 
 fn default_tracker() -> TrackerKind {
@@ -555,10 +559,29 @@ impl Config {
     ///
     /// Those defaults ask nothing of the repo being pointed at: no review-queue
     /// command, no managed processes, no tracker. A checkout that has those turns
-    /// them on in the settings panel. No special-casing here.
+    /// them on in the settings panel.
+    ///
+    /// The base ref is the one exception, because it is the one setting a checkout
+    /// can answer for itself: an `upstream` remote beside `origin` is a fork
+    /// layout, unmistakably, and guessing wrong there means every diff is measured
+    /// against nothing.
     fn default_for(main_checkout: PathBuf) -> Self {
-        let raw = serde_json::json!({ "main_checkout": main_checkout }).to_string();
-        // Cannot fail: the JSON is a single known-valid key.
+        let mut obj = serde_json::Map::new();
+        obj.insert(
+            "main_checkout".into(),
+            serde_json::to_value(&main_checkout).expect("a path is JSON"),
+        );
+        // Written into the file rather than left to the default, so what the
+        // daemon measures against is visible in `config.json` and editable there.
+        // A detected value living only in code would be a base ref nobody could
+        // see, which is worse than one they had to type.
+        if let Some((base, remote)) = crate::git::detect_base(&main_checkout) {
+            tracing::info!(%base, %remote, "first run: detected a fork layout");
+            obj.insert("upstream_ref".into(), base.into());
+            obj.insert("upstream_remote".into(), remote.into());
+        }
+        let raw = serde_json::Value::Object(obj).to_string();
+        // Cannot fail: every key written here is known-valid.
         Self::parse(&raw).expect("the default config is valid")
     }
 
@@ -713,7 +736,41 @@ mod tests {
         assert_eq!(cfg.tracker, TrackerKind::None);
         assert_eq!(cfg.reviews_command, vec!["mise", "run", "reviews:mine"]);
         // ...but an unmentioned key still comes from the defaults.
-        assert_eq!(cfg.upstream_ref, "upstream/develop");
+        assert_eq!(cfg.upstream_ref, "origin/HEAD");
+    }
+
+    /// The detection has to reach the file a first run writes, not merely exist.
+    /// `git::detect_base` is unit-tested; this is the wiring.
+    #[test]
+    fn a_first_run_adopts_a_fork_layout_and_leaves_a_plain_one_generic() {
+        let dir = std::env::temp_dir().join(format!(
+            "orchd-firstrun-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let run = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(&dir)
+                .output()
+                .expect("git runs")
+        };
+        run(&["init", "-q", "."]);
+        run(&["remote", "add", "origin", "git@github.com:you/monorepo.git"]);
+
+        // `origin` alone is not a fork, so the generic pair stands.
+        let plain = Config::default_for(dir.clone());
+        assert_eq!(plain.upstream_ref, "origin/HEAD");
+        assert_eq!(plain.upstream_remote, "origin");
+
+        run(&["remote", "add", "upstream", "git@github.com:acme/monorepo.git"]);
+        let fork = Config::default_for(dir.clone());
+        assert_eq!(fork.upstream_ref, "upstream/HEAD");
+        assert_eq!(fork.upstream_remote, "upstream");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
