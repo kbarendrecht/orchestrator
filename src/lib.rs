@@ -31,6 +31,7 @@ pub mod state;
 pub mod store;
 pub mod story;
 pub mod todo;
+pub mod tracker;
 pub mod triage;
 pub mod window;
 pub mod worktree;
@@ -174,7 +175,11 @@ pub async fn start(opts: StartOptions) -> Result<Server> {
         cfg.port = port;
     }
 
-    let settings = hooks::write_settings(cfg.port)?;
+    let settings = {
+        use crate::tracker::Tracker as _;
+        let t = crate::tracker::TrackerImpl::for_kind(cfg.tracker);
+        hooks::write_settings(cfg.port, t.as_ref().map(|t| t.mcp_server()))?
+    };
     tracing::info!("hook settings at {}", settings.display());
 
     // Repo config from §4. fsmonitor is deliberately main-only.
@@ -243,8 +248,8 @@ pub async fn start(opts: StartOptions) -> Result<Server> {
         // appears on every review card. A misconfigured one must not read as
         // "triage never proposes stories".
         match app.cfg.tracker {
-            config::Tracker::None => tracing::info!("tracker: none — `story+reply` is off"),
-            t => match story::resolve_token(app.cfg.shortcut_token_file.as_deref()) {
+            config::TrackerKind::None => tracing::info!("tracker: none — `story+reply` is off"),
+            t => match story::resolve_token(app.cfg.tracker_token_file.as_deref()) {
                 Ok(_) => tracing::info!(
                     "tracker: {t:?}, token resolved, {} story/ies cached",
                     inner.stories.len()

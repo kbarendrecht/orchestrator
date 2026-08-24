@@ -85,25 +85,43 @@ is *main*; worktrees are cut inside it under `.claude/worktrees/`. State lives i
 `~/.config/orchd/` on Linux and `~/Library/Application Support/orchd/` on macOS —
 move it with `ORCHD_CONFIG_DIR`.
 
-## What it assumes about your repo
+## Configuring it for your repo
 
-The defaults are the author's own monorepo ("acme"), not generic ones, because
-that is the one repo it runs against every day. Everything here is editable in the
-settings panel and written back to `config.json`; changes take effect on restart.
+The defaults ask nothing of the repo you point at: no review-queue command, no
+managed processes, no tracker. You get the session board, PR pane, diff viewer and
+worktrees on a bare `{ "main_checkout": "…" }`, and you turn the rest on as your
+repo can support it. Everything here is editable in the settings panel and written
+back to `config.json`; changes take effect on restart.
 
-| Setting | Default (acme's) | What it is |
+| Setting | Default | What it is |
 | --- | --- | --- |
-| `upstream_ref` / `upstream_remote` | `upstream/develop`, `upstream` | the base every diff and worktree is measured against — a fork workflow. A repo that merges to its origin's default branch sets `origin/HEAD` / `origin`. |
-| `tracker` | `shortcut` | where an out-of-scope review point can be filed as a story. `none` disables it. |
-| `output_language` | `Dutch` | the language the agent *writes* replies and stories in. Prompts and code stay English. |
-| `reviews_command` | `mise run reviews --json` | prints the review queue as JSON (shape in `docs/reviews-json.md`). Empty = no queue. |
-| `main_processes` | `ng-watch`, `docker` | long-running processes shown in the drawer, both `autostart:false`. Empty for a repo that has none. |
-| `worktree_setup` | *(empty)* | a command run in every worktree the daemon cuts itself, for repos whose `WorktreeCreate` hook does setup that PR/resumed worktrees would otherwise miss. |
+| `upstream_ref` / `upstream_remote` | `upstream/develop`, `upstream` | the base every diff and worktree is measured against. This one assumes a **fork workflow**; a repo that merges into its origin's default branch wants `origin/HEAD` / `origin`. |
+| `reviews_command` | *(empty)* | argv printing the review queue as JSON (shape in [`docs/reviews-json.md`](docs/reviews-json.md)). Empty means the pane reads "not configured" rather than "unavailable". |
+| `main_processes` | *(empty)* | long-running processes shown in the drawer. See below. |
+| `tracker` | `none` | where an out-of-scope review point can be filed as a story. `shortcut` is the one implementation; the seam for adding others is `src/tracker/`. |
+| `tracker_token_file` | *(unset)* | a `0600` file holding the tracker's API token. `ORCHD_TRACKER_TOKEN` wins over it. |
+| `output_language` | `English` | the language the agent *writes* replies and stories in. Prompts and code stay English regardless. |
+| `worktree_setup` | *(empty)* | a command run in every worktree the daemon cuts itself, for repos whose `WorktreeCreate` hook does setup that PR and resumed worktrees would otherwise miss. |
 
-So a acme checkout can write just `{ "main_checkout": "…" }` and inherit the
-rest; anyone else edits these to match their repo. A plain checkout with the
-tracker off and no reviews command still gets the session board, PR pane, diff
-viewer and worktrees — the review-resolve flow is what leans on the settings.
+### Declaring a managed process
+
+A managed process is a long-running command for the main checkout — a build
+watcher, a container stack — with the output patterns that decide whether the rail
+reads it as healthy or failing:
+
+```json
+"main_processes": [{
+  "name": "watch",
+  "command": ["npx", "ng", "build", "--watch"],
+  "failure_patterns": ["Error:", "ERROR in", "error TS"],
+  "ok_patterns": ["bundle generation complete"],
+  "autostart": false
+}]
+```
+
+`ok_patterns` is the part worth getting right: it is what *clears* a failure. A
+watcher whose success line is missing from the list leaves the rail stuck on
+`build failing` after you have already fixed the compile.
 
 Two things a fresh checkout needs once, both one-time: accept Claude Code's
 workspace-trust prompt for it (or `claude --worktree` refuses), and — if you

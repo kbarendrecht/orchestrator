@@ -51,11 +51,12 @@ pub struct Config {
     /// from "the daemon hid it". Defaults to Shortcut; set it to `none` for a repo
     /// with no tracker.
     #[serde(default = "default_tracker")]
-    pub tracker: Tracker,
+    pub tracker: TrackerKind,
     /// A `0600` file holding the Shortcut API token. `ORCHD_SHORTCUT_TOKEN` wins
     /// over it, mirroring the GitHub ladder.
     #[serde(default)]
-    pub shortcut_token_file: Option<PathBuf>,
+    #[serde(alias = "shortcut_token_file")]
+    pub tracker_token_file: Option<PathBuf>,
     /// How long the borrowed story-filing agent gets before it is killed.
     ///
     /// The one timeout in this daemon, because it is the one agent whose caller is
@@ -204,7 +205,7 @@ fn rewrite_main_checkout(path: &Path, raw: &str, main: &Path) -> Result<()> {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Settings {
     pub output_language: String,
-    pub tracker: Tracker,
+    pub tracker: TrackerKind,
     pub upstream_ref: String,
     pub upstream_remote: String,
     pub reviews_command: Vec<String>,
@@ -270,77 +271,30 @@ fn default_upstream_remote() -> String {
     "upstream".to_string()
 }
 
-fn default_tracker() -> Tracker {
-    Tracker::Shortcut
+fn default_tracker() -> TrackerKind {
+    TrackerKind::None
 }
 
+/// Empty: there is no command every repo has.
+///
+/// The pane reads "not configured" rather than "unavailable" for an empty one, so
+/// a repo with no such source says so instead of looking broken. `docs/reviews-json.md`
+/// has the shape one has to print.
 fn default_reviews_command() -> Vec<String> {
-    ["mise", "run", "reviews", "--json"]
-        .into_iter()
-        .map(String::from)
-        .collect()
+    Vec::new()
 }
 
 /// The two processes a acme main checkout wants, both started by hand: the
 /// Angular build watcher and the `docker compose` stack. The former runs through
 /// the repo's toolbox wrapper; the patterns are what the health dot reads.
+/// Empty: a managed process is whatever *this* repo runs long-term, and no two
+/// repos agree.
+///
+/// The drawer is the place they show up, and it stays empty until you declare
+/// one. `ManagedSpec` is the shape — a name, an argv, and the output patterns
+/// that decide whether it reads as healthy or failing.
 fn default_main_processes() -> Vec<ManagedSpec> {
-    vec![
-        ManagedSpec {
-            name: "ng-watch".to_string(),
-            command: ["mise", "run", "silent:exec:toolbox", "ng", "build", "--watch"]
-                .into_iter()
-                .map(String::from)
-                .collect(),
-            failure_patterns: [
-                "Error:",
-                "ERROR in",
-                "error TS",
-                "✘ [ERROR]",
-                "bundle generation failed",
-                // The runner's own failures, which none of the compiler patterns
-                // above catch: mise prefixes them `mise ERROR`, so a task that
-                // dies before Angular ever prints anything used to leave the
-                // watch looking healthy.
-                "mise ERROR",
-            ]
-            .into_iter()
-            .map(String::from)
-            .collect(),
-            // Matching is case-sensitive and Angular writes "Watching for file
-            // changes", so the lowercase spelling here never fired; the esbuild
-            // line below is what actually reports a healthy watch today. The two
-            // webpack-era strings stay for an older builder.
-            ok_patterns: [
-                "bundle generation complete",
-                "Watching for file changes",
-                "Build at:",
-                "successfully",
-            ]
-            .into_iter()
-            .map(String::from)
-            .collect(),
-            restart: RestartPolicy::Never,
-            autostart: false,
-        },
-        ManagedSpec {
-            name: "docker".to_string(),
-            command: ["docker", "compose", "up"]
-                .into_iter()
-                .map(String::from)
-                .collect(),
-            failure_patterns: ["exited with code", "Error response"]
-                .into_iter()
-                .map(String::from)
-                .collect(),
-            ok_patterns: ["Started", "Attaching to"]
-                .into_iter()
-                .map(String::from)
-                .collect(),
-            restart: RestartPolicy::Never,
-            autostart: false,
-        },
-    ]
+    Vec::new()
 }
 
 fn default_poll_seconds() -> u64 {
@@ -354,7 +308,7 @@ fn default_review_timeout() -> u64 {
 /// Where a `story+reply` position's story goes.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum Tracker {
+pub enum TrackerKind {
     /// No tracker. `story+reply` is never offered and would be refused.
     #[default]
     None,
@@ -365,9 +319,9 @@ pub enum Tracker {
     Stub,
 }
 
-impl Tracker {
+impl TrackerKind {
     pub fn is_configured(self) -> bool {
-        !matches!(self, Tracker::None)
+        !matches!(self, TrackerKind::None)
     }
 }
 
@@ -376,7 +330,7 @@ fn default_story_timeout() -> u64 {
 }
 
 fn default_output_language() -> String {
-    "Dutch".to_string()
+    "English".to_string()
 }
 
 /// Which code-hosting platform the repo lives on. The read/write seam is
@@ -702,33 +656,38 @@ mod tests {
     }
 
     #[test]
-    fn the_default_ng_watch_recognises_the_esbuild_recovery_line() {
-        // Its success line matches none of the older markers, so without this the
-        // rail's `build failing` never cleared after a fixed compile. ng-watch is
-        // a built-in default now, present without any profile.
+    fn a_bare_config_asks_nothing_of_the_repo_it_points_at() {
+        // The defaults used to be one monorepo's: a review-queue task only it had,
+        // its build watcher and docker stack, its tracker, its language. A repo
+        // without those read as broken rather than as not having them.
         let cfg = Config::parse(r#"{"main_checkout":"/tmp/x"}"#).expect("parse");
-        let ng = cfg
-            .main_processes
-            .iter()
-            .find(|p| p.name == "ng-watch")
-            .expect("ng-watch is a default process");
-        assert!(ng.ok_patterns.iter().any(|p| p == "bundle generation complete"));
-        assert!(!ng.autostart, "started by hand, matching the real acme config");
+        assert!(cfg.reviews_command.is_empty(), "no command every repo has");
+        assert!(cfg.main_processes.is_empty(), "no process every repo runs");
+        assert_eq!(cfg.tracker, TrackerKind::None);
+        assert_eq!(cfg.output_language, "English");
+        // `default_for` (the first-run write) goes through the same path, so a
+        // fresh install writes the same nothing.
+        assert!(Config::default_for(PathBuf::from("/tmp/x")).main_processes.is_empty());
     }
 
+    /// The example in the README has to keep working, because it is what anyone
+    /// declaring a build watcher will copy. The recovery line is the part that
+    /// cost a debugging session: esbuild's success marker matches none of the
+    /// older ones, so without it the rail's `build failing` never cleared after a
+    /// fixed compile.
     #[test]
-    fn a_bare_config_gets_the_acme_defaults() {
-        // The six settings the acme profile used to carry are the defaults now,
-        // so a checkout writes only `main_checkout` and gets the lot.
-        let cfg = Config::parse(r#"{"main_checkout":"/tmp/x"}"#).expect("parse");
-        assert_eq!(cfg.reviews_command, vec!["mise", "run", "reviews", "--json"]);
-        assert_eq!(cfg.tracker, Tracker::Shortcut);
-        assert_eq!(cfg.upstream_ref, "upstream/develop");
-        assert_eq!(cfg.upstream_remote, "upstream");
-        assert_eq!(cfg.output_language, "Dutch");
-        assert_eq!(cfg.main_processes.len(), 2);
-        // `default_for` (the first-run write) goes through the same path.
-        assert_eq!(Config::default_for(PathBuf::from("/tmp/x")).main_processes.len(), 2);
+    fn a_declared_watcher_clears_on_the_esbuild_recovery_line() {
+        let cfg = Config::parse(
+            r#"{"main_checkout":"/tmp/x","main_processes":[{
+                 "name":"ng-watch","command":["npx","ng","build","--watch"],
+                 "failure_patterns":["Error:","ERROR in"],
+                 "ok_patterns":["bundle generation complete"],
+                 "autostart":false}]}"#,
+        )
+        .expect("parse");
+        let ng = &cfg.main_processes[0];
+        assert!(ng.ok_patterns.iter().any(|p| p == "bundle generation complete"));
+        assert!(!ng.autostart);
     }
 
     #[test]
@@ -740,7 +699,7 @@ mod tests {
         .expect("parse");
         assert_eq!(cfg.port, 9000);
         assert_eq!(cfg.output_language, "English");
-        assert_eq!(cfg.tracker, Tracker::None);
+        assert_eq!(cfg.tracker, TrackerKind::None);
         assert_eq!(cfg.reviews_command, vec!["mise", "run", "reviews:mine"]);
         // ...but an unmentioned key still comes from the defaults.
         assert_eq!(cfg.upstream_ref, "upstream/develop");
@@ -783,7 +742,7 @@ mod tests {
         // and leaves everything else (here, just main_checkout) alone.
         let s = Settings {
             output_language: "English".into(),
-            tracker: Tracker::None,
+            tracker: TrackerKind::None,
             upstream_ref: "origin/main".into(),
             upstream_remote: "origin".into(),
             reviews_command: vec!["gh".into(), "pr".into()],
@@ -795,7 +754,7 @@ mod tests {
         assert_eq!(cfg.main_checkout, PathBuf::from("/tmp/x"), "untouched key kept");
         assert_eq!(cfg.port, 8080, "untouched key kept");
         assert_eq!(cfg.output_language, "English");
-        assert_eq!(cfg.tracker, Tracker::None);
+        assert_eq!(cfg.tracker, TrackerKind::None);
         assert_eq!(cfg.upstream_ref, "origin/main");
         assert_eq!(cfg.reviews_command, vec!["gh", "pr"]);
         assert!(cfg.main_processes.is_empty());
@@ -914,12 +873,13 @@ mod tests {
     }
 
     #[test]
-    fn a_fresh_config_gets_the_default_forge_and_review_command() {
-        // Talks to GitHub, and the review queue defaults to `mise run reviews`;
-        // clear the command in settings for a repo with no such task.
+    fn a_fresh_config_talks_to_github_and_no_review_queue() {
+        // The forge has a defensible default — GitHub is where the PRs are for
+        // most repos, and it is the only impl. The review queue does not: it runs
+        // a command this repo would have to already have.
         let cfg = Config::default_for(PathBuf::from("/tmp/x"));
         assert_eq!(cfg.forge, ForgeKind::GitHub);
-        assert_eq!(cfg.reviews_command, vec!["mise", "run", "reviews", "--json"]);
+        assert!(cfg.reviews_command.is_empty());
     }
 
     /// A checkout reached through a symlink has to resolve to the real path, or

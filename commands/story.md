@@ -32,7 +32,7 @@ on to the next.
 
 ## Where a story goes
 
-Follow the repo's own `shortcut` skill (`.claude/skills/shortcut/SKILL.md`) for the team, the
+If the repo has a tracker skill of its own (`.claude/skills/*/SKILL.md`), follow it for the team, the
 workflow state, the story type and the epic — it holds the ids and the routing rules, and they
 change without this prompt changing. Read it before your first call.
 

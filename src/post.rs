@@ -300,7 +300,7 @@ pub(crate) fn resolve(
     positions: &crate::proposal::ProposalSet,
     fresh: &Threads,
     batch: &Batch,
-    tracker: crate::config::Tracker,
+    tracker: crate::config::TrackerKind,
     // `None` on the first half, `Some` on the resume.
     //
     // Deliberately an `Option` around the map rather than an empty map: with a map
@@ -577,7 +577,7 @@ pub fn plan(
     positions: &crate::proposal::ProposalSet,
     fresh: &Threads,
     batch: &Batch,
-    tracker: crate::config::Tracker,
+    tracker: crate::config::TrackerKind,
 ) -> Result<Plan> {
     let handled = resolve(positions, fresh, batch, tracker, None)?;
     Ok(Plan {
@@ -1393,7 +1393,7 @@ mod tests {
 
     /// The story arms only exist with a tracker configured, so the tests that are
     /// not about that run with one.
-    const TRACKER: crate::config::Tracker = crate::config::Tracker::Stub;
+    const TRACKER: crate::config::TrackerKind = crate::config::TrackerKind::Stub;
 
     /// The first half: no phase has opened.
     const FIRST_HALF: Option<&std::collections::HashMap<String, String>> = None;
@@ -1827,7 +1827,7 @@ mod tests {
             &story_set(),
             &fresh,
             &batch("PRRT_1", 0, None),
-            crate::config::Tracker::None,
+            crate::config::TrackerKind::None,
             FIRST_HALF,
         )
         .unwrap_err()

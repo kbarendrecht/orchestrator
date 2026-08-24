@@ -40,7 +40,7 @@ use std::path::Path;
 /// `'' # can be` and injects a garbage Bearer, which surfaces later as "Shortcut
 /// is down" rather than "the token is not set".
 pub fn resolve_token(token_file: Option<&Path>) -> Result<String> {
-    if let Ok(v) = std::env::var("ORCHD_SHORTCUT_TOKEN") {
+    if let Ok(v) = std::env::var("ORCHD_TRACKER_TOKEN") {
         let v = v.trim().to_string();
         if !v.is_empty() {
             return Ok(v);
@@ -57,7 +57,7 @@ pub fn resolve_token(token_file: Option<&Path>) -> Result<String> {
         bail!("{} is empty", p.display());
     }
     bail!(
-        "no Shortcut token: set ORCHD_SHORTCUT_TOKEN or point `shortcut_token_file` at a \
+        "no tracker token: set ORCHD_TRACKER_TOKEN or point `tracker_token_file` at a \
          0600 file holding one"
     )
 }
@@ -329,7 +329,10 @@ async fn run_filer(
     use crate::model::{Kind, Session};
     use crate::pty::PtyHandle;
 
-    let token = resolve_token(app.cfg.shortcut_token_file.as_deref())?;
+    use crate::tracker::Tracker as _;
+    let tracker = crate::tracker::TrackerImpl::for_kind(app.cfg.tracker)
+        .context("no tracker configured, so there is nothing to file into")?;
+    let token = resolve_token(app.cfg.tracker_token_file.as_deref())?;
     let head_ref = {
         let inner = app.inner.read().await;
         inner
@@ -378,7 +381,7 @@ async fn run_filer(
     let (owner, repo) =
         crate::resolve_repo(app).context("no GitHub repo configured and none on the remote")?;
     let body = crate::prompt::render(
-        crate::prompt::STORY,
+        tracker.prompt(),
         &crate::prompt::Vars {
             pr,
             owner,
@@ -404,7 +407,7 @@ async fn run_filer(
         settings.to_string_lossy().into_owned(),
         // Scoped to the tracker server, reading the skill, and writing its report.
         //
-        // `mcp__shortcut` without parentheses, because MCP rules do not support
+        // `mcp__<server>` without parentheses, because MCP rules do not support
         // them — and the whole server rather than a list of tool names, because
         // the skill routes through `epics-search`, `labels-list`,
         // `workflows-list` and more, and an enumerated allowlist would fight it
@@ -417,12 +420,12 @@ async fn run_filer(
         // rule and denies everything. Where it may write is scoped by `--add-dir`
         // instead, which is the only mechanism that actually constrains a path.
         "--allowedTools".to_string(),
-        "mcp__shortcut Read Write".to_string(),
+        format!("mcp__{} Read Write", tracker.mcp_server()),
         // The scratch dir is outside the worktree, so it has to be granted.
         "--add-dir".to_string(),
         scratch.to_string_lossy().into_owned(),
     ];
-    if app.cfg.tracker == crate::config::Tracker::Stub {
+    if app.cfg.tracker == crate::config::TrackerKind::Stub {
         // Only the stub, and nothing else: `--strict-mcp-config` ignores every
         // configured server, which is what keeps a verification run from reaching
         // the real tracker by accident.
@@ -433,10 +436,10 @@ async fn run_filer(
 
     let (mut env, unset) = crate::config::transcript_env();
     env.push(("ORCH_SESSION_ID".to_string(), id.to_string()));
-    // What `${SHORTCUT_API_TOKEN}` in the repo's `.mcp.json` expands from. In the
+    // What the MCP entry's `${…}` expands from, named by the tracker. In the
     // child's environment, never in the settings file the daemon writes — that
     // would put a secret in `~/.config/orchd/`.
-    env.push(("SHORTCUT_API_TOKEN".to_string(), token));
+    env.push((tracker.token_env().to_string(), token));
 
     let spawned = PtyHandle::spawn(&cmd, &path, &env, &unset, crate::spawn::DEFAULT_SIZE)?;
     let worktree = path.clone();
@@ -555,7 +558,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "spawns a claude process"]
     async fn files_for_real_against_the_stub() {
-        use crate::config::{Config, Tracker};
+        use crate::config::{Config, TrackerKind};
 
         let cfg = Config::load_or_init(None).expect("the daemon's own config");
         // The agent has to run inside a real checkout of the repo, or `.mcp.json`
@@ -570,8 +573,8 @@ mod tests {
         let token_file = std::env::temp_dir().join("orchd-story-test-token");
         std::fs::write(&token_file, "stub-token-not-used-by-the-stub").unwrap();
         let cfg = Config {
-            tracker: Tracker::Stub,
-            shortcut_token_file: Some(token_file),
+            tracker: TrackerKind::Stub,
+            tracker_token_file: Some(token_file),
             // Long enough for a cold start plus the skill read.
             story_timeout_seconds: 300,
             ..cfg
@@ -669,15 +672,15 @@ mod tests {
     #[tokio::test]
     #[ignore = "spawns a claude process"]
     async fn a_run_that_overruns_is_killed_and_says_what_a_retry_does() {
-        use crate::config::{Config, Tracker};
+        use crate::config::{Config, TrackerKind};
 
         let cfg = Config::load_or_init(None).expect("config");
         let main = cfg.main_checkout.clone();
         let token_file = std::env::temp_dir().join("orchd-story-test-token");
         std::fs::write(&token_file, "stub-token").unwrap();
         let cfg = Config {
-            tracker: Tracker::Stub,
-            shortcut_token_file: Some(token_file),
+            tracker: TrackerKind::Stub,
+            tracker_token_file: Some(token_file),
             story_timeout_seconds: 5,
             ..cfg
         };

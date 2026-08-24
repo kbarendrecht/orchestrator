@@ -584,7 +584,7 @@ fn write_push_guard() -> Result<PathBuf> {
     Ok(path)
 }
 
-pub fn write_settings(port: u16) -> Result<PathBuf> {
+pub fn write_settings(port: u16, tracker: Option<&str>) -> Result<PathBuf> {
     let guard = write_push_guard()?;
     let base = format!("http://127.0.0.1:{port}/hooks");
     let http = |path: &str| {
@@ -631,10 +631,12 @@ pub fn write_settings(port: u16) -> Result<PathBuf> {
         // `.claude/settings.local.json`, which is gitignored, so a worktree does
         // not inherit them.
         //
-        // Named rather than `enableAllProjectMcpServers`: the repo declares nine
-        // servers including browser automation and three monitoring instances, and a
-        // story-filing agent has no business with any of them.
-        "enabledMcpjsonServers": ["shortcut"],
+        // Named rather than `enableAllProjectMcpServers`: a repo may declare a
+        // dozen servers — browser automation, dashboards, whatever — and a
+        // story-filing agent has no business with any of them. The name comes
+        // from the configured tracker, and with none configured the list is
+        // empty rather than approving something nothing will use.
+        "enabledMcpjsonServers": tracker.map(|t| vec![t]).unwrap_or_default(),
         "hooks": {
             "SessionStart":     [session_start],
             "UserPromptSubmit": [entry("user-prompt-submit")],
@@ -808,7 +810,7 @@ mod tests {
     fn hooks_carry_the_correlation_header_and_a_short_timeout() {
         let dir = std::env::temp_dir().join(format!("orchd-test-{}", std::process::id()));
         std::env::set_var("HOME", &dir);
-        let path = write_settings(7777).expect("write settings");
+        let path = write_settings(7777, Some("shortcut")).expect("write settings");
         let raw = std::fs::read_to_string(&path).expect("read back");
         let v: serde_json::Value = serde_json::from_str(&raw).unwrap();
         let stop = &v["hooks"]["Stop"][0]["hooks"][0];
