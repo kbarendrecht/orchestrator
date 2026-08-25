@@ -132,7 +132,10 @@ port, so a second instance refuses to start rather than fighting over
 - **Session names come from an undocumented field.** `store::ai_title` tails the
   transcript for `{"type":"ai-title","aiTitle":…}`. It degrades to the workspace
   name rather than failing, so a rail that suddenly reads `dfafdf` everywhere
-  means Claude Code changed the format.
+  means Claude Code changed the format. Identical titles across unrelated sessions
+  are Claude Code's doing, not a bug here: one `ai-title` string turned up in 8
+  transcripts across 3 repositories, each correctly attributed to its own
+  sessionId. The reader is right; the file says that.
 - **TODO.md has a daemon-written block.** Everything between the `orchd live
   findings` markers is rewritten on every poll. Edit outside it, and never commit
   the block's churn.
@@ -241,6 +244,29 @@ port, so a second instance refuses to start rather than fighting over
 - **Pushes are guarded.** `--force-with-lease` only, no `push -u`, no protected
   refs; `guards/push.py` denies the rest at `PreToolUse`. Never `git merge` into a
   branch here, rebase.
+- **`cargo fmt` is not this repo's formatter.** There is no `rustfmt.toml` and
+  `main` is not stable-rustfmt-clean, so running it out of habit reformats around
+  27 files you never touched. Revert everything outside your own change before
+  committing.
+- **`git rebase --exec 'cargo test'` did something unexplained.** It put test
+  fixture commits into the repo and moved its HEAD. Recovered fully, but the
+  mechanism was never found and the obvious hypothesis (rebase exporting
+  `GIT_DIR`) was disproved. It matters because the pre-commit hook also runs
+  `cargo test` while git holds the repo. Avoid that verification route until
+  somebody understands it.
+- **A test that asserts on git's own error wording fails on an older git.** Git
+  says "already used by worktree at" from 2.35 and "already checked out at"
+  before it, and 2.34.1 is what some machines have — so the worktree guard and the
+  swap test both failed for a reason that had nothing to do with the code.
+  `git::refused_as_already_checked_out` matches either. The refusal is the
+  invariant; its phrasing is not.
+- **Driving the API by hand has four traps.** The header is `x-orch-token`
+  (`Authorization: Bearer` is not read), the route is `/api/state` (`/api/snapshot`
+  does not exist, and an unknown route answers `{}`, which reads exactly like an
+  empty daemon), a POST needs an `Origin` matching the port or it is "bad origin",
+  and the config key is `worktrees_subdir`. An unknown config key is ignored in
+  silence, so `worktrees_dir` leaves the daemon managing `.claude/worktrees` and
+  logging that it is "ignoring worktree outside the managed dir".
 
 ## Releases
 
