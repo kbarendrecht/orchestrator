@@ -467,19 +467,30 @@ fn all_summary_threads(
 
 /// Whether a thread's last word is yours, one way or another.
 ///
-/// Either you replied — nothing after your comment — or the reviewer had the
-/// last word and you gave it a 👍. The thumbs-up is not decoration: it is the
-/// convention `commands/resolve.md` writes for "applied as asked, nothing to
-/// add", so reading it back is how the daemon sees work the flow finished.
+/// The rule itself is [`crate::forge::model::answered`], shared with
+/// `Thread::is_answerable`; this is only the part that knows where the two facts
+/// live in the poll's own JSON. The summary query asks for one comment, newest
+/// first, so `nodes/0` is the last word.
 fn acknowledged(thread: &Value, viewer: &str) -> bool {
     let Some(last) = thread.pointer("/comments/nodes/0") else {
         // No comments at all is not a thread anybody is waiting on.
         return true;
     };
-    if last.pointer("/author/login").and_then(|l| l.as_str()) == Some(viewer) {
-        return true;
-    }
-    last.get("reactionGroups")
+    let author = last
+        .pointer("/author/login")
+        .and_then(|l| l.as_str())
+        .unwrap_or("ghost");
+    crate::forge::model::answered(author, viewer_thumbed(last), viewer)
+}
+
+/// Did you 👍 this comment? Read out of a `reactionGroups` selection.
+///
+/// Its own function because two queries select it and both hand it to the same
+/// rule — the poll's, straight off the JSON, and the detailed fetch's, on its way
+/// into [`Comment::viewer_thumbed`].
+fn viewer_thumbed(comment: &Value) -> bool {
+    comment
+        .get("reactionGroups")
         .and_then(|g| g.as_array())
         .map(|groups| {
             groups.iter().any(|g| {
@@ -492,8 +503,14 @@ fn acknowledged(thread: &Value, viewer: &str) -> bool {
 
 /// Count open threads and, of those, the ones still waiting on you.
 ///
-/// An outdated thread is about code that no longer exists, so it does not gate
-/// `/resolve`. And closing a thread is the reviewer's button, so "unresolved" is
+/// An outdated thread is about code that no longer exists, so it does not *nag*:
+/// it is dropped here and nowhere else. `Thread::is_answerable` keeps it, because
+/// the point can still stand and the flow can still answer it — the two are
+/// answering different questions, and this is the pair to the note there. What
+/// they must never disagree on is the last word, which is why both go through
+/// `model::answered`.
+///
+/// And closing a thread is the reviewer's button, so "unresolved" is
 /// not the same question as "waiting on you" — answer every thread and the count
 /// does not move. What moves is who spoke last, and whether you acknowledged them:
 /// `/resolve` replies where there is something to say and leaves a 👍 where there
@@ -677,7 +694,8 @@ fn threads_query(owner: &str, name: &str, pr: u64, after: Option<&str>) -> Strin
           startLine
           originalLine
           comments(first: 50) {{
-            nodes {{ databaseId author {{ login }} body createdAt url diffHunk }}
+            nodes {{ databaseId author {{ login }} body createdAt url diffHunk
+              reactionGroups {{ content viewerHasReacted }} }}
           }}
         }}
       }}
@@ -817,6 +835,7 @@ fn parse_comment(n: &Value) -> Option<Comment> {
             .get("diffHunk")
             .and_then(|s| s.as_str())
             .map(|s| s.to_string()),
+        viewer_thumbed: viewer_thumbed(n),
     })
 }
 

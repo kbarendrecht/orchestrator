@@ -578,16 +578,21 @@ fn start_pr_poller(app: Arc<AppState>) {
                             let heads: Vec<(u64, Option<String>)> =
                                 prs.iter().map(|p| (p.number, p.head_sha.clone())).collect();
                             inner.with_automation("pr poll", |a| {
+                                let mut changed = false;
                                 for (number, head) in heads {
                                     let alive = matches!(
                                         a.get(number),
                                         Some(fix_pr::PrAutomation::Running { .. })
                                     );
                                     if !alive {
-                                        a.reconcile_head(number, head.as_deref());
+                                        // Reported rather than assumed, so a poll
+                                        // that changed nothing does not rewrite
+                                        // `automation.json` — and the poll that
+                                        // adopts a baseline does.
+                                        changed |= a.reconcile_head(number, head.as_deref());
                                     }
                                 }
-                                true
+                                changed
                             });
                             inner.prs = prs;
                             inner.pr_error = None;

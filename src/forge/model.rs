@@ -95,6 +95,22 @@ impl Pr {
 // Review threads
 // ---------------------------------------------------------------------------
 
+/// Has the last word on a thread been dealt with?
+///
+/// The one definition, over the last comment's author and whether you reacted to
+/// it. Either you replied — nothing came after you — or the reviewer had the last
+/// word and you 👍'd it, which is the convention `commands/resolve.md` writes for
+/// "applied as asked, nothing to add".
+///
+/// One function because two existed: the poll read the reaction and the resolve
+/// flow could not, so a thread the flow had answered with a 👍 stayed answerable
+/// and the overlay kept offering it. Takes the two facts rather than a thread,
+/// because the poll judges raw GraphQL and the flow judges a parsed [`Thread`] —
+/// the shapes differ, the rule must not.
+pub fn answered(last_author: &str, viewer_thumbed: bool, viewer: &str) -> bool {
+    last_author == viewer || viewer_thumbed
+}
+
 /// One comment in a review thread.
 #[derive(Debug, Clone, Serialize)]
 pub struct Comment {
@@ -107,6 +123,13 @@ pub struct Comment {
     /// The anchored patch text. GitHub hangs it off every comment; only the
     /// first one's is worth rendering, so `Thread::diff_hunk` reads that.
     pub diff_hunk: Option<String>,
+    /// You have 👍'd this comment.
+    ///
+    /// Fetched because the poll and the resolve flow have to agree on what a
+    /// thumbs-up means, and only the poll could see one: the detailed thread query
+    /// did not ask for reactions, so `is_answerable` re-offered every thread the
+    /// flow had already answered with a 👍 — the review's §3 finding.
+    pub viewer_thumbed: bool,
 }
 
 /// An unresolved conversation on a PR.
@@ -145,14 +168,21 @@ impl Thread {
     /// Whether this thread still wants something from you.
     ///
     /// Resolved threads are done. **Outdated ones are not skipped** — the code
-    /// moved, but the point may still stand. A thread whose last comment is
-    /// already yours has been answered; re-answering it is noise.
+    /// moved, but the point may still stand. Everything else is [`answered`],
+    /// which the poll's count uses too, so the two cannot drift.
+    ///
+    /// This deliberately still differs from the poll on one thing, and the
+    /// difference is not an oversight: the poll drops outdated threads from
+    /// `awaiting_you` because they should not nag, while this includes them
+    /// because they can be answered. The two questions are "should this PR ask for
+    /// your attention" and "is there anything here you could say" — see
+    /// `count_open`, which says the same thing from the other side.
     pub fn is_answerable(&self, viewer: &str) -> bool {
         if self.is_resolved {
             return false;
         }
         match self.comments.last() {
-            Some(last) => last.author != viewer,
+            Some(last) => !answered(&last.author, last.viewer_thumbed, viewer),
             // A thread with no comments cannot be answered.
             None => false,
         }
@@ -279,6 +309,44 @@ mod tests {
             comments: Vec::new(),
             answerable: true,
         }
+    }
+
+    fn said(author: &str, thumbed: bool) -> Comment {
+        Comment {
+            database_id: 1,
+            author: author.into(),
+            body: "b".into(),
+            created_at: "2026-08-17T00:00:00Z".into(),
+            url: "u".into(),
+            diff_hunk: None,
+            viewer_thumbed: thumbed,
+        }
+    }
+
+    /// The §3 symptom, from the side that had it wrong: the flow's own predicate
+    /// could not see a 👍, so the overlay kept offering a thread `/resolve` had
+    /// already answered that way — while the poll counted the same thread handled.
+    #[test]
+    fn a_thread_you_thumbed_is_not_still_asking() {
+        let mut t = thread_at(Some("a.ts"), Some(1));
+        t.comments = vec![said("me", false), said("them", false)];
+        assert!(t.is_answerable("me"), "they had the last word and nothing else");
+
+        t.comments = vec![said("me", false), said("them", true)];
+        assert!(!t.is_answerable("me"), "a 👍 is an answer — the flow writes it as one");
+        // And the poll's rule agrees, which is the whole point of sharing it.
+        assert!(answered("them", true, "me"));
+        assert!(answered("me", false, "me"));
+        assert!(!answered("them", false, "me"));
+
+        // Outdated stays answerable here on purpose: the code moved, the point may
+        // not have. The poll drops it from `awaiting_you` instead, so a PR whose
+        // only open thread is outdated does not nag while the flow can still work.
+        t.comments = vec![said("them", false)];
+        t.is_outdated = true;
+        assert!(t.is_answerable("me"));
+        t.is_resolved = true;
+        assert!(!t.is_answerable("me"), "resolved is done, whoever spoke last");
     }
 
     fn pr(number: u64, head: &str, base: &str) -> Pr {

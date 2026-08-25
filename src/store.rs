@@ -159,13 +159,25 @@ pub fn load_automation() -> crate::fix_pr::AutomationStore {
         }
     };
     // Orphaned Running is demoted to Exhausted: the run is not going to finish,
-    // and pretending it might would block the PR forever.
+    // and pretending it might would block the PR forever. With no head — nobody
+    // knows what the crashed run left, and the `""` this used to write matched no
+    // real sha, so the next poll read it as "you moved the branch" and threw the
+    // record away.
     for state in store.by_pr.values_mut() {
-        if let crate::fix_pr::PrAutomation::Running { .. } = state {
-            *state = crate::fix_pr::PrAutomation::Exhausted {
-                at_head: String::new(),
-                at: std::time::SystemTime::now(),
-            };
+        match state {
+            crate::fix_pr::PrAutomation::Running { .. } => {
+                *state = crate::fix_pr::PrAutomation::Exhausted {
+                    at_head: None,
+                    at: std::time::SystemTime::now(),
+                };
+            }
+            // The old sentinel, from a file written before `at_head` could say
+            // "unknown". Read as what it meant rather than as a sha.
+            crate::fix_pr::PrAutomation::Exhausted { at_head, .. } => {
+                if at_head.as_deref() == Some("") {
+                    *at_head = None;
+                }
+            }
         }
     }
     store
