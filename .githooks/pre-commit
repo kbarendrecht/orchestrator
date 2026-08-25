@@ -81,9 +81,9 @@ if { [ "$rust" = 1 ] || [ "$e2e" = 1 ]; } && [ "${E2E_EVERY:-5}" != 0 ]; then
   n=$(( $(cat "$counter" 2>/dev/null || echo 0) + 1 ))
   if [ "$n" -lt "${E2E_EVERY:-5}" ]; then
     printf '%s\n' "$n" > "$counter"
-    echo "pre-commit: e2e in $(( ${E2E_EVERY:-5} - n )) more commit(s) (E2E_EVERY=1 to force)"
+    echo "pre-commit: e2e in $(( ${E2E_EVERY:-5} - n )) more qualifying commit(s) (E2E_EVERY=1 to force)"
   else
-    echo "pre-commit: running the e2e flows (~45s, every ${E2E_EVERY:-5}th such commit)"
+    echo "pre-commit: running the e2e flows (~45s; every ${E2E_EVERY:-5} qualifying commits)"
     if node tools/e2e/run.mjs; then
       printf '0\n' > "$counter"
     else
