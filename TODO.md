@@ -18,7 +18,8 @@ Everything outside that block is hand-written and survives.
   second human identity: a throwaway account, or a fine-grained token for one.
 
 - **The two-phase resolve flow — proven on a fixture, not yet on real work.**
-  `docs/resolve-flow-plan.md` has the design and the nine decisions behind it.
+  `docs/resolve-flow-plan.md` has the nine decisions behind it, and the three that
+  landed differently once driven.
   Every phase has landed and a run has answered real reviewers: plan → session → a
   commit per thread → the real diff beside the drafted reply → the daemon posting on
   its own credential, with nothing pushed and no thread resolved until you press
@@ -274,6 +275,6 @@ Everything outside that block is hand-written and survives.
 
 Rewritten by the daemon on every poll. Edit anything outside this block.
 
-Nothing outstanding.
+- **GitHub token is gh's** — it carries write scopes; §6 wants a read-only PAT in `ORCHD_GITHUB_TOKEN` or `github_token_file`.
 
 <!-- <<< orchd live findings <<< -->
