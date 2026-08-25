@@ -927,10 +927,10 @@ pub async fn ensure_pr_worktree(app: &Arc<AppState>, pr: u64, head_ref: &str) ->
 /// — main is exclusive, and switching the one tree every worktree is cut from
 /// under uncommitted work is not recoverable by pressing back.
 pub async fn switch_main_to_pr(app: &Arc<AppState>, head_ref: &str) -> Result<String> {
-    if let Some(held) = {
-        let inner = app.inner.read().await;
-        inner.workspaces.get(MAIN).and_then(|w| w.occupant)
-    } {
+    // The canonical live-filtered read, not the bare `occupant`: a stale occupant
+    // (session gone, `release_main` not yet run) must not block moving the checkout
+    // when `claim_main` would already let a new session in.
+    if let Some(held) = app.main_occupant().await {
         bail!(
             "a session already holds main ({}); end it before moving the checkout",
             &held.to_string()[..8]
