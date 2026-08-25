@@ -91,7 +91,17 @@ pub enum Verdict {
 pub fn evaluate(input: &GuardInput) -> Verdict {
     let pr = input.pr;
 
-    // Authorship: the head repo must be your fork (§8).
+    // Authorship: the head repo must be your fork (§8). A `fix-pr` run rebases and
+    // force-pushes, so it must only ever touch a repo that is yours — and an
+    // *unknown* login fails closed, because a run that force-pushes must never
+    // guess it may write here. (The viewer is your own login; sourcing it from
+    // `pr.head_owner` would compare the owner to itself and never refuse.)
+    if input.viewer.is_empty() {
+        return no(format!(
+            "#{} cannot be remediated: your GitHub login is unknown",
+            pr.number
+        ));
+    }
     if let Some(owner) = &pr.head_owner {
         if owner != input.viewer {
             return no(format!(
@@ -270,6 +280,21 @@ mod tests {
         let mut p = pr(1);
         p.head_owner = Some("someone-else".into());
         assert!(matches!(evaluate(&input(&p)), Verdict::No { .. }));
+    }
+
+    /// Fails closed: an unknown login must not authorise a force-pushing run. This
+    /// is also what a caller that mis-sourced the viewer (e.g. from `head_owner`,
+    /// leaving it to match itself) should not be able to slip past — the empty
+    /// viewer is refused outright.
+    #[test]
+    fn an_unknown_viewer_is_refused() {
+        let p = pr(1);
+        let mut i = input(&p);
+        i.viewer = "";
+        match evaluate(&i) {
+            Verdict::No { reason } => assert!(reason.contains("login is unknown"), "{reason}"),
+            other => panic!("expected No, got {other:?}"),
+        }
     }
 
     #[test]
