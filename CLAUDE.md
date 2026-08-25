@@ -10,8 +10,9 @@ are already in there with the reason they were not done.
 
 ```
 cargo check                         # the daemon
-cargo test                          # 283 tests, all in-tree
+cargo test                          # 340 tests, all in-tree
 mise run check-web                  # type-check the SPA + enforce its module graph
+mise run e2e                        # 11 flows against a real daemon, ~45s
 cargo run -p orchestrator-desktop   # the app, daemon embedded in-process
 mise run shot                       # screenshot the running SPA (drives Chrome)
 ```
@@ -22,7 +23,9 @@ The agent binary is `claude`, installed by the `claude-code` mise tool so one
 **One daemon at a time.** The lock is `~/.config/orchd/instance.pid`, not the
 port, so a second instance refuses to start rather than fighting over
 `sessions.json` and the hook settings file. Close the running app before
-`cargo run`.
+`cargo run`. The file is deliberately **left behind** at shutdown —
+`instance::holder` decides by asking whether the pid is alive — so waiting for it
+to disappear is waiting for something that never happens.
 
 ## Things that will bite you
 
@@ -40,6 +43,12 @@ port, so a second instance refuses to start rather than fighting over
   refuses if the committed copy no longer matches the structs.
   `--no-verify` is a fine thing to reach for mid-refactor; the real gate is
   `mise run check-web`.
+  **Every fifth Rust-or-`tools/e2e/` commit it also runs the e2e flows**, ~45s
+  instead of ~2s — a middle ground, since running them always teaches everybody
+  `--no-verify` and never running them leaves those faults to CI. The counter is
+  in `.git/`, only qualifying commits spend it, and a *failure does not reset it*
+  so the next commit tries again rather than burying a break for four more.
+  `E2E_EVERY=1` forces a run, `E2E_EVERY=0` turns it off.
 - **`mise run check-web` is the SPA's gate, and it bites.** Three things in one:
   it regenerates `web/snapshot.d.ts` and fails if the committed copy drifted, it
   runs `tsc --noEmit --checkJs` over every SPA file, and it runs
@@ -129,6 +138,14 @@ port, so a second instance refuses to start rather than fighting over
 - **Transcript paths slug both `/` and `.`.** `.claude/worktrees/x` becomes
   `--claude-worktrees-x`, not `-.claude-...`. Getting this wrong makes every
   worktree session look like it has no transcript.
+- **A transcript is keyed by session uuid, so two sessions in one directory do not
+  interleave.** Said here because the opposite was written into two code comments
+  and a domain finding, and it justified a guard that refused reviewing any PR
+  whose worktree you had torn down. `transcript_file`, `find_transcript` and
+  `archive`'s copy all key on the uuid; sharing a directory slug gets you two
+  files. The real hazard of reusing a worktree name is elsewhere — a resume landing
+  in a tree cut again for something else — and `worktree::branch_drift` says so
+  rather than refusing.
 - **Session names come from an undocumented field.** `store::ai_title` tails the
   transcript for `{"type":"ai-title","aiTitle":…}`. It degrades to the workspace
   name rather than failing, so a rail that suddenly reads `dfafdf` everywhere
@@ -182,12 +199,29 @@ port, so a second instance refuses to start rather than fighting over
 - **Hooks are observers, not gatekeepers.** They answer immediately and finish
   their work detached, because Claude gives a hook one second and a dropped
   future silently loses the state change. Do not make a hook wait on anything.
+- **A hook for a session the daemon has not recorded yet is dropped in silence.**
+  `spawn_session` inserts the record *after* `PtyHandle::spawn`, so an agent quick
+  enough to fire `UserPromptSubmit` in that window loses it — and `Stop` arriving
+  after the insert then leaves a session at `your_turn` with `had_a_turn` false, a
+  conversation the rail will not offer to fork or resume. Real Claude Code takes
+  human-scale seconds to a first prompt and never lands there; anything scripted
+  does, which is why the e2e agent waits to see itself in `sessions.json` before
+  speaking.
 - **`github_write.rs` will not resolve a thread, approve, merge or open a PR.**
   That is a design boundary, not a gap. Resolving is the comment author's button.
 - **One pty exit, one observer.** `spawn::watch_session_exit` is the only thing
   that waits on a session's handle; it dispatches onward (a fix run's verdict goes
   to `fix_pr::settle`). A second `pty.wait()` on the same handle would work and
   then rot, because "is this over" would have two answers maintained apart.
+- **Main's claim belongs to the session record, and a relocation reuses the id.**
+  `claim_main` runs before anything is created so a refusal costs no worktree and
+  no pty — but until the record is installed the map still describes the *outgoing*
+  session, whose exit watcher is entitled to settle it, and `release_main` keys on
+  the id. So the claim the incoming session just took gets handed back, and main
+  holds a live agent with **no occupant recorded** — the value `switch_main_to_pr`
+  reads before moving the checkout. `spawn::spawn_session` closes the window with
+  `reclaim_main` after the insert. Reproduced one run in four by the two-way swap
+  e2e flow, and invisible to every unit test.
 - **Mutating a durable store carries its own write.** `automation`, `manual` and
   `stories` are changed through `Inner::with_automation` / `with_manual` /
   `with_stories`, which persist and log with the caller's own context. Do not
@@ -207,7 +241,22 @@ port, so a second instance refuses to start rather than fighting over
   makes a fixture daemon safe: config, `sessions.json`, `automation.json`,
   `hooks.json`, the instance lock and the findings block all follow it. Overriding
   `HOME` would do the same for free and is wrong — `claude` reads its credentials
-  from there, so every spawned session would come up unauthenticated.
+  from there, so every spawned session would come up unauthenticated. The one
+  exception is `mise run e2e`, where the agent is a fake with no credentials to
+  lose, so relocating `HOME` is what keeps transcripts out of your
+  `~/.claude/projects`.
+- **`mise run e2e` needs no product change, because the agent is a PATH lookup.**
+  The daemon spawns `CommandBuilder::new("claude")` and reaches GitHub only through
+  `Command::new("curl")`, so a shim earlier on PATH substitutes either without the
+  daemon knowing. Everything else in those flows is real — real worktrees, real
+  branch moves, real `stash create` carries, real locks, the real API, and the hooks
+  read out of the settings file the daemon itself wrote, so a change to
+  `hooks::write_settings` changes what they exercise instead of passing them by.
+  Read `docs/e2e.md` before adding one: it has the sandbox options, why every wait
+  is a condition rather than a sleep, and the limits (no SPA, no real round trip to
+  GitHub, nothing about what a fix run *does*). What they buy is the class of fault
+  unit tests structurally cannot see: the first full run turned up a `claim_main`
+  race, and driving them from the hook turned up what git hands a hook.
 - **The app's modifier is ⌘ on macOS and Ctrl elsewhere** (`core.appMod`, from the
   `__ORCH_PLATFORM__` the daemon substitutes into the page — told, not sniffed).
   Worth knowing why rather than just that: on a Mac ⌘ never reaches the pty, so the
