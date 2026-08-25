@@ -61,7 +61,7 @@ struct Workspace {
     branches: HashSet<String>,
     processes: Vec<Process>,
     occupant: Option<SessionId>, // main only: exclusivity mutex
-    capabilities: TestCapabilities,  // §7
+    tree: Tree,                  // last reconcile: changed files, base, divergence
 }
 
 enum WorkspaceKind {
@@ -555,96 +555,25 @@ not required for v1.
 
 ---
 
-## 7. Test capability model — gates all automation
+## 7. Test capability model — **removed**
 
-Two independent questions per suite, per workspace: **does the result reflect
-this workspace's code**, and **does running it mutate state someone else owns**.
+This section specified a `TestCapabilities` model — `Suite` (static/unit/
+integration/e2e), a composer autoload probe, lockfile-drift detection, per-suite
+trust and isolation — that gated all automation. **None of it exists.** It was cut
+wholesale for open source: it answered "does a command in this worktree reflect
+*this* worktree or silently main's", which is a question only a shared-stack
+monorepo raises, and every other repo ran it empty. `TODO.md`'s decisions section
+has what went with it and the one thing to do if that ever bites
+(`MAX_AUTOMATION = 1`).
 
-```rust
-struct TestCapabilities { suites: HashMap<Suite, Capability> }
+Kept as a numbered heading because the spec's `§` references are cited throughout
+the code and renumbering would break every one of them. **Rule 2** — a run holds
+shared resources, tracked as `locks_held` — is the only part still standing, and
+`state.rs` cites it.
 
-enum Suite { Static, Unit, Integration, E2E }
-
-struct Capability {
-    runnable: bool,
-    trust: Trust,
-    isolation: Isolation,
-    command: Vec<String>,          // exact invocation for this workspace
-}
-
-enum Trust {
-    Verified,     // result reflects this workspace's code
-    Stale,        // reflects this workspace, but a cached artifact may be out of date
-    Untrusted,    // result is meaningless here — never act on it
-}
-
-enum Isolation {
-    Isolated,
-    SharedResource(ResourceId),    // requires a global lock before running
-}
-```
-
-### Current state (post-WIP)
-
-The WIP commit gives worktrees a real `vendor/` with copied autoload files and a
-per-package symlink, so composer's `$baseDir` resolves to the worktree; and
-integration reads schema, seeds and config overlay from the running checkout.
-
-| Suite | Worktree trust | Isolation | Notes |
-|---|---|---|---|
-| Static | Verified | Isolated | mise resolves worktree as project root |
-| Unit | **Verified** | Isolated | shim and `auto_prepend_file` no longer needed |
-| Integration | **Verified** | Isolated per compose project | ⚠ confirm `pre-bash` no longer blocks it (§12) |
-| E2E | Verified | **`SharedResource("main:instances")`** | teardown anchors the instances dir on the main checkout |
-
-### Rules
-
-1. `/green` may act only if **every failing suite** is `runnable && trust !=
-   Untrusted` in the workspace it would run in. Otherwise the PR enters
-   **`NeedsMain`**: a button on the PR, never auto-run. Auto-occupying main would
-   interrupt your visual work — never a silent trade.
-2. **Shared-resource locks.** A suite with `Isolation::SharedResource(r)` takes a
-   global lock on `r` before running. `main:instances` conflicts with **main
-   occupancy** as well as with itself: e2e from a worktree reaches into the main
-   checkout, so it must not run while you are working there, and two e2e runs must
-   never overlap. This is the one place automation touches main, and it does so
-   through the lock, not by occupying the workspace.
-
-   **2a. You preempt automation, always.** Clicking "new session in main" while
-   the lock is held does not queue you and does not fail. It presents an inline
-   choice naming the run, its PR, and how long it has been going:
-
-   - **wait** — your session starts automatically when the lock releases
-   - **kill the run** — the automation session ends, the lock releases now
-
-   Killing costs nothing recoverable: the PR becomes `Exhausted` at its current
-   head and is eligible again the moment you touch the branch (§8). A background
-   job must never outrank you at your own desk, and silently queueing you behind
-   a ten-minute e2e run would do exactly that.
-3. **Dep staleness.** Copied autoload files freeze at copy time, and dep changes
-   remain a main-checkout operation. Before any PHP suite in a worktree, compare
-   `composer.lock` (hash, not mtime) between main and the worktree; on mismatch
-   mark the suite `Stale` and refuse to let `/green` act on its result. Same check
-   for `package-lock.json` / `yarn.lock` and `node_modules`. Surface it in the rail
-   as "deps stale — re-link from main", not as a test failure.
-4. **Preflight assertion.** Cheap and worth keeping even though the WIP fixes the
-   underlying cause — it is the regression detector for exactly this class of bug:
-   ```bash
-   php -r 'require "vendor/autoload.php"; echo (new ReflectionClass(Foo::class))->getFileName();'
-   ```
-   Anything resolving outside the worktree is a hard failure, not a warning.
-5. Container commands from a worktree always use `docker exec <container>`, never
-   `docker compose exec` or a task-runner wrapper — those resolve the
-   wrong compose project from a worktree dir.
-6. Capabilities are **config, not hardcoded.** They have already changed once.
-
-### Path mapping
-
-Host `<main>/.claude/worktrees/<name>` ↔ container `<repo-root>/.claude/worktrees/<name>`.
-The daemon owns this mapping for every command it builds and every path it parses
-back out of test output.
-
----
+`fix-pr` now keeps only the guards that protect the machine and the repo:
+authorship (can you push to the head repo), one run per PR, branch-busy, and the
+concurrency cap.
 
 ## 8. Automation
 
@@ -921,13 +850,3 @@ execution:
   state and can never trigger a spawn, a push, or a teardown.
 - **Never expose a generic "run this command" endpoint.** Every action the SPA can
   trigger is a named, enumerated operation with validated arguments.
-
-## 13. Open questions
-
-- Does the WIP also lift the `pre-bash` block on integration tests in worktrees,
-  or is that a separate change still pending?
-- Can e2e teardown be made to anchor the instances dir on the *running* checkout
-  too? That would remove the last shared-resource lock and make automation fully
-  parallel.
-- How are copied autoload files refreshed after a `composer install` in main —
-  manual re-link, or should the daemon detect and offer it?
