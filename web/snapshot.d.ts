@@ -145,7 +145,19 @@ children: Array<number>, };
  * *and* unnecessary. The daemon's job is only to avoid starting a second run
  * and to be honest about a run that gave up.
  */
-export type PrAutomation = { "state": "running", session: string, started: { secs_since_epoch: number, nanos_since_epoch: number }, } | { "state": "exhausted", at_head: string, at: { secs_since_epoch: number, nanos_since_epoch: number }, };
+export type PrAutomation = { "state": "running", session: string, started: { secs_since_epoch: number, nanos_since_epoch: number }, } | { "state": "exhausted", 
+/**
+ * The head this exhaustion is measured against, once anything knows it.
+ *
+ * `None` means "not established yet", and the next poll adopts whatever
+ * it finds. Two things wrote a wrong answer here before, and both
+ * cleared the record on the very next poll — erasing the "gave up, wants
+ * you" signal the run had just set. `settle` copied the head from the
+ * *previous* poll, which the run's own force-push had already moved past;
+ * and a crashed run was demoted with `""`, which can never equal a real
+ * sha. Neither could be told apart from you moving the branch.
+ */
+at_head: string | null, at: { secs_since_epoch: number, nanos_since_epoch: number }, };
 
 export type PrView = { rank: number, 
 /**

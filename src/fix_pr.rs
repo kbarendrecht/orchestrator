@@ -24,7 +24,17 @@ pub enum PrAutomation {
     },
     /// The run stopped without turning the PR green. It wants you.
     Exhausted {
-        at_head: String,
+        /// The head this exhaustion is measured against, once anything knows it.
+        ///
+        /// `None` means "not established yet", and the next poll adopts whatever
+        /// it finds. Two things wrote a wrong answer here before, and both
+        /// cleared the record on the very next poll — erasing the "gave up, wants
+        /// you" signal the run had just set. `settle` copied the head from the
+        /// *previous* poll, which the run's own force-push had already moved past;
+        /// and a crashed run was demoted with `""`, which can never equal a real
+        /// sha. Neither could be told apart from you moving the branch.
+        #[serde(default)]
+        at_head: Option<String>,
         #[cfg_attr(test, ts(type = "{ secs_since_epoch: number, nanos_since_epoch: number }"))]
         at: SystemTime,
     },
@@ -44,13 +54,35 @@ impl AutomationStore {
     /// Exhaustion clears when the head moves while no run is alive: nothing of
     /// the daemon's was running and the branch changed, therefore you did it.
     /// No commit markers, no timestamps, no provenance (§8).
-    pub fn reconcile_head(&mut self, pr: u64, head: Option<&str>) {
-        let Some(head) = head else { return };
-        if let Some(PrAutomation::Exhausted { at_head, .. }) = self.by_pr.get(&pr) {
-            if at_head != head {
-                self.by_pr.remove(&pr);
+    ///
+    /// A record with no head yet **adopts** this one rather than clearing. That is
+    /// what makes the rule mean what it says: the daemon cannot know the head a
+    /// run left — the run's last act is a force-push, after the poll that could
+    /// have seen it — so the first poll afterwards establishes the baseline and
+    /// only a move *after* that is yours. The cost is one poll interval of grace:
+    /// a push of yours landing in that window is absorbed into the baseline
+    /// instead of clearing the record. Worth it, since the bug it replaces
+    /// cleared the record every single time.
+    ///
+    /// Returns whether anything changed, so the caller can carry the write.
+    pub fn reconcile_head(&mut self, pr: u64, head: Option<&str>) -> bool {
+        let Some(head) = head else { return false };
+        // Decided before acting, because clearing takes the map mutably while the
+        // record it is deciding about is still borrowed.
+        let moved = match self.by_pr.get(&pr) {
+            Some(PrAutomation::Exhausted { at_head: Some(h), .. }) => h != head,
+            Some(PrAutomation::Exhausted { at_head: None, .. }) => false,
+            _ => return false,
+        };
+        if moved {
+            self.by_pr.remove(&pr);
+        } else if let Some(PrAutomation::Exhausted { at_head, .. }) = self.by_pr.get_mut(&pr) {
+            if at_head.is_some() {
+                return false;
             }
+            *at_head = Some(head.to_string());
         }
+        true
     }
 }
 
@@ -197,8 +229,11 @@ pub async fn settle(app: &std::sync::Arc<crate::state::AppState>, pr: u64) {
 /// up, so neither is worth remembering.
 fn verdict(found: Option<&Pr>) -> Option<PrAutomation> {
     match found {
+        // No head: the poll that produced `p` ran *before* the run's last
+        // force-push, so `p.head_sha` is a sha this branch has already left. The
+        // next poll establishes the real one — see `reconcile_head`.
         Some(p) if ended_red(p) => Some(PrAutomation::Exhausted {
-            at_head: p.head_sha.clone().unwrap_or_default(),
+            at_head: None,
             at: SystemTime::now(),
         }),
         _ => None,
@@ -314,7 +349,7 @@ mod tests {
         store.by_pr.insert(
             7,
             PrAutomation::Exhausted {
-                at_head: "abc".into(),
+                at_head: Some("abc".into()),
                 at: SystemTime::now(),
             },
         );
@@ -330,12 +365,37 @@ mod tests {
         store.by_pr.insert(
             7,
             PrAutomation::Exhausted {
-                at_head: "abc".into(),
+                at_head: Some("abc".into()),
                 at: SystemTime::now(),
             },
         );
         store.reconcile_head(7, None);
         assert!(store.get(7).is_some());
+    }
+
+    /// A record with no head yet is the *normal* end of a run, and the next poll
+    /// gives it one instead of throwing it away.
+    ///
+    /// This is the whole of the bug: the run's last act is a force-push, so the
+    /// head every already-taken poll knows is one the branch has left. Recording
+    /// that stale sha — or the `""` a crashed run used to be demoted with — made
+    /// the next poll read "the head moved, therefore you moved it" and erase the
+    /// only signal saying the run gave up.
+    #[test]
+    fn a_run_that_left_an_unknown_head_adopts_the_next_poll_rather_than_clearing() {
+        let mut store = AutomationStore::default();
+        store.by_pr.insert(
+            7,
+            PrAutomation::Exhausted { at_head: None, at: SystemTime::now() },
+        );
+        assert!(store.reconcile_head(7, Some("post-push")), "the baseline is news");
+        assert!(store.get(7).is_some(), "adopting must not clear the record");
+        // Adopted, so it is now the thing a later move is judged against — and a
+        // second poll at the same head changes nothing and writes nothing.
+        assert!(!store.reconcile_head(7, Some("post-push")));
+        assert!(store.get(7).is_some());
+        assert!(store.reconcile_head(7, Some("yours")), "now it really moved");
+        assert!(store.get(7).is_none());
     }
 
     /// The verdict a finished run leaves behind. Moved here out of a second
@@ -346,7 +406,8 @@ mod tests {
     fn a_run_that_ends_red_is_remembered_as_exhausted() {
         let p = pr(7); // `pr()` is red: checks Failing
         match verdict(Some(&p)) {
-            Some(PrAutomation::Exhausted { at_head, .. }) => assert_eq!(at_head, "abc"),
+            // Deliberately *not* `p.head_sha`: that is the pre-push poll's answer.
+            Some(PrAutomation::Exhausted { at_head, .. }) => assert_eq!(at_head, None),
             other => panic!("red at the end must be remembered, got {other:?}"),
         }
     }

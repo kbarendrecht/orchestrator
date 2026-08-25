@@ -2625,7 +2625,24 @@ pub async fn resolve_pr(
         inner.prs.iter().find(|p| p.number == number).cloned()
     };
     let pr = pr.ok_or_else(|| anyhow::anyhow!("PR #{number} is not in the current poll"))?;
-    if !pr.needs_you {
+    // Asked of the threads, not only of `needs_you`. They are different questions
+    // and this button is the flow's, not the rail's: `needs_you` drops outdated
+    // threads so a PR stops nagging about code that is gone, but the flow can
+    // answer those — so a PR whose only unanswered threads were outdated refused
+    // a run that had work to do, with a message saying there was none.
+    //
+    // `needs_you` still passes on its own, because it covers one thing threads
+    // cannot: a review that requested changes and left no thread at all. And a
+    // failed fetch falls back to it rather than refusing — a network blip is not
+    // evidence there is nothing to do.
+    let answerable = match fetch_threads(&app, number).await {
+        Ok(fresh) => fresh.items.iter().filter(|t| t.answerable).count(),
+        Err(e) => {
+            tracing::warn!(pr = number, "could not check the threads: {:#}", e.0);
+            0
+        }
+    };
+    if answerable == 0 && !pr.needs_you {
         return Err(ApiError(anyhow::anyhow!(
             "PR #{number} has nothing waiting on you: every open thread has your \
              reply or your 👍 on it"

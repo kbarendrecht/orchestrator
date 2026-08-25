@@ -1460,6 +1460,7 @@ mod tests {
             created_at: "2026-08-17T00:00:00Z".into(),
             url: "u".into(),
             diff_hunk: None,
+            viewer_thumbed: false,
         }
     }
 
