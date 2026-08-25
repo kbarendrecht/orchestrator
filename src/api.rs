@@ -1003,7 +1003,9 @@ async fn revive(app: &Arc<AppState>, id: Uuid, fork: bool) -> ApiResult<serde_js
     // warning it hands back means the branch moved on, which is worth saying and
     // not worth refusing.
     let warning = if path_exists {
-        None
+        // Standing, but not necessarily *this* conversation's tree — the rebuild
+        // that would have noticed is the branch that is skipped here.
+        crate::worktree::branch_drift(&cwd, recovery.as_ref())
     } else {
         crate::worktree::revive(app, &cwd, recovery)
             .await
