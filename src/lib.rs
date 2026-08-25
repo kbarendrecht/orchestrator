@@ -616,6 +616,21 @@ fn start_pr_poller(app: Arc<AppState>) {
 ///
 /// Deliberately skipped: automation runs, because the PR has moved on and §8
 /// demotes an orphaned run to `Exhausted` rather than resurrecting it.
+/// Of several resumable records, the ones to actually bring back: at most one per
+/// workspace, oldest first.
+///
+/// Pure and separate from the spawn loop so the rule can be tested without a daemon.
+/// Oldest-first both orders the rail the way it was built up and decides *which* of
+/// two records sharing a workspace wins.
+fn first_per_workspace(mut resumable: Vec<store::SessionRecord>) -> Vec<store::SessionRecord> {
+    resumable.sort_by_key(|r| r.created_at);
+    let mut seen = std::collections::HashSet::new();
+    resumable
+        .into_iter()
+        .filter(|r| seen.insert(r.workspace.clone()))
+        .collect()
+}
+
 fn auto_resume(app: Arc<AppState>, records: Vec<store::SessionRecord>) {
     tokio::spawn(async move {
         // Any session that was live, whatever started it. `/resolve` and the fix
@@ -623,41 +638,34 @@ fn auto_resume(app: Arc<AppState>, records: Vec<store::SessionRecord>) {
         // were actually sitting in was the one that did not come back. `--resume`
         // reopens the conversation at its prompt; it re-runs nothing, so there is
         // no rebase or push waiting to fire on boot.
-        let mut candidates: Vec<store::SessionRecord> =
+        let candidates: Vec<store::SessionRecord> =
             records.into_iter().filter(|r| r.was_live).collect();
         if candidates.is_empty() {
             return;
         }
-        // Oldest first, so the rail comes back in the order you built it up.
-        candidates.sort_by_key(|r| r.created_at);
 
-        let mut resumed = 0usize;
-        let mut main_taken = false;
+        // Only the records worth bringing back: a real directory to return to and a
+        // turn behind them. A header-only transcript resumes into an instant exit,
+        // which used to log "auto-resumed" about a session already gone; `prune_ghosts`
+        // repaired the `had_a_turn` bit from disk before these got here.
+        let mut resumable = Vec::new();
         for r in candidates {
             if !r.cwd.exists() {
                 tracing::warn!(session = %r.id, "not resumed: {} is gone", r.cwd.display());
-                continue;
+            } else if !r.had_a_turn {
+                tracing::warn!(session = %r.id, "not resumed: no conversation to resume from.");
+            } else {
+                resumable.push(r);
             }
-            // A turn, not just a file: a header-only transcript resumes into an
-            // instant exit, which used to log "auto-resumed" about a session that
-            // was already gone. `prune_ghosts` repaired the bit from disk before
-            // these records got here, so this reads it rather than the file.
-            if !r.had_a_turn {
-                tracing::warn!(
-                    session = %r.id,
-                    "not resumed: no conversation to resume from."
-                );
-                continue;
-            }
-            // Main is exclusive, so only the first one there comes back (§2).
-            if r.workspace == MAIN {
-                if main_taken {
-                    tracing::warn!(session = %r.id, "not resumed: main is already occupied");
-                    continue;
-                }
-                main_taken = true;
-            }
+        }
 
+        // One live session per workspace, the same rule the API enforces at runtime
+        // (`refuse_if_occupied`). A cold start has spawned nothing yet, so the restore
+        // path is where it holds — and it also defends a `sessions.json` written
+        // before that invariant existed, where two records shared one worktree.
+        let to_resume = first_per_workspace(resumable);
+        let mut resumed = 0usize;
+        for r in to_resume {
             // Its own kind, not `Interactive`: a resumed fix run is still the
             // automation the rail colours teal and the guard table counts.
             match spawn::spawn_session(&app, &r.workspace, r.kind.clone(), Some(spawn::Source::Resume(r.id)))
@@ -1141,4 +1149,48 @@ async fn font(axum::extract::Path(file): axum::extract::Path<String>) -> Respons
         body,
     )
         .into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// One record per workspace comes back, and it is the oldest — the rule that,
+    /// on a cold start, keeps two sessions that once shared a worktree from both
+    /// re-hydrating into it.
+    #[test]
+    fn auto_resume_brings_back_one_session_per_workspace() {
+        use std::time::{Duration, UNIX_EPOCH};
+        let rec = |ws: &str, age_secs: u64| {
+            let mut s = model::Session::new(
+                uuid::Uuid::new_v4(),
+                ws.to_string(),
+                std::path::PathBuf::from("/tmp"),
+                model::Kind::Interactive,
+            );
+            // Older = smaller created_at. Distinct so "oldest wins" is unambiguous.
+            s.created_at = UNIX_EPOCH + Duration::from_secs(1_000_000 - age_secs);
+            store::SessionRecord::of(&s)
+        };
+
+        // Two in one worktree, one in another, one in main. Newest listed first to
+        // prove the sort, not the input order, decides.
+        let newer_a = rec("wt-a", 10);
+        let older_a = rec("wt-a", 90);
+        let b = rec("wt-b", 50);
+        let main = rec(MAIN, 5);
+        let kept = first_per_workspace(vec![
+            newer_a.clone(),
+            b.clone(),
+            main.clone(),
+            older_a.clone(),
+        ]);
+
+        let by_ws: std::collections::HashMap<_, _> =
+            kept.iter().map(|r| (r.workspace.clone(), r.id)).collect();
+        assert_eq!(kept.len(), 3, "one per workspace: wt-a, wt-b, main");
+        assert_eq!(by_ws.get("wt-a"), Some(&older_a.id), "the older of the two in wt-a wins");
+        assert_eq!(by_ws.get("wt-b"), Some(&b.id));
+        assert_eq!(by_ws.get(MAIN), Some(&main.id));
+    }
 }

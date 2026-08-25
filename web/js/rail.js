@@ -389,8 +389,8 @@ async function openArchived(s) {
  *
  *  In order of how much it tells you: the PR an automation run is working on, the
  *  name Claude Code gave the conversation, then the workspace it sits in. The
- *  workspace is last because several sessions share one, so on its own it is the
- *  fact that distinguishes them least.
+ *  workspace is last because it is the coarsest — a worktree holds one session at a
+ *  time, so its name says where, not which conversation.
  *
  *  The placeholder workspace id is the daemon's own bookkeeping, so a worktree
  *  still being cut says what is happening instead. */
