@@ -321,6 +321,22 @@ impl Session {
         matches!(self.kind, Kind::Automation { .. })
     }
 
+    /// Whether resuming this session would find a conversation to continue.
+    ///
+    /// Two conditions, both load-bearing. `TranscriptOnly` means the branch and
+    /// sha are gone, so the worktree cannot be rebuilt to resume *into*. And
+    /// `had_a_turn` is the same strong question fork, nudge and prune all ask: a
+    /// turnless session owns a headers-only transcript, so `resumable: true` on
+    /// one promises a `--resume` that finds nothing and exits instantly. The rail
+    /// offered that resume, which is the weak "is there a file" answer this bit
+    /// replaced everywhere else.
+    ///
+    /// The single reader of both fields, because three call sites computed it
+    /// apart and only one of them would have been fixed.
+    pub fn resumable(&self) -> bool {
+        self.had_a_turn && !matches!(self.recovery, Some(ArchiveState::TranscriptOnly))
+    }
+
     pub fn set_state(&mut self, state: State) {
         // A turn in flight is a turn that can be lost: closing the app or killing
         // the process takes whatever the agent was part-way through with it. Only

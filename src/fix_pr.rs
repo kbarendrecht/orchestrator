@@ -65,7 +65,9 @@ pub struct GuardInput<'a> {
     pub automation: Option<&'a PrAutomation>,
     /// Your login, for the authorship guard.
     pub viewer: &'a str,
-    /// A live session on this PR's branch that is not merely idle.
+    /// Whether a worktree holding this PR's branch has a live session in it.
+    /// `spawn::branch_busy` is the one definition; an idle session counts, because
+    /// the spawn refuses one too.
     pub branch_busy: bool,
     pub running_automations: usize,
 }
@@ -121,7 +123,8 @@ pub fn evaluate(input: &GuardInput) -> Verdict {
     }
 
     // Never remediate a PR whose branch is checked out in a workspace holding a
-    // live, non-idle session — you are working on it (§8).
+    // live session — you are working on it (§8). Idle counts: the session is open,
+    // and a rebase under it is the thing this refuses.
     if input.branch_busy {
         return no(format!(
             "you have a live session on {}; fix-pr would fight it",
