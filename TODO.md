@@ -163,6 +163,11 @@ Everything outside that block is hand-written and survives.
   way to select a message index from outside the TUI, which the CLI does not
   expose — `--resume` resumes at the end and nothing else.
 
+- **`ng-watch` sits at `starting` and never comes alive.** Observed on this
+  machine and never investigated. Carried over from the swap handoff so it is not
+  lost with the file; it is the health-scan spec's own process, so it is either
+  the pattern in `config::default_main_processes` or the process really is stuck.
+
 - **Stacked-PR support.** Two halves. First, a context-menu `stack` action on a
   PR row that opens a session starting from that PR's code — a new branch based
   on the selected PR's head, its own worktree (cwd = main, via the existing
