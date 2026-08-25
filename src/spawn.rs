@@ -414,6 +414,15 @@ pub async fn spawn_session(
         let mut inner = app.inner.write().await;
         inner.sessions.insert(id, session);
     }
+    // The claim belongs to the record, so it is settled once the record is in.
+    // Until this insert the map still described whatever stood here under this id,
+    // and a relocation reuses the id — `reclaim_main` has what that let the
+    // outgoing session's watcher do to the incoming session's claim. After it the
+    // pty guard in `watch_session_exit` turns that watcher away, so this is the
+    // last moment the window is open.
+    if workspace == MAIN {
+        app.reclaim_main(id).await;
+    }
 
     watch_session_exit(app.clone(), id, spawned.handle);
     app.notify().await;

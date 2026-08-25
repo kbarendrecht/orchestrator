@@ -679,6 +679,17 @@ Everything outside that block is hand-written and survives.
 
 ## Decisions worth revisiting
 
+- **`hooks::session_end` settles a session with no identity check, unlike the exit
+  watcher.** Deferred, not overlooked. `watch_session_exit` may only settle a
+  session whose pty is still its own — the guard that stops a relocated session's
+  old watcher from marking the live replacement `Exited` and handing main's claim
+  back out. The `SessionEnd` hook does the same two things (`set_state(Exited)`,
+  `release_main`) with nothing of the sort, so an arriving hook from the process a
+  relocation just killed would reach past `reclaim_main` and do it anyway.
+  Unevidenced: nothing has been seen to fire `SessionEnd` on the way to a SIGKILL,
+  and the e2e fake agent does not send one, so there is no reproduction to point
+  at. If main is ever found live-but-unoccupied again, start here.
+
 - **History keeps its AI attribution, and 14 commits still name the monorepo.**
   *Decided, not overlooked.* The working tree is clean of both, and author history
   was rewritten onto one identity — but 208 of 286 commit messages carry
@@ -780,6 +791,6 @@ Everything outside that block is hand-written and survives.
 
 Rewritten by the daemon on every poll. Edit anything outside this block.
 
-Nothing outstanding.
+- **GitHub token is gh's** — it carries write scopes; §6 wants a read-only PAT in `ORCHD_GITHUB_TOKEN` or `github_token_file`.
 
 <!-- <<< orchd live findings <<< -->
