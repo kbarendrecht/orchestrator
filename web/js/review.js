@@ -1762,7 +1762,11 @@ async function runTail(what) {
     if (what === 'push') toast(`pushed ${r.pushed}`);
     else {
       const n = (r.rerequested || []).length;
-      toast(n ? `re-requested ${r.rerequested.join(', ')}` : 'nobody to re-request yet');
+      if (n) toast(`re-requested ${r.rerequested.join(', ')}`);
+      // Why nobody, not just that there was nobody: before, a reviewer held back by
+      // a thread of their own read the same as a PR with no reviewers at all.
+      for (const h of r.held_back || []) toast(h);
+      if (!n && !(r.held_back || []).length) toast('nobody to re-request yet');
       for (const f of r.failed || []) toast(f, true);
     }
   } catch (e) {

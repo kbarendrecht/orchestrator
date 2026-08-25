@@ -2488,32 +2488,42 @@ pub async fn pr_run_rerequest(
     let forge = write_forge(&app)?;
     let at = app.cfg.main_checkout.clone();
 
-    let all: Vec<&str> = fresh
-        .items
-        .iter()
-        .flat_map(|t| t.comments.first().map(|c| c.author.as_str()))
-        .filter(|a| *a != fresh.viewer)
-        .collect();
-    let open: Vec<&str> = fresh
-        .items
-        .iter()
-        .filter(|t| !t.is_resolved)
-        .flat_map(|t| t.comments.first().map(|c| c.author.as_str()))
-        .filter(|a| *a != fresh.viewer)
-        .collect();
+    // The threads this run answered, which is what decides whose review can be
+    // asked for again. Taken from the run's own record: `Replied` is the only
+    // status where the reviewer has actually been told something. `Held` and
+    // `NeedsYou` carry a commit but no answer, and a `Manual` thread is yours —
+    // each of those rightly holds its author back.
+    //
+    // This used to be derived from `!is_resolved` instead, and that could never
+    // work: resolving is the reviewer's button and the daemon never presses it, so
+    // every thread the run had just answered still read as open and nobody was
+    // ever ready. See `post::rerequest_all`, which is now the one implementation.
+    let done: Vec<String> = {
+        let inner = app.inner.read().await;
+        inner
+            .resolve_runs
+            .get(&number)
+            .map(|r| {
+                r.plan
+                    .threads
+                    .iter()
+                    .filter(|t| t.status == crate::post::ThreadStatus::Replied)
+                    .map(|t| t.thread_id.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let done: Vec<&str> = done.iter().map(String::as_str).collect();
 
-    let mut asked = Vec::new();
-    let mut failed = Vec::new();
-    for login in crate::forge::ready_to_rerequest(&all, &open) {
-        let (f, at, who) = (forge.clone(), at.clone(), login.to_string());
-        match tokio::task::spawn_blocking(move || f.rerequest(&at, number, &who)).await {
-            Ok(Ok(())) => asked.push(login.to_string()),
-            Ok(Err(e)) => failed.push(format!("{login}: {e:#}")),
-            Err(e) => failed.push(format!("{login}: {e}")),
-        }
-    }
+    let out = crate::post::rerequest_all(&forge, &at, number, &fresh, &done).await;
     app.notify().await;
-    Ok(Json(json!({ "rerequested": asked, "failed": failed })))
+    Ok(Json(json!({
+        "rerequested": out.asked,
+        "failed": out.failed.iter().map(|(who, e)| format!("{who}: {e}")).collect::<Vec<_>>(),
+        // Said rather than left as silence: "nobody to re-request" and "three
+        // people are still waiting on you" are different answers.
+        "held_back": out.held.iter().map(|(who, t)| format!("{who} — {t} is still unanswered")).collect::<Vec<_>>(),
+    })))
 }
 
 /// What you have edited since the manual phase opened.

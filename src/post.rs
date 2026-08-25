@@ -270,7 +270,6 @@ impl PostReport {
 pub(crate) struct Handled {
     thread_id: String,
     label: String,
-    root: ThreadRoot,
     stance: Stance,
     mode: Mode,
     patch: Option<String>,
@@ -345,8 +344,12 @@ pub(crate) fn resolve(
                     d.thread_id
                 )
             })?;
-        let root = fresh
-            .root_for(&d.thread_id)
+        // Checked, not carried. The value is looked up again where the write
+        // happens (`send_reply_once`, `react_one`), so both paths get it from the
+        // same fetch — a `root` on this struct was a second copy of the answer.
+        // The check stays because refusing here costs nothing: a thread with no
+        // comment to answer should stop the batch before it commits anything.
+        fresh.root_for(&d.thread_id)
             .with_context(|| format!("thread {} has no comment to answer", d.thread_id))?;
 
         let touched = if d.mode == Mode::Manual {
@@ -446,7 +449,6 @@ pub(crate) fn resolve(
         out.push(Handled {
             thread_id: d.thread_id.clone(),
             label: label_for(thread),
-            root,
             stance: pos.stance,
             mode: d.mode,
             // A staged fix belongs to the agent. Under `Manual` you are writing it
@@ -1124,48 +1126,76 @@ pub(crate) async fn post_one(
     story: Option<&crate::proposal::StoryDraft>,
     fresh: &Threads,
 ) -> Result<Posted> {
+    let text = match story {
+        None => reply.to_string(),
+        Some(draft) => {
+            // Keyed on the thread's own URL, which is what makes a retry find the
+            // story it already filed rather than open a second one.
+            let permalink = fresh
+                .items
+                .iter()
+                .find(|t| t.id == thread_id)
+                .and_then(|t| t.comments.first())
+                .map(|c| c.url.clone())
+                .unwrap_or_default();
+            let wanted = [crate::story::Wanted {
+                thread_id: thread_id.to_string(),
+                draft: draft.clone(),
+                permalink,
+            }];
+            let filed = crate::story::file_all(app, pr, &wanted).await;
+            match filed.get(thread_id) {
+                Some(Ok(f)) => with_story_id(reply, &f.story),
+                other => return Ok(Posted::HeldNoStory(no_story_reason(other))),
+            }
+        }
+    };
+    send_reply_once(forge, at, thread_id, &text, fresh).await
+}
+
+/// Put the filed story's id into a reply.
+///
+/// One of the two rules the whole design rests on — [`STORY_TOKEN`] must never
+/// reach GitHub — so it has one implementation, called by the single-thread path
+/// and by the batch's loop. `replace`, not `replacen`: a reply that names the
+/// story twice stays consistent.
+///
+/// [`STORY_TOKEN`]: crate::proposal::STORY_TOKEN
+fn with_story_id(reply: &str, story: &crate::story::StoryRef) -> String {
+    reply.replace(crate::proposal::STORY_TOKEN, &story.link())
+}
+
+/// Why a reply that needs a story id cannot go out.
+///
+/// Shared so both paths hold a reply back for the same stated reason. `None` is
+/// unreachable rather than expected: `file_all` answers for every thread it is
+/// given.
+fn no_story_reason(filed: Option<&std::result::Result<crate::story::Filed, String>>) -> String {
+    match filed {
+        Some(Err(e)) => e.clone(),
+        _ => "the story run answered nothing for this thread".to_string(),
+    }
+}
+
+/// Post a reply unless that exact text is already on the thread.
+///
+/// The other shared rule: a repeated call must not answer twice. Both callers want
+/// the distinction between "sent" and "was already there" — the batch to report it
+/// and a run to say so on the card — so it is a [`Posted`], not a bool.
+async fn send_reply_once(
+    forge: &ForgeImpl,
+    at: &Path,
+    thread_id: &str,
+    text: &str,
+    fresh: &Threads,
+) -> Result<Posted> {
+    if already_replied(fresh, thread_id, text) {
+        return Ok(Posted::AlreadyThere);
+    }
     let root = fresh
         .root_for(thread_id)
         .with_context(|| format!("thread {thread_id} has no comment to answer"))?;
-
-    let mut text = reply.to_string();
-    if let Some(draft) = story {
-        // Keyed on the thread's own URL, which is what makes a retry find the
-        // story it already filed rather than open a second one.
-        let permalink = fresh
-            .items
-            .iter()
-            .find(|t| t.id == thread_id)
-            .and_then(|t| t.comments.first())
-            .map(|c| c.url.clone())
-            .unwrap_or_default();
-        let wanted = [crate::story::Wanted {
-            thread_id: thread_id.to_string(),
-            draft: draft.clone(),
-            permalink,
-        }];
-        let filed = crate::story::file_all(app, pr, &wanted).await;
-        match filed.get(thread_id) {
-            Some(Ok(f)) => {
-                // `replace`, not `replacen`: a reply that names the story twice
-                // stays consistent.
-                text = text.replace(crate::proposal::STORY_TOKEN, &f.story.link());
-            }
-            other => {
-                return Ok(Posted::HeldNoStory(match other {
-                    Some(Err(e)) => e.clone(),
-                    // `file_all` answers for every thread it is given, so this is
-                    // unreachable rather than expected.
-                    _ => "the story run answered nothing for this thread".to_string(),
-                }));
-            }
-        }
-    }
-
-    if already_replied(fresh, thread_id, &text) {
-        return Ok(Posted::AlreadyThere);
-    }
-    blocking(forge, at, &root, Send::Reply(text)).await?;
+    blocking(forge, at, &root, Send::Reply(text.to_string())).await?;
     Ok(Posted::Sent)
 }
 
@@ -1222,9 +1252,8 @@ async fn post_outward(
                         story: Some(f.story.clone()),
                     });
                     // The whole reason the token exists: the id could not be known
-                    // when the reply was drafted. `replace` rather than `replacen`,
-                    // so a reply that mentions it twice is consistent.
-                    reply = reply.map(|t| t.replace(crate::proposal::STORY_TOKEN, &f.story.link()));
+                    // when the reply was drafted.
+                    reply = reply.map(|t| with_story_id(&t, &f.story));
                 }
                 other => {
                     all_landed = false;
@@ -1232,12 +1261,7 @@ async fn post_outward(
                         thread_id: h.thread_id.clone(),
                         label: h.label.clone(),
                         what: What::Story,
-                        error: match other {
-                            Some(Err(e)) => e.clone(),
-                            // `file_all` answers for every thread it was given, so
-                            // this is unreachable rather than expected.
-                            _ => "the story run answered nothing for this thread".to_string(),
-                        },
+                        error: no_story_reason(other),
                     });
                     report.skipped.push(Skipped {
                         label: h.label.clone(),
@@ -1250,32 +1274,25 @@ async fn post_outward(
         }
 
         if let Some(text) = &reply {
-            match already_replied(fresh, &h.thread_id, text) {
-                true => report.landed.push(Landed {
-                    thread_id: h.thread_id.clone(),
-                    label: h.label.clone(),
-                    what: What::Reply,
-                    already: true,
-                    story: None,
-                }),
-                false => match blocking(forge, at, &h.root, Send::Reply(text.clone())).await {
-                    Ok(()) => report.landed.push(Landed {
+            let row = |already| Landed {
+                thread_id: h.thread_id.clone(),
+                label: h.label.clone(),
+                what: What::Reply,
+                already,
+                story: None,
+            };
+            match send_reply_once(forge, at, &h.thread_id, text, fresh).await {
+                Ok(Posted::AlreadyThere) => report.landed.push(row(true)),
+                Ok(_) => report.landed.push(row(false)),
+                Err(e) => {
+                    all_landed = false;
+                    report.failed.push(Failed {
                         thread_id: h.thread_id.clone(),
                         label: h.label.clone(),
                         what: What::Reply,
-                        already: false,
-                        story: None,
-                    }),
-                    Err(e) => {
-                        all_landed = false;
-                        report.failed.push(Failed {
-                            thread_id: h.thread_id.clone(),
-                            label: h.label.clone(),
-                            what: What::Reply,
-                            error: format!("{e:#}"),
-                        });
-                    }
-                },
+                        error: format!("{e:#}"),
+                    });
+                }
             }
         }
 
@@ -1287,7 +1304,7 @@ async fn post_outward(
             // 👍-ing the same comment twice returned the same reaction id both
             // times. So no ledger and no `reactions` in the thread query are
             // needed to make this idempotent.
-            match blocking(forge, at, &h.root, Send::ThumbsUp).await {
+            match react_one(forge, at, &h.thread_id, fresh).await {
                 Ok(()) => report.landed.push(Landed {
                     thread_id: h.thread_id.clone(),
                     label: h.label.clone(),
@@ -1338,15 +1355,26 @@ fn split_reviewers<'a>(fresh: &'a Threads, done: &[&str]) -> Split<'a> {
         open: Vec::new(),
         holding: Vec::new(),
     };
-    for t in fresh.items.iter().filter(|t| t.answerable) {
+    for t in fresh.items.iter() {
         let Some(who) = t.author() else { continue };
         // Your own comment is not a review of yourself, and GitHub refuses to
         // request review from the PR's author anyway.
         if who == fresh.viewer {
             continue;
         }
+        // Everyone who reviewed, whatever became of their threads. This used to
+        // count only `answerable` ones, which worked for the batch because it
+        // judges a fetch taken *before* it posts — and left the run's button
+        // finding nobody at all, because by the time it fetches, every thread it
+        // answered has your comment last. Measured, not reasoned: a run that
+        // answered all three fixture threads re-requested nobody and held nobody
+        // back, because this list was empty.
         s.all.push(who);
-        if !done.contains(&t.id.as_str()) {
+        // Still wants an answer: we did not settle it, and nobody has answered it
+        // since. Both halves are needed — `done` catches the thread this run
+        // answered a moment ago, `answerable` catches one answered long before it
+        // started.
+        if !done.contains(&t.id.as_str()) && t.answerable {
             s.open.push(who);
             s.holding.push((who, label_for(t)));
         }
@@ -1354,7 +1382,54 @@ fn split_reviewers<'a>(fresh: &'a Threads, done: &[&str]) -> Split<'a> {
     s
 }
 
+/// Who was asked to look again, who was not, and what went wrong.
+///
+/// A value rather than a report: the batch renders it as `PostReport` rows and a
+/// run renders it as JSON, and neither shape belongs in the rule.
+pub(crate) struct Rerequested {
+    pub asked: Vec<String>,
+    /// `(login, error)`.
+    pub failed: Vec<(String, String)>,
+    /// `(login, the thread of theirs still unanswered)`, one row per reviewer.
+    pub held: Vec<(String, String)>,
+}
+
 /// Ask every reviewer with nothing of theirs left open to look again.
+///
+/// The one implementation, because there were two and the newer one was wrong.
+/// `api::pr_run_rerequest` derived "still open" from `!is_resolved` — but closing
+/// a thread is the reviewer's own button and the daemon never presses it, so every
+/// thread a run had just answered still counted as holding its author back, and
+/// the button could never re-request anybody. Answering that question needs
+/// `done`: the threads this run or batch actually settled.
+pub(crate) async fn rerequest_all(
+    forge: &ForgeImpl,
+    at: &Path,
+    pr: u64,
+    fresh: &Threads,
+    done: &[&str],
+) -> Rerequested {
+    let Split { all, open, holding } = split_reviewers(fresh, done);
+    let mut out = Rerequested { asked: Vec::new(), failed: Vec::new(), held: Vec::new() };
+
+    for login in forge::ready_to_rerequest(&all, &open) {
+        match blocking_rerequest(forge, at, pr, login).await {
+            Ok(()) => out.asked.push(login.to_string()),
+            Err(e) => out.failed.push((login.to_string(), format!("{e:#}"))),
+        }
+    }
+    // One row per held-back reviewer, naming the first thread of theirs that is
+    // still open — the whole point is that it is answerable, not a count.
+    for (who, thread) in holding {
+        if out.held.iter().any(|(named, _)| named == who) {
+            continue;
+        }
+        out.held.push((who.to_string(), thread));
+    }
+    out
+}
+
+/// The batch's rendering of [`rerequest_all`].
 async fn rerequest(
     forge: &ForgeImpl,
     at: &Path,
@@ -1363,27 +1438,17 @@ async fn rerequest(
     done: &[&str],
     report: &mut PostReport,
 ) {
-    let Split { all, open, holding } = split_reviewers(fresh, done);
-
-    for login in forge::ready_to_rerequest(&all, &open) {
-        match blocking_rerequest(forge, at, pr, login).await {
-            Ok(()) => report.rerequested.push(login.to_string()),
-            Err(e) => report.failed.push(Failed {
-                thread_id: String::new(),
-                label: format!("re-request {login}"),
-                what: What::Rerequest,
-                error: format!("{e:#}"),
-            }),
-        }
+    let out = rerequest_all(forge, at, pr, fresh, done).await;
+    report.rerequested.extend(out.asked);
+    for (login, error) in out.failed {
+        report.failed.push(Failed {
+            thread_id: String::new(),
+            label: format!("re-request {login}"),
+            what: What::Rerequest,
+            error,
+        });
     }
-    // One row per held-back reviewer, naming the first thread of theirs that is
-    // still open — the whole point is that it is answerable, not a count.
-    let mut named: Vec<&str> = Vec::new();
-    for (who, thread) in holding {
-        if named.contains(&who) {
-            continue;
-        }
-        named.push(who);
+    for (who, thread) in out.held {
         report.held_back.push(Skipped {
             label: format!("re-request {who}"),
             what: What::Rerequest,
@@ -1554,7 +1619,12 @@ mod tests {
         // change+thumbsup posts a reaction, not words.
         assert!(got[0].reply.is_none());
         assert!(got[0].stance.gives_thumbs_up());
-        assert_eq!(got[0].root.comment_id(), 100);
+        // The comment id is no longer carried here — the write looks it up from the
+        // same fetch — but `resolve` still refuses a thread it cannot answer, which
+        // is what that assertion was really standing in for.
+        assert_eq!(fresh.root_for("PRRT_1").unwrap().comment_id(), 100);
+        assert!(resolve(&set, &fetched(vec![]), &batch("PRRT_1", 0, None), TRACKER, FIRST_HALF)
+            .is_err());
     }
 
     #[test]
@@ -2070,6 +2140,53 @@ mod tests {
             vec!["carol", "dave"]
         );
         assert!(split.holding.is_empty());
+    }
+
+    /// The fault that made this one implementation instead of two.
+    ///
+    /// `api::pr_run_rerequest` asked "is the thread unresolved?" — but resolving is
+    /// the reviewer's own button and the daemon never presses it, so every thread a
+    /// run had just answered still counted as open, every reviewer stayed held
+    /// back, and the button could not re-request anybody, ever. The question has to
+    /// be "did *we* settle it", which is what `done` carries.
+    #[test]
+    fn an_answered_thread_still_unresolved_does_not_hold_its_author_back() {
+        let fresh = fetched(vec![
+            thread("PRRT_1", Some("a.ts"), Some(10), "carol"),
+            thread("PRRT_2", Some("b.ts"), Some(20), "dave"),
+        ]);
+        // The state a run always leaves: answered, and still open on GitHub.
+        assert!(fresh.items.iter().all(|t| !t.is_resolved));
+        let split = split_reviewers(&fresh, &["PRRT_1", "PRRT_2"]);
+        assert_eq!(split.all.len(), 2, "both reviewed, whatever their threads say now");
+        assert_eq!(
+            forge::ready_to_rerequest(&split.all, &split.open),
+            vec!["carol", "dave"],
+            "answered is answered, whoever gets to close the thread"
+        );
+        // And the broken reading, for contrast: taking every unresolved thread as
+        // still open leaves nobody ready, which is what shipped.
+        let as_unresolved: Vec<&str> = fresh
+            .items
+            .iter()
+            .filter(|t| !t.is_resolved)
+            .filter_map(|t| t.author())
+            .collect();
+        assert!(forge::ready_to_rerequest(&split.all, &as_unresolved).is_empty());
+
+        // The other half of the same fault, which only driving it showed: after the
+        // replies are out, a fetch says every thread is unanswerable, and taking
+        // *that* as "who reviewed" left nobody to consider either.
+        let mut answered = fresh.clone();
+        for t in answered.items.iter_mut() {
+            t.answerable = false;
+        }
+        let split = split_reviewers(&answered, &["PRRT_1", "PRRT_2"]);
+        assert_eq!(
+            forge::ready_to_rerequest(&split.all, &split.open),
+            vec!["carol", "dave"],
+            "the fetch happening after the posting must not change the answer"
+        );
     }
 
     #[test]

@@ -141,11 +141,57 @@ Everything outside that block is hand-written and survives.
   the *overlay* draws them are still unexercised, and so is `manual` mode, the
   story arm (the fixture daemon runs `tracker: none`) and `rerequest`.
 
-  *Deliberately still there.* The old batch (`/api/pr/:n/post` and the manual
-  phase) is the secondary button on the final screen. It is proven and a
-  words-only review does not need an agent. Retire it once a run has done real
-  work, not before — and that retirement is what finally answers the beta-gate
-  item below.
+  *Deliberately still there, and the bar for retiring it was raised rather than
+  met.* The old batch (`/api/pr/:n/post` and the manual phase) is the secondary
+  button on the final screen. A run has now done real work, which was the stated
+  condition — but judged against this repo's own bar (a concrete problem, evidence
+  it bites, a consequence of leaving it) the retirement does not qualify:
+  - Every review answer would start costing an agent session. A run always spawns
+    one, even words-only, which was the original reason to keep the batch.
+  - It would delete the proven path for the unproven one. The run has answered a
+    real PR twice, both times over the API, and its `manual` mode has still never
+    executed.
+  - The batch's resumability is real; the run's is not. `manual.json` carries a
+    half-done discipline across a crash mid-post; `resolve-runs.json` makes a run
+    *legible* after a restart, not resumable.
+  - It is ~1500 lines including machinery with no replacement: `patch.rs`'s
+    three-pass `git apply` ladder and `review_commit`'s blame-to-fixup-target
+    code. The run has no daemon-side apply at all — the agent does it.
+
+  A fairer bar: `manual` mode exercised, the overlay driven in a browser, and a run
+  having answered a real monorepo PR rather than a fixture. Note also that this and
+  the **beta gate** below are separable — the gate can be flipped without deleting
+  anything.
+
+  *What was worth doing now: the duplication that mattered.* The only real argument
+  for retirement was two implementations of "the daemon answers a reviewer", and
+  those are collapsed:
+  - `post_outward` now goes through the same `with_story_id`, `send_reply_once` and
+    `react_one` a run uses, so the three rules (story before reply, `{story}` never
+    reaches GitHub, no double post) have one implementation each. The batch keeps
+    its bulk story filing — one session for the whole batch, not one per thread —
+    and its own report shape, which is right: the report is the batch's output, not
+    a rule.
+  - `Handled.root` went with it. Both paths look the comment id up from the fetch
+    that is doing the writing, so carrying it was a second copy of the answer. The
+    lookup stays in `resolve` as a check, because refusing a thread with no comment
+    before anything is committed costs nothing.
+  - **And it found a bug: the run's re-request button could never re-request
+    anyone.** `pr_run_rerequest` derived "still open" from `!is_resolved`, but
+    closing a thread is the reviewer's own button and the daemon never presses it
+    (that is a design boundary, not a gap) — so every thread a run had just
+    answered still counted as holding its author back. `post::rerequest_all` is the
+    one implementation now.
+  - Driving that fix turned up a *second* layer no amount of sharing would have
+    fixed. `split_reviewers` counted only `answerable` threads as reviewers, which
+    works for the batch because it judges a fetch taken *before* it posts — and
+    left the run's button finding nobody, because by the time it fetches, every
+    thread it answered has your comment last. "Who reviewed" is now every thread's
+    author; "who is still owed an answer" is `!done && answerable`. Measured both
+    ways on the fixture: the old binary answered `rerequested: [], failed: []`, the
+    new one selects the reviewer and reports GitHub's real refusal (a bot cannot be
+    a requested reviewer — the fixture's known limit). `rerequest()` itself is
+    still unverified for want of a second human identity.
 
   *The three known gaps are closed, and each was driven against the fixture
   daemon rather than reasoned about.*
