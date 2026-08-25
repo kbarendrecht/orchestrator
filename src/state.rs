@@ -545,6 +545,24 @@ impl AppState {
     // Main occupancy
     // -----------------------------------------------------------------------
 
+    /// Who holds main, if anyone still live.
+    ///
+    /// The canonical read of "is main occupied": `occupant` is hand-maintained and
+    /// `release_main` can lag a session's death, so a *live* filter is the
+    /// difference between the truth and a stale name. Read-only callers ask through
+    /// here; `claim_main` repeats the same live filter inline because it must check
+    /// and set under one write lock. What must never recur is a caller trusting the
+    /// bare field — `switch_main_to_pr` did, and gave the opposite answer to
+    /// `claim_main` for the same "is anyone in main" question.
+    pub async fn main_occupant(&self) -> Option<SessionId> {
+        let inner = self.inner.read().await;
+        inner
+            .workspaces
+            .get(MAIN)
+            .and_then(|w| w.occupant)
+            .filter(|id| inner.sessions.get(id).map(|s| s.state.is_live()).unwrap_or(false))
+    }
+
     /// Main is exclusive: one Claude session at a time (§2). There is no queue —
     /// the UI disables "new session in main" and shows which session holds it.
     pub async fn claim_main(&self, session: SessionId) -> Result<()> {
@@ -1003,6 +1021,27 @@ mod tests {
         ))
         .unwrap();
         AppState::new(cfg, "t".into(), crate::window::Chrome::None)
+    }
+
+    /// A stale occupant — the session gone but `release_main` not yet run — must
+    /// read as unoccupied, the same answer `claim_main` gives, so the two never
+    /// disagree about whether main is free.
+    #[tokio::test]
+    async fn a_dead_occupant_leaves_main_free() {
+        let app = app().await;
+        let id = Uuid::new_v4();
+        {
+            let mut inner = app.inner.write().await;
+            let mut s = Session::new(id, MAIN.to_string(), std::path::PathBuf::from("/tmp"), Kind::Interactive);
+            s.set_state(State::Exited); // gone, but still the recorded occupant
+            inner.sessions.insert(id, s);
+            if let Some(w) = inner.workspaces.get_mut(MAIN) {
+                w.occupant = Some(id);
+            }
+        }
+        assert_eq!(app.main_occupant().await, None, "a dead occupant does not hold main");
+        // And a claim succeeds, proving the two readers agree main is free.
+        assert!(app.claim_main(Uuid::new_v4()).await.is_ok());
     }
 
     #[tokio::test]
