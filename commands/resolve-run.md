@@ -89,6 +89,27 @@ posts the reply. Move on.
 
 **`stance: "story"`.** The story is the daemon's to file. Nothing local.
 
+## A thread you cannot finish
+
+Say so, on the thread it happened to, and carry on to the next one:
+
+```bash
+curl -sS -X POST -H 'content-type: application/json' \
+  -H "x-orch-ask: $ORCH_ASK_TOKEN" \
+  -d '{"note":"the patch is against a function this branch no longer has"}' \
+  "{{ASK_BASE}}/$ORCH_SESSION_ID/thread/<thread_id>/stuck"
+```
+
+This does not block and posts nothing — the reviewer stays unanswered, which is
+the truth of it. The note is the whole of what the human gets, so name what
+stopped you, not that something did.
+
+Use it when the work is not yours to invent: a patch whose surrounding code is
+gone, a fix that needs a decision nobody made, a test you cannot get past. Do not
+use it instead of the question below when the answer is one you could be given —
+ask, wait, and finish the thread. And do not leave a thread silently unfinished:
+one you neither committed nor reported reads as one you have not reached yet.
+
 ## Asking the human
 
 You have one way to reach them, and it blocks until they answer:
@@ -131,7 +152,9 @@ A short report, in the pane, nothing written to disk:
 
 - one line per thread: what you committed, or that it was handed back, or that
   there was nothing local to do
-- the threads you could not finish, and precisely what stopped each one
+- the threads you could not finish, and precisely what stopped each one — each of
+  which you have already reported through `/stuck`, so this is the summary, not
+  the first anyone hears of it
 - whether `HEAD` moved under you, and which patches you had to rebuild
 
 Then stop. The push and every reply are the human's next action, not yours.

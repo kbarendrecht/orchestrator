@@ -1722,10 +1722,25 @@ function rvRun(root) {
   const by = (st) => run.threads.filter((t) => t.status === st).length;
   const left = by('pending') + by('committed');
   const foot = el('div', 'sec');
-  foot.appendChild(el('div', 'note', left
-    ? `${left} still moving. The buttons below are yours whenever you want them; `
-      + 'nothing here fires on its own.'
-    : 'Nothing is moving. What is on the branch is what the session finished.'));
+  // A run that ended says so first: without it, threads left `pending` read as
+  // waiting their turn behind a session that is not there any more.
+  if (run.ended) {
+    foot.appendChild(el('div', 'note',
+      `${run.ended}. ${left ? `${left} thread(s) never got an answer — the rows above are where it stopped.`
+        : 'Every thread was accounted for.'}`));
+  } else {
+    foot.appendChild(el('div', 'note', left
+      ? `${left} still moving. The buttons below are yours whenever you want them; `
+        + 'nothing here fires on its own.'
+      : 'Nothing is moving. What is on the branch is what the session finished.'));
+  }
+  // The commits are the run's whole output and nothing pushes them for you, so
+  // this is said plainly rather than left to the push button to imply.
+  if (run.unpushed) {
+    foot.appendChild(el('div', 'note warn',
+      `${run.unpushed} commit${run.unpushed === 1 ? '' : 's'} on this branch that the remote does not have. `
+      + 'Replies are already out; the change they describe is not.'));
+  }
   body.appendChild(foot);
   root.appendChild(body);
 

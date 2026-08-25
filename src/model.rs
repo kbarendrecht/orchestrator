@@ -47,6 +47,12 @@ pub struct Tree {
     pub base: Option<String>,
     /// (behind, ahead) against the upstream base.
     pub divergence: (u32, u32),
+    /// Commits this branch holds that its own remote does not.
+    ///
+    /// Not derivable from `divergence`, which is measured against the *base*: a
+    /// branch three commits ahead of `upstream/develop` may have pushed all three
+    /// or none of them.
+    pub unpushed: u32,
     pub rebasing: bool,
 }
 

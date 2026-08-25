@@ -612,6 +612,30 @@ pub fn divergence(cwd: &Path, upstream: &str) -> Result<(u32, u32)> {
     Ok((behind, ahead))
 }
 
+/// How many commits this branch holds that its own remote does not.
+///
+/// Counted against `origin/<branch>`, not `@{upstream}`: on this fork layout
+/// `@{upstream}` is the *base* (`upstream/develop`), which answers a different
+/// question — see [`unpushed`], which had to say the same thing.
+///
+/// With no remote counterpart the measure falls back to the commits beyond the
+/// base, the same reading [`unpushed`]'s `NeverPushed` arm takes: on a branch that
+/// was never pushed, everything it added is unpushed. Zero rather than an error
+/// when git cannot answer, since this feeds a count in an overview and a
+/// transient failure should not read as work to push.
+pub fn unpushed_count(cwd: &Path, branch: &str, upstream: &str) -> u32 {
+    let remote_ref = format!("refs/remotes/origin/{branch}");
+    let range = if git_ok(cwd, &["rev-parse", "--verify", "--quiet", &remote_ref]) {
+        format!("origin/{branch}..HEAD")
+    } else {
+        format!("{upstream}..HEAD")
+    };
+    git(cwd, &["rev-list", "--count", &range])
+        .ok()
+        .and_then(|out| out.trim().parse().ok())
+        .unwrap_or(0)
+}
+
 /// Whether a rebase is stopped part-way in this worktree.
 ///
 /// Checked on disk rather than inferred: a button that offers to rebase a tree
@@ -1771,6 +1795,33 @@ mod tests {
             Some("develop")
         );
         assert_eq!(merge_base(&work, "upstream/HEAD").expect("merge-base"), base_sha);
+
+        // What the run overview needed and `divergence` cannot say. The branch is
+        // one commit beyond the base and that commit is on nobody's remote, so both
+        // read 1 here — the numbers only part once something is pushed.
+        assert_eq!(divergence(&work, "upstream/develop").unwrap().1, 1);
+        assert_eq!(
+            unpushed_count(&work, "feature/x", "upstream/develop"),
+            1,
+            "never pushed, so everything beyond the base is unpushed"
+        );
+        git(&work, &["push", "-q", "origin", "feature/x"]).unwrap();
+        assert_eq!(
+            unpushed_count(&work, "feature/x", "upstream/develop"),
+            0,
+            "pushed, and the count follows the remote rather than the base"
+        );
+        std::fs::write(work.join("a.txt"), "more\n").unwrap();
+        git(&work, &["commit", "-qam", "more"]).unwrap();
+        assert_eq!(
+            (
+                divergence(&work, "upstream/develop").unwrap().1,
+                unpushed_count(&work, "feature/x", "upstream/develop")
+            ),
+            (2, 1),
+            "two commits past the base, one of them pushed — the case that made \
+             `ahead` the wrong number to show"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

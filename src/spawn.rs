@@ -1001,7 +1001,9 @@ pub async fn spawn_resolve_run(
     let dir = Config::config_dir()?.join(format!("resolve-run-{pr}"));
     std::fs::create_dir_all(&dir)?;
     let plan_file = dir.join("plan.json");
-    std::fs::write(&plan_file, serde_json::to_string_pretty(plan)?)
+    // The agent's view, not the whole record: `for_agent` drops the daemon's
+    // per-thread bookkeeping, which the prompt promises is not in this file.
+    std::fs::write(&plan_file, serde_json::to_string_pretty(&plan.for_agent())?)
         .with_context(|| format!("writing {}", plan_file.display()))?;
 
     let prompt_file = vendored_prompt_file(app, pr, "resolve-run").await?;
@@ -1053,6 +1055,11 @@ fn watch_session_exit(app: Arc<AppState>, id: SessionId, handle: Arc<PtyHandle>)
         // What this session *was* decides whether anything else has to be settled
         // now it is over. Read while the lock is already held; acted on below.
         let mut fix_pr_for: Option<u64> = None;
+        // Same idea for a resolve run, and the reason it is needed at all: the run
+        // record is the daemon's, so nothing else would ever notice that the thing
+        // working through it had stopped. Threads left `pending` then read as
+        // imminent for as long as the daemon runs.
+        let mut resolve_run_for: Option<u64> = None;
         // A turnless interactive session leaves nothing to come back to, so rather
         // than archive an empty row it is forgotten outright — and its headers-only
         // transcript is deleted here, outside the lock. `(cwd, recorded)` is what
@@ -1080,6 +1087,9 @@ fn watch_session_exit(app: Arc<AppState>, id: SessionId, handle: Arc<PtyHandle>)
                     if let Kind::Automation { pr, command } = &s.kind {
                         if command == crate::fix_pr::COMMAND {
                             fix_pr_for = Some(*pr);
+                        }
+                        if command == "resolve-run" {
+                            resolve_run_for = Some(*pr);
                         }
                     }
                     // Last chance to find the conversation. A session closed
@@ -1110,6 +1120,19 @@ fn watch_session_exit(app: Arc<AppState>, id: SessionId, handle: Arc<PtyHandle>)
         // learns the run is over.
         if let Some(pr) = fix_pr_for {
             crate::fix_pr::settle(&app, pr).await;
+        }
+        // The run's own account, closed. Only if it is still this session's run: a
+        // second run on the same PR replaces the record, and stamping that one as
+        // ended would bury a live run under the exit of the one it replaced.
+        if let Some(pr) = resolve_run_for {
+            let mut inner = app.inner.write().await;
+            inner.with_resolve_runs("session exited", |runs| match runs.get_mut(&pr) {
+                Some(r) if r.session == id && r.ended.is_none() => {
+                    r.ended = Some("the session ended".into());
+                    true
+                }
+                _ => false,
+            });
         }
         app.release_main(id).await;
         if let Some(ws) = workspace {
