@@ -10,7 +10,7 @@ are already in there with the reason they were not done.
 
 ```
 cargo check                         # the daemon
-cargo test                          # 340 tests, all in-tree
+cargo test                          # 341 tests, all in-tree
 mise run check-web                  # type-check the SPA + enforce its module graph
 mise run e2e                        # 11 flows against a real daemon, ~45s
 cargo run -p orchestrator-desktop   # the app, daemon embedded in-process
@@ -319,6 +319,15 @@ to disappear is waiting for something that never happens.
   swap test both failed for a reason that had nothing to do with the code.
   `git::refused_as_already_checked_out` matches either. The refusal is the
   invariant; its phrasing is not.
+- **A route an agent calls needs a line in `is_ask_route`, and forgetting it fails
+  as `bad origin`.** The vendored prompts curl with no `Origin` and carry the
+  session's ask token, not the app token — so a session route missing from that
+  list is refused twice: the Origin check has no arm for it, and `needs_token`
+  then wants a token the agent is deliberately not given.
+  `…/thread/:id/committed` shipped like that, which made the resolve run's central
+  seam unreachable by its only caller while every unit test passed. Add the
+  suffix, and the test in `api::tests` that walks the paths the prompts really
+  call.
 - **Driving the API by hand has four traps.** The header is `x-orch-token`
   (`Authorization: Bearer` is not read), the route is `/api/state` (`/api/snapshot`
   does not exist, and an unknown route answers `{}`, which reads exactly like an

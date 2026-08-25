@@ -98,7 +98,25 @@ untrusted checkout the daemon points at.
 
 Each of these was listed in TODO.md as unverifiable, and each now has a target:
 
-- The resolve flow end to end, against threads that really are awaiting you.
+The **resolve run end to end** is **done**, and it found the bug the whole
+fixture existed to find. A run on PR #9 answered three threads — two replies, one
+👍, nothing resolved, both commits held local until the push button — and its
+first attempt could not talk to the daemon at all: `…/thread/:id/committed`
+answered `403 bad origin`, because the guard's ask-token exemption listed `/ask`,
+`/wait` and `/spawn` and never gained `/committed`. Every line of that path was
+unit-tested. The route was unreachable by its only caller.
+
+Two notes for whoever drives the next one:
+
+- **The fixture config carries no `port`,** so a fixture daemon wants 7777 and the
+  headless binary refuses rather than starting beside your real app. Add
+  `"port": 7799` to `config.json`, or close the app first.
+- **A run is not unattended.** Its first act is reading `plan.json` in
+  `config_dir`, outside the worktree, so Claude Code asks permission before the
+  agent has read the plan — and again per commit and for the `committed` curl.
+  Driving it headlessly means answering those over the pty websocket
+  (`/ws/pty?target=session:<id>`); the daemon's own `needs_permission` state is
+  the signal to look for, not the screen.
 
 `triage::gate`'s dirty-worktree refusal is **verified** — the second thing driven
 against the fixture. A polled PR with a `pr-4` worktree, dirtied on purpose, made

@@ -21,9 +21,9 @@ Everything outside that block is hand-written and survives.
   `github-actions`. `ORCHD_CONFIG_DIR` keeps all of that off the real
   `sessions.json` and out of this repo's TODO.md.
 
-  **The one item still unverified** — the target exists; nothing has been driven
-  against it yet: the resolve run end to end (commit per thread,
-  `…/thread/:id/committed`, the daemon posting on its own credentials).
+  **The resolve run end to end — driven, and the seam was broken.** See the
+  resolve-flow item below: a run answered three real threads on PR #9, and the
+  first attempt could not reach the daemon at all.
 
   **The thumbs-up idempotency guess — settled, and it was right.** The ignored
   `posts_for_real` test (`forge/github_write.rs`), pointed at the fixture PR,
@@ -81,9 +81,40 @@ Everything outside that block is hand-written and survives.
   Settled once the fixture existed: the thumbs-up idempotency assumption
   (`post.rs`) — GitHub returns the existing reaction, not a second one (see above).
 
-- **The two-phase resolve flow — handover.** All four phases of
-  `docs/resolve-flow-plan.md` have landed, and none of it has answered a real
-  reviewer yet. Where it stands:
+- **The two-phase resolve flow — it has now answered a real reviewer, and the
+  seam it turns on was broken until it did.** Driven against the fixture (PR #9,
+  three threads really awaiting an answer): plan → session → a commit per thread →
+  the real diff beside the drafted reply → the daemon posting on its own
+  credential. What landed on GitHub, checked there and not inferred: two replies,
+  one 👍 on the `agree` thread, **no** thread resolved, and both commits left
+  local until the push button, which then moved the branch. `sweep_words_only`
+  answered the words-only thread at start; the bare-thumbs-up-after-a-commit arm
+  (`react_one`) fired for the third.
+
+  **The bug this found, which no test could.** `POST
+  /api/session/:id/thread/:t/committed` — the one route the whole design turns on —
+  answered `403 bad origin` to its only caller. The guard's ask-token exemption
+  matched `/ask`, `/wait` and `/spawn`; `/committed` arrived with the resolve run
+  and was never added, and its comment still said "the agent's own *two* routes".
+  Broken twice over: a curl that added an `Origin` would then have failed
+  `needs_token`, since the agent deliberately holds the ask token and not the app
+  token. The agent's own report of it was accurate — "bad origin — the daemon
+  rejected that" — and it then spent a turn probing the guard. `is_ask_route` is
+  now a named list and a test asserts every path the vendored prompts curl.
+
+  Two smaller things the same run turned up:
+  - **`posted: false` meant two opposite things.** A bare 👍 and a held-back reply
+    both return it, distinguished only by `reacted` versus `reason`, which the
+    prompt did not say — so the run's final report told the human thread 3 was
+    "held back for you to answer" when the daemon had reacted exactly as designed.
+    Fixed in `commands/resolve-run.md`; the API already carried the distinction.
+  - **A run cannot start unattended.** Its first act is reading `plan.json` in
+    `config_dir`, outside the worktree, so Claude Code asks permission before the
+    agent has read a word of the plan — then again for each commit and for the
+    `committed` curl. Fine in the app, where you are watching the pane; worth
+    knowing before anyone calls a run walk-away.
+
+  Where the rest stands:
 
   *Built and working.* The triage card is three decisions rather than one list of
   positions (`rvStance` / `rvReply` / `rvFix` in `web/app.js`), backed by a model
@@ -98,18 +129,17 @@ Everything outside that block is hand-written and survives.
   would open all 41 routes and make "the daemon owns outward writes" a promise in
   a prompt rather than a mechanism.
 
-  *Built, never executed.* `POST /api/pr/:n/resolve-run` resolves your decisions
+  *Built, and now executed once.* `POST /api/pr/:n/resolve-run` resolves your decisions
   through the same `post::resolve` the batch uses, writes `plan.json` beside the
   prompt, and spawns a session on `commands/resolve-run.md`. The session commits
   per thread and calls `…/thread/:id/committed`, which blocks while you look at
   the *real* commit diff beside the drafted reply and decide; the daemon posts on
   its own credentials or holds it back. The run's per-thread state is in the
   snapshot as `resolve_runs` and rendered by `rvRun`, with push and re-request as
-  their own buttons. Every line of that path is typed and unit-tested and has
-  never met a real PR. It now has one to meet: `mise run fixture` builds a PR
-  whose threads really are awaiting you, which is the thing that was missing.
-  Driving a run against it is the next step, and the first thing that would settle
-  the known gaps below.
+  their own buttons. All of that has now run against a real PR once, driven over
+  the API rather than through the SPA — so `rvRun`, `rvOverview` and the cards as
+  the *overlay* draws them are still unexercised, and so is `manual` mode, the
+  story arm (the fixture daemon runs `tracker: none`) and `rerequest`.
 
   *Deliberately still there.* The old batch (`/api/pr/:n/post` and the manual
   phase) is the secondary button on the final screen. It is proven and a
@@ -119,7 +149,8 @@ Everything outside that block is hand-written and survives.
 
   *Known gaps.* A run ends with commits and posted replies but nothing pushed
   until you press the button, which is intended, but the overview does not yet
-  say "unpushed" anywhere. `needs_you` is never set on a thread — the session has
+  say "unpushed" anywhere — and the run just driven confirmed it is the agent that
+  ends up saying it, in prose, in the pane. `needs_you` is never set on a thread — the session has
   no way to report that it could not finish one, so a failed thread just stays
   `pending`. The run record is memory-only, so a daemon restart mid-run loses the
   account of it while the commits survive; the plan calls for that to be durable
