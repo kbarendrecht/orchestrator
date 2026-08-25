@@ -2660,7 +2660,10 @@ pub async fn fix_pr(
         evaluate(&GuardInput {
             pr: &pr,
             automation: inner.automation.get(number),
-            viewer: pr.head_owner.as_deref().unwrap_or_default(),
+            // Your own login, never `pr.head_owner` — the guard refuses when the
+            // head owner is not you, so sourcing the viewer from the head owner
+            // compares a value to itself and the authorship check never fires.
+            viewer: inner.viewer.as_deref().unwrap_or_default(),
             branch_busy,
             running_automations,
         })
