@@ -48,6 +48,51 @@ Everything outside that block is hand-written and survives.
   *Not to be confused with the beta gate below*, which is a separate decision and
   needs no deletion.
 
+- **A resolve run should amend the PR's own commits, not append one per thread.**
+  Wanted, and the decision already exists — it is what the *batch* does and what the
+  run never learned. `review_commit::amend_target` blames the reviewed line, finds
+  the commit that introduced it, and answers `Fixup(sha)` / `Head(reason)` /
+  `OnTop(reason)`; the discriminator is **authorship, not publication**, so it
+  refuses to rewrite somebody else's commit and shows the reason at every fallback.
+  `git::fold_in` executes. The run uses none of it: `commands/resolve-run.md` says
+  "one commit per thread, nothing else in that commit", and `patch.rs`'s whole
+  apply-and-fold ladder is dead on that path.
+
+  Why the current shape is thinner than it looks: one-commit-per-thread exists only
+  so the confirm card can show `commit_diff(sha)` beside the drafted reply — a *UI*
+  need leaking into git history. It is prose, not a constraint; nothing enforces it;
+  and if an agent commits two threads together and reports the same sha twice,
+  `thread_committed` accepts it and posts both replies. Its real cost is the case it
+  handles worst: two comments on one function usually want *one* coherent change,
+  and splitting it leaves the first commit incoherent on its own.
+
+  Force-with-lease needs no new decision — `guards/push.py` already permits no other
+  form, bans `push -u`, and refuses protected refs.
+
+  **Three consequences to settle before building it.**
+  1. **The card's sha goes stale.** A `fixup!` is squashed later, so the sha the
+     agent reports is not the one that survives. Showing the fixup's own diff is
+     right — it is exactly the fix — but `PlannedThread::commit` then names a commit
+     that no longer exists. The record wants the fixup *target*, or a re-resolve
+     after the squash.
+  2. **Amending outdates other threads.** GitHub anchors a thread to a commit and a
+     line, so rewriting a commit a reviewer read can flip *their other* threads to
+     outdated — answering A can make B and C stop pointing at real code. The
+     append-only model cannot do that. This is a judgement about reviewers, not about
+     git, and it is the real price.
+  3. **The per-thread ancestry check would fire on every thread after the first.**
+     `thread_committed` holds a reply when the plan's `base_sha` is no longer an
+     ancestor of `HEAD` — which is exactly what an autosquash makes true. It would
+     have to tell *our own* rewrite from somebody else's, the same provenance problem
+     `Exhausted.at_head` already lost once.
+
+  The shape that dodges (3) and keeps the cards honest: the agent still owns code and
+  commits `--fixup <target>` where `amend_target` says `Fixup` — the daemon hands the
+  target in the plan, since it already blames for the batch — and the squash happens
+  **once at the end, before the push**, not per thread. One rewrite instead of N, so
+  the ancestry check needs a single exemption rather than continuous forgiveness, and
+  every card still shows a real standalone diff while you are approving it.
+
 - **Promote the in-UI review overlay out of beta.** The overlay now does the
   real work: threads listed under the PR with their file, hunk, and a reply box,
   and replies/reactions/re-request go straight through the GitHub API
