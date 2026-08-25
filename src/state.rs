@@ -73,6 +73,19 @@ pub struct AppState {
     /// WebSocket and every mutating endpoint (§12).
     pub token: String,
     pub inner: RwLock<Inner>,
+    /// The branch `open_pr(place=main)` checked into main, which `park_main` may
+    /// return to base when the last session there closes.
+    ///
+    /// Provenance, not a branch name lookup: after a swap, main also holds a branch
+    /// that can be a PR head, and parking *that* away would undo the swap. Only an
+    /// explicit "the daemon put this here for a PR" mark tells the two apart —
+    /// `current ∈ poll head refs` cannot. Set by `switch_main_to_pr`, cleared by a
+    /// swap and by parking.
+    ///
+    /// Deliberately in-memory and inverse-polarity to the old `swapped_with_main`
+    /// flag: losing it on a restart means main is *not* auto-parked (a harmless
+    /// squat on a PR branch), never that a swap is silently undone.
+    pub main_pr_park: RwLock<Option<String>>,
     /// Set the moment shutdown begins.
     ///
     /// A session's exit watcher cannot otherwise tell "you closed this pane" from
@@ -305,6 +318,7 @@ impl AppState {
                 update: None,
                 agent_update: None,
             }),
+            main_pr_park: RwLock::new(None),
             shutting_down: std::sync::atomic::AtomicBool::new(false),
             events,
             chrome,

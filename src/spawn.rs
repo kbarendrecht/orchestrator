@@ -843,16 +843,6 @@ async fn refuse_if_main_is_on(app: &Arc<AppState>, pr: u64, head_ref: &str) -> R
 /// still open there is someone still using it. Silence is the right answer to
 /// both: nothing was promised, and the pre-flight above explains it if a PR flow
 /// later needs the branch.
-/// Whether main's current branch is one the daemon parked there for a PR, and so
-/// safe to return to base when the last session closes.
-///
-/// Split out from [`park_main`] so the rule can be tested without a git checkout or
-/// an `AppState`. An empty set — no poll yet, or none matched — means "not ours",
-/// which keeps park to the one case it is for.
-fn park_is_ours(current: &str, head_refs: &std::collections::HashSet<String>) -> bool {
-    head_refs.contains(current)
-}
-
 async fn park_main(app: &Arc<AppState>) {
     // A restart is not "you are done with main". Auto-resume brings that session
     // back expecting the branch it was working on, and moving the checkout here
@@ -863,29 +853,28 @@ async fn park_main(app: &Arc<AppState>) {
     if !app.live_sessions_in(MAIN).await.is_empty() {
         return;
     }
-    // Only a branch the daemon parked here *for a PR* is ours to return to base.
-    // Anything else — a swapped-in worktree branch, a hand-checkout — is a
-    // deliberate placement, and parking it would be two features fighting. The set
-    // is the current poll's head refs, so this survives a restart where an
-    // in-memory "a swap happened" flag would not; `open_pr(place=main)` is the only
-    // thing that puts a PR head in main, so those refs are exactly the cleanup set.
-    let head_refs: std::collections::HashSet<String> = {
-        let inner = app.inner.read().await;
-        inner.prs.iter().map(|p| p.head_ref.clone()).collect()
+    // Only the branch `open_pr(main)` checked in for a PR is ours to return to base.
+    // A swapped-in branch (which can itself be a PR head) or a hand-checkout is a
+    // deliberate placement, and parking it would undo the swap — the two features
+    // fighting. Provenance, not a branch-name guess: `main_pr_park` records the one
+    // action that means "return this to base when you're done".
+    let parked_for_pr = app.main_pr_park.read().await.clone();
+    let Some(parked_for_pr) = parked_for_pr else {
+        return;
     };
     let path = app.cfg.main_checkout.clone();
     let base_ref = app.cfg.upstream_ref.clone();
     // Resolved, not the raw branch part: the default base is `origin/HEAD`, and
     // `git switch HEAD` fails with "a branch is expected". Unresolvable means the
-    // symref has not been fetched yet, so there is nowhere to park — say so once
-    // at debug rather than failing inside the checkout.
+    // symref has not been fetched yet, so there is nowhere to park.
     let exclude = app.cfg.worktrees_subdir_str();
     let moved = tokio::task::spawn_blocking(move || {
-        // The branch check is inside the blocking closure because reading it is a
-        // git call. Not a PR head → leave main exactly as it is.
+        // Reading the branch is a git call. If main has moved off the branch the
+        // mark named — a swap, or a hand-checkout since — the mark is stale and
+        // there is nothing of ours to park.
         let current = crate::git::current_branch(&path).ok()?;
-        if !park_is_ours(&current, &head_refs) {
-            tracing::debug!(%current, "main is not on a PR head; not parking it");
+        if current != parked_for_pr {
+            tracing::debug!(%current, "main is not on its open-PR branch; not parking it");
             return None;
         }
         let base = crate::git::base_checkout_branch(&path, &base_ref)?;
@@ -894,6 +883,10 @@ async fn park_main(app: &Arc<AppState>) {
     .await
     .ok()
     .flatten();
+
+    // Whatever the branch was, the mark has done its job now the last session is
+    // gone; a fresh `open_pr(main)` sets it again.
+    *app.main_pr_park.write().await = None;
 
     if let Some(was) = moved {
         // Said out loud: the checkout under every worktree just changed, and the
@@ -957,6 +950,11 @@ pub async fn switch_main_to_pr(app: &Arc<AppState>, head_ref: &str) -> Result<St
     })
     .await
     .map_err(|e| anyhow::anyhow!("switch task failed: {e}"))??;
+
+    // Provenance for `park_main`: main is on this branch because *this* put it here
+    // for a PR, so returning it to base when the session closes is right. A swap
+    // that later moves main clears this, so its branch is never parked away.
+    *app.main_pr_park.write().await = Some(head_ref.to_string());
 
     // The pane must be right about what is checked out the moment it changes.
     let _ = app.reconcile(MAIN).await;
@@ -1447,20 +1445,65 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Park returns main to base only for a branch it put there for a PR. A
-    /// swapped-in worktree branch is a deliberate placement, and an empty poll (no
-    /// GitHub yet) is not a licence to park anything.
-    #[test]
-    fn park_only_reclaims_a_branch_from_the_current_poll() {
-        let heads: std::collections::HashSet<String> =
-            ["feature/x".to_string(), "fix/y".to_string()].into_iter().collect();
-        assert!(park_is_ours("feature/x", &heads), "a PR head main was opened onto");
-        assert!(!park_is_ours("worktree-foo", &heads), "a swapped-in worktree branch");
-        assert!(!park_is_ours("develop", &heads), "the base branch itself");
-        assert!(
-            !park_is_ours("feature/x", &std::collections::HashSet::new()),
-            "no poll yet is not a licence to park"
-        );
+    /// Park returns main to base only for the branch `open_pr(main)` marked, and a
+    /// swapped-in branch (no mark) is left exactly where it is — even when it is a
+    /// branch name park could otherwise reach. Driven against a real checkout,
+    /// because the whole point is that the decision is provenance, not branch name.
+    #[tokio::test]
+    async fn park_reclaims_only_the_open_pr_branch_never_a_swapped_one() {
+        use crate::config::Config;
+        use crate::state::AppState;
+
+        let dir = std::env::temp_dir().join(format!(
+            "orchd-park-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let repo = dir.join("main");
+        let git = |args: &[&str], at: &std::path::Path| {
+            let ok = std::process::Command::new("git")
+                .args(args)
+                .current_dir(at)
+                .status()
+                .unwrap()
+                .success();
+            assert!(ok, "git {args:?} failed");
+        };
+        git(&["init", "-q", "-b", "main", "main"], &dir);
+        git(&["config", "user.email", "t@t"], &repo);
+        git(&["config", "user.name", "t"], &repo);
+        std::fs::write(repo.join("f.txt"), "base\n").unwrap();
+        git(&["add", "-A"], &repo);
+        git(&["commit", "-qm", "base"], &repo);
+        git(&["branch", "feature/x"], &repo);
+
+        // `origin/main` resolves to the local `main` branch as the base — no remote
+        // needed, since only the branch part is used for a non-HEAD ref.
+        let cfg: Config = serde_json::from_str(&format!(
+            r#"{{"main_checkout":"{}","port":7793,"upstream_ref":"origin/main"}}"#,
+            repo.display()
+        ))
+        .unwrap();
+        let app = AppState::new(cfg, "t".into(), crate::window::Chrome::None);
+
+        let on = |b: &str| git(&["switch", "-q", b], &repo);
+        let branch = || crate::git::current_branch(&repo).unwrap();
+
+        // Marked as open-PR provenance → parked back to base, mark cleared.
+        on("feature/x");
+        *app.main_pr_park.write().await = Some("feature/x".to_string());
+        park_main(&app).await;
+        assert_eq!(branch(), "main", "an open-PR branch returns to base");
+        assert!(app.main_pr_park.read().await.is_none(), "the mark is spent");
+
+        // Same branch checked out, but no mark (the swap case) → left in place.
+        on("feature/x");
+        park_main(&app).await;
+        assert_eq!(branch(), "feature/x", "a swapped-in branch is never parked away");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The two hooks in order, and the second surviving the first.

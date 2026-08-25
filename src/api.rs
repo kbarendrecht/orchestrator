@@ -1302,10 +1302,10 @@ pub async fn swap_with_main(
         .await
         .map_err(|e| anyhow::anyhow!("the swap task panicked: {e}"))??;
 
-    // Nothing to remember: `park_main` decides whether to return main to base by
-    // asking if its branch is a PR head from the current poll, not whether a swap
-    // happened. A swapped-in worktree branch is not one, so it is left in place —
-    // and that answer survives a restart, which the old in-memory flag did not.
+    // Main now holds a swapped-in branch, which can itself be a PR head. That must
+    // not be parked away as if `open_pr(main)` had left it there, so the open-PR
+    // provenance mark is cleared: a swap is a deliberate placement that stays.
+    *app.main_pr_park.write().await = None;
 
     // Each tree gave a branch away, and `reconcile` only adds. Left in, the
     // worktree would go on claiming the branch main now holds, and a PR flow for it
