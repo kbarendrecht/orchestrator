@@ -201,10 +201,44 @@ pub struct NewSession {
     pub workspace: String,
 }
 
+/// Refuse if a workspace already holds a live session.
+///
+/// One live session per workspace: two agents in one checkout share a cwd and edit
+/// the same files, and the daemon's dirty-tracking and reconcile are per-workspace,
+/// so a second one is corruption waiting to happen. Main enforces this through
+/// `claim_main`; this is the same rule for every other tree, applied at the paths a
+/// person or agent asks for a session — `new_session`, `open_pr`, resume.
+///
+/// Deliberately *not* inside `spawn_session`: the swap's `relocate_session` goes
+/// straight through that and legitimately holds both trees' sessions for the instant
+/// it exchanges them. The guard lives at the request boundary so that internal move
+/// is exempt. The trade-off is a narrow window — the check and the later insert are
+/// not one atomic step, so two *simultaneous* duplicate requests could both pass —
+/// which teardown already tolerates and which only the (rejected) in-`spawn_session`
+/// version would close.
+async fn refuse_if_occupied(app: &Arc<AppState>, workspace: &str) -> Result<(), ApiError> {
+    let Some(held) = app.live_sessions_in(workspace).await.into_iter().next() else {
+        return Ok(());
+    };
+    // Name it the way the rail does, so the message points at a row you can find.
+    let who = {
+        let inner = app.inner.read().await;
+        inner
+            .sessions
+            .get(&held)
+            .and_then(|s| s.title.clone())
+            .unwrap_or_else(|| held.to_string()[..8].to_string())
+    };
+    Err(ApiError(anyhow::anyhow!(
+        "{workspace} already has a live session ({who}); close it before starting another"
+    )))
+}
+
 pub async fn new_session(
     State(app): State<Arc<AppState>>,
     Json(body): Json<NewSession>,
 ) -> ApiResult<serde_json::Value> {
+    refuse_if_occupied(&app, &body.workspace).await?;
     let id = spawn::spawn_session(&app, &body.workspace, Kind::Interactive, None).await?;
     Ok(Json(json!({ "session": id })))
 }
@@ -958,6 +992,11 @@ async fn revive(app: &Arc<AppState>, id: Uuid, fork: bool) -> ApiResult<serde_js
             "session {id} is transcript-only: the branch is gone and the commit is unreachable"
         )));
     }
+
+    // Resume-into-occupied: the worktree this session lived in may hold a fresh
+    // live session now. Refuse before rebuilding anything. The session being revived
+    // is archived, so it is never the occupant this finds.
+    refuse_if_occupied(app, &workspace).await?;
 
     // A worktree that was torn down is rebuilt before the session goes back into
     // it. `worktree::revive` owns that, next to the archive that recorded it; the
@@ -2440,6 +2479,10 @@ pub async fn open_pr(
         other => return Err(ApiError(anyhow::anyhow!("unknown place {other}"))),
     };
 
+    // `ensure_pr_worktree` reuses a worktree that already holds the branch, so
+    // pressing this twice would otherwise stack a second session in it. (The `main`
+    // arm already refused an occupied main inside `switch_main_to_pr`.)
+    refuse_if_occupied(&app, &workspace).await?;
     let id = spawn::spawn_session(&app, &workspace, Kind::Interactive, None).await?;
     Ok(Json(json!({ "session": id, "workspace": workspace })))
 }

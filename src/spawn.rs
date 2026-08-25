@@ -1095,10 +1095,11 @@ fn watch_session_exit(app: Arc<AppState>, id: SessionId, handle: Arc<PtyHandle>)
         }
         app.release_main(id).await;
         if let Some(ws) = workspace {
-            // The drawer's processes belong to whoever was working here. Only
-            // once the last session in the workspace is gone, though: two
-            // sessions can share a worktree, and closing one of them must not
-            // pull the shells out from under the other.
+            // The drawer's processes belong to whoever was working here. Only once
+            // the workspace is empty, though: a worktree holds one session at a time
+            // now, but the swap's relocation briefly leaves the incoming one live
+            // beside the outgoing, and killing the shells then would pull them out
+            // from under the session that is staying.
             if app.live_sessions_in(&ws).await.is_empty() {
                 let killed = app.kill_processes_in(&ws).await;
                 if killed > 0 {
