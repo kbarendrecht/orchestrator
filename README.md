@@ -50,15 +50,17 @@ Releases attach two binaries per platform.
 
 Apple Silicon and x86-64 Linux are built.
 
-### Through mise (with the `ubi` backend)
+### Through mise (with the `github` backend)
 
 ```
-mise use -g "ubi:kbarendrecht/orchestrator[exe=orchestrator-desktop]"
+mise use -g "github:kbarendrecht/orchestrator"
 mise up          # upgrade to the newest release later
 ```
 
-`ubi` picks the right asset for your platform. If you want the optional `orch`
-CLI as well, add a second entry with `[exe=orch]`.
+mise picks the right asset for your platform, verifies its checksum and release
+provenance, and extracts **both** binaries — so `orch` lands beside
+`orchestrator-desktop` and no second entry is needed. (The older `ubi:` backend
+still resolves these releases, but mise has deprecated it.)
 
 ### From a release tarball
 
