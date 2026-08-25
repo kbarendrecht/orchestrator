@@ -10,7 +10,7 @@ are already in there with the reason they were not done.
 
 ```
 cargo check                         # the daemon
-cargo test                          # 344 tests, all in-tree
+cargo test                          # 345 tests, all in-tree
 mise run check-web                  # type-check the SPA + enforce its module graph
 mise run e2e                        # 11 flows against a real daemon, ~45s
 cargo run -p orchestrator-desktop   # the app, daemon embedded in-process
@@ -209,6 +209,13 @@ to disappear is waiting for something that never happens.
   speaking.
 - **`github_write.rs` will not resolve a thread, approve, merge or open a PR.**
   That is a design boundary, not a gap. Resolving is the comment author's button.
+  Which means **`is_resolved` can never stand for "handled"**: the daemon never
+  sets it, so every thread it has ever answered is still unresolved. A re-request
+  guard derived from `!is_resolved` shipped and could never fire — read
+  `post::rerequest_all`, and ask "did *we* settle it" instead. The neighbouring
+  trap is `answerable`, which flips the moment you post: it answers "is anyone
+  owed a reply", so it is only "who reviewed" on a fetch taken *before* the
+  posting.
 - **One pty exit, one observer.** `spawn::watch_session_exit` is the only thing
   that waits on a session's handle; it dispatches onward (a fix run's verdict goes
   to `fix_pr::settle`). A second `pty.wait()` on the same handle would work and
