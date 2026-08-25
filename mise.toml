@@ -49,3 +49,19 @@ run = "node tools/shot.mjs"
 description = "Build a throwaway PR to drive the review flow against"
 dir = "{{config_root}}"
 run = "node tools/fixture-pr.mjs"
+
+# Drive the main flows against a real daemon: open a worktree, open main, fork
+# either, swap both ways, run fix-pr. Offline and deterministic, because the agent
+# and the GitHub calls are PATH shims — everything else is real, down to the git
+# worktrees and the branch moves. `docs/e2e.md` has the design and its limits.
+#
+#   mise run e2e
+#   mise run e2e -- swap        # only the flows whose name matches
+#   mise run e2e -- --keep      # keep each sandbox to read afterwards
+#
+# Not in the pre-commit hook: it is ~25s and builds the daemon, where the hook is
+# ~2s. Run it before anything touching spawn, worktrees, the swap or fix-pr.
+[tasks.e2e]
+description = "Drive the main user flows against a real daemon"
+dir = "{{config_root}}"
+run = "node tools/e2e/run.mjs"
