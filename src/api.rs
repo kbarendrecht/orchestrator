@@ -85,6 +85,15 @@ fn origin_ok(origin: Option<&str>, port: u16, is_hook: bool, is_get: bool, token
     }
 }
 
+/// The routes a running session calls on its own `ask_token`.
+///
+/// A list rather than a growing chain of `ends_with`, because it has been
+/// outgrown once already — see the note in [`guard`].
+fn is_ask_route(path: &str) -> bool {
+    const ASK_ROUTES: [&str; 4] = ["/ask", "/wait", "/spawn", "/committed"];
+    path.starts_with("/api/session/") && ASK_ROUTES.iter().any(|s| path.ends_with(s))
+}
+
 /// Reject anything that is not the SPA's own origin.
 ///
 /// Binding to 127.0.0.1 is necessary but not sufficient: any web page you visit
@@ -123,13 +132,19 @@ pub async fn guard(
         .and_then(|v| v.to_str().ok())
         .is_some_and(|t| t == app.token);
 
-    /* The agent's own two routes authenticate differently: they carry the
-       session's `ask_token` rather than the app token, and the handlers do that
-       check because only they know which session the path names. Exempted here
-       the way hooks are, and for the same reason — the caller is a local process
-       with no Origin and no business holding the key to everything else. */
-    let is_ask = path.starts_with("/api/session/")
-        && (path.ends_with("/ask") || path.ends_with("/wait") || path.ends_with("/spawn"));
+    /* The agent's own routes authenticate differently: they carry the session's
+       `ask_token` rather than the app token, and the handlers do that check
+       because only they know which session the path names. Exempted here the way
+       hooks are, and for the same reason — the caller is a local process with no
+       Origin and no business holding the key to everything else.
+
+       Named as a list because the suffix form has already been outgrown once:
+       `/committed` arrived with the resolve run and this predicate was not
+       extended, so the seam the whole two-phase flow turns on answered 403 to
+       its only caller — twice over, since a curl that added an Origin would then
+       have failed `needs_token` for want of an app token it is deliberately not
+       given. Found by driving a real run, invisible to every unit test. */
+    let is_ask = is_ask_route(&path);
 
     let is_get = req.method() == axum::http::Method::GET;
     if !origin_ok(origin, port, is_hook || is_ask, is_get, token_ok) {
@@ -1704,6 +1719,30 @@ mod tests {
         assert!(ok(None, false, false, true));
         // Still nothing without the token.
         assert!(!ok(None, false, false, false));
+    }
+
+    #[test]
+    fn every_route_the_vendored_prompts_call_on_the_ask_token_is_exempt() {
+        // The three in `commands/resolve-run.md` plus `/spawn`. `/committed` was
+        // missing and the run's central seam answered 403 to the only caller it
+        // has; these are the literal paths those prompts curl.
+        for p in [
+            "/api/session/<id>/ask",
+            "/api/session/<id>/ask/<ask>/wait",
+            "/api/session/<id>/thread/PRRT_x/committed",
+            "/api/session/<id>/spawn",
+        ] {
+            assert!(is_ask_route(p), "{p} must not need the app token");
+        }
+        // And nothing else on the session: these are the SPA's, on the app token.
+        for p in [
+            "/api/session/<id>/kill",
+            "/api/session/<id>/answer",
+            "/api/session/<id>/fork",
+            "/api/state",
+        ] {
+            assert!(!is_ask_route(p), "{p} is not the agent's to call");
+        }
     }
 
     #[test]
