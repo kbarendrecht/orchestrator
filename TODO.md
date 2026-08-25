@@ -78,6 +78,16 @@ Everything outside that block is hand-written and survives.
   a way to select a message index from outside the TUI, which the CLI does not
   expose — `--resume` resumes at the end and nothing else.
 
+- **Containers and ports, if orchd ever hosts a heavier repo.**
+  `docs/workspace-isolation.md` has the decision record and the shape to build,
+  from a sourced research pass (`docs/research/worktree-docker.md`): per-worktree
+  compose projects (`COMPOSE_PROJECT_NAME`, ports from a pool), **not** the
+  shared-stack `docker exec` model that was cut with the capability subsystem. The
+  sibling problem is a per-worktree process publishing a fixed port; the peer answer
+  is a host port range plus a `$PORT` placeholder, and `ORCHD_PORT_BASE` — already
+  used per fix-pr run — is the hook. Neither is wanted yet: orchd carries no
+  container config at all, and that is the portable default.
+
 - **Stacked-PR support.** Two halves. First, a context-menu `stack` action on a
   PR row that opens a session starting from that PR's code — a new branch based
   on the selected PR's head, its own worktree (cwd = main, via the existing
@@ -276,6 +286,6 @@ Everything outside that block is hand-written and survives.
 
 Rewritten by the daemon on every poll. Edit anything outside this block.
 
-- **GitHub token is gh's** — it carries write scopes; §6 wants a read-only PAT in `ORCHD_GITHUB_TOKEN` or `github_token_file`.
+Nothing outstanding.
 
 <!-- <<< orchd live findings <<< -->

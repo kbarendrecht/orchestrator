@@ -151,7 +151,10 @@ the human and Slack output see.
 - Rows render from `actionable`; `blocked` goes behind the same disclosure the
   `--blocked` flag gates in the human output.
 
-## Follow-up
+## Against the spec
 
-§6b of `orchestrator-spec.md` should be rewritten against this once you've made the
-change — right now it documents a contract that does not and should not exist.
+`spec.md` §6b describes a built-in review queue with server-side ranking. That was
+built, worked, and was deliberately reverted — it was more machinery than the one
+real user wanted to own. **This file is the contract, not §6b**: the daemon shells
+out to `reviews_command` and renders its JSON, and a checkout that configures none
+gets a pane reading `off`. `TODO.md` has the trade-off that was accepted.

@@ -96,20 +96,14 @@ tree".
   publishing a fixed port. The peer answer is a host port range plus a `$PORT`
   placeholder; `ORCHD_PORT_BASE` (already used per fix-pr run) is the hook.
 
-## Implementation shape (not yet built)
+## What became of it
 
-- `spawn`: "new session" defaults to cutting a worktree; the main checkout
-  becomes an explicit path. `spawn_worktree_session` already exists and already
-  branches on whether the subdir is Claude Code's default.
-- `git::configure_repo`: idempotent managed-block exclude of
-  `/.claude/worktrees/`.
-- `watch_session_exit`: on a workspace's last exit, run `preflight`; if
-  `can_remove`, tear down.
-- `web/app.js`: relabel `main` → "main checkout"; worktree becomes the primary
-  new-session gesture; keep an explicit main-checkout action; tooltips on both.
+The decisions above are implemented: `worktrees_subdir` makes the layout
+configurable, `main_processes` are `autostart:false` specs a fresh checkout never
+starts, and the capability subsystem is gone. `spawn_worktree_session` branches on
+whether the subdir is Claude Code's default, delegating there and cutting the tree
+itself anywhere else.
 
-Verification: on a plain repo, a new session lands in a fresh worktree and
-disappears on clean exit but survives once it has a commit; the main checkout
-runs in place and refuses a second session; a daemon with the heavier defaults
-still nests worktrees exactly as today (the existing review-parity and
-isolated-daemon smokes cover that path).
+The build plan that used to close this file is dropped: part of it shipped, and the
+rest was written against a shape that has since moved. `TODO.md` is where the
+remaining work lives.
