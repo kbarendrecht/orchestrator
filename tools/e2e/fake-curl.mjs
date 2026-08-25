@@ -121,9 +121,14 @@ function node(p, slug, viewer) {
     isDraft: p.is_draft ?? false,
     mergeable: p.mergeable ?? 'MERGEABLE',
     mergeStateStatus: p.merge_state ?? 'CLEAN',
-    // Absent means "your own fork", which is what the authorship guard wants to
-    // see for the happy path; a flow says otherwise to make the guard refuse.
-    headRepositoryOwner: { login: p.head_owner ?? viewer },
+    // The authorship guard asks whether you can *push* to the head repo, so this
+    // carries the permission GitHub would report. Absent means your own repo, with
+    // write — the happy path; a flow sets `head_permission: 'READ'` to make the
+    // guard refuse, or `head_repo: null` to make it fail closed on an unknown.
+    headRepository: p.head_repo === null ? null : {
+      nameWithOwner: p.head_repo ?? `${viewer}/monorepo`,
+      viewerPermission: p.head_permission ?? 'WRITE',
+    },
     commits: {
       nodes: [{
         commit: {

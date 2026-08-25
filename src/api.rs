@@ -2819,9 +2819,10 @@ pub async fn fix_pr(
         evaluate(&GuardInput {
             pr: &pr,
             automation: inner.automation.get(number),
-            // Your own login, never `pr.head_owner` — the guard refuses when the
-            // head owner is not you, so sourcing the viewer from the head owner
-            // compares a value to itself and the authorship check never fires.
+            // Your own login, from the poll. The authorship guard no longer
+            // compares it to the head repo's owner — it asks whether you can push
+            // there — but an empty one still fails the guard closed, so this must
+            // stay the real viewer rather than anything derived from the PR.
             viewer: inner.viewer.as_deref().unwrap_or_default(),
             branch_busy,
             running_automations,

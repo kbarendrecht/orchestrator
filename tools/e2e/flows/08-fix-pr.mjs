@@ -42,10 +42,15 @@ export async function run(t) {
 
   // --- the authorship guard, for real ---------------------------------------
   //
-  // A run rebases and force-pushes, so a head repo that is not yours is the one
+  // A run rebases and force-pushes, so a head repo you cannot push to is the one
   // refusal that protects somebody else's branch. It is asserted first because it
-  // must refuse *before* anything is created.
-  t.setPrs([{ number: PR, head_ref: HEAD, head_owner: 'someone-else' }], VIEWER)
+  // must refuse *before* anything is created. Read access, not a foreign owner:
+  // the guard asks about push rights, since an org's own repo is not yours by name
+  // and is still yours to push to.
+  t.setPrs([{
+    number: PR, head_ref: HEAD,
+    head_repo: 'someone-else/monorepo', head_permission: 'READ',
+  }], VIEWER)
   const seen = await t.pollPrs()
   const pr = seen.prs.find((p) => p.number === PR)
   assert.ok(pr, `the poll saw ${JSON.stringify(seen.prs)} — a mis-shaped canned node reads as no PRs`)
@@ -54,7 +59,7 @@ export async function run(t) {
 
   await assert.rejects(
     () => t.api('POST', `/api/pr/${PR}/fix-pr`),
-    /not your fork/,
+    /which you cannot push to/,
   )
   // A refused run leaves nothing behind. The worktree used to be cut before the
   // guard ran, which is exactly the shape this pins down.
@@ -66,8 +71,8 @@ export async function run(t) {
   // A poll per attempt, not one poll and then waiting: a fetch already in flight
   // when the file changed answers from the old copy, and with a 30s period the
   // next one of its own accord is far past any sane timeout.
-  await until('the poll to report the PR as yours', async () =>
-    (await t.pollPrs()).prs.find((p) => p.number === PR)?.head_owner === VIEWER)
+  await until('the poll to report the PR as pushable', async () =>
+    (await t.pollPrs()).prs.find((p) => p.number === PR)?.head_pushable === true)
 
   const { session } = await t.api('POST', `/api/pr/${PR}/fix-pr`)
 

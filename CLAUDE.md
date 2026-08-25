@@ -10,7 +10,7 @@ are already in there with the reason they were not done.
 
 ```
 cargo check                         # the daemon
-cargo test                          # 345 tests, all in-tree
+cargo test                          # 347 tests, all in-tree
 mise run check-web                  # type-check the SPA + enforce its module graph
 mise run e2e                        # 11 flows against a real daemon, ~45s
 cargo run -p orchestrator-desktop   # the app, daemon embedded in-process
@@ -293,8 +293,9 @@ to disappear is waiting for something that never happens.
   clean, so a stale lock is the only thing left to trip on). Do not "simplify" the
   retry away.
 - **`POST /api/pr/:n/fix-pr` starts a run immediately.** No confirmation: the
-  guard table refuses on authorship, a run already going, a busy branch and the
-  concurrency cap, and *nothing else*. "The PR looks fine" is not a refusal,
+  guard table refuses on authorship — *can you push to the head repo*, read from
+  `headRepository.viewerPermission`, not whose name is on it — a run already going,
+  a busy branch and the concurrency cap, and *nothing else*. "The PR looks fine" is not a refusal,
   because a run is also how a PR that has fallen behind gets rebased. Easy to fire
   by accident while poking at the API.
 - **Pushes are guarded.** `--force-with-lease` only, no `push -u`, no protected
