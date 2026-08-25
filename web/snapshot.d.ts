@@ -92,7 +92,27 @@ free: boolean, };
 
 export type Kind = { "kind": "interactive" } | { "kind": "automation", pr: number, command: string, };
 
-export type Pr = { number: number, title: string, url: string, head_ref: string, head_owner: string | null, base_ref: string, is_draft: boolean, 
+export type Pr = { number: number, title: string, url: string, head_ref: string, 
+/**
+ * The head branch's repo, `owner/name`, for naming it in a refusal.
+ */
+head_repo: string | null, 
+/**
+ * May you push to that repo?
+ *
+ * This is what the `fix-pr` authorship guard asks, and it replaced "is the
+ * head repo's owner your login". That test was wrong in both directions: on
+ * an org PR the owner is the org, so it refused every PR and made `fix-pr`
+ * unusable outside a fork layout — while a same-repo PR passed it only
+ * because you happened to own the repo, not because it had established
+ * anything about a force-push.
+ *
+ * Repo-level, so it does not promise a given *branch* is force-pushable;
+ * `guards/push.py` is the other half of that pair (`--force-with-lease` only,
+ * no protected refs). `None` means GitHub did not say, and the guard fails
+ * closed on it.
+ */
+head_pushable: boolean | null, base_ref: string, is_draft: boolean, 
 /**
  * `MERGEABLE` / `CONFLICTING` / `UNKNOWN`.
  */
@@ -167,7 +187,27 @@ workspace: string | null,
 /**
  * A live session in that workspace, so the row can act as a jump link.
  */
-session: string | null, number: number, title: string, url: string, head_ref: string, head_owner: string | null, base_ref: string, is_draft: boolean, 
+session: string | null, number: number, title: string, url: string, head_ref: string, 
+/**
+ * The head branch's repo, `owner/name`, for naming it in a refusal.
+ */
+head_repo: string | null, 
+/**
+ * May you push to that repo?
+ *
+ * This is what the `fix-pr` authorship guard asks, and it replaced "is the
+ * head repo's owner your login". That test was wrong in both directions: on
+ * an org PR the owner is the org, so it refused every PR and made `fix-pr`
+ * unusable outside a fork layout — while a same-repo PR passed it only
+ * because you happened to own the repo, not because it had established
+ * anything about a force-push.
+ *
+ * Repo-level, so it does not promise a given *branch* is force-pushable;
+ * `guards/push.py` is the other half of that pair (`--force-with-lease` only,
+ * no protected refs). `None` means GitHub did not say, and the guard fails
+ * closed on it.
+ */
+head_pushable: boolean | null, base_ref: string, is_draft: boolean, 
 /**
  * `MERGEABLE` / `CONFLICTING` / `UNKNOWN`.
  */

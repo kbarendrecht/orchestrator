@@ -33,7 +33,22 @@ pub struct Pr {
     pub title: String,
     pub url: String,
     pub head_ref: String,
-    pub head_owner: Option<String>,
+    /// The head branch's repo, `owner/name`, for naming it in a refusal.
+    pub head_repo: Option<String>,
+    /// May you push to that repo?
+    ///
+    /// This is what the `fix-pr` authorship guard asks, and it replaced "is the
+    /// head repo's owner your login". That test was wrong in both directions: on
+    /// an org PR the owner is the org, so it refused every PR and made `fix-pr`
+    /// unusable outside a fork layout — while a same-repo PR passed it only
+    /// because you happened to own the repo, not because it had established
+    /// anything about a force-push.
+    ///
+    /// Repo-level, so it does not promise a given *branch* is force-pushable;
+    /// `guards/push.py` is the other half of that pair (`--force-with-lease` only,
+    /// no protected refs). `None` means GitHub did not say, and the guard fails
+    /// closed on it.
+    pub head_pushable: Option<bool>,
     pub base_ref: String,
     pub is_draft: bool,
     /// `MERGEABLE` / `CONFLICTING` / `UNKNOWN`.
@@ -355,7 +370,8 @@ mod tests {
             title: String::new(),
             url: String::new(),
             head_ref: head.into(),
-            head_owner: None,
+            head_repo: None,
+            head_pushable: None,
             base_ref: base.into(),
             is_draft: false,
             mergeable: "MERGEABLE".into(),

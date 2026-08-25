@@ -125,23 +125,39 @@ pub enum Verdict {
 pub fn evaluate(input: &GuardInput) -> Verdict {
     let pr = input.pr;
 
-    // Authorship: the head repo must be your fork (§8). A `fix-pr` run rebases and
-    // force-pushes, so it must only ever touch a repo that is yours — and an
-    // *unknown* login fails closed, because a run that force-pushes must never
-    // guess it may write here. (The viewer is your own login; sourcing it from
-    // `pr.head_owner` would compare the owner to itself and never refuse.)
+    // Authorship: you must be able to push to the head repo (§8). A `fix-pr` run
+    // rebases and force-pushes, so what matters is write access — never whose name
+    // is on the repo.
+    //
+    // This was "the head repo's owner is your login", which was wrong in both
+    // directions. On an org PR the owner is the org, so it refused every PR and
+    // `fix-pr` could not run outside a fork layout at all; and a same-repo PR
+    // passed it only because you happened to own the repo, having established
+    // nothing about a force-push. Scoping the guard to forks instead was the other
+    // option and is worse: it would skip the check on exactly the PRs whose branch
+    // lives in a shared repo.
+    //
+    // Both unknowns fail closed. A run that force-pushes must never guess.
     if input.viewer.is_empty() {
         return no(format!(
             "#{} cannot be remediated: your GitHub login is unknown",
             pr.number
         ));
     }
-    if let Some(owner) = &pr.head_owner {
-        if owner != input.viewer {
+    let where_ = pr.head_repo.as_deref().unwrap_or("an unknown repo");
+    match pr.head_pushable {
+        Some(true) => {}
+        Some(false) => {
             return no(format!(
-                "#{} is headed from {owner}, not your fork",
+                "#{} is headed from {where_}, which you cannot push to",
                 pr.number
-            ));
+            ))
+        }
+        None => {
+            return no(format!(
+                "#{} cannot be remediated: GitHub did not say whether you can push to {where_}",
+                pr.number
+            ))
         }
     }
 
@@ -250,7 +266,8 @@ mod tests {
             title: "t".into(),
             url: String::new(),
             head_ref: "feature/x".into(),
-            head_owner: Some("kbarendrecht".into()),
+            head_repo: Some("kbarendrecht/monorepo".into()),
+            head_pushable: Some(true),
             base_ref: "develop".into(),
             is_draft: false,
             mergeable: "MERGEABLE".into(),
@@ -313,17 +330,38 @@ mod tests {
         assert!(matches!(evaluate(&i), Verdict::No { .. }));
     }
 
+    /// The guard asks about push access, not about whose name is on the repo.
+    ///
+    /// Both readings agreed on a fork you own and disagreed everywhere else: the
+    /// old owner-versus-login test refused an org PR you have write on (so `fix-pr`
+    /// could not run outside a fork layout at all) and passed a same-repo PR merely
+    /// because you owned the repo. Each direction is asserted, because getting only
+    /// one of them right is what shipped.
     #[test]
-    fn someone_elses_head_repo_is_refused() {
+    fn the_guard_asks_whether_you_can_push_not_who_owns_it() {
+        // A repo that is not yours, and you cannot push to it.
         let mut p = pr(1);
-        p.head_owner = Some("someone-else".into());
-        assert!(matches!(evaluate(&input(&p)), Verdict::No { .. }));
+        p.head_repo = Some("someone-else/monorepo".into());
+        p.head_pushable = Some(false);
+        match evaluate(&input(&p)) {
+            Verdict::No { reason } => assert!(reason.contains("someone-else/monorepo"), "{reason}"),
+            other => panic!("expected No, got {other:?}"),
+        }
+
+        // An org's repo you *can* push to. The old guard refused this one.
+        p.head_repo = Some("acme/monorepo".into());
+        p.head_pushable = Some(true);
+        assert!(matches!(evaluate(&input(&p)), Verdict::Go));
+
+        // GitHub did not say. Fails closed rather than guessing about a force-push.
+        p.head_pushable = None;
+        match evaluate(&input(&p)) {
+            Verdict::No { reason } => assert!(reason.contains("did not say"), "{reason}"),
+            other => panic!("expected No, got {other:?}"),
+        }
     }
 
-    /// Fails closed: an unknown login must not authorise a force-pushing run. This
-    /// is also what a caller that mis-sourced the viewer (e.g. from `head_owner`,
-    /// leaving it to match itself) should not be able to slip past — the empty
-    /// viewer is refused outright.
+    /// Fails closed: an unknown login must not authorise a force-pushing run.
     #[test]
     fn an_unknown_viewer_is_refused() {
         let p = pr(1);

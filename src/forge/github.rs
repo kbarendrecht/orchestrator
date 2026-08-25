@@ -324,7 +324,7 @@ fn query_for(owner: &str, name: &str) -> String {
         isDraft
         mergeable
         mergeStateStatus
-        headRepositoryOwner {{ login }}
+        headRepository {{ nameWithOwner viewerPermission }}
         commits(last: 1) {{ nodes {{ commit {{ oid committedDate statusCheckRollup {{ state }} }} }} }}
         reviewThreads(first: {PAGE}) {{
           pageInfo {{ hasNextPage endCursor }}
@@ -465,6 +465,16 @@ fn all_summary_threads(
     Ok((all, true))
 }
 
+/// Does this repository permission let you push?
+///
+/// GitHub's `RepositoryPermission`: `ADMIN`, `MAINTAIN`, `WRITE`, `TRIAGE`,
+/// `READ`. Only the first three carry write access — `TRIAGE` manages issues and
+/// `READ` is read — and an unrecognised value is *not* push access, because a new
+/// tier arriving must not silently authorise a force-push.
+fn may_push(permission: &str) -> bool {
+    matches!(permission, "ADMIN" | "MAINTAIN" | "WRITE")
+}
+
 /// Whether a thread's last word is yours, one way or another.
 ///
 /// The rule itself is [`crate::forge::model::answered`], shared with
@@ -599,10 +609,14 @@ fn parse_pr(n: &Value, viewer: &str) -> Option<Pr> {
             .unwrap_or_default()
             .to_string(),
         head_ref: n.get("headRefName")?.as_str()?.to_string(),
-        head_owner: n
-            .pointer("/headRepositoryOwner/login")
+        head_repo: n
+            .pointer("/headRepository/nameWithOwner")
             .and_then(|s| s.as_str())
             .map(|s| s.to_string()),
+        head_pushable: n
+            .pointer("/headRepository/viewerPermission")
+            .and_then(|s| s.as_str())
+            .map(may_push),
         base_ref: n
             .get("baseRefName")
             .and_then(|s| s.as_str())
@@ -897,6 +911,44 @@ mod tests {
             Some(("acme".into(), "monorepo".into()))
         );
         assert_eq!(repo_from_remote("git@gitlab.com:x/y.git"), None);
+    }
+
+    /// The three tiers that carry write, and nothing else.
+    ///
+    /// An unrecognised value is deliberately *not* push access: this authorises a
+    /// force-pushing run, and a permission tier GitHub adds later must fail the
+    /// guard closed rather than be waved through by a catch-all.
+    #[test]
+    fn only_the_write_permissions_let_a_fix_run_push() {
+        for yes in ["ADMIN", "MAINTAIN", "WRITE"] {
+            assert!(may_push(yes), "{yes} can push");
+        }
+        for no in ["TRIAGE", "READ", "NONE", "", "write", "SOMETHING_NEW"] {
+            assert!(!may_push(no), "{no} must not authorise a force-push");
+        }
+    }
+
+    /// The head repo and its permission come off the PR, and both may be absent —
+    /// a deleted fork answers `headRepository: null`, which must read as "unknown"
+    /// rather than as anything the guard can act on.
+    #[test]
+    fn a_prs_head_repo_and_push_right_are_read_or_left_unknown() {
+        let with = serde_json::json!({
+            "number": 7, "title": "t", "url": "u", "headRefName": "feature/x",
+            "headRepository": { "nameWithOwner": "acme/monorepo", "viewerPermission": "WRITE" },
+            "baseRefName": "develop", "isDraft": false,
+            "mergeable": "MERGEABLE", "mergeStateStatus": "CLEAN",
+            "reviewThreads": { "pageInfo": { "hasNextPage": false }, "nodes": [] },
+        });
+        let pr = parse_pr(&with, "me").expect("parsed");
+        assert_eq!(pr.head_repo.as_deref(), Some("acme/monorepo"));
+        assert_eq!(pr.head_pushable, Some(true));
+
+        let mut without = with.clone();
+        without["headRepository"] = serde_json::Value::Null;
+        let pr = parse_pr(&without, "me").expect("parsed");
+        assert_eq!(pr.head_repo, None);
+        assert_eq!(pr.head_pushable, None, "absent is unknown, not `false`");
     }
 
     #[test]
@@ -1329,7 +1381,8 @@ mod tests {
             title: String::new(),
             url: String::new(),
             head_ref: head.into(),
-            head_owner: None,
+            head_repo: None,
+            head_pushable: None,
             base_ref: base.into(),
             is_draft: false,
             mergeable: "MERGEABLE".into(),
