@@ -295,6 +295,87 @@ pub async fn kill_session(
     }
 }
 
+/// Open Claude Code's own rewind picker in this session.
+///
+/// Two escapes into the pty, and nothing else. Claude Code already has the whole
+/// feature — a double-tap of `esc` at the prompt opens a picker that can put the
+/// conversation *and* the files back — so the daemon's job is to reach it, not to
+/// rebuild it. Measured in the shipped binary rather than assumed: 2.1.240 carries
+/// `rewindToMessageIndex`, `rewindAnchorUuid`, `rewindDirectory` and a tip whose
+/// text is "Double-tap esc to rewind the conversation to a previous point in
+/// time".
+///
+/// Gated here rather than in the SPA, because a stray escape is not harmless. The
+/// picker only opens at the prompt: mid-turn the keystroke interrupts the turn,
+/// and at a question or a permission prompt it *answers* — cancelling the one and
+/// declining the other. Those are the same two states the nudge refuses, for the
+/// same reason.
+///
+/// Nothing is reconciled afterwards, and that is deliberate: a rewind that
+/// restores files changes the worktree under the changed-files pane, but
+/// `start_workspace_watcher` already re-reads every workspace holding a live
+/// session on a 15s tick — it exists for exactly this class of change, the one no
+/// hook reports.
+pub async fn rewind_session(
+    State(app): State<Arc<AppState>>,
+    Path(id): Path<Uuid>,
+) -> ApiResult<serde_json::Value> {
+    let pty = {
+        let inner = app.inner.read().await;
+        let s = inner
+            .sessions
+            .get(&id)
+            .ok_or_else(|| anyhow::anyhow!("no such session {id}"))?;
+        // Nothing to rewind to. The picker opens on an empty conversation and has
+        // nothing to offer, which reads as a broken button.
+        if !s.had_a_turn {
+            return Err(ApiError(anyhow::anyhow!(
+                "this session has no conversation to rewind"
+            )));
+        }
+        match &s.state {
+            crate::model::State::YourTurn { reason, .. } => match reason {
+                crate::model::TurnReason::AskedAQuestion => {
+                    return Err(ApiError(anyhow::anyhow!(
+                        "it is asking you something — an escape would cancel the question, not rewind"
+                    )))
+                }
+                crate::model::TurnReason::NeedsPermission => {
+                    return Err(ApiError(anyhow::anyhow!(
+                        "it is waiting for permission — an escape would decline it, not rewind"
+                    )))
+                }
+                _ => {}
+            },
+            other => {
+                return Err(ApiError(anyhow::anyhow!(
+                    "the picker only opens at the prompt, and this session is {}",
+                    match other {
+                        crate::model::State::Working => "mid-turn",
+                        crate::model::State::Starting => "still starting",
+                        _ => "not live",
+                    }
+                )))
+            }
+        }
+        s.pty
+            .clone()
+            .filter(|p| p.is_alive())
+            .ok_or_else(|| anyhow::anyhow!("session {id} has no live terminal"))?
+    };
+
+    // Two writes with a gap, not one `\x1b\x1b`: it is a double *tap*, so the TUI
+    // is timing two key events. One burst risks arriving as a single escape — or
+    // as the `ESC ESC` meta prefix — and the difference is invisible from here.
+    // The gap is the same shape as the nudge's, which learned the lesson first.
+    tokio::spawn(async move {
+        let _ = pty.write(b"\x1b");
+        tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+        let _ = pty.write(b"\x1b");
+    });
+    Ok(Json(json!({ "rewinding": id })))
+}
+
 /// Forget a session outright.
 ///
 /// [`kill_session`] is the other answer and the usual one: it ends the process
@@ -1818,6 +1899,72 @@ mod tests {
         assert!(ok(None, false, false, true));
         // Still nothing without the token.
         assert!(!ok(None, false, false, false));
+    }
+
+    /// A stray escape is not harmless, so the states that would misread it are
+    /// refused by name.
+    ///
+    /// The two waiting ones are the point: mid-turn was driven against a real
+    /// session and refused, but a question and a permission prompt cannot be
+    /// arranged on demand, and those are exactly the two where the keystroke would
+    /// *answer* — cancelling the one, declining the other — rather than do nothing.
+    #[tokio::test]
+    async fn rewind_refuses_every_state_that_would_read_an_escape_as_an_answer() {
+        use crate::config::Config;
+        use crate::model::{Kind, Session, State as S, TurnReason as R, MAIN};
+        use crate::state::AppState;
+
+        let dir = std::env::temp_dir().join(format!("orchd-rewind-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cfg: Config = serde_json::from_str(&format!(
+            r#"{{"main_checkout":"{}","port":7796}}"#,
+            dir.display()
+        ))
+        .unwrap();
+        let app = AppState::new(cfg, "t".into(), crate::window::Chrome::None);
+
+        let at = |reason| S::YourTurn { since: std::time::SystemTime::now(), reason };
+        for (state, want) in [
+            (at(R::AskedAQuestion), "cancel the question"),
+            (at(R::NeedsPermission), "decline it"),
+            (S::Working, "mid-turn"),
+            (S::Starting, "still starting"),
+        ] {
+            let id = Uuid::new_v4();
+            {
+                let mut inner = app.inner.write().await;
+                let mut s = Session::new(id, MAIN.to_string(), dir.clone(), Kind::Interactive);
+                s.had_a_turn = true;
+                s.state = state.clone();
+                inner.sessions.insert(id, s);
+            }
+            match rewind_session(State(app.clone()), Path(id)).await {
+                Err(e) => {
+                    let said = format!("{:#}", e.0);
+                    assert!(said.contains(want), "{state:?} said {said:?}, wanted {want:?}");
+                }
+                Ok(_) => panic!("{state:?} must not open the picker"),
+            }
+        }
+
+        // And a session at the prompt with nothing behind it: the picker would
+        // open on an empty conversation, which reads as a broken button.
+        let id = Uuid::new_v4();
+        {
+            let mut inner = app.inner.write().await;
+            let mut s = Session::new(id, MAIN.to_string(), dir.clone(), Kind::Interactive);
+            s.state = at(R::TurnComplete);
+            inner.sessions.insert(id, s); // had_a_turn stays false
+        }
+        let said = format!(
+            "{:#}",
+            rewind_session(State(app.clone()), Path(id))
+                .await
+                .expect_err("no conversation must refuse")
+                .0
+        );
+        assert!(said.contains("no conversation to rewind"), "{said}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -459,6 +459,10 @@ function sessionRow(s, w) {
   btn.oncontextmenu = (ev) => openMenu(ev, [
     // Nothing to branch off until the conversation has had a turn.
     ['Fork session', null, s.has_transcript ? () => forkSession(s) : null],
+    // Claude Code's own picker, reached rather than rebuilt. Greyed in the states
+    // where the daemon refuses it — mid-turn an escape interrupts the turn, and at
+    // a question or a permission prompt it answers instead of rewinding.
+    ['Rewind conversation…', null, isRewindable(s) ? () => rewindSession(s) : null],
     // The worktree, not the session: the row is the only place a worktree is
     // visible, so its workspace-level action lives here too.
     //
@@ -474,6 +478,35 @@ function sessionRow(s, w) {
     ['Delete session', 'bad', () => deleteSession(s)],
   ]);
   return btn;
+}
+
+/** Sessions whose prompt would take a double-escape as "rewind".
+ *
+ *  The picker opens at the prompt and nowhere else, so this is narrower than
+ *  "waiting": mid-turn the escape interrupts the turn, and the two waiting states
+ *  that expect an answer would take it as one — cancelling a question, declining a
+ *  permission prompt. The daemon refuses the same three, so this only decides
+ *  whether the item is offered, never whether it is safe. */
+const isRewindable = (s) =>
+  s.alive
+  && s.state.state === 'your_turn'
+  && s.state.reason !== 'asked_a_question'
+  && s.state.reason !== 'needs_permission'
+  // Nothing to rewind to: the picker would open with nothing in it.
+  && s.has_transcript;
+
+/** Open Claude Code's rewind picker in this session's terminal.
+ *
+ *  Selects first, because the picker draws in the pane and pressing this on a row
+ *  you cannot see would put a modal somewhere out of sight. */
+async function rewindSession(s) {
+  setSelected(s.id);
+  try {
+    await call(`/api/session/${s.id}/rewind`);
+    toast('opened the rewind picker — pick a point in the pane');
+  } catch (e) {
+    toast(e.message, true);
+  }
 }
 
 /** Put this worktree's branch in main, and main's here.

@@ -383,6 +383,7 @@ fn router(app: Arc<AppState>) -> Router {
         .route("/api/file", post(api::write_file))
         .route("/api/session", post(api::new_session))
         .route("/api/session/:id/kill", post(api::kill_session))
+        .route("/api/session/:id/rewind", post(api::rewind_session))
         .route("/api/session/:id/resume", post(api::resume_session))
         .route("/api/sessions/nudge", post(api::nudge_sessions))
         .route("/api/session/:id/fork", post(api::fork_session))
