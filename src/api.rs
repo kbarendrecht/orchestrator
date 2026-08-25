@@ -2642,15 +2642,18 @@ pub async fn fix_pr(
     }
     .ok_or_else(|| anyhow::anyhow!("PR #{number} is not in the current poll"))?;
 
-    // The worktree has to exist before the run can be spawned into it.
-    let workspace = spawn::ensure_pr_worktree(&app, number, &pr.head_ref).await?;
+    // Asked the way the spawn enforces it, not with a second rule: an idle session
+    // on the branch used to pass here and be refused a moment later by
+    // `spawn_fix_pr_session`, once the run looked started.
+    //
+    // The worktree is no longer cut before this. `spawn_fix_pr_session` calls
+    // `ensure_pr_worktree` itself, so creating one here only meant a refused run
+    // left a worktree behind — and it is what split the two rules apart, since the
+    // guard then asked about the empty tree it had just made.
+    let branch_busy = spawn::branch_busy(&app, &pr.head_ref).await.is_some();
 
     let verdict = {
         let inner = app.inner.read().await;
-        let branch_busy = inner
-            .sessions
-            .values()
-            .any(|s| s.workspace == workspace && s.state.is_busy());
         let running_automations = inner
             .sessions
             .values()

@@ -78,7 +78,6 @@ impl SessionRecord {
     /// Rebuild a session from its record. It comes back `Archived`, never live:
     /// the daemon owned the pty and restarting it killed the process.
     pub fn restore(self) -> Session {
-        let resumable = !matches!(self.recovery, Some(ArchiveState::TranscriptOnly));
         let mut s = Session::new(self.id, self.workspace, self.cwd, self.kind);
         s.title = self.title;
         s.transcript_path = self.transcript_path;
@@ -90,7 +89,12 @@ impl SessionRecord {
         s.forked_from = self.forked_from;
         s.interrupted = self.interrupted;
         s.had_a_turn = self.had_a_turn;
-        s.state = State::Archived { resumable };
+        // After the fields, not before: `resumable` reads `recovery` and
+        // `had_a_turn`, so computing it on a half-built session answers about the
+        // defaults.
+        s.state = State::Archived {
+            resumable: s.resumable(),
+        };
         s
     }
 }
@@ -694,18 +698,38 @@ mod tests {
 
     #[test]
     fn a_restored_session_is_archived_never_live() {
-        let s = Session::new(
+        let mut s = Session::new(
             uuid::Uuid::new_v4(),
             "wt".into(),
             Path::new("/tmp").to_path_buf(),
             Kind::Interactive,
         );
+        s.had_a_turn = true;
         let restored = SessionRecord::of(&s).restore();
         assert!(matches!(
             restored.state,
             State::Archived { resumable: true }
         ));
         assert!(!restored.state.is_live());
+    }
+
+    /// The archive used to promise a resume for every session it touched, so a pane
+    /// opened and never typed into came back offering to continue a conversation
+    /// that does not exist — `--resume` finds a headers-only transcript and exits.
+    #[test]
+    fn a_turnless_session_restores_as_unresumable() {
+        let s = Session::new(
+            uuid::Uuid::new_v4(),
+            "wt".into(),
+            Path::new("/tmp").to_path_buf(),
+            Kind::Interactive,
+        );
+        assert!(!s.had_a_turn);
+        let restored = SessionRecord::of(&s).restore();
+        assert!(matches!(
+            restored.state,
+            State::Archived { resumable: false }
+        ));
     }
 
     #[test]
@@ -716,6 +740,7 @@ mod tests {
             Path::new("/tmp").to_path_buf(),
             Kind::Interactive,
         );
+        s.had_a_turn = true;
         s.recovery = Some(ArchiveState::TranscriptOnly);
         let restored = SessionRecord::of(&s).restore();
         assert!(matches!(

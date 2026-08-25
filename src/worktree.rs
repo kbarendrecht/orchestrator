@@ -419,7 +419,7 @@ pub async fn teardown(app: &Arc<AppState>, workspace: &str) -> Result<Preflight>
         inner.files.remove(workspace);
         for s in inner.sessions.values_mut() {
             if s.workspace == workspace {
-                let resumable = !matches!(s.recovery, Some(ArchiveState::TranscriptOnly));
+                let resumable = s.resumable();
                 s.set_state(State::Archived { resumable });
             }
         }

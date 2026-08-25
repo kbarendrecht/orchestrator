@@ -582,10 +582,8 @@ pub async fn spawn_fix_pr_session(
     // it running someone else's instructions, and retargeting it mid-flight is
     // not the daemon's call. Finish the review and press fix again, or tell that
     // session to fix the build yourself.
-    if let Some(ws) = worktree_holding(app, head_ref).await {
-        if !app.live_sessions_in(&ws).await.is_empty() {
-            bail!("{ws} already has a live session for #{pr}; finish or close it first");
-        }
+    if let Some(ws) = branch_busy(app, head_ref).await {
+        bail!("{ws} already has a live session for #{pr}; finish or close it first");
     }
 
     let workspace = ensure_pr_worktree(app, pr, head_ref).await?;
@@ -785,6 +783,19 @@ async fn worktree_holding(app: &Arc<AppState>, head_ref: &str) -> Option<String>
         .filter(|w| !w.is_main())
         .find(|w| w.branches.iter().any(|b| b == head_ref))
         .map(|w| w.id.clone())
+}
+
+/// The worktree that makes this PR's branch busy, if one does.
+///
+/// The single definition of "busy", because the guard and the spawn had two. The
+/// guard asked `is_busy()` (mid-turn) while the spawn enforces `is_live()` (any
+/// open session), so an idle session on the branch passed a guard whose own
+/// refusal says "live session" and was then refused at the spawn — after the run
+/// had been announced. `is_live` is the operative rule: fix-pr rebases, and a
+/// session sitting at its prompt is one you are still working in.
+pub async fn branch_busy(app: &Arc<AppState>, head_ref: &str) -> Option<String> {
+    let ws = worktree_holding(app, head_ref).await?;
+    (!app.live_sessions_in(&ws).await.is_empty()).then_some(ws)
 }
 
 /// The one case where a PR has nowhere to go, said in words.
@@ -1590,6 +1601,64 @@ mod tests {
         assert_eq!(resolve_setup_exe(main, "just"), "just");
         // An absolute path is already unambiguous.
         assert_eq!(resolve_setup_exe(main, "/usr/local/bin/setup"), "/usr/local/bin/setup");
+    }
+
+    /// The fix-pr guard used to ask `is_busy()` while the spawn enforces `is_live`,
+    /// so a session sitting idle on the branch passed a guard whose refusal reads
+    /// "live session" and was only stopped later, once the run looked started. Both
+    /// now read this.
+    #[tokio::test]
+    async fn an_idle_session_on_the_branch_still_makes_it_busy() {
+        let dir = std::env::temp_dir().join(format!("orchd-busy-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cfg = crate::config::Config::parse(&format!(
+            r#"{{"main_checkout":{:?}}}"#,
+            dir.to_string_lossy()
+        ))
+        .expect("parse");
+        let app = crate::state::AppState::new(cfg, "t".into(), crate::window::Chrome::None);
+
+        let id = uuid::Uuid::new_v4();
+        {
+            let mut inner = app.inner.write().await;
+            inner.workspaces.insert(
+                "pr-4".into(),
+                crate::model::Workspace {
+                    id: "pr-4".into(),
+                    path: dir.join("pr-4"),
+                    kind: crate::model::WorkspaceKind::Worktree { name: "pr-4".into() },
+                    branches: ["feature".to_string()].into_iter().collect(),
+                    processes: Vec::new(),
+                    occupant: None,
+                    tree: Default::default(),
+                },
+            );
+            let mut s = Session::new(id, "pr-4".into(), dir.join("pr-4"), Kind::Interactive);
+            // Idle, not mid-turn — the case the two rules disagreed on. Its pid is
+            // this test process, because `live_sessions_in` also wants it alive.
+            s.set_state(State::YourTurn {
+                since: std::time::SystemTime::now(),
+                reason: TurnReason::TurnComplete,
+            });
+            s.pid = Some(std::process::id());
+            inner.sessions.insert(id, s);
+        }
+        assert_eq!(branch_busy(&app, "feature").await.as_deref(), Some("pr-4"));
+
+        // Archived is the other side of the same rule: nothing is running there.
+        {
+            let mut inner = app.inner.write().await;
+            inner
+                .sessions
+                .get_mut(&id)
+                .unwrap()
+                .set_state(State::Archived { resumable: true });
+        }
+        assert_eq!(branch_busy(&app, "feature").await, None);
+        // A branch no worktree holds is never busy.
+        assert_eq!(branch_busy(&app, "other").await, None);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
