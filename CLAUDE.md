@@ -264,6 +264,26 @@ to disappear is waiting for something that never happens.
   GitHub, nothing about what a fix run *does*). What they buy is the class of fault
   unit tests structurally cannot see: the first full run turned up a `claim_main`
   race, and driving them from the hook turned up what git hands a hook.
+- **The keyboard map has a contract, and it is the reason the next binding is
+  obvious.** Above the keydown handler in `web/app.js`: **bare keys belong to the
+  open overlay, `Ctrl` is the whole app, `Esc` dismisses the topmost thing.** The
+  whole `Alt` layer was deleted to get here — every action it held already had a
+  `Ctrl` spelling, and two vocabularies for one set of verbs is what made the map
+  unpredictable. Do not reintroduce `Alt` to dodge a collision; `Ctrl+Shift` is the
+  escape hatch. Plain `Ctrl+<letter>` shadows the pty, so `Ctrl+Shift+…` is the
+  default and a plain letter is taken only where the idiom earns it. The legend
+  (`Ctrl+Shift+?`) is hand-written HTML and is the one thing here that can silently
+  drift from the code.
+- **Measure a release build, or do not quote the number.** "orchd uses 76 MB" was a
+  `cargo run` debug build — 113 MB of binary against release's 11 MB, nearly all
+  paged-in debug text. Release, idle, polling: 7.6 MB RSS and **1.1 MB** of heap.
+  Two performance suspects were chased on the strength of the wrong figure. For the
+  same reason `web/js/term.js` pins `scrollback: 2000`: xterm holds each line as a
+  `Uint32Array` of `cols * 3`, so depth costs process memory whether or not a
+  terminal paints (10000 lines cost +36.7 MB against 2000's +13.3 MB) — and the
+  daemon's ring buffer only replays ~3600 lines anyway, so a deeper buffer was
+  never durable. JS-heap metrics are useless here: CDP reported 0.9 MB for 9000
+  lines that cost ~23 MB, because typed-array stores are external memory.
 - **The app's modifier is ⌘ on macOS and Ctrl elsewhere** (`core.appMod`, from the
   `__ORCH_PLATFORM__` the daemon substitutes into the page — told, not sniffed).
   Worth knowing why rather than just that: on a Mac ⌘ never reaches the pty, so the
