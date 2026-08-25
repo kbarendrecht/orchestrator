@@ -90,7 +90,7 @@ fn origin_ok(origin: Option<&str>, port: u16, is_hook: bool, is_get: bool, token
 /// A list rather than a growing chain of `ends_with`, because it has been
 /// outgrown once already — see the note in [`guard`].
 fn is_ask_route(path: &str) -> bool {
-    const ASK_ROUTES: [&str; 4] = ["/ask", "/wait", "/spawn", "/committed"];
+    const ASK_ROUTES: [&str; 5] = ["/ask", "/wait", "/spawn", "/committed", "/stuck"];
     path.starts_with("/api/session/") && ASK_ROUTES.iter().any(|s| path.ends_with(s))
 }
 
@@ -517,6 +517,62 @@ pub struct CommittedBody {
     pub sha: String,
 }
 
+#[derive(Deserialize)]
+pub struct StuckBody {
+    /// What stopped it, in the session's own words. Shown verbatim in the
+    /// overview, so it is the whole of what you get to act on.
+    pub note: String,
+}
+
+/// The session reports a thread it could not finish.
+///
+/// The counterpart to [`thread_committed`], and the reason `NeedsYou` existed as
+/// a state nothing could reach: a run had exactly one way to report progress —
+/// a commit — so a thread it gave up on stayed `Pending` and read as one it had
+/// not got to yet. An honest overview needs the difference, and only the session
+/// knows it.
+///
+/// Does not block and posts nothing: there is no commit to show and no reply that
+/// could truthfully go out. The thread stays open on GitHub, which is what
+/// "needs you" means.
+pub async fn thread_stuck(
+    State(app): State<Arc<AppState>>,
+    Path((id, thread_id)): Path<(Uuid, String)>,
+    headers: axum::http::HeaderMap,
+    Json(body): Json<StuckBody>,
+) -> ApiResult<serde_json::Value> {
+    ask_token_ok(&app, id, &headers).await?;
+    let note = body.note.trim();
+    if note.is_empty() {
+        // A bare "could not do it" is worse than silence: it removes the thread
+        // from the list of things still moving and says nothing about why.
+        return Err(ApiError(anyhow::anyhow!(
+            "say what stopped it — the note is all the overview can show"
+        )));
+    }
+    let number = {
+        let inner = app.inner.read().await;
+        let (number, run) = inner
+            .resolve_runs
+            .iter()
+            .find(|(_, r)| r.session == id)
+            .ok_or_else(|| anyhow::anyhow!("session {id} is not carrying out a resolve run"))?;
+        if !run.plan.threads.iter().any(|t| t.thread_id == thread_id) {
+            return Err(ApiError(anyhow::anyhow!(
+                "thread {thread_id} is not in this run's plan"
+            )));
+        }
+        *number
+    };
+    mark_thread(&app, number, &thread_id, |t| {
+        t.status = crate::post::ThreadStatus::NeedsYou;
+        t.note = Some(note.to_string());
+    })
+    .await;
+    app.notify().await;
+    Ok(Json(json!({ "recorded": true })))
+}
+
 /// The session reports a thread's work is committed; the daemon shows it and,
 /// with your say-so, posts the reply.
 ///
@@ -719,11 +775,18 @@ async fn mark_thread(
     f: impl FnOnce(&mut crate::post::PlannedThread),
 ) {
     let mut inner = app.inner.write().await;
-    if let Some(run) = inner.resolve_runs.get_mut(&pr) {
-        if let Some(t) = run.plan.threads.iter_mut().find(|t| t.thread_id == thread_id) {
-            f(t);
+    inner.with_resolve_runs("thread progress", |runs| {
+        let Some(run) = runs.get_mut(&pr) else {
+            return false;
+        };
+        match run.plan.threads.iter_mut().find(|t| t.thread_id == thread_id) {
+            Some(t) => {
+                f(t);
+                true
+            }
+            None => false,
         }
-    }
+    });
 }
 
 /// Your answer, which releases the tool call the agent is sitting in.
@@ -1730,6 +1793,7 @@ mod tests {
             "/api/session/<id>/ask",
             "/api/session/<id>/ask/<ask>/wait",
             "/api/session/<id>/thread/PRRT_x/committed",
+            "/api/session/<id>/thread/PRRT_x/stuck",
             "/api/session/<id>/spawn",
         ] {
             assert!(is_ask_route(p), "{p} must not need the app token");
@@ -2261,13 +2325,20 @@ pub async fn pr_resolve_run(
     let session = spawn::spawn_resolve_run(&app, number, &pr.head_ref, &plan).await?;
     // Kept so the daemon can answer "what does this thread say" when the session
     // reports a commit. The agent is never told the reply is its to send.
-    app.inner.write().await.resolve_runs.insert(
-        number,
-        crate::state::ResolveRun {
-            session,
-            plan: plan.clone(),
-        },
-    );
+    app.inner
+        .write()
+        .await
+        .with_resolve_runs("run started", |runs| {
+            runs.insert(
+                number,
+                crate::state::ResolveRun {
+                    session,
+                    plan: plan.clone(),
+                    ended: None,
+                },
+            );
+            true
+        });
     app.notify().await;
 
     let answered = sweep_words_only(&app, number, &plan, &fresh).await;
@@ -2395,6 +2466,11 @@ pub async fn pr_run_push(
     tokio::task::spawn_blocking(move || crate::git::push_with_lease(&path, &branch))
         .await
         .context("the push panicked")??;
+    // Re-measure, or the overview keeps saying there is work to push: `unpushed`
+    // is the last reconcile's number, and this is the moment it stopped being true.
+    if let Some(ws) = workspace_for(&app, &pr.head_ref).await {
+        let _ = app.reconcile(&ws).await;
+    }
     app.notify().await;
     Ok(Json(json!({ "pushed": pr.head_ref })))
 }

@@ -507,11 +507,12 @@ fn label_for(t: &crate::forge::Thread) -> String {
 /// answered four threads, held one back and could not apply a sixth has five
 /// different outcomes to account for, and an overview that says "5 of 6" about it
 /// is hiding the only rows worth reading.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
 pub enum ThreadStatus {
     /// Not reached yet.
+    #[default]
     Pending,
     /// The session committed for it, and you have not decided about the reply.
     Committed,
@@ -533,7 +534,7 @@ pub enum ThreadStatus {
 /// daemon are working from one reading of your decisions: the drift checks, the
 /// story/tracker refusal and the reply resolution have all already happened by
 /// the time this is written out.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlannedThread {
     pub thread_id: String,
     /// `path:line`, or the thread's label when it is a review summary.
@@ -549,26 +550,77 @@ pub struct PlannedThread {
     /// `manual`, where you are writing it.
     pub patch: Option<String>,
     pub story: Option<crate::proposal::StoryDraft>,
-    /// Where this thread has got to. Not sent to the session — it is the daemon's
-    /// account of the run, and the session is told one thread at a time.
-    #[serde(skip_serializing)]
+    /// Where this thread has got to — the daemon's account of the run, not the
+    /// session's. Kept out of the file the agent reads by [`Plan::for_agent`]
+    /// rather than by a `skip_serializing` here, which is what made this type
+    /// unpersistable: the three fields a restart most needs to keep were the
+    /// three no serializer would write.
+    #[serde(default)]
     pub status: ThreadStatus,
     /// The commit the session made for it, once it reports one.
-    #[serde(skip_serializing)]
+    #[serde(default)]
     pub commit: Option<String>,
     /// Why it stopped, when it did.
-    #[serde(skip_serializing)]
+    #[serde(default)]
     pub note: Option<String>,
 }
 
 /// The whole run, in the order the threads should be worked.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Plan {
     pub pr: u64,
     /// The head the decisions were taken against. The session re-checks it before
     /// touching anything, because a force-push in between invalidates every patch.
     pub base_sha: String,
     pub threads: Vec<PlannedThread>,
+}
+
+/// One thread as the file the agent reads describes it.
+///
+/// The plan minus the daemon's bookkeeping. `commands/resolve-run.md` documents
+/// exactly these keys, and the session is told one thread's progress at a time —
+/// through the reply to its own `committed` call — never a table of all of them.
+#[derive(Debug, Serialize)]
+struct AgentThread<'a> {
+    thread_id: &'a str,
+    location: &'a str,
+    reviewer_said: &'a str,
+    stance: crate::proposal::Stance,
+    mode: crate::proposal::Mode,
+    reply: Option<&'a str>,
+    patch: Option<&'a str>,
+    story: Option<&'a crate::proposal::StoryDraft>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AgentPlan<'a> {
+    pr: u64,
+    base_sha: &'a str,
+    threads: Vec<AgentThread<'a>>,
+}
+
+impl Plan {
+    /// The plan as `plan.json`, for the session to work from.
+    pub fn for_agent(&self) -> AgentPlan<'_> {
+        AgentPlan {
+            pr: self.pr,
+            base_sha: &self.base_sha,
+            threads: self
+                .threads
+                .iter()
+                .map(|t| AgentThread {
+                    thread_id: &t.thread_id,
+                    location: &t.location,
+                    reviewer_said: &t.reviewer_said,
+                    stance: t.stance,
+                    mode: t.mode,
+                    reply: t.reply.as_deref(),
+                    patch: t.patch.as_deref(),
+                    story: t.story.as_ref(),
+                })
+                .collect(),
+        }
+    }
 }
 
 /// Turn accepted decisions into the plan a session works from.
@@ -1690,6 +1742,53 @@ mod tests {
         // the plan, so a `WordsOnly` thread with nothing to say would be a thread
         // nothing ever posts.
         assert!(plan.threads[2].reply.is_some());
+    }
+
+    /// The plan is two files' worth of one type, and each must keep what the other
+    /// drops.
+    ///
+    /// `plan.json` is the agent's, and `commands/resolve-run.md` documents its keys;
+    /// the record is the daemon's, and the three fields the overview reads are the
+    /// three the agent must not see. They used to be enforced by
+    /// `skip_serializing`, which meant the record could not be persisted at all —
+    /// so the split is a view now, and this is the test that keeps it a split.
+    #[test]
+    fn the_agents_plan_file_and_the_persisted_record_are_not_the_same_document() {
+        use crate::proposal::{Mode, Stance};
+        let fresh = fetched(vec![thread("PRRT_1", Some("a.ts"), Some(10), "john")]);
+        let set = proposed("PRRT_1", vec![with_patch(Stance::Reply, true)]);
+        let batch = Batch {
+            base_sha: "abc123".into(),
+            decisions: vec![Decision {
+                thread_id: "PRRT_1".into(),
+                position: 0,
+                reply: None,
+                mode: Mode::Agent,
+            }],
+        };
+        let mut plan = plan(4812, &set, &fresh, &batch, TRACKER).expect("planned");
+        plan.threads[0].status = ThreadStatus::NeedsYou;
+        plan.threads[0].commit = Some("deadbee".into());
+        plan.threads[0].note = Some("the surrounding code is gone".into());
+
+        let for_agent = serde_json::to_string(&plan.for_agent()).unwrap();
+        for key in ["thread_id", "location", "reviewer_said", "stance", "mode", "patch"] {
+            assert!(for_agent.contains(key), "the prompt documents {key}");
+        }
+        for key in ["status", "commit", "note", "needs_you", "deadbee"] {
+            assert!(
+                !for_agent.contains(key),
+                "{key} is the daemon's bookkeeping and must not reach the agent"
+            );
+        }
+
+        // And the record keeps precisely those, through a round trip: this is what
+        // a restart reads back to say which commit answered which reviewer.
+        let back: Plan = serde_json::from_str(&serde_json::to_string(&plan).unwrap()).unwrap();
+        assert_eq!(back.threads[0].status, ThreadStatus::NeedsYou);
+        assert_eq!(back.threads[0].commit.as_deref(), Some("deadbee"));
+        assert_eq!(back.threads[0].note.as_deref(), Some("the surrounding code is gone"));
+        assert_eq!(back.threads[0].reply, plan.threads[0].reply);
     }
 
     /// The two branches `sweep_words_only` chooses between. Every stance takes

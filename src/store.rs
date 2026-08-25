@@ -246,6 +246,53 @@ pub fn load_manual() -> std::collections::HashMap<u64, crate::post::ManualPhase>
     }
 }
 
+fn resolve_runs_path() -> Result<PathBuf> {
+    Ok(Config::config_dir()?.join("resolve-runs.json"))
+}
+
+/// Resolve runs, per PR.
+///
+/// Persisted for the same reason as `manual.json` and not the same reason as
+/// `sessions.json`: the run's commits are already in git by the time anything can
+/// go wrong, and this record is the only thing that says which commit answers
+/// which reviewer. Without it a restart left a branch of commits and no map.
+pub fn save_resolve_runs(runs: &std::collections::HashMap<u64, crate::state::ResolveRun>) -> Result<()> {
+    let p = resolve_runs_path()?;
+    std::fs::create_dir_all(p.parent().unwrap())?;
+    let tmp = p.with_extension("json.tmp");
+    std::fs::write(&tmp, serde_json::to_string_pretty(runs)?)?;
+    std::fs::rename(&tmp, &p)?;
+    Ok(())
+}
+
+/// Every run the last daemon knew about, marked as over.
+///
+/// The session cannot have survived the restart — the daemon owns every pty and
+/// takes them with it — so a restored run is an account, never something still
+/// moving. Said here rather than left for a reader to infer, because a thread
+/// reading `pending` in an overview otherwise looks imminent forever.
+pub fn load_resolve_runs() -> std::collections::HashMap<u64, crate::state::ResolveRun> {
+    let Ok(p) = resolve_runs_path() else {
+        return Default::default();
+    };
+    let Ok(raw) = std::fs::read_to_string(&p) else {
+        return Default::default();
+    };
+    let mut runs: std::collections::HashMap<u64, crate::state::ResolveRun> =
+        match serde_json::from_str(&raw) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!("could not parse {}: {e}", p.display());
+                return Default::default();
+            }
+        };
+    for r in runs.values_mut() {
+        r.ended
+            .get_or_insert_with(|| "the daemon restarted; the session did not survive it".into());
+    }
+    runs
+}
+
 pub fn save(records: &[SessionRecord]) -> Result<()> {
     let p = path()?;
     std::fs::create_dir_all(p.parent().unwrap())?;

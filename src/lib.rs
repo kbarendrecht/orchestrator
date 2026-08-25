@@ -262,6 +262,18 @@ pub async fn start(opts: StartOptions) -> Result<Server> {
             let prs: Vec<String> = inner.manual.keys().map(|p| format!("#{p}")).collect();
             tracing::info!("manual phase still open on {}", prs.join(", "));
         }
+        // A resolve run's commits outlive its session, and this is the only record
+        // of which commit answers which thread. Restored as an account: `load`
+        // marks every one ended, because no pty survives a restart.
+        inner.resolve_runs = store::load_resolve_runs();
+        if !inner.resolve_runs.is_empty() {
+            let prs: Vec<String> = inner
+                .resolve_runs
+                .keys()
+                .map(|p| format!("#{p}"))
+                .collect();
+            tracing::info!("resolve runs recovered for {}", prs.join(", "));
+        }
         // Said out loud at boot, because `tracker` decides whether a whole option
         // appears on every review card. A misconfigured one must not read as
         // "triage never proposes stories".
@@ -381,6 +393,10 @@ fn router(app: Arc<AppState>) -> Router {
         .route(
             "/api/session/:id/thread/:thread/committed",
             post(api::thread_committed),
+        )
+        .route(
+            "/api/session/:id/thread/:thread/stuck",
+            post(api::thread_stuck),
         )
         .route("/api/session/:id/delete", post(api::delete_session))
         .route("/api/worktree", post(api::new_worktree))

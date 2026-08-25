@@ -259,7 +259,21 @@ export type RunThreadView = { thread_id: string, location: string, status: Threa
 /**
  * What the overview shows about a run: one row per thread, in plan order.
  */
-export type RunView = { session: string, threads: Array<RunThreadView>, };
+export type RunView = { session: string, threads: Array<RunThreadView>, 
+/**
+ * Why the run is over, when it is. `null` means the session is still on it.
+ */
+ended: string | null, 
+/**
+ * Commits on the run's branch that its remote does not have.
+ *
+ * The one thing the overview could not say before: a run finishes with the
+ * reviewers answered and the work sitting on nobody's branch but yours, and
+ * the only mention of it was whatever prose the agent chose to write in the
+ * pane. Measured at the last reconcile of the run's own worktree, so it
+ * counts a push made anywhere — not a flag the push button sets.
+ */
+unpushed: number, };
 
 export type SessionView = { id: string, workspace: string, state: State, kind: Kind, title: string | null, cwd: string, rank: number, 
 /**

@@ -1067,6 +1067,10 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
   font-size:calc(11.5px * var(--fs));color:var(--dim);line-height:1.55;
   border-left:2px solid var(--line);padding-left:10px;
 }
+/* One note in the run overview is a claim about the branch, not a description of
+   the screen: commits that exist nowhere else. It reads in the same voice as the
+   divergence strip for the same reason — it is the same kind of fact. */
+.rv .note.warn{color:var(--attn);border-left-color:rgba(224,162,68,.5)}
 
 /* A textarea, not a contenteditable: the reply goes to GitHub as plain
    markdown, so rich paste is liability and browsers insert <div>/<br> rather

@@ -1,5 +1,5 @@
 use anyhow::{bail, Result};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -18,6 +18,16 @@ use crate::pty::pid_alive;
 pub struct RunView {
     pub session: Uuid,
     pub threads: Vec<RunThreadView>,
+    /// Why the run is over, when it is. `null` means the session is still on it.
+    pub ended: Option<String>,
+    /// Commits on the run's branch that its remote does not have.
+    ///
+    /// The one thing the overview could not say before: a run finishes with the
+    /// reviewers answered and the work sitting on nobody's branch but yours, and
+    /// the only mention of it was whatever prose the agent chose to write in the
+    /// pane. Measured at the last reconcile of the run's own worktree, so it
+    /// counts a push made anywhere — not a flag the push button sets.
+    pub unpushed: u32,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -31,9 +41,11 @@ pub struct RunThreadView {
 }
 
 impl RunView {
-    fn of(r: &ResolveRun) -> Self {
+    fn of(r: &ResolveRun, unpushed: u32) -> Self {
         RunView {
             session: r.session,
+            ended: r.ended.clone(),
+            unpushed,
             threads: r
                 .plan
                 .threads
@@ -50,11 +62,20 @@ impl RunView {
     }
 }
 
-/// A resolve run in flight: the session doing it, and the decisions it carries.
-#[derive(Debug, Clone)]
+/// A resolve run: the session doing it, and the decisions it carries.
+///
+/// Persisted, because the commits outlive the record and an account of them is
+/// the only thing that says which commit answers which thread. Losing it to a
+/// restart left a branch of commits nobody could map back to a reviewer.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResolveRun {
     pub session: Uuid,
     pub plan: crate::post::Plan,
+    /// Why the run is over, when it is. Set when the session exits and on load,
+    /// where a restored run's session never survived the restart — so a thread
+    /// still reading `pending` is understood as abandoned rather than imminent.
+    #[serde(default)]
+    pub ended: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Default)]
@@ -230,6 +251,27 @@ impl Inner {
             // the thing it protects against.
             if let Err(e) = crate::store::save_manual(&self.manual) {
                 tracing::warn!("could not save manual.json ({why}): {e:#}");
+            }
+        }
+        changed
+    }
+
+    /// Change the run record, and write it.
+    ///
+    /// Every mutation goes through here for the reason the other three do: the
+    /// site that reaches for `store::save_resolve_runs` itself is the one that
+    /// gets forgotten when a fourth caller arrives.
+    pub fn with_resolve_runs(
+        &mut self,
+        why: &str,
+        f: impl FnOnce(&mut HashMap<u64, ResolveRun>) -> bool,
+    ) -> bool {
+        let changed = f(&mut self.resolve_runs);
+        if changed {
+            // A warning: the run itself is unharmed by a failed write, and only
+            // the account of it after a restart is at stake.
+            if let Err(e) = crate::store::save_resolve_runs(&self.resolve_runs) {
+                tracing::warn!("could not save resolve-runs.json ({why}): {e:#}");
             }
         }
         changed
@@ -500,7 +542,20 @@ impl AppState {
             resolve_runs: inner
                 .resolve_runs
                 .iter()
-                .map(|(pr, r)| (*pr, RunView::of(r)))
+                .map(|(pr, r)| {
+                    // Through the run's session to its worktree, because that is
+                    // the tree the commits are in and the only one whose reconcile
+                    // measured them. Zero when the session record is gone: the
+                    // overview then says nothing about pushing rather than
+                    // claiming a number it did not measure.
+                    let unpushed = inner
+                        .sessions
+                        .get(&r.session)
+                        .and_then(|s| inner.workspaces.get(&s.workspace))
+                        .map(|w| w.tree.unpushed)
+                        .unwrap_or(0);
+                    (*pr, RunView::of(r, unpushed))
+                })
                 .collect(),
             version: env!("CARGO_PKG_VERSION"),
         }
@@ -778,6 +833,11 @@ impl AppState {
         // Branches accumulate and are never removed (§2): a PR still belongs to
         // the session that made it after you have moved on to another branch.
         let branch = git::current_branch(&path).ok();
+        // Needs the branch by name — `origin/HEAD` is the base, not this branch's
+        // remote — so it is measured here rather than beside the divergence.
+        let unpushed = branch
+            .as_deref()
+            .map(|b| git::unpushed_count(&path, b, &self.cfg.upstream_ref));
 
         // What this workspace changed since it branched: committed work and
         // uncommitted both, which is the question the changed-files pane asks.
@@ -816,6 +876,9 @@ impl AppState {
             }
             if let Some(d) = divergence {
                 w.tree.divergence = d;
+            }
+            if let Some(u) = unpushed {
+                w.tree.unpushed = u;
             }
             w.tree.rebasing = rebasing;
         }

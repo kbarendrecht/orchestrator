@@ -147,15 +147,40 @@ Everything outside that block is hand-written and survives.
   work, not before — and that retirement is what finally answers the beta-gate
   item below.
 
-  *Known gaps.* A run ends with commits and posted replies but nothing pushed
-  until you press the button, which is intended, but the overview does not yet
-  say "unpushed" anywhere — and the run just driven confirmed it is the agent that
-  ends up saying it, in prose, in the pane. `needs_you` is never set on a thread — the session has
-  no way to report that it could not finish one, so a failed thread just stays
-  `pending`. The run record is memory-only, so a daemon restart mid-run loses the
-  account of it while the commits survive; the plan calls for that to be durable
-  and resumable. And nothing re-validates drift *per thread*: the prompt checks
-  `base_sha` once at the start.
+  *The three known gaps are closed, and each was driven against the fixture
+  daemon rather than reasoned about.*
+  - **"Unpushed" is said, and it is measured.** `Tree.unpushed` counts commits the
+    branch's own remote does not have, taken beside the divergence on every
+    reconcile, and `RunView.unpushed` carries it to the overview. It is a different
+    number from `ahead`, which is against the *base* — driven to two commits past
+    the base with one pushed, where `ahead` said 2 and `unpushed` said 1. The push
+    button re-reconciles, so pressing it clears the line rather than leaving a
+    stale claim. A branch that was never pushed falls back to the base count, the
+    same reading `git::unpushed` already took.
+  - **`needs_you` is reachable.** `POST …/thread/:t/stuck` is the counterpart to
+    `committed`: the session says what stopped it, the thread goes to `NeedsYou`
+    with that note, nothing is posted and nothing blocks. It refuses an empty note,
+    because a thread taken off the "still moving" list without a reason is worse
+    than one left on it. `commands/resolve-run.md` now says when to use it and that
+    a thread neither committed nor reported reads as one not yet reached.
+  - **The run record is durable.** `resolve-runs.json`, written through
+    `Inner::with_resolve_runs`, restored at boot. `ResolveRun.ended` is set when the
+    session exits — the only place that learns it — and on load, where nothing can
+    have survived. So threads left `pending` are shown as abandoned rather than
+    imminent. Driven both ways: a killed session ended the run, a restart recovered
+    it with its statuses and notes, and a record still marked live on disk came back
+    naming the restart.
+
+    Persisting it needed one thing fixing first: `PlannedThread`'s three
+    bookkeeping fields were `skip_serializing`, so the type could not round-trip at
+    all — the fields a restart most needs were the ones no serializer would write.
+    The agent's `plan.json` is now a view (`Plan::for_agent`), which is where that
+    concern belonged, with a test that keeps the two documents apart.
+
+  *Still open here.* Nothing re-validates drift *per thread*: the prompt checks
+  `base_sha` once at the start. And the overview's own rendering of all this is
+  type-checked, not driven — `rvRun` was exercised through the API, never through
+  the overlay in a browser.
 
 - **Promote the in-UI review overlay out of beta.** The overlay now does the
   real work: threads listed under the PR with their file, hunk, and a reply box,
