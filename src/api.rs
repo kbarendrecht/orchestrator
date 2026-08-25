@@ -1283,7 +1283,7 @@ pub async fn swap_with_main(
     // stopped rebase is still a refusal: a tree mid-rebase cannot switch at all.
     let (m, t) = (main.clone(), tree.clone());
     let (swapped, untracked) =
-        tokio::task::spawn_blocking(move || -> anyhow::Result<((String, String), Vec<String>)> {
+        tokio::task::spawn_blocking(move || -> anyhow::Result<(crate::git::Swap, Vec<String>)> {
             for (label, path) in [("the main checkout", &m), ("this worktree", &t)] {
                 if crate::git::rebase_in_progress(path) {
                     anyhow::bail!(
@@ -1311,9 +1311,12 @@ pub async fn swap_with_main(
     // worktree would go on claiming the branch main now holds, and a PR flow for it
     // would be pointed at the wrong tree — found by driving this against a real
     // daemon, not by reading it.
-    let (main_now, tree_now) = &swapped;
-    app.forget_branch(&workspace, main_now).await;
-    app.forget_branch(MAIN, tree_now).await;
+    //
+    // This and everything after it runs even when the WIP did not re-apply. The
+    // branches moved; refusing to record that would leave the daemon describing a
+    // world git no longer agrees with, which is worse than the failure itself.
+    app.forget_branch(&workspace, &swapped.main_now).await;
+    app.forget_branch(MAIN, &swapped.worktree_now).await;
 
     // Both panes describe a tree whose every file just changed.
     let _ = app.reconcile(MAIN).await;
@@ -1355,14 +1358,23 @@ pub async fn swap_with_main(
         .or_else(|| into_worktree.as_ref().and_then(|r| r.as_ref().ok()))
         .map(|r| r.id.to_string());
 
-    tracing::info!(%workspace, main_now = %swapped.0, worktree_now = %swapped.1, "swapped branches with main");
+    tracing::info!(
+        %workspace,
+        main_now = %swapped.main_now,
+        worktree_now = %swapped.worktree_now,
+        wip_error = ?swapped.wip_error,
+        "swapped branches with main"
+    );
     Ok(Json(json!({
-        "main": swapped.0,
-        "worktree": swapped.1,
+        "main": swapped.main_now,
+        "worktree": swapped.worktree_now,
         "workspace": workspace,
         "select": select,
         "into_main": carried_json(&into_main),
         "into_worktree": carried_json(&into_worktree),
+        // A partial success, said as one: the branches moved, this did not. The
+        // message names the WIP commit the work is still in.
+        "wip_error": swapped.wip_error,
         // Named, not counted: knowing *which* files stayed behind is the difference
         // between going to fetch them and wondering what you lost.
         "untracked_left": untracked,

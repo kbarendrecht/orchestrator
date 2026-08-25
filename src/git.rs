@@ -779,6 +779,24 @@ pub fn base_checkout_branch(main: &Path, upstream_ref: &str) -> Option<String> {
     Some(branch.to_string())
 }
 
+/// What a swap did. See [`Swap::wip_error`] for why re-applying the uncommitted
+/// work failing is a field here rather than an `Err`.
+pub struct Swap {
+    /// The branch main has now.
+    pub main_now: String,
+    /// The branch the worktree has now.
+    pub worktree_now: String,
+    /// Set when the branches exchanged but the banked work would not re-apply.
+    ///
+    /// Deliberately not an `Err`. Once the exchange commits, "swapped" is what
+    /// happened, and returning an error made the caller bail before it forgot the
+    /// traded branches, reconciled the two panes and moved the conversations — so
+    /// git described the swapped world while the daemon went on describing the
+    /// pre-swap one, and the SPA said only "failed". The work itself is never at
+    /// risk: it is in the WIP commit this message names.
+    pub wip_error: Option<String>,
+}
+
 /// Exchange the branches checked out in two trees.
 ///
 /// The tree a worktree *is* cannot be swapped with main — worktrees live inside
@@ -807,7 +825,7 @@ pub fn base_checkout_branch(main: &Path, upstream_ref: &str) -> Option<String> {
 /// fails with the worktree *detached* — a state nobody asked for. So a failure
 /// there puts the worktree back on its own branch before returning the error, and
 /// the caller sees "nothing happened" rather than a repo it has to unpick.
-pub fn swap_branches(main: &Path, worktree: &Path) -> Result<(String, String)> {
+pub fn swap_branches(main: &Path, worktree: &Path) -> Result<Swap> {
     let main_branch = current_branch(main)?;
     let tree_branch = current_branch(worktree)?;
     if main_branch == tree_branch {
@@ -855,6 +873,10 @@ pub fn swap_branches(main: &Path, worktree: &Path) -> Result<(String, String)> {
     // Crosswise, and after both branches are in place. A failure here is reported,
     // not rolled back: the WIP commit still holds the work and is named in the
     // error, so nothing is lost even in the case that should not happen.
+    //
+    // Reported *alongside the swap*, not instead of it — the branches are already
+    // exchanged by the time this runs, so an `Err` here would deny something that
+    // has happened. See `Swap::wip_error`.
     let mut carried = Ok(());
     if let Some(wip) = &tree_wip {
         carried = carried.and(apply_wip(main, wip));
@@ -862,9 +884,12 @@ pub fn swap_branches(main: &Path, worktree: &Path) -> Result<(String, String)> {
     if let Some(wip) = &main_wip {
         carried = carried.and(apply_wip(worktree, wip));
     }
-    carried?;
 
-    Ok((tree_branch, main_branch))
+    Ok(Swap {
+        main_now: tree_branch,
+        worktree_now: main_branch,
+        wip_error: carried.err().map(|e| format!("{e:#}")),
+    })
 }
 
 /// Detach a tree at its current commit, releasing the branch it held.
@@ -1473,6 +1498,62 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A WIP that will not re-apply is a warning on a swap that happened, never an
+    /// error instead of it.
+    ///
+    /// It used to return `Err`, and the caller bailed on the `?` before it forgot
+    /// the traded branches, reconciled the panes or moved the conversations — so
+    /// git held the swapped world and the daemon described the pre-swap one, with
+    /// the SPA reporting a plain failure. Nothing could reconcile that afterwards.
+    ///
+    /// The apply is made to fail the one way it can: main's banked *new* file lands
+    /// in a worktree that already has an untracked file of that name. Untracked
+    /// files do not travel, so it is still sitting there.
+    #[test]
+    fn a_wip_that_cannot_reapply_still_leaves_the_branches_swapped() {
+        let dir = std::env::temp_dir().join(format!(
+            "orchd-swapwip-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let main = dir.join("repo");
+        git(&dir, &["init", "-q", "-b", "main", "repo"]).unwrap();
+        git(&main, &["config", "user.email", "t@t"]).unwrap();
+        git(&main, &["config", "user.name", "t"]).unwrap();
+        std::fs::write(main.join("f.txt"), "base\n").unwrap();
+        git(&main, &["add", "-A"]).unwrap();
+        git(&main, &["commit", "-qm", "base"]).unwrap();
+        git(&main, &["branch", "feature/b"]).unwrap();
+        let tree = main.join(".claude/worktrees/w");
+        git(&main, &["worktree", "add", "-q", tree.to_str().unwrap(), "feature/b"]).unwrap();
+
+        // Banked: a staged addition in main, which travels to the worktree.
+        std::fs::write(main.join("x.txt"), "main's new file\n").unwrap();
+        git(&main, &["add", "x.txt"]).unwrap();
+        // In the way: the same name, untracked in the worktree, so it stays put and
+        // the apply has nowhere to put main's copy.
+        std::fs::write(tree.join("x.txt"), "already here, untracked\n").unwrap();
+
+        let s = swap_branches(&main, &tree).expect("a failed re-apply is not a failed swap");
+        assert_eq!(current_branch(&main).unwrap(), "feature/b");
+        assert_eq!(current_branch(&tree).unwrap(), "main");
+        let why = s.wip_error.expect("the re-apply failure is reported");
+        assert!(
+            why.contains("did not re-apply") && why.contains("git stash apply"),
+            "the message must name the commit and how to recover it: {why}"
+        );
+        // The work is still banked, not lost — that is what makes the warning a
+        // warning. And the file in the way is untouched.
+        assert_eq!(
+            std::fs::read_to_string(tree.join("x.txt")).unwrap(),
+            "already here, untracked\n"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// The swap, and the refusal it is built around: git will not check one branch
     /// out twice, so the naive "switch each tree" fails on the first move. Both
     /// halves are pinned here because the three-step order *is* the feature.
@@ -1507,8 +1588,9 @@ mod tests {
             "unexpected refusal: {naive:#}"
         );
 
-        let (to_main, to_tree) = swap_branches(&main, &tree).expect("the swap");
-        assert_eq!((to_main.as_str(), to_tree.as_str()), ("feature/b", "main"));
+        let s = swap_branches(&main, &tree).expect("the swap");
+        assert_eq!((s.main_now.as_str(), s.worktree_now.as_str()), ("feature/b", "main"));
+        assert!(s.wip_error.is_none(), "nothing to carry, nothing to warn about");
         assert_eq!(current_branch(&main).unwrap(), "feature/b");
         assert_eq!(current_branch(&tree).unwrap(), "main");
         // Neither tree is left detached or dirty.
@@ -1535,7 +1617,8 @@ mod tests {
         std::fs::write(tree.join("staged.txt"), "staged in the worktree\n").unwrap();
         git(&tree, &["add", "staged.txt"]).unwrap();
 
-        swap_branches(&main, &tree).expect("swap with work in both trees");
+        let s = swap_branches(&main, &tree).expect("swap with work in both trees");
+        assert!(s.wip_error.is_none(), "both sides re-applied: {:?}", s.wip_error);
 
         assert_eq!(current_branch(&main).unwrap(), "feature/b");
         assert_eq!(current_branch(&tree).unwrap(), "main");

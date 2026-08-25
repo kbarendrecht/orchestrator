@@ -514,6 +514,10 @@ async function swapWithMain(wsId) {
       // row rather than the one you were looking at.
       else if (dir.degraded) toast(`the conversation ${where} would not resume, so it was forked instead`, true);
     }
+    // The other partial success: the branches exchanged but the banked work would
+    // not re-apply. A second line for the same reason the relocation errors are —
+    // the swap happened, and the message says where the work still is.
+    if (r.wip_error) toast(`the branches swapped, but ${r.wip_error}`, true);
     // Untracked files cannot be carried, so say which stayed rather than leaving
     // you to notice that half the work did not travel.
     if (r.untracked_left && r.untracked_left.length) {
