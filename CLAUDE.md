@@ -248,12 +248,22 @@ port, so a second instance refuses to start rather than fighting over
   `main` is not stable-rustfmt-clean, so running it out of habit reformats around
   27 files you never touched. Revert everything outside your own change before
   committing.
+- **Git exports its own state into hooks and `--exec`, and one of the variables is
+  a *relative* path.** Measured, not assumed: a pre-commit hook here runs with
+  `GIT_INDEX_FILE=.git/index`, `GIT_PREFIX`, `GIT_AUTHOR_*` and `GIT_EXEC_PATH`
+  set. Because that index path is relative, any `git` a hook runs from a
+  *different* directory resolves it against that directory instead — which is how
+  the e2e suite, run from the hook, died on
+  `Unable to create '<newtree>/.git/index.lock': Not a directory`: a worktree's
+  `.git` is a file. Anything spawning git from a hook must strip `GIT_*` first;
+  `tools/e2e/harness.mjs` does, and that is the only reason the suite can run
+  there.
 - **`git rebase --exec 'cargo test'` did something unexplained.** It put test
-  fixture commits into the repo and moved its HEAD. Recovered fully, but the
-  mechanism was never found and the obvious hypothesis (rebase exporting
-  `GIT_DIR`) was disproved. It matters because the pre-commit hook also runs
-  `cargo test` while git holds the repo. Avoid that verification route until
-  somebody understands it.
+  fixture commits into the repo and moved its HEAD. Recovered fully, and the
+  mechanism was never confirmed — but the entry above is the strongest candidate
+  yet, and it re-opens a hypothesis once written off: `--exec` sets the same
+  variables, and the one that bites is `GIT_INDEX_FILE`, not the `GIT_DIR` that
+  was tested and cleared. Still worth avoiding until somebody proves it.
 - **A test that asserts on git's own error wording fails on an older git.** Git
   says "already used by worktree at" from 2.35 and "already checked out at"
   before it, and 2.34.1 is what some machines have — so the worktree guard and the
