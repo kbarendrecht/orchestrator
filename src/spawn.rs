@@ -674,18 +674,18 @@ pub async fn spawn_command_session(
     // Otherwise pin a worktree to that branch. `git worktree add` directly,
     // because the WorktreeCreate hook always cuts a new branch from
     // upstream/develop; `worktree-link` still runs at SessionStart.
-    {
-        let name = format!("pr-{pr}");
-        let inner = app.inner.read().await;
-        if inner.sessions.values().any(|s| {
-            matches!(&s.recovery, Some(ArchiveState::Recoverable { name: n, .. }) if n == &name)
-        }) {
-            bail!(
-                "an archived session used the worktree name {name}; remove it or rename before \
-                 reusing the name, or the two transcripts interleave"
-            );
-        }
-    }
+    //
+    // No name-reuse refusal here, deliberately, and it was removed rather than
+    // never written. It refused whenever an archived session's recovery record
+    // named `pr-<n>` — which teardown writes — so reviewing a PR whose worktree you
+    // had torn down was refused for good, with advice ("rename") that cannot be
+    // followed for a name the daemon derives from the PR number. `fix-pr` and
+    // `triage` never had the check and were unaffected, so one PR answered two ways.
+    //
+    // What it claimed to prevent does not happen: transcripts are keyed by session
+    // uuid, so two sessions under one directory slug are two files. The real harm
+    // was elsewhere — resuming an archived session into a worktree cut again at its
+    // path — and `worktree::branch_drift` says so on the resume itself.
     let name = ensure_pr_worktree(app, pr, head_ref).await?;
     start_with_prompt(app, &name, pr, command).await
 }
@@ -1601,6 +1601,54 @@ mod tests {
         assert_eq!(resolve_setup_exe(main, "just"), "just");
         // An absolute path is already unambiguous.
         assert_eq!(resolve_setup_exe(main, "/usr/local/bin/setup"), "/usr/local/bin/setup");
+    }
+
+    /// Reviewing a PR whose worktree you tore down must not be refused on the name.
+    ///
+    /// Teardown writes a recovery record naming `pr-<n>`, and the old check refused
+    /// on exactly that — for good, since "rename" is impossible for a name derived
+    /// from the PR number, leaving deleting the conversation as the only way out.
+    /// `fix-pr` and `triage` never had the check, so one PR answered two ways.
+    ///
+    /// Asserted as "not *this* refusal" rather than success: reaching a real spawn
+    /// would need a repo, a branch and `claude`. The failure here is the missing
+    /// branch, which is the next thing the path legitimately trips on.
+    #[tokio::test]
+    async fn reviewing_a_pr_is_not_refused_because_its_worktree_was_torn_down() {
+        let dir = std::env::temp_dir().join(format!("orchd-reuse-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let cfg = crate::config::Config::parse(&format!(
+            r#"{{"main_checkout":{:?}}}"#,
+            dir.to_string_lossy()
+        ))
+        .expect("parse");
+        let app = crate::state::AppState::new(cfg, "t".into(), crate::window::Chrome::None);
+        {
+            let mut inner = app.inner.write().await;
+            let id = uuid::Uuid::new_v4();
+            let mut s = Session::new(id, "pr-4".into(), dir.join("pr-4"), Kind::Interactive);
+            s.had_a_turn = true;
+            s.set_state(State::Archived { resumable: true });
+            // Exactly what `worktree::archive` writes when a pr-4 tree is torn down.
+            s.recovery = Some(ArchiveState::Recoverable {
+                name: "pr-4".into(),
+                branch: "feature/x".into(),
+                head_sha: "abc1234".into(),
+            });
+            inner.sessions.insert(id, s);
+        }
+        let err = format!(
+            "{:#}",
+            spawn_command_session(&app, 4, "feature/x", "resolve")
+                .await
+                .expect_err("no repo here, so it cannot get as far as a session")
+        );
+        assert!(
+            !err.contains("already used") && !err.contains("interleave"),
+            "refused on the reused name again: {err}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The fix-pr guard used to ask `is_busy()` while the spawn enforces `is_live`,

@@ -281,6 +281,38 @@ pub async fn revive(
     }))
 }
 
+/// What a resuming session is actually coming back to, when its worktree is
+/// still standing.
+///
+/// A path that exists is not the same as *this conversation's* tree. A torn-down
+/// worktree's name can be cut again at the same path — `ensure_pr_worktree` does
+/// exactly that for a PR you come back to — and [`revive`] is then skipped
+/// entirely, so nothing else ever looks at the branch.
+///
+/// Driven against a fixture daemon, which is how this was found rather than
+/// reasoned: an archived `pr-4` recorded on `feat` resumed into a `pr-4` checked
+/// out on `other`, and the API answered `200` with `warning: null`.
+///
+/// Said, not refused. The ordinary case is the same branch, where resuming is
+/// exactly right, and the record is the conversation's own history — it cannot
+/// arbitrate what the tree is for now.
+pub fn branch_drift(cwd: &std::path::Path, recovery: Option<&ArchiveState>) -> Option<String> {
+    let ArchiveState::Recoverable { name, branch, .. } = recovery? else {
+        return None;
+    };
+    drift_message(name, branch, &git::current_branch(cwd).ok()?)
+}
+
+/// The wording, apart from the git call so it can be tested without one.
+fn drift_message(name: &str, recorded: &str, now: &str) -> Option<String> {
+    (recorded != now).then(|| {
+        format!(
+            "{name} is on {now} now, not the {recorded} this conversation ran on — \
+             the worktree at that path was cut again after this one was archived"
+        )
+    })
+}
+
 /// A recovery record for a worktree that never got one.
 ///
 /// Only the *shape* is recovered, not the history: `head_sha` is empty because
@@ -431,6 +463,37 @@ pub async fn teardown(app: &Arc<AppState>, workspace: &str) -> Result<Preflight>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Resuming into a standing worktree skips the rebuild, so the branch was
+    /// never looked at. Driven against a fixture: an archived `pr-4` recorded on
+    /// `feat` came back in a `pr-4` on `other`, answered 200, `warning: null`.
+    #[test]
+    fn a_worktree_cut_again_on_another_branch_is_said_not_swallowed() {
+        let why = drift_message("pr-4", "feat", "other").expect("drift is reported");
+        assert!(
+            why.contains("pr-4") && why.contains("feat") && why.contains("other"),
+            "the message must name the tree and both branches: {why}"
+        );
+        // The ordinary case, and the reason this warns rather than refuses.
+        assert_eq!(drift_message("pr-4", "feat", "feat"), None);
+    }
+
+    /// A transcript-only record has no branch to compare, and a live tree is not a
+    /// reason to invent one.
+    #[test]
+    fn no_recovery_record_means_no_drift_warning() {
+        assert_eq!(
+            branch_drift(std::path::Path::new("/nonexistent"), None),
+            None
+        );
+        assert_eq!(
+            branch_drift(
+                std::path::Path::new("/nonexistent"),
+                Some(&ArchiveState::TranscriptOnly)
+            ),
+            None
+        );
+    }
 
     /// The gap this closes: a worktree removed by hand leaves no recovery record,
     /// and resuming its session refused with "no recovery record" — a fact about
