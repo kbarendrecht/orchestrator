@@ -1,8 +1,8 @@
 # The end-to-end flows
 
 `mise run e2e` drives the flows a person actually presses buttons for, against a
-real daemon, offline and deterministically. Eight of them, one file each under
-`tools/e2e/flows/`, about 25 seconds for the lot.
+real daemon, offline and deterministically. Eleven of them, one file each under
+`tools/e2e/flows/`, about 45 seconds for the lot.
 
 It exists because of what unit tests kept missing. Two bugs found by hand-driving
 a daemon in one afternoon — a resume that skipped its branch check because the
@@ -71,7 +71,13 @@ export async function run(t) {
 `.claude/worktrees`, which is what makes the daemon hand the cut to
 `claude --worktree` instead of doing it itself; `turns` is how many turns the agent
 takes unprompted, and `0` is the session that was never typed into — the one fork
-and resume refuse. `repo` turns GitHub on and installs the curl shim.
+and resume refuse. `repo` turns GitHub on and installs the curl shim. `autoResume`
+brings live sessions back across `t.restart()`.
+
+`t.restart()` stops the daemon and brings it back on the same state. It is the only
+way to reach the durable half — `restore`, `prune_ghosts`, `auto_resume`,
+`first_per_workspace` — and the only honest test of `Session::resumable()`, which is
+computed during `restore` from fields that exist only on the record.
 
 **Wait, never sleep.** `t.settled(id)` and `until(...)` exist because a POST
 returning is not the same as the state having changed: hooks arrive over HTTP

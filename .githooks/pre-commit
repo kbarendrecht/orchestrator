@@ -23,14 +23,20 @@ staged=$(git diff --cached --name-only --diff-filter=ACMR)
 
 web=0
 rust=0
+e2e=0
 if printf '%s\n' "$staged" | grep -qE '^web/'; then web=1; fi
 if printf '%s\n' "$staged" | grep -qE '\.rs$'; then rust=1; fi
-[ "$web" = 1 ] || [ "$rust" = 1 ] || exit 0
+# The flows themselves count: changing the harness without running it is how a
+# suite quietly stops testing anything.
+if printf '%s\n' "$staged" | grep -qE '^tools/e2e/'; then e2e=1; fi
+[ "$web" = 1 ] || [ "$rust" = 1 ] || [ "$e2e" = 1 ] || exit 0
 
+if [ "$web" = 1 ] || [ "$rust" = 1 ]; then
 if [ ! -d tools/node_modules ]; then
   echo "pre-commit: tools/node_modules is missing — run 'npm install --prefix tools'" >&2
   echo "            (or commit with --no-verify)" >&2
   exit 1
+fi
 fi
 
 # A Rust change can move the snapshot the SPA is typed against. Regenerate and
@@ -49,4 +55,43 @@ fi
 if [ "$web" = 1 ]; then
   npx --prefix tools tsc -p tools/tsconfig.json
   npx --prefix tools depcruise --config tools/.dependency-cruiser.cjs web/app.js >/dev/null
+fi
+
+# The end-to-end flows, every Nth Rust commit rather than every one.
+#
+# They cost ~45s, which is twenty times the rest of this hook, so running them
+# always would teach everybody to pass `--no-verify` and the hook would then catch
+# nothing at all. Never running them means the faults only they can see — a state
+# machine driven by hooks over HTTP against a real git repo — wait for CI or for a
+# person to remember. Every fifth commit is the middle: a regression is at most
+# four commits from the one that caused it, which is still a readable bisect.
+#
+# Three details that make the count mean something:
+#
+#   * Only a Rust or harness commit ticks it. A docs or SPA commit cannot break a
+#     flow, so it does not spend the count.
+#   * The counter lives in `.git/`, so it is per-clone and never committed.
+#   * A failing run does **not** reset it, so the next commit tries again. Resetting
+#     on failure would bury a real break for four more commits.
+#
+# `E2E_EVERY=1` to run every time, `E2E_EVERY=0` to turn it off. `--no-verify`
+# still skips the lot.
+if { [ "$rust" = 1 ] || [ "$e2e" = 1 ]; } && [ "${E2E_EVERY:-5}" != 0 ]; then
+  counter="$(git rev-parse --git-dir)/e2e-counter"
+  n=$(( $(cat "$counter" 2>/dev/null || echo 0) + 1 ))
+  if [ "$n" -lt "${E2E_EVERY:-5}" ]; then
+    printf '%s\n' "$n" > "$counter"
+    echo "pre-commit: e2e in $(( ${E2E_EVERY:-5} - n )) more commit(s) (E2E_EVERY=1 to force)"
+  else
+    echo "pre-commit: running the e2e flows (~45s, every ${E2E_EVERY:-5}th such commit)"
+    if node tools/e2e/run.mjs; then
+      printf '0\n' > "$counter"
+    else
+      # Left un-reset on purpose: the next commit runs them again rather than
+      # waiting out another four.
+      echo "pre-commit: an e2e flow failed. The sandbox above has its daemon log." >&2
+      echo "            Commit anyway with --no-verify if you know why." >&2
+      exit 1
+    fi
+  fi
 fi
