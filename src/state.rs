@@ -589,6 +589,31 @@ impl AppState {
         Ok(())
     }
 
+    /// Take main's claim again, for a session that already holds it, if it has been
+    /// dropped in the meantime.
+    ///
+    /// `claim_main` runs before anything is created, so a refusal costs no worktree
+    /// and no pty. But a relocation resumes under the *same session id*, so between
+    /// that claim and the record being installed the map still describes the *old*
+    /// session — and its exit watcher is entitled to settle it, which calls
+    /// `release_main`, which keys on the id and so hands back the claim the incoming
+    /// session had already taken. Main then holds a live agent with no occupant
+    /// recorded, and that is the value `switch_main_to_pr` reads to decide it may
+    /// move the checkout under it. Found by driving a two-way swap end to end; it
+    /// reproduced about one run in four.
+    ///
+    /// Only an *empty* slot is filled. A slot held by somebody else is a real
+    /// conflict that `claim_main` was supposed to catch, and quietly stealing it
+    /// would turn one bug into a worse one.
+    pub async fn reclaim_main(&self, session: SessionId) {
+        let mut inner = self.inner.write().await;
+        if let Some(w) = inner.workspaces.get_mut(MAIN) {
+            if w.occupant.is_none() {
+                w.occupant = Some(session);
+            }
+        }
+    }
+
     pub async fn release_main(&self, session: SessionId) {
         let mut inner = self.inner.write().await;
         if let Some(w) = inner.workspaces.get_mut(MAIN) {
@@ -1020,6 +1045,37 @@ mod tests {
         ))
         .unwrap();
         AppState::new(cfg, "t".into(), crate::window::Chrome::None)
+    }
+
+    /// The three cases `reclaim_main` has to tell apart.
+    ///
+    /// It exists because a relocation reuses the session id, so the outgoing
+    /// session's exit watcher releases the claim the incoming one has already
+    /// taken — leaving a live agent in main with no occupant recorded, which is
+    /// what `switch_main_to_pr` reads before moving the checkout. Filling an empty
+    /// slot repairs that. Taking one that somebody else holds would be a worse bug
+    /// than the one it fixes, so it does not.
+    #[tokio::test]
+    async fn reclaiming_main_fills_an_empty_slot_and_never_takes_someone_elses() {
+        let app = app().await;
+        let (mine, theirs) = (Uuid::new_v4(), Uuid::new_v4());
+
+        // The case this is for: the claim was dropped from under a live session.
+        app.reclaim_main(mine).await;
+        assert_eq!(app.inner.read().await.workspaces[MAIN].occupant, Some(mine));
+
+        // Already ours, so nothing to do and nothing changes.
+        app.reclaim_main(mine).await;
+        assert_eq!(app.inner.read().await.workspaces[MAIN].occupant, Some(mine));
+
+        // Held by somebody else: left alone, because that is a real conflict and
+        // `claim_main` is the thing that refuses it.
+        app.reclaim_main(theirs).await;
+        assert_eq!(
+            app.inner.read().await.workspaces[MAIN].occupant,
+            Some(mine),
+            "reclaim must never steal main"
+        );
     }
 
     /// A stale occupant — the session gone but `release_main` not yet run — must
