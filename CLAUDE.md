@@ -10,7 +10,7 @@ are already in there with the reason they were not done.
 
 ```
 cargo check                         # the daemon
-cargo test                          # 348 tests, all in-tree
+cargo test                          # 349 tests, all in-tree
 mise run check-web                  # type-check the SPA + enforce its module graph
 mise run e2e                        # 11 flows against a real daemon, ~45s
 cargo run -p orchestrator-desktop   # the app, daemon embedded in-process

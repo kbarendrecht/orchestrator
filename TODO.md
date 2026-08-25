@@ -262,32 +262,47 @@ Everything outside that block is hand-written and survives.
   design (`forge/github_write.rs:10-13`) — so this item is about the beta gate, not
   the missing action.
 
-- **Rewind a session from the rail.** Claude Code already has this: a double
-  `Escape` at the prompt opens its own rewind picker, and the strings in the
-  bundle show what it can do — `rewindToMessageIndex`, `rewindAnchorUuid`,
-  `rewind-files` / `rewindDirectory` (it can put the files back too), plus
-  `rewind-refusal` and `rewind-unavailable` for when it cannot. So the daemon
-  does not need to build a picker, only a way to reach the one that exists.
+- **Rewind a session from the rail.** *Built: `Rewind conversation…` on the
+  session row's context menu, `POST /api/session/:id/rewind`.* The daemon builds no
+  picker — Claude Code has the whole feature, and the button only reaches it. The
+  premise was re-checked in the shipped binary rather than trusted: 2.1.240 still
+  carries `rewindToMessageIndex`, `rewindAnchorUuid`, `rewindDirectory`, and a tip
+  reading "Double-tap esc to rewind the conversation to a previous point in time".
 
-  The cheap version is a context-menu item on a session row — `rewind`, or
-  `time travel` — that selects the session and writes `\x1b\x1b` into its
-  terminal. That is a pure SPA change: `term.onData` (`web/js/term.js:164`)
-  already sends keystrokes down the attach socket, so a menu item can send the
-  two escapes the same way. No route, no daemon state, nothing to persist.
+  Driven against a real session, which settled the one thing that could not be
+  reasoned about: **two escapes 60ms apart do register as a double tap.** The
+  picker opened and listed the turn — "Restore the code and/or conversation to the
+  point before… / What is 2 + 2?" One `\x1b\x1b` burst was not risked, because a
+  double *tap* is two timed key events and a single write could arrive as one
+  escape or as the `ESC ESC` meta prefix — invisible from here either way. The
+  nudge's separate-writes lesson is the same shape.
 
-  Two caveats worth checking before building it. The picker only opens at the
-  prompt, so the item wants the same gating the nudge uses — a session mid-turn
-  should not get it, and one at `asked_a_question` would answer the question with
-  an escape. And a rewind that restores files changes the worktree under the
-  changed-file pane, so it should be followed by a reconcile the way
-  `watch_session_exit` does.
+  Two departures from the plan above, both for a reason:
+  - **A route, not a pure SPA change.** The SPA's attach socket only exists while a
+    terminal is open, so sending straight after `setSelected` races the socket
+    opening. The daemon owns the pty and needs no socket — and it means the *gate*
+    is the daemon's rather than advice the SPA could bypass.
+  - **No reconcile needed.** `start_workspace_watcher` already re-reads every
+    workspace holding a live session every 15s, and its comment names exactly this
+    class — a change no hook reports, "a `git restore` that way changed 849 files
+    and the pane never heard". A rewind that restores files is that, so the caveat
+    was already answered.
 
-  A modal of our own is the alternative, and it is a bigger thing: the daemon
+  Refused, by name, in the four states where an escape means something else: mid-turn
+  it interrupts the turn, at a question it cancels the question, at a permission
+  prompt it declines, and with no conversation the picker opens empty. Mid-turn and
+  the empty-conversation case were driven; the two answer-taking states cannot be
+  arranged on demand and are unit-tested, which is the point of testing them at all.
+
+  No keyboard chord, deliberately: the audit's own finding was that the scheme wins
+  by being smaller, and nothing has asked to reach this from the keyboard.
+
+  A modal of our own is still the alternative, and still a bigger thing: the daemon
   would list the conversation's turns (it already tails the transcript for
-  `store::ai_title`) and offer them as rewind points. That only pays off if the
-  native picker turns out to be hard to reach or too coarse, and it would need a
-  way to select a message index from outside the TUI, which the CLI does not
-  expose — `--resume` resumes at the end and nothing else.
+  `store::ai_title`) and offer them as rewind points. It only pays off if the native
+  picker turns out too coarse, and it would need a way to select a message index
+  from outside the TUI, which the CLI does not expose — `--resume` resumes at the
+  end and nothing else.
 
 - **`ng-watch` sits at `starting` and never comes alive.** Observed on this
   machine and never investigated. Carried over from the swap handoff so it is not
