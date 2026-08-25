@@ -2089,6 +2089,37 @@ mod tests {
         std::fs::canonicalize(&dir).unwrap_or(dir)
     }
 
+    /// What the resolve run's per-thread check rests on, including the way it
+    /// fails.
+    ///
+    /// A run asks "is the tree I was triaged against still in my history", and the
+    /// three answers all matter: yes while the agent commits on top, no once the
+    /// branch is rewritten under it, and *no* for a sha this repo has never heard
+    /// of — which is the same situation from the run's point of view, and must not
+    /// read as yes just because git could not answer.
+    #[test]
+    fn ancestry_says_no_to_a_rewritten_branch_and_to_a_sha_it_cannot_resolve() {
+        let repo = scratch_repo();
+        let base = head_sha(&repo).expect("head");
+        std::fs::write(repo.join("f.txt"), "two\n").unwrap();
+        git(&repo, &["commit", "-qam", "two"]).unwrap();
+        assert!(is_ancestor(&repo, &base, "HEAD"), "committing on top keeps it");
+
+        // The rewrite: a history built from the same tree but with no parents,
+        // which is what a branch reset below the base and re-committed leaves.
+        let orphan = git(&repo, &["commit-tree", "-m", "orphan", &format!("{base}^{{tree}}")])
+            .expect("an orphan commit with no parents");
+        assert!(
+            !is_ancestor(&repo, &base, orphan.trim()),
+            "a history the base is not in must answer no"
+        );
+        assert!(
+            !is_ancestor(&repo, "0000000000000000000000000000000000000000", "HEAD"),
+            "a sha git cannot resolve is not an ancestor — the check fails closed"
+        );
+        let _ = std::fs::remove_dir_all(&repo);
+    }
+
     #[test]
     fn cuts_a_new_worktree_at_a_custom_subdir() {
         // The daemon's own creation path, used when worktrees do not live where

@@ -591,7 +591,7 @@ pub async fn thread_committed(
 ) -> ApiResult<serde_json::Value> {
     ask_token_ok(&app, id, &headers).await?;
 
-    let (number, planned, cwd) = {
+    let (number, planned, cwd, base_sha) = {
         let inner = app.inner.read().await;
         let (number, run) = inner
             .resolve_runs
@@ -610,18 +610,54 @@ pub async fn thread_committed(
             .get(&id)
             .map(|s| s.cwd.clone())
             .ok_or_else(|| anyhow::anyhow!("no such session {id}"))?;
-        (*number, planned, cwd)
+        (*number, planned, cwd, run.plan.base_sha.clone())
     };
 
     // The real diff, not the one triage staged: what the reviewer is about to be
     // told happened is what actually landed, including whatever the agent had to
     // change to make it apply.
-    let (sha, dir) = (body.sha.clone(), cwd.clone());
-    let diff = tokio::task::spawn_blocking(move || {
-        crate::git::commit_diff(&dir, &sha, crate::proposal::MAX_FIELD)
+    //
+    // Taken with the ancestry check below, because both ask git about this worktree
+    // and both must describe the same moment.
+    let (sha, dir, base) = (body.sha.clone(), cwd.clone(), base_sha.clone());
+    let (diff, still_ours) = tokio::task::spawn_blocking(move || {
+        (
+            crate::git::commit_diff(&dir, &sha, crate::proposal::MAX_FIELD),
+            crate::git::is_ancestor(&dir, &base, "HEAD"),
+        )
     })
     .await
-    .context("reading the commit panicked")??;
+    .context("reading the commit panicked")?;
+    let diff = diff?;
+
+    // Is the tree this run was triaged against still in our history?
+    //
+    // Per thread, and *not* `base_sha == HEAD`: the agent commits once per thread,
+    // so from the second thread on the head has moved by design — which is why the
+    // prompt checks equality only at the start. What must stay true for the whole
+    // run is ancestry. It stops being true when the branch is rewritten underneath
+    // the run: a push from another machine, or somebody force-pushing your branch.
+    //
+    // The harm is outward, which is why it is checked here rather than left to the
+    // push. The agent's commits are then on an orphaned history, and every reply
+    // after that would tell a reviewer about a fix that cannot land — the final
+    // `--force-with-lease` would refuse, but only after N public comments had
+    // already claimed the work. So the reply is held and the thread says why.
+    if !still_ours {
+        let note = format!(
+            "the branch was rewritten under this run ({} is no longer in its history) — \
+             the commit stands but nothing was posted",
+            &base_sha[..base_sha.len().min(7)]
+        );
+        mark_thread(&app, number, &thread_id, |t| {
+            t.commit = Some(body.sha.clone());
+            t.status = crate::post::ThreadStatus::NeedsYou;
+            t.note = Some(note.clone());
+        })
+        .await;
+        app.notify().await;
+        return Ok(Json(json!({ "posted": false, "reason": note })));
+    }
 
     mark_thread(&app, number, &thread_id, |t| {
         t.commit = Some(body.sha.clone());

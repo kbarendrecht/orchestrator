@@ -223,10 +223,34 @@ Everything outside that block is hand-written and survives.
     The agent's `plan.json` is now a view (`Plan::for_agent`), which is where that
     concern belonged, with a test that keeps the two documents apart.
 
-  *Still open here.* Nothing re-validates drift *per thread*: the prompt checks
-  `base_sha` once at the start. And the overview's own rendering of all this is
-  type-checked, not driven — `rvRun` was exercised through the API, never through
-  the overlay in a browser.
+  *"Nothing re-validates drift per thread" — the item was wrong, and what it
+  pointed at is now checked.* Assessed before being built, and a literal reading
+  would have been a bug: the agent commits once per thread, so from the second
+  thread on `HEAD` differs from `base_sha` **by design**, and a per-thread equality
+  check would fire on every thread but the first. That is why the prompt checks it
+  once. The adaptation the plan's decision 2 asked for was already there too — the
+  prompt has the agent rebuild a patch whose surroundings moved, and the first
+  fixture run did exactly that and said so. Three neighbouring risks were also
+  already covered: `commit_diff` fails on a sha that does not exist,
+  `thread_committed` re-fetches the threads, and the push is
+  `--force-with-lease`.
+
+  What was genuinely missing was one thing, and it was ancestry rather than drift:
+  if the branch is **rewritten under the run** — a push from another machine,
+  somebody force-pushing your branch — the agent's commits sit on an orphaned
+  history, and the daemon would keep posting a reply per thread about a fix that
+  can never land. The lease would refuse the final push, but only after several
+  public comments had claimed the work. `thread_committed` now asks whether the
+  plan's `base_sha` is still an ancestor of `HEAD` before it posts; if it is not,
+  the reply is held, the thread goes to `NeedsYou` naming the sha, and the prompt
+  tells the session to stop rather than work threads into the same hole. Driven
+  both ways on the fixture: ancestry intact posted the 👍, and a branch reset below
+  the base was refused with the note. A `base_sha` git cannot resolve counts as
+  "not an ancestor" — fail closed, pinned by a test, since nothing covered
+  `git::is_ancestor` at all.
+
+  *Still open here.* The overview's own rendering is type-checked, not driven —
+  `rvRun` was exercised through the API, never through the overlay in a browser.
 
 - **Promote the in-UI review overlay out of beta.** The overlay now does the
   real work: threads listed under the PR with their file, hunk, and a reply box,

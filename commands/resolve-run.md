@@ -73,13 +73,21 @@ curl -sS -X POST -H 'content-type: application/json' \
 
 This blocks. The human is shown your actual commit next to the reply that was
 drafted for it, and decides whether it goes out. `posted: true` means the reviewer
-has been answered. `posted: false` means one of two things, and the other field
-says which: with `"reacted": true` the stance was a bare thumbs up, there were
-never any words, and the daemon has already left the reaction — nothing was held
-back and your report must not say it was. With `"reason": "held back"` they really
-did keep it back and will answer that one themselves. Either way the commit
-stands, and either way you carry on to the next thread. Do not re-send it and do
-not argue with a hold.
+has been answered. `posted: false` means one of three things, and the other field
+says which:
+
+- `"reacted": true` — the stance was a bare thumbs up, there were never any words,
+  and the daemon has already left the reaction. Nothing was held back and your
+  report must not say it was.
+- `"reason": "held back"` — they kept it back and will answer that one themselves.
+- any other `"reason"` — the daemon refused to post and the string says why. Read
+  it. If it says the branch was rewritten under you, **stop**: your commits are on
+  a history that is no longer the branch's, and every thread after this one would
+  land in the same place. Report which threads you had finished and that the branch
+  moved.
+
+Otherwise the commit stands and you carry on to the next thread. Do not re-send it
+and do not argue with a hold.
 
 **`mode: "manual"`.** You are not writing this one. Ask the question below to hand
 it over, wait, and carry on when it comes back. Do not helpfully do it anyway.
