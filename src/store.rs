@@ -313,20 +313,19 @@ pub fn prune_ghosts(mut records: Vec<SessionRecord>) -> (Vec<SessionRecord>, usi
     let kept: Vec<SessionRecord> = records
         .into_iter()
         .filter(|r| {
-            // `was_live` outranks everything: this is a record `auto_resume` is
-            // about to relaunch, so dropping it would remove a session from under
-            // the thing bringing it back. Measured — the two records here with no
-            // transcript at all came back as live rows in the rail.
+            // A record is worth keeping only if there is a conversation to come back
+            // to: `had_a_turn` (repaired from disk just above), or an archived copy
+            // on disk. Not "a file exists" — a session opened and never typed into
+            // owns a headers-only `.jsonl` that resumes into an instant exit.
             //
-            // Otherwise the test is `had_a_turn`, not "a file exists": a session
-            // opened and never typed into owns a headers-only `.jsonl`, and keeping
-            // it only litters the archive with a row that resumes into an instant
-            // exit. That is the tightening — the file-exists clause used to keep
-            // exactly those. `had_a_turn` was repaired from disk just above, so a
-            // real conversation whose bit predates the field still counts.
-            r.was_live
-                || r.had_a_turn
-                || r.archived_transcript.as_deref().is_some_and(Path::exists)
+            // `was_live` is deliberately *not* a keeper on its own. It once was, to
+            // protect records `auto_resume` relaunches — but `auto_resume` now
+            // refuses a `!had_a_turn` record (it would exit instantly), so a
+            // `was_live && !had_a_turn` record is kept by nothing that can bring it
+            // back: it restores as an `Archived` row with `has_transcript=false`,
+            // which `isConversation` hides — present and counted, but unseeable and
+            // unreachable, the exact ghost this prune exists to remove.
+            r.had_a_turn || r.archived_transcript.as_deref().is_some_and(Path::exists)
         })
         .collect();
     let dropped = before - kept.len();
@@ -415,6 +414,9 @@ mod tests {
             // The bit already set, no file needed: a record written since the field
             // existed carries its own answer.
             SessionRecord { had_a_turn: true, ..record("had-a-turn", None, None) },
+            // A live session that had a turn survives — `was_live` alone is not why,
+            // its conversation is.
+            SessionRecord { was_live: true, had_a_turn: true, ..record("was-live-real", None, None) },
             // The archive is the *other* place a conversation can be: teardown
             // copies it out and the original may be pruned by Claude Code.
             record("has-archived-copy", None, Some(archived_copy.clone())),
@@ -423,19 +425,21 @@ mod tests {
             // Recorded paths that no longer resolve are the same as none.
             record("dangling-paths", Some(dir.join("gone.jsonl")), Some(dir.join("gone2.jsonl"))),
             record("ghost", None, None),
-            // No transcript either, but `auto_resume` is about to relaunch it, so it
-            // outranks the turn check. Dropping this one removed a session from
-            // under the thing bringing it back, which is what the first version did.
-            SessionRecord { was_live: true, ..record("was-live", None, None) },
+            // Live at the crash but never a turn: `auto_resume` refuses it (a resume
+            // would exit instantly), so keeping it only makes an `Archived,
+            // has_transcript=false` row that `isConversation` hides — an invisible
+            // ghost. Dropped, precisely because `was_live` no longer outranks the
+            // turn check.
+            SessionRecord { was_live: true, ..record("was-live-turnless", None, None) },
         ];
 
         let (kept, dropped) = prune_ghosts(records);
         let names: Vec<&str> = kept.iter().map(|r| r.workspace.as_str()).collect();
         assert_eq!(
             names,
-            vec!["real-conversation", "had-a-turn", "has-archived-copy", "was-live"]
+            vec!["real-conversation", "had-a-turn", "was-live-real", "has-archived-copy"]
         );
-        assert_eq!(dropped, 3, "headers-only, dangling, and the pure ghost");
+        assert_eq!(dropped, 4, "headers-only, dangling, the pure ghost, and the turnless was_live ghost");
         // The repair is written back, so the survivor stops being re-derived from
         // the file on every start.
         assert!(kept.iter().find(|r| r.workspace == "real-conversation").unwrap().had_a_turn);
