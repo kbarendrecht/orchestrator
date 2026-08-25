@@ -728,26 +728,21 @@ fn start_todo_writer(app: Arc<AppState>) {
 async fn live_findings(app: &Arc<AppState>) -> Vec<todo::Finding> {
     let mut out = Vec::new();
 
-    let (token, review_bad) = {
+    // `gh auth token` was reported here as a finding, and it is gone for the reason
+    // the `⚠` beside `pr_age_ms` went: a condition you have decided to live with is
+    // not a finding, it is furniture, and furniture in a list you read deliberately
+    // teaches you to stop reading it. The fact is still in the snapshot as
+    // `token_source` for anyone diagnosing over the API, and TODO.md's decisions
+    // section says the fallback is accepted.
+    let review_bad = {
         let inner = app.inner.read().await;
-        (
-            inner.token_source,
-            match &inner.reviews {
-                crate::reviews::ReviewState::Degraded { reason } => Some(reason.clone()),
-                // Pending is startup, not a fault.
-                _ => None,
-            },
-        )
+        match &inner.reviews {
+            crate::reviews::ReviewState::Degraded { reason } => Some(reason.clone()),
+            // Pending is startup, not a fault.
+            _ => None,
+        }
     };
 
-    if token == Some(forge::TokenSource::GhCli) {
-        out.push(todo::Finding {
-            what: "GitHub token is gh's".into(),
-            why: "it carries write scopes; §6 wants a read-only PAT in `ORCHD_GITHUB_TOKEN` \
-                  or `github_token_file`."
-                .into(),
-        });
-    }
     if let Some(reason) = review_bad {
         out.push(todo::Finding {
             what: "review queue is unavailable".into(),

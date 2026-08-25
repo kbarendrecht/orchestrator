@@ -78,11 +78,6 @@ Everything outside that block is hand-written and survives.
   a way to select a message index from outside the TUI, which the CLI does not
   expose — `--resume` resumes at the end and nothing else.
 
-- **`ng-watch` sits at `starting` and never comes alive.** Observed on this
-  machine and never investigated. Carried over from the swap handoff so it is not
-  lost with the file; it is the health-scan spec's own process, so it is either
-  the pattern in `config::default_main_processes` or the process really is stuck.
-
 - **Stacked-PR support.** Two halves. First, a context-menu `stack` action on a
   PR row that opens a session starting from that PR's code — a new branch based
   on the selected PR's head, its own worktree (cwd = main, via the existing
@@ -223,9 +218,15 @@ Everything outside that block is hand-written and survives.
   `green-<pr>` prompt directories under `~/.config/orchd` are dead files for the
   same reason.
 
-- **`gh auth token` fallback.** Works out of the box and is what the daemon uses
-  today, but its scopes include write and §6 wants read-only. Superseded as soon
-  as a fine-grained PAT exists.
+- **`gh auth token` is the credential, and that is settled.** §6 wanted a
+  read-only PAT and it is not going to get one: `gh`'s token works out of the box,
+  the daemon's own writes are `gh`-shelled anyway, and the extra scopes buy a setup
+  step nobody wants. The daemon used to report this as a live finding every poll —
+  removed, for the reason the `⚠` beside `pr_age_ms` went: a condition you have
+  decided to live with is furniture, and furniture teaches you to stop reading the
+  list. `token_source` is still in the snapshot for anyone diagnosing over the API.
+  Revisit only if the daemon ever needs a credential it should not be able to write
+  with.
 - **Two loosened spec rules.** The unpushed check counts commits beyond the base
   rather than blocking any never-pushed branch, and the transcript check
   distinguishes "nothing to copy" from "not copied yet". Both were unescapable
