@@ -818,7 +818,7 @@ pub async fn nudge_sessions(
             // Nothing to continue: a session that has never had a turn would take
             // the word as its opening instruction, which is not what anyone
             // pressing this meant.
-            if !crate::store::transcript_exists(s.id, &s.cwd, s.transcript_path.as_deref()) {
+            if !s.had_a_turn {
                 continue;
             }
             match &s.state {
@@ -914,14 +914,26 @@ pub async fn fork_session(
     State(app): State<Arc<AppState>>,
     Path(id): Path<Uuid>,
 ) -> ApiResult<serde_json::Value> {
-    let automation = {
+    let (automation, had_a_turn) = {
         let inner = app.inner.read().await;
-        inner
+        let s = inner
             .sessions
             .get(&id)
-            .ok_or_else(|| anyhow::anyhow!("no such session {id}"))?
-            .is_automation()
+            .ok_or_else(|| anyhow::anyhow!("no such session {id}"))?;
+        (s.is_automation(), s.had_a_turn)
     };
+    // Refuse before a worktree is cut, not after the fork dies in it. A fork
+    // replays the conversation with `--resume`, so a session that never had a turn
+    // forks into an instant exit — and `spawn_worktree_session` would have done a
+    // real `git worktree add` first, leaving a fresh tree holding a dead session.
+    // The SPA greys the menu item on the same bit, but a stale snapshot or a direct
+    // call reaches here regardless, which is why the guard lives on this side too.
+    if !had_a_turn {
+        return Err(ApiError(anyhow::anyhow!(
+            "session {} has no conversation yet — nothing to fork",
+            &id.to_string()[..8]
+        )));
+    }
     if automation {
         return revive(&app, id, true).await;
     }
@@ -1166,9 +1178,19 @@ pub async fn archive_workspace(
 ///
 /// Not a swap of roles. Worktrees live inside main, so one cannot become the
 /// primary checkout without containing its own parent, and git will not move the
-/// main worktree anyway. Only what each has checked out is exchanged; both paths,
-/// and therefore every transcript and archive entry, stay exactly where they are
-/// (`config::transcript_slug` keys on the path).
+/// main worktree anyway. Only what each has checked out is exchanged, and both
+/// directories stay exactly where they are.
+///
+/// # Both ways
+///
+/// The branches trade places, and so do the conversations about them: the
+/// worktree's session is relocated into main and main's own session, if it had one,
+/// is relocated out to the worktree. Symmetry is the point — a swap that moved one
+/// side only left main's session reading a tree that had changed under it.
+///
+/// Relocating keeps the session id, so each conversation continues as one rail row
+/// rather than gaining a forked sibling; `spawn::relocate_session` has the how, and
+/// falls back to a fork only if a resume will not stay up.
 ///
 /// # The refusals
 ///
@@ -1241,16 +1263,10 @@ pub async fn swap_with_main(
         .await
         .map_err(|e| anyhow::anyhow!("the swap task panicked: {e}"))??;
 
-    // Swapping back clears the flag, so pressing the item twice is a true undo and
-    // parking is allowed again.
-    {
-        let mut held = app.swapped_with_main.write().await;
-        *held = if held.as_deref() == Some(workspace.as_str()) {
-            None
-        } else {
-            Some(workspace.clone())
-        };
-    }
+    // Nothing to remember: `park_main` decides whether to return main to base by
+    // asking if its branch is a PR head from the current poll, not whether a swap
+    // happened. A swapped-in worktree branch is not one, so it is left in place —
+    // and that answer survives a restart, which the old in-memory flag did not.
 
     // Each tree gave a branch away, and `reconcile` only adds. Left in, the
     // worktree would go on claiming the branch main now holds, and a PR flow for it
@@ -1264,105 +1280,122 @@ pub async fn swap_with_main(
     let _ = app.reconcile(MAIN).await;
     let _ = app.reconcile(&workspace).await;
 
-    // Carry the conversation across, or the swap only moves half of what you meant.
+    // The conversations follow their branches, in both directions, or the swap only
+    // moves half of what you meant.
     //
-    // A session cannot *move*: its cwd is fixed at spawn and its transcript is
-    // filed under that path (`config::transcript_slug`), so relocating one would
-    // orphan its history. A fork can, though — `--resume` resolves a session by id
-    // from any working directory, so the new one starts in main with the whole
-    // conversation behind it, and the original stays exactly where it was.
+    // Main's session travels too: its branch is in the worktree now, and a
+    // conversation left staring at a tree that changed under it is the half of the
+    // old behaviour that made this a one-way move rather than a swap.
     //
-    // Best effort: the swap has already happened and is the thing you asked for, so
-    // a failure here is reported beside it rather than rolling the branches back.
-    let carried = carry_session_into_main(&app, &workspace).await;
+    // Both are picked before either moves. Choosing as we go would let the second
+    // choice see the session the first one just delivered — for the moment in
+    // between, both conversations live in the worktree — and send it straight back.
+    let outgoing = pick_to_carry(&app, MAIN).await;
+    let incoming = pick_to_carry(&app, &workspace).await;
+
+    // Out of main **first**, and the order is load-bearing rather than tidy: main
+    // holds one session at a time, so while the outgoing one is still sitting there
+    // the arrival is refused outright ("main is occupied by …"). Vacating makes the
+    // room. Found by driving a two-way swap against a real daemon, not by reading it.
+
+    let into_worktree = match outgoing {
+        Some(id) => Some(spawn::relocate_session(&app, id, &workspace, CARRY_GRACE).await),
+        None => None,
+    };
+    let into_main = match incoming {
+        Some(id) => Some(spawn::relocate_session(&app, id, MAIN, CARRY_GRACE).await),
+        None => None,
+    };
     app.notify().await;
+
+    // Where to land the pane: main is what you pressed this for, so the session that
+    // arrived there wins, and the one that left main is the fallback.
+    let select = into_main
+        .as_ref()
+        .and_then(|r| r.as_ref().ok())
+        .or_else(|| into_worktree.as_ref().and_then(|r| r.as_ref().ok()))
+        .map(|r| r.id.to_string());
 
     tracing::info!(%workspace, main_now = %swapped.0, worktree_now = %swapped.1, "swapped branches with main");
     Ok(Json(json!({
         "main": swapped.0,
         "worktree": swapped.1,
         "workspace": workspace,
-        "session": carried.as_ref().ok().map(|id| id.to_string()),
-        "session_error": carried.as_ref().err().map(|e| format!("{e:#}")),
+        "select": select,
+        "into_main": carried_json(&into_main),
+        "into_worktree": carried_json(&into_worktree),
         // Named, not counted: knowing *which* files stayed behind is the difference
         // between going to fetch them and wondering what you lost.
         "untracked_left": untracked,
     })))
 }
 
-/// Fork the worktree's own conversation into main, so work continues where the
-/// branch now is.
+/// How long a relocated session has to prove it stayed up.
 ///
-/// Picks the newest **interactive** session that has a transcript. Automation is
-/// left alone deliberately: a fix or resolve run belongs to its PR's worktree, and
-/// forking one into main would put an agent that rebases and force-pushes on the
+/// A grace window, not a health check: what has to be ruled out is the *instant*
+/// exit of a `--resume` that found nothing, because the fork fallback hangs on it.
+const CARRY_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// One direction of the carry, as the SPA reads it.
+///
+/// `null` is its own answer and not an error: it means there was nothing in that
+/// tree to move, which is the ordinary case for a swap into an empty main.
+fn carried_json(r: &Option<anyhow::Result<spawn::Relocated>>) -> serde_json::Value {
+    match r {
+        None => serde_json::Value::Null,
+        Some(Ok(moved)) => json!({
+            "session": moved.id.to_string(),
+            // A fork, not the move that was promised — the id changed, so the rail
+            // is about to show a second row and it is worth saying why.
+            "degraded": moved.degraded,
+            "error": serde_json::Value::Null,
+        }),
+        Some(Err(e)) => json!({
+            "session": serde_json::Value::Null,
+            "degraded": false,
+            "error": format!("{e:#}"),
+        }),
+    }
+}
+
+/// The session in a workspace whose conversation should follow the branch.
+///
+/// Newest **interactive** session that has actually had a turn. Automation is left
+/// alone deliberately: a fix or resolve run belongs to its PR's worktree, and
+/// moving one into main would put an agent that rebases and force-pushes on the
 /// tree every worktree is cut from.
-async fn carry_session_into_main(
-    app: &Arc<AppState>,
-    workspace: &str,
-) -> anyhow::Result<crate::model::SessionId> {
+///
+/// A turnless session is skipped rather than moved: `--resume` answers "no
+/// conversation found" and exits instantly, and so does the fork behind it, so
+/// there is nothing to carry and killing it would cost a live pane for nothing.
+/// Any *other* session in the tree stays where it is — closing them all is more
+/// honest and also more destructive, and this is the move that was asked for.
+async fn pick_to_carry(app: &Arc<AppState>, workspace: &str) -> Option<SessionId> {
     // Newest first, and the transcripts are read outside the guard: these are file
-    // reads, and the lock is fair, so a writer queued behind them would block
-    // every reader queued behind it in turn.
+    // reads, and the lock is fair, so a writer queued behind them would block every
+    // reader queued behind it in turn.
     let candidates = {
         let inner = app.inner.read().await;
         let mut v = inner
             .sessions
             .values()
-            .filter(|s| s.workspace == workspace)
+            .filter(|s| s.workspace == workspace && s.state.is_live())
             .filter(|s| matches!(s.kind, Kind::Interactive))
             .map(|s| (s.created_at, s.id, s.cwd.clone(), s.transcript_path.clone()))
             .collect::<Vec<_>>();
         v.sort_by_key(|(created, ..)| std::cmp::Reverse(*created));
         v
     };
-    // Nothing to fork until a conversation has had a turn: `--resume` answers "no
-    // conversation found" and the session exits instantly. A file does not prove
-    // one — a session that started but never spoke owns a file of headers — so
-    // this asks `has_conversation`. Newest-first, stopping at the first hit, so
-    // the usual cost is one read rather than one per session to then discard all
-    // but the newest.
-    let source = candidates
+    // A file does not prove a conversation — a session that started but never spoke
+    // owns a file of headers — so this asks `has_conversation`. Newest-first,
+    // stopping at the first hit, so the usual cost is one read rather than one per
+    // session to then discard all but the newest.
+    candidates
         .into_iter()
-        .find(|(_, id, cwd, recorded)| crate::store::has_conversation(*id, cwd, recorded.as_deref()))
-        .map(|(_, id, ..)| id);
-    let source = source.context("no conversation in this worktree to carry into main")?;
-
-    // Two seconds is a grace window, not a health check: what has to be ruled out
-    // is the *instant* exit, because the source is closed on the strength of this
-    // and a fork that died would leave nothing running at all.
-    let forked = spawn::spawn_session_confirmed(
-        app,
-        MAIN,
-        Kind::Interactive,
-        Some(spawn::Source::Fork(source)),
-        std::time::Duration::from_secs(2),
-    )
-    .await
-    .with_context(|| {
-        format!(
-            "the fork into main did not stay up, so {} was left running — nothing was closed",
-            &source.to_string()[..8]
-        )
-    })?;
-
-    // End the one it came from, or the swap leaves two live sessions on one
-    // conversation and the rail shows the work in two places at once. A *move* is
-    // what was asked for, so the original stops being live — but its row and its
-    // transcript stay, and it is resumable, which is why this kills rather than
-    // deletes.
-    let handle = {
-        let inner = app.inner.read().await;
-        inner.sessions.get(&source).and_then(|s| s.pty.clone())
-    };
-    if let Some(h) = handle {
-        if let Err(e) = h.kill() {
-            // Not fatal, and not rolled back: the fork is live and holds the
-            // conversation. A stray live row is untidy, not lost work.
-            tracing::warn!(%source, "carried the conversation into main but could not close the original: {e:#}");
-        }
-    }
-    Ok(forked)
+        .find(|(_, id, cwd, recorded)| {
+            crate::store::has_conversation(*id, cwd, recorded.as_deref())
+        })
+        .map(|(_, id, ..)| id)
 }
 
 pub async fn teardown(

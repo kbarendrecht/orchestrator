@@ -216,21 +216,30 @@ pub async fn start(opts: StartOptions) -> Result<Server> {
     let (records, gone) = {
         // Who they were, before the vector is consumed — this deletes durable
         // state, and the first version of it deleted every record on a real
-        // machine, so the log names them rather than counting them.
-        let was: Vec<(model::SessionId, String)> =
-            records.iter().map(|r| (r.id, r.workspace.clone())).collect();
+        // machine, so the log names them rather than counting them. cwd and the
+        // recorded path travel too, so a dropped ghost's header file can be removed
+        // rather than left for a later id-scan to resurrect.
+        let was: Vec<(model::SessionId, String, PathBuf, Option<PathBuf>)> = records
+            .iter()
+            .map(|r| (r.id, r.workspace.clone(), r.cwd.clone(), r.transcript_path.clone()))
+            .collect();
         let (kept, _) = store::prune_ghosts(records);
         let ids: std::collections::HashSet<_> = kept.iter().map(|r| r.id).collect();
         let gone: Vec<String> = was
             .into_iter()
-            .filter(|(id, _)| !ids.contains(id))
-            .map(|(id, ws)| format!("{} ({ws})", &id.to_string()[..8]))
+            .filter(|(id, ..)| !ids.contains(id))
+            .map(|(id, ws, cwd, recorded)| {
+                // A dropped record has no conversation and is not live, so its file
+                // is a headers-only remnant with nothing to lose.
+                store::delete_transcript(id, &cwd, recorded.as_deref());
+                format!("{} ({ws})", &id.to_string()[..8])
+            })
             .collect();
         (kept, gone)
     };
     if !gone.is_empty() {
         tracing::info!(
-            "dropped {} session record(s) with no transcript to return to: {}",
+            "dropped {} session record(s) with no conversation to return to: {}",
             gone.len(),
             gone.join(", ")
         );
@@ -629,10 +638,14 @@ fn auto_resume(app: Arc<AppState>, records: Vec<store::SessionRecord>) {
                 tracing::warn!(session = %r.id, "not resumed: {} is gone", r.cwd.display());
                 continue;
             }
-            if !store::resumable(&r) {
+            // A turn, not just a file: a header-only transcript resumes into an
+            // instant exit, which used to log "auto-resumed" about a session that
+            // was already gone. `prune_ghosts` repaired the bit from disk before
+            // these records got here, so this reads it rather than the file.
+            if !r.had_a_turn {
                 tracing::warn!(
                     session = %r.id,
-                    "not resumed: no transcript on disk to resume from."
+                    "not resumed: no conversation to resume from."
                 );
                 continue;
             }
