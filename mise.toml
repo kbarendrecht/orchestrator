@@ -59,8 +59,9 @@ run = "node tools/fixture-pr.mjs"
 #   mise run e2e -- swap        # only the flows whose name matches
 #   mise run e2e -- --keep      # keep each sandbox to read afterwards
 #
-# Not in the pre-commit hook: it is ~25s and builds the daemon, where the hook is
-# ~2s. Run it before anything touching spawn, worktrees, the swap or fix-pr.
+# Not in the pre-commit hook: it is ~45s and builds the daemon, where the hook is
+# ~2s. Run it before anything touching spawn, worktrees, the swap, restart or
+# fix-pr.
 [tasks.e2e]
 description = "Drive the main user flows against a real daemon"
 dir = "{{config_root}}"

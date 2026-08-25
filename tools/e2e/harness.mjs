@@ -38,8 +38,26 @@ function freePort() {
   })
 }
 
+/** The environment with git's own variables stripped out.
+ *
+ *  Not defensive tidying — without it the suite cannot run inside a git hook at
+ *  all. Git exports `GIT_INDEX_FILE=.git/index` to a hook, **relative**, so every
+ *  git command these flows run from a sandbox resolves it against the sandbox
+ *  instead, and `git worktree add` dies with
+ *  `Unable to create '<newtree>/.git/index.lock': Not a directory` — the `.git` in
+ *  a worktree being a file, not a directory. `GIT_AUTHOR_*` and `GIT_DIR` are the
+ *  same class of hazard, so the rule is the simple one: this harness wants nothing
+ *  from the caller's git environment.
+ *
+ *  Worth knowing beyond here. `git rebase --exec` sets these too, which is the
+ *  likeliest explanation for this repo's long-standing note about a
+ *  `rebase --exec 'cargo test'` that wrote commits into the repo and moved HEAD. */
+const cleanEnv = Object.fromEntries(
+  Object.entries(process.env).filter(([k]) => !k.startsWith('GIT_')),
+)
+
 export function git(cwd, args) {
-  const r = spawnSync('git', args, { cwd, encoding: 'utf8' })
+  const r = spawnSync('git', args, { cwd, encoding: 'utf8', env: cleanEnv })
   if (r.status !== 0) {
     throw new Error(`git ${args.join(' ')} in ${cwd}\n${r.stdout}${r.stderr}`)
   }
@@ -88,6 +106,8 @@ export async function until(what, predicate, { timeout = 10_000, every = 50, con
  *   every other flow keeps reaching whatever curl the machine has.
  * @param {string} [opts.githubToken] `ORCHD_GITHUB_TOKEN`. Non-empty short-circuits
  *   the token ladder before it reaches `gh`, which would be a real account.
+ * @param {boolean} [opts.autoResume] Bring live sessions back on a restart. Off
+ *   elsewhere, since nothing else restarts the daemon.
  * @param {number} [opts.pollSeconds] The poll period. The daemon floors it at 30,
  *   and a flow drives `/api/prs/refresh` rather than waiting for it either way.
  */
@@ -97,6 +117,7 @@ export async function sandbox({
   repo = undefined,
   githubToken = '',
   pollSeconds = 3600,
+  autoResume = false,
 } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'orchd-e2e-'))
   const dirs = {
@@ -156,11 +177,15 @@ export async function sandbox({
     reviews_command: ['true'],
     main_processes: [],
     worktree_processes: [],
-    auto_resume: false,
+    // Off unless a flow asks, because it relaunches an agent per restored session
+    // and every other flow restarts nothing.
+    auto_resume: autoResume,
   }, null, 2))
 
   const env = {
-    ...process.env,
+    // The daemon shells out to git constantly, and so does the fake agent it
+    // spawns — both inherit this, so the strip has to happen here too.
+    ...cleanEnv,
     HOME: dirs.home,
     ORCHD_CONFIG_DIR: dirs.cfg,
     ORCH_E2E_DIR: root,
@@ -176,13 +201,45 @@ export async function sandbox({
   }
 
   const logPath = path.join(root, 'daemon.log')
-  const log = fs.openSync(logPath, 'a')
-  const proc = spawn(DAEMON, [], { env, stdio: ['ignore', log, log] })
 
-  const token = await until('the daemon to print its token', () => {
-    const out = fs.readFileSync(logPath, 'utf8')
-    return out.match(/token=([a-z0-9]+)/)?.[1]
-  }, { timeout: 15_000 })
+  // The daemon is startable more than once, because a restart is a flow of its own:
+  // every durable record round-trips through `sessions.json` there, and nothing else
+  // exercises `restore`, `prune_ghosts` or `auto_resume`.
+  let live = null
+  async function start() {
+    // The token is searched for *after* whatever the previous run wrote, or a
+    // restart happily reads the dead daemon's token out of the same appended log
+    // and then fails every request with a bad token instead of saying so.
+    const from = fs.existsSync(logPath) ? fs.statSync(logPath).size : 0
+    const log = fs.openSync(logPath, 'a')
+    const proc = spawn(DAEMON, [], { env, stdio: ['ignore', log, log] })
+    const token = await until('the daemon to print its token', () => {
+      const out = fs.readFileSync(logPath, 'utf8').slice(from)
+      return out.match(/token=([a-z0-9]+)/)?.[1]
+    }, { timeout: 15_000 })
+    live = { proc, log, token }
+  }
+
+  async function stop() {
+    if (!live) return
+    const { proc, log } = live
+    // SIGTERM, not SIGKILL: the daemon persists its records on the way out, and a
+    // restart that could not read them would be testing the wrong thing.
+    proc.kill('SIGTERM')
+    for (let i = 0; i < 100 && proc.exitCode === null && !proc.killed; i++) {
+      await new Promise((r) => setTimeout(r, 50))
+    }
+    if (proc.exitCode === null) proc.kill('SIGKILL')
+    fs.closeSync(log)
+    live = null
+    // The process being gone is the whole signal. `instance.pid` is deliberately
+    // *not* waited on: the daemon leaves it behind and `instance::holder` decides
+    // by asking whether the pid is alive, so a stale file is the normal case. An
+    // earlier version waited for it to disappear and paid the full timeout in
+    // every flow — 5s each, which is how a 47s suite billed 102s.
+  }
+
+  await start()
 
   const base = `http://127.0.0.1:${port}`
   /** The API, with the four things that bite when driving it by hand already
@@ -192,7 +249,8 @@ export async function sandbox({
     const res = await fetch(base + route, {
       method,
       headers: {
-        'x-orch-token': token,
+        // Read per call, not captured: a restart mints a new one.
+        'x-orch-token': live?.token,
         origin: base,
         ...(body ? { 'content-type': 'application/json' } : {}),
       },
@@ -214,10 +272,13 @@ export async function sandbox({
   return {
     ...dirs,
     port,
-    token,
     api,
     state,
     log: () => fs.readFileSync(logPath, 'utf8'),
+    agentLog: () => {
+      const p = path.join(root, 'agent.log')
+      return fs.existsSync(p) ? fs.readFileSync(p, 'utf8') : ''
+    },
 
     /** How many turns the next spawned agent takes on its own. */
     setTurns: (n) => fs.writeFileSync(path.join(root, 'turns'), String(n)),
@@ -258,11 +319,15 @@ export async function sandbox({
         return found && want.includes(found.state.state) ? found : null
       }),
 
-    async stop() {
-      proc.kill('SIGTERM')
-      await new Promise((r) => setTimeout(r, 400))
-      if (!proc.killed) proc.kill('SIGKILL')
-      fs.closeSync(log)
+    stop,
+
+    /** Stop the daemon and bring it back on the same state.
+     *
+     *  Everything durable goes through `sessions.json` here, so this is the only
+     *  way to exercise `restore`, `prune_ghosts` and `auto_resume` at all. */
+    async restart() {
+      await stop()
+      await start()
     },
 
     /** Kept on failure so there is something to read; removed otherwise. */
