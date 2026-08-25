@@ -262,6 +262,15 @@ pub struct Session {
     /// Maintained by [`Session::set_state`], because a turn starting and a turn
     /// ending are the only two things that change the answer.
     pub interrupted: bool,
+    /// Whether a turn has *ever* started in this session.
+    ///
+    /// A session that spawned and was never typed into owns a headers-only
+    /// transcript, which `claude --resume` opens and then exits — so "is there a
+    /// file" is the wrong question before a resume or a fork, and this is the right
+    /// one. Set once, when the first `Working` is entered, and never cleared: the
+    /// point is only whether the conversation ever became real. Read in place of a
+    /// per-snapshot file stat, so the answer is free on the hot path.
+    pub had_a_turn: bool,
     /// The conversation this one was cut from, if it was forked.
     ///
     /// Kept as the id rather than a flag: the fork shares every earlier turn with
@@ -298,6 +307,7 @@ impl Session {
             boundary_violations: Vec::new(),
             last_reconcile: None,
             interrupted: false,
+            had_a_turn: false,
             forked_from: None,
             pending_prompt: None,
             // Always a real one, so an empty stored token can never match an
@@ -318,7 +328,13 @@ impl Session {
         // since that is the state a resumed session comes back in and the whole
         // point is that it still owes you the rest of the turn.
         match &state {
-            State::Working => self.interrupted = true,
+            State::Working => {
+                self.interrupted = true;
+                // `Working` is only ever entered off a prompt (`UserPromptSubmit`,
+                // or the nudge that resumes a polling agent), so it is the moment a
+                // conversation stops being an empty pane. Latched, never cleared.
+                self.had_a_turn = true;
+            }
             State::YourTurn { reason, .. } if *reason != TurnReason::Ready => {
                 self.interrupted = false;
             }

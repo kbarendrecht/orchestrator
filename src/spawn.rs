@@ -155,6 +155,155 @@ pub async fn spawn_session_confirmed(
     Ok(id)
 }
 
+/// Where a relocated conversation ended up.
+#[derive(Debug, Clone, Copy)]
+pub struct Relocated {
+    pub id: SessionId,
+    /// True when the resume would not stay up and this is a *fork* instead, so the
+    /// conversation survived under a new id rather than the one it had. Worth
+    /// reporting: the caller promised a move and delivered a copy.
+    pub degraded: bool,
+}
+
+/// Move a conversation to another workspace, keeping its id.
+///
+/// A session cannot be carried across: its cwd is fixed when the pty is spawned
+/// (`PtyHandle::spawn`), so nothing can chdir a live one. A move is therefore a
+/// kill and a `--resume` at the far end — which is exactly what the id invariant
+/// buys, since Claude's session id *is* the daemon's and `--resume` resolves a
+/// conversation by id from any working directory.
+///
+/// # Why the transcript move is not the load-bearing part
+///
+/// Measured against `claude` 2.1.240: `--resume` finds a conversation by id
+/// wherever its file sits, and appends to it there. So the resume works whether or
+/// not the file moves, and [`crate::store::move_transcript`] is about keeping the
+/// filing straight (see its own note) — its failure is logged, never fatal.
+///
+/// # The fork fallback
+///
+/// A resume that finds nothing exits instantly, so this waits out a grace window
+/// before believing it. If it does die, forking is tried rather than leaving the
+/// conversation with no live session at all: a new id is worse than the one you
+/// had, and much better than nothing. Both failing leaves the source killed with
+/// its transcript intact — resumable from the rail, nothing lost.
+pub async fn relocate_session(
+    app: &Arc<AppState>,
+    id: SessionId,
+    dest_workspace: &str,
+    grace: std::time::Duration,
+) -> Result<Relocated> {
+    let dest_path = app
+        .workspace_path(dest_workspace)
+        .await
+        .with_context(|| format!("unknown workspace {dest_workspace}"))?;
+    // Read before anything moves: `spawn_session` rebuilds the record under this
+    // same id, so what the conversation *was* has to be captured now or it is
+    // overwritten by defaults.
+    let (src_cwd, src_workspace, handle, title, created_at, kind) = {
+        let inner = app.inner.read().await;
+        let s = inner
+            .sessions
+            .get(&id)
+            .with_context(|| format!("unknown session {}", &id.to_string()[..8]))?;
+        (
+            s.cwd.clone(),
+            s.workspace.clone(),
+            s.pty.clone(),
+            s.title.clone(),
+            s.created_at,
+            s.kind.clone(),
+        )
+    };
+
+    // The pty holds the transcript open, and it is the process that decides when
+    // the last turn is flushed. Waiting for it to actually be gone is what makes
+    // the move below a move of a file nobody is writing to.
+    if let Some(h) = handle {
+        let _ = h.kill();
+        h.wait().await;
+    }
+
+    // Leaving main means giving up the claim, and this is the only thing that can
+    // do it: `watch_session_exit` would, but the guard there deliberately stops a
+    // relocated session's old watcher from touching state it no longer owns — so
+    // relying on the exit would hold main forever under a session that has moved
+    // away. Found by driving a two-way swap: the incoming resume was refused with
+    // "main is occupied" by the very session on its way out.
+    if src_workspace == MAIN && dest_workspace != MAIN {
+        app.release_main(id).await;
+    }
+
+    // Best effort by construction — the resume does not depend on it.
+    match crate::store::move_transcript(id, &src_cwd, &dest_path) {
+        Ok(_) => {}
+        Err(e) => tracing::warn!(
+            session = %id,
+            "could not re-file the transcript under {}; resuming anyway: {e:#}",
+            dest_path.display()
+        ),
+    }
+
+    // Its own kind, not `Interactive`: relocating must not quietly promote an
+    // automation run into a session the guard table counts differently.
+    let resumed =
+        spawn_session_confirmed(app, dest_workspace, kind.clone(), Some(Source::Resume(id)), grace)
+            .await;
+
+    match resumed {
+        Ok(id) => {
+            restore_after_relocate(app, id, title, created_at).await;
+            Ok(Relocated { id, degraded: false })
+        }
+        Err(e) => {
+            tracing::warn!(session = %id, "the resume in {dest_workspace} did not stay up, forking instead: {e:#}");
+            let forked = spawn_session_confirmed(
+                app,
+                dest_workspace,
+                kind,
+                Some(Source::Fork(id)),
+                grace,
+            )
+            .await
+            .with_context(|| {
+                format!(
+                    "neither resuming nor forking {} into {dest_workspace} stayed up; \
+                     it is closed but its conversation is intact and resumable",
+                    &id.to_string()[..8]
+                )
+            })?;
+            restore_after_relocate(app, forked, title, created_at).await;
+            Ok(Relocated { id: forked, degraded: true })
+        }
+    }
+}
+
+/// Put back what `spawn_session` reset, and re-find the transcript.
+///
+/// A resume rebuilds the record from [`Session::new`] defaults, so a relocated
+/// session would otherwise lose its title until the next tail read and jump to the
+/// top of the rail with a fresh `created_at` — which also changes which session a
+/// later swap reads as the newest.
+async fn restore_after_relocate(
+    app: &Arc<AppState>,
+    id: SessionId,
+    title: Option<String>,
+    created_at: std::time::SystemTime,
+) {
+    let mut inner = app.inner.write().await;
+    if let Some(s) = inner.sessions.get_mut(&id) {
+        // A fork has its own title to earn, but it opens on the same conversation,
+        // so showing the old one beats showing the workspace name.
+        if s.title.is_none() {
+            s.title = title;
+        }
+        s.created_at = created_at;
+        // Wherever the file ended up — the move may have been skipped, and Claude
+        // may have re-filed it. This is the same self-heal the exit path does.
+        crate::store::pin_transcript(s.id, &s.cwd, &mut s.transcript_path);
+    }
+}
+
 /// Spawn an interactive Claude session in an existing workspace.
 ///
 /// The daemon spawns every session and never adopts a shell-started one. That
@@ -218,19 +367,31 @@ pub async fn spawn_session(
     // Read before the insert below replaces it: a resume keeps the id, so the
     // record of what the conversation was doing is about to be overwritten by the
     // session that continues it.
-    let interrupted = match resume {
-        Some(Source::Resume(prev)) => app
-            .inner
-            .read()
-            .await
-            .sessions
-            .get(&prev)
-            .is_some_and(|s| s.interrupted),
-        _ => false,
+    // A resume comes back at an empty prompt, so whether the turn behind it was
+    // interrupted is the one thing it cannot re-derive. A fork starts a fresh
+    // direction, so it is never interrupted. `had_a_turn`, though, carries across
+    // both: a resumed conversation already had its turns, and a fork replays the
+    // parent's — so both open on a real conversation, not an empty pane, and
+    // reading it fresh would say otherwise until the next `Working`.
+    let (interrupted, had_a_turn) = match resume {
+        Some(Source::Resume(prev)) => {
+            let inner = app.inner.read().await;
+            let prev = inner.sessions.get(&prev);
+            (
+                prev.is_some_and(|s| s.interrupted),
+                prev.is_some_and(|s| s.had_a_turn),
+            )
+        }
+        Some(Source::Fork(prev)) => (
+            false,
+            app.inner.read().await.sessions.get(&prev).is_some_and(|s| s.had_a_turn),
+        ),
+        None => (false, false),
     };
 
     let mut session = Session::new(id, workspace.to_string(), path.clone(), kind);
     session.interrupted = interrupted;
+    session.had_a_turn = had_a_turn;
     if let Some(Source::Fork(prev)) = resume {
         session.forked_from = Some(prev);
     }
@@ -386,6 +547,11 @@ pub async fn spawn_worktree_session(
 
     let mut session = Session::new(id, workspace, cwd, Kind::Interactive);
     session.forked_from = fork;
+    // A fork opens on the parent's replayed conversation, so it has had a turn from
+    // birth — the same as the fork path in `spawn_session`. Without this its own row
+    // would offer no Fork and no nudge until it was first typed into, the very
+    // false negative `had_a_turn` exists to remove.
+    session.had_a_turn = fork.is_some();
     session.pty = Some(spawned.handle.clone());
     session.pid = spawned.pid;
     {
@@ -677,6 +843,16 @@ async fn refuse_if_main_is_on(app: &Arc<AppState>, pr: u64, head_ref: &str) -> R
 /// still open there is someone still using it. Silence is the right answer to
 /// both: nothing was promised, and the pre-flight above explains it if a PR flow
 /// later needs the branch.
+/// Whether main's current branch is one the daemon parked there for a PR, and so
+/// safe to return to base when the last session closes.
+///
+/// Split out from [`park_main`] so the rule can be tested without a git checkout or
+/// an `AppState`. An empty set — no poll yet, or none matched — means "not ours",
+/// which keeps park to the one case it is for.
+fn park_is_ours(current: &str, head_refs: &std::collections::HashSet<String>) -> bool {
+    head_refs.contains(current)
+}
+
 async fn park_main(app: &Arc<AppState>) {
     // A restart is not "you are done with main". Auto-resume brings that session
     // back expecting the branch it was working on, and moving the checkout here
@@ -687,12 +863,16 @@ async fn park_main(app: &Arc<AppState>) {
     if !app.live_sessions_in(MAIN).await.is_empty() {
         return;
     }
-    // A swap put that branch in main on purpose. Parking is for placement nobody
-    // chose to keep; undoing a deliberate one would be the two features fighting.
-    if let Some(with) = app.swapped_with_main.read().await.clone() {
-        tracing::debug!(%with, "main holds a swapped branch; not parking it");
-        return;
-    }
+    // Only a branch the daemon parked here *for a PR* is ours to return to base.
+    // Anything else — a swapped-in worktree branch, a hand-checkout — is a
+    // deliberate placement, and parking it would be two features fighting. The set
+    // is the current poll's head refs, so this survives a restart where an
+    // in-memory "a swap happened" flag would not; `open_pr(place=main)` is the only
+    // thing that puts a PR head in main, so those refs are exactly the cleanup set.
+    let head_refs: std::collections::HashSet<String> = {
+        let inner = app.inner.read().await;
+        inner.prs.iter().map(|p| p.head_ref.clone()).collect()
+    };
     let path = app.cfg.main_checkout.clone();
     let base_ref = app.cfg.upstream_ref.clone();
     // Resolved, not the raw branch part: the default base is `origin/HEAD`, and
@@ -701,6 +881,13 @@ async fn park_main(app: &Arc<AppState>) {
     // at debug rather than failing inside the checkout.
     let exclude = app.cfg.worktrees_subdir_str();
     let moved = tokio::task::spawn_blocking(move || {
+        // The branch check is inside the blocking closure because reading it is a
+        // git call. Not a PR head → leave main exactly as it is.
+        let current = crate::git::current_branch(&path).ok()?;
+        if !park_is_ours(&current, &head_refs) {
+            tracing::debug!(%current, "main is not on a PR head; not parking it");
+            return None;
+        }
         let base = crate::git::base_checkout_branch(&path, &base_ref)?;
         crate::git::park_on_base(&path, &base, Some(&exclude)).ok().flatten()
     })
@@ -848,8 +1035,25 @@ fn watch_session_exit(app: Arc<AppState>, id: SessionId, handle: Arc<PtyHandle>)
         // What this session *was* decides whether anything else has to be settled
         // now it is over. Read while the lock is already held; acted on below.
         let mut fix_pr_for: Option<u64> = None;
+        // A turnless interactive session leaves nothing to come back to, so rather
+        // than archive an empty row it is forgotten outright — and its headers-only
+        // transcript is deleted here, outside the lock. `(cwd, recorded)` is what
+        // finds the file.
+        let mut forget: Option<(PathBuf, Option<PathBuf>)> = None;
         let workspace = {
             let mut inner = app.inner.write().await;
+            // A relocation resumes under the *same id*, so by the time this wakes the
+            // record may already describe a live session at another path — one that
+            // installed its own pty and its own watcher. Settling it here would flip
+            // it to `Exited` and, because `release_main` keys on the id, hand main's
+            // claim back out from under it. The pty is the identity that distinguishes
+            // them: only the watcher whose handle is still the session's own may
+            // decide the session is over.
+            if let Some(cur) = inner.sessions.get(&id).and_then(|s| s.pty.as_ref()) {
+                if !Arc::ptr_eq(cur, &handle) {
+                    return;
+                }
+            }
             match inner.sessions.get_mut(&id) {
                 Some(s) => {
                     if s.state.is_live() {
@@ -865,11 +1069,25 @@ fn watch_session_exit(app: Arc<AppState>, id: SessionId, handle: Arc<PtyHandle>)
                     // Claude Code reported and never wrote to, and once it is
                     // archived nothing else goes looking.
                     crate::store::pin_transcript(s.id, &s.cwd, &mut s.transcript_path);
-                    Some(s.workspace.clone())
+                    let ws = s.workspace.clone();
+                    // An interactive session that never had a turn is an empty pane,
+                    // not a conversation: keeping its row and header file would only
+                    // offer a resume that exits instantly and a fork that dies in a
+                    // fresh worktree. Automation is exempt — a run that never got
+                    // going is tracked as `Exhausted`, not deleted (§8).
+                    if matches!(s.kind, Kind::Interactive) && !s.had_a_turn {
+                        forget = Some((s.cwd.clone(), s.transcript_path.clone()));
+                        inner.sessions.remove(&id);
+                    }
+                    Some(ws)
                 }
                 None => None,
             }
         };
+        if let Some((cwd, recorded)) = forget {
+            crate::store::delete_transcript(id, &cwd, recorded.as_deref());
+            tracing::info!(session = %id, "closed before its first turn; forgotten");
+        }
         // A fix run's verdict belongs to `fix_pr`, and this is the only place that
         // learns the run is over.
         if let Some(pr) = fix_pr_for {
@@ -1165,6 +1383,84 @@ pub fn worktree_name_of(path: &PathBuf, worktrees_dir: &PathBuf) -> Option<Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The race a relocation would otherwise lose.
+    ///
+    /// Relocating resumes under the *same id*, so the record the old watcher wakes
+    /// up to find is a **live session at the far end** — and settling it there would
+    /// mark it exited and, because `release_main` keys on the id, hand main's claim
+    /// straight back out from under it. Two real ptys, because the pty is the
+    /// identity that tells the two apart and a mock would be asserting the fix
+    /// against itself.
+    #[tokio::test]
+    async fn a_stale_watcher_does_not_settle_the_session_that_replaced_it() {
+        use crate::config::Config;
+        use crate::pty::PtyHandle;
+        use crate::state::AppState;
+
+        let dir = std::env::temp_dir().join(format!("orchd-stale-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cfg: Config = serde_json::from_str(&format!(
+            r#"{{"main_checkout":"{}","port":7791}}"#,
+            dir.display()
+        ))
+        .unwrap();
+        let app = AppState::new(cfg, "t".into(), crate::window::Chrome::None);
+
+        let pty = |()| {
+            PtyHandle::spawn(&["cat".to_string()], std::path::Path::new("/tmp"), &[], &[], (24, 80))
+                .unwrap()
+        };
+        let (old, new) = (pty(()), pty(()));
+
+        // The session as the relocation leaves it: same id, holding the *new* pty,
+        // live, and owning main.
+        let id = Uuid::new_v4();
+        {
+            let mut inner = app.inner.write().await;
+            let mut s = Session::new(id, MAIN.to_string(), dir.clone(), Kind::Interactive);
+            s.pty = Some(new.handle.clone());
+            s.set_state(State::Working);
+            inner.sessions.insert(id, s);
+        }
+        app.claim_main(id).await.unwrap();
+
+        // The watcher belonging to the pty that was killed on the way out.
+        watch_session_exit(app.clone(), id, old.handle.clone());
+        let _ = old.handle.kill();
+
+        // Long enough that a watcher which was going to act has acted.
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+        let inner = app.inner.read().await;
+        let s = inner.sessions.get(&id).expect("the session is still there");
+        assert!(s.state.is_live(), "a stale watcher exited the live session: {:?}", s.state);
+        assert_eq!(
+            inner.workspaces.get(MAIN).and_then(|w| w.occupant),
+            Some(id),
+            "a stale watcher released the main claim the resume had taken"
+        );
+        drop(inner);
+
+        let _ = new.handle.kill();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Park returns main to base only for a branch it put there for a PR. A
+    /// swapped-in worktree branch is a deliberate placement, and an empty poll (no
+    /// GitHub yet) is not a licence to park anything.
+    #[test]
+    fn park_only_reclaims_a_branch_from_the_current_poll() {
+        let heads: std::collections::HashSet<String> =
+            ["feature/x".to_string(), "fix/y".to_string()].into_iter().collect();
+        assert!(park_is_ours("feature/x", &heads), "a PR head main was opened onto");
+        assert!(!park_is_ours("worktree-foo", &heads), "a swapped-in worktree branch");
+        assert!(!park_is_ours("develop", &heads), "the base branch itself");
+        assert!(
+            !park_is_ours("feature/x", &std::collections::HashSet::new()),
+            "no poll yet is not a licence to park"
+        );
+    }
 
     /// The two hooks in order, and the second surviving the first.
     ///

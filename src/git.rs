@@ -1353,6 +1353,17 @@ mod tests {
     // share with the blame tests stayed here, so they reach across for `Amend`.
     use crate::review_commit::*;
 
+    /// Whether git refused because the branch is checked out in another tree.
+    ///
+    /// The *refusal* is the invariant two tests here are built on; its wording is
+    /// not. Git says "already used by worktree at" from 2.35 and "already checked
+    /// out at" before it, so matching one string made both tests fail on an older
+    /// git for a reason that had nothing to do with the code — which is the whole
+    /// failure mode a test is supposed to rule out.
+    fn refused_as_already_checked_out(err: &str) -> bool {
+        err.contains("already used by worktree") || err.contains("already checked out")
+    }
+
     /// The assumption `spawn::refuse_if_main_is_on` exists for: git will not check
     /// one branch out into two trees. Pinned here because the guard's whole value
     /// is turning this refusal into a sentence that says what to do, and a git
@@ -1379,7 +1390,7 @@ mod tests {
         let err = worktree_add_existing(&main, &dir.join("pr-1"), "feature/x")
             .expect_err("git must refuse a second checkout of one branch");
         assert!(
-            format!("{err:#}").contains("already used by worktree"),
+            refused_as_already_checked_out(&format!("{err:#}")),
             "unexpected refusal: {err:#}"
         );
         let _ = std::fs::remove_dir_all(&dir);
@@ -1492,7 +1503,7 @@ mod tests {
         let naive = git(&main, &["switch", "feature/b"])
             .expect_err("git must refuse a branch already checked out");
         assert!(
-            format!("{naive:#}").contains("already used by worktree"),
+            refused_as_already_checked_out(&format!("{naive:#}")),
             "unexpected refusal: {naive:#}"
         );
 

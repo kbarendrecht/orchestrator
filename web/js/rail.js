@@ -479,8 +479,9 @@ function sessionRow(s, w) {
 /** Put this worktree's branch in main, and main's here.
  *
  *  Main is where the managed processes and the dev stack live, so work that needs
- *  them has to be *in* main. Both paths stay put — only what each has checked out
- *  is exchanged — so every transcript and archive entry survives untouched.
+ *  them has to be *in* main. Both directories stay put — only what each has
+ *  checked out is exchanged — and the conversations follow their branches in both
+ *  directions, keeping their ids.
  *
  *  Confirmed rather than immediate: every file under two trees changes, and the
  *  daemon's refusals (mid-turn agent, dirty tree, stopped rebase) are about what
@@ -489,19 +490,30 @@ async function swapWithMain(wsId) {
   if (!confirm(
     `Swap branches between main and ${wsId}?\n\n`
     + `main takes this worktree's branch, and this worktree takes main's. `
-    + `Uncommitted changes travel with their branch, and this conversation `
-    + `continues in main. The session here closes — its history stays and is `
-    + `resumable, so nothing is lost.`
+    + `Uncommitted changes travel with their branch. Each conversation follows `
+    + `its branch — this one moves into main, and main's moves here — keeping its `
+    + `history and its place in the rail.`
   )) return;
   try {
     const r = await call(`/api/workspace/${encodeURIComponent(wsId)}/swap-main`);
-    // Select the fork, so the rail lands you in main where the branch now is —
-    // which is the whole point of pressing this.
-    if (r.session) setPendingSelect(r.session);
+    // A relocated session keeps its id, so the dead terminal is still in `terms`
+    // under the key the new pty wants and `openTerm` would hand back the corpse —
+    // the same reason resume closes it. Both directions, since both were respawned.
+    for (const dir of [r.into_main, r.into_worktree]) {
+      if (dir && dir.session) Term.close(`session:${dir.session}`);
+    }
+    // Land in main, where the branch now is — the whole point of pressing this.
+    if (r.select) setPendingSelect(r.select);
     toast(`main is on ${r.main}; ${wsId} is on ${r.worktree}`);
-    // The branches moved even if the conversation could not follow, so these are
+    // The branches moved even if a conversation could not follow, so these are
     // second lines rather than errors over the top of a success.
-    if (r.session_error) toast(`the branches swapped, but ${r.session_error}`, true);
+    for (const [dir, where] of [[r.into_main, 'into main'], [r.into_worktree, `into ${wsId}`]]) {
+      if (!dir) continue;
+      if (dir.error) toast(`the branches swapped, but ${dir.error}`, true);
+      // A fork, not the move that was promised: the id changed, so there is a new
+      // row rather than the one you were looking at.
+      else if (dir.degraded) toast(`the conversation ${where} would not resume, so it was forked instead`, true);
+    }
     // Untracked files cannot be carried, so say which stayed rather than leaving
     // you to notice that half the work did not travel.
     if (r.untracked_left && r.untracked_left.length) {

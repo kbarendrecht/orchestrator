@@ -273,9 +273,10 @@ wants_attention: boolean,
  */
 waiting_ms: number, created_ms: number, alive: boolean, dirty_count: number, boundary_violations: Array<string>, resumable: boolean, 
 /**
- * Whether there is a conversation on disk to come back to. Only asked of
- * sessions that have finished, so the cost is one stat per archived row
- * rather than one per session on every snapshot.
+ * Whether a turn ever happened here — the SPA gates Fork and the nudge on it,
+ * and lists an archived row only when it is true. Named for the file it used to
+ * stat; it is now the `had_a_turn` bit, which answers the same question the
+ * callers actually meant without a per-snapshot read.
  */
 has_transcript: boolean, 
 /**

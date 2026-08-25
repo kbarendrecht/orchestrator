@@ -73,19 +73,6 @@ pub struct AppState {
     /// WebSocket and every mutating endpoint (§12).
     pub token: String,
     pub inner: RwLock<Inner>,
-    /// The worktree main currently holds the branch of, if a swap put it there.
-    ///
-    /// Exists to stop two features undoing each other. `park_main` returns main to
-    /// its base branch when the last session there closes, which is right for
-    /// *incidental* placement — "open PR in main" leaves main on a branch nobody
-    /// chose to keep. A swap is the opposite: you asked for that branch to be in
-    /// main, and having it silently swapped back when you close the pane would be
-    /// the feature fighting itself.
-    ///
-    /// Cleared by swapping back, so the pair is symmetric. Deliberately *not*
-    /// persisted: on a restart main is wherever it was left, and the daemon
-    /// re-reads that from git rather than remembering an intention.
-    pub swapped_with_main: RwLock<Option<String>>,
     /// Set the moment shutdown begins.
     ///
     /// A session's exit watcher cannot otherwise tell "you closed this pane" from
@@ -318,7 +305,6 @@ impl AppState {
                 update: None,
                 agent_update: None,
             }),
-            swapped_with_main: RwLock::new(None),
             shutting_down: std::sync::atomic::AtomicBool::new(false),
             events,
             chrome,
@@ -919,9 +905,10 @@ pub struct SessionView {
     pub dirty_count: usize,
     pub boundary_violations: Vec<String>,
     pub resumable: bool,
-    /// Whether there is a conversation on disk to come back to. Only asked of
-    /// sessions that have finished, so the cost is one stat per archived row
-    /// rather than one per session on every snapshot.
+    /// Whether a turn ever happened here — the SPA gates Fork and the nudge on it,
+    /// and lists an archived row only when it is true. Named for the file it used to
+    /// stat; it is now the `had_a_turn` bit, which answers the same question the
+    /// callers actually meant without a per-snapshot read.
     pub has_transcript: bool,
     /// What this session is blocked on, waiting for you. The overlay renders it;
     /// everything else ignores it.
@@ -958,16 +945,12 @@ impl SessionView {
             alive: s.pty.as_ref().map(|h| h.is_alive()).unwrap_or(false),
             dirty_count: s.dirty_paths.len(),
             boundary_violations: s.boundary_violations.clone(),
-            // Just the file question. It used to be ANDed with "and it has
-            // finished", which the one caller checks for itself anyway, and a
-            // live session needs the honest answer too: forking one that has
-            // not had a turn yet is offering something Claude answers with "no
-            // conversation found".
-            has_transcript: crate::store::transcript_exists(
-                s.id,
-                &s.cwd,
-                s.transcript_path.as_deref(),
-            ),
+            // Whether a turn ever happened, not whether a file exists — forking or
+            // resuming a session that never had one offers something Claude answers
+            // with "no conversation found". Read straight off the session rather
+            // than stat'ing the transcript, so it costs nothing on a hot path that
+            // runs for every session on every notify.
+            has_transcript: s.had_a_turn,
             resumable: matches!(s.recovery, Some(ArchiveState::Recoverable { .. }) | None)
                 && !matches!(s.recovery, Some(ArchiveState::TranscriptOnly)),
             interaction: s.interaction.clone(),

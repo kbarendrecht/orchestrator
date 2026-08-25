@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
@@ -45,6 +45,13 @@ pub struct SessionRecord {
     /// conversation that was interrupted from one that was done.
     #[serde(default)]
     pub interrupted: bool,
+    /// Whether a turn ever started — see [`Session::had_a_turn`]. Persisted so a
+    /// restart keeps the difference between an empty pane and a real conversation
+    /// without re-reading every transcript. A record written before this field
+    /// existed defaults to `false` and is repaired once in [`prune_ghosts`], where
+    /// the file is already being read.
+    #[serde(default)]
+    pub had_a_turn: bool,
 }
 
 impl SessionRecord {
@@ -64,6 +71,7 @@ impl SessionRecord {
             was_live: s.state.is_live(),
             forked_from: s.forked_from,
             interrupted: s.interrupted,
+            had_a_turn: s.had_a_turn,
         }
     }
 
@@ -81,6 +89,7 @@ impl SessionRecord {
         s.pid = self.pid;
         s.forked_from = self.forked_from;
         s.interrupted = self.interrupted;
+        s.had_a_turn = self.had_a_turn;
         s.state = State::Archived { resumable };
         s
     }
@@ -293,18 +302,30 @@ pub fn prune_ghosts(mut records: Vec<SessionRecord>) -> (Vec<SessionRecord>, usi
        written back correct rather than re-hunted on every start. */
     for r in &mut records {
         pin_transcript(r.id, &r.cwd, &mut r.transcript_path);
+        // Repair a record written before `had_a_turn` existed: it defaults to
+        // `false`, but the file on disk knows. Done here because this is the one
+        // place already paying for a read per record, and writing it back means the
+        // question is answered from the field forever after.
+        if !r.had_a_turn && has_conversation(r.id, &r.cwd, r.transcript_path.as_deref()) {
+            r.had_a_turn = true;
+        }
     }
     let kept: Vec<SessionRecord> = records
         .into_iter()
         .filter(|r| {
-            // `was_live` outranks the transcript: this is a record `auto_resume`
-            // is about to relaunch, so it is interrupted rather than archived and
-            // dropping it would remove a session from under the thing bringing it
-            // back. Measured — the two records here with no transcript at all came
-            // back as live rows in the rail, which is why the first version's
-            // "no transcript, therefore dead" was wrong about them.
+            // `was_live` outranks everything: this is a record `auto_resume` is
+            // about to relaunch, so dropping it would remove a session from under
+            // the thing bringing it back. Measured — the two records here with no
+            // transcript at all came back as live rows in the rail.
+            //
+            // Otherwise the test is `had_a_turn`, not "a file exists": a session
+            // opened and never typed into owns a headers-only `.jsonl`, and keeping
+            // it only litters the archive with a row that resumes into an instant
+            // exit. That is the tightening — the file-exists clause used to keep
+            // exactly those. `had_a_turn` was repaired from disk just above, so a
+            // real conversation whose bit predates the field still counts.
             r.was_live
-                || transcript_exists(r.id, &r.cwd, r.transcript_path.as_deref())
+                || r.had_a_turn
                 || r.archived_transcript.as_deref().is_some_and(Path::exists)
         })
         .collect();
@@ -373,32 +394,51 @@ mod tests {
                 was_live: false,
                 forked_from: None,
                 interrupted: false,
+                had_a_turn: false,
             }
         };
 
-        let live_transcript = dir.join("live.jsonl");
-        std::fs::write(&live_transcript, "{}\n").unwrap();
+        // A real conversation: the file holds a user turn, so `prune_ghosts` repairs
+        // `had_a_turn` from disk and keeps it even though the record predates the bit.
+        let real = dir.join("real.jsonl");
+        std::fs::write(&real, "{\"type\":\"user\",\"message\":\"hi\"}\n").unwrap();
+        // A headers-only file: a session opened and never typed into. This is the
+        // ghost the `had_a_turn` sweep exists to drop — the old file-exists check
+        // kept it, and it resumed into an instant exit.
+        let headers = dir.join("headers.jsonl");
+        std::fs::write(&headers, "{\"type\":\"summary\"}\n").unwrap();
         let archived_copy = dir.join("archived.jsonl");
         std::fs::write(&archived_copy, "{}\n").unwrap();
 
         let records = vec![
-            record("has-transcript", Some(live_transcript.clone()), None),
+            record("real-conversation", Some(real.clone()), None),
+            // The bit already set, no file needed: a record written since the field
+            // existed carries its own answer.
+            SessionRecord { had_a_turn: true, ..record("had-a-turn", None, None) },
             // The archive is the *other* place a conversation can be: teardown
             // copies it out and the original may be pruned by Claude Code.
             record("has-archived-copy", None, Some(archived_copy.clone())),
+            // A file, but no turn in it — dropped now, kept before.
+            record("headers-only", Some(headers.clone()), None),
             // Recorded paths that no longer resolve are the same as none.
             record("dangling-paths", Some(dir.join("gone.jsonl")), Some(dir.join("gone2.jsonl"))),
             record("ghost", None, None),
-            // No transcript either, but `auto_resume` is about to relaunch it —
-            // interrupted, not archived. Dropping this one removed a session from
+            // No transcript either, but `auto_resume` is about to relaunch it, so it
+            // outranks the turn check. Dropping this one removed a session from
             // under the thing bringing it back, which is what the first version did.
             SessionRecord { was_live: true, ..record("was-live", None, None) },
         ];
 
         let (kept, dropped) = prune_ghosts(records);
-        assert_eq!(dropped, 2, "the ghost and the dangling one, and nothing else");
         let names: Vec<&str> = kept.iter().map(|r| r.workspace.as_str()).collect();
-        assert_eq!(names, vec!["has-transcript", "has-archived-copy", "was-live"]);
+        assert_eq!(
+            names,
+            vec!["real-conversation", "had-a-turn", "has-archived-copy", "was-live"]
+        );
+        assert_eq!(dropped, 3, "headers-only, dangling, and the pure ghost");
+        // The repair is written back, so the survivor stops being re-derived from
+        // the file on every start.
+        assert!(kept.iter().find(|r| r.workspace == "real-conversation").unwrap().had_a_turn);
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -563,6 +603,45 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A relocated session's transcript is re-filed under the tree it now runs in.
+    ///
+    /// A move rather than a copy, deliberately: two files under one id is the state
+    /// where `find_transcript` can answer with the stale one, and the swap would
+    /// leave a conversation appearing to live in both trees at once.
+    #[test]
+    fn a_relocated_transcript_moves_rather_than_being_copied() {
+        let root = std::env::temp_dir().join(format!("orchd-move-{}", std::process::id()));
+        let (from, to) = (root.join("slug-worktree"), root.join("slug-main"));
+        std::fs::create_dir_all(&from).unwrap();
+        let id = uuid::Uuid::new_v4();
+        let src = from.join(format!("{id}.jsonl"));
+        std::fs::write(&src, "{\"type\":\"user\",\"message\":\"hi\"}\n").unwrap();
+
+        // The destination slug does not exist yet: main's own directory is only
+        // created when something is filed under it.
+        let dest = to.join(format!("{id}.jsonl"));
+        assert_eq!(relocate_file(&src, &dest).unwrap(), dest);
+        assert!(dest.exists(), "the transcript arrived");
+        assert!(!src.exists(), "and did not stay behind");
+        assert_eq!(std::fs::read_to_string(&dest).unwrap(), "{\"type\":\"user\",\"message\":\"hi\"}\n");
+
+        // Idempotent, because a session resumed in the tree it was already in asks
+        // for a move to where it already is.
+        assert_eq!(relocate_file(&dest, &dest).unwrap(), dest);
+        assert!(dest.exists());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A session that never had a turn has no file, and that is not a failure —
+    /// it is the ordinary case for a pane opened and swapped away from.
+    #[test]
+    fn moving_a_transcript_that_does_not_exist_is_not_an_error() {
+        let id = uuid::Uuid::new_v4();
+        let moved = move_transcript(id, Path::new("/nonexistent/a"), Path::new("/nonexistent/b"));
+        assert!(matches!(moved, Ok(None)), "{moved:?}");
+    }
+
     /// Without this the flag dies with the daemon, and every session comes back
     /// looking equally unfinished — which is the bug it exists to fix.
     #[test]
@@ -581,6 +660,32 @@ mod tests {
             reason: TurnReason::TurnComplete,
         });
         assert!(!SessionRecord::of(&s).restore().interrupted);
+    }
+
+    /// The bit that separates an empty pane from a conversation: set on the first
+    /// `Working`, never cleared, and carried across a restart so the archive does
+    /// not have to re-read every transcript to tell them apart.
+    #[test]
+    fn had_a_turn_latches_on_the_first_working_and_survives_the_record() {
+        let mut s = Session::new(
+            uuid::Uuid::new_v4(),
+            "wt".into(),
+            Path::new("/tmp").to_path_buf(),
+            Kind::Interactive,
+        );
+        assert!(!s.had_a_turn, "a fresh session has had none");
+
+        s.set_state(State::Working);
+        assert!(s.had_a_turn, "a turn started");
+        assert!(SessionRecord::of(&s).restore().had_a_turn, "and survives the record");
+
+        // Finishing the turn does not un-set it: the question is whether one ever
+        // happened, not whether one is happening now.
+        s.set_state(State::YourTurn {
+            since: std::time::SystemTime::now(),
+            reason: TurnReason::TurnComplete,
+        });
+        assert!(s.had_a_turn);
     }
 
     #[test]
@@ -663,15 +768,6 @@ mod tests {
             }
         );
     }
-}
-
-/// Whether there is a transcript to resume this session from.
-///
-/// `claude --resume <id>` reads `~/.claude/projects/<cwd-slug>/<id>.jsonl`. A
-/// session killed before its first turn never gets one, and resuming from a
-/// missing file would just open an empty session under an old name.
-pub fn resumable(record: &SessionRecord) -> bool {
-    transcript_exists(record.id, &record.cwd, record.transcript_path.as_deref())
 }
 
 /// Whether there is a conversation here, not merely a file.
@@ -771,6 +867,80 @@ pub fn pin_transcript(id: uuid::Uuid, cwd: &Path, recorded: &mut Option<PathBuf>
     if let Some(found) = find_transcript(id) {
         *recorded = Some(found);
     }
+}
+
+/// Re-file a session's transcript under the slug of the directory it now runs in.
+///
+/// For a relocated session — one killed in one tree and resumed in another under
+/// the same id, which is how the swap moves a conversation. `--resume` does not
+/// need this: it was measured against `claude` 2.1.240, and it resolves a
+/// conversation by **id wherever the file sits**, appending to whatever location it
+/// finds. Resuming from a second directory with the file left behind continues the
+/// conversation and keeps writing to the *original* slug.
+///
+/// So this is about filing, not about survival, and that is why its failure is not
+/// fatal to a move. What it buys is the invariant every slug-based lookup here
+/// assumes — a session's transcript lives under its own cwd's slug. Left unmoved,
+/// [`transcript_file`]'s cheap path is wrong for the rest of the session's life and
+/// only the recorded path or a [`find_transcript`] scan saves it.
+///
+/// `Ok(None)` means there was nothing to move, which is the ordinary case for a
+/// session that never had a turn.
+pub fn move_transcript(id: uuid::Uuid, from: &Path, to: &Path) -> Result<Option<PathBuf>> {
+    let Some(src) = transcript_file(id, from, None) else {
+        return Ok(None);
+    };
+    let dir = crate::config::transcript_dir_for(to)?;
+    relocate_file(&src, &dir.join(format!("{id}.jsonl"))).map(Some)
+}
+
+/// Delete a session's transcript file, wherever it sits.
+///
+/// For a turnless session being dropped rather than archived: the headers-only
+/// file has nothing in it worth keeping, and leaving it lets a later
+/// [`find_transcript`] scan hand it back. Best effort — a missing file is the goal,
+/// not an error — and it reports whether it removed anything, only for the log.
+///
+/// The recorded path is preferred, then the cwd slug, then the id scan, so it
+/// finds the file even when a `--worktree` session filed it under main's slug.
+pub fn delete_transcript(id: uuid::Uuid, cwd: &Path, recorded: Option<&Path>) -> bool {
+    let Some(path) = transcript_file(id, cwd, recorded).or_else(|| find_transcript(id)) else {
+        return false;
+    };
+    match std::fs::remove_file(&path) {
+        Ok(()) => true,
+        Err(e) => {
+            tracing::warn!("could not remove transcript {}: {e}", path.display());
+            false
+        }
+    }
+}
+
+/// The filesystem half of [`move_transcript`], split out for the same reason
+/// [`crate::config::transcript_slug`] is: both ends of the real call are slugs
+/// under `$HOME`, and a test that set `HOME` to reach them would change it under
+/// every other test in the process.
+fn relocate_file(src: &Path, dest: &Path) -> Result<PathBuf> {
+    // Caught before the rename, which would otherwise be a rename onto itself: a
+    // session resumed in the tree it was already in moves nowhere.
+    if src == dest {
+        return Ok(dest.to_path_buf());
+    }
+    if let Some(dir) = dest.parent() {
+        std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    }
+    // Both slugs live under `~/.claude/projects`, so this is normally one inode
+    // moving inside a directory. The copy is for the case where it is not — a `HOME`
+    // that spans a mount gives `EXDEV`, which no amount of retrying fixes.
+    if std::fs::rename(src, dest).is_err() {
+        std::fs::copy(src, dest)
+            .with_context(|| format!("copying {} to {}", src.display(), dest.display()))?;
+        // Only once the copy is real. Removing the source first would put the one
+        // failure that loses the conversation into the path that exists to keep it.
+        std::fs::remove_file(src)
+            .with_context(|| format!("removing {} after copying it", src.display()))?;
+    }
+    Ok(dest.to_path_buf())
 }
 
 /// How much of the transcript's head to read looking for a first turn. The
