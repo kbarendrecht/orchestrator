@@ -486,6 +486,12 @@ function sessionRow(s, w) {
       s.workspace !== snap.workspaces.find((x) => x.is_main)?.id && !pending(s)
         ? () => swapWithMain(s.workspace)
         : null],
+    // The other side of that coin, and so only on a main row: out of the shared
+    // checkout into a tree of its own.
+    ['move out of main', null,
+      s.workspace === snap.workspaces.find((x) => x.is_main)?.id
+        ? () => moveOutOfMain(s)
+        : null],
     ['close', 'bad', s.alive ? () => closeSession(s.id) : null],
     ['delete', 'bad', () => deleteSession(s)],
   ]);
@@ -516,6 +522,46 @@ async function rewindSession(s) {
   try {
     await call(`/api/session/${s.id}/rewind`);
     toast('opened the rewind picker — pick a point in the pane');
+  } catch (e) {
+    toast(e.message, true);
+  }
+}
+
+/** Move a session out of main, into a worktree of its own.
+ *
+ *  The swap's missing direction: a swap needs a second branch to exchange, and
+ *  this has none — you started something in main, it turned into real work, and
+ *  main should be free again. The branch gets a tree named after it, uncommitted
+ *  changes travel with it, main goes back to base, and the conversation follows
+ *  keeping its id and its place in the rail.
+ *
+ *  Confirmed for the same reason the swap is: every file under main changes, and
+ *  the daemon's refusals are about what it can see, not about whether you meant
+ *  it. */
+async function moveOutOfMain(s) {
+  if (!confirm(
+    'Move this session out of main?\n\n'
+    + 'Its branch gets a worktree of its own and main goes back to its base branch \u2014 '
+    + 'or, if main is already on base, the work gets a branch cut for it and main stays put. '
+    + 'Uncommitted changes travel; untracked files stay in main. '
+    + 'The conversation moves too, keeping its history.'
+  )) return;
+  try {
+    const r = await call(`/api/session/${s.id}/out-of-main`);
+    // A relocated session keeps its id, so the dead terminal is still in `terms`
+    // under the key the new pty wants — the same reason the swap and resume close it.
+    if (r.session && r.session.session) Term.close(`session:${r.session.session}`);
+    if (r.session && r.session.session) setPendingSelect(r.session.session);
+    toast(r.created
+      ? `cut ${r.branch} in ${r.workspace}; main is still on ${r.main}`
+      : `${r.branch} is in ${r.workspace}; main is on ${r.main}`);
+    // The branch moved even if the conversation could not follow, so these are
+    // second lines rather than errors over the top of a success.
+    if (r.wip_error) toast(`the branch moved, but ${r.wip_error}`, true);
+    if (r.session && r.session.error) toast(`the branch moved, but ${r.session.error}`, true);
+    else if (r.session && r.session.degraded) {
+      toast('the conversation would not resume there, so it was forked instead', true);
+    }
   } catch (e) {
     toast(e.message, true);
   }

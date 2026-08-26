@@ -1675,6 +1675,184 @@ pub async fn swap_with_main(
 /// exit of a `--resume` that found nothing, because the fork fallback hangs on it.
 const CARRY_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
 
+/// Move a session out of main: its branch gets a worktree, main goes back to base.
+///
+/// The gesture the swap could not offer, because a swap needs a second branch to
+/// exchange and this has none: you started something in main, it turned into real
+/// work, and now it wants a tree of its own so main is free again.
+///
+/// One session, not the whole tree. The branch travels because the conversation is
+/// about it (`git::move_branch_out` carries the uncommitted work with it), and main
+/// is left on base rather than detached.
+///
+/// The refusals are the swap's, for the same reasons: an agent mid-turn in main
+/// would have the tree replaced under it, and a stopped rebase cannot switch at
+/// all. `move_branch_out` re-checks the rebase itself, since it is the half a test
+/// can drive.
+pub async fn move_out_of_main(
+    State(app): State<Arc<AppState>>,
+    Path(id): Path<Uuid>,
+) -> ApiResult<serde_json::Value> {
+    let (busy, live) = {
+        let inner = app.inner.read().await;
+        let s = inner
+            .sessions
+            .get(&id)
+            .ok_or_else(|| anyhow::anyhow!("no such session {id}"))?;
+        if s.workspace != MAIN {
+            return Err(ApiError(anyhow::anyhow!(
+                "{} is not in main, so there is nothing to move it out of",
+                &id.to_string()[..8]
+            )));
+        }
+        (s.state.is_busy(), s.state.is_live())
+    };
+    if busy {
+        return Err(ApiError(anyhow::anyhow!(
+            "that agent is mid-turn; the move replaces every file under it, so let              the turn finish first"
+        )));
+    }
+
+    let main = app.cfg.main_checkout.clone();
+    let base_ref = app.cfg.upstream_ref.clone();
+    // Named for the branch, which is what the worktree is *for* — and uniquified
+    // rather than refused, since a tree left behind by earlier work on the same
+    // branch is a reason to pick another name, not to stop.
+    let branch = tokio::task::spawn_blocking({
+        let main = main.clone();
+        move || crate::git::current_branch(&main)
+    })
+    .await
+    .map_err(|e| anyhow::anyhow!("reading main's branch failed: {e}"))??;
+    // Main sitting on base has no branch to hand over, so the tree is named for the
+    // work rather than for a branch, and `move_branch_out` cuts it one.
+    let base_now = tokio::task::spawn_blocking({
+        let (main, base_ref) = (main.clone(), base_ref.clone());
+        move || crate::git::base_checkout_branch(&main, &base_ref)
+    })
+    .await
+    .map_err(|e| anyhow::anyhow!("reading the base branch failed: {e}"))?;
+    let stem = if base_now.as_deref() == Some(branch.as_str()) {
+        "work".to_string()
+    } else {
+        branch_leaf(&branch)
+    };
+    let name = free_worktree_name(&app, &stem);
+    spawn::validate_worktree_name(&name)?;
+    let path = app.cfg.worktree_path(&name);
+    // The naming Claude Code's own worktrees use, so a branch cut here reads like
+    // every other worktree branch in the repo rather than like a special case.
+    let new_branch = format!("worktree-{name}");
+
+    let moved = tokio::task::spawn_blocking({
+        let (main, path, new_branch) = (main.clone(), path.clone(), new_branch.clone());
+        move || -> anyhow::Result<crate::git::MovedOut> {
+            let base = crate::git::base_checkout_branch(&main, &base_ref)
+                .ok_or_else(|| anyhow::anyhow!(
+                    "no base branch to put main back on — {base_ref} has not been fetched"
+                ))?;
+            // Listed before the move, because `stash create` cannot carry them and
+            // afterwards they are indistinguishable from base's own untracked files.
+            let left = crate::git::untracked_in(&main, Some(".claude/worktrees/"))?;
+            let moved = crate::git::move_branch_out(&main, &path, &base, &new_branch)?;
+            if !left.is_empty() {
+                tracing::info!(files = ?left, "untracked files stayed in main");
+            }
+            Ok(moved)
+        }
+    })
+    .await
+    .map_err(|e| anyhow::anyhow!("the move task panicked: {e}"))??;
+
+    // Cut by the daemon, so the repo's WorktreeCreate never fired for it (§ the
+    // worktree_setup rule) — the same reason `ensure_pr_worktree` runs these.
+    spawn::run_worktree_hooks(&app, &path).await;
+    app.register_worktree(&name, path.clone(), Some(moved.branch.clone()))
+        .await;
+    // Main gave the branch away, and `reconcile` only adds: left in, main would go
+    // on claiming a branch that lives in the new tree.
+    app.forget_branch(MAIN, &moved.branch).await;
+    // Main is on base by our own hand, so there is nothing left for `park_main` to
+    // return there — and a stale mark would park a branch a later open-PR puts back.
+    *app.main_pr_park.write().await = None;
+
+    let moved_branch = moved.branch.clone();
+
+    // Read *before* the reconciles, for the swap's reason: `reconcile` re-stamps a
+    // live session's branch from what its tree has checked out now, and the branch
+    // has already left — asking afterwards would find nobody who was on it.
+    let (_, records) = to_carry(&app, MAIN, &moved.branch).await;
+
+    let _ = app.reconcile(MAIN).await;
+    let _ = app.reconcile(&name).await;
+
+    // The conversation follows its branch: live means a pty to move, and a record
+    // that is not running has nothing to respawn, so the record itself travels.
+    let carried = if live {
+        Some(spawn::relocate_session(&app, id, &name, CARRY_GRACE).await)
+    } else {
+        carry_record(&app, id, &name, &path, &moved.branch).await;
+        None
+    };
+
+    // Told the same thing the swap tells a carried conversation: the cwd moved under
+    // it, and a session Claude Code has isolated somewhere else has to re-anchor.
+    if let Some(Ok(moved)) = &carried {
+        let notice = arrival_notice(&app, &moved_branch, &main, &path, false);
+        let mut inner = app.inner.write().await;
+        if let Some(s) = inner.sessions.get_mut(&moved.id) {
+            s.arrival_notice = Some(notice);
+        }
+    }
+
+    // Its siblings — the past conversations in main about the branch that just
+    // left. Leaving them behind points a later resume at main's directory while
+    // their work sits in the new tree, which is exactly the pairing the branch
+    // field exists to keep.
+    for other in records.into_iter().filter(|r| *r != id) {
+        carry_record(&app, other, &name, &path, &moved.branch).await;
+    }
+    app.notify().await;
+
+    Ok(Json(json!({
+        "workspace": name,
+        "branch": moved.branch,
+        "created": moved.created,
+        "main": moved.base,
+        "session": carried_json(&carried),
+        "wip_error": moved.wip_error,
+    })))
+}
+
+/// A directory-safe stem from a branch name.
+///
+/// `feature/some-thing` is `some-thing`: the leaf is what tells two of your
+/// branches apart, and the prefix is the same on all of them.
+fn branch_leaf(branch: &str) -> String {
+    let leaf = branch.rsplit('/').next().unwrap_or(branch);
+    let cleaned: String = leaf
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '-' })
+        .collect();
+    let stem = cleaned.trim_matches('-');
+    let stem = if stem.is_empty() { "work" } else { stem };
+    stem.chars().take(48).collect()
+}
+
+/// `stem`, or the first `stem-N` with no directory of that name.
+///
+/// Suffixed rather than refused: a tree from earlier work on the same branch may
+/// still be sitting there, which is a reason to pick another name, not to stop.
+fn free_worktree_name(app: &Arc<AppState>, stem: &str) -> String {
+    for n in 1..100 {
+        let name = if n == 1 { stem.to_string() } else { format!("{stem}-{n}") };
+        if !app.cfg.worktree_path(&name).exists() {
+            return name;
+        }
+    }
+    stem.to_string()
+}
+
 /// One direction of the carry, as the SPA reads it.
 ///
 /// `null` is its own answer and not an error: it means there was nothing in that

@@ -916,6 +916,144 @@ pub fn swap_branches(main: &Path, worktree: &Path) -> Result<Swap> {
     })
 }
 
+/// What a move out of main did.
+#[derive(Debug)]
+pub struct MovedOut {
+    /// The branch now checked out in the new worktree: the one that left main, or
+    /// the one cut for the work when main had nothing but base.
+    pub branch: String,
+    /// What main is on now.
+    pub base: String,
+    /// Whether that branch was created here rather than handed over.
+    pub created: bool,
+    /// See [`Swap::wip_error`]: the branch has already moved by the time the carry
+    /// runs, so a failure is reported beside the move rather than undoing it.
+    pub wip_error: Option<String>,
+}
+
+/// Move main's branch into a worktree of its own and put main back on `base`.
+///
+/// The one-directional half of [`swap_branches`]. There is no second branch to
+/// exchange, so main returns to base and the branch gets a tree cut for it — which
+/// is only possible in this order: git refuses a worktree for a branch that is
+/// still checked out somewhere, so main has to let go of it first.
+///
+/// Same WIP contract as the swap: uncommitted work is carried rather than refused,
+/// untracked files stay where they are (`stash create` cannot take them, and the
+/// caller names them), and everything up to the worktree existing is undoable —
+/// a refusal puts main back on its branch with its edits.
+///
+/// `new_branch` is only used when main is sitting on `base` — you were working in
+/// main directly and it turned into something. Then there is no branch to hand
+/// over, so the work gets one cut for it and main does not move at all. Uniquified
+/// here rather than by the caller, because deciding it needs the repo.
+pub fn move_branch_out(
+    main: &Path,
+    dest: &Path,
+    base: &str,
+    new_branch: &str,
+) -> Result<MovedOut> {
+    let branch = current_branch(main)?;
+    if rebase_in_progress(main) {
+        bail!("the main checkout has a rebase stopped part-way; finish or abort it first");
+    }
+
+    // Banked and the tree cleaned: a switch would otherwise carry the edits onto
+    // base, which is the one outcome you cannot press back out of.
+    let wip = capture_wip(main)?;
+
+    // Main is on base: nothing to hand over and nothing to switch, so this is the
+    // simpler half despite being the one that creates a branch. Main stays exactly
+    // where it is, on base and clean.
+    if branch == base {
+        let branch = free_branch(main, new_branch);
+        let path = dest.to_string_lossy().into_owned();
+        if let Err(e) = git(main, &["worktree", "add", "-b", &branch, &path]) {
+            let mut err = e.context(format!("no worktree could be cut for {branch}"));
+            // Nothing moved but the work, so putting that back is the whole undo.
+            if let Some(sha) = &wip {
+                if let Err(back) = apply_wip(main, sha) {
+                    err = err.context(format!(
+                        "and its uncommitted work is still in commit {sha}: {back:#}"
+                    ));
+                }
+            }
+            return Err(err);
+        }
+        let wip_error = match &wip {
+            Some(sha) => apply_wip(dest, sha).err().map(|e| format!("{e:#}")),
+            None => None,
+        };
+        return Ok(MovedOut {
+            branch,
+            base: base.to_string(),
+            created: true,
+            wip_error,
+        });
+    }
+    // Put main back the way it was, work included. Only correct while nothing else
+    // has moved, which is why it is not called after the worktree exists.
+    let undo = |mut err: anyhow::Error| -> anyhow::Error {
+        if let Err(back) = switch_branch(main, &branch) {
+            return err.context(format!("and main is left on {base}: {back:#}"));
+        }
+        if let Some(sha) = &wip {
+            if let Err(back) = apply_wip(main, sha) {
+                err = err.context(format!(
+                    "and its uncommitted work is still in commit {sha}: {back:#}"
+                ));
+            }
+        }
+        err
+    };
+
+    if let Err(e) = switch_branch(main, base) {
+        let e = e.context(format!("the main checkout could not go back to {base}"));
+        // Nothing to switch back — it never left — so only the work needs restoring.
+        if let Some(sha) = &wip {
+            if let Err(back) = apply_wip(main, sha) {
+                return Err(e.context(format!(
+                    "and its uncommitted work is still in commit {sha}: {back:#}"
+                )));
+            }
+        }
+        return Err(e);
+    }
+
+    if let Err(e) = worktree_add_existing(main, dest, &branch) {
+        return Err(undo(e.context(format!("no worktree could be cut for {branch}"))));
+    }
+
+    let wip_error = match &wip {
+        Some(sha) => apply_wip(dest, sha).err().map(|e| format!("{e:#}")),
+        None => None,
+    };
+    Ok(MovedOut {
+        branch,
+        base: base.to_string(),
+        created: false,
+        wip_error,
+    })
+}
+
+/// `stem`, or the first `stem-N` no branch has taken.
+///
+/// A worktree cut for work that had no branch is named after the tree, and a tree
+/// deleted long ago can leave its branch behind — so the free directory the caller
+/// found does not on its own mean the branch is free too.
+fn free_branch(main: &Path, stem: &str) -> String {
+    if !branch_exists(main, stem) {
+        return stem.to_string();
+    }
+    for n in 2..100 {
+        let candidate = format!("{stem}-{n}");
+        if !branch_exists(main, &candidate) {
+            return candidate;
+        }
+    }
+    stem.to_string()
+}
+
 /// Detach a tree at its current commit, releasing the branch it held.
 fn switch_detach(cwd: &Path) -> Result<()> {
     git(cwd, &["switch", "--detach", "-q"]).map(|_| ())
@@ -1582,6 +1720,96 @@ mod tests {
     /// out twice, so the naive "switch each tree" fails on the first move. Both
     /// halves are pinned here because the three-step order *is* the feature.
     #[test]
+    /// Moving main's branch out: the tree is cut *after* main lets go, the work
+    /// travels, and main is left on base rather than on a detached head.
+    #[test]
+    fn moving_a_branch_out_of_main_carries_its_work_and_leaves_main_on_base() {
+        let dir = std::env::temp_dir().join(format!(
+            "orchd-moveout-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let main = dir.join("repo");
+        git(&dir, &["init", "-q", "-b", "develop", "repo"]).unwrap();
+        git(&main, &["config", "user.email", "t@t"]).unwrap();
+        git(&main, &["config", "user.name", "t"]).unwrap();
+        std::fs::write(main.join("f.txt"), "base\n").unwrap();
+        git(&main, &["add", "-A"]).unwrap();
+        git(&main, &["commit", "-qm", "base"]).unwrap();
+        git(&main, &["switch", "-qc", "feature/b"]).unwrap();
+
+        // Dirty, staged and untracked: the three cases the carry treats differently.
+        std::fs::write(main.join("f.txt"), "edited in main\n").unwrap();
+        std::fs::write(main.join("staged.txt"), "staged\n").unwrap();
+        git(&main, &["add", "staged.txt"]).unwrap();
+        std::fs::write(main.join("loose.txt"), "untracked\n").unwrap();
+
+        let dest = main.join(".claude/worktrees/b");
+        let moved = move_branch_out(&main, &dest, "develop", "worktree-b").expect("the move");
+        assert_eq!((moved.branch.as_str(), moved.base.as_str()), ("feature/b", "develop"));
+        assert!(!moved.created, "the branch was handed over, not cut");
+        assert!(moved.wip_error.is_none(), "the carry: {:?}", moved.wip_error);
+
+        assert_eq!(current_branch(&main).unwrap(), "develop");
+        assert_eq!(current_branch(&dest).unwrap(), "feature/b");
+        // The work is in the worktree, index distinction intact.
+        assert_eq!(std::fs::read_to_string(dest.join("f.txt")).unwrap(), "edited in main\n");
+        assert!(dest.join("staged.txt").exists(), "the staged file travelled");
+        assert!(
+            status(&dest, None, Untracked::Each)
+                .unwrap()
+                .staged
+                .iter()
+                .any(|f| f.path == "staged.txt"),
+            "and it is still staged"
+        );
+        // Main kept none of the tracked work — that is the half that had to travel —
+        // and the untracked file is still there, because `stash create` cannot take
+        // one. Asserted rather than `is_clean`, which counts that file and would
+        // read this correct state as dirty.
+        let left = status(&main, Some(".claude/worktrees/"), Untracked::Each).unwrap();
+        assert!(
+            left.staged.is_empty() && left.unstaged.is_empty(),
+            "main still holds tracked work: {left:?}"
+        );
+        assert_eq!(
+            left.untracked.iter().map(|f| f.path.as_str()).collect::<Vec<_>>(),
+            ["loose.txt"],
+            "the untracked file stayed put, and is the only thing that did"
+        );
+        assert_eq!(std::fs::read_to_string(main.join("f.txt")).unwrap(), "base\n");
+
+        // --- and the other half: main on base, with work but no branch of its own ---
+        //
+        // Nothing to hand over, so the work gets a branch cut for it and main does
+        // not move at all. This is the case you land in by starting something in main
+        // without branching first, which is the common one.
+        std::fs::write(main.join("f.txt"), "started in main on develop\n").unwrap();
+        let second = main.join(".claude/worktrees/work");
+        let cut = move_branch_out(&main, &second, "develop", "worktree-work").expect("the cut");
+        assert_eq!((cut.branch.as_str(), cut.base.as_str()), ("worktree-work", "develop"));
+        assert!(cut.created, "the branch had to be created");
+        assert!(cut.wip_error.is_none(), "the carry: {:?}", cut.wip_error);
+        assert_eq!(current_branch(&second).unwrap(), "worktree-work");
+        assert_eq!(
+            std::fs::read_to_string(second.join("f.txt")).unwrap(),
+            "started in main on develop\n",
+            "the work did not travel to the branch cut for it"
+        );
+        // Main never left base and kept none of it.
+        assert_eq!(current_branch(&main).unwrap(), "develop");
+        assert_eq!(std::fs::read_to_string(main.join("f.txt")).unwrap(), "base\n");
+
+        // Again, with the branch name already taken: suffixed rather than refused,
+        // since a tree deleted long ago can leave its branch behind.
+        std::fs::write(main.join("f.txt"), "and again\n").unwrap();
+        let third = main.join(".claude/worktrees/work-2");
+        let cut = move_branch_out(&main, &third, "develop", "worktree-work").expect("the cut");
+        assert_eq!(cut.branch, "worktree-work-2");
+    }
+
     fn swapping_exchanges_two_branches_and_is_its_own_inverse() {
         let dir = std::env::temp_dir().join(format!(
             "orchd-swap-{}-{:?}",
