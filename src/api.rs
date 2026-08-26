@@ -2894,6 +2894,30 @@ pub async fn pr_triage(
     Ok(Json(json!({ "session": session })))
 }
 
+/// Start the overlay review session.
+///
+/// The single-session flow: it posts proposals like triage, then stays alive to
+/// take the human's decisions over the ask channel and carry out the change and
+/// the post. Same worktree gates as triage — it writes into this tree, so it must
+/// start clean.
+pub async fn pr_review_session(
+    State(app): State<Arc<AppState>>,
+    Path(number): Path<u64>,
+) -> ApiResult<serde_json::Value> {
+    let pr = {
+        let inner = app.inner.read().await;
+        pr_from_poll(&inner.prs, number)?
+    };
+    let fetched = fetch_threads(&app, number).await?;
+    if fetched.answerable_count() == 0 {
+        return Err(ApiError(anyhow::anyhow!(
+            "PR #{number} has no threads awaiting an answer"
+        )));
+    }
+    let session = crate::triage::spawn_review(&app, number, &pr.head_ref, &fetched.viewer).await?;
+    Ok(Json(json!({ "session": session })))
+}
+
 /// The agent's hand-off. **The only endpoint a subprocess calls.**
 ///
 /// Treated as hostile input: the agent's own input includes review comments other

@@ -29,6 +29,11 @@ pub const RESOLVE: &str = include_str!("../commands/resolve.md");
 /// stops to ask. It writes code and nothing outward.
 pub const RESOLVE_RUN: &str = include_str!("../commands/resolve-run.md");
 
+/// One session for the whole overlay-driven review: read-only triage, then the
+/// change and the post, with the human's decisions arriving over the ask channel
+/// between the phases. The single-session replacement for triage + the batch.
+pub const REVIEW_SESSION: &str = include_str!("../commands/review-session.md");
+
 /// What `{{TRACKER}}` becomes when a tracker is configured.
 ///
 /// A sentence rather than a boolean, so the prompt reads as prose in both states
@@ -155,11 +160,31 @@ mod tests {
             // was missing: `resolve-run.md` carries three built URLs, so it is
             // the likeliest to gain a placeholder nobody substitutes.
             ("resolve-run", RESOLVE_RUN),
+            // The overlay session, most interpolated of all: proposals URL, ask
+            // base, tracker, language and upstream in one file.
+            ("review-session", REVIEW_SESSION),
         ] {
             let out = render(t, &vars()).unwrap_or_else(|e| panic!("{name}: {e}"));
             assert!(!out.contains("{{"), "{name} still has a placeholder");
             assert!(out.contains("10001"), "{name} did not get the PR number");
         }
+    }
+
+    #[test]
+    fn the_review_session_prompt_carries_its_contract() {
+        let out = render(REVIEW_SESSION, &vars()).unwrap();
+        // The three phases the overlay and the daemon both depend on being in order.
+        assert!(out.contains("Phase 1 — Read"), "the read phase");
+        assert!(out.contains("Phase 2 — Change"), "the change phase");
+        assert!(out.contains("Phase 3 — Post"), "the post phase");
+        // The two seams the overlay answers over the ask channel.
+        assert!(out.contains("/api/session/$ORCH_SESSION_ID/ask"), "the ask channel URL");
+        assert!(out.contains("\"decisions\""), "the decision-set contract");
+        // Read-only in phase 1, and the same push guard the interactive resolve obeys.
+        assert!(out.contains("Read only"), "the read-only invariant");
+        assert!(out.contains("--force-with-lease"), "the push discipline");
+        // The daemon recognises its own replies by this exact footer.
+        assert!(out.contains("(via orchestrator)"), "the footer that dedups our replies");
     }
 
     #[test]

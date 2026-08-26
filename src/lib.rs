@@ -427,6 +427,7 @@ fn router(app: Arc<AppState>) -> Router {
         .route("/api/open/file", post(api::open_file))
         .route("/api/pr/:number/review", get(api::pr_review))
         .route("/api/pr/:number/triage", post(api::pr_triage))
+        .route("/api/pr/:number/review-session", post(api::pr_review_session))
         // The one route a subprocess calls. Hostile input; see `pr_proposals`.
         .route("/api/pr/:number/proposals", post(api::pr_proposals))
         .route("/api/pr/:number/commit", post(api::pr_commit))

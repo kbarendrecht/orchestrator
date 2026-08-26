@@ -221,6 +221,116 @@ pub async fn spawn(app: &Arc<AppState>, pr: u64, head_ref: &str, login: &str) ->
     Ok(id)
 }
 
+/// Start the overlay review session pinned to the PR's head branch.
+///
+/// The single-session replacement for triage + the batch: it posts proposals like
+/// triage does — filling the same overlay cards — but then stays alive, taking the
+/// human's decisions over the ask channel and carrying out the change and the post
+/// itself. So unlike [`spawn`] it needs `ORCH_ASK_TOKEN` in its environment, the
+/// key the `/ask` and `/wait` routes check, and it is marked `command: "review"` so
+/// the rail colours and the guards tell it from a triage run.
+pub async fn spawn_review(
+    app: &Arc<AppState>,
+    pr: u64,
+    head_ref: &str,
+    login: &str,
+) -> Result<SessionId> {
+    let workspace = ensure_pr_worktree(app, pr, head_ref).await?;
+
+    if let Some(g) = gate(app, pr, &workspace).await? {
+        anyhow::bail!("{}", g.say());
+    }
+
+    let path = app
+        .workspace_path(&workspace)
+        .await
+        .context("worktree vanished")?;
+
+    let (owner, repo) =
+        crate::resolve_repo(app).context("no GitHub repo configured and none on the remote")?;
+    let body = prompt::render(
+        prompt::REVIEW_SESSION,
+        &prompt::Vars {
+            pr,
+            owner,
+            repo,
+            login: login.to_string(),
+            upstream: app.cfg.upstream_ref.clone(),
+            upstream_remote: app.cfg.upstream_remote.clone(),
+            proposals_url: format!("http://127.0.0.1:{}/api/pr/{pr}/proposals", app.cfg.port),
+            ask_base: format!("http://127.0.0.1:{}/api/session", app.cfg.port),
+            tracker: if app.cfg.tracker.is_configured() {
+                prompt::TRACKER_ON.to_string()
+            } else {
+                prompt::TRACKER_OFF.to_string()
+            },
+            language: app.cfg.default_language.clone(),
+            ..Default::default()
+        },
+    )?;
+
+    let id = Uuid::new_v4();
+    let settings = Config::hooks_settings_path()?;
+
+    let dir = Config::config_dir()?.join(format!("review-{pr}"));
+    std::fs::create_dir_all(&dir)?;
+    let prompt_file = dir.join("prompt.md");
+    std::fs::write(&prompt_file, body)
+        .with_context(|| format!("writing {}", prompt_file.display()))?;
+
+    let cmd = vec![
+        "claude".to_string(),
+        "--session-id".to_string(),
+        id.to_string(),
+        "--settings".to_string(),
+        settings.to_string_lossy().into_owned(),
+    ];
+
+    // Minted here so the same value goes into the environment and onto the record:
+    // the agent reads it from `ORCH_ASK_TOKEN`, and `/ask`/`/wait` check it against
+    // `session.ask_token`. `Session::new` sets its own, overwritten below.
+    let ask_token = crate::state::random_token();
+    let (mut env, unset) = crate::config::transcript_env();
+    env.push(("ORCH_SESSION_ID".to_string(), id.to_string()));
+    // Posts proposals with the API token; asks with the narrow ask token. Both in
+    // the environment, never in the prompt text, which lands in transcripts.
+    env.push(("ORCHD_TOKEN".to_string(), app.token.clone()));
+    env.push(("ORCH_ASK_TOKEN".to_string(), ask_token.clone()));
+
+    let spawned = PtyHandle::spawn(&cmd, &path, &env, &unset, DEFAULT_SIZE)?;
+    let mut session = Session::new(
+        id,
+        workspace,
+        path,
+        Kind::Automation {
+            pr,
+            command: "review".to_string(),
+        },
+    );
+    session.pty = Some(spawned.handle.clone());
+    session.pid = spawned.pid;
+    session.ask_token = ask_token;
+    session.pending_prompt = Some(format!(
+        "Read {} and follow it. Those are your instructions for PR {pr}.",
+        prompt_file.display()
+    ));
+    {
+        let mut inner = app.inner.write().await;
+        // A fresh session supersedes whatever the last one proposed, and any batch
+        // that stopped for the manual phase — its decisions point at positions that
+        // no longer exist. Same reasoning as `spawn`.
+        inner.proposals.remove(&pr);
+        if inner.with_manual("re-review abandoned a phase", |m| m.remove(&pr).is_some()) {
+            tracing::warn!(pr, "a manual phase was open; re-reviewing abandons it");
+        }
+        inner.sessions.insert(id, session);
+    }
+
+    watch(app.clone(), pr, id, spawned.handle);
+    app.notify().await;
+    Ok(id)
+}
+
 /// Notice when a run ends without having proposed anything.
 ///
 /// Success is "proposals arrived", not "exited zero" — an agent can finish
