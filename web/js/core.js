@@ -266,6 +266,7 @@ export const isWaiting = (s) => s.wants_attention;
 export function openMenu(ev, items) {
   ev.preventDefault();
   const menu = $('ctxmenu');
+  menuAnchor = /** @type {HTMLElement} */ (ev.currentTarget || ev.target);
   menu.replaceChildren();
   for (const [label, cls, handler] of items) {
     const item = el('button', 'ctxmenu-item' + (cls ? ` ${cls}` : ''), label);
@@ -289,7 +290,12 @@ export function openMenu(ev, items) {
 
 export function closeMenu() {
   $('ctxmenu').hidden = true;
+  menuAnchor = null;
 }
+
+/** What the open menu is pointing at, so a scroll can tell "the row this menu
+ *  belongs to moved" from "a terminal three panes away printed a line". */
+let menuAnchor = null;
 
 export function sessionsOf(wsId) {
   return snap.sessions.filter((s) => s.workspace === wsId);
@@ -424,7 +430,17 @@ export const menuOpen = () => !$('ctxmenu').hidden;
 document.addEventListener('mousedown', (e) => {
   if (menuOpen() && !/** @type {HTMLElement} */ (e.target).closest('#ctxmenu')) closeMenu();
 }, true);
-document.addEventListener('scroll', closeMenu, true);
+/* Only a scroller the menu's own row sits in has actually moved it. This used to
+   be `closeMenu` on any scroll at all, and `capture` catches scroll — which does
+   not bubble — from every element on the page: a terminal printing a line, or a
+   rail whose rebuild clamps its `scrollTop`, dismissed a menu you had just
+   opened, roughly once a second while anything was running. */
+document.addEventListener('scroll', (e) => {
+  if (!menuOpen()) return;
+  const t = /** @type {any} */ (e.target);
+  const page = t === document || t === document.scrollingElement;
+  if (page || (menuAnchor && t.contains?.(menuAnchor))) closeMenu();
+}, true);
 window.addEventListener('blur', closeMenu);
 
 // ---------------------------------------------------------------------------
