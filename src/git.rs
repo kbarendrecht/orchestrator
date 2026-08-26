@@ -1716,10 +1716,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// The swap, and the refusal it is built around: git will not check one branch
-    /// out twice, so the naive "switch each tree" fails on the first move. Both
-    /// halves are pinned here because the three-step order *is* the feature.
-    #[test]
     /// Moving main's branch out: the tree is cut *after* main lets go, the work
     /// travels, and main is left on base rather than on a detached head.
     #[test]
@@ -1810,6 +1806,10 @@ mod tests {
         assert_eq!(cut.branch, "worktree-work-2");
     }
 
+    /// The swap, and the refusal it is built around: git will not check one branch
+    /// out twice, so the naive "switch each tree" fails on the first move. Both
+    /// halves are pinned here because the three-step order *is* the feature.
+    #[test]
     fn swapping_exchanges_two_branches_and_is_its_own_inverse() {
         let dir = std::env::temp_dir().join(format!(
             "orchd-swap-{}-{:?}",
