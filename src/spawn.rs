@@ -1327,12 +1327,25 @@ fn watch_health(
         let mut pending = String::from_utf8_lossy(&handle.snapshot()).into_owned();
         scan(&app, &workspace, &proc_id, &spec, &mut pending).await;
         loop {
-            let chunk = match rx.recv().await {
-                Ok(c) => c,
-                // A lagged consumer only misses health lines, and the next
-                // build will restate them; resubscribing beats tearing down.
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
-                Err(_) => break,
+            /* The child exiting, not merely the end of its output. The `Process`
+               record holds the pty handle, so the broadcast sender outlives the
+               child and `rx.recv()` never errors — which meant this loop never
+               reached the `Dead` below it, and a managed process that had exited
+               sat at `Starting` with a live-looking dot in the drawer. Measured:
+               a spec that exits immediately still read `starting, alive: false,
+               exit 1` a minute later.
+
+               `wait()` clones its own receiver off a watch channel, so it is safe
+               to poll here and there is still one observer of this pty. */
+            let chunk = tokio::select! {
+                r = rx.recv() => match r {
+                    Ok(c) => c,
+                    // A lagged consumer only misses health lines, and the next
+                    // build will restate them; resubscribing beats tearing down.
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(_) => break,
+                },
+                _ = handle.wait() => break,
             };
             pending.push_str(&String::from_utf8_lossy(&chunk));
             scan(&app, &workspace, &proc_id, &spec, &mut pending).await;
@@ -1414,6 +1427,59 @@ pub fn worktree_name_of(path: &PathBuf, worktrees_dir: &PathBuf) -> Option<Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A managed process that exits has to *say* so.
+    ///
+    /// The health watcher used to end its loop only when the output channel closed
+    /// — and the `Process` record holds the pty handle, so the sender outlives the
+    /// child and that never happened. A process that had exited sat at `Starting`
+    /// forever, which the drawer draws as a live tab. In-tree with a real pty
+    /// rather than in `e2e`: nothing here needs a worktree, a branch or the agent,
+    /// only a child that ends.
+    #[tokio::test]
+    async fn a_managed_process_that_exits_is_reported_dead() {
+        let dir = std::env::temp_dir().join(format!("orchd-managed-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cfg: Config = serde_json::from_str(&format!(
+            r#"{{"main_checkout":"{}","port":7796}}"#,
+            dir.display()
+        ))
+        .unwrap();
+        let app = AppState::new(cfg, "t".into(), crate::window::Chrome::None);
+
+        let spec = ManagedSpec {
+            name: "quick".into(),
+            // POSIX, and it ends on its own without printing a health line — so
+            // only the exit can move it off `Starting`.
+            command: vec!["sh".into(), "-c".into(), "exit 3".into()],
+            failure_patterns: Vec::new(),
+            ok_patterns: Vec::new(),
+            restart: crate::config::RestartPolicy::Never,
+            autostart: true,
+        };
+        let id = start_managed(&app, MAIN, &spec).await.expect("started");
+
+        let health = |app: Arc<AppState>, id: String| async move {
+            let inner = app.inner.read().await;
+            inner
+                .workspaces
+                .get(MAIN)
+                .and_then(|w| w.processes.iter().find(|p| p.id == id))
+                .map(|p| p.health.clone())
+        };
+        // A second is generous for `sh -c 'exit 3'`; before the fix this never
+        // arrived, however long you waited.
+        for _ in 0..100 {
+            if health(app.clone(), id.clone()).await == Some(Health::Dead) {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        panic!(
+            "still {:?} after a second — the exit went unobserved",
+            health(app.clone(), id.clone()).await
+        );
+    }
 
     /// The race a relocation would otherwise lose.
     ///
