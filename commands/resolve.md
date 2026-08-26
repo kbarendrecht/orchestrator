@@ -50,12 +50,13 @@ thread whose last comment is `{{LOGIN}}`'s is already answered; don't re-answer 
 
 Read the code at each thread before judging it, not just the diff. Then a numbered
 list, one line each: `<n>. <path>:<line>, <what they want> → apply | discuss |
-reject`. Numbering is how the user steers ("fix 1, respond to 2"), so keep it stable
+reject | story`. Numbering is how the user steers ("fix 1, respond to 2"), so keep it stable
 for the rest of the turn.
 
 - **apply**: concrete and correct, no behaviour decision in it.
 - **discuss**: a real question, a design call, or you think they're wrong.
 - **reject**: factually wrong about the code, and you can prove it with the code.
+- **story**: fair, and belongs in other work — filed now, not promised (below).
 
 A reviewer's `suggestion` block is still a claim, not an instruction. It's `apply`
 only when it's right.
@@ -100,8 +101,7 @@ it somewhere they didn't name, or you're asking them something.
 gh api -X POST repos/{{OWNER}}/{{REPO}}/pulls/comments/<id>/reactions -f content=+1
 ```
 
-- Reactions take no `(Written by Claude, Acknowledged by Kars)` line, and wait for
-  the same go as a reply.
+- Reactions take no footer line, and wait for the same go as a reply.
 - List them separately from the written replies in the draft.
 
 Written replies:
@@ -111,13 +111,45 @@ Written replies:
 - Say what changed and why. Nothing about mechanics: no rebasing, no amending, no
   "good catch", no restating their comment back at them.
 - One or two sentences. A reject states the fact that refutes it and where to see it.
-- Last line of every posted comment: `(Written by Claude, Acknowledged by Kars)`.
+- Last line of every posted comment: `(via orchestrator)`. That exact string is
+  how the daemon recognises its own replies (`forge::with_footer`,
+  `post::mine_by_footer`), so a thread answered here is not answered again by
+  a resolve run.
 
 Post a threaded reply with the comment id from the thread URL's `#discussion_r<id>`:
 
 ```bash
 gh api repos/{{OWNER}}/{{REPO}}/pulls/{{PR}}/comments/<id>/replies -f body="$reply"
 ```
+
+## Out of scope: file the story, don't promise it
+
+A thread that is fair but belongs in other work gets a story **now**, before the
+reply is drafted — the reply then carries the id. "We'll pull this into a story"
+is a promise nobody is holding, and the story is the only part the reviewer cannot
+check for themselves.
+
+Search first, so a retry cannot file a second one:
+
+```
+mcp__shortcut__stories-search   query: the thread's own URL
+mcp__shortcut__stories-create   name + description, Backlog
+```
+
+- The description ends with the line the daemon uses as its dedup key, exactly:
+  `Source: review of #<pr> — <thread url>`. That URL is what a later search finds.
+- Follow the repo's tracker skill (`.claude/skills/*/SKILL.md`) for the team, the
+  story type, the workflow state and the epic — it holds the ids, and
+  `stories-create` takes no custom fields, so anything else needs a follow-up
+  `stories-update`.
+- Title and body in the thread's language, and about the work itself: nobody
+  outside this session knows which thread this was.
+- One story per thread. A refused create is retried as the *same* create once what
+  it named is fixed, never worked around with a second story.
+
+Then reply with the id (`sc-12345`), not with a plan to get one. If the create
+fails twice, say so on the thread and leave it open — an unfiled story with a
+reply promising one is the state this exists to prevent.
 
 ## After posting
 
