@@ -61,6 +61,13 @@ function reviewButtons(p) {
   return wrap;
 }
 
+/* Menu copy, one convention for all of them: a lowercase verb phrase, and the
+   object only when it is *not* the row you right-clicked — the row already says
+   which session, so "fork session" says it twice, while "swap branch with main"
+   names something else and earns it. No trailing ellipsis on the ones that open a
+   prompt or a picker: every item here leads somewhere, so marking three of them
+   is noise rather than a distinction. */
+
 /** Everything you can start from a PR row.
  *
  *  The same list behind the `review` button and behind a right-click, because
@@ -72,7 +79,7 @@ function prMenu(p, btn) {
     ['open in main checkout', null, () => openPr(p.number, 'main')],
     ['open in worktree', null, () => openPr(p.number, 'worktree')],
     ['resolve', null, () => runResolve(p.number, btn)],
-    ['resolve in ui [beta]', null, () => Review.open(p.number)],
+    ['resolve in UI [beta]', null, () => Review.open(p.number)],
   ];
 }
 
@@ -354,8 +361,8 @@ function archivedRow(s) {
   btn.oncontextmenu = (ev) => openMenu(ev, [
     // Not gated on `resumable` the way opening it is: a fork cuts its own
     // worktree, so a conversation whose branch is gone can still be branched off.
-    ['Fork session', null, s.has_transcript ? () => forkSession(s) : null],
-    ['Delete session', 'bad', () => deleteSession(s)],
+    ['fork', null, s.has_transcript ? () => forkSession(s) : null],
+    ['delete', 'bad', () => deleteSession(s)],
   ]);
   return btn;
 }
@@ -458,11 +465,11 @@ function sessionRow(s, w) {
   // one meant switching to it first.
   btn.oncontextmenu = (ev) => openMenu(ev, [
     // Nothing to branch off until the conversation has had a turn.
-    ['Fork session', null, s.has_transcript ? () => forkSession(s) : null],
+    ['fork', null, s.has_transcript ? () => forkSession(s) : null],
     // Claude Code's own picker, reached rather than rebuilt. Greyed in the states
     // where the daemon refuses it — mid-turn an escape interrupts the turn, and at
     // a question or a permission prompt it answers instead of rewinding.
-    ['Rewind conversation…', null, isRewindable(s) ? () => rewindSession(s) : null],
+    ['rewind', null, isRewindable(s) ? () => rewindSession(s) : null],
     // The worktree, not the session: the row is the only place a worktree is
     // visible, so its workspace-level action lives here too.
     //
@@ -470,12 +477,12 @@ function sessionRow(s, w) {
     // worktree row — `w.is_main` is `undefined` there, and relying on that being
     // falsy would make this right by accident. Main cannot swap with itself, and
     // a worktree Claude Code has not named yet has no path to swap.
-    ['Swap branch with main', null,
+    ['swap branch with main', null,
       s.workspace !== snap.workspaces.find((x) => x.is_main)?.id && !pending(s)
         ? () => swapWithMain(s.workspace)
         : null],
-    ['Close session', 'bad', s.alive ? () => closeSession(s.id) : null],
-    ['Delete session', 'bad', () => deleteSession(s)],
+    ['close', 'bad', s.alive ? () => closeSession(s.id) : null],
+    ['delete', 'bad', () => deleteSession(s)],
   ]);
   return btn;
 }
