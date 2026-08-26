@@ -235,12 +235,13 @@ mod tests {
         assert!(out.contains("$ORCHD_TOKEN"), "token must come from the env");
         assert!(out.contains("/api/pr/10001/proposals"), "handoff URL");
         assert!(out.contains("kbarendrecht"), "viewer login substituted");
-        // The propose-only invariant everything downstream rests on. `proposal.rs`
-        // refuses a change without evidence, and `patch.rs` assumes the tree was
-        // clean; both are only true if the prompt actually said this.
+        // The read-only invariant everything downstream rests on. `patch.rs`
+        // assumes the tree the run inspected was clean, which is only true if the
+        // prompt told the agent to write nothing in it — this pass proposes, a
+        // later one makes the change.
         assert!(
-            out.contains("You do not change anything"),
-            "the propose-only invariant must be stated"
+            out.contains("Write nothing, and do not touch git"),
+            "the read-only invariant must be stated"
         );
         assert!(
             out.contains("committing, amending, rebasing, pushing"),

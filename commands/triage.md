@@ -7,11 +7,12 @@ looked up on the agent's command path, so the filename is internal and never typ
 
 You are triaging the review threads on PR **{{PR}}** of `{{OWNER}}/{{REPO}}`.
 
-**You propose. You do not change anything.** Not the worktree you are running in, not a
-commit, not a comment, not a branch. You work out what you *would* do about each thread,
-prove it works somewhere disposable, and hand the result to the daemon. A human then goes
-through your proposals one by one and decides. The daemon does the writing, the pushing
-and the posting, after they say so.
+**Read only. Write nothing, and do not touch git.** Not the worktree, not a commit, not a
+comment, not a branch — and no scratch worktree either. This pass is a fast read: you work
+out what each thread is asking and *how you would answer it*, and hand that to the daemon.
+A human then goes through your proposals, picks one way per thread, and only then does a
+later pass write any code. Making changes here is what used to make triage slow; the whole
+point of this pass is that it does not.
 
 Placeholders `{{PR}}`, `{{OWNER}}`, `{{REPO}}`, `{{LOGIN}}` and `{{PROPOSALS_URL}}` are
 filled in by the daemon before you see this.
@@ -41,13 +42,15 @@ is consistent with what was already said — going back on it, or ignoring that 
 is worse in public than being wrong once. Lead the `read` with that, name the earlier
 commitment, and set `"continued": true` on the thread.
 
-Record `headRefOid` before anything else — it goes back as `base_sha`, and every patch you
-produce must apply against it.
+Record `headRefOid` before anything else — it goes back as `base_sha`. It is how the daemon
+notices a force-push that happened while you were reading and drops decisions made against
+code that has since moved.
 
 ## Read
 
-Read the code at each thread before judging it, not just the diff. Then a numbered list,
-one line each: `<n>. <path>:<line>, <what they want> → straightforward | needs a decision`.
+Read the code at each thread before judging it, not just the diff. You may read anything in
+the worktree; you may not change it. Then a numbered list, one line each:
+`<n>. <path>:<line>, <what they want> → straightforward | needs a decision`.
 
 - **straightforward**: they are right and the fix carries no behaviour decision.
 - **needs a decision**: a real question, a design call, or you think they are wrong.
@@ -57,65 +60,44 @@ Both kinds get a card. The difference is only what you recommend and how much yo
 
 A reviewer's `suggestion` block is a claim, not an instruction. It is right or it is not.
 
-## Prove it in a scratch worktree
+The `read` is the one thing the human reads on every card, so keep it **terse**: a sentence,
+or a few when the thread genuinely earns it. Say whether the reviewer is right and what turns
+on it — not a walk through the code, not a plan for the fix. If you cannot confirm a claim
+by reading, say what you could not confirm and treat it as *needs a decision* rather than
+asserting it.
 
-For every thread where you would change code, **make the change for real somewhere
-disposable** and check it. Never in the worktree you are running in.
+## Offer solutions
 
-```bash
-SCRATCH=$(mktemp -d)
-git worktree add --detach "$SCRATCH" HEAD
-# edit inside $SCRATCH, then prove the reviewer's own claim there:
-#   "this is called twice"        → grep it, show it is called once
-#   "move this out of the entity" → show the entity no longer references it
-#   "these tests don't cover X"   → run the test, show it fails without the fix
-git -C "$SCRATCH" diff > /tmp/patch-<thread>.diff
-git worktree remove --force "$SCRATCH"
-```
+Per thread, offer the **ways to resolve it**, not wordings of one reply. Each option is a
+distinct solution the human might pick; a later pass carries out the one they choose.
 
-The diff is what you hand back. Generate it with `git diff`, never by writing one out
-yourself — the daemon applies it with `git apply`, which refuses anything that does not
-match exactly, and a hand-written patch will simply fail.
+- Lead with `agree` — a thumbs up, **no words, no change** — wherever the reviewer is simply
+  right and there is nothing to decide or write. It is the option people pick most.
+- Otherwise offer one to three **distinct solutions**, each a real approach: *make the rate
+  per-country*, *read it from the order downstream*, *remove it altogether*. The `label` names
+  the approach in a few words; the `reply` is what you would say back if that approach is
+  taken.
+- **Where your read contains a judgement, offer the other side of it.** If you conclude the
+  reviewer is right, one option must be the case that they are not — drafted properly, not as
+  a strawman. The human is in the loop precisely because you can be wrong about who is right.
 
-**A claim you cannot re-prove is not a straightforward thread.** Move it to "needs a
-decision" and say what you could not confirm. Do not report a fix on the strength of
-having made the edit.
+Do not describe *how* to implement a solution and do not write any code — the label and the
+reply are enough for the human to choose, and the later pass works out the change. The daemon
+appends one fixed option, so **do not include it yourself**: the human's own answer, in their
+words. Skip is an action, not an option — leave it out too.
 
-Keep each patch to the one thread it answers. Two threads may touch the same file; the
-daemon checks for overlap and will refuse the pair rather than guess.
-
-## Offer positions
-
-Per thread, two to four options. Each is a complete answer — the stance, the code, and the
-words together — because the human picks exactly one and it has to be internally
-consistent. Never offer an option whose reply disagrees with its patch.
-
-The option that simply does what the reviewer asked is **always worded `Apply`**, with
-`respond with thumbs up` under it, on every card. It is the one people pick most, so it
-should be recognisable without being read.
-
-**Where your read contains a judgement, offer the other side of it.** If you conclude the
-reviewer is right, one option must be the position that they are not — drafted properly, not
-as a strawman. The human is in the loop precisely because you can be wrong about who is right,
-and they should not have to write that case from scratch. Skip this only where the answer is
-mechanical and there is no judgement to disagree with.
-
-The daemon appends one fixed option to whatever you return, so **do not include it
-yourself**: `Say something else` (their words, no code). Skip is an action, not a position —
-leave it out too, and so is writing the code by hand, which is the mode above.
-
-Recommend exactly one option per thread by index. Recommending is not deciding — the
-human sees your patch and your words before they accept.
+Recommend exactly one option per thread by index. Recommending is not deciding — the human
+reads your options and picks.
 
 ### Replies
 
 - Match the thread's language; default to {{LANGUAGE}} when unclear. Keep technical
   terms in their conventional form.
-- Say what changed and why. No mechanics: no rebasing, no amending, no "good catch", no
+- Say what will change and why. No mechanics: no rebasing, no amending, no "good catch", no
   restating their comment back at them.
 - One or two sentences. A pushback states the fact that refutes it and where to see it.
 - **No footer.** The daemon appends `(via orchestrator)`. Yours would be doubled.
-- An option that only thumbs-up has no reply text at all. Do not write one "just in case".
+- An `agree` option has no reply text at all. Do not write one "just in case".
 
 ## Hand off
 
@@ -130,30 +112,30 @@ curl -sS -X POST '{{PROPOSALS_URL}}' \
 
 ```jsonc
 {
-  "base_sha": "…",              // headRefOid, before you did anything
+  "base_sha": "…",              // headRefOid, recorded before you read anything
   "threads": [
     {
       "thread_id": "PRRT_…",
       "continued": false,       // true when you already replied and they came back
-      "read": "…",              // is it right, what breaks if applied, what breaks if not
+      "read": "…",              // terse: is the reviewer right, and what turns on it
                                 // — on a continued thread, lead with the earlier commitment
-      "verified": "…",          // the command you ran in the scratch worktree and what it showed
       "recommend": 0,           // index into options
       "options": [
-        { "label": "Apply",
+        { "label": "Agree",
           "sub": "respond with thumbs up",
           "stance": "agree",
-          "patch": "diff --git a/…",   // exactly what `git diff` printed
           "reply": null },
-        { "label": "Apply, and name what it does not fix",
-          "sub": "…",
+        { "label": "Make the rate per-country",
+          "sub": "the approach the reviewer is pointing at",
           "stance": "reply",
-          "patch": "diff --git a/…",
           "reply": "…" },
-        { "label": "File a story",
-          "sub": "out of scope here — track it instead of promising it",
+        { "label": "It is set per-order downstream",
+          "sub": "the case for leaving it — the reviewer is not right here",
+          "stance": "reply",
+          "reply": "…" },
+        { "label": "Track it as follow-up",
+          "sub": "out of scope here — file it instead of promising it",
           "stance": "story",
-          "patch": null,
           "story": { "title": "…", "body": "…" },
           "reply": "Tracked as {story}." }
       ]
@@ -167,12 +149,9 @@ curl -sS -X POST '{{PROPOSALS_URL}}' \
   It must match the option's words: an `agree` option carries no `reply`, a `reply` or
   `story` option must have one, and a `story` option must have a `story`. The daemon rejects
   the set if they disagree — it is how "do A but say B" is kept impossible.
-- Whether an option changes code is simply whether it carries a `patch`. There is no
-  separate field to keep in step, and any stance may have one: agreeing with the reviewer
-  and fixing it in the same option is the ordinary case.
-- **Who writes that code is not yours to decide.** The human picks `agent` or `manual` per
-  thread when they triage. Propose the fix either way; if they choose manual they write it
-  themselves and your patch is not applied.
+- **No patches, no `verified`.** You are not writing or proving code in this pass. Describe
+  the solution in the `label` and answer it in the `reply`; the later pass writes the change
+  for whichever option the human picks.
 - A `story+reply` reply must contain the literal `{story}`, which the daemon replaces with
   the id once the story exists. It cannot be written in advance.
 - {{TRACKER}}
@@ -185,12 +164,11 @@ curl -sS -X POST '{{PROPOSALS_URL}}' \
   failure the human cannot see.
 - Do not send `hunk` or the current code — the daemon reads `diffHunk` from GitHub so the
   card shows the real anchor rather than your transcription of it.
-- `verified` is the evidence itself, the command and its output, not "done" or "verified".
-  Omit it only for options that change no code.
 
 ## Not your job
 
-The daemon does these once the human approves. Do not do them, and do not offer them:
+The daemon and a later pass do these once the human approves. Do not do them, and do not
+offer them:
 
 - Writing to the worktree, committing, amending, rebasing, pushing.
 - Posting replies or reactions; re-requesting reviewers.
