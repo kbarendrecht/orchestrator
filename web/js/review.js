@@ -1415,6 +1415,14 @@ function renderReview() {
   else if (reviewState.report) reviewState.screen = 'report';
   else if (reviewState.data.gate) reviewState.screen = 'gate';
   else if (!reviewState.data.proposals) reviewState.screen = 'intake';
+  // Proposals are in and the tree is writable, but the screen is still sitting on
+  // a pre-decision default: `intake` because triage had not run when the overlay
+  // opened (and reopening the same PR does not reset it), or `gate` from before it
+  // cleared. Nothing else advances off those, so triage produced cards the overlay
+  // never showed. A screen the user navigated into — card, final, run — is left.
+  else if (reviewState.screen === 'intake' || reviewState.screen === 'gate') {
+    reviewState.screen = 'overview';
+  }
 
   ({
     intake: rvIntake,
