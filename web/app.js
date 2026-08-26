@@ -84,6 +84,10 @@ function render() {
   renderDrawer();
   Diff.renderFiles();
   Queue.render();
+  // The review overlay reacts to its session's ask on this same tick — a
+  // decision ask means the read is done, a post ask means the change is. It reads
+  // the ask from the snapshot, so no polling and no second source of truth.
+  Review.tick();
   renderInteraction();
   renderUpdate();
   // After `renderUpdate`, which decides whether the bar above this one is there
@@ -104,6 +108,11 @@ function renderInteraction() {
   const host = $('oq');
   const s = currentSession();
   const q = s && s.interaction && !s.interaction.answer ? s.interaction : null;
+  // The review overlay owns its own session's asks — the decision and post-go
+  // checkpoints are the cards, not a generic question box floating over the pty.
+  if (q && Review.state.open && s.id === Review.state.session) {
+    host.hidden = true; host.replaceChildren(); return;
+  }
   if (!q) { host.hidden = true; host.replaceChildren(); return; }
 
   host.replaceChildren();

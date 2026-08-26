@@ -1,7 +1,7 @@
 // The review overlay: read a PR's threads, decide each one, then one batch of
 // outward writes. The largest single feature in the SPA.
 
-import { $, call, el, get, newShell, pending, snap, toast, setPendingSelect } from './core.js';
+import { $, call, el, get, newShell, pending, setSelected, snap, toast, setPendingSelect } from './core.js';
 import * as Diff from './diff.js';
 import { patchStats, hunkEl, fileListLabel, willWriteLabel } from './review-diff.js';
 
@@ -33,6 +33,13 @@ const reviewState = {
   drafts: {},
   report: null,
   busy: false,
+  /* The single-session flow. `session` is the review session's id once started;
+     while it is set, the overlay is driven by that session's ask (read from the
+     snapshot) rather than the daemon batch. Null means the old triage+batch path,
+     which is left exactly as it was. */
+  session: null,
+  proposalsLoaded: false,   // fetched /review once, when the decision ask appeared
+  decisionsSent: false,     // answered the decision ask; the change phase is running
 };
 
 /** The manual phase's own state.
@@ -259,13 +266,22 @@ function rvIntake(root) {
 
   const row = el('div');
   row.style.cssText = 'display:flex;gap:8px;margin-top:4px';
-  row.appendChild(headBtn('read the threads', 'go', () =>
-    rvAct(() => call(`/api/pr/${reviewState.pr}/triage`), 'triage started', true)));
+  // The single-session flow: one session reads, then makes the changes you pick and
+  // posts, staying open the whole time. The overlay does not close and hand you a
+  // pane — it stays put and advances itself when the session has read the threads.
+  row.appendChild(headBtn('read the threads', 'go', () => startReviewSession()));
   if (d.url) {
     const gh = headBtn('open on github', null, () => window.open(d.url, '_blank', 'noreferrer'));
     row.appendChild(gh);
   }
   mid.appendChild(row);
+  // The old triage+batch path, kept as the fallback while the session flow proves
+  // out: a words-only review does not need an agent, and this is the proven road.
+  const alt = el('div');
+  alt.style.cssText = 'margin-top:10px';
+  alt.appendChild(headBtn('or triage into the batch', null, () =>
+    rvAct(() => call(`/api/pr/${reviewState.pr}/triage`), 'triage started', true)));
+  mid.appendChild(alt);
 
   if (n === 0) {
     mid.appendChild(el('p', null,
@@ -788,6 +804,16 @@ function rvFinal(root) {
   const goes = byHand.length
     ? `commit, then ${byHand.length === 1 ? 'your turn' : `your turn on ${byHand.length}`}`
     : label;
+  // The single-session flow: hand the picks to the session that is already waiting,
+  // rather than to the daemon batch. It applies them, then brings the diff back.
+  if (reviewState.session) {
+    const decided = q.every((x) => isHandled(x) || reviewState.skipped[x.t.id]);
+    root.appendChild(rvActs([
+      actBtn('send to the session', 'warm', () => submitDecisions(), !decided),
+      actBtn('back', null, () => { reviewState.screen = 'card'; renderReview(); }),
+    ], 'the session applies your picks and pushes, then brings the diff back to post'));
+    return;
+  }
   root.appendChild(rvActs([
     // The session is the way this is meant to go now: it adapts a fix to a branch
     // that moved instead of refusing it, and it can ask. The batch stays because
@@ -1409,7 +1435,14 @@ async function finishManual(replay) {
 function renderReview() {
   const root = $('rvoverlay');
   root.replaceChildren();
-  if (!reviewState.open || !reviewState.data) return;
+  if (!reviewState.open) return;
+
+  // The single-session flow drives its own screens off the session's ask, not the
+  // batch ladder — and it renders before /review has ever been fetched (the read
+  // phase), so it does not fall through the `!data` guard the batch path needs.
+  if (reviewState.session) return renderSessionReview(root);
+
+  if (!reviewState.data) return;
 
   if (reviewState.report?.manual) reviewState.screen = 'manual';
   else if (reviewState.report) reviewState.screen = 'report';
@@ -1434,6 +1467,219 @@ function renderReview() {
     manual: rvManual,
     report: rvReport,
   })[reviewState.screen](root);
+}
+
+/* ---------- the single-session flow ---------- */
+
+/** The review session's pending, unanswered ask — read from the snapshot, so the
+ *  overlay reacts to it on the same websocket tick everything else does. */
+function sessionAsk() {
+  const s = (snap.sessions || []).find((x) => x.id === reviewState.session);
+  const i = s && s.interaction && !s.interaction.answer ? s.interaction : null;
+  return i && i.options ? i : null;
+}
+const askHasValue = (ask, v) => !!ask && ask.options.some((o) => o.value === v);
+
+/** Start one session that reads, then makes the changes you pick and posts. Unlike
+ *  triage it does not close the overlay: it stays open and advances itself when the
+ *  session has read the threads (the decision ask is how we know it has). */
+async function startReviewSession() {
+  if (reviewState.busy) return;
+  reviewState.busy = true;
+  reviewState.screen = 'reading';
+  try {
+    const r = await call(`/api/pr/${reviewState.pr}/review-session`);
+    reviewState.session = r.session;
+    reviewState.proposalsLoaded = false;
+    reviewState.decisionsSent = false;
+    toast('reading the threads…');
+  } catch (e) {
+    toast(e.message, true);
+    reviewState.screen = 'intake';
+  }
+  reviewState.busy = false;
+  renderReview();
+}
+
+/** Driven every websocket tick (from app.js). Watches the session's ask and moves
+ *  the overlay between phases — the ask is the whole signal, so there is no polling
+ *  of `/review` and no second source of truth. */
+function reviewTick() {
+  if (!reviewState.open || !reviewState.session) return;
+  const ask = sessionAsk();
+
+  // The decision ask appears only after the session has posted its proposals, so it
+  // is the proof they are ready. Fetch them once, then show the cards.
+  if (askHasValue(ask, 'decisions') && !reviewState.proposalsLoaded) {
+    reviewState.proposalsLoaded = true;
+    reviewState.screen = 'overview';
+    loadReview(reviewState.pr);
+    return;
+  }
+  // The post-go ask appears once the change phase is done. Move to the post screen.
+  if (askHasValue(ask, 'post') && reviewState.screen !== 'posting') {
+    reviewState.screen = 'posting';
+    renderReview();
+    return;
+  }
+  // The session ended. If it got as far as a phase we were driving, say it is done.
+  const s = (snap.sessions || []).find((x) => x.id === reviewState.session);
+  if ((!s || !s.alive) && reviewState.decisionsSent && reviewState.screen !== 'report') {
+    reviewState.screen = 'report';
+    renderReview();
+  }
+}
+
+/** Route the session flow's own screens. */
+function renderSessionReview(root) {
+  if (reviewState.screen === 'reading') return rvReading(root);
+  if (reviewState.screen === 'posting') return rvPosting(root);
+  if (reviewState.screen === 'report') return rvSessionReport(root);
+  if (reviewState.decisionsSent) return rvChanging(root);
+  if (!reviewState.data || !reviewState.data.proposals) return rvReading(root);
+  ({ overview: rvOverview, card: rvCard, final: rvFinal })[
+    ['overview', 'card', 'final'].includes(reviewState.screen) ? reviewState.screen : 'overview'
+  ](root);
+}
+
+/** The read phase: the session is reading, nothing to decide yet. */
+function rvReading(root) {
+  root.appendChild(rvHead(reviewState.data?.title || 'review'));
+  const mid = el('div', 'mid');
+  mid.appendChild(el('div', 'eyebrow', 'the session is reading the threads'));
+  mid.appendChild(el('div', 'big', 'Reading…'));
+  mid.appendChild(el('p', null,
+    'One session reads the code at each thread and works out how it could be answered. '
+    + 'It changes nothing yet. The cards open here the moment it is done — you do not '
+    + 'reopen anything. Answer any permission prompts in the session’s pane.'));
+  root.appendChild(mid);
+}
+
+/** Between the decision submit and the post-go ask: the session is writing code. */
+function rvChanging(root) {
+  root.appendChild(rvHead(reviewState.data?.title || 'review'));
+  const mid = el('div', 'mid');
+  mid.appendChild(el('div', 'eyebrow', 'the session is making the changes you picked'));
+  mid.appendChild(el('div', 'big', 'Applying…'));
+  mid.appendChild(el('p', null,
+    'It writes the code for each solution you chose, runs the repo’s checks, amends '
+    + 'the owning commit and pushes. Answer any permission prompts in the session’s pane. '
+    + 'When it is done, the real diff and your replies come back here to post.'));
+  const row = el('div');
+  row.style.cssText = 'display:flex;gap:8px;margin-top:6px';
+  row.appendChild(headBtn('go to the pane', 'go', () => { closeReview(); setSelected(reviewState.session); }));
+  mid.appendChild(row);
+  root.appendChild(mid);
+}
+
+/** The post phase: the change is pushed, nothing is said to a reviewer yet. */
+function rvPosting(root) {
+  const q = queue();
+  root.appendChild(rvHead('ready to post', `${q.length} thread${q.length === 1 ? '' : 's'}`));
+  const body = el('div', 'body');
+  const plan = el('div', 'sec');
+  for (const item of q) {
+    if (reviewState.skipped[item.t.id]) continue;
+    const pos = positionOf(item);
+    const row = el('div', 'stage-row');
+    const word = pos.stance === 'agree' ? 'thumbs up' : pos.stance === 'story' ? 'story' : 'reply';
+    row.appendChild(el('span', 'k ' + (pos.stance === 'agree' ? 'reply' : pos.stance), word));
+    const c = el('span', 'c');
+    c.appendChild(el('span', 'p', threadLabel(item.t)));
+    const reply = replyOf(item).trim();
+    if (reply) c.appendChild(el('span', 't', `Replies “${reply.length > 90 ? reply.slice(0, 90).trimEnd() + '…' : reply}”`));
+    row.appendChild(c);
+    plan.appendChild(row);
+  }
+  body.appendChild(plan);
+  root.appendChild(body);
+  root.appendChild(rvActs([
+    actBtn('post', 'warm', () => sendPost()),
+    actBtn('hold', null, () => holdPost()),
+  ], 'the code is already pushed · this posts the replies and reactions'));
+}
+
+/** Nothing more to do: the session finished. */
+function rvSessionReport(root) {
+  root.appendChild(rvHead('done'));
+  const mid = el('div', 'mid');
+  mid.appendChild(el('div', 'big', 'Posted.'));
+  mid.appendChild(el('p', null, 'The session answered the threads and finished. Read its pane for the detail of what it changed and posted.'));
+  root.appendChild(mid);
+  root.appendChild(rvActs([actBtn('close', 'pri', () => closeReview())]));
+}
+
+/** The decision set the overlay hands back over the ask channel. One per thread:
+ *  the stance, which solution the human picked, and the reply as they edited it. */
+function decisionSet() {
+  return queue().map((item) => {
+    if (reviewState.skipped[item.t.id]) return { thread_id: item.t.id, stance: 'skip' };
+    const pos = positionOf(item);
+    return {
+      thread_id: item.t.id,
+      stance: pos.stance,
+      solution: pos.label,
+      reply: pos.stance === 'agree' ? '' : replyOf(item),
+    };
+  });
+}
+
+/** Answer the review session's pending ask, carrying the JSON in the free-text
+ *  field the option opened. */
+async function answerSession(value, payload) {
+  const ask = sessionAsk();
+  if (!ask) { toast('the session is not waiting on anything just now', true); return false; }
+  try {
+    await call(`/api/session/${reviewState.session}/answer`, {
+      ask: ask.id, answer: value, text: JSON.stringify(payload),
+    });
+    return true;
+  } catch (e) {
+    toast(e.message, true);
+    return false;
+  }
+}
+
+/** Send the picks to the waiting session; it moves to the change phase. */
+async function submitDecisions() {
+  if (reviewState.busy) return;
+  reviewState.busy = true;
+  const ok = await answerSession('decisions', { decisions: decisionSet() });
+  reviewState.busy = false;
+  if (!ok) return;
+  reviewState.decisionsSent = true;
+  reviewState.screen = 'changing';
+  toast('sent — the session is applying your picks');
+  renderReview();
+}
+
+/** Give the go: the session posts the replies exactly as they stand. */
+async function sendPost() {
+  if (reviewState.busy) return;
+  reviewState.busy = true;
+  const replies = queue()
+    .filter((x) => !reviewState.skipped[x.t.id])
+    .map((x) => ({ thread_id: x.t.id, reply: replyOf(x) }));
+  const ok = await answerSession('post', { replies });
+  reviewState.busy = false;
+  if (!ok) return;
+  reviewState.screen = 'report';
+  toast('posting');
+  renderReview();
+}
+
+/** Hold: the session writes nothing outward and stops. */
+async function holdPost() {
+  if (reviewState.busy) return;
+  reviewState.busy = true;
+  const ask = sessionAsk();
+  if (ask) {
+    try { await call(`/api/session/${reviewState.session}/answer`, { ask: ask.id, answer: 'hold' }); }
+    catch (e) { toast(e.message, true); }
+  }
+  reviewState.busy = false;
+  toast('held — nothing posted');
+  closeReview();
 }
 
 /** Open the overlay on a PR, or refresh what it is showing.
@@ -1504,6 +1750,9 @@ async function openReview(pr) {
     reviewState.i = 0;
     reviewState.screen = 'intake';
     reviewState.data = null;
+    reviewState.session = null;
+    reviewState.proposalsLoaded = false;
+    reviewState.decisionsSent = false;
   }
   reviewState.open = true;
   $('rvoverlay').classList.add('on');
@@ -1820,4 +2069,4 @@ function reviewKey(e) {
 // which is the point: the rail reaches the overlay through these four or not
 // at all.
 
-export { reviewState as state, openReview as open, closeReview as close, reviewKey as key };
+export { reviewState as state, openReview as open, closeReview as close, reviewKey as key, reviewTick as tick };
