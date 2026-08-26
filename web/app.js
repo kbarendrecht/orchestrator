@@ -330,9 +330,13 @@ function renderDrawer() {
   if (!procs.some((p) => p.id === active)) {
     // Prefer something still running; a dead shell is only shown when it is
     // all there is, or when you picked it yourself.
-    active = (procs.find(alive) ?? procs[0])?.id ?? null;
+    const fallback = (procs.find(alive) ?? procs[0])?.id ?? null;
+    /* Unless it is a shell you just asked for that the snapshot has not caught up
+       with: writing the fallback back would spend the claim, and the process then
+       arrives to find something else selected and never takes the cursor. */
+    if (active !== pendingProcFocus) selectedProc[wsId] = fallback;
+    active = fallback;
   }
-  selectedProc[wsId] = active;
 
   // Shells are numbered per workspace. Without this every dead one renders as
   // the same "shell (0)" and a drawer with three corpses in it is unreadable.

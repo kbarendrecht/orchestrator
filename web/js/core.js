@@ -380,6 +380,9 @@ export async function newShell() {
     // You pressed + to type in it. The pty does not exist until the daemon says
     // so, so this is claimed here and spent when the terminal appears.
     pendingProcFocus = r.process;
+    // The snapshot with it in has usually landed already, so ask for the render
+    // rather than waiting for one that has been.
+    redrawDrawer();
   } catch (e) {
     toast(e.message, true);
   }
@@ -483,7 +486,18 @@ export function setDrawerCollapsed(v) {
   // Announced, not applied: redrawing the drawer and nudging xterm to refit are
   // the app's business, and reaching for them from here would make this layer
   // depend on the panes that sit on it.
-  for (const fn of drawerListeners) fn(v);
+  redrawDrawer();
+}
+
+/** Redraw the drawer now, on the same seam, without changing anything about it.
+ *
+ *  `newShell` needs it because the daemon notifies *before* it answers the POST
+ *  (`spawn::spawn_shell`), so the render that would have picked the new shell has
+ *  already been and gone by the time we know its id — and the next snapshot may
+ *  be a poll away. Waiting for one is what made a new shell take the cursor
+ *  sometimes and not others. */
+export function redrawDrawer() {
+  for (const fn of drawerListeners) fn(drawerCollapsed);
 }
 
 /** A shell whose terminal should take the cursor as soon as it exists. */
