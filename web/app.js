@@ -514,13 +514,6 @@ for (const dd of $('keyhelp').querySelectorAll('.keys dd')) {
     dd.innerHTML = dd.innerHTML.replace(/MOD/g, MOD_LABEL);
   }
 }
-if (IS_MAC) {
-  // Neither caveat applies to ⌘: a browser tab does not reserve ⌘N, and ⌘ never
-  // reaches the pty, so nothing of readline's is taken.
-  $('keyhelpnote').textContent =
-    'Ctrl stays with the terminal, so nothing here takes a shell key. '
-    + 'Ctrl Tab switches sessions because ⌘ Tab belongs to macOS.';
-}
 $('dcollapse').onclick = () => setDrawerCollapsed(!drawerCollapsed);
 $('refreshbtn').onclick = () => {
   const wsId = currentWorkspaceId();

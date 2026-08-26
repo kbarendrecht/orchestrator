@@ -530,25 +530,21 @@ body.row-resizing{cursor:row-resize;user-select:none}
 }
 .settings-group:first-of-type{margin-top:14px}
 .settings-x{margin-left:auto;letter-spacing:0}
-/* The shortcut legend: a two-column list of chord -> what it does. Chords are
-   right-aligned against the descriptions so the eye runs down one edge. */
-.keys{display:grid;grid-template-columns:max-content 1fr;gap:6px 16px;margin:8px 0 0}
+/* The shortcut legend: a two-column list of chord -> what it does, one grid for
+   the whole thing so the descriptions line up across the groups.
+   Chords are left-aligned, which is what makes the list scannable: nearly every
+   one starts with the same modifier, so the shared prefix stacks into a column.
+   Right-aligned they lined up on the edge nearest the descriptions and left the
+   modifier ragged, which is the edge nobody reads down. */
+.keys{display:grid;grid-template-columns:max-content 1fr;gap:10px 26px;margin:0}
+.keys .settings-group{grid-column:1/-1;margin:28px 0 0}
+.keys .settings-group:first-of-type{margin-top:8px}
 .keys dt{
   font-family:var(--mono);font-size:calc(11px * var(--fs));color:var(--text);
-  text-align:right;white-space:nowrap;
+  white-space:nowrap;
 }
 .keys dd{
   margin:0;font-size:calc(11px * var(--fs));color:var(--dim);align-self:center;
-}
-/* In the legend the help text is a footnote closing the list, not a caption
-   under the field above it, so it needs the room `.settings-help`'s 3px
-   deliberately withholds — and a rule, or it reads as another description. */
-/* `max-width` off so the rule lines up with the group rules above it: inherited,
-   the 62ch measure stopped it short and the ragged edge read as a mistake. Safe
-   here because the footnote is two lines, not a paragraph of prose. */
-.keyhelp .settings-help{
-  margin-top:22px;padding-top:12px;border-top:1px solid var(--line-soft);
-  max-width:none;
 }
 .settings-help kbd,.keys dt kbd{
   font-family:var(--mono);font-size:.9em;padding:0 4px;border-radius:3px;

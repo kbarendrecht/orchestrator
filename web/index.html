@@ -300,21 +300,21 @@
             title="Close · Esc" aria-label="Close shortcuts">&#10005;</button>
   </div>
   <div class="settings-card">
-    <div class="settings-group">Navigate</div>
+    <!-- One list, not one per group: the chord column is sized by the widest chord
+         in the *whole* legend, so every description starts at the same x. Four
+         separate `dl`s each measured their own, and the four columns landed 90px
+         apart. Group headings are grid children spanning both columns. -->
     <dl class="keys">
+      <div class="settings-group">Navigate</div>
       <dt>Ctrl&nbsp;Tab</dt><dd>next session (Shift: previous)</dd>
       <dt data-mod>MOD&nbsp;Space</dt><dd>jump to the first session waiting on you</dd>
-    </dl>
 
-    <div class="settings-group">Create</div>
-    <dl class="keys">
+      <div class="settings-group">Create</div>
       <dt data-mod>MOD&nbsp;N</dt><dd>new worktree</dd>
       <dt data-mod>MOD&nbsp;Shift&nbsp;N</dt><dd>new session on main</dd>
       <dt data-mod>MOD&nbsp;Shift&nbsp;T</dt><dd>new shell in this workspace (also MOD&nbsp;`)</dd>
-    </dl>
 
-    <div class="settings-group">Overlays</div>
-    <dl class="keys">
+      <div class="settings-group">Overlays</div>
       <dt data-mod>MOD&nbsp;Shift&nbsp;D</dt><dd>toggle the diff</dd>
       <dt>J&nbsp;/&nbsp;K</dt><dd>previous / next changed file or review card</dd>
       <dt>Enter</dt><dd>accept the review card</dd>
@@ -322,24 +322,14 @@
       <dt>S&nbsp;/&nbsp;M</dt><dd>skip the card / do it yourself</dd>
       <dt data-mod>MOD&nbsp;Enter</dt><dd>send the review batch</dd>
       <dt>Esc</dt><dd>close the topmost overlay or menu</dd>
-    </dl>
 
-    <div class="settings-group">View</div>
-    <dl class="keys">
+      <div class="settings-group">View</div>
       <dt data-mod>MOD&nbsp;=&nbsp;/&nbsp;&minus;</dt><dd>zoom in / out</dd>
       <dt data-mod>MOD&nbsp;0</dt><dd>reset zoom</dd>
       <dt data-mod data-mac="&#8984;&nbsp;C&nbsp;/&nbsp;V">Ctrl&nbsp;Shift&nbsp;C&nbsp;/&nbsp;V</dt><dd>copy / paste in the terminal</dd>
       <dt data-mod>MOD&nbsp;S</dt><dd>save the file being edited</dd>
       <dt data-mod>MOD&nbsp;Shift&nbsp;?</dt><dd>show or hide this list</dd>
     </dl>
-
-    <!-- Both halves are platform-specific: the browser-reserved keys and the
-         readline collision are the Ctrl spelling's problem, and a Mac has
-         neither, so `keyhelpNote` swaps the whole paragraph. -->
-    <p class="settings-help" id="keyhelpnote">Ctrl&nbsp;N, Ctrl&nbsp;Shift&nbsp;N and
-      Ctrl&nbsp;Tab need the desktop app; a browser tab keeps those for itself.
-      Ctrl&nbsp;N is also readline's next-history, so a shell here walks history
-      back with Ctrl&nbsp;P but not forward.</p>
   </div>
 </div>
 
