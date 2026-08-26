@@ -133,6 +133,44 @@ Everything outside that block is hand-written and survives.
   used per fix-pr run — is the hook. Neither is wanted yet: orchd carries no
   container config at all, and that is the portable default.
 
+- **Let `fix-pr` ask, and then decide what the concurrency cap is for.** One item
+  because the second question only becomes interesting once the first is answered.
+
+  **A fix run cannot ask you anything.** The ask channel is real and proven — the
+  session POSTs `…/ask`, long-polls `…/ask/:ask/wait` in bounded loops, the card
+  renders over the pty, and a `free: true` option opens a box so "let me write it"
+  can. The resolve run uses it. `commands/fix-pr.md` does not mention it once, and
+  `vendored_prompt_file` renders `{{ASK_BASE}}` for that template anyway — so the
+  machinery is handed to the session and never used.
+
+  What the prompt says instead, in five places, is **stop**: a conflict whose
+  resolution is a judgement about behaviour, the same job failing twice, a fix that
+  would change behaviour to go green, a rejected `--force-with-lease`. Every one is a
+  question with two or three real options. But "stop and ask" means print it in the
+  pane and end the turn — so the session lands at `your_turn`, `settle` records
+  `Exhausted` ("the run gave up"), and you have to find the pane and read back what
+  it wanted. The same information as a card would carry, except the run had to die to
+  deliver it. Converting those five into asks is the change; the prompt is where it
+  lives, not Rust.
+
+  **`MAX_AUTOMATION = 2` is vestigial, and 2 is the wrong number either way.** It
+  comes from two worlds that no longer exist: automation that fired on its own (§8's
+  transition rules, deliberately unimplemented — every run is hand-triggered now, so
+  passing 2 means pressing the button three times while watching), and the capability
+  subsystem that tracked shared resources (deleted; the leftover is two runs
+  colliding on a shared e2e instances dir, whose stated mitigation is
+  `MAX_AUTOMATION = 1`). At 2 it is neither serialization nor resource protection —
+  `headroom` does the latter at spawn, with real numbers. The only thing left that it
+  bounds is a runaway API caller, and that route needs the app token, which agents
+  deliberately do not hold. So: drop it and let `headroom` be the guard, or set it to
+  1 and name the shared-resource case as the reason. Not a number in between.
+
+  **Why they are one item.** A run blocked on a question holds its slot
+  indefinitely — a human takes minutes, and the loop is what makes that safe. So the
+  moment `fix-pr` can ask, the cap starts mattering *more*, for a new reason: two
+  open questions would lock out every further run. Either the cap stops counting
+  sessions that are waiting on you, or asking makes it worse than useless.
+
 - **Stacked-PR support.** Two halves. First, a context-menu `stack` action on a
   PR row that opens a session starting from that PR's code — a new branch based
   on the selected PR's head, its own worktree (cwd = main, via the existing
