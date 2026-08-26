@@ -335,7 +335,8 @@
 
 <div class="ctxmenu" id="ctxmenu" role="menu" hidden></div>
 
-<div class="toast" id="toast"></div>
+<!-- `tabindex` so a click can move focus off the terminal; see `core.toast`. -->
+<div class="toast" id="toast" tabindex="-1"></div>
 
 <script>window.__ORCH__ = { token: "__ORCH_TOKEN__", chrome: "__ORCH_CHROME__", platform: "__ORCH_PLATFORM__" };</script>
 <script src="/vendor/xterm.js"></script>

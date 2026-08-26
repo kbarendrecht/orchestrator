@@ -697,7 +697,15 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
   white-space:pre-wrap;
 }
 .toast.on{opacity:1}
-.toast.bad{border-color:var(--bad);color:var(--bad)}
+/* Reachable, and so selectable: an error is the one toast whose text you may have
+   to copy. The others keep `pointer-events:none` from the rule above, because a
+   receipt that lives 2.6s over the terminal must not take a click aimed at it.
+   No focus ring: the selection is the feedback, and a ring reads as an input. */
+.toast.bad{
+  border-color:var(--bad);color:var(--bad);
+  pointer-events:auto;cursor:text;user-select:text;
+}
+.toast:focus{outline:none}
 
 /* Update nudge: a quiet pill top-centre, out of the way but not a toast that
    vanishes before you act on it. */

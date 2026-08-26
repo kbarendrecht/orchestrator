@@ -69,13 +69,62 @@ export function el(tag, cls, text) {
 }
 
 let toastTimer = null;
+
+/** Whether the toast is being *used*: the pointer is in it, or it holds a
+ *  selection nobody has copied yet.
+ *
+ *  An error toast carries the text you need to keep — a refusal names a branch, a
+ *  pid, a path — and 7 seconds is not long enough to read one, aim at it and drag
+ *  across it. So the clock does not run while you are working in it. */
+function toastHeld() {
+  const t = $('toast');
+  if (t.matches(':hover')) return true;
+  const sel = window.getSelection();
+  return !!sel && !sel.isCollapsed && !!sel.anchorNode && t.contains(sel.anchorNode);
+}
+
+/** Whatever had the keyboard when the toast took it, to give back afterwards. */
+let toastReturn = null;
+
+/** Start the dismissal clock, and keep restarting it while the toast is held. */
+function armToast(ms) {
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => {
+    // Re-checked on a short beat rather than on pointerleave: a selection made and
+    // then left alone has to keep the text on screen too, and there is no event
+    // for "still selected".
+    if (toastHeld()) return armToast(1200);
+    const t = $('toast');
+    t.className = 'toast';
+    /* Hand the keyboard back to whatever we took it from — the exact terminal,
+       centre or drawer, rather than "a" terminal, which is why this remembers the
+       element instead of announcing the dismissal for `term` to guess at. Without
+       it the toast fades holding focus and the next keystroke lands nowhere. */
+    if (document.activeElement === t && toastReturn && document.contains(toastReturn)) {
+      try {
+        toastReturn.focus();
+      } catch (e) { /* disposed while the toast was up */ }
+    }
+    toastReturn = null;
+  }, ms);
+}
+
 export function toast(message, bad) {
   const t = $('toast');
   t.textContent = message;
   t.className = 'toast on' + (bad ? ' bad' : '');
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { t.className = 'toast'; }, bad ? 7000 : 2600);
+  armToast(bad ? 7000 : 2600);
 }
+
+/* Take focus on the way in, or the copy never happens: with a terminal focused,
+   `Ctrl+C` is an interrupt on its way to the pty, not a copy of what you just
+   selected. Only an error toast is reachable at all — `pointer-events` is off for
+   the rest, so a 2.6s confirmation in the middle of the pane cannot swallow a
+   click meant for the terminal under it. */
+$('toast').addEventListener('pointerdown', () => {
+  toastReturn = /** @type {HTMLElement} */ (document.activeElement);
+  $('toast').focus();
+});
 
 export async function call(path, body) {
   const res = await fetch(path, {
