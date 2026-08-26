@@ -233,6 +233,46 @@ Everything outside that block is hand-written and survives.
     the questions do not. A probe that *suggests* managed processes from a compose
     file or a `package.json` script was scoped and deferred.
 
+- **Cut every worktree with the daemon, including new interactive ones.** *Low
+  priority — nothing is broken today, both paths work.* The point is not tidiness:
+  `claude --worktree` is the one place the daemon asks the **agent** to do something
+  only that agent can do, so collapsing it is the first real step towards being
+  agent-agnostic. It is also the smaller half of the coupling — the session model is
+  the rest, see "Worktree creation is decoupled" above.
+
+  Mechanically it is already possible and already the exercised path: every PR
+  worktree and every resume is cut with `git worktree add`. Only
+  `spawn_worktree_session` delegates, and only when `worktrees_subdir` happens to be
+  Claude Code's default — so today you cannot ask for daemon-cutting without moving
+  your worktrees elsewhere, which is an unrelated decision. It wants an explicit
+  mode, not a subdir inference.
+
+  **From the outside nothing changes.** Same paths (`<main>/.claude/worktrees/<name>`),
+  same branch names (`worktree-<name>`), same rail, same gestures.
+
+  **What must keep working, and is the actual work:** the target repo's own
+  `WorktreeCreate` hooks. Claude fires those *only* for `claude --worktree`, so a
+  daemon-cut tree has to run them itself — read the repo's `WorktreeCreate` entries
+  and invoke them, rather than leaning on `worktree_setup` and telling every repo to
+  configure the same thing twice. Watch for the double-run: a repo with both a
+  `WorktreeCreate` hook and a configured `worktree_setup` must not get both.
+
+  **Trust stays Claude's**, checked when the session opens in the tree. What
+  disappears is *creation* depending on it: today an unaccepted trust dialog makes
+  `claude --worktree` refuse, the session exit instantly, and leaves a workspace
+  record for a worktree that was never created.
+
+  **`PENDING_WORKTREE` goes.** The daemon would know the path before the pty exists,
+  so no `…creating` placeholder, no adopting the workspace from the agent-reported
+  cwd, and no requirement to `canonicalize` at that boundary. The one thing lost is
+  `--worktree` with no name inventing a collision-proof one; the daemon already has
+  `wt-<8 hex>` for that.
+
+  **Measure first, in an afternoon:** cut a worktree each way and diff what Claude
+  Code writes into its own state. Locking the tree is the only difference anybody has
+  confirmed, and that is what `worktree_remove`'s stale-lock retry exists for — which
+  becomes deletable once no locked trees remain, but not before.
+
 - **Is it macOS-compatible? Built and tested there, never launched.** Four
   Linux-isms were found by reading for them rather than by CI, because all four
   **compile cleanly and fail at runtime**: `/proc` reads in `pid_alive` and
