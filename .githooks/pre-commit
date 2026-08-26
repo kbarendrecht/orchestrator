@@ -1,9 +1,12 @@
 #!/bin/sh
-# The SPA's two checks, before the commit rather than after the bug.
+# The identity guard and the SPA's two checks, before the commit rather than
+# after the bug.
 #
-# Kept honest about cost: each check runs only when something it could possibly
-# fail on is staged, because a hook that takes half a minute on a docs commit is
-# a hook everybody learns to pass `--no-verify` to. Warm, this is ~2s.
+# Kept honest about cost: the build checks run only when something they could
+# possibly fail on is staged, because a hook that takes half a minute on a docs
+# commit is a hook everybody learns to pass `--no-verify` to. Warm, this is ~2s.
+# The identity guard is the exception and runs always — it is two `git var` calls,
+# and the commit it has to catch is as likely to be a docs one as a Rust one.
 #
 # It checks the *working tree*, not the staged content. Committing a subset of
 # your changes can therefore pass a check the commit itself would not — the
@@ -17,6 +20,58 @@
 # mid-refactor; the gate is `mise run check-web` and CI, not this.
 
 set -e
+
+# The identity, checked before anything else and on every commit — including the
+# docs-only ones the checks below exit early on, because a TODO.md commit is one
+# of the nine this exists to have stopped.
+#
+# The tests configure a git identity in their scratch repos: `t@t` in git.rs,
+# `me@here` in patch.rs, `e2e@test` in the harness. Those live in /tmp and
+# normally stay there, but `git config` with no scope flag writes to
+# `$GIT_DIR/config` — so a `cargo test` that inherited GIT_DIR from a parent git
+# (a hook, `rebase --exec`) writes them into *this* repo instead. That happened
+# on 2026-08-24 at 15:03, along with six stray fixture branches and four
+# worktrees registered into /tmp. The next nine commits went out as
+# `me <me@here>`, and since the forge attributes by email they were credited to
+# whichever stranger has that address on their account. Undoing it means
+# rewriting every commit since, so the cheap moment to notice is here.
+#
+# Judged on the shape of the address rather than a list of the fixtures we
+# happen to have today: a domain with no dot, or one RFC 2606 reserves for
+# documentation and testing. A real committer's address is neither, and the next
+# test to invent an identity is covered without anyone remembering to add it.
+#
+# `git var` reports what git itself is about to use, so an identity from the
+# environment or `-c` is seen too. It does not see `git commit --author=…`, which
+# git applies after the hook — that one is a deliberate act, not a spill.
+fixture_host() {
+  case $1 in
+    example.com|example.org|example.net|localhost) return 0 ;;
+    *.test|*.example|*.invalid|*.localhost) return 0 ;;
+    *.*) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+for who in AUTHOR COMMITTER; do
+  ident=$(git var "GIT_${who}_IDENT")
+  email=${ident#*<}
+  email=${email%%>*}
+  if fixture_host "${email#*@}"; then
+    lc=$(printf '%s' "$who" | tr 'A-Z' 'a-z')
+    echo "pre-commit: refusing to commit with $lc <$email> — that is a test" >&2
+    echo "            identity, not yours. A cargo test that inherited GIT_DIR" >&2
+    echo "            writes its fixture identity into .git/config." >&2
+    echo "            Put yours back:" >&2
+    echo "              git config user.name  '<your name>'" >&2
+    echo "              git config user.email '<your address>'" >&2
+    echo "            Then look for the rest of the spill, which is usually" >&2
+    echo "            stray refs and worktrees pointing at /tmp:" >&2
+    echo "              git for-each-ref --format='%(refname:short) %(authoremail)' refs/heads/" >&2
+    echo "              git worktree list" >&2
+    exit 1
+  fi
+done
 
 staged=$(git diff --cached --name-only --diff-filter=ACMR)
 [ -n "$staged" ] || exit 0
