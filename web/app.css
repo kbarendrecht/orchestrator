@@ -429,9 +429,10 @@ button.ctx-btn:hover{color:var(--text)}
   font-family:var(--mono);font-size:calc(10.5px * var(--fs));color:var(--faint-solid);
   padding:3px 8px;border-radius:2px;display:flex;align-items:center;gap:6px;
 }
-.dtab[aria-selected="true"]{color:var(--text);background:var(--raised)}
-/* A finished shell keeps its buffer until dismissed, but must not read as live. */
-.dtab.dead{color:var(--ghost)}
+.dtab.stopped{color:var(--ghost)}
+/* Only the ⟳ lights up: the tab body does nothing, so it must not offer to. */
+.dtab.stopped:hover{color:var(--ghost)}
+.dtab.stopped .x:hover{color:var(--text);background:var(--raised)}
 .dtab.dead[aria-selected="true"]{color:var(--faint-solid)}
 .dtab .dot{width:5px;height:5px}
 .dtab .x{margin-left:1px;padding:0 3px}

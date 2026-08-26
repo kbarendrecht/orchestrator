@@ -483,6 +483,18 @@ impl AppState {
                         exit_code: p.pty.as_ref().and_then(|h| h.exit_code()),
                     })
                     .collect(),
+                // A managed process that died stays in `processes` as a dead tab
+                // with its own restart button, so matching on the name — not on
+                // liveness — is what keeps it from being listed twice.
+                stopped_processes: if w.is_main() {
+                    &self.cfg.main_processes
+                } else {
+                    &self.cfg.worktree_processes
+                }
+                .iter()
+                .filter(|spec| !w.processes.iter().any(|p| p.name == spec.name))
+                .map(|spec| spec.name.clone())
+                .collect(),
                 files: inner.files.get(&w.id).cloned().unwrap_or_default(),
                 changed: w.tree.changed.clone(),
                 changed_since: w.tree.base.clone(),
@@ -1006,6 +1018,15 @@ pub struct WorkspaceView {
     pub occupant: Option<Uuid>,
     pub branches: Vec<String>,
     pub processes: Vec<ProcessView>,
+    /// Managed processes this workspace declares that are not running — config
+    /// order, names only.
+    ///
+    /// The drawer built its tabs from `processes` alone, so anything with
+    /// `autostart: false` had no way into the app at all: the restart button the
+    /// config comment points at is drawn *on a tab*, and there was no tab. A
+    /// `docker compose up` you deliberately do not autostart still has to be
+    /// startable.
+    pub stopped_processes: Vec<String>,
     pub files: FileSet,
     /// Every file this workspace changed since it branched, committed work
     /// included, plus anything untracked. What the changed-files pane lists.

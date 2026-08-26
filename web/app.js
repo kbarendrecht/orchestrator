@@ -394,6 +394,37 @@ function renderDrawer() {
     tabs.appendChild(tab);
   }
 
+  /* Declared and not running (`stopped_processes`). A hollow dot, no ✕, and a
+     click starts it — the drawer used to list only what autostarted, which left
+     a `docker compose up` that is deliberately not autostarted with no way in:
+     the restart button its config comment points at is drawn on a tab, and there
+     was no tab until something started it. */
+  for (const name of w ? w.stopped_processes : []) {
+    const tab = el('button', 'dtab stopped');
+    tab.title = `${name} is declared and not running`;
+    // The same hollow dot an archived session uses: declared, not running.
+    tab.appendChild(el('span', 'dot archived'));
+    tab.appendChild(el('span', null, name));
+    /* Starting is the ⟳, not the tab. Every other tab in this strip selects on
+       click, so a tab that instead *launches* something is the one place a
+       misplaced click costs you a `docker compose up` — and the running tabs put
+       their restart behind the same glyph, so this is one gesture rather than two.
+       The tab itself stays clickable for the drag and does nothing else. */
+    const go = el('span', 'x', '⟳');
+    go.title = `Start ${name}`;
+    go.onclick = (ev) => {
+      ev.stopPropagation();
+      setDrawerTouched(true);
+      call(`/api/workspace/${encodeURIComponent(wsId)}/process/${encodeURIComponent(name)}/restart`)
+        // You pressed it to watch it come up, so land on it. The response carries
+        // the id; the snapshot that will carry the tab has not arrived yet.
+        .then((r) => { setSelectedProc(wsId, r.process); renderDrawer(); })
+        .catch((e) => toast(e.message, true));
+    };
+    tab.appendChild(go);
+    tabs.appendChild(tab);
+  }
+
   const shown = Term.show(active ? `proc:${active}` : null, $('drawerbody'));
   if (shown && pendingProcFocus && active === pendingProcFocus) {
     setPendingProcFocus(null);

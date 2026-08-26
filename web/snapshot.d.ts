@@ -501,7 +501,18 @@ tail: string, };
 
 export type WorkspaceKind = { "kind": "main" } | { "kind": "worktree", name: string, };
 
-export type WorkspaceView = { id: string, path: string, kind: WorkspaceKind, is_main: boolean, occupant: string | null, branches: Array<string>, processes: Array<ProcessView>, files: FileSet, 
+export type WorkspaceView = { id: string, path: string, kind: WorkspaceKind, is_main: boolean, occupant: string | null, branches: Array<string>, processes: Array<ProcessView>, 
+/**
+ * Managed processes this workspace declares that are not running — config
+ * order, names only.
+ *
+ * The drawer built its tabs from `processes` alone, so anything with
+ * `autostart: false` had no way into the app at all: the restart button the
+ * config comment points at is drawn *on a tab*, and there was no tab. A
+ * `docker compose up` you deliberately do not autostart still has to be
+ * startable.
+ */
+stopped_processes: Array<string>, files: FileSet, 
 /**
  * Every file this workspace changed since it branched, committed work
  * included, plus anything untracked. What the changed-files pane lists.
