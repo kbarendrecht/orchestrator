@@ -1790,6 +1790,29 @@ fn arrival_notice(
         to.display(),
         from.display(),
     );
+    /* Claude Code pins worktree isolation in the transcript (a `worktree-state`
+       record, re-appended every turn), so a conversation started by `claude
+       --worktree` goes on refusing every git command aimed anywhere but that
+       original worktree — including the tree it has just been moved *into*. The
+       daemon cannot clear that from outside: `ExitWorktree` and `EnterWorktree` are
+       the agent's own tools, so the agent has to be told to use one.
+
+       Found by reading a main session after a swap: the branch, the files and the
+       conversation had all arrived correctly and the agent still could not run `git
+       status` on them — "This session is isolated in the worktree …, but this
+       command redirects git to the shared checkout". Said unconditionally rather
+       than only for a session known to be isolated, because what the daemon can see
+       does not include that, and the instruction costs a session that is not
+       isolated nothing. */
+    note.push_str(&if into_main {
+        " If Claude Code has this session isolated in a worktree, call `ExitWorktree`          before your next git command: while that isolation holds, git aimed at this          checkout is refused outright."
+            .to_string()
+    } else {
+        format!(
+            " If Claude Code has this session isolated in a different worktree, call              `EnterWorktree` with path {} before your next git command: while the old              isolation holds, git aimed at this tree is refused outright.",
+            to.display()
+        )
+    });
     if let Some(extra) = app.cfg.workspace_notes.for_main(into_main) {
         note.push(' ');
         note.push_str(extra);
