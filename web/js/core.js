@@ -516,6 +516,28 @@ export function redrawDrawer() {
   for (const fn of drawerListeners) fn(drawerCollapsed);
 }
 
+/* The order you dragged the drawer's tabs into, per workspace, as a list of tab
+   keys. A view preference like the column widths and the drawer height, so it
+   lives beside them in `localStorage` rather than in the daemon: the order is
+   yours, not the machine's, and the processes it describes do not outlive the
+   daemon anyway. Keys are the caller's to choose — `app.js` uses a managed
+   process's name, so `docker` keeps its place across a restart, and a shell's id,
+   which is the only thing telling two of them apart. */
+export let procOrder = (() => {
+  try {
+    return JSON.parse(localStorage.getItem('orch.procOrder') || '{}') || {};
+  } catch (e) {
+    return {};
+  }
+})();
+
+export function setProcOrder(wsId, keys) {
+  procOrder = { ...procOrder, [wsId]: keys };
+  try {
+    localStorage.setItem('orch.procOrder', JSON.stringify(procOrder));
+  } catch (e) { /* private mode: the order still holds for this session */ }
+}
+
 /** A shell whose terminal should take the cursor as soon as it exists. */
 export let pendingProcFocus = null;
 

@@ -11,7 +11,7 @@ import {
   pending, isConversation, byNewest, sessionsOf, currentSession,
   activeWorkspaceId, currentWorkspaceId, openMenu, closeMenu, menuOpen,
   newSession, newWorktree, newShell,
-  selectedProc, setSelectedProc, prState, handedToPr,
+  selectedProc, setSelectedProc, prState, handedToPr, procOrder, setProcOrder,
   drawerTouched, setDrawerTouched, drawerCollapsed, setDrawerCollapsed,
   pendingProcFocus, setPendingProcFocus, pendingSelect, setPendingSelect,
   prOf, onDrawerChange, appMod, IS_MAC, MOD_LABEL,
@@ -290,7 +290,103 @@ function renderContext() {
 // Drawer — available on every workspace, not just main (§9)
 // ---------------------------------------------------------------------------
 
+/* The workspace whose tab strip is being dragged, or null. A snapshot arriving
+   mid-drag would `replaceChildren` the strip out from under the pointer, so the
+   render is skipped until the drop — which then renders once, from the order the
+   drop just saved. */
+let tabDrag = null;
+
+/** Reorder the drawer's tabs by dragging one.
+ *
+ *  Pointer events rather than HTML5 drag-and-drop: the webview is WebKitGTK, and
+ *  a native drag brings a drag image, a text selection and its own dragover rules
+ *  along with it, none of which a 20px tab wants. The 4px threshold is what keeps
+ *  a plain click on a tab a click. */
+function startTabDrag(ev, tab, wsId) {
+  if (ev.button !== 0) return;
+  const strip = $('dtabs');
+  const startX = ev.clientX;
+  let moved = false;
+  let lastX = startX;
+  let edge = null;
+
+  // Land before the first tab whose middle the pointer has passed — the same rule
+  // in both directions, so there is no left/right special case.
+  const placeAt = (x) => {
+    const before = [...strip.children]
+      .filter((c) => c !== tab)
+      .find((c) => {
+        const r = c.getBoundingClientRect();
+        return x < r.left + r.width / 2;
+      });
+    strip.insertBefore(tab, before ?? null);
+  };
+
+  /* Held at either end, nudge the strip: the target may be scrolled out of sight,
+     and a reorder you can only do within the visible window is not one. On a
+     timer rather than on movement, because holding still at the edge is exactly
+     the gesture — and it re-places the tab on every tick, since the pointer is
+     not moving but everything under it is. */
+  const edgeScroll = (x) => {
+    const r = strip.getBoundingClientRect();
+    const dir = x > r.right - 28 ? 1 : x < r.left + 28 ? -1 : 0;
+    if (!dir || edge) {
+      if (!dir && edge) { clearInterval(edge); edge = null; }
+      return;
+    }
+    edge = setInterval(() => {
+      strip.scrollLeft += dir * 10;
+      placeAt(lastX);
+    }, 16);
+  };
+
+  const onMove = (e) => {
+    if (!moved && Math.abs(e.clientX - startX) < 4) return;
+    if (!moved) {
+      moved = true;
+      tabDrag = wsId;
+      tab.classList.add('dragging');
+    }
+    lastX = e.clientX;
+    placeAt(lastX);
+    edgeScroll(lastX);
+  };
+
+  const onUp = () => {
+    window.removeEventListener('pointermove', onMove);
+    window.removeEventListener('pointerup', onUp);
+    if (edge) { clearInterval(edge); edge = null; }
+    tab.classList.remove('dragging');
+    if (!moved) return;
+    // The click that follows this pointerup would select whatever the tab landed
+    // on. Swallowed once, within the same gesture.
+    window.addEventListener('click', (e) => { e.stopPropagation(); e.preventDefault(); },
+      { capture: true, once: true });
+    setProcOrder(wsId, [...strip.children].map((c) => /** @type {HTMLElement} */ (c).dataset.key));
+    tabDrag = null;
+    renderDrawer();
+  };
+
+  window.addEventListener('pointermove', onMove);
+  window.addEventListener('pointerup', onUp);
+}
+
+/* Horizontal by wheel, because the strip has no scrollbar to grab: a header 30px
+   tall is not the place for one, and a dozen shells is exactly when you need to
+   reach the far end. */
+$('dtabs').addEventListener('wheel', (e) => {
+  const strip = $('dtabs');
+  if (strip.scrollWidth <= strip.clientWidth) return;
+  strip.scrollLeft += e.deltaY || e.deltaX;
+  e.preventDefault();
+}, { passive: false });
+
+/** The tab last scrolled into view, per workspace, so a snapshot does not drag
+ *  the strip back while you are reading the other end of it. */
+const shownTab = {};
+
 function renderDrawer() {
+  if (tabDrag !== null) return;
   const wsId = currentWorkspaceId();
   const w = snap.workspaces.find((x) => x.id === wsId);
   const tabs = $('dtabs');
@@ -338,8 +434,17 @@ function renderDrawer() {
     active = fallback;
   }
 
-  // Shells are numbered per workspace. Without this every dead one renders as
-  // the same "shell (0)" and a drawer with three corpses in it is unreadable.
+  /* Built here, appended below in the order you dragged them into. Two lists in
+     one strip — what is running, and what is declared and is not — and the tab
+     key is what the order is remembered by: a managed process by name, so
+     `docker` keeps its place whether it is up or not and across a restart, and a
+     shell by id, which is the only thing that tells two of them apart. */
+  const made = [];
+
+  // Shells are numbered per workspace, and the number comes from *this* loop —
+  // the daemon's order, which is creation order — not from the order you dragged
+  // them into: `shell 2` has to keep meaning the second one you opened. Without a
+  // number every dead one renders as the same "shell (0)".
   let shellNo = 0;
   for (const p of procs) {
     const isShell = p.kind.kind === 'shell';
@@ -391,7 +496,7 @@ function renderDrawer() {
       };
       tab.appendChild(r);
     }
-    tabs.appendChild(tab);
+    made.push([isShell ? p.id : p.name, tab]);
   }
 
   /* Declared and not running (`stopped_processes`). A hollow dot, no ✕, and a
@@ -422,7 +527,26 @@ function renderDrawer() {
         .catch((e) => toast(e.message, true));
     };
     tab.appendChild(go);
+    made.push([name, tab]);
+  }
+
+  /* Your order. Stable, and a key the order has never seen sorts last — which is
+     where a process you have just started belongs. */
+  const order = procOrder[wsId] || [];
+  const place = (k) => (order.indexOf(k) < 0 ? order.length : order.indexOf(k));
+  made.sort((a, b) => place(a[0]) - place(b[0]));
+  for (const [k, tab] of made) {
+    tab.dataset.key = k;
+    tab.onpointerdown = (ev) => startTabDrag(ev, tab, wsId);
     tabs.appendChild(tab);
+  }
+
+  // Only when the selection actually moved: doing it every snapshot would drag
+  // the strip back while you are reading the far end of it.
+  if (active && shownTab[wsId] !== active) {
+    shownTab[wsId] = active;
+    tabs.querySelector('.dtab[aria-selected="true"]')
+      ?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
   }
 
   const shown = Term.show(active ? `proc:${active}` : null, $('drawerbody'));

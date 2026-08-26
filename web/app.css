@@ -425,10 +425,32 @@ button.ctx-btn:hover{color:var(--text)}
   transition:transform .13s;
 }
 .dcollapse[aria-expanded="true"] .caretr{transform:rotate(90deg)}
+/* The strip is the only thing in the header that grows, so it is the only thing
+   that scrolls: a dozen shells used to push `+ Shell` and the stack dot off the
+   right edge. No scrollbar — a 30px header is not the place for one — so the
+   wheel scrolls it (`app.js`), and so does dragging a tab past the edge.
+   `user-select:none` because a drag across the strip would otherwise select the
+   labels it passes. */
+.dtabs{
+  display:flex;gap:4px;min-width:0;overflow-x:auto;
+  scrollbar-width:none;user-select:none;
+}
+.dtabs::-webkit-scrollbar{display:none}
 .dtab{
   font-family:var(--mono);font-size:calc(10.5px * var(--fs));color:var(--faint-solid);
   padding:3px 8px;border-radius:2px;display:flex;align-items:center;gap:6px;
+  /* Keep their size and let the strip scroll, rather than squeezing every tab
+     narrower as tabs are added. */
+  flex:0 0 auto;white-space:nowrap;
 }
+/* The one being dragged. Dimmed rather than lifted: the tabs are 20px tall and a
+   shadow at that size reads as a rendering fault. */
+.dtab.dragging{opacity:.55}
+.dtab[aria-selected="true"]{color:var(--text);background:var(--raised)}
+/* A finished shell keeps its buffer until dismissed, but must not read as live. */
+.dtab.dead{color:var(--ghost)}
+/* Declared in config and not running: same dimming, and it lights up on hover
+   because unlike every other tab this one is a button that *starts* something. */
 .dtab.stopped{color:var(--ghost)}
 /* Only the ⟳ lights up: the tab body does nothing, so it must not offer to. */
 .dtab.stopped:hover{color:var(--ghost)}
