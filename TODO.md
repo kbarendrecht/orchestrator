@@ -289,6 +289,68 @@ Everything outside that block is hand-written and survives.
   Objective-C and wants a real SDK — so this is somebody's afternoon with a Mac,
   not a CI job.
 
+- **Drag and drop in the rail: sort sessions, and swap two by dropping one on the
+  other.** The drawer's tabs got this (`startTabDrag` in `web/app.js`, order in
+  `localStorage` per workspace), and the rail is the place it would earn more —
+  the rail sorts itself by what needs you, which is right for triage and wrong
+  when you are working through a list in an order only you know. Two gestures, not
+  one: dropping *between* rows reorders, dropping *onto* a row swaps their
+  branches, which is `swap-main` generalised to any pair of worktrees and needs a
+  daemon route that does not exist yet. The tab drag is the pattern to copy —
+  pointer events rather than HTML5 drag-and-drop, a 4px threshold, and the render
+  suppressed mid-drag so a snapshot cannot rebuild the list under the pointer.
+
+- **Own the tracker's transport instead of borrowing the target repo's MCP.**
+  `Tracker::mcp_server()` names a server orchd expects to find in *the repo's*
+  `.mcp.json` — `hooks::write_settings` approves it through
+  `enabledMcpjsonServers`, `--allowedTools mcp__<name>` scopes the run to it, and
+  the daemon pushes the credential in under the variable `token_env()` names. So a
+  feature of orchd only works where somebody else happened to configure a server
+  with the right name, over a transport we do not control (acme's is `http` to
+  `mcp.shortcut.com`), and the failure lands mid-run on a thread rather than at
+  startup: the daemon warns about a missing *token* and says nothing about a
+  missing or renamed *server*. The interactive `/resolve` story step has the same
+  dependency, spelled `mcp__shortcut__*` in prose.
+
+  The mechanism to fix it is already here and used for one case only:
+  `TrackerKind::Stub` passes `--mcp-config` plus `--strict-mcp-config`, which
+  ignores every configured server. Doing that for the live tracker too is the
+  small version — the agent and MCP shape stay, the repo dependency goes. The
+  larger version is to call the tracker's API from Rust and drop the agent from
+  filing altogether; search and create are two calls, and the agent is only in
+  that path for the routing rules the repo's tracker skill holds, which would then
+  need another home. Either way `Tracker` stops being "four facts" and starts
+  owning how it is reached, and the trait's own doc — "which MCP server in the
+  repo's `.mcp.json` speaks to it" — is the sentence that changes.
+
+- **A rename does not survive a restart.** Strong suspect, not yet confirmed:
+  auto-resume respawns through `spawn_session(Source::Resume)`, which rebuilds the
+  record from `Session::new` defaults — and the only thing that puts a name back
+  afterwards is `restore_after_relocate`, on the relocation path. The title hides
+  it by being re-read from the transcript (`store::ai_title`), so `name` is the one
+  field with nothing to restore it. `store` round-trips it correctly and its test
+  proves that much, which is why this looked done.
+
+- **The rename box is `prompt()`.** It works and it is ugly, and the app has no
+  idiom for asking for a line of text — `confirm` and `prompt` are the only two
+  dialogs in the SPA. The row itself is the obvious place (edit in place on the
+  rail, `Esc` to cancel, `Enter` to commit), which also removes the one thing
+  `prompt` cannot do: show you the name while you retype it.
+
+- **The review pane is still `[beta]`, and the label is the honest part.** Needs a
+  list of what is actually wrong before anything is touched — collect that from a
+  real session rather than guessing. Two gaps already known from the code:
+  `is_resolved` is never set by the daemon (`github_write` will not resolve a
+  thread, by design), so nothing in the UI can mean "handled"; and the resolve run
+  itself has never made a real round trip to GitHub — the suite is unit tests and
+  a fixture, which `docs/fixture-pr.md` says out loud.
+
+- **`Ctrl+Shift+Tab` for the previous session.** The handler already reads
+  `e.shiftKey` and `switchSession(-1)` exists, so either the chord never arrives
+  (WebKitGTK may keep it, the way a browser tab does) or something eats it before
+  the keydown map. Worth ten minutes with the real window before assuming the
+  binding: the map is fine, the delivery is what is in doubt.
+
 ## Decisions worth revisiting
 
 - **`hooks::session_end` settles a session with no identity check, unlike the exit
@@ -409,6 +471,6 @@ Everything outside that block is hand-written and survives.
 
 Rewritten by the daemon on every poll. Edit anything outside this block.
 
-Nothing outstanding.
+- **review queue is unavailable** — the forge is not answering the review query: reviews exited 1: gh repo view failed: no git remotes found / no git remotes found
 
 <!-- <<< orchd live findings <<< -->
