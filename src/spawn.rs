@@ -417,11 +417,26 @@ pub async fn spawn_session(
         None => (None, None),
     };
 
+    // A name you typed survives a resume. The record is rebuilt under the same id,
+    // so unless it is carried here it reverts to the workspace default — which is
+    // exactly what auto-resume on a restart did, since it resumes through this path
+    // and never through `restore_after_relocate`. The title needs no carry: it is
+    // re-read from the transcript. Resume only, not fork: a fork is a new
+    // conversation and earns its own name (the degraded-relocate fork is the one
+    // exception, and it gets the name back through `restore_after_relocate`).
+    let carried_name = match resume {
+        Some(Source::Resume(prev)) => {
+            app.inner.read().await.sessions.get(&prev).and_then(|s| s.name.clone())
+        }
+        _ => None,
+    };
+
     let mut session = Session::new(id, workspace.to_string(), path.clone(), kind);
     session.interrupted = interrupted;
     session.had_a_turn = had_a_turn;
     session.branch = carried_branch.or_else(|| crate::git::current_branch(&path).ok());
     session.arrival_notice = carried_notice;
+    session.name = carried_name;
     if let Some(Source::Fork(prev)) = resume {
         session.forked_from = Some(prev);
     }

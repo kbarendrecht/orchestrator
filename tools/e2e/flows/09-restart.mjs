@@ -22,6 +22,12 @@ export async function run(t) {
   const { session: main } = await t.api('POST', '/api/session', { workspace: 'main' })
   await t.settled(main)
 
+  // A name you typed, which auto-resume rebuilds the record without: the resume
+  // path reset every field `Session::new` defaults, and the title self-heals from
+  // the transcript while the name had nothing to restore it.
+  await t.api('POST', `/api/session/${tree}/rename`, { name: 'the invoice one' })
+  assert.equal((await t.session(tree)).name, 'the invoice one')
+
   // And a pane nobody typed into, in a worktree of its own. It is the case the
   // whole `had_a_turn` distinction exists for: a headers-only transcript that
   // `--resume` opens and exits.
@@ -41,6 +47,14 @@ export async function run(t) {
     assert.equal(s.workspace, where)
     assert.equal(s.has_transcript, true, `${where} lost its conversation across the restart`)
   }
+
+  // The typed name came back with the record. Auto-resume respawns through the
+  // resume path, so this is the field that used to revert to the workspace default.
+  assert.equal(
+    (await t.session(tree)).name,
+    'the invoice one',
+    'the rename did not survive the restart',
+  )
 
   // `auto_resume` relaunched them, so they are live again rather than archived
   // rows waiting to be clicked.

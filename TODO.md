@@ -323,14 +323,6 @@ Everything outside that block is hand-written and survives.
   owning how it is reached, and the trait's own doc — "which MCP server in the
   repo's `.mcp.json` speaks to it" — is the sentence that changes.
 
-- **A rename does not survive a restart.** Strong suspect, not yet confirmed:
-  auto-resume respawns through `spawn_session(Source::Resume)`, which rebuilds the
-  record from `Session::new` defaults — and the only thing that puts a name back
-  afterwards is `restore_after_relocate`, on the relocation path. The title hides
-  it by being re-read from the transcript (`store::ai_title`), so `name` is the one
-  field with nothing to restore it. `store` round-trips it correctly and its test
-  proves that much, which is why this looked done.
-
 - **The rename box is `prompt()`.** It works and it is ugly, and the app has no
   idiom for asking for a line of text — `confirm` and `prompt` are the only two
   dialogs in the SPA. The row itself is the obvious place (edit in place on the
