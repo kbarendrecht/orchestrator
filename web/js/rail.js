@@ -359,6 +359,10 @@ function archivedRow(s) {
   }
   btn.onclick = () => openArchived(s);
   btn.oncontextmenu = (ev) => openMenu(ev, [
+    // Worth more here than on a live row: the archive is the list you scan weeks
+    // later, and two conversations Claude Code named the same thing are what you
+    // are scanning past.
+    ['rename', null, () => renameSession(s)],
     // Not gated on `resumable` the way opening it is: a fork cuts its own
     // worktree, so a conversation whose branch is gone can still be branched off.
     ['fork', null, s.has_transcript ? () => forkSession(s) : null],
@@ -464,6 +468,7 @@ function sessionRow(s, w) {
   // The header's ✕ only ever closes the selected session, so closing any other
   // one meant switching to it first.
   btn.oncontextmenu = (ev) => openMenu(ev, [
+    ['rename', null, () => renameSession(s)],
     // Nothing to branch off until the conversation has had a turn.
     ['fork', null, s.has_transcript ? () => forkSession(s) : null],
     // Claude Code's own picker, reached rather than rebuilt. Greyed in the states
@@ -588,6 +593,22 @@ async function forkSession(s) {
     // The branch moved on since the conversation, same as resume: worth saying,
     // not worth refusing over.
     if (r.warning) toast(r.warning, true);
+  } catch (e) {
+    toast(e.message, true);
+  }
+}
+
+/** Name a session yourself.
+ *
+ *  The box offers the name you gave it, never the ai-title: prefilling Claude
+ *  Code's own name would make pressing OK without typing freeze it, and the way
+ *  back out of a rename is an empty answer. */
+async function renameSession(s) {
+  const given = prompt("Session name (blank for Claude Code's own)", s.name || '');
+  // Cancel means cancel; blank means hand the row back to the ai-title.
+  if (given === null) return;
+  try {
+    await call(`/api/session/${s.id}/rename`, { name: given });
   } catch (e) {
     toast(e.message, true);
   }

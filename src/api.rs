@@ -241,7 +241,7 @@ async fn refuse_if_occupied(app: &Arc<AppState>, workspace: &str) -> Result<(), 
         inner
             .sessions
             .get(&held)
-            .and_then(|s| s.title.clone())
+            .and_then(|s| s.label().map(str::to_owned))
             .unwrap_or_else(|| held.to_string()[..8].to_string())
     };
     Err(ApiError(anyhow::anyhow!(
@@ -293,6 +293,47 @@ pub async fn kill_session(
         }
         None => Err(ApiError(anyhow::anyhow!("no such session {id}"))),
     }
+}
+
+#[derive(Deserialize)]
+pub struct Rename {
+    /// Blank means "go back to Claude Code's name", which is the only way out of a
+    /// rename you regret.
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+/// Name a session yourself.
+///
+/// Stored beside the ai-title rather than over it (`model::Session::name`): the
+/// `Stop` hook rewrites the ai-title every turn, so a rename written into `title`
+/// would revert the moment the agent finished anything. Archived conversations are
+/// renameable too — that is where a name earns the most, since the archive is the
+/// list you scan later.
+pub async fn rename_session(
+    State(app): State<Arc<AppState>>,
+    Path(id): Path<Uuid>,
+    Json(body): Json<Rename>,
+) -> ApiResult<serde_json::Value> {
+    let name = body
+        .name
+        .as_deref()
+        .map(str::trim)
+        .filter(|n| !n.is_empty())
+        // A rail row is one line: a name long enough to push the state out of it
+        // makes the row useless, and nothing else would ever say so.
+        .map(|n| n.chars().take(80).collect::<String>());
+    {
+        let mut inner = app.inner.write().await;
+        let s = inner
+            .sessions
+            .get_mut(&id)
+            .ok_or_else(|| anyhow::anyhow!("no such session {id}"))?;
+        s.name = name.clone();
+    }
+    // Persists on the way out: `notify` writes `sessions.json` before it pushes.
+    app.notify().await;
+    Ok(Json(json!({ "session": id, "name": name })))
 }
 
 /// Open Claude Code's own rewind picker in this session.
@@ -1073,7 +1114,7 @@ pub async fn nudge_sessions(
                     // quietly leave the sessions that most need you behind.
                     crate::model::TurnReason::NeedsPermission
                     | crate::model::TurnReason::AskedAQuestion => {
-                        held.push(s.title.clone().unwrap_or_else(|| s.workspace.clone()));
+                        held.push(s.label().unwrap_or(&s.workspace).to_string());
                     }
                     _ => {}
                 },
@@ -1476,7 +1517,7 @@ pub async fn swap_with_main(
                 .sessions
                 .values()
                 .find(|s| s.workspace == ws && s.state.is_busy())
-                .map(|s| s.title.clone().unwrap_or_else(|| s.id.to_string()[..8].to_string()))
+                .map(|s| s.label().map(str::to_owned).unwrap_or_else(|| s.id.to_string()[..8].to_string()))
         };
         for (label, ws) in [("main", MAIN), ("this worktree", workspace.as_str())] {
             if let Some(who) = busy(ws) {

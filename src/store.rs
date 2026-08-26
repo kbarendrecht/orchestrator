@@ -20,6 +20,10 @@ pub struct SessionRecord {
     pub cwd: PathBuf,
     pub kind: Kind,
     pub title: Option<String>,
+    /// The name you gave this session. Persisted, or a rename would last exactly
+    /// as long as the daemon.
+    #[serde(default)]
+    pub name: Option<String>,
     pub transcript_path: Option<PathBuf>,
     pub archived_transcript: Option<PathBuf>,
     #[serde(default)]
@@ -75,6 +79,7 @@ impl SessionRecord {
             cwd: s.cwd.clone(),
             kind: s.kind.clone(),
             title: s.title.clone(),
+            name: s.name.clone(),
             transcript_path: s.transcript_path.clone(),
             archived_transcript: s.archived_transcript.clone(),
             transcript_archived: s.transcript_archived,
@@ -95,6 +100,7 @@ impl SessionRecord {
     pub fn restore(self) -> Session {
         let mut s = Session::new(self.id, self.workspace, self.cwd, self.kind);
         s.title = self.title;
+        s.name = self.name;
         s.transcript_path = self.transcript_path;
         s.archived_transcript = self.archived_transcript;
         s.transcript_archived = self.transcript_archived;
@@ -464,6 +470,7 @@ mod tests {
                 cwd: dir.clone(),
                 kind: crate::model::Kind::Interactive,
                 title: None,
+                name: None,
                 transcript_path: transcript,
                 archived_transcript: archived,
                 transcript_archived: false,
@@ -726,6 +733,49 @@ mod tests {
         let id = uuid::Uuid::new_v4();
         let moved = move_transcript(id, Path::new("/nonexistent/a"), Path::new("/nonexistent/b"));
         assert!(matches!(moved, Ok(None)), "{moved:?}");
+    }
+
+    /// A rename is durable or it is decoration: the field goes through
+    /// `sessions.json` on every `notify`, and a `restore` that forgot it would put
+    /// Claude Code's own ai-title back on the row at the next launch with nothing
+    /// failing. Asserted here because the round-trip test beside it checks fields
+    /// one by one, so a new one is only covered once it is named.
+    #[test]
+    fn a_name_you_gave_a_session_survives_the_record() {
+        let mut s = crate::model::Session::new(
+            uuid::Uuid::new_v4(),
+            "wt".into(),
+            std::path::Path::new("/tmp").to_path_buf(),
+            crate::model::Kind::Interactive,
+        );
+        s.title = Some("Generated conversation name".into());
+        s.name = Some("the swap bug".into());
+
+        let back = SessionRecord::of(&s).restore();
+        assert_eq!(back.name.as_deref(), Some("the swap bug"));
+        // Both are kept: the ai-title is what the row goes back to when the name
+        // is cleared, so overwriting it with the name would be a one-way door.
+        assert_eq!(back.title.as_deref(), Some("Generated conversation name"));
+        assert_eq!(back.label(), Some("the swap bug"));
+
+        // A record written before the field existed loads unnamed, and the row
+        // reads as whatever Claude Code called it.
+        let old: SessionRecord = serde_json::from_value(serde_json::json!({
+            "id": uuid::Uuid::new_v4(),
+            "workspace": "wt",
+            "cwd": "/tmp",
+            "kind": { "kind": "interactive" },
+            "title": "Generated conversation name",
+            "transcript_path": null,
+            "archived_transcript": null,
+            "recovery": null,
+            "created_at": { "secs_since_epoch": 0, "nanos_since_epoch": 0 },
+            "pid": null,
+        }))
+        .expect("a record from before the rename still loads");
+        let back = old.restore();
+        assert_eq!(back.name, None);
+        assert_eq!(back.label(), Some("Generated conversation name"));
     }
 
     /// A restart brings a session back in its recorded *directory*, so the branch

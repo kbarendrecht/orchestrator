@@ -1038,7 +1038,13 @@ pub struct SessionView {
     pub workspace: String,
     pub state: State,
     pub kind: Kind,
+    /// What to call this session — the name you gave it, else Claude Code's own
+    /// ai-title (`Session::label`). The panes read this and stay out of the
+    /// precedence.
     pub title: Option<String>,
+    /// Only the name you typed, so the rename prompt can offer it back and an
+    /// empty answer can mean "go back to the ai-title" rather than "freeze it".
+    pub name: Option<String>,
     pub cwd: String,
     pub rank: u8,
     /// Whether this is idle time worth counting. A session you just opened is
@@ -1082,7 +1088,8 @@ impl SessionView {
             workspace: s.workspace.clone(),
             state: s.state.clone(),
             kind: s.kind.clone(),
-            title: s.title.clone(),
+            title: s.label().map(str::to_owned),
+            name: s.name.clone(),
             cwd: s.cwd.to_string_lossy().into_owned(),
             rank: s.sort_rank(),
             wants_attention: s.state.wants_attention(),

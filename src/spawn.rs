@@ -200,7 +200,7 @@ pub async fn relocate_session(
     // Read before anything moves: `spawn_session` rebuilds the record under this
     // same id, so what the conversation *was* has to be captured now or it is
     // overwritten by defaults.
-    let (src_cwd, src_workspace, handle, title, created_at, kind) = {
+    let (src_cwd, src_workspace, handle, title, name, created_at, kind) = {
         let inner = app.inner.read().await;
         let s = inner
             .sessions
@@ -211,6 +211,7 @@ pub async fn relocate_session(
             s.workspace.clone(),
             s.pty.clone(),
             s.title.clone(),
+            s.name.clone(),
             s.created_at,
             s.kind.clone(),
         )
@@ -252,7 +253,7 @@ pub async fn relocate_session(
 
     match resumed {
         Ok(id) => {
-            restore_after_relocate(app, id, title, created_at).await;
+            restore_after_relocate(app, id, title, name, created_at).await;
             Ok(Relocated { id, degraded: false })
         }
         Err(e) => {
@@ -272,7 +273,7 @@ pub async fn relocate_session(
                     &id.to_string()[..8]
                 )
             })?;
-            restore_after_relocate(app, forked, title, created_at).await;
+            restore_after_relocate(app, forked, title, name, created_at).await;
             Ok(Relocated { id: forked, degraded: true })
         }
     }
@@ -288,6 +289,7 @@ async fn restore_after_relocate(
     app: &Arc<AppState>,
     id: SessionId,
     title: Option<String>,
+    name: Option<String>,
     created_at: std::time::SystemTime,
 ) {
     let mut inner = app.inner.write().await;
@@ -296,6 +298,11 @@ async fn restore_after_relocate(
         // so showing the old one beats showing the workspace name.
         if s.title.is_none() {
             s.title = title;
+        }
+        // A name you typed is not the resume's to re-earn: unconditional, unlike
+        // the title, because the only thing that clears one is you clearing it.
+        if s.name.is_none() {
+            s.name = name;
         }
         s.created_at = created_at;
         // Wherever the file ended up — the move may have been skipped, and Claude

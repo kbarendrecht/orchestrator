@@ -327,7 +327,18 @@ ended: string | null,
  */
 unpushed: number, };
 
-export type SessionView = { id: string, workspace: string, state: State, kind: Kind, title: string | null, cwd: string, rank: number, 
+export type SessionView = { id: string, workspace: string, state: State, kind: Kind, 
+/**
+ * What to call this session — the name you gave it, else Claude Code's own
+ * ai-title (`Session::label`). The panes read this and stay out of the
+ * precedence.
+ */
+title: string | null, 
+/**
+ * Only the name you typed, so the rename prompt can offer it back and an
+ * empty answer can mean "go back to the ai-title" rather than "freeze it".
+ */
+name: string | null, cwd: string, rank: number, 
 /**
  * Whether this is idle time worth counting. A session you just opened is
  * idle but not waiting on you in the sense the rail exists to surface.

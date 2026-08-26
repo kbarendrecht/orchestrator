@@ -226,6 +226,13 @@ pub struct Session {
     pub pid: Option<u32>,
     pub cwd: PathBuf,
     pub title: Option<String>,
+    /// A name you typed, which stands in for `title` for as long as it is set.
+    ///
+    /// Its own field rather than a write into `title`, because `Stop` refreshes the
+    /// ai-title on every turn (`hooks::stop`) — a rename stored there would hold
+    /// until the agent finished its next turn and then silently revert. Cleared by
+    /// renaming to nothing, which hands the row back to Claude Code's own naming.
+    pub name: Option<String>,
     pub transcript_path: Option<PathBuf>,
     pub archived_transcript: Option<PathBuf>,
     /// True once archiving has been settled: either the transcript was copied,
@@ -330,6 +337,7 @@ impl Session {
             pid: None,
             cwd,
             title: None,
+            name: None,
             transcript_path: None,
             archived_transcript: None,
             transcript_archived: false,
@@ -350,6 +358,15 @@ impl Session {
             ask_token: crate::state::random_token(),
             interaction: None,
         }
+    }
+
+    /// What to call this session: the name you gave it, else Claude Code's own.
+    ///
+    /// Every place that names a session in words goes through here, so a rename
+    /// shows up in the refusals too — "main already has a live session (X)" naming
+    /// a title you no longer use is the same bug as a rail row doing it.
+    pub fn label(&self) -> Option<&str> {
+        self.name.as_deref().or(self.title.as_deref())
     }
 
     pub fn is_automation(&self) -> bool {
