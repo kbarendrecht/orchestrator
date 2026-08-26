@@ -13,6 +13,7 @@ export const name = 'fork main into a worktree'
 export async function run(t) {
   const { session: parent } = await t.api('POST', '/api/session', { workspace: 'main' })
   await t.settled(parent)
+  await t.transcribed(parent)
 
   const { session: fork } = await t.api('POST', `/api/session/${parent}/fork`)
   await t.settled(fork)

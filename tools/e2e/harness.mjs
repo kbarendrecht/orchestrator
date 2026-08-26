@@ -319,6 +319,21 @@ export async function sandbox({
         return found && want.includes(found.state.state) ? found : null
       }),
 
+    /** Wait until a session's first turn is on disk.
+     *
+     *  `settled` reaching `your_turn` does not mean the transcript exists yet: the
+     *  turn arrives over a hook and the file lands a moment later. A fork refuses a
+     *  session with `has_transcript` false, so under the load of a full run — but
+     *  not alone — forking straight after `settled` races that write and fails with
+     *  "no conversation yet". Wait for the write, the way every other wait here
+     *  waits for a condition rather than sleeping. */
+    transcribed: (id) =>
+      until(`session ${id.slice(0, 8)} to record a transcript`, async () => {
+        const s = await state()
+        const found = s.sessions.find((x) => x.id === id)
+        return found && found.has_transcript ? found : null
+      }),
+
     stop,
 
     /** Stop the daemon and bring it back on the same state.
