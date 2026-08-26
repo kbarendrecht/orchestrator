@@ -331,11 +331,20 @@ Everything outside that block is hand-written and survives.
   itself has never made a real round trip to GitHub — the suite is unit tests and
   a fixture, which `docs/fixture-pr.md` says out loud.
 
-- **`Ctrl+Shift+Tab` for the previous session.** The handler already reads
-  `e.shiftKey` and `switchSession(-1)` exists, so either the chord never arrives
-  (WebKitGTK may keep it, the way a browser tab does) or something eats it before
-  the keydown map. Worth ten minutes with the real window before assuming the
-  binding: the map is fine, the delivery is what is in doubt.
+- **`Ctrl+Shift+Tab` for the previous session.** The SPA half is proven correct
+  by reading, so the remaining question is delivery, not the binding. The keydown
+  listener is registered `capture: true` on `window` (`web/app.js`), so it is the
+  first thing to see any key — the `Tab && ctrlKey` arm at the top of it already
+  handles both directions (`switchSession(e.shiftKey ? -1 : 1)`), and xterm's
+  custom handler claims only `Ctrl+Shift+C` and lets everything else through
+  (`web/js/term.js`). Nothing in the page eats it first, and the desktop crate has
+  no key handling at all. So the one consumer left is WebKitGTK itself: `Ctrl+Tab`
+  and `Ctrl+Shift+Tab` are GTK focus-chain accelerators, and the asymmetry the
+  report describes — next works, previous does not — is what a GTK grab on the
+  backward-traversal chord looks like. The fix is therefore at the webview layer
+  (intercept the GTK `key-press-event` before it reaches focus traversal), not in
+  the SPA, and it still wants the real window to confirm the grab and prove the
+  interception. An in-page binding cannot fix an event that never arrives.
 
 ## Decisions worth revisiting
 
