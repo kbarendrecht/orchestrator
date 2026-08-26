@@ -14,7 +14,7 @@ import {
   selectedProc, setSelectedProc, prState, handedToPr, procOrder, setProcOrder,
   drawerTouched, setDrawerTouched, drawerCollapsed, setDrawerCollapsed,
   pendingProcFocus, setPendingProcFocus, pendingSelect, setPendingSelect,
-  prOf, onDrawerChange, appMod, IS_MAC, MOD_LABEL,
+  prOf, onDrawerChange, appMod, IS_MAC, MOD_LABEL, closeLegend,
 } from './js/core.js';
 
 // The daemon owns all state. This SPA is stateless and disposable: closing the
@@ -599,6 +599,9 @@ import * as Queue from './js/queue.js';
 // where you are about to type. Registered rather than called by the rail, so the
 // rail does not have to know about rendering.
 onSelection(() => {
+  // Picking a session is going back to work: the legend was an aside, and leaving
+  // it up over the pane you just chose is the app arguing with you.
+  closeLegend();
   const s = currentSession();
   // A session created a moment ago is not in the snapshot yet. Blanking the
   // terminal here would strand it: the next snapshot sees `selected` already

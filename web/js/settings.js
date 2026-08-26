@@ -1,7 +1,7 @@
 // The settings panel. The zoom control it offers lives in core, because the
 // terminals read the scale too.
 
-import { ctl, $, ZOOM, call, el, get, saveZoom, setZoom, snap, zoomScale } from './core.js';
+import { ctl, $, ZOOM, call, closeLegend, el, get, saveZoom, setZoom, snap, zoomScale } from './core.js';
 
 const settingsOpen = () => !$('settings').hidden;
 
@@ -16,6 +16,9 @@ function closeSettings() {
 let procDraft = [];
 
 function openSettings() {
+  // Two panes over the same pane is one too many, and the legend is the one you
+  // were done with the moment you reached for this.
+  closeLegend();
   $('settingsver').textContent = snap.version ? `orchd ${snap.version}` : '';
   $('setnote').textContent = '';
   $('settings').hidden = false;

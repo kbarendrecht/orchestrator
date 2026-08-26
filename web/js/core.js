@@ -288,6 +288,15 @@ export function openMenu(ev, items) {
   menu.style.top = `${Math.min(y, window.innerHeight - box.height - 6)}px`;
 }
 
+/** Dismiss the keyboard legend.
+ *
+ *  Here rather than in `app.js`, which owns the overlay, because the settings
+ *  panel closes it too and `settings` cannot reach back up to the app layer —
+ *  the same reason `closeMenu` lives down here. */
+export function closeLegend() {
+  $('keyhelp').hidden = true;
+}
+
 export function closeMenu() {
   $('ctxmenu').hidden = true;
   menuAnchor = null;
