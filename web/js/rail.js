@@ -9,7 +9,14 @@ import * as Term from './term.js';
  * worktrees' twenty are not the same question. */
 const showArchived = { main: false, worktrees: false };
 
+/* The session whose name is being edited in place, or null. A snapshot lands
+ * every second and rebuilds the rail, which would blow the input away mid-type —
+ * so the rebuild is held off while it is open, the same way `tabDrag` holds off
+ * `renderDrawer`. `renameSession` sets it and clears it. */
+let editingName = null;
+
 function renderRail() {
+  if (editingName !== null) return;
   const rail = $('rail');
   rail.replaceChildren();
 
@@ -344,6 +351,8 @@ function appendArchived(group, key, sessions) {
 function archivedRow(s) {
   const btn = el('button', 'sess arc');
   btn.setAttribute('aria-current', String(s.id === selected));
+  // So a rename can find this row's name span again after any re-render.
+  btn.dataset.id = s.id;
 
   const row = el('div', 'sess-row');
   row.appendChild(el('span', 'dot archived'));
@@ -429,6 +438,8 @@ function forkBadge(s) {
 function sessionRow(s, w) {
   const btn = el('button', 'sess' + (s.kind.kind === 'automation' ? ' auto' : ''));
   btn.setAttribute('aria-current', String(s.id === selected));
+  // So a rename can find this row's name span again after any re-render.
+  btn.dataset.id = s.id;
 
   const row = el('div', 'sess-row');
   row.appendChild(el('span', 'dot ' + dotClass(s)));
@@ -675,20 +686,56 @@ async function forkSession(s) {
   }
 }
 
-/** Name a session yourself.
+/** Name a session yourself, editing the rail row in place.
  *
- *  The box offers the name you gave it, never the ai-title: prefilling Claude
- *  Code's own name would make pressing OK without typing freeze it, and the way
- *  back out of a rename is an empty answer. */
-async function renameSession(s) {
-  const given = prompt("Session name (blank for Claude Code's own)", s.name || '');
-  // Cancel means cancel; blank means hand the row back to the ai-title.
-  if (given === null) return;
-  try {
-    await call(`/api/session/${s.id}/rename`, { name: given });
-  } catch (e) {
-    toast(e.message, true);
-  }
+ *  The input holds the name you gave it and shows the ai-title as a placeholder,
+ *  so you can see what the row falls back to while you retype — the one thing the
+ *  old `prompt()` box could not do. `Enter` commits, `Esc` cancels, and leaving
+ *  the box commits too. Blank hands the row back to the ai-title.
+ *
+ *  The row is a `<button>`, so every event the input handles is stopped from
+ *  bubbling: a click must not select the session, and a keystroke must not reach
+ *  the app's keyboard map. */
+function renameSession(s) {
+  const rail = $('rail');
+  const span = rail.querySelector(`[data-id="${s.id}"] .sess-name`);
+  // The menu action can outlive the row it was opened on; if a re-render dropped
+  // it, there is nothing to edit in place.
+  if (!span) return;
+
+  editingName = s.id;
+  const input = document.createElement('input');
+  input.className = 'sess-rename';
+  input.value = s.name || '';
+  input.placeholder = s.title || '';
+  span.replaceWith(input);
+  input.focus();
+  input.select();
+
+  let done = false;
+  const finish = async (commit) => {
+    if (done) return;             // blur fires alongside Enter; settle once.
+    done = true;
+    const given = input.value.trim();
+    editingName = null;           // let the rail rebuild again before the await.
+    if (commit && given !== (s.name || '')) {
+      try {
+        await call(`/api/session/${s.id}/rename`, { name: given });
+      } catch (e) {
+        toast(e.message, true);
+      }
+    }
+    renderRail();                 // put the row back, whichever way it ended.
+  };
+
+  input.onkeydown = (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); finish(true); }
+    else if (e.key === 'Escape') { e.preventDefault(); finish(false); }
+    e.stopPropagation();
+  };
+  input.onblur = () => finish(true);
+  input.onclick = (e) => e.stopPropagation();
+  input.onpointerdown = (e) => e.stopPropagation();
 }
 
 /** Forget a session: the row, the record, and the daemon's own copy of the

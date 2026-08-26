@@ -323,12 +323,6 @@ Everything outside that block is hand-written and survives.
   owning how it is reached, and the trait's own doc — "which MCP server in the
   repo's `.mcp.json` speaks to it" — is the sentence that changes.
 
-- **The rename box is `prompt()`.** It works and it is ugly, and the app has no
-  idiom for asking for a line of text — `confirm` and `prompt` are the only two
-  dialogs in the SPA. The row itself is the obvious place (edit in place on the
-  rail, `Esc` to cancel, `Enter` to commit), which also removes the one thing
-  `prompt` cannot do: show you the name while you retype it.
-
 - **The review pane is still `[beta]`, and the label is the honest part.** Needs a
   list of what is actually wrong before anything is touched — collect that from a
   real session rather than guessing. Two gaps already known from the code:

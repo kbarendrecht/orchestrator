@@ -264,6 +264,14 @@ button.ctx-btn:hover{color:var(--text)}
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
 }
 .sess.auto .sess-name{color:var(--auto)}
+/* The rename box, in place of the name. Same metrics as `.sess-name` so the row
+   does not shift when it opens, with a visible edge so it reads as editable. */
+.sess-rename{
+  font-family:var(--mono);font-size:calc(11.5px * var(--fs));flex:1;min-width:0;
+  color:var(--text);background:var(--bg);
+  border:1px solid var(--text);border-radius:3px;padding:0 4px;margin:-1px 0;
+}
+.sess-rename:focus{outline:none}
 /* A worktree with no name yet. Italic because it is a description of what is
    happening, not the name it will end up with. */
 .sess-name.pending{font-style:italic;color:var(--dim)}
