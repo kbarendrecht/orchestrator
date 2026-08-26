@@ -482,7 +482,9 @@ function sessionRow(s, w) {
     // worktree row — `w.is_main` is `undefined` there, and relying on that being
     // falsy would make this right by accident. Main cannot swap with itself, and
     // a worktree Claude Code has not named yet has no path to swap.
-    ['swap branch with main', null,
+    [mainHoldsWork(snap.workspaces.find((x) => x.is_main))
+      ? 'swap branch with main'
+      : 'move to main', null,
       s.workspace !== snap.workspaces.find((x) => x.is_main)?.id && !pending(s)
         ? () => swapWithMain(s.workspace)
         : null],
@@ -525,6 +527,29 @@ async function rewindSession(s) {
   } catch (e) {
     toast(e.message, true);
   }
+}
+
+/** Whether main is holding work of its own, or just sitting on the base branch.
+ *
+ *  What the swap is *called* turns on this: with a branch of its own on each side
+ *  the two trade places, and with only base in main your branch goes there and
+ *  base comes back — which is a move, and saying "swap" for it describes an
+ *  exchange nobody asked for.
+ *
+ *  The base branch comes off `upstream_ref` (`upstream/develop` → `develop`),
+ *  which is the same split the daemon makes. `origin/HEAD` cannot be split that
+ *  way — the daemon resolves it against the remote and the SPA cannot — so an
+ *  unresolvable base answers "yes, it holds something", keeping the wording that
+ *  is right either way.
+ *
+ *  Read off the whole branch *set*, not `branches[0]`: that set is built from a
+ *  `HashSet`, so its order says nothing, and "the only thing main has is base" is
+ *  a question about the set rather than about its first element. */
+function mainHoldsWork(main) {
+  const leaf = (snap.upstream_ref || '').split('/').pop();
+  if (!leaf || leaf === 'HEAD') return true;
+  const has = main?.branches ?? [];
+  return !(has.length === 1 && has[0] === leaf);
 }
 
 /** Move a session out of main, into a worktree of its own.
@@ -578,12 +603,18 @@ async function moveOutOfMain(s) {
  *  daemon's refusals (mid-turn agent, dirty tree, stopped rebase) are about what
  *  it can see, not about whether you meant it. */
 async function swapWithMain(wsId) {
-  if (!confirm(
-    `Swap branches between main and ${wsId}?\n\n`
-    + `main takes this worktree's branch, and this worktree takes main's. `
-    + `Uncommitted changes travel with their branch. Each conversation follows `
-    + `its branch — this one moves into main, and main's moves here — keeping its `
-    + `history and its place in the rail.`
+  const holds = mainHoldsWork(snap.workspaces.find((x) => x.is_main));
+  if (!confirm(holds
+    ? `Swap branches between main and ${wsId}?\n\n`
+      + `main takes this worktree's branch, and this worktree takes main's. `
+      + `Uncommitted changes travel with their branch. Each conversation follows `
+      + `its branch — this one moves into main, and main's moves here — keeping its `
+      + `history and its place in the rail.`
+    : `Move this worktree's branch to main?\n\n`
+      + `main has nothing of its own checked out, so its base branch comes back `
+      + `here in exchange. Uncommitted changes travel with the branch, and this `
+      + `conversation follows it into main, keeping its history and its place in `
+      + `the rail.`
   )) return;
   try {
     const r = await call(`/api/workspace/${encodeURIComponent(wsId)}/swap-main`);
