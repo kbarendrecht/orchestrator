@@ -1238,11 +1238,18 @@ pub async fn new_shell(
     Ok(Json(json!({ "process": id })))
 }
 
-/// Upgrade the agent binary, in the drawer where you can watch it.
+/// Upgrade the agent binary, reporting through the bar that offered it.
 ///
-/// Deliberately not a blocking call that reports a toast: mise fetches and
-/// unpacks, so it takes long enough to want progress, and an upgrade that failed
-/// halfway is exactly the thing you need the output of.
+/// Deliberately not a blocking call: mise fetches and unpacks, so the button
+/// answers at once and the bar follows the run through the snapshot
+/// (`agent_update::UpgradeRun`). A failure keeps the *end* of the output, which is
+/// the part that says why — an upgrade that fails silently behind a toast is worse
+/// than no button.
+///
+/// Not a drawer process, which is where this used to run. The drawer is one
+/// workspace's processes and upgrading the agent belongs to no workspace, so from
+/// any worktree the run was invisible while main's drawer grew a tab that was not
+/// main's process at all.
 ///
 /// Safe to press with sessions running, which is the whole reason it is a button:
 /// mise installs into a versioned directory and repoints, so a running `claude`
@@ -1252,26 +1259,31 @@ pub async fn new_shell(
 ///
 /// Refuses when the poller has not found an update, rather than running `mise
 /// upgrade` on a hunch — the tool name comes from what mise reported, so without
-/// that there is nothing to name.
+/// that there is nothing to name. And refuses a second run while one is going,
+/// because two `mise upgrade`s of one tool race over the same install directory.
 pub async fn upgrade_agent(State(app): State<Arc<AppState>>) -> ApiResult<serde_json::Value> {
-    let pending = app.inner.read().await.agent_update.clone();
-    let Some(u) = pending else {
-        return Err(ApiError(anyhow::anyhow!(
-            "no agent update to install — refresh the check first"
-        )));
+    let u = {
+        let mut inner = app.inner.write().await;
+        if inner.upgrade_run.as_ref().is_some_and(|r| r.running) {
+            return Err(ApiError(anyhow::anyhow!("that upgrade is already running")));
+        }
+        let Some(u) = inner.agent_update.clone() else {
+            return Err(ApiError(anyhow::anyhow!(
+                "no agent update to install — refresh the check first"
+            )));
+        };
+        // Claimed under the same guard that checked, so the refusal above cannot be
+        // raced past by a second press.
+        inner.upgrade_run = Some(crate::agent_update::UpgradeRun {
+            to: u.latest.clone(),
+            running: true,
+            tail: String::new(),
+        });
+        u
     };
-    let argv = crate::agent_update::upgrade_argv(&u.tool);
-    // In main: the version mise resolves is the one that checkout's config pins,
-    // and the check that found this update ran there too.
-    let id = spawn::spawn_in_drawer(
-        &app,
-        MAIN,
-        "upgrade",
-        &argv,
-        spawn::AfterDrawerExit::RecheckAgentUpdate,
-    )
-    .await?;
-    Ok(Json(json!({ "process": id, "from": u.current, "to": u.latest })))
+    app.notify().await;
+    crate::agent_update::run_upgrade(app.clone(), u.tool.clone(), u.latest.clone());
+    Ok(Json(json!({ "from": u.current, "to": u.latest })))
 }
 
 /// Re-run the agent version check now.

@@ -193,51 +193,67 @@ function renderUpdate() {
   bar.hidden = false;
 }
 
-// As `updateDismissed`, for the agent: a newer version than the one waved away
-// speaks up again, the same one stays quiet until the next launch.
+/* The last thing this bar said when you waved it away. Keyed on the message, not
+   on a version: every state it can be in — a newer build, a run in flight, a run
+   that failed — is a different sentence, so anything new speaks up again while the
+   same one stays quiet until the next launch. A version key could not tell a
+   failure from the nudge that preceded it. */
 let agentDismissed = null;
 
 function renderAgentUpdate() {
   const bar = $('agentbar');
   const u = snap.agent_update;
-  if (!u || agentDismissed === u.latest) { bar.hidden = true; return; }
+  /* The daemon's own state (`agent_update::UpgradeRun`), not a flag set on click:
+     a local "in progress" boolean has no way to learn that the run died, so it
+     would sit disabled forever. It also survives a reload and shows in every
+     window, which a local flag cannot. */
+  const run = snap.upgrade_run;
+  if (!u && !run) { bar.hidden = true; return; }
+  const failed = !!run && !run.running;
+
+  // A failure keeps the end of the output, which is the part that says why. Its
+  // first line here, the whole tail in the tooltip: the bar is one line tall and a
+  // stack trace in it would push the button off the end.
+  //
+  // `u` is only read in the last arm, and that is the only arm reachable with no
+  // update pending: the check is refreshed when a run ends, so a run in flight can
+  // outlive the nudge that started it.
+  const msg = failed
+    ? `Claude Code ${run.to} did not install: ${run.tail.split('\n')[0]}`
+    : run
+      ? `installing Claude Code ${run.to}\u2026`
+      : `Claude Code ${u.latest} available (you have ${u.current})`;
+  if (agentDismissed === msg) { bar.hidden = true; return; }
+
   // Below the release bar when that one is up, at the top when it is not.
   bar.classList.toggle('stacked', !$('updatebar').hidden);
-  $('agentmsg').textContent = `Claude Code ${u.latest} available (you have ${u.current})`;
+  $('agentmsg').textContent = msg;
+
   const go = /** @type {HTMLButtonElement} */ ($('agentgo'));
-  /* Derived from the drawer, not from a flag set on click. A local "in progress"
-     boolean has no way to learn that the run died, so it would sit disabled
-     forever; the process itself is the truth, and it removes itself on success or
-     stays as a dead tab on failure. */
-  const upgrading = (snap.workspaces.find((w) => w.is_main)?.processes ?? [])
-    .some((p) => p.name === 'upgrade' && p.alive);
-  go.disabled = upgrading;
-  go.textContent = upgrading ? 'Upgrading…' : 'Upgrade';
+  go.disabled = !!run && run.running;
+  go.textContent = run?.running ? 'Upgrading\u2026' : failed ? 'Retry' : 'Upgrade';
   // Says the safe thing out loud, because "upgrade the tool my agents are
   // running" reads risky and is not: mise repoints a versioned install, so a
   // session already going keeps the binary it loaded.
-  go.title = `Runs \`mise upgrade ${u.tool}\` in the drawer. `
-    + 'Sessions already running are unaffected — they finish on the version they '
-    + 'started with, and the next session you open gets the new one.';
+  const safety = 'Sessions already running are unaffected \u2014 they finish on the '
+    + 'version they started with, and the next session you open gets the new one.';
+  go.title = failed ? run.tail
+    : run ? `Running \`mise upgrade\`. ${safety}`
+      : `Runs \`mise upgrade ${u.tool}\`. ${safety}`;
   go.onclick = async () => {
     try {
       await call('/api/agent/upgrade');
-      // The drawer now has the run in it; watching it is the point. The button
-      // disables itself on the next snapshot, which is the one that carries the
-      // process — no local flag to get out of step with.
-      toast(`upgrading Claude Code to ${u.latest} — watch the drawer`);
+      // Nothing to point at: the button disables itself on the next snapshot, the
+      // one carrying the run, and this same bar reports how it ended.
+      toast(`upgrading Claude Code to ${run?.to ?? u.latest}`);
     } catch (e) {
       toast(e.message, true);
     }
   };
-  $('agentx').onclick = () => { agentDismissed = u.latest; bar.hidden = true; };
+  $('agentx').onclick = () => { agentDismissed = msg; bar.hidden = true; };
   keyActivate($('agentx'));
   bar.hidden = false;
 }
-
-
-
-
 
 
 import * as Rail from './js/rail.js';

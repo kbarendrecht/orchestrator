@@ -205,6 +205,9 @@ pub struct Inner {
     /// one. Unlike `update` this one is actionable in place: upgrading cannot
     /// disturb a running session, so the SPA offers a button rather than a link.
     pub agent_update: Option<crate::agent_update::AgentUpdate>,
+    /// An agent upgrade in flight, or the failure one left behind. Deliberately
+    /// not a workspace process — see `agent_update::UpgradeRun`.
+    pub upgrade_run: Option<crate::agent_update::UpgradeRun>,
 }
 
 /// Mutating the three stores that outlive the daemon.
@@ -359,6 +362,7 @@ impl AppState {
                 stack_up: None,
                 update: None,
                 agent_update: None,
+                upgrade_run: None,
             }),
             main_pr_park: RwLock::new(None),
             shutting_down: std::sync::atomic::AtomicBool::new(false),
@@ -539,6 +543,7 @@ impl AppState {
             stack_up: inner.stack_up,
             update: inner.update.clone(),
             agent_update: inner.agent_update.clone(),
+            upgrade_run: inner.upgrade_run.clone(),
             resolve_runs: inner
                 .resolve_runs
                 .iter()
@@ -965,6 +970,8 @@ pub struct Snapshot {
     /// A newer Claude Code than the installed one, or `None`. Actionable in the
     /// UI: the upgrade cannot disturb a session already running.
     pub agent_update: Option<crate::agent_update::AgentUpdate>,
+    /// The upgrade the update bar reports on, while it runs and after it fails.
+    pub upgrade_run: Option<crate::agent_update::UpgradeRun>,
     /// Resolve runs in flight, by PR: what each thread's outcome was so far. The
     /// overview reads this rather than the report of a batch that has finished,
     /// because a run is watchable while it happens.

@@ -101,12 +101,103 @@ fn parse(stdout: &[u8], tool: &str) -> Option<AgentUpdate> {
 
 /// The command the upgrade button runs.
 ///
-/// Returned rather than executed so the caller can put it in a pty and let you
-/// watch it — an upgrade that fails silently behind a toast is worse than no
-/// button. Run in the main checkout, because that is the config mise resolves
-/// the tool version from.
+/// Returned rather than executed so the deadline, the cwd and the reporting all
+/// live with the caller. Run in the main checkout, because that is the config mise
+/// resolves the tool version from.
 pub fn upgrade_argv(tool: &str) -> Vec<String> {
     vec!["mise".into(), "upgrade".into(), tool.into()]
+}
+
+/// An upgrade the daemon is running, or the failure it left behind.
+///
+/// The run used to be a process in main's drawer, which was the wrong home twice:
+/// the drawer is *this workspace's* processes, and upgrading the agent belongs to
+/// no workspace — so from any worktree the run was invisible, and main's drawer
+/// grew a tab that was not a process of main's at all. It reports through the same
+/// bar that offered the button instead.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
+pub struct UpgradeRun {
+    /// The version being installed. Carried so the bar can say it even after the
+    /// check that found it has been refreshed away.
+    pub to: String,
+    pub running: bool,
+    /// The tail of the output, for a run that failed. Empty while it runs, and a
+    /// success has none: it clears the run outright, because the nudge going away
+    /// *is* the report and a bar saying "done" would be announcing no news.
+    pub tail: String,
+}
+
+/// How long an upgrade may take before it is killed and reported as failed.
+///
+/// `mise upgrade` fetches and unpacks, so this is minutes rather than seconds —
+/// but bounded, because the alternative is a bar that says "Upgrading…" forever
+/// with no way to find out otherwise.
+const UPGRADE_TIMEOUT_SECS: u64 = 300;
+
+/// Run the upgrade, then say what happened.
+///
+/// Detached: the button answers immediately, and the bar follows the state through
+/// the snapshot. `run_bounded` captures rather than streams, so there is no live
+/// output to show — what a failure needs is the *end* of it, which is what a
+/// captured tail is.
+pub fn run_upgrade(app: std::sync::Arc<crate::state::AppState>, tool: String, to: String) {
+    tokio::spawn(async move {
+        let main = app.cfg.main_checkout.clone();
+        let argv = upgrade_argv(&tool);
+        let done = tokio::task::spawn_blocking(move || {
+            crate::proc::run_bounded(&main, UPGRADE_TIMEOUT_SECS, &argv, "agent upgrade")
+        })
+        .await;
+
+        let failure: Option<String> = match done {
+            Err(e) => Some(format!("the upgrade task panicked: {e}")),
+            Ok(Err(e)) => Some(format!("{e:#}")),
+            Ok(Ok(out)) if !out.status.success() => {
+                // stderr first: mise says what went wrong there, and its stdout is
+                // progress noise. Both, because a tool that fails quietly on one of
+                // them would otherwise report nothing at all.
+                let mut text = String::from_utf8_lossy(&out.stderr).into_owned();
+                if text.trim().is_empty() {
+                    text = String::from_utf8_lossy(&out.stdout).into_owned();
+                }
+                Some(tail(&text, 12))
+            }
+            Ok(Ok(_)) => None,
+        };
+
+        // Asked either way, and before the bar is updated: the check is what decides
+        // whether the nudge stays, so a failure that actually installed something is
+        // reported by the version rather than by our guess about the exit code.
+        if let Err(e) = refresh(&app).await {
+            tracing::warn!("re-checking the agent version after an upgrade failed: {e:#}");
+        }
+
+        {
+            let mut inner = app.inner.write().await;
+            inner.upgrade_run = match &failure {
+                Some(text) => {
+                    tracing::warn!("upgrading {tool} failed: {text}");
+                    Some(UpgradeRun {
+                        to,
+                        running: false,
+                        tail: text.clone(),
+                    })
+                }
+                None => {
+                    tracing::info!("upgraded {tool}");
+                    None
+                }
+            };
+        }
+        app.notify().await;
+    });
+}
+
+/// The last `n` non-empty lines, which is what a failure is actually in.
+fn tail(text: &str, n: usize) -> String {
+    let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+    lines[lines.len().saturating_sub(n)..].join("\n")
 }
 
 /// Poll for a newer agent, forever.
@@ -150,6 +241,21 @@ pub async fn refresh(app: &std::sync::Arc<crate::state::AppState>) -> Result<()>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// What the bar shows when an upgrade fails is the *end* of the output, and
+    /// mise pads its errors with blank lines — so a naive last-N-lines would hand
+    /// the bar an empty string and the failure would read as no reason at all.
+    #[test]
+    fn the_reported_tail_is_the_last_lines_that_say_something() {
+        let noisy = "fetching\n\nunpacking\n\nmise ERROR no version set\nmise ERROR see --verbose\n\n";
+        assert_eq!(
+            tail(noisy, 2),
+            "mise ERROR no version set\nmise ERROR see --verbose"
+        );
+        // Shorter than asked for is the whole of it, not padding.
+        assert_eq!(tail("only this\n", 12), "only this");
+        assert_eq!(tail("\n\n", 4), "");
+    }
 
     /// Both spellings, because this machine really has both — and the shadowed
     /// one must not be what gets reported. Driving it taught this: upgrading

@@ -412,6 +412,10 @@ update: UpdateInfo | null,
  */
 agent_update: AgentUpdate | null, 
 /**
+ * The upgrade the update bar reports on, while it runs and after it fails.
+ */
+upgrade_run: UpgradeRun | null, 
+/**
  * Resolve runs in flight, by PR: what each thread's outcome was so far. The
  * overview reads this rather than the report of a batch that has finished,
  * because a run is watchable while it happens.
@@ -461,6 +465,28 @@ export type TurnReason = "turn_complete" | "asked_a_question" | "needs_permissio
  * you it is there.
  */
 export type UpdateInfo = { current: string, latest: string, url: string, };
+
+/**
+ * An upgrade the daemon is running, or the failure it left behind.
+ *
+ * The run used to be a process in main's drawer, which was the wrong home twice:
+ * the drawer is *this workspace's* processes, and upgrading the agent belongs to
+ * no workspace — so from any worktree the run was invisible, and main's drawer
+ * grew a tab that was not a process of main's at all. It reports through the same
+ * bar that offered the button instead.
+ */
+export type UpgradeRun = { 
+/**
+ * The version being installed. Carried so the bar can say it even after the
+ * check that found it has been refreshed away.
+ */
+to: string, running: boolean, 
+/**
+ * The tail of the output, for a run that failed. Empty while it runs, and a
+ * success has none: it clears the run outright, because the nudge going away
+ * *is* the report and a bar saying "done" would be announcing no news.
+ */
+tail: string, };
 
 export type WorkspaceKind = { "kind": "main" } | { "kind": "worktree", name: string, };
 
