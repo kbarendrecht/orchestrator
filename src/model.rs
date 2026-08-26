@@ -235,6 +235,20 @@ pub struct Session {
     pub recovery: Option<ArchiveState>,
     pub created_at: SystemTime,
     pub state_since: SystemTime,
+    /// The branch this conversation is about, as opposed to the tree it sits in.
+    ///
+    /// Those are the same thing right up until a swap, which exchanges what two
+    /// trees have checked out. Without this the daemon can only pair a
+    /// conversation with a *directory*, so a swap moved the branch and left the
+    /// conversation behind: a pane whose transcript and whose changed files were
+    /// about different pieces of work, with nothing saying so.
+    ///
+    /// Read from the tree when a session is created and carried across a resume or
+    /// a fork, because a conversation already knows its branch and the tree it
+    /// comes back to may have drifted. `None` for a record written before this
+    /// existed, which is why nothing here ever treats it as an assertion: an
+    /// unknown branch travels nowhere.
+    pub branch: Option<String>,
     /// Paths reported dirty by `PostToolUse` since the last reconcile (§4).
     pub dirty_paths: HashSet<PathBuf>,
     /// Blocked tool calls surfaced by `worktree-edit-boundary` (§11) — an agent
@@ -283,6 +297,19 @@ pub struct Session {
     /// it, so knowing *which* one is the difference between two rows that read
     /// identically and two you can tell apart.
     pub forked_from: Option<SessionId>,
+    /// A one-off message for the agent, delivered at its next prompt.
+    ///
+    /// The daemon can move a conversation between checkouts, and until this the
+    /// agent was never told: it came back believing it was in the tree it had been
+    /// reading all along, and the first thing it did with a remembered path was
+    /// wrong. `UserPromptSubmit` is the moment to say so: it is the only hook that
+    /// can hand the agent context, and until the human speaks to the session there
+    /// is nothing for the note to change.
+    ///
+    /// Taken, not read: delivered exactly once. Carried across a resume and
+    /// persisted, because a session moved while it was not running is told when
+    /// auto-resume brings it back, which may be days later.
+    pub arrival_notice: Option<String>,
     /// Written into the pty once `SessionStart` fires.
     ///
     /// `initialUserMessage` is only honoured in non-interactive mode, and a
@@ -309,6 +336,8 @@ impl Session {
             recovery: None,
             created_at: now,
             state_since: now,
+            branch: None,
+            arrival_notice: None,
             dirty_paths: HashSet::new(),
             boundary_violations: Vec::new(),
             last_reconcile: None,

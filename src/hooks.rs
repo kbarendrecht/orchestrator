@@ -493,6 +493,19 @@ pub async fn pre_edit(
     let Some(id) = session_of(&headers, &payload) else {
         return ok();
     };
+
+    // Said before anything about the file, and said here rather than at the prompt.
+    //
+    // `UserPromptSubmit` looks like the natural place and is not: measured against a
+    // real session on the fixture daemon, `additionalContext` from the **http** form
+    // of that hook never reaches the model, and taking the notice there consumed it
+    // for nothing. This deny reason does reach it, which is what `claim_stale_warning`
+    // below has always relied on, and the moment an agent reaches for a path is
+    // exactly the moment being in a different tree starts to matter.
+    if let Some(notice) = app.take_arrival_notice(id).await {
+        return deny(notice);
+    }
+
     let Some(path) = payload
         .tool_input
         .as_ref()
@@ -503,20 +516,29 @@ pub async fn pre_edit(
     };
 
     match app.claim_stale_warning(id, &PathBuf::from(path)).await {
-        Some(reason) => (
-            StatusCode::OK,
-            Json(json!({
-                "hookSpecificOutput": {
-                    "hookEventName": "PreToolUse",
-                    "permissionDecision": "deny",
-                    "permissionDecisionReason": reason,
-                }
-            })),
-        ),
+        Some(reason) => deny(reason),
         // An empty body leaves the decision alone; this hook is otherwise an
         // observer and must never gate an ordinary edit.
         None => ok(),
     }
+}
+
+/// Refuse one tool call and tell the model why.
+///
+/// The daemon's only way to say something an agent will actually read: hooks are
+/// one-way and the pty is the human's. Every use of it is announce-once, because a
+/// deny that repeats stalls the turn instead of informing it.
+fn deny(reason: String) -> HookResult {
+    (
+        StatusCode::OK,
+        Json(json!({
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "deny",
+                "permissionDecisionReason": reason,
+            }
+        })),
+    )
 }
 
 /// A blocked tool call from `worktree-edit-boundary` surfaces as a distinct

@@ -389,9 +389,32 @@ pub async fn spawn_session(
         None => (false, false),
     };
 
+    // Carried first, read second. A resume or a fork continues a conversation that
+    // already knows what it is about, and the tree it comes back to may have been
+    // swapped since, so asking git here would quietly rewrite the conversation's
+    // own history to match whatever is checked out now, which is the mismatch this
+    // field exists to catch. Only a genuinely new session has to ask the tree.
+    //
+    // The undelivered arrival notice rides along for the same reason: a session
+    // moved while it was not running is told when auto-resume brings it back, and
+    // that resume is exactly this path.
+    let (carried_branch, carried_notice) = match resume {
+        Some(Source::Resume(prev)) | Some(Source::Fork(prev)) => {
+            let inner = app.inner.read().await;
+            let prev = inner.sessions.get(&prev);
+            (
+                prev.and_then(|s| s.branch.clone()),
+                prev.and_then(|s| s.arrival_notice.clone()),
+            )
+        }
+        None => (None, None),
+    };
+
     let mut session = Session::new(id, workspace.to_string(), path.clone(), kind);
     session.interrupted = interrupted;
     session.had_a_turn = had_a_turn;
+    session.branch = carried_branch.or_else(|| crate::git::current_branch(&path).ok());
+    session.arrival_notice = carried_notice;
     if let Some(Source::Fork(prev)) = resume {
         session.forked_from = Some(prev);
     }

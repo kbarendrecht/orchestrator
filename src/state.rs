@@ -581,6 +581,16 @@ impl AppState {
     ///
     /// Returns the message once per session per edit; afterwards the write is
     /// allowed, so the agent's retry after re-reading succeeds.
+    /// The one-off notice for a session the daemon moved, taken so it is said once.
+    ///
+    /// Lives beside [`Self::claim_stale_warning`] because it is the same idea and the
+    /// same delivery: the daemon has something the agent must know, and a refused
+    /// tool call is the only way to say it.
+    pub async fn take_arrival_notice(&self, session: SessionId) -> Option<String> {
+        let mut inner = self.inner.write().await;
+        inner.sessions.get_mut(&session)?.arrival_notice.take()
+    }
+
     pub async fn claim_stale_warning(&self, session: SessionId, path: &Path) -> Option<String> {
         let real = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
         let mut inner = self.inner.write().await;
@@ -860,7 +870,7 @@ impl AppState {
         let mut inner = self.inner.write().await;
         inner.files.insert(workspace.to_string(), set);
         if let Some(w) = inner.workspaces.get_mut(workspace) {
-            if let Some(b) = branch {
+            if let Some(b) = branch.clone() {
                 w.branches.insert(b);
             }
             // Each measurement keeps its previous value when git could not
@@ -886,6 +896,18 @@ impl AppState {
             if s.workspace == workspace {
                 s.dirty_paths.clear();
                 s.last_reconcile = Some(SystemTime::now());
+                // Live only, and that is the whole of the rule. A running agent
+                // that checks out another branch really has changed what its
+                // conversation is about, so the record follows it. An *archived*
+                // one is history: re-stamping it from the tree would erase the
+                // difference between "this conversation was about that branch" and
+                // "that branch happens to be here now", which is the difference a
+                // swap depends on to know who travels.
+                if s.state.is_live() {
+                    if let Some(b) = branch.clone() {
+                        s.branch = Some(b);
+                    }
+                }
             }
         }
         Ok(())

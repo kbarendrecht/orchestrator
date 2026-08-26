@@ -160,6 +160,20 @@ pub struct Config {
     /// running both would double it.
     #[serde(default)]
     pub worktree_setup: Vec<String>,
+
+    /// What to tell an agent whose conversation has just been moved into a
+    /// workspace, keyed by the kind of workspace it landed in.
+    ///
+    /// The daemon says the factual half itself: which branch moved, which directory
+    /// this session is in now, and where it was before. This is the half only the
+    /// project knows: that main is where the dev stack and the managed processes
+    /// run, say, so work that needs them has to happen there. orchd has no business
+    /// knowing that about any particular repo, so it is a string the repo supplies
+    /// rather than a rule the daemon carries.
+    ///
+    /// Empty by default, which is a note that simply is not added.
+    #[serde(default)]
+    pub workspace_notes: WorkspaceNotes,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -232,6 +246,27 @@ fn rewrite_main_checkout(path: &Path, raw: &str, main: &Path) -> Result<()> {
     );
     std::fs::write(path, serde_json::to_string_pretty(&v)? + "\n")?;
     Ok(())
+}
+
+/// Per-workspace-kind notes handed to an arriving agent. See
+/// [`Config::workspace_notes`].
+///
+/// Two kinds rather than a map keyed by workspace id, because the thing worth
+/// saying is true of *being in main* rather than of any particular worktree, and a
+/// worktree's id is generated per tree.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct WorkspaceNotes {
+    #[serde(default)]
+    pub main: Option<String>,
+    #[serde(default)]
+    pub worktree: Option<String>,
+}
+
+impl WorkspaceNotes {
+    /// The note for a destination, or `None` when the project said nothing about it.
+    pub fn for_main(&self, is_main: bool) -> Option<&str> {
+        if is_main { self.main.as_deref() } else { self.worktree.as_deref() }
+    }
 }
 
 /// The subset of [`Config`] the settings panel reads and writes.

@@ -52,6 +52,19 @@ pub struct SessionRecord {
     /// the file is already being read.
     #[serde(default)]
     pub had_a_turn: bool,
+    /// The branch this conversation is about. See [`crate::model::Session::branch`].
+    ///
+    /// Persisted because the pairing it exists to protect is exactly what a restart
+    /// used to lose: auto-resume brings a session back in its recorded *directory*,
+    /// and without the branch beside it nothing can tell that the directory now
+    /// holds somebody else's work.
+    #[serde(default)]
+    pub branch: Option<String>,
+    /// An undelivered [`crate::model::Session::arrival_notice`]. A conversation
+    /// carried by a swap while it was not running is told when auto-resume brings
+    /// it back, so the note has to outlive the daemon that wrote it.
+    #[serde(default)]
+    pub arrival_notice: Option<String>,
 }
 
 impl SessionRecord {
@@ -72,6 +85,8 @@ impl SessionRecord {
             forked_from: s.forked_from,
             interrupted: s.interrupted,
             had_a_turn: s.had_a_turn,
+            branch: s.branch.clone(),
+            arrival_notice: s.arrival_notice.clone(),
         }
     }
 
@@ -89,6 +104,8 @@ impl SessionRecord {
         s.forked_from = self.forked_from;
         s.interrupted = self.interrupted;
         s.had_a_turn = self.had_a_turn;
+        s.branch = self.branch;
+        s.arrival_notice = self.arrival_notice;
         // After the fields, not before: `resumable` reads `recovery` and
         // `had_a_turn`, so computing it on a half-built session answers about the
         // defaults.
@@ -457,6 +474,8 @@ mod tests {
                 forked_from: None,
                 interrupted: false,
                 had_a_turn: false,
+                branch: None,
+                arrival_notice: None,
             }
         };
 
@@ -707,6 +726,45 @@ mod tests {
         let id = uuid::Uuid::new_v4();
         let moved = move_transcript(id, Path::new("/nonexistent/a"), Path::new("/nonexistent/b"));
         assert!(matches!(moved, Ok(None)), "{moved:?}");
+    }
+
+    /// A restart brings a session back in its recorded *directory*, so the branch
+    /// has to come back beside it or nothing can tell that the directory now holds
+    /// somebody else's work. The notice rides along for the same reason: a
+    /// conversation moved while it was not running is told when auto-resume starts
+    /// it again, which may be days later.
+    #[test]
+    fn the_branch_and_an_undelivered_notice_survive_the_record() {
+        let mut s = crate::model::Session::new(
+            uuid::Uuid::new_v4(),
+            "wt".into(),
+            std::path::Path::new("/tmp").to_path_buf(),
+            crate::model::Kind::Interactive,
+        );
+        s.branch = Some("feature/a".into());
+        s.arrival_notice = Some("you were moved".into());
+
+        let back = SessionRecord::of(&s).restore();
+        assert_eq!(back.branch.as_deref(), Some("feature/a"));
+        assert_eq!(back.arrival_notice.as_deref(), Some("you were moved"));
+
+        // A record written before either field existed loads as "nothing known",
+        // and an unknown branch travels nowhere.
+        let old: SessionRecord = serde_json::from_value(serde_json::json!({
+            "id": uuid::Uuid::new_v4(),
+            "workspace": "wt",
+            "cwd": "/tmp",
+            "kind": { "kind": "interactive" },
+            "title": null,
+            "transcript_path": null,
+            "archived_transcript": null,
+            "recovery": null,
+            "created_at": { "secs_since_epoch": 0, "nanos_since_epoch": 0 },
+            "pid": null,
+        }))
+        .unwrap();
+        assert_eq!(old.branch, None);
+        assert_eq!(old.arrival_notice, None);
     }
 
     /// Without this the flag dies with the daemon, and every session comes back

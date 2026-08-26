@@ -1504,6 +1504,25 @@ pub async fn swap_with_main(
     // provenance mark is cleared: a swap is a deliberate placement that stays.
     *app.main_pr_park.write().await = None;
 
+    // Who travels is decided **here**, before `reconcile` runs, and the ordering is
+    // load-bearing. `reconcile` re-stamps a live session's branch from whatever its
+    // tree has checked out now, which is the right rule everywhere else and is
+    // exactly wrong in this window: the branches have already moved, so a reconcile
+    // first would tell every live session it had always been on the branch that just
+    // arrived, and then nobody matches the branch that left. Driving this against a
+    // fixture daemon is what caught it: the swap reported carrying nothing while
+    // two live conversations sat in the two trees.
+    //
+    // By branch, not by address: `swapped.worktree_now` is what left main and
+    // `swapped.main_now` is what left the worktree, so each side asks "who here was
+    // working on the branch that just moved out".
+    //
+    // Both are picked before either moves. Choosing as we go would let the second
+    // choice see the session the first one just delivered — for the moment in
+    // between, both conversations live in the worktree — and send it straight back.
+    let (outgoing, outgoing_records) = to_carry(&app, MAIN, &swapped.worktree_now).await;
+    let (incoming, incoming_records) = to_carry(&app, &workspace, &swapped.main_now).await;
+
     // Each tree gave a branch away, and `reconcile` only adds. Left in, the
     // worktree would go on claiming the branch main now holds, and a PR flow for it
     // would be pointed at the wrong tree — found by driving this against a real
@@ -1525,12 +1544,6 @@ pub async fn swap_with_main(
     // Main's session travels too: its branch is in the worktree now, and a
     // conversation left staring at a tree that changed under it is the half of the
     // old behaviour that made this a one-way move rather than a swap.
-    //
-    // Both are picked before either moves. Choosing as we go would let the second
-    // choice see the session the first one just delivered — for the moment in
-    // between, both conversations live in the worktree — and send it straight back.
-    let outgoing = pick_to_carry(&app, MAIN).await;
-    let incoming = pick_to_carry(&app, &workspace).await;
 
     // Out of main **first**, and the order is load-bearing rather than tidy: main
     // holds one session at a time, so while the outgoing one is still sitting there
@@ -1545,6 +1558,31 @@ pub async fn swap_with_main(
         Some(id) => Some(spawn::relocate_session(&app, id, MAIN, CARRY_GRACE).await),
         None => None,
     };
+
+    // The conversations that were not running. No process work, so these cannot
+    // fail the swap and are not reported back as a carry: the rail simply shows
+    // them where their branch went.
+    for id in outgoing_records {
+        carry_record(&app, id, &workspace, &tree, &swapped.worktree_now).await;
+    }
+    for id in incoming_records {
+        carry_record(&app, id, MAIN, &main, &swapped.main_now).await;
+    }
+
+    // The relocated ones are running, so they are told the same thing the records
+    // are. Set after the resume, because `spawn_session` rebuilds the record under
+    // the same id and would overwrite a notice left on the session it replaced.
+    for (moved, branch, from, to, into_main) in [
+        (&into_worktree, &swapped.worktree_now, &main, &tree, false),
+        (&into_main, &swapped.main_now, &tree, &main, true),
+    ] {
+        let Some(Ok(moved)) = moved else { continue };
+        let notice = arrival_notice(&app, branch, from, to, into_main);
+        let mut inner = app.inner.write().await;
+        if let Some(s) = inner.sessions.get_mut(&moved.id) {
+            s.arrival_notice = Some(notice);
+        }
+    }
     app.notify().await;
 
     // Where to land the pane: main is what you pressed this for, so the session that
@@ -1606,44 +1644,156 @@ fn carried_json(r: &Option<anyhow::Result<spawn::Relocated>>) -> serde_json::Val
     }
 }
 
-/// The session in a workspace whose conversation should follow the branch.
+/// Everything in a workspace that belongs to `branch`, split by what moving it costs.
 ///
-/// Newest **interactive** session that has actually had a turn. Automation is left
-/// alone deliberately: a fix or resolve run belongs to its PR's worktree, and
-/// moving one into main would put an agent that rebases and force-pushes on the
-/// tree every worktree is cut from.
+/// `.0` is the one live conversation, which has to be *relocated*: killed, re-filed
+/// and resumed in the destination. `.1` is every other session recorded there on the
+/// same branch, which is a field update and a file move with no process in it.
 ///
-/// A turnless session is skipped rather than moved: `--resume` answers "no
-/// conversation found" and exits instantly, and so does the fork behind it, so
-/// there is nothing to carry and killing it would cost a live pane for nothing.
-/// Any *other* session in the tree stays where it is — closing them all is more
-/// honest and also more destructive, and this is the move that was asked for.
-async fn pick_to_carry(app: &Arc<AppState>, workspace: &str) -> Option<SessionId> {
-    // Newest first, and the transcripts are read outside the guard: these are file
-    // reads, and the lock is fair, so a writer queued behind them would block every
-    // reader queued behind it in turn.
-    let candidates = {
+/// **Both halves matter, and the second one is the ordinary case.** The old version
+/// of this returned only the live pick, so a swap made while nothing was running
+/// moved the branch and carried no conversation at all. That is not a rare race:
+/// you swap between pieces of work, and the session you are swapping away from is
+/// usually the one you just finished with. The symptom was a pane whose transcript
+/// and whose changed files were about different stories, days later, with nothing
+/// saying why.
+///
+/// Selection is by branch rather than by recency, which is the point of the field:
+/// a worktree outlives the branches that pass through it, so "newest here" and
+/// "about the work that is leaving" are different questions. A session with no
+/// recorded branch answers neither and stays put.
+///
+/// Automation is left alone deliberately: a fix or resolve run belongs to its PR's
+/// worktree, and moving one into main would put an agent that rebases and
+/// force-pushes on the tree every worktree is cut from.
+async fn to_carry(
+    app: &Arc<AppState>,
+    workspace: &str,
+    branch: &str,
+) -> (Option<SessionId>, Vec<SessionId>) {
+    // Read out under one guard, decided outside it: `has_conversation` below is a
+    // file read, and the lock is fair, so a writer queued behind it would block
+    // every reader queued behind that in turn.
+    let (mut live, records) = {
         let inner = app.inner.read().await;
-        let mut v = inner
+        let mine = inner
             .sessions
             .values()
-            .filter(|s| s.workspace == workspace && s.state.is_live())
+            .filter(|s| s.workspace == workspace)
             .filter(|s| matches!(s.kind, Kind::Interactive))
-            .map(|s| (s.created_at, s.id, s.cwd.clone(), s.transcript_path.clone()))
-            .collect::<Vec<_>>();
-        v.sort_by_key(|(created, ..)| std::cmp::Reverse(*created));
-        v
+            .filter(|s| s.branch.as_deref() == Some(branch));
+        let mut live = Vec::new();
+        let mut records = Vec::new();
+        for s in mine {
+            if s.state.is_live() {
+                live.push((s.created_at, s.id, s.cwd.clone(), s.transcript_path.clone()));
+            } else if s.recovery.is_none() {
+                // A recovery record describes a worktree that was torn down, so the
+                // session is not *in* either tree here and which branch sits where
+                // has nothing to do with it. `worktree::branch_drift` already says
+                // its piece when one of those is resumed.
+                records.push(s.id);
+            }
+        }
+        live.sort_by_key(|(created, ..)| std::cmp::Reverse(*created));
+        (live, records)
     };
     // A file does not prove a conversation — a session that started but never spoke
     // owns a file of headers — so this asks `has_conversation`. Newest-first,
     // stopping at the first hit, so the usual cost is one read rather than one per
     // session to then discard all but the newest.
-    candidates
-        .into_iter()
+    let carried = live
+        .drain(..)
         .find(|(_, id, cwd, recorded)| {
             crate::store::has_conversation(*id, cwd, recorded.as_deref())
         })
-        .map(|(_, id, ..)| id)
+        .map(|(_, id, ..)| id);
+    (carried, records)
+}
+
+/// What an agent is told when its conversation has been moved.
+///
+/// Two halves on purpose. The factual one the daemon can always say: which branch
+/// you are on, where it is now, where you were reading before. The second is
+/// `workspace_notes`, which is the only part that knows anything about a particular
+/// repo (that main is where the dev stack runs, say), and it comes from that
+/// repo's config rather than from anything here.
+///
+/// Written as an instruction rather than a status line because that is what it is:
+/// the paths the agent has been using are stale from this point on, and it will
+/// reach for one on its very next tool call unless it is told not to.
+fn arrival_notice(
+    app: &Arc<AppState>,
+    branch: &str,
+    from: &std::path::Path,
+    to: &std::path::Path,
+    into_main: bool,
+) -> String {
+    let mut note = format!(
+        "This conversation has been moved. The branch it is working on ({branch}) was \
+         swapped into another checkout, and the session followed it: your working \
+         directory is now {}, and until this move it was {}. Treat remembered absolute \
+         paths as stale and re-read anything you are about to change.",
+        to.display(),
+        from.display(),
+    );
+    if let Some(extra) = app.cfg.workspace_notes.for_main(into_main) {
+        note.push(' ');
+        note.push_str(extra);
+    }
+    note
+}
+
+/// Move a session that is not running. The record follows its branch, and the
+/// transcript follows the record.
+///
+/// Separate from `spawn::relocate_session` because there is no pty to kill and no
+/// `--resume` to watch stay up, so none of that machinery applies and none of its
+/// failure modes exist. Auto-resume brings this conversation back in the directory
+/// recorded here, which is the whole reason the record has to move at all.
+///
+/// The transcript move is best effort for the reason `store::move_transcript`
+/// documents: `--resume` resolves a conversation by id wherever the file sits, so a
+/// failure costs the slug lookup its cheap path and nothing else.
+async fn carry_record(
+    app: &Arc<AppState>,
+    id: SessionId,
+    dest: &str,
+    dest_path: &std::path::Path,
+    branch: &str,
+) {
+    let src_cwd = {
+        let inner = app.inner.read().await;
+        match inner.sessions.get(&id) {
+            Some(s) => s.cwd.clone(),
+            None => return,
+        }
+    };
+    let refiled = match crate::store::move_transcript(id, &src_cwd, dest_path) {
+        Ok(moved) => moved,
+        Err(e) => {
+            tracing::warn!(
+                session = %id,
+                "could not re-file the transcript under {}; the record moves anyway: {e:#}",
+                dest_path.display()
+            );
+            None
+        }
+    };
+    let notice = arrival_notice(app, branch, &src_cwd, dest_path, dest == MAIN);
+    let mut inner = app.inner.write().await;
+    if let Some(s) = inner.sessions.get_mut(&id) {
+        s.workspace = dest.to_string();
+        s.cwd = dest_path.to_path_buf();
+        // Only on a move that happened. Left pointing at the old slug otherwise,
+        // which is still where the file is.
+        if let Some(path) = refiled {
+            s.transcript_path = Some(path);
+        }
+        // Waits here until auto-resume starts the conversation again, which is the
+        // first moment there is an agent to tell.
+        s.arrival_notice = Some(notice);
+    }
 }
 
 pub async fn teardown(
@@ -2004,6 +2154,195 @@ mod tests {
         assert!(host_allowed("localhost:7777", 7777));
         assert!(!host_allowed("evil.example:7777", 7777));
         assert!(!host_allowed("127.0.0.1", 7777));
+    }
+
+    /// Build an app whose main checkout is a scratch directory, with no git in it.
+    /// Enough for everything below: the carry decides from session records, and the
+    /// only filesystem it touches is a transcript move that finds nothing.
+    fn app_in(tag: &str) -> (std::sync::Arc<crate::state::AppState>, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!(
+            "orchd-{tag}-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cfg: crate::config::Config = serde_json::from_str(&format!(
+            r#"{{"main_checkout":"{}","port":7798}}"#,
+            dir.display()
+        ))
+        .unwrap();
+        let app = crate::state::AppState::new(cfg, "t".into(), crate::window::Chrome::None);
+        (app, dir)
+    }
+
+    /// The bug this is here for. Two swaps moved three branches between three trees
+    /// and carried no conversation at all, because every session involved happened
+    /// to be archived at the time, so days later a pane's transcript was about one
+    /// story and its changed files about another.
+    ///
+    /// `is_live` was the whole filter, and "not running" is not the rare case: you
+    /// swap between pieces of work, and the one you are swapping away from is
+    /// usually the one you just stopped.
+    #[tokio::test]
+    async fn a_swap_carries_the_conversation_that_was_not_running() {
+        use crate::model::{ArchiveState, Kind, Session, State};
+
+        let (app, dir) = app_in("carry-archived");
+        let put = |ws: &str, branch: Option<&str>, state: State, recovery: Option<ArchiveState>| {
+            let mut s = Session::new(Uuid::new_v4(), ws.to_string(), dir.clone(), Kind::Interactive);
+            s.branch = branch.map(str::to_string);
+            s.had_a_turn = true;
+            s.recovery = recovery;
+            s.state = state;
+            s
+        };
+        let archived = || State::Archived { resumable: true };
+
+        let (mine, others, unknown, torn, live_elsewhere) = {
+            let mut inner = app.inner.write().await;
+            let mine = put("wt", Some("feature/a"), archived(), None);
+            // Same tree, different branch: a worktree outlives the branches that
+            // pass through it, so "in this directory" was never the question.
+            let others = put("wt", Some("feature/b"), archived(), None);
+            // Written before the branch was recorded. An unknown branch answers
+            // nothing, so it travels nowhere.
+            let unknown = put("wt", None, archived(), None);
+            // Its worktree was torn down, so it is not *in* either tree here and
+            // which branch sits where has nothing to do with it.
+            let torn = put(
+                "wt",
+                Some("feature/a"),
+                archived(),
+                Some(ArchiveState::Recoverable {
+                    name: "gone".into(),
+                    branch: "feature/a".into(),
+                    head_sha: "abc".into(),
+                }),
+            );
+            let live_elsewhere = put("other", Some("feature/a"), archived(), None);
+            let ids = (
+                mine.id,
+                others.id,
+                unknown.id,
+                torn.id,
+                live_elsewhere.id,
+            );
+            for s in [mine, others, unknown, torn, live_elsewhere] {
+                inner.sessions.insert(s.id, s);
+            }
+            ids
+        };
+
+        let (live, records) = to_carry(&app, "wt", "feature/a").await;
+        assert_eq!(live, None, "nothing was running, so nothing is relocated");
+        assert_eq!(records, vec![mine], "only the conversation whose branch left");
+        for stranded in [others, unknown, torn, live_elsewhere] {
+            assert!(!records.contains(&stranded));
+        }
+    }
+
+    /// Selection is by branch, not by recency, which is the whole point of
+    /// recording it. The old picker took the newest session in the directory, so a
+    /// swap could carry a conversation about work that was not moving and leave the
+    /// one that was.
+    #[tokio::test]
+    async fn the_newest_conversation_is_not_the_one_that_travels() {
+        use crate::model::{Kind, Session, State};
+
+        let (app, dir) = app_in("carry-newest");
+        let (wanted, newer) = {
+            let mut inner = app.inner.write().await;
+            let mut wanted =
+                Session::new(Uuid::new_v4(), "wt".into(), dir.clone(), Kind::Interactive);
+            wanted.branch = Some("feature/a".into());
+            wanted.had_a_turn = true;
+            wanted.state = State::Archived { resumable: true };
+
+            let mut newer =
+                Session::new(Uuid::new_v4(), "wt".into(), dir.clone(), Kind::Interactive);
+            newer.branch = Some("feature/b".into());
+            newer.had_a_turn = true;
+            newer.state = State::Archived { resumable: true };
+            newer.created_at = wanted.created_at + std::time::Duration::from_secs(60);
+
+            let ids = (wanted.id, newer.id);
+            inner.sessions.insert(wanted.id, wanted);
+            inner.sessions.insert(newer.id, newer);
+            ids
+        };
+
+        let (_, records) = to_carry(&app, "wt", "feature/a").await;
+        assert_eq!(records, vec![wanted]);
+        assert!(!records.contains(&newer), "recency is not the question");
+    }
+
+    /// Moving the record is only half of it: the conversation comes back believing
+    /// it is in the tree it was reading all along, so it is told once, at the next
+    /// prompt, and the project's own note about the destination rides along.
+    #[tokio::test]
+    async fn a_carried_conversation_is_told_where_it_now_is() {
+        use crate::model::{Kind, Session, MAIN};
+
+        let dir = std::env::temp_dir().join(format!(
+            "orchd-carry-notice-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        // The half only the project knows. orchd supplies the facts about the move;
+        // this sentence is the repo's business and comes from its own config.
+        let cfg: crate::config::Config = serde_json::from_str(&format!(
+            r#"{{"main_checkout":"{}","port":7799,
+                 "workspace_notes":{{"main":"the dev stack only runs here"}}}}"#,
+            dir.display()
+        ))
+        .unwrap();
+        let app = crate::state::AppState::new(cfg, "t".into(), crate::window::Chrome::None);
+
+        let id = Uuid::new_v4();
+        {
+            let mut inner = app.inner.write().await;
+            let mut s = Session::new(id, "wt".to_string(), dir.join("wt"), Kind::Interactive);
+            s.branch = Some("feature/a".into());
+            s.had_a_turn = true;
+            s.state = crate::model::State::Archived { resumable: true };
+            inner.sessions.insert(id, s);
+        }
+
+        carry_record(&app, id, MAIN, &dir, "feature/a").await;
+
+        let inner = app.inner.read().await;
+        let s = &inner.sessions[&id];
+        assert_eq!(s.workspace, MAIN, "the record follows its branch");
+        assert_eq!(s.cwd, dir);
+        let notice = s.arrival_notice.as_deref().expect("it has to be told");
+        assert!(notice.contains("feature/a"), "which branch moved: {notice}");
+        assert!(
+            notice.contains(&dir.display().to_string()),
+            "where it is now: {notice}"
+        );
+        assert!(
+            notice.contains(&dir.join("wt").display().to_string()),
+            "where it was reading before: {notice}"
+        );
+        assert!(
+            notice.contains("the dev stack only runs here"),
+            "and what the project says main is for: {notice}"
+        );
+    }
+
+    /// The daemon says the facts; the repo says what its own checkouts mean. A note
+    /// is attached to the destination it was written about and nowhere else, which
+    /// is what keeps "the dev stack only runs in main" out of orchd.
+    #[test]
+    fn a_project_note_reaches_only_the_workspace_kind_it_was_written_for() {
+        let notes = crate::config::WorkspaceNotes {
+            main: Some("the stack runs here".into()),
+            worktree: None,
+        };
+        assert_eq!(notes.for_main(true), Some("the stack runs here"));
+        assert_eq!(notes.for_main(false), None);
+        assert_eq!(crate::config::WorkspaceNotes::default().for_main(true), None);
     }
 }
 
