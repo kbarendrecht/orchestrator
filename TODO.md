@@ -351,6 +351,14 @@ Everything outside that block is hand-written and survives.
   the keydown map. Worth ten minutes with the real window before assuming the
   binding: the map is fine, the delivery is what is in doubt.
 
+- **`fork a worktree session` flakes in a full e2e run.** "session … has no
+  conversation yet — nothing to fork", three times today, and it passes 3/3 when
+  run alone — so it is the fake agent's first turn not being recorded before the
+  fork under the load of eleven other flows, not the fork. It fails the pre-commit
+  e2e gate every fifth commit for no reason, which is how a suite teaches everybody
+  `--no-verify`. Make the flow wait for `has_transcript` the way the other flows
+  wait for conditions rather than sleeping.
+
 ## Decisions worth revisiting
 
 - **`hooks::session_end` settles a session with no identity check, unlike the exit

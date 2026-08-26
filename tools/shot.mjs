@@ -7,12 +7,14 @@
 //   mise run shot                     # whole window
 //   mise run shot -- '.drawer-head'   # just that element, tight crop
 //   mise run shot -- '.drawer-head' --click '#rvhead'   # click first, then shoot
-//   mise run shot -- '#keyhelp' --key '?'               # press first, then shoot
+//   mise run shot -- '#keyhelp' --key 'Control+Shift+?' # press first, then shoot
 //   mise run shot -- --dpr 1                            # terminal at its true size
 //
 // `--key` exists because an overlay opened by a chord had no other way in: the
 // legend has a close button and no open button, so `--click` could not reach it.
-// Takes playwright key syntax, so 'Control+Shift+D' works as well as '?'.
+// Takes playwright key syntax, and it has to be the *whole* chord: a bare '?' no
+// longer opens the legend, and the failure is a 10s wait for a selector that stays
+// hidden rather than anything that says why.
 //
 // Chrome is used via playwright-core's `channel`, so nothing is downloaded.
 import { chromium } from 'playwright-core';

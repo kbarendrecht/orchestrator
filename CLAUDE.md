@@ -35,6 +35,10 @@ to disappear is waiting for something that never happens.
   this worse, because you are then debugging a build from ten minutes ago.
   `pkill -x orchd` will not always do it: Linux truncates the process name to 15
   characters, so `orchestrator-desktop` needs killing by pid.
+  **And never `pkill -f orchd`.** It matches the *agents* too: the daemon passes
+  the vendored prompts on the command line, they contain the word, and `-f` reads
+  the whole command line — so it killed two live Claude sessions along with the
+  daemon. Kill by pid, or `pgrep -x orchestrator-de` for the app.
 - **There is a pre-commit hook, and it needs enabling once per clone.**
   `git config core.hooksPath .githooks` — git will not let a repo point at its own
   hooks, so a fresh clone has none until you say this. It runs the SPA checks only
@@ -49,6 +53,26 @@ to disappear is waiting for something that never happens.
   in `.git/`, only qualifying commits spend it, and a *failure does not reset it*
   so the next commit tries again rather than burying a break for four more.
   `E2E_EVERY=1` forces a run, `E2E_EVERY=0` turns it off.
+- **Splitting one working tree into several commits has two traps, and neither
+  fails loudly.** `git diff -U0` splits finely, but `git apply --cached
+  --unidiff-zero` has no context to check against and *trusts the line numbers*:
+  four `state.rs` insertions landed inside unrelated expressions, and five commits
+  in a row did not compile while `HEAD` did, because a later whole-file commit
+  quietly repaired them. Use context hunks (a mismatch then fails instead of
+  landing somewhere else) or write the whole file per stage, and **check out each
+  commit and `cargo check` it** — a throwaway `git worktree add --detach` is the
+  cheap way. The other trap is the hook: it regenerates `web/snapshot.d.ts` from
+  the *working tree*, which holds every change, so any Rust commit in a split
+  demands the final file and can only pass on the last one. `--no-verify` for the
+  split, then `mise run check-web` on the end state. Worth knowing generally: the
+  hook reads the working tree, so it never validates an intermediate commit at all.
+- **Inserting a test can unregister the one next to it.** An anchor on
+  `fn other_test() {` puts your test *between* that test's `#[test]` and its `fn`,
+  which leaves yours with two attributes and its neighbour with none — so it stops
+  running, and the count barely moves because yours now registers twice.
+  `swapping_exchanges_two_branches_and_is_its_own_inverse` sat unregistered in a
+  pushed commit that way. Anchor after the previous test's closing brace, and read
+  the test count.
 - **`mise run check-web` is the SPA's gate, and it bites.** Three things in one:
   it regenerates `web/snapshot.d.ts` and fails if the committed copy drifted, it
   runs `tsc --noEmit --checkJs` over every SPA file, and it runs
@@ -216,6 +240,24 @@ to disappear is waiting for something that never happens.
   trap is `answerable`, which flips the moment you post: it answers "is anyone
   owed a reply", so it is only "who reviewed" on a fetch taken *before* the
   posting.
+- **Claude Code pins worktree isolation in the transcript, so a moved conversation
+  cannot use git in its new home.** Every turn re-appends a `worktree-state` record
+  (`worktreePath`, `worktreeName`, `hookBased: true`), and on resume its own hook
+  refuses any git command aimed outside that original worktree — *including the
+  tree the daemon just moved it into*. A swap that worked perfectly (branch, files,
+  record, conversation all correct) left the agent unable to run `git status` on
+  its own work: "This session is isolated in the worktree …, but this command
+  redirects git to the shared checkout". The wording is in the `claude` binary, not
+  in a repo hook, and the daemon cannot clear it from outside — `ExitWorktree` and
+  `EnterWorktree` are the agent's own tools. So `api::arrival_notice` tells the
+  agent to call one, unconditionally, because what the daemon can see does not
+  include whether Claude Code isolated the session.
+- **Opening a PR in a worktree can move main's branch out from under you** — by
+  design, since `park_main` will not carry uncommitted work and a branch stuck in
+  main makes every PR flow for it impossible. If main holds that PR's own branch,
+  `ensure_pr_worktree` moves branch *and* work into the tree it was about to cut
+  and puts main back on base, logging that it did. Only a live session in main is
+  still refused. It is not a read-only flow with respect to main.
 - **One pty exit, one observer.** `spawn::watch_session_exit` is the only thing
   that waits on a session's handle; it dispatches onward (a fix run's verdict goes
   to `fix_pr::settle`). A second `pty.wait()` on the same handle would work and
