@@ -331,6 +331,30 @@ Everything outside that block is hand-written and survives.
   itself has never made a real round trip to GitHub — the suite is unit tests and
   a fixture, which `docs/fixture-pr.md` says out loud.
 
+  *The list, collected from the first real drive of the overlay (fixture PR #13).*
+  Keep is the whole point: the overlay showing each thread's file, line, hunk and
+  comment reads as a real UI, and beats the old spawn-a-terminal path.
+  - **Triage takes too long to sit through.** It is a full agent session reading
+    every thread; the wait is the agent's, not the daemon's. Cannot be made fast,
+    so it has to be made bearable — a live "reading N of M" instead of a closed
+    overlay and a blank pane. Ties into the next one.
+  - **You click `review` twice — once to start triage, once to see it.** `rvIntake`
+    fires triage with `andClose: true`, so the overlay closes and hands you the
+    pane; you reopen it when the agent is done. Keep it open on a `triaging…` screen
+    that polls `/review` and advances itself when proposals land. The snag is real:
+    triage needs permission prompts answered *in the pane*, so the overlay cannot
+    simply cover the screen while it runs — the progress screen has to coexist with,
+    or hand off to and auto-return from, the pane.
+  - **The `read` is a wall of text.** `rvCard` renders the agent's whole assessment
+    up front. Collapse it to a line with the rest behind a disclosure.
+  - **Stance + reply is too much machinery per thread.** The proposal model is
+    positions-with-patches and three stances. The wanted shape is fewer, flatter
+    choices with no solution diff on the card: 👍, a couple of AI-drafted replies,
+    or "handle differently" — and the drafted comments listed and *editable on the
+    final overview* rather than one card at a time. This is the deep one: it changes
+    `proposal.rs` (positions/patch/stance), `commands/triage.md`'s schema, and the
+    card/final screens together, so it wants a design pass before code, not a patch.
+
 - **`Ctrl+Shift+Tab` for the previous session.** The SPA half is proven correct
   by reading, so the remaining question is delivery, not the binding. The keydown
   listener is registered `capture: true` on `window` (`web/app.js`), so it is the
