@@ -3,6 +3,7 @@
 
 import { $, call, el, get, newShell, pending, setSelected, snap, toast, setPendingSelect } from './core.js';
 import * as Diff from './diff.js';
+import { langFor, hlTokens } from './diff.js';
 import { patchStats, hunkEl, fileListLabel } from './review-diff.js';
 
 
@@ -31,6 +32,10 @@ const reviewState = {
   /* Keyed per (thread, option), not per thread: looking at a second option must
      not be a punishment for having started typing. */
   drafts: {},
+  /* thread_id -> what the session should do, for a free-text answer. Keyed per
+     thread rather than per option: it describes the work, not a wording. Goes out
+     as `note`, and is never posted to the thread. */
+  notes: {},
   /* thread_id -> true while its reply is open for editing on the overview. The
      overview shows a line by default; the box appears only when you ask, so the
      list is not a wall of textareas. */
@@ -468,7 +473,9 @@ function rvCard(root) {
   top.appendChild(anchor);
 
   const hunk = t.comments?.[0]?.diff_hunk;
-  if (hunk) top.appendChild(hunkEl(hunk, true));
+  // The thread's path is the only thing that can name a language here: a GitHub
+  // diff hunk carries no `diff --git` header to read one from.
+  if (hunk) top.appendChild(hunkEl(hunk, true, t.path));
 
   const chain = el('div', 'chain');
   for (const c of t.comments || []) {
@@ -481,7 +488,7 @@ function rvCard(root) {
     if (mine) hd.appendChild(el('span', 'you', 'you'));
     hd.appendChild(el('span', 'age', commentAge(c.created_at)));
     cmt.appendChild(hd);
-    cmt.appendChild(el('p', null, c.body));
+    for (const part of commentParts(c.body, t.path)) cmt.appendChild(part);
     chain.appendChild(cmt);
   }
   top.appendChild(chain);
@@ -508,33 +515,89 @@ function rvCard(root) {
   ], hint));
 }
 
-/** The read, collapsed to its opening and the rest behind a disclosure — a full
- *  assessment on every card was a wall of text (the first drive said so). The
- *  disclosure body carries the whole read, so nothing is reassembled and lost. */
+/** A comment body, split into prose and GitHub `suggestion` blocks.
+ *
+ *  A suggestion is a fenced block whose info string is `suggestion`, and its
+ *  content is the reviewer's proposed replacement for the lines the thread is
+ *  anchored to. Rendered as code rather than left as prose because the fence
+ *  markers and the body were showing verbatim — the most common review comment
+ *  there is, reading as the one thing on the card that had not been formatted.
+ *
+ *  **Display only.** Nothing here applies it, and that is deliberate: this
+ *  codebase's stated position is that a suggestion is a claim to be verified, not
+ *  an instruction to be executed (`commands/triage.md`). Showing it clearly is
+ *  what lets you judge that; the Apply button is GitHub's, not ours.
+ *
+ *  Anything unterminated is left as prose, so a comment merely *discussing* a
+ *  fence does not swallow the rest of itself. */
+function commentParts(body, path) {
+  const text = body || '';
+  const out = [];
+  // ```suggestion … ``` — the fence may carry trailing spaces, and GitHub allows
+  // a longer run of backticks, which is why the closer is matched loosely.
+  const re = /^[ \t]*```+[ \t]*suggestion[ \t]*\r?\n([\s\S]*?)^[ \t]*```+[ \t]*$/gm;
+  let at = 0;
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    const before = text.slice(at, m.index).trim();
+    if (before) out.push(el('p', null, before));
+    out.push(suggestionEl(m[1].replace(/\r?\n$/, ''), path));
+    at = re.lastIndex;
+  }
+  const rest = text.slice(at).trim();
+  // The whole body when there was no suggestion at all, which is the usual case.
+  if (rest || !out.length) out.push(el('p', null, rest));
+  return out;
+}
+
+/** A reviewer's suggested replacement, as code they proposed rather than a diff:
+ *  GitHub gives the replacement text only, so the lines it *removes* are not in
+ *  the comment — showing them as additions against nothing would be inventing a
+ *  diff. Labelled instead, and syntax-coloured from the thread's own path. */
+function suggestionEl(code, path) {
+  const box = el('div', 'suggestion');
+  box.appendChild(el('div', 'sghead', 'suggested change'));
+  const body = el('div', 'sgbody');
+  const lang = langFor(path);
+  for (const line of code.split('\n')) {
+    const row = el('div', 'sgline');
+    // A blank line still needs something in it, or the row collapses.
+    row.appendChild(hlLine(line || ' ', lang));
+    body.appendChild(row);
+  }
+  box.appendChild(body);
+  return box;
+}
+
+/** One line of code, syntax-coloured with the viewer's palette. The same
+ *  flattening `review-diff`'s rows use; kept here rather than exported from there
+ *  because that module is about *diff* text and this is not a diff. */
+function hlLine(text, lang) {
+  const s = el('span', 'sgcode');
+  const ranges = lang ? hlTokens(text, lang) : [];
+  if (!ranges.length) { s.textContent = text; return s; }
+  let at = 0;
+  for (const r of ranges) {
+    if (r.s > at) s.appendChild(document.createTextNode(text.slice(at, r.s)));
+    s.appendChild(el('span', 'tok-' + r.cls, text.slice(r.s, r.e)));
+    at = r.e;
+  }
+  if (at < text.length) s.appendChild(document.createTextNode(text.slice(at)));
+  return s;
+}
+
+/** The read, in full.
+ *
+ *  It was collapsed to its opening sentence for a while, to answer the "wall of
+ *  text" the first drive complained about. Shown whole again: the fold cost a
+ *  click on every card to see the one thing the agent actually concluded, which is
+ *  worse than the length it was hiding. The prompt keeps the real fix — it tells
+ *  the agent the read must be terse. */
 function rvRead(p) {
   const sec = el('div', 'sec');
   const read = el('div', 'read');
   read.appendChild(el('div', 'eyebrow', 'the read'));
-  const full = (p.read || '').trim();
-  // First sentence or first line, whichever comes first and is not the whole thing.
-  const brk = full.search(/[.!?]\s|\n/);
-  const sentence = brk > 0 && brk < 160;
-  const head = sentence ? full.slice(0, brk + 1) : full.slice(0, 160);
-  if (head.length < full.length) {
-    const det = el('details', 'readmore');
-    const sum = el('summary');
-    // A bare 160-char cut lands mid-word, so mark it as truncated; a clean
-    // sentence break does not need the ellipsis.
-    sum.appendChild(el('span', null, sentence ? head : head + '…'));
-    sum.appendChild(el('span', 'more', ' more'));
-    det.appendChild(sum);
-    // The remainder only: `head` is an exact prefix, so summary + body is the whole
-    // read with nothing repeated when it is open.
-    det.appendChild(el('p', null, full.slice(head.length).trimStart()));
-    read.appendChild(det);
-  } else {
-    read.appendChild(el('p', null, full));
-  }
+  read.appendChild(el('p', null, (p.read || '').trim()));
   sec.appendChild(read);
   return sec;
 }
@@ -567,7 +630,7 @@ function rvOptions(item) {
     if (i === item.p.recommend) head.appendChild(el('span', 'tag rec', 'recommended'));
     b.appendChild(head);
     // The descriptor, not the reply: the reply lives in the box under the list now.
-    const sub = pos.stance === 'agree' ? 'thumbs up, no words' : (pos.sub || 'your own words');
+    const sub = pos.stance === 'agree' ? 'Apply, thumbs up' : (pos.sub || 'your own words');
     b.appendChild(el('div', 'osub', sub));
     b.onclick = () => {
       reviewState.picks[item.t.id] = i;
@@ -601,10 +664,7 @@ function replyBox(item) {
   const box = el('textarea', 'box');
   box.setAttribute('aria-label', `Reply for ${threadLabel(item.t)}`);
   box.value = replyOf(item);
-  if (isFreeText(pos)) {
-    box.placeholder = 'Tell the session what to say or do — e.g. push back, or ask for a change. '
-      + 'It writes nothing until you do.';
-  }
+  if (isFreeText(pos)) box.placeholder = 'What the reviewer will read on the thread.';
   box.oninput = () => {
     // Straight to the draft, no re-render: the words already exist, so a repaint
     // would buy nothing and cost the cursor its place mid-sentence.
@@ -617,21 +677,54 @@ function replyBox(item) {
   return wrap;
 }
 
-/** The selected option's reply, edited on the card. Absent for agree/skip, which
- *  post no words. Shares `reviewState.drafts` with the overview's edit box, so a
- *  reply typed on either surface shows on the other. */
+/** What the session should *do* — the other half of a free-text answer, and a
+ *  different thing from the reply: this one is never posted. It rides the wire as
+ *  `note`, which `commands/review-session.md` already reads as "the human's own
+ *  instruction; follow it". Keyed per thread, not per option, because it describes
+ *  the thread's work rather than one wording of it. */
+function instructionBox(item) {
+  const wrap = el('div', 'replyedit');
+  const box = el('textarea', 'box');
+  box.setAttribute('aria-label', `Instructions for ${threadLabel(item.t)}`);
+  box.value = reviewState.notes[item.t.id] ?? '';
+  box.placeholder = 'What the session should do';
+  // No re-render, same as the reply box: this text has no footer to repaint.
+  box.oninput = () => { reviewState.notes[item.t.id] = box.value; };
+  wrap.appendChild(box);
+  return wrap;
+}
+
+/** The boxes a thread's answer needs, shared by the card and the overview's edit
+ *  toggle so both surfaces offer exactly the same thing. A free-text answer gets
+ *  two: what to do, and what to say. They are separate because they go to
+ *  different readers — the instruction to the agent, the reply to the reviewer —
+ *  and one box for both meant the reviewer read your instructions. */
+function answerBoxes(item) {
+  const wrap = el('div', 'answerboxes');
+  if (isFreeText(positionOf(item))) {
+    wrap.appendChild(el('div', 'boxlab', 'instructions for the session'));
+    wrap.appendChild(instructionBox(item));
+    wrap.appendChild(el('div', 'boxlab', 'reply to the reviewer'));
+  }
+  wrap.appendChild(replyBox(item));
+  return wrap;
+}
+
+/** The selected option's answer, edited on the card. Absent for agree/skip, which
+ *  post no words. Shares `reviewState.drafts`/`notes` with the overview's edit
+ *  box, so text typed on either surface shows on the other. */
 function rvCardReply(item) {
   if (reviewState.skipped[item.t.id]) return null;
   const pos = positionOf(item);
   if (!['reply', 'story'].includes(pos.stance)) return null;
 
   const sec = el('div', 'sec');
-  sec.appendChild(el('div', 'eyebrow', isFreeText(pos) ? 'your reply' : 'reply · edit freely'));
+  sec.appendChild(el('div', 'eyebrow', isFreeText(pos) ? 'your answer' : 'reply · edit freely'));
   if (pos.stance === 'story') {
     sec.appendChild(el('div', 'storynote',
       `Files “${pos.story?.title || 'a story'}”, then replies with its id.`));
   }
-  sec.appendChild(replyBox(item));
+  sec.appendChild(answerBoxes(item));
   return sec;
 }
 
@@ -647,7 +740,8 @@ function rvFootState(bodyEl, item, pos, i) {
     const tok = el('span', 'm', '{story}');
     tok.style.color = 'var(--work)';
     said.appendChild(tok);
-    said.appendChild(document.createTextNode(' becomes the id once it exists · (via orchestrator) is appended'));
+    said.appendChild(document.createTextNode(
+      ' becomes a link to the story once it exists · (via orchestrator) is appended'));
     foot.appendChild(said);
   } else {
     foot.appendChild(el('span', null, '(via orchestrator) is appended when it posts'));
@@ -681,18 +775,21 @@ function rvFinal(root) {
   root.appendChild(rvStrip(null));
 
   const body = el('div', 'body');
+  const out = outward(q);
 
-  // -- one row per thread, in queue order; the reply is edited inline
-  const plan = el('div', 'sec');
+  /* One list, not three. The threads, the commit and the re-requests used to sit in
+     separate sections with a summary panel under them, so the same batch was
+     described twice and read four times. Everything that will be done is now one
+     sequence of rows under one heading, with the tally above it. */
+  body.appendChild(rvWillDo(out));
+
+  const plan = el('div', 'sec plan');
   for (const item of q) plan.appendChild(rvOverviewRow(item));
+  // The two things the batch does that belong to no single thread.
+  const commit = rvCommitRow(out);
+  if (commit) plan.appendChild(commit);
+  for (const row of rvRerequestRows(q)) plan.appendChild(row);
   body.appendChild(plan);
-
-  // -- re-request, per reviewer
-  const req = rvRerequestSec(q);
-  if (req) body.appendChild(req);
-
-  // -- what leaves this machine
-  body.appendChild(rvLeavesSec(q));
   root.appendChild(body);
 
   const decided = q.every((x) => isHandled(x) || reviewState.skipped[x.t.id]);
@@ -712,34 +809,59 @@ function rvOverviewRow(item) {
   const skipped = reviewState.skipped[item.t.id];
   const row = el('div', 'stage-row');
 
-  let kind = 'reply';
-  let word = 'reply';
-  if (skipped || !isHandled(item)) { kind = 'skip'; word = skipped ? 'skipped' : 'not handled'; }
-  else if (pos.stance === 'story') { kind = 'story'; word = 'story'; }
-  else if (pos.stance === 'agree') { kind = 'reply'; word = 'thumbs up'; }
-  row.appendChild(el('span', 'k ' + kind, word));
+  /* Every act the thread causes, not just its headline one: a story also posts the
+     reply carrying its id, and agreeing both changes code and reacts. One badge
+     each hid half of what pressing send would do. */
+  let badges;
+  if (skipped || !isHandled(item)) {
+    badges = [['skip', skipped ? 'skipped' : 'not handled']];
+    row.classList.add('off');   // not answered, so not at full volume
+  } else if (pos.stance === 'story') {
+    badges = [['story', 'story'], ['reply', 'reply']];
+  } else if (pos.stance === 'agree') {
+    // `apply`, not `thumbs up`: the reaction is the smaller half of what this does.
+    badges = [['apply', 'apply'], ['thumb', '👍']];
+  } else {
+    badges = [['reply', 'reply']];
+  }
 
+  /* The verdict rides on the same line as the thread it belongs to, as chips.
+     They used to sit in a fixed column at the far left, which put a hand's width of
+     nothing between the word and the thing it described — and hyphenated any
+     label longer than the column. */
   const c = el('span', 'c');
-  c.appendChild(el('span', 'p', threadLabel(item.t)));
+  const head = el('div', 'threadhead');
+  const kg = el('span', 'kgroup');
+  for (const [kind, word] of badges) kg.appendChild(el('span', 'k ' + kind, word));
+  head.appendChild(kg);
+  head.appendChild(el('span', 'p', threadLabel(item.t)));
+  c.appendChild(head);
   if (skipped || !isHandled(item)) {
     /* All three consequences stated, because "leaves it open" alone reads as
        harmless. */
     c.appendChild(el('span', 't',
       `Not handled. Stays open, nothing written, ${item.t.comments?.[0]?.author || 'they'} not re-requested.`));
   } else if (pos.stance === 'agree') {
-    c.appendChild(el('span', 't', '👍 thumbs up, no written reply.'));
+    c.appendChild(el('span', 't', 'Makes the change, then 👍 — no written reply.'));
   } else {
     if (pos.stance === 'story') {
       c.appendChild(el('span', 't', `Files “${pos.story?.title || 'a story'}”, then replies with its id.`));
     }
     if (reviewState.editing[item.t.id]) {
-      c.appendChild(replyBox(item));
+      c.appendChild(answerBoxes(item));
       const done = el('button', 'linkbtn', 'done');
       done.onclick = () => { delete reviewState.editing[item.t.id]; renderReview(); };
       c.appendChild(done);
     } else {
       // A line by default, edit on demand — the box the card already offers.
       const preview = replyPreview(item, pickOf(item));
+      // The instruction is not posted, so it is shown as a separate line rather
+      // than quoted: seeing it beside the reply is how you catch the two swapped.
+      const note = (reviewState.notes[item.t.id] || '').trim();
+      if (note) {
+        c.appendChild(el('span', 't instr',
+          `Session: ${note.length > 90 ? note.slice(0, 90).trimEnd() + '…' : note}`));
+      }
       const lineWrap = el('div', 'replyline');
       lineWrap.appendChild(el('span', 'q', preview ? `“${preview}”` : 'no reply written yet'));
       const edit = el('button', 'linkbtn', 'edit');
@@ -752,10 +874,87 @@ function rvOverviewRow(item) {
   return row;
 }
 
-/** Per reviewer, not per PR: one whose every thread is addressed is
- *  re-requested even while another's are still open. The daemon recomputes this
- *  from a fresh fetch at post time; this is the same rule, shown early. */
-function rvRerequestSec(q) {
+/** The heading and the tally: every outward act as a count, before the list that
+ *  spells them out. Badges rather than a sentence, because the question here is
+ *  "how much of what", and a number you can read at a glance is the answer.
+ *
+ *  The irreversibility is stated once, quietly, under them. It used to be a framed
+ *  panel of its own; a warning repeated in its own box on every send is one the eye
+ *  learns to jump, and it was describing the same batch the list already showed. */
+function rvWillDo(out) {
+  const sec = el('div', 'sec willdo');
+  sec.appendChild(el('div', 'eyebrow', 'what will be done'));
+  const row = el('div', 'tallies');
+  const add = (kind, n, one, many) => {
+    if (!n) return;
+    row.appendChild(el('span', 'tally-b ' + kind, `${n} ${n === 1 ? one : many}`));
+  };
+  // Commit first: it is the one that rewrites something that already exists.
+  if (out.push !== 'no') {
+    // "maybe" in words, never a `?`: the uncertainty is real and worth stating,
+    // but a glyph makes the badge look like it is asking you something.
+    row.appendChild(el('span', 'tally-b commit' + (out.push === 'may' ? ' maybe' : ''),
+      out.push === 'will' ? '1 commit' : '1 commit, maybe'));
+  }
+  add('reply', out.replies, 'reply', 'replies');
+  add('thumb', out.thumbs, 'thumbs up', 'thumbs up');
+  add('req', out.rerequests, 're-request', 're-requests');
+  add('story', out.stories, 'story', 'stories');
+  if (!row.children.length) {
+    row.appendChild(el('span', 'tally-b none', 'nothing'));
+  }
+  sec.appendChild(row);
+
+  const note = el('div', 'willnote');
+  if (row.querySelector('.none')) {
+    note.textContent = 'Every thread was skipped, so nothing is written, pushed or posted.';
+  } else {
+    note.textContent = out.push === 'no'
+      ? 'Comments are public and cannot be unsent.'
+      : 'The branch head is rewritten and comments are public. None of it can be undone.';
+  }
+  sec.appendChild(note);
+  return sec;
+}
+
+/** The commit, as a row in the same list as the threads.
+ *
+ *  It belongs to no single thread — one push carries all of them — but leaving it
+ *  out of the list was worse: `outward().commits` reads position patches, which the
+ *  session flow never has, so the most destructive act in the batch was the one
+ *  thing the screen never mentioned. The certainty is graded rather than guessed. */
+function rvCommitRow(out) {
+  if (out.push === 'no') return null;
+  const branch = `origin/${reviewState.data.head_ref || 'this branch'}`;
+  const row = el('div', 'stage-row');
+  const c = el('span', 'c');
+  const head = el('div', 'threadhead');
+  /* The three acts one push is made of, named separately because they fail and
+     matter separately: writing code, folding it into the commits that own it, and
+     rewriting the published branch. No hedging glyph on the badges — the certainty
+     belongs in the sentence, where it can be said in words. */
+  const kg = el('span', 'kgroup');
+  for (const [kind, word] of [['code', 'code'], ['commit', 'commit'], ['push', 'push']]) {
+    kg.appendChild(el('span', 'k ' + kind, word));
+  }
+  head.appendChild(kg);
+  head.appendChild(el('span', 'p', branch));
+  c.appendChild(head);
+  c.appendChild(el('span', 't', out.push === 'will'
+    ? 'Amends the commits that own the changed lines, then force-pushes. The branch '
+      + 'head is rewritten for everyone who has it.'
+    : `Amends and force-pushes only if the session changes code while answering `
+      + `${out.pushThreads === 1 ? 'this thread' : `these ${out.pushThreads} threads`}.`));
+  row.appendChild(c);
+  return row;
+}
+
+/** One row per reviewer who gets re-requested, or is held back from it.
+ *
+ *  Per reviewer, not per PR: one whose every thread is addressed is re-requested
+ *  even while another's are still open. The daemon recomputes this from a fresh
+ *  fetch at post time; this is the same rule, shown early. */
+function rvRerequestRows(q) {
   const viewer = reviewState.data.viewer;
   const mine = new Map();   // login -> { open: [labels] }
   for (const t of reviewState.data.threads || []) {
@@ -764,104 +963,33 @@ function rvRerequestSec(q) {
     if (!who || who === viewer) continue;
     const entry = mine.get(who) || { open: [] };
     const item = q.find((x) => x.t.id === t.id);
-    // Not `threadLabel`: the row is already labelled with this reviewer, and
-    // repeating their name inside the reason reads as a stutter.
     if (!item || !isHandled(item)) {
       const line = t.line ?? t.original_line;
       entry.open.push(t.path ? (line ? `${t.path}:${line}` : t.path) : 'the review summary');
     }
     mine.set(who, entry);
   }
-  if (!mine.size) return null;
 
-  const sec = el('div', 'sec');
-  sec.appendChild(el('div', 'eyebrow', 're-request'));
+  const rows = [];
   for (const [who, { open }] of [...mine].sort()) {
-    const row = el('div', 'stage-row');
-    row.appendChild(el('span', 'k ' + (open.length ? 'skip' : 'req'), who));
+    const row = el('div', 'stage-row' + (open.length ? ' off' : ''));
     const c = el('span', 'c');
-    c.appendChild(el('span', open.length ? 't held' : 't', open.length
-      ? `held back by ${open[0]}, which you did not handle`
-      : 'Every thread of theirs addressed.'));
+    const head = el('div', 'threadhead');
+    const kg = el('span', 'kgroup');
+    kg.appendChild(el('span', 'k ' + (open.length ? 'skip' : 'req'),
+      open.length ? 'no re-request' : 're-request'));
+    head.appendChild(kg);
+    head.appendChild(el('span', 'p', who));
+    c.appendChild(head);
+    c.appendChild(el('span', 't', open.length
+      ? `Held back by ${open[0]}, which you did not handle.`
+      : 'Every thread of theirs is addressed, so they are asked to look again.'));
     row.appendChild(c);
-    sec.appendChild(row);
+    rows.push(row);
   }
-  return sec;
+  return rows;
 }
 
-/** What is local and what is outward, separated by a single glyph. The last
- *  thing read before the irreversible button, so it is set apart rather than
- *  being one more list among the others. */
-function rvLeavesSec(q) {
-  const sec = el('div', 'sec leaves');
-  sec.appendChild(el('div', 'eyebrow', 'what leaves this machine'));
-  const group = el('div', 'group');
-  const out = outward(q);
-
-  if (out.files.length) {
-    const row = el('div', 'res wait');
-    row.appendChild(el('span', 'st', '·'));
-    const c = el('span', 'c');
-    const t = el('span', 't', 'writes ');
-    for (const f of out.files) {
-      const p = el('span', 'm', f.path);
-      t.appendChild(p);
-      const a = el('span', null, ` +${f.added}`);
-      a.style.color = 'var(--ok)';
-      t.appendChild(a);
-      const d = el('span', null, ` −${f.deleted} `);
-      d.style.color = 'var(--bad)';
-      t.appendChild(d);
-    }
-    t.appendChild(document.createTextNode('— local only'));
-    c.appendChild(t);
-    row.appendChild(c);
-    group.appendChild(row);
-  }
-  if (out.commits) {
-    const row = el('div', 'res wait');
-    row.appendChild(el('span', 'st', '↑'));
-    const c = el('span', 'c');
-    const t = el('span', 't', '1 commit to ');
-    t.appendChild(el('span', 'm', `origin/${reviewState.data.head_ref || 'this branch'}`));
-    c.appendChild(t);
-    row.appendChild(c);
-    group.appendChild(row);
-  }
-  if (out.stories) {
-    const row = el('div', 'res wait');
-    row.appendChild(el('span', 'st', '↑'));
-    const c = el('span', 'c');
-    c.appendChild(el('span', 't',
-      `${out.stories} story${out.stories === 1 ? '' : 's'} filed in the tracker, and ` +
-      `${out.stories === 1 ? 'its id' : 'their ids'} put into a reply.`));
-    row.appendChild(c);
-    group.appendChild(row);
-  }
-  if (out.total) {
-    const row = el('div', 'res wait');
-    row.appendChild(el('span', 'st', '↑'));
-    const c = el('span', 'c');
-    const bits = [];
-    if (out.replies) bits.push(`${out.replies} repl${out.replies === 1 ? 'y' : 'ies'}`);
-    if (out.thumbs) bits.push(`${out.thumbs} thumbs up`);
-    if (out.rerequests) bits.push(`${out.rerequests} re-request${out.rerequests === 1 ? '' : 's'}`);
-    c.appendChild(el('span', 't',
-      `${out.total} thing${out.total === 1 ? '' : 's'} to github — ${bits.join(', ')}. Cannot be unsent.`));
-    row.appendChild(c);
-    group.appendChild(row);
-  }
-  if (!group.children.length) {
-    const row = el('div', 'res wait');
-    row.appendChild(el('span', 'st', '·'));
-    const c = el('span', 'c');
-    c.appendChild(el('span', 't', 'Nothing. Every thread was skipped.'));
-    row.appendChild(c);
-    group.appendChild(row);
-  }
-  sec.appendChild(group);
-  return sec;
-}
 
 /** Everything the batch would do, counted. */
 function outward(q) {
@@ -895,9 +1023,24 @@ function outward(q) {
   }
   const rerequests = [...all].filter((w) => !open.has(w)).length;
 
+  /* How sure we are that a force-push happens.
+     `commits` was derived from position patches, and the session flow's positions
+     carry none — so the panel silently stopped reporting the most destructive
+     thing in the batch. Rather than invent a diff we do not have, the certainty is
+     graded and said in words: `agree` now means "make the change, then 👍", and a
+     note is an instruction to change something, so either proves work. A plain
+     reply might be prose, so it only earns `may`. Never `no` while the agent owns a
+     thread — under-reporting a force-push is the bad direction to be wrong in. */
+  const coding = handled.filter((x) => modeOf(x) === 'agent' &&
+    positionOf(x).stance !== 'story');
+  const push = !coding.length ? 'no'
+    : coding.some((x) => positionOf(x).stance === 'agree' ||
+        (reviewState.notes[x.t.id] || '').trim()) ? 'will' : 'may';
+
   return {
     files,
     commits: files.length ? 1 : 0,
+    push, pushThreads: coding.length,
     stories,
     replies, thumbs, rerequests,
     total: replies + thumbs + rerequests,
@@ -1507,12 +1650,17 @@ function decisionSet() {
   return queue().map((item) => {
     if (reviewState.skipped[item.t.id]) return { thread_id: item.t.id, stance: 'skip' };
     const pos = positionOf(item);
-    return {
+    const d = {
       thread_id: item.t.id,
       stance: pos.stance,
       solution: pos.label,
       reply: pos.stance === 'agree' ? '' : replyOf(item),
     };
+    // `note` is what to do, and the prompt reads it as an instruction to follow.
+    // Only sent when you actually wrote one, since its presence is the signal.
+    const note = (reviewState.notes[item.t.id] || '').trim();
+    if (note) d.note = note;
+    return d;
   });
 }
 
@@ -1541,6 +1689,14 @@ async function submitDecisions() {
   const blank = queue().filter((x) => needsWords(x) && !replyOf(x).trim());
   if (blank.length) {
     return toast(`write a reply for ${blank.map((x) => threadLabel(x.t)).join(', ')}`, true);
+  }
+  // A free-text answer needs its instruction too: the reply says what the reviewer
+  // reads, and without the note the session is told nothing about what to do.
+  const noInstr = queue().filter((x) =>
+    isHandled(x) && isFreeText(positionOf(x)) && !(reviewState.notes[x.t.id] || '').trim());
+  if (noInstr.length) {
+    return toast(
+      `write instructions for ${noInstr.map((x) => threadLabel(x.t)).join(', ')}`, true);
   }
   reviewState.busy = true;
   const ok = await answerSession('decisions', { decisions: decisionSet() });
@@ -1606,6 +1762,7 @@ async function loadReview(pr) {
       reviewState.picks = {};
       reviewState.skipped = {};
       reviewState.drafts = {};
+      reviewState.notes = {};
       reviewState.i = 0;
       // A comment describes work against a tree that has moved, so it is no longer
       // an answer to anything.
@@ -1644,6 +1801,7 @@ async function openReview(pr) {
     reviewState.picks = {};
     reviewState.skipped = {};
     reviewState.drafts = {};
+    reviewState.notes = {};
     reviewState.editing = {};
     reviewState.report = null;
     reviewState.head = null;
@@ -1676,6 +1834,7 @@ export function preview(data) {
   reviewState.picks = {};
   reviewState.skipped = {};
   reviewState.drafts = {};
+  reviewState.notes = {};
   reviewState.editing = {};
   reviewState.report = null;
   reviewState.head = data.proposals?.base_sha || null;

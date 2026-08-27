@@ -710,4 +710,7 @@ async function saveEditor() {
   }
 }
 
-export { diffState as state, editState as edit, openDiff as open, closeDiff as close, renderDiff as render, stepChange as step, loadFile, detailEl, renderFiles, openEditor, closeEditor, saveEditor };
+/* `langFor`/`hlTokens` are exported for the review cards' hunks, which want the
+   same colours as the viewer. Exported rather than copied: the extension table and
+   the token-flattening are the fiddly parts, and two of either would drift. */
+export { diffState as state, editState as edit, openDiff as open, closeDiff as close, renderDiff as render, stepChange as step, loadFile, detailEl, renderFiles, openEditor, closeEditor, saveEditor, langFor, hlTokens };

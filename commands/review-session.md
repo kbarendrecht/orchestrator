@@ -64,8 +64,9 @@ through the code, not a plan for the fix.
 Per thread, offer the **ways to resolve it**, not wordings of one reply. Each option is a
 distinct solution the human might pick; you carry out the one they choose in phase 2.
 
-- Lead with `agree` — a thumbs up, **no words, no change** — wherever the reviewer is
-  simply right and there is nothing to decide or write.
+- Lead with `agree` — **do what they asked, then a thumbs up and no words** — wherever the
+  reviewer is simply right and there is nothing left to decide. Agreeing is not the same as
+  doing nothing: if the thread asks for a change, taking this option is a promise to make it.
 - Otherwise offer one to three **distinct solutions**, each a real approach: *make the
   rate per-country*, *read it from the order downstream*, *remove it altogether*. The
   `label` names the approach; the `reply` is what you would say back if it is taken.
@@ -100,7 +101,7 @@ curl -sS -X POST '{{PROPOSALS_URL}}' \
       "read": "…",              // terse: is the reviewer right, and what turns on it
       "recommend": 1,
       "options": [
-        { "label": "Agree", "sub": "respond with thumbs up", "stance": "agree", "reply": null },
+        { "label": "Agree", "sub": "make the change, thumbs up", "stance": "agree", "reply": null },
         { "label": "Make the rate per-country", "sub": "the approach the reviewer points at",
           "stance": "reply", "reply": "…" },
         { "label": "Track it as follow-up", "sub": "out of scope here",
@@ -110,12 +111,12 @@ curl -sS -X POST '{{PROPOSALS_URL}}' \
 }
 ```
 
-- `stance` is what you say back: `agree` (thumbs up, no words), `reply` (words), or
+- `stance` is what you say back: `agree` (make the change, thumbs up, no words), `reply` (words), or
   `story` (file a follow-up and reply with its id). An `agree` option carries no `reply`;
   a `reply` or `story` option must have one; a `story` option must have a `story`.
 - **No patches.** You are not writing code in this phase.
-- A `story+reply` reply must contain the literal `{story}`, replaced with the id once the
-  story exists. {{TRACKER}}
+- A `story+reply` reply must contain the literal `{story}`, replaced once the story exists
+  with a markdown link to it — `[sc-12345](<url>)`, never a bare id. {{TRACKER}}
 - A `story` is `title` and `body` only, in {{LANGUAGE}}, no em dashes and no internal path
   or label references. Every unresolved thread needs an entry.
 - Do not send `hunk` or the current code — the daemon reads `diffHunk` from GitHub.
@@ -158,7 +159,11 @@ The overlay answers with one decision per thread:
 Now do **only** what each decision says:
 
 - **skip** — nothing. Not a reply, not a reaction.
-- **agree** — a 👍 on the opening comment, no code, no reply.
+- **agree** — **make the change the reviewer asked for**, by the same route as `reply`
+  below, then a 👍 in phase 3 and no written reply. Agreeing and then changing nothing is
+  the one outcome this must never produce: it tells the reviewer they were right and leaves
+  the code as it was. Only where the thread asks for nothing — praise, a question already
+  answered by the code — is there no change to make, and then say so in your report.
 - **reply / their own note** — if the solution needs a code change, make it: edit the
   worktree, **amend into the commit that owns each line** (`git log -S`/blame the line to
   find it), run the repo's checks (`mise run pre-commit:run` where it exists), then push
@@ -186,8 +191,16 @@ mcp__shortcut__stories-create   name + description, Backlog
 
 The description ends exactly with `Source: review of #{{PR}} — <thread url>` (the dedup
 key). Follow the repo's tracker skill for the team, story type, state and epic. One story
-per thread; a refused create is retried as the *same* create, never a second. Then reply
-with the id (`sc-12345`). If it fails twice, say so on the thread and leave it open.
+per thread; a refused create is retried as the *same* create, never a second.
+
+Then substitute `{story}` with a **markdown link, never a bare id**:
+`[sc-12345](https://app.shortcut.com/<org>/story/12345)`. A colleague reading the thread
+has to be able to click it, and a naked id is a dead end to anyone outside the tracker.
+Both halves come from the create response — never build the URL by `format!`, since the org
+slug is your workspace's and guessing it produces a link to nothing. This is the same rule
+the daemon applies for itself in `story::StoryRef::link`.
+
+If it fails twice, say so on the thread and leave it open.
 
 # Phase 3 — Post (only on their go)
 
@@ -212,8 +225,9 @@ REPLIES=$(jq -r .text <<<"$R")   # the final replies, as edited in the overlay
 `hold` means post nothing and stop. On `post`, use the replies exactly as they came back
 — the human's edits win over your drafts.
 
-- **Reactions**: a thread resolved by agreeing, with nothing to add, gets a 👍 and no
-  reply. `gh api -X POST repos/{{OWNER}}/{{REPO}}/pulls/comments/<id>/reactions -f content=+1`
+- **Reactions**: a thread answered by agreeing gets a 👍 and no reply — the change it
+  agreed to was already made and pushed in phase 2, so the reaction is the whole of what is
+  said. `gh api -X POST repos/{{OWNER}}/{{REPO}}/pulls/comments/<id>/reactions -f content=+1`
 - **Replies**: last line of every posted comment is `(via orchestrator)` — that exact
   string is how the daemon knows its own replies (`post::mine_by_footer`), so a thread
   answered here is not answered again by a run. Post threaded, with the comment id from the

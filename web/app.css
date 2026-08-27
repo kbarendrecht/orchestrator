@@ -1024,26 +1024,80 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
 .rv .flag.cont{color:var(--work);border-color:rgba(76,154,175,.35)}
 
 /* hunk — reuses the diff overlay's row classes. No +/- characters: the row's
-   background wash carries add/del. */
-.rv .hunk{font-family:var(--mono);font-size:calc(11.5px * var(--fs));line-height:1.65;border:1px solid var(--line-soft);border-radius:2px;overflow:hidden}
-.rv .hh{padding:2px 10px;background:#0B0B0B;color:var(--faint-solid);font-size:calc(10.5px * var(--fs));border-bottom:1px solid var(--line-soft)}
+   background wash carries add/del.
 
-/* comment chain */
-.rv .chain{display:flex;flex-direction:column;gap:9px}
-.rv .cmt{display:flex;flex-direction:column;gap:3px;padding-left:10px;border-left:1px solid var(--line)}
+   Shaped like GitHub's file view — a ruled line-number gutter, the tint carried
+   across the whole row, a file header strip — because that is the layout anyone
+   reviewing a PR already reads. The *colours* stay ours: the `.tok-*` muted
+   palette, and the existing `--add`/`--del` washes. Borrowing the shape without
+   the palette is the point; a white GitHub theme in here would fight everything. */
+.rv .hunk{
+  font-family:var(--mono);font-size:calc(11.5px * var(--fs));line-height:1.7;
+  border:1px solid var(--line);border-radius:4px;overflow:hidden;background:#0B0B0B;
+}
+.rv .hh{
+  padding:6px 12px;background:#141414;color:var(--dim);
+  font-size:calc(10.5px * var(--fs));border-bottom:1px solid var(--line);
+}
+/* The gutter is a column, not a margin: ruled off, never selectable, and tinted
+   a step darker than the code so the numbers stay quiet on a washed row. */
+.rv .hunk .ln{grid-template-columns:52px 1fr}
+.rv .hunk .ln i{
+  background:#101010;border-right:1px solid var(--line);
+  color:#6E6E6E;padding:0 10px 0 6px;
+}
+.rv .hunk .ln s{padding:0 12px}
+.rv .hunk .ln.add i{background:rgba(95,169,124,.10);color:#7FA98C}
+.rv .hunk .ln.del i{background:rgba(201,97,90,.10);color:#B98079}
+
+/* comment chain — a bordered box with a header strip, GitHub's comment shape.
+   The old left rule read as a quote of the code above it rather than as somebody
+   speaking, which is what a review thread actually is. */
+.rv .chain{display:flex;flex-direction:column;gap:10px}
+.rv .cmt{
+  display:flex;flex-direction:column;gap:0;
+  border:1px solid var(--line);border-radius:4px;overflow:hidden;background:#0D0D0D;
+}
 /* Your own comments in the chain. On a CONTINUED thread the thing that matters
    most is what you committed to last time — the new reply has to be consistent
    with it in public — so it cannot look identical to theirs. */
-.rv .cmt.mine{border-left-color:var(--faint-solid);background:rgba(255,255,255,.015)}
+.rv .cmt.mine{border-color:var(--faint-solid)}
+.rv .cmt.mine .hd{background:#161616}
 .rv .cmt.mine .hd b{color:var(--dim)}
 .rv .cmt.mine .hd .you{
   font-family:var(--label);font-size:calc(7.5px * var(--fs));font-weight:700;letter-spacing:.12em;
   text-transform:uppercase;color:var(--faint-solid);
 }
-.rv .cmt .hd{display:flex;gap:8px;align-items:baseline}
+.rv .cmt .hd{
+  display:flex;gap:8px;align-items:baseline;padding:7px 12px;
+  background:#141414;border-bottom:1px solid var(--line);
+}
 .rv .cmt .hd b{font-size:calc(11.5px * var(--fs));font-weight:600;color:var(--text)}
 .rv .cmt .hd .age{font-family:var(--mono);font-size:calc(10px * var(--fs));color:var(--faint-solid)}
-.rv .cmt p{color:var(--dim);max-width:70ch;white-space:pre-wrap}
+.rv .cmt p{color:var(--dim);max-width:70ch;white-space:pre-wrap;padding:10px 12px}
+/* A reviewer's ```suggestion block. Deliberately *not* green: green means "this is
+   going in" everywhere else in the app, and a suggestion is a claim to be judged,
+   not an accepted change. It is code somebody proposed, so it is styled as code.
+   No line numbers either — GitHub hands over the replacement text only, so there is
+   nothing truthful to number it against. */
+.rv .cmt .suggestion{
+  margin:0 12px 12px;border:1px solid var(--line);border-radius:4px;overflow:hidden;
+  background:#0B0B0B;
+}
+.rv .cmt p + .suggestion{margin-top:0}
+.rv .sghead{
+  font-family:var(--label);font-size:calc(8px * var(--fs));font-weight:700;letter-spacing:.12em;
+  text-transform:uppercase;color:var(--faint-solid);padding:5px 10px;
+  background:#141414;border-bottom:1px solid var(--line);
+}
+.rv .sgbody{
+  font-family:var(--mono);font-size:calc(11.5px * var(--fs));line-height:1.7;padding:6px 0;
+}
+/* A two-column grid, not a hanging glyph: a wrapped line's continuation has to
+   align with the code, or the overflow reads as an unmarked line of its own. */
+.rv .sgline{display:grid;grid-template-columns:14px 1fr;padding:0 12px}
+.rv .sgline::before{content:'+';color:var(--faint-solid);user-select:none}
+.rv .sgcode{white-space:pre-wrap;word-break:break-word;min-width:0}
 
 /* the agent's read */
 .rv .read{
@@ -1051,13 +1105,6 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
   padding:13px 15px;display:flex;flex-direction:column;gap:8px;
 }
 .rv .read p{color:var(--dim);max-width:70ch;white-space:pre-wrap}
-/* The read collapsed to its opening; the whole assessment was a wall of text on
-   every card. The summary is the first sentence, the disclosure body the rest. */
-.rv .readmore>summary{cursor:pointer;color:var(--dim);list-style:none;max-width:70ch}
-.rv .readmore>summary::-webkit-details-marker{display:none}
-.rv .readmore>summary .more{font-family:var(--mono);font-size:calc(9.5px * var(--fs));color:var(--faint-solid)}
-.rv .readmore[open]>summary .more{display:none}
-.rv .readmore>p{color:var(--dim);max-width:70ch;white-space:pre-wrap;margin-top:6px}
 
 /* The ways to answer a thread, one flat list — no stance segment, no alts row.
    Picking a row stages that answer; the words are edited on the overview. */
@@ -1085,6 +1132,64 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
 
 /* The reply box, on the card and on the overview's edit toggle. */
 .rv .replyedit{display:flex;flex-direction:column;gap:7px;margin-top:7px}
+/* The overview's thread list. Panels rather than hairline-separated rows, so the
+   screen you approve from is built of the same pieces as the card you decided on;
+   the plain rows read as a log next to it. */
+.rv .plan{gap:8px}
+.rv .plan .stage-row{
+  display:block;padding:12px 14px;border:1px solid var(--line);border-radius:4px;
+  background:#0D0D0D;
+}
+/* A thread nobody is answering is still worth showing, but not at full volume. */
+.rv .plan .stage-row.off{opacity:.62}
+.rv .plan .stage-row .c{display:block}
+/* The verdict and the thread it belongs to, on one line. */
+.rv .threadhead{display:flex;align-items:center;gap:9px;margin-bottom:6px}
+/* The badges live in a fixed-width group, so a row carrying two of them starts its
+   path on the same column as a row carrying one — the alignment has to survive the
+   pairs, not just the singles. Width is what a *pair* needs and no more: sized for
+   the commit row's three badges instead, every thread path lost its author to an
+   ellipsis, and the paths are what make the list scannable. The commit row is one
+   row, visually distinct, and is allowed to run wider than the column. */
+.rv .plan .kgroup{flex:0 0 auto;min-width:122px;display:flex;gap:5px}
+/* A path too long for the room left over is truncated rather than wrapped, for the
+   same reason. */
+.rv .plan .threadhead .p{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.rv .plan .threadhead .k{
+  flex:0 0 auto;border:1px solid var(--line);border-radius:2px;padding:2px 6px;
+  font-size:calc(8px * var(--fs));text-align:center;
+}
+.rv .plan .threadhead .k.apply{border-color:rgba(95,169,124,.35)}
+.rv .plan .threadhead .k.reply{border-color:rgba(224,162,68,.35)}
+.rv .plan .threadhead .k.story{border-color:rgba(120,120,220,.35)}
+.rv .plan .threadhead .k.thumb{border-color:rgba(95,169,124,.35);letter-spacing:0}
+/* The commit row's three acts. `push` is the one that rewrites what is already
+   published, so it is the one that carries the weight. */
+.rv .plan .threadhead .k.code{border-color:rgba(95,169,124,.35)}
+.rv .plan .threadhead .k.commit{border-color:rgba(224,162,68,.35)}
+.rv .plan .threadhead .k.push{color:var(--attn);border-color:rgba(224,162,68,.55)}
+.rv .plan .threadhead .k.req{color:var(--work);border-color:rgba(76,154,175,.35)}
+.rv .plan .threadhead .p{font-size:calc(11px * var(--fs))}
+/* Re-request: the first column holds a login, which is one unbreakable token, so
+   it sizes to its content instead of hyphenating inside the chip column's width. */
+.rv .rereq .stage-row .k{flex:0 0 auto;white-space:nowrap;min-width:82px}
+/* The three sections of this screen are built differently — panels, plain rows and
+   a framed callout — so their insets are set to agree rather than left to fall out
+   of each one's own padding. Everything starts on the same column. */
+.rv .rereq .eyebrow,
+.rv .rereq .stage-row{padding-left:14px}
+
+/* A free-text answer is two boxes going to two readers, so each is captioned —
+   an uncaptioned pair is exactly how you post your instructions to the reviewer. */
+.rv .answerboxes{display:flex;flex-direction:column}
+.rv .boxlab{
+  font-family:var(--label);font-size:calc(8.5px * var(--fs));font-weight:700;
+  letter-spacing:.16em;text-transform:uppercase;color:var(--faint-solid);margin-top:11px;
+}
+.rv .answerboxes .boxlab:first-child{margin-top:0}
+/* The instruction on the overview line: dimmer than the reply, because it is the
+   one line in that list that never reaches GitHub. */
+.rv .stage-row .c .t.instr{color:var(--faint-solid);font-style:italic}
 /* Above the card's story box: what the reply will do besides carry words. */
 .rv .storynote{font-size:calc(11.5px * var(--fs));color:var(--dim);margin-bottom:4px}
 /* The overview default: the reply as one line, with a text edit affordance — the
@@ -1282,9 +1387,30 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
 .rv .sline .val{font-size:calc(12px * var(--fs));color:var(--dim);min-width:0}
 
 /* The last thing read before the only irreversible button on the screen, so it
-   is set apart rather than being one more list among the others. */
-.rv .leaves{background:#0D0D0D;border-top:1px solid var(--line)}
-.rv .leaves .res .st{color:var(--faint-solid)}
+   is set apart rather than being one more list among the others.
+
+   A framed panel with an amber rule down its edge: the section is a warning about
+   what cannot be unsent, and it was reading as another quiet list. Amber rather
+   than red because nothing here has gone wrong — it is the colour the app already
+   uses for "this one is on you" (`--attn`, the accept button, the autobar). */
+/* The heading and the tally for the one list below it. This used to be a framed
+   panel of its own describing the same batch the list already showed, so the screen
+   said everything twice; the counts are what a panel adds, and the rest was echo. */
+.rv .willdo{gap:9px;border-bottom:1px solid var(--line-soft)}
+.rv .willdo .eyebrow{color:var(--attn)}
+.rv .tallies{display:flex;flex-wrap:wrap;gap:6px}
+.rv .tally-b{
+  border:1px solid var(--line);border-radius:2px;padding:3px 9px;background:var(--raised);
+  font-family:var(--mono);font-size:calc(11px * var(--fs));color:var(--text);white-space:nowrap;
+}
+/* Only one of these rewrites something that already exists. */
+.rv .tally-b.commit{color:var(--attn);border-color:rgba(224,162,68,.45)}
+.rv .tally-b.commit.maybe{color:var(--dim)}
+.rv .tally-b.req{color:var(--work);border-color:rgba(76,154,175,.35)}
+.rv .tally-b.none{color:var(--faint-solid)}
+/* Said once, quietly. A warning in its own box on every send is one the eye learns
+   to jump, and nothing here has gone wrong — so it is stated, not shouted. */
+.rv .willnote{font-size:calc(11.5px * var(--fs));color:var(--faint-solid)}
 
 /* New comments arriving while you work. Amber, because unlike a fix-pr run this
    may actually change what you were about to say. Still not blocking: the queue

@@ -47,8 +47,13 @@ const MIN_POSITIONS: usize = 1;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Stance {
-    /// The reviewer is right and there is nothing to add: a thumbs up on the
-    /// thread's opening comment, no words.
+    /// The reviewer is right: make the change they asked for, and answer with a
+    /// thumbs up on the thread's opening comment rather than words.
+    ///
+    /// "No words" is the whole of what this stance withholds — it does *not* mean
+    /// no code. Agreeing and then changing nothing tells a reviewer they were
+    /// right while leaving the code as it was, which is the one outcome the
+    /// session prompt names as never acceptable.
     Agree,
     /// Answer in words.
     Reply,

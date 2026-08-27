@@ -349,9 +349,12 @@ Everything outside that block is hand-written and survives.
   - ~~**You click `review` twice.**~~ *Done.* One session reads, and the overlay
     advances itself off the decision ask. Permission prompts are still answered in the
     pane, which is why the reading screen says so rather than covering the screen.
-  - ~~**The `read` is a wall of text.**~~ *Done.* `rvRead` shows its opening sentence
-    with the remainder behind a disclosure — the body holds the *remainder*, not the
-    whole read, or an expanded card repeats its own first line.
+  - ~~**The `read` is a wall of text.**~~ *Answered in the prompt, not the UI.* It was
+    collapsed to its opening sentence behind a disclosure, and that was reverted after
+    driving it: the fold cost a click on every card to reach the one thing the agent
+    concluded, which is worse than the length it hid. `commands/review-session.md`
+    carries the real fix — it tells the agent the read must be terse. Shortening a
+    thing at the source beats hiding it at the end.
   - ~~**Stance + reply is too much machinery per thread.**~~ *Done.* The card is the
     offered positions as one flat list, reply under it, skip on the action bar. What
     made this a design pass rather than a patch was the question underneath it —

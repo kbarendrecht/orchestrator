@@ -7,6 +7,7 @@
 // rather than reduce it.
 
 import { el } from './core.js';
+import { langFor, hlTokens } from './diff.js';
 
 /** Parse a unified diff into per-path counts — the same arithmetic as
  *  `git apply --numstat`, which is what the daemon re-derives authoritatively
@@ -64,6 +65,25 @@ function fileListLabel(files, verb) {
   return row;
 }
 
+/** The code of one diff row, syntax-coloured with the viewer's own palette.
+ *
+ *  `hlTokens` gives non-overlapping ranges; anything it does not cover is plain
+ *  text. No language, no grammar, or a tokenizer that threw → one text node, which
+ *  is the same row minus colour rather than an error. */
+function codeEl(text, lang) {
+  const s = el('s');
+  const ranges = lang ? hlTokens(text, lang) : [];
+  if (!ranges.length) { s.textContent = text; return s; }
+  let at = 0;
+  for (const r of ranges) {
+    if (r.s > at) s.appendChild(document.createTextNode(text.slice(at, r.s)));
+    s.appendChild(el('span', 'tok-' + r.cls, text.slice(r.s, r.e)));
+    at = r.e;
+  }
+  if (at < text.length) s.appendChild(document.createTextNode(text.slice(at)));
+  return s;
+}
+
 /** Render diff text as hunk rows.
  *
  *  Takes both shapes it is given: GitHub's `diffHunk` (one hunk, no file
@@ -71,12 +91,17 @@ function fileListLabel(files, verb) {
  *  classes are app.css's — `.ln`/`.add`/`.del` — not copies of them.
  *
  *  `hitLast` marks the final row with `.hit`: on a GitHub diff hunk that is the
- *  line the comment is anchored to. */
-function hunkEl(text, hitLast) {
+ *  line the comment is anchored to.
+ *
+ *  `path` names the language for a bare GitHub hunk, which carries no header to
+ *  read one from. A full `git diff` re-reads it at every `diff --git`, so a
+ *  multi-file diff is coloured per file rather than all as the first one. */
+function hunkEl(text, hitLast, path) {
   const box = el('div', 'hunk');
   let oldNo = 0;
   let newNo = 0;
   let last = null;
+  let lang = langFor(path);
   for (const line of (text || '').split('\n')) {
     /* A file boundary, and the states that have no hunk at all. Skipping these
        rendered a binary replacement, a pure rename and a deletion as *nothing* —
@@ -89,6 +114,8 @@ function hunkEl(text, hitLast) {
       box.appendChild(el('div', 'hh', from === to ? from : `${from} → ${to}`));
       oldNo = 0;
       newNo = 0;
+      // The destination name, so a rename colours as what the file now is.
+      lang = langFor(to);
       continue;
     }
     const said = /^(new file|deleted file|Binary files|rename from|rename to)/.exec(line);
@@ -110,7 +137,7 @@ function hunkEl(text, hitLast) {
     if (kind !== '+' && kind !== '-' && kind !== ' ') continue;
     const row = el('div', 'ln' + (kind === '+' ? ' add' : kind === '-' ? ' del' : ''));
     row.appendChild(el('i', null, kind === '-' ? String(oldNo) : String(newNo)));
-    row.appendChild(el('s', null, line.slice(1)));
+    row.appendChild(codeEl(line.slice(1), lang));
     if (kind === '-') oldNo++;
     else if (kind === '+') newNo++;
     else { oldNo++; newNo++; }

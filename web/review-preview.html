@@ -8,6 +8,11 @@
   <!-- The module graph reads these at import time (token/platform). No websocket,
        no daemon calls: the page seeds reviewState directly through Review.preview. -->
   <script>window.__ORCH__ = { token: "__ORCH_TOKEN__", chrome: "none", platform: "__ORCH_PLATFORM__" };</script>
+  <!-- The hunks colour through Prism, which the SPA vendors as a classic script.
+       Without it `langFor` answers null and the diff renders plain — the same
+       fallback as an unknown language, so its absence is invisible rather than
+       broken, which is exactly why it is easy to forget here. -->
+  <script src="/vendor/prism.min.js"></script>
   <style>
     /* A corner badge above the overlay, click-through so it never blocks a row. */
     #preview-badge{
@@ -56,7 +61,14 @@
           is_outdated: false, answerable: true,
           comments: [{
             author: 'octo-reviewer', databaseId: 1001, created_at: AGO,
-            body: '`reserve()` indexes `items[0]` before checking the cart is non-empty — an empty cart panics here.',
+            // Carries a ```suggestion block, the shape the comment renderer has to
+            // pull out of prose rather than print verbatim.
+            body: '`reserve()` indexes `items[0]` before checking the cart is non-empty — an empty cart panics here.\n\n'
+              + '```suggestion\n'
+              + '    let Some(first) = cart.items.first() else { return Ok(()) };\n'
+              + '    stock.hold(first.sku, first.qty);\n'
+              + '```\n\n'
+              + 'That keeps the empty case a no-op rather than a panic.',
             diff_hunk: '@@ -39,6 +39,9 @@ fn reserve(cart: &Cart) {\n+    let first = &cart.items[0];\n+    stock.hold(first.sku, first.qty);',
           }],
         },
