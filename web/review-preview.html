@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>review overlay — preview</title>
+  <link rel="stylesheet" href="/app.css">
+  <!-- The module graph reads these at import time (token/platform). No websocket,
+       no daemon calls: the page seeds reviewState directly through Review.preview. -->
+  <script>window.__ORCH__ = { token: "__ORCH_TOKEN__", chrome: "none", platform: "__ORCH_PLATFORM__" };</script>
+  <style>
+    /* A corner badge above the overlay, click-through so it never blocks a row. */
+    #preview-badge{
+      position:fixed;left:12px;bottom:10px;z-index:99999;pointer-events:none;
+      font:600 11px/1.4 ui-monospace,monospace;color:#E0A244;
+      background:rgba(0,0,0,.55);border:1px solid rgba(224,162,68,.35);border-radius:3px;
+      padding:5px 9px;letter-spacing:.02em;
+    }
+    #preview-badge b{color:#fff;font-weight:700}
+  </style>
+</head>
+<body>
+  <!-- The two elements the overlay and its toast render into, same ids as index.html. -->
+  <div class="overlay rv" id="rvoverlay"></div>
+  <div class="toast" id="toast" tabindex="-1"></div>
+  <!-- core.js wires document click/scroll/blur listeners that read `#ctxmenu`.
+       Present-but-empty here so those handlers do not throw off a missing element. -->
+  <div class="ctxmenu" id="ctxmenu" role="menu" hidden></div>
+  <div class="settings keyhelp" id="keyhelp" hidden></div>
+  <div id="preview-badge"><b>PREVIEW</b> · canned data · “send” is inert (no session)</div>
+
+  <script type="module">
+    import { preview } from '/js/review.js';
+
+    // Canned /review payload: three threads, one per shape the flat card must show —
+    // a defect that wants a reply, a question with two drafted replies, and an
+    // out-of-scope point offered as a story. `tracker:true` so the story row shows.
+    const AGO = '2026-08-25T10:00:00Z';
+    const SAY_ELSE = { label: 'Something else', sub: 'Custom instructions', stance: 'reply', reply: '' };
+
+    const DATA = {
+      pr_number: 14,
+      title: 'Add line pricing and stock reservation',
+      url: '#',
+      head_ref: 'fixture/pricing',
+      head_sha: 'a1b2c3d4e5f6',
+      base_sha: 'a1b2c3d4e5f6',
+      viewer: 'kbarendrecht',
+      answerable: 3,
+      checks: 'passing',
+      mergeable: 'MERGEABLE',
+      tracker: true,
+      threads: [
+        {
+          id: 'PRRT_pv1', path: 'src/checkout/reserve.rs', line: 42,
+          is_outdated: false, answerable: true,
+          comments: [{
+            author: 'octo-reviewer', databaseId: 1001, created_at: AGO,
+            body: '`reserve()` indexes `items[0]` before checking the cart is non-empty — an empty cart panics here.',
+            diff_hunk: '@@ -39,6 +39,9 @@ fn reserve(cart: &Cart) {\n+    let first = &cart.items[0];\n+    stock.hold(first.sku, first.qty);',
+          }],
+        },
+        {
+          id: 'PRRT_pv2', path: 'src/checkout/pricing.rs', line: 88,
+          is_outdated: false, answerable: true,
+          comments: [{
+            author: 'octo-reviewer', databaseId: 1002, created_at: AGO,
+            body: 'Why is the shipping rate per-order? Should it not depend on the destination country?',
+            diff_hunk: '@@ -85,3 +85,4 @@ fn total(cart: &Cart) {\n+    let rate = flat_shipping_rate();',
+          }],
+        },
+        {
+          id: 'PRRT_pv3', path: 'src/checkout/pricing.rs', line: 90,
+          is_outdated: true, answerable: true,
+          comments: [{
+            author: 'octo-reviewer', databaseId: 1003, created_at: AGO,
+            body: 'We refetch the currency rate on every request — could we cache it?',
+            diff_hunk: '@@ -88,2 +88,3 @@ fn total(cart: &Cart) {\n+    let fx = fetch_currency_rate();',
+          }],
+        },
+      ],
+      proposals: {
+        base_sha: 'a1b2c3d4e5f6',
+        proposals: [
+          {
+            thread_id: 'PRRT_pv1', continued: false, verified: null, recommend: 1,
+            read: 'The reviewer is right: reserve() dereferences the first line item without checking the cart is non-empty, so an empty cart throws. It is a real defect on the path this PR adds, not a style point.',
+            positions: [
+              { label: 'Agree', sub: 'respond with thumbs up', stance: 'agree', reply: null },
+              { label: 'Guard the null case', sub: 'the fix the reviewer points at', stance: 'reply',
+                reply: 'Good catch — I will guard the empty-cart case before the lookup so it cannot panic.' },
+              SAY_ELSE,
+            ],
+          },
+          {
+            thread_id: 'PRRT_pv2', continued: false, verified: null, recommend: 0,
+            read: 'The reviewer asks why the shipping rate is per-order rather than per-country. Both are defensible: per-order keeps the quote stable across basket edits, per-country is more accurate. Worth a decision rather than a silent default.',
+            positions: [
+              { label: 'Explain the per-order choice', sub: 'why it is deliberate', stance: 'reply',
+                reply: 'It is per-order on purpose: the rate is quoted once at checkout so the total cannot drift while the basket is edited.' },
+              { label: 'Make the rate per-country', sub: 'the change the reviewer suggests', stance: 'reply',
+                reply: 'Fair — I will read the rate per shipping country instead of a flat per-order figure.' },
+              SAY_ELSE,
+            ],
+          },
+          {
+            thread_id: 'PRRT_pv3', continued: false, verified: null, recommend: 0,
+            read: 'Fair point about caching the rate lookup, but it is broader than this PR: the lookup predates it and touches the whole checkout path. Better as its own story than smuggled in here.',
+            positions: [
+              { label: 'Track it as follow-up', sub: 'out of scope here', stance: 'story',
+                story: { title: 'Cache the currency-rate lookup per country', body: 'The rate is fetched per request. Cache it per shipping country for the checkout session.' },
+                reply: 'Tracked as {story}.' },
+              { label: 'Push back — it is in scope', sub: 'the other side of the read', stance: 'reply',
+                reply: 'I would keep this in the PR: the lookup is on the hot path this change adds, so caching it here avoids shipping a known regression.' },
+              SAY_ELSE,
+            ],
+          },
+        ],
+      },
+    };
+
+    preview(DATA);
+  </script>
+</body>
+</html>

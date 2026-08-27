@@ -372,6 +372,7 @@ fn router(app: Arc<AppState>) -> Router {
         .route("/", get(index))
         .route("/app.js", get(asset_js))
         .route("/app.css", get(asset_css))
+        .route("/review-preview", get(review_preview))
         .route("/js/:file", get(module))
         .route("/vendor/:file", get(vendor))
         .route("/vendor/fonts/:file", get(font))
@@ -1039,6 +1040,10 @@ pub(crate) fn resolve_repo(app: &Arc<AppState>) -> Option<(String, String)> {
 const INDEX: &str = include_str!("../web/index.html");
 const APP_JS: &str = include_str!("../web/app.js");
 const APP_CSS: &str = include_str!("../web/app.css");
+// A dev-only page that drives the real review overlay against canned data, so the
+// flattened UI can be clicked without GitHub, CI or an agent. Reachable only if you
+// know the path; it holds no secret beyond the app token every asset already carries.
+const REVIEW_PREVIEW: &str = include_str!("../web/review-preview.html");
 
 /// The token is embedded in the served page rather than fetched, so it never
 /// exists as a value any other origin could ask for (§12).
@@ -1077,6 +1082,20 @@ fn asset(content_type: &'static str, body: &'static str) -> Response {
 
 async fn asset_js() -> Response {
     asset("text/javascript; charset=utf-8", APP_JS)
+}
+
+/// The review-overlay preview page. Same token/platform substitution as `index`,
+/// because the module graph reads `window.__ORCH__` at import time.
+async fn review_preview(State(app): State<Arc<AppState>>) -> Response {
+    (
+        [(header::CACHE_CONTROL, "no-store, must-revalidate")],
+        Html(
+            REVIEW_PREVIEW
+                .replace("__ORCH_TOKEN__", &app.token)
+                .replace("__ORCH_PLATFORM__", if cfg!(target_os = "macos") { "mac" } else { "other" }),
+        ),
+    )
+        .into_response()
 }
 
 async fn asset_css() -> Response {

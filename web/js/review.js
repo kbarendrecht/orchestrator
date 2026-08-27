@@ -1668,6 +1668,29 @@ function closeReview() {
   $('rvoverlay').replaceChildren();
 }
 
+/** DEV-ONLY. Render the flat overview/card/final against canned data, with no
+ *  session and no daemon fetch — so the flattened UI can be clicked while the
+ *  GitHub fixture is blocked on CI. Reached only from `/review-preview`; nothing
+ *  in the app calls it, and `send` is inert because there is no session to answer. */
+export function preview(data) {
+  reviewState.picks = {};
+  reviewState.skipped = {};
+  reviewState.drafts = {};
+  reviewState.editing = {};
+  reviewState.report = null;
+  reviewState.head = data.proposals?.base_sha || null;
+  reviewState.i = 0;
+  reviewState.session = null;
+  reviewState.proposalsLoaded = false;
+  reviewState.decisionsSent = false;
+  reviewState.pr = data.pr_number ?? 0;
+  reviewState.data = data;
+  reviewState.open = true;
+  reviewState.screen = 'overview';
+  $('rvoverlay').classList.add('on');
+  renderReview();
+}
+
 /** Run something that changes the daemon's side, then refetch.
  *
  *  `andClose` is for the two calls that hand you to a session — a triage run and
