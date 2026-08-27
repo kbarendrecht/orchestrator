@@ -1004,7 +1004,7 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
 }
 
 .rv .body{flex:1;overflow:auto}
-.rv .sec{padding:15px;border-bottom:1px solid var(--line-soft);display:flex;flex-direction:column;gap:10px}
+.rv .sec{padding:18px;border-bottom:1px solid var(--line-soft);display:flex;flex-direction:column;gap:13px}
 .rv .sec:last-child{border-bottom:0}
 
 /* the anchored comment */
@@ -1048,9 +1048,55 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
 /* the agent's read */
 .rv .read{
   background:var(--surface);border:1px solid var(--line-soft);border-radius:2px;
-  padding:10px 12px;display:flex;flex-direction:column;gap:6px;
+  padding:13px 15px;display:flex;flex-direction:column;gap:8px;
 }
 .rv .read p{color:var(--dim);max-width:70ch;white-space:pre-wrap}
+/* The read collapsed to its opening; the whole assessment was a wall of text on
+   every card. The summary is the first sentence, the disclosure body the rest. */
+.rv .readmore>summary{cursor:pointer;color:var(--dim);list-style:none;max-width:70ch}
+.rv .readmore>summary::-webkit-details-marker{display:none}
+.rv .readmore>summary .more{font-family:var(--mono);font-size:calc(9.5px * var(--fs));color:var(--faint-solid)}
+.rv .readmore[open]>summary .more{display:none}
+.rv .readmore>p{color:var(--dim);max-width:70ch;white-space:pre-wrap;margin-top:6px}
+
+/* The ways to answer a thread, one flat list — no stance segment, no alts row.
+   Picking a row stages that answer; the words are edited on the overview. */
+.rv .opts{display:flex;flex-direction:column;gap:8px}
+.rv .opt{
+  display:flex;flex-direction:column;gap:5px;text-align:left;width:100%;padding:12px 14px;
+  border:1px solid var(--line);border-radius:2px;background:#0D0D0D;
+}
+.rv .opt:hover{border-color:var(--faint-solid)}
+.rv .opt.on{border-color:var(--attn);background:rgba(224,162,68,.06)}
+.rv .opt .ohead{display:flex;align-items:center;gap:8px}
+.rv .opt .olabel{font-size:calc(12.5px * var(--fs));color:var(--text)}
+.rv .opt .osub{
+  font-size:calc(11px * var(--fs));color:var(--dim);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:64ch;
+}
+/* A small pill on the option head: what taking it says back. */
+.rv .opt .tag{
+  font-family:var(--label);font-size:calc(8px * var(--fs));font-weight:700;letter-spacing:.12em;
+  text-transform:uppercase;border:1px solid var(--line);border-radius:2px;padding:1px 5px;flex:0 0 auto;
+}
+.rv .opt .tag.agree{border:0;padding:0;font-size:calc(13px * var(--fs))}
+.rv .opt .tag.story{color:var(--work);border-color:rgba(120,120,220,.35)}
+.rv .opt .tag.rec{color:var(--attn);border-color:rgba(224,162,68,.35);margin-left:auto}
+
+/* The reply box, on the card and on the overview's edit toggle. */
+.rv .replyedit{display:flex;flex-direction:column;gap:7px;margin-top:7px}
+/* Above the card's story box: what the reply will do besides carry words. */
+.rv .storynote{font-size:calc(11.5px * var(--fs));color:var(--dim);margin-bottom:4px}
+/* The overview default: the reply as one line, with a text edit affordance — the
+   list stays scannable instead of a column of textareas. */
+.rv .replyline{display:flex;align-items:baseline;gap:10px;margin-top:6px}
+.rv .replyline .q{font-size:calc(12px * var(--fs));color:var(--dim);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.rv .linkbtn{
+  flex:0 0 auto;font-family:var(--mono);font-size:calc(10px * var(--fs));
+  color:var(--faint-solid);text-decoration:underline;text-underline-offset:2px;
+}
+.rv .linkbtn:hover{color:var(--text)}
 
 /* positions — the reply and the proposed change live inside the position, not
    beside it. Picking a stance, writing the words and choosing the edit are one
@@ -1168,7 +1214,7 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
 .rv .tline .l em{display:block;font-style:normal;font-size:calc(11.5px * var(--fs));color:var(--faint-solid);margin-top:1px}
 
 /* the post list */
-.rv .stage-row{display:flex;align-items:baseline;gap:10px;padding:8px 0;border-bottom:1px solid var(--line-soft)}
+.rv .stage-row{display:flex;align-items:baseline;gap:12px;padding:12px 0;border-bottom:1px solid var(--line-soft)}
 .rv .stage-row:last-child{border-bottom:0}
 .rv .stage-row .k{font-family:var(--label);font-size:calc(8px * var(--fs));font-weight:700;letter-spacing:.12em;text-transform:uppercase;flex:0 0 82px}
 .rv .stage-row .k.apply{color:var(--ok)}

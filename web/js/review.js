@@ -3,7 +3,7 @@
 
 import { $, call, el, get, newShell, pending, setSelected, snap, toast, setPendingSelect } from './core.js';
 import * as Diff from './diff.js';
-import { patchStats, hunkEl, fileListLabel, willWriteLabel } from './review-diff.js';
+import { patchStats, hunkEl, fileListLabel } from './review-diff.js';
 
 
 /* Replaces typing `/resolve <pr>` into a terminal pane. The agent reads every
@@ -31,6 +31,10 @@ const reviewState = {
   /* Keyed per (thread, option), not per thread: looking at a second option must
      not be a punishment for having started typing. */
   drafts: {},
+  /* thread_id -> true while its reply is open for editing on the overview. The
+     overview shows a line by default; the box appears only when you ask, so the
+     list is not a wall of textareas. */
+  editing: {},
   report: null,
   busy: false,
   /* The single-session flow. `session` is the review session's id once started;
@@ -253,7 +257,7 @@ function rvIntake(root) {
   const n = d.answerable || 0;
   mid.appendChild(el('div', 'eyebrow', `${n} thread${n === 1 ? '' : 's'} awaiting an answer`));
 
-  const big = el('div', 'big', 'No triage for ');
+  const big = el('div', 'big', 'Not read for ');
   const sha = el('span', 'm', (d.head_sha || '').slice(0, 7));
   sha.style.fontSize = '13px';
   big.appendChild(sha);
@@ -261,8 +265,9 @@ function rvIntake(root) {
   mid.appendChild(big);
 
   mid.appendChild(el('p', null,
-    'Triage reads the code at each thread and works out what it would do about it. ' +
-    'It changes nothing — not a file, not a commit, not a comment. You decide thread by thread.'));
+    'One session reads the code at each thread and works out how it could be answered. ' +
+    'The read changes nothing — not a file, not a commit, not a comment. You decide thread ' +
+    'by thread, then it makes the changes you picked and posts.'));
 
   const row = el('div');
   row.style.cssText = 'display:flex;gap:8px;margin-top:4px';
@@ -275,17 +280,10 @@ function rvIntake(root) {
     row.appendChild(gh);
   }
   mid.appendChild(row);
-  // The old triage+batch path, kept as the fallback while the session flow proves
-  // out: a words-only review does not need an agent, and this is the proven road.
-  const alt = el('div');
-  alt.style.cssText = 'margin-top:10px';
-  alt.appendChild(headBtn('or triage into the batch', null, () =>
-    rvAct(() => call(`/api/pr/${reviewState.pr}/triage`), 'triage started', true)));
-  mid.appendChild(alt);
 
   if (n === 0) {
     mid.appendChild(el('p', null,
-      'Nothing is awaiting an answer right now, so triage would have nothing to read.'));
+      'Nothing is awaiting an answer right now, so the session would have nothing to read.'));
   }
   root.appendChild(mid);
 }
@@ -370,7 +368,7 @@ function rvOverview(root) {
      decides how long the queue takes — not by a category it would have to
      invent and keep consistent. */
   const buckets = [
-    ['Straightforward', 'they are right and a diff is ready — one keystroke each',
+    ['Straightforward', 'they are right — one keystroke each',
       (x) => positionOf(x).stance === 'agree'],
     ['Wants a decision', 'the recommendation comes with words you should read first',
       (x) => positionOf(x).stance === 'reply'],
@@ -391,7 +389,7 @@ function rvOverview(root) {
   body.appendChild(sec);
 
   const note = el('div', 'sec');
-  const p = el('p', null, 'Working tree is clean and stays that way until you accept something.');
+  const p = el('p', null, 'The read changed nothing. Nothing is written or posted until you send your picks.');
   p.style.cssText = 'color:var(--dim);font-size:12px';
   note.appendChild(p);
   body.appendChild(note);
@@ -402,7 +400,7 @@ function rvOverview(root) {
     actBtn(handled ? `back to thread ${reviewState.i + 1} of ${q.length}` : `start · thread 1 of ${q.length}`,
       'pri', () => { reviewState.screen = 'card'; renderReview(); }),
     handled === q.length && q.length
-      ? actBtn('review the batch', null, () => { reviewState.screen = 'final'; renderReview(); })
+      ? actBtn('review & send', null, () => { reviewState.screen = 'final'; renderReview(); })
       : null,
   ], 'enter accepts the recommendation · j / k to move'));
 }
@@ -429,9 +427,7 @@ function rvFreshBar() {
   bar.appendChild(el('b', null,
     `${fresh.length} thread${fresh.length === 1 ? '' : 's'} not in this queue`));
   const who = [...new Set(fresh.map((t) => t.comments?.[0]?.author).filter(Boolean))];
-  bar.appendChild(el('span', null, who.join(', ') + ' — arrived after triage ran'));
-  bar.appendChild(actBtn('re-triage', null, () =>
-    rvAct(() => call(`/api/pr/${reviewState.pr}/triage`), 'triage started', true)));
+  bar.appendChild(el('span', null, who.join(', ') + ' — arrived after the session read the threads'));
   bar.appendChild(el('span', 'why', 'they will hold their author back from a re-request'));
   return bar;
 }
@@ -491,169 +487,129 @@ function rvCard(root) {
   top.appendChild(chain);
   body.appendChild(top);
 
-  // -- the agent's read
-  const readSec = el('div', 'sec');
-  const read = el('div', 'read');
-  read.appendChild(el('div', 'eyebrow', 'the read'));
-  read.appendChild(el('p', null, p.read));
-  if (p.verified) {
-    const v = el('p', null, p.verified);
-    v.style.cssText = 'font-family:var(--mono);font-size:10.5px;color:var(--faint-solid)';
-    read.appendChild(v);
-  }
-  readSec.appendChild(read);
-  body.appendChild(readSec);
+  // -- the agent's read, one line with the rest behind a disclosure
+  body.appendChild(rvRead(p));
 
-  /* -- the three decisions, in the order they depend on each other: what you
-        are saying, the words that say it, and the code it implies. */
-  const decide = el('div', 'sec');
-  decide.appendChild(rvStance(item));
-  decide.appendChild(rvReply(item));
-  const fix = rvFix(item);
-  if (fix) decide.appendChild(fix);
-  body.appendChild(decide);
+  // -- the ways to answer this thread, one flat list; the selected option's reply
+  //    is edited in the box below it, prefilled from what the read already drafted.
+  body.appendChild(rvOptions(item));
+  const reply = rvCardReply(item);
+  if (reply) body.appendChild(reply);
   root.appendChild(body);
 
   const hint = `thread ${reviewState.i + 1} of ${q.length} · ` +
-    (q.some(isHandled) ? stagedCount() : 'nothing written yet');
-  /* Three peers, because they are three answers to the same question rather than
-     one action and two escapes. `manual` is not a lesser `accept`: it stages the
-     same stance and the same words, and says you are writing the code. */
+    (q.some(isHandled) ? stagedCount() : 'nothing chosen yet');
   root.appendChild(rvActs([
     actBtn('accept · ⏎', 'warm', () => acceptCard()),
-    actBtn('manual · m', modeOf(item) === 'manual' ? 'on' : null, () => manualCard()),
-    actBtn('skip · s', null, () => skipCard()),
+    // Lit when this thread is skipped: with no Skip row in the list, the button is
+    // the only thing that can say the card was answered by passing it over.
+    actBtn('skip · s', reviewState.skipped[t.id] ? 'on' : null, () => skipCard()),
     reviewState.i > 0 ? actBtn('back', null, () => moveCard(-1)) : null,
   ], hint));
 }
 
-/** A labelled field, the way the design lays the card out: a small caption, an
- *  optional hint to its right, then the control. */
-function rvField(label, hint) {
-  const wrap = el('div', 'field');
-  const lab = el('div', 'flab', label);
-  if (hint) lab.appendChild(el('span', 'fhint', hint));
-  wrap.appendChild(lab);
-  return wrap;
+/** The read, collapsed to its opening and the rest behind a disclosure — a full
+ *  assessment on every card was a wall of text (the first drive said so). The
+ *  disclosure body carries the whole read, so nothing is reassembled and lost. */
+function rvRead(p) {
+  const sec = el('div', 'sec');
+  const read = el('div', 'read');
+  read.appendChild(el('div', 'eyebrow', 'the read'));
+  const full = (p.read || '').trim();
+  // First sentence or first line, whichever comes first and is not the whole thing.
+  const brk = full.search(/[.!?]\s|\n/);
+  const sentence = brk > 0 && brk < 160;
+  const head = sentence ? full.slice(0, brk + 1) : full.slice(0, 160);
+  if (head.length < full.length) {
+    const det = el('details', 'readmore');
+    const sum = el('summary');
+    // A bare 160-char cut lands mid-word, so mark it as truncated; a clean
+    // sentence break does not need the ellipsis.
+    sum.appendChild(el('span', null, sentence ? head : head + '…'));
+    sum.appendChild(el('span', 'more', ' more'));
+    det.appendChild(sum);
+    // The remainder only: `head` is an exact prefix, so summary + body is the whole
+    // read with nothing repeated when it is open.
+    det.appendChild(el('p', null, full.slice(head.length).trimStart()));
+    read.appendChild(det);
+  } else {
+    read.appendChild(el('p', null, full));
+  }
+  sec.appendChild(read);
+  return sec;
 }
 
-/** The stances this proposal actually offers, in the order the card shows them.
- *
- *  Derived rather than fixed: triage decides which ways out exist for a thread,
- *  and offering `story` where it proposed none would be a button that picks
- *  nothing. `skip` is always there because it is the one answer that needs no
- *  proposal. */
-const STANCE_ORDER = ['reply', 'agree', 'story'];
-const STANCE_LABEL = { reply: 'Reply', agree: 'Agree 👍', story: 'Story' };
-
-function stancesOf(item) {
-  return STANCE_ORDER.filter((st) =>
-    item.p.positions.some((pos, i) => pos.stance === st && offered(pos)));
+/** A short preview of the reply a reply/story option would post, drafted or as
+ *  edited on the overview. Empty when there is nothing written yet. */
+function replyPreview(item, i) {
+  const pos = item.p.positions[i];
+  const r = (reviewState.drafts[draftKey(item.t.id, i)] ?? pos.reply ?? '').trim();
+  if (!r) return '';
+  return r.length > 120 ? r.slice(0, 120).trimEnd() + '…' : r;
 }
 
-/** The position to select when you pick a stance: the recommendation if it is in
- *  that stance, else its first. */
-function positionForStance(item, stance) {
-  const rec = item.p.positions[item.p.recommend];
-  if (rec && rec.stance === stance && offered(rec)) return item.p.recommend;
-  return item.p.positions.findIndex((pos) => pos.stance === stance && offered(pos));
-}
+/** The flat list of ways to answer this thread: one row per offered position, in
+ *  the order triage handed them (it leads with `agree` where the reviewer is
+ *  simply right), then Skip. No stance segment, no alts sub-row, no inline editor —
+ *  picking a row stages it, and the words are edited on the overview. */
+function rvOptions(item) {
+  const sec = el('div', 'sec');
+  const list = el('div', 'opts');
+  const chosen = reviewState.skipped[item.t.id] ? -1 : pickOf(item);
 
-/** What you are saying back. One row of peers, because they are alternatives to
- *  each other and not a primary with escapes. */
-function rvStance(item) {
-  const wrap = rvField('Stance');
-  const seg = el('div', 'seg');
-  const chosen = reviewState.skipped[item.t.id] ? 'skip' : positionOf(item).stance;
-
-  for (const st of stancesOf(item)) {
-    const b = el('button', 'segbtn' + (st === chosen ? ' on' : ''), STANCE_LABEL[st]);
+  item.p.positions.forEach((pos, i) => {
+    if (!offered(pos)) return;
+    const b = el('button', 'opt' + (i === chosen ? ' on' : ''));
+    const head = el('div', 'ohead');
+    if (pos.stance === 'agree') head.appendChild(el('span', 'tag agree', '👍'));
+    else if (pos.stance === 'story') head.appendChild(el('span', 'tag story', 'story'));
+    head.appendChild(el('span', 'olabel', pos.label));
+    if (i === item.p.recommend) head.appendChild(el('span', 'tag rec', 'recommended'));
+    b.appendChild(head);
+    // The descriptor, not the reply: the reply lives in the box under the list now.
+    const sub = pos.stance === 'agree' ? 'thumbs up, no words' : (pos.sub || 'your own words');
+    b.appendChild(el('div', 'osub', sub));
     b.onclick = () => {
-      const i = positionForStance(item, st);
-      if (i < 0) return;
       reviewState.picks[item.t.id] = i;
       delete reviewState.skipped[item.t.id];
       renderReview();
     };
-    seg.appendChild(b);
-  }
-  // Skip is a stance on this row and a button on the action row, deliberately:
-  // it is both an answer to "what are you saying" and a way past the card.
-  const sk = el('button', 'segbtn' + (chosen === 'skip' ? ' on' : ''), 'Skip');
-  sk.onclick = () => {
-    reviewState.skipped[item.t.id] = true;
-    delete reviewState.picks[item.t.id];
-    delete reviewState.modes[item.t.id];
-    renderReview();
-  };
-  seg.appendChild(sk);
-  wrap.appendChild(seg);
+    list.appendChild(b);
+  });
 
-  // Triage can offer two ways of taking the same stance — a short apology and a
-  // long one, two different fixes. The segment cannot say which, so when there
-  // is a choice left to make it stays on screen.
-  const alts = item.p.positions
-    .map((pos, i) => ({ pos, i }))
-    .filter(({ pos, i }) => pos.stance === chosen && offered(pos));
-  if (alts.length > 1) {
-    const row = el('div', 'alts');
-    for (const { pos, i } of alts) {
-      const b = el('button', 'alt' + (i === pickOf(item) ? ' on' : ''));
-      b.appendChild(el('span', 'k', String(i + 1)));
-      b.appendChild(el('span', 't', pos.label));
-      if (i === item.p.recommend) b.appendChild(el('span', 'rec', 'recommended'));
-      if (reviewState.drafts[draftKey(item.t.id, i)] !== undefined) {
-        b.appendChild(el('span', 'edited', 'edited'));
-      }
-      b.onclick = () => {
-        reviewState.picks[item.t.id] = i;
-        delete reviewState.skipped[item.t.id];
-        renderReview();
-      };
-      row.appendChild(b);
-    }
-    wrap.appendChild(row);
-  }
-  return wrap;
+  /* Skip is deliberately *not* a row here. It is a way past the card rather than
+     a way of answering it, and as a peer of the real answers it read as one. It
+     lives on the action bar, where the other ways out of a card are. */
+  sec.appendChild(list);
+  return sec;
 }
 
-/** The words. A box when there are words to write, and an honest note when there
- *  are not — a thumbs up posts none, and a hand-written thread's comment belongs
- *  to the phase, after the work exists. */
-function rvReply(item) {
-  const pos = positionOf(item);
+/** The daemon's appended free-text option ("Something else"): a reply stance with
+ *  no drafted words. Identified by shape, not label, so a rename cannot break it. */
+const isFreeText = (pos) => pos.stance === 'reply' && !((pos.reply || '').trim());
+
+/** The reply box, shared by the card and the overview's edit toggle. Prefilled
+ *  from the draft the read already produced — instant, nothing waits on the agent —
+ *  and written back on input with no re-render, so typing stays smooth and the
+ *  cursor never jumps. A textarea, not contenteditable: the text goes to GitHub as
+ *  plain markdown, so rich paste is liability and browsers insert <div>/<br> where
+ *  a newline belongs. `Diff.openEditor()` settled this. */
+function replyBox(item) {
   const i = pickOf(item);
-
-  if (reviewState.skipped[item.t.id]) {
-    const wrap = rvField('Reply');
-    wrap.appendChild(el('div', 'note', 'Skipped: the thread stays open and nothing is posted.'));
-    return wrap;
-  }
-  if (modeOf(item) === 'manual') {
-    const wrap = rvField('Reply', 'written in the phase, not now');
-    wrap.appendChild(el('div', 'note',
-      'You are writing this one live. The session stops here, and the comment is '
-      + 'written once the work exists.'));
-    return wrap;
-  }
-  if (!pos.stance || !['reply', 'story'].includes(pos.stance)) {
-    const wrap = rvField('Reply');
-    wrap.appendChild(el('div', 'note', 'A thumbs up posts no words.'));
-    return wrap;
-  }
-
-  const wrap = rvField('Reply', 'AI draft · edit freely');
+  const pos = item.p.positions[i];
+  const wrap = el('div', 'replyedit');
   const box = el('textarea', 'box');
-  box.setAttribute('aria-label', 'Reply');
+  box.setAttribute('aria-label', `Reply for ${threadLabel(item.t)}`);
   box.value = replyOf(item);
-  /* A textarea, not a contenteditable: the text goes to GitHub as plain
-     markdown, so rich paste is pure liability and browsers insert <div>/<br>
-     where a newline belongs. `Diff.openEditor()` settled this. */
+  if (isFreeText(pos)) {
+    box.placeholder = 'Tell the session what to say or do — e.g. push back, or ask for a change. '
+      + 'It writes nothing until you do.';
+  }
   box.oninput = () => {
+    // Straight to the draft, no re-render: the words already exist, so a repaint
+    // would buy nothing and cost the cursor its place mid-sentence.
     reviewState.drafts[draftKey(item.t.id, i)] = box.value;
-    // Repaint only the footer: re-rendering the card here would move focus out
-    // of the box mid-sentence.
-    rvFootState(wrap, item, pos, i);
+    rvFootState(wrap, item, pos, i);   // footer only — never the whole card
   };
   wrap.appendChild(box);
   wrap.appendChild(el('div', 'foot'));
@@ -661,40 +617,22 @@ function rvReply(item) {
   return wrap;
 }
 
-/** The code the decision implies: the staged fix, and the story when there is
- *  one. Absent entirely when the answer is words only, rather than an empty
- *  heading. */
-function rvFix(item) {
+/** The selected option's reply, edited on the card. Absent for agree/skip, which
+ *  post no words. Shares `reviewState.drafts` with the overview's edit box, so a
+ *  reply typed on either surface shows on the other. */
+function rvCardReply(item) {
   if (reviewState.skipped[item.t.id]) return null;
   const pos = positionOf(item);
-  if (!pos.patch && !pos.story) return null;
+  if (!['reply', 'story'].includes(pos.stance)) return null;
 
-  const manual = modeOf(item) === 'manual';
-  const wrap = rvField(
-    pos.patch ? 'Proposed fix' : 'Story',
-    pos.patch ? (manual ? 'staged, but you write it' : 'the session applies this') : null
-  );
-  if (pos.patch) {
-    wrap.appendChild(willWriteLabel(pos.patch));
-    wrap.appendChild(hunkEl(pos.patch, false));
+  const sec = el('div', 'sec');
+  sec.appendChild(el('div', 'eyebrow', isFreeText(pos) ? 'your reply' : 'reply · edit freely'));
+  if (pos.stance === 'story') {
+    sec.appendChild(el('div', 'storynote',
+      `Files “${pos.story?.title || 'a story'}”, then replies with its id.`));
   }
-  if (pos.story) {
-    // `willWriteLabel` derives its object from a diff, and a story has none — so
-    // the object is named here rather than leaving a verb with nothing after it.
-    const says = el('div', 'willwrite');
-    says.appendChild(document.createTextNode('will create'));
-    says.appendChild(el('b', null, 'a Shortcut story'));
-    wrap.appendChild(says);
-    const draft = el('div', 'storydraft');
-    for (const [lbl, val] of [['title', pos.story.title], ['body', pos.story.body]]) {
-      const l = el('div', 'sline');
-      l.appendChild(el('span', 'lbl', lbl));
-      l.appendChild(el('span', 'val', val));
-      draft.appendChild(l);
-    }
-    wrap.appendChild(draft);
-  }
-  return wrap;
+  sec.appendChild(replyBox(item));
+  return sec;
 }
 
 /** The footer under a reply box: what gets appended, and — only once the text
@@ -727,49 +665,26 @@ function rvFootState(bodyEl, item, pos, i) {
   }
 }
 
-/* ---------- screen 5: everything, then one go ---------- */
+/* ---------- screen 5: the overview, where the replies are edited and sent ---------- */
 
-/** The plan you are approving, then the only irreversible button in the flow.
- *
- *  Nothing has left the machine yet and the working tree is still clean:
- *  accepting staged the edits, it did not apply them. */
+/** Whether a thread's pick posts words the human has to write. `agree` posts a
+ *  thumbs up and no words, `skip` posts nothing; both need no reply. */
+const needsWords = (item) =>
+  isHandled(item) && ['reply', 'story'].includes(positionOf(item).stance);
+
+/** The overview: every thread's answer in one list, with the drafted replies
+ *  listed and editable here rather than one card at a time. Nothing has left the
+ *  machine yet — the session applies the picks and posts only on your go. */
 function rvFinal(root) {
   const q = queue();
-  root.appendChild(rvHead('ready'));
+  root.appendChild(rvHead('review & send', stagedCount()));
   root.appendChild(rvStrip(null));
 
   const body = el('div', 'body');
 
-  // -- one row per thread, in queue order
+  // -- one row per thread, in queue order; the reply is edited inline
   const plan = el('div', 'sec');
-  for (const item of q) {
-    const pos = positionOf(item);
-    const skipped = reviewState.skipped[item.t.id];
-    const row = el('div', 'stage-row');
-
-    /* APPLY, present tense on purpose: nothing is applied at this point, not on
-       the branch and not even in the working tree. The row says what the button
-       is about to do, so the list reads as a plan rather than a receipt. */
-    let kind = 'reply';
-    let word = 'reply';
-    if (skipped) { kind = 'skip'; word = 'skipped'; }
-    else if (!isHandled(item)) { kind = 'skip'; word = 'not handled'; }
-    else if (modeOf(item) === 'manual') { kind = 'manual'; word = 'by hand'; }
-    else if (pos.stance === 'story') { kind = 'story'; word = 'story'; }
-    else if (pos.patch) { kind = 'apply'; word = 'apply'; }
-    else if (pos.stance === 'agree') { kind = 'reply'; word = 'thumbs up'; }
-    row.appendChild(el('span', 'k ' + kind, word));
-
-    const c = el('span', 'c');
-    c.appendChild(el('span', 'p', threadLabel(item.t)));
-    c.appendChild(el('span', 't', skipped || !isHandled(item)
-      /* All three consequences stated, because "leaves it open" alone reads as
-         harmless. The button itself stays a bare `skip`. */
-      ? `Not handled. Stays open, nothing written, ${item.t.comments?.[0]?.author || 'they'} not re-requested.`
-      : planLine(item, pos)));
-    row.appendChild(c);
-    plan.appendChild(row);
-  }
+  for (const item of q) plan.appendChild(rvOverviewRow(item));
   body.appendChild(plan);
 
   // -- re-request, per reviewer
@@ -780,84 +695,61 @@ function rvFinal(root) {
   body.appendChild(rvLeavesSec(q));
   root.appendChild(body);
 
-  const out = outward(q);
-  // Nothing is blocked any more. A Manual thread does not disable the button — it
-  // changes what pressing it does: the batch commits the rest and stops, and a
-  // second screen finishes it. That cost was recorded deliberately, since "one go"
-  // was a property the design bought and asking for a human step spends it.
-  const byHand = q.filter((x) => isHandled(x) && modeOf(x) === 'manual');
-  const bits = [];
-  if (out.commits) bits.push('push 1 commit');
-  // Named separately from the GitHub count, because it is a write to another
-  // system and the one thing a retry cannot simply re-derive.
-  if (out.stories) bits.push(`file ${out.stories} story${out.stories === 1 ? '' : 's'}`);
-  if (out.total) bits.push(`post ${out.total} to github`);
-  const label = bits.length ? bits.join(' · ') : 'nothing to send';
-
-  /* Enter is unbound here. Across the cards it means "accept this one thing"; on
-     a batch it has no natural meaning, and three cards' worth of "enter is safe"
-     should not land on the one irreversible button. ctrl+enter is GitHub's own
-     comment-box convention, so it is already in the right muscle memory. */
-  /* The button names what it will actually do. With a Manual thread in the batch
-     that is not the push — it is committing and then handing back to you, and
-     saying "push" would be a lie you only discover after pressing it. */
-  const goes = byHand.length
-    ? `commit, then ${byHand.length === 1 ? 'your turn' : `your turn on ${byHand.length}`}`
-    : label;
-  // The single-session flow: hand the picks to the session that is already waiting,
-  // rather than to the daemon batch. It applies them, then brings the diff back.
-  if (reviewState.session) {
-    const decided = q.every((x) => isHandled(x) || reviewState.skipped[x.t.id]);
-    root.appendChild(rvActs([
-      actBtn('send to the session', 'warm', () => submitDecisions(), !decided),
-      actBtn('back', null, () => { reviewState.screen = 'card'; renderReview(); }),
-    ], 'the session applies your picks and pushes, then brings the diff back to post'));
-    return;
-  }
+  const decided = q.every((x) => isHandled(x) || reviewState.skipped[x.t.id]);
   root.appendChild(rvActs([
-    // The session is the way this is meant to go now: it adapts a fix to a branch
-    // that moved instead of refusing it, and it can ask. The batch stays because
-    // it is proven, and because a words-only review does not need an agent.
-    actBtn('hand it to a session', 'warm', () => startRun(), !bits.length && !byHand.length),
-    actBtn(`or ${goes}`, null, () => sendBatch(), !bits.length && !byHand.length),
+    // A blank reply is not disabled here — that would need a live repaint on every
+    // keystroke, which drops focus out of the box. `submitDecisions` refuses it.
+    actBtn('send to the session', 'warm', () => submitDecisions(), !decided),
     actBtn('back', null, () => { reviewState.screen = 'card'; renderReview(); }),
-  ], byHand.length
-    ? 'nothing is pushed or posted until you have written your comment'
-    : 'ctrl+enter to send · enter does nothing here'));
-
-  if (byHand.length) {
-    const warn = el('div', 'banner');
-    warn.appendChild(el('span', 'ico', '▲'));
-    const tx = el('span', 'tx');
-    tx.appendChild(el('b', null, 'This stops for you part-way.'));
-    tx.appendChild(el('p', null,
-      `${byHand.map((x) => threadLabel(x.t)).join(', ')} ` +
-      (byHand.length === 1 ? 'is yours to write' : 'are yours to write') +
-      '. Everything else is written and committed first, so you edit a tree that ' +
-      'already reflects every other decision — then a second screen takes your ' +
-      'comment and finishes the batch. Nothing is pushed or posted before that.'));
-    warn.appendChild(tx);
-    root.insertBefore(warn, root.querySelector('.strip'));
-  }
+  ], 'the session applies your picks and pushes, then brings the diff back to post'));
 }
 
-/** One sentence for what a handled thread will do. */
-function planLine(item, pos) {
-  const reply = replyOf(item).trim();
-  const short = reply.length > 90 ? reply.slice(0, 90).trimEnd() + '…' : reply;
-  if (modeOf(item) === 'manual') {
-    return pos.stance === 'agree'
-      ? 'You write the code, then it responds with a thumbs up.'
-      : 'You write the code, then comment in the phase that follows.';
+/** One thread's row on the overview: what it will do, and its reply as a line with
+ *  an `edit` toggle — not a textarea by default, which read as clutter. `agree`/
+ *  `skip` are static; a reply/story shows the drafted words and opens a box on ask. */
+function rvOverviewRow(item) {
+  const pos = positionOf(item);
+  const skipped = reviewState.skipped[item.t.id];
+  const row = el('div', 'stage-row');
+
+  let kind = 'reply';
+  let word = 'reply';
+  if (skipped || !isHandled(item)) { kind = 'skip'; word = skipped ? 'skipped' : 'not handled'; }
+  else if (pos.stance === 'story') { kind = 'story'; word = 'story'; }
+  else if (pos.stance === 'agree') { kind = 'reply'; word = 'thumbs up'; }
+  row.appendChild(el('span', 'k ' + kind, word));
+
+  const c = el('span', 'c');
+  c.appendChild(el('span', 'p', threadLabel(item.t)));
+  if (skipped || !isHandled(item)) {
+    /* All three consequences stated, because "leaves it open" alone reads as
+       harmless. */
+    c.appendChild(el('span', 't',
+      `Not handled. Stays open, nothing written, ${item.t.comments?.[0]?.author || 'they'} not re-requested.`));
+  } else if (pos.stance === 'agree') {
+    c.appendChild(el('span', 't', '👍 thumbs up, no written reply.'));
+  } else {
+    if (pos.stance === 'story') {
+      c.appendChild(el('span', 't', `Files “${pos.story?.title || 'a story'}”, then replies with its id.`));
+    }
+    if (reviewState.editing[item.t.id]) {
+      c.appendChild(replyBox(item));
+      const done = el('button', 'linkbtn', 'done');
+      done.onclick = () => { delete reviewState.editing[item.t.id]; renderReview(); };
+      c.appendChild(done);
+    } else {
+      // A line by default, edit on demand — the box the card already offers.
+      const preview = replyPreview(item, pickOf(item));
+      const lineWrap = el('div', 'replyline');
+      lineWrap.appendChild(el('span', 'q', preview ? `“${preview}”` : 'no reply written yet'));
+      const edit = el('button', 'linkbtn', 'edit');
+      edit.onclick = () => { reviewState.editing[item.t.id] = true; renderReview(); };
+      lineWrap.appendChild(edit);
+      c.appendChild(lineWrap);
+    }
   }
-  if (pos.stance === 'agree') {
-    return pos.patch
-      ? `${pos.label}. Responds with a thumbs up, no written reply.`
-      : 'Responds with a thumbs up, no written reply.';
-  }
-  if (pos.stance === 'story') return `File “${pos.story?.title || 'a story'}”, then reply with its id.`;
-  if (pos.patch) return `${pos.label}. Replies “${short}”`;
-  return `Replies “${short}”`;
+  row.appendChild(c);
+  return row;
 }
 
 /** Per reviewer, not per PR: one whose every thread is addressed is
@@ -1643,6 +1535,13 @@ async function answerSession(value, payload) {
 /** Send the picks to the waiting session; it moves to the change phase. */
 async function submitDecisions() {
   if (reviewState.busy) return;
+  // A reply/story pick with an empty box would post a blank comment, which cannot
+  // be unsent — the daemon refuses it too. Caught here rather than by disabling
+  // the button, so typing does not force a focus-dropping repaint per keystroke.
+  const blank = queue().filter((x) => needsWords(x) && !replyOf(x).trim());
+  if (blank.length) {
+    return toast(`write a reply for ${blank.map((x) => threadLabel(x.t)).join(', ')}`, true);
+  }
   reviewState.busy = true;
   const ok = await answerSession('decisions', { decisions: decisionSet() });
   reviewState.busy = false;
@@ -1745,6 +1644,7 @@ async function openReview(pr) {
     reviewState.picks = {};
     reviewState.skipped = {};
     reviewState.drafts = {};
+    reviewState.editing = {};
     reviewState.report = null;
     reviewState.head = null;
     reviewState.i = 0;
@@ -1799,18 +1699,10 @@ function acceptCard() {
   const q = queue();
   const item = q[reviewState.i];
   if (!item) return;
-  const pos = positionOf(item);
-
-  // A reply-only position with an empty box would post a blank comment, which
-  // cannot be deleted from here — the daemon refuses it too.
-  if (pos.stance !== 'agree' && modeOf(item) === 'agent' && !replyOf(item).trim()) {
-    return toast('this position posts a reply — write one, or pick another', true);
-  }
+  // The words are edited on the overview, so an empty reply is not blocked here —
+  // the send button on the overview is where a blank reply is refused.
   reviewState.picks[item.t.id] = pickOf(item);
   delete reviewState.skipped[item.t.id];
-  // Accepting is the agent doing the work. Says so out loud, so pressing it after
-  // `manual` takes the thread back rather than leaving the older answer standing.
-  delete reviewState.modes[item.t.id];
   advance();
 }
 
@@ -2051,7 +1943,6 @@ function reviewKey(e) {
     return true;
   }
   if (e.key === 's' && reviewState.screen === 'card') { skipCard(); return true; }
-  if (e.key === 'm' && reviewState.screen === 'card') { manualCard(); return true; }
   if (/^[1-9]$/.test(e.key) && reviewState.screen === 'card') {
     const item = queue()[reviewState.i];
     const i = +e.key - 1;

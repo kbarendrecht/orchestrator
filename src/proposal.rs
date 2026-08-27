@@ -310,8 +310,10 @@ impl ProposalSet {
             // work, not about what you are saying back, and as a position it made
             // "agree, and I will fix it myself" unspellable.
             p.positions.push(Position {
-                label: "Say something else".into(),
-                sub: "your words, your stance — no code".into(),
+                label: "Something else".into(),
+                // Not "no code": the box is an instruction to the session, which may
+                // well write code from it. What is yours here is the direction.
+                sub: "Custom instructions".into(),
                 stance: Stance::Reply,
                 patch: None,
                 reply: Some(String::new()),
@@ -382,7 +384,7 @@ mod tests {
             .iter()
             .map(|p| p.label.as_str())
             .collect();
-        assert_eq!(labels, vec!["L", "Say something else"]);
+        assert_eq!(labels, vec!["L", "Something else"]);
     }
 
     #[test]
