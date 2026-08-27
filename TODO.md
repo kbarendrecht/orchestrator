@@ -103,6 +103,13 @@ Everything outside that block is hand-written and survives.
   design (`forge/github_write.rs:10-13`) — so this item is about the beta gate, not
   the missing action.
 
+  The gate now has one concrete condition rather than a feeling: **the session flow
+  has to drive a real PR once.** The overlay is session-only since the flatten, so
+  the beta label is carrying the fact that its change and post-go phases have only
+  ever been exercised against canned data. Blocked on the fixture, which needs
+  Actions minutes. `/resolve` stays whatever the answer is — it is the fallback, not
+  the thing being replaced.
+
 - **Rewind a session from the rail.** *Built: `Rewind conversation…` on the session
   row's context menu, `POST /api/session/:id/rewind`.* The daemon builds no picker —
   Claude Code has the whole feature, files included — so the button only reaches it,
@@ -334,26 +341,42 @@ Everything outside that block is hand-written and survives.
   *The list, collected from the first real drive of the overlay (fixture PR #13).*
   Keep is the whole point: the overlay showing each thread's file, line, hunk and
   comment reads as a real UI, and beats the old spawn-a-terminal path.
-  - **Triage takes too long to sit through.** It is a full agent session reading
-    every thread; the wait is the agent's, not the daemon's. Cannot be made fast,
-    so it has to be made bearable — a live "reading N of M" instead of a closed
-    overlay and a blank pane. Ties into the next one.
-  - **You click `review` twice — once to start triage, once to see it.** `rvIntake`
-    fires triage with `andClose: true`, so the overlay closes and hands you the
-    pane; you reopen it when the agent is done. Keep it open on a `triaging…` screen
-    that polls `/review` and advances itself when proposals land. The snag is real:
-    triage needs permission prompts answered *in the pane*, so the overlay cannot
-    simply cover the screen while it runs — the progress screen has to coexist with,
-    or hand off to and auto-return from, the pane.
-  - **The `read` is a wall of text.** `rvCard` renders the agent's whole assessment
-    up front. Collapse it to a line with the rest behind a disclosure.
-  - **Stance + reply is too much machinery per thread.** The proposal model is
-    positions-with-patches and three stances. The wanted shape is fewer, flatter
-    choices with no solution diff on the card: 👍, a couple of AI-drafted replies,
-    or "handle differently" — and the drafted comments listed and *editable on the
-    final overview* rather than one card at a time. This is the deep one: it changes
-    `proposal.rs` (positions/patch/stance), `commands/triage.md`'s schema, and the
-    card/final screens together, so it wants a design pass before code, not a patch.
+  **All four are done** — the first two by the review-session flow, the last two by
+  the flatten (`5bc1800`). Left here because the reasoning is what the next round of
+  this will be argued against.
+  - ~~**Triage takes too long to sit through.**~~ *Done.* The session's `rvReading`
+    screen holds the overlay open while it reads, instead of closing onto a blank pane.
+  - ~~**You click `review` twice.**~~ *Done.* One session reads, and the overlay
+    advances itself off the decision ask. Permission prompts are still answered in the
+    pane, which is why the reading screen says so rather than covering the screen.
+  - ~~**The `read` is a wall of text.**~~ *Done.* `rvRead` shows its opening sentence
+    with the remainder behind a disclosure — the body holds the *remainder*, not the
+    whole read, or an expanded card repeats its own first line.
+  - ~~**Stance + reply is too much machinery per thread.**~~ *Done.* The card is the
+    offered positions as one flat list, reply under it, skip on the action bar. What
+    made this a design pass rather than a patch was the question underneath it —
+    whether the batch survives — and the answer was no: the overlay is session-only
+    now. The daemon half of that removal is the item below.
+
+- **Delete the batch the overlay no longer reaches, and flatten `proposal.rs`.**
+  The flatten took the triage+batch path out of the UI, so a large amount of proven,
+  tested daemon code is now unreachable: `/triage` + `triage::spawn`,
+  `pr_resolve_run`/`spawn_resolve_run`, `pr_post`, `post::resolve`'s apply path,
+  `resolve_runs` state and its store file, `/committed` + `thread_committed`, the
+  gate/commit/stash endpoints, `patch.rs`'s apply-and-fold ladder, and the SPA's
+  `rvGate`/`rvRun`/`rvManual`. `proposal.rs` then loses `patch`, `Mode`, `verified`
+  and the "change without evidence" check, which is what makes the model actually
+  flat rather than flat-looking.
+
+  **Deliberately not done yet, and the order matters.** The session flow has never
+  driven a real PR end-to-end: the change and post-go phases are unverified, and the
+  fixture cannot post its bot-authored threads without Actions minutes (the run failed
+  on the billing gate, not on our code). Removing the proven path before its
+  replacement has run once would leave no way back. `/resolve` into a pane is
+  untouched and is the real fallback either way.
+
+  Until then the dead code is reachable only by the API, and `web/review-preview.html`
+  is what lets the flattened UI be looked at without any of it.
 
 - **`Ctrl+Shift+Tab` for the previous session.** The SPA half is proven correct
   by reading, so the remaining question is delivery, not the binding. The keydown
