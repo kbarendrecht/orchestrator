@@ -19,13 +19,28 @@ const USAGE: &str = "\
 orch — talk to the orchestrator you are running inside
 
   orch new [--workspace <name>] [--prompt <text>]
-      Start another session. Defaults to your own workspace. Refused when the
-      machine is low on memory, so this cannot be how the desktop dies.
+      Start another session, and print its id.
+
+      A workspace is a checkout the daemon manages: `main`, or a worktree named
+      after the branch in it. `orch ls` prints the one each session is in.
+
+      Without --workspace it lands somewhere it can actually run: beside you in
+      your own worktree, which is what you want when you need a hand with the
+      thing you are already doing, or in a worktree cut for it when you are in
+      main — main holds one session and you are it. Refused when the machine is
+      low on memory, so this cannot be how the desktop dies.
 
   orch ask --question <text> [--detail <text>] [--thread <id>]
            --option <value>:<label>[:<sub>] ...  [--free <value>:<label>]
       Ask the human something and block until they answer. Prints the chosen
       value, and their words on a second line when they wrote any.
+
+  orch run <name>
+      Start one of the processes this workspace declares — the tabs in the app's
+      drawer, `docker` or a watch build. A *name*, not a command: the daemon
+      resolves it against the config and refuses anything else, so this cannot
+      run arbitrary things. Refused when it is already up, which is the answer
+      you wanted anyway.
 
   orch ls
       The sessions the daemon knows about, one per line.
@@ -131,6 +146,19 @@ fn run(cmd: &str, args: &[String]) -> Result<String, String> {
             match (field(&out, "session"), field(&out, "error")) {
                 (_, Some(err)) => Err(err.to_string()),
                 (Some(id), _) => Ok(id.to_string()),
+                _ => Ok(out.trim().to_string()),
+            }
+        }
+        "run" => {
+            let name = args
+                .iter()
+                .find(|a| !a.starts_with("--"))
+                .ok_or("run needs the name of a process")?;
+            let body = format!("{{\"name\":\"{}\"}}", esc(name));
+            let out = http("POST", &format!("{base}/api/session/{me}/process"), &token, Some(&body))?;
+            match (field(&out, "process"), field(&out, "error")) {
+                (_, Some(err)) => Err(err.to_string()),
+                (Some(p), _) => Ok(p.to_string()),
                 _ => Ok(out.trim().to_string()),
             }
         }

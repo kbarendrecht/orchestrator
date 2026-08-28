@@ -391,6 +391,7 @@ fn router(app: Arc<AppState>) -> Router {
         .route("/api/sessions/nudge", post(api::nudge_sessions))
         .route("/api/session/:id/fork", post(api::fork_session))
         .route("/api/session/:id/spawn", post(api::spawn_from_session))
+        .route("/api/session/:id/process", post(api::process_from_session))
         .route("/api/session/:id/ask", post(api::ask))
         .route("/api/session/:id/ask/:ask/wait", get(api::ask_wait))
         .route("/api/session/:id/answer", post(api::answer))
@@ -423,6 +424,7 @@ fn router(app: Arc<AppState>) -> Router {
         .route("/api/prs/refresh", post(api::refresh_prs))
         // The agent's own version: check it now, and install it in the drawer.
         .route("/api/agent/update/refresh", post(api::refresh_agent_update))
+        .route("/api/agent/upgrade/dismiss", post(api::dismiss_agent_upgrade))
         .route("/api/agent/upgrade", post(api::upgrade_agent))
         .route("/api/open", post(api::open_url))
         .route("/api/open/file", post(api::open_file))
@@ -1014,6 +1016,21 @@ fn start_update_poller(app: Arc<AppState>) {
 /// `v1.2.3` / `1.2.3` / `1.2.3-rc1` → `(1, 2, 3)`. Prerelease and build metadata
 /// are dropped: good enough to answer "is there a newer release", which is all
 /// the nudge asks. Anything unparseable is `None` and simply never nags.
+/// The directory the running executable sits in, when `orch` is really there.
+///
+/// Every packaging puts the two binaries side by side — the tarball, the `.deb`'s
+/// `/usr/bin`, the AppImage's AppDir, the macOS bundle's `Contents/MacOS` — but
+/// only the tarball's directory is on anybody's PATH. Answering `None` when the
+/// sibling is missing keeps a development build (`cargo run`, where `orch` may
+/// not have been built) from prepending a directory that has no `orch` in it.
+pub fn sibling_bin_dir() -> Option<String> {
+    let exe = std::env::current_exe().ok()?;
+    let dir = exe.parent()?;
+    dir.join("orch")
+        .is_file()
+        .then(|| dir.to_string_lossy().into_owned())
+}
+
 fn parse_semver(s: &str) -> Option<(u64, u64, u64)> {
     let core = s.trim().trim_start_matches('v');
     let core = core.split(['-', '+']).next()?;

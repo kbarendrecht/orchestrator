@@ -24,6 +24,13 @@ jobs:
           # build.
           - os: ubuntu-22.04
             slug: x86_64-linux
+            # Both, because they answer different questions: the `.deb` is the one
+            # that installs (menu entry, icon, `orch` on PATH, apt removes it), and
+            # the AppImage is for everything that is not Debian. It is the one that
+            # costs: measured locally, the deb adds seconds to a build that already
+            # happens and weighs 6.5 MB, the AppImage adds ~55s and weighs 79 MB,
+            # because it carries its own GTK/WebKit tree.
+            bundles: deb,appimage
           # macos-14 is the Apple Silicon runner, so the host target is
           # aarch64-apple-darwin and no `--target` is needed. Intel Macs are not
           # built for: every Mac sold since 2020 is arm64, and a second runner
@@ -31,6 +38,9 @@ jobs:
           # system WKWebView, so unlike Linux there are no libraries to install.
           - os: macos-14
             slug: aarch64-macos
+            # Unsigned, so Gatekeeper asks the first time. Still better than a
+            # tarball, and signing wants a paid Developer ID.
+            bundles: dmg
     steps:
       - uses: actions/checkout@v7
 
@@ -68,33 +78,46 @@ jobs:
 
       - name: Build
         run: |
-          cargo build --release -p orchestrator-desktop
-          # The CLI a session uses to reach the daemon. Same tarball, because a
-          # binary that has to be installed separately is one that is not there
-          # when an agent reaches for it.
+          # `orch` first, and not only for the tarball: every bundle copies it in
+          # beside the app (the per-bundle `files` maps in tauri.conf.json), so it
+          # has to exist before the bundler runs. A binary that has to be installed
+          # separately is one that is not there when an agent reaches for it.
           cargo build --release --bin orch
+          # The npm CLI ships a prebuilt binary; `cargo install tauri-cli` would
+          # spend minutes compiling one on every release. This also builds
+          # `orchestrator-desktop --release`, which is why that step is gone.
+          npx -y @tauri-apps/cli@^2 build --bundles ${{ matrix.bundles }}
 
       - name: Package
-        id: pkg
         run: |
+          mkdir -p dist
           tag="${GITHUB_REF_NAME}"
-          asset="orchestrator-${tag}-${{ matrix.slug }}.tar.gz"
-          # The app embeds the SPA (include_str!), so the tarball is two
-          # executables and nothing else: the app, and the `orch` CLI its sessions
-          # use to talk back to it. ubi extracts by the exe name below.
-          tar -C target/release -czf "$asset" orchestrator-desktop orch
-          # macOS has `shasum`, not GNU coreutils' `sha256sum`.
-          if command -v sha256sum >/dev/null 2>&1; then
-            sha256sum "$asset" > "$asset.sha256"
-          else
-            shasum -a 256 "$asset" > "$asset.sha256"
-          fi
-          echo "asset=$asset" >> "$GITHUB_OUTPUT"
+          # The tarball stays, and is what `mise`/`ubi` install: they read a release
+          # asset and extract by exe name, and neither can open a .deb. The app
+          # embeds the SPA (include_str!), so it is two executables and nothing
+          # else — the app, and the `orch` CLI its sessions use to talk back to it.
+          tar -C target/release -czf "dist/orchestrator-${tag}-${{ matrix.slug }}.tar.gz" \
+            orchestrator-desktop orch
+          # Whatever the bundler produced, under its own conventional name: a .deb
+          # is named the way apt expects, not the way the tarball is.
+          find target/release/bundle -maxdepth 2 -type f \
+            \( -name '*.deb' -o -name '*.AppImage' -o -name '*.dmg' \) \
+            -exec mv {} dist/ \;
+          # `for f in *` expands once, before the loop writes anything, so the sums
+          # do not get sums of their own.
+          cd dist
+          for f in *; do
+            # macOS has `shasum`, not GNU coreutils' `sha256sum`.
+            if command -v sha256sum >/dev/null 2>&1; then
+              sha256sum "$f" > "$f.sha256"
+            else
+              shasum -a 256 "$f" > "$f.sha256"
+            fi
+          done
+          ls -lh
 
       - name: Release
         uses: softprops/action-gh-release@v3
         with:
-          files: |
-            ${{ steps.pkg.outputs.asset }}
-            ${{ steps.pkg.outputs.asset }}.sha256
+          files: dist/*
           generate_release_notes: true

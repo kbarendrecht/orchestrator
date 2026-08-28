@@ -21,6 +21,14 @@ pub enum WindowCmd {
     Minimize,
     ToggleMaximize,
     Close,
+    /// Quit and come back, so every session is respawned.
+    ///
+    /// Here rather than in a seam of its own because it is `Close` with an
+    /// intention: the daemon owns the ptys and takes them with it either way, and
+    /// only the shell knows how to start the process again. Upgrading the agent is
+    /// what wants it — mise repoints the install, but a `claude` already running is
+    /// still the old build, and the only way onto the new one is a fresh spawn.
+    Restart,
     /// Hand the drag to the compositor. Sent on mousedown in the top bar, which
     /// is the one command that must arrive while a mouse button is still held.
     StartDrag,

@@ -476,6 +476,28 @@ function sessionRow(s, w) {
 
   btn.appendChild(el('div', 'sess-pad'));
   btn.onclick = () => setSelected(s.id);
+  /* Which way the branch moves, as one item with three answers. Asked of the
+     snapshot's own main row rather than of `w`, which is a `{ id }` stub on a
+     worktree row — `w.is_main` is `undefined` there, and relying on that being
+     falsy would make this right by accident.
+
+       on main                        → move out of main, into a tree of its own
+       on a worktree, main is free    → move to main
+       on a worktree, main holds work → swap branch with main
+
+     Never two of them. A session is in main or it is not, so the other could only
+     ever be dead, and a greyed "move out of main" on a worktree row reads as the
+     app thinking that row is in main — the opposite of what the rail says two
+     lines above it. */
+  const mainWs = snap.workspaces.find((x) => x.is_main);
+  const inMain = s.workspace === mainWs?.id;
+  const moveLabel = inMain
+    ? 'move out of main'
+    : mainHoldsWork(mainWs) ? 'swap branch with main' : 'move to main';
+  // A worktree Claude Code has not named yet has no path to swap.
+  const moveDo = inMain
+    ? () => moveOutOfMain(s)
+    : pending(s) ? null : () => swapWithMain(s.workspace);
   // The header's ✕ only ever closes the selected session, so closing any other
   // one meant switching to it first.
   btn.oncontextmenu = (ev) => openMenu(ev, [
@@ -488,23 +510,7 @@ function sessionRow(s, w) {
     ['rewind', null, isRewindable(s) ? () => rewindSession(s) : null],
     // The worktree, not the session: the row is the only place a worktree is
     // visible, so its workspace-level action lives here too.
-    //
-    // Asked of the snapshot rather than of `w`, which is a `{ id }` stub for a
-    // worktree row — `w.is_main` is `undefined` there, and relying on that being
-    // falsy would make this right by accident. Main cannot swap with itself, and
-    // a worktree Claude Code has not named yet has no path to swap.
-    [mainHoldsWork(snap.workspaces.find((x) => x.is_main))
-      ? 'swap branch with main'
-      : 'move to main', null,
-      s.workspace !== snap.workspaces.find((x) => x.is_main)?.id && !pending(s)
-        ? () => swapWithMain(s.workspace)
-        : null],
-    // The other side of that coin, and so only on a main row: out of the shared
-    // checkout into a tree of its own.
-    ['move out of main', null,
-      s.workspace === snap.workspaces.find((x) => x.is_main)?.id
-        ? () => moveOutOfMain(s)
-        : null],
+    [moveLabel, null, moveDo],
     ['close', 'bad', s.alive ? () => closeSession(s.id) : null],
     ['delete', 'bad', () => deleteSession(s)],
   ]);
@@ -613,7 +619,16 @@ async function moveOutOfMain(s) {
  *  Confirmed rather than immediate: every file under two trees changes, and the
  *  daemon's refusals (mid-turn agent, dirty tree, stopped rebase) are about what
  *  it can see, not about whether you meant it. */
+/* A swap takes seconds — two checkouts change every file, and the conversations
+   that follow the branches are killed and resumed — and until it lands the rail
+   still shows the world as it was. That silence is what gets it pressed twice, and
+   the second press is not a no-op: it swaps straight back. The daemon refuses a
+   concurrent one outright; this says so without the round trip, and says the first
+   is running rather than leaving you to guess. */
+let swapInFlight = false;
+
 async function swapWithMain(wsId) {
+  if (swapInFlight) return toast('a swap is already running — watch the rail', true);
   const holds = mainHoldsWork(snap.workspaces.find((x) => x.is_main));
   if (!confirm(holds
     ? `Swap branches between main and ${wsId}?\n\n`
@@ -627,6 +642,8 @@ async function swapWithMain(wsId) {
       + `conversation follows it into main, keeping its history and its place in `
       + `the rail.`
   )) return;
+  swapInFlight = true;
+  toast(`swapping ${wsId} with main…`);
   try {
     const r = await call(`/api/workspace/${encodeURIComponent(wsId)}/swap-main`);
     // A relocated session keeps its id, so the dead terminal is still in `terms`
@@ -662,6 +679,8 @@ async function swapWithMain(wsId) {
     }
   } catch (e) {
     toast(e.message, true);
+  } finally {
+    swapInFlight = false;
   }
 }
 

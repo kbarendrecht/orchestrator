@@ -90,7 +90,7 @@ fn origin_ok(origin: Option<&str>, port: u16, is_hook: bool, is_get: bool, token
 /// A list rather than a growing chain of `ends_with`, because it has been
 /// outgrown once already — see the note in [`guard`].
 fn is_ask_route(path: &str) -> bool {
-    const ASK_ROUTES: [&str; 5] = ["/ask", "/wait", "/spawn", "/committed", "/stuck"];
+    const ASK_ROUTES: [&str; 6] = ["/ask", "/wait", "/spawn", "/committed", "/stuck", "/process"];
     path.starts_with("/api/session/") && ASK_ROUTES.iter().any(|s| path.ends_with(s))
 }
 
@@ -1022,19 +1022,28 @@ pub async fn spawn_from_session(
 ) -> ApiResult<serde_json::Value> {
     ask_token_ok(&app, id, &headers).await?;
 
-    let workspace = match body.workspace {
-        Some(w) => w,
-        None => {
-            let inner = app.inner.read().await;
-            inner
-                .sessions
-                .get(&id)
-                .map(|s| s.workspace.clone())
-                .ok_or_else(|| anyhow::anyhow!("no such session {id}"))?
-        }
+    let mine = {
+        let inner = app.inner.read().await;
+        inner
+            .sessions
+            .get(&id)
+            .map(|s| s.workspace.clone())
+            .ok_or_else(|| anyhow::anyhow!("no such session {id}"))?
     };
 
-    let child = spawn::spawn_session(&app, &workspace, Kind::Interactive, None).await?;
+    // Main can hold one live session and the caller *is* it, so defaulting to the
+    // caller's own workspace made `orch new` impossible from main: every call came
+    // back "main is occupied by session <itself>". An agent asked to hand work off
+    // then has nowhere to put it, and no way to make one — cutting a worktree is
+    // not on the ask token. So the default is "somewhere this can actually run":
+    // your own tree when you are in a worktree, which is what you mean when you
+    // want a hand with what you are already doing, and a fresh worktree when you
+    // are in main. Naming one is still not offered; the daemon picks.
+    let child = match body.workspace {
+        Some(w) => spawn::spawn_session(&app, &w, Kind::Interactive, None).await?,
+        None if mine == MAIN => spawn::spawn_worktree_session(&app, None, None).await?,
+        None => spawn::spawn_session(&app, &mine, Kind::Interactive, None).await?,
+    };
     if let Some(prompt) = body.prompt.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
         let mut inner = app.inner.write().await;
         if let Some(s) = inner.sessions.get_mut(&child) {
@@ -1044,7 +1053,93 @@ pub async fn spawn_from_session(
         }
     }
     app.notify().await;
+    // Read back off the record rather than echoed, because when the default cut a
+    // worktree the caller never named it and has no other way to learn where its
+    // request landed. It can still be the `…creating` placeholder: at Claude Code's
+    // own layout the tree is cut by `claude --worktree` and only `SessionStart`
+    // reports the name.
+    let workspace = app
+        .inner
+        .read()
+        .await
+        .sessions
+        .get(&child)
+        .map(|s| s.workspace.clone())
+        .unwrap_or_default();
     Ok(Json(json!({ "session": child, "workspace": workspace })))
+}
+
+#[derive(Deserialize)]
+pub struct ProcessBody {
+    /// Which configured process to start. A name, never a command — see below.
+    pub name: String,
+}
+
+/// One session starts a managed process in its own workspace.
+///
+/// The agent-facing half of the drawer's restart button, and the same shape as
+/// `spawn_from_session`: authenticated by the caller's own ask token, acting on the
+/// workspace the caller is actually in. An agent asked to bring the stack up should
+/// not have to tell you to press a button.
+///
+/// **A name, never a command.** §12 refuses a generic "run this" endpoint, and this
+/// is not one by a different door: the name is resolved against the processes this
+/// workspace *declares* in config, and anything else is refused with the list of
+/// what it could have meant. So the reachable set is exactly what the drawer shows,
+/// which is the property that makes handing it to an agent unremarkable.
+///
+/// Refused when it is already running, rather than restarting it the way the
+/// drawer's button does. The button is yours, pressed while looking at the tab; an
+/// agent killing a watch you are reading, halfway through its own turn, is a
+/// different act — and "it is already up" is what the agent needed to know anyway.
+pub async fn process_from_session(
+    State(app): State<Arc<AppState>>,
+    Path(id): Path<Uuid>,
+    headers: axum::http::HeaderMap,
+    Json(body): Json<ProcessBody>,
+) -> ApiResult<serde_json::Value> {
+    ask_token_ok(&app, id, &headers).await?;
+
+    let workspace = {
+        let inner = app.inner.read().await;
+        inner
+            .sessions
+            .get(&id)
+            .map(|s| s.workspace.clone())
+            .ok_or_else(|| anyhow::anyhow!("no such session {id}"))?
+    };
+
+    let spec = managed_spec(&app, &workspace, &body.name).ok_or_else(|| {
+        let known = managed_names(&app, &workspace);
+        anyhow::anyhow!(
+            "{workspace} declares no process called {}; it has {}",
+            body.name,
+            if known.is_empty() {
+                "none at all".to_string()
+            } else {
+                known.join(", ")
+            }
+        )
+    })?;
+
+    {
+        let inner = app.inner.read().await;
+        let alive = inner.workspaces.get(&workspace).is_some_and(|w| {
+            w.processes
+                .iter()
+                .any(|p| p.name == spec.name && p.pty.as_ref().is_some_and(|h| h.exit_code().is_none()))
+        });
+        if alive {
+            return Err(ApiError(anyhow::anyhow!(
+                "{} is already running in {workspace}",
+                spec.name
+            )));
+        }
+    }
+
+    let process = spawn::start_managed(&app, &workspace, &spec).await?;
+    app.notify().await;
+    Ok(Json(json!({ "process": process, "workspace": workspace })))
 }
 
 #[derive(Deserialize)]
@@ -1327,6 +1422,23 @@ pub async fn upgrade_agent(State(app): State<Arc<AppState>>) -> ApiResult<serde_
     Ok(Json(json!({ "from": u.current, "to": u.latest })))
 }
 
+/// Put a finished upgrade's report away.
+///
+/// Daemon-side rather than a flag in the SPA, because the report is: a bar
+/// dismissed in one window and back on the next reload is the same bar arguing
+/// with you. Refuses while the run is going — there is nothing to dismiss yet, and
+/// clearing it would leave the button enabled beside a running `mise upgrade`.
+pub async fn dismiss_agent_upgrade(State(app): State<Arc<AppState>>) -> ApiResult<serde_json::Value> {
+    let mut inner = app.inner.write().await;
+    if inner.upgrade_run.as_ref().is_some_and(|r| r.running) {
+        return Err(ApiError(anyhow::anyhow!("the upgrade is still running")));
+    }
+    inner.upgrade_run = None;
+    drop(inner);
+    app.notify().await;
+    Ok(Json(json!({ "dismissed": true })))
+}
+
 /// Re-run the agent version check now.
 pub async fn refresh_agent_update(State(app): State<Arc<AppState>>) -> ApiResult<serde_json::Value> {
     crate::agent_update::refresh(&app).await?;
@@ -1334,24 +1446,37 @@ pub async fn refresh_agent_update(State(app): State<Arc<AppState>>) -> ApiResult
     Ok(Json(json!({ "update": now })))
 }
 
+/// The configured process of that name for that workspace, or nothing.
+///
+/// Main and a worktree declare different sets, so which list is consulted is part
+/// of the question. Shared with the session-side route because "which processes
+/// exist here" must have one answer: a name the drawer refuses and the CLI accepts
+/// would be two products.
+fn managed_spec(app: &Arc<AppState>, workspace: &str, name: &str) -> Option<crate::config::ManagedSpec> {
+    let specs = if workspace == MAIN {
+        &app.cfg.main_processes
+    } else {
+        &app.cfg.worktree_processes
+    };
+    specs.iter().find(|s| s.name == name).cloned()
+}
+
+/// The names that workspace could start, for an error worth reading.
+fn managed_names(app: &Arc<AppState>, workspace: &str) -> Vec<String> {
+    let specs = if workspace == MAIN {
+        &app.cfg.main_processes
+    } else {
+        &app.cfg.worktree_processes
+    };
+    specs.iter().map(|s| s.name.clone()).collect()
+}
+
 pub async fn restart_process(
     State(app): State<Arc<AppState>>,
     Path((workspace, name)): Path<(String, String)>,
 ) -> ApiResult<serde_json::Value> {
-    let spec = if workspace == MAIN {
-        app.cfg
-            .main_processes
-            .iter()
-            .find(|s| s.name == name)
-            .cloned()
-    } else {
-        app.cfg
-            .worktree_processes
-            .iter()
-            .find(|s| s.name == name)
-            .cloned()
-    };
-    let spec = spec.ok_or_else(|| anyhow::anyhow!("no managed process {name} for {workspace}"))?;
+    let spec = managed_spec(&app, &workspace, &name)
+        .ok_or_else(|| anyhow::anyhow!("no managed process {name} for {workspace}"))?;
 
     let existing = {
         let inner = app.inner.read().await;
@@ -1502,6 +1627,19 @@ pub async fn swap_with_main(
             "main cannot be swapped with itself"
         )));
     }
+    // One swap at a time, and refused rather than queued: a swap kills and respawns
+    // the conversations that follow the branches, and it decides which ones those
+    // are *before* anything moves. A second swap taken while the first is still
+    // landing reads session state mid-relocation, matches nobody, and moves a branch
+    // without its conversation — which is how a double click left a session in main
+    // with its branch back in the worktree. Queueing would run the second one on the
+    // strength of what you saw before the first, which is not what you would ask for
+    // if you could see the result.
+    let _swap = app.swapping.try_lock().map_err(|_| {
+        ApiError(anyhow::anyhow!(
+            "a swap is already running; it moves whole checkouts and their              conversations, so give it a moment and look at the rail before asking again"
+        ))
+    })?;
     let tree = app
         .workspace_path(&workspace)
         .await
@@ -2382,6 +2520,9 @@ mod tests {
             "/api/session/<id>/thread/PRRT_x/committed",
             "/api/session/<id>/thread/PRRT_x/stuck",
             "/api/session/<id>/spawn",
+            // `orch run`. Named processes only, so this exemption widens what an
+            // agent can start without widening it to arbitrary commands (§12).
+            "/api/session/<id>/process",
         ] {
             assert!(is_ask_route(p), "{p} must not need the app token");
         }
@@ -2391,6 +2532,9 @@ mod tests {
             "/api/session/<id>/answer",
             "/api/session/<id>/fork",
             "/api/state",
+            // The drawer's own button, which restarts a *running* process. Named
+            // the same thing, deliberately not the agent's.
+            "/api/workspace/main/process/docker/restart",
         ] {
             assert!(!is_ask_route(p), "{p} is not the agent's to call");
         }

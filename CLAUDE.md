@@ -240,18 +240,38 @@ to disappear is waiting for something that never happens.
   trap is `answerable`, which flips the moment you post: it answers "is anyone
   owed a reply", so it is only "who reviewed" on a fetch taken *before* the
   posting.
-- **Claude Code pins worktree isolation in the transcript, so a moved conversation
-  cannot use git in its new home.** Every turn re-appends a `worktree-state` record
+- **Claude Code pins worktree isolation in the transcript, and the daemon clears it
+  by writing to that same file.** Every turn re-appends a `worktree-state` record
   (`worktreePath`, `worktreeName`, `hookBased: true`), and on resume its own hook
   refuses any git command aimed outside that original worktree — *including the
   tree the daemon just moved it into*. A swap that worked perfectly (branch, files,
   record, conversation all correct) left the agent unable to run `git status` on
   its own work: "This session is isolated in the worktree …, but this command
-  redirects git to the shared checkout". The wording is in the `claude` binary, not
-  in a repo hook, and the daemon cannot clear it from outside — `ExitWorktree` and
-  `EnterWorktree` are the agent's own tools. So `api::arrival_notice` tells the
-  agent to call one, unconditionally, because what the daemon can see does not
-  include whether Claude Code isolated the session.
+  redirects git to the shared checkout".
+
+  It used to say here that the daemon cannot clear that from outside, since
+  `ExitWorktree` is the agent's own tool, so `api::arrival_notice` asked the agent
+  to call it. **Both halves of that were wrong, and a conversation paid for it for
+  two days**: it went on editing a worktree that had since been cut again for a
+  different branch while its own branch sat in main, taking the bare isolation
+  refusal sixteen times, and it never called `ExitWorktree` once.
+
+  - **The pin is a running value, not a header.** The *last* `worktree-state`
+    record wins, and letting go is one line —
+    `{"type":"worktree-state","worktreeSession":null,"sessionId":…}`, preceded by
+    `{"type":"relocated","relocatedCwd":…}`. Measured across 395 transcripts: 128
+    end exactly that way. So `store::clear_worktree_pin` appends what Claude Code
+    would have written, and `spawn_session` calls it on resume whenever the pin
+    disagrees with the cwd. **Only ever between processes** — the old pty dead, the
+    new one not started — because a live agent is appending to that file too.
+  - **Asking was delivered on the wrong tools.** The notice rides `PreToolUse`,
+    which was registered `Edit|Write`, and the isolation bites on *git* — Bash. The
+    explanation sat queued behind a write the session never made. `PostToolUse` had
+    been widened off that same matcher for the same reason; `PreToolUse` now matches
+    every tool.
+
+  `arrival_notice` stays, because it says in words what the record only implies, but
+  it is no longer the mechanism.
 - **Opening a PR in a worktree can move main's branch out from under you** — by
   design, since `park_main` will not carry uncommitted work and a branch stuck in
   main makes every PR flow for it impossible. If main holds that PR's own branch,

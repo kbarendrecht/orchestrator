@@ -24,6 +24,22 @@ use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
 /// The daemon, once started. Held so the exit hook can tear it down.
 static SERVER: OnceLock<Mutex<Option<orchd::Server>>> = OnceLock::new();
 
+/// Set by `WindowCmd::Restart`, read once the window is down.
+///
+/// The replacement is started from the exit path rather than from the command,
+/// because the point of a restart here is the *sessions*: they are this process's
+/// children and they have to be gone before their successors are spawned, or two
+/// `claude` processes share a worktree. `shutdown` is what makes that true.
+static RESTART: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// How long a replacement waits for the process it is replacing.
+///
+/// `shutdown` kills the sessions and waits on them, so this is the tail of that,
+/// not a guess about startup. Bounded because the alternative is a window that
+/// never appears: if the old process is somehow still there, saying so beats
+/// waiting in silence.
+const HANDOFF_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// macOS keeps its real traffic lights over a transparent titlebar; everywhere
 /// else the window is frameless and the SPA draws its own controls.
 const CHROME: Chrome = if cfg!(target_os = "macos") {
@@ -61,7 +77,94 @@ fn wsl_render_workaround() {
 #[cfg(not(target_os = "linux"))]
 fn wsl_render_workaround() {}
 
+/// Write a launcher entry for the binary that is running.
+///
+/// Only for the installs that ship no packaging of their own — `mise`, `ubi`, a
+/// tarball unpacked by hand. It points `Exec` at `current_exe`, so upgrading in
+/// place keeps working as long as the path is stable, which is exactly what mise's
+/// `latest` symlink gives you.
+///
+/// XDG only. A macOS `.app` is a directory layout rather than a file to write, and
+/// the `.dmg` already is one.
+#[cfg(target_os = "linux")]
+fn install_desktop_entry() -> anyhow::Result<std::path::PathBuf> {
+    use anyhow::Context;
+
+    let exe = std::env::current_exe().context("finding this executable")?;
+    let home = std::env::var("HOME").context("HOME is not set")?;
+    // An empty `XDG_DATA_HOME` means unset, per the spec — and `env::var` hands it
+    // back as `Ok("")`, which is how a test run wrote `applications/…` into the
+    // working directory instead of under HOME.
+    let data = std::env::var("XDG_DATA_HOME")
+        .ok()
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| format!("{home}/.local/share"));
+
+    // Same id as the bundles use, so installing a `.deb` later replaces this entry
+    // rather than leaving the launcher showing the app twice.
+    const ID: &str = "dev.orchd.orchestrator";
+    for (px, bytes) in [
+        (32u32, &include_bytes!("../icons/32x32.png")[..]),
+        (128, &include_bytes!("../icons/128x128.png")[..]),
+        (256, &include_bytes!("../icons/128x128@2x.png")[..]),
+    ] {
+        let dir = std::path::PathBuf::from(&data)
+            .join("icons/hicolor")
+            .join(format!("{px}x{px}"))
+            .join("apps");
+        std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+        std::fs::write(dir.join(format!("{ID}.png")), bytes)?;
+    }
+
+    let apps = std::path::PathBuf::from(&data).join("applications");
+    std::fs::create_dir_all(&apps).with_context(|| format!("creating {}", apps.display()))?;
+    let file = apps.join(format!("{ID}.desktop"));
+    std::fs::write(
+        &file,
+        format!(
+            "[Desktop Entry]\n\
+             Type=Application\n\
+             Name=Orchestrator\n\
+             Comment=Session board for parallel Claude work\n\
+             Exec={exe}\n\
+             Icon={ID}\n\
+             Terminal=false\n\
+             Categories=Development;\n\
+             Keywords=claude;sessions;orchestrator;\n",
+            exe = exe.display()
+        ),
+    )
+    .with_context(|| format!("writing {}", file.display()))?;
+
+    // Best effort: most desktops notice the file on their own, and a missing
+    // `update-desktop-database` is not a failure worth reporting.
+    let _ = std::process::Command::new("update-desktop-database")
+        .arg(&apps)
+        .status();
+    Ok(file)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn install_desktop_entry() -> anyhow::Result<std::path::PathBuf> {
+    anyhow::bail!("--install-desktop-entry is for Linux; macOS ships the .app in the .dmg")
+}
+
 fn main() {
+    // Before anything opens a window: this is a one-shot, and it is the only way a
+    // `mise`/tarball install gets an app you can find in a launcher. The `.deb`
+    // and the AppImage carry their own entry, so it exists for the install method
+    // that carries nothing.
+    if std::env::args().any(|a| a == "--install-desktop-entry") {
+        match install_desktop_entry() {
+            Ok(path) => println!("wrote {}", path.display()),
+            Err(e) => {
+                eprintln!("could not write the desktop entry: {e:#}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+
     wsl_render_workaround();
 
     tracing_subscriber::fmt()
@@ -70,6 +173,11 @@ fn main() {
                 .unwrap_or_else(|_| "orchd=info,orchestrator_desktop=info".into()),
         )
         .init();
+
+    // After the logger, so the wait can say what it is waiting for, and well before
+    // `orchd::start`: a replacement must not touch the lock, the port or the hook
+    // settings while the process it is replacing still holds them.
+    await_handoff();
 
     // Tauri owns the main thread, so the async half gets its own runtime. It is
     // never dropped — `App::run` does not return — which is what keeps the
@@ -121,6 +229,9 @@ fn main() {
             api.prevent_exit();
             shutdown();
             app_handle.cleanup_before_exit();
+            if RESTART.load(std::sync::atomic::Ordering::SeqCst) {
+                relaunch();
+            }
             // `None` is a user closing the window; `Some` came from an
             // `exit(n)` of ours, and a failed start that reports success is a
             // lie to whatever launched us.
@@ -273,6 +384,56 @@ fn remember_window(app: &AppHandle) {
     }
 }
 
+/// Start our own replacement, and tell it what to wait for.
+///
+/// Tauri's own `restart` spawns and exits, which cannot work here: `instance::acquire`
+/// refuses the moment it finds a live holder pid, so the replacement would come up,
+/// read this process as the holder and die with "already running" — leaving nothing
+/// at all. So the new process is handed our pid and waits for it. The lock file is
+/// left behind by `exit`, which is the documented behaviour and exactly what makes
+/// the wait sufficient: `acquire` clears a file whose owner is gone.
+fn relaunch() {
+    let exe = match std::env::current_exe() {
+        Ok(p) => p,
+        Err(e) => return tracing::error!("cannot restart, no path to this binary: {e}"),
+    };
+    // Our own arguments minus argv[0], so a restart keeps whatever it was started
+    // with, plus the handoff.
+    let mut args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
+    args.push("--wait-for-pid".into());
+    args.push(std::process::id().to_string().into());
+    match std::process::Command::new(&exe).args(&args).spawn() {
+        Ok(child) => tracing::info!(pid = child.id(), "restarting"),
+        Err(e) => tracing::error!("could not restart: {e}"),
+    }
+}
+
+/// Wait for the process we are replacing to go, if we are a replacement.
+///
+/// Before anything binds a port or takes the lock. Both are held until the old
+/// process actually exits, and its sessions are its children — so starting early
+/// would mean two daemons and, worse, two agents in one worktree.
+fn await_handoff() {
+    let args: Vec<String> = std::env::args().collect();
+    let Some(pid) = args
+        .iter()
+        .position(|a| a == "--wait-for-pid")
+        .and_then(|i| args.get(i + 1))
+        .and_then(|p| p.parse::<u32>().ok())
+    else {
+        return;
+    };
+    let deadline = std::time::Instant::now() + HANDOFF_TIMEOUT;
+    while orchd::pty::pid_alive(pid) {
+        if std::time::Instant::now() > deadline {
+            tracing::warn!(pid, "the process being replaced is still running; starting anyway");
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    tracing::info!(pid, "the process being replaced is gone");
+}
+
 fn shutdown() {
     let Some(server) = SERVER.get().and_then(|s| s.lock().unwrap().take()) else {
         return;
@@ -326,6 +487,13 @@ impl WindowControl for TauriWindow {
                 }
             }
             WindowCmd::Close => w.close()?,
+            // Closing *is* the restart: the exit path tears the daemon down and
+            // takes the sessions with it, and only then is it safe to start the
+            // process that will spawn their replacements.
+            WindowCmd::Restart => {
+                RESTART.store(true, std::sync::atomic::Ordering::SeqCst);
+                w.close()?
+            }
             WindowCmd::StartDrag => w.start_dragging()?,
             // Only `Window` has this, not `WebviewWindow`, so go through the
             // webview to reach it. macOS never asks: it keeps its decorations,

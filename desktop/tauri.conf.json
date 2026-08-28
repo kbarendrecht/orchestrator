@@ -12,7 +12,11 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["deb", "appimage"],
+    "targets": [
+      "deb",
+      "appimage",
+      "dmg"
+    ],
     "icon": [
       "icons/icon.png",
       "icons/128x128@2x.png",
@@ -20,6 +24,28 @@
       "icons/32x32.png"
     ],
     "category": "DeveloperTool",
-    "shortDescription": "Session board for parallel Claude work"
+    "shortDescription": "Session board for parallel Claude work",
+    "longDescription": "Hosts several Claude Code sessions over one monorepo: a rail of what needs you, a terminal per session, the changed files beside it, and the PRs they end up on.",
+    "linux": {
+      "deb": {
+        "depends": [
+          "libwebkit2gtk-4.1-0",
+          "libgtk-3-0"
+        ],
+        "files": {
+          "/usr/bin/orch": "../target/release/orch"
+        }
+      },
+      "appimage": {
+        "files": {
+          "usr/bin/orch": "../target/release/orch"
+        }
+      }
+    },
+    "macOS": {
+      "files": {
+        "MacOS/orch": "../target/release/orch"
+      }
+    }
   }
 }

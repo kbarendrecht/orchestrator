@@ -9,10 +9,22 @@
 //! instead, which is the thing that would perform the upgrade anyway.
 //!
 //! **The upgrade cannot interrupt a running session**, which is what makes a
-//! button safe to offer. `mise` installs into a versioned directory and repoints;
-//! a running `claude` keeps executing the image it already loaded. So sessions in
-//! flight finish on the old version and every new one gets the new — no restart,
-//! no downtime, nothing to coordinate.
+//! button safe to offer. A running `claude` keeps executing the image it already
+//! loaded, so sessions in flight finish on the old version and every new one gets
+//! the new — no restart, no downtime, nothing to coordinate.
+//!
+//! Not quite for the reason first written here, and the difference is worth
+//! keeping: mise does not leave the old versioned directory behind. It **deletes**
+//! it, and the live processes read `/proc/<pid>/exe` as
+//! `installs/claude-code/2.1.246/claude (deleted)` — they survive on an unlinked
+//! inode, not on a directory that is still there. Nothing has broken on this, and
+//! the reason to know it is `CLAUDE_CODE_EXECPATH`: anything that re-execs itself
+//! by that path after an upgrade is pointing at a file that no longer exists.
+//!
+//! The visible consequence is smaller and bit a user first: every open session
+//! keeps printing *its own* upgrade nag, because that process really is the old
+//! build. An upgrade that reported nothing therefore read as an upgrade that did
+//! not happen, which is why success says so now.
 
 use anyhow::Result;
 use serde::Serialize;
@@ -41,8 +53,14 @@ pub fn check(main: &Path) -> Option<AgentUpdate> {
     // `--json` rather than the table: the human output is columns of padded
     // text, and `{}` for "nothing outdated" is unambiguous where an empty table
     // is not.
+    //
+    // Named, rather than asking about every tool the checkout pins. Bare
+    // `outdated` reaches each tool's own backend — seven registries here, one of
+    // them answering 404 and warning about it every time — and the answer is
+    // thrown away but for one line. Asked about the agent alone it is a single
+    // lookup off mise's cache, which is what makes polling this often affordable.
     let out = Command::new("mise")
-        .args(["outdated", "--json"])
+        .args(["outdated", "--json", &tool])
         .current_dir(main)
         .output()
         .ok()?;
@@ -122,9 +140,16 @@ pub struct UpgradeRun {
     /// check that found it has been refreshed away.
     pub to: String,
     pub running: bool,
-    /// The tail of the output, for a run that failed. Empty while it runs, and a
-    /// success has none: it clears the run outright, because the nudge going away
-    /// *is* the report and a bar saying "done" would be announcing no news.
+    /// The tail of the output, for a run that failed. Empty while it runs, and
+    /// empty on success — which, with `running` false, is how the bar tells the two
+    /// finished states apart.
+    ///
+    /// Success used to clear the run outright, on the reasoning that the nudge
+    /// going away *is* the report. It is not: the sessions you have open go on
+    /// printing Claude Code's own upgrade notice, because they really are still the
+    /// old build, so a bar that vanishes silently against a terminal that still
+    /// says "update available" reads as a button that did nothing. It is reported,
+    /// and dismissed like any other.
     pub tail: String,
 }
 
@@ -186,7 +211,13 @@ pub fn run_upgrade(app: std::sync::Arc<crate::state::AppState>, tool: String, to
                 }
                 None => {
                     tracing::info!("upgraded {tool}");
-                    None
+                    // Reported rather than cleared: see `tail`. An empty tail on a
+                    // finished run is the success.
+                    Some(UpgradeRun {
+                        to,
+                        running: false,
+                        tail: String::new(),
+                    })
                 }
             };
         }
@@ -202,12 +233,15 @@ fn tail(text: &str, n: usize) -> String {
 
 /// Poll for a newer agent, forever.
 ///
-/// Six hours, matching the daemon's own release check: Claude Code ships often,
-/// but nothing here is urgent — the nag exists because the version is *usually*
-/// a little behind, not because being behind breaks anything.
+/// Hourly. It was six hours, to match the daemon's own release check, and that is
+/// the wrong comparison: the agent prints its own nag in the pane the moment it
+/// knows, so a slow poll does not mean "you hear about it later", it means **the
+/// app disagrees with the terminal inside it** — the session says upgrade and the
+/// bar that exists to offer that button is not there. Affordable now that the
+/// check names one tool instead of every tool in the checkout.
 pub fn start_poller(app: std::sync::Arc<crate::state::AppState>) {
     tokio::spawn(async move {
-        let interval = std::time::Duration::from_secs(6 * 60 * 60);
+        let interval = std::time::Duration::from_secs(60 * 60);
         loop {
             let main = app.cfg.main_checkout.clone();
             // Off-thread: `mise outdated` reaches the network to learn the latest
@@ -221,6 +255,23 @@ pub fn start_poller(app: std::sync::Arc<crate::state::AppState>) {
                 }
             }
             tokio::time::sleep(interval).await;
+        }
+    });
+}
+
+/// Check in the background, and never make the caller wait for it.
+///
+/// For the spawn paths: starting a session is the moment the agent's version
+/// matters, because this one runs whatever is installed now and prints its own
+/// "update available" nag into the pane the moment it thinks so. A poll alone
+/// leaves the bar that offers the upgrade button missing while the terminal
+/// inside the app is asking for it. Failures are debug-level: this is a nudge,
+/// and one that could not be refreshed is not worth a warning per session.
+pub fn refresh_detached(app: &std::sync::Arc<crate::state::AppState>) {
+    let app = app.clone();
+    tokio::spawn(async move {
+        if let Err(e) = refresh(&app).await {
+            tracing::debug!("re-checking the agent version after a spawn failed: {e:#}");
         }
     });
 }

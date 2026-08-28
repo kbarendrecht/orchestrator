@@ -493,9 +493,16 @@ export type UpgradeRun = {
  */
 to: string, running: boolean, 
 /**
- * The tail of the output, for a run that failed. Empty while it runs, and a
- * success has none: it clears the run outright, because the nudge going away
- * *is* the report and a bar saying "done" would be announcing no news.
+ * The tail of the output, for a run that failed. Empty while it runs, and
+ * empty on success — which, with `running` false, is how the bar tells the two
+ * finished states apart.
+ *
+ * Success used to clear the run outright, on the reasoning that the nudge
+ * going away *is* the report. It is not: the sessions you have open go on
+ * printing Claude Code's own upgrade notice, because they really are still the
+ * old build, so a bar that vanishes silently against a terminal that still
+ * says "update available" reads as a button that did nothing. It is reported,
+ * and dismissed like any other.
  */
 tail: string, };
 

@@ -37,7 +37,10 @@ The pieces:
 
 ## Install
 
-Releases attach two binaries per platform.
+A release attaches an installer per platform and a tarball beside it. The
+installers are the shortest path: a `.deb` or the `.dmg` gives you an app in your
+launcher, with an icon, and puts `orch` where the shell can find it. The tarball
+is what `mise` reads, and is still two binaries you place yourself.
 
 - **`orchestrator-desktop`** is the app. The daemon and the web UI are compiled
   into it, so this one binary on its own is a complete install.
@@ -49,6 +52,23 @@ Releases attach two binaries per platform.
   than bury the question in its own scrollback. Nothing requires it.
 
 Apple Silicon and x86-64 Linux are built.
+
+### From an installer
+
+```
+sudo apt install ./Orchestrator_<version>_amd64.deb   # Debian/Ubuntu
+```
+
+Puts the app at `/usr/bin/orchestrator-desktop`, `orch` on your `PATH`, and a
+launcher entry with its icon. `apt remove orchestrator` takes all of it away.
+
+The **AppImage** is the same app for everything that is not Debian: `chmod +x`
+and run it. It carries its own GTK/WebKit, which is why it is 79 MB against the
+deb's 6.5 MB, and `orch` rides inside it — the daemon puts its own directory on
+each session's `PATH`, so an agent can still reach it.
+
+On **macOS**, open the `.dmg` and drag the app to Applications. It is unsigned, so
+the first launch is right-click → Open rather than a double-click.
 
 ### Through mise (with the `github` backend)
 
@@ -72,6 +92,16 @@ xattr -dr com.apple.quarantine orchestrator-desktop orch
 
 Put them on your `PATH` (`orch` only if you want it) and run
 `orchestrator-desktop`.
+
+A tarball or a mise install ships no launcher entry, because there is no
+installer to write one. The app writes its own on request:
+
+```
+orchestrator-desktop --install-desktop-entry   # Linux
+```
+
+It points at the binary that ran it and uses the same id the `.deb` does, so
+installing the package later replaces the entry instead of listing the app twice.
 
 **Linux** needs **WebKitGTK 4.1** at runtime (Ubuntu 22.04 / Debian 12 or newer;
 20.04 ships only 4.0 and will not work). **macOS** uses the system WebView and

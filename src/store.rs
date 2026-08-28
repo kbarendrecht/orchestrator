@@ -701,6 +701,79 @@ mod tests {
     /// A move rather than a copy, deliberately: two files under one id is the state
     /// where `find_transcript` can answer with the stale one, and the swap would
     /// leave a conversation appearing to live in both trees at once.
+    /// The shapes are copied from real transcripts, because the whole value of
+    /// this reader is that it agrees with what Claude Code actually writes.
+    #[test]
+    fn the_last_worktree_state_record_is_the_pin() {
+        let dir = std::env::temp_dir().join(format!("orchd-pin-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("pin.jsonl");
+        let id = uuid::Uuid::new_v4();
+
+        // Nothing to say: not every conversation was ever in a worktree.
+        std::fs::write(&f, "{\"type\":\"user\"}\n").unwrap();
+        assert_eq!(worktree_pin(&f), None);
+
+        // Isolated, re-appended every turn — the many-records case.
+        let pinned = format!(
+            "{{\"type\":\"worktree-state\",\"worktreeSession\":{{\"originalCwd\":\"/repo\",\
+             \"preEnterOriginalCwd\":\"/repo\",\"worktreePath\":\"/repo/.claude/worktrees/wt\",\
+             \"worktreeName\":\"wt\",\"sessionId\":\"{id}\",\"hookBased\":true}},\
+             \"sessionId\":\"{id}\"}}\n"
+        );
+        std::fs::write(&f, format!("{{\"type\":\"user\"}}\n{pinned}{pinned}")).unwrap();
+        assert_eq!(
+            worktree_pin(&f).as_deref(),
+            Some(std::path::Path::new("/repo/.claude/worktrees/wt"))
+        );
+
+        // And let go again. The last record wins, which is the point: an earlier
+        // pin followed by a cleared one means "not isolated", and reading only the
+        // first would have this exactly backwards.
+        clear_worktree_pin(id, std::path::Path::new("/repo"), &f).unwrap();
+        assert_eq!(worktree_pin(&f), None, "a cleared pin must read as no pin");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// What we append has to be what Claude Code reads, so the record is checked
+    /// field by field rather than by "it round-trips through our own reader".
+    #[test]
+    fn clearing_writes_the_two_records_claude_code_writes() {
+        let dir = std::env::temp_dir().join(format!("orchd-clear-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("clear.jsonl");
+        let id = uuid::Uuid::new_v4();
+        std::fs::write(&f, "").unwrap();
+
+        clear_worktree_pin(id, std::path::Path::new("/repo"), &f).unwrap();
+
+        let text = std::fs::read_to_string(&f).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 2, "two records, one line each");
+
+        let a: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+        assert_eq!(a["type"], "relocated");
+        assert_eq!(a["relocatedCwd"], "/repo");
+        assert_eq!(a["sessionId"], id.to_string());
+
+        let b: serde_json::Value = serde_json::from_str(lines[1]).unwrap();
+        assert_eq!(b["type"], "worktree-state");
+        assert!(b["worktreeSession"].is_null(), "null is what releases it");
+        assert_eq!(b["sessionId"], id.to_string());
+
+        // Appended, never rewritten: the file is a conversation's own history and
+        // the daemon has no business editing what is already in it.
+        let before = text.clone();
+        clear_worktree_pin(id, std::path::Path::new("/repo"), &f).unwrap();
+        assert!(
+            std::fs::read_to_string(&f).unwrap().starts_with(&before),
+            "clearing twice must append, not rewrite"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn a_relocated_transcript_moves_rather_than_being_copied() {
         let root = std::env::temp_dir().join(format!("orchd-move-{}", std::process::id()));
@@ -1088,6 +1161,86 @@ pub fn move_transcript(id: uuid::Uuid, from: &Path, to: &Path) -> Result<Option<
     };
     let dir = crate::config::transcript_dir_for(to)?;
     relocate_file(&src, &dir.join(format!("{id}.jsonl"))).map(Some)
+}
+
+/// Where Claude Code believes this conversation is isolated, if anywhere.
+///
+/// The transcript carries a `worktree-state` record and **the last one wins**: a
+/// session that leaves a worktree appends one whose `worktreeSession` is `null`,
+/// and 128 transcripts on this machine end that way. So the pin is a running
+/// value, not a header — read to the end, keep the last answer.
+///
+/// `None` covers both "never isolated" and "isolated and then let go", which are
+/// the same thing to every caller here.
+pub fn worktree_pin(transcript: &Path) -> Option<PathBuf> {
+    let text = std::fs::read_to_string(transcript).ok()?;
+    let mut pin = None;
+    for line in text.lines() {
+        // Cheap reject first: this runs over a file that is megabytes of turns and
+        // holds a handful of these records.
+        if !line.contains("\"worktree-state\"") {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        if v.get("type").and_then(|t| t.as_str()) != Some("worktree-state") {
+            continue;
+        }
+        pin = v
+            .get("worktreeSession")
+            .and_then(|w| w.get("worktreePath"))
+            .and_then(|p| p.as_str())
+            .map(PathBuf::from);
+    }
+    pin
+}
+
+/// Tell a moved conversation it has been moved, in the file it reads it from.
+///
+/// The claim this replaces was that the daemon *cannot* clear Claude Code's
+/// worktree isolation from outside, because `ExitWorktree` is the agent's own
+/// tool. Measured against 128 transcripts, that is wrong: the state is two
+/// appended records, and both are one line with no timestamp and no uuid —
+///
+/// ```text
+/// {"type":"relocated","sessionId":"…","relocatedCwd":"/new/cwd"}
+/// {"type":"worktree-state","worktreeSession":null,"sessionId":"…"}
+/// ```
+///
+/// which is exactly what Claude Code writes for itself when a session relocates.
+/// Asking the agent instead was one instruction, delivered once, that an agent is
+/// free to ignore — and one conversation took the bare "isolated in the worktree"
+/// refusal sixteen times over two days while editing a tree that had since been
+/// cut again for somebody else's branch.
+///
+/// Undocumented format, the same bet as [`ai_title`], and it degrades the same
+/// way: an ignored record leaves things exactly as they were, and the arrival
+/// notice still says the words. **Only safe while the session is not running** —
+/// call it before the pty, never beside a live agent appending to the same file.
+pub fn clear_worktree_pin(id: uuid::Uuid, cwd: &Path, transcript: &Path) -> Result<()> {
+    use std::io::Write;
+    let mut f = std::fs::OpenOptions::new().append(true).open(transcript)?;
+    // `relocated` first, then the pin, in the order Claude Code writes them.
+    writeln!(
+        f,
+        "{}",
+        serde_json::json!({
+            "type": "relocated",
+            "sessionId": id.to_string(),
+            "relocatedCwd": cwd.to_string_lossy(),
+        })
+    )?;
+    writeln!(
+        f,
+        "{}",
+        serde_json::json!({
+            "type": "worktree-state",
+            "worktreeSession": serde_json::Value::Null,
+            "sessionId": id.to_string(),
+        })
+    )?;
+    Ok(())
 }
 
 /// Delete a session's transcript file, wherever it sits.

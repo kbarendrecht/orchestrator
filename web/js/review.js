@@ -276,10 +276,22 @@ function rvIntake(root) {
 
   const row = el('div');
   row.style.cssText = 'display:flex;gap:8px;margin-top:4px';
-  // The single-session flow: one session reads, then makes the changes you pick and
-  // posts, staying open the whole time. The overlay does not close and hand you a
-  // pane — it stays put and advances itself when the session has read the threads.
-  row.appendChild(headBtn('read the threads', 'go', () => startReviewSession()));
+  // A session this window cannot drive is still a session doing the work: it is
+  // past the decisions and this SPA does not hold them, so the only honest offer
+  // is its pane. Starting a second one here would abandon it mid-ask, and a fresh
+  // spawn drops the proposals the first is acting on.
+  const busy = liveReviewSession(reviewState.pr);
+  if (busy) {
+    mid.appendChild(el('p', null,
+      'A session is already answering this PR, further along than this window can pick up. '
+      + 'Watch it in its pane; it posts nothing without asking.'));
+    row.appendChild(headBtn('go to its pane', 'go', () => { closeReview(); setSelected(busy.id); }));
+  } else {
+    // The single-session flow: one session reads, then makes the changes you pick and
+    // posts, staying open the whole time. The overlay does not close and hand you a
+    // pane — it stays put and advances itself when the session has read the threads.
+    row.appendChild(headBtn('read the threads', 'go', () => startReviewSession()));
+  }
   if (d.url) {
     const gh = headBtn('open on github', null, () => window.open(d.url, '_blank', 'noreferrer'));
     row.appendChild(gh);
@@ -1525,6 +1537,10 @@ async function startReviewSession() {
   try {
     const r = await call(`/api/pr/${reviewState.pr}/review-session`);
     reviewState.session = r.session;
+    // Put the rail and the pane behind the overlay on the session that is about
+    // to ask for permissions, so closing the overlay lands on it instead of on
+    // whatever you happened to be looking at when you started the review.
+    setPendingSelect(r.session);
     reviewState.proposalsLoaded = false;
     reviewState.decisionsSent = false;
     toast('reading the threads…');
@@ -1587,6 +1603,12 @@ function rvReading(root) {
     'One session reads the code at each thread and works out how it could be answered. '
     + 'It changes nothing yet. The cards open here the moment it is done — you do not '
     + 'reopen anything. Answer any permission prompts in the session’s pane.'));
+  // The same way out `rvChanging` has: the reading phase is the one that asks for
+  // permissions, so the pane it names has to be one gesture away.
+  const row = el('div');
+  row.style.cssText = 'display:flex;gap:8px;margin-top:6px';
+  row.appendChild(headBtn('go to the pane', 'go', () => { closeReview(); setSelected(reviewState.session); }));
+  mid.appendChild(row);
   root.appendChild(mid);
 }
 
@@ -1792,6 +1814,25 @@ async function loadReview(pr) {
   }
 }
 
+/** The live session answering this PR, whichever window started it. */
+function liveReviewSession(pr) {
+  return (snap.sessions || []).find((x) => x.alive
+    && x.kind.kind === 'automation' && x.kind.command === 'review' && x.kind.pr === pr) || null;
+}
+
+/** Can this window pick up that session where it stands?
+ *
+ *  Only before it has been handed a decision set, because the decisions live in
+ *  this SPA and nowhere else: adopting a session mid-change would face the post
+ *  screen with empty picks, and post the recommended reply for every thread —
+ *  including the ones the other window skipped. So: no ask yet (still reading),
+ *  or the decision ask still open. Anything later is watched from its pane. */
+function adoptable(s) {
+  if (!s) return false;
+  const i = s.interaction;
+  return !i || (!i.answer && i.options.some((o) => o.value === 'decisions'));
+}
+
 async function openReview(pr) {
   // Two overlays at the same z-index would stack; the diff viewer goes first.
   if (Diff.state.open) Diff.close();
@@ -1811,6 +1852,15 @@ async function openReview(pr) {
     reviewState.session = null;
     reviewState.proposalsLoaded = false;
     reviewState.decisionsSent = false;
+    // A session for this PR may already be running: the overlay was closed and
+    // another PR opened in between, or the page reloaded. Adopt it rather than
+    // leaving it mid-ask with nothing able to answer it. Its phase comes from the
+    // ask, so `tick` sorts out which screen this is.
+    const live = liveReviewSession(pr);
+    if (adoptable(live)) {
+      reviewState.session = live.id;
+      reviewState.screen = 'reading';
+    }
   }
   reviewState.open = true;
   $('rvoverlay').classList.add('on');

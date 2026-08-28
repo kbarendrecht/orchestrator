@@ -1,7 +1,7 @@
 // The terminals: one xterm per session or process, attached to the daemon's pty
 // over a websocket. The DOM renderer is deliberate in the webview — see CLAUDE.md.
 
-import { $, CHROME, IS_MAC, TOKEN, WS_BASE, el, selected, terms, toast, uiScale } from './core.js';
+import { $, CHROME, IS_MAC, TOKEN, WS_BASE, el, selected, terms, toast, typingElsewhere, uiScale } from './core.js';
 
 
 const THEME = {
@@ -148,8 +148,10 @@ function openTerm(target, parent) {
     // A session you just created is selected before there is anything to type
     // into, so the focus `select` asked for landed on nothing. Take it once the
     // pty is actually attached, but only if this is still the session you are
-    // in, or a slow one would steal the keyboard back later.
-    if (terms.get(`session:${selected}`) === entry) {
+    // in, or a slow one would steal the keyboard back later — and never out of a
+    // box you are typing in, which is how a rename in the rail lost the keyboard
+    // mid-word and committed what had been typed so far.
+    if (terms.get(`session:${selected}`) === entry && !typingElsewhere()) {
       try {
         term.focus();
       } catch (e) { /* disposed while the socket was opening */ }

@@ -431,6 +431,42 @@ pub async fn spawn_session(
         _ => None,
     };
 
+    // A conversation the daemon has moved still believes it is isolated in the tree
+    // it started in: Claude Code pins that in the transcript and re-appends it every
+    // turn, so it outlives the swap, the restart and the resume. Telling the agent
+    // was the whole mitigation and it is not enough — the notice is one instruction
+    // an agent may not act on, and one conversation went two days editing a worktree
+    // that had been cut again for a different branch, its own branch sitting in main.
+    //
+    // So the correction is written rather than requested. Here because this is the
+    // one moment it is safe: the previous process is gone and the next has not
+    // started, so nothing else is appending to that file. Only when the pin really
+    // disagrees — a session resumed into the tree it is pinned to is correctly
+    // isolated and must stay that way.
+    let transcript = resume.and_then(|_| {
+        // The id scan as a fallback, because the case that breaks the cheap slug
+        // lookup is this one: a relocation whose `move_transcript` failed leaves the
+        // file under the old tree's slug, and that is a conversation that is *more*
+        // likely to be carrying a stale pin, not less.
+        crate::store::transcript_file(id, &path, None).or_else(|| crate::store::find_transcript(id))
+    });
+    if let Some(t) = transcript {
+        match crate::store::worktree_pin(&t) {
+            Some(pin) if pin != path => match crate::store::clear_worktree_pin(id, &path, &t) {
+                Ok(()) => tracing::info!(
+                    session = %id,
+                    "cleared a worktree pin on {} for a conversation now in {}",
+                    pin.display(),
+                    path.display()
+                ),
+                // Not fatal: the arrival notice still says it in words, and a
+                // session that comes back isolated is what happened before this.
+                Err(e) => tracing::warn!(session = %id, "could not clear the worktree pin: {e:#}"),
+            },
+            _ => {}
+        }
+    }
+
     let mut session = Session::new(id, workspace.to_string(), path.clone(), kind);
     session.interrupted = interrupted;
     session.had_a_turn = had_a_turn;
@@ -450,6 +486,15 @@ pub async fn spawn_session(
         "ORCH_URL".to_string(),
         format!("http://127.0.0.1:{}", app.cfg.port),
     ));
+    // And so it is *findable*. `orch` ships beside the binary that is running, but
+    // only the tarball puts that directory on your PATH — inside an AppImage or a
+    // macOS bundle it is a mount point nothing else knows about, and the agent's
+    // `orch new` would be a command not found. Prepended, so a build you are
+    // testing wins over an installed one.
+    if let Some(dir) = crate::sibling_bin_dir() {
+        let rest = std::env::var("PATH").unwrap_or_default();
+        env.push(("PATH".to_string(), format!("{dir}:{rest}")));
+    }
     let spawned = PtyHandle::spawn(&cmd, &path, &env, &unset, DEFAULT_SIZE)?;
 
     session.pty = Some(spawned.handle.clone());
@@ -470,6 +515,7 @@ pub async fn spawn_session(
     }
 
     watch_session_exit(app.clone(), id, spawned.handle);
+    crate::agent_update::refresh_detached(&app);
     app.notify().await;
     Ok(id)
 }
@@ -614,6 +660,7 @@ pub async fn spawn_worktree_session(
     }
 
     watch_session_exit(app.clone(), id, spawned.handle);
+    crate::agent_update::refresh_detached(&app);
     app.notify().await;
     Ok(id)
 }
@@ -697,6 +744,7 @@ pub async fn spawn_fix_pr_session(
     }
 
     watch_session_exit(app.clone(), id, spawned.handle);
+    crate::agent_update::refresh_detached(&app);
     app.notify().await;
     Ok(id)
 }

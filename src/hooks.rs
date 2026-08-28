@@ -665,7 +665,17 @@ pub fn write_settings(port: u16, tracker: Option<&str>) -> Result<PathBuf> {
             // Ordering matters only in that both fire: PreToolUse warns about a
             // rewrite, PostToolUse records what was written.
             "PreToolUse": [
-                matched("Edit|Write", "pre-edit"),
+                // Every tool, not `Edit|Write`. The stale-edit warning this hook was
+                // built for only concerns a file, but it is also where a moved
+                // conversation is told it has been moved — and *that* bites on git,
+                // which is Bash. Scoped to edits, the notice waited for a write that
+                // a session sorting out where it is never makes: one conversation
+                // took Claude Code's bare "isolated in the worktree" refusal sixteen
+                // times over two days with the explanation still queued behind it.
+                // `PostToolUse` was widened off this same matcher for the same
+                // reason; the handler already returns early when there is no
+                // `file_path`, so a Bash call costs one loopback round trip.
+                entry("pre-edit"),
                 // Additive to the repo's own `pre-bash`: any hook exiting 2
                 // blocks, so both sets of rules apply (§11).
                 { "matcher": "Bash", "hooks": [{

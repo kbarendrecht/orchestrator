@@ -40,10 +40,15 @@ export let selected = null;
 const selectionListeners = [];
 export function onSelection(fn) { selectionListeners.push(fn); }
 
-/** Pick a session. What *happens* next is whoever registered's business. */
-export function setSelected(id) {
+/** Pick a session. What *happens* next is whoever registered's business.
+ *
+ *  `auto` marks the pick the app made for you, which is what the snapshot does
+ *  when the session you were on ends. A listener that reads that as a gesture is
+ *  reacting to a session finishing, so anything standing down on "you went
+ *  somewhere else" has to be able to tell the two apart. */
+export function setSelected(id, auto = false) {
   selected = id;
-  for (const fn of selectionListeners) fn(id);
+  for (const fn of selectionListeners) fn(id, auto);
 }
 
 export const TOKEN = window.__ORCH__.token;
@@ -594,6 +599,24 @@ export function setProcOrder(wsId, keys) {
   try {
     localStorage.setItem('orch.procOrder', JSON.stringify(procOrder));
   } catch (e) { /* private mode: the order still holds for this session */ }
+}
+
+/** Is the keyboard in a text box that is not a terminal?
+ *
+ *  The pty takes focus on its own in two places — a socket that has just opened,
+ *  and a session you just picked — and neither is a gesture you made at that
+ *  moment. Renaming a session in the rail is: the input is open, you are typing
+ *  into it, and a terminal attaching underneath pulled the keyboard away and blurred
+ *  the box, which commits the half-typed name.
+ *
+ *  xterm's own focus target is a `<textarea>`, so it has to be excluded by name or
+ *  this would read "a terminal has focus" as "you are typing" and no session switch
+ *  would ever move the cursor. */
+export function typingElsewhere() {
+  const a = document.activeElement;
+  if (!a || a.classList.contains('xterm-helper-textarea')) return false;
+  return a.tagName === 'INPUT' || a.tagName === 'TEXTAREA'
+    || /** @type {HTMLElement} */ (a).isContentEditable;
 }
 
 /** A shell whose terminal should take the cursor as soon as it exists. */

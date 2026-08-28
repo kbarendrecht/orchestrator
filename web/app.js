@@ -14,7 +14,7 @@ import {
   selectedProc, setSelectedProc, prState, handedToPr, procOrder, setProcOrder,
   drawerTouched, setDrawerTouched, drawerCollapsed, setDrawerCollapsed,
   pendingProcFocus, setPendingProcFocus, pendingSelect, setPendingSelect,
-  prOf, onDrawerChange, appMod, IS_MAC, MOD_LABEL, closeLegend,
+  prOf, onDrawerChange, appMod, IS_MAC, MOD_LABEL, closeLegend, typingElsewhere,
 } from './js/core.js';
 
 // The daemon owns all state. This SPA is stateless and disposable: closing the
@@ -108,12 +108,16 @@ function renderInteraction() {
   const host = $('oq');
   const s = currentSession();
   const q = s && s.interaction && !s.interaction.answer ? s.interaction : null;
-  // The review overlay owns its own session's asks — the decision and post-go
-  // checkpoints are the cards, not a generic question box floating over the pty.
-  if (q && Review.state.open && s.id === Review.state.session) {
+  if (!q) { host.hidden = true; host.replaceChildren(); return; }
+
+  // The PR a review session is answering, or null for every other session. Its
+  // checkpoints are the overlay's cards, so this box behaves differently below.
+  const rvPr = s.kind.kind === 'automation' && s.kind.command === 'review' ? s.kind.pr : null;
+  // The overlay owns the ask while it is driving that session: the decision and
+  // post-go checkpoints are the cards, not a question box floating over the pty.
+  if (rvPr !== null && Review.state.open && Review.state.session === s.id) {
     host.hidden = true; host.replaceChildren(); return;
   }
-  if (!q) { host.hidden = true; host.replaceChildren(); return; }
 
   host.replaceChildren();
   const head = el('div', 'oqh');
@@ -128,7 +132,21 @@ function renderInteraction() {
   if (q.detail) host.appendChild(Diff.detailEl(q.detail));
 
   const opts = el('div', 'oqopts');
+  // The way back into the cards, first because it is the answer to the question.
+  if (rvPr !== null) {
+    const back = el('button', 'oqopt');
+    back.appendChild(el('div', 'ol', 'back to the review'));
+    back.appendChild(el('div', 'od', 'the cards are where this is answered'));
+    back.onclick = () => Review.open(rvPr);
+    opts.appendChild(back);
+  }
   for (const o of q.options) {
+    // A review session's free-text option carries the overlay's own payload — the
+    // decision set, the replies as edited — so answering it here would send the
+    // agent prose where it parses JSON. A plain option beside it (`hold`) still
+    // means what it says, and is the one thing worth being able to say without
+    // waiting for the overlay to load.
+    if (rvPr !== null && o.free) continue;
     const b = el('button', 'oqopt' + (o.free ? ' esc' : ''));
     b.appendChild(el('div', 'ol', o.label));
     if (o.sub) b.appendChild(el('div', 'od', o.sub));
@@ -218,7 +236,12 @@ function renderAgentUpdate() {
      window, which a local flag cannot. */
   const run = snap.upgrade_run;
   if (!u && !run) { bar.hidden = true; return; }
-  const failed = !!run && !run.running;
+  // A finished run with nothing in its tail is the one that worked. Reported
+  // rather than cleared, because the sessions you already have open go on printing
+  // Claude Code's own upgrade notice — they really are still the old build — so a
+  // bar that just vanished read as a button that had done nothing.
+  const done = !!run && !run.running;
+  const failed = done && !!run.tail;
 
   // A failure keeps the end of the output, which is the part that says why. Its
   // first line here, the whole tail in the tooltip: the bar is one line tall and a
@@ -229,27 +252,46 @@ function renderAgentUpdate() {
   // outlive the nudge that started it.
   const msg = failed
     ? `Claude Code ${run.to} did not install: ${run.tail.split('\n')[0]}`
-    : run
-      ? `installing Claude Code ${run.to}\u2026`
-      : `Claude Code ${u.latest} available (you have ${u.current})`;
+    : done
+      ? `Claude Code ${run.to} installed \u2014 sessions you already have open are still `
+        + 'the old build, and restarting is what puts them on the new one'
+      : run
+        ? `installing Claude Code ${run.to}\u2026`
+        : `Claude Code ${u.latest} available (you have ${u.current})`;
   if (agentDismissed === msg) { bar.hidden = true; return; }
 
   // Below the release bar when that one is up, at the top when it is not.
   bar.classList.toggle('stacked', !$('updatebar').hidden);
   $('agentmsg').textContent = msg;
 
+  const succeeded = done && !failed;
   const go = /** @type {HTMLButtonElement} */ ($('agentgo'));
   go.disabled = !!run && run.running;
-  go.textContent = run?.running ? 'Upgrading\u2026' : failed ? 'Retry' : 'Upgrade';
+  go.textContent = run?.running ? 'Upgrading\u2026'
+    : failed ? 'Retry' : succeeded ? 'Restart' : 'Upgrade';
   // Says the safe thing out loud, because "upgrade the tool my agents are
   // running" reads risky and is not: mise repoints a versioned install, so a
   // session already going keeps the binary it loaded.
   const safety = 'Sessions already running are unaffected \u2014 they finish on the '
     + 'version they started with, and the next session you open gets the new one.';
   go.title = failed ? run.tail
-    : run ? `Running \`mise upgrade\`. ${safety}`
-      : `Runs \`mise upgrade ${u.tool}\`. ${safety}`;
+    : succeeded
+      ? 'Quits and comes back. Your sessions are resumed as they were, on the new '
+        + 'version, because a running agent goes on being the build it started as.'
+      : run ? `Running \`mise upgrade\`. ${safety}`
+        : `Runs \`mise upgrade ${u.tool}\`. ${safety}`;
   go.onclick = async () => {
+    // A restart takes the window down, so there is nothing to report back into:
+    // the answer is the app coming back. Everything else reports through this bar
+    // on the next snapshot, which is why neither points at a result.
+    if (succeeded) {
+      try {
+        await call('/api/window/restart');
+      } catch (e) {
+        toast(e.message, true);
+      }
+      return;
+    }
     try {
       await call('/api/agent/upgrade');
       // Nothing to point at: the button disables itself on the next snapshot, the
@@ -259,7 +301,15 @@ function renderAgentUpdate() {
       toast(e.message, true);
     }
   };
-  $('agentx').onclick = () => { agentDismissed = msg; bar.hidden = true; };
+  // A finished run lives in the snapshot, so dismissing it there is what makes it
+  // stay dismissed: a local flag would put the same bar back on the next reload,
+  // and in every other window it never left. The nudge itself has nothing to clear
+  // daemon-side — it is recomputed from mise — so that one stays local.
+  $('agentx').onclick = () => {
+    agentDismissed = msg;
+    bar.hidden = true;
+    if (done) call('/api/agent/upgrade/dismiss').catch((e) => toast(e.message, true));
+  };
   keyActivate($('agentx'));
   bar.hidden = false;
 }
@@ -607,10 +657,18 @@ import * as Queue from './js/queue.js';
 // What picking a session means: open its terminal, redraw, and put the cursor
 // where you are about to type. Registered rather than called by the rail, so the
 // rail does not have to know about rendering.
-onSelection(() => {
+onSelection((id, auto) => {
   // Picking a session is going back to work: the legend was an aside, and leaving
   // it up over the pane you just chose is the app arguing with you.
   closeLegend();
+  // Same rule for the review overlay, which covers the centre column: picking a
+  // session in the rail did change the selection, it just changed it behind an
+  // overlay, so the rail looked broken. Its own session is the exception, because
+  // the overlay *is* that session's view and it selects it when it spawns. So is
+  // selecting nothing, which is what the snapshot does when a session ends: the
+  // review session ending is when the overlay has its report to show, and the
+  // snapshot then lands you on another session on its own.
+  if (id && !auto && Review.state.open && id !== Review.state.session) Review.close();
   const s = currentSession();
   // A session created a moment ago is not in the snapshot yet. Blanking the
   // terminal here would strand it: the next snapshot sees `selected` already
@@ -619,8 +677,10 @@ onSelection(() => {
   render();
   // Picking a session is picking where you are about to type. After the frame
   // that un-hides it, for the same reason the drawer waits: xterm refuses focus
-  // while its host still has no dimensions.
-  if (shown) {
+  // while its host still has no dimensions. Not while you are typing in a box:
+  // the app picks a session for you when one ends, and that must not reach into
+  // an open rename and take the keyboard.
+  if (shown && !typingElsewhere()) {
     requestAnimationFrame(() => {
       try {
         shown.term.focus();
@@ -1019,11 +1079,15 @@ function connect() {
       if (!cur || isArchived(cur)) setSelected(null);
     }
 
-    // Switch to a session we asked for as soon as the daemon reports it.
+    // Switch to a session we asked for as soon as the daemon reports it. `auto`,
+    // because this is the app landing you on something it created for you: the
+    // review overlay hands work to a session and keeps watching it, so a listener
+    // reading this as "you went somewhere else" would close the screen that was
+    // put up to report on it.
     if (pendingSelect && snap.sessions.some((s) => s.id === pendingSelect)) {
       const id = pendingSelect;
       setPendingSelect(null);
-      setSelected(id);
+      setSelected(id, true);
       return;
     }
 
@@ -1032,7 +1096,7 @@ function connect() {
       const first = snap.sessions.filter((x) => !isArchived(x));
       const pick = first.find(isWaiting) || first[0];
       if (pick) {
-        setSelected(pick.id);
+        setSelected(pick.id, true);
         Term.show(`session:${pick.id}`, $('termwrap'));
       } else {
         Term.show(null, $('termwrap'));

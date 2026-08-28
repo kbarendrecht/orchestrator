@@ -107,6 +107,21 @@ pub struct AppState {
     /// flag: losing it on a restart means main is *not* auto-parked (a harmless
     /// squat on a PR branch), never that a swap is silently undone.
     pub main_pr_park: RwLock<Option<String>>,
+    /// Held for the length of a swap, so two of them cannot interleave.
+    ///
+    /// Not a nicety. A swap chooses *who travels* from a snapshot of session state
+    /// — by branch, before anything moves — and a relocation already in flight is
+    /// mutating exactly that: the conversation is killed, its record is rebuilt
+    /// under the same id, and for the moment in between it matches neither tree.
+    /// A second swap taken in that window finds nobody to carry and moves a branch
+    /// on its own, and the conversation lands in a checkout its branch has already
+    /// left. Reproduced by pressing the button twice: two swaps eleven seconds
+    /// apart cancelled each other's branches out and left the session in main with
+    /// its branch back in the worktree.
+    ///
+    /// One flag rather than one per workspace, because every swap involves main:
+    /// two of them are never independent.
+    pub swapping: tokio::sync::Mutex<()>,
     /// Set the moment shutdown begins.
     ///
     /// A session's exit watcher cannot otherwise tell "you closed this pane" from
@@ -365,6 +380,7 @@ impl AppState {
                 upgrade_run: None,
             }),
             main_pr_park: RwLock::new(None),
+            swapping: tokio::sync::Mutex::new(()),
             shutting_down: std::sync::atomic::AtomicBool::new(false),
             events,
             chrome,

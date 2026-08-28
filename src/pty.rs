@@ -20,6 +20,54 @@ pub struct Spawned {
     pub pid: Option<u32>,
 }
 
+/// Where a program name points, resolved the way a shell would.
+///
+/// A name containing a `/` is a path, and stays relative to the spawn cwd. A bare
+/// name is looked up on the PATH the child will actually get — the daemon's, with
+/// the caller's overrides and removals applied, since a session may be spawned
+/// with a PATH of its own.
+///
+/// Only a regular file with an execute bit counts. Taking the first thing that
+/// merely *exists* is the bug this exists to avoid, and it costs nothing to be
+/// stricter than the crate we hand the answer to.
+fn resolve_program(
+    prog: &str,
+    cwd: &Path,
+    env: &[(String, String)],
+    unset: &[&str],
+) -> Result<std::path::PathBuf> {
+    if prog.contains('/') {
+        return Ok(cwd.join(prog));
+    }
+    let path = env
+        .iter()
+        .find(|(k, _)| k == "PATH")
+        .map(|(_, v)| v.clone())
+        .or_else(|| {
+            if unset.contains(&"PATH") {
+                None
+            } else {
+                std::env::var("PATH").ok()
+            }
+        })
+        .unwrap_or_default();
+    for dir in std::env::split_paths(&path) {
+        let candidate = dir.join(prog);
+        if is_executable(&candidate) {
+            return Ok(candidate);
+        }
+    }
+    anyhow::bail!("{prog} is not on PATH")
+}
+
+#[cfg(unix)]
+fn is_executable(p: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(p)
+        .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
+}
+
 /// A hosted pty: the process, its scrollback, and a fan-out of live output.
 ///
 /// Sessions and Processes are hosted identically (§2) — same ring buffer, same
@@ -58,7 +106,16 @@ impl PtyHandle {
         let (prog, args) = command
             .split_first()
             .context("empty command — nothing to spawn")?;
-        let mut cmd = CommandBuilder::new(prog);
+        // A bare name is a PATH lookup and nothing else. portable-pty tries the
+        // *cwd* first and takes whatever exists there, a directory included, so a
+        // checkout holding a `docker/` folder made `docker compose up` exec the
+        // folder. The failure is unreadable rather than loud: portable-pty's
+        // `close_random_fds` has already closed the pipe std reports an exec error
+        // on, so the child aborts with `fatal runtime error: assertion failed:
+        // output.write(&bytes).is_ok()` and never names the command. Resolving here
+        // hands it an absolute path, which it only checks for X_OK.
+        let resolved = resolve_program(prog, cwd, env, unset)?;
+        let mut cmd = CommandBuilder::new(&resolved);
         for arg in args {
             cmd.arg(arg);
         }
@@ -258,6 +315,84 @@ mod tests {
         assert!(out.contains("hello"), "expected output, got {out:?}");
         assert_eq!(spawned.handle.exit_code(), Some(3));
         assert!(spawned.pid.is_some());
+    }
+
+    /// A checkout that holds a `docker/` directory made `docker compose up` exec
+    /// the *directory*: portable-pty resolves a bare name against the cwd first
+    /// and accepts anything that exists. The failure never names the command —
+    /// its `close_random_fds` has closed the pipe std reports an exec error on, so
+    /// the child aborts with `fatal runtime error: assertion failed:
+    /// output.write(&bytes).is_ok()` and that is the whole of what the pane shows.
+    #[test]
+    fn a_directory_in_the_cwd_does_not_shadow_a_program_on_the_path() {
+        let dir = std::env::temp_dir().join(format!("orchd-shadow-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("echo")).expect("the shadowing directory");
+
+        let spawned = PtyHandle::spawn(
+            &["echo".to_string(), "hi".to_string()],
+            &dir,
+            &[],
+            &[],
+            (24, 80),
+        )
+        .expect("spawn");
+
+        for _ in 0..100 {
+            if spawned.handle.exit_code().is_some() && !spawned.handle.snapshot().is_empty() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let out = String::from_utf8_lossy(&spawned.handle.snapshot()).to_string();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(out.contains("hi"), "expected /bin/echo to have run, got {out:?}");
+    }
+
+    /// The other half: a name with a `/` is a path, and still means the cwd.
+    #[test]
+    fn a_path_stays_relative_to_the_cwd() {
+        let dir = std::env::temp_dir().join(format!("orchd-relpath-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("the temp dir");
+        let script = dir.join("say.sh");
+        std::fs::write(&script, "#!/bin/sh
+echo from-the-cwd
+").expect("the script");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))
+                .expect("chmod");
+        }
+
+        let spawned =
+            PtyHandle::spawn(&["./say.sh".to_string()], &dir, &[], &[], (24, 80)).expect("spawn");
+        for _ in 0..100 {
+            if spawned.handle.exit_code().is_some() && !spawned.handle.snapshot().is_empty() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let out = String::from_utf8_lossy(&spawned.handle.snapshot()).to_string();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(out.contains("from-the-cwd"), "got {out:?}");
+    }
+
+    /// A name that is nowhere on PATH is an error the caller can read, rather
+    /// than a child that aborts with the crate's own assertion.
+    #[test]
+    fn a_program_that_is_not_on_the_path_says_so() {
+        let spawned = PtyHandle::spawn(
+            &["orchd-definitely-not-a-binary".to_string()],
+            Path::new("/tmp"),
+            &[],
+            &[],
+            (24, 80),
+        );
+        let err = match spawned {
+            Ok(_) => panic!("spawned something that does not exist"),
+            Err(e) => e.to_string(),
+        };
+        assert!(err.contains("not on PATH"), "unhelpful error: {err}");
     }
 
     #[test]
