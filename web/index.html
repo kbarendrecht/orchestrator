@@ -112,6 +112,14 @@
         Nothing running.<br>
         Start a session from the rail, or open one from its archive.
       </div>
+
+      <!-- What a review is doing, while its overlay is closed. Inside the terminal
+           region so it sits over the pty rather than over the drawer, and outside
+           `#rvoverlay` because `renderReview` replaces that element's children on
+           every snapshot and would tear this out about once a second. `showTerm`
+           only appends and hides hosts, so a sibling here is safe — `#termempty`
+           has always been one. -->
+      <div class="rvbar" id="rvbar" hidden></div>
     </div>
 
     <!-- Process drawer: available on every workspace, not just main. -->
@@ -316,6 +324,7 @@
 
       <div class="settings-group">Overlays</div>
       <dt data-mod>MOD&nbsp;Shift&nbsp;D</dt><dd>toggle the diff</dd>
+      <dt data-mod>MOD&nbsp;Shift&nbsp;R</dt><dd>back to the review you left</dd>
       <dt>J&nbsp;/&nbsp;K</dt><dd>previous / next changed file or review card</dd>
       <dt>Enter</dt><dd>accept the review card</dd>
       <dt>1&ndash;9</dt><dd>pick a position</dd>

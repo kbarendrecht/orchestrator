@@ -1618,9 +1618,30 @@ pub async fn archive_workspace(
 /// with `is_busy`.
 ///
 /// Main having no session at all is equally fine — nothing here requires one.
+/// Log every outcome, not only the good one.
+///
+/// A swap has six ways to refuse — main occupied, an agent mid-turn, a stopped
+/// rebase, an unknown workspace, a concurrent swap, git itself — and every one of
+/// them used to reach you as a toast and leave nothing behind. So "it did not move
+/// the worktree that time, and worked when I pressed it again" had no record to
+/// read afterwards, which is the one thing needed to tell a refusal from a bug.
 pub async fn swap_with_main(
     State(app): State<Arc<AppState>>,
     Path(workspace): Path<String>,
+) -> ApiResult<serde_json::Value> {
+    tracing::info!(%workspace, "swap requested");
+    let out = swap_with_main_inner(app, workspace.clone()).await;
+    if let Err(e) = &out {
+        // Warn, not error: most of these are the daemon correctly declining, and a
+        // refusal you can read is the point rather than a fault to page about.
+        tracing::warn!(%workspace, "swap refused: {:#}", e.0);
+    }
+    out
+}
+
+async fn swap_with_main_inner(
+    app: Arc<AppState>,
+    workspace: String,
 ) -> ApiResult<serde_json::Value> {
     if workspace == MAIN {
         return Err(ApiError(anyhow::anyhow!(
@@ -1713,6 +1734,9 @@ pub async fn swap_with_main(
     // between, both conversations live in the worktree — and send it straight back.
     let (outgoing, outgoing_records) = to_carry(&app, MAIN, &swapped.worktree_now).await;
     let (incoming, incoming_records) = to_carry(&app, &workspace, &swapped.main_now).await;
+    // Counted here because the loops below consume the vectors, and the log at the
+    // end is the only place this number is ever read.
+    let carried_records = outgoing_records.len() + incoming_records.len();
 
     // Each tree gave a branch away, and `reconcile` only adds. Left in, the
     // worktree would go on claiming the branch main now holds, and a PR flow for it
@@ -1789,6 +1813,11 @@ pub async fn swap_with_main(
         main_now = %swapped.main_now,
         worktree_now = %swapped.worktree_now,
         wip_error = ?swapped.wip_error,
+        // Which conversations travelled, because "it did not move" can mean the
+        // branches or the sessions, and the two have different causes.
+        into_main = ?into_main.as_ref().and_then(|r| r.as_ref().ok()).map(|r| r.id),
+        into_worktree = ?into_worktree.as_ref().and_then(|r| r.as_ref().ok()).map(|r| r.id),
+        carried_records,
         "swapped branches with main"
     );
     Ok(Json(json!({

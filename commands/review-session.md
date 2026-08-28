@@ -202,28 +202,17 @@ the daemon applies for itself in `story::StoryRef::link`.
 
 If it fails twice, say so on the thread and leave it open.
 
-# Phase 3 — Post (only on their go)
+# Phase 3 — Post
 
-The code is pushed; nothing has been said to a reviewer yet. Ask for the go — the human
-reads the real diff beside each reply in the overlay first:
+The code is pushed. Post the replies now, without asking again.
 
-```bash
-ASK=$(curl -sS -X POST -H 'content-type: application/json' -H "x-orch-ask: $ORCH_ASK_TOKEN" \
-  -d '{"question":"Ready to post. Waiting for your go in the review overlay.",
-       "options":[{"value":"post","label":"Post","free":true},
-                  {"value":"hold","label":"Hold"}]}' \
-  "{{ASK_BASE}}/$ORCH_SESSION_ID/ask" | jq -r .ask)
+**There is one gate and you are past it.** The decisions you were handed in phase 2 are
+the human's last word: they carry the reply for each thread, as edited, and sending them
+authorised the change *and* what gets said about it. There is no second ask — a screen
+that showed the same replies back and asked "really?" is what this flow removed. So the
+replies to post are the ones in `$DECISIONS`, verbatim.
 
-while :; do
-  R=$(curl -sS -H "x-orch-ask: $ORCH_ASK_TOKEN" "{{ASK_BASE}}/$ORCH_SESSION_ID/ask/$ASK/wait")
-  [ "$(jq -r .answered <<<"$R")" = true ] && break
-done
-[ "$(jq -r .answer <<<"$R")" = hold ] && exit 0   # they held; write nothing
-REPLIES=$(jq -r .text <<<"$R")   # the final replies, as edited in the overlay
-```
-
-`hold` means post nothing and stop. On `post`, use the replies exactly as they came back
-— the human's edits win over your drafts.
+Say nothing about a thread whose decision was `skip`.
 
 - **Reactions**: a thread answered by agreeing gets a 👍 and no reply — the change it
   agreed to was already made and pushed in phase 2, so the reaction is the whole of what is

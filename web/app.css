@@ -335,6 +335,37 @@ button.ctx-btn:hover{color:var(--text)}
 .termhost{position:absolute;inset:8px 6px 8px 12px}
 .termhost[hidden]{display:none}
 
+/* ---------- what a review is doing, while its overlay is closed ---------- */
+/* Bottom of the *terminal*, not of the column: `.oq` sits at the top and blocks a
+   turn, this only reports, and anchoring it to `.center` would have put it over the
+   drawer. Coloured by phase on the rail's own three tones, so a review reads like
+   every other thing in the app that is working, waiting or done. */
+.rvbar{
+  position:absolute;left:6px;right:6px;bottom:8px;z-index:5;
+  display:flex;align-items:center;gap:11px;
+  background:var(--raised);border:1px solid var(--line);border-radius:3px;
+  padding:8px 11px;font-family:var(--mono);font-size:calc(11px * var(--fs));
+  color:var(--text);
+}
+.rvbar[hidden]{display:none}
+.rvbar .dot{width:6px;height:6px;border-radius:50%;background:currentColor;flex:0 0 auto}
+.rvbar .k{
+  font-family:var(--label);font-size:calc(8.5px * var(--fs));font-weight:700;
+  letter-spacing:.12em;text-transform:uppercase;white-space:nowrap;
+}
+.rvbar .what{color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.rvbar .go{
+  margin-left:auto;flex:0 0 auto;border:1px solid currentColor;border-radius:2px;
+  padding:3px 9px;font-size:calc(10px * var(--fs));white-space:nowrap;
+}
+.rvbar .go:hover{background:var(--surface)}
+/* The three tones the rail uses. `attn` is the default border, so it is stated
+   rather than inherited — a bar whose colour depends on which rule ran last is the
+   bug this file has had before. */
+.rvbar.attn{border-color:var(--attn);color:var(--attn)}
+.rvbar.work{border-color:var(--work);color:var(--work)}
+.rvbar.ok{border-color:var(--ok);color:var(--ok)}
+
 /* ---------- the open question ---------- */
 /* The session is stopped until this is answered, so it sits over the pty rather
    than beside it. Amber throughout: this is the legend's "needs you", and a

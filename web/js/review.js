@@ -1,7 +1,7 @@
 // The review overlay: read a PR's threads, decide each one, then one batch of
 // outward writes. The largest single feature in the SPA.
 
-import { $, call, el, get, newShell, pending, setSelected, snap, toast, setPendingSelect } from './core.js';
+import { $, call, el, get, MOD_LABEL, newShell, pending, setSelected, snap, toast, setPendingSelect } from './core.js';
 import * as Diff from './diff.js';
 import { langFor, hlTokens } from './diff.js';
 import { patchStats, hunkEl, fileListLabel } from './review-diff.js';
@@ -810,7 +810,7 @@ function rvFinal(root) {
     // keystroke, which drops focus out of the box. `submitDecisions` refuses it.
     actBtn('send to the session', 'warm', () => submitDecisions(), !decided),
     actBtn('back', null, () => { reviewState.screen = 'card'; renderReview(); }),
-  ], 'the session applies your picks and pushes, then brings the diff back to post'));
+  ], 'this is the last word: the session applies your picks, pushes, and posts these replies'));
 }
 
 /** One thread's row on the overview: what it will do, and its reply as a line with
@@ -1556,7 +1556,11 @@ async function startReviewSession() {
  *  the overlay between phases — the ask is the whole signal, so there is no polling
  *  of `/review` and no second source of truth. */
 function reviewTick() {
-  if (!reviewState.open || !reviewState.session) return;
+  // Not gated on the overlay being open. The bar reports the phase from wherever you
+  // are, so the phase has to go on advancing while you are looking at another
+  // session — otherwise coming back would show you the screen you left rather than
+  // the one the review has reached.
+  if (!reviewState.session) return;
   const ask = sessionAsk();
 
   // The decision ask appears only after the session has posted its proposals, so it
@@ -1567,24 +1571,34 @@ function reviewTick() {
     loadReview(reviewState.pr);
     return;
   }
-  // The post-go ask appears once the change phase is done. Move to the post screen.
-  if (askHasValue(ask, 'post') && reviewState.screen !== 'posting') {
-    reviewState.screen = 'posting';
-    renderReview();
+  // The session ended.
+  const s = (snap.sessions || []).find((x) => x.id === reviewState.session);
+  if (s && s.alive) return;
+
+  // It got as far as a phase we were driving, so there is a result to report.
+  if (reviewState.decisionsSent) {
+    if (reviewState.screen !== 'report') {
+      reviewState.screen = 'report';
+      renderReview();
+    }
     return;
   }
-  // The session ended. If it got as far as a phase we were driving, say it is done.
-  const s = (snap.sessions || []).find((x) => x.id === reviewState.session);
-  if ((!s || !s.alive) && reviewState.decisionsSent && reviewState.screen !== 'report') {
-    reviewState.screen = 'report';
-    renderReview();
-  }
+
+  /* And otherwise the review is simply over — closed, killed, or it fell over while
+     reading — with nothing decided and nothing to come back to. Let go of it, or the
+     bar goes on announcing a session that no longer exists over every pane in the
+     app, which is exactly how it looked: a review "reading the threads" forever,
+     everywhere, for a conversation that had been closed. The overlay, if it is open,
+     falls back to this PR's intake so it can be started again. */
+  reviewState.session = null;
+  reviewState.proposalsLoaded = false;
+  reviewState.screen = 'intake';
+  renderReview();
 }
 
 /** Route the session flow's own screens. */
 function renderSessionReview(root) {
   if (reviewState.screen === 'reading') return rvReading(root);
-  if (reviewState.screen === 'posting') return rvPosting(root);
   if (reviewState.screen === 'report') return rvSessionReport(root);
   if (reviewState.decisionsSent) return rvChanging(root);
   if (!reviewState.data || !reviewState.data.proposals) return rvReading(root);
@@ -1620,8 +1634,8 @@ function rvChanging(root) {
   mid.appendChild(el('div', 'big', 'Applying…'));
   mid.appendChild(el('p', null,
     'It writes the code for each solution you chose, runs the repo’s checks, amends '
-    + 'the owning commit and pushes. Answer any permission prompts in the session’s pane. '
-    + 'When it is done, the real diff and your replies come back here to post.'));
+    + 'the owning commit and pushes, then posts your replies. Answer any permission '
+    + 'prompts in the session’s pane. Nothing more is asked of you.'));
   const row = el('div');
   row.style.cssText = 'display:flex;gap:8px;margin-top:6px';
   row.appendChild(headBtn('go to the pane', 'go', () => { closeReview(); setSelected(reviewState.session); }));
@@ -1629,32 +1643,6 @@ function rvChanging(root) {
   root.appendChild(mid);
 }
 
-/** The post phase: the change is pushed, nothing is said to a reviewer yet. */
-function rvPosting(root) {
-  const q = queue();
-  root.appendChild(rvHead('ready to post', `${q.length} thread${q.length === 1 ? '' : 's'}`));
-  const body = el('div', 'body');
-  const plan = el('div', 'sec');
-  for (const item of q) {
-    if (reviewState.skipped[item.t.id]) continue;
-    const pos = positionOf(item);
-    const row = el('div', 'stage-row');
-    const word = pos.stance === 'agree' ? 'thumbs up' : pos.stance === 'story' ? 'story' : 'reply';
-    row.appendChild(el('span', 'k ' + (pos.stance === 'agree' ? 'reply' : pos.stance), word));
-    const c = el('span', 'c');
-    c.appendChild(el('span', 'p', threadLabel(item.t)));
-    const reply = replyOf(item).trim();
-    if (reply) c.appendChild(el('span', 't', `Replies “${reply.length > 90 ? reply.slice(0, 90).trimEnd() + '…' : reply}”`));
-    row.appendChild(c);
-    plan.appendChild(row);
-  }
-  body.appendChild(plan);
-  root.appendChild(body);
-  root.appendChild(rvActs([
-    actBtn('post', 'warm', () => sendPost()),
-    actBtn('hold', null, () => holdPost()),
-  ], 'the code is already pushed · this posts the replies and reactions'));
-}
 
 /** Nothing more to do: the session finished. */
 function rvSessionReport(root) {
@@ -1663,7 +1651,21 @@ function rvSessionReport(root) {
   mid.appendChild(el('div', 'big', 'Posted.'));
   mid.appendChild(el('p', null, 'The session answered the threads and finished. Read its pane for the detail of what it changed and posted.'));
   root.appendChild(mid);
-  root.appendChild(rvActs([actBtn('close', 'pri', () => closeReview())]));
+  root.appendChild(rvActs([actBtn('done', 'pri', () => finishReview())]));
+}
+
+/** Put the whole review away, rather than just the overlay.
+ *
+ *  `closeReview` means "I am looking at something else" — the bar goes on reporting
+ *  and selecting the session brings the cards back. That is wrong for a review that
+ *  has finished: there is nothing to come back to, and a bar reporting `posted`
+ *  forever is the furniture this codebase keeps deleting. */
+function finishReview() {
+  reviewState.session = null;
+  reviewState.pr = null;
+  reviewState.data = null;
+  reviewState.decisionsSent = false;
+  closeReview();
 }
 
 /** The decision set the overlay hands back over the ask channel. One per thread:
@@ -1730,34 +1732,6 @@ async function submitDecisions() {
   renderReview();
 }
 
-/** Give the go: the session posts the replies exactly as they stand. */
-async function sendPost() {
-  if (reviewState.busy) return;
-  reviewState.busy = true;
-  const replies = queue()
-    .filter((x) => !reviewState.skipped[x.t.id])
-    .map((x) => ({ thread_id: x.t.id, reply: replyOf(x) }));
-  const ok = await answerSession('post', { replies });
-  reviewState.busy = false;
-  if (!ok) return;
-  reviewState.screen = 'report';
-  toast('posting');
-  renderReview();
-}
-
-/** Hold: the session writes nothing outward and stops. */
-async function holdPost() {
-  if (reviewState.busy) return;
-  reviewState.busy = true;
-  const ask = sessionAsk();
-  if (ask) {
-    try { await call(`/api/session/${reviewState.session}/answer`, { ask: ask.id, answer: 'hold' }); }
-    catch (e) { toast(e.message, true); }
-  }
-  reviewState.busy = false;
-  toast('held — nothing posted');
-  closeReview();
-}
 
 /** Open the overlay on a PR, or refresh what it is showing.
  *
@@ -2188,8 +2162,62 @@ function reviewKey(e) {
   return false;
 }
 
+/* ---------- the bar the overlay leaves behind ---------- */
+
+/** What the review is doing, for someone who is not looking at it.
+ *
+ *  Returns `null` when there is nothing to say. The tone is the flow's own: `work`
+ *  is the agent busy, `attn` is it waiting on you, `ok` is finished — the same three
+ *  the rail uses, so a review reads like every other row in the app. */
+function barState() {
+  if (!reviewState.session) return null;
+  const s = (snap.sessions || []).find((x) => x.id === reviewState.session);
+  // Belt to the tick's braces: a bar for a session that is not there is the one
+  // thing this must never draw, whatever order the snapshot and the render ran in.
+  if (!s && !reviewState.decisionsSent) return null;
+  const q = reviewState.data?.proposals ? queue() : [];
+  if (reviewState.screen === 'report' || (s && !s.alive && reviewState.decisionsSent)) {
+    return { tone: 'ok', what: `posted · ${q.length || ''} answered`.replace('·  ', '· ') };
+  }
+  // Nothing has been sent yet and the cards are up: it is your turn, and how many
+  // threads are left is the only number worth carrying out here.
+  if (!reviewState.decisionsSent && q.length) {
+    const left = q.filter((x) => !isHandled(x) && !reviewState.skipped[x.t.id]).length;
+    return left
+      ? { tone: 'attn', what: `${left} of ${q.length} threads waiting on you` }
+      : { tone: 'attn', what: `${q.length} threads decided · not sent yet` };
+  }
+  if (reviewState.decisionsSent) return { tone: 'work', what: 'writing the code' };
+  return { tone: 'work', what: 'reading the threads' };
+}
+
+/** Draw the bar, or take it away.
+ *
+ *  Only while the overlay is *closed*: open, the cards are the report. Rendered from
+ *  `app.js`'s tick like every other pane, and into a host that lives outside
+ *  `#rvoverlay` — `renderReview` replaces that element's children on every snapshot
+ *  and would tear a live node out from under itself once a second. */
+function renderBar() {
+  const host = $('rvbar');
+  const st = reviewState.open ? null : barState();
+  if (!st) { host.hidden = true; host.replaceChildren(); return; }
+
+  host.replaceChildren();
+  host.className = `rvbar ${st.tone}`;
+  host.appendChild(el('span', 'dot'));
+  host.appendChild(el('span', 'k', `review · pr ${reviewState.pr}`));
+  host.appendChild(el('span', 'what', st.what));
+  const go = el('button', 'go', `open · ${MOD_LABEL}\u21e7R`);
+  go.onclick = () => openReview(reviewState.pr);
+  host.appendChild(go);
+  host.hidden = false;
+}
+
 // The public surface. Everything else above is private by construction now,
 // which is the point: the rail reaches the overlay through these four or not
 // at all.
 
-export { reviewState as state, openReview as open, closeReview as close, reviewKey as key, reviewTick as tick };
+export {
+  reviewState as state, openReview as open, closeReview as close,
+  reviewKey as key, reviewTick as tick, renderBar as bar,
+};

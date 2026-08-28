@@ -88,6 +88,7 @@ function render() {
   // decision ask means the read is done, a post ask means the change is. It reads
   // the ask from the snapshot, so no polling and no second source of truth.
   Review.tick();
+  Review.bar();
   renderInteraction();
   renderUpdate();
   // After `renderUpdate`, which decides whether the bar above this one is there
@@ -654,10 +655,19 @@ import * as Queue from './js/queue.js';
 // Actions
 // ---------------------------------------------------------------------------
 
+/* The session the last selection landed on, so "you came back to it" can be told
+   from "you were already here". Only the review overlay needs the difference, and
+   it needs it badly: `go to the pane` closes the overlay and selects the very
+   session the overlay is driving, so a reopen rule keyed on the session alone
+   fires on the way out and the button appears to do nothing. */
+let cameFrom = null;
+
 // What picking a session means: open its terminal, redraw, and put the cursor
 // where you are about to type. Registered rather than called by the rail, so the
 // rail does not have to know about rendering.
 onSelection((id, auto) => {
+  const arrived = id !== cameFrom;
+  cameFrom = id;
   // Picking a session is going back to work: the legend was an aside, and leaving
   // it up over the pane you just chose is the app arguing with you.
   closeLegend();
@@ -669,6 +679,18 @@ onSelection((id, auto) => {
   // review session ending is when the overlay has its report to show, and the
   // snapshot then lands you on another session on its own.
   if (id && !auto && Review.state.open && id !== Review.state.session) Review.close();
+  // And the other direction, which is the half that was missing: the overlay *is*
+  // that session's view, so going to the session is going to the overlay. Without
+  // this you landed on the pane with the generic ask box over it and no way back to
+  // the cards that were supposed to answer it. Gestures only — the app picking a
+  // session for you when another ends is not you asking for the review.
+  //
+  // On *arriving*, not on being here. `go to the pane` is the overlay closing and
+  // selecting its own session in one move, and reopening on that is the button
+  // undoing itself. Closed while you stand on the session, the bar is the way back.
+  if (id && !auto && arrived && !Review.state.open && Review.state.session === id) {
+    Review.open(Review.state.pr);
+  }
   const s = currentSession();
   // A session created a moment ago is not in the snapshot yet. Blanking the
   // terminal here would strand it: the next snapshot sees `selected` already
@@ -934,6 +956,16 @@ window.addEventListener('keydown', (e) => {
     // so this is the third rung of the same ladder as Ctrl+N / Ctrl+Shift+N.
     if (e.key === '`' || (e.shiftKey && k === 't')) {
       e.preventDefault(); newShell(); return;
+    }
+    // Back to a review from anywhere. Shift, like the rest of this layer, and `r`
+    // was free; a browser tab spends it on a hard reload, the same trade `Ctrl+N`
+    // and `Ctrl+Shift+N` already make for the webview this is built for.
+    if (e.shiftKey && k === 'r') {
+      if (!Review.state.session) return;   // nothing to go back to; let the pty have it
+      e.preventDefault();
+      if (Review.state.open) return toast('the review is already open');
+      Review.open(Review.state.pr);
+      return;
     }
     // Shift, not plain: Ctrl+D is EOF and still has to exit a shell.
     if (e.shiftKey && k === 'd') {
