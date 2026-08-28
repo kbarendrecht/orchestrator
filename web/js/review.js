@@ -207,26 +207,30 @@ function rvStrip(cur) {
     strip.appendChild(el('span', cls));
   });
 
-  const staged = q.filter(isHandled).length;
-  const skipped = q.filter((x) => reviewState.skipped[x.t.id]).length;
+  const done = q.filter((x) => isHandled(x) || reviewState.skipped[x.t.id]).length;
   let left;
+  // On a card the strip is a position; everywhere else it is progress, and it says
+  // "decided" because that is the one word this flow counts in.
   if (cur !== null && cur !== undefined) left = `${cur + 1} / ${q.length}`;
-  else if (!staged && !skipped) left = 'not started';
-  else if (staged + skipped === q.length) left = `${q.length} / ${q.length} handled`;
-  else left = `${staged + skipped} / ${q.length}`;
+  else if (!done) left = 'none decided';
+  else left = `${done} / ${q.length} decided`;
   strip.appendChild(el('span', 'left', left));
   return strip;
 }
 
 /** What the header's count says. */
-function stagedCount() {
+/** How far through the threads you are.
+ *
+ *  One word for one idea: *decided*. This used to say "staged", which is git's word
+ *  for something else entirely, and the card hint said "nothing chosen yet" for the
+ *  same count in a different vocabulary — three names between them for the number
+ *  the tally, the strip and the bar are all showing. */
+function decidedCount() {
   const q = queue();
-  const staged = q.filter(isHandled).length;
+  const decided = q.filter((x) => isHandled(x) || reviewState.skipped[x.t.id]).length;
   const skipped = q.filter((x) => reviewState.skipped[x.t.id]).length;
-  const bits = [];
-  if (staged) bits.push(`${staged} staged`);
-  if (skipped) bits.push(`${skipped} skipped`);
-  return bits.length ? bits.join(' · ') : 'nothing staged';
+  const of = `${decided} of ${q.length} decided`;
+  return skipped ? `${of} · ${skipped} skipped` : of;
 }
 
 function rvActs(buttons, hint) {
@@ -270,9 +274,8 @@ function rvIntake(root) {
   mid.appendChild(big);
 
   mid.appendChild(el('p', null,
-    'One session reads the code at each thread and works out how it could be answered. ' +
-    'The read changes nothing — not a file, not a commit, not a comment. You decide thread ' +
-    'by thread, then it makes the changes you picked and posts.'));
+    'Reads the code behind each comment and works out how it could be answered. '
+    + 'Nothing is written until you decide.'));
 
   const row = el('div');
   row.style.cssText = 'display:flex;gap:8px;margin-top:4px';
@@ -284,13 +287,15 @@ function rvIntake(root) {
   if (busy) {
     mid.appendChild(el('p', null,
       'A session is already answering this PR, further along than this window can pick up. '
-      + 'Watch it in its pane; it posts nothing without asking.'));
+      + 'Watch it in its pane.'));
     row.appendChild(headBtn('go to its pane', 'go', () => { closeReview(); setSelected(busy.id); }));
   } else {
     // The single-session flow: one session reads, then makes the changes you pick and
     // posts, staying open the whole time. The overlay does not close and hand you a
     // pane — it stays put and advances itself when the session has read the threads.
-    row.appendChild(headBtn('read the threads', 'go', () => startReviewSession()));
+      // Not offered with nothing to read: an enabled primary action that spends an
+    // agent session on an empty queue is the button doing the opposite of its label.
+    if (n) row.appendChild(headBtn('read the threads', 'go', () => startReviewSession()));
   }
   if (d.url) {
     const gh = headBtn('open on github', null, () => window.open(d.url, '_blank', 'noreferrer'));
@@ -300,7 +305,7 @@ function rvIntake(root) {
 
   if (n === 0) {
     mid.appendChild(el('p', null,
-      'Nothing is awaiting an answer right now, so the session would have nothing to read.'));
+      'Every thread on this PR has been answered. Nothing to read.'));
   }
   root.appendChild(mid);
 }
@@ -405,11 +410,6 @@ function rvOverview(root) {
   sec.appendChild(tally);
   body.appendChild(sec);
 
-  const note = el('div', 'sec');
-  const p = el('p', null, 'The read changed nothing. Nothing is written or posted until you send your picks.');
-  p.style.cssText = 'color:var(--dim);font-size:12px';
-  note.appendChild(p);
-  body.appendChild(note);
   root.appendChild(body);
 
   const handled = q.filter((x) => isHandled(x) || reviewState.skipped[x.t.id]).length;
@@ -460,7 +460,7 @@ function rvCard(root) {
   if (!item) { reviewState.screen = 'overview'; return rvOverview(root); }
   const { t, p } = item;
 
-  root.appendChild(rvHead(`thread ${reviewState.i + 1} of ${q.length}`, stagedCount()));
+  root.appendChild(rvHead(`thread ${reviewState.i + 1} of ${q.length}`, decidedCount()));
   root.appendChild(rvFreshBar());
   root.appendChild(rvStrip(reviewState.i));
 
@@ -516,8 +516,7 @@ function rvCard(root) {
   if (reply) body.appendChild(reply);
   root.appendChild(body);
 
-  const hint = `thread ${reviewState.i + 1} of ${q.length} · ` +
-    (q.some(isHandled) ? stagedCount() : 'nothing chosen yet');
+  const hint = `thread ${reviewState.i + 1} of ${q.length} · ${decidedCount()}`;
   root.appendChild(rvActs([
     actBtn('accept · ⏎', 'warm', () => acceptCard()),
     // Lit when this thread is skipped: with no Skip row in the list, the button is
@@ -783,7 +782,7 @@ const needsWords = (item) =>
  *  machine yet — the session applies the picks and posts only on your go. */
 function rvFinal(root) {
   const q = queue();
-  root.appendChild(rvHead('review & send', stagedCount()));
+  root.appendChild(rvHead('review & send', decidedCount()));
   root.appendChild(rvStrip(null));
 
   const body = el('div', 'body');
@@ -805,12 +804,24 @@ function rvFinal(root) {
   root.appendChild(body);
 
   const decided = q.every((x) => isHandled(x) || reviewState.skipped[x.t.id]);
+  /* What actually leaves the machine, counted rather than described. This is the
+     only irreversible control in the flow — one press writes code *and* speaks to a
+     reviewer — and it used to be labelled `send to the session`, which is true of the
+     plumbing and silent about GitHub. A button is read on its own, so it names the
+     outcome; the hint carries the numbers, which are what change the decision. */
+  const said = [
+    out.replies && `${out.replies} ${out.replies === 1 ? 'reply' : 'replies'}`,
+    out.thumbs && `${out.thumbs} 👍`,
+    out.stories && `${out.stories} ${out.stories === 1 ? 'story' : 'stories'}`,
+  ].filter(Boolean).join(' and ');
   root.appendChild(rvActs([
     // A blank reply is not disabled here — that would need a live repaint on every
     // keystroke, which drops focus out of the box. `submitDecisions` refuses it.
-    actBtn('send to the session', 'warm', () => submitDecisions(), !decided),
+    actBtn('apply, push and post', 'warm', () => submitDecisions(), !decided),
     actBtn('back', null, () => { reviewState.screen = 'card'; renderReview(); }),
-  ], 'this is the last word: the session applies your picks, pushes, and posts these replies'));
+  ], said
+    ? `${said} go to the PR · nothing here can be unsent`
+    : 'nothing to say to a reviewer · this only applies and pushes'));
 }
 
 /** One thread's row on the overview: what it will do, and its reply as a line with
@@ -1614,9 +1625,7 @@ function rvReading(root) {
   mid.appendChild(el('div', 'eyebrow', 'the session is reading the threads'));
   mid.appendChild(el('div', 'big', 'Reading…'));
   mid.appendChild(el('p', null,
-    'One session reads the code at each thread and works out how it could be answered. '
-    + 'It changes nothing yet. The cards open here the moment it is done — you do not '
-    + 'reopen anything. Answer any permission prompts in the session’s pane.'));
+    'The cards open here when it is done. Permission prompts appear in the session’s pane.'));
   // The same way out `rvChanging` has: the reading phase is the one that asks for
   // permissions, so the pane it names has to be one gesture away.
   const row = el('div');
@@ -1647,11 +1656,27 @@ function rvChanging(root) {
 /** Nothing more to do: the session finished. */
 function rvSessionReport(root) {
   root.appendChild(rvHead('done'));
+  const q = queue();
+  const out = outward(q);
+  const skipped = q.filter((x) => reviewState.skipped[x.t.id]).length;
+
   const mid = el('div', 'mid');
-  mid.appendChild(el('div', 'big', 'Posted.'));
-  mid.appendChild(el('p', null, 'The session answered the threads and finished. Read its pane for the detail of what it changed and posted.'));
+  /* What you authorised, counted — not "read its pane for the detail", which sent
+     you to a terminal to find out what the app had just done on your behalf. Phrased
+     as what was sent rather than what GitHub accepted, because the overlay watched
+     the session end and did not watch the API answer: claiming a result it cannot
+     see is the one thing a success message must not do. */
+  const said = [
+    out.replies && `${out.replies} ${out.replies === 1 ? 'reply' : 'replies'}`,
+    out.thumbs && `${out.thumbs} 👍`,
+    out.stories && `${out.stories} ${out.stories === 1 ? 'story' : 'stories'}`,
+  ].filter(Boolean).join(' and ');
+  mid.appendChild(el('div', 'big', said ? `Sent ${said}.` : 'Finished.'));
+  mid.appendChild(el('p', null,
+    (skipped ? `${skipped} thread${skipped === 1 ? '' : 's'} skipped and still open. ` : '')
+    + 'The commit and what it actually wrote are in the pane.'));
   root.appendChild(mid);
-  root.appendChild(rvActs([actBtn('done', 'pri', () => finishReview())]));
+  root.appendChild(rvActs([actBtn('close', 'pri', () => finishReview())]));
 }
 
 /** Put the whole review away, rather than just the overlay.
