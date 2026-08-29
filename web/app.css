@@ -1045,7 +1045,7 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
 .rv .anchor .who{font-size:calc(11.5px * var(--fs));color:var(--dim)}
 .rv .anchor .age{font-family:var(--mono);font-size:calc(10px * var(--fs));color:var(--faint-solid)}
 .rv .flag{
-  font-family:var(--label);font-size:calc(8px * var(--fs));font-weight:700;letter-spacing:.12em;
+  font-family:var(--label);font-size:calc(9px * var(--fs));font-weight:700;letter-spacing:.1em;
   text-transform:uppercase;padding:2px 5px;border-radius:2px;
   color:var(--faint-solid);border:1px solid var(--line);
 }
@@ -1096,7 +1096,7 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
 .rv .cmt.mine .hd{background:#161616}
 .rv .cmt.mine .hd b{color:var(--dim)}
 .rv .cmt.mine .hd .you{
-  font-family:var(--label);font-size:calc(7.5px * var(--fs));font-weight:700;letter-spacing:.12em;
+  font-family:var(--label);font-size:calc(9px * var(--fs));font-weight:700;letter-spacing:.1em;
   text-transform:uppercase;color:var(--faint-solid);
 }
 .rv .cmt .hd{
@@ -1117,7 +1117,7 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
 }
 .rv .cmt p + .suggestion{margin-top:0}
 .rv .sghead{
-  font-family:var(--label);font-size:calc(8px * var(--fs));font-weight:700;letter-spacing:.12em;
+  font-family:var(--label);font-size:calc(9px * var(--fs));font-weight:700;letter-spacing:.1em;
   text-transform:uppercase;color:var(--faint-solid);padding:5px 10px;
   background:#141414;border-bottom:1px solid var(--line);
 }
@@ -1154,7 +1154,7 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
 }
 /* A small pill on the option head: what taking it says back. */
 .rv .opt .tag{
-  font-family:var(--label);font-size:calc(8px * var(--fs));font-weight:700;letter-spacing:.12em;
+  font-family:var(--label);font-size:calc(9px * var(--fs));font-weight:700;letter-spacing:.1em;
   text-transform:uppercase;border:1px solid var(--line);border-radius:2px;padding:1px 5px;flex:0 0 auto;
 }
 .rv .opt .tag.agree{border:0;padding:0;font-size:calc(13px * var(--fs))}
@@ -1188,7 +1188,7 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
 .rv .plan .threadhead .p{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .rv .plan .threadhead .k{
   flex:0 0 auto;border:1px solid var(--line);border-radius:2px;padding:2px 6px;
-  font-size:calc(8px * var(--fs));text-align:center;
+  font-size:calc(9px * var(--fs));text-align:center;
 }
 .rv .plan .threadhead .k.apply{border-color:rgba(95,169,124,.35)}
 .rv .plan .threadhead .k.reply{border-color:rgba(224,162,68,.35)}
@@ -1274,7 +1274,7 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
 .rv .alt.on .k{color:var(--attn);border-color:rgba(224,162,68,.4)}
 .rv .alt .t{font-size:calc(12px * var(--fs));color:var(--text)}
 .rv .rec{
-  font-family:var(--label);font-size:calc(8px * var(--fs));font-weight:700;letter-spacing:.12em;
+  font-family:var(--label);font-size:calc(9px * var(--fs));font-weight:700;letter-spacing:.1em;
   text-transform:uppercase;color:var(--attn);border:1px solid rgba(224,162,68,.35);
   border-radius:2px;padding:1px 5px;margin-left:8px;
 }
@@ -1310,13 +1310,13 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
    wording or the agent's?" is the question that needs answering first, and the
    posted footer cannot answer it. */
 .rv .edited{
-  font-family:var(--label);font-size:calc(8px * var(--fs));font-weight:700;letter-spacing:.12em;
+  font-family:var(--label);font-size:calc(9px * var(--fs));font-weight:700;letter-spacing:.1em;
   text-transform:uppercase;color:var(--work);border:1px solid rgba(76,154,175,.35);
   border-radius:2px;padding:1px 5px;margin-left:8px;
 }
 .rv .willwrite{
   display:flex;align-items:baseline;gap:7px;flex-wrap:wrap;
-  font-family:var(--label);font-size:calc(8px * var(--fs));font-weight:700;letter-spacing:.12em;
+  font-family:var(--label);font-size:calc(9px * var(--fs));font-weight:700;letter-spacing:.1em;
   text-transform:uppercase;color:var(--faint-solid);
 }
 .rv .willwrite b{font-family:var(--mono);font-size:calc(10.5px * var(--fs));font-weight:400;letter-spacing:0;text-transform:none;color:var(--dim)}
@@ -1352,7 +1352,7 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
 /* the post list */
 .rv .stage-row{display:flex;align-items:baseline;gap:12px;padding:12px 0;border-bottom:1px solid var(--line-soft)}
 .rv .stage-row:last-child{border-bottom:0}
-.rv .stage-row .k{font-family:var(--label);font-size:calc(8px * var(--fs));font-weight:700;letter-spacing:.12em;text-transform:uppercase;flex:0 0 82px}
+.rv .stage-row .k{font-family:var(--label);font-size:calc(9px * var(--fs));font-weight:700;letter-spacing:.1em;text-transform:uppercase;flex:0 0 82px}
 .rv .stage-row .k.apply{color:var(--ok)}
 .rv .stage-row .k.reply{color:var(--attn)}
 .rv .stage-row .k.skip{color:var(--faint-solid)}
@@ -1412,7 +1412,7 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
 .rv .sline{display:flex;gap:10px;padding:6px 9px;border-bottom:1px solid var(--line-soft)}
 .rv .sline:last-child{border-bottom:0}
 .rv .sline .lbl{
-  font-family:var(--label);font-size:calc(7.5px * var(--fs));font-weight:700;letter-spacing:.12em;
+  font-family:var(--label);font-size:calc(9px * var(--fs));font-weight:700;letter-spacing:.1em;
   text-transform:uppercase;color:var(--faint-solid);flex:0 0 44px;padding-top:3px;
 }
 .rv .sline .val{font-size:calc(12px * var(--fs));color:var(--dim);min-width:0}
@@ -1454,7 +1454,7 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
 }
 .rv .autobar b{color:var(--attn);font-weight:400}
 .rv .autobar .why{margin-left:auto;color:var(--faint-solid)}
-.rv .autobar .act{margin-left:0;padding:2px 7px;font-size:calc(8px * var(--fs));letter-spacing:.1em}
+.rv .autobar .act{margin-left:0;padding:2px 7px;font-size:calc(8.5px * var(--fs));letter-spacing:.1em}
 
 /* ---------- the manual phase ---------- */
 /* A comment is required on a Manual thread, so the label says so rather than
@@ -1473,7 +1473,7 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
   color:var(--dim);font-size:calc(12px * var(--fs));max-width:70ch;white-space:pre-wrap;
 }
 .rv .manrow .state{
-  font-family:var(--label);font-size:calc(8px * var(--fs));font-weight:700;letter-spacing:.12em;
+  font-family:var(--label);font-size:calc(9px * var(--fs));font-weight:700;letter-spacing:.1em;
   text-transform:uppercase;padding:1px 5px;border-radius:2px;border:1px solid var(--line);
 }
 .rv .manrow .state.wait{color:var(--faint-solid)}
