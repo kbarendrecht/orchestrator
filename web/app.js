@@ -1103,10 +1103,15 @@ document.addEventListener('visibilitychange', refreshOnReturn);
 
 function connect() {
   const sock = new WebSocket(`${WS_BASE}/ws/events?token=${encodeURIComponent(TOKEN)}`);
+  // Connected (or reconnected): clear the dropped-connection status.
+  sock.onopen = () => { $('connbar').hidden = true; };
   sock.onmessage = (ev) => {
     // Through `receive` so the snapshot and the clock it is measured against move
     // together; `snap` is a live binding, so every reader sees this.
     receive(JSON.parse(ev.data));
+    // The first snapshot has landed, so drop the "connecting" hold and let the
+    // real board — empty or not — show. Idempotent after that.
+    document.body.classList.add('ready');
     // A session whose pty is gone keeps its scrollback until it is dismissed,
     // so terminals are only torn down when the session disappears entirely.
     const liveProcs = new Set(
@@ -1159,7 +1164,10 @@ function connect() {
     nudgeWebkitInput();
   };
   sock.onclose = () => {
-    toast('daemon disconnected — retrying', true);
+    // A dropped socket is a condition, not an error: a quiet status that clears
+    // itself on reconnect (see onopen), rather than a toast that — now that
+    // errors persist — would linger after the daemon came back.
+    $('connbar').hidden = false;
     setTimeout(connect, 1500);
   };
 }

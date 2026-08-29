@@ -185,11 +185,11 @@ button.ctx-btn:hover{color:var(--text)}
 .repo-switch{
   display:flex;flex-direction:column;align-items:flex-start;gap:1px;
   min-width:0;flex:1 1 auto;text-align:left;padding:2px 4px;
-  border-radius:3px;border:1px solid transparent;
+  border-radius:2px;border:1px solid transparent;
 }
 .gear{
   flex:0 0 auto;display:flex;align-items:center;justify-content:center;
-  width:26px;height:26px;border-radius:3px;color:var(--faint-solid);
+  width:26px;height:26px;border-radius:2px;color:var(--faint-solid);
   transition:color .12s,background .12s;
 }
 .gear:hover,.gear[aria-expanded="true"]{color:var(--text);background:var(--raised)}
@@ -198,7 +198,7 @@ button.ctx-btn:hover{color:var(--text)}
 .helpbtn{
   flex:0 0 auto;display:flex;align-items:center;justify-content:center;
   position:relative;
-  width:17px;height:17px;margin-left:1px;border-radius:3px;
+  width:17px;height:17px;margin-left:1px;border-radius:2px;
   font-family:var(--label);font-size:calc(10.5px * var(--fs));font-weight:700;
   color:var(--faint-solid);opacity:.75;
   transition:color .12s,background .12s,opacity .12s;
@@ -260,7 +260,7 @@ button.ctx-btn:hover{color:var(--text)}
 
 .plus{
   font-family:var(--mono);font-size:calc(15px * var(--fs));line-height:1;color:var(--ghost);
-  padding:1px 5px 3px;border-radius:3px;margin-left:9px;
+  padding:1px 5px 3px;border-radius:2px;margin-left:9px;
 }
 .plus:hover:not(:disabled){color:var(--text);background:var(--raised)}
 .plus:disabled{color:#2E2E2E;cursor:not-allowed}
@@ -295,7 +295,7 @@ button.ctx-btn:hover{color:var(--text)}
 .sess-rename{
   font-family:var(--mono);font-size:calc(11.5px * var(--fs));flex:1;min-width:0;
   color:var(--text);background:var(--bg);
-  border:1px solid var(--text);border-radius:3px;padding:0 4px;margin:-1px 0;
+  border:1px solid var(--text);border-radius:2px;padding:0 4px;margin:-1px 0;
 }
 .sess-rename:focus{outline:none}
 /* A worktree with no name yet. Italic because it is a description of what is
@@ -321,7 +321,7 @@ button.ctx-btn:hover{color:var(--text)}
   flex:0 0 auto;
   font-family:var(--mono);font-size:calc(9px * var(--fs));letter-spacing:.06em;
   text-transform:uppercase;color:var(--faint-solid);
-  border:1px solid var(--faint-solid);border-radius:3px;
+  border:1px solid var(--faint-solid);border-radius:2px;
   padding:0 3px;line-height:1.6;opacity:.75;
 }
 /* No author `display` above, and this keeps it that way: one has beaten
@@ -369,7 +369,7 @@ button.ctx-btn:hover{color:var(--text)}
 .rvbar{
   position:absolute;left:6px;right:6px;bottom:8px;z-index:5;
   display:flex;align-items:center;gap:11px;
-  background:var(--raised);border:1px solid var(--line);border-radius:3px;
+  background:var(--raised);border:1px solid var(--line);border-radius:2px;
   padding:8px 11px;font-family:var(--mono);font-size:calc(11.5px * var(--fs));
   color:var(--text);
 }
@@ -398,7 +398,7 @@ button.ctx-btn:hover{color:var(--text)}
    blocked agent is the clearest case of it there is. */
 .oq{
   position:absolute;left:12px;right:6px;top:8px;z-index:5;
-  background:var(--surface);border:1px solid var(--attn);border-radius:3px;
+  background:var(--surface);border:1px solid var(--attn);border-radius:2px;
   padding:13px 15px;display:flex;flex-direction:column;gap:11px;
   box-shadow:0 10px 30px rgba(0,0,0,.5);max-height:calc(100% - 16px);overflow:auto;
 }
@@ -555,7 +555,7 @@ button.ctx-btn:hover{color:var(--text)}
    markup now. */
 .frow,.dfrow{
   width:100%;display:grid;grid-template-columns:11px 1fr auto;gap:8px;align-items:center;
-  padding:3.5px 13px;text-align:left;font-family:var(--mono);font-size:calc(11.5px * var(--fs));
+  padding:4px 13px;text-align:left;font-family:var(--mono);font-size:calc(11.5px * var(--fs));
 }
 .frow:hover{background:var(--hover)}
 .fst{font-size:calc(10.5px * var(--fs));font-weight:600;text-align:center}
@@ -569,8 +569,34 @@ button.ctx-btn:hover{color:var(--text)}
 #termempty .empty-k{display:block;margin-top:5px}
 #termempty kbd{
   font-family:var(--mono);font-size:.9em;color:var(--dim);
-  border:1px solid var(--line);border-radius:3px;padding:0 4px;background:var(--raised);
+  border:1px solid var(--line);border-radius:2px;padding:0 4px;background:var(--raised);
 }
+/* First paint: hold "connecting" until the first snapshot (body.ready, set in
+   app.js), so the empty-board message and its chord hints are only ever shown
+   once the daemon has actually said nothing is running. */
+.empty-connecting{display:none;align-items:center;justify-content:center;gap:9px;
+  font-family:var(--mono);font-size:calc(11.5px * var(--fs));color:var(--faint-solid)}
+body:not(.ready) #termempty .empty-connecting{display:flex}
+body:not(.ready) #termempty .empty-big,
+body:not(.ready) #termempty .empty-k{display:none}
+.conn-dot{width:7px;height:7px;border-radius:50%;background:var(--faint-solid);
+  animation:connbr 1.6s ease-in-out infinite}
+@keyframes connbr{0%,100%{opacity:.3}50%{opacity:1}}
+@media(prefers-reduced-motion:reduce){.conn-dot{animation:none;opacity:.7}}
+
+/* Dropped-connection status: a quiet amber pill, present while the socket is down
+   and cleared the instant it is back. `[hidden]` is stated because the author
+   `display:flex` would otherwise beat the UA rule — a recurring trap here. */
+.connbar{
+  position:fixed;left:50%;top:10px;transform:translateX(-50%);z-index:101;
+  display:flex;align-items:center;gap:9px;padding:6px 13px;border-radius:20px;
+  background:var(--raised);border:1px solid var(--line);
+  font-family:var(--mono);font-size:calc(10.5px * var(--fs));color:var(--dim);
+  box-shadow:0 4px 14px #0006;
+}
+.connbar[hidden]{display:none}
+.connbar .d{width:7px;height:7px;border-radius:50%;background:var(--attn);flex:0 0 auto;
+  animation:connbr 1.6s ease-in-out infinite}
 .files-foot{padding:9px 13px;font-family:var(--mono);font-size:calc(10.5px * var(--fs));color:var(--faint-solid);border-top:1px solid var(--line-soft)}
 /* Nothing to count, nothing to draw: otherwise the border and the padding read
    as a panel of their own. */
@@ -653,7 +679,7 @@ body.row-resizing{cursor:row-resize;user-select:none}
   margin:0;font-size:calc(11.5px * var(--fs));color:var(--dim);align-self:center;
 }
 .settings-help kbd,.keys dt kbd{
-  font-family:var(--mono);font-size:.9em;padding:0 4px;border-radius:3px;
+  font-family:var(--mono);font-size:.9em;padding:0 4px;border-radius:2px;
   border:1px solid var(--line);background:var(--raised);color:var(--text);
 }
 .settings-row{display:flex;align-items:center;gap:12px}
@@ -662,7 +688,7 @@ body.row-resizing{cursor:row-resize;user-select:none}
 .settings-k{font-family:var(--mono);font-size:calc(11.5px * var(--fs));color:var(--text)}
 .settings-step{margin-left:auto;display:flex;align-items:center;gap:2px}
 .stepbtn{
-  width:24px;height:24px;border-radius:3px;border:1px solid var(--line);
+  width:24px;height:24px;border-radius:2px;border:1px solid var(--line);
   font-family:var(--mono);font-size:calc(11.5px * var(--fs));line-height:1;color:var(--dim);
 }
 .stepbtn:hover:not(:disabled){color:var(--text);background:var(--bg)}
@@ -686,7 +712,7 @@ body.row-resizing{cursor:row-resize;user-select:none}
 .settings-field{display:flex;align-items:center;gap:12px;margin-top:8px}
 .settings-in{
   margin-left:auto;flex:0 1 62%;min-width:0;padding:4px 7px;
-  background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:3px;
+  background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:2px;
   font-family:var(--mono);font-size:calc(11.5px * var(--fs));
 }
 .settings-in:focus{outline:none;border-color:var(--focus)}
@@ -745,7 +771,7 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
 .settings-actions .settings-save{margin-left:auto;order:2}
 .settings-actions .settings-note{order:1}
 .settings-save{
-  padding:5px 13px;border:1px solid var(--line);border-radius:3px;
+  padding:5px 13px;border:1px solid var(--line);border-radius:2px;
   background:var(--bg);color:var(--text);
   font-family:var(--mono);font-size:calc(11.5px * var(--fs));
 }
@@ -757,7 +783,7 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
    are pointing at. */
 .ctxmenu{
   position:fixed;z-index:100;min-width:132px;padding:3px;
-  background:var(--raised);border:1px solid var(--line);border-radius:3px;
+  background:var(--raised);border:1px solid var(--line);border-radius:2px;
   box-shadow:0 6px 18px rgba(0,0,0,.45);
 }
 .ctxmenu-item{
@@ -779,7 +805,7 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
 }
 .toast{
   display:flex;align-items:center;gap:10px;max-width:100%;
-  padding:9px 14px;border-radius:3px;
+  padding:9px 14px;border-radius:2px;
   background:var(--raised);border:1px solid var(--line);
   font-family:var(--mono);font-size:calc(11.5px * var(--fs));color:var(--text);
   white-space:pre-wrap;
@@ -976,7 +1002,7 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
 /* Refresh: one glyph, three headers. 12px with 3px of padding was a 16px target
    for a thing you press by hand, so it is 15px in a 24px box now. */
 .rvrefresh,.refresh{font-size:calc(15px * var(--fs));line-height:1;color:var(--faint-solid);cursor:pointer;
-  padding:4px 6px;border-radius:3px;transition:color .12s,background .12s}
+  padding:4px 6px;border-radius:2px;transition:color .12s,background .12s}
 .rvrefresh:hover,.refresh:hover{color:var(--text);background:var(--raised)}
 .rvrefresh.spin{animation:rvspin .8s linear infinite;color:var(--dim)}
 @keyframes rvspin{to{transform:rotate(360deg)}}
@@ -1061,6 +1087,17 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
 .rv .m{font-family:var(--mono);font-size:calc(11.5px * var(--fs))}
 .rv .head-btn.go{color:#1A1206;background:var(--attn);border-color:var(--attn)}
 
+/* Where you are in the run — three stages the seven screens fold into, current
+   lit, passed ones dim. The per-thread strip tracks threads; this tracks flow. */
+.rv .rvsteps{display:flex;align-items:center;margin-right:2px}
+.rv .rvsteps .s{
+  font-family:var(--label);font-size:calc(9px * var(--fs));font-weight:700;letter-spacing:.1em;
+  text-transform:uppercase;color:var(--ghost);padding:0 8px;border-right:1px solid var(--line-soft);
+}
+.rv .rvsteps .s:last-child{border-right:0}
+.rv .rvsteps .s.done{color:var(--faint-solid)}
+.rv .rvsteps .s.on{color:var(--attn)}
+
 /* Branch health, from data the poller already has. Never a gate — CI colour and
    a develop conflict are product signals that do not touch the apply/push
    machinery, so they inform and offer fix-pr, and that is all. The real gates
@@ -1078,7 +1115,7 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
    through a queue; dots would read as status lights and invite a colour per
    verdict, which is not what varies. */
 .rv .strip{display:flex;align-items:center;gap:5px;padding:8px 15px;border-bottom:1px solid var(--line-soft);background:#0D0D0D;flex:0 0 auto}
-.rv .pip{width:22px;height:3px;border-radius:1px;background:var(--ghost);min-width:3px}
+.rv .pip{width:22px;height:3px;border-radius:2px;background:var(--ghost);min-width:3px}
 .rv .pip.staged{background:var(--attn)}
 .rv .pip.skip{background:var(--line)}
 .rv .pip.cur{background:var(--text)}

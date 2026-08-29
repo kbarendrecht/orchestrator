@@ -152,12 +152,31 @@ function rvHead(sub, count) {
   head.appendChild(rvHealth());
 
   const nav = el('div', 'ov-nav');
+  nav.appendChild(rvSteps());
   if (count) nav.appendChild(el('span', 'ov-count', count));
   const esc = el('button', 'head-btn', 'esc');
   esc.onclick = () => closeReview();
   nav.appendChild(esc);
   head.appendChild(nav);
   return head;
+}
+
+/** Where you are in the run — three stages the seven screens fold into, so the
+ *  header answers "how far in, and what is left" without another screen. The
+ *  per-thread strip tracks the threads; this tracks the flow. */
+function rvSteps() {
+  const stageOf = {
+    intake: 'found', gate: 'found', overview: 'found',
+    card: 'decide', manual: 'decide',
+    final: 'send', report: 'send',
+  };
+  const order = ['found', 'decide', 'send'];
+  const cur = order.indexOf(stageOf[reviewState.screen] || 'found');
+  const wrap = el('div', 'rvsteps');
+  order.forEach((name, i) => {
+    wrap.appendChild(el('span', 's' + (i < cur ? ' done' : i === cur ? ' on' : ''), name));
+  });
+  return wrap;
 }
 
 /** Branch health — CI colour and a develop conflict.
