@@ -1,2 +1,4 @@
 node_modules/
 target/
+# Live daemon findings, written only when dogfooding (findings::dogfood_log).
+daemon.log

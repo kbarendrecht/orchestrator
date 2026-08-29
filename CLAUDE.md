@@ -177,9 +177,14 @@ to disappear is waiting for something that never happens.
   are Claude Code's doing, not a bug here: one `ai-title` string turned up in 8
   transcripts across 3 repositories, each correctly attributed to its own
   sessionId. The reader is right; the file says that.
-- **TODO.md has a daemon-written block.** Everything between the `orchd live
-  findings` markers is rewritten on every poll. Edit outside it, and never commit
-  the block's churn.
+- **Live findings go to a gitignored `daemon.log`, only when dogfooding.**
+  `findings::write_log` overwrites `daemon.log` with what the daemon can see
+  right now, each poll — but `start_findings_log` starts at all only when the
+  repo being managed *is* this source tree (`findings::dogfood_log` compares
+  `main_checkout` to the build-time `CARGO_MANIFEST_DIR`), or when `log_path` is
+  set. So a daemon pointed at any other repo — or a throwaway build — writes
+  nothing, and never dirties a tracked file. This replaced an older block spliced
+  into `TODO.md` at the build-time path, which churned this repo from every build.
 - **Shelling out to coreutils is the other portability trap.** The review queue
   ran its command under `timeout`, which is GNU and not on a Mac, so it failed at
   the spawn and the pane blamed the review command for a missing binary it never

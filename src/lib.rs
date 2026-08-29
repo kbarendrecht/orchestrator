@@ -30,7 +30,7 @@ pub mod spawn;
 pub mod state;
 pub mod store;
 pub mod story;
-pub mod todo;
+pub mod findings;
 pub mod tracker;
 pub mod triage;
 pub mod window;
@@ -298,7 +298,7 @@ pub async fn start(opts: StartOptions) -> Result<Server> {
     start_stack_poller(app.clone());
     start_workspace_watcher(app.clone());
     start_head_poller(app.clone());
-    start_todo_writer(app.clone());
+    start_findings_log(app.clone());
     // A debug build is `cargo run` from a checkout; its version is whatever the
     // working tree is, so comparing it against a release only ever nags. Only a
     // release build — which is what a downloaded/`mise`-installed one is — checks.
@@ -716,22 +716,29 @@ fn auto_resume(app: Arc<AppState>, records: Vec<store::SessionRecord>) {
     });
 }
 
-/// Keep TODO.md's generated block honest about what the daemon can currently
-/// see. Only conditions that are true now, so the list stays worth reading.
-fn start_todo_writer(app: Arc<AppState>) {
+/// Write live findings to a gitignored `daemon.log`, but only when the daemon is
+/// managing orchd's own checkout (dogfooding) or `log_path` is set. Anywhere
+/// else there is nothing to dogfood, so no logger starts and no repo the daemon
+/// was not asked about is touched — the old build-time TODO.md write is gone.
+fn start_findings_log(app: Arc<AppState>) {
+    let path = app
+        .cfg
+        .log_path
+        .clone()
+        .or_else(|| findings::dogfood_log(&app.cfg.main_checkout));
+    let Some(path) = path else { return };
     tokio::spawn(async move {
-        let path = app.cfg.todo_path.clone().unwrap_or_else(todo::default_path);
         loop {
-            let findings = live_findings(&app).await;
-            if let Err(e) = todo::update(&path, &findings) {
-                tracing::warn!("could not update {}: {e:#}", path.display());
+            let found = live_findings(&app).await;
+            if let Err(e) = findings::write_log(&path, &found) {
+                tracing::warn!("could not write {}: {e:#}", path.display());
             }
             tokio::time::sleep(std::time::Duration::from_secs(app.cfg.poll_seconds.max(60))).await;
         }
     });
 }
 
-async fn live_findings(app: &Arc<AppState>) -> Vec<todo::Finding> {
+async fn live_findings(app: &Arc<AppState>) -> Vec<findings::Finding> {
     let mut out = Vec::new();
 
     // `gh auth token` was reported here as a finding, and it is gone for the reason
@@ -750,7 +757,7 @@ async fn live_findings(app: &Arc<AppState>) -> Vec<todo::Finding> {
     };
 
     if let Some(reason) = review_bad {
-        out.push(todo::Finding {
+        out.push(findings::Finding {
             what: "review queue is unavailable".into(),
             why: format!("the forge is not answering the review query: {}", reason.trim()),
         });

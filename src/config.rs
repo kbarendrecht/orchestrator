@@ -113,10 +113,12 @@ pub struct Config {
     /// so rather than reading as a broken command.
     #[serde(default = "default_reviews_command")]
     pub reviews_command: Vec<String>,
-    /// Where the auto-updated findings block lives. Defaults to the
-    /// orchestrator's own TODO.md.
+    /// Where live findings are written. Left unset they go to a gitignored
+    /// `daemon.log`, and only when the daemon is managing orchd's own checkout
+    /// (dogfooding) — see `findings::dogfood_log`. Set it to capture findings
+    /// from a daemon managing some other repo.
     #[serde(default)]
-    pub todo_path: Option<PathBuf>,
+    pub log_path: Option<PathBuf>,
     /// Bring back sessions that were live when the daemon last went down.
     ///
     /// The daemon owns every pty, so a crash — or a reboot — takes every Claude
@@ -451,10 +453,11 @@ impl Config {
     ///
     /// `ORCHD_CONFIG_DIR` moves the lot, which is what makes the review fixture
     /// (`tools/fixture-pr.mjs`) safe to point a daemon at. Without it a fixture
-    /// run writes throwaway sessions into the real `sessions.json`, rewrites
-    /// `main_checkout` to a scratch clone, and — because `todo_path` defaults to
-    /// this repo's own TODO.md — puts the live-findings block of a fake repo into
-    /// a tracked file. Overriding `HOME` would relocate all of it for free and is
+    /// run writes throwaway sessions into the real `sessions.json` and rewrites
+    /// `main_checkout` to a scratch clone. (The findings log no longer needs a
+    /// mention here: it only writes when the managed repo *is* this source tree,
+    /// so a fixture pointed elsewhere never touches it.) Overriding `HOME` would
+    /// relocate all of it for free and is
     /// the wrong lever: `claude` reads its credentials from there, so every
     /// session the fixture daemon spawned would come up unauthenticated.
     ///

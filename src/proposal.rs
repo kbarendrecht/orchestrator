@@ -12,8 +12,8 @@
 //! `forge::model::ThreadRoot`). Nothing in this module trusts a field because it
 //! parsed.
 //!
-//! `Proposal`, deliberately not `Finding`: [`crate::todo::Finding`] already owns
-//! that word for the conditions the daemon writes into `TODO.md`.
+//! `Proposal`, deliberately not `Finding`: [`crate::findings::Finding`] already
+//! owns that word for the conditions the daemon writes to its `daemon.log`.
 
 use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};

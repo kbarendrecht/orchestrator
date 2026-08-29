@@ -509,13 +509,3 @@ Everything outside that block is hand-written and survives.
   stops all of it is closing the app: the daemon owns every pty and takes them
   with it. A separate pause state would guard against a machine that is already
   not doing anything unbidden.
-
-<!-- >>> orchd live findings >>> -->
-
-## Live findings
-
-Rewritten by the daemon on every poll. Edit anything outside this block.
-
-- **review queue is unavailable** — the forge is not answering the review query: reviews exited 1: gh repo view failed: no git remotes found / no git remotes found
-
-<!-- <<< orchd live findings <<< -->
