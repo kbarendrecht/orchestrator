@@ -446,9 +446,10 @@ function sessionRow(s, w) {
   row.appendChild(el('span', 'sess-name' + (pending(s) ? ' pending' : ''), railName(s, w)));
   const forked = forkBadge(s);
   if (forked) row.appendChild(forked);
-  // Worktree rows all carry their worktree's name, so without this the ones
-  // sharing a worktree read identically.
-  row.appendChild(el('span', 'sess-id', s.id.slice(0, 8)));
+  // The session's age, not its id. A hex slice told worktree-sharing rows apart
+  // but was unreadable — a value you never recognise — and age is worth reading on
+  // every row and moves as the session does. Same token the archive rows show.
+  row.appendChild(el('span', 'sess-id', duration(sinceSnap(s.created_ms)) + ' ago'));
   btn.appendChild(row);
 
   const sub = el('div', 'sess-sub');
