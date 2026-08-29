@@ -166,11 +166,11 @@ function rvHead(sub, count) {
  *  per-thread strip tracks the threads; this tracks the flow. */
 function rvSteps() {
   const stageOf = {
-    intake: 'found', gate: 'found', overview: 'found',
-    card: 'decide', manual: 'decide',
+    intake: 'triage', gate: 'triage', overview: 'triage',
+    card: 'answer', manual: 'answer',
     final: 'send', report: 'send',
   };
-  const order = ['found', 'decide', 'send'];
+  const order = ['triage', 'answer', 'send'];
   const cur = order.indexOf(stageOf[reviewState.screen] || 'found');
   const wrap = el('div', 'rvsteps');
   order.forEach((name, i) => {

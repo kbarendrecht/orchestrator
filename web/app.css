@@ -228,7 +228,7 @@ button.ctx-btn:hover{color:var(--text)}
 .ws{border-bottom:1px solid var(--line-soft)}
 .ws-head{
   display:flex;align-items:center;justify-content:space-between;
-  padding:12px 16px 8px;position:sticky;top:0;background:var(--surface);z-index:2;
+  padding:13px 15px 7px;position:sticky;top:0;background:var(--surface);z-index:2;
 }
 .ws-name{display:flex;align-items:center;gap:8px;min-width:0}
 .ws-note{font-family:var(--mono);font-size:calc(9px * var(--fs));color:var(--faint-solid);margin-left:auto;white-space:nowrap}
@@ -266,7 +266,7 @@ button.ctx-btn:hover{color:var(--text)}
 .plus:disabled{color:#2E2E2E;cursor:not-allowed}
 
 .sess{
-  width:100%;display:block;padding:8px 16px 0;position:relative;text-align:left;
+  width:100%;display:block;padding:9px 15px 0;position:relative;text-align:left;
   border-left:2px solid transparent;transition:background .12s;
 }
 .sess:hover{background:var(--hover)}
@@ -303,7 +303,7 @@ button.ctx-btn:hover{color:var(--text)}
 .sess-name.pending{font-style:italic;color:var(--dim)}
 .sess-name.pending::after{content:'…'}
 .sess-sub{
-  display:flex;align-items:center;gap:12px;padding-left:16px;margin-top:2px;
+  display:flex;align-items:center;gap:13px;padding-left:14px;margin-top:2px;
   font-family:var(--mono);font-size:calc(10.5px * var(--fs));color:var(--faint-solid);
 }
 /* The automation's own name, in the accent its rows already wear. */
