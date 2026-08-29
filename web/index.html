@@ -85,7 +85,7 @@
   </nav>
 
   <!-- ============ CENTER ============ -->
-  <main class="center">
+  <main class="center" aria-label="Terminal">
     <!-- ============ DIFF OVERLAY ============ -->
     <div class="overlay" id="overlay">
       <div class="ov-head">
@@ -160,7 +160,7 @@
   </main>
 
   <!-- ============ FILES ============ -->
-  <aside class="files">
+  <aside class="files" aria-label="Changes">
     <!-- Divergence first: when the branch is behind, that is the thing worth
          acting on, not the file list under it. -->
     <div class="diverge" id="diverge"></div>
@@ -366,6 +366,11 @@
 <div class="connbar" id="connbar" hidden><span class="d"></span>reconnecting&#8230;</div>
 
 <div class="toaststack" id="toaststack"></div>
+
+<!-- Announces a session crossing into "needs you" — the one signal the board is
+     for — to a screen reader and to a backgrounded window. Polite: it waits for a
+     pause. Visually hidden; app.js writes the transition into it. -->
+<div id="live" class="sr-only" aria-live="polite" aria-atomic="true"></div>
 
 <script>window.__ORCH__ = { token: "__ORCH_TOKEN__", chrome: "__ORCH_CHROME__", platform: "__ORCH_PLATFORM__" };</script>
 <script src="/vendor/xterm.js"></script>

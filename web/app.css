@@ -582,7 +582,16 @@ body:not(.ready) #termempty .empty-k{display:none}
 .conn-dot{width:7px;height:7px;border-radius:50%;background:var(--faint-solid);
   animation:connbr 1.6s ease-in-out infinite}
 @keyframes connbr{0%,100%{opacity:.3}50%{opacity:1}}
-@media(prefers-reduced-motion:reduce){.conn-dot{animation:none;opacity:.7}}
+/* One block for every infinite animation, so a viewer who asked their OS to
+   reduce motion gets none of them — the connecting and reconnecting pulses and
+   the refresh spinner alike. */
+@media(prefers-reduced-motion:reduce){
+  .conn-dot,.connbar .d{animation:none;opacity:.7}
+  .rvrefresh.spin{animation:none}
+}
+/* Visually hidden, still read aloud — the live region that announces "needs you". */
+.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;
+  clip:rect(0 0 0 0);white-space:nowrap;border:0}
 
 /* Dropped-connection status: a quiet amber pill, present while the socket is down
    and cleared the instant it is back. `[hidden]` is stated because the author

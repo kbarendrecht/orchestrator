@@ -396,6 +396,7 @@ function renderDiff() {
     $('ovcount').textContent = '';
     diffState.anchors = [];
   };
+  if (diffState.loading) return note('reading the diff…');
   if (!f) return note('Select a file.');
   if (f.binary) return note('Binary file — not shown.');
   if (!f.hunks.length) return note('No textual changes against this base.');
@@ -536,12 +537,18 @@ async function loadFile(path) {
   });
   const pr = prForWorkspace(ws);
   if (pr && pr.base_ref) q.set('pr_base', pr.base_ref);
+  // Show "reading the diff…" only if the fetch outlasts a couple of frames, so a
+  // fast local diff never flashes it and a slow one stops reading as "did nothing"
+  // by leaving the previous file's hunks on screen.
+  const slow = setTimeout(() => { diffState.loading = true; renderDiff(); }, 150);
   try {
     diffState.file = await get(`/api/diff/file?${q}`);
   } catch (e) {
     diffState.file = null;
     toast(e.message, true);
   }
+  clearTimeout(slow);
+  diffState.loading = false;
   renderDiff();
   renderFiles();
 }

@@ -1101,6 +1101,28 @@ document.addEventListener('visibilitychange', refreshOnReturn);
 // Live state
 // ---------------------------------------------------------------------------
 
+/* Announce a session crossing into "needs you" — the one signal the whole board
+ *  is for, and the only thing nothing else says out loud — to a screen reader and
+ *  to a backgrounded window. Polite (waits for a pause) and only on the transition
+ *  in, so it never nags; the first snapshot seeds the set without speaking. */
+let waitingKnown = null;
+function announceWaiting() {
+  const now = new Set(snap.sessions.filter(isWaiting).map((s) => s.id));
+  if (waitingKnown) {
+    const fresh = [...now].filter((id) => !waitingKnown.has(id));
+    if (fresh.length) {
+      const names = fresh.map((id) => {
+        const s = snap.sessions.find((x) => x.id === id);
+        return s ? Rail.rowName(s, { id: s.workspace }) : id;
+      });
+      $('live').textContent = names.length === 1
+        ? `${names[0]} needs you`
+        : `${names.length} sessions need you`;
+    }
+  }
+  waitingKnown = now;
+}
+
 function connect() {
   const sock = new WebSocket(`${WS_BASE}/ws/events?token=${encodeURIComponent(TOKEN)}`);
   // Connected (or reconnected): clear the dropped-connection status.
@@ -1161,6 +1183,7 @@ function connect() {
       }
     }
     render();
+    announceWaiting();
     nudgeWebkitInput();
   };
   sock.onclose = () => {
