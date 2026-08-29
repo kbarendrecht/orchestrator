@@ -38,7 +38,9 @@
   --work:#4C9AAF;
   --ok:#5FA97C;
   --bad:#D4726B;
-  --auto:#3E9AAF;        /* automation — NOT purple: purple reads as merged on GitHub */
+  --auto:#5B8FC9;        /* automation — azure, parted from --work's teal so the two
+                            no longer collide as 6px dots. Still NOT purple: purple
+                            reads as merged on GitHub. */
 
   --mono:'IBM Plex Mono',ui-monospace,monospace;
   /* Code you read line by line, which is the diff. The rest of the UI stays on
@@ -250,9 +252,11 @@ button.ctx-btn:hover{color:var(--text)}
 .sess-row{display:flex;align-items:center;gap:8px}
 .dot{width:6px;height:6px;border-radius:50%;flex:0 0 auto;background:#6B6B6B}
 .dot.blocked{background:var(--attn)}
-/* Handed to a PR: the work is elsewhere now, so it reads as in-flight rather
-   than as something wanting you. */
-.dot.pr{background:var(--work)}
+/* Handed to a PR: the work is elsewhere now, so it wears a ring rather than a
+   fill — the same outline an archived session gets, since both mean "not the
+   thing in front of you". The outline also parts it from the teal automation
+   used to share, for an eye that cannot tell the two hues apart. */
+.dot.pr{background:none;border:1px solid var(--work)}
 .dot.build{background:var(--bad)}
 .dot.auto{background:var(--auto)}
 .dot.working{background:#6A6A6A}
