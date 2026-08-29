@@ -3,7 +3,7 @@
 // The first seam to become a real module: five names, one of which leaves. What
 // it needs from elsewhere is now an import list rather than an assumption about
 // what happens to be in scope.
-import { $, el, snap, refreshButton } from './core.js';
+import { $, el, snap, refreshButton, duration, sinceSnap } from './core.js';
 
 let showReviews = true;
 let showBlockedReviews = false;
@@ -69,6 +69,11 @@ function renderReviews() {
   const blocked = rv.blocked || [];
   count.appendChild(el('span', rows.length ? 'n' : null,
     rows.length ? `${rows.length} waiting` : 'clear'));
+  // How fresh the queue is, the same line the PR pane shows. Hidden mid-poll so
+  // it does not flicker to "0s ago" and back.
+  if (snap.reviews_age_ms != null && !snap.reviews_polling) {
+    count.appendChild(el('span', 'prage', ` · ${duration(sinceSnap(snap.reviews_age_ms))} ago`));
+  }
   head.appendChild(count);
   head.appendChild(refresh);
   head.onclick = () => { showReviews = !showReviews; renderReviews(); };

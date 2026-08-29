@@ -197,6 +197,9 @@ pub struct Inner {
     pub reviews_poll: u64,
     /// As `pr_polling`, for the review queue.
     pub reviews_polling: bool,
+    /// When the last review poll landed, for the "as of Nm ago" the pane shows.
+    /// Mirrors `pr_fetched`.
+    pub reviews_fetched: Option<SystemTime>,
     /// Files rewritten through the diff editor, and which sessions have been
     /// told. Conflict detection on save protects you from the agent; this is
     /// the other direction, which is the one that loses work silently.
@@ -371,6 +374,7 @@ impl AppState {
                 reviews: Default::default(),
                 reviews_poll: 0,
                 reviews_polling: false,
+                reviews_fetched: None,
                 human_edits: HashMap::new(),
                 automation: Default::default(),
                 locks_held: Vec::new(),
@@ -563,6 +567,9 @@ impl AppState {
             pr_polling: inner.pr_polling,
             token_source: inner.token_source,
             reviews: inner.reviews.clone(),
+            reviews_age_ms: inner
+                .reviews_fetched
+                .and_then(|t| now.duration_since(t).ok().map(|d| d.as_millis() as u64)),
             reviews_poll: inner.reviews_poll,
             reviews_polling: inner.reviews_polling,
             automation: inner.automation.by_pr.clone(),
@@ -978,6 +985,10 @@ pub struct Snapshot {
     pub pr_polling: bool,
     pub token_source: Option<crate::forge::TokenSource>,
     pub reviews: crate::reviews::ReviewState,
+    /// Age of the last completed review poll, in ms. `None` before the first.
+    /// Mirrors `pr_age_ms`.
+    #[cfg_attr(test, ts(type = "number"))]
+    pub reviews_age_ms: Option<u64>,
     /// Monotonic counter of completed review polls; see `Inner::reviews_poll`.
     #[cfg_attr(test, ts(type = "number"))]
     pub reviews_poll: u64,

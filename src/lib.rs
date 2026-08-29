@@ -795,6 +795,7 @@ fn start_review_poller(app: Arc<AppState>) {
                 // queue is byte-for-byte the same as before.
                 inner.reviews_poll = inner.reviews_poll.wrapping_add(1);
                 inner.reviews_polling = false;
+                inner.reviews_fetched = Some(std::time::SystemTime::now());
             }
             app.notify().await;
 

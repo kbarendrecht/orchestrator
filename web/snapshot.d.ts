@@ -398,6 +398,11 @@ pr_poll: number,
  */
 pr_polling: boolean, token_source: TokenSource | null, reviews: ReviewState, 
 /**
+ * Age of the last completed review poll, in ms. `None` before the first.
+ * Mirrors `pr_age_ms`.
+ */
+reviews_age_ms: number, 
+/**
  * Monotonic counter of completed review polls; see `Inner::reviews_poll`.
  */
 reviews_poll: number, reviews_polling: boolean, automation: { [key in string]: PrAutomation }, repos: Repos, 
