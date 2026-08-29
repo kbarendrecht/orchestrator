@@ -166,9 +166,12 @@ function rvHead(sub, count) {
  *  per-thread strip tracks the threads; this tracks the flow. */
 function rvSteps() {
   const stageOf = {
-    intake: 'triage', gate: 'triage', overview: 'triage',
+    // `reading` and `changing` are the session flow's two waiting screens. Without
+    // them the lookup missed, `indexOf` answered -1 and the trail went blank on the
+    // two screens where "how far in am I" is the only question you have.
+    intake: 'triage', gate: 'triage', overview: 'triage', reading: 'triage',
     card: 'answer', manual: 'answer',
-    final: 'send', report: 'send',
+    final: 'send', changing: 'send', report: 'send',
   };
   const order = ['triage', 'answer', 'send'];
   const cur = order.indexOf(stageOf[reviewState.screen] || 'found');
@@ -523,10 +526,16 @@ function rvCard(root) {
     chain.appendChild(cmt);
   }
   top.appendChild(chain);
-  body.appendChild(top);
 
-  // -- the agent's read, one line with the rest behind a disclosure
+  /* -- the agent's read, *above* the evidence rather than below it.
+     It is the card's verdict: the one line saying whether the reviewer is right,
+     and the only place the agent can say they are not — the positions can offer the
+     other side but an `.osub` is a single ellipsised line and cannot argue. Fourth
+     in reading order it sat under two blocks of unbounded length, so on a long
+     thread the fast path was anchor, Enter, verdict never seen. Conclusion first;
+     the hunk and the chain are reference and read as such underneath it. */
   body.appendChild(rvRead(p));
+  body.appendChild(top);
 
   // -- the ways to answer this thread, one flat list; the selected option's reply
   //    is edited in the box below it, prefilled from what the read already drafted.
@@ -626,7 +635,7 @@ function hlLine(text, lang) {
 function rvRead(p) {
   const sec = el('div', 'sec');
   const read = el('div', 'read');
-  read.appendChild(el('div', 'eyebrow', 'the read'));
+  read.appendChild(el('div', 'eyebrow', 'is the reviewer right?'));
   read.appendChild(el('p', null, (p.read || '').trim()));
   sec.appendChild(read);
   return sec;

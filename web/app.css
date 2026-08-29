@@ -1148,7 +1148,7 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
 }
 
 .rv .body{flex:1;overflow:auto}
-.rv .sec{padding:16px;border-bottom:1px solid var(--line-soft);display:flex;flex-direction:column;gap:13px}
+.rv .sec{padding:16px;border-bottom:1px solid var(--line-soft);display:flex;flex-direction:column;gap:12px}
 .rv .sec:last-child{border-bottom:0}
 
 /* the anchored comment */
@@ -1244,11 +1244,19 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
 .rv .sgcode{white-space:pre-wrap;word-break:break-word;min-width:0}
 
 /* the agent's read */
+/* The card's verdict, and styled like one. It used to be `--dim` prose inside a
+   `--line-soft` panel, sitting under the option rows it exists to qualify — solid
+   borders, `--text` labels — so the thing that decides whether the recommendation is
+   trustworthy read as the thing you could skip. Same panel, same colours, one step
+   up the type scale and the text at full weight. */
 .rv .read{
-  background:var(--surface);border:1px solid var(--line-soft);border-radius:2px;
+  background:var(--surface);border:1px solid var(--line);border-radius:2px;
   padding:12px 16px;display:flex;flex-direction:column;gap:8px;
 }
-.rv .read p{color:var(--dim);max-width:70ch;white-space:pre-wrap}
+.rv .read p{
+  font-size:calc(15px * var(--fs));line-height:1.45;
+  color:var(--text);max-width:70ch;white-space:pre-wrap;
+}
 
 /* The ways to answer a thread, one flat list — no stance segment, no alts row.
    Picking a row stages that answer; the words are edited on the overview. */
