@@ -76,6 +76,18 @@ export function el(tag, cls, text, title) {
   return n;
 }
 
+/** The chevron a collapsible header rotates — drawn rather than typed so it
+ *  matches the gear and refresh and cannot fall out of the font. `1em`, so each
+ *  header's own font-size still sets its size, and the `[aria-expanded]` rotate
+ *  rule turns the SVG exactly as it turned the glyph. */
+export function caret() {
+  const s = el('span', 'caretr');
+  s.innerHTML = '<svg viewBox="0 0 16 16" width="1em" height="1em" fill="none"'
+    + ' stroke="currentColor" stroke-width="1.6" stroke-linecap="round"'
+    + ' stroke-linejoin="round" aria-hidden="true"><path d="M6 4l4 4-4 4"/></svg>';
+  return s;
+}
+
 /* One row per message, stacked newest at the bottom. A receipt fades on its own;
  * an error stays until dismissed, because a refusal names a branch, a pid or a
  * path you may need to copy — and a second error must no longer erase the first

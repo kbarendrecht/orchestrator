@@ -1,7 +1,7 @@
 // The settings panel. The zoom control it offers lives in core, because the
 // terminals read the scale too.
 
-import { ctl, $, ZOOM, call, closeLegend, el, get, saveZoom, setZoom, snap, zoomScale } from './core.js';
+import { ctl, $, ZOOM, call, caret, closeLegend, el, get, saveZoom, setZoom, snap, zoomScale } from './core.js';
 
 const settingsOpen = () => !$('settings').hidden;
 
@@ -77,7 +77,7 @@ function renderProcs() {
     const fold = el('button', 'settings-fold');
     fold.type = 'button';
     fold.setAttribute('aria-expanded', String(!!p.open));
-    fold.appendChild(el('span', 'caretr', '\u203a'));
+    fold.appendChild(caret());
     fold.onclick = () => { p.open = !p.open; renderProcs(); };
     top.appendChild(fold);
     const name = el('input', 'settings-in');

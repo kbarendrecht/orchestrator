@@ -1,7 +1,7 @@
 // The rail: what is running, what is waiting on you, and the PRs beside it.
 // Twenty-four names, three out; the rest is how a row decides what it says.
 
-import { $, byNewest, call, dotClass, duration, el, isArchived, isConversation, isWaiting, newSession, newWorktree, openMenu, pending, refreshButton, selected, sessionsOf, setSelected, sinceSnap, snap, stateClass, stateLabel, toast, setPendingSelect } from './core.js';
+import { $, byNewest, call, caret, dotClass, duration, el, isArchived, isConversation, isWaiting, newSession, newWorktree, openMenu, pending, refreshButton, selected, sessionsOf, setSelected, sinceSnap, snap, stateClass, stateLabel, toast, setPendingSelect } from './core.js';
 import * as Review from './review.js';
 import * as Term from './term.js';
 
@@ -149,7 +149,7 @@ function prGroup() {
 
   const head = el('button', 'prgroup-head');
   head.setAttribute('aria-expanded', String(showPrs));
-  head.appendChild(el('span', 'caretr', '›'));
+  head.appendChild(caret());
   head.appendChild(el('span', 'eyebrow', 'PRs'));
 
   // The summary sits where the detail already is, rather than duplicated at
@@ -334,7 +334,7 @@ function appendArchived(group, key, sessions) {
 
   const toggle = el('button', 'arctoggle');
   toggle.setAttribute('aria-expanded', String(open));
-  toggle.appendChild(el('span', 'caretr', '\u203a'));
+  toggle.appendChild(caret());
   toggle.appendChild(el('span', null, 'archived'));
   toggle.appendChild(el('span', 'arccount', String(sessions.length)));
   toggle.onclick = () => { showArchived[key] = !open; renderRail(); };

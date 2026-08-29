@@ -335,6 +335,9 @@ button.ctx-btn:hover{color:var(--text)}
 }
 .arctoggle:hover{color:var(--dim)}
 .arctoggle .caretr{display:inline-block;transition:transform .13s;font-size:calc(13px * var(--fs));line-height:1}
+/* The caret is a drawn SVG now (core.caret); block removes the inline-svg gap so
+   it sits centred in every header that carries one. */
+.caretr svg{display:block}
 .arctoggle[aria-expanded="true"] .caretr{transform:rotate(90deg)}
 .arccount{margin-left:auto;font-size:calc(9px * var(--fs));color:var(--faint-solid)}
 

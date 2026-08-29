@@ -3,7 +3,7 @@
 // The first seam to become a real module: five names, one of which leaves. What
 // it needs from elsewhere is now an import list rather than an assumption about
 // what happens to be in scope.
-import { $, el, snap, refreshButton, duration, sinceSnap } from './core.js';
+import { $, caret, el, snap, refreshButton, duration, sinceSnap } from './core.js';
 
 let showReviews = true;
 let showBlockedReviews = false;
@@ -36,7 +36,7 @@ function renderReviews() {
 
   const rv = snap.reviews;
   head.setAttribute('aria-expanded', String(showReviews));
-  head.appendChild(el('span', 'caretr', '\u203a'));
+  head.appendChild(caret());
   head.appendChild(el('span', 'eyebrow', 'Review queue'));
   const count = el('span', 'rvcount');
 
@@ -123,7 +123,7 @@ function renderReviews() {
   if (blocked.length) {
     const t = el('button', 'arctoggle');
     t.setAttribute('aria-expanded', String(showBlockedReviews));
-    t.appendChild(el('span', 'caretr', '\u203a'));
+    t.appendChild(caret());
     t.appendChild(el('span', null, `${blocked.length} not reviewable`));
     t.title = blocked.map((r) => `#${r.number} — ${r.blockers.join(', ')}`).join('\n');
     t.onclick = () => { showBlockedReviews = !showBlockedReviews; renderReviews(); };
