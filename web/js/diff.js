@@ -421,6 +421,13 @@ function renderDiff() {
       body.appendChild(b);
     }
 
+    // The hunk's section heading — git's text after the second @@, the function
+    // or class the change sits in — pinned so it stays in view while you scroll a
+    // long hunk, the way the review overlay's hunk header already does. Empty for
+    // a top-of-file hunk, so it is only drawn when it says something.
+    const section = (h.header && h.header.split('@@')[2] || '').trim();
+    if (section) body.appendChild(el('div', 'diffhh', section));
+
     if (diffState.split) {
       let splitInBlock = false;
       for (const [o, n] of pairRows(h.rows)) {
