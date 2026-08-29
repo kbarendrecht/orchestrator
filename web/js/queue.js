@@ -104,8 +104,8 @@ function renderReviews() {
     const age = el('span', 'num', reviewAge(r.age_hours || 0));
     age.title = `#${r.number}`;
     a.appendChild(age);
-    a.appendChild(el('span', 'ttl', r.title));
-    a.appendChild(el('span', 'who', r.author));
+    a.appendChild(el('span', 'ttl', r.title, r.title));
+    a.appendChild(el('span', 'who', r.author, r.author));
     // File count stands in for review cost — 37 files is a different
     // commitment from 1 — but an empty column just steals width from the title.
     if (anyFiles) a.appendChild(el('span', 'fc', r.changed_files != null ? String(r.changed_files) : '·'));

@@ -209,7 +209,7 @@ function prGroup() {
     row.rel = 'noreferrer';
     row.appendChild(el('span', 'dot ' + prDot(p)));
     row.appendChild(el('span', 'num', `#${p.number}`));
-    row.appendChild(el('span', 'ttl', p.title));
+    row.appendChild(el('span', 'ttl', p.title, p.title));
 
     const auto0 = (snap.automation || {})[p.number];
     const needsResolve0 = p.needs_you;
@@ -356,7 +356,8 @@ function archivedRow(s) {
 
   const row = el('div', 'sess-row');
   row.appendChild(el('span', 'dot archived'));
-  row.appendChild(el('span', 'sess-name', railName(s, { id: s.workspace })));
+  const arcName = railName(s, { id: s.workspace });
+  row.appendChild(el('span', 'sess-name', arcName, arcName));
   const forked = forkBadge(s);
   if (forked) row.appendChild(forked);
   row.appendChild(el('span', 'sess-id', duration(sinceSnap(s.created_ms)) + ' ago'));
@@ -443,7 +444,8 @@ function sessionRow(s, w) {
 
   const row = el('div', 'sess-row');
   row.appendChild(el('span', 'dot ' + dotClass(s)));
-  row.appendChild(el('span', 'sess-name' + (pending(s) ? ' pending' : ''), railName(s, w)));
+  const liveName = railName(s, w);
+  row.appendChild(el('span', 'sess-name' + (pending(s) ? ' pending' : ''), liveName, liveName));
   const forked = forkBadge(s);
   if (forked) row.appendChild(forked);
   // The session's age, not its id. A hex slice told worktree-sharing rows apart

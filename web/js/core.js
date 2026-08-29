@@ -66,10 +66,13 @@ export const $ = (id) => document.getElementById(id);
  *  everything fetched through it keeps being checked. */
 export const ctl = (id) => /** @type {any} */ (document.getElementById(id));
 
-export function el(tag, cls, text) {
+export function el(tag, cls, text, title) {
   const n = document.createElement(tag);
   if (cls) n.className = cls;
   if (text !== undefined) n.textContent = text;
+  // A truncated label is unreadable past the ellipsis, so pass the full text as
+  // `title` and the native tooltip reveals the clipped tail on hover.
+  if (title !== undefined) n.title = title;
   return n;
 }
 
