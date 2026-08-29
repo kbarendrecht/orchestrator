@@ -34,6 +34,11 @@
   --faint-solid:#8E8E8E;
   --ghost:#787878;
 
+  /* Keyboard focus, kept deliberately off the state palette: one neutral
+     near-white signal — a ring on controls, a border on text inputs — so amber
+     stays "needs you" and never doubles as "you are here". */
+  --focus:#C9C9C9;
+
   --attn:#E0A244;        /* needs you — deliberately not green or red */
   --work:#4C9AAF;
   --ok:#5FA97C;
@@ -69,7 +74,7 @@ body{
   -webkit-font-smoothing:antialiased;overflow:hidden;
 }
 button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
-:focus-visible{outline:2px solid var(--attn);outline-offset:1px;border-radius:2px}
+:focus-visible{outline:2px solid var(--focus);outline-offset:1px;border-radius:2px}
 /* Selection is a real gesture here — the error toast and review errors are made
    selectable so you can copy them (see `.toast.bad`) — so it gets a palette wash
    rather than the browser's OS-blue on this near-black ground. Background only:
@@ -431,7 +436,7 @@ button.ctx-btn:hover{color:var(--text)}
   color:var(--text);background:var(--bg);border:1px solid var(--line);
   border-radius:2px;padding:9px 11px;
 }
-.oqfree .box:focus{outline:none;border-color:var(--attn)}
+.oqfree .box:focus{outline:none;border-color:var(--focus)}
 .oqfoot{display:flex;align-items:center;gap:8px}
 .oqsend{
   font-family:var(--label);font-size:calc(8.5px * var(--fs));font-weight:700;
@@ -663,7 +668,7 @@ body.row-resizing{cursor:row-resize;user-select:none}
   background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:3px;
   font-family:var(--mono);font-size:calc(11px * var(--fs));
 }
-.settings-in:focus{outline:none;border-color:var(--dim)}
+.settings-in:focus{outline:none;border-color:var(--focus)}
 /* A `select` takes its colours from the platform unless every part is named, so
    on a dark card WebKitGTK renders black-on-black. The option list is drawn by
    the OS and needs telling separately. */
@@ -1315,7 +1320,7 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
   padding:9px 11px;color:var(--text);font-family:var(--sans);font-size:calc(12.5px * var(--fs));
   min-height:56px;white-space:pre-wrap;
 }
-.rv .box:focus{outline:none;border-color:var(--faint-solid)}
+.rv .box:focus{outline:none;border-color:var(--focus)}
 .rv .foot{
   display:flex;align-items:baseline;gap:10px;
   font-family:var(--mono);font-size:calc(10px * var(--fs));color:var(--faint-solid);
