@@ -498,6 +498,16 @@ button.ctx-btn:hover{color:var(--text)}
   scrollbar-width:none;user-select:none;
 }
 .dtabs::-webkit-scrollbar{display:none}
+/* With the scrollbar gone there is no cue that tabs continue off the edge, so
+   the edge that has more fades out. The mask sits on the scroll container, so it
+   tracks the visual edge rather than scrolling away with the content; app.js
+   toggles the class, because CSS cannot see overflow. */
+.dtabs.of-end{-webkit-mask-image:linear-gradient(90deg,#000 calc(100% - 26px),transparent);
+  mask-image:linear-gradient(90deg,#000 calc(100% - 26px),transparent)}
+.dtabs.of-start{-webkit-mask-image:linear-gradient(90deg,transparent,#000 26px);
+  mask-image:linear-gradient(90deg,transparent,#000 26px)}
+.dtabs.of-both{-webkit-mask-image:linear-gradient(90deg,transparent,#000 26px,#000 calc(100% - 26px),transparent);
+  mask-image:linear-gradient(90deg,transparent,#000 26px,#000 calc(100% - 26px),transparent)}
 .dtab{
   font-family:var(--mono);font-size:calc(10.5px * var(--fs));color:var(--faint-solid);
   padding:3px 8px;border-radius:2px;display:flex;align-items:center;gap:6px;

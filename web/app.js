@@ -441,6 +441,23 @@ $('dtabs').addEventListener('wheel', (e) => {
   e.preventDefault();
 }, { passive: false });
 
+/* Fade whichever edge of the tab strip has more tabs behind it. Driven from
+ *  observers rather than `renderDrawer`, so it stays correct however the strip
+ *  changes — tabs added/removed (mutation), the drawer resized (resize), or the
+ *  strip scrolled by wheel, drag or the shownTab restore (scroll). */
+function updateTabOverflow() {
+  const strip = $('dtabs');
+  const over = strip.scrollWidth - strip.clientWidth;
+  strip.classList.remove('of-start', 'of-end', 'of-both');
+  if (over <= 1) return;
+  const atStart = strip.scrollLeft <= 1;
+  const atEnd = strip.scrollLeft >= over - 1;
+  strip.classList.add(atStart ? 'of-end' : atEnd ? 'of-start' : 'of-both');
+}
+$('dtabs').addEventListener('scroll', updateTabOverflow);
+new ResizeObserver(updateTabOverflow).observe($('dtabs'));
+new MutationObserver(updateTabOverflow).observe($('dtabs'), { childList: true });
+
 /** The tab last scrolled into view, per workspace, so a snapshot does not drag
  *  the strip back while you are reading the other end of it. */
 const shownTab = {};

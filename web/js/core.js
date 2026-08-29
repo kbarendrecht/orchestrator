@@ -184,7 +184,13 @@ export function keyActivate(el) {
  * is the POST that pulses that poller. Used by both the PR and review panes.
  */
 export function refreshButton(kind, pollCount, endpoint, polling) {
-  const btn = el('span', 'rvrefresh', '↻');
+  // Drawn, not typed — see the files-header refresh in index.html for why the
+  // reload glyph is an SVG rather than U+21BB. 1em tracks the font-size setting.
+  const btn = el('span', 'rvrefresh');
+  btn.innerHTML = '<svg viewBox="0 0 16 16" width="1em" height="1em" fill="none"'
+    + ' stroke="currentColor" stroke-width="1.5" stroke-linecap="round"'
+    + ' stroke-linejoin="round" aria-hidden="true">'
+    + '<path d="M13.4 8A5.4 5.4 0 1 1 11.7 4"/><path d="M12 1.6V4.3H9.3"/></svg>';
   btn.title = 'Refresh now';
   btn.setAttribute('role', 'button');
   keyActivate(btn);
