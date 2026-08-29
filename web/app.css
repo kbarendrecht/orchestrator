@@ -70,6 +70,11 @@ body{
 }
 button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
 :focus-visible{outline:2px solid var(--attn);outline-offset:1px;border-radius:2px}
+/* Selection is a real gesture here — the error toast and review errors are made
+   selectable so you can copy them (see `.toast.bad`) — so it gets a palette wash
+   rather than the browser's OS-blue on this near-black ground. Background only:
+   the coral of an error and the muted syntax colours keep their own hue under it. */
+::selection{background:rgba(76,154,175,.30)}
 
 .eyebrow{
   font-family:var(--label);font-size:calc(8.5px * var(--fs));font-weight:700;
@@ -184,10 +189,19 @@ button.ctx-btn:hover{color:var(--text)}
    quiet enough not to compete with the controls that get used daily. */
 .helpbtn{
   flex:0 0 auto;display:flex;align-items:center;justify-content:center;
+  position:relative;
   width:17px;height:17px;margin-left:1px;border-radius:3px;
   font-family:var(--label);font-size:calc(10px * var(--fs));font-weight:700;
   color:var(--faint-solid);opacity:.75;
   transition:color .12s,background .12s,opacity .12s;
+}
+/* WCAG 2.5.8 wants a 24px pointer target, but the painted box stays two-thirds
+   of the gear on purpose. So a transparent ::after grows only the hit area, not
+   the look. The 11px flex gap to the gear is wider than the 3.5px it reaches
+   past the box, so it steals no neighbouring click. */
+.helpbtn::after{
+  content:'';position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);
+  width:24px;height:24px;
 }
 .helpbtn:hover,.helpbtn[aria-expanded="true"]{color:var(--text);background:var(--raised);opacity:1}
 .repo-switch:hover{background:var(--raised);border-color:var(--line)}
@@ -622,7 +636,7 @@ body.row-resizing{cursor:row-resize;user-select:none}
 .settings-k{font-family:var(--mono);font-size:calc(11px * var(--fs));color:var(--text)}
 .settings-step{margin-left:auto;display:flex;align-items:center;gap:2px}
 .stepbtn{
-  width:22px;height:22px;border-radius:3px;border:1px solid var(--line);
+  width:24px;height:24px;border-radius:3px;border:1px solid var(--line);
   font-family:var(--mono);font-size:calc(12px * var(--fs));line-height:1;color:var(--dim);
 }
 .stepbtn:hover:not(:disabled){color:var(--text);background:var(--bg)}
