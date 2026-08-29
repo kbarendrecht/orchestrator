@@ -560,6 +560,14 @@ button.ctx-btn:hover{color:var(--text)}
 .fname{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;direction:rtl;text-align:left}
 #filepanes{flex:1;min-height:0;overflow-y:auto}
 .fempty{padding:22px 15px;font-family:var(--mono);font-size:calc(10.5px * var(--fs));color:var(--faint-solid);line-height:1.75}
+/* The empty-terminal hint: a lead line, then the chords that start work. Scoped
+   to #termempty so the other empty panes keep their plain one-liner. */
+#termempty .empty-big{display:block;color:var(--dim);font-size:calc(12px * var(--fs));margin-bottom:11px}
+#termempty .empty-k{display:block;margin-top:5px}
+#termempty kbd{
+  font-family:var(--mono);font-size:.9em;color:var(--dim);
+  border:1px solid var(--line);border-radius:3px;padding:0 4px;background:var(--raised);
+}
 .files-foot{padding:9px 13px;font-family:var(--mono);font-size:calc(10px * var(--fs));color:var(--faint-solid);border-top:1px solid var(--line-soft)}
 /* Nothing to count, nothing to draw: otherwise the border and the padding read
    as a panel of their own. */
@@ -758,26 +766,37 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
 .ctxmenu-item.bad:hover:not(:disabled){color:var(--bad)}
 
 /* ---------- toast ---------- */
-/* A refused `git worktree remove` is information, so errors are shown rather
-   than swallowed. */
+/* A stack of toasts, newest at the bottom. The container ignores the pointer so
+   it never swallows a click meant for the terminal under it; an error row turns
+   the pointer back on so its text can be selected and copied. */
+.toaststack{
+  position:fixed;left:50%;bottom:22px;transform:translateX(-50%);z-index:99;
+  display:flex;flex-direction:column;align-items:center;gap:8px;
+  max-width:70vw;pointer-events:none;
+}
 .toast{
-  position:fixed;left:50%;bottom:22px;transform:translateX(-50%);
-  max-width:70vw;padding:9px 14px;border-radius:3px;
+  display:flex;align-items:center;gap:10px;max-width:100%;
+  padding:9px 14px;border-radius:3px;
   background:var(--raised);border:1px solid var(--line);
   font-family:var(--mono);font-size:calc(11px * var(--fs));color:var(--text);
-  opacity:0;pointer-events:none;transition:opacity .16s;z-index:99;
   white-space:pre-wrap;
 }
-.toast.on{opacity:1}
-/* Reachable, and so selectable: an error is the one toast whose text you may have
-   to copy. The others keep `pointer-events:none` from the rule above, because a
-   receipt that lives 2.6s over the terminal must not take a click aimed at it.
-   No focus ring: the selection is the feedback, and a ring reads as an input. */
+.toast-msg{white-space:pre-wrap;min-width:0}
+/* A refused `git worktree remove` is information, so an error stays until
+   dismissed and is the one row you can reach and select — a refusal names a
+   branch, a pid, a path. The others keep `pointer-events:none` from the stack, so
+   a 2.6s receipt over the terminal cannot take a click aimed at it. No focus
+   ring: the selection is the feedback, and a ring reads as an input. */
 .toast.bad{
   border-color:var(--bad);color:var(--bad);
   pointer-events:auto;cursor:text;user-select:text;
 }
 .toast:focus{outline:none}
+.toast-x{
+  margin-left:auto;flex:0 0 auto;color:var(--faint-solid);cursor:pointer;
+  padding:0 2px;user-select:none;border-radius:2px;transition:color .12s;
+}
+.toast-x:hover{color:var(--bad)}
 
 /* Update nudge: a quiet pill top-centre, out of the way but not a toast that
    vanishes before you act on it. */

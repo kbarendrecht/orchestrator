@@ -73,63 +73,80 @@ export function el(tag, cls, text) {
   return n;
 }
 
-let toastTimer = null;
+/* One row per message, stacked newest at the bottom. A receipt fades on its own;
+ * an error stays until dismissed, because a refusal names a branch, a pid or a
+ * path you may need to copy — and a second error must no longer erase the first
+ * the way the single slot did. */
+const MAX_TOASTS = 5;
+const toastTimers = new WeakMap();
 
-/** Whether the toast is being *used*: the pointer is in it, or it holds a
- *  selection nobody has copied yet.
- *
- *  An error toast carries the text you need to keep — a refusal names a branch, a
- *  pid, a path — and 7 seconds is not long enough to read one, aim at it and drag
- *  across it. So the clock does not run while you are working in it. */
-function toastHeld() {
-  const t = $('toast');
-  if (t.matches(':hover')) return true;
-  const sel = window.getSelection();
-  return !!sel && !sel.isCollapsed && !!sel.anchorNode && t.contains(sel.anchorNode);
-}
-
-/** Whatever had the keyboard when the toast took it, to give back afterwards. */
+/** Whatever had the keyboard when an error row took it, to give back afterwards. */
 let toastReturn = null;
 
-/** Start the dismissal clock, and keep restarting it while the toast is held. */
-function armToast(ms) {
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => {
-    // Re-checked on a short beat rather than on pointerleave: a selection made and
-    // then left alone has to keep the text on screen too, and there is no event
-    // for "still selected".
-    if (toastHeld()) return armToast(1200);
-    const t = $('toast');
-    t.className = 'toast';
-    /* Hand the keyboard back to whatever we took it from — the exact terminal,
-       centre or drawer, rather than "a" terminal, which is why this remembers the
-       element instead of announcing the dismissal for `term` to guess at. Without
-       it the toast fades holding focus and the next keystroke lands nowhere. */
-    if (document.activeElement === t && toastReturn && document.contains(toastReturn)) {
-      try {
-        toastReturn.focus();
-      } catch (e) { /* disposed while the toast was up */ }
-    }
+/** In use: the pointer is in the row, or it holds a selection nobody has copied.
+ *  7 seconds is not enough to read a refusal, aim at it and drag across it, so
+ *  the clock does not run while you are working in the row. */
+function toastHeld(row) {
+  if (row.matches(':hover')) return true;
+  const sel = window.getSelection();
+  return !!sel && !sel.isCollapsed && !!sel.anchorNode && row.contains(sel.anchorNode);
+}
+
+function dismissToast(row) {
+  clearTimeout(toastTimers.get(row));
+  toastTimers.delete(row);
+  /* Hand the keyboard back to the exact element the row took it from — the
+     specific terminal, centre or drawer, not "a" terminal — or the next
+     keystroke lands nowhere. */
+  if (document.activeElement === row && toastReturn && document.contains(toastReturn)) {
+    try {
+      toastReturn.focus();
+    } catch (e) { /* disposed while the toast was up */ }
     toastReturn = null;
-  }, ms);
+  }
+  row.remove();
+}
+
+/** A receipt's dismissal clock, restarted while the row is held. An error never
+ *  arms one — it stays until the ✕. */
+function armToast(row, ms) {
+  clearTimeout(toastTimers.get(row));
+  // Re-checked on a short beat, not on pointerleave: a selection left alone has
+  // to keep the text up too, and there is no event for "still selected".
+  toastTimers.set(row, setTimeout(() => {
+    if (toastHeld(row)) return armToast(row, 1200);
+    dismissToast(row);
+  }, ms));
 }
 
 export function toast(message, bad) {
-  const t = $('toast');
-  t.textContent = message;
-  t.className = 'toast on' + (bad ? ' bad' : '');
-  armToast(bad ? 7000 : 2600);
+  const stack = $('toaststack');
+  const row = el('div', 'toast on' + (bad ? ' bad' : ''));
+  row.appendChild(el('span', 'toast-msg', message));
+  if (bad) {
+    // Errors persist and are copyable; the ✕ is the only thing that closes one.
+    row.tabIndex = -1;
+    const x = el('span', 'toast-x', '✕');
+    x.setAttribute('role', 'button');
+    x.title = 'Dismiss';
+    x.onclick = () => dismissToast(row);
+    row.appendChild(x);
+    /* Take focus on pointerdown, or the copy never happens: with a terminal
+       focused, Ctrl+C is an interrupt on its way to the pty, not a copy. The ✕ is
+       exempt, so dismissing does not first steal focus for a copy nobody made. */
+    row.addEventListener('pointerdown', (e) => {
+      if (e.target === x) return;
+      toastReturn = /** @type {HTMLElement} */ (document.activeElement);
+      row.focus();
+    });
+  }
+  stack.appendChild(row);
+  if (!bad) armToast(row, 2600);
+  // A burst must not fill the screen: drop the oldest past the cap.
+  while (stack.children.length > MAX_TOASTS) {
+    dismissToast(/** @type {HTMLElement} */ (stack.firstElementChild));
+  }
 }
-
-/* Take focus on the way in, or the copy never happens: with a terminal focused,
-   `Ctrl+C` is an interrupt on its way to the pty, not a copy of what you just
-   selected. Only an error toast is reachable at all — `pointer-events` is off for
-   the rest, so a 2.6s confirmation in the middle of the pane cannot swallow a
-   click meant for the terminal under it. */
-$('toast').addEventListener('pointerdown', () => {
-  toastReturn = /** @type {HTMLElement} */ (document.activeElement);
-  $('toast').focus();
-});
 
 export async function call(path, body) {
   const res = await fetch(path, {

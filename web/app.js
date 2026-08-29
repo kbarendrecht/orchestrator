@@ -791,6 +791,10 @@ for (const dt of $('keyhelp').querySelectorAll('dt[data-mod]')) {
   if (IS_MAC && mac) dt.innerHTML = mac;
   else dt.innerHTML = dt.innerHTML.replace(/MOD/g, MOD_LABEL);
 }
+// The empty-terminal hint teaches the same chords, so it resolves MOD the same.
+for (const k of $('termempty').querySelectorAll('kbd')) {
+  k.textContent = k.textContent.replace(/MOD/g, MOD_LABEL);
+}
 /* Descriptions too, not only the chords: one of them names a second spelling
    ("also MOD `"), and substituting the `dt` alone left the placeholder on screen.
    Found by looking at the rendered legend — the test that checked the chords read

@@ -116,9 +116,13 @@
     <div class="oq" id="oq" hidden></div>
 
     <div class="termwrap" id="termwrap">
+      <!-- An empty pane is the one moment someone is looking for what to do, so it
+           names the moves and their chords. MOD is resolved to the platform
+           modifier at boot in app.js, the same way the legend is. -->
       <div class="fempty" id="termempty">
-        Nothing running.<br>
-        Start a session from the rail, or open one from its archive.
+        <span class="empty-big">Nothing running.</span>
+        <span class="empty-k"><kbd>MOD N</kbd> new worktree · <kbd>MOD Shift N</kbd> session on main</span>
+        <span class="empty-k"><kbd>MOD `</kbd> a shell here · <kbd>MOD Shift ?</kbd> all shortcuts</span>
       </div>
 
       <!-- What a review is doing, while its overlay is closed. Inside the terminal
@@ -353,7 +357,7 @@
 <div class="ctxmenu" id="ctxmenu" role="menu" hidden></div>
 
 <!-- `tabindex` so a click can move focus off the terminal; see `core.toast`. -->
-<div class="toast" id="toast" tabindex="-1"></div>
+<div class="toaststack" id="toaststack"></div>
 
 <script>window.__ORCH__ = { token: "__ORCH_TOKEN__", chrome: "__ORCH_CHROME__", platform: "__ORCH_PLATFORM__" };</script>
 <script src="/vendor/xterm.js"></script>
