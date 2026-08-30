@@ -679,6 +679,17 @@ function rvOptions(item) {
     // The descriptor, not the reply: the reply lives in the box under the list now.
     const sub = pos.stance === 'agree' ? 'Apply, thumbs up' : (pos.sub || 'your own words');
     b.appendChild(el('div', 'osub', sub));
+    /* The other side, in a line. Triage is *required* to draft the case against its own
+       read — not a strawman (commands/triage.md) — and that argument lands in the
+       position's `reply`. But a reply only shows once you select its row, so the reason to
+       disagree was invisible at the moment you decide, and the ellipsised `sub` above
+       "cannot argue". Surface the gist on every non-recommended reply/story position: the
+       recommended side is already argued in the read above, and agree/"Something else"
+       carry no drafted words, so those stay quiet. One line, from data, no extra model call. */
+    if (i !== item.p.recommend) {
+      const why = replyPreview(item, i);
+      if (why) b.appendChild(el('div', 'owhy', why));
+    }
     b.onclick = () => {
       reviewState.picks[item.t.id] = i;
       delete reviewState.skipped[item.t.id];

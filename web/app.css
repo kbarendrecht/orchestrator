@@ -1273,6 +1273,15 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
   font-size:calc(11.5px * var(--fs));color:var(--dim);
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:64ch;
 }
+/* The one-line gist of a non-recommended position's reply — the "other side" triage
+   drafted, made legible before you select it. Same one-line clamp as `.osub`; the `↳`
+   marks it as the argument that reply would make, and picking the row still opens the
+   full reply below. */
+.rv .opt .owhy{
+  font-size:calc(11.5px * var(--fs));color:var(--dim);font-style:italic;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:64ch;
+}
+.rv .opt .owhy::before{content:"\21B3\00A0";color:var(--attn);font-style:normal}
 /* A small pill on the option head: what taking it says back. */
 .rv .opt .tag{
   font-family:var(--label);font-size:calc(9px * var(--fs));font-weight:700;letter-spacing:.1em;
