@@ -10,9 +10,9 @@ are already in there with the reason they were not done.
 
 ```
 cargo check                         # the daemon
-cargo test                          # 349 tests, all in-tree
+cargo test                          # 367 tests, all in-tree
 mise run check-web                  # type-check the SPA + enforce its module graph
-mise run e2e                        # 11 flows against a real daemon, ~45s
+mise run e2e                        # 12 flows against a real daemon, ~45s
 cargo run -p orchestrator-desktop   # the app, daemon embedded in-process
 mise run shot                       # screenshot the running SPA (drives Chrome)
 ```
@@ -385,9 +385,18 @@ to disappear is waiting for something that never happens.
   a busy branch and the concurrency cap, and *nothing else*. "The PR looks fine" is not a refusal,
   because a run is also how a PR that has fallen behind gets rebased. Easy to fire
   by accident while poking at the API.
-- **Pushes are guarded.** `--force-with-lease` only, no `push -u`, no protected
-  refs; `guards/push.py` denies the rest at `PreToolUse`. Never `git merge` into a
-  branch here, rebase.
+- **Pushes are guarded, by two halves that must agree.** `src/guard.rs` holds the
+  rules; `orch guard push` runs them as a `PreToolUse` hook on the agent's Bash,
+  and `git::push_with_lease` re-states the base-branch rule because a *daemon*
+  push never passes through a hook. Two rules only: no lease-less `--force`, and
+  no push to the base branch, which comes from `upstream_ref` rather than a list
+  of likely names. Never `git merge` into a branch here, rebase.
+  It is a **mistake-catcher, not a control** — Bash only, so `gh` or a script the
+  agent writes goes around it. Do not write docs that claim otherwise; the README
+  did, and that is the kind of sentence that earns misplaced trust.
+  The Python script this replaced failed open when `python3` was missing, and
+  matched refspecs by spelling — `git push origin main` refused while
+  `git push origin HEAD:refs/heads/main` passed.
 - **`cargo fmt` is not this repo's formatter.** There is no `rustfmt.toml` and
   `main` is not stable-rustfmt-clean, so running it out of habit reformats around
   27 files you never touched. Revert everything outside your own change before

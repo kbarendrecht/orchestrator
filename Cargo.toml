@@ -8,6 +8,11 @@ edition = "2021"
 description = "Run several Claude Code sessions over one repository from a single window"
 repository = "https://github.com/kbarendrecht/orchestrator"
 license = "AGPL-3.0-only"
+# The AGPL is a grant *from* a copyright holder, so one has to be named or there
+# is no identified licensor. The address is the GitHub noreply on purpose: it is
+# what every commit is authored as, and it keeps an employer's mail domain out of
+# a personal project's metadata.
+authors = ["Kars Barendrecht <18546657+kbarendrecht@users.noreply.github.com>"]
 # Not a crates.io library — it is an application, and the desktop shell is the
 # thing people install. Set so a stray `cargo publish` cannot go through.
 publish = false

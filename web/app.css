@@ -6,7 +6,9 @@
    needs DNS to render its own labels is not one; `swap` still applies for the
    first paint before the local files land. Latin subset only — the rest of the
    Unicode range falls through to the system stack, which is the right trade
-   for a tool whose text is branch names and file paths. */
+   for a tool whose text is branch names and file paths. All four families are
+   OFL-1.1; each one's licence sits beside it here, and `THIRD-PARTY.md` at the
+   root lists the versions. */
 @font-face{font-family:'IBM Plex Sans';src:url('/vendor/fonts/plex-sans.woff2') format('woff2');
   font-weight:100 700;font-style:normal;font-display:swap}
 @font-face{font-family:'IBM Plex Mono';src:url('/vendor/fonts/plex-mono-400.woff2') format('woff2');
@@ -17,8 +19,7 @@
   font-weight:600;font-style:normal;font-display:swap}
 @font-face{font-family:'Martian Mono';src:url('/vendor/fonts/martian-mono.woff2') format('woff2');
   font-weight:100 800;font-style:normal;font-display:swap}
-/* Diffs only, so one weight: nothing in a diff is bold. Its licence sits beside it
-   in `web/vendor/fonts/`. */
+/* Diffs only, so one weight: nothing in a diff is bold. */
 @font-face{font-family:'JetBrains Mono';src:url('/vendor/fonts/jetbrains-mono-400.woff2') format('woff2');
   font-weight:400;font-style:normal;font-display:swap}
 
@@ -690,6 +691,21 @@ body.row-resizing{cursor:row-resize;user-select:none}
 .keys dd{
   margin:0;font-size:calc(11.5px * var(--fs));color:var(--dim);align-self:center;
 }
+/* The licence notice, a fixed foot to the legend rather than its last row.
+   `flex:0 0 auto` beside the card's `flex:1` is what keeps it on screen while the
+   shortcuts scroll under it — it is a legal notice, so being reachable only by
+   scrolling would defeat it. A footnote in tone: --ghost, and links in --dim
+   rather than an accent, because nothing here is a call to action. */
+.legal{
+  flex:0 0 auto;margin:0;padding:12px 16px 14px;
+  border-top:1px solid var(--line);background:var(--surface);
+  font-size:calc(10.5px * var(--fs));line-height:1.6;color:var(--ghost);
+  text-align:center;
+}
+.legal a{color:var(--dim);text-decoration:underline;text-underline-offset:2px}
+.legal a:hover{color:var(--text)}
+.legal a:focus-visible{outline:2px solid var(--focus);outline-offset:2px;border-radius:2px}
+#legalver{font-family:var(--mono)}
 .settings-help kbd,.keys dt kbd{
   font-family:var(--mono);font-size:.9em;padding:0 4px;border-radius:2px;
   border:1px solid var(--line);background:var(--raised);color:var(--text);

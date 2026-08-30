@@ -91,7 +91,7 @@ pub enum What {
 #[derive(Debug, Clone, Serialize)]
 pub struct Landed {
     pub thread_id: String,
-    /// `renovate.json5:161 · carol`, for the report's left column.
+    /// `renovate.json5:161 · bob`, for the report's left column.
     pub label: String,
     pub what: What,
     /// It was already there, so nothing was sent. The distinction matters on a
@@ -492,7 +492,7 @@ fn resolve_reply(pos: &Position, d: &Decision, thread_id: &str) -> Result<Option
     }
 }
 
-/// `renovate.json5:161 · carol`, or `review summary · reviewbot` for a
+/// `renovate.json5:161 · bob`, or `review summary · reviewbot` for a
 /// thread with no file.
 fn label_for(t: &crate::forge::Thread) -> String {
     let who = t.author().unwrap_or("ghost");
@@ -871,9 +871,11 @@ async fn run_inner(
     if unpushed {
         let branch = pr.head_ref.clone();
         let p = path.clone();
-        let pushed = tokio::task::spawn_blocking(move || crate::git::push_with_lease(&p, &branch))
-            .await
-            .context("the push panicked")?;
+        let base = crate::git::base_checkout_branch(&app.cfg.main_checkout, &app.cfg.upstream_ref);
+        let pushed =
+            tokio::task::spawn_blocking(move || crate::git::push_with_lease(&p, &branch, base.as_deref()))
+                .await
+                .context("the push panicked")?;
         if let Err(e) = pushed {
             // **HEAD has moved by now**, on both halves — the local write committed.
             // Returning an `Err` here 500s the request, the SPA only toasts, and the
@@ -1546,7 +1548,7 @@ mod tests {
     fn fetched(items: Vec<Thread>) -> Threads {
         Threads {
             pr: 10001,
-            viewer: "kars".into(),
+            viewer: "viewer".into(),
             head_sha: Some("abc123".into()),
             items,
         }
@@ -1564,7 +1566,7 @@ mod tests {
             sub: String::new(),
             stance,
             patch: patch.then(|| "--- a/f\n+++ b/f\n".to_string()),
-            reply: stance.writes_reply().then(|| "Resolved.".to_string()),
+            reply: stance.writes_reply().then(|| "Fixed.".to_string()),
             story: stance.files_story().then(|| StoryDraft {
                 title: "t".into(),
                 body: "b".into(),
@@ -1610,7 +1612,7 @@ mod tests {
     #[test]
     fn a_patch_position_resolves_to_its_diff_and_a_blame_target() {
         let set = proposed("PRRT_1", vec![with_patch(Stance::Agree, true)]);
-        let fresh = fetched(vec![thread("PRRT_1", Some("src/Foo.php"), Some(42), "john")]);
+        let fresh = fetched(vec![thread("PRRT_1", Some("src/Foo.php"), Some(42), "alice")]);
         let got = resolve(&set, &fresh, &batch("PRRT_1", 0, None), TRACKER, FIRST_HALF).unwrap();
 
         assert_eq!(got.len(), 1);
@@ -1630,10 +1632,10 @@ mod tests {
     #[test]
     fn your_wording_overrides_the_draft() {
         let set = proposed("PRRT_1", vec![position(Stance::Reply)]);
-        let fresh = fetched(vec![thread("PRRT_1", Some("a.ts"), Some(1), "john")]);
+        let fresh = fetched(vec![thread("PRRT_1", Some("a.ts"), Some(1), "alice")]);
 
         let kept = resolve(&set, &fresh, &batch("PRRT_1", 0, None), TRACKER, FIRST_HALF).unwrap();
-        assert_eq!(kept[0].reply.as_deref(), Some("Resolved."));
+        assert_eq!(kept[0].reply.as_deref(), Some("Fixed."));
 
         let mine = resolve(
             &set,
@@ -1651,7 +1653,7 @@ mod tests {
         // `Say something else` starts empty; sending it untouched would post a
         // blank comment that cannot be deleted from here.
         let set = proposed("PRRT_1", vec![position(Stance::Reply)]);
-        let fresh = fetched(vec![thread("PRRT_1", Some("a.ts"), Some(1), "john")]);
+        let fresh = fetched(vec![thread("PRRT_1", Some("a.ts"), Some(1), "alice")]);
         let err = resolve(
             &set,
             &fresh,
@@ -1716,8 +1718,8 @@ mod tests {
         // owning commits and amends HEAD instead of folding the patch into the
         // commit that owns it, because of code that does not exist yet.
         let fresh = fetched(vec![
-            thread("PRRT_1", Some("a.ts"), Some(10), "john"),
-            thread("PRRT_2", Some("b.ts"), Some(99), "dave"),
+            thread("PRRT_1", Some("a.ts"), Some(10), "alice"),
+            thread("PRRT_2", Some("b.ts"), Some(99), "carol"),
         ]);
         let mut set = proposed("PRRT_1", vec![with_patch(Stance::Reply, true)]);
         set.proposals.push(Proposal {
@@ -1731,7 +1733,7 @@ mod tests {
                 sub: String::new(),
                 stance: Stance::Reply,
                 patch: None,
-                reply: Some("Resolved.".into()),
+                reply: Some("Fixed.".into()),
                 story: None,
             }],
         });
@@ -1768,9 +1770,9 @@ mod tests {
     fn a_plan_starts_each_thread_where_it_actually_is() {
         use crate::proposal::{Mode, Stance};
         let fresh = fetched(vec![
-            thread("PRRT_1", Some("a.ts"), Some(10), "john"),
-            thread("PRRT_2", Some("b.ts"), Some(99), "john"),
-            thread("PRRT_3", Some("c.ts"), Some(12), "john"),
+            thread("PRRT_1", Some("a.ts"), Some(10), "alice"),
+            thread("PRRT_2", Some("b.ts"), Some(99), "alice"),
+            thread("PRRT_3", Some("c.ts"), Some(12), "alice"),
         ]);
         let mut set = proposed("PRRT_1", vec![with_patch(Stance::Reply, true)]);
         for (id, pos) in [
@@ -1826,7 +1828,7 @@ mod tests {
     #[test]
     fn the_agents_plan_file_and_the_persisted_record_are_not_the_same_document() {
         use crate::proposal::{Mode, Stance};
-        let fresh = fetched(vec![thread("PRRT_1", Some("a.ts"), Some(10), "john")]);
+        let fresh = fetched(vec![thread("PRRT_1", Some("a.ts"), Some(10), "alice")]);
         let set = proposed("PRRT_1", vec![with_patch(Stance::Reply, true)]);
         let batch = Batch {
             base_sha: "abc123".into(),
@@ -1879,7 +1881,7 @@ mod tests {
     fn a_manual_thread_carries_no_comment_into_the_phase() {
         // The card's box is a draft: you cannot describe work you have not done, so
         // the real comment is written in the phase and there is nothing to post yet.
-        let fresh = fetched(vec![thread("PRRT_1", Some("a.ts"), Some(12), "john")]);
+        let fresh = fetched(vec![thread("PRRT_1", Some("a.ts"), Some(12), "alice")]);
         let got = resolve(
             &manual_set(""),
             &fresh,
@@ -1900,7 +1902,7 @@ mod tests {
     fn a_manual_thread_will_not_finish_without_a_comment() {
         // Without one the reviewer gets a commit and silence, which is
         // indistinguishable from being ignored.
-        let fresh = fetched(vec![thread("PRRT_1", Some("a.ts"), Some(12), "john")]);
+        let fresh = fetched(vec![thread("PRRT_1", Some("a.ts"), Some(12), "alice")]);
 
         // **An absent key must fail exactly like a blank one.** This is the case
         // that got away: with an empty map standing in for "the phase has not
@@ -2030,7 +2032,7 @@ mod tests {
         // The reverse mistake: there would be no id to substitute, so the literal
         // braces would be posted to GitHub.
         let set = proposed("PRRT_1", vec![position(Stance::Reply)]);
-        let fresh = fetched(vec![thread("PRRT_1", Some("a.ts"), Some(1), "john")]);
+        let fresh = fetched(vec![thread("PRRT_1", Some("a.ts"), Some(1), "alice")]);
         let err = resolve(
             &set,
             &fresh,
@@ -2048,7 +2050,7 @@ mod tests {
         // The one agent-or-human string the validator never sized, and it is about
         // to carry a public URL.
         let set = proposed("PRRT_1", vec![position(Stance::Reply)]);
-        let fresh = fetched(vec![thread("PRRT_1", Some("a.ts"), Some(1), "john")]);
+        let fresh = fetched(vec![thread("PRRT_1", Some("a.ts"), Some(1), "alice")]);
         let huge = "x".repeat(crate::proposal::MAX_FIELD + 1);
         let err = resolve(
             &set,
@@ -2065,7 +2067,7 @@ mod tests {
     #[test]
     fn a_decision_the_human_never_saw_is_refused() {
         let set = proposed("PRRT_1", vec![position(Stance::Reply)]);
-        let fresh = fetched(vec![thread("PRRT_1", Some("a.ts"), Some(1), "john")]);
+        let fresh = fetched(vec![thread("PRRT_1", Some("a.ts"), Some(1), "alice")]);
 
         // An index past the list: the payload carries indices, so this is how a
         // bad client would try to reach content nobody reviewed.
@@ -2073,7 +2075,7 @@ mod tests {
         // A thread with no proposal behind it.
         assert!(resolve(&set, &fresh, &batch("PRRT_9", 0, None), TRACKER, FIRST_HALF).is_err());
         // A thread that has since gone from the PR.
-        let gone = fetched(vec![thread("PRRT_2", Some("a.ts"), Some(1), "john")]);
+        let gone = fetched(vec![thread("PRRT_2", Some("a.ts"), Some(1), "alice")]);
         assert!(resolve(&set, &gone, &batch("PRRT_1", 0, None), TRACKER, FIRST_HALF).is_err());
     }
 
@@ -2093,51 +2095,51 @@ mod tests {
     fn a_reply_already_in_the_thread_is_not_posted_twice() {
         // This is the whole of retry: derive what is missing from a fresh fetch
         // rather than remember what was sent.
-        let mut t = thread("PRRT_1", Some("a.ts"), Some(1), "john");
+        let mut t = thread("PRRT_1", Some("a.ts"), Some(1), "alice");
         t.comments.push(comment(
             101,
-            "kars",
-            &forge::with_footer("Resolved."),
+            "viewer",
+            &forge::with_footer("Fixed."),
         ));
         let fresh = fetched(vec![t]);
 
-        assert!(already_replied(&fresh, "PRRT_1", "Resolved."));
+        assert!(already_replied(&fresh, "PRRT_1", "Fixed."));
         // Different words are a different reply, and should go.
         assert!(!already_replied(&fresh, "PRRT_1", "Fixed in the mapper."));
     }
 
     #[test]
     fn someone_elses_identical_comment_does_not_count_as_our_reply() {
-        let mut t = thread("PRRT_1", Some("a.ts"), Some(1), "john");
+        let mut t = thread("PRRT_1", Some("a.ts"), Some(1), "alice");
         t.comments
-            .push(comment(101, "john", &forge::with_footer("Resolved.")));
-        assert!(!already_replied(&fetched(vec![t]), "PRRT_1", "Resolved."));
+            .push(comment(101, "alice", &forge::with_footer("Fixed.")));
+        assert!(!already_replied(&fetched(vec![t]), "PRRT_1", "Fixed."));
     }
 
     #[test]
     fn a_reviewer_is_held_back_by_their_own_unsettled_thread() {
         let fresh = fetched(vec![
-            thread("PRRT_1", Some("a.ts"), Some(10), "carol"),
-            thread("PRRT_2", Some("a.ts"), Some(20), "carol"),
-            thread("PRRT_3", Some("b.ts"), Some(1), "dave"),
+            thread("PRRT_1", Some("a.ts"), Some(10), "bob"),
+            thread("PRRT_2", Some("a.ts"), Some(20), "bob"),
+            thread("PRRT_3", Some("b.ts"), Some(1), "carol"),
         ]);
 
-        // Dave's one thread is settled; one of carol's is not.
+        // Carol's one thread is settled; one of bob's is not.
         let split = split_reviewers(&fresh, &["PRRT_1", "PRRT_3"]);
         assert_eq!(
             forge::ready_to_rerequest(&split.all, &split.open),
-            vec!["dave"]
+            vec!["carol"]
         );
         assert_eq!(split.holding.len(), 1);
-        assert_eq!(split.holding[0].0, "carol");
+        assert_eq!(split.holding[0].0, "bob");
         // The row names the thread, not a count — it is the one to go and answer.
-        assert_eq!(split.holding[0].1, "a.ts:20 · carol");
+        assert_eq!(split.holding[0].1, "a.ts:20 · bob");
 
         // With everything settled, both go.
         let split = split_reviewers(&fresh, &["PRRT_1", "PRRT_2", "PRRT_3"]);
         assert_eq!(
             forge::ready_to_rerequest(&split.all, &split.open),
-            vec!["carol", "dave"]
+            vec!["bob", "carol"]
         );
         assert!(split.holding.is_empty());
     }
@@ -2152,8 +2154,8 @@ mod tests {
     #[test]
     fn an_answered_thread_still_unresolved_does_not_hold_its_author_back() {
         let fresh = fetched(vec![
-            thread("PRRT_1", Some("a.ts"), Some(10), "carol"),
-            thread("PRRT_2", Some("b.ts"), Some(20), "dave"),
+            thread("PRRT_1", Some("a.ts"), Some(10), "bob"),
+            thread("PRRT_2", Some("b.ts"), Some(20), "carol"),
         ]);
         // The state a run always leaves: answered, and still open on GitHub.
         assert!(fresh.items.iter().all(|t| !t.is_resolved));
@@ -2161,7 +2163,7 @@ mod tests {
         assert_eq!(split.all.len(), 2, "both reviewed, whatever their threads say now");
         assert_eq!(
             forge::ready_to_rerequest(&split.all, &split.open),
-            vec!["carol", "dave"],
+            vec!["bob", "carol"],
             "answered is answered, whoever gets to close the thread"
         );
         // And the broken reading, for contrast: taking every unresolved thread as
@@ -2184,7 +2186,7 @@ mod tests {
         let split = split_reviewers(&answered, &["PRRT_1", "PRRT_2"]);
         assert_eq!(
             forge::ready_to_rerequest(&split.all, &split.open),
-            vec!["carol", "dave"],
+            vec!["bob", "carol"],
             "the fetch happening after the posting must not change the answer"
         );
     }
@@ -2195,8 +2197,8 @@ mod tests {
         // The re-request assertion "everything of yours is addressed" stays true
         // without any mechanism for noticing the arrival.
         let fresh = fetched(vec![
-            thread("PRRT_1", Some("a.ts"), Some(10), "carol"),
-            thread("PRRT_new", Some("c.ts"), Some(3), "carol"),
+            thread("PRRT_1", Some("a.ts"), Some(10), "bob"),
+            thread("PRRT_new", Some("c.ts"), Some(3), "bob"),
         ]);
         let split = split_reviewers(&fresh, &["PRRT_1"]);
         assert!(forge::ready_to_rerequest(&split.all, &split.open).is_empty());
@@ -2204,7 +2206,7 @@ mod tests {
 
     #[test]
     fn your_own_thread_never_asks_you_to_review_yourself() {
-        let fresh = fetched(vec![thread("PRRT_1", Some("a.ts"), Some(1), "kars")]);
+        let fresh = fetched(vec![thread("PRRT_1", Some("a.ts"), Some(1), "viewer")]);
         let split = split_reviewers(&fresh, &[]);
         assert!(split.all.is_empty());
         assert!(split.holding.is_empty());
@@ -2216,7 +2218,7 @@ mod tests {
             label_for(&thread("PRRT_1", None, None, "reviewbot")),
             "review summary · reviewbot"
         );
-        let mut outdated = thread("PRRT_2", Some("a.ts"), None, "john");
+        let mut outdated = thread("PRRT_2", Some("a.ts"), None, "alice");
         outdated.original_line = Some(9);
         outdated.is_outdated = true;
         // Outdated: no current line, so it is named by where the reviewer looked.
@@ -2250,10 +2252,10 @@ mod tests {
     #[tokio::test]
     async fn a_reply_already_on_the_thread_is_not_posted_again() {
         let app = app().await;
-        let mut t = thread("PRRT_1", Some("a.ts"), Some(1), "john");
+        let mut t = thread("PRRT_1", Some("a.ts"), Some(1), "alice");
         // The viewer's own answer, footed the way the forge writes it.
         t.comments
-            .push(comment(101, "kars", &crate::forge::with_footer("Resolved.")));
+            .push(comment(101, "viewer", &crate::forge::with_footer("Fixed.")));
         let fresh = fetched(vec![t]);
 
         let out = post_one(
@@ -2262,7 +2264,7 @@ mod tests {
             &app.cfg.main_checkout.clone(),
             10001,
             "PRRT_1",
-            "Resolved.",
+            "Fixed.",
             None,
             &fresh,
         )
@@ -2288,11 +2290,11 @@ mod tests {
             .stories
             .put(10001, "PRRT_1", story.clone());
 
-        let mut t = thread("PRRT_1", Some("a.ts"), Some(1), "john");
+        let mut t = thread("PRRT_1", Some("a.ts"), Some(1), "alice");
         t.comments.push(comment(
             101,
-            "kars",
-            &crate::forge::with_footer(&format!("Tracked: {}", story.link())),
+            "viewer",
+            &crate::forge::with_footer(&format!("Tracked as: {}", story.link())),
         ));
         let fresh = fetched(vec![t]);
 
@@ -2306,7 +2308,7 @@ mod tests {
             &app.cfg.main_checkout.clone(),
             10001,
             "PRRT_1",
-            &format!("Tracked: {}", crate::proposal::STORY_TOKEN),
+            &format!("Tracked as: {}", crate::proposal::STORY_TOKEN),
             Some(&draft),
             &fresh,
         )
@@ -2321,14 +2323,14 @@ mod tests {
     #[tokio::test]
     async fn a_vanished_thread_refuses_rather_than_posting_nowhere() {
         let app = app().await;
-        let fresh = fetched(vec![thread("PRRT_9", Some("a.ts"), Some(1), "john")]);
+        let fresh = fetched(vec![thread("PRRT_9", Some("a.ts"), Some(1), "alice")]);
         let err = post_one(
             &app,
             &no_write_forge(),
             &app.cfg.main_checkout.clone(),
             10001,
             "PRRT_1",
-            "Resolved.",
+            "Fixed.",
             None,
             &fresh,
         )

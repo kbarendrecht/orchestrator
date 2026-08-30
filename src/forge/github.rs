@@ -1185,13 +1185,13 @@ mod tests {
     #[test]
     fn a_thread_page_yields_its_threads_and_the_next_cursor() {
         let v = thread_page(
-            "kars",
-            &thread_node("PRRT_1", false, false, &["john"]),
+            "viewer",
+            &thread_node("PRRT_1", false, false, &["alice"]),
             Some("Y3Vy"),
         );
         let (page, next) = parse_thread_page(&v, 10001).unwrap();
 
-        assert_eq!(page.viewer, "kars");
+        assert_eq!(page.viewer, "viewer");
         assert_eq!(page.head_sha.as_deref(), Some("abc123"));
         assert_eq!(next.as_deref(), Some("Y3Vy"));
 
@@ -1201,14 +1201,14 @@ mod tests {
         assert_eq!(t.line, Some(42));
         assert_eq!(t.start_line, None);
         assert_eq!(t.original_line, Some(40));
-        assert_eq!(t.author(), Some("john"));
+        assert_eq!(t.author(), Some("alice"));
         assert_eq!(t.diff_hunk(), Some("@@ -1 +1 @@\n+x"));
         assert_eq!(t.comments[0].database_id, 100);
     }
 
     #[test]
     fn the_last_page_reports_no_cursor() {
-        let v = thread_page("kars", &thread_node("PRRT_1", false, false, &["john"]), None);
+        let v = thread_page("viewer", &thread_node("PRRT_1", false, false, &["alice"]), None);
         assert_eq!(parse_thread_page(&v, 10001).unwrap().1, None);
     }
 
@@ -1217,7 +1217,7 @@ mod tests {
         // hasNextPage with a null endCursor would re-request the same page
         // forever; the cursor, not the flag, is what continues the loop.
         let v = node(
-            r#"{"data":{"viewer":{"login":"kars"},"repository":{"pullRequest":{
+            r#"{"data":{"viewer":{"login":"viewer"},"repository":{"pullRequest":{
                 "headRefOid":"abc123","reviewThreads":{
                   "pageInfo":{"hasNextPage":true,"endCursor":null},"nodes":[]}}}}}"#,
         );
@@ -1227,50 +1227,50 @@ mod tests {
     #[test]
     fn a_missing_pull_request_is_an_error_not_an_empty_list() {
         // A deleted or mistyped PR must not read as "no threads to answer".
-        let v = node(r#"{"data":{"viewer":{"login":"kars"},"repository":{"pullRequest":null}}}"#);
+        let v = node(r#"{"data":{"viewer":{"login":"viewer"},"repository":{"pullRequest":null}}}"#);
         assert!(parse_thread_page(&v, 10001).is_none());
     }
 
     #[test]
     fn a_resolved_thread_needs_no_answer() {
-        let v = thread_page("kars", &thread_node("PRRT_1", true, false, &["john"]), None);
+        let v = thread_page("viewer", &thread_node("PRRT_1", true, false, &["alice"]), None);
         let (page, _) = parse_thread_page(&v, 10001).unwrap();
-        assert!(!page.items[0].is_answerable("kars"));
+        assert!(!page.items[0].is_answerable("viewer"));
     }
 
     #[test]
     fn an_outdated_thread_still_needs_an_answer() {
         // The code moved, but the point may still stand — unlike the rail's
         // unresolved count, triage keeps these.
-        let v = thread_page("kars", &thread_node("PRRT_1", false, true, &["john"]), None);
+        let v = thread_page("viewer", &thread_node("PRRT_1", false, true, &["alice"]), None);
         let (page, _) = parse_thread_page(&v, 10001).unwrap();
-        assert!(page.items[0].is_answerable("kars"));
+        assert!(page.items[0].is_answerable("viewer"));
     }
 
     #[test]
     fn a_thread_you_answered_last_needs_no_second_answer() {
         let v = thread_page(
-            "kars",
-            &thread_node("PRRT_1", false, false, &["john", "kars"]),
+            "viewer",
+            &thread_node("PRRT_1", false, false, &["alice", "viewer"]),
             None,
         );
         let (page, _) = parse_thread_page(&v, 10001).unwrap();
-        assert!(!page.items[0].is_answerable("kars"));
+        assert!(!page.items[0].is_answerable("viewer"));
 
         // ...but one where they got the last word still does.
         let v = thread_page(
-            "kars",
-            &thread_node("PRRT_2", false, false, &["john", "kars", "john"]),
+            "viewer",
+            &thread_node("PRRT_2", false, false, &["alice", "viewer", "alice"]),
             None,
         );
         let (page, _) = parse_thread_page(&v, 10001).unwrap();
-        assert!(page.items[0].is_answerable("kars"));
+        assert!(page.items[0].is_answerable("viewer"));
     }
 
     #[test]
     fn a_deleted_author_reads_as_ghost_rather_than_dropping_the_comment() {
         let v = node(
-            r#"{"data":{"viewer":{"login":"kars"},"repository":{"pullRequest":{
+            r#"{"data":{"viewer":{"login":"viewer"},"repository":{"pullRequest":{
                 "headRefOid":"abc","reviewThreads":{"pageInfo":{"hasNextPage":false},
                 "nodes":[{"id":"PRRT_1","isResolved":false,"isOutdated":false,
                   "comments":{"nodes":[
@@ -1317,8 +1317,8 @@ mod tests {
         // The reply endpoint is nested under a PR *and* keyed on a comment id;
         // both come off the same fetch so they cannot disagree.
         let v = thread_page(
-            "kars",
-            &thread_node("PRRT_1", false, false, &["john", "kars", "john"]),
+            "viewer",
+            &thread_node("PRRT_1", false, false, &["alice", "viewer", "alice"]),
             None,
         );
         let (page, _) = parse_thread_page(&v, 10001).unwrap();
@@ -1335,7 +1335,7 @@ mod tests {
         // The triage agent's own input includes comments other people wrote, so an
         // id it hands back has to be looked up rather than trusted. There is no
         // other constructor: an unvalidated id cannot reach `gh`.
-        let v = thread_page("kars", &thread_node("PRRT_1", false, false, &["john"]), None);
+        let v = thread_page("viewer", &thread_node("PRRT_1", false, false, &["alice"]), None);
         let (page, _) = parse_thread_page(&v, 10001).unwrap();
         assert!(page.root_for("PRRT_somebody_elses_pr").is_none());
         assert!(page.root_for("").is_none());
@@ -1344,7 +1344,7 @@ mod tests {
     #[test]
     fn a_thread_with_no_comments_yields_no_root() {
         let v = node(
-            r#"{"data":{"viewer":{"login":"kars"},"repository":{"pullRequest":{
+            r#"{"data":{"viewer":{"login":"viewer"},"repository":{"pullRequest":{
                 "headRefOid":"abc","reviewThreads":{"pageInfo":{"hasNextPage":false},
                 "nodes":[{"id":"PRRT_1","isResolved":false,"isOutdated":false,
                   "comments":{"nodes":[]}}]}}}}}"#,

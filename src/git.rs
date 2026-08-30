@@ -1144,24 +1144,26 @@ fn upstream_fetch_argv(upstream_ref: &str) -> Vec<&str> {
 // The review flow's writes
 // ---------------------------------------------------------------------------
 
-/// Refs a push must never target, mirroring `guards/push.py`.
-///
-/// That guard is a `PreToolUse` hook on the **agent's** Bash, so a daemon-side
-/// push never passes through it. The rest of its rules — plain `--force`,
-/// `--set-upstream`, pushing to `upstream` — are structurally impossible below
-/// because the command is a fixed string, but the protected-ref rule has to be
-/// re-stated here or it simply is not enforced.
-const PROTECTED: [&str; 4] = ["develop", "main", "master", "release"];
-
 /// Push the PR's own branch, refusing to clobber anyone else's work.
 ///
 /// `--force-with-lease` rather than `--force`: it fails when the remote moved
 /// since the last fetch, which is exactly the "someone else pushed" case that
 /// must not be overwritten. Never `-u`: rebinding upstream to origin breaks pull
 /// tracking in a triangular remote setup.
-pub fn push_with_lease(cwd: &Path, branch: &str) -> Result<()> {
-    if PROTECTED.contains(&branch) {
-        bail!("refusing to push to {branch}: open a PR instead");
+///
+/// `base` is the branch this checkout is measured against, from `upstream_ref`.
+/// The agent-side guard ([`crate::guard`]) is a `PreToolUse` hook on **Bash**, so
+/// a daemon-side push never passes through it and the rule has to be re-stated
+/// here or it is simply not enforced. Its other rule — plain `--force` — is
+/// structurally impossible below, because the command is a fixed string.
+///
+/// This used to be a hardcoded `["develop", "main", "master", "release"]`, which
+/// was wrong in both directions: it let a push to a base called `trunk` through,
+/// and refused an ordinary feature branch that happened to be named `release`.
+/// `None` is "no resolvable base", and refuses nothing.
+pub fn push_with_lease(cwd: &Path, branch: &str, base: Option<&str>) -> Result<()> {
+    if base == Some(branch) {
+        bail!("refusing to push to {branch}: it is the base branch, open a PR instead");
     }
     let out = Command::new("git")
         .args(["push", "--force-with-lease", "origin", branch])
@@ -2605,12 +2607,12 @@ mod tests {
             vec!["add", "-A"],
             vec![
                 "-c",
-                "user.email=bob@example.com",
+                "user.email=alice@example.com",
                 "-c",
-                "user.name=bob",
+                "user.name=alice",
                 "commit",
                 "-qm",
-                "bob's commit",
+                "alice's commit",
             ],
         ] {
             std::process::Command::new("git")
@@ -2622,7 +2624,7 @@ mod tests {
 
         match amend_target(&d, None, "base", &[("f.txt".into(), 3)], "me@here").unwrap() {
             Amend::OnTop(why) => {
-                assert!(why.contains("bob@example.com"), "must name them: {why}");
+                assert!(why.contains("alice@example.com"), "must name them: {why}");
                 assert!(why.contains(&target[..7]), "and the target: {why}");
             }
             other => panic!("a stacked commit must not be rewritten, got {other:?}"),
@@ -2642,7 +2644,7 @@ mod tests {
             .unwrap();
 
         std::fs::write(d.join("f.txt"), "base1\nbase2\nmine\nby hand\n").unwrap();
-        fold_in(&d, &Amend::OnTop("HEAD is bob's commit".into())).unwrap();
+        fold_in(&d, &Amend::OnTop("HEAD is alice's commit".into())).unwrap();
 
         let after_count = std::process::Command::new("git")
             .args(["rev-list", "--count", "HEAD"])
@@ -2752,13 +2754,19 @@ mod tests {
     }
 
     #[test]
-    fn a_push_to_a_protected_ref_is_refused_before_it_runs() {
-        // guards/push.py only hooks the agent's Bash; a daemon push bypasses it.
+    fn a_push_to_the_base_branch_is_refused_before_it_runs() {
+        // The agent-side guard only hooks Bash; a daemon push bypasses it.
         let d = amend_repo();
-        for branch in ["develop", "main", "master", "release"] {
-            let err = push_with_lease(&d, branch).unwrap_err().to_string();
-            assert!(err.contains("refusing to push"), "{branch}: {err}");
-        }
+        let err = push_with_lease(&d, "trunk", Some("trunk")).unwrap_err().to_string();
+        assert!(err.contains("refusing to push"), "{err}");
+        // The list used to be four hardcoded names, so this pair was backwards:
+        // `trunk` sailed through and `release` was refused for its name alone.
+        // Only a real push attempt gets past the check, so the error is git's.
+        let err = push_with_lease(&d, "release", Some("trunk")).unwrap_err().to_string();
+        assert!(!err.contains("refusing to push"), "{err}");
+        // No resolvable base refuses nothing here either.
+        let err = push_with_lease(&d, "trunk", None).unwrap_err().to_string();
+        assert!(!err.contains("refusing to push"), "{err}");
     }
 
     #[test]

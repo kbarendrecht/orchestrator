@@ -2,9 +2,10 @@
 //!
 //! `commands/*.md` are compiled in with `include_str!` the same way the SPA is,
 //! so the daemon carries its own prompts instead of resolving slash commands
-//! from the agent's command path. That path depends on `you/commands`
-//! being installed; it usually is not, and a missing command fails as "no such
-//! command" at the worst possible moment — after a session has already spawned.
+//! from the agent's command path. That path holds whatever the person running the
+//! daemon happens to have installed, which is nothing the daemon can depend on —
+//! and a missing command fails as "no such command" at the worst possible moment,
+//! after a session has already spawned.
 //!
 //! Rendered text is passed to `claude -p` inline. Nothing is typed into a pty as
 //! a `/command`, so nothing has to exist on the agent's side for a run to work.
@@ -50,8 +51,10 @@ pub const TRACKER_OFF: &str = "**No tracker is configured, so never propose `sto
 
 /// Everything a vendored prompt can ask for.
 ///
-/// Deliberately not the token: that goes in the environment as `ORCHD_TOKEN`, so
-/// it is never in prompt text that ends up in a transcript or a pty buffer.
+/// Deliberately not a credential: those go in the environment — `ORCH_POST_TOKEN`
+/// for the proposals POST, `ORCH_ASK_TOKEN` for asking — so neither is in prompt
+/// text that ends up in a transcript or a pty buffer. Neither is the app token,
+/// and that is the point: this run reads other people's review comments.
 ///
 /// One struct for three templates, so each caller fills in only the fields its own
 /// template uses and leaves the rest at [`Default`]. Note what that costs: `render`
@@ -241,7 +244,35 @@ mod tests {
         let out = render(TRIAGE, &Vars { language: "Portuguese".into(), ..vars() }).unwrap();
         assert!(out.contains("default to Portuguese"), "reply language substituted");
         assert!(out.contains("Write both in Portuguese"), "story language substituted");
-        assert!(!out.contains("Dutch"), "no language is baked into the prompt");
+    }
+
+    #[test]
+    fn no_prompt_carries_the_language_it_was_extracted_from() {
+        // This used to be `assert!(!out.contains("Dutch"))`, on one prompt, and it
+        // passed for a year while four prompts shipped Dutch *sentences* — the word
+        // "Dutch" was never going to appear in them. Look for the language instead
+        // of its name, and look in every prompt rather than the first one.
+        //
+        // Whole words, not substrings: "een" is inside "between".
+        const DUTCH: [&str; 9] =
+            ["naar", "niet", "wordt", "werd", "voor", "het", "een", "bron", "losgetrokken"];
+        const PROMPTS: [(&str, &str); 6] = [
+            ("triage", TRIAGE),
+            ("fix-pr", FIX_PR),
+            ("story", STORY),
+            ("resolve", RESOLVE),
+            ("resolve-run", RESOLVE_RUN),
+            ("review-session", REVIEW_SESSION),
+        ];
+        for (name, body) in PROMPTS {
+            for word in body.split(|c: char| !c.is_alphabetic()) {
+                let w = word.to_ascii_lowercase();
+                assert!(
+                    !DUTCH.contains(&w.as_str()),
+                    "{name}.md still carries the Dutch word {word:?}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -257,7 +288,10 @@ mod tests {
         let out = render(TRIAGE, &vars()).unwrap();
         // The invariants the daemon depends on. If the prompt is reworded past
         // these, the contract in `proposal.rs` no longer matches what was asked.
-        assert!(out.contains("$ORCHD_TOKEN"), "token must come from the env");
+        // The *narrow* one, from the environment. `$ORCHD_TOKEN` here would mean
+        // the run was handed the whole API again.
+        assert!(out.contains("$ORCH_POST_TOKEN"), "post token must come from the env");
+        assert!(!out.contains("ORCHD_TOKEN"), "the app token must not reach this run");
         assert!(out.contains("/api/pr/10001/proposals"), "handoff URL");
         assert!(out.contains("kbarendrecht"), "viewer login substituted");
         // The read-only invariant everything downstream rests on. `patch.rs`

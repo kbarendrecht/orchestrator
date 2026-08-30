@@ -45,6 +45,10 @@ orch — talk to the orchestrator you are running inside
   orch ls
       The sessions the daemon knows about, one per line.
 
+  orch guard push [--base <branch>]
+      Not for you to call. The daemon registers this as a PreToolUse hook; it
+      reads the payload on stdin and exits 2 to refuse a dangerous push.
+
 Environment (set for you): ORCH_URL, ORCH_SESSION_ID, ORCH_ASK_TOKEN
 ";
 
@@ -112,6 +116,12 @@ fn main() -> ExitCode {
         print!("{USAGE}");
         return ExitCode::SUCCESS;
     };
+    // Before `run`, which needs the session environment: a hook is spawned by
+    // Claude Code, not by the daemon, so `ORCH_URL` and the ask token are not
+    // guaranteed to be there — and the guard talks to nothing anyway.
+    if cmd == "guard" {
+        return guard(&args);
+    }
     match run(cmd, &args) {
         Ok(out) => {
             if !out.is_empty() {
@@ -124,6 +134,68 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// `orch guard push` — the `PreToolUse` hook body.
+///
+/// Exit 2 refuses the tool call and shows stderr to the model; everything else
+/// lets it through. **Every unreadable thing here exits 0 on purpose**: a guard
+/// that blocks a turn because a payload changed shape would be worse than the
+/// mistake it is watching for, and the rules it enforces are a safety net rather
+/// than a boundary (see `orchd::guard`).
+fn guard(args: &[String]) -> ExitCode {
+    if args.get(1).map(String::as_str) != Some("push") {
+        eprintln!("orch: the only guard is `orch guard push`");
+        return ExitCode::FAILURE;
+    }
+    let mut payload = String::new();
+    if std::io::Read::read_to_string(&mut std::io::stdin(), &mut payload).is_err() {
+        return ExitCode::SUCCESS;
+    }
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&payload) else {
+        return ExitCode::SUCCESS;
+    };
+    let tool_name = v.get("tool_name").and_then(|t| t.as_str()).unwrap_or("");
+    let command = v
+        .get("tool_input")
+        .and_then(|i| i.get("command"))
+        .and_then(|c| c.as_str())
+        .unwrap_or("");
+
+    // The branch only matters for a bare `git push`, and it is read from the
+    // payload's own cwd rather than this process's — a hook's working directory
+    // is not promised to be the checkout the command runs in.
+    let branch = v
+        .get("cwd")
+        .and_then(|c| c.as_str())
+        .and_then(current_branch);
+
+    let base = flag(args, "--base");
+    let call = orchd::guard::Call {
+        tool_name,
+        command,
+        current_branch: branch.as_deref(),
+    };
+    match orchd::guard::check(&call, base.as_deref()) {
+        Some(reason) => {
+            eprintln!("{reason}");
+            // Claude Code's "block and tell the model why" code.
+            ExitCode::from(2)
+        }
+        None => ExitCode::SUCCESS,
+    }
+}
+
+fn current_branch(cwd: &str) -> Option<String> {
+    let out = std::process::Command::new("git")
+        .args(["-C", cwd, "symbolic-ref", "--short", "HEAD"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let name = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (!name.is_empty()).then_some(name)
 }
 
 fn run(cmd: &str, args: &[String]) -> Result<String, String> {

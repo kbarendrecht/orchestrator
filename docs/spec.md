@@ -487,7 +487,7 @@ would actually cost a colleague a day.
       "number": 2001,
       "title": "Refactor a config loader",
       "url": "https://github.com/acme/monorepo/pull/2001",
-      "author": "erin",
+      "author": "dana",
       "requested_at": "2026-08-09T09:02:00Z",
       "updated_at": "2026-08-13T16:40:11Z",
       "state": "requested",
@@ -842,8 +842,13 @@ execution:
   `http://127.0.0.1:7777`. Validate the `Origin` and `Host` headers on every
   request and reject anything that isn't the SPA's own origin.
 - **Token.** Generate a random token at daemon start, embed it in the served SPA,
-  require it on the WebSocket and all mutating endpoints. Cheap, and it closes the
-  "any local process" hole too.
+  require it on the WebSocket and all mutating endpoints. Cheap, and it is what
+  makes the Origin check bite: a web page you visit cannot read the token, so it
+  cannot forge a call even from a browser that would send one.
+  — *Superseded in one respect:* this said it "closes the 'any local process' hole
+  too". It does not. `GET /` returns the page with the token in it and is exempt,
+  so any local process can read it. That is a deliberate trade, not a boundary;
+  `README.md` § Security states it plainly and `api::guard` carries the reasoning.
 - **Hook endpoints are the exception** — they come from `claude` subprocesses that
   can't easily carry the token. Keep them on a separate path prefix, accept only
   the documented hook schema, and treat them as write-only observers: they update

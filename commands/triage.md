@@ -1,6 +1,6 @@
 # Triage review feedback — the orchd read-and-propose pass
 
-Adapted from `you/commands:claude/commands/resolve.md`, and renamed: this pass
+Named `triage` rather than `resolve`, because this pass
 resolves nothing. It reads, judges and proposes; the human resolves. Vendored here so the
 daemon carries its own copy — substituted and passed to `claude -p` inline rather than
 looked up on the agent's command path, so the filename is internal and never typed.
@@ -109,7 +109,7 @@ One POST, then exit. A run that exits without posting is a failed run.
 
 ```bash
 curl -sS -X POST '{{PROPOSALS_URL}}' \
-  -H "x-orch-token: $ORCHD_TOKEN" \
+  -H "x-orch-token: $ORCH_POST_TOKEN" \
   -H 'content-type: application/json' \
   --data-binary @proposals.json
 ```

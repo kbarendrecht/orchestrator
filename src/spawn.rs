@@ -698,8 +698,8 @@ pub async fn spawn_fix_pr_session(
     // start (§8); it never depended on the run being invisible.
     //
     // The prompt is a file the session is told to read rather than a slash
-    // command, so nothing depends on `you/commands` being installed and
-    // nothing is written into the checkout being driven.
+    // command, so nothing has to be installed on the agent's side and nothing is
+    // written into the checkout being driven.
     let prompt_file = vendored_prompt_file(app, pr, "fix-pr").await?;
 
     let id = Uuid::new_v4();

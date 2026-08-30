@@ -1,8 +1,8 @@
 # TODO
 
-The **Live findings** block below is rewritten by the daemon every poll. It only
-ever lists conditions that are true right now, so it stays worth reading.
-Everything outside that block is hand-written and survives.
+Hand-written, and it survives. The daemon's live findings used to be spliced into
+this file, which churned it from every build; they now go to a gitignored
+`daemon.log` instead, and only when the repo being managed is this source tree.
 
 ## Next
 
@@ -66,8 +66,8 @@ Everything outside that block is hand-written and survives.
   handles worst: two comments on one function usually want *one* coherent change,
   and splitting it leaves the first commit incoherent on its own.
 
-  Force-with-lease needs no new decision — `guards/push.py` already permits no other
-  form, bans `push -u`, and refuses protected refs.
+  Force-with-lease needs no new decision — `src/guard.rs` already permits no other
+  form, and refuses a push to the base branch.
 
   **Three consequences to settle before building it.**
   1. **The card's sha goes stale.** A `fixup!` is squashed later, so the sha the
@@ -188,7 +188,7 @@ Everything outside that block is hand-written and survives.
   a semi-automation in the spirit of `fix-pr` — a `/restack` (or `sync`) skill
   that keeps a stack in sync: when a base PR's head moves (amend/rebase), rebase
   the children onto it bottom-up and re-push, within the existing push guards
-  (`--force-with-lease` only, `push -u` ban, protected refs). Reuses the
+  (`--force-with-lease` only, never the base branch). Reuses the
   `PrAutomation` per-PR run model and the skill-spawn path; the bottom-up
   serialized ordering is the piece §8 described but never built. Two known
   wrinkles: the stack DAG is stored children-only (`Pr.children`), so a restack

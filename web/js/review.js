@@ -133,7 +133,7 @@ function replyOf(item) {
 const isHandled = (item) =>
   !reviewState.skipped[item.t.id] && reviewState.picks[item.t.id] !== undefined;
 
-/** `renovate.json5:161 · carol`, matching what the daemon's report uses. */
+/** `renovate.json5:161 · bob`, matching what the daemon's report uses. */
 function threadLabel(t) {
   const who = t.comments?.[0]?.author || 'ghost';
   const line = t.line ?? t.original_line;

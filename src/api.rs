@@ -94,6 +94,24 @@ fn is_ask_route(path: &str) -> bool {
     path.starts_with("/api/session/") && ASK_ROUTES.iter().any(|s| path.ends_with(s))
 }
 
+/// Where a triage or review-session run POSTs what it proposed.
+///
+/// Separate from [`is_ask_route`] because it is keyed on a *PR*, not a session,
+/// so it cannot share that matcher's `/api/session/` prefix. It carries the same
+/// kind of credential: narrow, minted per run, and good for nothing else.
+fn is_proposals_route(path: &str) -> bool {
+    path.starts_with("/api/pr/") && path.ends_with("/proposals")
+}
+
+/// Every route an *agent* calls, on a credential that is not the app token.
+///
+/// One predicate because the guard has to make the same two allowances for all of
+/// them — skip `needs_token`, and accept a missing `Origin` — and splitting that
+/// is how `…/committed` shipped reachable by neither. See [`guard`].
+fn is_agent_route(path: &str) -> bool {
+    is_ask_route(path) || is_proposals_route(path)
+}
+
 /// Reject anything that is not the SPA's own origin.
 ///
 /// Binding to 127.0.0.1 is necessary but not sufficient: any web page you visit
@@ -144,16 +162,25 @@ pub async fn guard(
        its only caller — twice over, since a curl that added an Origin would then
        have failed `needs_token` for want of an app token it is deliberately not
        given. Found by driving a real run, invisible to every unit test. */
-    let is_ask = is_ask_route(&path);
+    let is_ask = is_agent_route(&path);
 
     let is_get = req.method() == axum::http::Method::GET;
     if !origin_ok(origin, port, is_hook || is_ask, is_get, token_ok) {
         return (StatusCode::FORBIDDEN, "bad origin").into_response();
     }
 
-    // The token closes the "any local process" hole. Hooks cannot easily carry
-    // it, which is why they are confined to a separate prefix and a schema that
-    // only ever updates state.
+    // **The token does not close the "any local process" hole, and this comment
+    // used to say it did.** `GET /` is exempt below and the page it returns has
+    // the token substituted into it, so any process that can reach loopback can
+    // read it and then hold everything. That is a deliberate trade — the threat
+    // model is a machine you do not share, where a hostile local process can
+    // ptrace this daemon anyway — but it is a trade, not a boundary, and the
+    // README says so in those words now. What the token *does* close is the
+    // cross-origin hole, together with the Host and Origin checks above: a web
+    // page you visit cannot read the token, so it cannot forge these calls.
+    //
+    // Hooks cannot easily carry it, which is why they are confined to a separate
+    // prefix and a schema that only ever updates state.
     //
     // GETs are otherwise exempt so a same-origin address-bar read works. That
     // holds while a GET only hands back state the daemon already had; a GET
@@ -622,6 +649,36 @@ async fn ask_token_ok(app: &Arc<AppState>, id: Uuid, headers: &axum::http::Heade
         return Err(ApiError(anyhow::anyhow!("bad ask token for session {id}")));
     }
     Ok(())
+}
+
+/// Is this caller the triage run this PR is expecting proposals from?
+///
+/// The sibling of [`ask_token_ok`] for the one agent route that is keyed on a PR
+/// rather than a session. Same shape and same reasoning: the app token is taken
+/// too, so the SPA and the tests can drive the endpoint, but a run is given only
+/// the narrow one.
+///
+/// A PR with no token recorded refuses everything except the app token — there is
+/// no run to be, so there is nothing to authenticate as.
+async fn proposal_token_ok(
+    app: &Arc<AppState>,
+    pr: u64,
+    headers: &axum::http::HeaderMap,
+) -> Result<(), ApiError> {
+    let given = headers
+        .get("x-orch-token")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default();
+    if given == app.token {
+        return Ok(());
+    }
+    let inner = app.inner.read().await;
+    match inner.proposal_tokens.get(&pr) {
+        Some(want) if !given.is_empty() && given == want => Ok(()),
+        _ => Err(ApiError(anyhow::anyhow!(
+            "bad proposals token for PR #{pr}"
+        ))),
+    }
 }
 
 #[derive(Deserialize)]
@@ -2569,6 +2626,60 @@ mod tests {
         }
     }
 
+    /// The guard consults [`is_agent_route`], not [`is_ask_route`]. A route the
+    /// prompts really curl that is missing from it is refused twice over — `bad
+    /// origin` first, because the agent's curl carries none, and then for want of
+    /// an app token it is deliberately not given. That is how `…/committed` shipped
+    /// unreachable by its only caller.
+    #[test]
+    fn the_proposals_post_is_an_agent_route_and_reachable_without_an_origin() {
+        let p = "/api/pr/10001/proposals";
+        assert!(is_proposals_route(p));
+        assert!(is_agent_route(p), "{p} is curled by triage.md and review-session.md");
+        // Not an *ask* route: it is keyed on a PR, and has no session to check.
+        assert!(!is_ask_route(p));
+        // The Origin allowance the agent's curl depends on.
+        assert!(ok(None, true, false, false), "no Origin must pass for an agent route");
+        // Neighbours that stay the SPA's, on the app token.
+        for other in ["/api/pr/10001/review", "/api/pr/10001/fix-pr", "/api/pr/10001"] {
+            assert!(!is_agent_route(other), "{other} is not the agent's to call");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_run_posts_proposals_on_a_token_that_opens_nothing_else() {
+        let (app, dir) = app_in("proposaltok");
+        let pr = 10001u64;
+        let narrow = crate::state::random_token();
+        app.inner
+            .write()
+            .await
+            .proposal_tokens
+            .insert(pr, narrow.clone());
+
+        let hdr = |v: &str| {
+            let mut h = axum::http::HeaderMap::new();
+            h.insert("x-orch-token", v.parse().unwrap());
+            h
+        };
+
+        // The run's own credential works for its own PR.
+        assert!(proposal_token_ok(&app, pr, &hdr(&narrow)).await.is_ok());
+        // The app token still works, so the SPA and these tests can drive it.
+        assert!(proposal_token_ok(&app, pr, &hdr(&app.token)).await.is_ok());
+        // A wrong one, an empty one, and no header at all are all refused.
+        assert!(proposal_token_ok(&app, pr, &hdr("nope")).await.is_err());
+        assert!(proposal_token_ok(&app, pr, &hdr("")).await.is_err());
+        assert!(proposal_token_ok(&app, pr, &axum::http::HeaderMap::new())
+            .await
+            .is_err());
+        // Scoped to the PR it was minted for: the same token is nothing on another.
+        assert!(proposal_token_ok(&app, 999, &hdr(&narrow)).await.is_err());
+        // And a PR with no run recorded authenticates nobody but the app.
+        assert!(proposal_token_ok(&app, 999, &hdr(&app.token)).await.is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn a_no_origin_get_or_hook_still_passes_untokened() {
         assert!(ok(None, false, true, false));
@@ -3101,8 +3212,13 @@ pub async fn pr_review_session(
 pub async fn pr_proposals(
     State(app): State<Arc<AppState>>,
     Path(number): Path<u64>,
+    headers: axum::http::HeaderMap,
     Json(body): Json<crate::proposal::ProposalSet>,
 ) -> ApiResult<serde_json::Value> {
+    // Before the fetch: this route spends the GitHub token on `fetch_threads`, so
+    // an unauthenticated caller could otherwise drive outbound traffic and burn
+    // the rate limit without ever getting past validation.
+    proposal_token_ok(&app, number, &headers).await?;
     let fetched = fetch_threads(&app, number).await?;
 
     if let Some(head) = &fetched.head_sha {
@@ -3436,7 +3552,8 @@ pub async fn pr_run_push(
     };
     let path = gate_worktree(&app, number).await?;
     let branch = pr.head_ref.clone();
-    tokio::task::spawn_blocking(move || crate::git::push_with_lease(&path, &branch))
+    let base = crate::git::base_checkout_branch(&app.cfg.main_checkout, &app.cfg.upstream_ref);
+    tokio::task::spawn_blocking(move || crate::git::push_with_lease(&path, &branch, base.as_deref()))
         .await
         .context("the push panicked")??;
     // Re-measure, or the overview keeps saying there is work to push: `unpushed`

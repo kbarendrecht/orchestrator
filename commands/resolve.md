@@ -1,6 +1,6 @@
 # Resolve review feedback — orchd run
 
-Adapted from `you/commands:claude/commands/resolve.md`. Vendored here so the
+Vendored here so the
 daemon carries its own copy: it is substituted and written to a file the daemon owns,
 and the session is told to read that file. Nothing is resolved from the agent's
 command path, so nothing has to be installed for a run to work.
@@ -65,8 +65,8 @@ only when it's right.
 
 Apply the `apply` set, amend into the commit that owns each change, run the repo's
 pre-commit (`mise run pre-commit:run` where it exists), push `--force-with-lease`.
-The daemon's push guard denies plain `--force`, `-u`/`--set-upstream`, and any push
-to a protected ref — those denials are correct, do not work around them.
+The daemon's push guard denies plain `--force` and any push to the base branch —
+those denials are correct, do not work around them.
 
 Then verify each one landed, by the reviewer's own claim, not by your edit
 succeeding:

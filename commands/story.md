@@ -62,8 +62,8 @@ Write **one file** and exit:
   "stories": [
     {
       "thread_id": "PRRT_…",       // exactly as given above
-      "id": "sc-3001",            // the short form
-      "url": "https://app.shortcut.com/…/story/3001",
+      "id": "sc-12345",            // the short form
+      "url": "https://app.shortcut.com/…/story/12345",
       "created": true              // false if the search found it already there
     },
     {

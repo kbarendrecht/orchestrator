@@ -179,11 +179,17 @@ pub async fn spawn(app: &Arc<AppState>, pr: u64, head_ref: &str, login: &str) ->
         settings.to_string_lossy().into_owned(),
     ];
 
-    let (mut env, unset) = crate::config::transcript_env();
-    env.push(("ORCH_SESSION_ID".to_string(), id.to_string()));
-    // The run POSTs its proposals back, so it needs the API token — in the
-    // environment, never in the prompt text, which lands in transcripts.
-    env.push(("ORCHD_TOKEN".to_string(), app.token.clone()));
+    // The run POSTs its proposals back, so it needs a credential — but only for
+    // that one route on this one PR. It used to be handed `app.token`, the whole
+    // API, and this is the run whose input is other people's review comments.
+    let post_token = crate::state::random_token();
+    app.inner
+        .write()
+        .await
+        .proposal_tokens
+        .insert(pr, post_token.clone());
+
+    let (env, unset) = run_env(id, &post_token, None);
 
     let spawned = PtyHandle::spawn(&cmd, &path, &env, &unset, DEFAULT_SIZE)?;
     let mut session = Session::new(
@@ -290,12 +296,18 @@ pub async fn spawn_review(
     // the agent reads it from `ORCH_ASK_TOKEN`, and `/ask`/`/wait` check it against
     // `session.ask_token`. `Session::new` sets its own, overwritten below.
     let ask_token = crate::state::random_token();
-    let (mut env, unset) = crate::config::transcript_env();
-    env.push(("ORCH_SESSION_ID".to_string(), id.to_string()));
-    // Posts proposals with the API token; asks with the narrow ask token. Both in
-    // the environment, never in the prompt text, which lands in transcripts.
-    env.push(("ORCHD_TOKEN".to_string(), app.token.clone()));
-    env.push(("ORCH_ASK_TOKEN".to_string(), ask_token.clone()));
+    // Two narrow credentials, no broad one: asks are authenticated against this
+    // session, proposals against this PR. Neither opens anything else, which is
+    // what keeps "the daemon owns outward writes" an API rule rather than a
+    // sentence in a prompt this run's own input could argue with.
+    let post_token = crate::state::random_token();
+    app.inner
+        .write()
+        .await
+        .proposal_tokens
+        .insert(pr, post_token.clone());
+
+    let (env, unset) = run_env(id, &post_token, Some(&ask_token));
 
     let spawned = PtyHandle::spawn(&cmd, &path, &env, &unset, DEFAULT_SIZE)?;
     let mut session = Session::new(
@@ -331,6 +343,35 @@ pub async fn spawn_review(
     Ok(id)
 }
 
+/// The environment a proposals-posting run is given, and nothing more.
+///
+/// One function for both runs so the two cannot drift — and extracted at all
+/// because this is the seam that decides *which* credential a run holds, and it
+/// used to be `app.token`: the whole API, handed to the pass whose input is other
+/// people's review comments.
+///
+/// Both credentials go in the environment rather than the prompt, because prompt
+/// text lands in a transcript and a pty buffer. `ask` is `None` for the headless
+/// triage pass, which has nobody to ask.
+///
+/// Testable on purpose. Verifying it live needs a real triage run against a PR
+/// with unanswered threads, and the fixture that provides one depends on GitHub
+/// Actions — so when Actions is unavailable, this is the only thing standing
+/// between a two-line plumbing slip and a review flow that cannot post.
+fn run_env(
+    id: SessionId,
+    post_token: &str,
+    ask: Option<&str>,
+) -> (Vec<(String, String)>, Vec<&'static str>) {
+    let (mut env, unset) = crate::config::transcript_env();
+    env.push(("ORCH_SESSION_ID".to_string(), id.to_string()));
+    env.push(("ORCH_POST_TOKEN".to_string(), post_token.to_string()));
+    if let Some(t) = ask {
+        env.push(("ORCH_ASK_TOKEN".to_string(), t.to_string()));
+    }
+    (env, unset)
+}
+
 /// Notice when a run ends without having proposed anything.
 ///
 /// Success is "proposals arrived", not "exited zero" — an agent can finish
@@ -350,6 +391,43 @@ fn watch(app: Arc<AppState>, pr: u64, id: SessionId, handle: Arc<PtyHandle>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The credential a run is handed, pinned. This is the one thing about seam 2
+    /// a unit test can see: the route guard and the token check are driven over
+    /// real HTTP in `api::tests`, but *which* value reaches the agent is decided
+    /// here, and the prompts read it by name.
+    #[test]
+    fn a_run_is_given_the_narrow_token_and_never_the_app_token() {
+        let id = uuid::Uuid::new_v4();
+        let (env, _) = run_env(id, "post-tok", Some("ask-tok"));
+        let get = |k: &str| {
+            env.iter()
+                .find(|(n, _)| n == k)
+                .map(|(_, v)| v.clone())
+        };
+
+        assert_eq!(get("ORCH_POST_TOKEN").as_deref(), Some("post-tok"));
+        assert_eq!(get("ORCH_ASK_TOKEN").as_deref(), Some("ask-tok"));
+        assert_eq!(get("ORCH_SESSION_ID").as_deref(), Some(id.to_string().as_str()));
+
+        // The regression this exists for. `ORCHD_TOKEN` here means the run holds
+        // the whole API again — teardown, spawn, file writes — to do a job that is
+        // one POST, while reading text a stranger wrote on a pull request.
+        assert!(
+            get("ORCHD_TOKEN").is_none(),
+            "the app token must never reach a run that reads third-party comments"
+        );
+        // And the name the prompts actually curl with. `commands/triage.md` and
+        // `review-session.md` send `$ORCH_POST_TOKEN`; a rename here that missed
+        // them would fail only at the POST, in a run that had already done its work.
+        assert!(crate::prompt::TRIAGE.contains("$ORCH_POST_TOKEN"));
+        assert!(crate::prompt::REVIEW_SESSION.contains("$ORCH_POST_TOKEN"));
+
+        // The headless triage pass has nobody to ask, so it gets no ask token.
+        let (solo, _) = run_env(id, "post-tok", None);
+        assert!(!solo.iter().any(|(n, _)| n == "ORCH_ASK_TOKEN"));
+        assert!(solo.iter().any(|(n, _)| n == "ORCH_POST_TOKEN"));
+    }
 
     #[test]
     fn a_gate_says_what_is_wrong_in_one_line() {

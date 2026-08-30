@@ -261,7 +261,7 @@ mod tests {
         let q = parse_t(&v(r#"{
             "forLogin":"kbarendrecht","total":16,"skipped":4,
             "actionable":[{"pr":{"number":2001,"title":"Refactor a config loader",
-                "url":"https://github.com/x/y/pull/2001","author":"erin","isDraft":false},
+                "url":"https://github.com/x/y/pull/2001","author":"dana","isDraft":false},
                 "reviewers":["a","b"],"blockers":[],"needsReReview":false,
                 "ageHours":52.5,"prio":2}],
             "blocked":[],"ownBlocked":[]}"#))
@@ -270,7 +270,7 @@ mod tests {
         assert_eq!(q.actionable.len(), 1);
         let r = &q.actionable[0];
         assert_eq!(r.number, 2001);
-        assert_eq!(r.author, "erin");
+        assert_eq!(r.author, "dana");
         assert_eq!(r.reviewers, 2);
         assert_eq!(r.prio, 2);
         assert!((r.age_hours - 52.5).abs() < 0.01);
@@ -342,7 +342,7 @@ mod tests {
             {"pr":{"number":10003,
                    "title":"Rename a widget helper",
                    "url":"https://github.com/acme/monorepo/pull/10003",
-                   "author":"carol","isDraft":false,
+                   "author":"bob","isDraft":false,
                    "mergeable":"MERGEABLE","checks":"SUCCESS"},
              "prio":3,"ageHours":70.4,"reviewers":0,"needsReReview":false,
              "blockers":[]}],"blocked":[]}"#;
@@ -351,7 +351,7 @@ mod tests {
         assert_eq!(q.total, 1);
         let e = &q.actionable[0];
         assert_eq!(e.number, 10003);
-        assert_eq!(e.author, "carol");
+        assert_eq!(e.author, "bob");
         assert_eq!(e.prio, 3);
         assert_eq!(e.age_hours, 70.4);
         assert_eq!(e.checks.as_deref(), Some("SUCCESS"));

@@ -356,6 +356,27 @@
       <dt data-mod>MOD&nbsp;Shift&nbsp;?</dt><dd>show or hide this list</dd>
     </dl>
   </div>
+  <!-- The AGPL's "Appropriate Legal Notices" (§0): a copyright line, no warranty,
+       that it may be conveyed, and where to read the licence. Nothing obliges this
+       — §5(d) excuses a work whose upstream shows none, and orchd showed none — but
+       it is the only place a person handed a `.deb` ever meets the licence, and
+       once it is here a modified version has to keep it.
+
+       In the legend because §0 says a prominent item in a list of user commands
+       satisfies the requirement, and this is that list. **Outside `settings-card`**
+       because that card is the scrolling half: inside it, the notice sat below the
+       fold on a short window, and a notice you have to go looking for is not the
+       "convenient and prominently visible" the same section asks for.
+
+       The version comes from `renderLegalNotice()` reading `snap.version`, not
+       typed here — this file is hand-written and a pinned version number is the
+       thing that silently goes a release stale. -->
+  <p class="legal" id="legalnotice">
+    <span id="legalver">orchd</span> &middot; Copyright &copy; 2026 Kars Barendrecht<br>
+    No warranty. Free software: you may redistribute it under the
+    <a href="https://www.gnu.org/licenses/agpl-3.0.html" target="_blank" rel="noopener noreferrer">AGPL-3.0-only</a>.
+    Source: <a href="https://github.com/kbarendrecht/orchestrator" target="_blank" rel="noopener noreferrer">github.com/kbarendrecht/orchestrator</a>
+  </p>
 </div>
 
 <div class="ctxmenu" id="ctxmenu" role="menu" hidden></div>

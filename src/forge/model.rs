@@ -45,8 +45,8 @@ pub struct Pr {
     /// anything about a force-push.
     ///
     /// Repo-level, so it does not promise a given *branch* is force-pushable;
-    /// `guards/push.py` is the other half of that pair (`--force-with-lease` only,
-    /// no protected refs). `None` means GitHub did not say, and the guard fails
+    /// `src/guard.rs` is the other half of that pair (`--force-with-lease` only,
+    /// never the base branch). `None` means GitHub did not say, and the guard fails
     /// closed on it.
     pub head_pushable: Option<bool>,
     pub base_ref: String,
@@ -393,7 +393,7 @@ mod tests {
         // tab, whose order is the diff's.
         let mut t = Threads {
             pr: 10001,
-            viewer: "kars".into(),
+            viewer: "viewer".into(),
             head_sha: None,
             items: vec![
                 thread_at(Some("b.ts"), Some(9)),
@@ -430,7 +430,7 @@ mod tests {
         // to the top of its file instead of where the reviewer was looking.
         let mut t = Threads {
             pr: 10001,
-            viewer: "kars".into(),
+            viewer: "viewer".into(),
             head_sha: None,
             items: vec![thread_at(Some("a.ts"), Some(5)), {
                 let mut o = thread_at(Some("a.ts"), None);

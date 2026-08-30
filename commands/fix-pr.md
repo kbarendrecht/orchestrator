@@ -1,8 +1,7 @@
 # fix-pr — get a PR green, an orchd run
 
-Adapted from `you/commands:claude/commands/green.md`. Vendored here so the
-daemon carries its own copy: it is substituted and passed to `claude -p` inline,
-not resolved from the agent's command path.
+Vendored here so the daemon carries its own copy: it is substituted and passed to
+`claude -p` inline, not resolved from the agent's command path.
 
 You are getting PR **{{PR}}** of `{{OWNER}}/{{REPO}}` green. Placeholders
 `{{PR}}`, `{{OWNER}}`, `{{REPO}}`, `{{LOGIN}}`, `{{UPSTREAM}}` and
@@ -40,9 +39,9 @@ switching.
 5. Amend into the commit that owns the change; never a "fix review" or "fix CI"
    commit. The subject still describes the change after amending; if it no longer
    does, rewrite it. Splitting or reordering commits: only when asked.
-6. `git push --force-with-lease`. The daemon's push guard denies plain `--force`,
-   `-u`/`--set-upstream`, and any push to a protected ref — those denials are
-   correct, do not work around them.
+6. `git push --force-with-lease`. The daemon's push guard denies plain `--force`
+   and any push to the base branch — those denials are correct, do not work
+   around them.
 7. Watch with the Monitor tool over `gh pr checks {{PR}} --watch --interval 60`,
    event on each failure and on completion. A failure lands → back to step 4,
    amend, push, keep watching.

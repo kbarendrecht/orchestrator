@@ -94,6 +94,7 @@ function render() {
   // After `renderUpdate`, which decides whether the bar above this one is there
   // and therefore whether this one is stacked.
   renderAgentUpdate();
+  renderLegalNotice();
 }
 
 /** The question the selected session is blocked on.
@@ -205,6 +206,19 @@ async function answerInteraction(session, ask, answer, host, text) {
   }
 }
 
+
+/* The build named in the legend's legal notice.
+ *
+ * Filled from the snapshot rather than written into `index.html`, because that
+ * file is hand-written and a typed version number is exactly the kind of thing
+ * that drifts a release behind and is never noticed. Guarded on a change so a
+ * notice that cannot move is not rewritten on every snapshot. */
+let legendVersion = null;
+function renderLegalNotice() {
+  if (!snap.version || snap.version === legendVersion) return;
+  legendVersion = snap.version;
+  $('legalver').textContent = `orchd ${snap.version}`;
+}
 
 // The version the user dismissed this session. A newer release than this shows
 // again; the same one stays hidden until the next launch.

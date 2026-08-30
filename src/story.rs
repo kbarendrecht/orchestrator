@@ -9,7 +9,7 @@
 //! agent for a *value* rather than for a session. What that buys is not credential
 //! avoidance — the Shortcut MCP entry is `Bearer ${SHORTCUT_API_TOKEN}`, so the
 //! same token is needed either way — but the repo's own
-//! `.claude/skills/shortcut/SKILL.md`: Dutch content, the Backlog workflow state,
+//! `.claude/skills/shortcut/SKILL.md`: the language to write in, the Backlog state,
 //! the team id, epic routing by category, priority only settable by a follow-up
 //! update. A daemon-side template would hardcode those and write a worse story.
 //!
@@ -60,9 +60,9 @@ pub fn resolve_token() -> Result<String> {
 /// business knowing it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StoryRef {
-    /// Short form, `sc-3001`. What the report shows.
+    /// Short form, `sc-12345`. What the report shows.
     pub id: String,
-    /// The clickable one, `https://app.shortcut.com/<org>/story/3001`.
+    /// The clickable one, `https://app.shortcut.com/<org>/story/12345`.
     pub url: String,
 }
 
@@ -71,7 +71,7 @@ impl StoryRef {
     ///
     /// A markdown link rather than either half alone: the skill's rule is "never
     /// a bare number, always the full URL" because a colleague has to be able to
-    /// click it, and a naked URL mid-sentence reads badly in Dutch prose. The
+    /// click it, and a naked URL mid-sentence reads badly in prose. The
     /// substitution is deterministic given `(id, url)`, so `already_replied`'s
     /// exact match still recognises a reply it posted before.
     pub fn link(&self) -> String {
@@ -189,6 +189,11 @@ struct Reported {
 /// created a story and died before reporting is found rather than duplicated. The
 /// daemon writes it so the agent cannot forget to, and so its exact shape is one
 /// thing rather than a prompt instruction that might drift.
+///
+/// Deliberately English regardless of `default_language`, which governs what the
+/// agent *writes* — this is a key the daemon matches on, and a key that changes
+/// wording with a config setting is a key that stops matching. It shipped in
+/// Dutch, from the repo this was extracted out of.
 fn source_line(pr: u64, permalink: &str) -> String {
     format!("Source: review of #{pr} — {permalink}")
 }
@@ -594,7 +599,7 @@ mod tests {
         let wanted = vec![Wanted {
             thread_id: "PRRT_test_1".into(),
             draft: crate::proposal::StoryDraft {
-                title: "Splits de guard uit de service".into(),
+                title: "Split the guard out of the service".into(),
                 body: "The guard belongs in its own file.".into(),
             },
             permalink: permalink.into(),
@@ -691,7 +696,7 @@ mod tests {
             &[Wanted {
                 thread_id: "PRRT_timeout".into(),
                 draft: crate::proposal::StoryDraft {
-                    title: "Nooit afgemaakt".into(),
+                    title: "Never finished".into(),
                     body: "This run gets killed.".into(),
                 },
                 permalink: "https://github.com/o/r/pull/999002#discussion_r1".into(),
@@ -741,8 +746,8 @@ mod tests {
 
     fn story() -> StoryRef {
         StoryRef {
-            id: "sc-3001".into(),
-            url: "https://app.shortcut.com/acme/story/3001".into(),
+            id: "sc-12345".into(),
+            url: "https://app.shortcut.com/acme/story/12345".into(),
         }
     }
 
@@ -750,7 +755,7 @@ mod tests {
     fn the_substitution_is_clickable_and_short() {
         assert_eq!(
             story().link(),
-            "[sc-3001](https://app.shortcut.com/acme/story/3001)"
+            "[sc-12345](https://app.shortcut.com/acme/story/12345)"
         );
     }
 
@@ -768,13 +773,13 @@ mod tests {
         // same story.
         let mut slugged = story();
         slugged.url =
-            "https://app.shortcut.com/acme/story/3001/document-the-schedules".into();
+            "https://app.shortcut.com/acme/story/12345/document-the-schedules".into();
         assert!(slugged.consistent());
 
         // ...and a slug carrying digits of its own must not stand in for the id.
         let mut decoy = story();
         decoy.id = "sc-777".into();
-        decoy.url = "https://app.shortcut.com/acme/story/3001/fix-777-errors".into();
+        decoy.url = "https://app.shortcut.com/acme/story/12345/fix-777-errors".into();
         assert!(
             !decoy.consistent(),
             "matched a slug instead of the id segment"

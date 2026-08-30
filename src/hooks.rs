@@ -574,9 +574,23 @@ pub async fn boundary_block(
 /// settings rather than replacing them, so the repo's own `worktree-create`,
 /// `worktree-link`, `worktree-edit-boundary` and `pre-bash` hooks keep firing
 /// alongside these. §3's fallback of inlining the repo's hooks is unnecessary.
-/// Blast-radius guards for `git push` (§8), kept as a real script in the repo
-/// rather than a string literal so it can be read, tested and diffed.
-const PUSH_GUARD: &str = include_str!("../guards/push.py");
+/// The `orch` binary, which carries the `git push` guard (§8).
+///
+/// A sibling of the running executable, because that is true in every layout
+/// that exists: `target/debug/orch` beside `target/debug/orchd` in development,
+/// and both in the same directory in the release tarball. Resolved rather than
+/// left to `PATH` so the guard does not depend on how the user installed things.
+///
+/// `None` when it is not there — a `cargo run` before `cargo build --bins`, or a
+/// partial install. The caller logs that loudly and registers no hook at all,
+/// which is the honest outcome: the previous guard ran a Python script by its
+/// shebang, so a machine without `python3` got a hook that exited 127 and a
+/// guard that had silently stopped existing.
+fn orch_binary() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let orch = exe.parent()?.join(if cfg!(windows) { "orch.exe" } else { "orch" });
+    orch.exists().then_some(orch)
+}
 
 /// Single-quote a string for a shell.
 ///
@@ -594,20 +608,30 @@ fn sh_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', r"'\''"))
 }
 
-fn write_push_guard() -> Result<PathBuf> {
-    let path = Config::config_dir()?.join("guard-push.py");
-    std::fs::create_dir_all(path.parent().unwrap())?;
-    std::fs::write(&path, PUSH_GUARD)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))?;
+/// The `PreToolUse` entry for the push guard, or `None` when `orch` is missing.
+///
+/// The base branch is baked into the command rather than read from config by the
+/// guard process: settings are rewritten at every start, so this tracks
+/// `upstream_ref` on the same restart boundary the rest of the config does, and
+/// the rule in force is visible in the settings file instead of being implied.
+fn push_guard_hook(base_branch: Option<&str>) -> Option<serde_json::Value> {
+    let orch = orch_binary()?;
+    let mut command = format!("{} guard push", sh_quote(&orch.to_string_lossy()));
+    if let Some(b) = base_branch {
+        command.push_str(&format!(" --base {}", sh_quote(b)));
     }
-    Ok(path)
+    Some(json!({ "matcher": "Bash", "hooks": [{
+        "type": "command",
+        "command": command,
+        "timeout": 5,
+    }]}))
 }
 
-pub fn write_settings(port: u16, tracker: Option<&str>) -> Result<PathBuf> {
-    let guard = write_push_guard()?;
+pub fn write_settings(
+    port: u16,
+    tracker: Option<&str>,
+    base_branch: Option<&str>,
+) -> Result<PathBuf> {
     let base = format!("http://127.0.0.1:{port}/hooks");
     let http = |path: &str| {
         json!({
@@ -676,13 +700,6 @@ pub fn write_settings(port: u16, tracker: Option<&str>) -> Result<PathBuf> {
                 // reason; the handler already returns early when there is no
                 // `file_path`, so a Bash call costs one loopback round trip.
                 entry("pre-edit"),
-                // Additive to the repo's own `pre-bash`: any hook exiting 2
-                // blocks, so both sets of rules apply (§11).
-                { "matcher": "Bash", "hooks": [{
-                    "type": "command",
-                    "command": sh_quote(&guard.to_string_lossy()),
-                    "timeout": 5,
-                }]},
             ],
             // Every tool, not just the two that write files. `Bash` is the one
             // that moves files the daemon cannot predict, and any tool at all is
@@ -703,6 +720,25 @@ pub fn write_settings(port: u16, tracker: Option<&str>) -> Result<PathBuf> {
             "SessionEnd":   [entry("session-end")],
         }
     });
+
+    // Appended rather than written inline, because it is the one hook that can be
+    // absent. Additive to the repo's own `pre-bash`: any hook exiting 2 blocks, so
+    // both sets of rules apply (§11).
+    let mut settings = settings;
+    match push_guard_hook(base_branch) {
+        Some(hook) => {
+            settings["hooks"]["PreToolUse"]
+                .as_array_mut()
+                .expect("PreToolUse is the array written just above")
+                .push(hook);
+        }
+        // Loud, because the whole point of moving this guard in-process was that
+        // its predecessor could stop existing without saying anything.
+        None => tracing::warn!(
+            "no `orch` binary beside this executable — the git push guard is not \
+             registered, and agent pushes are unguarded"
+        ),
+    }
 
     let path = Config::hooks_settings_path()?;
     std::fs::create_dir_all(path.parent().unwrap())?;
@@ -842,7 +878,7 @@ mod tests {
     fn hooks_carry_the_correlation_header_and_a_short_timeout() {
         let dir = std::env::temp_dir().join(format!("orchd-test-{}", std::process::id()));
         std::env::set_var("HOME", &dir);
-        let path = write_settings(7777, Some("shortcut")).expect("write settings");
+        let path = write_settings(7777, Some("shortcut"), Some("main")).expect("write settings");
         let raw = std::fs::read_to_string(&path).expect("read back");
         let v: serde_json::Value = serde_json::from_str(&raw).unwrap();
         let stop = &v["hooks"]["Stop"][0]["hooks"][0];
@@ -861,25 +897,64 @@ mod tests {
         assert!(cmd.contains("|| true"), "must not fail the turn");
         assert!(cmd.contains("-m 1"), "must not stall the turn");
 
-        // The guard is a shell string, so its path must arrive quoted whatever
-        // the config dir is called. Unquoted, the macOS default's space would
-        // split it and the guard would silently not run.
-        let guard = v["hooks"]["PreToolUse"]
+        // The guard is a shell string, so its path must arrive quoted whatever the
+        // install directory is called. Unquoted, a space would split it and the
+        // guard would silently not run — the macOS config dir is why this exists.
+        //
+        // Skipped when `orch` has not been built: `cargo test` does not build the
+        // sibling binary, and asserting on it would fail for a reason that says
+        // nothing about the code. `push_guard_hook_is_absent_rather_than_broken`
+        // covers the missing case on purpose.
+        if let Some(guard) = v["hooks"]["PreToolUse"]
             .as_array()
             .expect("PreToolUse")
             .iter()
             .find_map(|e| e["hooks"][0]["command"].as_str())
-            .expect("a guard command");
-        assert!(
-            guard.starts_with('\'') && guard.ends_with('\''),
-            "the guard path must be shell-quoted, got {guard}"
-        );
-        assert!(
-            std::path::Path::new(guard.trim_matches('\'')).exists(),
-            "the quoted path must name the script that was written"
-        );
+        {
+            let path = guard.split(" guard push").next().expect("a command");
+            assert!(
+                path.starts_with('\'') && path.ends_with('\''),
+                "the orch path must be shell-quoted, got {guard}"
+            );
+            assert!(
+                std::path::Path::new(path.trim_matches('\'')).exists(),
+                "the quoted path must name the binary that runs the guard"
+            );
+            assert!(
+                guard.ends_with("--base 'main'"),
+                "the base branch must reach the guard, got {guard}"
+            );
+        }
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The failure mode the Python guard had: it ran by shebang, so a machine
+    /// without `python3` got a hook that exited 127 and a guard that had quietly
+    /// stopped existing. Absent must mean *no hook*, never a broken one.
+    #[test]
+    fn push_guard_hook_is_absent_rather_than_broken() {
+        match push_guard_hook(Some("main")) {
+            None => {}
+            Some(hook) => {
+                let cmd = hook["hooks"][0]["command"].as_str().expect("a command");
+                let path = cmd.split(" guard push").next().unwrap().trim_matches('\'');
+                assert!(
+                    std::path::Path::new(path).exists(),
+                    "a registered guard must name a binary that is really there"
+                );
+            }
+        }
+    }
+
+    /// A base the daemon could not resolve leaves the force-with-lease rule in
+    /// force rather than passing a `HEAD` symref through as a branch name.
+    #[test]
+    fn an_unresolvable_base_still_registers_the_force_rule() {
+        if let Some(hook) = push_guard_hook(None) {
+            let cmd = hook["hooks"][0]["command"].as_str().expect("a command");
+            assert!(cmd.ends_with("guard push"), "no --base should be passed: {cmd}");
+        }
     }
 
     /// Proven through a real shell, in a directory whose name has a space —
@@ -891,7 +966,7 @@ mod tests {
             .join(format!("orchd quote {}", std::process::id()))
             .join("Application Support");
         std::fs::create_dir_all(&dir).expect("mkdir");
-        let script = dir.join("guard-push.py");
+        let script = dir.join("orch");
         std::fs::write(&script, "#!/bin/sh\nexit 0\n").expect("write");
         #[cfg(unix)]
         {

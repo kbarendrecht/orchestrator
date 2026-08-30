@@ -137,7 +137,7 @@ the same reaction id both times — GitHub is idempotent per (user, content), so
 `post.rs`'s retry needs no ledger:
 
 ```
-ORCHD_LIVE_REPO=kbarendrecht/orchd-fixture ORCHD_LIVE_PR=<n> \
+ORCHD_LIVE_REPO=<your-login>/orchd-fixture ORCHD_LIVE_PR=<n> \
   cargo test --lib -- --ignored --nocapture posts_for_real
 ```
 

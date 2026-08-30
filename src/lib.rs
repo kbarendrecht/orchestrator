@@ -10,12 +10,14 @@ pub mod config;
 pub mod diff;
 pub mod edit;
 pub mod git;
+pub mod guard;
 pub mod forge;
 pub mod fix_pr;
 pub mod headroom;
 pub mod health;
 pub mod hooks;
 pub mod instance;
+pub mod machine;
 pub mod model;
 pub mod patch;
 pub mod post;
@@ -178,7 +180,21 @@ pub async fn start(opts: StartOptions) -> Result<Server> {
     let settings = {
         use crate::tracker::Tracker as _;
         let t = crate::tracker::TrackerImpl::for_kind(cfg.tracker);
-        hooks::write_settings(cfg.port, t.as_ref().map(|t| t.mcp_server()))?
+        // Said before the first session can be spawned, because every one of these
+        // otherwise surfaces as a failure that blames something else.
+        for w in machine::check(&cfg, t.as_ref().map(|t| t.mcp_server())) {
+            tracing::warn!("{} — {}", w.what, w.cost);
+        }
+        // The push guard protects the branch this repo is measured against, so it
+        // is read from config rather than a list of likely names. `origin/HEAD`
+        // that has never been fetched resolves to nothing, and the guard then
+        // enforces the force-with-lease rule alone.
+        let base = git::base_checkout_branch(&cfg.main_checkout, &cfg.upstream_ref);
+        hooks::write_settings(
+            cfg.port,
+            t.as_ref().map(|t| t.mcp_server()),
+            base.as_deref(),
+        )?
     };
     tracing::info!("hook settings at {}", settings.display());
 
@@ -989,10 +1005,12 @@ fn start_update_poller(app: Arc<AppState>) {
         let interval = std::time::Duration::from_secs(6 * 60 * 60);
         loop {
             let cur = current.clone();
-            // The release repo is private, so the check rides the same token
-            // ladder the PR poller uses. Resolved per poll, off-thread, so a
+            // Rides the same token ladder the PR poller uses. The repo is public,
+            // so an unauthenticated read would usually work — but GitHub rate-limits
+            // those by IP at 60/hour, shared with everything else on the machine,
+            // and a token lifts it to 5000. Resolved per poll, off-thread, so a
             // rotated token is picked up and a slow `gh auth token` never blocks
-            // the runtime.
+            // the runtime. A missing token is not an error: the nudge just waits.
             let tf = token_file.clone();
             if let Ok(Some((tag, url))) = tokio::task::spawn_blocking(move || {
                 let token = forge::resolve_token(tf.as_deref()).ok().map(|t| t.value);

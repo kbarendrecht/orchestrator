@@ -162,6 +162,18 @@ pub struct Inner {
     /// and come back. Its absence after a run exits is how a failed run is
     /// detected: the agent reports by POSTing, not by its exit code.
     pub proposals: HashMap<u64, crate::proposal::ProposalSet>,
+    /// The credential the triage run for this PR may post its proposals with.
+    ///
+    /// Minted per run and good for **one route on one PR**. It replaced handing
+    /// those runs `app.token`, which was the whole API — and they are the runs
+    /// whose input is third-party review comments, so a prompt-injected one held
+    /// the credential for `teardown`, `session` and `file` to do a job that needs
+    /// a single POST. `model::Session::ask_token` states that rule; this is the
+    /// same rule for the one route that is not per-session.
+    ///
+    /// Deliberately **not** persisted: a run does not survive a restart, so a
+    /// token that outlived one could only ever be a key nobody is holding.
+    pub proposal_tokens: HashMap<u64, String>,
     /// A batch that stopped for the manual phase, per PR.
     ///
     /// The resume pointer used to live only in the browser, so a reload, a daemon
@@ -362,6 +374,7 @@ impl AppState {
                 files: HashMap::new(),
                 prs: Vec::new(),
                 proposals: HashMap::new(),
+                proposal_tokens: HashMap::new(),
                 manual: HashMap::new(),
                 stories: Default::default(),
                 viewer: None,

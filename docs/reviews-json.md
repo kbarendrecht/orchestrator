@@ -76,8 +76,8 @@ Wrap the existing value rather than replacing it. For the single-login case the
 daemon wants the `Queue` fields at the top level alongside `version`:
 
 ```json
-{ "version": 1, "generated_at": "...", "forLogin": "kbarendrecht",
-  "total": 61, "skipped": 44, "actionable": [...], "blocked": [...], "ownBlocked": [...] }
+{ "version": 1, "generated_at": "...", "forLogin": "<your login>",
+  "total": 0, "skipped": 0, "actionable": [...], "blocked": [...], "ownBlocked": [...] }
 ```
 
 Multi-login stays as-is under a `queues` key. The daemon never asks for it.

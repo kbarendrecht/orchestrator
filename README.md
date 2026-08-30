@@ -35,6 +35,24 @@ The pieces:
 - **A diff viewer** against the merge-base, with an editable pane that warns the
   agent when you have changed a file under it.
 
+## What you need
+
+| | |
+| --- | --- |
+| **Claude Code** (`claude` on `PATH`, signed in) | The daemon spawns it for every session. Without it a session exits the instant it starts, so the daemon says so at boot rather than letting you find out that way. |
+| **git** | Worktrees, branch moves, diffs — all of it. |
+| **WebKitGTK 4.1** (Linux only) | The desktop window. Ubuntu 22.04 / Debian 12 or newer; 20.04 ships 4.0 and will not work. macOS uses the system WebView. |
+| **`gh`**, signed in | Only for the credential: GitHub itself is reached with `curl`, but the token ladder ends at `gh auth token`. Set `github_token_file` instead and you do not need it. |
+| **node** | Only for the review queue that ships with it — the ejected `reviews.js` is a node script. Point `reviews_command` at anything you like, or clear it, and node stops mattering. |
+
+A fresh checkout also needs Claude Code's **workspace trust** accepted once, in
+its dialog. Until you do, `claude --worktree` refuses and sessions die on spawn.
+
+None of this is checked at install time, because none of it has to be there for
+the rest to work. The daemon checks at **boot** and warns, naming what is missing
+and what stops working — it never refuses to start over a missing half you may not
+want.
+
 ## Install
 
 A release attaches an installer per platform and a tarball beside it. The
@@ -128,9 +146,9 @@ back to `config.json`; changes take effect on restart.
 | Setting | Default | What it is |
 | --- | --- | --- |
 | `upstream_ref` / `upstream_remote` | `origin/HEAD`, `origin` | the base every diff and worktree is measured against. On a **fork workflow** — an `upstream` remote beside `origin` — a first run detects it and writes `upstream/<default branch>` instead, so there is nothing to set by hand. |
-| `reviews_command` | the ejected `reviews.py` | argv printing the review queue as JSON. See below. Empty means the pane reads "not configured" rather than "unavailable". |
+| `reviews_command` | the ejected `reviews.js` | argv printing the review queue as JSON. See below. Empty means the pane reads "not configured" rather than "unavailable". |
 | `main_processes` | *(empty)* | long-running processes shown in the drawer. See below. |
-| `tracker` | `none` | where an out-of-scope review point can be filed as a story. `shortcut` is the one implementation; the seam for adding others is `src/tracker/`. Its token is **not** a config key — set `ORCHD_TRACKER_TOKEN` in the daemon's environment. |
+| `tracker` | `none` | where an out-of-scope review point can be filed as a story. `shortcut` is the one implementation; the seam for adding others is `src/tracker/`. Its token is **not** a config key — set `ORCHD_TRACKER_TOKEN` in the daemon's environment. It also needs the repo to declare a matching **MCP server** — see below. |
 | `default_language` | `English` | the language the agent *writes* replies and stories in. Prompts and code stay English regardless. |
 | `shared_worktree_paths` | *(empty)* | directories inside a worktree that are allowed to be symlinks *out* of it, e.g. a plan dir shared back to main. The editable diff pane refuses every other path that resolves outside the workspace. |
 | `worktree_init` / `worktree_setup` | *(empty)* | two commands run in every worktree the daemon cuts itself. See below. |
@@ -176,6 +194,27 @@ The one contract is the JSON on stdout. A non-zero exit shows the pane as
 *degraded* with the command's own stderr, deliberately distinct from "no reviews",
 because silently showing an empty queue when the command is broken is the failure
 that would actually cost a colleague a day.
+
+### Filing stories in a tracker
+
+With `tracker` set, a review point that is fair but out of scope can be filed as a
+story and answered with its id, instead of a promise nobody is holding.
+
+The tracker is reached **over MCP**, by an agent the daemon borrows for the value.
+So two things have to be true beyond the token, and both live in the repo you
+pointed the daemon at, not in its config:
+
+- **`.mcp.json` declares a server named for the tracker** (`shortcut`). The daemon
+  approves that one server by name for the sessions it spawns — never all of them,
+  since a repo may declare a dozen and a story-filing agent has business with none
+  of the others.
+- **A tracker skill** (`.claude/skills/*/SKILL.md`) holds the team id, the workflow
+  state, the story type and the epic routing. Those are yours and they change
+  without this project changing, which is why they are not settings.
+
+Get the first one wrong and Claude Code drops the server **silently** — the tool is
+simply absent and the run burns its whole timeout mid-review. That is why the
+daemon checks at boot and says so.
 
 ### Worktree hooks
 
@@ -245,9 +284,8 @@ develop orchd — `git config core.hooksPath .githooks`.
   you see beside the real diff before the daemon posts it on its own credentials.
   Resolving a thread stays your button, by design.
 - **`fix-pr` is hand-triggered, never automatic.** The guards that protect the
-  machine and the repo remain (authorship, one run per PR, a concurrency cap,
-  push guards that deny `-u`, bare `--force`, and protected refs); the automatic
-  trigger does not. It is a gate you read before starting, not one that trips
+  machine and the repo remain (authorship, one run per PR, a concurrency cap, the
+  push guard below); the automatic trigger does not. It is a gate you read before starting, not one that trips
   while you look elsewhere.
 
 The web UI is compiled into the binary with `include_str!`, so it can never drift
@@ -260,6 +298,31 @@ required on the WebSocket and every mutating route. Hook endpoints are exempt
 from the token but confined to their own prefix and can only ever update state.
 GitHub auth resolves `ORCHD_GITHUB_TOKEN`, then a `0600` `github_token_file`, then
 `gh auth token`; read scopes are all it needs.
+
+**The trust boundary is your user account, not the process.** Loopback keeps the
+network out and the Origin check keeps other web pages out. But `GET /` returns
+the page with the token substituted into it and is deliberately not gated, so any
+process running as you can read the token and then hold everything — including the
+pty attach, which means typing into a live agent's terminal. Do not run this on a
+machine you share with people you do not trust.
+
+That is a trade rather than an oversight: on a single-user machine a hostile local
+process can already ptrace the daemon, and gating the page would break the token
+discovery the tooling depends on. It is written down because the alternative is a
+sentence that earns trust it has not got.
+
+Agents get narrower credentials than the SPA does, and that part *is* enforced: a
+session asks with `ORCH_ASK_TOKEN`, good for its own session's routes, and a triage
+run posts with `ORCH_POST_TOKEN`, good for one route on one PR. Neither is the app
+token — which matters because those are the runs that read other people's review
+comments.
+
+There is a `PreToolUse` guard on `git push` (`orch guard push`) that refuses a
+lease-less `--force` and a push to the base branch. Read it as a **mistake-catcher,
+not a control**: it sees `Bash` tool calls only, so `gh`, an MCP git server, or a
+script the agent writes and then runs all go around it. It is there because a
+fix-pr run force-pushes with nobody watching, and that is the mistake worth
+catching — not because an agent could be prevented from pushing.
 
 ## Layout
 
@@ -296,16 +359,18 @@ src/
   worktree.rs   teardown preflight, archive, revive, removal
   store.rs      session record persistence, orphan reaping
   api.rs        HTTP surface and the origin/token guards      ws.rs  event stream + pty attach
-  todo.rs       the generated findings block in TODO.md
+  findings.rs   the live findings the daemon can see, written to daemon.log
+  guard.rs      the git push rules, run by `orch guard push` as a PreToolUse hook
+  machine.rs    what the daemon needs from the machine, warned about at boot
 web/            the SPA (vanilla, xterm.js vendored) — one module graph under js/,
                 booted by app.js; snapshot.d.ts is generated from the Rust structs
-guards/push.py  PreToolUse deny for dangerous pushes
 ```
 
 ## Developing
 
 ```
 mise install
+npm install --prefix tools               # once per clone: check-web and shot need it
 git config core.hooksPath .githooks      # once per clone
 cargo test                               # the daemon
 mise run check-web                       # type-check the SPA + its module graph
@@ -325,8 +390,8 @@ cargo run -p orchd -- --main /path/to/your/repo
 The app runs in **WebKitGTK**, so `mise run shot` (Chrome) is good for layout but
 not the last word — the two engines disagree often enough to matter.
 [`CLAUDE.md`](CLAUDE.md) has the working notes and the traps worth knowing;
-[`TODO.md`](TODO.md) is the living record of what is open, with a block the daemon
-rewrites each poll. The `(§N)` scattered through the comments point at
+[`TODO.md`](TODO.md) is the living record of what is open. The `(§N)` scattered
+through the comments point at
 [`docs/spec.md`](docs/spec.md), the requirements this was built against — §2 is
 the object model, §6b the review queue, §8 the automation rules.
 
@@ -336,6 +401,18 @@ Versions are CalVer (`year.month.n`). Cut a release by bumping `Cargo.toml`,
 
 ## Licence
 
+Copyright © 2026 Kars Barendrecht.
+
 [AGPL-3.0-only](LICENSE). Use it, run it, change it. If you distribute it, or run
 a modified version as a network service, the source has to go with it under the
 same terms.
+
+The network clause is not decoration here. In the desktop app it does nothing —
+the daemon binds loopback and you are both the operator and the user, so the
+obligation is to yourself. It has teeth in the **headless** mode, which binds a
+port and prints a URL: point that at an interface your team can reach and it is a
+network service, and this licence is what keeps a hosted variant open.
+
+The vendored web assets are not ours: xterm.js, PrismJS and four font families,
+all MIT or OFL-1.1. [`THIRD-PARTY.md`](THIRD-PARTY.md) lists each one with its
+version and the notice its licence asks to travel with it.

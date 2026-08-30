@@ -108,8 +108,8 @@ head_repo: string | null,
  * anything about a force-push.
  *
  * Repo-level, so it does not promise a given *branch* is force-pushable;
- * `guards/push.py` is the other half of that pair (`--force-with-lease` only,
- * no protected refs). `None` means GitHub did not say, and the guard fails
+ * `src/guard.rs` is the other half of that pair (`--force-with-lease` only,
+ * never the base branch). `None` means GitHub did not say, and the guard fails
  * closed on it.
  */
 head_pushable: boolean | null, base_ref: string, is_draft: boolean, 
@@ -203,8 +203,8 @@ head_repo: string | null,
  * anything about a force-push.
  *
  * Repo-level, so it does not promise a given *branch* is force-pushable;
- * `guards/push.py` is the other half of that pair (`--force-with-lease` only,
- * no protected refs). `None` means GitHub did not say, and the guard fails
+ * `src/guard.rs` is the other half of that pair (`--force-with-lease` only,
+ * never the base branch). `None` means GitHub did not say, and the guard fails
  * closed on it.
  */
 head_pushable: boolean | null, base_ref: string, is_draft: boolean, 

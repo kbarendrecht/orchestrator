@@ -13,9 +13,9 @@
 //!   exists, to learn which repo to build one for, and it is inherently
 //!   platform-specific (remote-URL shapes).
 //! - **The update nudge** ([`latest_release`]) — a one-off against github.com's
-//!   releases, riding the read-token ladder because the release repo is private.
-//!   It asks about *orchd's own* release repo, not the hosted monorepo, so it
-//!   belongs to no forge instance.
+//!   releases, riding the read-token ladder to stay off the 60/hour anonymous
+//!   rate limit. It asks about *orchd's own* release repo, not the hosted
+//!   monorepo, so it belongs to no forge instance.
 //!
 //! The model types ([`Pr`], [`Threads`], …) live in [`model`] so they carry no
 //! GitHub dependency; the write handle and the token ladder are re-exported from
