@@ -209,7 +209,12 @@ function rvHealth() {
   if (preDecision && (d.checks === 'failing' || d.mergeable === 'CONFLICTING')) {
     const b = el('button', 'head-btn', 'fix');
     b.title = 'Rebase on develop and fix what CI says. It cannot run while a review is open.';
-    b.onclick = () => rvAct(() => call(`/api/pr/${reviewState.pr}/fix-pr`), 'started the fix run', true);
+    // Confirm first: this is the one control in the flow that rewrites the published
+    // branch, and it does not wait for the final screen the way everything else does.
+    b.onclick = () => {
+      if (!confirm('Start a fix run? It rebases on develop, force-pushes this branch, and closes the review.')) return;
+      rvAct(() => call(`/api/pr/${reviewState.pr}/fix-pr`), 'started the fix run', true);
+    };
     wrap.appendChild(b);
   }
   return wrap;
@@ -441,7 +446,7 @@ function rvOverview(root) {
     handled === q.length && q.length
       ? actBtn('review & send', null, () => { reviewState.screen = 'final'; renderReview(); })
       : null,
-  ], 'enter accepts the recommendation · j / k to move'));
+  ], 'enter opens the threads'));
 }
 
 /** Comments that landed after the queue was built.
@@ -544,7 +549,10 @@ function rvCard(root) {
   if (reply) body.appendChild(reply);
   root.appendChild(body);
 
-  const hint = `thread ${reviewState.i + 1} of ${q.length} · ${decidedCount()}`;
+  // The header already carries "thread N of q" and the decided count, so the hint
+  // is free to teach the two keys that have no button of their own. Enter and s
+  // ride the accept and skip buttons.
+  const hint = 'j / k to move · 1–9 to pick';
   root.appendChild(rvActs([
     actBtn('accept · ⏎', 'warm', () => acceptCard()),
     // Lit when this thread is skipped: with no Skip row in the list, the button is
@@ -2191,7 +2199,21 @@ async function runTail(what) {
  *  containing "check the job" would otherwise jump cards mid-sentence. */
 function reviewKey(e) {
   if (e.key === 'Enter') {
+    // A focused control owns Enter. Without this the global handler hijacks it to
+    // accept the card, so a keyboard user who tabbed to an option button pressed
+    // Enter and staged the *recommendation* instead of the row they were on. Let
+    // the button activate natively; the re-render then drops focus back to body,
+    // so the next Enter accepts as before.
+    const on = document.activeElement;
+    if (on && (on.tagName === 'BUTTON' || on.tagName === 'A')) return false;
     if (reviewState.screen === 'card') { acceptCard(); return true; }
+    // The overview's primary is "start / back to the threads", so Enter is it —
+    // the first screen after triage gets the keyboard the cards already had.
+    if (reviewState.screen === 'overview' && queue().length) {
+      reviewState.screen = 'card';
+      renderReview();
+      return true;
+    }
     // Deliberately dead on the final screen: across the cards Enter means
     // "accept this one thing", and on a batch it has no natural meaning.
     return reviewState.screen === 'final';
