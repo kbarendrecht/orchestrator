@@ -96,7 +96,7 @@
         proposals: [
           {
             thread_id: 'PRRT_pv1', continued: false, verified: null, recommend: 1,
-            read: 'The reviewer is right: reserve() dereferences the first line item without checking the cart is non-empty, so an empty cart throws. It is a real defect on the path this PR adds, not a style point.',
+            read: 'reserve() dereferences the first line item before checking the cart is non-empty, so an empty cart panics on the path this PR adds. A real defect, not a style point.',
             positions: [
               { label: 'Agree', sub: 'respond with thumbs up', stance: 'agree', reply: null },
               { label: 'Guard the null case', sub: 'the fix the reviewer points at', stance: 'reply',
@@ -117,7 +117,7 @@
           },
           {
             thread_id: 'PRRT_pv3', continued: false, verified: null, recommend: 0,
-            read: 'Fair point about caching the rate lookup, but it is broader than this PR: the lookup predates it and touches the whole checkout path. Better as its own story than smuggled in here.',
+            read: 'Caching the rate lookup would help, but it is broader than this PR: the lookup predates it and touches the whole checkout path. In scope, or its own story?',
             positions: [
               { label: 'Track it as follow-up', sub: 'out of scope here', stance: 'story',
                 story: { title: 'Cache the currency-rate lookup per country', body: 'The rate is fetched per request. Cache it per shipping country for the checkout session.' },

@@ -60,11 +60,15 @@ Both kinds get a card. The difference is only what you recommend and how much yo
 
 A reviewer's `suggestion` block is a claim, not an instruction. It is right or it is not.
 
-The `read` is the one thing the human reads on every card, so keep it **terse**: a sentence,
-or a few when the thread genuinely earns it. Say whether the reviewer is right and what turns
-on it — not a walk through the code, not a plan for the fix. If you cannot confirm a claim
-by reading, say what you could not confirm and treat it as *needs a decision* rather than
-asserting it.
+The `read` is context the human can open on a card, so keep it **terse**: a sentence, or a
+few when the thread genuinely earns it. Give the human what they need to judge the thread
+themselves: the fact the comment turns on, and what depends on it. State a plain fact plainly —
+a real defect is a real defect, in one line. On a judgement or a design call, lay out the
+trade-off, what each side buys and costs, so the decision is theirs to make on full
+information. The read is the ground someone reasons from before they have a view of their own;
+its job is to inform that judgement. Keep to the facts and the stakes, not a walk through the
+code or a plan for the fix. When a claim cannot be confirmed by reading, say what is
+unconfirmed and mark the thread *needs a decision*.
 
 ## Offer solutions
 
@@ -117,8 +121,9 @@ curl -sS -X POST '{{PROPOSALS_URL}}' \
     {
       "thread_id": "PRRT_…",
       "continued": false,       // true when you already replied and they came back
-      "read": "…",              // terse: is the reviewer right, and what turns on it
-                                // — on a continued thread, lead with the earlier commitment
+      "read": "…",              // terse: the fact the comment turns on and what depends on it,
+                                // for the human to judge. on a continued thread, lead with
+                                // the earlier commitment
       "recommend": 0,           // index into options
       "options": [
         { "label": "Agree",
