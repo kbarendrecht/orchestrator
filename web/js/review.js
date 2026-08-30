@@ -633,17 +633,49 @@ function hlLine(text, lang) {
   return s;
 }
 
-/** The read, in full.
+/** Whether the reads are expanded, for the whole session. Collapsed by default;
+ *  opening one opens them all, and they stay open until you close one or relaunch. */
+let readsOpen = false;
+
+/** The read, collapsed by default.
  *
- *  It was collapsed to its opening sentence for a while, to answer the "wall of
- *  text" the first drive complained about. Shown whole again: the fold cost a
- *  click on every card to see the one thing the agent actually concluded, which is
- *  worse than the length it was hiding. The prompt keeps the real fix — it tells
- *  the agent the read must be terse. */
+ *  History, because this reverses an earlier decision: the read was once collapsed to
+ *  its first sentence for *clutter*, and that was reverted — the fold cost a click on
+ *  every card to see the one thing the agent concluded, worse than the length it hid.
+ *  This collapse is for a different reason: *anchoring*. The read is a confident verdict
+ *  shown first, and stating the agent's conclusion up front pulls the human toward it
+ *  before they have read the comment and the code themselves. Folded, the reviewer and
+ *  the diff lead, and the read is context you pull in rather than a headline pushed at
+ *  you — a little more in the human's hands.
+ *
+ *  The per-card-click objection that killed the first fold is answered by making the
+ *  toggle *sticky for the session*: open one and they are all open. It resets to
+ *  collapsed next launch, so each session starts with the human forming their own view.
+ *  The prompt still keeps the read terse. */
 function rvRead(p) {
   const sec = el('div', 'sec');
+  if (!readsOpen) {
+    const tog = el('button', 'readtog');
+    tog.setAttribute('aria-expanded', 'false');
+    tog.setAttribute('aria-label', 'Show the agent’s read');
+    tog.appendChild(el('span', 'car', '▸'));
+    tog.appendChild(el('span', 'q', 'some context'));
+    tog.appendChild(el('span', 'hint', 'tap to show'));
+    tog.onclick = () => { readsOpen = true; renderReview(); };
+    sec.appendChild(tog);
+    return sec;
+  }
   const read = el('div', 'read');
-  read.appendChild(el('div', 'eyebrow', 'is the reviewer right?'));
+  const head = el('button', 'readhead');
+  head.setAttribute('aria-expanded', 'true');
+  head.setAttribute('aria-label', 'Hide the agent’s read');
+  head.appendChild(el('span', 'car', '▾'));
+  // The same words as the collapsed toggle, so opening only flips the caret — and it
+  // does not restate "is the reviewer right?", the verdict framing that primed the
+  // human toward the read before they had formed their own view.
+  head.appendChild(el('span', 'eyebrow', 'some context'));
+  head.onclick = () => { readsOpen = false; renderReview(); };
+  read.appendChild(head);
   read.appendChild(el('p', null, (p.read || '').trim()));
   sec.appendChild(read);
   return sec;

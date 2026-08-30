@@ -1257,6 +1257,26 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
   font-size:calc(15px * var(--fs));line-height:1.45;
   color:var(--text);max-width:70ch;white-space:pre-wrap;
 }
+/* The read is collapsed by default (anti-anchor): this is the closed toggle, a dashed
+   affordance that says "context is here" without stating the verdict. */
+.rv .readtog{
+  display:flex;align-items:center;gap:9px;width:100%;text-align:left;font:inherit;
+  border:1px dashed var(--line);border-radius:2px;background:var(--surface);
+  padding:10px 14px;color:var(--dim);cursor:pointer;
+}
+.rv .readtog:hover{border-color:var(--faint-solid)}
+.rv .readtog .car{color:var(--attn);font-size:calc(10px * var(--fs))}
+.rv .readtog .q{font-size:calc(12px * var(--fs));color:var(--dim)}
+.rv .readtog .hint{
+  margin-left:auto;font-family:var(--label);font-size:calc(9px * var(--fs));
+  letter-spacing:.1em;text-transform:uppercase;color:var(--faint-solid);
+}
+/* The open read's header: caret + the eyebrow, clickable to fold it back. */
+.rv .read .readhead{
+  display:flex;align-items:center;gap:8px;width:100%;text-align:left;font:inherit;
+  background:none;border:0;padding:0;cursor:pointer;
+}
+.rv .read .readhead .car{color:var(--attn);font-size:calc(10px * var(--fs))}
 
 /* The ways to answer a thread, one flat list — no stance segment, no alts row.
    Picking a row stages that answer; the words are edited on the overview. */
