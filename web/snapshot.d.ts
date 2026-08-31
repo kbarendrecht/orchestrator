@@ -338,7 +338,15 @@ title: string | null,
  * Only the name you typed, so the rename prompt can offer it back and an
  * empty answer can mean "go back to the ai-title" rather than "freeze it".
  */
-name: string | null, cwd: string, rank: number, 
+name: string | null, cwd: string, 
+/**
+ * The branch this conversation is about ([`Session::branch`]), not the tree it
+ * sits in. Sent so `orch ls` can answer the question its columns could not:
+ * whether two sessions can safely work in parallel. A shared `cwd` means one
+ * git index, and two rows on one branch means one branch — and neither was
+ * visible from id, workspace and state.
+ */
+branch: string | null, rank: number, 
 /**
  * Whether this is idle time worth counting. A session you just opened is
  * idle but not waiting on you in the sense the rail exists to surface.

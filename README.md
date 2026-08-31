@@ -63,11 +63,14 @@ is what `mise` reads, and is still two binaries you place yourself.
 - **`orchestrator-desktop`** is the app. The daemon and the web UI are compiled
   into it, so this one binary on its own is a complete install.
 - **`orch` is optional.** A small CLI against a running daemon: `orch new` starts
-  another session with a prompt, `orch ask` puts a question in front of you and
-  blocks until you answer, `orch ls` lists what is running. Useful from your own
-  shell, and it is how an *agent* reaches the daemon that spawned it — a session
-  can open a helper session for a subtask, or ask you something and wait rather
-  than bury the question in its own scrollback. Nothing requires it.
+  another session with a prompt, `orch kill` undoes one of its own spawns,
+  `orch ask` puts a question in front of you and blocks until you answer, `orch ls`
+  lists what is running. Useful from your own shell, and it is how an *agent*
+  reaches the daemon that spawned it — a session can open a helper session for a
+  subtask, or ask you something and wait rather than bury the question in its own
+  scrollback. `orch new --worktree` gives that helper its own tree and branch, which
+  is the difference between two parallel jobs and two agents sharing one git index.
+  `orch <command> --help` documents the flags. Nothing requires it.
 
 Apple Silicon and x86-64 Linux are built.
 

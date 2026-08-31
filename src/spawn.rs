@@ -311,6 +311,39 @@ async fn restore_after_relocate(
     }
 }
 
+/// Everything `orch` needs to work, pushed as one unit.
+///
+/// **All of it or none of it, for every interactive session.** One that had
+/// `ORCH_SESSION_ID` and not the other two failed every `orch` command with "only
+/// runs inside a session the daemon started" — which reads as "you are in the wrong
+/// place" while the truth was a two-line omission in one spawn path.
+/// `spawn_worktree_session` built its environment by hand and had exactly that gap,
+/// so every session started from the new-worktree button could neither ask nor
+/// spawn. One function, called by both, is what keeps that from happening again.
+///
+/// The automation runs are the deliberate exception and do not call this: `triage`,
+/// `story` and `fix-pr` are handed their URL substituted into their prompt, and two
+/// of the three are given no ask token at all.
+fn push_agent_env(env: &mut Vec<(String, String)>, app: &Arc<AppState>, id: SessionId, ask: &str) {
+    env.push(("ORCH_SESSION_ID".to_string(), id.to_string()));
+    env.push(("ORCH_ASK_TOKEN".to_string(), ask.to_string()));
+    // So `orch` needs no configuration: the session's own environment says where
+    // the daemon is and who it is.
+    env.push((
+        "ORCH_URL".to_string(),
+        format!("http://127.0.0.1:{}", app.cfg.port),
+    ));
+    // And so it is *findable*. `orch` ships beside the binary that is running, but
+    // only the tarball puts that directory on your PATH — inside an AppImage or a
+    // macOS bundle it is a mount point nothing else knows about, and the agent's
+    // `orch new` would be a command not found. Prepended, so a build you are
+    // testing wins over an installed one.
+    if let Some(dir) = crate::sibling_bin_dir() {
+        let rest = std::env::var("PATH").unwrap_or_default();
+        env.push(("PATH".to_string(), format!("{dir}:{rest}")));
+    }
+}
+
 /// Spawn an interactive Claude session in an existing workspace.
 ///
 /// The daemon spawns every session and never adopts a shell-started one. That
@@ -478,23 +511,7 @@ pub async fn spawn_session(
     }
 
     let (mut env, unset) = crate::config::transcript_env();
-    env.push(("ORCH_SESSION_ID".to_string(), id.to_string()));
-    env.push(("ORCH_ASK_TOKEN".to_string(), session.ask_token.clone()));
-    // So `orch` needs no configuration: the session's own environment says where
-    // the daemon is and who it is.
-    env.push((
-        "ORCH_URL".to_string(),
-        format!("http://127.0.0.1:{}", app.cfg.port),
-    ));
-    // And so it is *findable*. `orch` ships beside the binary that is running, but
-    // only the tarball puts that directory on your PATH — inside an AppImage or a
-    // macOS bundle it is a mount point nothing else knows about, and the agent's
-    // `orch new` would be a command not found. Prepended, so a build you are
-    // testing wins over an installed one.
-    if let Some(dir) = crate::sibling_bin_dir() {
-        let rest = std::env::var("PATH").unwrap_or_default();
-        env.push(("PATH".to_string(), format!("{dir}:{rest}")));
-    }
+    push_agent_env(&mut env, app, id, &session.ask_token);
     let spawned = PtyHandle::spawn(&cmd, &path, &env, &unset, DEFAULT_SIZE)?;
 
     session.pty = Some(spawned.handle.clone());
@@ -576,7 +593,13 @@ pub async fn spawn_worktree_session(
     let id = Uuid::new_v4();
     let settings = Config::hooks_settings_path()?;
     let (mut env, unset) = crate::config::transcript_env();
-    env.push(("ORCH_SESSION_ID".to_string(), id.to_string()));
+    // Minted here rather than taken off the record, because the record cannot exist
+    // yet: without a name the workspace is only known once `SessionStart` reports
+    // the cwd, so `Session::new` happens after the pty. The token has to be in the
+    // environment the pty is *given*, so it is generated first and written onto the
+    // session below.
+    let ask_token = crate::state::random_token();
+    push_agent_env(&mut env, app, id, &ask_token);
 
     // Where the daemon looks for worktrees decides who creates this one.
     let delegated = app.cfg.worktrees_subdir_is_claude_default();
@@ -646,6 +669,10 @@ pub async fn spawn_worktree_session(
     };
 
     let mut session = Session::new(id, workspace, cwd, Kind::Interactive);
+    // The one the pty already holds. `Session::new` always mints a fresh token, so
+    // leaving this out is not a missing credential but a *mismatched* one, and the
+    // agent's asks would be refused rather than failing to be attempted.
+    session.ask_token = ask_token;
     session.forked_from = fork;
     // A fork opens on the parent's replayed conversation, so it has had a turn from
     // birth — the same as the fork path in `spawn_session`. Without this its own row
@@ -1524,6 +1551,40 @@ pub fn worktree_name_of(path: &PathBuf, worktrees_dir: &PathBuf) -> Option<Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// All three variables or none, and this is the seam that decides it.
+    ///
+    /// `spawn_worktree_session` built its environment by hand and pushed only
+    /// `ORCH_SESSION_ID`, so every session started from the new-worktree button had
+    /// an `orch` that could not reach the daemon and, on an AppImage or a `.app`,
+    /// was not even on `PATH`. The failure was silent in the worst way: the CLI read
+    /// the subset as "you are not in a session" and said so.
+    #[tokio::test]
+    async fn a_session_is_handed_the_whole_orch_environment_or_it_cannot_ask() {
+        let dir = std::env::temp_dir().join(format!("orchd-agent-env-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cfg: Config = serde_json::from_str(&format!(
+            r#"{{"main_checkout":"{}","port":7794}}"#,
+            dir.display()
+        ))
+        .unwrap();
+        let app = AppState::new(cfg, "t".into(), crate::window::Chrome::None);
+
+        let id = Uuid::new_v4();
+        let mut env = Vec::new();
+        push_agent_env(&mut env, &app, id, "ask-tok");
+        let get = |k: &str| {
+            env.iter()
+                .find(|(n, _)| n == k)
+                .map(|(_, v)| v.clone())
+                .unwrap_or_else(|| panic!("{k} is not in the environment"))
+        };
+        assert_eq!(get("ORCH_SESSION_ID"), id.to_string());
+        assert_eq!(get("ORCH_ASK_TOKEN"), "ask-tok");
+        // The port the daemon is actually on, or the agent's curl reaches nothing.
+        assert_eq!(get("ORCH_URL"), "http://127.0.0.1:7794");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// A managed process that exits has to *say* so.
     ///

@@ -90,7 +90,18 @@ fn origin_ok(origin: Option<&str>, port: u16, is_hook: bool, is_get: bool, token
 /// A list rather than a growing chain of `ends_with`, because it has been
 /// outgrown once already — see the note in [`guard`].
 fn is_ask_route(path: &str) -> bool {
-    const ASK_ROUTES: [&str; 6] = ["/ask", "/wait", "/spawn", "/committed", "/stuck", "/process"];
+    const ASK_ROUTES: [&str; 7] = [
+        "/ask",
+        "/wait",
+        "/spawn",
+        "/committed",
+        "/stuck",
+        "/process",
+        // `orch kill`. Not `/kill` or `/delete`, which are the SPA's own routes on
+        // any session — a suffix matcher cannot tell those apart from a narrower
+        // verb spelled the same way.
+        "/discard",
+    ];
     path.starts_with("/api/session/") && ASK_ROUTES.iter().any(|s| path.ends_with(s))
 }
 
@@ -465,6 +476,14 @@ pub async fn delete_session(
     State(app): State<Arc<AppState>>,
     Path(id): Path<Uuid>,
 ) -> ApiResult<serde_json::Value> {
+    forget_session(&app, id).await?;
+    Ok(Json(json!({ "deleted": id })))
+}
+
+/// End a session and drop its record. The body of [`delete_session`], shared with
+/// [`discard_spawned`] so the agent's undo and the rail's delete cannot drift into
+/// meaning different things.
+async fn forget_session(app: &Arc<AppState>, id: SessionId) -> anyhow::Result<()> {
     let (pty, archived) = {
         let inner = app.inner.read().await;
         let s = inner
@@ -493,7 +512,65 @@ pub async fn delete_session(
 
     // Persists the records without the deleted one, so it stays gone.
     app.notify().await;
-    Ok(Json(json!({ "deleted": id })))
+    Ok(())
+}
+
+/// `orch kill` — undo a spawn.
+///
+/// **Only the sessions this caller spawned**, which is the whole of what makes it
+/// safe to put on the ask token. That token opens asking and spawning; a destroy
+/// that reached any session would reach the conversation you are sitting in, and an
+/// agent only has to misread a uuid once. So the record's `spawned_by` is the
+/// authorisation, and it is checked against the path's caller rather than trusted
+/// from the body.
+///
+/// When that same spawn cut a worktree, the tree goes too — a spawn you regret
+/// otherwise leaves a checkout on disk with no row in the rail pointing at it, which
+/// is a worse mess than the row was. Through the ordinary preflight, so a tree with
+/// uncommitted or unpushed work refuses and *says so* while the session is still
+/// gone. Never for a workspace that already existed: `spawn_cut_worktree` is false
+/// there, and a clean worktree of yours is not the agent's to remove.
+pub async fn discard_spawned(
+    State(app): State<Arc<AppState>>,
+    Path((id, child)): Path<(Uuid, Uuid)>,
+    headers: axum::http::HeaderMap,
+) -> ApiResult<serde_json::Value> {
+    ask_token_ok(&app, id, &headers).await?;
+
+    let (workspace, cut) = {
+        let inner = app.inner.read().await;
+        let s = inner
+            .sessions
+            .get(&child)
+            .ok_or_else(|| anyhow::anyhow!("no such session {child}"))?;
+        if s.spawned_by != Some(id) {
+            return Err(ApiError(anyhow::anyhow!(
+                "{child} is not a session you spawned; close it in the app"
+            )));
+        }
+        (s.workspace.clone(), s.spawn_cut_worktree)
+    };
+
+    forget_session(&app, child).await?;
+
+    // Only once the record is gone: preflight refuses a workspace with a live
+    // session, and the session it would be refusing for is the one just discarded.
+    let mut out = json!({ "killed": child, "workspace": workspace });
+    // `MAIN` cannot be the answer here — `spawn_cut_worktree` is never true of it —
+    // but the placeholder can: at Claude Code's own layout the tree is cut by
+    // `claude --worktree` and has no name until `SessionStart` reports one. Teardown
+    // would refuse "unknown workspace …creating", which reads as a broken command
+    // rather than "you were faster than the hook".
+    if cut && workspace != MAIN && workspace != spawn::PENDING_WORKTREE {
+        match worktree::teardown(&app, &workspace).await {
+            Ok(_) => out["removed"] = json!(workspace),
+            // Not an error: the session is already gone and saying "kill failed"
+            // would be false. The tree is still there and the reason is worth
+            // reading, so it rides back as a note.
+            Err(e) => out["kept"] = json!(format!("{e:#}")),
+        }
+    }
+    Ok(Json(out))
 }
 
 // ---------------------------------------------------------------------------
@@ -1055,10 +1132,23 @@ pub async fn answer(
 
 #[derive(Deserialize)]
 pub struct SpawnBody {
-    /// Where to work. Defaults to the caller's own workspace, which is what you
-    /// mean when you want a hand with the thing you are already doing.
+    /// An *existing* workspace to work in. Defaults to the caller's own, which is
+    /// what you mean when you want a hand with the thing you are already doing.
     #[serde(default)]
     pub workspace: Option<String>,
+    /// Cut a fresh worktree for the new session instead.
+    ///
+    /// A separate field rather than "create `workspace` if it is missing", because
+    /// the two are different acts and only one of them should tolerate a typo: an
+    /// unknown `workspace` must stay an error, or `--workspace dependabot-api`
+    /// misspelt silently becomes a whole new checkout. This is the shape the CLI
+    /// could not express at all, which is what made "spawn two independent fixers"
+    /// impossible — both landed in the caller's own tree, sharing one git index.
+    #[serde(default)]
+    pub worktree: bool,
+    /// What to call that worktree. Absent means the daemon names it.
+    #[serde(default)]
+    pub name: Option<String>,
     /// Typed into the new session once it is up. Without one it sits at a prompt.
     #[serde(default)]
     pub prompt: Option<String>,
@@ -1088,25 +1178,56 @@ pub async fn spawn_from_session(
             .ok_or_else(|| anyhow::anyhow!("no such session {id}"))?
     };
 
+    let named = body.workspace.as_deref().map(str::trim).filter(|w| !w.is_empty());
+    // Two names for one place is a request nobody can honour, and guessing which
+    // half was meant is how a fixer ends up in the tree you were reading.
+    if named.is_some() && body.worktree {
+        return Err(ApiError(anyhow::anyhow!(
+            "name a workspace or ask for a worktree, not both"
+        )));
+    }
+    // An unknown name is an error, and it now says what the names *are*. The old
+    // message ("unknown workspace dependabot-management-api") reads as a rule you
+    // have to go and discover, when the list that would settle it is one read away.
+    if let Some(w) = named {
+        let known = app.inner.read().await;
+        if !known.workspaces.contains_key(w) {
+            let mut names: Vec<&str> = known.workspaces.keys().map(String::as_str).collect();
+            names.sort_unstable();
+            return Err(ApiError(anyhow::anyhow!(
+                "unknown workspace {w} — known: {}. Use worktree:true to cut a new one",
+                names.join(", ")
+            )));
+        }
+    }
+
     // Main can hold one live session and the caller *is* it, so defaulting to the
     // caller's own workspace made `orch new` impossible from main: every call came
     // back "main is occupied by session <itself>". An agent asked to hand work off
-    // then has nowhere to put it, and no way to make one — cutting a worktree is
-    // not on the ask token. So the default is "somewhere this can actually run":
-    // your own tree when you are in a worktree, which is what you mean when you
-    // want a hand with what you are already doing, and a fresh worktree when you
-    // are in main. Naming one is still not offered; the daemon picks.
-    let child = match body.workspace {
-        Some(w) => spawn::spawn_session(&app, &w, Kind::Interactive, None).await?,
-        None if mine == MAIN => spawn::spawn_worktree_session(&app, None, None).await?,
+    // then has nowhere to put it. So the default is "somewhere this can actually
+    // run": your own tree when you are in a worktree, which is what you mean when
+    // you want a hand with what you are already doing, and a fresh worktree when
+    // you are in main.
+    let name = body.name.as_deref().map(str::trim).filter(|n| !n.is_empty());
+    let cut = body.worktree || (named.is_none() && mine == MAIN);
+    let child = match named {
+        Some(w) => spawn::spawn_session(&app, w, Kind::Interactive, None).await?,
+        None if cut => spawn::spawn_worktree_session(&app, name, None).await?,
         None => spawn::spawn_session(&app, &mine, Kind::Interactive, None).await?,
     };
-    if let Some(prompt) = body.prompt.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
+    {
         let mut inner = app.inner.write().await;
         if let Some(s) = inner.sessions.get_mut(&child) {
-            // The same path a vendored prompt takes: typed in at `SessionStart`,
-            // because an interactive session honours nothing else.
-            s.pending_prompt = Some(prompt.to_string());
+            if let Some(prompt) = body.prompt.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
+                // The same path a vendored prompt takes: typed in at `SessionStart`,
+                // because an interactive session honours nothing else.
+                s.pending_prompt = Some(prompt.to_string());
+            }
+            // What makes this spawn undoable — see `discard_spawned`. Recorded on the
+            // child rather than kept as a list on the parent, so the answer survives
+            // the parent being forgotten and cannot go stale.
+            s.spawned_by = Some(id);
+            s.spawn_cut_worktree = cut;
         }
     }
     app.notify().await;
@@ -1115,15 +1236,21 @@ pub async fn spawn_from_session(
     // request landed. It can still be the `…creating` placeholder: at Claude Code's
     // own layout the tree is cut by `claude --worktree` and only `SessionStart`
     // reports the name.
-    let workspace = app
+    //
+    // The path comes back for the same reason the workspace does, one step further:
+    // a bare id told the caller nothing about *where*, so confirming a spawn went
+    // where you meant took a second call.
+    let (workspace, path) = app
         .inner
         .read()
         .await
         .sessions
         .get(&child)
-        .map(|s| s.workspace.clone())
+        .map(|s| (s.workspace.clone(), s.cwd.to_string_lossy().into_owned()))
         .unwrap_or_default();
-    Ok(Json(json!({ "session": child, "workspace": workspace })))
+    Ok(Json(
+        json!({ "session": child, "workspace": workspace, "path": path }),
+    ))
 }
 
 #[derive(Deserialize)]
@@ -2595,6 +2722,72 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// The whole of what makes `orch kill` safe to put on the ask token: it reaches
+    /// the caller's own spawns and nothing else. Only the refusal is driven here —
+    /// it answers before anything is mutated, whereas the accepting path forgets a
+    /// record and tears a worktree down, which is what the e2e flows are for.
+    #[tokio::test]
+    async fn discard_reaches_only_the_sessions_the_caller_spawned() {
+        use crate::config::Config;
+        use crate::model::{Kind, Session, MAIN};
+        use crate::state::AppState;
+
+        let dir = std::env::temp_dir().join(format!("orchd-discard-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cfg: Config = serde_json::from_str(&format!(
+            r#"{{"main_checkout":"{}","port":7795}}"#,
+            dir.display()
+        ))
+        .unwrap();
+        let app = AppState::new(cfg, "t".into(), crate::window::Chrome::None);
+
+        let caller = Uuid::new_v4();
+        let mine = Uuid::new_v4();
+        let someone_elses = Uuid::new_v4();
+        {
+            let mut inner = app.inner.write().await;
+            for id in [caller, mine, someone_elses] {
+                let s = Session::new(id, MAIN.to_string(), dir.clone(), Kind::Interactive);
+                inner.sessions.insert(id, s);
+            }
+            // Spawned by a third session, not by the caller — the shape an agent
+            // reaches by misreading a uuid out of `orch ls`.
+            inner.sessions.get_mut(&someone_elses).unwrap().spawned_by = Some(Uuid::new_v4());
+            inner.sessions.get_mut(&mine).unwrap().spawned_by = Some(caller);
+        }
+
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert("x-orch-token", "t".parse().unwrap());
+
+        for (child, want) in [
+            (someone_elses, "is not a session you spawned"),
+            // A session nobody spawned — every one you started yourself, so the
+            // conversation you are sitting in is refused by the same rule.
+            (caller, "is not a session you spawned"),
+            (Uuid::new_v4(), "no such session"),
+        ] {
+            let said = format!(
+                "{:#}",
+                discard_spawned(
+                    State(app.clone()),
+                    Path((caller, child)),
+                    headers.clone()
+                )
+                .await
+                .expect_err("must refuse")
+                .0
+            );
+            assert!(said.contains(want), "{child} said {said:?}, wanted {want:?}");
+        }
+
+        // And the one that is the caller's own is not refused on authorship. Not
+        // carried further here: the next step writes records and removes a tree.
+        let inner = app.inner.read().await;
+        assert_eq!(inner.sessions[&mine].spawned_by, Some(caller));
+        drop(inner);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn every_route_the_vendored_prompts_call_on_the_ask_token_is_exempt() {
         // The three in `commands/resolve-run.md` plus `/spawn`. `/committed` was
@@ -2609,6 +2802,10 @@ mod tests {
             // `orch run`. Named processes only, so this exemption widens what an
             // agent can start without widening it to arbitrary commands (§12).
             "/api/session/<id>/process",
+            // `orch kill`. Only the caller's own spawns, which `discard_spawned`
+            // enforces from the record — the exemption is what lets it be called at
+            // all, not what decides which sessions it reaches.
+            "/api/session/<id>/spawned/<child>/discard",
         ] {
             assert!(is_ask_route(p), "{p} must not need the app token");
         }
@@ -2617,6 +2814,9 @@ mod tests {
             "/api/session/<id>/kill",
             "/api/session/<id>/answer",
             "/api/session/<id>/fork",
+            // The unrestricted delete the rail's own button uses. `/discard` above
+            // exists *because* this one must stay out of the agent's reach.
+            "/api/session/<id>/delete",
             "/api/state",
             // The drawer's own button, which restarts a *running* process. Named
             // the same thing, deliberately not the agent's.

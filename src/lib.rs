@@ -407,6 +407,13 @@ fn router(app: Arc<AppState>) -> Router {
         .route("/api/sessions/nudge", post(api::nudge_sessions))
         .route("/api/session/:id/fork", post(api::fork_session))
         .route("/api/session/:id/spawn", post(api::spawn_from_session))
+        // `/discard` rather than the `/kill` or `/delete` the SPA already uses:
+        // `is_ask_route` matches by *suffix*, so reusing either name would hand the
+        // agent the rail's own unrestricted verbs on every session at once.
+        .route(
+            "/api/session/:id/spawned/:child/discard",
+            post(api::discard_spawned),
+        )
         .route("/api/session/:id/process", post(api::process_from_session))
         .route("/api/session/:id/ask", post(api::ask))
         .route("/api/session/:id/ask/:ask/wait", get(api::ask_wait))

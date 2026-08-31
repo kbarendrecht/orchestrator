@@ -304,6 +304,21 @@ pub struct Session {
     /// it, so knowing *which* one is the difference between two rows that read
     /// identically and two you can tell apart.
     pub forked_from: Option<SessionId>,
+    /// The session whose `orch new` created this one.
+    ///
+    /// What makes `orch kill` an undo rather than a remote control: the ask token
+    /// opens asking and spawning, so the matching destroy must reach exactly the
+    /// sessions that same token brought into being and nothing else. Without this
+    /// an agent that misread an id could end the conversation you were sitting in.
+    pub spawned_by: Option<SessionId>,
+    /// Whether that same `orch new` cut the worktree this session sits in.
+    ///
+    /// Separate from [`Session::spawned_by`] because it decides a *destructive*
+    /// step: discarding a session the daemon cut a tree for should take the tree
+    /// with it, and discarding one that was put into a tree you already had must
+    /// leave that tree alone. Teardown's preflight would refuse a dirty or unpushed
+    /// tree either way, but a clean worktree of yours is not the agent's to remove.
+    pub spawn_cut_worktree: bool,
     /// A one-off message for the agent, delivered at its next prompt.
     ///
     /// The daemon can move a conversation between checkouts, and until this the
@@ -352,6 +367,8 @@ impl Session {
             interrupted: false,
             had_a_turn: false,
             forked_from: None,
+            spawned_by: None,
+            spawn_cut_worktree: false,
             pending_prompt: None,
             // Always a real one, so an empty stored token can never match an
             // empty header.

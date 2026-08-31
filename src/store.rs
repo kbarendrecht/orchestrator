@@ -69,6 +69,16 @@ pub struct SessionRecord {
     /// it back, so the note has to outlive the daemon that wrote it.
     #[serde(default)]
     pub arrival_notice: Option<String>,
+    /// Who spawned this session, and whether that spawn cut its worktree — see
+    /// [`crate::model::Session::spawned_by`].
+    ///
+    /// Persisted so `orch kill` still works after a restart: the spawner comes back
+    /// under the same id, its worktree is still on disk, and a spawn you want to be
+    /// rid of is exactly the kind that outlives the daemon that made it.
+    #[serde(default)]
+    pub spawned_by: Option<SessionId>,
+    #[serde(default)]
+    pub spawn_cut_worktree: bool,
 }
 
 impl SessionRecord {
@@ -92,6 +102,8 @@ impl SessionRecord {
             had_a_turn: s.had_a_turn,
             branch: s.branch.clone(),
             arrival_notice: s.arrival_notice.clone(),
+            spawned_by: s.spawned_by,
+            spawn_cut_worktree: s.spawn_cut_worktree,
         }
     }
 
@@ -112,6 +124,8 @@ impl SessionRecord {
         s.had_a_turn = self.had_a_turn;
         s.branch = self.branch;
         s.arrival_notice = self.arrival_notice;
+        s.spawned_by = self.spawned_by;
+        s.spawn_cut_worktree = self.spawn_cut_worktree;
         // After the fields, not before: `resumable` reads `recovery` and
         // `had_a_turn`, so computing it on a half-built session answers about the
         // defaults.
@@ -483,6 +497,8 @@ mod tests {
                 had_a_turn: false,
                 branch: None,
                 arrival_notice: None,
+                spawned_by: None,
+                spawn_cut_worktree: false,
             }
         };
 
@@ -1020,6 +1036,42 @@ mod tests {
             }
         );
         assert!(matches!(r.recovery, Some(ArchiveState::Recoverable { .. })));
+    }
+
+    /// A spawn you want to be rid of is exactly the kind that outlives the daemon
+    /// that made it, so both halves of `orch kill`'s authorisation are persisted —
+    /// and a record that never had them reads as "nobody spawned this", which
+    /// refuses rather than allowing a restart to widen what the token reaches.
+    #[test]
+    fn who_spawned_a_session_and_whether_it_cut_the_tree_survive_a_restart() {
+        let parent = uuid::Uuid::new_v4();
+        let mut s = Session::new(
+            uuid::Uuid::new_v4(),
+            "fixer-a".into(),
+            Path::new("/repo/.claude/worktrees/fixer-a").to_path_buf(),
+            Kind::Interactive,
+        );
+        s.spawned_by = Some(parent);
+        s.spawn_cut_worktree = true;
+        let back = SessionRecord::of(&s).restore();
+        assert_eq!(back.spawned_by, Some(parent));
+        assert!(back.spawn_cut_worktree);
+
+        let old: SessionRecord = serde_json::from_value(serde_json::json!({
+            "id": uuid::Uuid::new_v4(),
+            "workspace": "main",
+            "cwd": "/repo",
+            "kind": { "kind": "interactive" },
+            "title": null,
+            "transcript_path": null,
+            "archived_transcript": null,
+            "recovery": null,
+            "created_at": { "secs_since_epoch": 0, "nanos_since_epoch": 0 },
+            "pid": null,
+        }))
+        .expect("a record written before these fields still loads");
+        assert_eq!(old.spawned_by, None, "nobody spawned it, so nobody may kill it");
+        assert!(!old.spawn_cut_worktree, "and no tree of ours to remove");
     }
 
     #[test]

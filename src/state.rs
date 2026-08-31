@@ -1107,6 +1107,12 @@ pub struct SessionView {
     /// empty answer can mean "go back to the ai-title" rather than "freeze it".
     pub name: Option<String>,
     pub cwd: String,
+    /// The branch this conversation is about ([`Session::branch`]), not the tree it
+    /// sits in. Sent so `orch ls` can answer the question its columns could not:
+    /// whether two sessions can safely work in parallel. A shared `cwd` means one
+    /// git index, and two rows on one branch means one branch — and neither was
+    /// visible from id, workspace and state.
+    pub branch: Option<String>,
     pub rank: u8,
     /// Whether this is idle time worth counting. A session you just opened is
     /// idle but not waiting on you in the sense the rail exists to surface.
@@ -1152,6 +1158,7 @@ impl SessionView {
             title: s.label().map(str::to_owned),
             name: s.name.clone(),
             cwd: s.cwd.to_string_lossy().into_owned(),
+            branch: s.branch.clone(),
             rank: s.sort_rank(),
             wants_attention: s.state.wants_attention(),
             waiting_ms,
