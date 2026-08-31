@@ -68,6 +68,14 @@ pub struct Config {
     /// daemon's environment, and nowhere else. See `story::resolve_token`.
     #[serde(default = "default_tracker")]
     pub tracker: TrackerKind,
+    /// Which tool a spawned session's own environment comes from.
+    ///
+    /// This is how the tracker's credential reaches the agent at all when the
+    /// daemon was not started from a shell in the checkout: the MCP entry expands
+    /// `${SHORTCUT_API_TOKEN}` from the session's environment, and only this puts
+    /// it there.
+    #[serde(default)]
+    pub env_source: EnvSourceKind,
     /// How long the borrowed story-filing agent gets before it is killed.
     ///
     /// The one timeout in this daemon, because it is the one agent whose caller is
@@ -410,6 +418,26 @@ impl TrackerKind {
     }
 }
 
+/// Which tool tells the daemon what a checkout's environment is.
+///
+/// Explicit rather than probed for, the same call as [`TrackerKind`]: probing
+/// would make "the session has no token" and "the daemon picked the other tool"
+/// indistinguishable. `mise` by default because a session that inherits nothing
+/// is the broken case, not a neutral one — a `.mcp.json` credential read from the
+/// environment simply goes out empty.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EnvSourceKind {
+    /// Ask `mise env --json` in the session's own directory.
+    #[default]
+    Mise,
+    /// Ask `direnv export json` instead.
+    Direnv,
+    /// Ask nothing. A session gets the daemon's environment and no more, which is
+    /// right when the daemon is already started with everything a checkout needs.
+    None,
+}
+
 fn default_story_timeout() -> u64 {
     300
 }
@@ -734,15 +762,29 @@ impl Config {
 /// cannot quietly leave one out.
 ///
 /// `ask_token` is `None` for a run with nobody to ask — the headless triage pass.
+///
+/// `cwd` is where the session will run, and it is asked what it exports
+/// ([`crate::env_source`]): the daemon's own environment is whatever started it, so
+/// from a desktop launcher it holds no checkout's variables at all. That is the
+/// other half of the tracker token below, and of every `${…}` a repo's `.mcp.json`
+/// expands.
 pub fn session_env(
     cfg: &Config,
+    cwd: &Path,
     id: uuid::Uuid,
     ask_token: Option<&str>,
 ) -> (Vec<(String, String)>, Vec<&'static str>) {
-    let mut set = vec![(
+    // The checkout's own variables first, so everything the daemon sets below wins
+    // — the pty applies these in order, and a repo exporting `ORCH_ASK_TOKEN` must
+    // not be able to overwrite the one this session was given.
+    let mut set = match crate::env_source::EnvSourceImpl::for_kind(cfg.env_source) {
+        Some(source) => crate::env_source::read(&source, cwd),
+        None => Vec::new(),
+    };
+    set.push((
         "CLAUDE_CODE_FORCE_SESSION_PERSISTENCE".to_string(),
         "1".to_string(),
-    )];
+    ));
     set.push(("ORCH_SESSION_ID".to_string(), id.to_string()));
     if let Some(t) = ask_token {
         set.push(("ORCH_ASK_TOKEN".to_string(), t.to_string()));
@@ -759,7 +801,16 @@ pub fn session_env(
     // `orch new` would be a command not found. Prepended, so a build you are
     // testing wins over an installed one.
     if let Some(dir) = crate::sibling_bin_dir() {
-        let rest = std::env::var("PATH").unwrap_or_default();
+        // Prepend to the checkout's PATH when there is one, not the daemon's: the
+        // source above may already have put a PATH here holding the tools this
+        // checkout pins, and rebuilding from the daemon's would drop them. Last
+        // wins, the same rule the pty applies.
+        let rest = set
+            .iter()
+            .rev()
+            .find(|(k, _)| k == "PATH")
+            .map(|(_, v)| v.clone())
+            .unwrap_or_else(|| std::env::var("PATH").unwrap_or_default());
         set.push(("PATH".to_string(), format!("{dir}:{rest}")));
     }
     // What the repo's `.mcp.json` `${…}` expands from, named by the tracker.
@@ -771,7 +822,7 @@ pub fn session_env(
     // said was that no token had been sent. In the child's environment rather than
     // the settings file the daemon writes, which would put a secret in
     // `~/.config/orchd/`.
-    if let Some(pair) = crate::story::token_env_pair(cfg.tracker) {
+    if let Some(pair) = crate::story::token_env_pair(cfg.tracker, &set) {
         set.push(pair);
     }
     (set, vec!["CLAUDE_CODE_CHILD_SESSION"])
@@ -999,7 +1050,11 @@ mod tests {
     fn persistence_clears_the_child_marker() {
         // The marker is what a daemon launched from inside a Claude session
         // inherits, and it silently turns transcripts off in every child.
-        let (set, unset) = session_env(&super::test_config(), uuid::Uuid::nil(), None);
+        let cfg = Config {
+            env_source: EnvSourceKind::None,
+            ..super::test_config()
+        };
+        let (set, unset) = session_env(&cfg, Path::new("/tmp"), uuid::Uuid::nil(), None);
         assert!(unset.contains(&"CLAUDE_CODE_CHILD_SESSION"));
         assert!(set
             .iter()

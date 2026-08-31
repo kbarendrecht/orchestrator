@@ -39,10 +39,17 @@ use std::path::Path;
 ///
 /// The story pass keeps the hard [`resolve_token`] instead: a run that files into a
 /// tracker with no credential can only fail mid-flight, so it is refused up front.
-pub fn token_env_pair(kind: crate::config::TrackerKind) -> Option<(String, String)> {
+///
+/// `checkout` is the environment built so far, which is where the token comes from
+/// when the daemon's own has none.
+pub fn token_env_pair(
+    kind: crate::config::TrackerKind,
+    checkout: &[(String, String)],
+) -> Option<(String, String)> {
     use crate::tracker::Tracker as _;
     let tracker = crate::tracker::TrackerImpl::for_kind(kind)?;
-    Some((tracker.token_env().to_string(), resolve_token().ok()?))
+    let var = tracker.token_env();
+    Some((var.to_string(), resolve_token(checkout, var).ok()?))
 }
 
 /// The tracker's API token, for its MCP server's `Authorization` header.
@@ -57,14 +64,27 @@ pub fn token_env_pair(kind: crate::config::TrackerKind) -> Option<(String, Strin
 /// `SHORTCUT_API_TOKEN='' # can be generated in …`; a naive split yields
 /// `'' # can be` and injects a garbage Bearer, which surfaces later as "the
 /// tracker is down" rather than "the token is not set".
-pub fn resolve_token() -> Result<String> {
+///
+/// `checkout` is that same team copy read *correctly* — by the tool that owns the
+/// file ([`crate::env_source`]), under the name the tracker's MCP entry expands.
+/// It is a fallback, not the first answer: `ORCHD_TRACKER_TOKEN` is what an
+/// operator set for this daemon, and a checkout must not be able to redirect
+/// filing by exporting a token of its own.
+pub fn resolve_token(checkout: &[(String, String)], var: &str) -> Result<String> {
     if let Ok(v) = std::env::var("ORCHD_TRACKER_TOKEN") {
         let v = v.trim().to_string();
         if !v.is_empty() {
             return Ok(v);
         }
     }
-    bail!("no tracker token: set ORCHD_TRACKER_TOKEN in the daemon's environment")
+    // Last wins, the same rule the pty applies to these pairs.
+    if let Some((_, v)) = checkout.iter().rev().find(|(k, _)| k == var) {
+        let v = v.trim().to_string();
+        if !v.is_empty() {
+            return Ok(v);
+        }
+    }
+    bail!("no tracker token: set ORCHD_TRACKER_TOKEN in the daemon's environment, or {var} in the checkout")
 }
 
 /// A story that exists in the tracker.
@@ -342,9 +362,6 @@ async fn run_filer(
     use crate::tracker::Tracker as _;
     let tracker = crate::tracker::TrackerImpl::for_kind(app.cfg.tracker)
         .context("no tracker configured, so there is nothing to file into")?;
-    // Refused here rather than mid-run: `session_env` hands the token to every
-    // session and shrugs when there is none, which is right for all of them but this.
-    resolve_token()?;
     let head_ref = {
         let inner = app.inner.read().await;
         inner
@@ -447,10 +464,13 @@ async fn run_filer(
     }
 
     // The tracker variable this run needs is pushed by `session_env` now, for every
-    // session rather than only this one. `resolve_token` above still runs and still
-    // refuses: every other session can work without a tracker, and a story pass
-    // cannot.
-    let (env, unset) = crate::config::session_env(&app.cfg, id, None);
+    // session rather than only this one.
+    let (env, unset) = crate::config::session_env(&app.cfg, &path, id, None);
+    // Still refused before the agent runs: `session_env` shrugs when there is no
+    // token, which is right for every other session and not for this one. Asked of
+    // the environment it just built rather than of the daemon's, because the
+    // checkout's own copy is the other place a token comes from.
+    resolve_token(&env, tracker.token_env())?;
 
     let spawned = PtyHandle::spawn(&cmd, &path, &env, &unset, crate::spawn::DEFAULT_SIZE)?;
     let worktree = path.clone();

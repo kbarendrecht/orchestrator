@@ -151,7 +151,8 @@ back to `config.json`; changes take effect on restart.
 | `upstream_ref` / `upstream_remote` | `origin/HEAD`, `origin` | the base every diff and worktree is measured against. On a **fork workflow** — an `upstream` remote beside `origin` — a first run detects it and writes `upstream/<default branch>` instead, so there is nothing to set by hand. |
 | `reviews_command` | the ejected `reviews.js` | argv printing the review queue as JSON. See below. Empty means the pane reads "not configured" rather than "unavailable". |
 | `main_processes` | *(empty)* | long-running processes shown in the drawer. See below. |
-| `tracker` | `none` | where an out-of-scope review point can be filed as a story. `shortcut` is the one implementation; the seam for adding others is `src/tracker/`. Its token is **not** a config key — set `ORCHD_TRACKER_TOKEN` in the daemon's environment. It also needs the repo to declare a matching **MCP server** — see below. |
+| `tracker` | `none` | where an out-of-scope review point can be filed as a story. `shortcut` is the one implementation; the seam for adding others is `src/tracker/`. Its token is **not** a config key — set `ORCHD_TRACKER_TOKEN` in the daemon's environment, or let `env_source` read the checkout's own. It also needs the repo to declare a matching **MCP server** — see below. |
+| `env_source` | `mise` | which tool is asked what a session's own directory exports — `mise`, `direnv`, or `none`. Config file only, not in the settings panel. See below. |
 | `default_language` | `English` | the language the agent *writes* replies and stories in. Prompts and code stay English regardless. |
 | `shared_worktree_paths` | *(empty)* | directories inside a worktree that are allowed to be symlinks *out* of it, e.g. a plan dir shared back to main. The editable diff pane refuses every other path that resolves outside the workspace. |
 | `worktree_init` / `worktree_setup` | *(empty)* | two commands run in every worktree the daemon cuts itself. See below. |
@@ -218,6 +219,34 @@ pointed the daemon at, not in its config:
 Get the first one wrong and Claude Code drops the server **silently** — the tool is
 simply absent and the run burns its whole timeout mid-review. That is why the
 daemon checks at boot and says so.
+
+### The environment a session gets
+
+A session gets the daemon's environment plus whatever `env_source` says the
+session's own directory exports. That second half exists because the first is not
+what you think it is: the daemon's environment is whatever started it, and started
+from a desktop launcher that is the systemd user manager's, which holds no
+checkout's variables at all.
+
+The symptom is an MCP server that answers 401. An `.mcp.json` entry spelled
+`"Authorization": "Bearer ${SHORTCUT_API_TOKEN}"` expands from the process
+environment and nowhere else, so an absent variable goes out as literal text. It
+stays hidden because typing `claude` in that checkout still works — `mise activate`
+exports at a shell prompt, and an app has no prompt.
+
+So the daemon asks the tool directly, per spawn, in the session's own directory:
+`mise env --json` or `direnv export json`. Two things worth knowing:
+
+- **Every failure is silent by design.** No tool, no config, no trust, unreadable
+  output: the session starts with what it had. A missing variable is a degraded
+  session; a refused spawn is a lost one. An untrusted config is the one case that
+  logs a warning, because the variables exist and the session is not getting them.
+- **Trust is per config file.** mise refuses a `mise.toml` it has not been told to
+  trust, and a worktree is a new path — so a fresh worktree can need `mise trust`
+  before its sessions see anything. `worktree_setup` is the place to put that.
+
+Set `env_source` to `none` if the daemon is already started with everything the
+checkouts need.
 
 ### Worktree hooks
 
@@ -356,6 +385,8 @@ src/
   patch.rs      applying and committing what you approved, with staleness checks
   prompt.rs     rendering the vendored prompts in commands/
   story.rs      filing a tracker story for a fair-but-out-of-scope point
+  env_source/   where a session's own variables come from: trait + dispatch
+                (mod.rs), mise.rs, direnv.rs
   reviews.rs    review queue: runs reviews_command, parses JSON, degraded states
   fix_pr.rs     automation state, the fix-pr guard table, a run's verdict
   agent_update.rs   is Claude Code behind (via mise), and the one-click upgrade

@@ -9,6 +9,7 @@ pub mod api;
 pub mod config;
 pub mod diff;
 pub mod edit;
+pub mod env_source;
 pub mod git;
 pub mod guard;
 pub mod forge;
@@ -295,13 +296,25 @@ pub async fn start(opts: StartOptions) -> Result<Server> {
         // "triage never proposes stories".
         match app.cfg.tracker {
             config::TrackerKind::None => tracing::info!("tracker: none — `story+reply` is off"),
-            t => match story::resolve_token() {
-                Ok(_) => tracing::info!(
-                    "tracker: {t:?}, token resolved, {} story/ies cached",
-                    inner.stories.len()
-                ),
-                Err(e) => tracing::warn!("tracker: {t:?} but no usable token — {e:#}"),
-            },
+            t => {
+                use tracker::Tracker as _;
+                // The main checkout's own environment is the filer's fallback, so
+                // the boot line has to read it too. Without this it would warn
+                // about a missing token that a run then finds.
+                let checkout = env_source::EnvSourceImpl::for_kind(app.cfg.env_source)
+                    .map(|s| env_source::read(&s, &app.cfg.main_checkout))
+                    .unwrap_or_default();
+                let var = tracker::TrackerImpl::for_kind(t)
+                    .map(|i| i.token_env())
+                    .unwrap_or_default();
+                match story::resolve_token(&checkout, var) {
+                    Ok(_) => tracing::info!(
+                        "tracker: {t:?}, token resolved, {} story/ies cached",
+                        inner.stories.len()
+                    ),
+                    Err(e) => tracing::warn!("tracker: {t:?} but no usable token — {e:#}"),
+                }
+            }
         }
     }
     reconcile_all(&app).await;

@@ -214,6 +214,20 @@ mean *this* repo; if you do, name it.
   set. So a daemon pointed at any other repo — or a throwaway build — writes
   nothing, and never dirties a tracked file. This replaced an older block spliced
   into `TODO.md` at the build-time path, which churned this repo from every build.
+- **A session's environment is not the shell's, and the gap is invisible.** The
+  daemon's environment is whatever started it; from a desktop launcher that is the
+  systemd user manager's, which holds no checkout's variables. So a `.mcp.json`
+  header spelled `Bearer ${SHORTCUT_API_TOKEN}` went out as literal text and the
+  server answered 401 — while the same session started by typing `claude` in that
+  checkout worked, because `mise activate` exports at a shell prompt and an app has
+  no prompt. That is why the terminal is the worst place to reproduce this.
+  `config::session_env` now asks the tool itself (`src/env_source/`, `mise` by
+  default, `direnv` beside it, `none` to turn it off), per spawn, in the session's
+  own cwd. Two things it will not do: it never fails a spawn (a missing variable is
+  degraded, a refused spawn is lost), and it cannot trust a config for you — mise
+  refuses an untrusted `mise.toml`, a fresh worktree is a fresh path, and the only
+  sign is one warning in the log. Put `mise trust` in `worktree_setup` if that
+  bites.
 - **Shelling out to coreutils is the other portability trap.** The review queue
   ran its command under `timeout`, which is GNU and not on a Mac, so it failed at
   the spawn and the pane blamed the review command for a missing binary it never

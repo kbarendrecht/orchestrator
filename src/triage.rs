@@ -16,6 +16,7 @@
 //! worse source of truth.
 
 use anyhow::{Context, Result};
+use std::path::Path;
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -189,7 +190,7 @@ pub async fn spawn(app: &Arc<AppState>, pr: u64, head_ref: &str, login: &str) ->
         .proposal_tokens
         .insert(pr, post_token.clone());
 
-    let (env, unset) = run_env(&app.cfg, id, &post_token, None);
+    let (env, unset) = run_env(&app.cfg, &path, id, &post_token, None);
 
     let spawned = PtyHandle::spawn(&cmd, &path, &env, &unset, DEFAULT_SIZE)?;
     let mut session = Session::new(
@@ -314,7 +315,7 @@ pub async fn spawn_review(
         .proposal_tokens
         .insert(pr, post_token.clone());
 
-    let (env, unset) = run_env(&app.cfg, id, &post_token, Some(&ask_token));
+    let (env, unset) = run_env(&app.cfg, &path, id, &post_token, Some(&ask_token));
 
     let spawned = PtyHandle::spawn(&cmd, &path, &env, &unset, DEFAULT_SIZE)?;
     let mut session = Session::new(
@@ -367,11 +368,12 @@ pub async fn spawn_review(
 /// between a two-line plumbing slip and a review flow that cannot post.
 fn run_env(
     cfg: &crate::config::Config,
+    cwd: &Path,
     id: SessionId,
     post_token: &str,
     ask: Option<&str>,
 ) -> (Vec<(String, String)>, Vec<&'static str>) {
-    let (mut env, unset) = crate::config::session_env(cfg, id, ask);
+    let (mut env, unset) = crate::config::session_env(cfg, cwd, id, ask);
     env.push(("ORCH_POST_TOKEN".to_string(), post_token.to_string()));
     (env, unset)
 }
@@ -403,7 +405,14 @@ mod tests {
     #[test]
     fn a_run_is_given_the_narrow_token_and_never_the_app_token() {
         let id = uuid::Uuid::new_v4();
-        let (env, _) = run_env(&crate::config::test_config(), id, "post-tok", Some("ask-tok"));
+        // `env_source: None`: this asserts what the *daemon* hands a run, and a
+        // real source would make the answer depend on the machine it runs on.
+        let cfg = crate::config::Config {
+            env_source: crate::config::EnvSourceKind::None,
+            ..crate::config::test_config()
+        };
+        let dir = std::env::temp_dir();
+        let (env, _) = run_env(&cfg, &dir, id, "post-tok", Some("ask-tok"));
         let get = |k: &str| {
             env.iter()
                 .find(|(n, _)| n == k)
@@ -428,7 +437,7 @@ mod tests {
         assert!(crate::prompt::REVIEW_SESSION.contains("$ORCH_POST_TOKEN"));
 
         // The headless triage pass has nobody to ask, so it gets no ask token.
-        let (solo, _) = run_env(&crate::config::test_config(), id, "post-tok", None);
+        let (solo, _) = run_env(&cfg, &dir, id, "post-tok", None);
         assert!(!solo.iter().any(|(n, _)| n == "ORCH_ASK_TOKEN"));
         assert!(solo.iter().any(|(n, _)| n == "ORCH_POST_TOKEN"));
     }

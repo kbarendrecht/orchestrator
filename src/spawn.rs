@@ -478,7 +478,7 @@ pub async fn spawn_session(
         session.forked_from = Some(prev);
     }
 
-    let (env, unset) = crate::config::session_env(&app.cfg, id, Some(&session.ask_token));
+    let (env, unset) = crate::config::session_env(&app.cfg, &path, id, Some(&session.ask_token));
     let spawned = PtyHandle::spawn(&cmd, &path, &env, &unset, DEFAULT_SIZE)?;
 
     session.pty = Some(spawned.handle.clone());
@@ -615,7 +615,6 @@ pub async fn spawn_worktree_session(
     // environment the pty is *given*, so it is generated first and written onto the
     // session below.
     let ask_token = crate::state::random_token();
-    let (env, unset) = crate::config::session_env(&app.cfg, id, Some(&ask_token));
 
     // Where the daemon looks for worktrees decides who creates this one — **unless
     // this is a fork**, which the daemon always cuts itself. `claude --worktree`
@@ -709,6 +708,10 @@ pub async fn spawn_worktree_session(
         "--settings".to_string(),
         settings.to_string_lossy().into_owned(),
     ]);
+    // After the arms, because only they know where this runs — and in the
+    // delegated arm that is the main checkout, whose environment is the one the
+    // worktree about to be cut from it would have had anyway.
+    let (env, unset) = crate::config::session_env(&app.cfg, &spawn_cwd, id, Some(&ask_token));
     let spawned = PtyHandle::spawn(&cmd, &spawn_cwd, &env, &unset, DEFAULT_SIZE)?;
 
     // Without a name the path is not known until `SessionStart` reports the
@@ -818,7 +821,7 @@ pub async fn spawn_fix_pr_session(
 
     // No ask token: a fix run is handed its URL substituted into its prompt and has
     // nothing to ask, which is the narrower surface 942d01b chose on purpose.
-    let (mut env, unset) = crate::config::session_env(&app.cfg, id, None);
+    let (mut env, unset) = crate::config::session_env(&app.cfg, &path, id, None);
     // Parallel runs collide on ports and docker resource names, so each gets
     // its own compose project and port base (§8).
     env.push(("COMPOSE_PROJECT_NAME".to_string(), format!("orchd-pr-{pr}")));
@@ -1678,15 +1681,17 @@ mod tests {
     async fn a_session_is_handed_the_whole_orch_environment_or_it_cannot_ask() {
         let dir = std::env::temp_dir().join(format!("orchd-agent-env-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
+        // `env_source: none`: this pins what the *daemon* puts in, and a real
+        // source would add whatever the machine running the test exports.
         let cfg: Config = serde_json::from_str(&format!(
-            r#"{{"main_checkout":"{}","port":7794}}"#,
+            r#"{{"main_checkout":"{}","port":7794,"env_source":"none"}}"#,
             dir.display()
         ))
         .unwrap();
         let app = AppState::new(cfg, "t".into(), crate::window::Chrome::None);
 
         let id = Uuid::new_v4();
-        let (env, _) = crate::config::session_env(&app.cfg, id, Some("ask-tok"));
+        let (env, _) = crate::config::session_env(&app.cfg, &dir, id, Some("ask-tok"));
         let get = |k: &str| {
             env.iter()
                 .find(|(n, _)| n == k)
