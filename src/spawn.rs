@@ -517,7 +517,7 @@ pub async fn spawn_session(
 /// Untracked files do not travel: `stash create` has no `--include-untracked`. They
 /// are named rather than silently left, the same rule the swap follows, because
 /// half your work not arriving is exactly the thing you find out about too late.
-fn carry_into(parent: &std::path::Path, fork: &std::path::Path) -> Option<String> {
+fn carry_into(parent: &std::path::Path, fork: &std::path::Path, exclude: &str) -> Option<String> {
     let mut said = Vec::new();
     match crate::git::copy_wip(parent, fork) {
         Ok(Some(_)) => said.push("its uncommitted changes were carried in with it".to_string()),
@@ -527,7 +527,10 @@ fn carry_into(parent: &std::path::Path, fork: &std::path::Path) -> Option<String
             said.push(format!("its uncommitted changes could NOT be carried in ({e})"));
         }
     }
-    match crate::git::untracked_in(parent, None) {
+    // Excluding the worktrees dir, because a fork of a session in main would
+    // otherwise walk every worktree in the checkout — the case `Untracked::Collapsed`
+    // exists for, and which `reconcile` already guards against.
+    match crate::git::untracked_in(parent, Some(exclude)) {
         Ok(f) if !f.is_empty() => {
             let shown: Vec<&str> = f.iter().take(4).map(String::as_str).collect();
             let more = f.len().saturating_sub(shown.len());
@@ -568,8 +571,9 @@ fn carry_into(parent: &std::path::Path, fork: &std::path::Path) -> Option<String
 /// uncommitted work is copied in before the session starts, so the tree looks like
 /// the one the replayed conversation remembers. `claude --worktree` cannot do
 /// either half — it takes a name and nothing else, and does not report the path
-/// until `SessionStart` — which is why a fork gives up the repo's own
-/// `worktree-create` hooks and gets `run_worktree_hooks` instead.
+/// until `SessionStart`. The repo's `WorktreeCreate` still runs: `create_worktree`
+/// invokes it and adopts the tree it makes, then puts that tree on the parent's
+/// commit.
 ///
 /// `--resume` finds a session by id wherever it was recorded, so a fork still does
 /// not *need* the original's working directory to exist. Without it there is simply
@@ -620,9 +624,9 @@ pub async fn spawn_worktree_session(
     // this is a fork**, which the daemon always cuts itself. `claude --worktree`
     // takes a name and nothing else: it cannot be told to branch from the parent,
     // and it does not report the path until `SessionStart`, so neither half of
-    // carrying the parent's files is possible through it. The cost is that the
-    // repo's own `worktree-create` / `worktree-link` hooks do not fire for a fork;
-    // `worktree_setup` is the seam for that, and `run_worktree_hooks` below runs it.
+    // carrying the parent's files is possible through it. `create_worktree` still
+    // runs the repo's `WorktreeCreate`, so the only thing a fork gives up is Claude
+    // Code choosing the name.
     let delegated = app.cfg.worktrees_subdir_is_claude_default() && fork.is_none();
 
     // The tree a fork is cut from and carries the work of. `None` when there is no
@@ -648,7 +652,7 @@ pub async fn spawn_worktree_session(
     };
     let name = name.or(owned_name.as_deref());
 
-    let (spawn_cwd, cmd) = if delegated {
+    let (spawn_cwd, cmd, made_at) = if delegated {
         let mut cmd = vec!["claude".to_string(), "--worktree".to_string()];
         // With no name, Claude Code generates one. That is also the only path
         // that cannot collide with an archived worktree by construction, since
@@ -656,8 +660,9 @@ pub async fn spawn_worktree_session(
         if let Some(name) = name {
             cmd.push(name.to_string());
         }
-        // cwd is the main checkout, not the worktree-to-be.
-        (app.cfg.main_checkout.clone(), cmd)
+        // cwd is the main checkout, not the worktree-to-be, and the path is Claude
+        // Code's to choose and to report at `SessionStart`.
+        (app.cfg.main_checkout.clone(), cmd, None)
     } else {
         let name = name.context("a worktree name is required")?;
         let path = app.cfg.worktree_path(name);
@@ -665,10 +670,16 @@ pub async fn spawn_worktree_session(
         // tree that looks like the one the conversation remembers, and the parent's
         // *committed* work is most of that. Resolved to a sha so the base cannot
         // move between here and the `worktree add`.
-        let base = parent_tree
-            .as_deref()
-            .and_then(|p| crate::git::head_sha(p).ok())
-            .unwrap_or_else(|| app.cfg.upstream_ref.clone());
+        let base = match parent_tree.clone() {
+            // On a blocking thread like every other git call here: `head_sha` is a
+            // subprocess, and the fork path is already the slowest spawn there is.
+            Some(p) => tokio::task::spawn_blocking(move || crate::git::head_sha(&p).ok())
+                .await
+                .ok()
+                .flatten()
+                .unwrap_or_else(|| app.cfg.upstream_ref.clone()),
+            None => app.cfg.upstream_ref.clone(),
+        };
         let branch = format!("worktree-{name}");
         // The repo's own `WorktreeCreate` if it has one, ours if not. The path can
         // come back different: the hook chooses where it puts things.
@@ -689,11 +700,19 @@ pub async fn spawn_worktree_session(
         // Now the parent's uncommitted work, on top of the parent's HEAD the tree
         // was just cut from. Before the session starts, so the agent never sees the
         // tree change under it.
-        if let Some(parent) = parent_tree.as_deref() {
-            carried = carry_into(parent, &path);
+        if let Some(parent) = parent_tree.clone() {
+            // Four git subprocesses including a `stash apply`, so not on the executor.
+            let exclude = app.cfg.worktrees_subdir_str();
+            let to = path.clone();
+            carried = tokio::task::spawn_blocking(move || carry_into(&parent, &to, &exclude))
+                .await
+                .unwrap_or(None);
         }
-        // The session runs *in* the worktree, so it needs no `--worktree`.
-        (path, vec!["claude".to_string()])
+        // The session runs *in* the worktree, so it needs no `--worktree`. The path
+        // travels with it: `create_worktree` may have adopted a tree the repo's hook
+        // put somewhere else, and registering the path we *asked* for would leave the
+        // daemon reconciling a directory that does not exist.
+        (path.clone(), vec!["claude".to_string()], Some(path))
     };
 
     let mut cmd = cmd;
@@ -718,10 +737,12 @@ pub async fn spawn_worktree_session(
     // cwd, so the workspace is registered there instead.
     let (workspace, cwd) = match name {
         Some(name) => {
-            let expected = app.cfg.worktree_path(name);
-            app.register_worktree(name, expected.clone(), Some(format!("worktree-{name}")))
+            // Where it actually is when the daemon cut it, and where Claude Code puts
+            // one otherwise.
+            let at = made_at.unwrap_or_else(|| app.cfg.worktree_path(name));
+            app.register_worktree(name, at.clone(), Some(format!("worktree-{name}")))
                 .await;
-            (name.to_string(), expected)
+            (name.to_string(), at)
         }
         None => (PENDING_WORKTREE.to_string(), app.cfg.main_checkout.clone()),
     };
@@ -743,21 +764,16 @@ pub async fn spawn_worktree_session(
     // from memory and the first remembered path it uses is wrong — the same failure
     // a relocation's notice exists to prevent, in the one place that never sent one.
     if fork.is_some() {
-        let where_ = cwd.display();
-        session.arrival_notice = Some(match &carried {
-            Some(what) => format!(
-                "You are a fork, in a new worktree at {where_} cut from the commit the \
-                 conversation you are replaying was on. It is not the tree that \
-                 conversation was written in, so re-read before trusting a remembered \
-                 path. {what}."
-            ),
-            None => format!(
-                "You are a fork, in a new worktree at {where_} cut from the commit the \
-                 conversation you are replaying was on. It is not the tree that \
-                 conversation was written in, so re-read before trusting a remembered \
-                 path. The original tree had no uncommitted work to carry."
-            ),
-        });
+        let what = carried
+            .as_deref()
+            .unwrap_or("The original tree had no uncommitted work to carry");
+        session.arrival_notice = Some(format!(
+            "You are a fork, in a new worktree at {} cut from the commit the \
+             conversation you are replaying was on. It is not the tree that \
+             conversation was written in, so re-read before trusting a remembered \
+             path. {what}.",
+            cwd.display()
+        ));
     }
     session.pty = Some(spawned.handle.clone());
     session.pid = spawned.pid;
@@ -2206,60 +2222,73 @@ pub(crate) enum Want<'a> {
 /// produced, which is how a repo's fetching, its layout and its post-create work
 /// reach a tree the daemon asked for.
 ///
-/// **Then the branch is put right.** The hook chooses its own base, and this
-/// repo's hardcodes `upstream/develop`. That is wrong for a PR worktree pinned to a
-/// head ref and wrong for a fork cut from its parent, so [`Want`] is applied to the
-/// tree afterwards. The branch the hook made is left behind; that is the price of
-/// letting it own creation, and it is a stale ref rather than lost work.
+/// **Then the branch is put right.** The hook chooses its own base, and the
+/// monorepo's hardcodes `upstream/develop`. That is wrong for a PR worktree pinned
+/// to a head ref and wrong for a fork cut from its parent, so [`Want`] is applied to
+/// the tree afterwards. The branch the hook made is left behind; that is the price
+/// of letting it own creation, and it is a stale ref rather than lost work.
 ///
 /// **Every failure falls through to the daemon's own creation**, which is the path
-/// that ran before any of this existed. A repo without the hook, a hook that exits
-/// non-zero, a hook that prints something that is not a usable directory, a tree the
-/// branch will not apply to: all of them end with `worktree_add_new` at the path the
-/// caller asked for. Creating a worktree is the daemon's most load-bearing
-/// operation, and a repo script is not allowed to be the reason it cannot.
+/// that ran before any of this existed. Creating a worktree is the daemon's most
+/// load-bearing operation and a repo script is not allowed to be the reason it
+/// cannot happen. A tree the hook made but we could not use is *removed* first: it
+/// usually sits at the very path and branch the fallback is about to ask for, so
+/// leaving it there turned an adoption failure into a hard spawn failure with a git
+/// error about a branch nobody asked about.
 ///
 /// Returns the path the worktree actually landed at, which is the hook's choice when
-/// the hook made it.
+/// the hook made it. Callers must use that rather than the path they passed in.
 pub(crate) async fn create_worktree(
     app: &Arc<AppState>,
     name: &str,
     path: &std::path::Path,
     want: Want<'_>,
 ) -> Result<std::path::PathBuf> {
+    // Owned up front: every git call below goes to a blocking thread, because each
+    // one can fetch and a fetch against an unreachable remote parks a runtime worker
+    // for as long as git waits.
+    let main = app.cfg.main_checkout.clone();
+    let branch = match &want {
+        Want::New { branch, .. } | Want::Existing { branch } => branch.to_string(),
+    };
+    let base = match &want {
+        Want::New { base, .. } => Some(base.to_string()),
+        Want::Existing { .. } => None,
+    };
+
     if let Some(made) = hook_cut_worktree(app, name).await {
-        match put_on_branch(&app.cfg.main_checkout, &made, &want) {
+        let (m, tree, b, ba) = (main.clone(), made.clone(), branch.clone(), base.clone());
+        let applied = tokio::task::spawn_blocking(move || match ba {
+            Some(base) => crate::git::checkout_new_branch(&m, &tree, &b, &base),
+            None => crate::git::checkout_existing_branch(&m, &tree, &b),
+        })
+        .await
+        .context("putting the hook's worktree on its branch panicked")?;
+
+        match applied {
             Ok(()) => return Ok(made),
             Err(e) => {
-                // The tree is the hook's and we could not use it. Left alone rather
-                // than removed: it is the repo's object, the daemon did not choose
-                // its path, and deleting someone else's worktree to recover from our
-                // own failure is the wrong trade.
                 tracing::warn!(
                     name,
                     "the repo's WorktreeCreate made {} but it could not be put on the \
                      branch this needs, so the daemon is cutting its own: {e:#}",
                     made.display()
                 );
+                // Out of the way before the fallback asks for the same path, and very
+                // likely the same branch name.
+                let (m, t) = (main.clone(), made.clone());
+                let _ = tokio::task::spawn_blocking(move || crate::git::worktree_remove(&m, &t)).await;
             }
         }
     }
-    let main = app.cfg.main_checkout.clone();
+
     let p = path.to_path_buf();
-    match &want {
-        Want::New { branch, base } => {
-            let (branch, base) = (branch.to_string(), base.to_string());
-            tokio::task::spawn_blocking(move || crate::git::worktree_add_new(&main, &p, &branch, &base))
-                .await
-                .context("the worktree add panicked")??;
-        }
-        Want::Existing { branch } => {
-            let branch = branch.to_string();
-            tokio::task::spawn_blocking(move || crate::git::worktree_add_existing(&main, &p, &branch))
-                .await
-                .context("the worktree add panicked")??;
-        }
-    }
+    tokio::task::spawn_blocking(move || match base {
+        Some(base) => crate::git::worktree_add_new(&main, &p, &branch, &base),
+        None => crate::git::worktree_add_existing(&main, &p, &branch),
+    })
+    .await
+    .context("the worktree add panicked")??;
     Ok(path.to_path_buf())
 }
 
@@ -2269,77 +2298,27 @@ pub(crate) async fn create_worktree(
 /// `None` for every way this can decline: no hook declared, a non-zero exit, empty
 /// output, or a path that is not a directory. The caller cuts its own on `None`, so
 /// none of these is an error worth raising.
-///
-/// The emitted path is checked the way Claude Code checks it: absolute, no dot
-/// segments, and a real directory. Its own reason for each — a relative path is
-/// ambiguous against a cwd the hook does not control, dot segments can climb out of
-/// the repository, and a path that is not a directory is a hook that failed while
-/// exiting zero.
 async fn hook_cut_worktree(app: &Arc<AppState>, name: &str) -> Option<std::path::PathBuf> {
-    let hooks = crate::worktree::repo_worktree_hooks(&app.cfg.main_checkout, "WorktreeCreate");
-    if hooks.is_empty() {
-        return None;
-    }
-    // `name` is the key this repo's hook reads, and the only one the contract is
+    // `name` is the key the monorepo's hook reads, and the only one the contract is
     // observed to carry.
     let payload = serde_json::json!({
         "hook_event_name": "WorktreeCreate",
         "cwd": app.cfg.main_checkout.to_string_lossy(),
         "name": name,
-    })
-    .to_string()
-    .into_bytes();
-
-    for cmd in hooks {
-        let argv = vec!["sh".to_string(), "-c".to_string(), cmd.clone()];
-        let at = app.cfg.main_checkout.clone();
-        let envs = vec![(
-            "CLAUDE_PROJECT_DIR".to_string(),
-            app.cfg.main_checkout.to_string_lossy().into_owned(),
-        )];
-        let body = payload.clone();
-        let out = tokio::task::spawn_blocking(move || {
-            crate::proc::run_bounded_with_input(
-                &at,
-                WORKTREE_SETUP_TIMEOUT_SECS,
-                &argv,
-                "worktree create hook",
-                Some(body),
-                &envs,
-            )
-        })
-        .await;
-        let out = match out {
-            Ok(Ok(o)) if o.status.success() => o,
-            Ok(Ok(o)) => {
-                tracing::warn!(
-                    name,
-                    "the repo's WorktreeCreate hook exited {}: {}",
-                    o.status,
-                    String::from_utf8_lossy(&o.stderr).trim()
-                );
-                continue;
-            }
-            Ok(Err(e)) => {
-                tracing::warn!(name, "the repo's WorktreeCreate hook failed: {e:#}");
-                continue;
-            }
-            Err(e) => {
-                tracing::warn!(name, "the WorktreeCreate hook task panicked: {e}");
-                continue;
-            }
-        };
+    });
+    for out in crate::worktree::run_repo_hooks(app, "WorktreeCreate", payload).await {
         let said = String::from_utf8_lossy(&out.stdout);
-        let Some(made) = usable_hook_path(&said) else {
-            tracing::warn!(
+        match usable_hook_path(&said) {
+            Some(made) => {
+                tracing::info!(name, "the repo's WorktreeCreate hook made {}", made.display());
+                return Some(made);
+            }
+            None => tracing::warn!(
                 name,
                 "the repo's WorktreeCreate hook emitted an unusable path {:?}",
                 said.trim()
-            );
-            continue;
-        };
-        tracing::info!(name, "the repo's WorktreeCreate hook made {}", made.display());
-        return Some(made);
+            ),
+        }
     }
     None
 }
@@ -2374,10 +2353,3 @@ fn usable_hook_path(said: &str) -> Option<std::path::PathBuf> {
     made.is_dir().then_some(made)
 }
 
-/// Put a tree the hook made onto the branch the daemon asked for.
-fn put_on_branch(main: &std::path::Path, tree: &std::path::Path, want: &Want<'_>) -> Result<()> {
-    match want {
-        Want::New { branch, base } => crate::git::checkout_new_branch(main, tree, branch, base),
-        Want::Existing { branch } => crate::git::checkout_existing_branch(main, tree, branch),
-    }
-}

@@ -502,24 +502,21 @@ fn stale_lock_pid(main: &Path, path: &Path) -> Option<u32> {
 /// The daemon's own version of what `claude --worktree` does, for a repo whose
 /// worktrees do not live where that command puts them. Mirrors its naming
 /// (`worktree-<name>`) so a worktree is recognisable whichever path created it.
-pub fn worktree_add_new(main: &Path, path: &Path, branch: &str, base: &str) -> Result<()> {
-    if branch_exists(main, branch) {
-        bail!("branch {branch} already exists");
-    }
-    let path_str = path.to_string_lossy().into_owned();
-    // Freshen the base first, when it is one that can go stale.
-    //
-    // The repo's own `WorktreeCreate` hook opens with `git fetch upstream develop`
-    // for this reason, and a daemon-cut tree never runs that hook, so every PR
-    // worktree and every new worktree the daemon made started from whatever the
-    // last fetch happened to leave behind. Non-fatal exactly as the hook has it:
-    // offline is a reason to cut from the last-known base, not a reason to refuse.
-    //
-    // Only for a remote-tracking base. A fork's base is a sha and a local branch is
-    // already current, and neither has a remote to ask.
+/// Freshen a base ref that can go stale, then prove it resolves.
+///
+/// The repo's own `WorktreeCreate` hook opens with `git fetch upstream develop`, and
+/// a daemon-cut tree never runs that hook, so every PR worktree and every worktree
+/// the daemon made started from whatever the last fetch happened to leave behind.
+/// Non-fatal exactly as the hook has it: offline is a reason to cut from the
+/// last-known base, not a reason to refuse.
+///
+/// Only fetches a remote-tracking base. A sha has no `/` and a local branch has no
+/// remote to ask, so both fall through to the resolve check alone — which is what
+/// lets a caller skip the fetch entirely by resolving `base` to a sha first.
+fn freshen_base(main: &Path, base: &str) -> Result<()> {
     if let Some((remote, branch)) = base.split_once('/') {
         if has_remote(main, remote) && git(main, &["fetch", "--quiet", remote, branch]).is_err() {
-            tracing::warn!("could not fetch {base}; cutting from the last-known copy");
+            tracing::warn!("could not fetch {base}; using the last-known copy");
         }
     }
     // A base that does not resolve would otherwise cut from HEAD silently, which
@@ -527,6 +524,46 @@ pub fn worktree_add_new(main: &Path, path: &Path, branch: &str, base: &str) -> R
     if !git_ok(main, &["rev-parse", "--verify", "--quiet", base]) {
         bail!("base ref {base} does not resolve");
     }
+    Ok(())
+}
+
+/// Where a branch lives: `None` for local, `Some("origin/x")` when only the fork has
+/// it, and an error when neither does.
+///
+/// One function because the rule is one rule (§6): PRs are opened from the fork, so
+/// a head ref this checkout has never seen is the ordinary case rather than a
+/// failure. Both the worktree-add and the checkout path ask it.
+fn locate_branch(main: &Path, branch: &str) -> Result<Option<String>> {
+    if branch_exists(main, branch) {
+        return Ok(None);
+    }
+    let _ = git(main, &["fetch", "origin", branch, "--no-tags"]);
+    let remote = format!("origin/{branch}");
+    if !git_ok(main, &["rev-parse", "--verify", "--quiet", &remote]) {
+        bail!("branch {branch} exists neither locally nor on origin");
+    }
+    Ok(Some(remote))
+}
+
+/// Refuse to move a tree that is carrying work.
+///
+/// A freshly created worktree is clean, so anything here is a hook having left
+/// something behind, and moving it silently onto another branch is how that stops
+/// being noticed. Tracked changes only: untracked files survive a checkout.
+fn refuse_if_dirty(tree: &Path, branch: &str) -> Result<()> {
+    let set = status(tree, None, Untracked::Collapsed)?;
+    if !set.staged.is_empty() || !set.unstaged.is_empty() {
+        bail!("{} has uncommitted work; not moving it onto {branch}", tree.display());
+    }
+    Ok(())
+}
+
+pub fn worktree_add_new(main: &Path, path: &Path, branch: &str, base: &str) -> Result<()> {
+    if branch_exists(main, branch) {
+        bail!("branch {branch} already exists");
+    }
+    let path_str = path.to_string_lossy().into_owned();
+    freshen_base(main, base)?;
     git(main, &["worktree", "add", &path_str, "-b", branch, base])?;
     Ok(())
 }
@@ -536,65 +573,32 @@ pub fn worktree_add_new(main: &Path, path: &Path, branch: &str, base: &str) -> R
 /// For a worktree the repo's `WorktreeCreate` hook made on a base of its own
 /// choosing. `-B` rather than `-b`: the daemon owns this branch name, and a retry
 /// after a half-finished attempt must not fail because the name is taken.
-///
-/// Refuses on a dirty tree rather than carrying the changes onto the new branch. A
-/// freshly created worktree is clean, so anything here is the hook having left work
-/// behind, and moving it silently is how it stops being noticed.
 pub fn checkout_new_branch(main: &Path, tree: &Path, branch: &str, base: &str) -> Result<()> {
-    if let Some((remote, b)) = base.split_once('/') {
-        if has_remote(main, remote) && git(main, &["fetch", "--quiet", remote, b]).is_err() {
-            tracing::warn!("could not fetch {base}; using the last-known copy");
-        }
-    }
-    if !git_ok(main, &["rev-parse", "--verify", "--quiet", base]) {
-        bail!("base ref {base} does not resolve");
-    }
-    if !git(tree, &["status", "--porcelain", "--untracked-files=no"])?.trim().is_empty() {
-        bail!("{} has uncommitted work; not moving it onto {branch}", tree.display());
-    }
+    freshen_base(main, base)?;
+    refuse_if_dirty(tree, branch)?;
     git(tree, &["checkout", "-q", "-B", branch, base])?;
     Ok(())
 }
 
 /// Put an existing tree onto a branch that already exists, locally or on origin.
 ///
-/// The PR half of the pair. Fetching from origin first is the same rule
-/// [`worktree_add_existing`] follows: PRs are opened from the fork (§6), so a head
-/// ref this checkout has never seen is the ordinary case rather than an error.
-///
-/// Refuses if another worktree already holds the branch. Git would refuse anyway,
-/// and its wording is version-dependent; saying it here means the caller falls back
-/// for a reason it can read.
+/// The PR half of the pair. If another worktree already holds the branch git
+/// refuses, and the caller falls back on that error rather than a check here.
 pub fn checkout_existing_branch(main: &Path, tree: &Path, branch: &str) -> Result<()> {
-    if !git(tree, &["status", "--porcelain", "--untracked-files=no"])?.trim().is_empty() {
-        bail!("{} has uncommitted work; not moving it onto {branch}", tree.display());
-    }
-    if branch_exists(main, branch) {
-        git(tree, &["checkout", "-q", branch])?;
-        return Ok(());
-    }
-    let _ = git(main, &["fetch", "origin", branch, "--no-tags"]);
-    let remote = format!("origin/{branch}");
-    if !git_ok(main, &["rev-parse", "--verify", "--quiet", &remote]) {
-        bail!("branch {branch} exists neither locally nor on origin");
-    }
-    git(tree, &["checkout", "-q", "-B", branch, &remote])?;
+    refuse_if_dirty(tree, branch)?;
+    match locate_branch(main, branch)? {
+        None => git(tree, &["checkout", "-q", branch])?,
+        Some(remote) => git(tree, &["checkout", "-q", "-B", branch, &remote])?,
+    };
     Ok(())
 }
 
 pub fn worktree_add_existing(main: &Path, path: &Path, branch: &str) -> Result<()> {
     let path_str = path.to_string_lossy().into_owned();
-    if branch_exists(main, branch) {
-        git(main, &["worktree", "add", &path_str, branch])?;
-        return Ok(());
-    }
-    // The head ref lives on the fork, since PRs are opened from origin (§6).
-    let _ = git(main, &["fetch", "origin", branch, "--no-tags"]);
-    let remote = format!("origin/{branch}");
-    if !git_ok(main, &["rev-parse", "--verify", "--quiet", &remote]) {
-        bail!("branch {branch} exists neither locally nor on origin");
-    }
-    git(main, &["worktree", "add", &path_str, "-b", branch, &remote])?;
+    match locate_branch(main, branch)? {
+        None => git(main, &["worktree", "add", &path_str, branch])?,
+        Some(remote) => git(main, &["worktree", "add", &path_str, "-b", branch, &remote])?,
+    };
     Ok(())
 }
 
@@ -981,10 +985,10 @@ pub fn swap_branches(main: &Path, worktree: &Path) -> Result<Swap> {
     // has happened. See `Swap::wip_error`.
     let mut carried = Ok(());
     if let Some(wip) = &tree_wip {
-        carried = carried.and(apply_wip(main, wip));
+        carried = carried.and(apply_wip(main, wip, "the branches swapped"));
     }
     if let Some(wip) = &main_wip {
-        carried = carried.and(apply_wip(worktree, wip));
+        carried = carried.and(apply_wip(worktree, wip, "the branches swapped"));
     }
 
     Ok(Swap {
@@ -1050,7 +1054,7 @@ pub fn move_branch_out(
             let mut err = e.context(format!("no worktree could be cut for {branch}"));
             // Nothing moved but the work, so putting that back is the whole undo.
             if let Some(sha) = &wip {
-                if let Err(back) = apply_wip(main, sha) {
+                if let Err(back) = apply_wip(main, sha, "the branches swapped") {
                     err = err.context(format!(
                         "and its uncommitted work is still in commit {sha}: {back:#}"
                     ));
@@ -1059,7 +1063,7 @@ pub fn move_branch_out(
             return Err(err);
         }
         let wip_error = match &wip {
-            Some(sha) => apply_wip(dest, sha).err().map(|e| format!("{e:#}")),
+            Some(sha) => apply_wip(dest, sha, "the branches swapped").err().map(|e| format!("{e:#}")),
             None => None,
         };
         return Ok(MovedOut {
@@ -1076,7 +1080,7 @@ pub fn move_branch_out(
             return err.context(format!("and main is left on {base}: {back:#}"));
         }
         if let Some(sha) = &wip {
-            if let Err(back) = apply_wip(main, sha) {
+            if let Err(back) = apply_wip(main, sha, "the branches swapped") {
                 err = err.context(format!(
                     "and its uncommitted work is still in commit {sha}: {back:#}"
                 ));
@@ -1089,7 +1093,7 @@ pub fn move_branch_out(
         let e = e.context(format!("the main checkout could not go back to {base}"));
         // Nothing to switch back — it never left — so only the work needs restoring.
         if let Some(sha) = &wip {
-            if let Err(back) = apply_wip(main, sha) {
+            if let Err(back) = apply_wip(main, sha, "the branches swapped") {
                 return Err(e.context(format!(
                     "and its uncommitted work is still in commit {sha}: {back:#}"
                 )));
@@ -1103,7 +1107,7 @@ pub fn move_branch_out(
     }
 
     let wip_error = match &wip {
-        Some(sha) => apply_wip(dest, sha).err().map(|e| format!("{e:#}")),
+        Some(sha) => apply_wip(dest, sha, "the branches swapped").err().map(|e| format!("{e:#}")),
         None => None,
     };
     Ok(MovedOut {
@@ -1210,11 +1214,16 @@ pub fn copy_wip(from: &Path, to: &Path) -> Result<Option<String>> {
 }
 
 /// Re-apply banked work onto whatever this tree now has checked out.
-fn apply_wip(cwd: &Path, sha: &str) -> Result<()> {
+/// Re-apply banked work onto whatever this tree now has checked out.
+///
+/// `what_happened` opens the failure message, because the recovery advice is the
+/// same for every caller and the cause is not: a swap and a fork both leave the work
+/// in the commit, and the sentence has to say which one you are looking at.
+fn apply_wip(cwd: &Path, sha: &str, what_happened: &str) -> Result<()> {
     git(cwd, &["stash", "apply", "--index", sha])
         .with_context(|| {
             format!(
-                "the branches swapped but the uncommitted work did not re-apply in {}; \
+                "{what_happened} but the uncommitted work did not re-apply in {}; \
                  it is still in commit {sha} — `git stash apply {sha}` there to recover it",
                 cwd.display()
             )
@@ -1924,12 +1933,6 @@ mod tests {
     /// The swap, and the refusal it is built around: git will not check one branch
     /// out twice, so the naive "switch each tree" fails on the first move. Both
     /// halves are pinned here because the three-step order *is* the feature.
-    /// A fork's carry: the work arrives, and the parent keeps it.
-    ///
-    /// Both halves matter and only one is obvious. `capture_wip` banks and then
-    /// resets, which is right for a swap and would be theft here — a fork is a
-    /// second place to work, not a move, so the parent tree must look untouched
-    /// afterwards. That is the assertion this test exists for.
     /// Removal is a backstop, so "already gone" is a success.
     ///
     /// The repo's `WorktreeRemove` hook runs first and may do the whole job. Without
@@ -2060,6 +2063,12 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// A fork's carry: the work arrives, and the parent keeps it.
+    ///
+    /// Both halves matter and only one is obvious. `capture_wip` banks and then
+    /// resets, which is right for a swap and would be theft here — a fork is a
+    /// second place to work, not a move, so the parent tree must look untouched
+    /// afterwards. That is the assertion this test exists for.
     #[test]
     fn a_fork_copies_the_work_across_and_leaves_the_parent_holding_it() {
         let root = std::env::temp_dir().join(format!("orch-copywip-{}", uuid::Uuid::new_v4()));

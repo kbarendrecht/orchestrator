@@ -4204,25 +4204,31 @@ pub async fn session_handoff(
 
     // Only a review session, and only about its own PR. The ask token already says
     // *which* session is calling; this says it is one entitled to hand anything on.
-    let pr = {
+    // Both reads under one lock: which PR this session is about, and what the poll
+    // last said about it.
+    let hand_on = {
         let inner = app.inner.read().await;
-        match inner.sessions.get(&id).map(|s| &s.kind) {
+        let pr = match inner.sessions.get(&id).map(|s| &s.kind) {
             Some(Kind::Automation { pr, command }) if command == crate::triage::COMMAND => *pr,
             _ => {
                 return Err(ApiError(anyhow::anyhow!(
                     "only a review session hands over, and {id} is not one"
                 )))
             }
-        }
+        };
+        // No poll to read is not a reason to start a force-pushing run. Same
+        // direction as `Checks::Unknown`: when the daemon cannot see, it does
+        // nothing.
+        (
+            pr,
+            inner
+                .prs
+                .iter()
+                .find(|p| p.number == pr)
+                .is_some_and(crate::fix_pr::wants_watching),
+        )
     };
-
-    let pr_now = {
-        let inner = app.inner.read().await;
-        inner.prs.iter().find(|p| p.number == pr).cloned()
-    };
-    // No poll to read is not a reason to start a force-pushing run. Same direction
-    // as `Checks::Unknown`: when the daemon cannot see, it does nothing.
-    let hand_on = pr_now.as_ref().is_some_and(crate::fix_pr::wants_watching);
+    let (pr, hand_on) = hand_on;
 
     {
         let mut inner = app.inner.write().await;

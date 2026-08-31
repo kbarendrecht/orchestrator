@@ -208,11 +208,14 @@ pub fn ended_red(pr: &Pr) -> bool {
 /// that *is* the watching. Green and mergeable means the review is simply over and
 /// there is nothing to hand on.
 ///
-/// `Unknown` deliberately does not count. It is the answer when the poll could not
-/// say, and a run rebases and force-pushes: the one thing this must not do is start
-/// one because it could not tell.
+/// Deliberately wider than [`ended_red`] by exactly one case, and phrased as such so
+/// the two cannot drift on what counts as red.
+///
+/// `Unknown` does not count. It is the answer when the poll could not say, and a run
+/// rebases and force-pushes: the one thing this must not do is start one because it
+/// could not tell.
 pub fn wants_watching(pr: &Pr) -> bool {
-    matches!(pr.checks, Checks::Failing | Checks::Pending) || pr.mergeable == "CONFLICTING"
+    ended_red(pr) || pr.checks == Checks::Pending
 }
 
 /// The `Kind::Automation` command a fix run carries.
