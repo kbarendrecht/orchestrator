@@ -60,6 +60,11 @@ installers are the shortest path: a `.deb` or the `.dmg` gives you an app in you
 launcher, with an icon, and puts `orch` where the shell can find it. The tarball
 is what `mise` reads, and is still two binaries you place yourself.
 
+> **Today's published releases carry the tarball only.** The installer build
+> (`.deb`, AppImage, `.dmg`) is in the release workflow but landed after the most
+> recent tag, so it runs first on the *next* release. Until then, use the tarball
+> or `mise`; the installer steps below apply from that release on.
+
 - **`orchestrator-desktop`** is the app. The daemon and the web UI are compiled
   into it, so this one binary on its own is a complete install.
 - **`orch` is optional.** A small CLI against a running daemon: `orch new` starts
@@ -156,6 +161,29 @@ back to `config.json`; changes take effect on restart.
 | `default_language` | `English` | the language the agent *writes* replies and stories in. Prompts and code stay English regardless. |
 | `shared_worktree_paths` | *(empty)* | directories inside a worktree that are allowed to be symlinks *out* of it, e.g. a plan dir shared back to main. The editable diff pane refuses every other path that resolves outside the workspace. |
 | `worktree_init` / `worktree_setup` | *(empty)* | two commands run in every worktree the daemon cuts itself. See below. |
+
+The table above is the set most repos touch. The rest are operational, and most
+repos leave them at the default:
+
+| Setting | Default | What it is |
+| --- | --- | --- |
+| `main_checkout` | *(required)* | the privileged checkout the daemon manages. The one key with no default; the folder picker writes it on first run. |
+| `worktrees_subdir` | `.claude/worktrees` | where worktrees live, relative to `main_checkout`. Point it at the same place a repo's own `WorktreeCreate` hook puts them, so the daemon recognises its own worktrees. Kept relative and inside main on purpose. |
+| `port` | `7777` | the loopback port the daemon serves the SPA and API on. Never bound to anything but `127.0.0.1`. |
+| `repo` | *(derived)* | `owner/name` override, when it cannot be read off the upstream remote. |
+| `github_token_file` | *(none)* | a `0600` file holding a read-only GitHub token, outside the repo. An alternative to `ORCHD_GITHUB_TOKEN` or `gh auth token`. |
+| `worktree_processes` | *(empty)* | managed processes for worktree workspaces, the counterpart to `main_processes`. Empty means a shell is opened on demand instead. |
+| `poll_seconds` | `300` | how often the PR poll runs. One query per period, negligible against the API budget. |
+| `review_timeout_seconds` | `240` | ceiling for `reviews_command` before the poller gives up on it. |
+| `story_timeout_seconds` | `300` | ceiling for the borrowed story-filing agent — the one timeout in the daemon, because its caller is a blocking request rather than a rail entry someone is watching. |
+| `log_path` | *(none)* | where live findings are written. Unset, they go to a gitignored `daemon.log`, and only when the daemon manages orchd's own checkout. Set it to capture findings from a daemon managing any other repo. |
+| `auto_resume` | `true` | relaunch sessions that were live when the daemon last went down, with `--resume`, so a crash costs the scrollback rather than the conversation. |
+| `forge` | `github` | which forge the repo lives on. Only GitHub is implemented; the key exists so a second platform is a config choice, not a rebuild. |
+| `workspace_notes` | *(empty)* | what to tell an agent whose conversation was just moved into a workspace, keyed by the kind it landed in. The daemon states the factual half (which branch, which directory); this is the half only the repo knows. |
+
+An **unknown key is ignored in silence** — a misspelling does not error, it just
+leaves the default in force. Check the spelling against this list if a setting
+seems to do nothing.
 
 ### Fork workflow, or not
 
