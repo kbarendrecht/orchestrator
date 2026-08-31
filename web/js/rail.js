@@ -571,8 +571,15 @@ async function rewindSession(s) {
 function mainHoldsWork(main) {
   const leaf = (snap.upstream_ref || '').split('/').pop();
   if (!leaf || leaf === 'HEAD') return true;
-  const has = main?.branches ?? [];
-  return !(has.length === 1 && has[0] === leaf);
+  // What main has checked out *now*. This used to ask `branches`, which accumulates
+  // every branch a tree has ever held and is never pruned — so one visit from any
+  // other branch made main look occupied for the rest of the daemon's life, and the
+  // row went on offering "swap branch with main" over a main sitting on its base.
+  // Unknown before the first reconcile, and unknown is the cautious answer: a swap
+  // refuses when there is nothing to exchange, a move would move onto a branch
+  // somebody else holds.
+  const on = main?.branch;
+  return !on || on !== leaf;
 }
 
 /** Move a session out of main, into a worktree of its own.

@@ -51,6 +51,14 @@ pub struct Tree {
     /// What `changed` would have been, uncapped. Equal to `changed.len()` in the
     /// ordinary case; larger is how the pane knows to say so.
     pub changed_total: u32,
+    /// What this tree has checked out *now*.
+    ///
+    /// Not to be confused with `Workspace::branches`, which accumulates every branch
+    /// a tree has ever held and is never pruned (§2) — a PR still belongs to the
+    /// session that made it after you have moved on. That set cannot answer "is main
+    /// free", and asking it anyway is what made the rail offer to *swap* with a main
+    /// that was already parked on its base.
+    pub branch: Option<String>,
     /// `merge-base(upstream, HEAD)` — the commit `changed` is measured from.
     pub base: Option<String>,
     /// (behind, ahead) against the upstream base.

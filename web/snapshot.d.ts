@@ -522,7 +522,18 @@ tail: string, };
 
 export type WorkspaceKind = { "kind": "main" } | { "kind": "worktree", name: string, };
 
-export type WorkspaceView = { id: string, path: string, kind: WorkspaceKind, is_main: boolean, occupant: string | null, branches: Array<string>, processes: Array<ProcessView>, 
+export type WorkspaceView = { id: string, path: string, kind: WorkspaceKind, is_main: boolean, occupant: string | null, 
+/**
+ * Every branch this workspace has ever held, never pruned (§2).
+ *
+ * Not "what is checked out" — see `branch` for that. The two were conflated
+ * once, and the rail offered to swap with a main that was sitting on its base.
+ */
+branches: Array<string>, 
+/**
+ * What it has checked out now, or `None` before the first reconcile.
+ */
+branch: string | null, processes: Array<ProcessView>, 
 /**
  * Managed processes this workspace declares that are not running — config
  * order, names only.

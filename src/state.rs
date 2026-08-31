@@ -539,6 +539,7 @@ impl AppState {
                 .filter(|spec| !w.processes.iter().any(|p| p.name == spec.name))
                 .map(|spec| spec.name.clone())
                 .collect(),
+                branch: w.tree.branch.clone(),
                 changed: w.tree.changed.clone(),
                 changed_total: w.tree.changed_total,
                 changed_since: w.tree.base.clone(),
@@ -940,7 +941,12 @@ impl AppState {
         let mut inner = self.inner.write().await;
         if let Some(w) = inner.workspaces.get_mut(workspace) {
             if let Some(b) = branch.clone() {
-                w.branches.insert(b);
+                w.branches.insert(b.clone());
+                // The one that is true *now*, beside the set of every one it has
+                // ever held. Kept when git could not answer, like the measurements
+                // below: a tree mid-rebase has no branch, and blanking it would read
+                // as "this checkout is free".
+                w.tree.branch = Some(b);
             }
             // Each measurement keeps its previous value when git could not
             // answer, so a transient failure (an unfetched upstream, a lock
@@ -1074,7 +1080,13 @@ pub struct WorkspaceView {
     pub kind: WorkspaceKind,
     pub is_main: bool,
     pub occupant: Option<Uuid>,
+    /// Every branch this workspace has ever held, never pruned (§2).
+    ///
+    /// Not "what is checked out" — see `branch` for that. The two were conflated
+    /// once, and the rail offered to swap with a main that was sitting on its base.
     pub branches: Vec<String>,
+    /// What it has checked out now, or `None` before the first reconcile.
+    pub branch: Option<String>,
     pub processes: Vec<ProcessView>,
     /// Managed processes this workspace declares that are not running — config
     /// order, names only.
@@ -1401,6 +1413,64 @@ mod tests {
         // rather than whatever order git answered in.
         assert_eq!(tree.changed[0].path, "f00000.ts");
 
+        drop(inner);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// What a tree has checked out now, beside every branch it has ever held.
+    ///
+    /// The bug this pins: the rail asked `branches` whether main was free, and that
+    /// set is never pruned — so one visit from any other branch made main look
+    /// occupied for good, and a worktree row went on offering "swap branch with
+    /// main" over a main already parked on its base. The two answers have to be
+    /// separately readable, which is the whole of the fix.
+    #[tokio::test]
+    async fn a_workspace_says_what_it_holds_now_as_well_as_what_it_has_held() {
+        let dir = std::env::temp_dir().join(format!("orchd-branchnow-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let sh = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .args(args)
+                .current_dir(&dir)
+                .output()
+                .expect("git");
+            assert!(out.status.success(), "git {args:?}");
+        };
+        sh(&["init", "-q", "-b", "main"]);
+        sh(&["config", "user.email", "t@t"]);
+        sh(&["config", "user.name", "t"]);
+        std::fs::write(dir.join("f"), "1").unwrap();
+        sh(&["add", "-A"]);
+        sh(&["commit", "-qm", "base"]);
+
+        let cfg: Config = serde_json::from_str(&format!(
+            r#"{{"main_checkout":"{}","port":7791,"upstream_ref":"main"}}"#,
+            dir.display()
+        ))
+        .unwrap();
+        let app = AppState::new(cfg, "t".into(), crate::window::Chrome::None);
+
+        app.reconcile(MAIN).await.expect("reconcile");
+        {
+            let inner = app.inner.read().await;
+            let w = inner.workspaces.get(MAIN).unwrap();
+            assert_eq!(w.tree.branch.as_deref(), Some("main"));
+        }
+
+        // Visit another branch and come back. `branches` keeps both for good, which
+        // is deliberate; `branch` must follow the checkout.
+        sh(&["switch", "-qc", "feature/x"]);
+        app.reconcile(MAIN).await.expect("reconcile");
+        sh(&["switch", "-q", "main"]);
+        app.reconcile(MAIN).await.expect("reconcile");
+
+        let inner = app.inner.read().await;
+        let w = inner.workspaces.get(MAIN).unwrap();
+        assert_eq!(w.tree.branch.as_deref(), Some("main"), "it is back on its base");
+        assert!(
+            w.branches.contains("feature/x") && w.branches.contains("main"),
+            "and it still remembers having held the other one"
+        );
         drop(inner);
         let _ = std::fs::remove_dir_all(&dir);
     }
