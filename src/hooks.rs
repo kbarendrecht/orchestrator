@@ -261,7 +261,17 @@ pub async fn post_tool_use(
             //
             // `BuildFailing` is left alone: it is a red build talking, not a
             // guess about the turn, and `Stop` recomputes it either way.
-            if matches!(s.state, State::YourTurn { .. }) {
+            //
+            // So is `Interrupted`, and that one is load-bearing. You stopped the turn
+            // from the pane; a tool that was already in flight then reports back, and
+            // lifting the state on it would put the session in `Working` with nothing
+            // left to take it out — `Stop` does not fire on an interrupt. That is the
+            // exact fault `TurnReason::Interrupted` exists to fix, reproduced through
+            // a race. Only your next prompt (`UserPromptSubmit`) clears it.
+            if matches!(
+                s.state,
+                State::YourTurn { reason, .. } if reason != TurnReason::Interrupted
+            ) {
                 s.set_state(State::Working);
                 changed = true;
             }
@@ -858,6 +868,50 @@ mod tests {
         assert!(
             matches!(inner.sessions.get(&id).unwrap().state, State::Working),
             "a tool call left the session claiming the turn was complete"
+        );
+        drop(inner);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A tool result arriving after you interrupted must not restart the turn.
+    ///
+    /// The race that would otherwise undo `TurnReason::Interrupted` entirely: you
+    /// press escape, a tool that was already in flight reports back, `post_tool_use`
+    /// lifts any `YourTurn` to `Working` — and `Stop` never fires on an interrupt, so
+    /// nothing takes it out again. The session sits there claiming to work with an
+    /// idle agent in it, which is the exact fault the reason exists to fix.
+    #[tokio::test]
+    async fn a_late_tool_result_does_not_undo_an_interrupt() {
+        let dir = std::env::temp_dir().join(format!("orchd-hooks-int-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cfg: Config = serde_json::from_str(&format!(
+            r#"{{"main_checkout":"{}","port":7793}}"#,
+            dir.display()
+        ))
+        .unwrap();
+        let app = AppState::new(cfg, "t".into(), crate::window::Chrome::None);
+
+        let id = uuid::Uuid::new_v4();
+        {
+            let mut inner = app.inner.write().await;
+            let mut s = Session::new(id, MAIN.to_string(), dir.clone(), Kind::Interactive);
+            s.set_state(State::YourTurn {
+                since: SystemTime::now(),
+                reason: TurnReason::Interrupted,
+            });
+            inner.sessions.insert(id, s);
+        }
+        let mut headers = HeaderMap::new();
+        headers.insert("x-orch-session", id.to_string().parse().unwrap());
+        post_tool_use(AxState(app.clone()), headers, Json(HookPayload::default())).await;
+
+        let inner = app.inner.read().await;
+        assert!(
+            matches!(
+                inner.sessions.get(&id).unwrap().state,
+                State::YourTurn { reason: TurnReason::Interrupted, .. }
+            ),
+            "a tool finishing after the escape restarted the turn"
         );
         drop(inner);
         let _ = std::fs::remove_dir_all(&dir);
