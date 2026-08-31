@@ -81,6 +81,56 @@ fn declares_mcp_server(main: &Path, name: &str) -> Option<bool> {
     Some(v.get("mcpServers")?.get(name).is_some())
 }
 
+/// Whether this directory is a git work tree.
+///
+/// Asked of the directory rather than of `.git`, because both shapes are legitimate:
+/// a plain checkout has a `.git` directory, a worktree has a `.git` *file*, and a
+/// repository marked `core.bare` has a perfectly good `.git` and still refuses every
+/// working-tree command. Only git can tell them apart, so git is asked.
+///
+/// Failure to run answers `true`. A preflight that cries wolf on a machine it cannot
+/// inspect is worse than one that says nothing — the same rule [`on_path`] follows.
+fn is_work_tree(dir: &Path) -> bool {
+    let Ok(out) = std::process::Command::new("git")
+        .args(["-C", &dir.to_string_lossy(), "rev-parse", "--is-inside-work-tree"])
+        .output()
+    else {
+        return true;
+    };
+    if !out.status.success() {
+        return false;
+    }
+    String::from_utf8_lossy(&out.stdout).trim() != "false"
+}
+
+/// Whether Claude Code has been trusted in this directory.
+///
+/// `Some(false)` is the only actionable answer: trust is recorded per directory in
+/// `~/.claude.json`, so an absent file, an unreadable one or a shape that has changed
+/// all mean "cannot tell" and answer `None`. Read rather than inferred, because the
+/// alternative — spawning a session to see whether it survives — is the failure this
+/// exists to describe.
+///
+/// The key is the directory as Claude Code spells it, which is the absolute path.
+fn trust_accepted(dir: &Path) -> Option<bool> {
+    let home = std::env::var("HOME").ok()?;
+    trust_accepted_in(Path::new(&home), dir)
+}
+
+/// The half that reads a file, with the home directory handed in.
+///
+/// Split so the test needs no `set_var`: `HOME` is process-global, the suite runs in
+/// threads, and half of what the daemon reads is keyed on it. Setting it "for one
+/// test" sets it for whatever else is running at that moment.
+fn trust_accepted_in(home: &Path, dir: &Path) -> Option<bool> {
+    let raw = std::fs::read_to_string(home.join(".claude.json")).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    let entry = v.get("projects")?.get(dir.to_string_lossy().as_ref())?;
+    // Present and false is untrusted. Present without the key is a project Claude
+    // Code knows and has not recorded a decision for, which is not a refusal.
+    Some(entry.get("hasTrustDialogAccepted")?.as_bool()?)
+}
+
 /// Everything worth saying about this machine, in boot order.
 ///
 /// `tracker_server` is the MCP server name the configured tracker needs, or `None`
@@ -93,6 +143,43 @@ pub fn check(cfg: &Config, tracker_server: Option<&str>) -> Vec<Warning> {
         out.push(Warning {
             what: "`claude` is not on PATH".into(),
             cost: "every session will exit the moment it spawns".into(),
+        });
+    }
+
+    // Named in the README's prerequisites and checked nowhere until now. Nothing
+    // here degrades without it: worktrees, branch moves and every diff are `git`.
+    if !on_path("git") {
+        out.push(Warning {
+            what: "`git` is not on PATH".into(),
+            cost: "no worktree can be cut and no changed file can be read".into(),
+        });
+    }
+
+    // The one prerequisite whose failure is silent. `claude --worktree` refuses an
+    // untrusted directory, the session exits before its first turn, and
+    // `watch_session_exit` forgets a turnless session on purpose — so the rail row
+    // *disappears* and the new-worktree button reads as doing nothing at all.
+    if trust_accepted(&cfg.main_checkout) == Some(false) {
+        out.push(Warning {
+            what: format!(
+                "Claude Code's workspace trust has not been accepted for {}",
+                cfg.main_checkout.display()
+            ),
+            cost: "sessions will die on spawn and their rows will vanish; run `claude` \
+                   there once and accept the dialog"
+                .into(),
+        });
+    }
+
+    // A checkout that is not a work tree measures nothing, and says so only in a
+    // reconcile warning per poll. Seen for real: a `git filter-repo` run left
+    // `core.bare = true` behind, and the panes went stale with no error in the app.
+    if !is_work_tree(&cfg.main_checkout) {
+        out.push(Warning {
+            what: format!("{} is not a git work tree", cfg.main_checkout.display()),
+            cost: "the changed-file pane and the divergence strip stay empty, and every \
+                   poll fails"
+                .into(),
         });
     }
 
@@ -148,6 +235,78 @@ mod tests {
         let d = std::env::temp_dir().join(format!("orchd-pre-{}-{name}", std::process::id()));
         std::fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    /// The three shapes a checkout can be in, told apart.
+    ///
+    /// `core.bare` is the one worth a test: the repository is real, `.git` is there
+    /// and complete, and every working-tree command still refuses. A `.git` existence
+    /// check would call it healthy, which is how a `git filter-repo` run left the
+    /// panes stale for a day with no error in the app.
+    #[test]
+    fn a_bare_repo_and_a_plain_directory_are_both_refused_as_work_trees() {
+        let root = tmp("worktree-shapes");
+        let repo = root.join("repo");
+        let plain = root.join("plain");
+        std::fs::create_dir_all(&repo).unwrap();
+        std::fs::create_dir_all(&plain).unwrap();
+        let git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(&repo)
+                .output()
+                .expect("git");
+        };
+        git(&["init", "-q"]);
+        assert!(is_work_tree(&repo), "a fresh checkout is a work tree");
+
+        // Real repository, real `.git`, and no work tree.
+        git(&["config", "core.bare", "true"]);
+        assert!(!is_work_tree(&repo), "core.bare is not a work tree");
+
+        // Not a repository at all, which is what picking the wrong folder gives you.
+        assert!(!is_work_tree(&plain));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Trust is only reported when the answer is actually "no".
+    ///
+    /// Everything else has to be `None`: an absent `~/.claude.json`, a directory
+    /// Claude Code has never seen, or a shape that has changed under us. A warning
+    /// telling somebody to accept a dialog they already accepted is the kind of
+    /// false alarm that teaches people to skip the boot log.
+    #[test]
+    fn trust_is_unknown_unless_the_file_says_no() {
+        let root = tmp("trust");
+        let home = root.join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        let dir = root.join("checkout");
+        let shown = dir.to_string_lossy().into_owned();
+        let write = |body: &str| std::fs::write(home.join(".claude.json"), body).unwrap();
+
+        // The home directory is a parameter here on purpose: `HOME` is
+        // process-global and the suite runs in threads.
+        let at = |d: &std::path::Path| trust_accepted_in(&home, d);
+
+        assert_eq!(at(&dir), None, "no file at all is not a refusal");
+        write("{ not json");
+        assert_eq!(at(&dir), None, "nor is a file we cannot parse");
+        write(r#"{"projects":{}}"#);
+        assert_eq!(at(&dir), None, "nor a project it has never seen");
+        write(&format!(r#"{{"projects":{{"{shown}":{{}}}}}}"#));
+        assert_eq!(at(&dir), None, "nor one with no decision recorded");
+
+        write(&format!(
+            r#"{{"projects":{{"{shown}":{{"hasTrustDialogAccepted":false}}}}}}"#
+        ));
+        assert_eq!(at(&dir), Some(false), "this one is the warning");
+        write(&format!(
+            r#"{{"projects":{{"{shown}":{{"hasTrustDialogAccepted":true}}}}}}"#
+        ));
+        assert_eq!(at(&dir), Some(true));
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
