@@ -180,6 +180,15 @@ export async function sandbox({
     // Off unless a flow asks, because it relaunches an agent per restored session
     // and every other flow restarts nothing.
     auto_resume: autoResume,
+    // The sandbox has no checkout variables to read, and asking mise for them
+    // breaks the run outright. `HOME` is relocated here so the fake agent's
+    // transcripts stay out of the real one — which also relocates mise's state, so
+    // `mise env` answers with a PATH led by `~/.local/share/mise/shims`, and those
+    // shims cannot resolve against an empty HOME. The agent shim is `exec node
+    // fake-claude.mjs`, so `node` dies and every flow times out waiting for a turn
+    // that never starts. Nothing here tests env_source, and a suite that depends on
+    // the developer's own mise state is not isolated.
+    env_source: 'none',
   }, null, 2))
 
   const env = {
