@@ -2,3 +2,9 @@ node_modules/
 target/
 # Live daemon findings, written only when dogfooding (findings::dogfood_log).
 daemon.log
+# Worktrees the daemon and `claude --worktree` cut inside the checkout. Each one
+# is a git worktree, so it carries its own `.git` file and must never be
+# committed into the tree that hosts it.
+.claude/worktrees/
+# Scratch space for dogfooding: throwaway configs, captured logs, spike builds.
+.dev/
