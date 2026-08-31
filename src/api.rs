@@ -1844,7 +1844,8 @@ async fn swap_with_main_inner(
     // if you could see the result.
     let _swap = app.swapping.try_lock().map_err(|_| {
         ApiError(anyhow::anyhow!(
-            "a swap is already running; it moves whole checkouts and their              conversations, so give it a moment and look at the rail before asking again"
+            "a swap is already running; it moves whole checkouts and their \
+             conversations, so give it a moment and look at the rail before asking again"
         ))
     })?;
     let tree = app
@@ -2064,7 +2065,8 @@ pub async fn move_out_of_main(
     };
     if busy {
         return Err(ApiError(anyhow::anyhow!(
-            "that agent is mid-turn; the move replaces every file under it, so let              the turn finish first"
+            "that agent is mid-turn; the move replaces every file under it, so let \
+             the turn finish first"
         )));
     }
 
