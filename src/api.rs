@@ -2006,6 +2006,8 @@ async fn swap_with_main_inner(
         carried_records,
         "swapped branches with main"
     );
+    // Both trees have been reconciled by here, so their branches are current.
+    check_moves_landed(&app, "the swap").await;
     Ok(Json(json!({
         "main": swapped.main_now,
         "worktree": swapped.worktree_now,
@@ -2167,6 +2169,7 @@ pub async fn move_out_of_main(
     }
     app.notify().await;
 
+    check_moves_landed(&app, "the move out of main").await;
     Ok(Json(json!({
         "workspace": name,
         "branch": moved.branch,
@@ -2314,36 +2317,46 @@ fn arrival_notice(
     into_main: bool,
 ) -> String {
     let mut note = format!(
-        "This conversation has been moved. The branch it is working on ({branch}) was \
-         swapped into another checkout, and the session followed it: your working \
-         directory is now {}, and until this move it was {}. Treat remembered absolute \
-         paths as stale and re-read anything you are about to change.",
+        "This conversation has been moved. The branch {branch} was carried into another \
+         checkout and this session followed it: your working directory is now {}, and \
+         until this move it was {}. What travelled is that branch and its uncommitted \
+         work. If you had been editing on a *different* branch, those edits are still \
+         in the tree you came from — check before you assume either way, and say what \
+         you find rather than moving anything.",
         to.display(),
         from.display(),
     );
     /* Claude Code pins worktree isolation in the transcript (a `worktree-state`
        record, re-appended every turn), so a conversation started by `claude
-       --worktree` goes on refusing every git command aimed anywhere but that
-       original worktree — including the tree it has just been moved *into*. The
-       daemon cannot clear that from outside: `ExitWorktree` and `EnterWorktree` are
-       the agent's own tools, so the agent has to be told to use one.
+       --worktree` would go on refusing every git command aimed anywhere but that
+       original worktree — including the tree it has just been moved into.
+       `store::clear_worktree_pin` has already released it by the time this is read:
+       `spawn_session` calls it on resume whenever the pin disagrees with the cwd, and
+       a relocation is a resume.
 
-       Found by reading a main session after a swap: the branch, the files and the
-       conversation had all arrived correctly and the agent still could not run `git
-       status` on them — "This session is isolated in the worktree …, but this
-       command redirects git to the shared checkout". Said unconditionally rather
-       than only for a session known to be isolated, because what the daemon can see
-       does not include that, and the instruction costs a session that is not
-       isolated nothing. */
-    note.push_str(&if into_main {
-        " If Claude Code has this session isolated in a worktree, call `ExitWorktree`          before your next git command: while that isolation holds, git aimed at this          checkout is refused outright."
-            .to_string()
-    } else {
-        format!(
-            " If Claude Code has this session isolated in a different worktree, call              `EnterWorktree` with path {} before your next git command: while the old              isolation holds, git aimed at this tree is refused outright.",
-            to.display()
-        )
-    });
+       So this says what happened and asks for nothing. It used to tell the agent to
+       call `ExitWorktree` first, on the belief that the daemon could not clear the pin
+       from outside. That belief was wrong — see `clear_worktree_pin`, measured against
+       128 transcripts — and the instruction outlived it, with two costs. The tool
+       answers "No-op: there is no active EnterWorktree session to exit", which is the
+       truth and reads as a failure; and an agent that has just been told it is
+       isolated, and then told it is not, concludes the relocation did not happen. One
+       went looking for its work in the old worktree and started moving by hand what
+       it thought had been left. Telling it not to call the tool is the point of naming
+       the tool at all.
+
+       What this must *not* do is over-correct into reassurance. A first draft said the
+       files had come with it and there was nothing to move — and a real session then
+       proved that wrong: it followed the branch it was recorded on while its own edits
+       sat on another branch in the tree it left. The daemon knows which branch it
+       moved; it does not know which branch the agent was editing. So this states the
+       first and asks the agent to establish the second. */
+    note.push_str(
+        " Claude Code's worktree isolation for this session has already been released, \
+         so do not call `ExitWorktree` or `EnterWorktree`, and do not re-run the move: \
+         git in this directory works now. Treat remembered absolute paths as stale and \
+         re-read anything you are about to change.",
+    );
     if let Some(extra) = app.cfg.workspace_notes.for_main(into_main) {
         note.push(' ');
         note.push_str(extra);
@@ -2362,6 +2375,46 @@ fn arrival_notice(
 /// The transcript move is best effort for the reason `store::move_transcript`
 /// documents: `--resume` resolves a conversation by id wherever the file sits, so a
 /// failure costs the slug lookup its cheap path and nothing else.
+/// Prove a move left every conversation in the tree that holds its branch.
+///
+/// A post-condition, not a guard: the move has already happened, and the point is
+/// that a mismatch is *said* rather than discovered days later by an agent that
+/// cannot find its own work. This has stranded a conversation more than once — the
+/// record in one checkout, its uncommitted edits in another — and each time the only
+/// symptom was the agent eventually noticing.
+///
+/// Live interactive sessions only. An archived one is history and is allowed to name
+/// a branch that has since moved; automation is pinned to its PR's branch by
+/// construction.
+async fn check_moves_landed(app: &Arc<AppState>, what: &str) {
+    let inner = app.inner.read().await;
+    for s in inner.sessions.values() {
+        if !s.state.is_live() || !matches!(s.kind, Kind::Interactive) {
+            continue;
+        }
+        let Some(mine) = s.branch.as_deref() else {
+            continue;
+        };
+        let Some(w) = inner.workspaces.get(&s.workspace) else {
+            continue;
+        };
+        // Unknown before the first reconcile, which is not a mismatch.
+        let Some(holds) = w.tree.branch.as_deref() else {
+            continue;
+        };
+        if holds != mine {
+            tracing::warn!(
+                session = %s.id,
+                "after {what}: this conversation is recorded on {mine} but {} holds \
+                 {holds}, so its work is not where the conversation is. Nothing is \
+                 lost — the branch and its uncommitted changes are wherever {mine} \
+                 went — but the two have to be brought back together by hand.",
+                s.workspace,
+            );
+        }
+    }
+}
+
 async fn carry_record(
     app: &Arc<AppState>,
     id: SessionId,
@@ -2392,6 +2445,17 @@ async fn carry_record(
     if let Some(s) = inner.sessions.get_mut(&id) {
         s.workspace = dest.to_string();
         s.cwd = dest_path.to_path_buf();
+        // The branch it was carried *for*, written now rather than left for the next
+        // reconcile to infer from whatever the tree holds.
+        //
+        // `to_carry` selects on this field, so until it is right the record names the
+        // branch this conversation just left. A second move inside that window asks
+        // "who here was working on the branch that is leaving" and gets the wrong
+        // answer — it matches a session whose branch has already gone, or fails to
+        // match the one that should travel and strands it. That is how a conversation
+        // ends up in one checkout with its uncommitted work in another, which is the
+        // whole failure this pairing exists to prevent.
+        s.branch = Some(branch.to_string());
         // Only on a move that happened. Left pointing at the old slug otherwise,
         // which is still where the file is.
         if let Some(path) = refiled {
@@ -3150,7 +3214,11 @@ mod tests {
         {
             let mut inner = app.inner.write().await;
             let mut s = Session::new(id, "wt".to_string(), dir.join("wt"), Kind::Interactive);
-            s.branch = Some("feature/a".into());
+            // Recorded on the branch it is *leaving*, which is the state a second
+            // move finds a session in: the first carry moved it and nothing had
+            // re-stamped the record yet. `carry_record` has to correct that itself,
+            // because `to_carry` selects on this field.
+            s.branch = Some("feature/stale".into());
             s.had_a_turn = true;
             s.state = crate::model::State::Archived { resumable: true };
             inner.sessions.insert(id, s);
@@ -3162,6 +3230,11 @@ mod tests {
         let s = &inner.sessions[&id];
         assert_eq!(s.workspace, MAIN, "the record follows its branch");
         assert_eq!(s.cwd, dir);
+        assert_eq!(
+            s.branch.as_deref(),
+            Some("feature/a"),
+            "the record names the branch it was carried for, not the one it left"
+        );
         let notice = s.arrival_notice.as_deref().expect("it has to be told");
         assert!(notice.contains("feature/a"), "which branch moved: {notice}");
         assert!(
