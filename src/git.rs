@@ -527,8 +527,35 @@ fn freshen_base(main: &Path, base: &str) -> Result<()> {
     Ok(())
 }
 
-/// Where a branch lives: `None` for local, `Some("origin/x")` when only the fork has
-/// it, and an error when neither does.
+/// The remote-tracking ref for a branch this checkout has no local copy of, or
+/// `None` when no remote carries it.
+///
+/// `origin` first: PRs are opened from the fork, which is `origin` by convention
+/// (§6), so that one fetch answers the ordinary case. Only when it comes up empty
+/// does this fall back to every remote — a fork whose push remote is named
+/// something other than `origin` (a personal remote, `fork`, `mine`) still
+/// resolves rather than failing with "exists neither locally nor on origin". The
+/// fallback's `fetch --all` runs only on that miss, never on the common path.
+fn remote_branch(main: &Path, branch: &str) -> Option<String> {
+    let _ = git(main, &["fetch", "origin", branch, "--no-tags"]);
+    let origin = format!("origin/{branch}");
+    if git_ok(main, &["rev-parse", "--verify", "--quiet", &origin]) {
+        return Some(origin);
+    }
+    let _ = git(main, &["fetch", "--all", "--no-tags"]);
+    let listed = git(main, &["for-each-ref", "--format=%(refname:short)", "refs/remotes/"]).ok()?;
+    // The short ref is `<remote>/<branch>`; match the branch part exactly so a
+    // slash in the branch name (`feature/x`) does not misfire against a shorter
+    // one, and so branch `x` never matches `origin/feature/x`.
+    listed
+        .lines()
+        .map(str::trim)
+        .find(|s| s.split_once('/').is_some_and(|(_, b)| b == branch))
+        .map(String::from)
+}
+
+/// Where a branch lives: `None` for local, `Some("<remote>/x")` when only a remote
+/// has it, and an error when none does.
 ///
 /// One function because the rule is one rule (§6): PRs are opened from the fork, so
 /// a head ref this checkout has never seen is the ordinary case rather than a
@@ -537,12 +564,10 @@ fn locate_branch(main: &Path, branch: &str) -> Result<Option<String>> {
     if branch_exists(main, branch) {
         return Ok(None);
     }
-    let _ = git(main, &["fetch", "origin", branch, "--no-tags"]);
-    let remote = format!("origin/{branch}");
-    if !git_ok(main, &["rev-parse", "--verify", "--quiet", &remote]) {
-        bail!("branch {branch} exists neither locally nor on origin");
+    match remote_branch(main, branch) {
+        Some(remote) => Ok(Some(remote)),
+        None => bail!("branch {branch} exists neither locally nor on any remote"),
     }
-    Ok(Some(remote))
 }
 
 /// Refuse to move a tree that is carrying work.
@@ -623,10 +648,9 @@ pub fn worktree_rebuild(
     if branch_exists(main, branch) {
         git(main, &["worktree", "add", &path_str, branch])?;
     } else {
-        // The head ref lives on the fork, since PRs are opened from origin (§6).
-        let _ = git(main, &["fetch", "origin", branch, "--no-tags"]);
-        let remote = format!("origin/{branch}");
-        if git_ok(main, &["rev-parse", "--verify", "--quiet", &remote]) {
+        // The head ref lives on the fork; `remote_branch` tries origin first and
+        // then any remote, so a fork not named origin still resolves (§6).
+        if let Some(remote) = remote_branch(main, branch) {
             git(main, &["worktree", "add", &path_str, "-b", branch, &remote])?;
         } else if git_ok(main, &["cat-file", "-e", &format!("{recorded}^{{commit}}")]) {
             // Nothing to track, but the commit the conversation ran on is still
@@ -658,12 +682,10 @@ pub fn switch_branch(cwd: &Path, branch: &str) -> Result<()> {
         git(cwd, &["switch", branch])?;
         return Ok(());
     }
-    // The head ref lives on the fork, since PRs are opened from origin (§6).
-    let _ = git(cwd, &["fetch", "origin", branch, "--no-tags"]);
-    let remote = format!("origin/{branch}");
-    if !git_ok(cwd, &["rev-parse", "--verify", "--quiet", &remote]) {
-        bail!("branch {branch} exists neither locally nor on origin");
-    }
+    // The head ref lives on the fork; `remote_branch` tries origin first and then
+    // any remote, so a fork not named origin still resolves (§6).
+    let remote = remote_branch(cwd, branch)
+        .ok_or_else(|| anyhow::anyhow!("branch {branch} exists neither locally nor on any remote"))?;
     git(cwd, &["switch", "-c", branch, "--track", &remote])?;
     Ok(())
 }
@@ -2805,10 +2827,52 @@ mod tests {
         std::fs::create_dir_all(wt.parent().unwrap()).unwrap();
         let err = worktree_add_existing(&repo, &wt, "feature/nope").unwrap_err();
         assert!(
-            format!("{err:#}").contains("neither locally nor on origin"),
+            format!("{err:#}").contains("neither locally nor on any remote"),
             "unexpected: {err:#}"
         );
         let _ = std::fs::remove_dir_all(&repo);
+    }
+
+    /// A fork whose push remote is not named `origin` still resolves a head branch.
+    ///
+    /// `remote_branch` tries `origin` first for speed, then falls back to every
+    /// remote. Without the fallback a checkout whose fork remote is called anything
+    /// else refused every PR head with "exists neither locally nor on origin".
+    #[test]
+    fn a_head_branch_on_a_non_origin_remote_still_resolves() {
+        let root = std::env::temp_dir().join(format!("orch-forkremote-{}", uuid::Uuid::new_v4()));
+        let fork = root.join("fork");
+        let repo = root.join("repo");
+        std::fs::create_dir_all(&fork).unwrap();
+        std::fs::create_dir_all(&repo).unwrap();
+        let sh = |cwd: &Path, args: &[&str]| {
+            let out = std::process::Command::new("git").args(args).current_dir(cwd).output().unwrap();
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        };
+        // The fork holds a PR head branch.
+        sh(&fork, &["init", "-q", "-b", "develop"]);
+        sh(&fork, &["config", "user.email", "t@t"]);
+        sh(&fork, &["config", "user.name", "t"]);
+        std::fs::write(fork.join("f"), "1").unwrap();
+        sh(&fork, &["add", "-A"]);
+        sh(&fork, &["commit", "-qm", "base"]);
+        sh(&fork, &["branch", "feature/head"]);
+
+        // The checkout knows the fork under a name that is not `origin`.
+        sh(&repo, &["init", "-q", "-b", "develop"]);
+        sh(&repo, &["config", "user.email", "t@t"]);
+        sh(&repo, &["config", "user.name", "t"]);
+        std::fs::write(repo.join("f"), "1").unwrap();
+        sh(&repo, &["add", "-A"]);
+        sh(&repo, &["commit", "-qm", "base"]);
+        sh(&repo, &["remote", "add", "mine", &fork.to_string_lossy()]);
+
+        let wt = repo.join(".claude/worktrees/pr-1");
+        std::fs::create_dir_all(wt.parent().unwrap()).unwrap();
+        worktree_add_existing(&repo, &wt, "feature/head").unwrap();
+        assert_eq!(current_branch(&wt).unwrap(), "feature/head");
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

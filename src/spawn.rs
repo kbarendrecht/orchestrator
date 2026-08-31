@@ -955,6 +955,23 @@ async fn start_with_prompt(
 /// checkout that lands outside the worktree, and a file *inside* the worktree would
 /// make the tree dirty — which the review flow then checks. Nothing of the
 /// daemon's is written into the checkout it is driving.
+/// The ref a per-PR run rebases onto: the PR's *own* base branch on the upstream
+/// remote, not the daemon's global `upstream_ref`.
+///
+/// A PR opened against a release branch, an LTS branch, or stacked on another
+/// branch has a base that is not the configured default. Rebasing it onto
+/// `upstream_ref` regardless then force-pushes history rebased onto the wrong
+/// ancestor — silently, since the rebase usually succeeds mechanically. Falls back
+/// to the configured base when the PR is not in the poll or GitHub named no base,
+/// which for a normal PR is identical to it (`upstream_remote`/`base_ref` ==
+/// `upstream_ref`), so nothing changes for the ordinary case.
+fn rebase_target(upstream_ref: &str, upstream_remote: &str, base_ref: Option<&str>) -> String {
+    match base_ref {
+        Some(b) if !b.is_empty() => format!("{upstream_remote}/{b}"),
+        _ => upstream_ref.to_string(),
+    }
+}
+
 async fn vendored_prompt_file(app: &Arc<AppState>, pr: u64, command: &str) -> Result<PathBuf> {
     let template = match command {
         "resolve" => crate::prompt::RESOLVE,
@@ -964,11 +981,21 @@ async fn vendored_prompt_file(app: &Arc<AppState>, pr: u64, command: &str) -> Re
     };
     let (owner, repo) =
         crate::resolve_repo(app).context("no GitHub repo configured and none on the remote")?;
-    let login = {
+    let (login, base_ref) = {
         let inner = app.inner.read().await;
-        inner.viewer.clone()
-    }
-    .context("no GitHub login yet — the PR poller has not run")?;
+        let base = inner
+            .prs
+            .iter()
+            .find(|p| p.number == pr)
+            .map(|p| p.base_ref.clone());
+        (inner.viewer.clone(), base)
+    };
+    let login = login.context("no GitHub login yet — the PR poller has not run")?;
+    let upstream = rebase_target(
+        &app.cfg.upstream_ref,
+        &app.cfg.upstream_remote,
+        base_ref.as_deref(),
+    );
     let body = crate::prompt::render(
         template,
         &crate::prompt::Vars {
@@ -976,7 +1003,7 @@ async fn vendored_prompt_file(app: &Arc<AppState>, pr: u64, command: &str) -> Re
             owner,
             repo,
             login,
-            upstream: app.cfg.upstream_ref.clone(),
+            upstream,
             upstream_remote: app.cfg.upstream_remote.clone(),
             ask_base: format!("http://127.0.0.1:{}/api/session", app.cfg.port),
             language: app.cfg.default_language.clone(),
@@ -1685,6 +1712,30 @@ pub fn worktree_name_of(path: &PathBuf, worktrees_dir: &PathBuf) -> Option<Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A per-PR run rebases onto the PR's own base, not the daemon's global one.
+    ///
+    /// A normal PR based on the configured branch renders exactly `upstream_ref`,
+    /// so nothing changes for the ordinary case. A PR on a release branch renders
+    /// that branch on the upstream remote instead of the wrong ancestor. A PR the
+    /// poll does not carry falls back to the configured base rather than an empty
+    /// or malformed ref.
+    #[test]
+    fn a_run_rebases_onto_the_prs_own_base_not_the_global_one() {
+        // The ordinary case: same base as configured, so the ref is unchanged.
+        assert_eq!(
+            rebase_target("upstream/develop", "upstream", Some("develop")),
+            "upstream/develop"
+        );
+        // A release-branch PR: the run must target that branch, not develop.
+        assert_eq!(
+            rebase_target("upstream/develop", "upstream", Some("release/2.0")),
+            "upstream/release/2.0"
+        );
+        // Not in the poll, or GitHub named no base: fall back to the configured ref.
+        assert_eq!(rebase_target("origin/main", "origin", None), "origin/main");
+        assert_eq!(rebase_target("origin/main", "origin", Some("")), "origin/main");
+    }
 
     /// All three variables or none, and this is the seam that decides it.
     ///
