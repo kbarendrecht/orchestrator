@@ -410,6 +410,18 @@ pub fn worktree_list(main: &Path) -> Result<Vec<WorktreeEntry>> {
 /// escalated to `--force` and never falls back to a filesystem delete.
 pub fn worktree_remove(main: &Path, path: &Path) -> Result<()> {
     let path_str = path.to_string_lossy().into_owned();
+    // Already gone is a success, not an error.
+    //
+    // This runs after the repo's `WorktreeRemove` hook, which may have done the
+    // whole job — so the ordinary outcome in a repo that declares one is that
+    // there is nothing left here to remove. `git worktree remove` on a path that
+    // is not there fails with "is not a working tree", which would turn a
+    // completed teardown into a reported failure. Pruning is still owed: the hook
+    // deleted a directory, and git's own registration of it is what is left.
+    if !path.exists() {
+        let _ = git(main, &["worktree", "prune"]);
+        return Ok(());
+    }
     if let Err(e) = git(main, &["worktree", "remove", &path_str]) {
         // A plain `git worktree remove` refuses for exactly two reasons: a dirty
         // tree, or a lock. Teardown's preflight already guaranteed the tree is
@@ -495,12 +507,78 @@ pub fn worktree_add_new(main: &Path, path: &Path, branch: &str, base: &str) -> R
         bail!("branch {branch} already exists");
     }
     let path_str = path.to_string_lossy().into_owned();
+    // Freshen the base first, when it is one that can go stale.
+    //
+    // The repo's own `WorktreeCreate` hook opens with `git fetch upstream develop`
+    // for this reason, and a daemon-cut tree never runs that hook, so every PR
+    // worktree and every new worktree the daemon made started from whatever the
+    // last fetch happened to leave behind. Non-fatal exactly as the hook has it:
+    // offline is a reason to cut from the last-known base, not a reason to refuse.
+    //
+    // Only for a remote-tracking base. A fork's base is a sha and a local branch is
+    // already current, and neither has a remote to ask.
+    if let Some((remote, branch)) = base.split_once('/') {
+        if has_remote(main, remote) && git(main, &["fetch", "--quiet", remote, branch]).is_err() {
+            tracing::warn!("could not fetch {base}; cutting from the last-known copy");
+        }
+    }
     // A base that does not resolve would otherwise cut from HEAD silently, which
     // is a different branch than the caller asked for.
     if !git_ok(main, &["rev-parse", "--verify", "--quiet", base]) {
         bail!("base ref {base} does not resolve");
     }
     git(main, &["worktree", "add", &path_str, "-b", branch, base])?;
+    Ok(())
+}
+
+/// Put an existing tree onto a new branch cut from `base`.
+///
+/// For a worktree the repo's `WorktreeCreate` hook made on a base of its own
+/// choosing. `-B` rather than `-b`: the daemon owns this branch name, and a retry
+/// after a half-finished attempt must not fail because the name is taken.
+///
+/// Refuses on a dirty tree rather than carrying the changes onto the new branch. A
+/// freshly created worktree is clean, so anything here is the hook having left work
+/// behind, and moving it silently is how it stops being noticed.
+pub fn checkout_new_branch(main: &Path, tree: &Path, branch: &str, base: &str) -> Result<()> {
+    if let Some((remote, b)) = base.split_once('/') {
+        if has_remote(main, remote) && git(main, &["fetch", "--quiet", remote, b]).is_err() {
+            tracing::warn!("could not fetch {base}; using the last-known copy");
+        }
+    }
+    if !git_ok(main, &["rev-parse", "--verify", "--quiet", base]) {
+        bail!("base ref {base} does not resolve");
+    }
+    if !git(tree, &["status", "--porcelain", "--untracked-files=no"])?.trim().is_empty() {
+        bail!("{} has uncommitted work; not moving it onto {branch}", tree.display());
+    }
+    git(tree, &["checkout", "-q", "-B", branch, base])?;
+    Ok(())
+}
+
+/// Put an existing tree onto a branch that already exists, locally or on origin.
+///
+/// The PR half of the pair. Fetching from origin first is the same rule
+/// [`worktree_add_existing`] follows: PRs are opened from the fork (§6), so a head
+/// ref this checkout has never seen is the ordinary case rather than an error.
+///
+/// Refuses if another worktree already holds the branch. Git would refuse anyway,
+/// and its wording is version-dependent; saying it here means the caller falls back
+/// for a reason it can read.
+pub fn checkout_existing_branch(main: &Path, tree: &Path, branch: &str) -> Result<()> {
+    if !git(tree, &["status", "--porcelain", "--untracked-files=no"])?.trim().is_empty() {
+        bail!("{} has uncommitted work; not moving it onto {branch}", tree.display());
+    }
+    if branch_exists(main, branch) {
+        git(tree, &["checkout", "-q", branch])?;
+        return Ok(());
+    }
+    let _ = git(main, &["fetch", "origin", branch, "--no-tags"]);
+    let remote = format!("origin/{branch}");
+    if !git_ok(main, &["rev-parse", "--verify", "--quiet", &remote]) {
+        bail!("branch {branch} exists neither locally nor on origin");
+    }
+    git(tree, &["checkout", "-q", "-B", branch, &remote])?;
     Ok(())
 }
 
@@ -1093,6 +1171,41 @@ fn capture_wip(cwd: &Path) -> Result<Option<String>> {
         bail!("git stash create returned {sha}, which does not resolve — refusing to reset");
     }
     git(cwd, &["reset", "--hard", "-q"])?;
+    Ok(Some(sha))
+}
+
+/// Copy a tree's uncommitted work into another tree, leaving the source as it was.
+///
+/// The fork's half of the pair. [`capture_wip`] banks and then **resets**, which is
+/// right when a branch is leaving and wrong here: a fork is a second place to work,
+/// not a move, and the parent must still have its edits when you look back at it.
+/// `stash create` alone does exactly that — it writes the commit object and does not
+/// touch the working tree — so this is the same banking without the reset.
+///
+/// Reaching the object from the other tree needs nothing special: worktrees of one
+/// repository share `.git/objects`, so the dangling commit `stash create` returns is
+/// visible in both.
+///
+/// `None` means the parent was clean and there was nothing to carry. Tracked changes
+/// only, as ever: `stash create` has no `--include-untracked`, so the caller names
+/// what stayed behind rather than pretending it travelled.
+pub fn copy_wip(from: &Path, to: &Path) -> Result<Option<String>> {
+    let sha = git(from, &["stash", "create"])?.trim().to_string();
+    if sha.is_empty() {
+        return Ok(None);
+    }
+    // Never apply a sha that does not resolve. Cheap, and the same guard
+    // `capture_wip` needs for a much worse reason.
+    if !git_ok(from, &["cat-file", "-e", &format!("{sha}^{{commit}}")]) {
+        bail!("git stash create returned {sha}, which does not resolve");
+    }
+    git(to, &["stash", "apply", "--index", &sha]).with_context(|| {
+        format!(
+            "the fork was cut but the uncommitted work did not re-apply in {}; it is \
+             banked in commit {sha} — `git stash apply {sha}` there to recover it",
+            to.display()
+        )
+    })?;
     Ok(Some(sha))
 }
 
@@ -1811,6 +1924,200 @@ mod tests {
     /// The swap, and the refusal it is built around: git will not check one branch
     /// out twice, so the naive "switch each tree" fails on the first move. Both
     /// halves are pinned here because the three-step order *is* the feature.
+    /// A fork's carry: the work arrives, and the parent keeps it.
+    ///
+    /// Both halves matter and only one is obvious. `capture_wip` banks and then
+    /// resets, which is right for a swap and would be theft here — a fork is a
+    /// second place to work, not a move, so the parent tree must look untouched
+    /// afterwards. That is the assertion this test exists for.
+    /// Removal is a backstop, so "already gone" is a success.
+    ///
+    /// The repo's `WorktreeRemove` hook runs first and may do the whole job. Without
+    /// this, `git worktree remove` on a path that is no longer there fails with "is
+    /// not a working tree" and turns a completed teardown into a reported failure.
+    /// The prune is still owed: the hook deleted a directory and git's registration
+    /// of it is what remains.
+    #[test]
+    fn removing_a_worktree_that_a_hook_already_took_is_not_an_error() {
+        let root = std::env::temp_dir().join(format!("orch-idem-{}", uuid::Uuid::new_v4()));
+        let repo = root.join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        let sh = |cwd: &Path, args: &[&str]| {
+            let out = std::process::Command::new("git").args(args).current_dir(cwd).output().unwrap();
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        };
+        sh(&repo, &["init", "-q", "-b", "main"]);
+        sh(&repo, &["config", "user.email", "t@t"]);
+        sh(&repo, &["config", "user.name", "t"]);
+        std::fs::write(repo.join("f"), "1").unwrap();
+        sh(&repo, &["add", "-A"]);
+        sh(&repo, &["commit", "-qm", "base"]);
+
+        let wt = root.join("wt");
+        worktree_add_new(&repo, &wt, "wt-gone", &head_sha(&repo).unwrap()).unwrap();
+        // What a hook that owns removal leaves behind: no directory, and a
+        // registration git still believes in.
+        std::fs::remove_dir_all(&wt).unwrap();
+        assert!(git(&repo, &["worktree", "list"]).unwrap().contains("wt-gone")
+            || git(&repo, &["worktree", "list"]).unwrap().contains("wt"));
+
+        worktree_remove(&repo, &wt).expect("already gone is a success");
+        // And the registration is cleared, not merely tolerated.
+        assert!(!git(&repo, &["worktree", "list"]).unwrap().contains("/wt"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A remote-tracking base is fetched before the cut, so a daemon-cut worktree
+    /// does not start from whatever the last fetch happened to leave behind.
+    ///
+    /// The repo's own `WorktreeCreate` hook opens with this fetch and a daemon-cut
+    /// tree never runs that hook. Driven against a real second repository, because
+    /// the thing being asserted is that the new tree holds a commit that existed
+    /// only on the remote a moment ago.
+    #[test]
+    fn cutting_from_a_remote_base_fetches_it_first() {
+        let root = std::env::temp_dir().join(format!("orch-fetchbase-{}", uuid::Uuid::new_v4()));
+        let origin = root.join("origin");
+        let repo = root.join("repo");
+        std::fs::create_dir_all(&origin).unwrap();
+        let sh = |cwd: &Path, args: &[&str]| {
+            let out = std::process::Command::new("git").args(args).current_dir(cwd).output().unwrap();
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        };
+        sh(&origin, &["init", "-q", "-b", "develop"]);
+        sh(&origin, &["config", "user.email", "t@t"]);
+        sh(&origin, &["config", "user.name", "t"]);
+        std::fs::write(origin.join("f"), "1").unwrap();
+        sh(&origin, &["add", "-A"]);
+        sh(&origin, &["commit", "-qm", "first"]);
+
+        let out = std::process::Command::new("git")
+            .args(["clone", "-q", &origin.to_string_lossy(), &repo.to_string_lossy()])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        sh(&repo, &["remote", "rename", "origin", "upstream"]);
+
+        // A commit the clone has never seen. Without the fetch, cutting from
+        // `upstream/develop` gives the tree the *old* tip.
+        std::fs::write(origin.join("g"), "2").unwrap();
+        sh(&origin, &["add", "-A"]);
+        sh(&origin, &["commit", "-qm", "landed after the clone"]);
+
+        let wt = root.join("wt");
+        worktree_add_new(&repo, &wt, "wt-fresh", "upstream/develop").unwrap();
+        assert!(wt.join("g").exists(), "the new tree has the commit that landed after the clone");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Adopting a tree the repo's `WorktreeCreate` hook made.
+    ///
+    /// The hook cuts from a base of its own, so the daemon puts the tree on what it
+    /// actually needs afterwards. Both shapes are asserted, and so is the refusal
+    /// that keeps the fallback honest: a dirty tree is a hook that left work behind,
+    /// and carrying it silently onto another branch is how that stops being noticed.
+    #[test]
+    fn a_tree_a_hook_made_can_be_put_on_the_branch_the_daemon_needs() {
+        let root = std::env::temp_dir().join(format!("orch-adopt-{}", uuid::Uuid::new_v4()));
+        let repo = root.join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        let sh = |cwd: &Path, args: &[&str]| {
+            let out = std::process::Command::new("git").args(args).current_dir(cwd).output().unwrap();
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        };
+        sh(&repo, &["init", "-q", "-b", "develop"]);
+        sh(&repo, &["config", "user.email", "t@t"]);
+        sh(&repo, &["config", "user.name", "t"]);
+        std::fs::write(repo.join("f"), "1").unwrap();
+        sh(&repo, &["add", "-A"]);
+        sh(&repo, &["commit", "-qm", "base"]);
+        // A branch that already exists, the shape a PR head has.
+        sh(&repo, &["branch", "feature/head"]);
+
+        // What a hook leaves: a tree on a branch of its own choosing.
+        let made = root.join("hook-made");
+        worktree_add_new(&repo, &made, "worktree-hookname", "develop").unwrap();
+        assert_eq!(current_branch(&made).unwrap(), "worktree-hookname");
+
+        // Want::Existing — the PR case.
+        checkout_existing_branch(&repo, &made, "feature/head").unwrap();
+        assert_eq!(current_branch(&made).unwrap(), "feature/head");
+
+        // Want::New — the plain and fork cases. `-B`, so a retry over a name the
+        // daemon already owns does not fail.
+        checkout_new_branch(&repo, &made, "worktree-mine", "develop").unwrap();
+        assert_eq!(current_branch(&made).unwrap(), "worktree-mine");
+        checkout_new_branch(&repo, &made, "worktree-mine", "develop").unwrap();
+
+        // A dirty tree refuses, both ways, so the caller falls back rather than
+        // moving work it did not put there.
+        std::fs::write(made.join("f"), "changed by the hook\n").unwrap();
+        assert!(checkout_new_branch(&repo, &made, "worktree-other", "develop").is_err());
+        assert!(checkout_existing_branch(&repo, &made, "feature/head").is_err());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_fork_copies_the_work_across_and_leaves_the_parent_holding_it() {
+        let root = std::env::temp_dir().join(format!("orch-copywip-{}", uuid::Uuid::new_v4()));
+        let parent = root.join("parent");
+        std::fs::create_dir_all(&parent).unwrap();
+        let sh = |cwd: &Path, args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .args(args)
+                .current_dir(cwd)
+                .output()
+                .expect("git");
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        };
+        sh(&parent, &["init", "-q", "-b", "main"]);
+        sh(&parent, &["config", "user.email", "t@t"]);
+        sh(&parent, &["config", "user.name", "t"]);
+        std::fs::write(parent.join("tracked.txt"), "committed\n").unwrap();
+        sh(&parent, &["add", "-A"]);
+        sh(&parent, &["commit", "-qm", "base"]);
+
+        // The state a fork is supposed to reproduce: an edit to a tracked file, and
+        // an untracked file that cannot travel.
+        std::fs::write(parent.join("tracked.txt"), "edited in the parent\n").unwrap();
+        std::fs::write(parent.join("new.txt"), "untracked\n").unwrap();
+
+        // The fork's tree, cut from the parent's HEAD the way `spawn` cuts it.
+        let head = head_sha(&parent).unwrap();
+        let fork = root.join("fork");
+        worktree_add_new(&parent, &fork, "wt-fork", &head).unwrap();
+
+        let sha = copy_wip(&parent, &fork).unwrap().expect("there was work to carry");
+        assert!(!sha.is_empty());
+
+        // It arrived.
+        assert_eq!(
+            std::fs::read_to_string(fork.join("tracked.txt")).unwrap(),
+            "edited in the parent\n"
+        );
+        // And the parent still has it — `stash create` writes an object and does not
+        // touch the tree, which is the whole reason this is not `capture_wip`.
+        assert_eq!(
+            std::fs::read_to_string(parent.join("tracked.txt")).unwrap(),
+            "edited in the parent\n"
+        );
+        // Untracked files do not travel, and the caller is the one that says so.
+        assert!(!fork.join("new.txt").exists(), "stash create cannot carry untracked");
+        assert_eq!(untracked_in(&parent, None).unwrap(), vec!["new.txt".to_string()]);
+
+        // A clean parent has nothing to carry and says so rather than erroring.
+        sh(&parent, &["add", "-A"]);
+        sh(&parent, &["commit", "-qm", "tidy"]);
+        let fork2 = root.join("fork2");
+        worktree_add_new(&parent, &fork2, "wt-fork2", &head_sha(&parent).unwrap()).unwrap();
+        assert_eq!(copy_wip(&parent, &fork2).unwrap(), None);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn swapping_exchanges_two_branches_and_is_its_own_inverse() {
         let dir = std::env::temp_dir().join(format!(

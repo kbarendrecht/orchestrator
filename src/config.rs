@@ -721,14 +721,60 @@ impl Config {
 /// what launched it.
 ///
 /// Returns `(set, unset)`.
-pub fn transcript_env() -> (Vec<(String, String)>, Vec<&'static str>) {
-    (
-        vec![(
-            "CLAUDE_CODE_FORCE_SESSION_PERSISTENCE".to_string(),
-            "1".to_string(),
-        )],
-        vec!["CLAUDE_CODE_CHILD_SESSION"],
-    )
+///
+/// # Why every spawn goes through here
+///
+/// This used to be `transcript_env`, and each spawn site added its own `ORCH_*` on
+/// top. They drifted, silently and more than once: `spawn_worktree_session` set
+/// `ORCH_SESSION_ID` and stopped, so `orch` in a `claude --worktree` session had a
+/// name for itself and no address and answered "only runs inside a session the
+/// daemon started" — a sentence describing a session that is not one. The fix-pr and
+/// triage spawns had the same hole. The signature changed rather than gaining a
+/// default so the compiler names every site, which is the only reason a future spawn
+/// cannot quietly leave one out.
+///
+/// `ask_token` is `None` for a run with nobody to ask — the headless triage pass.
+pub fn session_env(
+    cfg: &Config,
+    id: uuid::Uuid,
+    ask_token: Option<&str>,
+) -> (Vec<(String, String)>, Vec<&'static str>) {
+    let mut set = vec![(
+        "CLAUDE_CODE_FORCE_SESSION_PERSISTENCE".to_string(),
+        "1".to_string(),
+    )];
+    set.push(("ORCH_SESSION_ID".to_string(), id.to_string()));
+    if let Some(t) = ask_token {
+        set.push(("ORCH_ASK_TOKEN".to_string(), t.to_string()));
+    }
+    // So `orch` needs no configuration: the session's own environment says where
+    // the daemon is and who it is.
+    set.push((
+        "ORCH_URL".to_string(),
+        format!("http://127.0.0.1:{}", cfg.port),
+    ));
+    // And so it is *findable*. `orch` ships beside the binary that is running, but
+    // only the tarball puts that directory on your PATH — inside an AppImage or a
+    // macOS bundle it is a mount point nothing else knows about, and the agent's
+    // `orch new` would be a command not found. Prepended, so a build you are
+    // testing wins over an installed one.
+    if let Some(dir) = crate::sibling_bin_dir() {
+        let rest = std::env::var("PATH").unwrap_or_default();
+        set.push(("PATH".to_string(), format!("{dir}:{rest}")));
+    }
+    // What the repo's `.mcp.json` `${…}` expands from, named by the tracker.
+    //
+    // Claude Code expands those from the **real process environment** and nowhere
+    // else — an `env` block in a settings file is not consulted, and an unset
+    // variable is passed through as the literal `${VAR}`. Shortcut answers a
+    // literal with "the access token expired", so the one thing the chain never
+    // said was that no token had been sent. In the child's environment rather than
+    // the settings file the daemon writes, which would put a secret in
+    // `~/.config/orchd/`.
+    if let Some(pair) = crate::story::token_env_pair(cfg.tracker) {
+        set.push(pair);
+    }
+    (set, vec!["CLAUDE_CODE_CHILD_SESSION"])
 }
 
 /// Claude Code keys its transcript directory by working directory, slugging the
@@ -751,6 +797,18 @@ pub fn transcript_dir_for(cwd: &Path) -> Result<PathBuf> {
 /// test reaching into `HOME` and changing it under every other test.
 fn transcript_slug(cwd: &Path) -> String {
     cwd.to_string_lossy().replace(['/', '.'], "-")
+}
+
+/// A parsed `Config` for a test that only needs one to exist. `Config` has no
+/// `Default` on purpose — `main_checkout` is canonicalised at parse, and a default
+/// one would be a path that resolves to nothing.
+#[cfg(test)]
+pub(crate) fn test_config() -> Config {
+    Config::parse(&format!(
+        r#"{{"main_checkout":"{}"}}"#,
+        std::env::temp_dir().display()
+    ))
+    .expect("a config")
 }
 
 #[cfg(test)]
@@ -941,7 +999,7 @@ mod tests {
     fn persistence_clears_the_child_marker() {
         // The marker is what a daemon launched from inside a Claude session
         // inherits, and it silently turns transcripts off in every child.
-        let (set, unset) = transcript_env();
+        let (set, unset) = session_env(&super::test_config(), uuid::Uuid::nil(), None);
         assert!(unset.contains(&"CLAUDE_CODE_CHILD_SESSION"));
         assert!(set
             .iter()

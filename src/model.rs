@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -41,8 +41,16 @@ pub enum WorkspaceKind {
 /// shows before its first reconcile.
 #[derive(Debug, Default, Clone)]
 pub struct Tree {
-    /// Everything changed since the branch point, committed and untracked both.
+    /// Everything changed since the branch point, committed and untracked both —
+    /// or the first [`crate::state::CHANGED_CAP`] of it, sorted by path.
+    ///
+    /// Truncated here rather than on the way out, so the big `Vec` is never held at
+    /// all: this is cloned into every workspace of every snapshot, and a snapshot is
+    /// built on every `notify`.
     pub changed: Vec<crate::diff::DiffFile>,
+    /// What `changed` would have been, uncapped. Equal to `changed.len()` in the
+    /// ordinary case; larger is how the pane knows to say so.
+    pub changed_total: u32,
     /// `merge-base(upstream, HEAD)` — the commit `changed` is measured from.
     pub base: Option<String>,
     /// (behind, ahead) against the upstream base.
@@ -98,6 +106,17 @@ pub enum TurnReason {
     /// nothing is running and nothing will until you type — but not idle in the
     /// sense the rail shouts about, because you only just opened it.
     Ready,
+    /// You cut the turn short — an escape or a `^C` into the pane.
+    ///
+    /// Its own reason because **`Stop` does not fire on a user interrupt**, so
+    /// nothing else ever ends that turn: a session stayed `Working` until its next
+    /// completed turn, which for one abandoned mid-thought is never. Main sat that
+    /// way for eight minutes with a live, idle agent in it, and the rail said it was
+    /// working the whole time.
+    ///
+    /// Not folded into `TurnComplete`, because the two disagree about what is owed:
+    /// see the `interrupted` arm of [`Session::set_state`].
+    Interrupted,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -338,6 +357,22 @@ pub struct Session {
     /// `/resolve` session is interactive so you can take it over mid-flight — so
     /// the invocation is typed in instead (§8).
     pub pending_prompt: Option<String>,
+    /// Set when a review session reports it is done and the PR still has checks to
+    /// watch, so its *exit* starts a `fix-pr` run (`api::session_handoff`).
+    ///
+    /// The exit, and not the call, because the run cannot start while this session
+    /// is alive: `fix_pr::evaluate` refuses a branch with a live session on it, and
+    /// it is right to — two agents in one worktree is the thing that guard exists
+    /// for. So the handoff kills the pty and `spawn::watch_session_exit`, the one
+    /// observer of a pty ending, starts the run.
+    ///
+    /// Not persisted: it describes a window that ends with the pty, and a daemon
+    /// that went down inside it has lost the review session anyway — restoring a
+    /// flag that force-pushes on the strength of a call nothing can now attribute is
+    /// exactly what must not happen. It *is* in the snapshot, as
+    /// `SessionView::handed_off`, because the overlay has to know a review ended
+    /// this way before the run it handed to exists.
+    pub fix_pr_on_exit: bool,
 }
 
 impl Session {
@@ -370,6 +405,7 @@ impl Session {
             spawned_by: None,
             spawn_cut_worktree: false,
             pending_prompt: None,
+            fix_pr_on_exit: false,
             // Always a real one, so an empty stored token can never match an
             // empty header.
             ask_token: crate::state::random_token(),
@@ -420,7 +456,14 @@ impl Session {
                 // conversation stops being an empty pane. Latched, never cleared.
                 self.had_a_turn = true;
             }
-            State::YourTurn { reason, .. } if *reason != TurnReason::Ready => {
+            // `Interrupted` joins `Ready` in *not* clearing it, and for the same
+            // reason: both are turns that stopped without finishing, so the
+            // conversation still owes you the rest of one. Clearing it here would
+            // take the resume nudge away from the sessions that most need it — the
+            // ones you cut off yourself.
+            State::YourTurn { reason, .. }
+                if !matches!(reason, TurnReason::Ready | TurnReason::Interrupted) =>
+            {
                 self.interrupted = false;
             }
             _ => {}
@@ -556,7 +599,9 @@ impl Process {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
-#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
+// No `ts_rs` export: `git::status` still produces these, but nothing reaches them
+// from `Snapshot` any more — the changed-files pane reads `changed`, and
+// `WorkspaceView.files` was sent to every client on every tick and read by none.
 pub enum FileStatus {
     Staged,
     Unstaged,
@@ -564,7 +609,9 @@ pub enum FileStatus {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
+// No `ts_rs` export: `git::status` still produces these, but nothing reaches them
+// from `Snapshot` any more — the changed-files pane reads `changed`, and
+// `WorkspaceView.files` was sent to every client on every tick and read by none.
 pub struct ChangedFile {
     pub path: String,
     pub status: FileStatus,
@@ -573,14 +620,15 @@ pub struct ChangedFile {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
+// No `ts_rs` export: `git::status` still produces these, but nothing reaches them
+// from `Snapshot` any more — the changed-files pane reads `changed`, and
+// `WorkspaceView.files` was sent to every client on every tick and read by none.
 pub struct FileSet {
     pub staged: Vec<ChangedFile>,
     pub unstaged: Vec<ChangedFile>,
     pub untracked: Vec<ChangedFile>,
 }
 
-pub type FileSets = HashMap<WorkspaceId, FileSet>;
 
 #[cfg(test)]
 mod tests {
@@ -653,6 +701,38 @@ mod tests {
         }
         .wants_attention());
         assert!(!State::Working.wants_attention());
+    }
+
+    /// An interrupted turn is a turn still owed, so the flag the resume nudge reads
+    /// has to survive it.
+    ///
+    /// The trap this guards: `set_state` clears `interrupted` on *every* `YourTurn`
+    /// but `Ready`, so giving the interrupt any other reason would have ended the
+    /// turn correctly in the rail and quietly dropped the session out of the one
+    /// button that offers to finish it.
+    #[test]
+    fn an_interrupted_turn_is_still_owed() {
+        let mut s = Session::new(
+            uuid::Uuid::new_v4(),
+            "wt".into(),
+            std::path::Path::new("/tmp").to_path_buf(),
+            Kind::Interactive,
+        );
+        s.set_state(State::Working);
+        assert!(s.interrupted);
+
+        s.set_state(your_turn(TurnReason::Interrupted));
+        assert!(s.interrupted, "you cut it off; it still owes you the rest");
+        // And it is idle, so nothing that refuses to run under a working agent is
+        // held back by a turn nobody is taking.
+        assert!(!s.state.is_busy());
+        assert!(s.state.wants_attention(), "stopped, and it is your move");
+
+        // A turn that really finished clears it, which is the contrast that makes
+        // the reason worth having.
+        s.set_state(State::Working);
+        s.set_state(your_turn(TurnReason::TurnComplete));
+        assert!(!s.interrupted);
     }
 
     #[test]

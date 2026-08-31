@@ -311,38 +311,6 @@ async fn restore_after_relocate(
     }
 }
 
-/// Everything `orch` needs to work, pushed as one unit.
-///
-/// **All of it or none of it, for every interactive session.** One that had
-/// `ORCH_SESSION_ID` and not the other two failed every `orch` command with "only
-/// runs inside a session the daemon started" — which reads as "you are in the wrong
-/// place" while the truth was a two-line omission in one spawn path.
-/// `spawn_worktree_session` built its environment by hand and had exactly that gap,
-/// so every session started from the new-worktree button could neither ask nor
-/// spawn. One function, called by both, is what keeps that from happening again.
-///
-/// The automation runs are the deliberate exception and do not call this: `triage`,
-/// `story` and `fix-pr` are handed their URL substituted into their prompt, and two
-/// of the three are given no ask token at all.
-fn push_agent_env(env: &mut Vec<(String, String)>, app: &Arc<AppState>, id: SessionId, ask: &str) {
-    env.push(("ORCH_SESSION_ID".to_string(), id.to_string()));
-    env.push(("ORCH_ASK_TOKEN".to_string(), ask.to_string()));
-    // So `orch` needs no configuration: the session's own environment says where
-    // the daemon is and who it is.
-    env.push((
-        "ORCH_URL".to_string(),
-        format!("http://127.0.0.1:{}", app.cfg.port),
-    ));
-    // And so it is *findable*. `orch` ships beside the binary that is running, but
-    // only the tarball puts that directory on your PATH — inside an AppImage or a
-    // macOS bundle it is a mount point nothing else knows about, and the agent's
-    // `orch new` would be a command not found. Prepended, so a build you are
-    // testing wins over an installed one.
-    if let Some(dir) = crate::sibling_bin_dir() {
-        let rest = std::env::var("PATH").unwrap_or_default();
-        env.push(("PATH".to_string(), format!("{dir}:{rest}")));
-    }
-}
 
 /// Spawn an interactive Claude session in an existing workspace.
 ///
@@ -510,8 +478,7 @@ pub async fn spawn_session(
         session.forked_from = Some(prev);
     }
 
-    let (mut env, unset) = crate::config::transcript_env();
-    push_agent_env(&mut env, app, id, &session.ask_token);
+    let (env, unset) = crate::config::session_env(&app.cfg, id, Some(&session.ask_token));
     let spawned = PtyHandle::spawn(&cmd, &path, &env, &unset, DEFAULT_SIZE)?;
 
     session.pty = Some(spawned.handle.clone());
@@ -537,6 +504,48 @@ pub async fn spawn_session(
     Ok(id)
 }
 
+/// Carry a forked-from tree's uncommitted work into the fork, and say what did not.
+///
+/// Returns the sentence the fork is told at its first prompt, or `None` when the
+/// parent was clean and there is nothing to say.
+///
+/// **Never fatal.** A fork whose files did not travel is still a usable fork on the
+/// right commit, and the banked work is still in the parent tree where it always
+/// was — `copy_wip` does not reset the source. Failing the spawn would trade a
+/// partial success for none.
+///
+/// Untracked files do not travel: `stash create` has no `--include-untracked`. They
+/// are named rather than silently left, the same rule the swap follows, because
+/// half your work not arriving is exactly the thing you find out about too late.
+fn carry_into(parent: &std::path::Path, fork: &std::path::Path) -> Option<String> {
+    let mut said = Vec::new();
+    match crate::git::copy_wip(parent, fork) {
+        Ok(Some(_)) => said.push("its uncommitted changes were carried in with it".to_string()),
+        Ok(None) => {}
+        Err(e) => {
+            tracing::warn!("fork could not carry the uncommitted work: {e:#}");
+            said.push(format!("its uncommitted changes could NOT be carried in ({e})"));
+        }
+    }
+    match crate::git::untracked_in(parent, None) {
+        Ok(f) if !f.is_empty() => {
+            let shown: Vec<&str> = f.iter().take(4).map(String::as_str).collect();
+            let more = f.len().saturating_sub(shown.len());
+            said.push(format!(
+                "{} untracked file{} stayed in the original tree and {} NOT here: {}{}",
+                f.len(),
+                if f.len() == 1 { "" } else { "s" },
+                if f.len() == 1 { "is" } else { "are" },
+                shown.join(", "),
+                if more > 0 { format!(", and {more} more") } else { String::new() },
+            ));
+        }
+        Ok(_) => {}
+        Err(e) => tracing::warn!("fork could not list the parent's untracked files: {e:#}"),
+    }
+    (!said.is_empty()).then(|| said.join(". "))
+}
+
 /// Create a worktree and start a session in it.
 ///
 /// Two paths, decided by where this repo keeps its worktrees:
@@ -553,11 +562,19 @@ pub async fn spawn_session(
 ///   look: it would register a path that does not exist, reconcile against a
 ///   missing directory, and fail to adopt the real one at `SessionStart`.
 ///
-/// `fork` carries a conversation into the new worktree. It composes with both
-/// paths — `claude --worktree --resume <prev> --fork-session --session-id <new>`
-/// cuts the tree and replays the conversation into it — and `--resume` finds a
-/// session by id wherever it was recorded, so the fork does not need the
-/// original's working directory to exist.
+/// `fork` carries a conversation into the new worktree, **and its files with it**.
+/// A fork therefore always takes the second path, whatever this repo's layout: it
+/// is cut from the parent's HEAD rather than from upstream, and the parent's
+/// uncommitted work is copied in before the session starts, so the tree looks like
+/// the one the replayed conversation remembers. `claude --worktree` cannot do
+/// either half — it takes a name and nothing else, and does not report the path
+/// until `SessionStart` — which is why a fork gives up the repo's own
+/// `worktree-create` hooks and gets `run_worktree_hooks` instead.
+///
+/// `--resume` finds a session by id wherever it was recorded, so a fork still does
+/// not *need* the original's working directory to exist. Without it there is simply
+/// nothing to cut from and nothing to carry, and the fork comes back on the base
+/// branch exactly as it always did.
 pub async fn spawn_worktree_session(
     app: &Arc<AppState>,
     name: Option<&str>,
@@ -592,17 +609,36 @@ pub async fn spawn_worktree_session(
 
     let id = Uuid::new_v4();
     let settings = Config::hooks_settings_path()?;
-    let (mut env, unset) = crate::config::transcript_env();
     // Minted here rather than taken off the record, because the record cannot exist
     // yet: without a name the workspace is only known once `SessionStart` reports
     // the cwd, so `Session::new` happens after the pty. The token has to be in the
     // environment the pty is *given*, so it is generated first and written onto the
     // session below.
     let ask_token = crate::state::random_token();
-    push_agent_env(&mut env, app, id, &ask_token);
+    let (env, unset) = crate::config::session_env(&app.cfg, id, Some(&ask_token));
 
-    // Where the daemon looks for worktrees decides who creates this one.
-    let delegated = app.cfg.worktrees_subdir_is_claude_default();
+    // Where the daemon looks for worktrees decides who creates this one — **unless
+    // this is a fork**, which the daemon always cuts itself. `claude --worktree`
+    // takes a name and nothing else: it cannot be told to branch from the parent,
+    // and it does not report the path until `SessionStart`, so neither half of
+    // carrying the parent's files is possible through it. The cost is that the
+    // repo's own `worktree-create` / `worktree-link` hooks do not fire for a fork;
+    // `worktree_setup` is the seam for that, and `run_worktree_hooks` below runs it.
+    let delegated = app.cfg.worktrees_subdir_is_claude_default() && fork.is_none();
+
+    // The tree a fork is cut from and carries the work of. `None` when there is no
+    // parent tree left — a fork is deliberately cheaper than a resume, so a
+    // conversation whose worktree is long gone can still be forked; it just comes
+    // back on the base branch with nothing carried, exactly as it did before.
+    let parent_tree = match fork {
+        Some(prev) => {
+            let cwd = app.inner.read().await.sessions.get(&prev).map(|s| s.cwd.clone());
+            cwd.filter(|p| p.exists())
+        }
+        None => None,
+    };
+    // What travelled, in words, for the arrival notice below.
+    let mut carried: Option<String> = None;
 
     // A name is required when the daemon cuts the worktree: only
     // `claude --worktree` can invent one, and the daemon must know the path up
@@ -626,18 +662,37 @@ pub async fn spawn_worktree_session(
     } else {
         let name = name.context("a worktree name is required")?;
         let path = app.cfg.worktree_path(name);
-        let (main, branch, base) = (
-            app.cfg.main_checkout.clone(),
-            format!("worktree-{name}"),
-            app.cfg.upstream_ref.clone(),
-        );
-        let p = path.clone();
-        tokio::task::spawn_blocking(move || crate::git::worktree_add_new(&main, &p, &branch, &base))
-            .await
-            .context("the worktree add panicked")??;
-        // The daemon cut this tree, so nothing fired the repo's WorktreeCreate —
-        // run the setup seam before the session opens.
+        // A fork branches from the parent's HEAD, not from upstream: the point is a
+        // tree that looks like the one the conversation remembers, and the parent's
+        // *committed* work is most of that. Resolved to a sha so the base cannot
+        // move between here and the `worktree add`.
+        let base = parent_tree
+            .as_deref()
+            .and_then(|p| crate::git::head_sha(p).ok())
+            .unwrap_or_else(|| app.cfg.upstream_ref.clone());
+        let branch = format!("worktree-{name}");
+        // The repo's own `WorktreeCreate` if it has one, ours if not. The path can
+        // come back different: the hook chooses where it puts things.
+        let path = create_worktree(
+            app,
+            name,
+            &path,
+            Want::New {
+                branch: &branch,
+                base: &base,
+            },
+        )
+        .await?;
+        // `worktree_setup` on top, for a repo that keeps real setup inside its
+        // `WorktreeCreate` and would otherwise have it run twice or not at all. It
+        // is configured per repo and does nothing when unset.
         run_worktree_hooks(app, &path).await;
+        // Now the parent's uncommitted work, on top of the parent's HEAD the tree
+        // was just cut from. Before the session starts, so the agent never sees the
+        // tree change under it.
+        if let Some(parent) = parent_tree.as_deref() {
+            carried = carry_into(parent, &path);
+        }
         // The session runs *in* the worktree, so it needs no `--worktree`.
         (path, vec!["claude".to_string()])
     };
@@ -668,7 +723,8 @@ pub async fn spawn_worktree_session(
         None => (PENDING_WORKTREE.to_string(), app.cfg.main_checkout.clone()),
     };
 
-    let mut session = Session::new(id, workspace, cwd, Kind::Interactive);
+    // `cwd` is cloned because the arrival notice below names it.
+    let mut session = Session::new(id, workspace, cwd.clone(), Kind::Interactive);
     // The one the pty already holds. `Session::new` always mints a fresh token, so
     // leaving this out is not a missing credential but a *mismatched* one, and the
     // agent's asks would be refused rather than failing to be attempted.
@@ -679,6 +735,27 @@ pub async fn spawn_worktree_session(
     // would offer no Fork and no nudge until it was first typed into, the very
     // false negative `had_a_turn` exists to remove.
     session.had_a_turn = fork.is_some();
+    // And it is *told* where it woke up. The conversation it replays was written in
+    // another checkout, so without this the fork reasons about the parent's tree
+    // from memory and the first remembered path it uses is wrong — the same failure
+    // a relocation's notice exists to prevent, in the one place that never sent one.
+    if fork.is_some() {
+        let where_ = cwd.display();
+        session.arrival_notice = Some(match &carried {
+            Some(what) => format!(
+                "You are a fork, in a new worktree at {where_} cut from the commit the \
+                 conversation you are replaying was on. It is not the tree that \
+                 conversation was written in, so re-read before trusting a remembered \
+                 path. {what}."
+            ),
+            None => format!(
+                "You are a fork, in a new worktree at {where_} cut from the commit the \
+                 conversation you are replaying was on. It is not the tree that \
+                 conversation was written in, so re-read before trusting a remembered \
+                 path. The original tree had no uncommitted work to carry."
+            ),
+        });
+    }
     session.pty = Some(spawned.handle.clone());
     session.pid = spawned.pid;
     {
@@ -739,8 +816,9 @@ pub async fn spawn_fix_pr_session(
         settings.to_string_lossy().into_owned(),
     ];
 
-    let (mut env, unset) = crate::config::transcript_env();
-    env.push(("ORCH_SESSION_ID".to_string(), id.to_string()));
+    // No ask token: a fix run is handed its URL substituted into its prompt and has
+    // nothing to ask, which is the narrower surface 942d01b chose on purpose.
+    let (mut env, unset) = crate::config::session_env(&app.cfg, id, None);
     // Parallel runs collide on ports and docker resource names, so each gets
     // its own compose project and port base (§8).
     env.push(("COMPOSE_PROJECT_NAME".to_string(), format!("orchd-pr-{pr}")));
@@ -1025,7 +1103,9 @@ pub async fn ensure_pr_worktree(app: &Arc<AppState>, pr: u64, head_ref: &str) ->
 
     let name = format!("pr-{pr}");
     validate_worktree_name(&name)?;
-    let path = app.cfg.worktree_path(&name);
+    // Reassigned when the repo's `WorktreeCreate` hook puts the tree somewhere of
+    // its own choosing.
+    let mut path = app.cfg.worktree_path(&name);
     if !path.exists() {
         /* Main holding this very branch is the one case where cutting the tree and
            freeing main are the same act, so it is done rather than refused.
@@ -1071,11 +1151,11 @@ pub async fn ensure_pr_worktree(app: &Arc<AppState>, pr: u64, head_ref: &str) ->
             );
             run_worktree_hooks(app, &path).await;
         } else {
-            crate::git::worktree_add_existing(&app.cfg.main_checkout, &path, head_ref)?;
-            // Only when we actually cut it. A PR worktree is always daemon-cut, so it
-            // never saw the repo's WorktreeCreate — this is the gap that left the
-            // pr-* worktrees without their rule-dedup file. Skipped when the tree was
-            // already there, since setup ran when it was first created.
+            // The repo's own `WorktreeCreate` if it has one, ours if not. It cuts
+            // from a base of its own, so the tree is then put on the PR's head ref.
+            path = create_worktree(app, &name, &path, Want::Existing { branch: head_ref }).await?;
+            // Only when we actually cut it. Skipped when the tree was already there,
+            // since setup ran when it was first created.
             run_worktree_hooks(app, &path).await;
         }
     }
@@ -1214,6 +1294,11 @@ fn watch_session_exit(app: Arc<AppState>, id: SessionId, handle: Arc<PtyHandle>)
         // working through it had stopped. Threads left `pending` then read as
         // imminent for as long as the daemon runs.
         let mut resolve_run_for: Option<u64> = None;
+        // And the review that asked, on its way out, for the CI it is not allowed to
+        // touch to be picked up by a run. Read here for the same reason as the two
+        // above: this is where a pty ending is learned, and the guard `fix_pr::start`
+        // has to pass — no live session on the branch — is only true once it has.
+        let mut hand_off_for: Option<u64> = None;
         // A turnless interactive session leaves nothing to come back to, so rather
         // than archive an empty row it is forgotten outright — and its headers-only
         // transcript is deleted here, outside the lock. `(cwd, recorded)` is what
@@ -1244,6 +1329,14 @@ fn watch_session_exit(app: Arc<AppState>, id: SessionId, handle: Arc<PtyHandle>)
                         }
                         if command == "resolve-run" {
                             resolve_run_for = Some(*pr);
+                        }
+                        // Only a review that said so. Every other way one ends — you
+                        // closed it, it fell over reading, you killed it mid-cards —
+                        // leaves the flag false and hands on nothing, which is the
+                        // whole difference between this and a run that trips behind
+                        // you.
+                        if s.fix_pr_on_exit {
+                            hand_off_for = Some(*pr);
                         }
                     }
                     // Last chance to find the conversation. A session closed
@@ -1289,6 +1382,28 @@ fn watch_session_exit(app: Arc<AppState>, id: SessionId, handle: Arc<PtyHandle>)
             });
         }
         app.release_main(id).await;
+        // The branch is free now, which is the only reason this waited for the exit.
+        // A refusal is not raised, because by here nobody is waiting: the guard
+        // table's reasons are written for whoever asked, and the rail's own `fix`
+        // button is still there to be pressed and will say the same thing.
+        //
+        // But it is *taken back*. `handed_off` is what tells the overlay to hold its
+        // report and wait for a run, so a refusal that left the flag standing would
+        // strand the review on "applying" for good — which is the fault this whole
+        // hand-off was built to fix, rebuilt one branch over.
+        if let Some(pr) = hand_off_for {
+            match crate::fix_pr::start(&app, pr).await {
+                Ok(session) => {
+                    tracing::info!(pr, %session, "review handed the checks to a fix-pr run")
+                }
+                Err(e) => {
+                    tracing::warn!(pr, "review's hand-off to fix-pr refused: {e}");
+                    if let Some(s) = app.inner.write().await.sessions.get_mut(&id) {
+                        s.fix_pr_on_exit = false;
+                    }
+                }
+            }
+        }
         if let Some(ws) = workspace {
             // The drawer's processes belong to whoever was working here. Only once
             // the workspace is empty, though: a worktree holds one session at a time
@@ -1571,8 +1686,7 @@ mod tests {
         let app = AppState::new(cfg, "t".into(), crate::window::Chrome::None);
 
         let id = Uuid::new_v4();
-        let mut env = Vec::new();
-        push_agent_env(&mut env, &app, id, "ask-tok");
+        let (env, _) = crate::config::session_env(&app.cfg, id, Some("ask-tok"));
         let get = |k: &str| {
             env.iter()
                 .find(|(n, _)| n == k)
@@ -1702,6 +1816,41 @@ mod tests {
     /// straight back out from under it. Two real ptys, because the pty is the
     /// identity that tells the two apart and a mock would be asserting the fix
     /// against itself.
+    /// What the daemon will and will not adopt from a `WorktreeCreate` hook.
+    ///
+    /// Every rejection here falls back to the daemon cutting its own tree, so being
+    /// strict costs nothing and being lax means adopting a directory chosen by a
+    /// script that answered the wrong question.
+    #[test]
+    fn only_a_real_absolute_dot_free_directory_is_adopted_from_a_hook() {
+        let dir = std::env::temp_dir().join(format!("orch-hookpath-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let shown = dir.to_string_lossy().into_owned();
+
+        // The contract: only the path on stdout, and a trailing newline is normal.
+        assert_eq!(usable_hook_path(&format!("{shown}\n")), Some(dir.clone()));
+        assert_eq!(usable_hook_path(&format!("  {shown}  ")), Some(dir.clone()));
+
+        // Nothing said at all, which is a hook that declined.
+        assert_eq!(usable_hook_path(""), None);
+        assert_eq!(usable_hook_path("   \n"), None);
+        // Relative: ambiguous against a cwd the hook does not control.
+        assert_eq!(usable_hook_path("wt/name"), None);
+        // Dot segments: Claude Code refuses these rather than normalising, because
+        // they can climb out of the repository.
+        assert_eq!(usable_hook_path(&format!("{shown}/../elsewhere")), None);
+        assert_eq!(usable_hook_path(&format!("{shown}/./here")), None);
+        // Absolute, dot-free, and simply not there: a hook that failed while
+        // exiting zero.
+        assert_eq!(usable_hook_path("/nonexistent/orchd/worktree"), None);
+        // A file rather than a directory, same reason.
+        let f = dir.join("afile");
+        std::fs::write(&f, "x").unwrap();
+        assert_eq!(usable_hook_path(&f.to_string_lossy()), None);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[tokio::test]
     async fn a_stale_watcher_does_not_settle_the_session_that_replaced_it() {
         use crate::config::Config;
@@ -2026,5 +2175,204 @@ mod tests {
         let p = PathBuf::from("/repo/.claude/worktrees/invoice/src/Foo.php");
         assert_eq!(worktree_name_of(&p, &dir), Some("invoice".to_string()));
         assert_eq!(worktree_name_of(&PathBuf::from("/repo/src"), &dir), None);
+    }
+}
+
+/// What the daemon needs the new worktree to have checked out.
+///
+/// The repo's `WorktreeCreate` hook decides its own branch and base, so whatever it
+/// produces has to be put onto this afterwards. Naming the two shapes rather than
+/// passing a branch and a nullable base keeps the "is this a new branch or an
+/// existing one" question answered once, at the call site that knows.
+pub(crate) enum Want<'a> {
+    /// A branch to cut, from this base. A plain new worktree, or a fork from its
+    /// parent's HEAD.
+    New { branch: &'a str, base: &'a str },
+    /// A branch that already exists somewhere, local or on origin. A PR's head ref.
+    Existing { branch: &'a str },
+}
+
+/// Create a worktree the repo's way if it has one, ours otherwise.
+///
+/// **The repo's `WorktreeCreate` hook first, the daemon's own creation behind it.**
+/// A repo that declares the event is stating how worktrees are made here, and
+/// Claude Code treats the hook as the whole mechanism: it reads the request on
+/// stdin and prints the path it made. So the daemon runs it and adopts what it
+/// produced, which is how a repo's fetching, its layout and its post-create work
+/// reach a tree the daemon asked for.
+///
+/// **Then the branch is put right.** The hook chooses its own base, and this
+/// repo's hardcodes `upstream/develop`. That is wrong for a PR worktree pinned to a
+/// head ref and wrong for a fork cut from its parent, so [`Want`] is applied to the
+/// tree afterwards. The branch the hook made is left behind; that is the price of
+/// letting it own creation, and it is a stale ref rather than lost work.
+///
+/// **Every failure falls through to the daemon's own creation**, which is the path
+/// that ran before any of this existed. A repo without the hook, a hook that exits
+/// non-zero, a hook that prints something that is not a usable directory, a tree the
+/// branch will not apply to: all of them end with `worktree_add_new` at the path the
+/// caller asked for. Creating a worktree is the daemon's most load-bearing
+/// operation, and a repo script is not allowed to be the reason it cannot.
+///
+/// Returns the path the worktree actually landed at, which is the hook's choice when
+/// the hook made it.
+pub(crate) async fn create_worktree(
+    app: &Arc<AppState>,
+    name: &str,
+    path: &std::path::Path,
+    want: Want<'_>,
+) -> Result<std::path::PathBuf> {
+    if let Some(made) = hook_cut_worktree(app, name).await {
+        match put_on_branch(&app.cfg.main_checkout, &made, &want) {
+            Ok(()) => return Ok(made),
+            Err(e) => {
+                // The tree is the hook's and we could not use it. Left alone rather
+                // than removed: it is the repo's object, the daemon did not choose
+                // its path, and deleting someone else's worktree to recover from our
+                // own failure is the wrong trade.
+                tracing::warn!(
+                    name,
+                    "the repo's WorktreeCreate made {} but it could not be put on the \
+                     branch this needs, so the daemon is cutting its own: {e:#}",
+                    made.display()
+                );
+            }
+        }
+    }
+    let main = app.cfg.main_checkout.clone();
+    let p = path.to_path_buf();
+    match &want {
+        Want::New { branch, base } => {
+            let (branch, base) = (branch.to_string(), base.to_string());
+            tokio::task::spawn_blocking(move || crate::git::worktree_add_new(&main, &p, &branch, &base))
+                .await
+                .context("the worktree add panicked")??;
+        }
+        Want::Existing { branch } => {
+            let branch = branch.to_string();
+            tokio::task::spawn_blocking(move || crate::git::worktree_add_existing(&main, &p, &branch))
+                .await
+                .context("the worktree add panicked")??;
+        }
+    }
+    Ok(path.to_path_buf())
+}
+
+/// Run the repo's `WorktreeCreate` hooks and return the tree the first usable one
+/// made.
+///
+/// `None` for every way this can decline: no hook declared, a non-zero exit, empty
+/// output, or a path that is not a directory. The caller cuts its own on `None`, so
+/// none of these is an error worth raising.
+///
+/// The emitted path is checked the way Claude Code checks it: absolute, no dot
+/// segments, and a real directory. Its own reason for each — a relative path is
+/// ambiguous against a cwd the hook does not control, dot segments can climb out of
+/// the repository, and a path that is not a directory is a hook that failed while
+/// exiting zero.
+async fn hook_cut_worktree(app: &Arc<AppState>, name: &str) -> Option<std::path::PathBuf> {
+    let hooks = crate::worktree::repo_worktree_hooks(&app.cfg.main_checkout, "WorktreeCreate");
+    if hooks.is_empty() {
+        return None;
+    }
+    // `name` is the key this repo's hook reads, and the only one the contract is
+    // observed to carry.
+    let payload = serde_json::json!({
+        "hook_event_name": "WorktreeCreate",
+        "cwd": app.cfg.main_checkout.to_string_lossy(),
+        "name": name,
+    })
+    .to_string()
+    .into_bytes();
+
+    for cmd in hooks {
+        let argv = vec!["sh".to_string(), "-c".to_string(), cmd.clone()];
+        let at = app.cfg.main_checkout.clone();
+        let envs = vec![(
+            "CLAUDE_PROJECT_DIR".to_string(),
+            app.cfg.main_checkout.to_string_lossy().into_owned(),
+        )];
+        let body = payload.clone();
+        let out = tokio::task::spawn_blocking(move || {
+            crate::proc::run_bounded_with_input(
+                &at,
+                WORKTREE_SETUP_TIMEOUT_SECS,
+                &argv,
+                "worktree create hook",
+                Some(body),
+                &envs,
+            )
+        })
+        .await;
+        let out = match out {
+            Ok(Ok(o)) if o.status.success() => o,
+            Ok(Ok(o)) => {
+                tracing::warn!(
+                    name,
+                    "the repo's WorktreeCreate hook exited {}: {}",
+                    o.status,
+                    String::from_utf8_lossy(&o.stderr).trim()
+                );
+                continue;
+            }
+            Ok(Err(e)) => {
+                tracing::warn!(name, "the repo's WorktreeCreate hook failed: {e:#}");
+                continue;
+            }
+            Err(e) => {
+                tracing::warn!(name, "the WorktreeCreate hook task panicked: {e}");
+                continue;
+            }
+        };
+        let said = String::from_utf8_lossy(&out.stdout);
+        let Some(made) = usable_hook_path(&said) else {
+            tracing::warn!(
+                name,
+                "the repo's WorktreeCreate hook emitted an unusable path {:?}",
+                said.trim()
+            );
+            continue;
+        };
+        tracing::info!(name, "the repo's WorktreeCreate hook made {}", made.display());
+        return Some(made);
+    }
+    None
+}
+
+/// The worktree path a `WorktreeCreate` hook printed, if it is one the daemon can
+/// use.
+///
+/// Checked the way Claude Code checks it, and for its reasons: a relative path is
+/// ambiguous against a working directory the hook does not control; dot segments can
+/// climb out of the repository, and Claude Code refuses them outright rather than
+/// normalising, so a hook that emits them is one written against a different
+/// contract; and a path that is not a directory is a hook that failed while exiting
+/// zero. The hook's contract is that only the path goes to stdout, so trailing
+/// newlines are trimmed and nothing else is parsed out of it.
+fn usable_hook_path(said: &str) -> Option<std::path::PathBuf> {
+    let said = said.trim();
+    if said.is_empty() {
+        return None;
+    }
+    let made = std::path::PathBuf::from(said);
+    if !made.is_absolute() {
+        return None;
+    }
+    if made.components().any(|c| {
+        matches!(
+            c,
+            std::path::Component::CurDir | std::path::Component::ParentDir
+        )
+    }) {
+        return None;
+    }
+    made.is_dir().then_some(made)
+}
+
+/// Put a tree the hook made onto the branch the daemon asked for.
+fn put_on_branch(main: &std::path::Path, tree: &std::path::Path, want: &Want<'_>) -> Result<()> {
+    match want {
+        Want::New { branch, base } => crate::git::checkout_new_branch(main, tree, branch, base),
+        Want::Existing { branch } => crate::git::checkout_existing_branch(main, tree, branch),
     }
 }

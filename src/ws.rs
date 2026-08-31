@@ -11,6 +11,7 @@ use serde::Deserialize;
 use std::sync::Arc;
 use uuid::Uuid;
 
+use crate::model::{State as SessionState, TurnReason};
 use crate::pty::PtyHandle;
 use crate::state::AppState;
 
@@ -105,7 +106,13 @@ pub async fn pty(
     let Some(handle) = resolve(&app, &target).await else {
         return (StatusCode::NOT_FOUND, "no such pty").into_response();
     };
-    ws.on_upgrade(move |socket| pty_loop(handle, socket))
+    // A session's pane, as opposed to the drawer's shells: only a session has a turn
+    // to interrupt. Parsed from the target rather than looked up again, since
+    // `resolve` has just proved this one exists.
+    let session = target
+        .strip_prefix("session:")
+        .and_then(|rest| Uuid::parse_str(rest).ok());
+    ws.on_upgrade(move |socket| pty_loop(app, session, handle, socket))
 }
 
 /// Targets are named and enumerated — there is no endpoint that runs an
@@ -127,7 +134,85 @@ async fn resolve(app: &Arc<AppState>, target: &str) -> Option<Arc<PtyHandle>> {
     None
 }
 
-async fn pty_loop(handle: Arc<PtyHandle>, socket: WebSocket) {
+/// Whether these bytes are you telling the agent to stop.
+///
+/// `ESC` and `^C` both do it in Claude Code's TUI, and the pane is the only way
+/// either reaches the pty.
+///
+/// **A *bare* escape, not an escape anywhere in the chunk.** `0x1b` is the first
+/// byte of every escape sequence a terminal sends — arrow keys are `ESC [ A`,
+/// bracketed paste opens `ESC [ 200 ~`, and a TUI with mouse reporting on emits one
+/// per movement. Matching on "contains" would have read all of that as an
+/// interrupt, so pressing Up mid-turn, or just moving the mouse across the pane,
+/// would have declared the turn over. Alt+key is `ESC` plus the key, and is
+/// correctly not one either.
+///
+/// `^C` needs no such care: `0x03` is not a byte any sequence carries.
+fn is_interrupt(data: &[u8]) -> bool {
+    data == [0x1b] || data.contains(&0x03)
+}
+
+/// Move a session off `Working` because you just cut its turn short.
+///
+/// **The only signal there is.** Claude Code's `Stop` hook does not fire on a user
+/// interrupt, and the `idle_prompt` notification did not arrive either — so without
+/// this the session sits in `Working` until it happens to finish a *later* turn, and
+/// a conversation you abandoned mid-thought sits there for good. The pane is where
+/// the escape is typed, so the pane is where the daemon can know.
+///
+/// Only out of `Working`: an escape at the prompt dismisses something, an escape at
+/// a question cancels it (`api::rewind` refuses for exactly these reasons), and
+/// neither is a turn ending.
+async fn note_interrupt(app: &Arc<AppState>, id: Uuid) {
+    {
+        let mut inner = app.inner.write().await;
+        match inner.sessions.get_mut(&id) {
+            Some(s) if matches!(s.state, SessionState::Working) => {
+                s.set_state(SessionState::YourTurn {
+                    since: std::time::SystemTime::now(),
+                    reason: TurnReason::Interrupted,
+                })
+            }
+            _ => return,
+        }
+    }
+    app.notify().await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_interrupt;
+
+    /// The distinction the whole detector turns on: `0x1b` leads every escape
+    /// sequence a terminal sends, so anything looser than "the chunk *is* an
+    /// escape" reads ordinary typing as the end of a turn.
+    #[test]
+    fn only_a_bare_escape_or_a_ctrl_c_counts() {
+        assert!(is_interrupt(b"\x1b"), "the escape key");
+        assert!(is_interrupt(b"\x03"), "^C");
+
+        // Every one of these arrives while you are watching a turn, and none of
+        // them means stop.
+        for ordinary in [
+            &b"\x1b[A"[..],       // up arrow
+            b"\x1b[B",            // down
+            b"\x1b[200~hi\x1b[201~", // bracketed paste
+            b"\x1b[M   ",         // a mouse report, one per movement
+            b"\x1bb",             // alt+b
+            b"hello",
+            b"",
+        ] {
+            assert!(!is_interrupt(ordinary), "{ordinary:?} is not an interrupt");
+        }
+    }
+}
+
+async fn pty_loop(
+    app: Arc<AppState>,
+    session: Option<Uuid>,
+    handle: Arc<PtyHandle>,
+    socket: WebSocket,
+) {
     let (mut tx, mut rx) = socket.split();
 
     // Subscribe before replaying, so output produced during the replay is
@@ -176,6 +261,9 @@ async fn pty_loop(handle: Arc<PtyHandle>, socket: WebSocket) {
             incoming = rx.next() => match incoming {
                 Some(Ok(Message::Binary(data))) => {
                     let _ = writer.write(&data);
+                    if let Some(id) = session.filter(|_| is_interrupt(&data)) {
+                        note_interrupt(&app, id).await;
+                    }
                 }
                 Some(Ok(Message::Text(text))) => {
                     match serde_json::from_str::<ClientMessage>(&text) {
@@ -185,6 +273,9 @@ async fn pty_loop(handle: Arc<PtyHandle>, socket: WebSocket) {
                         // Anything else is keystrokes that arrived as text.
                         Err(_) => {
                             let _ = writer.write(text.as_bytes());
+                            if let Some(id) = session.filter(|_| is_interrupt(text.as_bytes())) {
+                                note_interrupt(&app, id).await;
+                            }
                         }
                     }
                 }

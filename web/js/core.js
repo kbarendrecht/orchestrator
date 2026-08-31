@@ -313,6 +313,10 @@ export function stateLabel(s) {
       if (s.state.reason === 'asked_a_question') return 'asked a question';
       if (s.state.reason === 'needs_permission') return 'needs permission';
       if (s.state.reason === 'ready') return 'ready';
+      // Said rather than folded into "turn complete", because it is the opposite
+      // claim: the turn did not complete, you stopped it, and there is more of it
+      // owed. Same word the resume nudge uses about a session it offers to continue.
+      if (s.state.reason === 'interrupted') return 'interrupted';
       return 'turn complete';
     case 'build_failing': return s.state.summary || 'build failing';
     case 'error': return s.state.message || 'error';

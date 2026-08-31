@@ -27,6 +27,35 @@ port, so a second instance refuses to start rather than fighting over
 `instance::holder` decides by asking whether the pid is alive — so waiting for it
 to disappear is waiting for something that never happens.
 
+## One repo is the test, not the specification
+
+`orchd` is developed against a single monorepo, and almost every fact in this file
+was learned there. That repo is the only live test there is, so **keep it working**.
+But its arrangement is one arrangement, and a rule derived from it is a guess about
+every other repo until something else confirms it.
+
+The distinction to hold: what **Claude Code** guarantees is a contract, what **a
+repo** happens to do is a convention. They are easy to confuse because only one repo
+is ever in front of you. Plenty of what looks structural here is that repo's choice:
+worktrees under `.claude/worktrees`, a base of `upstream/develop`, a `WorktreeCreate`
+hook that cuts from a fixed ref and prints the path, worktree *setup* hung off
+`SessionStart` because Claude Code has no post-create event, `mise` as the task
+runner, `origin` as a fork with `upstream` as the real remote. Another repo may do
+none of that, and a daemon that assumes it will be wrong quietly.
+
+The failure this is written for is not a crash. It is a feature that works
+everywhere it was tried and means nothing elsewhere: a code path reached only by a
+layout nobody else has, or a guard reasoning about a hook the next repo puts on a
+different event. Where a behaviour depends on the repo rather than on the daemon,
+say so where it is written, and make the daemon degrade rather than insist.
+`worktree_setup` and `reviews`'s ejected script are both that shape, configured per
+repo with a sensible default and no opinion at all when they are unset.
+
+Two practical rules. Read the repo's own configuration rather than a remembered copy
+of this one's, which is why `upstream_ref`, `worktrees_subdir` and `tracker` are
+settings. And before writing "the repo's X does Y" into a comment, check whether you
+mean *this* repo; if you do, name it.
+
 ## Things that will bite you
 
 - **The SPA is compiled in.** Everything under `web/` is `include_str!`d, so a
@@ -193,15 +222,30 @@ to disappear is waiting for something that never happens.
   threads), used by both the review queue and `worktree_setup`. Every other
   command the daemon spawns is POSIX (`git`, `curl`, `gh`, `ps`, `which`, `kill`) —
   keep it that way, and check `command -v` before reaching for a GNU flag.
-- **A daemon-cut worktree fires no `WorktreeCreate` hook, so repo setup runs
-  through `worktree_setup` instead.** Claude's `WorktreeCreate` fires only for
-  `claude --worktree`; PR worktrees, resumes and relocated layouts are cut by the
-  daemon's own `git worktree add`, which Claude knows nothing about — so anything
-  the repo's hook did at creation (a rules-dedup file, in the case this was
-  written for) was silently skipped. `spawn::run_worktree_setup` runs the configured command in each
-  daemon-cut worktree, before the session, non-fatal. Do **not** add it to the
-  `claude --worktree` arm — the repo's hook already ran there. A relative script
-  path resolves against `main_checkout`; cwd is the worktree.
+- **`WorktreeCreate` is not a setup hook. It *is* the creation, and a daemon-cut
+  worktree therefore never fires one.** Claude Code's own error text says what the
+  event is for: worktree isolation "with other VCS systems". The hook reads the
+  request on stdin, creates the tree by whatever means it likes, and prints the
+  path, which Claude Code then validates (absolute, no dot segments, a real
+  directory, not a symlink). So it cannot be re-run over a tree that already exists,
+  and it cannot be asked to honour a base the daemon chose: the monorepo's copy
+  hardcodes `upstream/develop`, which is exactly wrong for a PR worktree pinned to a
+  head ref or a fork cut from its parent. That is why `ensure_pr_worktree` and the
+  fork path cut their own.
+  **The post-create seam is `SessionStart`**, because Claude Code has no post-create
+  worktree event, and that one *does* fire for a daemon-cut tree: the daemon's
+  `--settings` merges with the repo's rather than replacing it. Measured, after a
+  session spent believing the opposite: three daemon-cut PR worktrees all had
+  `remote.pushDefault`, the shared `.plan` and every symlink, because the monorepo
+  hangs its `worktree-link` there. Do not "fix" a gap here without checking which
+  event the repo in front of you actually uses.
+  `worktree_setup` remains for a repo that puts real setup inside `WorktreeCreate`,
+  where a daemon-cut tree would genuinely miss it: `spawn::run_worktree_setup` runs
+  the configured command in each daemon-cut worktree, before the session, non-fatal.
+  Do **not** add it to the `claude --worktree` arm, where the repo's own hook already
+  ran. A relative script path resolves against `main_checkout`; cwd is the worktree.
+  The matching teardown event is `WorktreeRemove`, which the daemon also does not
+  fire; `git::worktree_remove` does its own thing.
 - **Paths are resolved at one boundary, and comparing across it silently fails.**
   `main_checkout` is `canonicalize`d in `Config::parse`, so `worktrees_dir` and
   `worktree_path` are resolved too, and the agent-reported cwd is resolved where a

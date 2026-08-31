@@ -232,7 +232,27 @@ Resolving the threads stays the reviewer's button — never resolve one yourself
 
 - **Resolving threads.** Closing a conversation is the comment author's button.
 - CI still red or the branch behind `{{UPSTREAM}}` → say so and stop. That is `fix-pr`'s
-  job, which the rail triggers; do not rebase for it unless the human asks.
+  job; do not rebase for it and do not start one yourself. Phase 4 hands it over.
 
 When you are done, a short report in the pane: what you changed, what you posted, and any
 thread you held and why.
+
+# Phase 4 — Hand over
+
+Last thing, after the report. One call, and it ends the session:
+
+```bash
+curl -sS -X POST -H "x-orch-ask: $ORCH_ASK_TOKEN" "{{ASK_BASE}}/$ORCH_SESSION_ID/handoff"
+```
+
+Do not report its answer or act on it — the pty is closing as it returns, so a `curl:
+(52)` here is the call having worked.
+
+**Say only that you are finished.** The daemon re-reads the PR itself and decides whether
+a `fix-pr` run picks up the checks; it does not read this report and it does not take your
+word for the check state. So there is nothing to argue here and nothing to withhold: call
+it whether you think the PR is green, red, or you never got far enough to know.
+
+Call it exactly once, and only after phase 3. Not calling it is the one real failure —
+the overlay waits on this to know the review is over, and without it the human is left
+watching a screen that says you are still applying.

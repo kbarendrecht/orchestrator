@@ -189,7 +189,7 @@ pub async fn spawn(app: &Arc<AppState>, pr: u64, head_ref: &str, login: &str) ->
         .proposal_tokens
         .insert(pr, post_token.clone());
 
-    let (env, unset) = run_env(id, &post_token, None);
+    let (env, unset) = run_env(&app.cfg, id, &post_token, None);
 
     let spawned = PtyHandle::spawn(&cmd, &path, &env, &unset, DEFAULT_SIZE)?;
     let mut session = Session::new(
@@ -227,14 +227,21 @@ pub async fn spawn(app: &Arc<AppState>, pr: u64, head_ref: &str, login: &str) ->
     Ok(id)
 }
 
+/// The `Kind::Automation` command a review session carries.
+///
+/// Named for the same reason `fix_pr::COMMAND` is: the spawn, the handoff route and
+/// the exit watcher all have to agree on this string, and three literals is how
+/// they stop agreeing without anything failing.
+pub const COMMAND: &str = "review";
+
 /// Start the overlay review session pinned to the PR's head branch.
 ///
 /// The single-session replacement for triage + the batch: it posts proposals like
 /// triage does — filling the same overlay cards — but then stays alive, taking the
 /// human's decisions over the ask channel and carrying out the change and the post
 /// itself. So unlike [`spawn`] it needs `ORCH_ASK_TOKEN` in its environment, the
-/// key the `/ask` and `/wait` routes check, and it is marked `command: "review"` so
-/// the rail colours and the guards tell it from a triage run.
+/// key the `/ask` and `/wait` routes check, and it is marked [`COMMAND`] so the
+/// rail colours, the guards and the handoff tell it from a triage run.
 pub async fn spawn_review(
     app: &Arc<AppState>,
     pr: u64,
@@ -307,7 +314,7 @@ pub async fn spawn_review(
         .proposal_tokens
         .insert(pr, post_token.clone());
 
-    let (env, unset) = run_env(id, &post_token, Some(&ask_token));
+    let (env, unset) = run_env(&app.cfg, id, &post_token, Some(&ask_token));
 
     let spawned = PtyHandle::spawn(&cmd, &path, &env, &unset, DEFAULT_SIZE)?;
     let mut session = Session::new(
@@ -316,7 +323,7 @@ pub async fn spawn_review(
         path,
         Kind::Automation {
             pr,
-            command: "review".to_string(),
+            command: COMMAND.to_string(),
         },
     );
     session.pty = Some(spawned.handle.clone());
@@ -359,16 +366,13 @@ pub async fn spawn_review(
 /// Actions — so when Actions is unavailable, this is the only thing standing
 /// between a two-line plumbing slip and a review flow that cannot post.
 fn run_env(
+    cfg: &crate::config::Config,
     id: SessionId,
     post_token: &str,
     ask: Option<&str>,
 ) -> (Vec<(String, String)>, Vec<&'static str>) {
-    let (mut env, unset) = crate::config::transcript_env();
-    env.push(("ORCH_SESSION_ID".to_string(), id.to_string()));
+    let (mut env, unset) = crate::config::session_env(cfg, id, ask);
     env.push(("ORCH_POST_TOKEN".to_string(), post_token.to_string()));
-    if let Some(t) = ask {
-        env.push(("ORCH_ASK_TOKEN".to_string(), t.to_string()));
-    }
     (env, unset)
 }
 
@@ -399,7 +403,7 @@ mod tests {
     #[test]
     fn a_run_is_given_the_narrow_token_and_never_the_app_token() {
         let id = uuid::Uuid::new_v4();
-        let (env, _) = run_env(id, "post-tok", Some("ask-tok"));
+        let (env, _) = run_env(&crate::config::test_config(), id, "post-tok", Some("ask-tok"));
         let get = |k: &str| {
             env.iter()
                 .find(|(n, _)| n == k)
@@ -424,7 +428,7 @@ mod tests {
         assert!(crate::prompt::REVIEW_SESSION.contains("$ORCH_POST_TOKEN"));
 
         // The headless triage pass has nobody to ask, so it gets no ask token.
-        let (solo, _) = run_env(id, "post-tok", None);
+        let (solo, _) = run_env(&crate::config::test_config(), id, "post-tok", None);
         assert!(!solo.iter().any(|(n, _)| n == "ORCH_ASK_TOKEN"));
         assert!(solo.iter().any(|(n, _)| n == "ORCH_POST_TOKEN"));
     }

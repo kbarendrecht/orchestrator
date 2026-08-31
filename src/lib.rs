@@ -415,6 +415,7 @@ fn router(app: Arc<AppState>) -> Router {
             post(api::discard_spawned),
         )
         .route("/api/session/:id/process", post(api::process_from_session))
+        .route("/api/session/:id/handoff", post(api::session_handoff))
         .route("/api/session/:id/ask", post(api::ask))
         .route("/api/session/:id/ask/:ask/wait", get(api::ask_wait))
         .route("/api/session/:id/answer", post(api::answer))

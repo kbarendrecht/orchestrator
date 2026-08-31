@@ -159,7 +159,14 @@ function renderFiles() {
       w.is_main ? 'Nothing changed in the main checkout.' : 'Nothing changed in this worktree yet.'));
   }
 
-  const bits = [`${files.length} file${files.length === 1 ? '' : 's'}`];
+  // "500 of 5,214" when the daemon capped the list, plain count otherwise. Said
+  // rather than left to look complete: a truncation presented as the whole answer
+  // is the one thing a changed-file pane must not do, and a wiped repository is
+  // exactly when you are reading it.
+  const total = sum ? files.length : (w.changed_total ?? files.length);
+  const bits = [total > files.length
+    ? `${files.length} of ${total.toLocaleString()} files`
+    : `${files.length} file${files.length === 1 ? '' : 's'}`];
   if (sum) bits.push(`+${sum.added} \u2212${sum.deleted}`);
   if (w.is_main) bits.push('worktrees excluded');
   $('filesfoot').textContent = bits.join(' \u00b7 ');

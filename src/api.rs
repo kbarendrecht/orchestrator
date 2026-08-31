@@ -90,7 +90,7 @@ fn origin_ok(origin: Option<&str>, port: u16, is_hook: bool, is_get: bool, token
 /// A list rather than a growing chain of `ends_with`, because it has been
 /// outgrown once already — see the note in [`guard`].
 fn is_ask_route(path: &str) -> bool {
-    const ASK_ROUTES: [&str; 7] = [
+    const ASK_ROUTES: [&str; 8] = [
         "/ask",
         "/wait",
         "/spawn",
@@ -101,6 +101,8 @@ fn is_ask_route(path: &str) -> bool {
         // any session — a suffix matcher cannot tell those apart from a narrower
         // verb spelled the same way.
         "/discard",
+        // Phase 4 of `commands/review-session.md`: the review saying it is done.
+        "/handoff",
     ];
     path.starts_with("/api/session/") && ASK_ROUTES.iter().any(|s| path.ends_with(s))
 }
@@ -2806,6 +2808,8 @@ mod tests {
             // enforces from the record — the exemption is what lets it be called at
             // all, not what decides which sessions it reaches.
             "/api/session/<id>/spawned/<child>/discard",
+            // Phase 4 of `commands/review-session.md`: the review saying it is done.
+            "/api/session/<id>/handoff",
         ] {
             assert!(is_ask_route(p), "{p} must not need the app token");
         }
@@ -2877,6 +2881,111 @@ mod tests {
         assert!(proposal_token_ok(&app, 999, &hdr(&narrow)).await.is_err());
         // And a PR with no run recorded authenticates nobody but the app.
         assert!(proposal_token_ok(&app, 999, &hdr(&app.token)).await.is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The hand-off is the review's, and only about a PR that still has something
+    /// to watch.
+    ///
+    /// Both halves matter for the same reason: what this arms is a run that rebases
+    /// and force-pushes, and it arms it to fire on a pty exit, where nobody is
+    /// watching for a refusal. So the narrowing is done here, at the call, rather
+    /// than left to the guard table alone.
+    #[tokio::test]
+    async fn only_a_review_hands_over_and_only_when_the_pr_needs_watching() {
+        use crate::forge::{Checks, Pr};
+        use crate::model::{Kind, Session};
+
+        let (app, dir) = app_in("handoff");
+        let pr_num = 10001u64;
+
+        let mut red = Pr {
+            number: pr_num,
+            title: "t".into(),
+            url: String::new(),
+            head_ref: "feature/x".into(),
+            head_repo: Some("me/repo".into()),
+            head_pushable: Some(true),
+            base_ref: "develop".into(),
+            is_draft: false,
+            mergeable: "MERGEABLE".into(),
+            merge_state: "CLEAN".into(),
+            checks: Checks::Failing,
+            head_sha: Some("abc".into()),
+            unresolved: 0,
+            unresolved_capped: false,
+            awaiting_you: 0,
+            changes_requested: false,
+            needs_you: false,
+            children: vec![],
+        };
+
+        let put = |kind: Kind| {
+            let s = Session::new(Uuid::new_v4(), "wt".to_string(), dir.clone(), kind);
+            (s.id, s.ask_token.clone(), s)
+        };
+        let review = |pr: u64| Kind::Automation {
+            pr,
+            command: crate::triage::COMMAND.to_string(),
+        };
+
+        let (rid, rtok, r) = put(review(pr_num));
+        let (fid, ftok, f) = put(Kind::Automation {
+            pr: pr_num,
+            command: crate::fix_pr::COMMAND.to_string(),
+        });
+        let (iid, itok, i) = put(Kind::Interactive);
+        {
+            let mut inner = app.inner.write().await;
+            inner.prs = vec![red.clone()];
+            for s in [r, f, i] {
+                inner.sessions.insert(s.id, s);
+            }
+        }
+        let hdr = |v: &str| {
+            let mut h = axum::http::HeaderMap::new();
+            h.insert("x-orch-ask", v.parse().unwrap());
+            h
+        };
+        let flag = |id: Uuid| {
+            let app = app.clone();
+            async move { app.inner.read().await.sessions[&id].fix_pr_on_exit }
+        };
+
+        // A fix run and an ordinary pane are refused, on their own valid tokens:
+        // the token says who is calling, not what they are entitled to hand on.
+        for (id, tok) in [(fid, ftok), (iid, itok.clone())] {
+            let said = match session_handoff(State(app.clone()), Path(id), hdr(&tok)).await {
+                Ok(_) => panic!("only a review hands over"),
+                Err(e) => e.0.to_string(),
+            };
+            assert!(said.contains("not one"), "{said}");
+        }
+        // And a review on somebody else's token is not a review calling.
+        assert!(session_handoff(State(app.clone()), Path(rid), hdr(&itok))
+            .await
+            .is_err());
+
+        // The real thing: red PR, so the checks are handed on.
+        let out = match session_handoff(State(app.clone()), Path(rid), hdr(&rtok)).await {
+            Ok(o) => o,
+            Err(e) => panic!("the review may hand over: {}", e.0),
+        };
+        assert_eq!(out.0["fix_pr"], true);
+        assert!(flag(rid).await, "the exit must start a run");
+
+        // Green and mergeable: the review is simply over. It still answers, because
+        // ending the session is the other half of what this call is for — the
+        // overlay reads that as its report either way.
+        red.checks = Checks::Passing;
+        app.inner.write().await.prs = vec![red];
+        let out = match session_handoff(State(app.clone()), Path(rid), hdr(&rtok)).await {
+            Ok(o) => o,
+            Err(e) => panic!("still answers: {}", e.0),
+        };
+        assert_eq!(out.0["fix_pr"], false);
+        assert!(!flag(rid).await, "nothing to watch, nothing armed");
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -4067,83 +4176,101 @@ pub async fn write_file(
 }
 
 // ---------------------------------------------------------------------------
-// fix-pr (§8) — hand-triggered only
+// The review's hand-off
 // ---------------------------------------------------------------------------
 
-/// Start a `fix-pr` run for a PR.
+/// A review session reporting that its own work is finished.
 ///
-/// Deliberately **not** automatic. §8 fires it on a PR going red; running it by
-/// hand instead means the guard table is a gate you read rather than one that
-/// trips behind you, and it is the difference between a tool that helps and one
-/// that rebases your branches while you are looking elsewhere.
+/// The last thing `commands/review-session.md` does. Its phase 3 ends with the code
+/// pushed and the replies posted, and the prompt then forbids the one job that is
+/// left — "CI still red or the branch behind → say so and stop. That is `fix-pr`'s
+/// job". This is how it says so to something that can act on it.
+///
+/// **The agent does not decide, and is not believed.** It says it is done; the
+/// daemon reads the PR out of its own poll and decides whether anything is left to
+/// watch, exactly as [`crate::fix_pr::settle`] re-reads the check state instead of
+/// trusting a run's report. All this route takes from the caller is the fact that
+/// the review reached its end.
+///
+/// Answers before it acts, on the hooks' rule: the caller is the session this is
+/// about to kill, so finishing the work inside the request would cut the answer off
+/// at the wire it is travelling on.
+pub async fn session_handoff(
+    State(app): State<Arc<AppState>>,
+    Path(id): Path<Uuid>,
+    headers: axum::http::HeaderMap,
+) -> ApiResult<serde_json::Value> {
+    ask_token_ok(&app, id, &headers).await?;
+
+    // Only a review session, and only about its own PR. The ask token already says
+    // *which* session is calling; this says it is one entitled to hand anything on.
+    let pr = {
+        let inner = app.inner.read().await;
+        match inner.sessions.get(&id).map(|s| &s.kind) {
+            Some(Kind::Automation { pr, command }) if command == crate::triage::COMMAND => *pr,
+            _ => {
+                return Err(ApiError(anyhow::anyhow!(
+                    "only a review session hands over, and {id} is not one"
+                )))
+            }
+        }
+    };
+
+    let pr_now = {
+        let inner = app.inner.read().await;
+        inner.prs.iter().find(|p| p.number == pr).cloned()
+    };
+    // No poll to read is not a reason to start a force-pushing run. Same direction
+    // as `Checks::Unknown`: when the daemon cannot see, it does nothing.
+    let hand_on = pr_now.as_ref().is_some_and(crate::fix_pr::wants_watching);
+
+    {
+        let mut inner = app.inner.write().await;
+        if let Some(s) = inner.sessions.get_mut(&id) {
+            s.fix_pr_on_exit = hand_on;
+        }
+    }
+
+    // Detached, so the answer is already on its way out when the pty dies under the
+    // curl that asked. The review is over either way — the overlay reads the session
+    // ending as its report — and `watch_session_exit` starts the run if the flag says
+    // to, because a run cannot start while this session still holds the branch.
+    let app2 = app.clone();
+    tokio::spawn(async move {
+        let handle = {
+            let inner = app2.inner.read().await;
+            inner.sessions.get(&id).and_then(|s| s.pty.clone())
+        };
+        if let Some(h) = handle {
+            if let Err(e) = h.kill() {
+                tracing::warn!(session = %id, "review handed over but would not close: {e}");
+            }
+        }
+    });
+
+    tracing::info!(session = %id, pr, hand_on, "review handed over");
+    Ok(Json(json!({ "fix_pr": hand_on })))
+}
+
+// ---------------------------------------------------------------------------
+// fix-pr (§8) — never on the poll's say-so
+// ---------------------------------------------------------------------------
+
+/// Start a `fix-pr` run for a PR. The rail's button.
+///
+/// Still **not** what §8 describes: a run never starts because a PR went red. The
+/// difference that rule is protecting is between a tool that helps and one that
+/// rebases your branches while you are looking elsewhere, and that turns on whether
+/// a *person* set the run in motion — not on which line of code spawns it. Two
+/// things now do: this, and a review handing on the CI it is forbidden to fix
+/// (`session_handoff`), which you started by sending the decisions and which
+/// announces itself in the same rail chip. The guard table is the same either way,
+/// because it is the whole of what makes a run safe to start.
 pub async fn fix_pr(
     State(app): State<Arc<AppState>>,
     Path(number): Path<u64>,
 ) -> ApiResult<serde_json::Value> {
-    use crate::fix_pr::{evaluate, GuardInput, PrAutomation, Verdict};
-
-    let pr = {
-        let inner = app.inner.read().await;
-        inner.prs.iter().find(|p| p.number == number).cloned()
-    }
-    .ok_or_else(|| anyhow::anyhow!("PR #{number} is not in the current poll"))?;
-
-    // Asked the way the spawn enforces it, not with a second rule: an idle session
-    // on the branch used to pass here and be refused a moment later by
-    // `spawn_fix_pr_session`, once the run looked started.
-    //
-    // The worktree is no longer cut before this. `spawn_fix_pr_session` calls
-    // `ensure_pr_worktree` itself, so creating one here only meant a refused run
-    // left a worktree behind — and it is what split the two rules apart, since the
-    // guard then asked about the empty tree it had just made.
-    let branch_busy = spawn::branch_busy(&app, &pr.head_ref).await.is_some();
-
-    let verdict = {
-        let inner = app.inner.read().await;
-        let running_automations = inner
-            .sessions
-            .values()
-            .filter(|s| s.is_automation() && s.state.is_live())
-            .count();
-
-        evaluate(&GuardInput {
-            pr: &pr,
-            automation: inner.automation.get(number),
-            // Your own login, from the poll. The authorship guard no longer
-            // compares it to the head repo's owner — it asks whether you can push
-            // there — but an empty one still fails the guard closed, so this must
-            // stay the real viewer rather than anything derived from the PR.
-            viewer: inner.viewer.as_deref().unwrap_or_default(),
-            branch_busy,
-            running_automations,
-        })
-    };
-
-    match verdict {
-        Verdict::Go => {}
-        Verdict::No { reason } => return Err(ApiError(anyhow::anyhow!("{reason}"))),
-    };
-
-    let session = spawn::spawn_fix_pr_session(&app, number, &pr.head_ref).await?;
-    {
-        let mut inner = app.inner.write().await;
-        // If this never reaches disk, a restart forgets the run started and the
-        // one-run-per-PR cap can re-fire, so the write is not optional.
-        inner.with_automation(&format!("PR #{number} run started"), |a| {
-            a.by_pr.insert(
-                number,
-                PrAutomation::Running {
-                    session,
-                    started: std::time::SystemTime::now(),
-                },
-            );
-            true
-        });
-    }
-
-    // Exhaustion is recorded by the session's own exit watcher, which is the
-    // one place that sees a pty end (`fix_pr::settle`).
-    app.notify().await;
+    let session = crate::fix_pr::start(&app, number).await?;
     Ok(Json(json!({ "session": session })))
 }
 

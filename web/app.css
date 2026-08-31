@@ -362,8 +362,18 @@ button.ctx-btn:hover{color:var(--text)}
 /* ---------- center ---------- */
 .center{display:flex;flex-direction:column;min-width:0;background:var(--bg);position:relative}
 .termwrap{flex:1;min-height:0;position:relative;padding:8px 6px 8px 12px}
-.termhost{position:absolute;inset:8px 6px 8px 12px}
+.termhost{position:absolute;inset:8px 6px 8px 12px;transition:opacity .35s ease}
 .termhost[hidden]{display:none}
+/* The pty of the session a review is driving, while it is driving it. Dimmed, not
+   covered: the scrollback is the thing that proves it is working, so it stays
+   readable — this says "nobody is waiting on you here", not "do not look".
+   Steady, deliberately. Lifting it on hover or focus was tried and is wrong twice
+   over: `app.js` focuses the terminal on every selection, so `:focus-within` is
+   true the whole time and the dim would never appear at all, and a state that goes
+   away when you point at it is not a state indicator. Set on `.termwrap` rather
+   than the host, so the bar and the empty state — both siblings — stay at full
+   strength over it. */
+.termwrap.rvwork .termhost{opacity:.6}
 
 /* ---------- what a review is doing, while its overlay is closed ---------- */
 /* Bottom of the *terminal*, not of the column: `.oq` sits at the top and blocks a
@@ -394,6 +404,10 @@ button.ctx-btn:hover{color:var(--text)}
    bug this file has had before. */
 .rvbar.attn{border-color:var(--attn);color:var(--attn)}
 .rvbar.work{border-color:var(--work);color:var(--work)}
+/* The dimmed pane says "not yours"; on its own it also says "stalled". The dot
+   breathing is the half that says the agent is still going — the connecting
+   pulse's own rhythm, because it means the same thing here. */
+.rvbar.work .dot{animation:connbr 1.6s ease-in-out infinite}
 .rvbar.ok{border-color:var(--ok);color:var(--ok)}
 
 /* ---------- the open question ---------- */
@@ -590,7 +604,7 @@ body:not(.ready) #termempty .empty-k{display:none}
    reduce motion gets none of them — the connecting and reconnecting pulses and
    the refresh spinner alike. */
 @media(prefers-reduced-motion:reduce){
-  .conn-dot,.connbar .d{animation:none;opacity:.7}
+  .conn-dot,.connbar .d,.rvbar.work .dot{animation:none;opacity:.7}
   .rvrefresh.spin{animation:none}
 }
 /* Visually hidden, still read aloud — the live region that announces "needs you". */

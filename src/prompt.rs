@@ -188,6 +188,14 @@ mod tests {
         assert!(out.contains("--force-with-lease"), "the push discipline");
         // The daemon recognises its own replies by this exact footer.
         assert!(out.contains("(via orchestrator)"), "the footer that dedups our replies");
+        // Phase 4 is the only thing that tells the overlay the review is over, and
+        // the only route by which a review reaches `fix-pr`. A rewording that drops
+        // the call leaves the overlay saying "applying" for good.
+        assert!(out.contains("Phase 4 — Hand over"), "the hand-over phase");
+        assert!(
+            out.contains("/api/session/$ORCH_SESSION_ID/handoff"),
+            "the hand-over URL"
+        );
     }
 
     #[test]

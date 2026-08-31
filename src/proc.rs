@@ -22,15 +22,43 @@ use std::time::{Duration, Instant};
 /// never reach the deadline. `label` is only for the timeout message, so a caller
 /// gets "reviews timed out" rather than a generic one.
 pub fn run_bounded(cwd: &Path, timeout_secs: u64, argv: &[String], label: &str) -> Result<Output> {
+    run_bounded_with_input(cwd, timeout_secs, argv, label, None, &[])
+}
+
+/// [`run_bounded`], with a payload written to the child's stdin and the pipe then
+/// closed.
+///
+/// For a Claude Code hook, which is defined as reading one JSON object on stdin.
+/// Closing the pipe after the write is what keeps the no-prompting property the
+/// plain version gets from `/dev/null`: a command that waits for more input sees
+/// EOF rather than hanging until the deadline.
+///
+/// Written on a thread, like the two output pipes and for the same reason: a
+/// payload larger than the pipe buffer would otherwise deadlock against a child
+/// that is writing output before it finishes reading.
+///
+/// `envs` are added to the child's inherited environment.
+pub fn run_bounded_with_input(
+    cwd: &Path,
+    timeout_secs: u64,
+    argv: &[String],
+    label: &str,
+    input: Option<Vec<u8>>,
+    envs: &[(String, String)],
+) -> Result<Output> {
     use std::os::unix::process::CommandExt;
 
     let (exe, args) = argv.split_first().with_context(|| format!("{label}: empty command"))?;
     let mut child = Command::new(exe)
         .args(args)
         .current_dir(cwd)
-        // No stdin: a command that stops to prompt would otherwise hang until the
-        // deadline rather than failing.
-        .stdin(Stdio::null())
+        // No stdin unless the caller has something to say: a command that stops to
+        // prompt would otherwise hang until the deadline rather than failing.
+        .stdin(if input.is_some() { Stdio::piped() } else { Stdio::null() })
+        // On the child, never on this process. `std::env::set_var` is
+        // process-global and this daemon is full of threads, so setting a variable
+        // "for the hook" would set it for every other thing running at that moment.
+        .envs(envs.iter().map(|(k, v)| (k.as_str(), v.as_str())))
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         // Makes the child a group leader, so its pid *is* the group id below.
@@ -39,6 +67,15 @@ pub fn run_bounded(cwd: &Path, timeout_secs: u64, argv: &[String], label: &str) 
         .with_context(|| format!("running `{}`", argv.join(" ")))?;
 
     let pgid = child.id() as libc::pid_t;
+    if let (Some(payload), Some(mut pipe)) = (input, child.stdin.take()) {
+        std::thread::spawn(move || {
+            use std::io::Write as _;
+            // Both halves are ignorable on purpose: a hook that exits without
+            // reading its input gives EPIPE, which is its business, not a failure
+            // of the run. The drop closes the pipe and is what sends EOF.
+            let _ = pipe.write_all(&payload);
+        });
+    }
     let mut out_pipe = child.stdout.take().context("no stdout pipe")?;
     let mut err_pipe = child.stderr.take().context("no stderr pipe")?;
     let out_thread = std::thread::spawn(move || {
@@ -110,6 +147,40 @@ mod tests {
         }
         let _ = std::fs::remove_file(&marker);
         assert!(!alive, "the group's grandchild survived the deadline");
+    }
+
+    /// A hook is defined as reading one JSON object on stdin, so the payload has to
+    /// arrive and the pipe has to close.
+    ///
+    /// The closing half is the one worth a test: without it a hook that reads to EOF
+    /// waits for the full deadline and is then killed, which looks exactly like a
+    /// hook that hung.
+    #[test]
+    fn a_payload_reaches_the_child_and_the_pipe_then_closes() {
+        let argv = vec!["sh".to_string(), "-c".to_string(), "cat".to_string()];
+        let out = run_bounded_with_input(
+            Path::new("/tmp"),
+            5,
+            &argv,
+            "t",
+            Some(br#"{"worktreePath":"/x"}"#.to_vec()),
+            &[],
+        )
+        .expect("it finished rather than hitting the deadline");
+        assert!(out.status.success());
+        assert_eq!(String::from_utf8_lossy(&out.stdout), r#"{"worktreePath":"/x"}"#);
+    }
+
+    /// Set on the child, never on this process: `std::env::set_var` is
+    /// process-global, and a daemon full of threads would be setting it for
+    /// everything else running at that moment.
+    #[test]
+    fn an_env_var_reaches_the_child_without_touching_this_process() {
+        let argv = vec!["sh".to_string(), "-c".to_string(), "printf %s \"$ORCH_T\"".to_string()];
+        let envs = vec![("ORCH_T".to_string(), "child-only".to_string())];
+        let out = run_bounded_with_input(Path::new("/tmp"), 5, &argv, "t", None, &envs).unwrap();
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "child-only");
+        assert!(std::env::var("ORCH_T").is_err(), "the daemon's own env is untouched");
     }
 
     #[test]

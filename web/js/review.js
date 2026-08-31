@@ -1,7 +1,7 @@
 // The review overlay: read a PR's threads, decide each one, then one batch of
 // outward writes. The largest single feature in the SPA.
 
-import { $, call, el, get, MOD_LABEL, newShell, pending, setSelected, snap, toast, setPendingSelect } from './core.js';
+import { $, call, el, get, MOD_LABEL, newShell, pending, selected, setSelected, snap, toast, setPendingSelect } from './core.js';
 import * as Diff from './diff.js';
 import { langFor, hlTokens } from './diff.js';
 import { patchStats, hunkEl, fileListLabel } from './review-diff.js';
@@ -1665,6 +1665,28 @@ function reviewTick() {
   const s = (snap.sessions || []).find((x) => x.id === reviewState.session);
   if (s && s.alive) return;
 
+  // Handed the checks on. The review's last act is `/handoff`, which ends the
+  // session and lets its exit start a `fix-pr` run — so the work is somewhere else
+  // now, and this overlay is the wrong frame for it. Give way to the flow that owns
+  // watching a PR: close, and land on the run's pane the way the `fix` button does.
+  // Not a screen of our own reporting on someone else's run, which is how you end up
+  // with two places to look and one of them a version behind.
+  if (s && s.handed_off) {
+    const run = (snap.automation || {})[reviewState.pr];
+    // The run does not exist yet — the daemon is still cutting its worktree. Hold
+    // the screen we are on rather than showing the report we are about to replace.
+    if (!run || run.state !== 'running' || run.session === reviewState.session) return;
+    const pr = reviewState.pr;
+    // Only if you were watching this. A review you left running in the background
+    // finishing is not a reason to take the centre pane away from whatever you went
+    // off to do — the rail's `fixing` chip is how that one reaches you.
+    const watching = reviewState.open || selected === reviewState.session;
+    finishReview();
+    if (watching) setPendingSelect(run.session);
+    toast(`review done · fix-pr is watching #${pr}`);
+    return;
+  }
+
   // It got as far as a phase we were driving, so there is a result to report.
   if (reviewState.decisionsSent) {
     if (reviewState.screen !== 'report') {
@@ -2311,13 +2333,23 @@ function barState() {
 
 /** Draw the bar, or take it away.
  *
- *  Only while the overlay is *closed*: open, the cards are the report. Rendered from
- *  `app.js`'s tick like every other pane, and into a host that lives outside
- *  `#rvoverlay` — `renderReview` replaces that element's children on every snapshot
- *  and would tear a live node out from under itself once a second. */
+ *  Two conditions, and both are about *where you are standing* rather than what the
+ *  review is doing. Only while the overlay is *closed*: open, the cards are the
+ *  report. And only on the review's own pane — the bar sits over `.termwrap`, which
+ *  every session shares, so without this it captioned whichever pty you happened to
+ *  be looking at with what a different session was up to.
+ *
+ *  Rendered from `app.js`'s tick like every other pane, and into a host that lives
+ *  outside `#rvoverlay` — `renderReview` replaces that element's children on every
+ *  snapshot and would tear a live node out from under itself once a second. */
 function renderBar() {
   const host = $('rvbar');
-  const st = reviewState.open ? null : barState();
+  const mine = !!selected && selected === reviewState.session;
+  const st = reviewState.open || !mine ? null : barState();
+  // The pane is Claude's while the agent has the turn, so it reads as Claude's:
+  // dimmed, with the bar at full strength over it. Only on `work` — the lift back
+  // to normal is itself the signal that the turn came back to you.
+  $('termwrap').classList.toggle('rvwork', !!st && st.tone === 'work');
   if (!st) { host.hidden = true; host.replaceChildren(); return; }
 
   host.replaceChildren();

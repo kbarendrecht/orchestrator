@@ -443,12 +443,14 @@ pub async fn teardown(app: &Arc<AppState>, workspace: &str) -> Result<Preflight>
         .workspace_path(workspace)
         .await
         .with_context(|| format!("unknown workspace {workspace}"))?;
+    // The repo's own teardown first, then ours. Ours runs either way and no-ops
+    // when the hook already did the job.
+    run_worktree_remove_hooks(app, workspace, &path).await;
     git::worktree_remove(&app.cfg.main_checkout, &path)?;
 
     {
         let mut inner = app.inner.write().await;
         inner.workspaces.remove(workspace);
-        inner.files.remove(workspace);
         for s in inner.sessions.values_mut() {
             if s.workspace == workspace {
                 let resumable = s.resumable();
@@ -462,6 +464,48 @@ pub async fn teardown(app: &Arc<AppState>, workspace: &str) -> Result<Preflight>
 
 #[cfg(test)]
 mod tests {
+
+    /// Only `command` hooks, from both repo settings files, in Claude Code's order.
+    ///
+    /// An `http` hook is Claude Code's to deliver and means nothing outside a
+    /// session, so it is skipped rather than guessed at: the daemon's own removal
+    /// runs either way, which is what makes skipping safe.
+    #[test]
+    fn the_repos_worktree_hooks_are_read_from_both_settings_files() {
+        let dir = std::env::temp_dir().join(format!("orch-wrhooks-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(dir.join(".claude")).unwrap();
+        assert!(worktree_remove_hooks(&dir).is_empty(), "no settings, no hooks");
+
+        std::fs::write(
+            dir.join(".claude/settings.json"),
+            r#"{"hooks":{"WorktreeRemove":[{"hooks":[
+                 {"type":"command","command":"tidy-up"},
+                 {"type":"http","url":"http://x/y"}]}]}}"#,
+        )
+        .unwrap();
+        assert_eq!(worktree_remove_hooks(&dir), vec!["tidy-up".to_string()]);
+        // Keyed by event, so the create side reads its own and never the other's.
+        assert!(repo_worktree_hooks(&dir, "WorktreeCreate").is_empty());
+
+        // Local layers on top of project, the way Claude Code stacks them.
+        std::fs::write(
+            dir.join(".claude/settings.local.json"),
+            r#"{"hooks":{"WorktreeRemove":[{"hooks":[{"type":"command","command":"mine"}]}]}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            worktree_remove_hooks(&dir),
+            vec!["tidy-up".to_string(), "mine".to_string()]
+        );
+
+        // A repo that declares other hooks but not this one, and a settings file
+        // that is not valid JSON, both answer "none" rather than failing teardown.
+        std::fs::write(dir.join(".claude/settings.json"), r#"{"hooks":{"SessionStart":[]}}"#).unwrap();
+        std::fs::write(dir.join(".claude/settings.local.json"), "{ not json").unwrap();
+        assert!(worktree_remove_hooks(&dir).is_empty());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
     use super::*;
 
     /// Resuming into a standing worktree skips the rebuild, so the branch was
@@ -525,5 +569,136 @@ mod tests {
         // A path with no final component gives nothing to derive from, and the
         // caller says so rather than inventing a name.
         assert!(derive_recovery(std::path::Path::new("/")).is_none());
+    }
+}
+
+/// How long the repo's teardown hook gets. The same budget the setup hooks have:
+/// removal is filesystem work, and anything slower than this is stuck rather than
+/// busy.
+const WORKTREE_REMOVE_TIMEOUT_SECS: u64 = 120;
+
+/// The repo's `command` hooks for one worktree event, in the order Claude Code
+/// would run them.
+///
+/// Read from the repo's own settings rather than the daemon's: these are the
+/// *repo's* worktree policy, and the daemon's `--settings` file is where the
+/// daemon's own hooks live. Both of Claude Code's repo-level files are consulted,
+/// project first then local, which is the layering it uses everywhere else.
+///
+/// Only `type: "command"` is returned. An `http` hook is Claude Code's to deliver
+/// and has no meaning outside a session; skipping it silently is right, because the
+/// daemon's own path follows either way.
+pub(crate) fn repo_worktree_hooks(main: &std::path::Path, event: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for name in [".claude/settings.json", ".claude/settings.local.json"] {
+        let Ok(raw) = std::fs::read_to_string(main.join(name)) else {
+            continue;
+        };
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) else {
+            continue;
+        };
+        let Some(entries) = v.pointer(&format!("/hooks/{event}")).and_then(|h| h.as_array()) else {
+            continue;
+        };
+        for entry in entries {
+            let Some(hooks) = entry.get("hooks").and_then(|h| h.as_array()) else {
+                continue;
+            };
+            for h in hooks {
+                if h.get("type").and_then(|t| t.as_str()) != Some("command") {
+                    continue;
+                }
+                if let Some(cmd) = h.get("command").and_then(|c| c.as_str()) {
+                    out.push(cmd.to_string());
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The repo's `WorktreeRemove` hooks, in the order Claude Code would run them.
+///
+/// Read from the repo's own settings rather than the daemon's: this is the
+/// *repo's* teardown policy, and the daemon's `--settings` file is where the
+/// daemon's own hooks live. Both of Claude Code's repo-level files are consulted,
+/// project first then local, which is the layering it uses everywhere else.
+///
+/// Only `type: "command"` is run. An `http` hook is Claude Code's to deliver and
+/// has no meaning outside a session; skipping it silently is right, because the
+/// daemon's own removal follows either way.
+fn worktree_remove_hooks(main: &std::path::Path) -> Vec<String> {
+    repo_worktree_hooks(main, "WorktreeRemove")
+}
+
+/// Run the repo's `WorktreeRemove` hooks, then let the daemon's own removal finish
+/// the job.
+///
+/// **The hook first, the daemon's removal always.** A repo that declares one is
+/// stating how worktrees go away here, and Claude Code treats that as the whole
+/// mechanism. The daemon cannot: it created this tree with `git worktree add`, so
+/// it is answerable for the git side whether or not a hook exists and whether or
+/// not the hook did anything. `git::worktree_remove` is idempotent for exactly this
+/// reason, so the two orders of events (hook removed it, hook did nothing) both end
+/// with the tree gone and git's registration pruned.
+///
+/// **Non-fatal, and does not gate the removal.** A hook that fails must not strand a
+/// worktree the preflight already proved safe to remove: the failure is logged with
+/// its own stderr and teardown continues. The alternative is a tree nobody can get
+/// rid of because a script the daemon does not own returned 1.
+///
+/// The payload's `worktreePath` and `worktreeName` are the spellings Claude Code's
+/// own binary carries. That is the strongest evidence available: the monorepo
+/// declares no `WorktreeRemove`, so this has never made a real round trip, and a
+/// repo whose hook reads some other key gets a no-op rather than a wrong action.
+async fn run_worktree_remove_hooks(app: &Arc<AppState>, workspace: &str, path: &std::path::Path) {
+    let hooks = worktree_remove_hooks(&app.cfg.main_checkout);
+    if hooks.is_empty() {
+        return;
+    }
+    let payload = serde_json::json!({
+        "hook_event_name": "WorktreeRemove",
+        "cwd": app.cfg.main_checkout.to_string_lossy(),
+        "worktreePath": path.to_string_lossy(),
+        "worktreeName": workspace,
+    })
+    .to_string()
+    .into_bytes();
+
+    for cmd in hooks {
+        // A shell string, the way Claude Code defines a `command` hook, so `$VAR`
+        // and a pipe mean what the author wrote. `CLAUDE_PROJECT_DIR` is exported
+        // because repo hooks address themselves through it, this one included.
+        let argv = vec!["sh".to_string(), "-c".to_string(), cmd.clone()];
+        let at = app.cfg.main_checkout.clone();
+        let envs = vec![(
+            "CLAUDE_PROJECT_DIR".to_string(),
+            app.cfg.main_checkout.to_string_lossy().into_owned(),
+        )];
+        let body = payload.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            crate::proc::run_bounded_with_input(
+                &at,
+                WORKTREE_REMOVE_TIMEOUT_SECS,
+                &argv,
+                "worktree remove hook",
+                Some(body),
+                &envs,
+            )
+        })
+        .await;
+        match result {
+            Ok(Ok(out)) if out.status.success() => {
+                tracing::info!(workspace, "the repo's WorktreeRemove hook ran");
+            }
+            Ok(Ok(out)) => tracing::warn!(
+                workspace,
+                "the repo's WorktreeRemove hook exited {}: {}",
+                out.status,
+                String::from_utf8_lossy(&out.stderr).trim(),
+            ),
+            Ok(Err(e)) => tracing::warn!(workspace, "the repo's WorktreeRemove hook failed: {e:#}"),
+            Err(e) => tracing::warn!(workspace, "the WorktreeRemove hook task panicked: {e}"),
+        }
     }
 }

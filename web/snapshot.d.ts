@@ -16,12 +16,6 @@ tool: string, current: string, latest: string, };
  */
 export type ArchiveState = { "recovery": "recoverable", name: string, branch: string, head_sha: string, } | { "recovery": "transcript_only" };
 
-export type ChangedFile = { path: string, status: FileStatus, 
-/**
- * Two-letter XY code from `git status --porcelain=v2`, kept verbatim.
- */
-code: string, };
-
 export type Checks = "passing" | "failing" | "pending" | "unknown";
 
 export type DiffFile = { path: string, 
@@ -37,10 +31,6 @@ eager: boolean,
  * Present for renames.
  */
 old_path: string | null, };
-
-export type FileSet = { staged: Array<ChangedFile>, unstaged: Array<ChangedFile>, untracked: Array<ChangedFile>, };
-
-export type FileStatus = "staged" | "unstaged" | "untracked";
 
 export type Health = { "health": "starting" } | { "health": "ok" } | { "health": "failing", summary: string, } | { "health": "dead" };
 
@@ -378,7 +368,18 @@ forked_from: string | null,
  * Whether this session still owes you the rest of a turn. The nudge is only
  * true of these; every other resumed session is sitting at its prompt done.
  */
-interrupted: boolean, };
+interrupted: boolean, 
+/**
+ * A review that ended by handing its PR's checks to a `fix-pr` run.
+ *
+ * Here rather than left for the overlay to infer, because the two facts it
+ * would have to infer it from arrive apart: the session is marked `Exited`
+ * straight away and the run's record only exists once `ensure_pr_worktree` and
+ * a spawn have finished. In that gap the overlay would put its finished-review
+ * report up and then take it away again a second later, which is a worse thing
+ * to show than either state.
+ */
+handed_off: boolean, };
 
 /**
  * What the SPA receives on every tick.
@@ -482,7 +483,7 @@ export type TokenSource = "env" | "file" | "gh_cli";
  * actually gates progress is Claude finishing a turn (§2). A completed turn is
  * not a quiet success, it is an idle agent.
  */
-export type TurnReason = "turn_complete" | "asked_a_question" | "needs_permission" | "ready";
+export type TurnReason = "turn_complete" | "asked_a_question" | "needs_permission" | "ready" | "interrupted";
 
 /**
  * A release newer than what is running. `mise` does the upgrade; this only tells
@@ -532,12 +533,26 @@ export type WorkspaceView = { id: string, path: string, kind: WorkspaceKind, is_
  * `docker compose up` you deliberately do not autostart still has to be
  * startable.
  */
-stopped_processes: Array<string>, files: FileSet, 
+stopped_processes: Array<string>, 
 /**
  * Every file this workspace changed since it branched, committed work
  * included, plus anything untracked. What the changed-files pane lists.
+ *
+ * **Capped at [`CHANGED_CAP`]**, with the real number in `changed_total`. It
+ * is cloned into every snapshot, for every workspace, and a snapshot goes out
+ * on every `notify` — which `post_tool_use` calls once per tool call. At the
+ * measured ~155-200 bytes a file, one wiped repository put ~0.8 MB through
+ * that path several times a second and took the whole app down with it.
  */
 changed: Array<DiffFile>, 
+/**
+ * How many there really are, when `changed` is a prefix of them.
+ *
+ * Sent rather than inferred from the length, so the pane can say "500 of
+ * 5,214" instead of quietly presenting a truncation as the whole answer —
+ * the same honesty `unresolved_capped` buys the PR pane (§6).
+ */
+changed_total: number, 
 /**
  * The commit the above is measured from: `merge-base(upstream, HEAD)`.
  */

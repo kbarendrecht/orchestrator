@@ -151,11 +151,23 @@ pub struct AppState {
     pub pr_refresh: Arc<Notify>,
 }
 
+/// How many changed files a workspace reports before the pane starts counting
+/// instead of listing.
+///
+/// Not a display preference — a bound on the snapshot. `changed` is cloned per
+/// workspace into every snapshot and `notify` builds one per tool call, so the
+/// list's length is multiplied by the busiest loop in the daemon. Measured at
+/// ~155-200 bytes a file: 500 costs about 80 KB, 5,000 costs 0.8 MB, and the
+/// second number is what an agent that wiped a repository actually produced.
+///
+/// Well past what anyone reads down. The number exists so the *pane* stays useful
+/// on a big branch, not so the list stays complete.
+pub const CHANGED_CAP: usize = 500;
+
 #[derive(Default)]
 pub struct Inner {
     pub workspaces: HashMap<WorkspaceId, Workspace>,
     pub sessions: HashMap<SessionId, Session>,
-    pub files: FileSets,
     pub prs: Vec<crate::forge::Pr>,
     /// What the last triage run proposed, per PR. A run costs a full agent pass,
     /// so this outlives the session that produced it — you can close the overlay
@@ -371,7 +383,6 @@ impl AppState {
             inner: RwLock::new(Inner {
                 workspaces,
                 sessions: HashMap::new(),
-                files: HashMap::new(),
                 prs: Vec::new(),
                 proposals: HashMap::new(),
                 proposal_tokens: HashMap::new(),
@@ -528,8 +539,8 @@ impl AppState {
                 .filter(|spec| !w.processes.iter().any(|p| p.name == spec.name))
                 .map(|spec| spec.name.clone())
                 .collect(),
-                files: inner.files.get(&w.id).cloned().unwrap_or_default(),
                 changed: w.tree.changed.clone(),
+                changed_total: w.tree.changed_total,
                 changed_since: w.tree.base.clone(),
                 behind: w.tree.divergence.0,
                 ahead: w.tree.divergence.1,
@@ -911,17 +922,22 @@ impl AppState {
         // Failure is empty rather than fatal: a worktree whose upstream ref has
         // not been fetched yet still has a status worth showing.
         let base = git::merge_base(&path, &self.cfg.upstream_ref).ok();
+        // Sorted before the truncation, so what survives is a stable prefix rather
+        // than whatever order git answered in — the pane's first 500 stay the same
+        // 500 across reconciles, and a file does not appear and vanish while you
+        // are looking at it.
         let changed = base.as_deref().map(|b| {
             let mut files = crate::diff::summary(&path, b)
                 .map(|s| s.files)
                 .unwrap_or_default();
             files.extend(set.untracked.iter().map(crate::diff::DiffFile::untracked));
             files.sort_by(|a, b| a.path.cmp(&b.path));
-            files
+            let total = files.len() as u32;
+            files.truncate(CHANGED_CAP);
+            (files, total)
         });
 
         let mut inner = self.inner.write().await;
-        inner.files.insert(workspace.to_string(), set);
         if let Some(w) = inner.workspaces.get_mut(workspace) {
             if let Some(b) = branch.clone() {
                 w.branches.insert(b);
@@ -935,7 +951,9 @@ impl AppState {
                 w.tree.base = Some(b);
             }
             if let Some(c) = changed {
-                w.tree.changed = c;
+                let (files, total) = c;
+                w.tree.changed = files;
+                w.tree.changed_total = total;
             }
             if let Some(d) = divergence {
                 w.tree.divergence = d;
@@ -1067,10 +1085,22 @@ pub struct WorkspaceView {
     /// `docker compose up` you deliberately do not autostart still has to be
     /// startable.
     pub stopped_processes: Vec<String>,
-    pub files: FileSet,
     /// Every file this workspace changed since it branched, committed work
     /// included, plus anything untracked. What the changed-files pane lists.
+    ///
+    /// **Capped at [`CHANGED_CAP`]**, with the real number in `changed_total`. It
+    /// is cloned into every snapshot, for every workspace, and a snapshot goes out
+    /// on every `notify` — which `post_tool_use` calls once per tool call. At the
+    /// measured ~155-200 bytes a file, one wiped repository put ~0.8 MB through
+    /// that path several times a second and took the whole app down with it.
     pub changed: Vec<crate::diff::DiffFile>,
+    /// How many there really are, when `changed` is a prefix of them.
+    ///
+    /// Sent rather than inferred from the length, so the pane can say "500 of
+    /// 5,214" instead of quietly presenting a truncation as the whole answer —
+    /// the same honesty `unresolved_capped` buys the PR pane (§6).
+    #[cfg_attr(test, ts(type = "number"))]
+    pub changed_total: u32,
     /// The commit the above is measured from: `merge-base(upstream, HEAD)`.
     pub changed_since: Option<String>,
     /// Commits on `upstream/develop` this branch does not have. Drives the
@@ -1141,6 +1171,15 @@ pub struct SessionView {
     /// Whether this session still owes you the rest of a turn. The nudge is only
     /// true of these; every other resumed session is sitting at its prompt done.
     pub interrupted: bool,
+    /// A review that ended by handing its PR's checks to a `fix-pr` run.
+    ///
+    /// Here rather than left for the overlay to infer, because the two facts it
+    /// would have to infer it from arrive apart: the session is marked `Exited`
+    /// straight away and the run's record only exists once `ensure_pr_worktree` and
+    /// a spawn have finished. In that gap the overlay would put its finished-review
+    /// report up and then take it away again a second later, which is a worse thing
+    /// to show than either state.
+    pub handed_off: bool,
 }
 
 impl SessionView {
@@ -1179,6 +1218,7 @@ impl SessionView {
             interaction: s.interaction.clone(),
             forked_from: s.forked_from,
             interrupted: s.interrupted,
+            handed_off: s.fix_pr_on_exit,
         }
     }
 }
@@ -1307,6 +1347,62 @@ mod tests {
             .await
             .is_none());
         let _ = std::fs::remove_file(&other);
+    }
+
+    /// A changeset larger than the pane can usefully list is cut down, and says so.
+    ///
+    /// The bound is on the *snapshot*, not the pane: `changed` is cloned per
+    /// workspace into every snapshot and `notify` builds one per tool call, so an
+    /// uncapped list is multiplied by the busiest loop in the daemon. A wiped
+    /// repository put roughly 0.8 MB through that path several times a second.
+    ///
+    /// `changed_total` is asserted separately because the honesty is the point: a
+    /// truncated list that reports its own length reads as a complete answer.
+    #[tokio::test]
+    async fn a_huge_changeset_is_capped_and_counted() {
+        let dir = std::env::temp_dir().join(format!("orchd-cap-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let sh = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(&dir)
+                .output()
+                .expect("git");
+        };
+        sh(&["init", "-q", "-b", "main"]);
+        sh(&["config", "user.email", "t@t"]);
+        sh(&["config", "user.name", "t"]);
+        std::fs::write(dir.join("seed"), "1").unwrap();
+        sh(&["add", "-A"]);
+        sh(&["commit", "-qm", "base"]);
+        // The base the changeset is measured from. `upstream_ref` defaults to a
+        // remote ref, so it is pointed at a local branch this test can make.
+        sh(&["branch", "base"]);
+        let n = CHANGED_CAP + 120;
+        for i in 0..n {
+            std::fs::write(dir.join(format!("f{i:05}.ts")), "x").unwrap();
+        }
+        sh(&["add", "-A"]);
+        sh(&["commit", "-qm", "many"]);
+
+        let cfg: Config = serde_json::from_str(&format!(
+            r#"{{"main_checkout":"{}","port":7797,"upstream_ref":"base"}}"#,
+            dir.display()
+        ))
+        .unwrap();
+        let app = AppState::new(cfg, "t".into(), crate::window::Chrome::None);
+        app.reconcile(MAIN).await.expect("reconcile");
+
+        let inner = app.inner.read().await;
+        let tree = &inner.workspaces.get(MAIN).unwrap().tree;
+        assert_eq!(tree.changed.len(), CHANGED_CAP, "the list is bounded");
+        assert_eq!(tree.changed_total, n as u32, "and the real number survives it");
+        // Sorted before truncation, so the prefix is stable across reconciles
+        // rather than whatever order git answered in.
+        assert_eq!(tree.changed[0].path, "f00000.ts");
+
+        drop(inner);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Worktree ids are deterministic and reused (`pr-<n>`), so the measurements

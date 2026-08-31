@@ -31,6 +31,20 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
 
+/// The tracker's variable and its value, for a session that may or may not need one.
+///
+/// `None` means "nothing to hand over" — no tracker configured, or no token in the
+/// daemon's environment — and says so in silence, because boot already logs the
+/// missing token once (`lib.rs`) and a warning per spawn would only bury it.
+///
+/// The story pass keeps the hard [`resolve_token`] instead: a run that files into a
+/// tracker with no credential can only fail mid-flight, so it is refused up front.
+pub fn token_env_pair(kind: crate::config::TrackerKind) -> Option<(String, String)> {
+    use crate::tracker::Tracker as _;
+    let tracker = crate::tracker::TrackerImpl::for_kind(kind)?;
+    Some((tracker.token_env().to_string(), resolve_token().ok()?))
+}
+
 /// The tracker's API token, for its MCP server's `Authorization` header.
 ///
 /// **Environment only.** The forge keeps a file ladder because its token is read
@@ -328,7 +342,9 @@ async fn run_filer(
     use crate::tracker::Tracker as _;
     let tracker = crate::tracker::TrackerImpl::for_kind(app.cfg.tracker)
         .context("no tracker configured, so there is nothing to file into")?;
-    let token = resolve_token()?;
+    // Refused here rather than mid-run: `session_env` hands the token to every
+    // session and shrugs when there is none, which is right for all of them but this.
+    resolve_token()?;
     let head_ref = {
         let inner = app.inner.read().await;
         inner
@@ -430,12 +446,11 @@ async fn run_filer(
         cmd.push("--strict-mcp-config".to_string());
     }
 
-    let (mut env, unset) = crate::config::transcript_env();
-    env.push(("ORCH_SESSION_ID".to_string(), id.to_string()));
-    // What the MCP entry's `${…}` expands from, named by the tracker. In the
-    // child's environment, never in the settings file the daemon writes — that
-    // would put a secret in `~/.config/orchd/`.
-    env.push((tracker.token_env().to_string(), token));
+    // The tracker variable this run needs is pushed by `session_env` now, for every
+    // session rather than only this one. `resolve_token` above still runs and still
+    // refuses: every other session can work without a tracker, and a story pass
+    // cannot.
+    let (env, unset) = crate::config::session_env(&app.cfg, id, None);
 
     let spawned = PtyHandle::spawn(&cmd, &path, &env, &unset, crate::spawn::DEFAULT_SIZE)?;
     let worktree = path.clone();

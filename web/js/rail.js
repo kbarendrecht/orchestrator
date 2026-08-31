@@ -225,8 +225,11 @@ function prGroup() {
       if (why.length) row.appendChild(el('span', 'link', why[0]));
     }
 
-    // Both skills are hand-triggered. fix-pr is deliberately not automatic:
-    // the guard table is a gate you read, not one that trips behind you.
+    // Both buttons are hand-triggered, and no poll result ever presses one: a PR
+    // going red is not a reason for anything to start, which is what keeps the
+    // guard table a gate you read rather than one that trips behind you. A run can
+    // also arrive here already going, from a review handing on the CI it is not
+    // allowed to fix — still something a person set off, by sending the decisions.
     const auto = auto0, needsResolve = needsResolve0, needsFix = needsFix0;
 
     if (auto && auto.state === 'running') {

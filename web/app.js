@@ -268,8 +268,7 @@ function renderAgentUpdate() {
   const msg = failed
     ? `Claude Code ${run.to} did not install: ${run.tail.split('\n')[0]}`
     : done
-      ? `Claude Code ${run.to} installed \u2014 sessions you already have open are still `
-        + 'the old build, and restarting is what puts them on the new one'
+      ? `Claude Code ${run.to} installed, restart a session to pick it up`
       : run
         ? `installing Claude Code ${run.to}\u2026`
         : `Claude Code ${u.latest} available (you have ${u.current})`;

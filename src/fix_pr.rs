@@ -201,12 +201,103 @@ pub fn ended_red(pr: &Pr) -> bool {
     pr.checks == Checks::Failing || pr.mergeable == "CONFLICTING"
 }
 
+/// Whether a PR still has something a fix run would watch.
+///
+/// Asked at the end of a review, which has just force-pushed: the checks are
+/// running against a head that did not exist a minute ago, so `Pending` counts —
+/// that *is* the watching. Green and mergeable means the review is simply over and
+/// there is nothing to hand on.
+///
+/// `Unknown` deliberately does not count. It is the answer when the poll could not
+/// say, and a run rebases and force-pushes: the one thing this must not do is start
+/// one because it could not tell.
+pub fn wants_watching(pr: &Pr) -> bool {
+    matches!(pr.checks, Checks::Failing | Checks::Pending) || pr.mergeable == "CONFLICTING"
+}
+
 /// The `Kind::Automation` command a fix run carries.
 ///
 /// Named rather than spelled at the spawn site and again at the place that reacts
 /// to the exit: those two have to agree, and a literal in both is how they stop
 /// agreeing without anything failing.
 pub const COMMAND: &str = "fix-pr";
+
+/// Start a run: the guard table, the spawn, and the record, in that order.
+///
+/// One function because there are two callers now — the rail's button and a review
+/// handing on what it is not allowed to finish — and the guard table is the whole
+/// of what makes starting one safe. A second call site carrying its own copy of the
+/// checks is how one of them ends up a version behind, quietly.
+///
+/// The refusal comes back as the error, verbatim: `fix-pr` refusals are written to
+/// be read by whoever asked.
+pub async fn start(
+    app: &std::sync::Arc<crate::state::AppState>,
+    number: u64,
+) -> anyhow::Result<SessionId> {
+    let pr = {
+        let inner = app.inner.read().await;
+        inner.prs.iter().find(|p| p.number == number).cloned()
+    }
+    .ok_or_else(|| anyhow::anyhow!("PR #{number} is not in the current poll"))?;
+
+    // Asked the way the spawn enforces it, not with a second rule: an idle session
+    // on the branch used to pass here and be refused a moment later by
+    // `spawn_fix_pr_session`, once the run looked started.
+    //
+    // The worktree is not cut before this. `spawn_fix_pr_session` calls
+    // `ensure_pr_worktree` itself, so creating one here only meant a refused run
+    // left a worktree behind — and it is what split the two rules apart, since the
+    // guard then asked about the empty tree it had just made.
+    let branch_busy = crate::spawn::branch_busy(app, &pr.head_ref).await.is_some();
+
+    let verdict = {
+        let inner = app.inner.read().await;
+        let running_automations = inner
+            .sessions
+            .values()
+            .filter(|s| s.is_automation() && s.state.is_live())
+            .count();
+
+        evaluate(&GuardInput {
+            pr: &pr,
+            automation: inner.automation.get(number),
+            // Your own login, from the poll. The authorship guard no longer
+            // compares it to the head repo's owner — it asks whether you can push
+            // there — but an empty one still fails the guard closed, so this must
+            // stay the real viewer rather than anything derived from the PR.
+            viewer: inner.viewer.as_deref().unwrap_or_default(),
+            branch_busy,
+            running_automations,
+        })
+    };
+
+    if let Verdict::No { reason } = verdict {
+        anyhow::bail!("{reason}");
+    }
+
+    let session = crate::spawn::spawn_fix_pr_session(app, number, &pr.head_ref).await?;
+    {
+        let mut inner = app.inner.write().await;
+        // If this never reaches disk, a restart forgets the run started and the
+        // one-run-per-PR cap can re-fire, so the write is not optional.
+        inner.with_automation(&format!("PR #{number} run started"), |a| {
+            a.by_pr.insert(
+                number,
+                PrAutomation::Running {
+                    session,
+                    started: SystemTime::now(),
+                },
+            );
+            true
+        });
+    }
+
+    // Exhaustion is recorded by the session's own exit watcher, which is the
+    // one place that sees a pty end (`settle`).
+    app.notify().await;
+    Ok(session)
+}
 
 /// Write down how a finished run left the PR.
 ///
@@ -328,6 +419,31 @@ mod tests {
         let mut i = input(&p);
         i.running_automations = MAX_AUTOMATION;
         assert!(matches!(evaluate(&i), Verdict::No { .. }));
+    }
+
+    /// What a finishing review asks before handing anything on.
+    ///
+    /// `Pending` is the case worth stating: a review's last act in phase 2 is a
+    /// force-push, so the checks it is asking about were queued seconds ago and are
+    /// almost never anything else. Reading pending as "fine" would make the hand-off
+    /// fire approximately never, which is a feature that does nothing rather than one
+    /// that fails.
+    #[test]
+    fn a_review_hands_on_a_pr_with_something_left_to_watch() {
+        let mut p = pr(1);
+        for (checks, mergeable, want) in [
+            (Checks::Pending, "MERGEABLE", true),
+            (Checks::Failing, "MERGEABLE", true),
+            (Checks::Passing, "CONFLICTING", true),
+            (Checks::Passing, "MERGEABLE", false),
+            // Not "probably fine" and not "probably red": it is the poll saying it
+            // could not tell, and a run rebases and force-pushes.
+            (Checks::Unknown, "MERGEABLE", false),
+        ] {
+            p.checks = checks.clone();
+            p.mergeable = mergeable.into();
+            assert_eq!(wants_watching(&p), want, "{checks:?} / {mergeable}");
+        }
     }
 
     /// The guard asks about push access, not about whose name is on the repo.
