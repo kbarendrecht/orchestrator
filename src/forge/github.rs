@@ -165,6 +165,9 @@ pub fn graphql(token: &str, query: &str) -> Result<Value> {
 /// releases (404), unparseable JSON — is `None`, never an error; the update
 /// nudge is a nicety and must never be able to break startup.
 pub fn latest_release(owner: &str, name: &str, token: Option<&str>) -> Option<(String, String)> {
+    use std::io::Write;
+    use std::process::Stdio;
+
     let url = format!("https://api.github.com/repos/{owner}/{name}/releases/latest");
     let mut cmd = Command::new("curl");
     cmd.args([
@@ -176,13 +179,28 @@ pub fn latest_release(owner: &str, name: &str, token: Option<&str>) -> Option<(S
         "-H",
         "User-Agent: orchd",
     ]);
-    // On the command line the header shows in the process table, but a one-off
-    // read of a release tag is not worth the stdin dance graphql() does, and this
-    // token is read-scoped.
-    if let Some(t) = token.map(str::trim).filter(|t| !t.is_empty()) {
-        cmd.arg("-H").arg(format!("Authorization: Bearer {t}"));
+    // The token rides on stdin, never argv: the same ladder can resolve a
+    // `gh auth token` with wider scopes than this read expects, so it must not
+    // show in the process table for the life of the curl — the stdin dance
+    // graphql() does, for the same reason.
+    let token = token.map(str::trim).filter(|t| !t.is_empty());
+    if token.is_some() {
+        cmd.arg("-H").arg("@-").stdin(Stdio::piped());
     }
-    let out = cmd.arg(&url).output().ok()?;
+    let mut child = cmd
+        .arg(&url)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .ok()?;
+    if let Some(t) = token {
+        child
+            .stdin
+            .as_mut()?
+            .write_all(format!("Authorization: Bearer {t}\n").as_bytes())
+            .ok()?;
+    }
+    let out = child.wait_with_output().ok()?;
     if !out.status.success() {
         return None;
     }

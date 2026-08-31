@@ -30,10 +30,11 @@ switching.
    them, never `git merge`. A conflict whose resolution is a judgement call about
    behaviour → stop and ask, with both sides shown.
 4. Fix what's red:
-   - Failed checks from step 1 → fetch each log; the repo's `github` skill has the
-     commands and the CI-tests-merged-with-develop gotcha.
-   - A failure naming a test absent from the working tree came from develop. Still
-     yours to fix; say so in the report.
+   - Failed checks from step 1 → fetch each log. If the repo has its own skills or
+     docs for reading CI, follow them; watch for a CI that tests your branch merged
+     with `{{UPSTREAM}}` rather than as-is.
+   - A failure naming a test absent from the working tree came from `{{UPSTREAM}}`.
+     Still yours to fix; say so in the report.
    - Run the repo's pre-commit (`mise run pre-commit:run` where it exists) before
      pushing.
 5. Amend into the commit that owns the change; never a "fix review" or "fix CI"

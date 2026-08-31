@@ -5,7 +5,6 @@
 claude-code = "latest"
 node = "latest"
 rust = "latest"
-zig = "latest"
 
 # Screenshot the running app from a terminal — the only way to check a UI change
 # when you cannot see the screen. Needs the app running and Chrome installed;

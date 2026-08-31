@@ -52,19 +52,18 @@ ORCHD_CONFIG_DIR=~/.cache/orchd-fixture/config cargo run -p orchestrator-desktop
 ```
 
 `ORCHD_CONFIG_DIR` moves *every* piece of durable state — `config.json`,
-`sessions.json`, `automation.json`, `hooks.json`, the instance lock, the findings
-block. Without it a fixture run writes throwaway sessions into your real
-`sessions.json`, rewrites `main_checkout` to a scratch clone, and — because
-`todo_path` defaults to this repo's own TODO.md — puts a fake repo's live-findings
-block into a tracked file.
+`sessions.json`, `automation.json`, `hooks.json`, the instance lock. Without it a
+fixture run writes throwaway sessions into your real `sessions.json` and rewrites
+`main_checkout` to a scratch clone.
 
 Overriding `HOME` would have relocated all of it for free and is the wrong lever:
 `claude` reads its credentials from there, so every session the fixture daemon
 spawned would come up unauthenticated.
 
-The fixture config sets `todo_path` to a file in the config dir rather than
-anywhere inside the clone, because the daemon rewrites that block on every poll
-and a dirty fixture worktree silently changes what `triage::gate` sees.
+The live-findings log needs no fixture handling: `findings::dogfood_log` writes
+only when the managed checkout *is* orchd's own source tree, and then only to the
+gitignored `daemon.log`, so a fixture clone dirties nothing. Set `log_path` to
+force the log elsewhere.
 
 ## A fresh clone needs Claude Code's trust accepted once
 

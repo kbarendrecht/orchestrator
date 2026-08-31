@@ -313,7 +313,7 @@ this file, which churned it from every build; they now go to a gitignored
   `enabledMcpjsonServers`, `--allowedTools mcp__<name>` scopes the run to it, and
   the daemon pushes the credential in under the variable `token_env()` names. So a
   feature of orchd only works where somebody else happened to configure a server
-  with the right name, over a transport we do not control (acme's is `http` to
+  with the right name, over a transport we do not control (one repo's is `http` to
   `mcp.shortcut.com`), and the failure lands mid-run on a thread rather than at
   startup: the daemon warns about a missing *token* and says nothing about a
   missing or renamed *server*. The interactive `/resolve` story step has the same

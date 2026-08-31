@@ -179,5 +179,5 @@ offer them:
 - Posting replies or reactions; re-requesting reviewers.
 - **Resolving threads.** Closing a conversation is the comment author's button.
 
-CI red or the branch behind develop → say so in your final message and stop. That is
+CI red or the branch behind its base → say so in your final message and stop. That is
 `fix-pr`'s job, not this pass.

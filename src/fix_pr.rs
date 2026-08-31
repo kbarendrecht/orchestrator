@@ -360,7 +360,7 @@ mod tests {
             title: "t".into(),
             url: String::new(),
             head_ref: "feature/x".into(),
-            head_repo: Some("kbarendrecht/monorepo".into()),
+            head_repo: Some("me/monorepo".into()),
             head_pushable: Some(true),
             base_ref: "develop".into(),
             is_draft: false,
