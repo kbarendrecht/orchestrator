@@ -15,6 +15,41 @@ const showArchived = { main: false, worktrees: false };
  * `renderDrawer`. `renameSession` sets it and clears it. */
 let editingName = null;
 
+/** A duration that keeps moving, without the tree being rebuilt to move it.
+ *
+ *  The base value is kept on the node, so [`tick`] can recompute it against the
+ *  same `sinceSnap` clock a second later. That is the whole mechanism, and it
+ *  exists because the alternative was calling `renderRail` on a timer: a rebuild
+ *  destroys the node under your pointer, `:hover` is not re-targeted until the
+ *  mouse moves, and a native `title` tooltip needs the pointer resting on one
+ *  element for about half a second — which a 1 Hz rebuild never leaves it.
+ *  Rebuilding was never slow (0.46 ms for a 430-node rail); it was simply the
+ *  wrong verb for "one more second has passed".
+ */
+function clock(cls, ms, suffix = '', prefix = '') {
+  // An absent base renders empty and is left un-marked. `Number('')` is 0, so a
+  // null written into the dataset would come back as a clock counting up from the
+  // epoch of nothing — a "0s" that grows where there had been no text at all.
+  if (ms == null) return el('span', cls, '');
+  const span = el('span', cls, prefix + duration(sinceSnap(ms)) + suffix);
+  span.dataset.clock = String(ms);
+  if (suffix) span.dataset.clockSuffix = suffix;
+  if (prefix) span.dataset.clockPrefix = prefix;
+  return span;
+}
+
+/** Advance every duration the rail is showing. The timer calls this, not render. */
+function tick() {
+  for (const node of document.querySelectorAll('[data-clock]')) {
+    const el_ = /** @type {HTMLElement} */ (node);
+    const base = Number(el_.dataset.clock);
+    if (!Number.isFinite(base)) continue;
+    el_.textContent = (el_.dataset.clockPrefix || '')
+      + duration(sinceSnap(base))
+      + (el_.dataset.clockSuffix || '');
+  }
+}
+
 function renderRail() {
   if (editingName !== null) return;
   const rail = $('rail');
@@ -171,7 +206,7 @@ function prGroup() {
     // like the rail's other ages, so a poller that is stuck without erroring
     // reads as stale rather than current. Hidden while a fetch is in flight.
     if (snap.pr_age_ms != null && !snap.pr_polling) {
-      count.appendChild(el('span', 'prage', ` · ${duration(sinceSnap(snap.pr_age_ms))} ago`));
+      count.appendChild(clock('prage', snap.pr_age_ms, ' ago', ' · '));
     }
   }
   head.appendChild(count);
@@ -369,7 +404,7 @@ function archivedRow(s) {
   row.appendChild(el('span', 'sess-name', arcName, arcName));
   const forked = forkBadge(s);
   if (forked) row.appendChild(forked);
-  row.appendChild(el('span', 'sess-id', duration(sinceSnap(s.created_ms)) + ' ago'));
+  row.appendChild(clock('sess-id', s.created_ms, ' ago'));
   btn.appendChild(row);
 
   if (!s.resumable) {
@@ -460,7 +495,7 @@ function sessionRow(s, w) {
   // The session's age, not its id. A hex slice told worktree-sharing rows apart
   // but was unreadable — a value you never recognise — and age is worth reading on
   // every row and moves as the session does. Same token the archive rows show.
-  row.appendChild(el('span', 'sess-id', duration(sinceSnap(s.created_ms)) + ' ago'));
+  row.appendChild(clock('sess-id', s.created_ms, ' ago'));
   btn.appendChild(row);
 
   const sub = el('div', 'sess-sub');
@@ -473,9 +508,9 @@ function sessionRow(s, w) {
   // the repo's link hooks before it says anything, which is ten seconds of
   // nothing. A number that moves is the difference between slow and hung.
   if (isWaiting(s) && s.waiting_ms != null) {
-    sub.appendChild(el('span', null, duration(sinceSnap(s.waiting_ms))));
+    sub.appendChild(clock(null, s.waiting_ms));
   } else if (s.state.state === 'starting') {
-    sub.appendChild(el('span', null, duration(sinceSnap(s.created_ms))));
+    sub.appendChild(clock(null, s.created_ms));
   }
   btn.appendChild(sub);
 
@@ -836,8 +871,10 @@ function renderWaitbar() {
     const longest = waiting.reduce(
       (a, b) => ((a.waiting_ms ?? 0) >= (b.waiting_ms ?? 0) ? a : b));
     bar.className = 'waitbar on';
-    bar.appendChild(el('span', null,
-      `${waiting.length} waiting · longest ${duration(sinceSnap(longest.waiting_ms) ?? 0)}`));
+    // Two nodes, because only the second half moves: the count changes with a
+    // snapshot, the duration changes every second.
+    bar.appendChild(el('span', null, `${waiting.length} waiting · longest `));
+    bar.appendChild(clock(null, longest.waiting_ms ?? 0));
     bar.onclick = () => setSelected(longest.id);
   } else {
     /* Nobody is asking for you; a restart has just put several agents back at an
@@ -876,4 +913,4 @@ async function nudgeAll() {
   }
 }
 
-export { renderRail as render, railName as rowName, closeSession };
+export { renderRail as render, tick, railName as rowName, closeSession };

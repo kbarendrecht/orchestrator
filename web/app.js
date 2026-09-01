@@ -1490,8 +1490,14 @@ Settings.setup();
 setupColumns();
 setupChrome();
 connect();
-// The waiting clock has to tick even when nothing else changes.
-setInterval(() => { Rail.render(); }, 1000);
+/* The waiting clock has to tick even when nothing else changes — and ticking is
+   all it does. This used to call `Rail.render()`, which opens with
+   `replaceChildren`: the row under your pointer was destroyed and rebuilt every
+   second, `:hover` was not re-targeted until the mouse moved, and a native
+   `title` tooltip — which wants the pointer resting on one element for about half
+   a second — arrived late or never. `tick` rewrites the duration strings in
+   place. */
+setInterval(() => { Rail.tick(); }, 1000);
 
 window.orchTeardown = teardown;
 
