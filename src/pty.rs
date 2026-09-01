@@ -85,6 +85,15 @@ pub struct PtyHandle {
 impl PtyHandle {
     /// Spawn `command` in a pty rooted at `cwd`, with `env` layered on top of
     /// the daemon's own environment.
+    ///
+    /// **A `cwd` that is not a directory is refused here, loudly.** `portable-pty`
+    /// treats it as absent instead: `CommandBuilder::as_command` filters the cwd on
+    /// `is_dir()` and falls back to `$HOME`, so a session aimed at a worktree that
+    /// has been removed does not fail — it starts in your home directory and runs
+    /// there. That is worse than a crash, because the agent is then working in a
+    /// tree nobody chose. Seen for real: a fix-pr run on a stale workspace record
+    /// opened in `$HOME`, and only Claude Code's own workspace-trust prompt stopped
+    /// it, which is not a guarantee the daemon may rely on.
     pub fn spawn(
         command: &[String],
         cwd: &Path,
@@ -92,6 +101,13 @@ impl PtyHandle {
         unset: &[&str],
         size: (u16, u16),
     ) -> Result<Spawned> {
+        if !cwd.is_dir() {
+            anyhow::bail!(
+                "{} is not a directory, so there is nowhere to start {}",
+                cwd.display(),
+                command.first().map(String::as_str).unwrap_or("the command")
+            );
+        }
         let (rows, cols) = size;
         let pty_system = native_pty_system();
         let pair = pty_system
@@ -291,6 +307,25 @@ pub fn pid_alive(pid: u32) -> bool {
 mod tests {
     use super::*;
     use std::time::Duration;
+    /// portable-pty answers a missing cwd with `$HOME` rather than an error
+    /// (`CommandBuilder::as_command` filters it on `is_dir()`), so without this
+    /// guard a session aimed at a removed worktree runs in the home directory and
+    /// says nothing. The refusal is the whole point; the wording only has to name
+    /// the path.
+    #[test]
+    fn a_cwd_that_is_not_there_is_refused_rather_than_swapped_for_home() {
+        let gone = std::env::temp_dir().join(format!("orchd-gone-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&gone);
+        let err = match PtyHandle::spawn(&["cat".to_string()], &gone, &[], &[], (24, 80)) {
+            Ok(_) => panic!("a missing directory must fail the spawn"),
+            Err(e) => e,
+        };
+        assert!(
+            err.to_string().contains(&gone.display().to_string()),
+            "the refusal has to name the path: {err}"
+        );
+    }
+
 
     #[test]
     fn spawns_reads_and_reports_exit() {
