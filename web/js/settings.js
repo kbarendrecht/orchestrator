@@ -154,9 +154,26 @@ async function saveSettings() {
   };
   try {
     await call('/api/config', body);
-    $('setnote').textContent = 'saved — restart orchd to apply';
   } catch (e) {
     $('setnote').textContent = e.message;
+    return;
+  }
+  /* Saved is only half of it: nothing here reaches the running daemon. The config
+     is read once at start — `upstream_ref` is baked into the push guard's hook
+     there, `main_processes` describes things already spawned — so the panel used
+     to say "restart orchd to apply" and leave you to it, which made trying a
+     review command a restart each time you changed your mind.
+     The restart is the same one the agent-upgrade bar offers: the window goes
+     down, the daemon takes its sessions with it, and `auto_resume` brings the
+     live ones back with `--resume`. */
+  $('setnote').textContent = 'saved, restarting\u2026';
+  try {
+    await call('/api/window/restart');
+  } catch (e) {
+    // A browser tab has no window to restart, and the daemon says so. Then the
+    // old sentence is the right one: it is saved, and it applies when you restart
+    // it yourself.
+    $('setnote').textContent = `saved, restart orchd to apply (${e.message})`;
   }
 }
 
@@ -186,6 +203,8 @@ function setupSettings() {
     renderProcs();
   };
   $('setsave').onclick = saveSettings;
+  $('setsave').title = 'Saves, then quits and comes back, because the config is '
+    + 'read at start. Live sessions are resumed as they were when `auto_resume` is on.';
 
   /* **Nothing closes this pane by accident.** The gear, the X and Esc are the
      three ways out, and that is deliberate: what used to sit here was a captured

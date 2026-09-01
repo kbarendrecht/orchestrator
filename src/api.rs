@@ -237,8 +237,13 @@ pub async fn get_config(State(app): State<Arc<AppState>>) -> ApiResult<crate::co
 }
 
 /// Persist edited settings to `config.json`. Validation is serde's — a bad
-/// tracker or a malformed process rejects the whole POST. Applied on the next
-/// start; the running config is not mutated, so the panel says "restart to apply".
+/// tracker or a malformed process rejects the whole POST.
+///
+/// **Nothing here reaches the running daemon.** The config is read once at start:
+/// `upstream_ref` is baked into the push guard's hook there, and `main_processes`
+/// describes processes already spawned. So the panel's button is "Save & restart"
+/// and it asks for the restart itself once this returns — `restart_required` is
+/// still in the answer for anything driving the API by hand.
 pub async fn set_config(
     State(_app): State<Arc<AppState>>,
     Json(body): Json<crate::config::Settings>,
