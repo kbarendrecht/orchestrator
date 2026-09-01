@@ -143,6 +143,12 @@ opens on a plain double-click, unlike the unsigned `.dmg`.
 20.04 ships only 4.0 and will not work). **macOS** uses the system WebView and
 needs nothing extra.
 
+**After a mise or tarball install, run `orchestrator-desktop` once from a
+terminal.** That first launch writes the launcher entry: a Finder and Spotlight
+entry on macOS, an application-menu entry on Linux. From then on you can start it
+the way you start anything else, and an upgrade keeps the entry pointing at the
+build you are running.
+
 Then launch it and point it at a git checkout when it asks (it shows a folder
 picker when it has no config, or when the one on record has moved). That checkout
 is *main*; worktrees are cut inside it under `.claude/worktrees/`. State lives in
@@ -263,11 +269,11 @@ what you think it is: the daemon's environment is whatever started it, and start
 from a desktop launcher that is the systemd user manager's, which holds no
 checkout's variables at all.
 
-The symptom is an MCP server that answers 401. An `.mcp.json` entry spelled
-`"Authorization": "Bearer ${SHORTCUT_API_TOKEN}"` expands from the process
-environment and nowhere else, so an absent variable goes out as literal text. It
-stays hidden because typing `claude` in that checkout still works — `mise activate`
-exports at a shell prompt, and an app has no prompt.
+It stays hidden because typing `claude` in that checkout still works: `mise
+activate` exports at a shell prompt, and an app has no prompt. So anything that
+expands a variable from the process environment — an `.mcp.json` header, a tool a
+session shells — gets the empty string and fails in its own words rather than in
+words about `PATH`.
 
 So the daemon asks the tool directly, per spawn, in the session's own directory:
 `mise env --json` or `direnv export json`. Two things worth knowing:
