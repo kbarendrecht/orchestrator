@@ -461,6 +461,21 @@ pub async fn stop_failure(
     ok()
 }
 
+/// A session's process says it is finished.
+///
+/// **Not every `SessionEnd` for an id belongs to the session holding that id.** A
+/// relocation resumes under the *same* id in another directory, so the process it
+/// killed on the way can still have a hook in flight — and settling on that would
+/// flip the live replacement to `Exited` and, because `release_main` keys on the
+/// id, hand main's claim back out from under it. `watch_session_exit` guards the
+/// same race by comparing pty handles, which is the exact test; a hook is an HTTP
+/// request and has no handle to compare.
+///
+/// What it does have is where it ran. A moved conversation is somewhere else by
+/// definition, and the dying process reports the path it was in, so a `cwd` that
+/// disagrees with the record is a hook from a process this session no longer is.
+/// A payload without one settles as before: a guard that cannot tell must not
+/// start refusing.
 pub async fn session_end(
     AxState(app): AxState<Arc<AppState>>,
     headers: HeaderMap,
@@ -469,18 +484,41 @@ pub async fn session_end(
     let Some(id) = session_of(&headers, &payload) else {
         return ok();
     };
+    // Resolved, because `s.cwd` is: `main_checkout` is canonicalized at parse and
+    // the adopted worktree path is canonicalized where the agent reports it. On a
+    // Mac the difference is `/tmp` against `/private/tmp`, which would make every
+    // hook look stale.
+    let said = payload
+        .cwd
+        .as_deref()
+        .map(|c| std::fs::canonicalize(c).unwrap_or_else(|_| PathBuf::from(c)));
+
+    let mut stale = false;
     let workspace = {
         let mut inner = app.inner.write().await;
         match inner.sessions.get_mut(&id) {
             Some(s) => {
-                // Buffer is retained: the transcript and scrollback outlive the
-                // process (§3).
-                s.set_state(State::Exited);
-                Some(s.workspace.clone())
+                if said.as_ref().is_some_and(|c| *c != s.cwd) {
+                    stale = true;
+                    None
+                } else {
+                    // Buffer is retained: the transcript and scrollback outlive the
+                    // process (§3).
+                    s.set_state(State::Exited);
+                    Some(s.workspace.clone())
+                }
             }
             None => None,
         }
     };
+    if stale {
+        tracing::info!(
+            session = %id,
+            "ignored a SessionEnd from {} — this conversation has moved",
+            said.unwrap_or_default().display()
+        );
+        return ok();
+    }
     app.release_main(id).await;
     if let Some(ws) = workspace {
         let _ = app.reconcile(&ws).await;
@@ -780,6 +818,69 @@ pub fn write_settings(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A `SessionEnd` from the process a relocation killed must not settle the
+    /// live session that took its id.
+    ///
+    /// The exit watcher guards this by pty handle. A hook has no handle, so it is
+    /// guarded on where the process ran: the moved conversation is somewhere else,
+    /// and main's claim is what the old ending would have handed back.
+    #[tokio::test]
+    async fn a_session_end_from_the_tree_the_conversation_left_settles_nothing() {
+        use crate::config::Config;
+        use crate::model::{Kind, Session, MAIN};
+        use crate::state::AppState;
+
+        let dir = std::env::temp_dir().join(format!("orchd-endhook-{}", std::process::id()));
+        let (here, gone) = (dir.join("main"), dir.join("old-worktree"));
+        std::fs::create_dir_all(&here).unwrap();
+        std::fs::create_dir_all(&gone).unwrap();
+        let cfg: Config = serde_json::from_str(&format!(
+            r#"{{"main_checkout":"{}","port":7797}}"#,
+            here.display()
+        ))
+        .unwrap();
+        let app = AppState::new(cfg, "t".into(), crate::window::Chrome::None);
+
+        // The session as a relocation leaves it: same id, now living in main.
+        let id = Uuid::new_v4();
+        {
+            let mut inner = app.inner.write().await;
+            let mut s = Session::new(id, MAIN.to_string(), here.clone(), Kind::Interactive);
+            s.set_state(State::Working);
+            inner.sessions.insert(id, s);
+        }
+        app.claim_main(id).await.unwrap();
+
+        let headers = {
+            let mut h = HeaderMap::new();
+            h.insert("x-orch-session", id.to_string().parse().unwrap());
+            h
+        };
+        let stale = HookPayload {
+            cwd: Some(gone.to_string_lossy().into_owned()),
+            ..HookPayload::default()
+        };
+        session_end(AxState(app.clone()), headers.clone(), Json(stale)).await;
+
+        {
+            let inner = app.inner.read().await;
+            assert!(
+                inner.sessions[&id].state.is_live(),
+                "a hook from the tree it left must not end it"
+            );
+        }
+        assert_eq!(app.main_occupant().await, Some(id), "nor hand main's claim back");
+
+        // And the real one, from where the conversation actually is, still settles.
+        let real = HookPayload {
+            cwd: Some(here.to_string_lossy().into_owned()),
+            ..HookPayload::default()
+        };
+        session_end(AxState(app.clone()), headers, Json(real)).await;
+        let inner = app.inner.read().await;
+        assert!(!inner.sessions[&id].state.is_live(), "its own ending still ends it");
+    }
 
     /// The rail said "needs permission" for a multiple choice, which is a
     /// different thing to walk over to.

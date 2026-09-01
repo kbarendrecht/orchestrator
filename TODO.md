@@ -371,17 +371,6 @@ this file, which churned it from every build; they now go to a gitignored
 
 ## Decisions worth revisiting
 
-- **`hooks::session_end` settles a session with no identity check, unlike the exit
-  watcher.** Deferred, not overlooked. `watch_session_exit` may only settle a
-  session whose pty is still its own — the guard that stops a relocated session's
-  old watcher from marking the live replacement `Exited` and handing main's claim
-  back out. The `SessionEnd` hook does the same two things (`set_state(Exited)`,
-  `release_main`) with nothing of the sort, so an arriving hook from the process a
-  relocation just killed would reach past `reclaim_main` and do it anyway.
-  Unevidenced: nothing has been seen to fire `SessionEnd` on the way to a SIGKILL,
-  and the e2e fake agent does not send one, so there is no reproduction to point
-  at. If main is ever found live-but-unoccupied again, start here.
-
 - **History keeps its AI attribution.** *Decided, not overlooked.* The monorepo
   half of this is **done**: a rewrite on 2026-09-01 scrubbed the names out of every
   message (0 mentions in 430 commits now) and dropped the commits that added the
