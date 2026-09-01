@@ -727,7 +727,12 @@ fn remember_window(app: &AppHandle) {
 /// left behind by `exit`, which is the documented behaviour and exactly what makes
 /// the wait sufficient: `acquire` clears a file whose owner is gone.
 fn relaunch() {
-    let exe = match std::env::current_exe() {
+    // [`stable_exe`], not the path we are running from. A restart is what applies a
+    // self-upgrade, and mise installs each version in its own directory: by the time
+    // this runs, the path this process was started from may be the version that was
+    // just replaced, or gone. The `latest` symlink beside it is the one that means
+    // "the build to run now".
+    let exe = match launcher_target() {
         Ok(p) => p,
         Err(e) => return tracing::error!("cannot restart, no path to this binary: {e}"),
     };

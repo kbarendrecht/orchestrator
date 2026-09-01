@@ -439,6 +439,12 @@ stack_up: boolean | null,
  */
 update: UpdateInfo | null, 
 /**
+ * The app's own upgrade run: `running` while `mise upgrade` goes, then a tail
+ * that is empty on success. Success means *installed*, not applied — this
+ * process is still the old build, so the bar then asks for a restart.
+ */
+self_upgrade_run: UpgradeRun | null, 
+/**
  * A newer Claude Code than the installed one, or `None`. Actionable in the
  * UI: the upgrade cannot disturb a session already running.
  */
@@ -493,10 +499,19 @@ export type TokenSource = "env" | "file" | "gh_cli";
 export type TurnReason = "turn_complete" | "asked_a_question" | "needs_permission" | "ready" | "interrupted";
 
 /**
- * A release newer than what is running. `mise` does the upgrade; this only tells
- * you it is there.
+ * A release newer than what is running.
  */
-export type UpdateInfo = { current: string, latest: string, url: string, };
+export type UpdateInfo = { current: string, latest: string, url: string, 
+/**
+ * The mise tool that installed this binary, when one did.
+ *
+ * What decides whether the bar can offer a button at all: `Some` is an install
+ * the app can upgrade itself (`mise upgrade <tool>`), `None` is a `.deb`, an
+ * AppImage, a `.dmg` or a checkout, where the honest offer is the release link
+ * it already had. Resolved by `self_update::providing_tool` at check time,
+ * off-thread, because it shells mise.
+ */
+tool: string | null, };
 
 /**
  * An upgrade the daemon is running, or the failure it left behind.

@@ -193,8 +193,13 @@
 
 <!-- A newer release exists. Notice only: `mise up` does the upgrade. Shown until
      dismissed, and again when a version newer than the dismissed one lands. -->
+<!-- A newer release of the app. The link is always the release; the button is
+     there only when mise installed this build, because that is the only install
+     the app can upgrade without a password or replacing a file somebody
+     downloaded. Unlike the agent's, this one is not applied until a restart. -->
 <div class="updatebar" id="updatebar" hidden>
   <a class="updatebar-link" id="updatelink" target="_blank" rel="noreferrer"></a>
+  <button class="agentgo" id="updatego" type="button" hidden>Upgrade</button>
   <span class="updatebar-x" id="updatex" role="button" title="Dismiss">&#10005;</span>
 </div>
 

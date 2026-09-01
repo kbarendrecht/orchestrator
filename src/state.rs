@@ -240,9 +240,13 @@ pub struct Inner {
     /// `None` before the first probe; the drawer header reads it as up/down.
     pub stack_up: Option<bool>,
     /// A newer GitHub release than the running build, if the update poller has
-    /// found one. Surfaced to the SPA as a dismissible nudge; the actual upgrade
-    /// is `mise up`.
+    /// found one. Surfaced to the SPA as a dismissible nudge, with a button when
+    /// mise is what installed us.
     pub update: Option<UpdateInfo>,
+    /// The app's own upgrade, while it runs and after it ends. The sibling of
+    /// `upgrade_run`, kept apart from it because both can be in flight at once and
+    /// a shared slot would let one report the other's outcome.
+    pub self_upgrade_run: Option<crate::agent_update::UpgradeRun>,
     /// A newer Claude Code than the one installed, if the agent poller has found
     /// one. Unlike `update` this one is actionable in place: upgrading cannot
     /// disturb a running session, so the SPA offers a button rather than a link.
@@ -334,14 +338,21 @@ impl Inner {
     }
 }
 
-/// A release newer than what is running. `mise` does the upgrade; this only tells
-/// you it is there.
+/// A release newer than what is running.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
 pub struct UpdateInfo {
     pub current: String,
     pub latest: String,
     pub url: String,
+    /// The mise tool that installed this binary, when one did.
+    ///
+    /// What decides whether the bar can offer a button at all: `Some` is an install
+    /// the app can upgrade itself (`mise upgrade <tool>`), `None` is a `.deb`, an
+    /// AppImage, a `.dmg` or a checkout, where the honest offer is the release link
+    /// it already had. Resolved by `self_update::providing_tool` at check time,
+    /// off-thread, because it shells mise.
+    pub tool: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -404,6 +415,7 @@ impl AppState {
                 locks_held: Vec::new(),
                 stack_up: None,
                 update: None,
+                self_upgrade_run: None,
                 agent_update: None,
                 upgrade_run: None,
             }),
@@ -603,6 +615,7 @@ impl AppState {
             upstream_ref: self.cfg.upstream_ref.clone(),
             stack_up: inner.stack_up,
             update: inner.update.clone(),
+            self_upgrade_run: inner.self_upgrade_run.clone(),
             agent_update: inner.agent_update.clone(),
             upgrade_run: inner.upgrade_run.clone(),
             resolve_runs: inner
@@ -1070,6 +1083,10 @@ pub struct Snapshot {
     pub stack_up: Option<bool>,
     /// A newer release than the running build, or `None`.
     pub update: Option<UpdateInfo>,
+    /// The app's own upgrade run: `running` while `mise upgrade` goes, then a tail
+    /// that is empty on success. Success means *installed*, not applied — this
+    /// process is still the old build, so the bar then asks for a restart.
+    pub self_upgrade_run: Option<crate::agent_update::UpgradeRun>,
     /// A newer Claude Code than the installed one, or `None`. Actionable in the
     /// UI: the upgrade cannot disturb a session already running.
     pub agent_update: Option<crate::agent_update::AgentUpdate>,

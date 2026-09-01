@@ -411,6 +411,87 @@ this file, which churned it from every build; they now go to a gitignored
   warning that treats `TokenSource::GhCli` as too wide loses its subject. The README
   describes today's split rather than this plan.
 
+- **The watch build leaks a process every time its client dies, and orchestrator is
+  where that gets fixed.** Found on the scienta box: five `ng build --watch` stacked
+  inside one `scienta-assets` container, ages 2h to 20h, about 8 GiB with their
+  esbuild children, swap at 19 of 23 GiB. `mise run angular:watch` is
+  `docker compose exec -ti scienta-assets pnpm run build-watch`, and docker does not
+  signal the container-side process when the exec client goes. Verified by counting:
+  one live exec client, four live watchers. Every new `mise run watch` stacks another
+  and nothing reaps them.
+
+  The model here already fits. `ManagedSpec` gives one `proc_id` per
+  `workspace:name`, start is refused when it is already running (`api.rs:1283`), and
+  restart kills first (`api.rs:1683`). What is missing is that the pty would own the
+  wrong process: `PtyHandle::kill()` takes the local exec client and leaves the build
+  running, so declaring the watch in `main_processes` as it stands buys nothing. Two
+  ways out. A dedicated compose service puts the lifecycle on docker and there is no
+  exec client at all; a `stop_command` on `ManagedSpec` keeps `exec` and adds a
+  second thing to keep correct.
+
+  **The compose-service route costs the health parsing, and that is the open
+  question.** `ng-watch` health is parsed off pty output (`health.rs`). A service has
+  no pty, so it becomes `docker compose logs -f` and the rail's error summary depends
+  on that stream behaving the same. Unproven either way.
+
+  Two leaks of the same class are already in here regardless of which route wins.
+  `spawn.rs:1552` does `w.processes.retain(|p| p.id != proc_id)` and drops the old
+  handle without killing it, and `PtyHandle` has no `Drop` impl, so the child
+  survives; the API guards the usual path, but `autostart_processes` on a daemon
+  restart does not go through that guard. And `Server::shutdown` kills children
+  (`lib.rs:117`) only on `ctrl_c` (`main.rs:39`), so a SIGTERM or a crash leaks every
+  managed process.
+
+- **The webview spends its frame budget on terminals nobody is looking at, and a
+  hidden one costs more than a visible one.** Two symptoms, one cause: typing
+  echoes late, and a `title` tooltip in the rail takes several tries to appear.
+
+  `Term.show` only sets `host.hidden`. The socket stays open and `term.write` keeps
+  running, so every terminal opened this session parses its pty stream forever.
+  `.termhost[hidden]` is `display:none`, which was assumed to make that free;
+  CLAUDE.md still says the renderer stops. The paint stops. The cost does not, and
+  on WebKit it goes *up*.
+
+  Measured under playwright's WebKit, 8 terminals at 140x40, `scrollback: 2000`,
+  8 KB written to each per frame, two runs per cell:
+
+  | | all 8 visible | 7 of 8 hidden |
+  |---|---|---|
+  | WebKit | 37-41 ms/frame | 172-188 ms/frame |
+  | Chrome | 16.6-16.7 ms/frame | 24.5-25.0 ms/frame |
+
+  A hidden terminal is about five times a visible one, and only on the engine the
+  app actually runs on. 180 ms a frame is the typing delay: the keystroke leaves
+  immediately and the echo waits for the main thread. It is *not* the DOM renderer
+  under heavy output that the WebGL entry below expected to bite, because the
+  all-visible column is fine.
+
+  The remedy that entry already names needs no WebGL: stop feeding a hidden
+  terminal. `ws::pty_loop` replays the 512 KB ring buffer on connect, so closing
+  the socket on hide and reattaching on show loses nothing inside that buffer.
+  Queueing chunks while hidden is the smaller change and loses nothing at all.
+
+  Caveat: playwright's WebKit is not WebKitGTK 2.50.4. Same family, different
+  build, and the gap measured here is far wider than that difference.
+
+- **The rail rebuilds every second and drops the hover under your pointer.**
+  `app.js` runs `Rail.render()` at 1 Hz so the waiting clock ticks, and
+  `renderRail` opens with `rail.replaceChildren()` whether anything changed or not.
+  Hold the pointer still on a `.sess` row and `:hover` is true before the rebuild
+  and false after it, in Chrome and WebKit alike: the node is destroyed and hover
+  is not re-targeted until the mouse moves. A native `title` tooltip wants the
+  pointer resting on one element for about half a second, so the rebuild leaves it
+  a 500 ms window per second, and it arrives late or not at all.
+
+  Speed is not the problem. A 430-node rail renders in 0.46 ms. Rebuilding is the
+  problem. The tick exists only for the duration strings, so writing those text
+  nodes in place would settle it without anyone having to build a diffing layer.
+
+- **`notify()` writes `sessions.json` before every snapshot.** `AppState::notify`
+  calls `persist()` first, a blocking 79 KB write on a tokio worker thread, from
+  about seventy call sites, and 92 session records have piled up. Not what makes
+  the window feel slow, but it runs on every hook.
+
 ## Decisions worth revisiting
 
 - **`hooks::session_end` settles a session with no identity check, unlike the exit

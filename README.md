@@ -101,6 +101,12 @@ provenance, and extracts **both** binaries — so `orch` lands beside
 `orchestrator-desktop` and no second entry is needed. (The older `ubi:` backend
 still resolves these releases, but mise has deprecated it.)
 
+Installed this way, **the app upgrades itself**: the release nudge carries an
+Upgrade button that runs `mise upgrade` for you, then a Restart button, because the
+new build is installed beside the running one and a restart is what picks it up.
+Every other install keeps the link to the release instead — a `.deb` belongs to
+apt, and an AppImage or a `.dmg` is a file you downloaded.
+
 ### From a release tarball
 
 ```
@@ -485,6 +491,7 @@ src/
   reviews.rs    review queue: runs reviews_command, parses JSON, degraded states
   fix_pr.rs     automation state, the fix-pr guard table, a run's verdict
   agent_update.rs   is Claude Code behind (via mise), and the one-click upgrade
+  self_update.rs    which mise tool installed *us*, so the app can upgrade itself
   worktree.rs   teardown preflight, archive, revive, removal
   store.rs      session record persistence, orphan reaping
   api.rs        HTTP surface and the origin/token guards      ws.rs  event stream + pty attach

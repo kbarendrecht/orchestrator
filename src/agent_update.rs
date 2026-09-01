@@ -160,13 +160,35 @@ pub struct UpgradeRun {
 /// with no way to find out otherwise.
 const UPGRADE_TIMEOUT_SECS: u64 = 300;
 
+/// Which install an upgrade belongs to.
+///
+/// One runner, two subjects. They differ in which slot the report lands in and in
+/// whether the check that found the update is worth re-running, and in nothing
+/// else — so the bounded exec, the captured tail and the reporting stay one
+/// implementation. That reporting is the part already got wrong once (a successful
+/// run used to clear itself, which read as a button that did nothing), and a second
+/// copy is how one of them would get the fix.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Subject {
+    /// Claude Code, which every session spawns fresh.
+    Agent,
+    /// This app. Nothing about the running process changes: mise installs beside
+    /// it, so the report is "restart" rather than "done".
+    App,
+}
+
 /// Run the upgrade, then say what happened.
 ///
 /// Detached: the button answers immediately, and the bar follows the state through
 /// the snapshot. `run_bounded` captures rather than streams, so there is no live
 /// output to show — what a failure needs is the *end* of it, which is what a
 /// captured tail is.
-pub fn run_upgrade(app: std::sync::Arc<crate::state::AppState>, tool: String, to: String) {
+pub fn run_upgrade(
+    app: std::sync::Arc<crate::state::AppState>,
+    tool: String,
+    to: String,
+    subject: Subject,
+) {
     tokio::spawn(async move {
         let main = app.cfg.main_checkout.clone();
         let argv = upgrade_argv(&tool);
@@ -194,13 +216,20 @@ pub fn run_upgrade(app: std::sync::Arc<crate::state::AppState>, tool: String, to
         // Asked either way, and before the bar is updated: the check is what decides
         // whether the nudge stays, so a failure that actually installed something is
         // reported by the version rather than by our guess about the exit code.
-        if let Err(e) = refresh(&app).await {
-            tracing::warn!("re-checking the agent version after an upgrade failed: {e:#}");
+        //
+        // Only for the agent. The app's own nudge compares the newest release
+        // against the version *this process* was built as, and a successful upgrade
+        // does not change that — it is still true until the restart, and re-checking
+        // would only cost a request to say so again.
+        if subject == Subject::Agent {
+            if let Err(e) = refresh(&app).await {
+                tracing::warn!("re-checking the agent version after an upgrade failed: {e:#}");
+            }
         }
 
         {
             let mut inner = app.inner.write().await;
-            inner.upgrade_run = match &failure {
+            let report = match &failure {
                 Some(text) => {
                     tracing::warn!("upgrading {tool} failed: {text}");
                     Some(UpgradeRun {
@@ -220,6 +249,10 @@ pub fn run_upgrade(app: std::sync::Arc<crate::state::AppState>, tool: String, to
                     })
                 }
             };
+            match subject {
+                Subject::Agent => inner.upgrade_run = report,
+                Subject::App => inner.self_upgrade_run = report,
+            }
         }
         app.notify().await;
     });

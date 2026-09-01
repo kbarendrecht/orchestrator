@@ -226,11 +226,69 @@ let updateDismissed = null;
 function renderUpdate() {
   const bar = $('updatebar');
   const u = snap.update;
-  if (!u || updateDismissed === u.latest) { bar.hidden = true; return; }
+  /* The daemon's own state, for the reasons `renderAgentUpdate` gives: a local
+     flag cannot learn that the run died, does not survive a reload, and is unknown
+     to a second window. */
+  const run = snap.self_upgrade_run;
+  if ((!u && !run) || (u && updateDismissed === u.latest)) { bar.hidden = true; return; }
+  const done = !!run && !run.running;
+  const failed = done && !!run.tail;
+  const succeeded = done && !failed;
+
   const link = /** @type {HTMLAnchorElement} */ ($('updatelink'));
-  link.textContent = `Update available — v${u.latest} (you have v${u.current}). Run mise up`;
-  link.href = u.url || '#';
-  $('updatex').onclick = () => { updateDismissed = u.latest; bar.hidden = true; renderAgentUpdate(); };
+  /* `u` can be gone while a run is not — the release check refreshes on its own
+     clock — so every arm that names a version reads it off the run, which carries
+     the one it is installing. */
+  link.textContent = failed
+    ? `v${run.to} did not install: ${run.tail.split('\n')[0]}`
+    : succeeded
+      ? `v${run.to} installed — restart to run it`
+      : run
+        ? `installing v${run.to}\u2026`
+        : u.tool
+          ? `Update available — v${u.latest} (you have v${u.current})`
+          : `Update available — v${u.latest} (you have v${u.current}). Run mise up`;
+  link.href = u?.url || '#';
+  link.title = failed ? run.tail : '';
+
+  /* No button unless mise installed this build. A `.deb` wants apt and a password,
+     an AppImage and a `.dmg` are files somebody downloaded, and offering to
+     upgrade what we cannot is worse than the link. */
+  const go = /** @type {HTMLButtonElement} */ ($('updatego'));
+  go.hidden = !(u?.tool || run);
+  go.disabled = !!run && run.running;
+  go.textContent = run?.running ? 'Upgrading\u2026'
+    : failed ? 'Retry' : succeeded ? 'Restart' : 'Upgrade';
+  go.title = failed ? run.tail
+    : succeeded
+      ? 'Quits and comes back on the new version. Your sessions are resumed as they were.'
+      : run ? 'Running `mise upgrade`.'
+        : `Runs \`mise upgrade ${u.tool}\`. Installed beside this build, so nothing `
+          + 'changes until you restart, and your sessions are untouched either way.';
+  go.onclick = async () => {
+    // A restart takes the window down, so there is nothing to report back into:
+    // the answer is the app coming back on the new version.
+    try {
+      await call(succeeded ? '/api/window/restart' : '/api/update/upgrade');
+    } catch (e) {
+      toast(e.message, true);
+    }
+  };
+
+  $('updatex').onclick = async () => {
+    // A finished run is the daemon's to forget, or it comes back on the next
+    // reload. The nudge itself is dismissed in the page, like it always was.
+    if (done) {
+      try {
+        await call('/api/update/upgrade/dismiss');
+      } catch (e) {
+        toast(e.message, true);
+      }
+    }
+    if (u) updateDismissed = u.latest;
+    bar.hidden = true;
+    renderAgentUpdate();
+  };
   keyActivate($('updatex'));
   bar.hidden = false;
 }

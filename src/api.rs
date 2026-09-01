@@ -1610,8 +1610,72 @@ pub async fn upgrade_agent(State(app): State<Arc<AppState>>) -> ApiResult<serde_
         u
     };
     app.notify().await;
-    crate::agent_update::run_upgrade(app.clone(), u.tool.clone(), u.latest.clone());
+    crate::agent_update::run_upgrade(
+        app.clone(),
+        u.tool.clone(),
+        u.latest.clone(),
+        crate::agent_update::Subject::Agent,
+    );
     Ok(Json(json!({ "from": u.current, "to": u.latest })))
+}
+
+/// Upgrade the app itself to the release the bar is offering.
+///
+/// The sibling of [`upgrade_agent`], and everything it says about pressing a
+/// button that runs `mise upgrade` holds here too — with one difference that runs
+/// the other way. Upgrading the agent is invisible to what is running; upgrading
+/// *this* is not applied at all until the app restarts, because the process
+/// serving you is the old build and mise installs beside it. So a finished run
+/// reports "restart", and the button becomes the restart.
+///
+/// Refuses when there is no update, when the install is not mise's (nothing to
+/// name in `mise upgrade`), and when a run is already going.
+pub async fn upgrade_app(State(app): State<Arc<AppState>>) -> ApiResult<serde_json::Value> {
+    let (tool, u) = {
+        let mut inner = app.inner.write().await;
+        if inner.self_upgrade_run.as_ref().is_some_and(|r| r.running) {
+            return Err(ApiError(anyhow::anyhow!("that upgrade is already running")));
+        }
+        let Some(u) = inner.update.clone() else {
+            return Err(ApiError(anyhow::anyhow!(
+                "no release to install — the check has not found one"
+            )));
+        };
+        let Some(tool) = u.tool.clone() else {
+            return Err(ApiError(anyhow::anyhow!(
+                "this build was not installed by mise, so it cannot upgrade itself"
+            )));
+        };
+        // Claimed under the same guard that checked, so a second press cannot race
+        // past the refusal above.
+        inner.self_upgrade_run = Some(crate::agent_update::UpgradeRun {
+            to: u.latest.clone(),
+            running: true,
+            tail: String::new(),
+        });
+        (tool, u)
+    };
+    app.notify().await;
+    crate::agent_update::run_upgrade(
+        app.clone(),
+        tool,
+        u.latest.clone(),
+        crate::agent_update::Subject::App,
+    );
+    Ok(Json(json!({ "from": u.current, "to": u.latest })))
+}
+
+/// Put the app upgrade's report away. [`dismiss_agent_upgrade`]'s sibling, and
+/// refuses mid-run for the same reason.
+pub async fn dismiss_app_upgrade(State(app): State<Arc<AppState>>) -> ApiResult<serde_json::Value> {
+    let mut inner = app.inner.write().await;
+    if inner.self_upgrade_run.as_ref().is_some_and(|r| r.running) {
+        return Err(ApiError(anyhow::anyhow!("the upgrade is still running")));
+    }
+    inner.self_upgrade_run = None;
+    drop(inner);
+    app.notify().await;
+    Ok(Json(json!({ "dismissed": true })))
 }
 
 /// Put a finished upgrade's report away.
@@ -2485,6 +2549,64 @@ pub async fn teardown(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The button is offered on `tool`, so the refusal has to be on `tool` too: a
+    /// `.deb` or an AppImage has nothing to name in `mise upgrade`, and running it
+    /// anyway would upgrade some *other* copy of the app and report success.
+    #[tokio::test]
+    async fn a_build_mise_did_not_install_cannot_upgrade_itself() {
+        use crate::config::Config;
+        use crate::state::{AppState, UpdateInfo};
+
+        let dir = std::env::temp_dir().join(format!("orchd-selfup-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cfg: Config = serde_json::from_str(&format!(
+            r#"{{"main_checkout":"{}","port":7795}}"#,
+            dir.display()
+        ))
+        .unwrap();
+        let app = AppState::new(cfg, "t".into(), crate::window::Chrome::None);
+
+        // Nothing found yet: nothing to install.
+        assert!(upgrade_app(State(app.clone())).await.is_err());
+
+        let mut info = UpdateInfo {
+            current: "2026.9.1".into(),
+            latest: "2026.9.2".into(),
+            url: "https://example.invalid/r".into(),
+            tool: None,
+        };
+        app.inner.write().await.update = Some(info.clone());
+        let err = match upgrade_app(State(app.clone())).await {
+            Ok(_) => panic!("a non-mise install must refuse"),
+            Err(e) => e,
+        };
+        assert!(
+            format!("{}", err.0).contains("mise"),
+            "the refusal has to say why: {}",
+            err.0
+        );
+        assert!(
+            app.inner.read().await.self_upgrade_run.is_none(),
+            "a refusal must not leave a run behind for the bar to report"
+        );
+
+        // A run in flight refuses the next press, because two `mise upgrade`s of one
+        // tool race over the same install directory.
+        //
+        // Set here rather than by pressing the button: a real press spawns a real
+        // `mise upgrade`, and a unit test that reaches the network — or worse,
+        // installs something on the machine running it — is not a unit test. The
+        // claim itself is three lines above this in the handler and is read there.
+        info.tool = Some("github:kbarendrecht/orchestrator".into());
+        app.inner.write().await.update = Some(info);
+        app.inner.write().await.self_upgrade_run = Some(crate::agent_update::UpgradeRun {
+            to: "2026.9.2".into(),
+            running: true,
+            tail: String::new(),
+        });
+        assert!(upgrade_app(State(app.clone())).await.is_err(), "one run at a time");
+    }
 
     /// The whole point of the channel: the agent's poll is released by the answer
     /// rather than by a timeout, and it comes back carrying the choice.

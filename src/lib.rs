@@ -28,6 +28,7 @@ pub mod proposal;
 pub mod pty;
 pub mod review_commit;
 pub mod reviews;
+pub mod self_update;
 pub mod ring;
 pub mod spawn;
 pub mod state;
@@ -463,6 +464,8 @@ fn router(app: Arc<AppState>) -> Router {
         .route("/api/agent/update/refresh", post(api::refresh_agent_update))
         .route("/api/agent/upgrade/dismiss", post(api::dismiss_agent_upgrade))
         .route("/api/agent/upgrade", post(api::upgrade_agent))
+        .route("/api/update/upgrade/dismiss", post(api::dismiss_app_upgrade))
+        .route("/api/update/upgrade", post(api::upgrade_app))
         .route("/api/open", post(api::open_url))
         .route("/api/open/file", post(api::open_file))
         .route("/api/pr/:number/review", get(api::pr_review))
@@ -1043,10 +1046,22 @@ fn start_update_poller(app: Arc<AppState>) {
                     (Some(latest), Some(running)) => latest > running,
                     _ => false,
                 };
+                // Only when there is something to offer, and off-thread because it
+                // shells mise. `None` is the ordinary answer for every install mise
+                // did not make, and it is what leaves the bar as the link it was.
+                let tool = if newer {
+                    let main = app.cfg.main_checkout.clone();
+                    tokio::task::spawn_blocking(move || crate::self_update::providing_tool(&main))
+                        .await
+                        .unwrap_or(None)
+                } else {
+                    None
+                };
                 let next = newer.then(|| crate::state::UpdateInfo {
                     current: cur.clone(),
                     latest: tag.trim_start_matches('v').to_string(),
                     url,
+                    tool,
                 });
                 let mut inner = app.inner.write().await;
                 if inner.update != next {
