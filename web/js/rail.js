@@ -274,17 +274,23 @@ function groupHead(label, add) {
 }
 
 /** Main is exclusive: one active session at a time, and no queue. While it is
- *  occupied the button is disabled and the row that holds it says so (§2). */
+ *  occupied the button is disabled and the row that holds it says so (§2).
+ *
+ *  Unless `allow_several_in_main` is set, which is a config-file decision the
+ *  daemon reports in the snapshot. Then `+` stays live and the holder's name is
+ *  still worth saying, because a second session in one checkout is a thing to do
+ *  on purpose rather than by accident. */
 function mainGroup(w) {
   const group = el('div', 'ws');
   const sessions = sessionsOf(w.id);
   const active = sessions.filter((s) => !isArchived(s));
   const occupant = active.find((s) => s.id === w.occupant && s.alive);
+  const several = !!snap.several_in_main;
 
   const add = el('button', 'plus', '+');
-  add.disabled = !!occupant;
+  add.disabled = !!occupant && !several;
   add.title = occupant
-    ? `main is held by ${occupant.title || occupant.id.slice(0, 8)}`
+    ? `main is held by ${occupant.title || occupant.id.slice(0, 8)}${several ? ' · another is allowed' : ''}`
     : 'New session in main';
   add.onclick = () => newSession(w.id);
   group.appendChild(groupHead('Main checkout', add));

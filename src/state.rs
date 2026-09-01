@@ -599,6 +599,7 @@ impl AppState {
             reviews_polling: inner.reviews_polling,
             automation: inner.automation.by_pr.clone(),
             repos: self.repos.clone(),
+            several_in_main: self.cfg.allow_several_in_main,
             upstream_ref: self.cfg.upstream_ref.clone(),
             stack_up: inner.stack_up,
             update: inner.update.clone(),
@@ -686,16 +687,37 @@ impl AppState {
     /// `claim_main` for the same "is anyone in main" question.
     pub async fn main_occupant(&self) -> Option<SessionId> {
         let inner = self.inner.read().await;
-        inner
+        let recorded = inner
             .workspaces
             .get(MAIN)
             .and_then(|w| w.occupant)
-            .filter(|id| inner.sessions.get(id).map(|s| s.state.is_live()).unwrap_or(false))
+            .filter(|id| inner.sessions.get(id).map(|s| s.state.is_live()).unwrap_or(false));
+        // With `allow_several_in_main` there can be a live session in main that the
+        // single `occupant` field does not name, and every caller here is asking
+        // "may I move this checkout" rather than "who is the holder". Answering
+        // with the recorded one alone would let a swap pull the tree out from under
+        // the others. Deterministic — oldest first — so the message names the same
+        // session twice running.
+        recorded.or_else(|| {
+            let mut live: Vec<&Session> = inner
+                .sessions
+                .values()
+                .filter(|s| s.workspace == MAIN && s.state.is_live())
+                .collect();
+            live.sort_by_key(|s| s.created_at);
+            live.first().map(|s| s.id)
+        })
     }
 
     /// Main is exclusive: one Claude session at a time (§2). There is no queue —
     /// the UI disables "new session in main" and shows which session holds it.
+    ///
+    /// `allow_several_in_main` turns the refusal off, and only the refusal. The
+    /// claim is still recorded, because everything else keyed on it — the swap's
+    /// hand-back, `reclaim_main`, the rail's label — is about the tree rather than
+    /// about exclusivity.
     pub async fn claim_main(&self, session: SessionId) -> Result<()> {
+        let several = self.cfg.allow_several_in_main;
         let mut inner = self.inner.write().await;
         let held = inner
             .workspaces
@@ -709,7 +731,7 @@ impl AppState {
                     .unwrap_or(false)
             });
         if let Some(holder) = held {
-            if holder != session {
+            if holder != session && !several {
                 bail!("main is occupied by session {holder}");
             }
         }
@@ -1033,6 +1055,11 @@ pub struct Snapshot {
     #[cfg_attr(test, ts(as = "std::collections::HashMap<String, crate::fix_pr::PrAutomation>"))]
     pub automation: HashMap<u64, crate::fix_pr::PrAutomation>,
     pub repos: Repos,
+    /// Main may hold more than one live session (`allow_several_in_main`).
+    ///
+    /// Sent because the rail decides whether to offer `+` on main, and the reason
+    /// it may is a setting the SPA cannot see any other way.
+    pub several_in_main: bool,
     /// The base `behind`/`ahead` are measured against, e.g. `upstream/develop`.
     ///
     /// Sent because it is a setting: the divergence strip used to print the
@@ -1264,6 +1291,82 @@ mod tests {
         ))
         .unwrap();
         AppState::new(cfg, "t".into(), crate::window::Chrome::None)
+    }
+
+    /// The same fixture with `allow_several_in_main` on.
+    async fn app_sharing_main() -> Arc<AppState> {
+        let dir = std::env::temp_dir().join(format!("orchd-share-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cfg: Config = serde_json::from_str(&format!(
+            r#"{{"main_checkout":"{}","port":7799,"allow_several_in_main":true}}"#,
+            dir.display()
+        ))
+        .unwrap();
+        AppState::new(cfg, "t".into(), crate::window::Chrome::None)
+    }
+
+    /// Put a live session in main, the way a spawn does.
+    async fn live_in_main(app: &Arc<AppState>) -> SessionId {
+        let id = Uuid::new_v4();
+        let mut inner = app.inner.write().await;
+        let mut s = Session::new(id, MAIN.to_string(), std::path::PathBuf::from("/tmp"), Kind::Interactive);
+        s.set_state(State::Working);
+        inner.sessions.insert(id, s);
+        id
+    }
+
+    #[tokio::test]
+    async fn main_is_exclusive_by_default_and_shared_when_the_setting_says_so() {
+        let app = app().await;
+        let first = live_in_main(&app).await;
+        app.claim_main(first).await.unwrap();
+        assert!(
+            app.claim_main(Uuid::new_v4()).await.is_err(),
+            "one checkout, one index: the default has to refuse"
+        );
+
+        let shared = app_sharing_main().await;
+        let first = live_in_main(&shared).await;
+        shared.claim_main(first).await.unwrap();
+        let second = live_in_main(&shared).await;
+        shared
+            .claim_main(second)
+            .await
+            .expect("allow_several_in_main lifts the refusal");
+        assert_eq!(
+            shared.inner.read().await.workspaces[MAIN].occupant,
+            Some(second),
+            "the claim is still recorded; only the refusal is off"
+        );
+    }
+
+    /// What must *not* be relaxed. `switch_main_to_pr` and the swap ask
+    /// `main_occupant` before moving the checkout, and with several sessions the
+    /// single `occupant` field can name none of the live ones — a released claim
+    /// with somebody still working there would have read as an empty main.
+    #[tokio::test]
+    async fn a_session_in_main_holds_it_even_when_the_claim_names_nobody() {
+        let shared = app_sharing_main().await;
+        let one = live_in_main(&shared).await;
+        let two = live_in_main(&shared).await;
+        shared.claim_main(one).await.unwrap();
+        shared.claim_main(two).await.unwrap();
+
+        // The first one exits and hands the claim back, which it does by id.
+        {
+            let mut inner = shared.inner.write().await;
+            if let Some(s) = inner.sessions.get_mut(&two) {
+                s.set_state(State::Exited);
+            }
+        }
+        shared.release_main(two).await;
+        assert_eq!(shared.inner.read().await.workspaces[MAIN].occupant, None);
+
+        assert_eq!(
+            shared.main_occupant().await,
+            Some(one),
+            "somebody is still working in main, so the checkout must not move"
+        );
     }
 
     /// The three cases `reclaim_main` has to tell apart.

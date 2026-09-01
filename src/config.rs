@@ -134,6 +134,23 @@ pub struct Config {
     /// you the scrollback rather than the conversation.
     #[serde(default = "default_auto_resume")]
     pub auto_resume: bool,
+    /// Let main hold more than one live session at a time.
+    ///
+    /// Off, because one checkout is one working tree and one git index: two agents
+    /// in main share both. The changed-file pane and `reconcile` are per workspace,
+    /// so their edits merge into one list that cannot say who wrote what, and one
+    /// agent's `git add` stages the other's work.
+    ///
+    /// On, because that is sometimes what you want anyway — a second session
+    /// reading, running tests, or answering a question beside the one doing the
+    /// writing — and the daemon has no business refusing it forever. Nothing else
+    /// relaxes: moving main's checkout (a PR worktree, a swap) still refuses while
+    /// *any* session is live in it.
+    ///
+    /// Config file only, like `env_source`: it is a decision about how you work,
+    /// not a thing to flick mid-session.
+    #[serde(default)]
+    pub allow_several_in_main: bool,
     /// Shadows the repo's `worktree-create` hook: **make the tree usable.**
     ///
     /// First of the two, run with cwd set to the new worktree, before

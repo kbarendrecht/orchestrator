@@ -272,6 +272,12 @@ pub struct NewSession {
 /// which teardown already tolerates and which only the (rejected) in-`spawn_session`
 /// version would close.
 async fn refuse_if_occupied(app: &Arc<AppState>, workspace: &str) -> Result<(), ApiError> {
+    // The one relaxation, and it is main's alone: a worktree exists so that two
+    // pieces of work do not share an index, so lifting it there would undo the
+    // thing the worktree is for.
+    if workspace == MAIN && app.cfg.allow_several_in_main {
+        return Ok(());
+    }
     let Some(held) = app.live_sessions_in(workspace).await.into_iter().next() else {
         return Ok(());
     };
