@@ -1577,6 +1577,20 @@ pub async fn start_managed(
     {
         let mut inner = app.inner.write().await;
         if let Some(w) = inner.workspaces.get_mut(workspace) {
+            // Killed, not merely forgotten. `retain` used to drop the old record
+            // and its `PtyHandle` with it, and `PtyHandle` has no `Drop`, so the
+            // child went on running with nothing left pointing at it. The API path
+            // cannot reach this — `start` refuses a process that is already
+            // running and `restart` kills first — but `autostart_processes` on a
+            // daemon restart goes straight through, which is exactly when a
+            // previous run's watcher is most likely to still be there.
+            for old in w.processes.iter().filter(|p| p.id == proc_id) {
+                if let Some(pty) = &old.pty {
+                    if let Err(e) = pty.kill() {
+                        tracing::warn!(%proc_id, "could not kill the process being replaced: {e:#}");
+                    }
+                }
+            }
             w.processes.retain(|p| p.id != proc_id);
             w.processes.push(process);
         }

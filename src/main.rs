@@ -35,8 +35,36 @@ async fn main() -> Result<()> {
     println!("orchd  {}", server.url());
     println!("main   {}", server.app.cfg.main_checkout.display());
 
-    // Ctrl-C takes the children with it, same as closing the desktop window.
-    tokio::signal::ctrl_c().await?;
+    // Ctrl-C takes the children with it, same as closing the desktop window — and
+    // so does SIGTERM, which is how anything that is not a keyboard asks a process
+    // to stop: `kill`, a systemd unit, a container runtime, a script that started
+    // this and is tidying up. Listening for one and not the other meant every
+    // managed process survived those, and a `ng build --watch` nobody is watching
+    // is a CPU leak with a log file.
+    let stopped = async {
+        #[cfg(unix)]
+        {
+            use tokio::signal::unix::{signal, SignalKind};
+            // A failure to register is not a reason to refuse to run: fall back to
+            // Ctrl-C alone, which is what this did before.
+            let mut term = match signal(SignalKind::terminate()) {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::warn!("no SIGTERM handler, Ctrl-C only: {e}");
+                    return tokio::signal::ctrl_c().await;
+                }
+            };
+            tokio::select! {
+                r = tokio::signal::ctrl_c() => r,
+                _ = term.recv() => Ok(()),
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            tokio::signal::ctrl_c().await
+        }
+    };
+    stopped.await?;
     println!();
     server.shutdown().await;
     Ok(())
