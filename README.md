@@ -343,6 +343,13 @@ watcher whose success line is missing from the list leaves the rail stuck on
   writes its entry on first launch, so start it once from a terminal. If it is
   still missing, run `orchestrator-desktop --install-desktop-entry`, which says
   where it wrote.
+- **Started from the launcher, it cannot find `gh`, `node` or `claude`.** The PR
+  pane reports no credential, the review queue reads unavailable, and a session
+  dies on spawn. An app started by Finder or a desktop entry does not inherit your
+  shell's `PATH`: macOS hands it `/usr/bin:/bin:/usr/sbin:/sbin`, which holds
+  neither Homebrew nor mise. The app asks your login shell for its `PATH` at
+  startup and adopts it, so this should heal itself. If it does not, your `PATH` is
+  probably set somewhere an interactive login shell does not read.
 - **A session cannot see a variable your shell has.** The daemon's environment is
   not your shell's. `env_source` bridges that per spawn, and an untrusted
   `mise.toml` is the one case that logs a warning instead of degrading quietly. See

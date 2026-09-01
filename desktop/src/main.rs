@@ -77,6 +77,91 @@ fn wsl_render_workaround() {
 #[cfg(not(target_os = "linux"))]
 fn wsl_render_workaround() {}
 
+/// Marker written around the PATH the login shell prints, so an rc file that
+/// greets you does not become part of it.
+const PATH_MARK: &str = "__ORCHD_PATH__";
+
+/// Set once the PATH has been adopted, so a self-restart does not pay for it
+/// again.
+const ADOPTED: &str = "ORCHD_ADOPTED_LOGIN_PATH";
+
+/// Give the daemon the PATH the user's shell would have given it.
+///
+/// **An app started from a launcher does not inherit your shell's environment.**
+/// On macOS LaunchServices hands over `/usr/bin:/bin:/usr/sbin:/sbin`, and on
+/// Linux a desktop entry gets the systemd user manager's. Neither holds Homebrew,
+/// mise or `~/.local/bin`, so `gh`, `node` and `claude` are absent — and nothing
+/// says "PATH" anywhere the user is looking. What they see is a PR pane reporting
+/// no credential, a review queue reading unavailable, and sessions that die on
+/// spawn. Measured on a colleague's Mac, from the `.app` this project now writes
+/// itself, which is why it is worth doing rather than documenting.
+///
+/// Skipped when started from a terminal, because then the environment already is
+/// the shell's. `-lic` rather than `-lc`: a login shell reads `.zprofile`, but
+/// most people set PATH in `.zshrc`, which only an *interactive* shell reads.
+///
+/// Never fatal, and never destructive: the entries already present are kept, and a
+/// shell that cannot be run leaves the process exactly as it was.
+///
+/// Called from the top of `main`, and it has to stay there: `set_var` is
+/// process-global and unsound beside other threads, so this runs before the
+/// runtime, the daemon and every pty exist.
+fn adopt_login_path() {
+    use std::io::IsTerminal;
+    if std::io::stdin().is_terminal() || std::env::var_os(ADOPTED).is_some() {
+        return;
+    }
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/".into());
+    let argv = [
+        shell,
+        "-lic".into(),
+        format!("printf '{PATH_MARK}%s{PATH_MARK}' \"$PATH\""),
+    ];
+    // Bounded, because an rc file that waits for something would otherwise hold
+    // the window shut. Five seconds is a slow shell, not a hung one.
+    let out = match orchd::proc::run_bounded(std::path::Path::new(&home), 5, &argv, "login shell") {
+        Ok(out) => out,
+        Err(e) => {
+            tracing::warn!("could not ask the login shell for PATH: {e:#}");
+            return;
+        }
+    };
+    let said = String::from_utf8_lossy(&out.stdout);
+    let Some(theirs) = path_between_marks(&said) else {
+        tracing::warn!("the login shell printed no PATH; keeping the one we were given");
+        return;
+    };
+    let current = std::env::var_os("PATH").unwrap_or_default();
+    let merged = merge_paths(theirs, &current);
+    std::env::set_var("PATH", &merged);
+    std::env::set_var(ADOPTED, "1");
+    tracing::info!("adopted the login shell's PATH");
+}
+
+/// The PATH between the two markers, if the shell printed both.
+fn path_between_marks(said: &str) -> Option<&str> {
+    let (_, rest) = said.split_once(PATH_MARK)?;
+    let (path, _) = rest.split_once(PATH_MARK)?;
+    (!path.trim().is_empty()).then_some(path)
+}
+
+/// The shell's PATH first, then anything we already had that it did not mention.
+///
+/// Order matters and theirs wins: a tool manager puts its shims in front on
+/// purpose, and taking the version the user gets in a terminal is the whole point.
+/// Nothing is dropped, because the inherited PATH is what the packaged install
+/// relies on to find its own `orch`.
+fn merge_paths(theirs: &str, ours: &std::ffi::OsStr) -> std::ffi::OsString {
+    let mut merged: Vec<std::path::PathBuf> = std::env::split_paths(theirs).collect();
+    for p in std::env::split_paths(ours) {
+        if !merged.contains(&p) {
+            merged.push(p);
+        }
+    }
+    std::env::join_paths(merged).unwrap_or_else(|_| ours.to_os_string())
+}
+
 /// The launcher identity, shared with every bundle this project ships.
 ///
 /// The same id the `.deb`, the AppImage and the `.dmg` carry, so an entry written
@@ -412,6 +497,11 @@ fn main() {
                 .unwrap_or_else(|_| "orchd=info,orchestrator_desktop=info".into()),
         )
         .init();
+
+    // Before the daemon, because everything it looks up — `gh` for the credential,
+    // `node` for the review queue, `claude` for a session — is a PATH lookup made
+    // from this process's environment.
+    adopt_login_path();
 
     // After the logger so a write is visible, and before the window because the
     // point of it is the launcher: an install that carries no entry writes one
@@ -871,6 +961,32 @@ mod tests {
         }
         assert_eq!(at, icns.len());
         assert_eq!(kinds, ["ic11", "ic07", "ic08", "ic09"]);
+    }
+
+    #[test]
+    fn the_shell_path_is_read_between_the_marks_and_greetings_are_not() {
+        let said = format!("Welcome back!\n{PATH_MARK}/opt/homebrew/bin:/usr/bin{PATH_MARK}");
+        assert_eq!(path_between_marks(&said), Some("/opt/homebrew/bin:/usr/bin"));
+        assert_eq!(path_between_marks("no markers here"), None, "a shell that failed says nothing");
+        assert_eq!(
+            path_between_marks(&format!("{PATH_MARK}{PATH_MARK}")),
+            None,
+            "an empty PATH is a shell that did not answer, not an answer"
+        );
+    }
+
+    /// The shell's order is the answer, and the inherited entries still have to
+    /// survive: a packaged install finds its own `orch` through one of them.
+    #[test]
+    fn the_shell_path_wins_and_nothing_inherited_is_dropped() {
+        let merged = merge_paths(
+            "/opt/homebrew/bin:/usr/bin",
+            std::ffi::OsStr::new("/usr/bin:/Applications/Orchestrator.app/Contents/MacOS"),
+        );
+        assert_eq!(
+            merged.to_string_lossy(),
+            "/opt/homebrew/bin:/usr/bin:/Applications/Orchestrator.app/Contents/MacOS"
+        );
     }
 
     #[test]
