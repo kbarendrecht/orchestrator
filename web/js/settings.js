@@ -182,15 +182,18 @@ function setupSettings() {
   };
   $('setsave').onclick = saveSettings;
 
-  /* A click on another pane puts it away; a click anywhere inside this one does
-     not. The scrim clause that used to be here was right while settings floated
-     over the window as a modal — its own backdrop was the way out. It fills the
-     centre column now, so that backdrop is just the empty half of a form, and
-     missing an input closed the panel. */
-  document.addEventListener('mousedown', (e) => {
-    if (!settingsOpen()) return;
-    if (!(/** @type {HTMLElement} */ (e.target)).closest('#settings, #gearbtn')) closeSettings();
-  }, true);
+  /* **Nothing closes this pane by accident.** The gear, the X and Esc are the
+     three ways out, and that is deliberate: what used to sit here was a captured
+     `mousedown` on the document that put the panel away on any click outside it.
+     That rule is left over from when settings floated over the window as a modal
+     with a scrim — its backdrop was the way out, and the scrim clause was already
+     deleted once for the same reason ("missing an input closed the panel").
+
+     It fills the centre column now, so a click on the rail, the terminal, the
+     drawer, a toast or a splitter is not a gesture at this panel at all. And every
+     one of them discarded the draft: `procDraft` and each form field live only in
+     the DOM until Save, so a stray click lost a half-typed process command with
+     nothing said. */
 }
 
 export { settingsOpen as isOpen, closeSettings as close, setupSettings as setup };
