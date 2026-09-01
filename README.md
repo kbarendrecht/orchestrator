@@ -34,10 +34,13 @@ The pieces:
   by a command you configure.
 - **A diff viewer** against the merge-base, with an editable pane that warns the
   agent when you have changed a file under it.
+- **A CLI.** `orch` drives a running daemon from your shell, and from inside a
+  session, so an agent can open a helper session for a subtask, or ask you a
+  question and block until you answer. [Install](#install) lists what it does.
 
 ## What you need
 
-| | |
+| What | Why |
 | --- | --- |
 | **Claude Code** (`claude` on `PATH`, signed in) | The daemon spawns it for every session. Without it a session exits the instant it starts, so the daemon says so at boot rather than letting you find out that way. |
 | **git** | Worktrees, branch moves, diffs — all of it. |
@@ -45,13 +48,11 @@ The pieces:
 | **`gh`**, signed in | Only for the credential: GitHub itself is reached with `curl`, but the token ladder ends at `gh auth token`. Set `github_token_file` instead and you do not need it. |
 | **node** | Only for the review queue that ships with it — the ejected `reviews.js` is a node script. Point `reviews_command` at anything you like, or clear it, and node stops mattering. |
 
-A fresh checkout also needs Claude Code's **workspace trust** accepted once, in
-its dialog. Until you do, `claude --worktree` refuses and sessions die on spawn.
+A fresh checkout also needs Claude Code's **workspace trust**, accepted once in
+its dialog. Until then sessions die on spawn.
 
-None of this is checked at install time, because none of it has to be there for
-the rest to work. The daemon checks at **boot** and warns, naming what is missing
-and what stops working — it never refuses to start over a missing half you may not
-want.
+Nothing here is checked at install time. The daemon checks at **boot**, names what
+is missing and what stops working, and starts anyway.
 
 ## Install
 
@@ -59,11 +60,6 @@ A release attaches an installer per platform and a tarball beside it. The
 installers are the shortest path: a `.deb` or the `.dmg` gives you an app in your
 launcher, with an icon, and puts `orch` where the shell can find it. The tarball
 is what `mise` reads, and is still two binaries you place yourself.
-
-> **Today's published releases carry the tarball only.** The installer build
-> (`.deb`, AppImage, `.dmg`) is in the release workflow but landed after the most
-> recent tag, so it runs first on the *next* release. Until then, use the tarball
-> or `mise`; the installer steps below apply from that release on.
 
 - **`orchestrator-desktop`** is the app. The daemon and the web UI are compiled
   into it, so this one binary on its own is a complete install.
@@ -278,12 +274,15 @@ checkouts need.
 
 ### Worktree hooks
 
-The daemon cuts worktrees itself for PR worktrees, resumes, and relocated layouts.
-Claude Code's own `WorktreeCreate` hook fires only for `claude --worktree`, so
-those trees would otherwise skip whatever your repo does at creation. These two
-run there, in order, with cwd set to the new worktree:
+The daemon cuts and removes worktrees itself for PR worktrees, resumes and
+relocated layouts. It runs your repo's own hooks around that.
 
-| | Mirrors | For |
+**Creating.** Your repo's `WorktreeCreate` hook is asked first and the daemon
+adopts the tree it printed, then puts that tree on the branch it needs; every way
+that can decline falls through to the daemon cutting its own. Then these two run,
+in order, with cwd set to the new worktree:
+
+| Setting | Mirrors | For |
 | --- | --- | --- |
 | `worktree_init` | `worktree-create` | the tree *as a checkout* — basing it on a fresh upstream, triangular push |
 | `worktree_setup` | `worktree-link` | what it needs *beside* the code — symlinks back to main, generated config |
@@ -293,6 +292,12 @@ script it already has. Both are non-fatal and the second runs even if the first
 failed: a tree that is merely un-based is still worth linking. A relative script
 path resolves against the main checkout, not the worktree, since the worktree may
 not carry it yet.
+
+**Removing.** Teardown runs your repo's `WorktreeRemove` hooks, then `git worktree
+remove` and `git worktree prune`, which no-op when the hook already did the job. A
+refusal is reported as it stands: never `--force`, never a recursive delete, since
+a worktree can hold symlinks back into main and following them destroys the main
+checkout.
 
 ### Declaring a managed process
 
@@ -441,25 +446,16 @@ mise run shot                            # screenshot the running app (drives Ch
 mise run fixture                         # a throwaway PR to drive the review flow
 ```
 
-Prefer a terminal, or debugging the daemon itself? Run it headless and open the
-printed URL, which carries a per-start token. The release ships the app and
-`orch`, not this binary, and it shares the app's config:
+`cargo run -p orchd -- --main /path/to/your/repo` runs the daemon headless on the
+app's own config and prints a tokened URL. `mise run shot` drives Chrome while the
+app runs in **WebKitGTK**, so it is good for layout and not the last word.
 
-```
-cargo run -p orchd -- --main /path/to/your/repo
-```
+[`CLAUDE.md`](CLAUDE.md) has the traps, [`TODO.md`](TODO.md) what is open, and
+[`docs/spec.md`](docs/spec.md) the requirements the `(§N)` comments point at.
 
-The app runs in **WebKitGTK**, so `mise run shot` (Chrome) is good for layout but
-not the last word — the two engines disagree often enough to matter.
-[`CLAUDE.md`](CLAUDE.md) has the working notes and the traps worth knowing;
-[`TODO.md`](TODO.md) is the living record of what is open. The `(§N)` scattered
-through the comments point at
-[`docs/spec.md`](docs/spec.md), the requirements this was built against — §2 is
-the object model, §6b the review queue, §8 the automation rules.
-
-Versions are CalVer (`year.month.n`). Cut a release by bumping `Cargo.toml`,
-`desktop/Cargo.toml`, `desktop/tauri.conf.json` and `Cargo.lock`, then tagging
-`v<version>` — the workflow refuses a tag that disagrees with the crate version.
+Releases are CalVer (`year.month.n`): bump `Cargo.toml`, `desktop/Cargo.toml`,
+`desktop/tauri.conf.json` and `Cargo.lock`, then tag `v<version>`. The workflow
+refuses a tag that disagrees with the crate version.
 
 ## Licence
 
