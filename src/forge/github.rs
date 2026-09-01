@@ -57,19 +57,32 @@ pub fn resolve_token(token_file: Option<&Path>) -> Result<Token> {
             }
         }
     }
-    let out = Command::new("gh")
-        .args(["auth", "token"])
-        .output()
-        .context("no ORCHD_GITHUB_TOKEN, no token file, and `gh auth token` could not be run")?;
+    /* **Written for whoever reads it in the PR pane**, which is where this lands.
+       It used to say "no ORCHD_GITHUB_TOKEN, no token file, and `gh auth token`
+       could not be run: No such file or directory (os error 2)" — a walk through
+       the daemon's own ladder, ending in an errno. That is the first thing a new
+       install sees, and it names three things the reader has never heard of
+       instead of the one command that fixes it. The ladder is still worth knowing,
+       so it comes second, in the half a pane can show when it has room. */
+    let out = match Command::new("gh").args(["auth", "token"]).output() {
+        Ok(out) => out,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => bail!(
+            "no GitHub credential: install `gh` and run `gh auth login`, or point \
+             github_token_file at a token"
+        ),
+        Err(e) => bail!("no GitHub credential: `gh auth token` could not be run: {e}"),
+    };
     if !out.status.success() {
+        // gh is there and says why, usually "not logged in". Its own words, since
+        // they are better than a guess about which of its states this is.
         bail!(
-            "no GitHub token available: {}",
+            "no GitHub credential, run `gh auth login`: {}",
             String::from_utf8_lossy(&out.stderr).trim()
         );
     }
     let v = String::from_utf8_lossy(&out.stdout).trim().to_string();
     if v.is_empty() {
-        bail!("`gh auth token` returned nothing");
+        bail!("no GitHub credential: `gh auth token` returned nothing");
     }
     Ok(Token {
         value: v,
