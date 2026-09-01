@@ -563,8 +563,8 @@ trust and isolation — that gated all automation. **None of it exists.** It was
 wholesale for open source: it answered "does a command in this worktree reflect
 *this* worktree or silently main's", which is a question only a shared-stack
 monorepo raises, and every other repo ran it empty. `TODO.md`'s decisions section
-has what went with it and the one thing to do if that ever bites
-(`MAX_AUTOMATION = 1`).
+has what went with it. The one thing named there as a mitigation — capping
+concurrent runs — is gone too: see §8.
 
 Kept as a numbered heading because the spec's `§` references are cited throughout
 the code and renumbering would break every one of them. **Rule 2** — a run holds
@@ -572,8 +572,13 @@ shared resources, tracked as `locks_held` — is the only part still standing, a
 `state.rs` cites it.
 
 `fix-pr` now keeps only the guards that protect the machine and the repo:
-authorship (can you push to the head repo), one run per PR, branch-busy, and the
-concurrency cap.
+authorship (can you push to the head repo), one run per PR, and branch-busy.
+
+**The concurrency cap is gone.** `MAX_AUTOMATION = 2` guarded two things that no
+longer exist — automation that fired on its own, and the shared resources this
+section used to track — and at 2 it was neither serialization nor protection.
+`headroom` refuses a spawn the machine cannot take, with real numbers; the two
+rules above stop the collisions that matter; and every run is pressed by hand.
 
 ## 8. Automation
 

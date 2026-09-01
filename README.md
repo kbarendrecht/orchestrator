@@ -411,8 +411,8 @@ is logged and the pty is killed anyway.
   you see beside the real diff before the daemon posts it on its own credentials.
   Resolving a thread stays your button, by design.
 - **`fix-pr` is hand-triggered, never automatic.** The guards that protect the
-  machine and the repo remain (authorship, one run per PR, a concurrency cap, the
-  push guard below); the automatic trigger does not. It is a gate you read before starting, not one that trips
+  machine and the repo remain (authorship, one run per PR, a busy branch, the push
+  guard below); the automatic trigger does not. It is a gate you read before starting, not one that trips
   while you look elsewhere.
 
 The web UI is compiled into the binary with `include_str!`, so it can never drift

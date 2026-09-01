@@ -101,11 +101,18 @@ pub struct GuardInput<'a> {
     /// `spawn::branch_busy` is the one definition; an idle session counts, because
     /// the spawn refuses one too.
     pub branch_busy: bool,
-    pub running_automations: usize,
 }
 
-/// Cap on concurrent automation runs (§8).
-pub const MAX_AUTOMATION: usize = 2;
+/* **There is no cap on concurrent runs, and 2 was the wrong number for it.**
+   `MAX_AUTOMATION` came from two worlds that no longer exist: automation that
+   fired on its own (§8's transition rules, never implemented — every run is
+   hand-triggered, so passing the cap meant pressing the button three times while
+   watching), and the capability subsystem that tracked shared resources, which was
+   deleted. At 2 it was neither serialization nor resource protection: `headroom`
+   does the latter at spawn with real numbers, `branch_busy` and the one-run-per-PR
+   rule above stop the collisions that matter, and the only thing left was a
+   runaway API caller — on a route that needs the app token, which agents
+   deliberately do not hold. */
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "verdict", rename_all = "snake_case")]
@@ -180,13 +187,6 @@ pub fn evaluate(input: &GuardInput) -> Verdict {
         ));
     }
 
-    if input.running_automations >= MAX_AUTOMATION {
-        return no(format!(
-            "{} automation runs already going (cap {MAX_AUTOMATION})",
-            input.running_automations
-        ));
-    }
-
     Verdict::Go
 }
 
@@ -256,12 +256,6 @@ pub async fn start(
 
     let verdict = {
         let inner = app.inner.read().await;
-        let running_automations = inner
-            .sessions
-            .values()
-            .filter(|s| s.is_automation() && s.state.is_live())
-            .count();
-
         evaluate(&GuardInput {
             pr: &pr,
             automation: inner.automation.get(number),
@@ -271,7 +265,6 @@ pub async fn start(
             // stay the real viewer rather than anything derived from the PR.
             viewer: inner.viewer.as_deref().unwrap_or_default(),
             branch_busy,
-            running_automations,
         })
     };
 
@@ -383,7 +376,6 @@ mod tests {
             automation: None,
             viewer: "kbarendrecht",
             branch_busy: false,
-            running_automations: 0,
         }
     }
 
@@ -414,14 +406,6 @@ mod tests {
             Verdict::No { reason } => assert!(reason.contains("would fight it"), "{reason}"),
             other => panic!("expected No, got {other:?}"),
         }
-    }
-
-    #[test]
-    fn automation_cap_refuses_rather_than_queue() {
-        let p = pr(1);
-        let mut i = input(&p);
-        i.running_automations = MAX_AUTOMATION;
-        assert!(matches!(evaluate(&i), Verdict::No { .. }));
     }
 
     /// What a finishing review asks before handing anything on.
