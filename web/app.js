@@ -842,6 +842,7 @@ $('keyhelpx').onclick = () => { $('keyhelp').hidden = true; };
 // The visible way in, beside the gear. Its tooltip names the chord — the whole
 // point is that finding the button once is how you stop needing it.
 $('keysbtn').title = `Keyboard shortcuts · ${MOD_LABEL} Shift ?`;
+$('addshell').title = `New shell in this workspace · ${MOD_LABEL} \` or ${MOD_LABEL} Shift T`;
 $('keysbtn').onclick = (ev) => {
   ev.stopPropagation();
   $('keyhelp').hidden = !$('keyhelp').hidden;

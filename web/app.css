@@ -556,7 +556,15 @@ button.ctx-btn:hover{color:var(--text)}
   padding:4px 8px;display:flex;align-items:center;gap:8px;
 }
 .addsh:hover{color:var(--text)}
-.addsh kbd{font-size:calc(9px * var(--fs));color:var(--faint-solid)}
+/* A key, drawn like every other key in this app. It used to be bare faint text,
+   which read as two stray punctuation marks beside the label rather than as a
+   chord — reported as "a dakje and a backtick next to the Shell name" (#2), and
+   the dakje was itself wrong: `⌃` is Control, while the app's modifier is ⌘ on a
+   Mac. Same treatment as `#termempty kbd` and the legend's. */
+.addsh kbd{
+  font-family:var(--mono);font-size:calc(9px * var(--fs));color:var(--dim);
+  border:1px solid var(--line);border-radius:2px;padding:0 4px;background:var(--raised);
+}
 .dcwd{margin-left:auto;font-family:var(--mono);font-size:calc(9px * var(--fs));color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:flex;align-items:center}
 .stackdot{width:6px;height:6px;border-radius:50%;margin-right:6px;flex:0 0 auto}
 .stackdot.up{background:var(--work)}
