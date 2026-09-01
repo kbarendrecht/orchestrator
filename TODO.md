@@ -6,16 +6,11 @@ this file, which churned it from every build; they now go to a gitignored
 
 ## Next
 
-- **A fixture PR to test the review flow against.** *Built and used heavily —
-  `mise run fixture`, `tools/fixture-pr.mjs`, written up in `docs/fixture-pr.md`,
-  which carries the why, the two GitHub behaviours that cost an afternoon, and what
-  each drive against it settled.*
-
-  Everything it was built to unblock has now been driven: the resolve run end to
-  end, `triage::gate`'s dirty refusal, `open_file`'s head-sha arm, teardown and its
-  archive, the thumbs-up idempotency question. What it still cannot cover is
-  `rerequest()` — a bot cannot be a requested reviewer, so that one button wants a
-  second human identity: a throwaway account, or a fine-grained token for one.
+- **`rerequest()` has never run.** The fixture drives everything else in the review
+  flow (`mise run fixture`, `docs/fixture-pr.md`), but its threads are posted by
+  `github-actions[bot]` and a bot cannot be a requested reviewer. That one button
+  wants a second human identity: a throwaway account, or a fine-grained token for
+  one.
 
 - **The two-phase resolve flow — proven on a fixture, not yet on real work.**
   `docs/resolve-flow-plan.md` has the nine decisions behind it, and the three that
@@ -109,26 +104,6 @@ this file, which churned it from every build; they now go to a gitignored
   ever been exercised against canned data. Blocked on the fixture, which needs
   Actions minutes. `/resolve` stays whatever the answer is — it is the fallback, not
   the thing being replaced.
-
-- **Rewind a session from the rail.** *Built: `Rewind conversation…` on the session
-  row's context menu, `POST /api/session/:id/rewind`.* The daemon builds no picker —
-  Claude Code has the whole feature, files included — so the button only reaches it,
-  with two escapes into the pty. Measured rather than assumed, against a real
-  session: **two escapes 60ms apart register as a double tap** and the picker opens.
-  One `\x1b\x1b` burst was not risked, because a double *tap* is two timed events
-  and a single write could arrive as one escape or as the `ESC ESC` meta prefix.
-
-  Refused in the four states where an escape means something else — mid-turn it
-  interrupts, at a question it cancels, at a permission prompt it declines, and with
-  no conversation the picker opens empty. Gated in the daemon rather than the SPA,
-  because the attach socket only exists while a terminal is open and a gate the SPA
-  owns is advice. No reconcile afterwards: `start_workspace_watcher` already
-  re-reads live workspaces every 15s, which is what it exists for.
-
-  *Not built:* a modal of our own, listing the conversation's turns as rewind
-  points. It only pays off if the native picker proves too coarse, and it would need
-  a way to select a message index from outside the TUI, which the CLI does not
-  expose — `--resume` resumes at the end and nothing else.
 
 - **Containers and ports, if orchd ever hosts a heavier repo.**
   `docs/workspace-isolation.md` has the decision record and the shape to build,
@@ -280,21 +255,22 @@ this file, which churned it from every build; they now go to a gitignored
   confirmed, and that is what `worktree_remove`'s stale-lock retry exists for — which
   becomes deletable once no locked trees remain, but not before.
 
-- **Is it macOS-compatible? Built and tested there, never launched.** Four
-  Linux-isms were found by reading for them rather than by CI, because all four
-  **compile cleanly and fail at runtime**: `/proc` reads in `pid_alive` and
-  `instance::holder`, a `timeout` that is GNU, and a keyboard map that was
-  Ctrl-only. Those are fixed and recorded in CLAUDE.md, which is where the rules
-  they left behind belong. `release.yml` ships an `aarch64-macos` tarball beside the
-  Linux one, and `check.yml` is green on macos-14 for the daemon tests *and* the
-  Tauri build.
+- **macOS: launched now, and mostly working.** A second person ran it on a Mac on
+  2026-09-01, which closed the "never executed" half of this. What that afternoon
+  found, all fixed: an app started from Finder inherits none of your shell's `PATH`,
+  so `gh`, `node` and `claude` were all missing at once; sessions stuck at
+  `starting` (a hook arriving before the record was inserted); a `⌃` drawn where the
+  modifier is `⌘`; and no Finder entry at all from a mise install.
 
-  What remains cannot be closed from here: **nothing has ever been executed on a
-  Mac.** `Chrome::Overlay`'s traffic lights, `open` for URLs and the window chrome
-  are written-not-run, and a binary that compiles is not a window that draws. The
-  desktop crate cannot even be cross-checked — `objc2-exception-helper` compiles
-  Objective-C and wants a real SDK — so this is somebody's afternoon with a Mac,
-  not a CI job.
+  What is still unanswered there:
+  - **Scrolling feels sluggish, and halts.** Two of the fixes above plausibly
+    explain it (hidden terminals were being parsed, and the rail rebuilt at 1 Hz),
+    but that is not confirmed. If it survives 2026.9.3, the next suspect is the DOM
+    renderer — see the WebGL decision below, whose evidence is entirely WebKitGTK.
+  - **Chrome::Overlay's traffic lights and `open` for URLs** are written-not-run.
+  - The desktop crate still cannot be cross-checked from Linux
+    (`objc2-exception-helper` wants a real SDK); `check.yml` on macos-14 is the
+    only answer, and it now runs that crate's tests as well as building it.
 
 - **Drag and drop in the rail: sort sessions, and swap two by dropping one on the
   other.** The drawer's tabs got this (`startTabDrag` in `web/app.js`, order in
@@ -338,28 +314,11 @@ this file, which churned it from every build; they now go to a gitignored
   itself has never made a real round trip to GitHub — the suite is unit tests and
   a fixture, which `docs/fixture-pr.md` says out loud.
 
-  *The list, collected from the first real drive of the overlay (fixture PR #13).*
-  Keep is the whole point: the overlay showing each thread's file, line, hunk and
-  comment reads as a real UI, and beats the old spawn-a-terminal path.
-  **All four are done** — the first two by the review-session flow, the last two by
-  the flatten (`5bc1800`). Left here because the reasoning is what the next round of
-  this will be argued against.
-  - ~~**Triage takes too long to sit through.**~~ *Done.* The session's `rvReading`
-    screen holds the overlay open while it reads, instead of closing onto a blank pane.
-  - ~~**You click `review` twice.**~~ *Done.* One session reads, and the overlay
-    advances itself off the decision ask. Permission prompts are still answered in the
-    pane, which is why the reading screen says so rather than covering the screen.
-  - ~~**The `read` is a wall of text.**~~ *Answered in the prompt, not the UI.* It was
-    collapsed to its opening sentence behind a disclosure, and that was reverted after
-    driving it: the fold cost a click on every card to reach the one thing the agent
-    concluded, which is worse than the length it hid. `commands/review-session.md`
-    carries the real fix — it tells the agent the read must be terse. Shortening a
-    thing at the source beats hiding it at the end.
-  - ~~**Stance + reply is too much machinery per thread.**~~ *Done.* The card is the
-    offered positions as one flat list, reply under it, skip on the action bar. What
-    made this a design pass rather than a patch was the question underneath it —
-    whether the batch survives — and the answer was no: the overlay is session-only
-    now. The daemon half of that removal is the item below.
+  *The first real drive found four things and all four are fixed* — the reading
+  screen, one click instead of two, a terse read asked for in
+  `commands/review-session.md` rather than folded away in the UI, and the card as
+  one flat list. The one worth remembering: shortening a thing at its source beats
+  hiding it at the end.
 
 - **Delete the batch the overlay no longer reaches, and flatten `proposal.rs`.**
   The flatten took the triage+batch path out of the UI, so a large amount of proven,
@@ -412,10 +371,10 @@ this file, which churned it from every build; they now go to a gitignored
   describes today's split rather than this plan.
 
 - **The watch build leaks a process every time its client dies, and orchestrator is
-  where that gets fixed.** Found on the scienta box: five `ng build --watch` stacked
-  inside one `scienta-assets` container, ages 2h to 20h, about 8 GiB with their
-  esbuild children, swap at 19 of 23 GiB. `mise run angular:watch` is
-  `docker compose exec -ti scienta-assets pnpm run build-watch`, and docker does not
+  where that gets fixed.** Found on the monorepo box: five `ng build --watch`
+  stacked inside one assets container, ages 2h to 20h, about 8 GiB with their
+  esbuild children, swap at 19 of 23 GiB. The watch task is
+  `docker compose exec -ti <assets> pnpm run build-watch`, and docker does not
   signal the container-side process when the exec client goes. Verified by counting:
   one live exec client, four live watchers. Every new `mise run watch` stacks another
   and nothing reaps them.
@@ -434,63 +393,9 @@ this file, which churned it from every build; they now go to a gitignored
   no pty, so it becomes `docker compose logs -f` and the rail's error summary depends
   on that stream behaving the same. Unproven either way.
 
-  Two leaks of the same class are already in here regardless of which route wins.
-  `spawn.rs:1552` does `w.processes.retain(|p| p.id != proc_id)` and drops the old
-  handle without killing it, and `PtyHandle` has no `Drop` impl, so the child
-  survives; the API guards the usual path, but `autostart_processes` on a daemon
-  restart does not go through that guard. And `Server::shutdown` kills children
-  (`lib.rs:117`) only on `ctrl_c` (`main.rs:39`), so a SIGTERM or a crash leaks every
-  managed process.
-
-- **The webview spends its frame budget on terminals nobody is looking at, and a
-  hidden one costs more than a visible one.** Two symptoms, one cause: typing
-  echoes late, and a `title` tooltip in the rail takes several tries to appear.
-
-  `Term.show` only sets `host.hidden`. The socket stays open and `term.write` keeps
-  running, so every terminal opened this session parses its pty stream forever.
-  `.termhost[hidden]` is `display:none`, which was assumed to make that free;
-  CLAUDE.md still says the renderer stops. The paint stops. The cost does not, and
-  on WebKit it goes *up*.
-
-  Measured under playwright's WebKit, 8 terminals at 140x40, `scrollback: 2000`,
-  8 KB written to each per frame, two runs per cell:
-
-  | | all 8 visible | 7 of 8 hidden |
-  |---|---|---|
-  | WebKit | 37-41 ms/frame | 172-188 ms/frame |
-  | Chrome | 16.6-16.7 ms/frame | 24.5-25.0 ms/frame |
-
-  A hidden terminal is about five times a visible one, and only on the engine the
-  app actually runs on. 180 ms a frame is the typing delay: the keystroke leaves
-  immediately and the echo waits for the main thread. It is *not* the DOM renderer
-  under heavy output that the WebGL entry below expected to bite, because the
-  all-visible column is fine.
-
-  The remedy that entry already names needs no WebGL: stop feeding a hidden
-  terminal. `ws::pty_loop` replays the 512 KB ring buffer on connect, so closing
-  the socket on hide and reattaching on show loses nothing inside that buffer.
-  Queueing chunks while hidden is the smaller change and loses nothing at all.
-
-  Caveat: playwright's WebKit is not WebKitGTK 2.50.4. Same family, different
-  build, and the gap measured here is far wider than that difference.
-
-- **The rail rebuilds every second and drops the hover under your pointer.**
-  `app.js` runs `Rail.render()` at 1 Hz so the waiting clock ticks, and
-  `renderRail` opens with `rail.replaceChildren()` whether anything changed or not.
-  Hold the pointer still on a `.sess` row and `:hover` is true before the rebuild
-  and false after it, in Chrome and WebKit alike: the node is destroyed and hover
-  is not re-targeted until the mouse moves. A native `title` tooltip wants the
-  pointer resting on one element for about half a second, so the rebuild leaves it
-  a 500 ms window per second, and it arrives late or not at all.
-
-  Speed is not the problem. A 430-node rail renders in 0.46 ms. Rebuilding is the
-  problem. The tick exists only for the duration strings, so writing those text
-  nodes in place would settle it without anyone having to build a diffing layer.
-
-- **`notify()` writes `sessions.json` before every snapshot.** `AppState::notify`
-  calls `persist()` first, a blocking 79 KB write on a tokio worker thread, from
-  about seventy call sites, and 92 session records have piled up. Not what makes
-  the window feel slow, but it runs on every hook.
+  *The two leaks this entry also named are fixed* (`b543c5e`): a replaced managed
+  process is killed rather than dropped, and SIGTERM runs `shutdown` like Ctrl-C
+  does. What is left is the docker half above.
 
 ## Decisions worth revisiting
 
@@ -505,23 +410,25 @@ this file, which churned it from every build; they now go to a gitignored
   and the e2e fake agent does not send one, so there is no reproduction to point
   at. If main is ever found live-but-unoccupied again, start here.
 
-- **History keeps its AI attribution, and 14 commits still name the monorepo.**
-  *Decided, not overlooked.* The working tree is clean of both, and author history
-  was rewritten onto one identity — but 208 of 286 commit messages carry
+- **History keeps its AI attribution.** *Decided, not overlooked.* The monorepo
+  half of this is **done**: a rewrite on 2026-09-01 scrubbed the names out of every
+  message (0 mentions in 430 commits now) and dropped the commits that added the
+  226 KB `design/review-overlay.artifact.html`. What is left is the attribution —
   `Generated with Claude Code` / `Co-Authored-By: Claude` / `happy.engineering`
-  trailers, 14 name the monorepo in subject or body, and a 226 KB
-  `design/review-overlay.artifact.html` with 12 internal mentions survives in
-  history alone. Scrubbing all three is one `filter-repo --message-callback` pass,
+  trailers, still on most messages. Scrubbing it is one
+  `filter-repo --message-callback` pass,
   and the cost is the same as the author rewrite: every SHA changes and the 13
   release tags need re-pushing. (Re-pushing them is free — tag *updates* do not
   retrigger the release workflow, only tag *creation* does, measured when the
   author rewrite moved all 13 and nothing built.) Judged not worth it; say so if
   that changes.
 
-  Two things that would quietly undo the author rewrite:
-  `../orchestrator-pre-rewrite.bundle` still holds the old commits, and another
-  machine still has the pre-rewrite history with the personal address configured —
-  commit `1092a8f` came from there.
+  Three things that would quietly undo a rewrite:
+  `../orchestrator-pre-rewrite.bundle` still holds the old commits, another machine
+  still has the pre-rewrite history with the personal address configured (commit
+  `1092a8f` came from there), and the local tags `pre-rewrite-main` /
+  `pre-rewrite-handoff` hold the pre-scrub commits including that artifact. Delete
+  those two tags when you are satisfied with the scrub.
 
 - **The changed-files pane still refreshes.** The divergence strip now carries
   the thing worth acting on when a branch has fallen behind, but the list under
@@ -542,10 +449,20 @@ this file, which churned it from every build; they now go to a gitignored
   scroll or a selection cleaned up. Two narrower fixes did not hold: clearing the
   glyph atlas and refreshing after every refit, and disposing the addon on context
   loss. So the canvas is gone in the webview and xterm draws real text, which
-  cannot garble; a browser tab keeps the fast path. The cost is the DOM renderer
-  under heavy output, unmeasured. If it ever feels slow, the fast path is worth
-  another look with only the *visible* terminal holding a context, since hidden
-  ones can be torn down and replayed from the daemon's ring buffer for free.
+  cannot garble; a browser tab keeps the fast path.
+
+  **The evidence is entirely WebKitGTK, and macOS is not WebKitGTK.** `CHROME` is
+  the test, so a Mac gets the DOM renderer on the strength of a bug measured on
+  Linux, and the first Mac user reports scrolling that is sluggish and halts. The
+  cheap experiment is one condition — allow WebGL when the platform is macOS — and
+  the question it answers is whether WKWebView garbles glyphs the way WebKitGTK
+  does. Only a Mac can answer it.
+
+  The cost of the DOM renderer is now partly measured: parsing into a *hidden*
+  terminal cost about five times a visible one under WebKit (172-188 ms a frame
+  with seven of eight hidden, against 37-41 with all visible), which is why hidden
+  terminals now queue instead of writing. What that leaves unmeasured is the
+  visible pane under a heavy scroll, which is the report.
 
 - **Sessions archived before the rename still say `green`.** `Kind::Automation`
   carries the command as a free string, so records already in `sessions.json` keep
@@ -554,10 +471,12 @@ this file, which churned it from every build; they now go to a gitignored
   `green-<pr>` prompt directories under `~/.config/orchd` are dead files for the
   same reason.
 
-- **`gh auth token` is the credential, and that is settled.** §6 wanted a
-  read-only PAT and it is not going to get one: `gh`'s token works out of the box,
-  the daemon's own writes are `gh`-shelled anyway, and the extra scopes buy a setup
-  step nobody wants. The daemon used to report this as a live finding every poll —
+- **`gh auth token` is the credential — and that is no longer settled.** Reopened
+  on 2026-09-01: the plan is now to drop `gh` for the API and keep it only as token
+  *discovery*, which is the "One credential" item above. What follows is why it was
+  settled, which is the argument that item has to beat. §6 wanted a read-only PAT
+  and did not get one: `gh`'s token works out of the box, the daemon's own writes
+  are `gh`-shelled anyway, and the extra scopes buy a setup step nobody wants. The daemon used to report this as a live finding every poll —
   removed, for the reason the `⚠` beside `pr_age_ms` went: a condition you have
   decided to live with is furniture, and furniture teaches you to stop reading the
   list. `token_source` is still in the snapshot for anyone diagnosing over the API.
@@ -586,6 +505,11 @@ this file, which churned it from every build; they now go to a gitignored
 
 ## Won't do without a reason
 
+- A rewind modal of our own, listing a conversation's turns as rewind points.
+  `Rewind conversation…` on the row's context menu reaches Claude Code's own
+  picker, which has the whole feature including files. Ours only pays off if that
+  proves too coarse, and it would need a way to select a message index from outside
+  the TUI, which the CLI does not expose.
 - A jump-to-a-PR key. It was the one concrete gap left by the keyboard audit and
   is declined: PRs are picked by eye from a short list, so the chord would save a
   click you were going to aim anyway, and the audit's own finding was that the
