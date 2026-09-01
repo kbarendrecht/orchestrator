@@ -1,6 +1,6 @@
 [package]
 name = "orchestrator-desktop"
-version = "2026.9.0"
+version = "2026.9.1"
 edition = "2021"
 description = "Desktop shell for orchd: the daemon and its web UI in one window"
 repository = "https://github.com/kbarendrecht/orchestrator"
