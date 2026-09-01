@@ -55,6 +55,11 @@ function openTerm(target, parent) {
   const host = el('div', 'termhost');
   parent.appendChild(host);
 
+  /* Whether an agent is on the other end of this pty, which decides one binding
+     below. The daemon's own naming answers it: sessions are keyed by id, every
+     process and shell by its workspace. */
+  const agentPane = target.startsWith('session:');
+
   const term = new Terminal({
     theme: THEME,
     fontFamily: "'IBM Plex Mono', ui-monospace, monospace",
@@ -94,6 +99,33 @@ function openTerm(target, parent) {
    * Returning false tells xterm not to handle the event itself. */
   term.attachCustomKeyEventHandler((e) => {
     if (e.type !== 'keydown') return true;
+    /* **Shift+Enter is a newline, and a terminal cannot say so by itself.** Enter
+       and Shift+Enter both leave xterm as a bare CR — measured here with `cat -v`,
+       which showed no escape at all — so Claude Code has nothing to tell them
+       apart by and submits the prompt instead of breaking the line. Its own
+       `/terminal-setup` fixes this in iTerm2 and VS Code by binding the chord to
+       ESC then CR; this is the same binding, made here so it works out of the box
+       and needs no setup command run against a terminal the user does not own.
+
+       Shift alone: with Ctrl, ⌘ or Alt held it is a different chord and belongs to
+       whoever claims it. `sock` is closed over rather than passed, and it exists
+       by the time any key is pressed.
+
+       **Agent panes only, and that is not caution — a shell needs the opposite.**
+       Measured in a drawer shell: with the escape sent, the line is still
+       submitted and the ESC arrives *inside the command*, so `cat -v` read `A^[`
+       where the user typed `A`. Nothing in a terminal can tell what is running in
+       it, but the daemon's own key can: a session is `session:<id>`, a shell or a
+       managed process is `<workspace>:…`. */
+    if (agentPane && e.key === 'Enter' && e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      // Both, and the second is not belt and braces: returning false keeps xterm
+      // from handling the key, but the browser still delivers it to the hidden
+      // textarea, which sends a CR of its own. Measured — the pty received
+      // `1b 0d` followed by `0d`, so the agent saw the newline *and* the submit.
+      e.preventDefault();
+      if (sock.readyState === WebSocket.OPEN) sock.send(new TextEncoder().encode('\x1b\r'));
+      return false;
+    }
     const combo = IS_MAC ? e.metaKey && !e.ctrlKey : e.ctrlKey && e.shiftKey;
     if (!combo) return true;
     const key = e.key.toLowerCase();
