@@ -45,7 +45,7 @@ The pieces:
 | **Claude Code** (`claude` on `PATH`, signed in) | The daemon spawns it for every session. Without it a session exits the instant it starts, so the daemon says so at boot rather than letting you find out that way. |
 | **git** | Worktrees, branch moves, diffs — all of it. |
 | **WebKitGTK 4.1** (Linux only) | The desktop window. Ubuntu 22.04 / Debian 12 or newer; 20.04 ships 4.0 and will not work. macOS uses the system WebView. |
-| **`gh`**, signed in | Only for the credential: GitHub itself is reached with `curl`, but the token ladder ends at `gh auth token`. Set `github_token_file` instead and you do not need it. |
+| **`gh`**, signed in | Reads go out with `curl`, and for those `github_token_file` replaces it. Every write (a thread reply, a 👍, a re-requested review) shells `gh` and uses its credential, so the resolve flow wants it. |
 | **node** | Only for the review queue that ships with it — the ejected `reviews.js` is a node script. Point `reviews_command` at anything you like, or clear it, and node stops mattering. |
 
 A fresh checkout also needs Claude Code's **workspace trust**, accepted once in
@@ -63,14 +63,11 @@ is what `mise` reads, and is still two binaries you place yourself.
 
 - **`orchestrator-desktop`** is the app. The daemon and the web UI are compiled
   into it, so this one binary on its own is a complete install.
-- **`orch` is optional.** A small CLI against a running daemon: `orch new` starts
-  another session with a prompt, `orch kill` undoes one of its own spawns,
-  `orch ask` puts a question in front of you and blocks until you answer, `orch ls`
-  lists what is running. Useful from your own shell, and it is how an *agent*
-  reaches the daemon that spawned it — a session can open a helper session for a
-  subtask, or ask you something and wait rather than bury the question in its own
-  scrollback. `orch new --worktree` gives that helper its own tree and branch, which
-  is the difference between two parallel jobs and two agents sharing one git index.
+- **`orch` is optional.** `orch new` starts another session with a prompt,
+  `orch kill` undoes one of its own spawns, `orch ask` puts a question in front of
+  you and blocks until you answer, `orch ls` lists what is running.
+  `orch new --worktree` gives a helper session its own tree and branch, which is the
+  difference between two parallel jobs and two agents sharing one git index.
   `orch <command> --help` documents the flags. Nothing requires it.
 
 Apple Silicon and x86-64 Linux are built.
@@ -85,9 +82,9 @@ Puts the app at `/usr/bin/orchestrator-desktop`, `orch` on your `PATH`, and a
 launcher entry with its icon. `apt remove orchestrator` takes all of it away.
 
 The **AppImage** is the same app for everything that is not Debian: `chmod +x`
-and run it. It carries its own GTK/WebKit, which is why it is 79 MB against the
-deb's 6.5 MB, and `orch` rides inside it — the daemon puts its own directory on
-each session's `PATH`, so an agent can still reach it.
+and run it. It carries its own GTK/WebKit, so it is an order of magnitude
+larger than the deb, and `orch` rides inside it: the daemon puts its own directory
+on each session's `PATH`, so an agent can still reach it.
 
 On **macOS**, open the `.dmg` and drag the app to Applications. It is unsigned, so
 the first launch is right-click → Open rather than a double-click.
@@ -129,10 +126,6 @@ installing the package later replaces the entry instead of listing the app twice
 20.04 ships only 4.0 and will not work). **macOS** uses the system WebView and
 needs nothing extra.
 
-> **Honesty about macOS:** the macOS build compiles and its daemon tests pass in
-> CI, but nobody has launched the app on a Mac yet. Treat the first run as the
-> test. Everything below is exercised daily on Linux.
-
 Then launch it and point it at a git checkout when it asks (it shows a folder
 picker when it has no config, or when the one on record has moved). That checkout
 is *main*; worktrees are cut inside it under `.claude/worktrees/`. State lives in
@@ -167,7 +160,7 @@ repos leave them at the default:
 | `worktrees_subdir` | `.claude/worktrees` | where worktrees live, relative to `main_checkout`. Point it at the same place a repo's own `WorktreeCreate` hook puts them, so the daemon recognises its own worktrees. Kept relative and inside main on purpose. |
 | `port` | `7777` | the loopback port the daemon serves the SPA and API on. Never bound to anything but `127.0.0.1`. |
 | `repo` | *(derived)* | `owner/name` override, when it cannot be read off the upstream remote. |
-| `github_token_file` | *(none)* | a `0600` file holding a read-only GitHub token, outside the repo. An alternative to `ORCHD_GITHUB_TOKEN` or `gh auth token`. |
+| `github_token_file` | *(none)* | a `0600` file holding a read-only GitHub token, outside the repo. An alternative to `ORCHD_GITHUB_TOKEN` or `gh auth token`. Reads only: the writes go through `gh`. |
 | `worktree_processes` | *(empty)* | managed processes for worktree workspaces, the counterpart to `main_processes`. Empty means a shell is opened on demand instead. |
 | `poll_seconds` | `300` | how often the PR poll runs. One query per period, negligible against the API budget. |
 | `review_timeout_seconds` | `240` | ceiling for `reviews_command` before the poller gives up on it. |
@@ -282,16 +275,19 @@ adopts the tree it printed, then puts that tree on the branch it needs; every wa
 that can decline falls through to the daemon cutting its own. Then these two run,
 in order, with cwd set to the new worktree:
 
-| Setting | Mirrors | For |
-| --- | --- | --- |
-| `worktree_init` | `worktree-create` | the tree *as a checkout* — basing it on a fresh upstream, triangular push |
-| `worktree_setup` | `worktree-link` | what it needs *beside* the code — symlinks back to main, generated config |
+| Setting | For |
+| --- | --- |
+| `worktree_init` | the tree *as a checkout*: basing it on a fresh upstream, triangular push |
+| `worktree_setup` | what it needs *beside* the code: symlinks back to main, generated config |
 
-Two rather than one so a repo with two hooks points each setting straight at the
-script it already has. Both are non-fatal and the second runs even if the first
-failed: a tree that is merely un-based is still worth linking. A relative script
-path resolves against the main checkout, not the worktree, since the worktree may
-not carry it yet.
+Both stand in for what your repo does at `WorktreeCreate`. Two rather than one so a
+repo that splits that work points each setting straight at the script it already
+has. Nothing here stands in for `SessionStart`, which fires for a daemon-cut tree by
+itself, so whatever your repo hangs off that event still runs.
+
+Both are non-fatal and the second runs even if the first failed: a tree that is
+merely un-based is still worth linking. A relative script path resolves against the
+main checkout, not the worktree, since the worktree may not carry it yet.
 
 **Removing.** Teardown runs your repo's `WorktreeRemove` hooks, then `git worktree
 remove` and `git worktree prune`, which no-op when the hook already did the job. A
@@ -319,9 +315,23 @@ reads it as healthy or failing:
 watcher whose success line is missing from the list leaves the rail stuck on
 `build failing` after you have already fixed the compile.
 
-Two things a fresh checkout needs once, both one-time: accept Claude Code's
-workspace-trust prompt for it (or `claude --worktree` refuses), and — if you
-develop orchd — `git config core.hooksPath .githooks`.
+## Troubleshooting
+
+- **Every session dies the instant it starts.** Claude Code's workspace trust has
+  not been accepted for that checkout, so `claude --worktree` refuses. Accept it in
+  the dialog once, per checkout.
+- **It will not start: "Orchestrator is already running".** One instance at a time,
+  held by a pid file in the config dir, because a second one would spawn sessions
+  into the same worktrees and take over the hook settings. Close the running app.
+- **The review pane reads *degraded*.** `reviews_command` exited non-zero and the
+  pane is showing its stderr. Deliberately distinct from an empty queue, which is
+  what "no reviews" looks like.
+- **A setting does nothing.** An unknown key is ignored in silence. Check the
+  spelling against the tables above.
+- **A session cannot see a variable your shell has.** The daemon's environment is
+  not your shell's. `env_source` bridges that per spawn, and an untrusted
+  `mise.toml` is the one case that logs a warning instead of degrading quietly. See
+  [The environment a session gets](#the-environment-a-session-gets).
 
 ## How it works
 
@@ -339,11 +349,12 @@ develop orchd — `git config core.hooksPath .githooks`.
   is working or waiting. The daemon's hook settings *merge* with the repo's own,
   so your project hooks keep firing.
 - **Worktrees.** At Claude Code's default layout the daemon launches
-  `claude --worktree` and the repo's own worktree hooks do the work; for PR
-  worktrees, resumes, and relocated layouts it cuts the tree itself with
-  `git worktree add` and runs `worktree_setup`. Teardown is a six-check preflight
-  and `git worktree remove` only — never `rm -rf`, because a worktree is full of
-  symlinks into main.
+  `claude --worktree`. Everywhere else it makes the tree itself: it asks your repo's
+  `WorktreeCreate` hook first and adopts what that hook made, cuts its own with
+  `git worktree add` when the hook declines, then runs `worktree_init` and
+  `worktree_setup`. Teardown is a six-check preflight, then your repo's
+  `WorktreeRemove` hooks, then `git worktree remove`. Never `rm -rf`, because a
+  worktree is full of symlinks into main.
 - **The review flow.** Triage reads a PR's open threads and proposes, per thread,
   a stance and whether code changes; a run commits per thread and drafts a reply
   you see beside the real diff before the daemon posts it on its own credentials.
@@ -359,10 +370,14 @@ from the daemon serving it — and a change under `web/` needs a rebuild.
 ## Security
 
 Bound to `127.0.0.1` only, with Origin/Host validation and a per-start token
-required on the WebSocket and every mutating route. Hook endpoints are exempt
-from the token but confined to their own prefix and can only ever update state.
-GitHub auth resolves `ORCHD_GITHUB_TOKEN`, then a `0600` `github_token_file`, then
-`gh auth token`; read scopes are all it needs.
+required on the WebSocket and every mutating route. Hook endpoints are exempt from
+the token, because a hook Claude Code spawns cannot easily carry a per-start one.
+They are confined to their own prefix and a schema that can only ever update state.
+GitHub **reads** resolve `ORCHD_GITHUB_TOKEN`, then a `0600` `github_token_file`,
+then `gh auth token`, and read scopes are all they need. **Writes are the other
+half**: a thread reply, a 👍 and a re-requested review shell `gh` and use gh's own
+credential, whatever you set here. So a read-only token does not make the daemon
+read-only, and the resolve flow wants `gh` signed in.
 
 **The trust boundary is your user account, not the process.** Loopback keeps the
 network out and the Origin check keeps other web pages out. But `GET /` returns
@@ -389,7 +404,31 @@ script the agent writes and then runs all go around it. It is there because a
 fix-pr run force-pushes with nobody watching, and that is the mistake worth
 catching — not because an agent could be prevented from pushing.
 
-## Layout
+## Developing
+
+```
+mise install
+npm install --prefix tools               # once per clone: check-web and shot need it
+git config core.hooksPath .githooks      # once per clone
+cargo test                               # the daemon
+mise run check-web                       # type-check the SPA + its module graph
+cargo run -p orchestrator-desktop        # the app, daemon embedded
+mise run shot                            # screenshot the running app (drives Chrome)
+mise run fixture                         # a throwaway PR to drive the review flow
+```
+
+`cargo run -p orchd -- --main /path/to/your/repo` runs the daemon headless on the
+app's own config and prints a tokened URL. `mise run shot` drives Chrome while the
+app runs in **WebKitGTK**, so it is good for layout and not the last word.
+
+[`CLAUDE.md`](CLAUDE.md) has the traps, [`TODO.md`](TODO.md) what is open, and
+[`docs/spec.md`](docs/spec.md) the requirements the `(§N)` comments point at.
+
+Releases are CalVer (`year.month.n`): bump `Cargo.toml`, `desktop/Cargo.toml`,
+`desktop/tauri.conf.json` and `Cargo.lock`, then tag `v<version>`. The workflow
+refuses a tag that disagrees with the crate version.
+
+### Layout
 
 ```
 src/
@@ -432,30 +471,6 @@ src/
 web/            the SPA (vanilla, xterm.js vendored) — one module graph under js/,
                 booted by app.js; snapshot.d.ts is generated from the Rust structs
 ```
-
-## Developing
-
-```
-mise install
-npm install --prefix tools               # once per clone: check-web and shot need it
-git config core.hooksPath .githooks      # once per clone
-cargo test                               # the daemon
-mise run check-web                       # type-check the SPA + its module graph
-cargo run -p orchestrator-desktop        # the app, daemon embedded
-mise run shot                            # screenshot the running app (drives Chrome)
-mise run fixture                         # a throwaway PR to drive the review flow
-```
-
-`cargo run -p orchd -- --main /path/to/your/repo` runs the daemon headless on the
-app's own config and prints a tokened URL. `mise run shot` drives Chrome while the
-app runs in **WebKitGTK**, so it is good for layout and not the last word.
-
-[`CLAUDE.md`](CLAUDE.md) has the traps, [`TODO.md`](TODO.md) what is open, and
-[`docs/spec.md`](docs/spec.md) the requirements the `(§N)` comments point at.
-
-Releases are CalVer (`year.month.n`): bump `Cargo.toml`, `desktop/Cargo.toml`,
-`desktop/tauri.conf.json` and `Cargo.lock`, then tag `v<version>`. The workflow
-refuses a tag that disagrees with the crate version.
 
 ## Licence
 

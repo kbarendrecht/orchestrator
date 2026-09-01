@@ -396,6 +396,21 @@ this file, which churned it from every build; they now go to a gitignored
   the SPA, and it still wants the real window to confirm the grab and prove the
   interception. An in-page binding cannot fix an event that never arrives.
 
+- **One credential, and it stops being `gh`'s.** Reads already go out over curl with
+  a resolved token (`forge/github.rs`); only three places shell `gh` at all:
+  `gh auth token` for the credential (`forge/github.rs:60`), every write
+  (`forge/github_write.rs:156`), and the ejected `reviews.js`, which is the user's
+  own file. So the plan is to move the writes onto the same curl transport, keep
+  `gh auth token` as *discovery* when gh happens to be installed, and prompt for a
+  token when it is not. A GitHub OAuth flow is the later shape.
+
+  **What it costs, said up front.** Today's read path is documented as wanting a
+  read-only PAT precisely because the writes borrow gh's wider credential
+  (`forge/github.rs:14-18`). One transport means one token carrying write scopes, so
+  "the daemon never pushes and needs read only" stops being true, and the boot
+  warning that treats `TokenSource::GhCli` as too wide loses its subject. The README
+  describes today's split rather than this plan.
+
 ## Decisions worth revisiting
 
 - **`hooks::session_end` settles a session with no identity check, unlike the exit
