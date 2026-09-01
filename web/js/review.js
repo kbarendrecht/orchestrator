@@ -274,6 +274,13 @@ function actBtn(label, cls, onclick, disabled) {
   return b;
 }
 
+/** A button with its chord in the tooltip. Separate from [`actBtn`] because only
+ *  a couple of these have one, and a parameter nobody passes reads as noise. */
+function withTitle(button, title) {
+  button.title = title;
+  return button;
+}
+
 function headBtn(label, cls, onclick) {
   const b = el('button', 'head-btn' + (cls ? ' ' + cls : ''), label);
   b.disabled = reviewState.busy;
@@ -896,7 +903,12 @@ function rvFinal(root) {
   root.appendChild(rvActs([
     // A blank reply is not disabled here — that would need a live repaint on every
     // keystroke, which drops focus out of the box. `submitDecisions` refuses it.
-    actBtn('apply, push and post', 'warm', () => submitDecisions(), !decided),
+    // The chord presses this very button (`app.js` clicks `.acts .act.warm`), so
+    // the tooltip names it here rather than the map naming it somewhere else.
+    withTitle(
+      actBtn('apply, push and post', 'warm', () => submitDecisions(), !decided),
+      `Send the batch · ${MOD_LABEL} \u23ce`,
+    ),
     actBtn('back', null, () => { reviewState.screen = 'card'; renderReview(); }),
   ], said
     ? `${said} go to the PR · nothing here can be unsent`

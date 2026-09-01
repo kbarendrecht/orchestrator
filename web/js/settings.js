@@ -1,7 +1,7 @@
 // The settings panel. The zoom control it offers lives in core, because the
 // terminals read the scale too.
 
-import { ctl, $, ZOOM, call, caret, closeLegend, el, get, saveZoom, setZoom, snap, zoomScale } from './core.js';
+import { ctl, $, ZOOM, call, caret, closeLegend, el, get, MOD_LABEL, saveZoom, setZoom, snap, zoomScale } from './core.js';
 
 const settingsOpen = () => !$('settings').hidden;
 
@@ -168,6 +168,11 @@ function setupSettings() {
     if (settingsOpen()) closeSettings();
     else openSettings();
   };
+  // Each names its chord, so the panel teaches the shortcut rather than replacing
+  // it. `MOD_LABEL` because the modifier differs by platform.
+  $('fsdown').title = `Smaller · ${MOD_LABEL} \u2212`;
+  $('fsup').title = `Larger · ${MOD_LABEL} =`;
+  $('fsreset').title = `Reset · ${MOD_LABEL} 0`;
   $('fsdown').onclick = () => saveZoom(setZoom(zoomScale - ZOOM.step));
   $('fsup').onclick = () => saveZoom(setZoom(zoomScale + ZOOM.step));
   $('fsreset').onclick = () => saveZoom(setZoom(ZOOM.def));

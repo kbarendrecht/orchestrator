@@ -857,7 +857,11 @@ keyActivate($('keysbtn'));
  *
  * Ctrl+Tab is left alone on purpose: it is Ctrl on both platforms, since ⌘Tab is
  * the macOS application switcher and never arrives. */
-for (const dt of $('keyhelp').querySelectorAll('dt[data-mod]')) {
+/* Document-wide, not just the legend: two controls outside it show a chord on
+   their face — the drawer's `+ Shell` and the diff editor's Save — and both used
+   to carry a hardcoded glyph, which is the wrong key on one of the two platforms.
+   Anything marked `data-mod` is resolved here, wherever it lives. */
+for (const dt of document.querySelectorAll('[data-mod]')) {
   const mac = dt.getAttribute('data-mac');
   if (IS_MAC && mac) dt.innerHTML = mac;
   else dt.innerHTML = dt.innerHTML.replace(/MOD/g, MOD_LABEL);

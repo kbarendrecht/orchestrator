@@ -1,7 +1,7 @@
 // The rail: what is running, what is waiting on you, and the PRs beside it.
 // Twenty-four names, three out; the rest is how a row decides what it says.
 
-import { $, byNewest, call, caret, dotClass, duration, el, isArchived, isConversation, isWaiting, newSession, newWorktree, openMenu, pending, refreshButton, selected, sessionsOf, setSelected, sinceSnap, snap, stateClass, stateLabel, toast, setPendingSelect } from './core.js';
+import { $, byNewest, call, caret, dotClass, duration, el, isArchived, isConversation, isWaiting, MOD_LABEL, newSession, newWorktree, openMenu, pending, refreshButton, selected, sessionsOf, setSelected, sinceSnap, snap, stateClass, stateLabel, toast, setPendingSelect } from './core.js';
 import * as Review from './review.js';
 import * as Term from './term.js';
 
@@ -71,10 +71,13 @@ function renderRail() {
 
 /** Dot colour for a PR, sharing the session legend so one key covers both (§9). */
 function prDot(p) {
+  // Red first, above everything. A PR that is failing or conflicting is failing
+  // whoever happens to be sitting in it, and the teal "a session holds this" used
+  // to hide exactly that: you opened a session on a red PR and the row went calm.
+  if (p.checks === 'failing' || p.mergeable === 'CONFLICTING') return 'build';
   if (p.session) return 'auto';           // a session is holding it
   if (p.is_draft) return 'idle';
   if (p.needs_you) return 'blocked';
-  if (p.checks === 'failing' || p.mergeable === 'CONFLICTING') return 'build';
   if (p.checks === 'passing') return 'ok';
   return 'idle';
 }
@@ -278,7 +281,13 @@ function prGroup() {
         row.appendChild(el('span', 'why gaveup', 'gave up'));
       }
       if (needsResolve) row.appendChild(reviewButtons(p));
-      if (needsFix) row.appendChild(actionButton(p, 'fix-pr', 'fix'));
+      /* No `fix` while a session holds the branch, because the daemon refuses that
+         run: `spawn_fix_pr_session` bails with "already has a live session for
+         #<n>" the moment `branch_busy` answers, and `PrView.session` is that same
+         live session. A button whose only outcome is an error toast is worse than
+         no button — the `jump` chip beside it is the thing to press. Review keeps
+         its buttons: `/resolve` takes you *to* that session rather than refusing. */
+      if (needsFix && !p.session) row.appendChild(actionButton(p, 'fix-pr', 'fix'));
     }
 
     // The row opens the PR; jumping to its session is the explicit chip, so
@@ -324,9 +333,13 @@ function mainGroup(w) {
 
   const add = el('button', 'plus', '+');
   add.disabled = !!occupant && !several;
+  /* The chord belongs in the tooltip of the button that does the same thing:
+     finding the button once is how you stop needing it, which is the argument the
+     legend button already makes for itself. `MOD_LABEL` rather than a literal —
+     the modifier is ⌘ on macOS and Ctrl everywhere else. */
   add.title = occupant
     ? `main is held by ${occupant.title || occupant.id.slice(0, 8)}${several ? ' · another is allowed' : ''}`
-    : 'New session in main';
+    : `New session in main · ${MOD_LABEL} Shift N`;
   add.onclick = () => newSession(w.id);
   group.appendChild(groupHead('Main checkout', add));
 
@@ -346,7 +359,7 @@ function mainGroup(w) {
 function worktreeGroup(mainId) {
   const group = el('div', 'ws');
   const add = el('button', 'plus', '+');
-  add.title = 'New worktree session (shift-click to name it)';
+  add.title = `New worktree session · ${MOD_LABEL} N (shift-click to name it)`;
   add.onclick = (ev) => newWorktree(ev.shiftKey);
   group.appendChild(groupHead('Worktrees', add));
 
@@ -875,6 +888,7 @@ function renderWaitbar() {
     // snapshot, the duration changes every second.
     bar.appendChild(el('span', null, `${waiting.length} waiting · longest `));
     bar.appendChild(clock(null, longest.waiting_ms ?? 0));
+    bar.title = `Jump to the session waiting longest · ${MOD_LABEL} Space`;
     bar.onclick = () => setSelected(longest.id);
   } else {
     /* Nobody is asking for you; a restart has just put several agents back at an

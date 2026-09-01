@@ -95,7 +95,7 @@
           <button class="head-btn" id="ovprev">Prev &#8963;&#8592;</button>
           <button class="head-btn" id="ovnext">Next &#8963;&#8594;</button>
           <button class="head-btn" id="ovedit">Edit</button>
-          <button class="head-btn" id="ovsave" hidden>Save &#8984;S</button>
+          <button class="head-btn" id="ovsave" hidden><span data-mod>Save MOD S</span></button>
           <button class="head-btn" id="ovmode">Split</button>
           <button class="head-btn" id="ovclose">Close ESC</button>
         </div>
@@ -152,7 +152,9 @@
         </button>
         <span class="eyebrow" id="dlabel" style="margin-right:2px">Processes</span>
         <span class="dtabs" id="dtabs"></span>
-        <button class="addsh" id="addshell">+ Shell <kbd>⌃`</kbd></button>
+        <!-- `MOD` is resolved at boot, like the legend's rows: this used to be a
+             literal ⌃, which is the wrong key on a Mac. -->
+        <button class="addsh" id="addshell">+ Shell <kbd data-mod>MOD `</kbd></button>
         <span class="dcwd" id="dcwd"></span>
       </div>
       <div class="drawer-body" id="drawerbody"></div>
