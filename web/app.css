@@ -998,6 +998,11 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
 .prblock{
   flex:0 0 auto;max-height:46%;overflow-y:auto;
   border-top:1px solid var(--line);background:var(--surface);
+  /* The review queue ends on its `arctoggle`, whose 12px bottom padding lifts the
+     last row off the window edge. This list ends on a `prrow` with 4px, so it
+     needs the same space stated rather than inherited from what happens to be
+     last. */
+  padding-bottom:12px;
 }
 .prblock .ws{border-bottom:0}
 .prgroup-head{
