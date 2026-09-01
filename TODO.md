@@ -178,7 +178,7 @@ this file, which churned it from every build; they now go to a gitignored
   gone: the six stack-specific settings are `#[serde(default)]` values editable in
   the settings panel, `worktrees_subdir` makes the layout configurable, `docker` and
   `ng-watch` are `autostart:false` specs a fresh checkout never starts, the base ref
-  is split out of `upstream_ref`, and `output_language` fills the prompts'
+  is split out of `upstream_ref`, and `default_language` fills the prompts'
   `{{LANGUAGE}}`. Paths, `/proc` reads and GNU coreutils were the other half, and
   those rules are in CLAUDE.md.
 
@@ -232,12 +232,13 @@ this file, which churned it from every build; they now go to a gitignored
   **From the outside nothing changes.** Same paths (`<main>/.claude/worktrees/<name>`),
   same branch names (`worktree-<name>`), same rail, same gestures.
 
-  **What must keep working, and is the actual work:** the target repo's own
-  `WorktreeCreate` hooks. Claude fires those *only* for `claude --worktree`, so a
-  daemon-cut tree has to run them itself — read the repo's `WorktreeCreate` entries
-  and invoke them, rather than leaning on `worktree_setup` and telling every repo to
-  configure the same thing twice. Watch for the double-run: a repo with both a
-  `WorktreeCreate` hook and a configured `worktree_setup` must not get both.
+  **What was called the actual work here is done.** A daemon-cut tree already runs
+  the target repo's own `WorktreeCreate` hooks: `spawn::create_worktree` asks them
+  first through `hook_cut_worktree`, adopts the tree they printed, puts it on the
+  branch it needs, and cuts its own only when that declines. So this entry is now
+  the smaller thing it always claimed to be — an explicit mode instead of a subdir
+  inference. Still watch the double-run: a repo with both a `WorktreeCreate` hook
+  and a configured `worktree_setup` must not get both.
 
   **Trust stays Claude's**, checked when the session opens in the tree. What
   disappears is *creation* depending on it: today an unaccepted trust dialog makes
