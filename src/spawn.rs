@@ -312,6 +312,54 @@ async fn restore_after_relocate(
 }
 
 
+/// Put the record in, start the pty, and hang the handle on the record.
+///
+/// **The insert happens before the process starts, and that ordering is the whole
+/// point of this function.** Claude Code fires `SessionStart` while it boots, and a
+/// hook naming a session the daemon has not recorded yet is dropped in silence:
+/// the handler looks the id up, finds nothing, and answers `ok`. What that leaves
+/// behind depends on the session — an interactive one sits at `starting` until
+/// something else happens to move it, and one carrying a `pending_prompt` never
+/// gets the prompt typed at all, because that hook is what types it.
+///
+/// The window is between the spawn and the insert, so it is lost by being *fast*.
+/// Reported from a Mac, and invisible to every test here, whose fake agent takes
+/// longer to speak than a real one.
+///
+/// A spawn that fails takes the record straight back out, so a refusal still costs
+/// nothing. The record is briefly in the map with no pty, which is a state it
+/// already has to survive: every session restored from disk starts that way.
+async fn insert_and_spawn(
+    app: &Arc<AppState>,
+    id: SessionId,
+    session: Session,
+    cmd: &[String],
+    cwd: &std::path::Path,
+    env: &[(String, String)],
+    unset: &[&str],
+) -> Result<crate::pty::Spawned> {
+    {
+        let mut inner = app.inner.write().await;
+        inner.sessions.insert(id, session);
+    }
+    let spawned = match PtyHandle::spawn(cmd, cwd, env, unset, DEFAULT_SIZE) {
+        Ok(spawned) => spawned,
+        Err(e) => {
+            let mut inner = app.inner.write().await;
+            inner.sessions.remove(&id);
+            return Err(e);
+        }
+    };
+    {
+        let mut inner = app.inner.write().await;
+        if let Some(s) = inner.sessions.get_mut(&id) {
+            s.pty = Some(spawned.handle.clone());
+            s.pid = spawned.pid;
+        }
+    }
+    Ok(spawned)
+}
+
 /// Spawn an interactive Claude session in an existing workspace.
 ///
 /// The daemon spawns every session and never adopts a shell-started one. That
@@ -479,15 +527,7 @@ pub async fn spawn_session(
     }
 
     let (env, unset) = crate::config::session_env(&app.cfg, &path, id, Some(&session.ask_token));
-    let spawned = PtyHandle::spawn(&cmd, &path, &env, &unset, DEFAULT_SIZE)?;
-
-    session.pty = Some(spawned.handle.clone());
-    session.pid = spawned.pid;
-
-    {
-        let mut inner = app.inner.write().await;
-        inner.sessions.insert(id, session);
-    }
+    let spawned = insert_and_spawn(app, id, session, &cmd, &path, &env, &unset).await?;
     // The claim belongs to the record, so it is settled once the record is in.
     // Until this insert the map still described whatever stood here under this id,
     // and a relocation reuses the id — `reclaim_main` has what that let the
@@ -731,7 +771,6 @@ pub async fn spawn_worktree_session(
     // delegated arm that is the main checkout, whose environment is the one the
     // worktree about to be cut from it would have had anyway.
     let (env, unset) = crate::config::session_env(&app.cfg, &spawn_cwd, id, Some(&ask_token));
-    let spawned = PtyHandle::spawn(&cmd, &spawn_cwd, &env, &unset, DEFAULT_SIZE)?;
 
     // Without a name the path is not known until `SessionStart` reports the
     // cwd, so the workspace is registered there instead.
@@ -775,12 +814,7 @@ pub async fn spawn_worktree_session(
             cwd.display()
         ));
     }
-    session.pty = Some(spawned.handle.clone());
-    session.pid = spawned.pid;
-    {
-        let mut inner = app.inner.write().await;
-        inner.sessions.insert(id, session);
-    }
+    let spawned = insert_and_spawn(app, id, session, &cmd, &spawn_cwd, &env, &unset).await?;
 
     watch_session_exit(app.clone(), id, spawned.handle);
     crate::agent_update::refresh_detached(&app);
@@ -846,26 +880,23 @@ pub async fn spawn_fix_pr_session(
         (20000 + (pr % 1000) * 20).to_string(),
     ));
 
-    let spawned = PtyHandle::spawn(&cmd, &path, &env, &unset, DEFAULT_SIZE)?;
     let mut session = Session::new(
         id,
         workspace,
-        path,
+        path.clone(),
         Kind::Automation {
             pr,
             command: crate::fix_pr::COMMAND.to_string(),
         },
     );
-    session.pty = Some(spawned.handle.clone());
-    session.pid = spawned.pid;
+    // Typed in by the `SessionStart` handler, which is the reason this record has
+    // to be in the map before the process starts rather than after: a run whose
+    // hook arrived first was a run that never received its instructions.
     session.pending_prompt = Some(format!(
         "Read {} and follow it. Those are your instructions for PR {pr}.",
         prompt_file.display()
     ));
-    {
-        let mut inner = app.inner.write().await;
-        inner.sessions.insert(id, session);
-    }
+    let spawned = insert_and_spawn(app, id, session, &cmd, &path, &env, &unset).await?;
 
     watch_session_exit(app.clone(), id, spawned.handle);
     crate::agent_update::refresh_detached(&app);
@@ -1921,6 +1952,68 @@ mod tests {
         assert_eq!(usable_hook_path(&f.to_string_lossy()), None);
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The record has to be visible to a hook before the process that fires it
+    /// exists. Asserted on the helper rather than on a spawn, because the thing
+    /// that made this a bug — a real agent booting faster than the insert — is
+    /// exactly what a test cannot reproduce.
+    #[tokio::test]
+    async fn the_record_is_in_the_map_before_the_process_starts() {
+        use crate::config::Config;
+        use crate::state::AppState;
+
+        let dir = std::env::temp_dir().join(format!("orchd-insert-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cfg: Config = serde_json::from_str(&format!(
+            r#"{{"main_checkout":"{}","port":7792}}"#,
+            dir.display()
+        ))
+        .unwrap();
+        let app = AppState::new(cfg, "t".into(), crate::window::Chrome::None);
+
+        let id = Uuid::new_v4();
+        let session = Session::new(id, MAIN.to_string(), dir.clone(), Kind::Interactive);
+        let cmd = ["cat".to_string()];
+        let spawned = insert_and_spawn(&app, id, session, &cmd, &dir, &[], &[])
+            .await
+            .expect("spawn cat");
+
+        let inner = app.inner.read().await;
+        let s = inner.sessions.get(&id).expect("the record is there");
+        assert!(s.pty.is_some(), "the handle is hung on the record afterwards");
+        assert_eq!(s.pid, spawned.pid);
+        drop(inner);
+        let _ = spawned.handle.kill();
+    }
+
+    /// And a spawn that never happened leaves nothing behind: the record would
+    /// otherwise sit in the rail as a session with no process, holding its
+    /// workspace against the next attempt.
+    #[tokio::test]
+    async fn a_refused_spawn_takes_its_record_back_out() {
+        use crate::config::Config;
+        use crate::state::AppState;
+
+        let dir = std::env::temp_dir().join(format!("orchd-refused-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cfg: Config = serde_json::from_str(&format!(
+            r#"{{"main_checkout":"{}","port":7793}}"#,
+            dir.display()
+        ))
+        .unwrap();
+        let app = AppState::new(cfg, "t".into(), crate::window::Chrome::None);
+
+        let id = Uuid::new_v4();
+        let session = Session::new(id, MAIN.to_string(), dir.clone(), Kind::Interactive);
+        let cmd = ["orchd-no-such-binary-ever".to_string()];
+        let err = insert_and_spawn(&app, id, session, &cmd, &dir, &[], &[]).await;
+
+        assert!(err.is_err(), "a missing binary is a failed spawn");
+        assert!(
+            app.inner.read().await.sessions.get(&id).is_none(),
+            "the record must not outlive the attempt"
+        );
     }
 
     #[tokio::test]
