@@ -1543,6 +1543,57 @@ fn watch_session_exit(app: Arc<AppState>, id: SessionId, handle: Arc<PtyHandle>)
 // Processes
 // ---------------------------------------------------------------------------
 
+/// Stop a managed process: its `stop_command` first, then the pty.
+///
+/// **The order is the point.** For an ordinary process the pty child *is* the
+/// process and this is just a kill. For a client — `docker compose exec` is the
+/// case that produced it — killing the pty leaves the real process running with
+/// nothing pointing at it, so the configured stop runs first and the kill takes
+/// the client afterwards.
+///
+/// The spec is read from config by name rather than carried on the record: the
+/// record holds what was *started*, and a stop command is a thing you fix after
+/// discovering you need it. Settings restart the daemon anyway, so the two cannot
+/// drift far.
+///
+/// Never fails. A stop command that errors, times out or is missing still gets the
+/// pty killed, because the alternative is a process the daemon has stopped showing
+/// you but has not stopped.
+pub async fn stop_managed(app: &Arc<AppState>, workspace: &str, name: &str, pty: &Arc<PtyHandle>) {
+    let spec = app
+        .cfg
+        .processes_for(workspace)
+        .iter()
+        .find(|s| s.name == name)
+        .cloned();
+    if let Some(spec) = spec.filter(|s| !s.stop_command.is_empty()) {
+        if let Some(cwd) = app.workspace_path(workspace).await {
+            let argv = spec.stop_command.clone();
+            let label = format!("stop {workspace}:{name}");
+            // Short: this runs on the way out, and a restart of the app waits on it.
+            let out = tokio::task::spawn_blocking(move || {
+                crate::proc::run_bounded(&cwd, STOP_TIMEOUT_SECS, &argv, &label)
+            })
+            .await;
+            match out {
+                Ok(Ok(o)) if !o.status.success() => tracing::warn!(
+                    %workspace, %name, "stop_command exited {}: {}",
+                    o.status,
+                    String::from_utf8_lossy(&o.stderr).trim()
+                ),
+                Ok(Err(e)) => tracing::warn!(%workspace, %name, "stop_command failed: {e:#}"),
+                Err(e) => tracing::warn!(%workspace, %name, "stop_command panicked: {e}"),
+                Ok(Ok(_)) => tracing::info!(%workspace, %name, "stopped through its stop_command"),
+            }
+        }
+    }
+    let _ = pty.kill();
+}
+
+/// How long a `stop_command` may take. Short, because closing the window waits on
+/// it and a stop that hangs would hold the app open.
+const STOP_TIMEOUT_SECS: u64 = 10;
+
 /// Start a managed process declared in config for this workspace.
 pub async fn start_managed(
     app: &Arc<AppState>,
@@ -1592,6 +1643,12 @@ pub async fn start_managed(
                 }
             }
             w.processes.retain(|p| p.id != proc_id);
+            // The `stop_command` is deliberately *not* run here. This arm only
+            // fires when a record for this name is still in the map at start —
+            // autostart after a daemon restart — where the process it names died
+            // with the daemon that owned it. Running a stop then would kill a
+            // remote the new one is about to talk to. The paths that mean "stop
+            // this", the drawer's close and restart, go through `stop_managed`.
             w.processes.push(process);
         }
     }
@@ -1878,6 +1935,7 @@ mod tests {
             ok_patterns: Vec::new(),
             restart: crate::config::RestartPolicy::Never,
             autostart: true,
+            stop_command: Vec::new(),
         };
         let id = start_managed(&app, MAIN, &spec).await.expect("started");
 
@@ -2045,6 +2103,83 @@ mod tests {
             Some("gone"),
             "a deleted tree does not free the branch for a second agent"
         );
+    }
+
+    /// The stop command runs, and it runs *before* the pty dies.
+    ///
+    /// The order is the entire fix: `docker compose exec` leaves the container-side
+    /// process running when its client is killed, so a kill-then-stop would be
+    /// talking to a client that is already gone. Proven by having the stop command
+    /// write a file and then asserting the pty was still alive when it ran — the
+    /// script records the client's own liveness, so a reordering fails this.
+    #[tokio::test]
+    async fn the_stop_command_runs_before_the_client_is_killed() {
+        use crate::config::{Config, ManagedSpec, RestartPolicy};
+        use crate::state::AppState;
+
+        let dir = std::env::temp_dir().join(format!("orchd-stopcmd-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let cfg: Config = serde_json::from_str(&format!(
+            r#"{{"main_checkout":"{}","port":7796}}"#,
+            dir.display()
+        ))
+        .unwrap();
+        let mut cfg = cfg;
+        cfg.main_processes = vec![ManagedSpec {
+            name: "watcher".into(),
+            // Stands in for the exec client: writes its own pid, then waits to be
+            // killed.
+            command: vec![
+                "sh".into(),
+                "-c".into(),
+                format!("echo $$ > {}/client.pid; sleep 30", dir.display()),
+            ],
+            failure_patterns: Vec::new(),
+            ok_patterns: Vec::new(),
+            restart: RestartPolicy::Never,
+            autostart: false,
+            // Reads that pid and records whether the client was still alive when
+            // this ran. `kill -0` asks without signalling.
+            stop_command: vec![
+                "sh".into(),
+                "-c".into(),
+                format!(
+                    "if kill -0 $(cat {d}/client.pid) 2>/dev/null;                      then echo alive > {d}/stopped; else echo dead > {d}/stopped; fi",
+                    d = dir.display()
+                ),
+            ],
+        }];
+        let app = AppState::new(cfg, "t".into(), crate::window::Chrome::None);
+
+        let spec = app.cfg.main_processes[0].clone();
+        start_managed(&app, MAIN, &spec).await.expect("started");
+        let pty = {
+            let inner = app.inner.read().await;
+            inner.workspaces[MAIN].processes[0].pty.clone().expect("a pty")
+        };
+        assert!(pty.is_alive(), "the stand-in client is running");
+        // Its pid file, which the stop command reads.
+        for _ in 0..40 {
+            if dir.join("client.pid").exists() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+
+        stop_managed(&app, MAIN, "watcher", &pty).await;
+
+        let recorded = std::fs::read_to_string(dir.join("stopped"))
+            .expect("the stop command ran at all");
+        assert_eq!(recorded.trim(), "alive", "it must run before the kill, not after");
+        // And the client is gone afterwards, stop command or not.
+        for _ in 0..40 {
+            if !pty.is_alive() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        assert!(!pty.is_alive(), "the pty is killed after the stop command");
     }
 
     /// The record has to be visible to a hook before the process that fires it

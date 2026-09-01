@@ -1714,22 +1714,12 @@ pub async fn refresh_agent_update(State(app): State<Arc<AppState>>) -> ApiResult
 /// exist here" must have one answer: a name the drawer refuses and the CLI accepts
 /// would be two products.
 fn managed_spec(app: &Arc<AppState>, workspace: &str, name: &str) -> Option<crate::config::ManagedSpec> {
-    let specs = if workspace == MAIN {
-        &app.cfg.main_processes
-    } else {
-        &app.cfg.worktree_processes
-    };
-    specs.iter().find(|s| s.name == name).cloned()
+    app.cfg.processes_for(workspace).iter().find(|s| s.name == name).cloned()
 }
 
 /// The names that workspace could start, for an error worth reading.
 fn managed_names(app: &Arc<AppState>, workspace: &str) -> Vec<String> {
-    let specs = if workspace == MAIN {
-        &app.cfg.main_processes
-    } else {
-        &app.cfg.worktree_processes
-    };
-    specs.iter().map(|s| s.name.clone()).collect()
+    app.cfg.processes_for(workspace).iter().map(|s| s.name.clone()).collect()
 }
 
 pub async fn restart_process(
@@ -1749,7 +1739,9 @@ pub async fn restart_process(
         })
     };
     if let Some(h) = existing {
-        let _ = h.kill();
+        // Through the stop path, or a restart of a `docker compose exec` watcher
+        // leaves the old one running in the container and starts a second beside it.
+        spawn::stop_managed(&app, &workspace, &name, &h).await;
     }
 
     let id = spawn::start_managed(&app, &workspace, &spec).await?;
@@ -1801,13 +1793,23 @@ pub async fn close_process(
     State(app): State<Arc<AppState>>,
     Path(proc_id): Path<String>,
 ) -> ApiResult<serde_json::Value> {
+    // Found under the read lock and stopped without it: `stop_managed` awaits a
+    // bounded command, and holding the write lock across that would freeze every
+    // snapshot for as long as the stop takes.
+    let found = {
+        let inner = app.inner.read().await;
+        inner.workspaces.values().find_map(|w| {
+            w.processes
+                .iter()
+                .find(|p| p.id == proc_id)
+                .map(|p| (w.id.clone(), p.name.clone(), p.pty.clone()))
+        })
+    };
+    if let Some((workspace, name, Some(h))) = found {
+        spawn::stop_managed(&app, &workspace, &name, &h).await;
+    }
     let mut inner = app.inner.write().await;
     for w in inner.workspaces.values_mut() {
-        if let Some(p) = w.processes.iter().find(|p| p.id == proc_id) {
-            if let Some(h) = &p.pty {
-                let _ = h.kill();
-            }
-        }
         w.processes.retain(|p| p.id != proc_id);
     }
     drop(inner);

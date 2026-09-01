@@ -339,6 +339,22 @@ reads it as healthy or failing:
 watcher whose success line is missing from the list leaves the rail stuck on
 `build failing` after you have already fixed the compile.
 
+**`stop_command`, when the command is a client rather than the process.** Empty
+for anything ordinary, where killing the pty kills the process. Set it where that
+is not true:
+
+```json
+"command": ["docker", "compose", "exec", "-T", "assets", "pnpm", "run", "build-watch"],
+"stop_command": ["docker", "compose", "exec", "-T", "assets", "pkill", "-f", "build-watch"]
+```
+
+`docker compose exec` runs the watcher **inside the container**, and docker does
+not signal it when the exec client goes away — so every start stacks another one
+up in there, with nothing reaping them. The stop command runs in the workspace's
+directory, bounded, immediately *before* the pty is killed, on every path that
+means stop: the drawer's close, a restart, and the daemon shutting down. A failure
+is logged and the pty is killed anyway.
+
 ## Troubleshooting
 
 - **Every session dies the instant it starts.** Claude Code's workspace trust has

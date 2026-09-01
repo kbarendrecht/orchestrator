@@ -219,6 +219,42 @@ pub struct ManagedSpec {
     /// your back when the daemon starts.
     #[serde(default)]
     pub autostart: bool,
+    /// How to stop the thing [`Self::command`] is a *client* of, when killing the
+    /// pty is not enough.
+    ///
+    /// Empty for an ordinary process, where the pty child is the process and
+    /// killing it is the whole story. It exists for the case where it is not:
+    /// `docker compose exec -T <svc> pnpm run build-watch` runs the watcher
+    /// **inside the container**, and docker does not signal it when the exec
+    /// client goes away. Measured on the monorepo box: five `ng build --watch`
+    /// stacked up in one container, ages 2h to 20h, about 8 GiB with their esbuild
+    /// children, against a single live exec client.
+    ///
+    /// Run in the workspace's directory, bounded, immediately *before* the pty is
+    /// killed — the other order leaves the remote process with no client at all,
+    /// which is the leak. A failure is logged and the pty is killed anyway: a stop
+    /// command that does not work must not leave a process the daemon will no
+    /// longer show you.
+    ///
+    /// The daemon knows nothing about docker here. This is a command the repo
+    /// writes, e.g. `["docker","compose","exec","-T","assets","pkill","-f","build-watch"]`.
+    #[serde(default)]
+    pub stop_command: Vec<String>,
+}
+
+impl Config {
+    /// The processes this workspace declares.
+    ///
+    /// Main and a worktree declare different sets, and "which processes exist
+    /// here" must have one answer: a name the drawer refuses and the CLI accepts
+    /// would be two products. `api` asks through here, and so does the stop path.
+    pub fn processes_for(&self, workspace: &str) -> &[ManagedSpec] {
+        if workspace == crate::model::MAIN {
+            &self.main_processes
+        } else {
+            &self.worktree_processes
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]

@@ -48,6 +48,7 @@ async function loadConfigInto() {
     failure_patterns: (p.failure_patterns || []).join(', '),
     restart: p.restart || 'never',
     autostart: !!p.autostart,
+    stop_command: (p.stop_command || []).join(' '),
   }));
   renderProcs();
 }
@@ -115,6 +116,10 @@ function renderProcs() {
     box.appendChild(procField('command', p, 'command'));
     box.appendChild(procField('ok when', p, 'ok_patterns'));
     box.appendChild(procField('fails when', p, 'failure_patterns'));
+    /* Empty for anything ordinary. It is here rather than config-file-only for a
+       blunt reason: this panel posts the whole process list, so a field it did not
+       carry would be erased by the next save. */
+    box.appendChild(procField('stop with', p, 'stop_command'));
 
     const rrow = el('label', 'settings-field');
     rrow.appendChild(el('span', 'settings-k', 'restart'));
@@ -150,6 +155,7 @@ async function saveSettings() {
       ok_patterns: list(p.ok_patterns),
       restart: p.restart,
       autostart: p.autostart,
+      stop_command: argv(p.stop_command),
     })),
   };
   try {
@@ -198,7 +204,7 @@ function setupSettings() {
   $('setprocadd').onclick = () => {
     procDraft.push({
       name: '', command: '', ok_patterns: '', failure_patterns: '',
-      restart: 'never', autostart: false, open: true,
+      restart: 'never', autostart: false, stop_command: '', open: true,
     });
     renderProcs();
   };

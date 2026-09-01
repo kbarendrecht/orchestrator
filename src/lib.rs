@@ -110,11 +110,44 @@ impl Server {
     /// not supervising `ng-watch`, and a build watcher nobody is watching is
     /// just a CPU leak with a log file.
     ///
-    /// This reaches only as far as the ptys. `docker compose up -d` detaches
-    /// and its pty child is long gone by the time we get here, so the
-    /// containers keep running — which is the intent. Long-lived containers
-    /// are infrastructure; `ng-watch` is a process this app started and should
-    /// therefore finish.
+    /// This reaches the ptys, and whatever a process declares as its
+    /// `stop_command`. `docker compose up -d` detaches and its pty child is long
+    /// gone by the time we get here, so the containers keep running — which is the
+    /// intent. Long-lived containers are infrastructure; `ng-watch` is a process
+    /// this app started and should therefore finish, wherever it is running.
+    /// Run every managed process's `stop_command`, before anything is killed.
+    ///
+    /// Sequential and bounded: there is normally one such process, and a restart
+    /// of the app is waiting on this.
+    async fn stop_declared_processes(&self) {
+        let declared: Vec<(String, String, std::sync::Arc<crate::pty::PtyHandle>)> = {
+            let inner = self.app.inner.read().await;
+            inner
+                .workspaces
+                .values()
+                .flat_map(|w| {
+                    w.processes.iter().filter_map(|p| {
+                        p.pty
+                            .as_ref()
+                            .filter(|h| h.is_alive())
+                            .map(|h| (w.id.clone(), p.name.clone(), h.clone()))
+                    })
+                })
+                .collect()
+        };
+        for (workspace, name, pty) in declared {
+            if self
+                .app
+                .cfg
+                .processes_for(&workspace)
+                .iter()
+                .any(|s| s.name == name && !s.stop_command.is_empty())
+            {
+                crate::spawn::stop_managed(&self.app, &workspace, &name, &pty).await;
+            }
+        }
+    }
+
     pub async fn shutdown(&self) {
         // Before anything is killed: every pty about to die wakes an exit watcher,
         // and one of them would otherwise read a restart as "you finished with
@@ -126,6 +159,12 @@ impl Server {
         // Before the killing, not after: `was_live` is read off session state,
         // which the exit watchers are about to rewrite.
         self.app.persist_now().await;
+
+        // And before the lock is taken, because each of these is a bounded child
+        // process. A watcher running through `docker compose exec` outlives its
+        // client, so killing the pty alone leaves it in the container — which is
+        // how five of them stacked up.
+        self.stop_declared_processes().await;
 
         let mut killed = 0usize;
         {
@@ -142,6 +181,10 @@ impl Server {
                 for p in &w.processes {
                     if let Some(h) = &p.pty {
                         if h.is_alive() {
+                            // The pty only. A `stop_command` is a bounded child of
+                            // its own and this runs under the write lock on the way
+                            // out; `shutdown_processes` below does that half first,
+                            // with the lock released.
                             let _ = h.kill();
                             killed += 1;
                         }

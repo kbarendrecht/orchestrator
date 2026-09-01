@@ -370,32 +370,21 @@ this file, which churned it from every build; they now go to a gitignored
   warning that treats `TokenSource::GhCli` as too wide loses its subject. The README
   describes today's split rather than this plan.
 
-- **The watch build leaks a process every time its client dies, and orchestrator is
-  where that gets fixed.** Found on the monorepo box: five `ng build --watch`
-  stacked inside one assets container, ages 2h to 20h, about 8 GiB with their
-  esbuild children, swap at 19 of 23 GiB. The watch task is
-  `docker compose exec -ti <assets> pnpm run build-watch`, and docker does not
-  signal the container-side process when the exec client goes. Verified by counting:
-  one live exec client, four live watchers. Every new `mise run watch` stacks another
-  and nothing reaps them.
+- **Declare the watch as a managed process, with its `stop_command`.** The daemon
+  half is done (`stop_command` on `ManagedSpec`): a command that stops what the pty
+  is a *client* of, run before the kill, on close, restart and shutdown. What is
+  left is repo-side — put the watch in `main_processes` with
+  `docker compose exec -T <assets> pnpm run build-watch` and a `pkill -f` beside it,
+  and confirm on the box that starting and stopping it twice leaves no watcher
+  behind.
 
-  The model here already fits. `ManagedSpec` gives one `proc_id` per
-  `workspace:name`, start is refused when it is already running (`api.rs:1283`), and
-  restart kills first (`api.rs:1683`). What is missing is that the pty would own the
-  wrong process: `PtyHandle::kill()` takes the local exec client and leaves the build
-  running, so declaring the watch in `main_processes` as it stands buys nothing. Two
-  ways out. A dedicated compose service puts the lifecycle on docker and there is no
-  exec client at all; a `stop_command` on `ManagedSpec` keeps `exec` and adds a
-  second thing to keep correct.
-
-  **The compose-service route costs the health parsing, and that is the open
-  question.** `ng-watch` health is parsed off pty output (`health.rs`). A service has
-  no pty, so it becomes `docker compose logs -f` and the rail's error summary depends
-  on that stream behaving the same. Unproven either way.
-
-  *The two leaks this entry also named are fixed* (`b543c5e`): a replaced managed
-  process is killed rather than dropped, and SIGTERM runs `shutdown` like Ctrl-C
-  does. What is left is the docker half above.
+  *The compose-service alternative was rejected, and the reasoning is worth keeping.*
+  Moving the watch to its own compose service and following `docker compose logs -f`
+  costs two things the pty gives for free: `logs -f` replays history, so the health
+  parser would open on yesterday's failures, and "the child exited" would become
+  "the log follower exited", which says nothing about the service. It does not even
+  avoid the problem — stopping a service is still not killing a pty — so it needed a
+  stop mechanism too.
 
 ## Decisions worth revisiting
 

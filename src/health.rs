@@ -178,6 +178,7 @@ mod tests {
             ],
             restart: crate::config::RestartPolicy::Never,
             autostart: false,
+            stop_command: Vec::new(),
         }
     }
 
