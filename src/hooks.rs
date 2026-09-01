@@ -614,7 +614,12 @@ fn orch_binary() -> Option<PathBuf> {
 /// Single quotes take everything literally. The only thing they cannot contain is
 /// a single quote, which is closed, escaped and reopened — a home directory
 /// belonging to an O'Brien is not a reason for the guard to stop working.
-fn sh_quote(s: &str) -> String {
+///
+/// `pub` because the desktop crate writes a shell launcher into a macOS `.app`
+/// and needs the same rule. One implementation, since the failure it prevents is
+/// identical on both sides and a second copy is how one of them stops getting the
+/// fix.
+pub fn sh_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', r"'\''"))
 }
 

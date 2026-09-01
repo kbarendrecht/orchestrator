@@ -112,15 +112,26 @@ xattr -dr com.apple.quarantine orchestrator-desktop orch
 Put them on your `PATH` (`orch` only if you want it) and run
 `orchestrator-desktop`.
 
-A tarball or a mise install ships no launcher entry, because there is no
-installer to write one. The app writes its own on request:
+A tarball or a mise install carries no launcher entry, because there is no
+installer to write one. **The app writes its own on first launch**: a `.desktop`
+file under `~/.local/share/applications` on Linux, and an
+`~/Applications/Orchestrator.app` on macOS, which is what puts it in Finder,
+Spotlight and Launchpad. Force it, or write it again after moving the binary, with:
 
 ```
-orchestrator-desktop --install-desktop-entry   # Linux
+orchestrator-desktop --install-desktop-entry
 ```
 
-It points at the binary that ran it and uses the same id the `.deb` does, so
-installing the package later replaces the entry instead of listing the app twice.
+It points at the binary that ran it and uses the same id the packages do, so
+installing a `.deb` or the `.dmg` later replaces the entry instead of listing the
+app twice. Two things it will not do: write anything for an install that carries
+its own entry (the `.deb`, the AppImage, the `.dmg`), and write anything from a
+build tree, where the shared id would let `cargo run` shadow a real install.
+
+Because a mise install lives at a version-pinned path, the entry names the
+`latest` symlink beside it where there is one, and is rewritten at the next launch
+when the binary has moved. A bundle built this way is also unquarantined, so it
+opens on a plain double-click, unlike the unsigned `.dmg`.
 
 **Linux** needs **WebKitGTK 4.1** at runtime (Ubuntu 22.04 / Debian 12 or newer;
 20.04 ships only 4.0 and will not work). **macOS** uses the system WebView and
@@ -328,6 +339,10 @@ watcher whose success line is missing from the list leaves the rail stuck on
   what "no reviews" looks like.
 - **A setting does nothing.** An unknown key is ignored in silence. Check the
   spelling against the tables above.
+- **It is not in Finder, Spotlight or your launcher.** A mise or tarball install
+  writes its entry on first launch, so start it once from a terminal. If it is
+  still missing, run `orchestrator-desktop --install-desktop-entry`, which says
+  where it wrote.
 - **A session cannot see a variable your shell has.** The daemon's environment is
   not your shell's. `env_source` bridges that per spawn, and an untrusted
   `mise.toml` is the one case that logs a warning instead of degrading quietly. See

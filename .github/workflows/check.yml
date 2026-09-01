@@ -53,11 +53,13 @@ jobs:
           # Or the two platforms share one cache key and evict each other.
           key: ${{ matrix.os }}
 
-      # The daemon carries every test, including the pid-liveness and
+      # The daemon carries almost every test, including the pid-liveness and
       # instance-lock guards that used to read `/proc` and answered wrongly off
-      # Linux. Those are the ones worth running on a Mac.
+      # Linux. Those are the ones worth running on a Mac. The desktop crate is in
+      # for one reason: it writes the macOS `.app` bundle, and this is the only
+      # machine that can check that layout against a real Finder's rules.
       - name: Test the daemon
-        run: cargo test -p orchd
+        run: cargo test -p orchd -p orchestrator-desktop
 
       # The part no Linux box can answer, so it runs even when the tests above
       # failed: a red test would otherwise skip this step and hide the one signal
