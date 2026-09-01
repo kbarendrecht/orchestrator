@@ -1069,6 +1069,32 @@ async fn worktree_holding(app: &Arc<AppState>, head_ref: &str) -> Option<String>
         .map(|w| w.id.clone())
 }
 
+/// Where this branch is already recorded, whether or not the tree is still there.
+///
+/// A workspace record outlives the directory it names: `claude --worktree` removes
+/// its own tree when that session ends, and only `worktree::teardown` ever drops a
+/// record. The PR flows key on the record, so a vanished one used to be handed back
+/// as if it stood — the run was then aimed at a path that is not there, which
+/// `portable-pty` turns into `$HOME` rather than an error.
+///
+/// The path comes back with the name because the answer to a missing tree is to
+/// **rebuild it where it stood**, not to cut a second one somewhere else. The
+/// session is what owns that directory: transcripts are keyed by working directory,
+/// so a conversation resumed later looks for its own path, and two trees on one
+/// branch is a choice `worktree_holding` should never have to make.
+///
+/// Deliberately not folded into [`worktree_holding`], which answers "is anyone
+/// working on this branch". That one must keep saying yes for a live session whose
+/// tree was deleted under it, or a fix run would start beside it.
+async fn recorded_worktree_for(
+    app: &Arc<AppState>,
+    head_ref: &str,
+) -> Option<(String, std::path::PathBuf)> {
+    let ws = worktree_holding(app, head_ref).await?;
+    let path = app.workspace_path(&ws).await?;
+    Some((ws, path))
+}
+
 /// The worktree that makes this PR's branch busy, if one does.
 ///
 /// The single definition of "busy", because the guard and the spawn had two. The
@@ -1174,15 +1200,22 @@ async fn park_main(app: &Arc<AppState>) {
 }
 
 pub async fn ensure_pr_worktree(app: &Arc<AppState>, pr: u64, head_ref: &str) -> Result<String> {
-    if let Some(ws) = worktree_holding(app, head_ref).await {
-        return Ok(ws);
+    let recorded = recorded_worktree_for(app, head_ref).await;
+    if let Some((ws, path)) = &recorded {
+        if path.is_dir() {
+            return Ok(ws.clone());
+        }
     }
 
-    let name = format!("pr-{pr}");
+    // A record whose tree is gone keeps its name and its path, and the arms below
+    // cut it again there, on this PR's head ref. That is the same repair
+    // `worktree::revive` does for a resumed session, reached from the other side.
+    let (name, mut path) = recorded.unwrap_or_else(|| {
+        let name = format!("pr-{pr}");
+        let path = app.cfg.worktree_path(&name);
+        (name, path)
+    });
     validate_worktree_name(&name)?;
-    // Reassigned when the repo's `WorktreeCreate` hook puts the tree somewhere of
-    // its own choosing.
-    let mut path = app.cfg.worktree_path(&name);
     if !path.exists() {
         /* Main holding this very branch is the one case where cutting the tree and
            freeing main are the same act, so it is done rather than refused.
@@ -1952,6 +1985,52 @@ mod tests {
         assert_eq!(usable_hook_path(&f.to_string_lossy()), None);
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A workspace record outlives the directory it names, and the PR flows key on
+    /// that record. The run this cost opened in `$HOME`: the tree had been removed,
+    /// `worktree_holding` handed its name back anyway, `ensure_pr_worktree` took the
+    /// early return, and the spawn was aimed at a path that was not there.
+    #[tokio::test]
+    async fn a_worktree_whose_directory_is_gone_does_not_hold_a_branch() {
+        use crate::config::Config;
+        use crate::state::AppState;
+
+        let dir = std::env::temp_dir().join(format!("orchd-holding-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cfg: Config = serde_json::from_str(&format!(
+            r#"{{"main_checkout":"{}","port":7794}}"#,
+            dir.display()
+        ))
+        .unwrap();
+        let app = AppState::new(cfg, "t".into(), crate::window::Chrome::None);
+
+        let here = dir.join("here");
+        std::fs::create_dir_all(&here).unwrap();
+        let gone = dir.join("gone");
+        let _ = std::fs::remove_dir_all(&gone);
+
+        app.register_worktree("here", here, Some("feature/here".into())).await;
+        app.register_worktree("gone", gone, Some("feature/gone".into())).await;
+
+        let (name, path) = recorded_worktree_for(&app, "feature/here").await.expect("standing");
+        assert_eq!((name.as_str(), path.is_dir()), ("here", true));
+
+        // The one that matters: the record survives its directory, and it comes back
+        // with the path so the flow rebuilds the tree where it stood rather than
+        // cutting a second one for the same branch.
+        let (name, path) = recorded_worktree_for(&app, "feature/gone").await.expect("recorded");
+        assert_eq!(name, "gone");
+        assert!(!path.is_dir(), "the tree is gone; the record is not");
+        assert!(path.ends_with("gone"), "and it names where it stood: {}", path.display());
+
+        // And it is still where that branch is being worked on, which is a different
+        // question and the one the busy guard asks.
+        assert_eq!(
+            worktree_holding(&app, "feature/gone").await.as_deref(),
+            Some("gone"),
+            "a deleted tree does not free the branch for a second agent"
+        );
     }
 
     /// The record has to be visible to a hook before the process that fires it

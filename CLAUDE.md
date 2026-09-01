@@ -283,6 +283,24 @@ mean *this* repo; if you do, name it.
   `objc2-exception-helper` compiles Objective-C and needs a real macOS SDK, so it
   fails in `cc-rs` on Linux for reasons that say nothing about your code. That
   half is only answered by `check.yml` on the macos-14 runner.
+- **A missing `cwd` is not an error to `portable-pty` — it is `$HOME`.**
+  `CommandBuilder::as_command` filters the cwd on `is_dir()` and falls back to the
+  home directory, so a session aimed at a worktree that no longer exists does not
+  fail: it starts in `~` and runs there. A fix-pr run did exactly that, and the
+  only thing that stopped it was Claude Code's workspace-trust prompt for a
+  directory nobody had chosen. `PtyHandle::spawn` now refuses a `cwd` that is not a
+  directory, which is the one place every session, process and shell goes through.
+  The record that pointed there is the other half. A workspace record outlives its
+  directory — `claude --worktree` removes its own tree when that session ends, and
+  only `worktree::teardown` ever drops a record — so the PR flows were handed a
+  name whose tree was gone. **The repair is to rebuild it where it stood**, not to
+  cut a second tree or to prune the record: the session owns that directory,
+  because transcripts are keyed by it. A resume already did that
+  (`api::revive` → `worktree::revive`); `ensure_pr_worktree` now does it too, via
+  `recorded_worktree_for`, which hands back the recorded path precisely so the tree
+  can be cut again at it. `worktree_holding` deliberately ignores whether the
+  directory exists — a live session whose tree was deleted still holds its branch,
+  and `branch_busy` must keep saying so.
 - **Hooks are observers, not gatekeepers.** They answer immediately and finish
   their work detached, because Claude gives a hook one second and a dropped
   future silently loses the state change. Do not make a hook wait on anything.
