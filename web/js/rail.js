@@ -641,7 +641,9 @@ async function rewindSession(s) {
  *  What the swap is *called* turns on this: with a branch of its own on each side
  *  the two trade places, and with only base in main your branch goes there and
  *  base comes back — which is a move, and saying "swap" for it describes an
- *  exchange nobody asked for.
+ *  exchange nobody asked for. A *session* in main counts as work too: swapping
+ *  then displaces that conversation into this worktree, which is an exchange
+ *  however empty main's branch is.
  *
  *  The base branch comes off `upstream_ref` (`upstream/develop` → `develop`),
  *  which is the same split the daemon makes. `origin/HEAD` cannot be split that
@@ -653,6 +655,19 @@ async function rewindSession(s) {
  *  `HashSet`, so its order says nothing, and "the only thing main has is base" is
  *  a question about the set rather than about its first element. */
 function mainHoldsWork(main) {
+  /* A conversation in main is work, whatever branch main is on. Without this the
+     item read the git side only: main sitting on its base with somebody working in
+     it answered "nothing of its own", so the menu offered `move to main` and the
+     confirm promised "main has nothing of its own checked out" — while a swap
+     would have carried that person's conversation out into this worktree. Reported
+     from a Mac: `move to main` on a row while a session was in main.
+
+     The same rule the daemon uses for "is anyone in main" since it learned to
+     allow more than one: any live session whose workspace is main, rather than the
+     recorded claim, which can name none of them. */
+  const busy = snap.sessions.some(
+    (x) => x.workspace === main?.id && x.alive && !isArchived(x));
+  if (busy) return true;
   const leaf = (snap.upstream_ref || '').split('/').pop();
   if (!leaf || leaf === 'HEAD') return true;
   // What main has checked out *now*. This used to ask `branches`, which accumulates
@@ -914,11 +929,17 @@ function renderWaitbar() {
     const longest = waiting.reduce(
       (a, b) => ((a.waiting_ms ?? 0) >= (b.waiting_ms ?? 0) ? a : b));
     bar.className = 'waitbar on';
-    // Two nodes, because only the second half moves: the count changes with a
-    // snapshot, the duration changes every second.
-    bar.appendChild(el('span', null, `${waiting.length} waiting · longest `));
+    /* "need you", not "waiting". The count is `wants_attention` — any `your_turn`
+       but `ready`, plus a red build — so it covers a finished turn as well as a
+       permission prompt, and the rows name those separately. "Waiting" promised
+       somebody was blocked, and reading "2 waiting" over a rail with one obviously
+       blocked row is the bar arguing with the list under it.
+
+       Two nodes, because only the second half moves: the count changes with a
+       snapshot, the duration changes every second. */
+    bar.appendChild(el('span', null, `${waiting.length} need you · longest `));
     bar.appendChild(clock(null, longest.waiting_ms ?? 0));
-    bar.title = `Jump to the session waiting longest · ${MOD_LABEL} Space`;
+    bar.title = `Jump to the one that has needed you longest · ${MOD_LABEL} Space`;
     bar.onclick = () => setSelected(longest.id);
   } else {
     /* Nobody is asking for you; a restart has just put several agents back at an

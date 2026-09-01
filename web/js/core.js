@@ -333,7 +333,13 @@ export function dotClass(s) {
   const k = s.state.state;
   if (k === 'build_failing' || k === 'error') return 'build';
   if (handedToPr(s)) return 'pr';
-  if (k === 'your_turn') return 'blocked';
+  /* `ready` is not blocked, and this was the one predicate that thought it was.
+     `stateClass` below and the daemon's `wants_attention` both read
+     `your_turn && reason !== 'ready'`; this read `your_turn`. So a session that
+     had only just resumed wore the attention colour while the bar deliberately
+     left it out of the count — the dot shouting about the one thing the rail had
+     decided not to shout about. */
+  if (k === 'your_turn') return s.state.reason === 'ready' ? 'idle' : 'blocked';
   // Teal outranks the underlying state: while automation holds a session,
   // "already being handled" is the more useful signal.
   if (s.kind.kind === 'automation') return 'auto';
