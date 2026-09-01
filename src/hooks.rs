@@ -591,15 +591,31 @@ pub async fn boundary_block(
 /// and both in the same directory in the release tarball. Resolved rather than
 /// left to `PATH` so the guard does not depend on how the user installed things.
 ///
-/// `None` when it is not there — a `cargo run` before `cargo build --bins`, or a
-/// partial install. The caller logs that loudly and registers no hook at all,
+/// **Through the `latest` symlink when mise installed us**, because this path is
+/// written into a settings file that outlives the process. mise installs each
+/// version in a directory of its own and removes the old one, so the version-pinned
+/// path is dead the moment you upgrade — and the guard is a `type: "command"` hook,
+/// so a missing binary is a hook that fails *open*. Seen: four
+/// `PreToolUse:Bash hook error` lines in one session, naming an `orch` from a
+/// version that had been replaced under a still-running daemon, with the guard
+/// silently not running for any of those pushes.
+///
+/// `None` when neither path is there — a `cargo run` before `cargo build --bins`,
+/// or a partial install. The caller logs that loudly and registers no hook at all,
 /// which is the honest outcome: the previous guard ran a Python script by its
 /// shebang, so a machine without `python3` got a hook that exited 127 and a
 /// guard that had silently stopped existing.
 fn orch_binary() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
-    let orch = exe.parent()?.join(if cfg!(windows) { "orch.exe" } else { "orch" });
-    orch.exists().then_some(orch)
+    let name = if cfg!(windows) { "orch.exe" } else { "orch" };
+    let stable = crate::self_update::stable_exe(&exe);
+    // The stable path first, the running one as the fallback: a layout without a
+    // `latest` beside it gets exactly what it got before.
+    let candidates = [
+        stable.parent().map(|dir| dir.join(name)),
+        exe.parent().map(|dir| dir.join(name)),
+    ];
+    candidates.into_iter().flatten().find(|orch| orch.exists())
 }
 
 /// Single-quote a string for a shell.

@@ -178,41 +178,10 @@ const APP_NAME: &str = "Orchestrator";
 /// repair, because it never starts to notice.
 fn launcher_target() -> Result<std::path::PathBuf> {
     let exe = std::env::current_exe().context("finding this executable")?;
-    Ok(stable_exe(&exe))
-}
-
-/// `…/installs/<tool>/<version>/<file>` → `…/installs/<tool>/latest/<file>`.
-///
-/// Only when that path really exists, so a layout this does not understand keeps
-/// the resolved path it came with. Pure, and tested, because the fault it prevents
-/// is invisible until an upgrade weeks later.
-fn stable_exe(exe: &std::path::Path) -> std::path::PathBuf {
-    let parts: Vec<_> = exe.components().collect();
-    // <installs>/<tool>/<version>/<file>: the version is two components from the
-    // end, and `installs` two before that.
-    let Some(version_at) = parts.len().checked_sub(2) else {
-        return exe.to_path_buf();
-    };
-    let installs_at = match version_at.checked_sub(2) {
-        Some(i) => i,
-        None => return exe.to_path_buf(),
-    };
-    if parts[installs_at].as_os_str() != std::ffi::OsStr::new("installs") {
-        return exe.to_path_buf();
-    }
-    let mut latest = std::path::PathBuf::new();
-    for (n, c) in parts.iter().enumerate() {
-        if n == version_at {
-            latest.push("latest");
-        } else {
-            latest.push(c.as_os_str());
-        }
-    }
-    if latest.exists() {
-        latest
-    } else {
-        exe.to_path_buf()
-    }
+    // The daemon's, because the push guard's hook has the same problem with the
+    // same answer, and two copies of this rule is how one of them would keep the
+    // version-pinned path.
+    Ok(orchd::self_update::stable_exe(&exe))
 }
 
 /// Write `bytes` unless the file already holds exactly that.
@@ -869,37 +838,6 @@ mod tests {
     /// The fault this prevents costs an upgrade, not a launch: mise installs each
     /// version to its own directory, so an entry naming the resolved path is dead
     /// the moment `mise up` removes it.
-    #[test]
-    fn a_mise_install_path_is_written_as_the_latest_symlink() {
-        let d = scratch("stable");
-        let versioned = d.join("installs/orchestrator/2026.9.0");
-        let latest = d.join("installs/orchestrator/latest");
-        std::fs::create_dir_all(&versioned).unwrap();
-        std::fs::create_dir_all(&latest).unwrap();
-        std::fs::write(versioned.join("orchestrator-desktop"), "x").unwrap();
-        std::fs::write(latest.join("orchestrator-desktop"), "x").unwrap();
-
-        assert_eq!(
-            stable_exe(&versioned.join("orchestrator-desktop")),
-            latest.join("orchestrator-desktop")
-        );
-    }
-
-    #[test]
-    fn a_path_with_no_latest_beside_it_is_left_alone() {
-        let d = scratch("nolatest");
-        let versioned = d.join("installs/orchestrator/2026.9.0");
-        std::fs::create_dir_all(&versioned).unwrap();
-        let exe = versioned.join("orchestrator-desktop");
-        std::fs::write(&exe, "x").unwrap();
-        assert_eq!(stable_exe(&exe), exe, "no `latest` means nothing to prefer");
-
-        // And a path that is nothing like a mise layout, including a short one:
-        // the component arithmetic underflows if it is not guarded.
-        assert_eq!(stable_exe(std::path::Path::new("/usr/bin/x")), std::path::Path::new("/usr/bin/x"));
-        assert_eq!(stable_exe(std::path::Path::new("/x")), std::path::Path::new("/x"));
-    }
-
     #[test]
     fn the_bundle_execs_the_binary_where_it_actually_lives() {
         let d = scratch("bundle");

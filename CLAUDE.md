@@ -283,6 +283,19 @@ mean *this* repo; if you do, name it.
   `objc2-exception-helper` compiles Objective-C and needs a real macOS SDK, so it
   fails in `cc-rs` on Linux for reasons that say nothing about your code. That
   half is only answered by `check.yml` on the macos-14 runner.
+- **A mise install path is version-pinned, so never write one into a file that
+  outlives the process.** mise installs each version in its own directory and
+  removes the old one on upgrade, while `current_exe` resolves symlinks and so
+  hands back the pinned path rather than the `latest` beside it. Three things
+  wrote that path down and each broke on the next `mise up`: the `.desktop` entry
+  (a launcher pointing at a version that is gone), `relaunch` (a restart that
+  cannot find itself), and the push guard's `PreToolUse` hook — which is the worst
+  of the three, because a `type: "command"` hook whose binary is missing fails
+  **open**. That one showed up as four `PreToolUse:Bash hook error` lines in a
+  session, with the guard silently not running for any of those pushes.
+  `self_update::stable_exe` is the one rule: swap the version component for
+  `latest` when that path really exists, else keep what you had. Use it anywhere a
+  path is persisted.
 - **A missing `cwd` is not an error to `portable-pty` — it is `$HOME`.**
   `CommandBuilder::as_command` filters the cwd on `is_dir()` and falls back to the
   home directory, so a session aimed at a worktree that no longer exists does not

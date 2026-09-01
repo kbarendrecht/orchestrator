@@ -72,9 +72,83 @@ fn tool_owning(stdout: &[u8], exe: &Path) -> Option<String> {
     best.map(|(_, tool)| tool)
 }
 
+/// `…/installs/<tool>/<version>/<file>` → `…/installs/<tool>/latest/<file>`.
+///
+/// Only when that path really exists, so a layout this does not understand keeps
+/// the resolved path it came with. Pure, and tested, because the fault it prevents
+/// is invisible until an upgrade weeks later.
+pub fn stable_exe(exe: &std::path::Path) -> std::path::PathBuf {
+    let parts: Vec<_> = exe.components().collect();
+    // <installs>/<tool>/<version>/<file>: the version is two components from the
+    // end, and `installs` two before that.
+    let Some(version_at) = parts.len().checked_sub(2) else {
+        return exe.to_path_buf();
+    };
+    let installs_at = match version_at.checked_sub(2) {
+        Some(i) => i,
+        None => return exe.to_path_buf(),
+    };
+    if parts[installs_at].as_os_str() != std::ffi::OsStr::new("installs") {
+        return exe.to_path_buf();
+    }
+    let mut latest = std::path::PathBuf::new();
+    for (n, c) in parts.iter().enumerate() {
+        if n == version_at {
+            latest.push("latest");
+        } else {
+            latest.push(c.as_os_str());
+        }
+    }
+    if latest.exists() {
+        latest
+    } else {
+        exe.to_path_buf()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The fault this prevents costs an upgrade, not a launch: mise installs each
+    /// version in its own directory, so a path written into the launcher entry or
+    /// into the push guard's hook is dead the moment `mise up` removes it. Seen
+    /// twice — a `.desktop` file naming a version that was gone, and a `PreToolUse`
+    /// hook whose `orch` had been replaced, which made the guard fail *open* and
+    /// print four errors into a session.
+    #[test]
+    fn a_mise_install_path_resolves_to_the_latest_symlink() {
+        let d = std::env::temp_dir().join(format!("orchd-stable-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let versioned = d.join("installs/orchestrator/2026.9.0");
+        let latest = d.join("installs/orchestrator/latest");
+        std::fs::create_dir_all(&versioned).unwrap();
+        std::fs::create_dir_all(&latest).unwrap();
+        std::fs::write(versioned.join("orchestrator-desktop"), "x").unwrap();
+        std::fs::write(latest.join("orchestrator-desktop"), "x").unwrap();
+
+        assert_eq!(
+            stable_exe(&versioned.join("orchestrator-desktop")),
+            latest.join("orchestrator-desktop")
+        );
+    }
+
+    #[test]
+    fn a_path_with_no_latest_beside_it_is_left_alone() {
+        let d = std::env::temp_dir().join(format!("orchd-nolatest-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let versioned = d.join("installs/orchestrator/2026.9.0");
+        std::fs::create_dir_all(&versioned).unwrap();
+        let exe = versioned.join("orchestrator-desktop");
+        std::fs::write(&exe, "x").unwrap();
+        assert_eq!(stable_exe(&exe), exe, "no `latest` means nothing to prefer");
+
+        // And anything that is not a mise layout, including paths short enough to
+        // underflow the component arithmetic.
+        for p in ["/usr/bin/orch", "/x", "/"] {
+            assert_eq!(stable_exe(Path::new(p)), Path::new(p));
+        }
+    }
 
     /// The real shape, trimmed: mise keys by the name it accepts, which for a
     /// backend install is not what the directory is called.
