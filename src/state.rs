@@ -87,12 +87,24 @@ pub struct Repos {
     pub fork: Option<String>,
 }
 
+/// How long `notify` waits before the records reach disk.
+///
+/// A second: long enough that a burst of hooks is one write, short enough that a
+/// crash costs a second of bookkeeping rather than a conversation. Nothing waits
+/// on it — the snapshot goes out immediately either way.
+const PERSIST_COALESCE: std::time::Duration = std::time::Duration::from_secs(1);
+
 pub struct AppState {
     pub cfg: Config,
     pub repos: Repos,
     /// Random per-start token embedded in the served SPA and required on the
     /// WebSocket and every mutating endpoint (§12).
     pub token: String,
+    /// A record write is already scheduled; see [`Self::persist_soon`].
+    persist_pending: std::sync::atomic::AtomicBool,
+    /// Which sessions the last written `sessions.json` knows about; see
+    /// [`Self::persist_when_due`].
+    persisted_ids: std::sync::atomic::AtomicU64,
     pub inner: RwLock<Inner>,
     /// The branch `open_pr(place=main)` checked into main, which `park_main` may
     /// return to base when the last session there closes.
@@ -391,6 +403,8 @@ impl AppState {
             cfg,
             repos,
             token,
+            persist_pending: std::sync::atomic::AtomicBool::new(false),
+            persisted_ids: std::sync::atomic::AtomicU64::new(0),
             inner: RwLock::new(Inner {
                 workspaces,
                 sessions: HashMap::new(),
@@ -441,21 +455,79 @@ impl AppState {
 
     /// Push a fresh snapshot to every connected SPA. State is small enough that
     /// a whole snapshot beats a delta protocol nobody can debug.
-    pub async fn notify(&self) {
-        self.persist().await;
+    pub async fn notify(self: &Arc<Self>) {
+        self.persist_when_due().await;
         let snapshot = self.snapshot().await;
         if let Ok(json) = serde_json::to_string(&snapshot) {
             let _ = self.events.send(json);
         }
     }
 
-    /// Write the session records without pushing a snapshot.
+    /// Write the session records without pushing a snapshot, right now.
     ///
     /// Shutdown wants this: `was_live` is read off session state, and killing
     /// the ptys flips that state from under you a moment later. Persisting
-    /// first is what lets auto-resume rebuild the rail next launch.
+    /// first is what lets auto-resume rebuild the rail next launch. Immediate
+    /// rather than coalesced for the same reason — there is no later.
     pub async fn persist_now(&self) {
         self.persist().await;
+    }
+
+    /// Write the records now if the *set* of sessions changed, and soon otherwise.
+    ///
+    /// The split is a contract, not an optimisation. A record has to exist as soon
+    /// as its session does: the e2e agent waits to see itself in `sessions.json`
+    /// before it speaks, `restore` reads that file and nothing else, and a session
+    /// created a moment before a crash is one the rail cannot offer to resume.
+    /// Everything *else* a notify carries — a state flip, a title, a waiting clock
+    /// — is a field on a record that already exists, and those are what arrive
+    /// dozens at a time.
+    async fn persist_when_due(self: &Arc<Self>) {
+        let now = self.session_ids().await;
+        if now != self.persisted_ids.load(std::sync::atomic::Ordering::SeqCst) {
+            self.persist().await;
+        } else {
+            self.persist_soon();
+        }
+    }
+
+    /// A cheap stand-in for "which sessions exist": their count, and their ids
+    /// mixed together. Two different sets colliding would delay one write by a
+    /// second, which is why a hash is enough and a clone of every id is not needed.
+    async fn session_ids(&self) -> u64 {
+        let inner = self.inner.read().await;
+        let mut mixed = inner.sessions.len() as u64;
+        for id in inner.sessions.keys() {
+            let (hi, lo) = id.as_u64_pair();
+            mixed = mixed.rotate_left(7) ^ hi ^ lo;
+        }
+        mixed
+    }
+
+    /// Ask for the records to be written, soon and at most once a second.
+    ///
+    /// `notify` used to write them **before every snapshot**, and it is called from
+    /// about seventy places — every hook, every poll, every state change. That is a
+    /// serialise-and-write of the whole record set, tens of kilobytes once a
+    /// session board has been used for a while, on a tokio worker thread, several
+    /// times a second while an agent is working.
+    ///
+    /// Coalescing costs at most a second of records on a *crash* — an ordinary exit
+    /// goes through [`Self::persist_now`], and the flush below always writes the
+    /// state as it is when it runs, not as it was when the flag was set. What it
+    /// buys is that a burst of hooks writes the file once rather than ten times.
+    fn persist_soon(self: &Arc<Self>) {
+        // Already scheduled: the pending flush will see whatever this change made,
+        // because it reads the records when it runs.
+        if self.persist_pending.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            return;
+        }
+        let app = self.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(PERSIST_COALESCE).await;
+            app.persist_pending.store(false, std::sync::atomic::Ordering::SeqCst);
+            app.persist().await;
+        });
     }
 
     /// Session records are written on every state change, so a daemon that dies
@@ -469,6 +541,10 @@ impl AppState {
                 .map(crate::store::SessionRecord::of)
                 .collect()
         };
+        // Recorded before the write, and unconditionally: a failed write is not a
+        // reason to keep answering "the set changed" and writing on every notify.
+        self.persisted_ids
+            .store(self.session_ids().await, std::sync::atomic::Ordering::SeqCst);
         if let Err(e) = crate::store::save(&records) {
             tracing::warn!("could not persist session records: {e:#}");
         }

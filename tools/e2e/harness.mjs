@@ -234,8 +234,16 @@ export async function sandbox({
     const { proc, log } = live
     // SIGTERM, not SIGKILL: the daemon persists its records on the way out, and a
     // restart that could not read them would be testing the wrong thing.
+    //
+    // **Wait on `exitCode`, never on `killed`.** Node sets `proc.killed` the moment
+    // a signal is *sent*, not when the process goes, so `!proc.killed` ended this
+    // loop on its first pass and the SIGKILL below landed microseconds later — the
+    // daemon was hard-killed every time and the comment above was describing
+    // something that never happened. Invisible while records were written
+    // synchronously on every change; the moment they were coalesced, a rename made
+    // a second before the restart was gone.
     proc.kill('SIGTERM')
-    for (let i = 0; i < 100 && proc.exitCode === null && !proc.killed; i++) {
+    for (let i = 0; i < 100 && proc.exitCode === null; i++) {
       await new Promise((r) => setTimeout(r, 50))
     }
     if (proc.exitCode === null) proc.kill('SIGKILL')
