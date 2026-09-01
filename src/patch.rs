@@ -1414,19 +1414,28 @@ mod tests {
         }
     }
 
-    /// Run `f` with `dir` as the only entry on PATH, so a fake `pre-commit` is
-    /// found (or deliberately is not). Serialised by the mutex: PATH is process
-    /// state and cargo runs tests in threads.
+    /// Run `f` with `dir` in front of a PATH that cannot supply a real
+    /// `pre-commit`, so the fake one in `dir` is found — or, for the arm that wants
+    /// it missing, nothing is. Serialised by the mutex: PATH is process state and
+    /// cargo runs tests in threads.
+    ///
+    /// **Two things this has to hold at once**, and each one broke it in turn.
+    /// Keeping the whole real PATH behind `dir` makes the "not installed" arm
+    /// assert something about the *machine*: a mise shim for `pre-commit` with no
+    /// version set was enough to turn a lookup that must find nothing into a hook
+    /// that ran and failed. Replacing PATH outright breaks every *other* test in
+    /// the run, because PATH is process-wide and this mutex only serialises its own
+    /// callers: they lose git for as long as `f` takes. So the real entries stay,
+    /// minus the ones that actually hold a `pre-commit`.
     fn with_path<T>(dir: &Path, f: impl FnOnce() -> T) -> T {
         use std::sync::Mutex;
         static LOCK: Mutex<()> = Mutex::new(());
         let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let old = std::env::var_os("PATH");
-        // git is still needed, so keep the real PATH behind the fake dir.
-        let combined = match &old {
-            Some(p) => format!("{}:{}", dir.display(), p.to_string_lossy()),
-            None => dir.display().to_string(),
-        };
+        let real = old.clone().unwrap_or_default();
+        let kept = std::env::split_paths(&real).filter(|p| !p.join("pre-commit").exists());
+        let combined = std::env::join_paths(std::iter::once(dir.to_path_buf()).chain(kept))
+            .expect("rebuilding PATH");
         std::env::set_var("PATH", &combined);
         let out = f();
         match old {
