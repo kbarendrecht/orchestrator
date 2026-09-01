@@ -84,6 +84,10 @@ function prDot(p) {
 
 let showPrs = true;
 
+/** The session a pointer just picked, so the `click` behind it does not pick it
+ *  again. See `sessionRow`. */
+let picked = null;
+
 /** How to answer a PR's threads: asked per PR, not remembered.
  *
  *  `/resolve` spawns a session pinned to the PR worktree and runs the vendored
@@ -535,7 +539,33 @@ function sessionRow(s, w) {
   }
 
   btn.appendChild(el('div', 'sess-pad'));
-  btn.onclick = () => setSelected(s.id);
+  /* Picked on pointerdown, not on click.
+   *
+   * A `click` is only dispatched when the press and the release land on the
+   * *same* element, and this row is rebuilt whenever a snapshot arrives — which
+   * is what selecting a session causes. Move between sessions at a normal pace
+   * and about one pick in fifteen simply never happens: the render fell inside
+   * the few tens of milliseconds the click was being made in, the row the mouse
+   * went down on was gone by the time it came up, and nothing fired. No error,
+   * no toast, just a row that did not take.
+   *
+   * Pointerdown cannot be caught out that way — it fires on the row that is
+   * under the pointer at the time, before any of this can be replaced.
+   *
+   * The click handler stays because a keyboard activates a `<button>` without a
+   * pointer ever going down. `picked` is module-level rather than per node, so
+   * it survives the row being rebuilt between the two events; without that the
+   * pair would select twice and the second one would re-announce the selection,
+   * stealing focus back into a terminal you had just left. */
+  btn.onpointerdown = (ev) => {
+    if (ev.button !== 0) return;      // the secondary button opens the menu
+    picked = s.id;
+    setSelected(s.id);
+  };
+  btn.onclick = () => {
+    if (picked === s.id) { picked = null; return; }
+    setSelected(s.id);
+  };
   /* Which way the branch moves, as one item with three answers. Asked of the
      snapshot's own main row rather than of `w`, which is a `{ id }` stub on a
      worktree row — `w.is_main` is `undefined` there, and relying on that being
