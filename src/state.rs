@@ -134,6 +134,20 @@ pub struct AppState {
     /// One flag rather than one per workspace, because every swap involves main:
     /// two of them are never independent.
     pub swapping: tokio::sync::Mutex<()>,
+    /// Held for the length of a reconcile sweep, so two of them cannot overlap.
+    ///
+    /// One sweep is seven git runs per workspace and there are as many workspaces
+    /// as you keep worktrees — 447 child processes over 64 of them on the machine
+    /// this was measured on. Two sweeps at once is that twice, for an answer that
+    /// is the same both times, and the second one is pure contention with the
+    /// first. It became possible the moment the boot sweep stopped blocking
+    /// `start`: the PR poller reconciles on its own first tick, which is
+    /// immediately, so boot and poll now race by construction.
+    ///
+    /// `try_lock`, never `lock`: a sweep that arrives while one is running has
+    /// nothing to add, so it is dropped rather than queued behind a job whose
+    /// result it would only overwrite with the same numbers.
+    pub sweeping: tokio::sync::Mutex<()>,
     /// Set the moment shutdown begins.
     ///
     /// A session's exit watcher cannot otherwise tell "you closed this pane" from
@@ -449,6 +463,7 @@ impl AppState {
             }),
             main_pr_park: RwLock::new(None),
             swapping: tokio::sync::Mutex::new(()),
+            sweeping: tokio::sync::Mutex::new(()),
             shutting_down: std::sync::atomic::AtomicBool::new(false),
             events,
             chrome,
@@ -648,6 +663,7 @@ impl AppState {
                 behind: w.tree.divergence.0,
                 ahead: w.tree.divergence.1,
                 rebasing: w.tree.rebasing,
+                measured: w.tree.measured,
             })
             .collect();
         workspaces.sort_by(|a, b| b.is_main.cmp(&a.is_main).then(a.id.cmp(&b.id)));
@@ -1087,6 +1103,14 @@ impl AppState {
                 w.tree.unpushed = u;
             }
             w.tree.rebasing = rebasing;
+            // Last, and unconditionally. Every measurement above keeps its
+            // previous value when git could not answer, so a workspace whose
+            // first reconcile half-failed is still *measured*: the pane has the
+            // real answer for what git could say and defaults for the rest, which
+            // is the state the fields were always allowed to be in. Holding the
+            // loader up for it would leave a tree that cannot be measured showing
+            // a spinner for the life of the daemon.
+            w.tree.measured = true;
         }
         for s in inner.sessions.values_mut() {
             if s.workspace == workspace {
@@ -1248,6 +1272,14 @@ pub struct WorkspaceView {
     pub behind: u32,
     pub ahead: u32,
     pub rebasing: bool,
+    /// Whether the four fields above have ever been measured for this workspace
+    /// — see [`crate::model::Tree::measured`].
+    ///
+    /// The pane needs it because the first sweep no longer finishes before the
+    /// window opens: without it an unmeasured worktree renders as "nothing
+    /// changed", which is the one thing a changed-files pane must not say when it
+    /// does not know.
+    pub measured: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -1618,6 +1650,56 @@ mod tests {
         assert_eq!(tree.changed[0].path, "f00000.ts");
 
         drop(inner);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A tree says whether it has been measured, and the pane needs it.
+    ///
+    /// Every other field here defaults to something that reads as a real answer —
+    /// no changed files is a clean tree, `(0,0)` divergence is up to date — which
+    /// was harmless only while the first sweep finished before the window opened.
+    /// It runs in the background now, so "not counted yet" has to be a state the
+    /// snapshot can express or the pane reports a clean worktree it has never
+    /// looked at.
+    #[tokio::test]
+    async fn a_tree_is_unmeasured_until_it_is_reconciled() {
+        let dir = std::env::temp_dir().join(format!("orchd-measured-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let sh = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(&dir)
+                .output()
+                .expect("git");
+        };
+        sh(&["init", "-q", "-b", "main"]);
+        sh(&["config", "user.email", "t@t"]);
+        sh(&["config", "user.name", "t"]);
+        std::fs::write(dir.join("seed"), "1").unwrap();
+        sh(&["add", "-A"]);
+        sh(&["commit", "-qm", "base"]);
+
+        let cfg: Config = serde_json::from_str(&format!(
+            r#"{{"main_checkout":"{}","port":7798}}"#,
+            dir.display()
+        ))
+        .unwrap();
+        let app = AppState::new(cfg, "t".into(), crate::window::Chrome::None);
+        assert!(
+            !app.inner.read().await.workspaces.get(MAIN).unwrap().tree.measured,
+            "a workspace starts having measured nothing"
+        );
+
+        app.reconcile(MAIN).await.expect("reconcile");
+        assert!(
+            app.inner.read().await.workspaces.get(MAIN).unwrap().tree.measured,
+            "and says so once it has"
+        );
+        // It reaches the SPA, which is the only place it is read.
+        let snap = app.snapshot().await;
+        let w = snap.workspaces.iter().find(|w| w.is_main).expect("main");
+        assert!(w.measured, "the flag has to survive the view");
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 

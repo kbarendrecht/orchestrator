@@ -470,17 +470,35 @@ mean *this* repo; if you do, name it.
   else.** Almost nothing in `orchd::start` is CPU work, so "better hardware, worse
   start" is not a contradiction: the cost is per exec, and a Mac pays dyld on every
   one plus whatever endpoint-security software a managed laptop carries. Measured
-  here, debug, 4 worktrees: **1441 ms and 35 child processes**, of which `git fetch`
-  is 1343 ms and `reconcile` 83 ms for all four. So the other 34 execs cost ~1.5 ms
-  each on Linux, and at a Mac's per-exec price the same boot is seconds.
-  `src/timing.rs` is what says so — a phase line per start (`daemon start`,
-  `session … start`, `shell start`, `window open`), each carrying its own exec
-  count, plus `slow git` for a single call over 300 ms. Two of them are structural
-  and worth knowing before optimising anything: the **upstream fetch is a network
-  round trip on the critical path** of the window opening, and **`reconcile_all`
-  is seven git runs per workspace, sequentially, in an `async fn` with no
-  `spawn_blocking`**. Also `configure_repo` sets fsmonitor on main *only*, so every
-  worktree's `git status` is a full scan.
+  on the real monorepo, release, **64 worktrees: 7836 ms and 447 child processes**,
+  of which `reconcile_all` was 6294 ms and the upstream fetch 1479 ms. Everything
+  else in `start` came to 59 ms. `src/timing.rs` is what says so — a phase line per
+  start (`daemon start`, `session … start`, `shell start`, `window open`), each
+  carrying its own exec count and its own share of the time in them, plus `slow
+  git` for a single call over 300 ms and a `page start` line from the SPA.
+  **The sweep is now spawned rather than awaited**, which is what took the start to
+  ~1.4 s: `reconcile_all` holds `AppState::sweeping` so boot and the PR poller's
+  first tick cannot overlap, walks [`sweep_order`] (sessions, then main, then the
+  rest) so the pane you land on fills first, and notifies per workspace so they
+  fill in as it goes. What is left on the critical path is the **upstream fetch,
+  which is a network round trip**. Two things still true and worth knowing:
+  `configure_repo` sets fsmonitor on main *only*, so every worktree's `git status`
+  is a full scan; and the poller still does its own fetch and sweep ~1.4 s after
+  boot has done both, which is redundant and was redundant before this too.
+- **Nothing may read `Tree` without asking whether it has been measured.** Every
+  field on it defaults to a value indistinguishable from a real answer: no changed
+  files is a clean tree, `changed_total` 0 is zero files, `(0,0)` divergence is up
+  to date, `branch: None` is... nothing. That was invisible while the first sweep
+  finished before the window opened, and became a lie the moment it did not.
+  `Tree::measured` is the difference, and it reaches the SPA on `WorkspaceView`.
+  The changed-files pane shows a loader on `false` (`.fempty.counting`, reusing
+  `.conn-dot` so the reduced-motion rule that names it already covers it) and its
+  footer says `counting…` rather than `0 files`. The two other readers already
+  degraded correctly and their comments say why: the rail's swap affordance treats
+  an unknown branch as the cautious answer, and `api.rs`'s post-swap mismatch
+  warning treats it as "not a mismatch". Teardown never trusted the cache at all —
+  `worktree::preflight` measures unpushed work with a fresh `git::unpushed`, which
+  is why deferring the sweep costs no safety.
 - **A launcher-started app has no stdout, so it used to leave no log at all.** That
   is why a colleague's slow start could not be looked at: `tracing` went to a
   terminal nobody had. `init_logging` in `desktop/src/main.rs` now writes the same

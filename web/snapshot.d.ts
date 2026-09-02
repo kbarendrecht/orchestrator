@@ -594,4 +594,14 @@ changed_since: string | null,
  * Commits on `upstream/develop` this branch does not have. Drives the
  * rebase affordance.
  */
-behind: number, ahead: number, rebasing: boolean, };
+behind: number, ahead: number, rebasing: boolean, 
+/**
+ * Whether the four fields above have ever been measured for this workspace
+ * — see [`crate::model::Tree::measured`].
+ *
+ * The pane needs it because the first sweep no longer finishes before the
+ * window opens: without it an unmeasured worktree renders as "nothing
+ * changed", which is the one thing a changed-files pane must not say when it
+ * does not know.
+ */
+measured: boolean, };

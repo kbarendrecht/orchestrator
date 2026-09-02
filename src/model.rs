@@ -70,6 +70,17 @@ pub struct Tree {
     /// or none of them.
     pub unpushed: u32,
     pub rebasing: bool,
+    /// Whether `reconcile` has ever filled the fields above.
+    ///
+    /// **The one thing `Default` could not express.** Every field here is a
+    /// measurement whose "not measured yet" value is indistinguishable from a real
+    /// answer: no changed files reads as a clean tree, `changed_total` 0 as zero
+    /// files, `divergence` (0,0) as up to date. That was harmless while the first
+    /// sweep finished before the window opened. It stopped being harmless when the
+    /// sweep moved off the critical path, because then the pane is on screen while
+    /// the answer is still unknown, and a clean-looking tree is a lie the user
+    /// cannot see through. The pane shows a loader on `false`.
+    pub measured: bool,
 }
 
 pub struct Workspace {

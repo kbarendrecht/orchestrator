@@ -80,6 +80,24 @@ function openFileOnForge(w, path) {
     .catch((err) => toast(err.message, true));
 }
 
+/** "The daemon has not counted this tree yet."
+ *
+ *  The same pulsing dot the empty terminal uses while the first snapshot is in
+ *  flight, because it means the same thing: the app is up and this particular
+ *  answer is still on its way. Reusing `.conn-dot` rather than inventing a
+ *  spinner also inherits the reduced-motion rule that already names it — a new
+ *  animation would have needed adding to that block, and forgetting is how one
+ *  keeps moving for somebody who asked for none. */
+function counting() {
+  const box = el('div', 'fempty counting');
+  box.appendChild(el('span', 'conn-dot'));
+  box.appendChild(el('span', null, 'counting the changed files…'));
+  // The pane is a live region for this one moment: a screen reader is otherwise
+  // told nothing between an empty list and a full one.
+  box.setAttribute('aria-live', 'polite');
+  return box;
+}
+
 function renderFiles() {
   // The diff overlay is opened against a workspace and keeps describing it while
   // it is open, session or no session.
@@ -154,22 +172,37 @@ function renderFiles() {
     panes.appendChild(row);
   }
 
+  /* **"Nothing changed" and "not counted yet" are different sentences.** Every
+     field this pane reads defaults to a value that looks like a real answer — no
+     files, zero changed, no base — and the daemon's first sweep used to finish
+     before the window opened, so the difference could not be seen. It runs in the
+     background now, so an unmeasured worktree would render as a clean one. The
+     daemon says which this is (`measured`); the loader is only ever the honest
+     half of that.
+
+     Not while the diff overlay is open: `sum` is its own fetched summary, which
+     is measured by definition. */
   if (!files.length) {
-    panes.appendChild(el('div', 'fempty',
-      w.is_main ? 'Nothing changed in the main checkout.' : 'Nothing changed in this worktree yet.'));
+    panes.appendChild(sum || w.measured
+      ? el('div', 'fempty',
+        w.is_main ? 'Nothing changed in the main checkout.' : 'Nothing changed in this worktree yet.')
+      : counting());
   }
 
   // "500 of 5,214" when the daemon capped the list, plain count otherwise. Said
   // rather than left to look complete: a truncation presented as the whole answer
   // is the one thing a changed-file pane must not do, and a wiped repository is
   // exactly when you are reading it.
+  //
+  // A count of something not yet counted is the same fault with a different
+  // cause, so the footer says so instead of showing a confident nothing.
   const total = sum ? files.length : (w.changed_total ?? files.length);
   const bits = [total > files.length
     ? `${files.length} of ${total.toLocaleString()} files`
     : `${files.length} file${files.length === 1 ? '' : 's'}`];
   if (sum) bits.push(`+${sum.added} \u2212${sum.deleted}`);
   if (w.is_main) bits.push('worktrees excluded');
-  $('filesfoot').textContent = bits.join(' \u00b7 ');
+  $('filesfoot').textContent = sum || w.measured ? bits.join(' \u00b7 ') : 'counting\u2026';
   // The base belongs in the header, where the toggle used to be: it is the one
   // thing you need to know to read the list, and it is not a choice.
   $('filesbase').textContent = since ? `since ${since.slice(0, 7)}` : '';

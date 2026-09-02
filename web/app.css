@@ -604,6 +604,10 @@ button.ctx-btn:hover{color:var(--text)}
 .fname{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;direction:rtl;text-align:left}
 #filepanes{flex:1;min-height:0;overflow-y:auto}
 .fempty{padding:24px 16px;font-family:var(--mono);font-size:calc(10.5px * var(--fs));color:var(--faint-solid);line-height:1.75}
+/* The one `.fempty` that is a row rather than a sentence: it carries the same
+   pulsing dot as the empty terminal's "connecting…", so it needs the dot beside
+   the words rather than above them. */
+.fempty.counting{display:flex;align-items:center;gap:8px}
 /* The empty-terminal hint: a lead line, then the chords that start work. Scoped
    to #termempty so the other empty panes keep their plain one-liner. */
 #termempty .empty-big{display:block;color:var(--dim);font-size:calc(11.5px * var(--fs));margin-bottom:11px}

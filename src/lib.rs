@@ -383,10 +383,23 @@ pub async fn start(opts: StartOptions) -> Result<Server> {
     // The tracker's boot line asks the env source for the main checkout, which
     // is a bounded child process of somebody else's tool.
     phases.mark("stores");
-    reconcile_all(&app).await;
-    // The phase that scales with how many worktrees you keep: seven git runs per
-    // workspace, one workspace after another, none of them off the critical path.
-    phases.mark("reconcile");
+    /* **The sweep is spawned, not awaited, and that is the whole of the startup
+       fix.** It was seven git runs per workspace, one workspace after another,
+       with the window shut for all of it: 6294ms of a 7836ms start over 64
+       worktrees, 447 child processes. None of it is needed to serve the page —
+       the rail, the terminals and the session records are all already in hand —
+       so the only thing awaiting it bought was a first snapshot with the
+       changed-file lists already filled.
+
+       That is a real thing to give up, which is why `Tree::measured` exists: the
+       pane can now say "still counting" instead of showing an unmeasured tree as
+       a clean one. Every snapshot after each workspace lands carries the answer
+       through, so the panes fill in as the sweep walks. */
+    tokio::spawn({
+        let app = app.clone();
+        async move { reconcile_all(&app).await }
+    });
+    phases.mark("reconcile-spawn");
     autostart_processes(&app).await;
     if app.cfg.auto_resume {
         auto_resume(app.clone(), records);
@@ -618,13 +631,68 @@ async fn adopt_existing_worktrees(app: &Arc<AppState>) -> Result<()> {
     Ok(())
 }
 
+/// The order a sweep should visit workspaces in, so the pane you are looking at
+/// fills first.
+///
+/// It used to be `HashMap` order, which is arbitrary, and that was fine while the
+/// whole sweep finished before the window existed. Now that the window opens
+/// first, the order *is* the perceived speed: with 64 worktrees, landing last in
+/// an arbitrary order means six seconds of loader on the one pane being read.
+///
+/// Sessions first, because after a restart those are the records `auto_resume` is
+/// bringing back and the selection lands on one of them. Then main, which the
+/// context bar reads even when nothing is selected. Then the rest, which nobody
+/// is looking at until they go looking, and by then this has finished.
+fn sweep_order(inner: &state::Inner) -> Vec<String> {
+    let mut ids: Vec<String> = inner.workspaces.keys().cloned().collect();
+    // Archived counts. At boot every restored session is `Archived` until
+    // auto-resume spawns it, so ranking on *live* would rank nothing at all —
+    // which is the case this ordering exists for.
+    let occupied: std::collections::HashSet<&str> =
+        inner.sessions.values().map(|s| s.workspace.as_str()).collect();
+    ids.sort_by_key(|id| {
+        let rank = if occupied.contains(id.as_str()) {
+            0
+        } else if id == MAIN {
+            1
+        } else {
+            2
+        };
+        // The id as a tiebreak, so a sweep is deterministic and two of them
+        // report the same thing in the same order.
+        (rank, id.clone())
+    });
+    ids
+}
+
+/// Measure every workspace's tree.
+///
+/// Sequential on purpose, even now that it is off the boot path: each pass is a
+/// run of git processes over a working tree, and doing 64 of them at once turns a
+/// slow start into a slow machine. What makes it feel fast is [`sweep_order`],
+/// not concurrency.
 async fn reconcile_all(app: &Arc<AppState>) {
-    let ids: Vec<String> = app.inner.read().await.workspaces.keys().cloned().collect();
+    let Ok(_sweep) = app.sweeping.try_lock() else {
+        tracing::debug!("a reconcile sweep is already running; skipping this one");
+        return;
+    };
+    let ids = sweep_order(&*app.inner.read().await);
+    let total = ids.len();
+    let began = std::time::Instant::now();
     for id in ids {
         if let Err(e) = app.reconcile(&id).await {
             tracing::warn!("reconcile {id} failed: {e:#}");
         }
+        // Per workspace, not per sweep. The pane is on screen while this runs, so
+        // each answer has to reach it as it lands rather than 64 of them at the
+        // end — which would be the loader sitting there for the whole sweep and
+        // then everything appearing at once.
+        app.notify().await;
     }
+    tracing::info!(
+        "reconciled {total} workspace(s) in {}ms",
+        began.elapsed().as_millis()
+    );
 }
 
 /// Managed processes start only when config says so.
@@ -1375,6 +1443,51 @@ async fn font(axum::extract::Path(file): axum::extract::Path<String>) -> Respons
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The order the boot sweep walks, which is now the perceived start time.
+    ///
+    /// Worth a test rather than a comment because it is invisible when wrong: an
+    /// arbitrary order still measures everything and still ends up correct, it
+    /// just leaves the one pane being read until last. With 64 worktrees that is
+    /// the difference between a loader that blinks and one that sits there for six
+    /// seconds.
+    #[tokio::test]
+    async fn a_sweep_measures_the_workspaces_you_are_looking_at_first() {
+        let dir = std::env::temp_dir().join(format!("orchd-sweep-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cfg: Config = serde_json::from_str(&format!(
+            r#"{{"main_checkout":"{}","port":7796}}"#,
+            dir.display()
+        ))
+        .unwrap();
+        let app = AppState::new(cfg, "t".into(), window::Chrome::None);
+
+        // Named so alphabetical order would put them in exactly the wrong places:
+        // `a-empty` first and `z-session` last.
+        for ws in ["a-empty", "m-empty", "z-session"] {
+            app.register_worktree(ws, dir.clone(), None).await;
+        }
+        {
+            let mut inner = app.inner.write().await;
+            // Archived, the state every restored session is in before auto-resume
+            // spawns it — which is the moment the boot sweep runs. Ranking on
+            // `is_live` here would rank nothing and sort alphabetically.
+            let s = model::Session::new(
+                uuid::Uuid::new_v4(),
+                "z-session".to_string(),
+                dir.clone(),
+                model::Kind::Interactive,
+            );
+            inner.sessions.insert(s.id, s);
+        }
+
+        let order = sweep_order(&*app.inner.read().await);
+        assert_eq!(
+            order,
+            vec!["z-session", MAIN, "a-empty", "m-empty"],
+            "sessions first, then main, then the rest alphabetically"
+        );
+    }
 
     /// One record per workspace comes back, and it is the oldest — the rule that,
     /// on a cold start, keeps two sessions that once shared a worktree from both
