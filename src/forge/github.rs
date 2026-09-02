@@ -407,9 +407,8 @@ pub fn poll(token: &str, owner: &str, name: &str) -> Result<(String, Vec<Pr>)> {
                     pr.unresolved = unresolved;
                     pr.awaiting_you = awaiting_you;
                     pr.unresolved_capped = guard_hit;
-                    pr.needs_you = awaiting_you > 0
-                        || (pr.changes_requested && unresolved == 0 && !answered_by_pushing(n))
-                        || guard_hit;
+                    pr.needs_you =
+                        needs_you(awaiting_you, pr.changes_requested, unresolved, n, guard_hit);
                 }
                 // A floor beats nothing: keep the first page's capped values and
                 // try again next poll, same as the detailed fetch's runaway guard.
@@ -587,6 +586,19 @@ fn count_open(threads: &[Value], viewer: &str) -> (u32, u32) {
 /// Timestamps are GitHub's ISO-8601 in UTC, so they order lexicographically and
 /// nothing has to parse a date. Either one missing is no opinion, which leaves
 /// the answer where it was.
+/// Whether the PR waits on you. Decided once, for the first page and for the
+/// recount a capped PR pays for, because the recount takes exactly the PRs a fix
+/// applied to `parse_pr` alone would miss.
+fn needs_you(
+    awaiting_you: u32,
+    changes_requested: bool,
+    unresolved: u32,
+    n: &Value,
+    capped: bool,
+) -> bool {
+    awaiting_you > 0 || (changes_requested && unresolved == 0 && !answered_by_pushing(n)) || capped
+}
+
 fn answered_by_pushing(n: &Value) -> bool {
     let pushed = n
         .pointer("/commits/nodes/0/commit/committedDate")
@@ -673,9 +685,7 @@ fn parse_pr(n: &Value, viewer: &str) -> Option<Pr> {
         unresolved_capped: capped,
         awaiting_you,
         changes_requested,
-        needs_you: awaiting_you > 0
-            || (changes_requested && unresolved == 0 && !answered_by_pushing(n))
-            || capped,
+        needs_you: needs_you(awaiting_you, changes_requested, unresolved, n, capped),
         children: Vec::new(),
     })
 }

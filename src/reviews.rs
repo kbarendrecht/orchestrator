@@ -49,7 +49,7 @@ pub struct ReviewQueue {
 /// Silently showing zero reviews when the command is broken is the one failure
 /// that would actually cost a colleague a day (§6b), so a non-zero exit,
 /// unparseable output or an unknown `version` all land here instead.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Default, Serialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 #[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
 pub enum ReviewState {
@@ -57,17 +57,12 @@ pub enum ReviewState {
     Degraded { reason: String },
     /// Before the first poll lands. Distinct from `Degraded` so startup does
     /// not read as a broken command — and so it never becomes a TODO entry.
+    #[default]
     Pending,
     /// No review-queue command configured. Not a fault — this repo simply has
     /// no such source — so, like `Pending`, it never becomes a TODO finding and
     /// the pane says "not configured" rather than "unavailable".
     Off,
-}
-
-impl Default for ReviewState {
-    fn default() -> Self {
-        ReviewState::Pending
-    }
 }
 
 /// Version the daemon understands. The source does not emit one yet, so its
@@ -125,16 +120,10 @@ fn run(main: &Path, timeout_secs: u64, command: &[String], repo: Option<&str>) -
     let out = crate::proc::run_bounded(main, timeout_secs, command, "reviews")?;
 
     if !out.status.success() {
-        let tail: String = String::from_utf8_lossy(&out.stderr)
-            .lines()
-            .rev()
-            .take(3)
-            .collect::<Vec<_>>()
-            .join(" / ");
         bail!(
             "reviews exited {}: {}",
             out.status.code().unwrap_or(-1),
-            if tail.is_empty() { "no stderr" } else { &tail }
+            crate::proc::stderr_tail(&out)
         );
     }
 

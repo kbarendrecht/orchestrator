@@ -29,6 +29,21 @@ pub enum Amend {
     OnTop(String),
 }
 
+impl Amend {
+    /// The one line a user reads about what happened to their commit.
+    pub fn describe(self) -> String {
+        match self {
+            Amend::Fixup(sha) => {
+                format!("folded into {}", sha.chars().take(7).collect::<String>())
+            }
+            Amend::Head(why) => format!("amended HEAD — {why}"),
+            // Worth naming differently: an amend leaves the branch's shape alone
+            // and a new commit does not.
+            Amend::OnTop(why) => format!("committed on top — {why}"),
+        }
+    }
+}
+
 
 /// The **only** way to build an [`Amend::Head`].
 ///

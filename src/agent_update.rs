@@ -229,26 +229,17 @@ pub fn run_upgrade(
 
         {
             let mut inner = app.inner.write().await;
-            let report = match &failure {
-                Some(text) => {
-                    tracing::warn!("upgrading {tool} failed: {text}");
-                    Some(UpgradeRun {
-                        to,
-                        running: false,
-                        tail: text.clone(),
-                    })
-                }
-                None => {
-                    tracing::info!("upgraded {tool}");
-                    // Reported rather than cleared: see `tail`. An empty tail on a
-                    // finished run is the success.
-                    Some(UpgradeRun {
-                        to,
-                        running: false,
-                        tail: String::new(),
-                    })
-                }
-            };
+            match &failure {
+                Some(text) => tracing::warn!("upgrading {tool} failed: {text}"),
+                None => tracing::info!("upgraded {tool}"),
+            }
+            // Reported rather than cleared: see `tail`. An empty tail on a
+            // finished run is the success.
+            let report = Some(UpgradeRun {
+                to,
+                running: false,
+                tail: failure.clone().unwrap_or_default(),
+            });
             match subject {
                 Subject::Agent => inner.upgrade_run = report,
                 Subject::App => inner.self_upgrade_run = report,
@@ -276,16 +267,8 @@ pub fn start_poller(app: std::sync::Arc<crate::state::AppState>) {
     tokio::spawn(async move {
         let interval = std::time::Duration::from_secs(60 * 60);
         loop {
-            let main = app.cfg.main_checkout.clone();
-            // Off-thread: `mise outdated` reaches the network to learn the latest
-            // version, and the runtime must not wait on it.
-            if let Ok(next) = tokio::task::spawn_blocking(move || check(&main)).await {
-                let mut inner = app.inner.write().await;
-                if inner.agent_update != next {
-                    inner.agent_update = next;
-                    drop(inner);
-                    app.notify().await;
-                }
+            if let Err(e) = refresh(&app).await {
+                tracing::warn!("checking the agent version failed: {e:#}");
             }
             tokio::time::sleep(interval).await;
         }
@@ -309,9 +292,12 @@ pub fn refresh_detached(app: &std::sync::Arc<crate::state::AppState>) {
     });
 }
 
-/// Check once, now, and publish the answer. The refresh button's other half.
+/// Check once, now, and publish the answer. The poller's tick and the refresh
+/// button's other half.
 pub async fn refresh(app: &std::sync::Arc<crate::state::AppState>) -> Result<()> {
     let main = app.cfg.main_checkout.clone();
+    // Off-thread: `mise outdated` reaches the network to learn the latest
+    // version, and the runtime must not wait on it.
     let next = tokio::task::spawn_blocking(move || check(&main)).await?;
     let mut inner = app.inner.write().await;
     if inner.agent_update != next {

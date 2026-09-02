@@ -8,6 +8,11 @@ use uuid::Uuid;
 use crate::pty::PtyHandle;
 
 pub type SessionId = Uuid;
+
+/// The eight characters a session goes by in logs and refusals.
+pub fn short_id(id: &Uuid) -> String {
+    id.to_string()[..8].to_string()
+}
 /// `"main"` for the privileged checkout, the worktree name otherwise.
 pub type WorkspaceId = String;
 

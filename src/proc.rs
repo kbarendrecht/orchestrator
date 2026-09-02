@@ -25,6 +25,22 @@ pub fn run_bounded(cwd: &Path, timeout_secs: u64, argv: &[String], label: &str) 
     run_bounded_with_input(cwd, timeout_secs, argv, label, None, &[])
 }
 
+/// The last three stderr lines of a failed command, on one line, for a log entry
+/// that says what went wrong without pasting the whole stream.
+pub fn stderr_tail(out: &Output) -> String {
+    let tail: String = String::from_utf8_lossy(&out.stderr)
+        .lines()
+        .rev()
+        .take(3)
+        .collect::<Vec<_>>()
+        .join(" / ");
+    if tail.is_empty() {
+        "no stderr".to_string()
+    } else {
+        tail
+    }
+}
+
 /// [`run_bounded`], with a payload written to the child's stdin and the pipe then
 /// closed.
 ///

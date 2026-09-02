@@ -294,6 +294,11 @@ impl Config {
             &self.worktree_processes
         }
     }
+
+    /// The named process this workspace declares, if it declares one.
+    pub fn managed_spec(&self, workspace: &str, name: &str) -> Option<ManagedSpec> {
+        self.processes_for(workspace).iter().find(|s| s.name == name).cloned()
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -424,21 +429,12 @@ impl Settings {
         let obj = v
             .as_object_mut()
             .context("config.json is not a JSON object")?;
-        obj.insert("default_language".into(), serde_json::to_value(&self.default_language)?);
-        obj.insert("tracker".into(), serde_json::to_value(self.tracker)?);
-        obj.insert("upstream_ref".into(), serde_json::to_value(&self.upstream_ref)?);
-        obj.insert("upstream_remote".into(), serde_json::to_value(&self.upstream_remote)?);
-        obj.insert("reviews_command".into(), serde_json::to_value(&self.reviews_command)?);
-        obj.insert("main_processes".into(), serde_json::to_value(&self.main_processes)?);
-        obj.insert("worktree_setup".into(), serde_json::to_value(&self.worktree_setup)?);
-        obj.insert(
-            "worktree_retention_days".into(),
-            serde_json::to_value(self.worktree_retention_days)?,
-        );
-        obj.insert(
-            "allow_several_in_main".into(),
-            serde_json::to_value(self.allow_several_in_main)?,
-        );
+        // The struct's field names are the keys, so a new setting cannot be
+        // forgotten here and a misspelt key cannot persist to nothing.
+        let serde_json::Value::Object(mine) = serde_json::to_value(self)? else {
+            anyhow::bail!("settings did not serialize as an object")
+        };
+        obj.extend(mine);
         Ok(serde_json::to_string_pretty(&v)? + "\n")
     }
 }

@@ -85,17 +85,11 @@ async fn run_worktree_hook(
             tracing::info!(worktree = %path.display(), "ran {label}: {shown}");
         }
         Ok(Ok(out)) => {
-            let tail: String = String::from_utf8_lossy(&out.stderr)
-                .lines()
-                .rev()
-                .take(3)
-                .collect::<Vec<_>>()
-                .join(" / ");
             tracing::error!(
                 worktree = %path.display(),
                 "{label} `{shown}` exited {}: {}",
                 out.status.code().unwrap_or(-1),
-                if tail.is_empty() { "no stderr" } else { &tail }
+                crate::proc::stderr_tail(&out)
             );
         }
         Ok(Err(e)) => {
@@ -147,10 +141,10 @@ pub async fn spawn_session_confirmed(
         inner.sessions.get(&id).and_then(|s| s.pty.clone())
     };
     let Some(handle) = handle else {
-        bail!("session {} was gone before it could be confirmed", &id.to_string()[..8]);
+        bail!("session {} was gone before it could be confirmed", crate::model::short_id(&id));
     };
     if let Ok(code) = tokio::time::timeout(grace, handle.wait()).await {
-        bail!("session {} exited immediately, code {code}", &id.to_string()[..8]);
+        bail!("session {} exited immediately, code {code}", crate::model::short_id(&id));
     }
     Ok(id)
 }
@@ -205,7 +199,7 @@ pub async fn relocate_session(
         let s = inner
             .sessions
             .get(&id)
-            .with_context(|| format!("unknown session {}", &id.to_string()[..8]))?;
+            .with_context(|| format!("unknown session {}", crate::model::short_id(&id)))?;
         (
             s.cwd.clone(),
             s.workspace.clone(),
@@ -270,7 +264,7 @@ pub async fn relocate_session(
                 format!(
                     "neither resuming nor forking {} into {dest_workspace} stayed up; \
                      it is closed but its conversation is intact and resumable",
-                    &id.to_string()[..8]
+                    crate::model::short_id(&id)
                 )
             })?;
             restore_after_relocate(app, forked, title, name, created_at).await;
@@ -329,7 +323,7 @@ async fn restore_after_relocate(
 /// A spawn that fails takes the record straight back out, so a refusal still costs
 /// nothing. The record is briefly in the map with no pty, which is a state it
 /// already has to survive: every session restored from disk starts that way.
-async fn insert_and_spawn(
+pub(crate) async fn insert_and_spawn(
     app: &Arc<AppState>,
     id: SessionId,
     session: Session,
@@ -1051,11 +1045,7 @@ async fn vendored_prompt_file(app: &Arc<AppState>, pr: u64, command: &str) -> Re
         crate::resolve_repo(app).context("no GitHub repo configured and none on the remote")?;
     let (login, base_ref) = {
         let inner = app.inner.read().await;
-        let base = inner
-            .prs
-            .iter()
-            .find(|p| p.number == pr)
-            .map(|p| p.base_ref.clone());
+        let base = inner.pr(pr).map(|p| p.base_ref.clone());
         (inner.viewer.clone(), base)
     };
     let login = login.context("no GitHub login yet — the PR poller has not run")?;
@@ -1334,7 +1324,7 @@ pub async fn switch_main_to_pr(app: &Arc<AppState>, head_ref: &str) -> Result<St
     if let Some(held) = app.main_occupant().await {
         bail!(
             "a session already holds main ({}); end it before moving the checkout",
-            &held.to_string()[..8]
+            crate::model::short_id(&held)
         );
     }
 
@@ -1629,12 +1619,7 @@ fn watch_session_exit(app: Arc<AppState>, id: SessionId, handle: Arc<PtyHandle>)
 /// pty killed, because the alternative is a process the daemon has stopped showing
 /// you but has not stopped.
 pub async fn stop_managed(app: &Arc<AppState>, workspace: &str, name: &str, pty: &Arc<PtyHandle>) {
-    let spec = app
-        .cfg
-        .processes_for(workspace)
-        .iter()
-        .find(|s| s.name == name)
-        .cloned();
+    let spec = app.cfg.managed_spec(workspace, name);
     if let Some(spec) = spec.filter(|s| !s.stop_command.is_empty()) {
         if let Some(cwd) = app.workspace_path(workspace).await {
             let argv = spec.stop_command.clone();

@@ -1,48 +1,28 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, Result};
 use serde::Serialize;
 use std::path::Path;
-use std::process::Command;
+
+use crate::git::git;
 
 /// Eager cap: past this a file is listed but its hunks are only fetched on
 /// explicit request (§5).
 pub const EAGER_LINE_CAP: usize = 2000;
-
-fn git(cwd: &Path, args: &[&str]) -> Result<String> {
-    let out = Command::new("git")
-        .args(args)
-        .current_dir(cwd)
-        .output()
-        .with_context(|| format!("running git {}", args.join(" ")))?;
-    if !out.status.success() {
-        bail!(
-            "git {} failed: {}",
-            args.join(" "),
-            String::from_utf8_lossy(&out.stderr).trim()
-        );
-    }
-    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
-}
 
 // ---------------------------------------------------------------------------
 // Base
 // ---------------------------------------------------------------------------
 
 /// What the diff is taken against (§5).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Base {
     /// Everything done on the branch, including uncommitted work.
+    #[default]
     Upstream,
     /// Uncommitted work only.
     Head,
     /// The PR's own base branch.
     PrBase,
-}
-
-impl Default for Base {
-    fn default() -> Self {
-        Base::Upstream
-    }
 }
 
 /// Resolve a base to a concrete commit.
@@ -293,38 +273,24 @@ fn parse_unified(path: &str, raw: &str) -> FileDiff {
             _ => continue,
         };
 
-        match kind {
-            RowKind::Context => {
-                h.rows.push(Row {
-                    kind,
-                    old: Some(old_line),
-                    new: Some(new_line),
-                    text: text.to_string(),
-                    words: Vec::new(),
-                });
-                old_line += 1;
-                new_line += 1;
-            }
-            RowKind::Del => {
-                h.rows.push(Row {
-                    kind,
-                    old: Some(old_line),
-                    new: None,
-                    text: text.to_string(),
-                    words: Vec::new(),
-                });
-                old_line += 1;
-            }
-            RowKind::Add => {
-                h.rows.push(Row {
-                    kind,
-                    old: None,
-                    new: Some(new_line),
-                    text: text.to_string(),
-                    words: Vec::new(),
-                });
-                new_line += 1;
-            }
+        let (old, new) = match kind {
+            RowKind::Context => (Some(old_line), Some(new_line)),
+            RowKind::Del => (Some(old_line), None),
+            RowKind::Add => (None, Some(new_line)),
+        };
+        h.rows.push(Row {
+            kind,
+            old,
+            new,
+            text: text.to_string(),
+            words: Vec::new(),
+        });
+        // A side's counter moves only when the row exists on that side.
+        if old.is_some() {
+            old_line += 1;
+        }
+        if new.is_some() {
+            new_line += 1;
         }
         last_old_end = old_line;
     }

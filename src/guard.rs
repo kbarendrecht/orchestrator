@@ -143,7 +143,8 @@ fn check_one(segment: &str, base: Base, current_branch: Option<&str>) -> Option<
     }
 
     let base = base?;
-    for dst in destinations(&args) {
+    let dsts = destinations(&args);
+    for dst in &dsts {
         if dst == base {
             return Some(format!(
                 "orchd: pushing to `{base}` is denied — it is the base branch this \
@@ -155,7 +156,7 @@ fn check_one(segment: &str, base: Base, current_branch: Option<&str>) -> Option<
     // A bare `git push` while standing on the base branch is the same push with
     // nothing written down, and the spelling-only version of this guard let it
     // through. Only reachable when the branch could actually be read.
-    if destinations(&args).is_empty() && current_branch == Some(base) {
+    if dsts.is_empty() && current_branch == Some(base) {
         return Some(format!(
             "orchd: `git push` from `{base}` is denied — it is the base branch this \
              checkout is measured against. Open a PR instead."

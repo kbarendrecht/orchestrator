@@ -293,7 +293,7 @@ async fn refuse_if_occupied(app: &Arc<AppState>, workspace: &str) -> Result<(), 
             .sessions
             .get(&held)
             .and_then(|s| s.label().map(str::to_owned))
-            .unwrap_or_else(|| held.to_string()[..8].to_string())
+            .unwrap_or_else(|| crate::model::short_id(&held))
     };
     Err(ApiError(anyhow::anyhow!(
         "{workspace} already has a live session ({who}); close it before starting another"
@@ -1306,7 +1306,7 @@ pub async fn process_from_session(
             .ok_or_else(|| anyhow::anyhow!("no such session {id}"))?
     };
 
-    let spec = managed_spec(&app, &workspace, &body.name).ok_or_else(|| {
+    let spec = app.cfg.managed_spec(&workspace, &body.name).ok_or_else(|| {
         let known = managed_names(&app, &workspace);
         anyhow::anyhow!(
             "{workspace} declares no process called {}; it has {}",
@@ -1493,7 +1493,7 @@ pub async fn fork_session(
     if !had_a_turn {
         return Err(ApiError(anyhow::anyhow!(
             "session {} has no conversation yet — nothing to fork",
-            &id.to_string()[..8]
+            crate::model::short_id(&id)
         )));
     }
     if automation {
@@ -1709,14 +1709,6 @@ pub async fn refresh_agent_update(State(app): State<Arc<AppState>>) -> ApiResult
 
 /// The configured process of that name for that workspace, or nothing.
 ///
-/// Main and a worktree declare different sets, so which list is consulted is part
-/// of the question. Shared with the session-side route because "which processes
-/// exist here" must have one answer: a name the drawer refuses and the CLI accepts
-/// would be two products.
-fn managed_spec(app: &Arc<AppState>, workspace: &str, name: &str) -> Option<crate::config::ManagedSpec> {
-    app.cfg.processes_for(workspace).iter().find(|s| s.name == name).cloned()
-}
-
 /// The names that workspace could start, for an error worth reading.
 fn managed_names(app: &Arc<AppState>, workspace: &str) -> Vec<String> {
     app.cfg.processes_for(workspace).iter().map(|s| s.name.clone()).collect()
@@ -1726,7 +1718,7 @@ pub async fn restart_process(
     State(app): State<Arc<AppState>>,
     Path((workspace, name)): Path<(String, String)>,
 ) -> ApiResult<serde_json::Value> {
-    let spec = managed_spec(&app, &workspace, &name)
+    let spec = app.cfg.managed_spec(&workspace, &name)
         .ok_or_else(|| anyhow::anyhow!("no managed process {name} for {workspace}"))?;
 
     let existing = {
@@ -1940,7 +1932,7 @@ async fn swap_with_main_inner(
                 .sessions
                 .values()
                 .find(|s| s.workspace == ws && s.state.is_busy())
-                .map(|s| s.label().map(str::to_owned).unwrap_or_else(|| s.id.to_string()[..8].to_string()))
+                .map(|s| s.label().map(str::to_owned).unwrap_or_else(|| crate::model::short_id(&s.id)))
         };
         for (label, ws) in [("main", MAIN), ("this worktree", workspace.as_str())] {
             if let Some(who) = busy(ws) {
@@ -2135,7 +2127,7 @@ pub async fn move_out_of_main(
         if s.workspace != MAIN {
             return Err(ApiError(anyhow::anyhow!(
                 "{} is not in main, so there is nothing to move it out of",
-                &id.to_string()[..8]
+                crate::model::short_id(&id)
             )));
         }
         (s.state.is_busy(), s.state.is_live())
@@ -2180,6 +2172,7 @@ pub async fn move_out_of_main(
 
     let moved = tokio::task::spawn_blocking({
         let (main, path, new_branch) = (main.clone(), path.clone(), new_branch.clone());
+        let exclude = app.cfg.worktrees_subdir_str();
         move || -> anyhow::Result<crate::git::MovedOut> {
             let base = crate::git::base_checkout_branch(&main, &base_ref)
                 .ok_or_else(|| anyhow::anyhow!(
@@ -2187,7 +2180,7 @@ pub async fn move_out_of_main(
                 ))?;
             // Listed before the move, because `stash create` cannot carry them and
             // afterwards they are indistinguishable from base's own untracked files.
-            let left = crate::git::untracked_in(&main, Some(".claude/worktrees/"))?;
+            let left = crate::git::untracked_in(&main, Some(&exclude))?;
             let moved = crate::git::move_branch_out(&main, &path, &base, &new_branch)?;
             if !left.is_empty() {
                 tracing::info!(files = ?left, "untracked files stayed in main");
@@ -4253,7 +4246,7 @@ pub async fn open_pr(
 ) -> ApiResult<serde_json::Value> {
     let pr = {
         let inner = app.inner.read().await;
-        inner.prs.iter().find(|p| p.number == number).cloned()
+        inner.pr(number).cloned()
     }
     .ok_or_else(|| anyhow::anyhow!("PR #{number} is not in the current poll"))?;
 
@@ -4277,7 +4270,7 @@ pub async fn resolve_pr(
 ) -> ApiResult<serde_json::Value> {
     let pr = {
         let inner = app.inner.read().await;
-        inner.prs.iter().find(|p| p.number == number).cloned()
+        inner.pr(number).cloned()
     };
     let pr = pr.ok_or_else(|| anyhow::anyhow!("PR #{number} is not in the current poll"))?;
     // Asked of the threads, not only of `needs_you`. They are different questions
@@ -4467,11 +4460,7 @@ pub async fn session_handoff(
         // nothing.
         (
             pr,
-            inner
-                .prs
-                .iter()
-                .find(|p| p.number == pr)
-                .is_some_and(crate::fix_pr::wants_watching),
+            inner.pr(pr).is_some_and(crate::fix_pr::wants_watching),
         )
     };
     let (pr, hand_on) = hand_on;

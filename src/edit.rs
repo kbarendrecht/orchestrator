@@ -89,11 +89,11 @@ pub fn read(workspace_root: &Path, rel: &str, shared: &[String]) -> Result<FileC
         );
     }
     let bytes = std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
-    let content = String::from_utf8(bytes.clone())
+    let content = String::from_utf8(bytes)
         .map_err(|_| anyhow::anyhow!("{rel} is not UTF-8, so it is not editable here"))?;
     Ok(FileContents {
         path: rel.to_string(),
-        version: version_of(&bytes),
+        version: version_of(content.as_bytes()),
         bytes: md.len(),
         content,
     })

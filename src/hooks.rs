@@ -87,6 +87,18 @@ fn resolved(path: &std::path::Path) -> PathBuf {
     std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
+impl HookPayload {
+    /// The reported cwd, resolved — because everything it is compared against is:
+    /// `main_checkout` is canonicalized at parse, `worktrees_dir` derives from it,
+    /// and an adopted worktree is registered through here. On a Mac the difference
+    /// is `/tmp` against `/private/tmp`, which would make every hook look stale or
+    /// every adoption miss. Falls back to what was reported: a cwd that does not
+    /// resolve is not a reason to drop the hook.
+    pub fn resolved_cwd(&self) -> Option<PathBuf> {
+        self.cwd.as_deref().map(|c| resolved(std::path::Path::new(c)))
+    }
+}
+
 /// Correlation is exact: the session id is carried in a header interpolated from
 /// `$ORCH_SESSION_ID` at spawn. No cwd or pid heuristics (§3).
 fn session_of(headers: &HeaderMap, payload: &HookPayload) -> Option<Uuid> {
@@ -149,22 +161,12 @@ pub async fn session_start(
     };
     // A worktree the daemon did not name only reveals its path here, so this is
     // where it gets adopted.
-    if let Some(cwd) = payload.cwd.as_deref() {
-        // Resolved, because it is compared against `worktrees_dir` — which comes
-        // from `main_checkout` and is resolved at parse — and because the path
-        // registered here is what `workspace_for_path` matches resolved hook
-        // paths against. An agent reporting `/var/…` where the config resolved to
-        // `/private/var/…` would be adopted as no worktree at all, or as one whose
-        // edits never attribute. Falls back to what was reported: a cwd that does
-        // not resolve is not a reason to drop the adoption.
-        let path = resolved(std::path::Path::new(cwd));
-        if let Some(name) = crate::spawn::worktree_name_of(&path, &app.cfg.worktrees_dir()) {
-            let branch = crate::git::current_branch(&path).ok();
+    let cwd = payload.resolved_cwd();
+    if let Some(path) = &cwd {
+        if let Some(name) = crate::spawn::worktree_name_of(path, &app.cfg.worktrees_dir()) {
+            let branch = crate::git::current_branch(path).ok();
             app.register_worktree(&name, path.clone(), branch).await;
-            let mut inner = app.inner.write().await;
-            if let Some(s) = inner.sessions.get_mut(&id) {
-                s.workspace = name;
-            }
+            app.with_session(id, |s| s.workspace = name).await;
         }
     }
 
@@ -182,14 +184,8 @@ pub async fn session_start(
                     s.transcript_path = Some(tp);
                 }
             }
-            if let Some(cwd) = payload.cwd.as_deref() {
-                // Resolved, like the adoption above and like everything that is
-                // later compared against it. This line used to take the reported
-                // path raw, which put an unresolved cwd on the record while
-                // `session_end` canonicalized the one it compares: equal paths,
-                // unequal strings, and on macOS that is the normal case rather
-                // than the exception. The transcript slug is read off this too.
-                s.cwd = resolved(std::path::Path::new(cwd));
+            if let Some(cwd) = cwd {
+                s.cwd = cwd;
             }
             if matches!(s.state, State::Starting) {
                 // Started, but nothing is running: the prompt box is empty and
@@ -244,12 +240,9 @@ pub async fn user_prompt_submit(
     Json(payload): Json<HookPayload>,
 ) -> HookResult {
     if let Some(id) = session_of(&headers, &payload) {
-        let mut inner = app.inner.write().await;
-        if let Some(s) = inner.sessions.get_mut(&id) {
-            // Sending the next prompt is one of exactly two ways YourTurn
-            // clears (§2). Both change the underlying reality.
-            s.set_state(State::Working);
-        }
+        // Sending the next prompt is one of exactly two ways YourTurn
+        // clears (§2). Both change the underlying reality.
+        app.with_session(id, |s| s.set_state(State::Working)).await;
     }
     app.notify().await;
     ok()
@@ -285,10 +278,7 @@ pub async fn post_tool_use(
             Some(path) => {
                 let real = resolved(path);
                 let owner = app.workspace_for_path(&real).await;
-                let mut inner = app.inner.write().await;
-                if let Some(s) = inner.sessions.get_mut(&id) {
-                    s.dirty_paths.insert(real);
-                }
+                app.with_session(id, |s| s.dirty_paths.insert(real)).await;
                 owner
             }
             None => None,
@@ -412,19 +402,17 @@ pub async fn stop(
         crate::health::build_failure_in(&inner, &workspace)
     };
 
-    {
-        let mut inner = app.inner.write().await;
-        if let Some(s) = inner.sessions.get_mut(&id) {
-            let want = crate::health::at_rest(build_failure.as_deref());
-            // Re-stamping `YourTurn` would restart the waiting clock on a session
-            // that was already waiting, and that clock is what the rail sorts on.
-            let already_waiting =
-                matches!(want, State::YourTurn { .. }) && matches!(s.state, State::YourTurn { .. });
-            if !already_waiting {
-                s.set_state(want);
-            }
+    app.with_session(id, |s| {
+        let want = crate::health::at_rest(build_failure.as_deref());
+        // Re-stamping `YourTurn` would restart the waiting clock on a session
+        // that was already waiting, and that clock is what the rail sorts on.
+        let already_waiting =
+            matches!(want, State::YourTurn { .. }) && matches!(s.state, State::YourTurn { .. });
+        if !already_waiting {
+            s.set_state(want);
         }
-    }
+    })
+    .await;
 
     refresh_title(&app, id).await;
     let _ = app.reconcile(&workspace).await;
@@ -444,12 +432,10 @@ async fn refresh_title(app: &Arc<AppState>, id: Uuid) {
     // the worktree, and Claude Code wrote the file under the checkout it started
     // in. Left uncorrected, the session drops out of the archive the moment it
     // finishes, because nothing can find its conversation.
-    {
-        let mut inner = app.inner.write().await;
-        if let Some(s) = inner.sessions.get_mut(&id) {
-            crate::store::pin_transcript(s.id, &s.cwd, &mut s.transcript_path);
-        }
-    }
+    app.with_session(id, |s| {
+        crate::store::pin_transcript(s.id, &s.cwd, &mut s.transcript_path)
+    })
+    .await;
 
     let found = {
         let inner = app.inner.read().await;
@@ -459,12 +445,12 @@ async fn refresh_title(app: &Arc<AppState>, id: Uuid) {
             .and_then(|s| crate::store::ai_title(s.id, &s.cwd, s.transcript_path.as_deref()))
     };
     let Some(title) = found else { return };
-    let mut inner = app.inner.write().await;
-    if let Some(s) = inner.sessions.get_mut(&id) {
+    app.with_session(id, |s| {
         if s.title.as_deref() != Some(title.as_str()) {
             s.title = Some(title);
         }
-    }
+    })
+    .await;
 }
 
 /// **Explicit no-op.**
@@ -496,10 +482,7 @@ pub async fn stop_failure(
             .map(|e| e.to_string())
             .or(payload.message.clone())
             .unwrap_or_else(|| "stop failure".to_string());
-        let mut inner = app.inner.write().await;
-        if let Some(s) = inner.sessions.get_mut(&id) {
-            s.set_state(State::Error { message });
-        }
+        app.with_session(id, |s| s.set_state(State::Error { message })).await;
     }
     app.notify().await;
     ok()
@@ -547,13 +530,7 @@ pub async fn session_end(
         );
         return ok();
     }
-    // Resolved, because everything it is compared against is: `main_checkout` at
-    // parse, and each worktree where it is registered. On a Mac the difference is
-    // `/tmp` against `/private/tmp`, which would make every hook look stale.
-    let said = payload
-        .cwd
-        .as_deref()
-        .map(|c| resolved(std::path::Path::new(c)));
+    let said = payload.resolved_cwd();
 
     let workspace = {
         let mut inner = app.inner.write().await;
@@ -683,10 +660,7 @@ pub async fn boundary_block(
             .clone()
             .or_else(|| payload.tool_name.clone())
             .unwrap_or_else(|| "blocked edit".to_string());
-        let mut inner = app.inner.write().await;
-        if let Some(s) = inner.sessions.get_mut(&id) {
-            s.boundary_violations.push(what);
-        }
+        app.with_session(id, |s| s.boundary_violations.push(what)).await;
     }
     app.notify().await;
     ok()
@@ -814,7 +788,7 @@ pub fn write_settings(
         }]
     });
 
-    let settings = json!({
+    let mut settings = json!({
         // Repo config cannot redirect the daemon's HTTP hooks elsewhere (§11).
         "allowedHttpHookUrls": [format!("http://127.0.0.1:{port}/*")],
         // Approve the tracker server from the repo's own `.mcp.json`.
@@ -873,7 +847,6 @@ pub fn write_settings(
     // Appended rather than written inline, because it is the one hook that can be
     // absent. Additive to the repo's own `pre-bash`: any hook exiting 2 blocks, so
     // both sets of rules apply (§11).
-    let mut settings = settings;
     match push_guard_hook(base_branch) {
         Some(hook) => {
             settings["hooks"]["PreToolUse"]

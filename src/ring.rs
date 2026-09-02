@@ -31,7 +31,12 @@ impl RingBuffer {
     }
 
     pub fn snapshot(&self) -> Vec<u8> {
-        self.buf.iter().copied().collect()
+        // Two memcpys, not a byte at a time: this runs on every attach and resync.
+        let (a, b) = self.buf.as_slices();
+        let mut out = Vec::with_capacity(a.len() + b.len());
+        out.extend_from_slice(a);
+        out.extend_from_slice(b);
+        out
     }
 
     #[cfg(test)]

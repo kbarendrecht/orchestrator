@@ -24,7 +24,7 @@ use crate::config::Config;
 use crate::model::*;
 use crate::prompt;
 use crate::pty::PtyHandle;
-use crate::spawn::{ensure_pr_worktree, DEFAULT_SIZE};
+use crate::spawn::ensure_pr_worktree;
 use crate::state::AppState;
 
 /// Why a triage run cannot start.
@@ -102,18 +102,14 @@ async fn gate_inner(
     if crate::git::rebase_in_progress(&path) {
         return Ok(Some(Gate::Rebasing));
     }
-    if require_clean && !crate::git::is_clean(&path)? {
-        let set = crate::git::status(&path, None, crate::git::Untracked::Each)?;
-        let mut files: Vec<String> = set
-            .staged
-            .iter()
-            .chain(set.unstaged.iter())
-            .chain(set.untracked.iter())
-            .map(|f| f.path.clone())
-            .collect();
-        files.sort();
-        files.dedup();
-        return Ok(Some(Gate::Dirty { files }));
+    if require_clean {
+        // One `git status` answers both questions, and it is the same list the
+        // manual phase's writer refuses on, so the gate never names a different
+        // set than the write does.
+        let files = crate::patch::dirty_paths(&path)?;
+        if !files.is_empty() {
+            return Ok(Some(Gate::Dirty { files }));
+        }
     }
     Ok(None)
 }
@@ -123,104 +119,13 @@ async fn gate_inner(
 /// `login` is the viewer whose PR this is; it comes from the thread fetch that
 /// preceded this, rather than a second `gh api user` call.
 pub async fn spawn(app: &Arc<AppState>, pr: u64, head_ref: &str, login: &str) -> Result<SessionId> {
-    let workspace = ensure_pr_worktree(app, pr, head_ref).await?;
-
-    if let Some(g) = gate(app, pr, &workspace).await? {
-        anyhow::bail!("{}", g.say());
-    }
-
-    let path = app
-        .workspace_path(&workspace)
-        .await
-        .context("worktree vanished")?;
-
-    let (owner, repo) =
-        crate::resolve_repo(app).context("no GitHub repo configured and none on the remote")?;
-    let body = prompt::render(
-        prompt::TRIAGE,
-        &prompt::Vars {
-            pr,
-            owner,
-            repo,
-            login: login.to_string(),
-            upstream: app.cfg.upstream_ref.clone(),
-            upstream_remote: app.cfg.upstream_remote.clone(),
-            proposals_url: format!("http://127.0.0.1:{}/api/pr/{pr}/proposals", app.cfg.port),
-            ask_base: format!("http://127.0.0.1:{}/api/session", app.cfg.port),
-            // Whether the agent may offer `story+reply` at all: an option the
-            // daemon would refuse should never reach a card.
-            tracker: if app.cfg.tracker.is_configured() {
-                prompt::TRACKER_ON.to_string()
-            } else {
-                prompt::TRACKER_OFF.to_string()
-            },
-            language: app.cfg.default_language.clone(),
-            ..Default::default()
-        },
-    )?;
-
-    let id = Uuid::new_v4();
-    let settings = Config::hooks_settings_path()?;
-
-    // Written to a file the session is told to read, not typed in: the prompt is
-    // multi-line and typing it would submit at the first newline. Under the
-    // daemon's own config dir, never inside the checkout, so the tree the review
-    // flow inspects stays clean — the same reasoning as `vendored_prompt_file`.
-    let dir = Config::config_dir()?.join(format!("triage-{pr}"));
-    std::fs::create_dir_all(&dir)?;
-    let prompt_file = dir.join("prompt.md");
-    std::fs::write(&prompt_file, body)
-        .with_context(|| format!("writing {}", prompt_file.display()))?;
-
-    let cmd = vec![
-        "claude".to_string(),
-        "--session-id".to_string(),
-        id.to_string(),
-        "--settings".to_string(),
-        settings.to_string_lossy().into_owned(),
-    ];
-
-    // The run POSTs its proposals back, so it needs a credential — but only for
-    // that one route on this one PR. It used to be handed `app.token`, the whole
-    // API, and this is the run whose input is other people's review comments.
-    let post_token = mint_post_token(app, pr).await;
-
-    let (env, unset) = run_env(&app.cfg, &path, id, &post_token, None);
-
-    let spawned = PtyHandle::spawn(&cmd, &path, &env, &unset, DEFAULT_SIZE)?;
-    let mut session = Session::new(
-        id,
-        workspace,
-        path,
-        Kind::Automation {
-            pr,
-            command: TRIAGE_COMMAND.to_string(),
-        },
-    );
-    session.pty = Some(spawned.handle.clone());
-    session.pid = spawned.pid;
-    session.pending_prompt = Some(format!(
-        "Read {} and follow it. Those are your instructions for PR {pr}.",
-        prompt_file.display()
-    ));
-    {
-        let mut inner = app.inner.write().await;
-        // A fresh run supersedes whatever the last one proposed; keeping stale
-        // proposals visible while a new run works would be worse than a gap.
-        inner.proposals.remove(&pr);
-        // And with them any batch that stopped for the manual phase: its decisions
-        // point at positions that no longer exist, so finishing it is impossible and
-        // offering to would be a screen whose button always fails. The local commit it
-        // left behind is not silently lost — the next batch's own gate names it.
-        if inner.with_manual("re-triage abandoned a phase", |m| m.remove(&pr).is_some()) {
-            tracing::warn!(pr, "a manual phase was open; re-triaging abandons it");
-        }
-        inner.sessions.insert(id, session);
-    }
-
-    watch(app.clone(), pr, id, spawned.handle);
-    app.notify().await;
-    Ok(id)
+    let kind = RunKind {
+        prompt: prompt::TRIAGE,
+        dir: "triage",
+        command: TRIAGE_COMMAND,
+        asks: false,
+    };
+    spawn_posting_run(app, pr, head_ref, login, kind).await
 }
 
 /// The `Kind::Automation` command a review session carries.
@@ -285,6 +190,35 @@ pub async fn spawn_review(
     head_ref: &str,
     login: &str,
 ) -> Result<SessionId> {
+    let kind = RunKind {
+        prompt: prompt::REVIEW_SESSION,
+        dir: "review",
+        command: COMMAND,
+        asks: true,
+    };
+    spawn_posting_run(app, pr, head_ref, login, kind).await
+}
+
+/// What tells a triage run from a review session. Everything else about the two
+/// spawns is the same, and was written twice until the copies drifted.
+struct RunKind {
+    prompt: &'static str,
+    /// Prefix of the scratch dir under the config dir: `<dir>-<pr>`.
+    dir: &'static str,
+    /// The `Kind::Automation` command the session carries.
+    command: &'static str,
+    /// Whether the run takes decisions over the ask channel, and so needs
+    /// `ORCH_ASK_TOKEN` in its environment.
+    asks: bool,
+}
+
+async fn spawn_posting_run(
+    app: &Arc<AppState>,
+    pr: u64,
+    head_ref: &str,
+    login: &str,
+    kind: RunKind,
+) -> Result<SessionId> {
     let workspace = ensure_pr_worktree(app, pr, head_ref).await?;
 
     if let Some(g) = gate(app, pr, &workspace).await? {
@@ -299,7 +233,7 @@ pub async fn spawn_review(
     let (owner, repo) =
         crate::resolve_repo(app).context("no GitHub repo configured and none on the remote")?;
     let body = prompt::render(
-        prompt::REVIEW_SESSION,
+        kind.prompt,
         &prompt::Vars {
             pr,
             owner,
@@ -309,6 +243,8 @@ pub async fn spawn_review(
             upstream_remote: app.cfg.upstream_remote.clone(),
             proposals_url: format!("http://127.0.0.1:{}/api/pr/{pr}/proposals", app.cfg.port),
             ask_base: format!("http://127.0.0.1:{}/api/session", app.cfg.port),
+            // Whether the agent may offer `story+reply` at all: an option the
+            // daemon would refuse should never reach a card.
             tracker: if app.cfg.tracker.is_configured() {
                 prompt::TRACKER_ON.to_string()
             } else {
@@ -322,7 +258,11 @@ pub async fn spawn_review(
     let id = Uuid::new_v4();
     let settings = Config::hooks_settings_path()?;
 
-    let dir = Config::config_dir()?.join(format!("review-{pr}"));
+    // Written to a file the session is told to read, not typed in: the prompt is
+    // multi-line and typing it would submit at the first newline. Under the
+    // daemon's own config dir, never inside the checkout, so the tree the review
+    // flow inspects stays clean — the same reasoning as `vendored_prompt_file`.
+    let dir = Config::config_dir()?.join(format!("{}-{pr}", kind.dir));
     std::fs::create_dir_all(&dir)?;
     let prompt_file = dir.join("prompt.md");
     std::fs::write(&prompt_file, body)
@@ -339,42 +279,48 @@ pub async fn spawn_review(
     // Minted here so the same value goes into the environment and onto the record:
     // the agent reads it from `ORCH_ASK_TOKEN`, and `/ask`/`/wait` check it against
     // `session.ask_token`. `Session::new` sets its own, overwritten below.
-    let ask_token = crate::state::random_token();
-    // Two narrow credentials, no broad one: asks are authenticated against this
+    let ask_token = kind.asks.then(crate::state::random_token);
+    // Narrow credentials, no broad one: asks are authenticated against this
     // session, proposals against this PR. Neither opens anything else, which is
     // what keeps "the daemon owns outward writes" an API rule rather than a
     // sentence in a prompt this run's own input could argue with.
     let post_token = mint_post_token(app, pr).await;
 
-    let (env, unset) = run_env(&app.cfg, &path, id, &post_token, Some(&ask_token));
+    let (env, unset) = run_env(&app.cfg, &path, id, &post_token, ask_token.as_deref());
 
-    let spawned = PtyHandle::spawn(&cmd, &path, &env, &unset, DEFAULT_SIZE)?;
     let mut session = Session::new(
         id,
         workspace,
-        path,
+        path.clone(),
         Kind::Automation {
             pr,
-            command: COMMAND.to_string(),
+            command: kind.command.to_string(),
         },
     );
-    session.pty = Some(spawned.handle.clone());
-    session.pid = spawned.pid;
-    session.ask_token = ask_token;
+    if let Some(token) = ask_token {
+        session.ask_token = token;
+    }
+    // Typed in by the `SessionStart` handler, which is why the record has to be in
+    // the map before the process starts: `insert_and_spawn` says the rest.
     session.pending_prompt = Some(format!(
         "Read {} and follow it. Those are your instructions for PR {pr}.",
         prompt_file.display()
     ));
+    let spawned =
+        crate::spawn::insert_and_spawn(app, id, session, &cmd, &path, &env, &unset).await?;
     {
         let mut inner = app.inner.write().await;
-        // A fresh session supersedes whatever the last one proposed, and any batch
-        // that stopped for the manual phase — its decisions point at positions that
-        // no longer exist. Same reasoning as `spawn`.
+        // A fresh run supersedes whatever the last one proposed; keeping stale
+        // proposals visible while a new run works would be worse than a gap.
         inner.proposals.remove(&pr);
-        if inner.with_manual("re-review abandoned a phase", |m| m.remove(&pr).is_some()) {
-            tracing::warn!(pr, "a manual phase was open; re-reviewing abandons it");
+        // And with them any batch that stopped for the manual phase: its decisions
+        // point at positions that no longer exist, so finishing it is impossible and
+        // offering to would be a screen whose button always fails. The local commit it
+        // left behind is not silently lost — the next batch's own gate names it.
+        let why = format!("re-{} abandoned a phase", kind.command);
+        if inner.with_manual(&why, |m| m.remove(&pr).is_some()) {
+            tracing::warn!(pr, "a manual phase was open; a new {} run abandons it", kind.command);
         }
-        inner.sessions.insert(id, session);
     }
 
     watch(app.clone(), pr, id, spawned.handle);

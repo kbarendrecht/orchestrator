@@ -40,7 +40,7 @@ fn run(cwd: &Path, args: &[&str]) -> std::io::Result<std::process::Output> {
 
 /// Shell out to `git` rather than a library binding — you need fsmonitor and
 /// the real worktree/remote semantics (§1).
-fn git(cwd: &Path, args: &[&str]) -> Result<String> {
+pub(crate) fn git(cwd: &Path, args: &[&str]) -> Result<String> {
     let out = run(cwd, args).with_context(|| format!("running git {}", args.join(" ")))?;
     if !out.status.success() {
         bail!(
@@ -332,17 +332,13 @@ impl Unpushed {
 /// `@{push}` does not resolve on a branch that was never pushed, and `@{u}`
 /// resolves to `upstream/develop` — neither answers the question.
 pub fn unpushed(cwd: &Path, branch: &str, upstream: &str) -> Result<Unpushed> {
-    let remote_ref = format!("refs/remotes/origin/{branch}");
-    if !git_ok(cwd, &["rev-parse", "--verify", "--quiet", &remote_ref]) {
-        // Nothing on origin, so measure against the upstream base instead:
-        // that is exactly the set of commits that exist nowhere but here.
-        let range = format!("{upstream}..HEAD");
+    let (range, on_origin) = unpushed_range(cwd, branch, upstream);
+    if !on_origin {
         let commits = git(cwd, &["log", &range, "--oneline"])
             .map(|out| out.lines().map(|l| l.trim().to_string()).collect())
             .unwrap_or_else(|_| vec!["(could not resolve the upstream base)".to_string()]);
         return Ok(Unpushed::NeverPushed { commits });
     }
-    let range = format!("origin/{branch}..HEAD");
     let out = git(cwd, &["log", &range, "--oneline"])?;
     let commits: Vec<String> = out.lines().map(|l| l.trim().to_string()).collect();
     if commits.is_empty() {
@@ -749,16 +745,24 @@ pub fn divergence(cwd: &Path, upstream: &str) -> Result<(u32, u32)> {
 /// when git cannot answer, since this feeds a count in an overview and a
 /// transient failure should not read as work to push.
 pub fn unpushed_count(cwd: &Path, branch: &str, upstream: &str) -> u32 {
-    let remote_ref = format!("refs/remotes/origin/{branch}");
-    let range = if git_ok(cwd, &["rev-parse", "--verify", "--quiet", &remote_ref]) {
-        format!("origin/{branch}..HEAD")
-    } else {
-        format!("{upstream}..HEAD")
-    };
+    let (range, _) = unpushed_range(cwd, branch, upstream);
     git(cwd, &["rev-list", "--count", &range])
         .ok()
         .and_then(|out| out.trim().parse().ok())
         .unwrap_or(0)
+}
+
+/// The range holding this branch's unpushed commits, and whether origin has the
+/// branch at all. Beyond `origin/<branch>` when it exists; else beyond the
+/// upstream base, which is exactly the set of commits that exist nowhere but
+/// here. The one place that decides it, for [`unpushed`] and [`unpushed_count`].
+fn unpushed_range(cwd: &Path, branch: &str, upstream: &str) -> (String, bool) {
+    let remote_ref = format!("refs/remotes/origin/{branch}");
+    if git_ok(cwd, &["rev-parse", "--verify", "--quiet", &remote_ref]) {
+        (format!("origin/{branch}..HEAD"), true)
+    } else {
+        (format!("{upstream}..HEAD"), false)
+    }
 }
 
 /// Whether a rebase is stopped part-way in this worktree.

@@ -314,6 +314,11 @@ impl Inner {
             .map(|w| w.id.clone())
     }
 
+    /// The PR by number, as the last poll saw it.
+    pub fn pr(&self, number: u64) -> Option<&crate::forge::Pr> {
+        self.prs.iter().find(|p| p.number == number)
+    }
+
     pub fn with_automation(
         &mut self,
         why: &str,
@@ -404,6 +409,17 @@ pub struct HumanEdit {
 }
 
 impl AppState {
+    /// Change one thing on one session under the write lock; a session that is
+    /// gone is not an error. The shape every hook handler has, written once.
+    pub async fn with_session<R>(
+        &self,
+        id: SessionId,
+        f: impl FnOnce(&mut Session) -> R,
+    ) -> Option<R> {
+        let mut inner = self.inner.write().await;
+        inner.sessions.get_mut(&id).map(f)
+    }
+
     pub fn new(cfg: Config, token: String, chrome: crate::window::Chrome) -> Arc<Self> {
         let (events, _) = broadcast::channel(64);
         let mut workspaces = HashMap::new();
@@ -647,13 +663,11 @@ impl AppState {
                 // A managed process that died stays in `processes` as a dead tab
                 // with its own restart button, so matching on the name — not on
                 // liveness — is what keeps it from being listed twice.
-                stopped_processes: if w.is_main() {
-                    &self.cfg.main_processes
-                } else {
-                    &self.cfg.worktree_processes
-                }
-                .iter()
-                .filter(|spec| !w.processes.iter().any(|p| p.name == spec.name))
+                stopped_processes: self
+                    .cfg
+                    .processes_for(&w.id)
+                    .iter()
+                    .filter(|spec| !w.processes.iter().any(|p| p.name == spec.name))
                 .map(|spec| spec.name.clone())
                 .collect(),
                 branch: w.tree.branch.clone(),
@@ -1007,12 +1021,10 @@ impl AppState {
     /// take down with it: `ng-watch` in main is meant to be running whenever the
     /// daemon is, not only while somebody happens to have a session open there.
     fn is_autostart(&self, workspace: &str, name: &str) -> bool {
-        let specs = if workspace == MAIN {
-            &self.cfg.main_processes
-        } else {
-            &self.cfg.worktree_processes
-        };
-        specs.iter().any(|s| s.autostart && s.name == name)
+        self.cfg
+            .processes_for(workspace)
+            .iter()
+            .any(|s| s.autostart && s.name == name)
     }
 
     // -----------------------------------------------------------------------

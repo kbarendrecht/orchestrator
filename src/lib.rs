@@ -308,7 +308,7 @@ pub async fn start(opts: StartOptions) -> Result<Server> {
                 // A dropped record has no conversation and is not live, so its file
                 // is a headers-only remnant with nothing to lose.
                 store::delete_transcript(id, &cwd, recorded.as_deref());
-                format!("{} ({ws})", &id.to_string()[..8])
+                format!("{} ({ws})", crate::model::short_id(&id))
             })
             .collect();
         (kept, gone)

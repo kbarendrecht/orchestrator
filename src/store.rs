@@ -169,32 +169,45 @@ fn automation_path() -> Result<PathBuf> {
     Ok(Config::config_dir()?.join("automation.json"))
 }
 
+/// Write a store under the config dir. Write-and-rename so a crash mid-write
+/// cannot leave a truncated file that would lose every record at once — one
+/// discipline for every store, so a change to it lands everywhere.
+fn save_json<T: Serialize + ?Sized>(p: &Path, value: &T) -> Result<()> {
+    std::fs::create_dir_all(p.parent().unwrap())?;
+    let tmp = p.with_extension("json.tmp");
+    std::fs::write(&tmp, serde_json::to_string_pretty(value)?)?;
+    std::fs::rename(&tmp, p)?;
+    Ok(())
+}
+
+/// Read a store, or its default when the file is missing or corrupt. A corrupt
+/// store must not stop the daemon booting; what the degradation costs is each
+/// caller's to say.
+fn load_json<T: serde::de::DeserializeOwned + Default>(p: Result<PathBuf>) -> T {
+    let Ok(p) = p else {
+        return T::default();
+    };
+    let Ok(raw) = std::fs::read_to_string(&p) else {
+        return T::default();
+    };
+    match serde_json::from_str(&raw) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!("could not parse {}: {e}", p.display());
+            T::default()
+        }
+    }
+}
+
 /// §8 says SQLite; a JSON file with the same write-and-rename discipline holds
 /// a handful of PR numbers just as safely and keeps the dependency list short.
 pub fn save_automation(store: &crate::fix_pr::AutomationStore) -> Result<()> {
-    let p = automation_path()?;
-    std::fs::create_dir_all(p.parent().unwrap())?;
-    let tmp = p.with_extension("json.tmp");
-    std::fs::write(&tmp, serde_json::to_string_pretty(store)?)?;
-    std::fs::rename(&tmp, &p)?;
-    Ok(())
+    save_json(&automation_path()?, store)
 }
 
 /// A restart must not resurrect a `Running` state whose session is gone (§8).
 pub fn load_automation() -> crate::fix_pr::AutomationStore {
-    let Ok(p) = automation_path() else {
-        return Default::default();
-    };
-    let Ok(raw) = std::fs::read_to_string(&p) else {
-        return Default::default();
-    };
-    let mut store: crate::fix_pr::AutomationStore = match serde_json::from_str(&raw) {
-        Ok(v) => v,
-        Err(e) => {
-            tracing::warn!("could not parse {}: {e}", p.display());
-            return Default::default();
-        }
-    };
+    let mut store: crate::fix_pr::AutomationStore = load_json(automation_path());
     // Orphaned Running is demoted to Exhausted: the run is not going to finish,
     // and pretending it might would block the PR forever. With no head — nobody
     // knows what the crashed run left, and the `""` this used to write matched no
@@ -232,28 +245,11 @@ fn stories_path() -> Result<PathBuf> {
 /// tries to repair or reconcile it on load: the worst an empty file costs is one
 /// redundant search.
 pub fn save_stories(cache: &crate::story::Cache) -> Result<()> {
-    let p = stories_path()?;
-    std::fs::create_dir_all(p.parent().unwrap())?;
-    let tmp = p.with_extension("json.tmp");
-    std::fs::write(&tmp, serde_json::to_string_pretty(cache)?)?;
-    std::fs::rename(&tmp, &p)?;
-    Ok(())
+    save_json(&stories_path()?, cache)
 }
 
 pub fn load_stories() -> crate::story::Cache {
-    let Ok(p) = stories_path() else {
-        return Default::default();
-    };
-    let Ok(raw) = std::fs::read_to_string(&p) else {
-        return Default::default();
-    };
-    match serde_json::from_str(&raw) {
-        Ok(v) => v,
-        Err(e) => {
-            tracing::warn!("could not parse {}: {e}", p.display());
-            Default::default()
-        }
-    }
+    load_json(stories_path())
 }
 
 fn manual_path() -> Result<PathBuf> {
@@ -269,30 +265,13 @@ fn manual_path() -> Result<PathBuf> {
 pub fn save_manual(
     phases: &std::collections::HashMap<u64, crate::post::ManualPhase>,
 ) -> Result<()> {
-    let p = manual_path()?;
-    std::fs::create_dir_all(p.parent().unwrap())?;
-    let tmp = p.with_extension("json.tmp");
-    std::fs::write(&tmp, serde_json::to_string_pretty(phases)?)?;
-    std::fs::rename(&tmp, &p)?;
-    Ok(())
+    save_json(&manual_path()?, phases)
 }
 
+/// Degrading to empty costs the resume, which is bad but recoverable by hand;
+/// refusing to boot would cost every session.
 pub fn load_manual() -> std::collections::HashMap<u64, crate::post::ManualPhase> {
-    let Ok(p) = manual_path() else {
-        return Default::default();
-    };
-    let Ok(raw) = std::fs::read_to_string(&p) else {
-        return Default::default();
-    };
-    match serde_json::from_str(&raw) {
-        Ok(v) => v,
-        Err(e) => {
-            // Degrading to empty costs the resume, which is bad but recoverable by
-            // hand; refusing to boot would cost every session.
-            tracing::warn!("could not parse {}: {e}", p.display());
-            Default::default()
-        }
-    }
+    load_json(manual_path())
 }
 
 fn resolve_runs_path() -> Result<PathBuf> {
@@ -306,12 +285,7 @@ fn resolve_runs_path() -> Result<PathBuf> {
 /// go wrong, and this record is the only thing that says which commit answers
 /// which reviewer. Without it a restart left a branch of commits and no map.
 pub fn save_resolve_runs(runs: &std::collections::HashMap<u64, crate::state::ResolveRun>) -> Result<()> {
-    let p = resolve_runs_path()?;
-    std::fs::create_dir_all(p.parent().unwrap())?;
-    let tmp = p.with_extension("json.tmp");
-    std::fs::write(&tmp, serde_json::to_string_pretty(runs)?)?;
-    std::fs::rename(&tmp, &p)?;
-    Ok(())
+    save_json(&resolve_runs_path()?, runs)
 }
 
 /// Every run the last daemon knew about, marked as over.
@@ -321,20 +295,8 @@ pub fn save_resolve_runs(runs: &std::collections::HashMap<u64, crate::state::Res
 /// moving. Said here rather than left for a reader to infer, because a thread
 /// reading `pending` in an overview otherwise looks imminent forever.
 pub fn load_resolve_runs() -> std::collections::HashMap<u64, crate::state::ResolveRun> {
-    let Ok(p) = resolve_runs_path() else {
-        return Default::default();
-    };
-    let Ok(raw) = std::fs::read_to_string(&p) else {
-        return Default::default();
-    };
     let mut runs: std::collections::HashMap<u64, crate::state::ResolveRun> =
-        match serde_json::from_str(&raw) {
-            Ok(v) => v,
-            Err(e) => {
-                tracing::warn!("could not parse {}: {e}", p.display());
-                return Default::default();
-            }
-        };
+        load_json(resolve_runs_path());
     for r in runs.values_mut() {
         r.ended
             .get_or_insert_with(|| "the daemon restarted; the session did not survive it".into());
@@ -343,30 +305,12 @@ pub fn load_resolve_runs() -> std::collections::HashMap<u64, crate::state::Resol
 }
 
 pub fn save(records: &[SessionRecord]) -> Result<()> {
-    let p = path()?;
-    std::fs::create_dir_all(p.parent().unwrap())?;
-    // Write-and-rename so a crash mid-write cannot leave a truncated file that
-    // would lose every record at once.
-    let tmp = p.with_extension("json.tmp");
-    std::fs::write(&tmp, serde_json::to_string_pretty(records)?)?;
-    std::fs::rename(&tmp, &p)?;
-    Ok(())
+    save_json(&path()?, records)
 }
 
+/// A corrupt store only costs the resume offers.
 pub fn load() -> Vec<SessionRecord> {
-    let Ok(p) = path() else { return Vec::new() };
-    let Ok(raw) = std::fs::read_to_string(&p) else {
-        return Vec::new();
-    };
-    match serde_json::from_str(&raw) {
-        Ok(v) => v,
-        Err(e) => {
-            // A corrupt store must not stop the daemon booting; it only costs
-            // the resume offers.
-            tracing::warn!("could not parse {}: {e}", p.display());
-            Vec::new()
-        }
-    }
+    load_json(path())
 }
 
 /// Drop records with nothing left to come back to.
@@ -1405,6 +1349,11 @@ pub fn ai_title(id: uuid::Uuid, cwd: &Path, recorded: Option<&Path>) -> Option<S
     lines.next();
     let mut found = None;
     for line in lines {
+        // Most of a tail is tool results, tens of KB each; parsing those to learn
+        // they are not the title was the cost of every `Stop`.
+        if !line.contains("\"ai-title\"") {
+            continue;
+        }
         let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
             continue;
         };

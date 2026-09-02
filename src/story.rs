@@ -365,9 +365,7 @@ async fn run_filer(
     let head_ref = {
         let inner = app.inner.read().await;
         inner
-            .prs
-            .iter()
-            .find(|p| p.number == pr)
+            .pr(pr)
             .map(|p| p.head_ref.clone())
             .with_context(|| format!("PR #{pr} is not in the current poll"))?
     };

@@ -173,7 +173,7 @@ pub fn evaluate(input: &GuardInput) -> Verdict {
         return no(format!(
             "#{} already has a fix-pr session running ({})",
             pr.number,
-            &session.to_string()[..8]
+            crate::model::short_id(&session)
         ));
     }
 
@@ -240,7 +240,7 @@ pub async fn start(
 ) -> anyhow::Result<SessionId> {
     let pr = {
         let inner = app.inner.read().await;
-        inner.prs.iter().find(|p| p.number == number).cloned()
+        inner.pr(number).cloned()
     }
     .ok_or_else(|| anyhow::anyhow!("PR #{number} is not in the current poll"))?;
 
@@ -304,7 +304,7 @@ pub async fn start(
 /// nowhere in particular.
 pub async fn settle(app: &std::sync::Arc<crate::state::AppState>, pr: u64) {
     let mut inner = app.inner.write().await;
-    let found = inner.prs.iter().find(|p| p.number == pr).cloned();
+    let found = inner.pr(pr).cloned();
     let v = verdict(found.as_ref());
     // The write rides with the mutation: a lost one makes a restart mis-remember
     // whether this PR is exhausted, which defeats the one-run-per-PR cap.

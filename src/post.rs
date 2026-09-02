@@ -736,8 +736,8 @@ async fn run_inner(
             "this branch has work origin does not: local is {} and origin is {}. Pushing \
              anything would push that too, so push or drop it first — a manual phase you \
              backed out of leaves a commit here on purpose.",
-            short(&local_head),
-            short(fresh.head_sha.as_deref().unwrap_or_default())
+            crate::git::short(&local_head),
+            crate::git::short(fresh.head_sha.as_deref().unwrap_or_default())
         )));
     }
 
@@ -752,8 +752,8 @@ async fn run_inner(
             return Ok(PostReport::refused(format!(
                 "the branch moved since triage ({} → {}). The patches were generated against \
                  code that is no longer there; re-triage rather than write over it.",
-                short(&batch.base_sha),
-                short(head)
+                crate::git::short(&batch.base_sha),
+                crate::git::short(head)
             )));
         }
     }
@@ -800,8 +800,8 @@ async fn run_inner(
                      patches are still committed on it and nothing has been pushed or posted; \
                      whatever moved it may not account for your edits, so look at the branch \
                      before continuing.",
-                    short(&done.committed),
-                    short(&head)
+                    crate::git::short(&done.committed),
+                    crate::git::short(&head)
                 )));
             }
             // The digest half one recorded. The batch is re-supplied and re-resolved
@@ -887,10 +887,10 @@ async fn run_inner(
             report.retryable = true;
             return Ok(carry_phase(app, pr.number, &path, report).await);
         }
-        report.pushed = Some(crate::git::head_sha(&path)?);
+        report.pushed = Some(head_now.clone());
         // Recorded before anything outward runs: if the story call or a reply then
         // fails, a retry must know the push already landed.
-        update_phase_head(app, pr.number, &path).await;
+        set_phase_head(app, pr.number, head_now).await;
     }
 
     // --- the stories, before the replies that carry their ids ---------------
@@ -976,6 +976,11 @@ async fn update_phase_head(app: &Arc<AppState>, pr: u64, path: &Path) {
     let Ok(head) = crate::git::head_sha(path) else {
         return;
     };
+    set_phase_head(app, pr, head).await;
+}
+
+/// [`update_phase_head`] for a caller that has already read the sha.
+async fn set_phase_head(app: &Arc<AppState>, pr: u64, head: String) {
     let mut inner = app.inner.write().await;
     // Returning `false` when nothing moved keeps this from rewriting the file on
     // every commit that happens to land on the same head.
@@ -1037,7 +1042,12 @@ async fn write_manual(
     .await
     .context("the manual write panicked")??;
 
-    Ok(match written {
+    Ok(report_of(written))
+}
+
+/// What a local write means to its caller: a report, or a refusal to report.
+fn report_of(written: Written) -> std::result::Result<PostReport, PostReport> {
+    match written {
         Written::Committed { files, amend } => Ok(PostReport {
             files,
             amend: Some(amend),
@@ -1046,7 +1056,7 @@ async fn write_manual(
         // You changed nothing, which a Manual thread is allowed to mean.
         Written::NothingToWrite => Ok(PostReport::default()),
         Written::Refused(why) => Err(PostReport::refused(why)),
-    })
+    }
 }
 
 /// The local half: blame, ladder, apply, hooks, fold. `Err` on the inner result
@@ -1081,15 +1091,7 @@ async fn write_local(
     .await
     .context("the write batch panicked")??;
 
-    Ok(match written {
-        Written::Committed { files, amend } => Ok(PostReport {
-            files,
-            amend: Some(amend),
-            ..Default::default()
-        }),
-        Written::NothingToWrite => Ok(PostReport::default()),
-        Written::Refused(why) => Err(PostReport::refused(why)),
-    })
+    Ok(report_of(written))
 }
 
 /// What became of one thread's outward words.
@@ -1500,10 +1502,6 @@ async fn blocking_rerequest(forge: &ForgeImpl, at: &Path, pr: u64, login: &str) 
     tokio::task::spawn_blocking(move || f.rerequest(&at, pr, &login))
         .await
         .context("the re-request panicked")?
-}
-
-fn short(sha: &str) -> String {
-    sha.chars().take(7).collect()
 }
 
 #[cfg(test)]

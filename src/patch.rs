@@ -284,41 +284,50 @@ pub fn write_batch(
 
     // 4/5. The hooks, on what we wrote.
     let paths: Vec<String> = files.iter().map(|f| f.path.clone()).collect();
-    match crate::git::pre_commit(cwd, &paths)? {
-        crate::git::PreCommit::Passed | crate::git::PreCommit::NotConfigured => {}
-        crate::git::PreCommit::NotInstalled => {
-            tracing::warn!(
-                "`.pre-commit-config.yaml` is present but `pre-commit` is not installed; \
-                 pushing code the local hooks did not see"
-            );
-        }
-        crate::git::PreCommit::Failed(detail) => {
-            return Ok(Written::Refused(format!(
-                "pre-commit failed, so nothing was committed:\n{detail}"
-            )))
-        }
-        crate::git::PreCommit::Reformatted(paths) => {
-            return Ok(Written::Refused(format!(
-                "the hooks rewrote {} — what would land is no longer what you approved. \
-                 Nothing was committed.",
-                paths.join(", ")
-            )))
-        }
+    if let Some(why) = hooks_refusal(cwd, &paths, false)? {
+        return Ok(Written::Refused(why));
     }
 
     // 6. Fold.
     crate::git::fold_in(cwd, &amend)?;
     Ok(Written::Committed {
         files,
-        amend: match amend {
-            crate::review_commit::Amend::Fixup(sha) => {
-                format!("folded into {}", sha.chars().take(7).collect::<String>())
-            }
-            crate::review_commit::Amend::Head(why) => format!("amended HEAD — {why}"),
-            // Worth naming differently: an amend leaves the branch's shape alone
-            // and a new commit does not.
-            crate::review_commit::Amend::OnTop(why) => format!("committed on top — {why}"),
-        },
+        amend: amend.describe(),
+    })
+}
+
+/// Run the repo's pre-commit hooks over `paths`: the refusal to report, or `None`
+/// when what is in the tree may land.
+///
+/// `own_edits` says whose work the hooks ran on. Unlike an accepted patch, a hook
+/// rewriting your own edit is not a surprise — you wrote it, and formatting is what
+/// hooks are for — so a rewrite is reported rather than refused, and the caller's
+/// file list includes it.
+fn hooks_refusal(cwd: &Path, paths: &[String], own_edits: bool) -> Result<Option<String>> {
+    Ok(match crate::git::pre_commit(cwd, paths)? {
+        crate::git::PreCommit::Passed | crate::git::PreCommit::NotConfigured => None,
+        crate::git::PreCommit::NotInstalled => {
+            tracing::warn!(
+                "`.pre-commit-config.yaml` is present but `pre-commit` is not installed; \
+                 pushing code the local hooks did not see"
+            );
+            None
+        }
+        crate::git::PreCommit::Failed(detail) if own_edits => Some(format!(
+            "pre-commit failed on your edits, so nothing was committed:\n{detail}"
+        )),
+        crate::git::PreCommit::Failed(detail) => {
+            Some(format!("pre-commit failed, so nothing was committed:\n{detail}"))
+        }
+        crate::git::PreCommit::Reformatted(rewritten) if own_edits => {
+            tracing::info!("the hooks reformatted {}", rewritten.join(", "));
+            None
+        }
+        crate::git::PreCommit::Reformatted(paths) => Some(format!(
+            "the hooks rewrote {} — what would land is no longer what you approved. \
+             Nothing was committed.",
+            paths.join(", ")
+        )),
     })
 }
 
@@ -442,25 +451,8 @@ pub fn write_manual(
         crate::review_commit::amend_target(cwd, Some("HEAD"), merge_base, &usable, my_email)?
     };
 
-    match crate::git::pre_commit(cwd, &paths)? {
-        crate::git::PreCommit::Passed | crate::git::PreCommit::NotConfigured => {}
-        crate::git::PreCommit::NotInstalled => {
-            tracing::warn!(
-                "`.pre-commit-config.yaml` is present but `pre-commit` is not installed; \
-                 pushing code the local hooks did not see"
-            );
-        }
-        crate::git::PreCommit::Failed(detail) => {
-            return Ok(Written::Refused(format!(
-                "pre-commit failed on your edits, so nothing was committed:\n{detail}"
-            )))
-        }
-        // Unlike an accepted patch, a hook rewriting your own edit is not a
-        // surprise — you wrote it, and formatting is what hooks are for. So it is
-        // reported rather than refused, and the file list below includes it.
-        crate::git::PreCommit::Reformatted(rewritten) => {
-            tracing::info!("the hooks reformatted {}", rewritten.join(", "));
-        }
+    if let Some(why) = hooks_refusal(cwd, &paths, true)? {
+        return Ok(Written::Refused(why));
     }
 
     // Recounted after the hooks, so the file list is what will actually land.
@@ -468,15 +460,7 @@ pub fn write_manual(
     crate::git::fold_in(cwd, &amend)?;
     Ok(Written::Committed {
         files,
-        amend: match amend {
-            crate::review_commit::Amend::Fixup(sha) => {
-                format!("folded into {}", sha.chars().take(7).collect::<String>())
-            }
-            crate::review_commit::Amend::Head(why) => format!("amended HEAD — {why}"),
-            // Worth naming differently: an amend leaves the branch's shape alone
-            // and a new commit does not.
-            crate::review_commit::Amend::OnTop(why) => format!("committed on top — {why}"),
-        },
+        amend: amend.describe(),
     })
 }
 
@@ -487,17 +471,7 @@ pub fn write_manual(
 /// file would be missing from both halves.
 pub fn worktree_change(cwd: &Path) -> Result<(Vec<FileStat>, String)> {
     let files = numstat_worktree(cwd)?;
-    let out = Command::new("git")
-        .args(["diff", "HEAD"])
-        .current_dir(cwd)
-        .output()
-        .context("running git diff")?;
-    anyhow::ensure!(
-        out.status.success(),
-        "git diff failed: {}",
-        String::from_utf8_lossy(&out.stderr).trim()
-    );
-    let mut diff = String::from_utf8_lossy(&out.stdout).into_owned();
+    let mut diff = crate::git::git(cwd, &["diff", "HEAD"])?;
 
     // `git diff HEAD` cannot see an untracked file at all, and the only way to make
     // it — `--intent-to-add` — is the index write that broke `git stash`. So each new
@@ -607,21 +581,15 @@ fn paths_changed_between(
     cwd: &Path,
     since: &str,
 ) -> Result<Option<std::collections::HashSet<String>>> {
-    let out = Command::new("git")
-        .args(["diff", "--name-only", "-z", since, "HEAD"])
-        .current_dir(cwd)
-        .output()
-        .context("running git diff --name-only")?;
-    if !out.status.success() {
-        tracing::warn!(
-            "could not diff {since}..HEAD, so no anchor is trusted: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        );
-        return Ok(None);
-    }
+    let out = match crate::git::git(cwd, &["diff", "--name-only", "-z", since, "HEAD"]) {
+        Ok(out) => out,
+        Err(e) => {
+            tracing::warn!("could not diff {since}..HEAD, so no anchor is trusted: {e:#}");
+            return Ok(None);
+        }
+    };
     Ok(Some(
-        String::from_utf8_lossy(&out.stdout)
-            .split('\0')
+        out.split('\0')
             .filter(|p| !p.is_empty())
             .map(str::to_string)
             .collect(),
@@ -652,18 +620,8 @@ pub fn dirty_paths(cwd: &Path) -> Result<Vec<String>> {
 /// is `added\tdeleted\t\0old\0new\0` — the path field is empty and the two paths
 /// follow as their own records.
 fn numstat_counts(cwd: &Path) -> Result<std::collections::HashMap<String, (u32, u32)>> {
-    let out = Command::new("git")
-        .args(["diff", "--numstat", "-z", "HEAD"])
-        .current_dir(cwd)
-        .output()
-        .context("running git diff --numstat -z")?;
-    anyhow::ensure!(
-        out.status.success(),
-        "git diff --numstat failed: {}",
-        String::from_utf8_lossy(&out.stderr).trim()
-    );
-    let raw = String::from_utf8_lossy(&out.stdout);
-    let mut fields = raw.split('\0').filter(|f| !f.is_empty() || true).peekable();
+    let raw = crate::git::git(cwd, &["diff", "--numstat", "-z", "HEAD"])?;
+    let mut fields = raw.split('\0').peekable();
     let mut counts = std::collections::HashMap::new();
     while let Some(field) = fields.next() {
         if field.is_empty() {
