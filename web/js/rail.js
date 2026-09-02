@@ -427,6 +427,14 @@ function archivedRow(s) {
   if (!s.resumable) {
     // The transcript is readable, the conversation cannot be continued (§2).
     btn.appendChild(el('div', 'sess-sub', 'transcript only'));
+  } else if (!snap.workspaces.some((w) => w.id === s.workspace)) {
+    /* Its worktree is gone, which the snapshot says by omission: only teardown
+       drops a workspace record, and the retention timer is what usually calls it.
+       Worth a line, because "archived" alone would leave you to discover on the
+       next resume that the directory is not there — and the point of the setting
+       is that the row still works, so the row should say so. Main is never
+       missing, so this can only read on a worktree. */
+    btn.appendChild(el('div', 'sess-sub', 'tree removed · rebuilds on resume'));
   }
   btn.onclick = () => openArchived(s);
   btn.oncontextmenu = (ev) => openMenu(ev, [

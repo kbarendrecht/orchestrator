@@ -463,8 +463,361 @@ pub async fn teardown(app: &Arc<AppState>, workspace: &str) -> Result<Preflight>
     Ok(pf)
 }
 
+/// Remove the worktrees of conversations nobody has come back to.
+///
+/// The one thing on a timer, and it is on one because the silt is the daemon's own
+/// doing: `claude --worktree` removes its own tree when its session ends, and the
+/// daemon owns the pty and kills it, so that cleanup never runs. 61 trees and 14 GB
+/// on the machine this was written for, of which 55 were the agent's to remove.
+///
+/// **The tree, never the conversation.** Every row stays in the rail, stays
+/// archived and stays resumable, because `revive` rebuilds the tree at the same
+/// absolute path. Deleting a record is a separate decision, taken by a person, and
+/// is deliberately not automated: it drops the archived transcript with it.
+///
+/// It removes nothing the button would not. There is no second set of rules and no
+/// bypass: this calls the same [`teardown`], so a live session, a dirty tree, an
+/// unpushed commit or an attached process refuses here exactly as it refuses a
+/// right-click, and the archive it needs runs the same way. What this adds is only
+/// *when* to ask.
+///
+/// Deliberately quiet about a refusal. A tree that carries work is the normal
+/// outcome and will be a refusal again on the next pass, so a warning per tree per
+/// hour would be a log that teaches you to stop reading it. Removals are logged
+/// individually, because that is the thing that happened.
+pub async fn reap_old(app: &Arc<AppState>) -> usize {
+    let days = app.cfg.worktree_retention_days;
+    if days == 0 {
+        return 0;
+    }
+    let Some(cutoff) = std::time::SystemTime::now()
+        .checked_sub(std::time::Duration::from_secs(u64::from(days) * 86_400))
+    else {
+        return 0;
+    };
+
+    let candidates: Vec<String> = {
+        let inner = app.inner.read().await;
+        inner
+            .workspaces
+            .values()
+            .filter(|w| !w.is_main())
+            .filter(|w| {
+                let mut newest = None;
+                for s in inner.sessions.values().filter(|s| s.workspace == w.id) {
+                    // Anything still running keeps its tree, whatever its age. The
+                    // preflight says so too; this is just not asking.
+                    if s.state.is_live() {
+                        return false;
+                    }
+                    newest = newest.max(Some(crate::store::last_used(s)));
+                }
+                /* A tree with no conversation pointing at it at all, which is the
+                   commonest shape of silt and the one nothing else can reach: 32 of
+                   61 trees on the machine this was written for. They are made, not
+                   found — `spawn::watch_session_exit` forgets a turnless session's
+                   record and used to leave its tree standing, and `store` drops the
+                   same class of record again at load.
+
+                   The safest population rather than the riskiest: nothing can
+                   resume it, and `git worktree remove` never deletes the branch, so
+                   the commits stay reachable from main whatever happens here.
+
+                   Dated by the directory, because the record that would have dated
+                   it is precisely what is missing. Deliberately *not* the
+                   per-worktree index, which looks like the better signal and is
+                   worthless: the daemon's own reconcile runs `git status` in every
+                   tree and refreshes it, measured at 0.0 days for all 32 while the
+                   directories themselves read 8 to 19 days. A directory that is
+                   gone answers `None` and is left alone — a record outliving its
+                   tree is a real state here, and teardown would fail on it anyway. */
+                newest
+                    .or_else(|| std::fs::metadata(&w.path).ok()?.modified().ok())
+                    .is_some_and(|at| at < cutoff)
+            })
+            .map(|w| w.id.clone())
+            .collect()
+    };
+
+    let mut removed = 0;
+    for ws in candidates {
+        match teardown(app, &ws).await {
+            Ok(_) => {
+                removed += 1;
+                tracing::info!(
+                    workspace = %ws,
+                    days,
+                    "removed the worktree of a conversation nobody came back to; \
+                     the row stays and a resume rebuilds the tree"
+                );
+            }
+            // At debug: see the doc comment. A tree holding work refuses every pass.
+            Err(e) => tracing::debug!(workspace = %ws, "left in place: {e:#}"),
+        }
+    }
+    removed
+}
+
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    /// A real repo, a real worktree, an old archived conversation in it.
+    ///
+    /// Written because this is the one thing in the daemon that removes something
+    /// without being asked, and the selection is not the part that can be reasoned
+    /// about safely: `is_main`, the age comparison and the preflight all have to
+    /// agree, and only a real tree proves they do.
+    fn repo_with_a_worktree(tag: &str) -> (std::path::PathBuf, std::path::PathBuf, String) {
+        let g = |at: &std::path::Path, args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .args(args)
+                .current_dir(at)
+                .output()
+                .expect("git");
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+        let dir = std::env::temp_dir().join(format!("orchd-reap-{tag}-{}", uuid::Uuid::new_v4()));
+        let main = dir.join("main");
+        std::fs::create_dir_all(&main).unwrap();
+        g(&dir, &["init", "-q", "-b", "develop", "main"]);
+        g(&main, &["config", "user.email", "t@t"]);
+        g(&main, &["config", "user.name", "t"]);
+        std::fs::write(main.join("f"), "x").unwrap();
+        g(&main, &["add", "-A"]);
+        g(&main, &["commit", "-qm", "init"]);
+        let sha = g(&main, &["rev-parse", "HEAD"]);
+        let wt = dir.join("wt");
+        g(&main, &["worktree", "add", "-q", "-b", "worktree-old", wt.to_str().unwrap()]);
+        (main, wt, sha)
+    }
+
+    /// The whole point, driven end to end: the tree goes, the conversation stays.
+    #[tokio::test]
+    async fn reaping_removes_an_old_tree_and_keeps_the_conversation() {
+        use crate::config::Config;
+        use crate::model::{ArchiveState, Kind, Session};
+        use crate::state::AppState;
+
+        let (main, wt, sha) = repo_with_a_worktree("old");
+        let cfg: Config = serde_json::from_str(&format!(
+            r#"{{"main_checkout":"{}","port":7801,"worktree_retention_days":60,
+                 "upstream_ref":"develop","upstream_remote":"origin"}}"#,
+            main.display()
+        ))
+        .unwrap();
+        let app = AppState::new(cfg, "t".into(), crate::window::Chrome::None);
+        app.register_worktree("old", wt.clone(), Some("worktree-old".into())).await;
+
+        let id = uuid::Uuid::new_v4();
+        {
+            let mut inner = app.inner.write().await;
+            let mut s = Session::new(id, "old".to_string(), wt.clone(), Kind::Interactive);
+            // Ninety days back, and everything the preflight wants already settled:
+            // the interesting question is the timer, not the archive.
+            s.created_at = std::time::SystemTime::now() - std::time::Duration::from_secs(90 * 86_400);
+            s.transcript_archived = true;
+            s.recovery = Some(ArchiveState::Recoverable {
+                name: "old".into(),
+                branch: "worktree-old".into(),
+                head_sha: sha,
+            });
+            s.set_state(State::Archived { resumable: true });
+            inner.sessions.insert(id, s);
+        }
+
+        assert_eq!(reap_old(&app).await, 1, "an old clean tree is reaped");
+        assert!(!wt.exists(), "the tree is gone");
+        let inner = app.inner.read().await;
+        assert!(
+            inner.sessions.contains_key(&id),
+            "the conversation stays: this removes trees, never rows"
+        );
+        assert!(
+            inner.sessions[&id].recovery.is_some(),
+            "and keeps what a resume rebuilds the tree from"
+        );
+        drop(inner);
+        let _ = std::fs::remove_dir_all(main.parent().unwrap());
+    }
+
+    /// A conversation you worked in for a long time is not old the day you stop.
+    ///
+    /// The reason retention counts from the transcript's last write rather than from
+    /// `created_at`: a session started months ago and worked in yesterday reads as
+    /// ancient by its start date, and its tree would go while you still remembered
+    /// it. Measured on real records, the gap reaches 66 hours today; the shape is
+    /// what matters, not the size.
+    #[tokio::test]
+    async fn a_long_running_conversation_is_dated_by_its_last_turn() {
+        use crate::config::Config;
+        use crate::model::{ArchiveState, Kind, Session};
+        use crate::state::AppState;
+
+        let (main, wt, sha) = repo_with_a_worktree("lastused");
+        let cfg: Config = serde_json::from_str(&format!(
+            r#"{{"main_checkout":"{}","port":7804,"worktree_retention_days":60,
+                 "upstream_ref":"develop","upstream_remote":"origin"}}"#,
+            main.display()
+        ))
+        .unwrap();
+        let app = AppState::new(cfg, "t".into(), crate::window::Chrome::None);
+        app.register_worktree("lastused", wt.clone(), Some("worktree-old".into())).await;
+
+        // Started 90 days ago, and its transcript was written to a moment ago.
+        let transcript = main.parent().unwrap().join("live.jsonl");
+        std::fs::write(&transcript, b"{}\n").unwrap();
+        let id = uuid::Uuid::new_v4();
+        {
+            let mut inner = app.inner.write().await;
+            let mut s = Session::new(id, "lastused".to_string(), wt.clone(), Kind::Interactive);
+            s.created_at = std::time::SystemTime::now() - std::time::Duration::from_secs(90 * 86_400);
+            s.transcript_path = Some(transcript.clone());
+            s.transcript_archived = true;
+            s.recovery = Some(ArchiveState::Recoverable {
+                name: "lastused".into(),
+                branch: "worktree-old".into(),
+                head_sha: sha,
+            });
+            s.set_state(State::Archived { resumable: true });
+            inner.sessions.insert(id, s);
+        }
+
+        assert_eq!(
+            reap_old(&app).await,
+            0,
+            "worked in yesterday is not old, whatever the start date says"
+        );
+        assert!(wt.exists());
+
+        // Now let the conversation itself go cold. Same record, same start date.
+        let out = std::process::Command::new("touch")
+            .args(["-t", "202001010000", transcript.to_str().unwrap()])
+            .output()
+            .expect("touch");
+        assert!(out.status.success());
+
+        assert_eq!(reap_old(&app).await, 1, "cold for long enough, and the tree goes");
+        assert!(!wt.exists());
+        let _ = std::fs::remove_dir_all(main.parent().unwrap());
+    }
+
+    /// A tree no conversation points at is reaped, dated by the directory.
+    ///
+    /// The population the timer exists for and the one it originally could not
+    /// reach: `watch_session_exit` forgets a turnless session's record, and the
+    /// record is what dates a tree. 32 of 61 trees were in this state.
+    #[tokio::test]
+    async fn a_worktree_no_conversation_points_at_is_dated_by_its_directory() {
+        use crate::config::Config;
+        use crate::state::AppState;
+
+        let (main, wt, _) = repo_with_a_worktree("orphan");
+        let cfg: Config = serde_json::from_str(&format!(
+            r#"{{"main_checkout":"{}","port":7803,"worktree_retention_days":60,
+                 "upstream_ref":"develop","upstream_remote":"origin"}}"#,
+            main.display()
+        ))
+        .unwrap();
+        let app = AppState::new(cfg, "t".into(), crate::window::Chrome::None);
+        // Registered the way `adopt_existing_worktrees` registers every tree on
+        // disk at boot, and with no session record at all.
+        app.register_worktree("orphan", wt.clone(), Some("worktree-old".into())).await;
+
+        // Young by its own mtime: nothing yet, however orphaned. This is what keeps
+        // a tree the agent has just cut, and not yet reported, out of reach.
+        assert_eq!(reap_old(&app).await, 0, "a fresh orphan is left alone");
+        assert!(wt.exists());
+
+        // Backdated. `touch -t` rather than a crate: POSIX, and the only thing that
+        // can make a directory old without waiting sixty days.
+        let out = std::process::Command::new("touch")
+            .args(["-t", "202001010000", wt.to_str().unwrap()])
+            .output()
+            .expect("touch");
+        assert!(out.status.success(), "touch: {}", String::from_utf8_lossy(&out.stderr));
+
+        assert_eq!(reap_old(&app).await, 1, "an old orphan is reaped");
+        assert!(!wt.exists(), "the tree is gone");
+        // The branch is not, which is what makes an orphan safe to remove: whatever
+        // was committed in there is still reachable from main.
+        let branches = std::process::Command::new("git")
+            .args(["branch", "--list", "worktree-old"])
+            .current_dir(&main)
+            .output()
+            .expect("git branch");
+        assert!(
+            String::from_utf8_lossy(&branches.stdout).contains("worktree-old"),
+            "removing a worktree must never take its branch"
+        );
+        let _ = std::fs::remove_dir_all(main.parent().unwrap());
+    }
+
+    /// Three ways it must decline, none of which reach the preflight.
+    #[tokio::test]
+    async fn reaping_declines_young_trees_live_sessions_and_a_zero_setting() {
+        use crate::config::Config;
+        use crate::model::{Kind, Session};
+        use crate::state::AppState;
+
+        let (main, wt, _) = repo_with_a_worktree("keep");
+        let with = |days: u32| -> Config {
+            serde_json::from_str(&format!(
+                r#"{{"main_checkout":"{}","port":7802,"worktree_retention_days":{days},
+                     "upstream_ref":"develop","upstream_remote":"origin"}}"#,
+                main.display()
+            ))
+            .unwrap()
+        };
+        let fresh = |cfg: Config| {
+            let wt = wt.clone();
+            async move {
+                let app = AppState::new(cfg, "t".into(), crate::window::Chrome::None);
+                app.register_worktree("keep", wt, Some("worktree-old".into())).await;
+                app
+            }
+        };
+
+        /// Archived, transcript settled, so only the age and the state are in play.
+        async fn add(
+            app: &Arc<AppState>,
+            wt: &std::path::Path,
+            state: State,
+            at: std::time::SystemTime,
+        ) {
+            let mut inner = app.inner.write().await;
+            let id = uuid::Uuid::new_v4();
+            let mut s = Session::new(id, "keep".to_string(), wt.to_path_buf(), Kind::Interactive);
+            s.created_at = at;
+            s.transcript_archived = true;
+            s.set_state(state);
+            inner.sessions.insert(id, s);
+        }
+
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(90 * 86_400);
+
+        // 1. Old, but the setting is off.
+        let app = fresh(with(0)).await;
+        add(&app, &wt, State::Archived { resumable: true }, old).await;
+        assert_eq!(reap_old(&app).await, 0, "`0` never reaps");
+        assert!(wt.exists());
+
+        // 2. Old, but something is still running in it. Age never outvotes that.
+        let app = fresh(with(60)).await;
+        add(&app, &wt, State::Archived { resumable: true }, old).await;
+        add(&app, &wt, State::Working, old).await;
+        assert_eq!(reap_old(&app).await, 0, "a live session keeps its tree");
+        assert!(wt.exists());
+
+        // 3. Archived, clean, and simply not old enough.
+        let app = fresh(with(60)).await;
+        add(&app, &wt, State::Archived { resumable: true }, std::time::SystemTime::now()).await;
+        assert_eq!(reap_old(&app).await, 0, "a young tree is left alone");
+        assert!(wt.exists());
+
+        let _ = std::fs::remove_dir_all(main.parent().unwrap());
+    }
 
     /// Only `command` hooks, from both repo settings files, in Claude Code's order.
     ///

@@ -627,20 +627,26 @@ pub async fn spawn_worktree_session(
     if let Some(name) = name {
         validate_worktree_name(name)?;
 
-        // Worktree names must be unique over time (§2): the projects directory
-        // is keyed by path, so reusing an archived worktree's name would
-        // interleave the two sessions' transcripts.
+        /* Two refusals, and both are about the present: a name a live workspace
+           already holds, and a directory already sitting on disk.
+
+           §2's "worktree names must be unique over time" is deliberately **not**
+           enforced. Its reason was that the projects directory is keyed by path, so
+           reusing an archived name would interleave two conversations' transcripts,
+           and that reason is false: a transcript is keyed by session uuid, so
+           sharing a directory slug gets you two files rather than one interleaved
+           one. This is the third place that same belief had been written down, and
+           `ensure_pr_worktree` had already outvoted it in practice — it reuses
+           `pr-<n>` for every run on a PR, which is how one of them came to hold
+           five conversations.
+
+           The real hazard of reusing a name is a resume landing in a tree that was
+           cut again for something else. `worktree::branch_drift` says so on the
+           resume, where the answer is known, instead of refusing a creation that is
+           usually fine. */
         let inner = app.inner.read().await;
         if inner.workspaces.contains_key(name) {
             bail!("a workspace named {name} already exists");
-        }
-        if inner.sessions.values().any(
-            |s| matches!(&s.recovery, Some(ArchiveState::Recoverable { name: n, .. }) if n == name),
-        ) {
-            bail!(
-                "an archived session used the worktree name {name}; pick another (e.g. {name}-2) \
-                 so its transcripts do not interleave"
-            );
         }
         drop(inner);
         if app.cfg.worktree_path(name).exists() {
@@ -1472,6 +1478,38 @@ fn watch_session_exit(app: Arc<AppState>, id: SessionId, handle: Arc<PtyHandle>)
         if let Some((cwd, recorded)) = forget {
             crate::store::delete_transcript(id, &cwd, recorded.as_deref());
             tracing::info!(session = %id, "closed before its first turn; forgotten");
+            /* And the tree it opened in, which is the half that leaked. Forgetting
+               the row left a worktree on disk with nothing pointing at it: 32 of the
+               61 trees on the machine this was written for, and the retention timer
+               could not date any of them because the record that dates a tree is
+               the one just deleted. A session and the worktree cut for it are one
+               thing, so they end together.
+
+               Through the ordinary preflight, which is what makes it safe without a
+               second set of rules: a tree holding uncommitted or unpushed work
+               refuses, and so does one a *second* session is still live in — the
+               case that matters, since two conversations can share a worktree.
+
+               Not gated on `spawn_cut_worktree`: that flag is only ever set on the
+               agent-spawn path, so every worktree session you start from the rail
+               has it false, which is exactly the population this is for. The
+               preflight is the authorisation instead. Same switch as the timer:
+               `0` means the daemon never removes a worktree by itself. */
+            if app.cfg.worktree_retention_days > 0 {
+                if let Some(ws) = workspace.as_deref() {
+                    if ws != MAIN && ws != PENDING_WORKTREE {
+                        match crate::worktree::teardown(&app, ws).await {
+                            Ok(_) => tracing::info!(
+                                workspace = %ws,
+                                "removed the worktree it opened in, having left nothing behind"
+                            ),
+                            // Debug: a tree that carries work is a correct refusal,
+                            // and the row is gone either way.
+                            Err(e) => tracing::debug!(workspace = %ws, "tree left in place: {e:#}"),
+                        }
+                    }
+                }
+            }
         }
         // A fix run's verdict belongs to `fix_pr`, and this is the only place that
         // learns the run is over.

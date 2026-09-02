@@ -304,6 +304,17 @@
       own WorktreeCreate hook would do — it only fires for interactive worktrees,
       so PR ones would otherwise miss it. cwd is the new worktree.</p>
 
+    <label class="settings-field">
+      <span class="settings-k">Keep worktrees for</span>
+      <input class="settings-in" id="setretain" type="number" min="0" step="1"
+             inputmode="numeric" placeholder="0 = keep forever">
+    </label>
+    <p class="settings-help">Days since a conversation was last worked in. Its
+      worktree is then removed, but only once it is clean, pushed and nothing is
+      running in it. The conversation stays in the rail and a resume rebuilds the
+      tree, so this frees disk rather than losing work. <code>0</code> never removes
+      anything.</p>
+
     <div class="settings-group">Processes</div>
 
     <div class="settings-field settings-procs-head">

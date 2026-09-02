@@ -201,6 +201,45 @@ pub struct Config {
     /// Empty by default, which is a note that simply is not added.
     #[serde(default)]
     pub workspace_notes: WorkspaceNotes,
+
+    /// Remove the worktree of a conversation this many days old. `0` never does.
+    ///
+    /// **The tree, never the conversation.** The row stays in the rail and stays
+    /// resumable: `worktree::revive` rebuilds the tree at the same absolute path
+    /// from the recovery record, and the teardown preflight will not pass until
+    /// that record is written and the transcript is copied. So the worst a wrong
+    /// answer here costs is one rebuild on the next resume, which is what makes it
+    /// safe to put on a timer at all. Deleting the record is a different decision
+    /// and is deliberately not on one.
+    ///
+    /// Every other guarantee is the preflight's, unchanged and unbypassed: a live
+    /// session, a dirty tree, an unpushed commit, a running process or a missing
+    /// recovery record each keep the tree exactly where it is.
+    ///
+    /// Age is **when the conversation was last worked in**, not when it started:
+    /// `store::last_used` reads the transcript's own mtime, since Claude Code
+    /// appends a line per turn and the daemon only ever reads that file. Dating a
+    /// conversation by its beginning is the flaw that shape avoids, and it is not
+    /// hypothetical: a session you worked in for weeks would read as ancient the day
+    /// after you stopped, and its tree would go while you still remembered it.
+    ///
+    /// The ladder ends at `created_at` where no transcript survives, which can only
+    /// make a tree look older than it is. A tree no conversation points at has no
+    /// transcript to read at all and is dated by its own directory instead.
+    #[serde(default = "default_retention_days")]
+    pub worktree_retention_days: u32,
+}
+
+/// Two months. Chosen to be clearly longer than anyone's memory of a branch: a
+/// tree you might still open is untouched, and what goes is what you had forgotten
+/// about. The silt it is aimed at had been accumulating for far longer than this on
+/// the machine the setting was written for (61 trees, 14 GB).
+///
+/// It is a default that deletes something, which is only acceptable because of what
+/// it deletes: a rebuildable directory, never a conversation, and never one holding
+/// work. Turn it off with `0`.
+fn default_retention_days() -> u32 {
+    60
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -335,7 +374,7 @@ impl WorkspaceNotes {
 /// The subset of [`Config`] the settings panel reads and writes.
 ///
 /// A distinct struct so the editable surface is explicit: a POST from the panel
-/// can set these seven and nothing else — not the port, the token paths, or the
+/// can set these eight and nothing else — not the port, the token paths, or the
 /// forge. Field names match the `config.json` keys they persist to.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Settings {
@@ -346,6 +385,7 @@ pub struct Settings {
     pub reviews_command: Vec<String>,
     pub main_processes: Vec<ManagedSpec>,
     pub worktree_setup: Vec<String>,
+    pub worktree_retention_days: u32,
 }
 
 impl Settings {
@@ -358,6 +398,7 @@ impl Settings {
             reviews_command: cfg.reviews_command.clone(),
             main_processes: cfg.main_processes.clone(),
             worktree_setup: cfg.worktree_setup.clone(),
+            worktree_retention_days: cfg.worktree_retention_days,
         }
     }
 
@@ -372,7 +413,7 @@ impl Settings {
         Ok(())
     }
 
-    /// Set these seven keys on a raw `config.json` string, returning the new file
+    /// Set these eight keys on a raw `config.json` string, returning the new file
     /// text. Split from [`Settings::write`] so it is testable without the real
     /// config path.
     pub fn merge_into(&self, raw: &str) -> Result<String> {
@@ -388,6 +429,10 @@ impl Settings {
         obj.insert("reviews_command".into(), serde_json::to_value(&self.reviews_command)?);
         obj.insert("main_processes".into(), serde_json::to_value(&self.main_processes)?);
         obj.insert("worktree_setup".into(), serde_json::to_value(&self.worktree_setup)?);
+        obj.insert(
+            "worktree_retention_days".into(),
+            serde_json::to_value(self.worktree_retention_days)?,
+        );
         Ok(serde_json::to_string_pretty(&v)? + "\n")
     }
 }
@@ -1086,6 +1131,7 @@ mod tests {
             reviews_command: vec!["gh".into(), "pr".into()],
             main_processes: vec![],
             worktree_setup: vec![".claude/hooks/worktree-setup".into()],
+            worktree_retention_days: 60,
         };
         let out = s.merge_into(r#"{"main_checkout":"/tmp/x","port":8080}"#).expect("merge");
         let cfg = Config::parse(&out).expect("re-parse");

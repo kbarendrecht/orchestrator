@@ -372,6 +372,7 @@ pub async fn start(opts: StartOptions) -> Result<Server> {
     start_workspace_watcher(app.clone());
     start_head_poller(app.clone());
     start_findings_log(app.clone());
+    start_worktree_reaper(app.clone());
     // A debug build is `cargo run` from a checkout; its version is whatever the
     // working tree is, so comparing it against a release only ever nags. Only a
     // release build — which is what a downloaded/`mise`-installed one is — checks.
@@ -994,6 +995,35 @@ fn start_head_poller(app: Arc<AppState>) {
             if changed {
                 app.notify().await;
             }
+        }
+    });
+}
+
+/// Remove the worktrees of conversations nobody came back to, hourly.
+///
+/// Hourly rather than at boot only, because a daemon that runs for a week would
+/// otherwise never look again; and hourly rather than often, because nothing here
+/// is urgent and every pass shells `git status` per candidate tree. The first pass
+/// waits a minute: startup is already spending its time on auto-resume, the PR poll
+/// and the boot checks, and nothing about this is worth being third in that queue.
+///
+/// `worktree::reap_old` decides and refuses; this only decides when to ask. Off
+/// entirely when `worktree_retention_days` is `0`, and the task is not even spawned
+/// then, so the setting costs nothing when it is unused.
+fn start_worktree_reaper(app: Arc<AppState>) {
+    if app.cfg.worktree_retention_days == 0 {
+        return;
+    }
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+        loop {
+            let removed = crate::worktree::reap_old(&app).await;
+            if removed > 0 {
+                // The rail lists workspaces, and one of them has just stopped
+                // existing.
+                app.notify().await;
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
         }
     });
 }

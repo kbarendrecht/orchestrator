@@ -1094,6 +1094,35 @@ mod tests {
 /// Whether there is a conversation here, not merely a file.
 ///
 /// [`transcript_exists`] is the weaker question and it is not enough before a
+/// When this conversation was last worked in, as evidence rather than bookkeeping.
+///
+/// The transcript's own mtime. Claude Code appends a line per turn, so the file's
+/// last write *is* the conversation's last activity, and the daemon only ever reads
+/// it — `ai_title` tails it, `has_conversation` reads its head, neither touches the
+/// mtime. Measured across 102 records here: readable for 87 of them, and it puts a
+/// session that ran for 66 hours 66 hours later than its start.
+///
+/// Retention counts from this rather than from `created_at`, which is the flaw in
+/// dating a conversation by its beginning: a session you worked in for weeks would
+/// read as ancient the day after you stopped, and its tree would go while you still
+/// remembered it.
+///
+/// The ladder ends at `created_at` on purpose. Claude Code prunes transcripts, so a
+/// missing file is a normal state, and the archived copy is then the best remaining
+/// evidence — its mtime is when the daemon copied it, which is close to when the
+/// session ended. Falling back to the start is the conservative end: it can only
+/// make a tree look *older* than it is, and the six-check preflight is what stands
+/// between that and losing anything.
+pub fn last_used(s: &crate::model::Session) -> std::time::SystemTime {
+    let mtime = |p: Option<&Path>| {
+        p.and_then(|p| std::fs::metadata(p).ok())
+            .and_then(|m| m.modified().ok())
+    };
+    mtime(s.transcript_path.as_deref())
+        .or_else(|| mtime(s.archived_transcript.as_deref()))
+        .unwrap_or(s.created_at)
+}
+
 /// `--resume`: a session that has started but never had a turn *does* have a
 /// `.jsonl`, holding only its `mode` / `permission-mode` / `ai-title` headers —
 /// 266 bytes of it. Resuming that answers "no conversation found" and the process

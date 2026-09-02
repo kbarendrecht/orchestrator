@@ -41,6 +41,9 @@ async function loadConfigInto() {
   ctl('setupremote').value = cfg.upstream_remote || '';
   ctl('setreviews').value = (cfg.reviews_command || []).join(' ');
   ctl('setwtsetup').value = (cfg.worktree_setup || []).join(' ');
+  // Numbers go in as numbers: `value = 0` on a number input renders "0", which is
+  // the setting being off said out loud, where '' would read as unset.
+  ctl('setretain').value = String(cfg.worktree_retention_days ?? 0);
   procDraft = (cfg.main_processes || []).map((p) => ({
     name: p.name || '',
     command: (p.command || []).join(' '),
@@ -148,6 +151,9 @@ async function saveSettings() {
     upstream_remote: ctl('setupremote').value.trim(),
     reviews_command: argv(ctl('setreviews').value),
     worktree_setup: argv(ctl('setwtsetup').value),
+    // A blank box means "keep forever" rather than NaN, and a negative number is
+    // not a shorter retention.
+    worktree_retention_days: Math.max(0, Math.trunc(Number(ctl('setretain').value) || 0)),
     main_processes: procDraft.map((p) => ({
       name: p.name.trim(),
       command: argv(p.command),
