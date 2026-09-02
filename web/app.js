@@ -15,7 +15,7 @@ import {
   drawerTouched, setDrawerTouched, drawerCollapsed, setDrawerCollapsed,
   pendingProcFocus, setPendingProcFocus, pendingSelect, setPendingSelect,
   onDrawerChange, appMod, IS_MAC, MOD_LABEL, closeLegend, typingElsewhere,
-  mark, reportBoot,
+  mark, reportBoot, confirmBox, dialogOpen, dismissDialog,
 } from './js/core.js';
 
 // The daemon owns all state. This SPA is stateless and disposable: closing the
@@ -76,6 +76,35 @@ function syncDiffToSession() {
   if (!Diff.state.open) return;
   const ws = activeWorkspaceId();
   if (!ws || ws !== Diff.state.ws) Diff.close();
+}
+
+/** Repaint the board, at most once a frame.
+ *
+ *  **The daemon pushes snapshots faster than a screen refreshes.** `notify` is
+ *  called from about seventy places and `post_tool_use` calls it once per tool
+ *  call, so a working agent produces several a second — and each one rebuilt the
+ *  rail, the context bar, the drawer, the changed-files pane (up to
+ *  `CHANGED_CAP`, which is 500 rows), the queue and three status bars. All of it
+ *  on the same main thread as the xterm parse and paint, so a keystroke's echo
+ *  queued behind however many boards had been drawn since. That is the reported
+ *  typing lag, and none of those extra passes was ever seen: two renders inside
+ *  one frame paint once.
+ *
+ *  Only the *painting* is coalesced. `receive` still takes every snapshot the
+ *  moment it lands, because it sets the snapshot and the clock it is measured
+ *  against together, and the terminal teardown and selection fixups beside it
+ *  still run per snapshot. A frame late is invisible; a snapshot missed is not.
+ *
+ *  A gesture still renders straight through — see the `onSelection` caller. It is
+ *  one pass, and a click should not wait for the next frame to show anything. */
+let renderQueued = false;
+function scheduleRender() {
+  if (renderQueued) return;
+  renderQueued = true;
+  requestAnimationFrame(() => {
+    renderQueued = false;
+    render();
+  });
 }
 
 function render() {
@@ -879,7 +908,7 @@ async function teardown(wsId) {
   if (!pf.can_remove) {
     return toast(`cannot remove ${wsId}:\n${lines.join('\n')}`, true);
   }
-  if (!confirm(`Remove worktree ${wsId}?\n\n${lines.join('\n')}`)) return;
+  if (!await confirmBox(`Remove worktree ${wsId}?\n\n${lines.join('\n')}`, { ok: 'Remove' })) return;
   try {
     await call(`/api/workspace/${encodeURIComponent(wsId)}/teardown`);
     toast(`removed ${wsId}`);
@@ -1015,6 +1044,15 @@ function switchSession(step) {
 }
 
 window.addEventListener('keydown', (e) => {
+  /* First in the chain, because it is modal and the topmost thing on screen: a
+     confirm drawn over the review overlay has to be the thing `Esc` answers, or
+     the overlay closes underneath the question about it. Cancelling is the safe
+     answer, which is what `Esc` means everywhere else here too. */
+  if (e.key === 'Escape' && dialogOpen()) {
+    e.preventDefault();
+    dismissDialog();
+    return;
+  }
   if (e.key === 'Escape' && !$('keyhelp').hidden) {
     e.preventDefault();
     $('keyhelp').hidden = true;
@@ -1322,7 +1360,7 @@ function connect() {
         Term.show(null, $('termwrap'));
       }
     }
-    render();
+    scheduleRender();
     announceWaiting();
     nudgeWebkitInput();
   };

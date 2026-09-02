@@ -384,6 +384,10 @@
       <dt data-mod>MOD&nbsp;=&nbsp;/&nbsp;&minus;</dt><dd>zoom in / out</dd>
       <dt data-mod>MOD&nbsp;0</dt><dd>reset zoom</dd>
       <dt data-mod data-mac="&#8984;&nbsp;C&nbsp;/&nbsp;V">Ctrl&nbsp;Shift&nbsp;C&nbsp;/&nbsp;V</dt><dd>copy / paste in the terminal</dd>
+      <!-- Not ours: xterm skips the mouse-report path when Shift is held, so the
+           wheel scrolls its own scrollback instead of reaching the agent. Listed
+           because it is the only way to read back past what the agent shows. -->
+      <dt>Shift&nbsp;scroll</dt><dd>the terminal's own scrollback, past the agent</dd>
       <dt data-mod>MOD&nbsp;S</dt><dd>save the file being edited</dd>
       <dt data-mod>MOD&nbsp;Shift&nbsp;?</dt><dd>show or hide this list</dd>
     </dl>
@@ -412,6 +416,13 @@
 </div>
 
 <div class="ctxmenu" id="ctxmenu" role="menu" hidden></div>
+
+<!-- Confirm and prompt, drawn by the app. `window.confirm` and `window.prompt`
+     are inert in WKWebView unless the host implements the matching WKUIDelegate
+     methods, and wry implements none of them — see the Dialogs section in
+     core.js. Above every overlay, because it is a question about the thing you
+     were doing on the overlay. -->
+<div class="dlg" id="dlg" hidden></div>
 
 <!-- `tabindex` so a click can move focus off the terminal; see `core.toast`. -->
 <!-- Connection lost after we were live: a quiet, self-clearing status, not an

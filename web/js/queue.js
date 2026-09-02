@@ -89,9 +89,20 @@ function renderReviews() {
      * It cannot tell a personal re-request from a team one — `prio` splits that
      * only for first requests.
      * A `prio` or `prio stopper` label outranks both: red, because that queue is
-     * somebody's release waiting on you. */
-    const dot = r.prio <= 1 ? ' prio' : r.needs_re_review ? ' blocked' : '';
-    a.appendChild(el('span', 'dot' + dot));
+     * somebody's release waiting on you.
+     *
+     * **A blocker is red too, and it was grey.** `conflicts` or `failing checks`
+     * came through as a word in the reason column beside a dot that looked
+     * exactly like a healthy row's, so the one thing you can see from across the
+     * pane said nothing. Same red as `prio` by its own name rather than by
+     * reusing that class: they mean different things — one is urgent *for you*,
+     * this one is broken and not yours — and a palette that ever splits them
+     * should not have to find the call sites first. Which blocker it is stays in
+     * the reason column and on the dot's own tooltip, because red cannot spell
+     * "conflicts". */
+    const blocked = r.blockers && r.blockers.length;
+    const dot = r.prio <= 1 ? ' prio' : blocked ? ' bad' : r.needs_re_review ? ' blocked' : '';
+    a.appendChild(el('span', 'dot' + dot, null, blocked ? r.blockers.join(', ') : undefined));
     // Age, not the PR number: how long it has waited is what tells you to pick
     // it up. The whole row already links to the PR, so the number earns nothing.
     const age = el('span', 'num', compactAge(r.age_hours || 0));

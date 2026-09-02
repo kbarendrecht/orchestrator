@@ -1,5 +1,6 @@
 // The terminals: one xterm per session or process, attached to the daemon's pty
-// over a websocket. The DOM renderer is deliberate in the webview — see CLAUDE.md.
+// over a websocket. The DOM renderer is deliberate under WebKitGTK, and only
+// there — see the renderer comment below, and CLAUDE.md.
 
 import { $, CHROME, IS_MAC, TOKEN, WS_BASE, el, mark, reportBoot, selected, terms, toast, typingElsewhere, uiScale } from './core.js';
 
@@ -141,19 +142,33 @@ function openTerm(target, parent) {
     // allowed to read the clipboard" on top of it.
     return true;
   });
-  /* No WebGL in the webview. WebKitGTK is the engine this app actually runs on,
-   * and xterm's WebGL renderer garbles glyphs there: text arrives as noise and
-   * comes back only when a scroll or a selection forces a full redraw, which is
-   * the canvas being composited wrong rather than the buffer being wrong.
-   * Repainting after every refit and dropping the addon on context loss both
-   * failed to fix it, so the canvas goes instead: the DOM renderer draws real
-   * text, which cannot garble. It is slower under heavy output, and that is the
-   * trade.
+  /* **No WebGL under WebKitGTK, and that is the whole of the rule.** Its WebGL
+   * renderer garbles glyphs there: text arrives as noise and comes back only when
+   * a scroll or a selection forces a full redraw, which is the canvas being
+   * composited wrong rather than the buffer being wrong. Repainting after every
+   * refit and dropping the addon on context loss both failed to fix it, so the
+   * canvas goes and the DOM renderer draws real text, which cannot garble.
    *
-   * A browser tab is Chromium or Firefox, where the fast path is fine, so it
-   * keeps it. `chrome` comes from the daemon, which is the side that knows
-   * whether it is being shown in a window it owns. */
-  if (CHROME === 'none') {
+   * Two engines get the fast path back:
+   *
+   * - **A browser tab** (`chrome === 'none'`), which is Chromium or Firefox.
+   * - **macOS**, which is WKWebView and not WebKitGTK. The condition used to be
+   *   `chrome` alone, so a Mac took the DOM renderer on the strength of a bug
+   *   measured on Linux — and paid for it, because the DOM renderer's cost is
+   *   visible cells times paint rate, a Retina panel composites four times the
+   *   pixels, and Claude Code repaints its whole TUI frame per keystroke. That is
+   *   the reported typing lag.
+   *
+   * **The macOS half is an experiment, and only a Mac can settle it**: the open
+   * question is whether WKWebView garbles glyphs the way WebKitGTK does. If it
+   * does, the symptom is unmistakable (noise that a scroll cleans up) and the fix
+   * is to drop `IS_MAC` from this condition. The context-loss disposal below is
+   * the safety net either way.
+   *
+   * Not the *scrolling* complaint, which was the other suspect this was held
+   * against: that turned out to be xterm damping sub-50px wheel deltas, measured
+   * separately, and no renderer would have changed it. */
+  if (CHROME === 'none' || IS_MAC) {
     try {
       const webgl = new WebglAddon.WebglAddon();
       // A lost context leaves the canvas frozen on whatever it last painted, and
@@ -164,6 +179,85 @@ function openTerm(target, parent) {
       // Software rendering is slower but correct; not worth failing over.
     }
   }
+
+  /* **A slow trackpad drag scrolls an agent pane in jerks, and xterm's own wheel
+   * maths is why.** With mouse reporting on — Claude Code sets `?1000h`,
+   * `?1002h`, `?1003h`, `?1006h` and never leaves the normal screen — every
+   * wheel event goes down the mouse-report path, and `consumeWheelEvent` does two
+   * things to it:
+   *
+   *   `Math.abs(deltaY) < 50 && (r *= .3)`   — sub-50px events cut to 30%
+   *   only whole lines pass; the rest is banked
+   *
+   * A mouse wheel reports line-mode deltas or pixel deltas over 100 and never
+   * enters that branch. **A macOS trackpad reports small pixel deltas and always
+   * does.** Measured against this same vendored build: at 1px per event, 5 of 300
+   * reached the agent and 295 were dropped; the cliff sits exactly on the 50px
+   * constant. A real slow drag has a 13px median, so every event of it is damped,
+   * ~4.6 events per line moved. That is the pane sitting still and then jumping.
+   *
+   * The same path also sends exactly **one report per event** whatever the delta,
+   * throwing away the line count it just computed — so a fast drag under-scrolls
+   * per pixel of travel. Both defects are in the one place, so both are fixed
+   * here: accumulate the real pixel deltas, undamped, and emit one report per
+   * whole line.
+   *
+   * `scrollSensitivity` is not the fix and is worth naming as a dead end: it
+   * multiplies *before* the threshold test and the test reads the raw `deltaY`,
+   * so a value that cancels the damping for a trackpad makes a mouse three times
+   * too fast.
+   *
+   * **Agent panes only**, the same rule Shift+Enter above follows and for the
+   * same reason: this writes a mouse report in the SGR encoding, which is right
+   * because the agent asked for `?1006h`, and would be wrong for some other
+   * program that enabled reporting in the default encoding. A drawer shell keeps
+   * xterm's own behaviour. Two more ways out, both deliberate: `deltaMode !== 0`
+   * is a line- or page-mode device, which was never damped, and `shiftKey` is
+   * xterm's documented escape to the scrollback — `consumeWheelEvent` returns 0
+   * on Shift, so that keeps working and is worth knowing about. */
+  let wheelLines = 0;
+  term.attachCustomWheelEventHandler((ev) => {
+    if (!agentPane || ev.shiftKey || ev.deltaMode !== 0) return true;
+    // `modes` is public API. `any`/`drag` is `?1003h`/`?1002h`, which is what an
+    // agent TUI sets; anything less capable is left alone rather than guessed at,
+    // and `none` means xterm is about to scroll its own buffer, which is correct.
+    const tracking = term.modes?.mouseTrackingMode;
+    if (tracking !== 'any' && tracking !== 'drag') return true;
+
+    const box = host.getBoundingClientRect();
+    const cell = box.height / term.rows;
+    if (!(cell > 0)) return true;
+    wheelLines += ev.deltaY / cell;
+    // `trunc`, so the sign is kept and the remainder is banked rather than
+    // rounded away. Banking is what makes a slow drag move at all: 0.7 of a line
+    // is not nothing, it is the next event's head start.
+    const lines = Math.trunc(wheelLines);
+    // Nothing whole yet, but the event is ours: `false` stops xterm applying its
+    // own damped version on top of what we have banked.
+    if (!lines) return false;
+    wheelLines -= lines;
+
+    /* The cell under the pointer, 1-based, which is what the SGR form wants.
+     * Derived from the host box rather than asked of xterm, which keeps its own
+     * padding-aware version private. Close enough by construction: the agent uses
+     * the report to decide *which pane* the wheel is over, and a cell either way
+     * inside the right pane changes nothing. */
+    const col = Math.min(term.cols, Math.max(1,
+      Math.floor((ev.clientX - box.left) / (box.width / term.cols)) + 1));
+    const row = Math.min(term.rows, Math.max(1,
+      Math.floor((ev.clientY - box.top) / cell) + 1));
+    // 64 is wheel up, 65 is wheel down — the same codes xterm's own encoder
+    // emits, in the same `ESC [ < btn ; col ; row M` shape.
+    const button = lines < 0 ? 64 : 65;
+    // A fling can bank a lot of lines. Capped at a page, because past that the
+    // reports are a burst the agent has to parse and nobody asked to travel that
+    // far in one frame.
+    const count = Math.min(Math.abs(lines), term.rows);
+    if (sock.readyState === WebSocket.OPEN) {
+      sock.send(new TextEncoder().encode(`\x1b[<${button};${col};${row}M`.repeat(count)));
+    }
+    return false;
+  });
 
   const sock = new WebSocket(
     `${WS_BASE}/ws/pty?token=${encodeURIComponent(TOKEN)}&target=${encodeURIComponent(target)}`

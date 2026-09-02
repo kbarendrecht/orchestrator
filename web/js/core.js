@@ -210,6 +210,144 @@ export function toast(message, bad) {
   }
 }
 
+/* ---------------------------------------------------------------------------
+ * Dialogs
+ *
+ * **`window.confirm` and `window.prompt` do not work in this app on macOS, and
+ * they fail silently.** WKWebView shows a script dialog only if the host
+ * application implements the matching `WKUIDelegate` method, and wry implements
+ * exactly three of them — the file-open panel, the media-capture permission and
+ * `window.open`. None of the JavaScript dialogs. With the delegate methods
+ * absent, WebKit's documented behaviour is that `alert()` does nothing,
+ * `confirm()` returns **false** and `prompt()` returns **null**.
+ *
+ * So on a Mac every guarded action read as dead: two `prompt()` flows (naming a
+ * worktree, the commit message for existing work) returned null and took the
+ * early `return`, and six `confirm()` guards returned false and refused —
+ * move out of main, swap branch, delete session, remove worktree, start a fix
+ * run, discard unsaved edits. Nothing was broken and nothing said anything.
+ * WebKitGTK ships default script dialogs, which is why Linux never showed it.
+ *
+ * Drawn here rather than routed to a native dialog through the daemon. The app
+ * already draws its own window controls, menus and rename box for the same
+ * reason: what the webview will render is knowable, and what a host delegate
+ * will do is not. It also means a browser tab behaves identically, and there is
+ * one code path to reason about instead of two.
+ * ------------------------------------------------------------------------- */
+
+/** Resolve for the dialog currently on screen, or null when there is none. */
+let dlgSettle = null;
+/** What that dialog is asking, and the promise everyone waiting shares.
+ *
+ *  **Re-entrancy is not hypothetical here.** One of these guards is reached from
+ *  `render`, which runs on every frame that has a new snapshot: a guard that
+ *  refuses leaves the state it guards unchanged, so the next render asks again.
+ *  `window.confirm` could not hit this because it blocked the thread. This one
+ *  does not, so the same question arriving twice has to answer from the dialog
+ *  already on screen rather than tearing it down and building it again, which
+ *  would be a box that flickers once a frame and can never be answered. */
+let dlgAsking = null;
+let dlgPending = null;
+
+/** Take the dialog down and answer whoever is waiting. */
+function dlgClose(answer) {
+  const host = $('dlg');
+  host.hidden = true;
+  host.replaceChildren();
+  const settle = dlgSettle;
+  dlgSettle = null;
+  dlgAsking = null;
+  dlgPending = null;
+  if (settle) settle(answer);
+}
+
+/** Is a dialog waiting for an answer? For the `Esc` chain. */
+export const dialogOpen = () => dlgSettle !== null;
+
+/** Cancel the open dialog, however it was asked. */
+export function dismissDialog() {
+  if (dlgSettle) dlgClose(null);
+}
+
+/** The shared shell: a message, a body the caller fills, and two buttons.
+ *
+ *  Returns the promise the caller awaits. The same question asked again while it
+ *  is still up hands back the promise already outstanding — see `dlgAsking`. A
+ *  *different* question replaces it rather than stacking, because these are all
+ *  guards on a gesture and two on screen means one of the gestures is lost. */
+// `body` and `focus` default rather than being left off, so `checkJs` reads them
+// as optional: a destructured parameter with no default is a required field.
+function dlgOpen(message, { ok, danger, answer, body = null, focus = null }) {
+  if (dlgSettle && dlgAsking === message) return dlgPending;
+  if (dlgSettle) dlgClose(null);
+  const host = $('dlg');
+  host.replaceChildren();
+  const card = el('div', 'dlgcard');
+  card.setAttribute('role', 'dialog');
+  card.setAttribute('aria-modal', 'true');
+
+  // Newlines are how every one of these messages was written for `confirm`, and
+  // they carry the detail under the question. `white-space: pre-wrap` in the
+  // stylesheet keeps them rather than collapsing the lot into one paragraph.
+  card.appendChild(el('div', 'dlgmsg', message));
+  if (body) card.appendChild(body);
+
+  const foot = el('div', 'dlgfoot');
+  const cancel = el('button', 'dlgbtn', 'Cancel');
+  cancel.onclick = () => dlgClose(null);
+  const go = el('button', 'dlgbtn go' + (danger ? ' danger' : ''), ok || 'OK');
+  go.onclick = () => dlgClose(answer());
+  // Cancel first, so Tab reaches the safe one before the destructive one and the
+  // row still reads left to right in the order everything else puts them.
+  foot.appendChild(cancel);
+  foot.appendChild(go);
+  card.appendChild(foot);
+  host.appendChild(card);
+  host.hidden = false;
+
+  card.onkeydown = (ev) => {
+    // Enter commits, except in a textarea where it is a newline. None of these
+    // use one today; the guard is here so adding one does not surprise anybody.
+    if (ev.key === 'Enter' && !ev.shiftKey
+      && /** @type {HTMLElement} */ (ev.target).tagName !== 'TEXTAREA') {
+      ev.preventDefault();
+      dlgClose(answer());
+    }
+  };
+  (focus || go).focus();
+  dlgAsking = message;
+  dlgPending = new Promise((resolve) => { dlgSettle = resolve; });
+  return dlgPending;
+}
+
+/** `window.confirm`, drawn by the app. Resolves true or false, never throws. */
+export function confirmBox(message, { ok = 'Yes', danger = true } = {}) {
+  return dlgOpen(message, { ok, danger, answer: () => true })
+    .then((a) => a === true);
+}
+
+/** `window.prompt`, drawn by the app. Resolves the text, or null if cancelled.
+ *
+ *  Blank resolves as the empty string rather than null, because one caller means
+ *  something by it: naming a worktree blank is "let Claude name it". Callers that
+ *  need words check for them. */
+export function promptBox(message, { value = '', placeholder = '', ok = 'OK' } = {}) {
+  const box = el('div', 'dlgbody');
+  const input = /** @type {HTMLInputElement} */ (el('input', 'dlginput'));
+  input.type = 'text';
+  input.value = value;
+  input.placeholder = placeholder;
+  input.setAttribute('aria-label', message);
+  box.appendChild(input);
+  return dlgOpen(message, {
+    ok,
+    danger: false,
+    body: box,
+    focus: input,
+    answer: () => input.value,
+  }).then((a) => (a === null ? null : String(a)));
+}
+
 export async function call(path, body) {
   const res = await fetch(path, {
     method: 'POST',
@@ -529,7 +667,10 @@ export async function newSession(workspace) {
 export async function newWorktree(named) {
   let name = null;
   if (named) {
-    name = prompt('Worktree name (blank to let Claude name it)');
+    name = await promptBox('Worktree name', {
+      placeholder: 'blank to let Claude name it',
+      ok: 'Create',
+    });
     // Cancel means cancel; blank means auto.
     if (name === null) return;
     name = name.trim() || null;

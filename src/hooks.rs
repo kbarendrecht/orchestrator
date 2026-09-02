@@ -159,15 +159,43 @@ pub async fn session_start(
     let Some(id) = session_of(&headers, &payload) else {
         return ok();
     };
-    // A worktree the daemon did not name only reveals its path here, so this is
-    // where it gets adopted.
+    /* A worktree the daemon did not name only reveals its path here, so this is
+       where it gets adopted.
+
+       **Both ways of missing used to be silent, and the symptom is the same
+       either way**: the row keeps the `…creating` placeholder for the life of the
+       session, and with it no workspace record — so no changed-files pane, no
+       divergence strip, no reconcile, and no swap or move. Nothing else ever
+       adopts it, so one missed event was permanent. Said out loud now, with the
+       path that was reported and the prefix it was measured against, because the
+       second case below is a *configuration* mismatch that no retry can fix and
+       the log line is the only thing that can point at it. */
     let cwd = payload.resolved_cwd();
-    if let Some(path) = &cwd {
-        if let Some(name) = crate::spawn::worktree_name_of(path, &app.cfg.worktrees_dir()) {
-            let branch = crate::git::current_branch(path).ok();
-            app.register_worktree(&name, path.clone(), branch).await;
-            app.with_session(id, |s| s.workspace = name).await;
-        }
+    let pending = app.session_workspace(id).await.as_deref() == Some(crate::spawn::PENDING_WORKTREE);
+    match &cwd {
+        Some(path) => match crate::spawn::worktree_name_of(path, &app.cfg.worktrees_dir()) {
+            Some(name) => {
+                let branch = crate::git::current_branch(path).ok();
+                app.register_worktree(&name, path.clone(), branch).await;
+                app.with_session(id, |s| s.workspace = name).await;
+            }
+            // Not a warning unless it matters: every session in main reports a
+            // cwd outside the worktrees dir, and that is the ordinary case.
+            None if pending => tracing::warn!(
+                session = %crate::model::short_id(&id),
+                "reported cwd {} is not under {}, so this worktree cannot be adopted — \
+                 check `worktrees_subdir` against where this repo's own hook cuts them",
+                path.display(),
+                app.cfg.worktrees_dir().display(),
+            ),
+            None => {}
+        },
+        None if pending => tracing::warn!(
+            session = %crate::model::short_id(&id),
+            "SessionStart carried no cwd, so the worktree it cut is unknown; \
+             the pending-worktree sweep will try to find it"
+        ),
+        None => {}
     }
 
     {

@@ -1,7 +1,7 @@
 // The rail: what is running, what is waiting on you, and the PRs beside it.
 // Twenty-four names, three out; the rest is how a row decides what it says.
 
-import { $, byNewest, call, caret, dotClass, duration, el, isArchived, isConversation, isWaiting, mainWorkspace, MOD_LABEL, newSession, newWorktree, openMenu, pending, refreshButton, selected, sessionsOf, setSelected, sinceSnap, snap, stateClass, stateLabel, toast, setPendingSelect } from './core.js';
+import { $, byNewest, call, caret, confirmBox, dotClass, duration, el, isArchived, isConversation, isWaiting, mainWorkspace, MOD_LABEL, newSession, newWorktree, openMenu, pending, refreshButton, selected, sessionsOf, setSelected, sinceSnap, snap, stateClass, stateLabel, toast, setPendingSelect } from './core.js';
 import * as Review from './review.js';
 import * as Term from './term.js';
 
@@ -699,7 +699,7 @@ function mainHoldsWork(main) {
  *  the daemon's refusals are about what it can see, not about whether you meant
  *  it. */
 async function moveOutOfMain(s) {
-  if (!confirm(
+  if (!await confirmBox(
     'Move this session out of main?\n\n'
     + 'Its branch gets a worktree of its own and main goes back to its base branch \u2014 '
     + 'or, if main is already on base, the work gets a branch cut for it and main stays put. '
@@ -750,7 +750,7 @@ let swapInFlight = false;
 async function swapWithMain(wsId) {
   if (swapInFlight) return toast('a swap is already running — watch the rail', true);
   const holds = mainHoldsWork(mainWorkspace());
-  if (!confirm(holds
+  if (!await confirmBox(holds
     ? `Swap branches between main and ${wsId}?\n\n`
       + `main takes this worktree's branch, and this worktree takes main's. `
       + `Uncommitted changes travel with their branch. Each conversation follows `
@@ -884,11 +884,12 @@ function renameSession(s) {
  *  matters — the conversation is still there to resume — and this is not. The
  *  wording says what survives, so "delete" does not have to be read as deleting
  *  the conversation itself. */
-function deleteSession(s) {
+async function deleteSession(s) {
   const name = railName(s, { id: s.workspace });
   const ending = s.alive ? 'It is still running, so this ends it first. ' : '';
-  if (!confirm(`Delete "${name}"?\n\n${ending}The row and orchd's copy of the `
-    + "transcript go for good. Claude Code's own transcript is left where it is.")) return;
+  if (!await confirmBox(`Delete "${name}"?\n\n${ending}The row and orchd's copy of the `
+    + "transcript go for good. Claude Code's own transcript is left where it is.",
+  { ok: 'Delete' })) return;
   call(`/api/session/${s.id}/delete`)
     .then(() => toast('deleted'))
     .catch((e) => toast(e.message, true));

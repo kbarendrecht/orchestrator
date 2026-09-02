@@ -2,7 +2,7 @@
 // drives it. One module because the three call each other; splitting them would
 // only have turned that into circular imports.
 
-import { $, activeWorkspaceId, call, currentSession, currentWorkspaceId, el, get, MOD_LABEL, openMenu, pending, prForWorkspace, snap, toast, workspaceById } from './core.js';
+import { $, activeWorkspaceId, call, confirmBox, currentSession, currentWorkspaceId, el, get, MOD_LABEL, openMenu, pending, prForWorkspace, snap, toast, workspaceById } from './core.js';
 
 // Written back onto the button after a save, so it is spelled from the same
 // platform label the page resolved `data-mod` with — a hardcoded glyph here was
@@ -580,7 +580,7 @@ async function loadSummary() {
 async function loadFile(path) {
   const ws = diffState.ws || activeWorkspaceId();
   if (!ws) return;
-  if (editState.on && path !== editState.path && !closeEditor()) return;
+  if (editState.on && path !== editState.path && !await closeEditor()) return;
   diffState.path = path;
   const q = new URLSearchParams({
     workspace: ws, base: diffState.base, path, context: String(diffState.context),
@@ -629,8 +629,8 @@ async function openDiff(path) {
   }
 }
 
-function closeDiff() {
-  if (editState.on && !closeEditor()) return;
+async function closeDiff() {
+  if (editState.on && !await closeEditor()) return;
   diffState.open = false;
   diffState.ws = null;
   diffState.file = null;
@@ -726,9 +726,12 @@ async function checkUnderneath() {
   }
 }
 
-function closeEditor(silent) {
+async function closeEditor(silent) {
+  // Async now, and the callers await it: `confirm` blocked the thread, this does
+  // not. Everything below has to stay after the answer, or the editor tears
+  // itself down while the question about it is still on screen.
   if (editState.on && editState.dirty && !silent
-      && !confirm('Discard unsaved edits?')) return false;
+      && !await confirmBox('Discard unsaved edits?', { ok: 'Discard' })) return false;
   clearInterval(editState.watch);
   editState.watch = null;
   editState.on = false;

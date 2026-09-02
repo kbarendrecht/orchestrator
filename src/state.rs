@@ -1,4 +1,4 @@
-use anyhow::{bail, Result};
+use anyhow::{bail, Context as _, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -189,6 +189,20 @@ pub struct AppState {
 /// Well past what anyone reads down. The number exists so the *pane* stays useful
 /// on a big branch, not so the list stays complete.
 pub const CHANGED_CAP: usize = 500;
+
+/// What one pass of git said about a tree, carried off the blocking thread.
+///
+/// A struct rather than a seven-wide tuple: every field here is `Option`, several
+/// are numbers, and `(_, _, _, Some(x), _, _)` at the far end is how the wrong
+/// two get swapped without anything failing to compile.
+struct Measured {
+    divergence: Option<(u32, u32)>,
+    rebasing: bool,
+    branch: Option<String>,
+    unpushed: Option<u32>,
+    base: Option<String>,
+    changed: Option<(Vec<crate::diff::DiffFile>, u32)>,
+}
 
 #[derive(Default)]
 pub struct Inner {
@@ -418,6 +432,20 @@ impl AppState {
     ) -> Option<R> {
         let mut inner = self.inner.write().await;
         inner.sessions.get_mut(&id).map(f)
+    }
+
+    /// Which workspace a session believes it is in, if the daemon still has it.
+    ///
+    /// Read rather than changed, and under the *read* lock: a hook that only
+    /// wants to know whether this session is still on the pending placeholder
+    /// should not queue behind writers to find out.
+    pub async fn session_workspace(&self, id: SessionId) -> Option<String> {
+        self.inner
+            .read()
+            .await
+            .sessions
+            .get(&id)
+            .map(|s| s.workspace.clone())
     }
 
     pub fn new(cfg: Config, token: String, chrome: crate::window::Chrome) -> Arc<Self> {
@@ -1033,6 +1061,9 @@ impl AppState {
 
     /// Re-read changed files for a workspace from git.
     ///
+    /// The git half runs on a blocking thread — see the comment on it. Everything
+    /// after that is the write into state, which is what has to stay here.
+    ///
     /// Hooks are the primary signal (§4); this catches the Bash-driven changes
     /// no `Edit` hook reported — codegen, builds, git ops.
     pub async fn reconcile(&self, workspace: &str) -> Result<()> {
@@ -1047,43 +1078,86 @@ impl AppState {
         // Main's tree contains every worktree, so drop paths under the worktrees
         // dir; a worktree sees only its own. The prefix follows a relocated layout.
         let exclude = is_main.then(|| self.cfg.worktrees_subdir_str());
-        let set = git::status(&path, exclude.as_deref(), git::Untracked::Collapsed)?;
-        // Recomputed alongside the file list, so the two always describe the
-        // same moment.
-        let divergence = git::divergence(&path, &self.cfg.upstream_ref).ok();
-        let rebasing = git::rebase_in_progress(&path);
-        // Branches accumulate and are never removed (§2): a PR still belongs to
-        // the session that made it after you have moved on to another branch.
-        let branch = git::current_branch(&path).ok();
-        // Needs the branch by name — `origin/HEAD` is the base, not this branch's
-        // remote — so it is measured here rather than beside the divergence.
-        let unpushed = branch
-            .as_deref()
-            .map(|b| git::unpushed_count(&path, b, &self.cfg.upstream_ref));
+        let upstream = self.cfg.upstream_ref.clone();
 
-        // What this workspace changed since it branched: committed work and
-        // uncommitted both, which is the question the changed-files pane asks.
-        // `git status` cannot answer it — a session that commits would empty its
-        // own list — so it is a diff against the merge-base, plus the untracked
-        // files a diff never sees.
-        //
-        // Failure is empty rather than fatal: a worktree whose upstream ref has
-        // not been fetched yet still has a status worth showing.
-        let base = git::merge_base(&path, &self.cfg.upstream_ref).ok();
-        // Sorted before the truncation, so what survives is a stable prefix rather
-        // than whatever order git answered in — the pane's first 500 stay the same
-        // 500 across reconciles, and a file does not appear and vanish while you
-        // are looking at it.
-        let changed = base.as_deref().map(|b| {
-            let mut files = crate::diff::summary(&path, b)
-                .map(|s| s.files)
-                .unwrap_or_default();
-            files.extend(set.untracked.iter().map(crate::diff::DiffFile::untracked));
-            files.sort_by(|a, b| a.path.cmp(&b.path));
-            let total = files.len() as u32;
-            files.truncate(CHANGED_CAP);
-            (files, total)
-        });
+        /* **Seven git processes, and they belong on a blocking thread.** They ran
+           straight on the async runtime, which the rest of the codebase does not
+           do — `spawn.rs` and the pollers in `lib.rs` all wrap their git calls —
+           so this was an oversight rather than a decision. What it costs is not
+           the pty write path, which never comes through here; it is the API and
+           the snapshot push, so it read as the whole board freezing. The workspace
+           watcher calls this every 15 seconds, for every workspace.
+
+           It got worse, not better, when the boot sweep stopped being awaited:
+           the sweep used to finish before `axum::serve` was even spawned, so its
+           blocking was invisible. Now it runs *while* the server answers, so a
+           worker held for the length of a `diff::summary` against the merge-base
+           is a worker not answering requests.
+
+           One `spawn_blocking` for the lot rather than seven, because they
+           describe one moment: the file list and the divergence are meant to
+           agree, and interleaving them with other work is what would let them
+           disagree. */
+        let measure = {
+            let path = path.clone();
+            let exclude = exclude.clone();
+            tokio::task::spawn_blocking(move || -> Result<Measured> {
+                let set = git::status(&path, exclude.as_deref(), git::Untracked::Collapsed)?;
+                // Recomputed alongside the file list, so the two always describe the
+                // same moment.
+                let divergence = git::divergence(&path, &upstream).ok();
+                let rebasing = git::rebase_in_progress(&path);
+                // Branches accumulate and are never removed (§2): a PR still belongs to
+                // the session that made it after you have moved on to another branch.
+                let branch = git::current_branch(&path).ok();
+                // Needs the branch by name — `origin/HEAD` is the base, not this branch's
+                // remote — so it is measured here rather than beside the divergence.
+                let unpushed = branch
+                    .as_deref()
+                    .map(|b| git::unpushed_count(&path, b, &upstream));
+
+                // What this workspace changed since it branched: committed work and
+                // uncommitted both, which is the question the changed-files pane asks.
+                // `git status` cannot answer it — a session that commits would empty its
+                // own list — so it is a diff against the merge-base, plus the untracked
+                // files a diff never sees.
+                //
+                // Failure is empty rather than fatal: a worktree whose upstream ref has
+                // not been fetched yet still has a status worth showing.
+                let base = git::merge_base(&path, &upstream).ok();
+                // Sorted before the truncation, so what survives is a stable prefix rather
+                // than whatever order git answered in — the pane's first 500 stay the same
+                // 500 across reconciles, and a file does not appear and vanish while you
+                // are looking at it.
+                let changed = base.as_deref().map(|b| {
+                    let mut files = crate::diff::summary(&path, b)
+                        .map(|s| s.files)
+                        .unwrap_or_default();
+                    files.extend(set.untracked.iter().map(crate::diff::DiffFile::untracked));
+                    files.sort_by(|a, b| a.path.cmp(&b.path));
+                    let total = files.len() as u32;
+                    files.truncate(CHANGED_CAP);
+                    (files, total)
+                });
+                Ok(Measured {
+                    divergence,
+                    rebasing,
+                    branch,
+                    unpushed,
+                    base,
+                    changed,
+                })
+            })
+        };
+        // A panic in there would otherwise surface as a `JoinError` nobody reads.
+        let Measured {
+            divergence,
+            rebasing,
+            branch,
+            unpushed,
+            base,
+            changed,
+        } = measure.await.context("measuring the tree")??;
 
         let mut inner = self.inner.write().await;
         if let Some(w) = inner.workspaces.get_mut(workspace) {

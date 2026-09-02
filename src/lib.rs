@@ -422,7 +422,18 @@ pub async fn start(opts: StartOptions) -> Result<Server> {
 
     let router = router(app.clone());
     let serve = tokio::spawn(async move {
-        if let Err(e) = axum::serve(listener, router).await {
+        // **`TCP_NODELAY`, because a keystroke is one small frame.** axum defaults
+        // it to `None` (`serve.rs`: it only calls `set_nodelay` when told to), so
+        // every connection here was running with Nagle on: the kernel holds a
+        // small write back waiting for an ACK it will not get until the peer's
+        // delayed-ACK timer fires. That is the classic ~40ms per round trip, and
+        // the pty websocket is nothing *but* small frames in both directions —
+        // a character out, the redrawn line back.
+        //
+        // Loopback, so this looks like it should not matter, and on Linux it
+        // mostly does not. It was reported as typing lag on macOS, where the
+        // delayed-ACK behaviour is more eager. Free to set either way.
+        if let Err(e) = axum::serve(listener, router).tcp_nodelay(true).await {
             tracing::error!("server stopped: {e:#}");
         }
     });
@@ -1047,6 +1058,7 @@ fn start_workspace_watcher(app: Arc<AppState>) {
                     .map(|s| s.workspace.clone())
                     .collect()
             };
+            adopt_pending_worktrees(&app).await;
             if busy.is_empty() {
                 continue;
             }
@@ -1056,6 +1068,76 @@ fn start_workspace_watcher(app: Arc<AppState>) {
             app.notify().await;
         }
     });
+}
+
+/// Find the worktree a `…creating` session cut, when its `SessionStart` did not
+/// say.
+///
+/// **The design had no retry, and one missed hook was permanent.** A worktree the
+/// daemon delegates to `claude --worktree` reveals its path only through that
+/// hook, so a session whose event was lost keeps the placeholder workspace id for
+/// its whole life — and with it no workspace record at all: no changed-files
+/// pane, no divergence, no reconcile, no swap or move. The tree itself is fine
+/// and the agent works in it, which is what makes this so easy to live with and
+/// so confusing to look at.
+///
+/// **Only when the answer is unambiguous.** One pending session and one worktree
+/// on disk that no workspace claims is a pairing with nothing to get wrong.
+/// Anything else is left alone and said out loud, because guessing here attaches
+/// a conversation to somebody else's tree, which is the one mistake in this area
+/// that costs real work (`worktree::branch_drift` exists for its cousin).
+async fn adopt_pending_worktrees(app: &Arc<AppState>) {
+    let pending: Vec<model::SessionId> = {
+        let inner = app.inner.read().await;
+        inner
+            .sessions
+            .values()
+            .filter(|s| s.state.is_live() && s.workspace == spawn::PENDING_WORKTREE)
+            .map(|s| s.id)
+            .collect()
+    };
+    if pending.is_empty() {
+        return;
+    }
+
+    let dir = app.cfg.worktrees_dir();
+    let Ok(entries) = git::worktree_list(&app.cfg.main_checkout) else {
+        return;
+    };
+    let known: std::collections::HashSet<String> =
+        app.inner.read().await.workspaces.keys().cloned().collect();
+    let orphans: Vec<(String, PathBuf, Option<String>)> = entries
+        .into_iter()
+        .filter_map(|e| {
+            let path = PathBuf::from(&e.path);
+            let name = spawn::worktree_name_of(&path, &dir)?;
+            (!known.contains(&name)).then_some((name, path, e.branch))
+        })
+        .collect();
+
+    if pending.len() != 1 || orphans.len() != 1 {
+        tracing::warn!(
+            "{} session(s) still on the pending-worktree placeholder and {} unclaimed \
+             worktree(s) on disk — too ambiguous to pair, so they stay as they are",
+            pending.len(),
+            orphans.len()
+        );
+        return;
+    }
+    let (name, path, branch) = orphans.into_iter().next().expect("one");
+    let id = pending[0];
+    app.register_worktree(&name, path.clone(), branch).await;
+    app.with_session(id, |s| {
+        s.workspace = name.clone();
+        // Its recorded cwd was main, because that is where the pty was spawned.
+        s.cwd = path.clone();
+    })
+    .await;
+    tracing::info!(
+        session = %model::short_id(&id),
+        "adopted {name} after its SessionStart did not report a cwd",
+    );
+    app.notify().await;
 }
 
 /// Catch a branch switch fast, without paying reconcile's git on a short timer.

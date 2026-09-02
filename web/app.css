@@ -853,6 +853,46 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
 /* ---------- context menu ---------- */
 /* Right-click on a session row. Above the toast, because it is the thing you
    are pointing at. */
+/* ---------- confirm / prompt, drawn by the app ---------- */
+/* `window.confirm` and `window.prompt` are inert in WKWebView; core.js's Dialogs
+   section has the why. Above the context menu and the toast, because it is modal
+   and nothing behind it can be acted on. */
+.dlg{
+  position:fixed;inset:0;z-index:200;display:flex;align-items:center;justify-content:center;
+  background:rgba(0,0,0,.55);
+}
+.dlg[hidden]{display:none}
+.dlgcard{
+  min-width:320px;max-width:min(560px,calc(100vw - 48px));
+  background:var(--surface);border:1px solid var(--line);border-radius:2px;
+  box-shadow:0 14px 40px rgba(0,0,0,.6);
+  padding:16px;display:flex;flex-direction:column;gap:14px;
+}
+/* `pre-wrap`, because every message here was written for `window.confirm` and
+   carries its detail on following lines. Collapsing them would turn a two-part
+   warning into one run-on sentence. */
+.dlgmsg{
+  font-size:calc(12px * var(--fs));color:var(--text);line-height:1.55;
+  white-space:pre-wrap;
+}
+.dlginput{
+  width:100%;background:var(--raised);border:1px solid var(--line);border-radius:2px;
+  padding:7px 9px;font-family:var(--mono);font-size:calc(11.5px * var(--fs));color:var(--text);
+}
+.dlginput:focus{outline:none;border-color:var(--focus)}
+.dlgfoot{display:flex;align-items:center;justify-content:flex-end;gap:8px}
+.dlgbtn{
+  border:1px solid var(--line);border-radius:2px;padding:5px 12px;
+  font-family:var(--mono);font-size:calc(11px * var(--fs));color:var(--dim);
+}
+.dlgbtn:hover{color:var(--text);background:var(--raised)}
+.dlgbtn.go{color:var(--text);border-color:var(--dim)}
+.dlgbtn.go:hover{border-color:var(--text)}
+/* The destructive answer wears the colour the rest of the app uses for bad. */
+.dlgbtn.go.danger{color:var(--bad);border-color:var(--bad)}
+.dlgbtn.go.danger:hover{background:var(--raised);border-color:var(--bad)}
+.dlgbtn:focus-visible{outline:1px solid var(--focus);outline-offset:1px}
+
 .ctxmenu{
   position:fixed;z-index:100;min-width:132px;padding:4px;
   background:var(--raised);border:1px solid var(--line);border-radius:2px;
@@ -1099,6 +1139,9 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
 .rvrow .dot{background-color:#6B6B6B}
 /* Beats the line above on order, not specificity, so it has to come after it. */
 .rvrow .dot.blocked{background-color:var(--attn)}
+/* A blocker the source named: conflicts, failing checks. Broken, and not yours
+   to fix — the row's own dimming says the second half. */
+.rvrow .dot.bad{background-color:var(--bad)}
 /* `prio` / `prio stopper` from the source's labels. Last, so it wins over both. */
 .rvrow .dot.prio{background-color:var(--bad)}
 /* Fixed-width number column so titles start at the same offset as the PR list. */

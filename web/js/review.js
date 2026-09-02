@@ -1,7 +1,7 @@
 // The review overlay: read a PR's threads, decide each one, then one batch of
 // outward writes. The largest single feature in the SPA.
 
-import { $, call, compactAge, el, get, MOD_LABEL, newShell, pending, selected, setSelected, snap, toast, setPendingSelect } from './core.js';
+import { $, call, compactAge, confirmBox, el, get, MOD_LABEL, newShell, pending, promptBox, selected, setSelected, snap, toast, setPendingSelect } from './core.js';
 import * as Diff from './diff.js';
 import { langFor, hlTokens, paintRanges } from './diff.js';
 import { patchStats, hunkEl, fileListLabel } from './review-diff.js';
@@ -212,8 +212,9 @@ function rvHealth() {
     b.title = 'Rebase on develop and fix what CI says. It cannot run while a review is open.';
     // Confirm first: this is the one control in the flow that rewrites the published
     // branch, and it does not wait for the final screen the way everything else does.
-    b.onclick = () => {
-      if (!confirm('Start a fix run? It rebases on develop, force-pushes this branch, and closes the review.')) return;
+    b.onclick = async () => {
+      if (!await confirmBox('Start a fix run?\n\nIt rebases on develop, force-pushes this branch, and closes the review.',
+        { ok: 'Start' })) return;
       rvAct(() => call(`/api/pr/${reviewState.pr}/fix-pr`), 'started the fix run', true);
     };
     wrap.appendChild(b);
@@ -376,7 +377,8 @@ function rvGate(root) {
     const row = el('div');
     row.style.cssText = 'display:flex;gap:8px;margin-top:4px';
     row.appendChild(headBtn('commit…', 'go', async () => {
-      const message = prompt('Commit message for the work already in this worktree:');
+      const message = await promptBox('Commit message for the work already in this worktree',
+        { ok: 'Commit' });
       if (!message || !message.trim()) return;
       rvAct(() => call(`/api/pr/${reviewState.pr}/commit`, { message: message.trim() }), 'committed');
     }));
