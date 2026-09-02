@@ -371,6 +371,12 @@ pub async fn spawn_session(
     kind: Kind,
     resume: Option<Source>,
 ) -> Result<SessionId> {
+    // The centre pane is empty until this returns, so this is the number people
+    // mean by "the terminal takes ages to appear". Three of the phases below are
+    // somebody else's program: the env source, the transcript on disk, and
+    // `claude` itself.
+    let mut phases = crate::timing::Phases::start();
+
     let path = app
         .workspace_path(workspace)
         .await
@@ -417,6 +423,7 @@ pub async fn spawn_session(
     // ones an agent asks for: the button in the rail can be the last straw just
     // as easily as a CLI call.
     crate::headroom::check().map_err(|why| anyhow::anyhow!("not starting a session: {why}"))?;
+    phases.mark("claim");
 
     // Built before the spawn so the pty can carry the session's own ask token:
     // it is minted with the session, and the agent reads it from its environment.
@@ -516,6 +523,10 @@ pub async fn spawn_session(
         }
     }
 
+    // The whole transcript is read to find the last `worktree-state` record, and
+    // a transcript is megabytes of turns.
+    phases.mark("transcript");
+
     let mut session = Session::new(id, workspace.to_string(), path.clone(), kind);
     session.interrupted = interrupted;
     session.had_a_turn = had_a_turn;
@@ -526,8 +537,27 @@ pub async fn spawn_session(
         session.forked_from = Some(prev);
     }
 
-    let (env, unset) = crate::config::session_env(&app.cfg, &path, id, Some(&session.ask_token));
+    let (mut env, unset) =
+        crate::config::session_env(&app.cfg, &path, id, Some(&session.ask_token));
+    // A resumed review or triage run is the same run with the same proposals
+    // still to post, and the credential for posting them lives in the
+    // environment — which a resume rebuilds from nothing. So one came back able
+    // to ask questions, because the ask token is re-minted just above, and unable
+    // to post: the agent reported `ORCH_POST_TOKEN is absent from this
+    // environment` and then asked the human what to do about it, which is a
+    // question nobody can answer. `mint_post_token` records it too, so the route
+    // accepts the value the agent now holds.
+    if let Kind::Automation { pr, command } = &session.kind {
+        if crate::triage::posts_proposals(command) {
+            let token = crate::triage::mint_post_token(app, *pr).await;
+            env.push(("ORCH_POST_TOKEN".to_string(), token));
+        }
+    }
+    // Read per spawn on purpose (`env_source`), and it is a bounded run of mise
+    // or direnv in a fresh worktree, so it is a cold one.
+    phases.mark("env");
     let spawned = insert_and_spawn(app, id, session, &cmd, &path, &env, &unset).await?;
+    phases.mark("pty");
     // The claim belongs to the record, so it is settled once the record is in.
     // Until this insert the map still described whatever stood here under this id,
     // and a relocation reuses the id — `reclaim_main` has what that let the
@@ -541,6 +571,7 @@ pub async fn spawn_session(
     watch_session_exit(app.clone(), id, spawned.handle);
     crate::agent_update::refresh_detached(&app);
     app.notify().await;
+    phases.log(&format!("session {} start in {workspace}", &id.to_string()[..8]));
     Ok(id)
 }
 

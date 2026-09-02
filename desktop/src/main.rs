@@ -442,6 +442,73 @@ fn icns() -> Vec<u8> {
     out
 }
 
+/// Where a log line can be read back from, when nobody is looking at a terminal.
+///
+/// **An app launched from Finder or a desktop launcher has no stdout**, so every
+/// line the daemon writes goes nowhere. That is not a small gap: it is why a
+/// colleague reporting a slow start could not send anything to look at, and why
+/// the timing this module now records would have been invisible to the only
+/// people who can see the problem. So the same lines also go to a file next to
+/// the config, which is the one place both halves of the app already agree on.
+///
+/// One generation is kept. A restart is the interesting case to compare against
+/// and it would otherwise overwrite itself, while an unbounded log on a machine
+/// nobody is watching is the other way to lose the information.
+struct LogFile(std::path::PathBuf);
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogFile {
+    /// Boxed because a file that cannot be opened has to degrade to writing
+    /// nowhere. Losing the file log is not worth losing the app over, and it is
+    /// the stdout layer that a developer is reading anyway.
+    type Writer = Box<dyn std::io::Write>;
+
+    /// Opened per line rather than held. It costs a syscall on a log this
+    /// quiet, and it buys a file that is complete after a crash, which is the
+    /// one case the log is being read for.
+    fn make_writer(&'a self) -> Self::Writer {
+        match std::fs::OpenOptions::new().create(true).append(true).open(&self.0) {
+            Ok(f) => Box::new(f),
+            Err(_) => Box::new(std::io::sink()),
+        }
+    }
+}
+
+fn init_logging() {
+    use tracing_subscriber::layer::{Layer, SubscriberExt};
+    use tracing_subscriber::util::SubscriberInitExt;
+
+    let filter = || {
+        tracing_subscriber::EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| "orchd=info,orchestrator_desktop=info".into())
+    };
+    let stdout = tracing_subscriber::fmt::layer().with_filter(filter());
+
+    // `ORCHD_CONFIG_DIR` moves this with everything else durable, which is what
+    // keeps a fixture daemon from writing over the real log.
+    let dir = orchd::config::Config::config_dir().ok();
+    let path = dir.as_ref().map(|dir| dir.join("orchd.log"));
+    let file = path.clone().map(|path| {
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+            let _ = std::fs::rename(&path, dir.join("orchd.log.1"));
+        }
+        tracing_subscriber::fmt::layer()
+            // No colour: this one is read in an editor, not a terminal.
+            .with_ansi(false)
+            .with_writer(LogFile(path))
+            .with_filter(filter())
+    });
+
+    tracing_subscriber::registry().with(stdout).with(file).init();
+
+    // Said once, first, because the whole point of the file is that somebody has
+    // to be able to find it without being told by hand.
+    match path {
+        Some(p) => tracing::info!("logging to {}", p.display()),
+        None => tracing::warn!("no config dir — this run leaves no log file behind"),
+    }
+}
+
 fn main() {
     // Before anything opens a window: a one-shot for the person who wants the
     // entry written now, or written again somewhere the refresh below declines to
@@ -460,27 +527,35 @@ fn main() {
 
     wsl_render_workaround();
 
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "orchd=info,orchestrator_desktop=info".into()),
-        )
-        .init();
+    init_logging();
+
+    // Held from the first thing `main` does that can be slow, because the phases
+    // before the daemon are the ones a person launching from Finder pays for and
+    // a person typing `cargo run` does not. `adopt_login_path` is the clearest
+    // case: it returns immediately at a terminal and runs somebody's whole zsh
+    // config from a launcher.
+    let mut phases = orchd::timing::Phases::start();
 
     // Before the daemon, because everything it looks up — `gh` for the credential,
     // `node` for the review queue, `claude` for a session — is a PATH lookup made
     // from this process's environment.
     adopt_login_path();
+    phases.mark("login-path");
 
     // After the logger so a write is visible, and before the window because the
     // point of it is the launcher: an install that carries no entry writes one
     // here, and a mise upgrade that moved the binary rewrites it.
     refresh_launcher_entry();
+    phases.mark("launcher");
 
     // After the logger, so the wait can say what it is waiting for, and well before
     // `orchd::start`: a replacement must not touch the lock, the port or the hook
     // settings while the process it is replacing still holds them.
     await_handoff();
+    // Nearly always zero. Non-zero only on a self-restart, where it is the
+    // process being replaced taking its sessions down.
+    phases.mark("handoff");
+    phases.log("shell start");
 
     // Tauri owns the main thread, so the async half gets its own runtime. It is
     // never dropped — `App::run` does not return — which is what keeps the
@@ -575,6 +650,9 @@ fn pick_checkout(app_handle: AppHandle, rt: tokio::runtime::Handle) {
 
 /// Start the daemon and show it.
 fn open(app_handle: &AppHandle, rt: &tokio::runtime::Handle, main: Option<std::path::PathBuf>) -> Result<()> {
+    // The daemon logs its own phases; this brackets them with the window, which
+    // is the part a person is actually waiting for and which nothing else times.
+    let mut phases = orchd::timing::Phases::start();
     let server = rt
         .block_on(orchd::start(orchd::StartOptions {
             main_checkout: main,
@@ -586,6 +664,7 @@ fn open(app_handle: &AppHandle, rt: &tokio::runtime::Handle, main: Option<std::p
         }))
         .context("starting the daemon")?;
 
+    phases.mark("daemon");
     tracing::info!("serving {} on port {}", server.app.cfg.main_checkout.display(), server.port);
 
     let size = orchd::store::load_window()
@@ -616,6 +695,11 @@ fn open(app_handle: &AppHandle, rt: &tokio::runtime::Handle, main: Option<std::p
     }
 
     builder.build().context("opening the window")?;
+    // The window exists here; it is not painted yet. Everything after this is
+    // the webview fetching the page and the SPA waiting for its first snapshot,
+    // which is the client's own half of the wait and is timed in the page.
+    phases.mark("window");
+    phases.log("window open");
 
     // WebKitGTK (WSLg especially) gives the webview no live input region until the
     // native window is resized once: on launch, clicks and the frameless resize

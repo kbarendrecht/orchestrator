@@ -421,14 +421,29 @@ button.ctx-btn:hover{color:var(--text)}
   box-shadow:0 10px 30px rgba(0,0,0,.5);max-height:calc(100% - 16px);overflow:auto;
 }
 .oq[hidden]{display:none}
+/* Folded: the header alone, a one-line strip that keeps saying the session is
+   blocked while giving the terminal back. Answering nothing, so the border and
+   the amber stay — it is the same open question, taking less room. */
+.oq.min{padding:6px 10px;gap:0;box-shadow:none;overflow:visible;cursor:pointer}
+.oq.min .oqh{cursor:pointer}
 .oqh{
   display:flex;align-items:center;gap:8px;
   font-family:var(--label);font-size:calc(9px * var(--fs));font-weight:700;
   letter-spacing:.16em;text-transform:uppercase;color:var(--attn);
 }
 .oqh .dia{font-size:calc(9px * var(--fs))}
-.oqh .oqt{margin-left:auto;font-family:var(--mono);letter-spacing:0;text-transform:none;
+/* The label pushes, rather than each trailing item pulling. Two `margin-left:auto`
+   siblings split the free space between them, which drifts the thread id into the
+   middle of the strip; one push keeps whatever follows grouped at the right edge
+   whether or not the thread id is there. */
+.oqh>span:nth-child(2){margin-right:auto}
+.oqh .oqt{font-family:var(--mono);letter-spacing:0;text-transform:none;
   font-weight:400;font-size:calc(9px * var(--fs));color:var(--faint-solid)}
+.oqfold{
+  color:var(--attn);font-family:var(--mono);letter-spacing:0;
+  font-size:calc(12px * var(--fs));line-height:1;padding:0 2px;
+}
+.oqfold:hover{color:var(--text)}
 .oqq{font-size:calc(13px * var(--fs));color:var(--text);line-height:1.5}
 .oqd{
   font-family:var(--code);font-size:calc(11.5px * var(--fs));line-height:1.55;

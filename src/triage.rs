@@ -183,12 +183,7 @@ pub async fn spawn(app: &Arc<AppState>, pr: u64, head_ref: &str, login: &str) ->
     // The run POSTs its proposals back, so it needs a credential — but only for
     // that one route on this one PR. It used to be handed `app.token`, the whole
     // API, and this is the run whose input is other people's review comments.
-    let post_token = crate::state::random_token();
-    app.inner
-        .write()
-        .await
-        .proposal_tokens
-        .insert(pr, post_token.clone());
+    let post_token = mint_post_token(app, pr).await;
 
     let (env, unset) = run_env(&app.cfg, &path, id, &post_token, None);
 
@@ -199,7 +194,7 @@ pub async fn spawn(app: &Arc<AppState>, pr: u64, head_ref: &str, login: &str) ->
         path,
         Kind::Automation {
             pr,
-            command: "triage".to_string(),
+            command: TRIAGE_COMMAND.to_string(),
         },
     );
     session.pty = Some(spawned.handle.clone());
@@ -234,6 +229,47 @@ pub async fn spawn(app: &Arc<AppState>, pr: u64, head_ref: &str, login: &str) ->
 /// the exit watcher all have to agree on this string, and three literals is how
 /// they stop agreeing without anything failing.
 pub const COMMAND: &str = "review";
+
+/// The same, for the headless triage pass.
+///
+/// Named late, because the literal it replaces was exactly the hazard the note
+/// above describes: [`posts_proposals`] has to agree with what [`spawn`] records,
+/// and a spelling that lives in one place cannot drift.
+pub const TRIAGE_COMMAND: &str = "triage";
+
+/// Does this automation run post proposals, and so need the credential for it?
+///
+/// Asked by the *resume* path, which is the only caller that cannot see how the
+/// run was started. Both posting runs spawn themselves here, so this is where
+/// the answer belongs.
+pub fn posts_proposals(command: &str) -> bool {
+    command == COMMAND || command == TRIAGE_COMMAND
+}
+
+/// Mint the proposals credential for `pr`, and record it as the one that route
+/// will accept.
+///
+/// **Called on every spawn of a posting run, resumes included**, which is the
+/// whole reason it is a function. A resume rebuilds the environment from scratch
+/// (`spawn::spawn_session`), so a review session that came back from a restart or
+/// from the rail's resume button had a fresh ask token and *no* post token: it
+/// could still ask you questions and could no longer post its proposals, which
+/// reached the agent as `ORCH_POST_TOKEN is absent from this environment` and
+/// reached the user as a review that had read everything and could not hand it
+/// over.
+///
+/// Re-minted rather than persisted, exactly like [`crate::model::Session::ask_token`]:
+/// the value is only ever compared against this record, so a new pair costs
+/// nothing, and the record is dropped with the process that minted it.
+pub async fn mint_post_token(app: &Arc<AppState>, pr: u64) -> String {
+    let token = crate::state::random_token();
+    app.inner
+        .write()
+        .await
+        .proposal_tokens
+        .insert(pr, token.clone());
+    token
+}
 
 /// Start the overlay review session pinned to the PR's head branch.
 ///
@@ -308,12 +344,7 @@ pub async fn spawn_review(
     // session, proposals against this PR. Neither opens anything else, which is
     // what keeps "the daemon owns outward writes" an API rule rather than a
     // sentence in a prompt this run's own input could argue with.
-    let post_token = crate::state::random_token();
-    app.inner
-        .write()
-        .await
-        .proposal_tokens
-        .insert(pr, post_token.clone());
+    let post_token = mint_post_token(app, pr).await;
 
     let (env, unset) = run_env(&app.cfg, &path, id, &post_token, Some(&ask_token));
 
@@ -440,6 +471,24 @@ mod tests {
         let (solo, _) = run_env(&cfg, &dir, id, "post-tok", None);
         assert!(!solo.iter().any(|(n, _)| n == "ORCH_ASK_TOKEN"));
         assert!(solo.iter().any(|(n, _)| n == "ORCH_POST_TOKEN"));
+    }
+
+    /// Which runs the resume path has to re-credential.
+    ///
+    /// `spawn::spawn_session` rebuilds a resumed session's environment and asks
+    /// this. It answered wrong by not existing: a resumed review run kept its
+    /// ask channel and lost its post token, so it reported the variable missing
+    /// and then asked the human a question the overlay had no card for. Both
+    /// spellings are recorded by [`spawn`] and [`spawn_review`], so a rename that
+    /// misses one turns the bug straight back on.
+    #[test]
+    fn both_posting_runs_are_recognised_and_no_others() {
+        assert!(posts_proposals(COMMAND));
+        assert!(posts_proposals(TRIAGE_COMMAND));
+        // A fix run posts nothing itself, and handing it the credential would
+        // widen what a run reading third-party comments can reach.
+        assert!(!posts_proposals(crate::fix_pr::COMMAND));
+        assert!(!posts_proposals("resolve"));
     }
 
     #[test]

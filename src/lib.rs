@@ -35,6 +35,7 @@ pub mod state;
 pub mod store;
 pub mod story;
 pub mod findings;
+pub mod timing;
 pub mod tracker;
 pub mod triage;
 pub mod window;
@@ -204,12 +205,19 @@ impl Server {
 /// has a port and a token to point it at. Everything slower than that — the
 /// upstream fetch, auto-resume, the pollers — runs on its own tasks.
 pub async fn start(opts: StartOptions) -> Result<Server> {
+    // Everything down to the `serve` spawn holds the window shut, and all of it
+    // is child processes and file reads rather than work this machine can be
+    // fast at. Marked per phase because "the app takes twelve seconds to open"
+    // is not a report anybody can act on, and it was the only report there was.
+    let mut phases = crate::timing::Phases::start();
+
     // First, and before anything is written: a second daemon would spawn into
     // the same worktrees and rewrite the hook settings with its own port.
     let lock = instance::acquire()?;
 
     let mut cfg = Config::load_or_init(opts.main_checkout)?;
     check_config(&cfg)?;
+    phases.mark("config");
 
     // Bind before anything else reads the port. The hook settings bake it into
     // URLs that `claude` subprocesses will call back on, and the request guard
@@ -242,6 +250,10 @@ pub async fn start(opts: StartOptions) -> Result<Server> {
         )?
     };
     tracing::info!("hook settings at {}", settings.display());
+    // `machine::check`, the base-branch read and the settings write together.
+    // They share a phase because they share a cause: each is a small run of
+    // child processes, and the fix for any of them is the same fix.
+    phases.mark("preflight");
 
     // Put the default queue on disk if it is not there. Every start, not just the
     // first: deleting the file is how you ask for the shipped version back, and a
@@ -263,6 +275,9 @@ pub async fn start(opts: StartOptions) -> Result<Server> {
     if let Err(e) = git::fetch_upstream(&app.cfg.main_checkout, &app.cfg.upstream_ref) {
         tracing::warn!("upstream fetch failed, using last-known ref: {e:#}");
     }
+    // The one phase here that is a network round trip, so it is the one whose
+    // cost depends on where you are sitting rather than on the machine.
+    phases.mark("fetch");
 
     // Session records outlive the daemon; the processes they name do not.
     let records = store::load();
@@ -310,8 +325,12 @@ pub async fn start(opts: StartOptions) -> Result<Server> {
             tracing::error!("could not write the pruned session store: {e:#}");
         }
     }
+    // A transcript read per record, plus a `find_transcript` scan for the ones
+    // whose path is not pinned yet. Grows with how many conversations you keep.
+    phases.mark("records");
     adopt_existing_worktrees(&app).await?;
     app.restore_sessions(records.clone()).await;
+    phases.mark("adopt");
     {
         let mut inner = app.inner.write().await;
         inner.automation = store::load_automation();
@@ -361,7 +380,13 @@ pub async fn start(opts: StartOptions) -> Result<Server> {
             }
         }
     }
+    // The tracker's boot line asks the env source for the main checkout, which
+    // is a bounded child process of somebody else's tool.
+    phases.mark("stores");
     reconcile_all(&app).await;
+    // The phase that scales with how many worktrees you keep: seven git runs per
+    // workspace, one workspace after another, none of them off the critical path.
+    phases.mark("reconcile");
     autostart_processes(&app).await;
     if app.cfg.auto_resume {
         auto_resume(app.clone(), records);
@@ -388,6 +413,8 @@ pub async fn start(opts: StartOptions) -> Result<Server> {
             tracing::error!("server stopped: {e:#}");
         }
     });
+    phases.mark("serve");
+    phases.log("daemon start");
 
     Ok(Server {
         port,
@@ -510,6 +537,9 @@ fn router(app: Arc<AppState>) -> Router {
         .route("/api/agent/upgrade", post(api::upgrade_agent))
         .route("/api/update/upgrade/dismiss", post(api::dismiss_app_upgrade))
         .route("/api/update/upgrade", post(api::upgrade_app))
+        // The page's own boot timing, so a slow start reads as one story rather
+        // than a daemon log with a hole where the webview should be.
+        .route("/api/client/timing", post(api::client_timing))
         .route("/api/open", post(api::open_url))
         .route("/api/open/file", post(api::open_file))
         .route("/api/pr/:number/review", get(api::pr_review))

@@ -438,6 +438,65 @@ mean *this* repo; if you do, name it.
   default and a plain letter is taken only where the idiom earns it. The legend
   (`Ctrl+Shift+?`) is hand-written HTML and is the one thing here that can silently
   drift from the code.
+- **A resume rebuilds a session's environment, so anything the daemon put there
+  has to be re-handed.** The ask token always was, because `Session::new` mints a
+  fresh one on every spawn and the route compares it against the record. The
+  *post* token was not: only `triage.rs` set `ORCH_POST_TOKEN`, and a resume goes
+  through `spawn::spawn_session`, which knows nothing about it. So a resumed
+  review run came back able to ask you questions and unable to post its
+  proposals — reported by the agent as `ORCH_POST_TOKEN is absent from this
+  environment`, after it had read every thread. Two ways in, neither exotic: the
+  app restarting (`auto_resume` resumes automation runs on purpose) and the rail's
+  own resume button (`api::revive` carries the recorded `Kind`). The rule now lives
+  in `triage::mint_post_token` / `posts_proposals`, called by all three spawns.
+  `proposal_tokens` says it is deliberately not persisted, and that is still right
+  — the token is only ever compared against the record, so re-minting is the fix
+  and persisting would be the wrong one.
+- **An ask the review overlay does not own must still be answerable in the box.**
+  `renderInteraction` dropped *every* free-text option for a review session, on
+  the assumption that the only one is the overlay's decision payload. The prompt's
+  ask template gives an ask exactly one free option, so a review session asking
+  anything of its own — a problem it hit, in its own words — rendered a box with
+  no answer in it and a "back to the review" button pointing at cards that had
+  never heard of the question. Answerable from neither side, and the session sat
+  on `your_turn` for good, because nothing ever clears `Session::interaction`; only
+  an answer hides it. It is dropped by *value* now (`decisions`), and the overlay
+  only claims the ask when that value is present.
+  The escape hatch beside it is a **fold**, not a dismiss: the header stays as a
+  one-line strip (`.oq.min`, the `×`, or `Esc`). Hiding it outright would be this
+  box disagreeing with the rail and the waitbar, which read `wants_attention` off
+  the daemon and are right — the agent really is still blocked.
+- **A start is a pile of child processes, and that is why it is slow somewhere
+  else.** Almost nothing in `orchd::start` is CPU work, so "better hardware, worse
+  start" is not a contradiction: the cost is per exec, and a Mac pays dyld on every
+  one plus whatever endpoint-security software a managed laptop carries. Measured
+  here, debug, 4 worktrees: **1441 ms and 35 child processes**, of which `git fetch`
+  is 1343 ms and `reconcile` 83 ms for all four. So the other 34 execs cost ~1.5 ms
+  each on Linux, and at a Mac's per-exec price the same boot is seconds.
+  `src/timing.rs` is what says so — a phase line per start (`daemon start`,
+  `session … start`, `shell start`, `window open`), each carrying its own exec
+  count, plus `slow git` for a single call over 300 ms. Two of them are structural
+  and worth knowing before optimising anything: the **upstream fetch is a network
+  round trip on the critical path** of the window opening, and **`reconcile_all`
+  is seven git runs per workspace, sequentially, in an `async fn` with no
+  `spawn_blocking`**. Also `configure_repo` sets fsmonitor on main *only*, so every
+  worktree's `git status` is a full scan.
+- **A launcher-started app has no stdout, so it used to leave no log at all.** That
+  is why a colleague's slow start could not be looked at: `tracing` went to a
+  terminal nobody had. `init_logging` in `desktop/src/main.rs` now writes the same
+  lines to `<config_dir>/orchd.log`, one generation kept as `orchd.log.1`, and says
+  the path in its first line. It follows `ORCHD_CONFIG_DIR`, so a fixture daemon
+  does not write over the real one. Unrelated to `daemon.log`, which is
+  `findings::write_log` and only exists while dogfooding.
+- **The page's own boot timing is not visible from Rust.** The daemon can time up
+  to serving the page and sending the first snapshot; the vendored script parse, the
+  first render, and the centre pane's terminal attaching and painting only exist in
+  the webview. So `core.js` marks them and POSTs once to `/api/client/timing`, which
+  logs a `page start` line beside the daemon's. Marks are first-wins, because
+  `attach` and `paint` repeat on every session switch and a later one is not boot.
+  While reading those numbers: `index.html` loads `prism.min.js` (574 KB) and
+  `addon-webgl.js` (247 KB) as blocking classic scripts, and the webgl addon is
+  dead weight in the desktop window, where `CHROME !== 'none'` never loads it.
 - **Measure a release build, or do not quote the number.** "orchd uses 76 MB" was a
   `cargo run` debug build — 113 MB of binary against release's 11 MB, nearly all
   paged-in debug text. Release, idle, polling: 7.6 MB RSS and **1.1 MB** of heap.

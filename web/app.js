@@ -15,6 +15,7 @@ import {
   drawerTouched, setDrawerTouched, drawerCollapsed, setDrawerCollapsed,
   pendingProcFocus, setPendingProcFocus, pendingSelect, setPendingSelect,
   prOf, onDrawerChange, appMod, IS_MAC, MOD_LABEL, closeLegend, typingElsewhere,
+  mark, reportBoot,
 } from './js/core.js';
 
 // The daemon owns all state. This SPA is stateless and disposable: closing the
@@ -97,6 +98,43 @@ function render() {
   renderLegalNotice();
 }
 
+/** The one option value the review overlay owns.
+ *
+ *  An ask carrying it is a checkpoint in the review flow, and the cards answer
+ *  it. An ask that does not is the agent asking something of its own, and every
+ *  rule below turns on that difference. */
+const DECISIONS = 'decisions';
+
+/** The ask the user has folded away, by its id.
+ *
+ *  Per ask rather than a plain flag, so the next question opens by itself: a box
+ *  you shut once must not swallow the one after it. Folded, never dismissed —
+ *  the agent is still stopped, so a control that made the question go away would
+ *  be this box disagreeing with the rail and the waitbar beside it. */
+let askFolded = null;
+
+/** Fold the open question away, or open it again. */
+function foldAsk(id) {
+  askFolded = askFolded === id ? null : id;
+  renderInteraction();
+}
+
+/** Fold whatever the box is showing, for the `Esc` chain. */
+function foldOpenAsk() {
+  const s = currentSession();
+  const q = s && s.interaction && !s.interaction.answer ? s.interaction : null;
+  if (q) foldAsk(q.id);
+}
+
+/** Is the question showing over the terminal right now?
+ *
+ *  Read off the DOM rather than re-derived: every rule about whether it renders
+ *  is in `renderInteraction`, and a second copy of them is a second answer. */
+function askShowing() {
+  const host = $('oq');
+  return !host.hidden && !host.classList.contains('min');
+}
+
 /** The question the selected session is blocked on.
  *
  *  Rendered from the snapshot rather than held locally, so it survives a reload
@@ -105,7 +143,8 @@ function render() {
  *
  *  Over the terminal on purpose. The agent could print the question into its own
  *  pane, but then answering means typing into a wall of scrollback, and a
- *  question that scrolls away is one nobody notices. */
+ *  question that scrolls away is one nobody notices. Which is also why folding it
+ *  is the only way to get it out of the way: the question stays put. */
 function renderInteraction() {
   const host = $('oq');
   const s = currentSession();
@@ -115,18 +154,41 @@ function renderInteraction() {
   // The PR a review session is answering, or null for every other session. Its
   // checkpoints are the overlay's cards, so this box behaves differently below.
   const rvPr = s.kind.kind === 'automation' && s.kind.command === 'review' ? s.kind.pr : null;
-  // The overlay owns the ask while it is driving that session: the decision and
-  // post-go checkpoints are the cards, not a question box floating over the pty.
-  if (rvPr !== null && Review.state.open && Review.state.session === s.id) {
+  /* **Only a checkpoint belongs to the overlay.** This used to be true of every
+     ask a review session made, and that is what stranded one: the session hit a
+     problem, asked about it in its own words, and this box refused to render the
+     answer while the cards had no idea the question existed. It could be answered
+     from neither place, and the session sat on "needs your call" for good.
+     Anything the overlay does not own is answered right here, like any other
+     session's question. */
+  const mine = q.options.some((o) => o.value === DECISIONS);
+  if (rvPr !== null && mine && Review.state.open && Review.state.session === s.id) {
     host.hidden = true; host.replaceChildren(); return;
   }
+  const folded = askFolded === q.id;
 
   host.replaceChildren();
+  host.className = folded ? 'oq min' : 'oq';
   const head = el('div', 'oqh');
   head.appendChild(el('span', 'dia', '\u25C6'));
   head.appendChild(el('span', null, 'needs your call'));
   if (q.thread_id) head.appendChild(el('span', 'oqt', q.thread_id));
+  /* The way out of a box that covers the terminal. It answers nothing — the
+     question stays open and the rail goes on saying so — it only gets the detail
+     off the pane you were trying to read. `Esc` does the same. */
+  const fold = el('button', 'oqfold', folded ? '\u25BE' : '\u00D7');
+  fold.title = folded ? 'Show the question · Esc' : 'Fold it away, still unanswered · Esc';
+  fold.setAttribute('aria-expanded', folded ? 'false' : 'true');
+  fold.setAttribute('aria-label', folded ? 'Show the question' : 'Fold the question away');
+  fold.onclick = (ev) => { ev.stopPropagation(); foldAsk(q.id); };
+  head.appendChild(fold);
   host.appendChild(head);
+  if (folded) {
+    // The header is the whole box now, so clicking it is the obvious way back.
+    head.onclick = () => foldAsk(q.id);
+    host.hidden = false;
+    return;
+  }
 
   host.appendChild(el('div', 'oqq', q.question));
   // Whatever the agent thought you needed to see to decide: a diff, a file, the
@@ -135,7 +197,9 @@ function renderInteraction() {
 
   const opts = el('div', 'oqopts');
   // The way back into the cards, first because it is the answer to the question.
-  if (rvPr !== null) {
+  // Only for a checkpoint: on any other ask this button pointed at a screen that
+  // could not answer it.
+  if (rvPr !== null && mine) {
     const back = el('button', 'oqopt');
     back.appendChild(el('div', 'ol', 'back to the review'));
     back.appendChild(el('div', 'od', 'the cards are where this is answered'));
@@ -143,12 +207,13 @@ function renderInteraction() {
     opts.appendChild(back);
   }
   for (const o of q.options) {
-    // A review session's free-text option carries the overlay's own payload — the
-    // decision set, the replies as edited — so answering it here would send the
-    // agent prose where it parses JSON. A plain option beside it (`hold`) still
-    // means what it says, and is the one thing worth being able to say without
-    // waiting for the overlay to load.
-    if (rvPr !== null && o.free) continue;
+    /* The overlay's own payload — the decision set, the replies as edited —
+       carried in a free-text option. Answering it here would send the agent prose
+       where it parses JSON, so it is dropped by *value*. It used to be dropped for
+       being free-text at all, which took every ad-hoc question's only answer with
+       it: the prompt's own template gives an ask one free option, so a session
+       asking anything else offered nothing to press. */
+    if (rvPr !== null && o.value === DECISIONS) continue;
     const b = el('button', 'oqopt' + (o.free ? ' esc' : ''));
     b.appendChild(el('div', 'ol', o.label));
     if (o.sub) b.appendChild(el('div', 'od', o.sub));
@@ -1012,6 +1077,18 @@ window.addEventListener('keydown', (e) => {
       return;
     }
   }
+  /* Below the overlays and above the terminal, which is where the box itself
+     sits. It folds rather than closes: `Esc` dismisses the topmost thing, and the
+     topmost thing here is a panel over the pty, not the question in it. */
+  if (e.key === 'Escape' && askShowing() && !Review.state.open && !Diff.state.open) {
+    e.preventDefault();
+    // The same rule the review overlay follows: blur first, because folding out
+    // of a half-written free-text answer would discard it.
+    const writing = /** @type {HTMLElement} */ (e.target).closest?.('.oq textarea');
+    if (writing) /** @type {HTMLElement} */ (e.target).blur();
+    else foldOpenAsk();
+    return;
+  }
   if (Diff.state.open) {
     if (e.key === 'Escape') { e.preventDefault(); Diff.close(); return; }
     // j/k steps through the changeset, matching the review overlay's motion so
@@ -1210,6 +1287,10 @@ function connect() {
     // The first snapshot has landed, so drop the "connecting" hold and let the
     // real board — empty or not — show. Idempotent after that.
     document.body.classList.add('ready');
+    // The board is now drawable, which is the moment the window stops looking
+    // broken. Everything after it is the centre pane filling in.
+    mark('snapshot');
+    reportBoot();
     // A session whose pty is gone keeps its scrollback until it is dismissed,
     // so terminals are only torn down when the session disappears entirely.
     const liveProcs = new Set(

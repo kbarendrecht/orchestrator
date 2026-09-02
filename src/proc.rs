@@ -89,7 +89,14 @@ pub fn run_bounded_with_input(
         v
     });
 
-    let deadline = Instant::now() + Duration::from_secs(timeout_secs);
+    let began = Instant::now();
+    let deadline = began + Duration::from_secs(timeout_secs);
+    // Backs off rather than sitting at one interval. Every wait here used to be
+    // a flat 50ms, which rounded a 30ms `mise env` up to 50 and a 610ms login
+    // shell up to 650 — a tax paid per spawn, on the path a session starts on.
+    // Starting fine and widening keeps the short commands short without spending
+    // a wakeup every 2ms on a build that runs for a minute.
+    let mut wait = Duration::from_millis(2);
     let status = loop {
         if let Some(status) = child.try_wait().with_context(|| format!("waiting on {label}"))? {
             break status;
@@ -101,8 +108,17 @@ pub fn run_bounded_with_input(
             let _ = child.wait();
             bail!("{label} timed out after {timeout_secs}s");
         }
-        std::thread::sleep(Duration::from_millis(50));
+        std::thread::sleep(wait);
+        wait = (wait * 2).min(Duration::from_millis(50));
     };
+
+    let took = began.elapsed();
+    crate::timing::record_exec(took);
+    // `info`, not `debug`, and per call rather than only when slow: these are the
+    // few commands the daemon runs that are somebody else's shell config, so the
+    // interesting fact is which one and how long, not whether it crossed a line.
+    // There are a handful per start, so the log stays readable.
+    tracing::info!("{label} took {}ms in {}", took.as_millis(), cwd.display());
 
     Ok(Output {
         status,

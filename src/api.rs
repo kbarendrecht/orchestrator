@@ -3489,6 +3489,42 @@ pub async fn refresh_prs(State(app): State<Arc<AppState>>) -> impl IntoResponse 
     (StatusCode::ACCEPTED, Json(json!({ "refreshing": true })))
 }
 
+/// Boot milestones the page measured, in milliseconds from its own `timeOrigin`.
+///
+/// A free-form map rather than named fields, because which milestones exist is
+/// the page's business and the daemon's only job is to write them down. Adding
+/// one is then a JS change, which is the point: the Rust side has nothing to say
+/// about what is worth timing in a webview.
+#[derive(Deserialize)]
+pub struct ClientTiming {
+    pub marks: std::collections::BTreeMap<String, i64>,
+}
+
+/// Put the page's own boot timing in the daemon's log.
+///
+/// The daemon can time everything up to serving the page and sending the first
+/// snapshot, and nothing after it. So the half that is missing from a slow-start
+/// report is exactly the half that only the page can see: the vendored scripts
+/// parsing, the first snapshot rendering, the centre pane's terminal attaching
+/// and painting. This is how the two halves end up in one log a colleague can
+/// paste back.
+///
+/// Sorted by the milestone's own timestamp, so the line reads in the order the
+/// start actually happened rather than alphabetically.
+pub async fn client_timing(
+    State(_app): State<Arc<AppState>>,
+    Json(body): Json<ClientTiming>,
+) -> impl IntoResponse {
+    let mut marks: Vec<(String, i64)> = body.marks.into_iter().collect();
+    marks.sort_by_key(|(_, ms)| *ms);
+    let said: Vec<String> = marks
+        .iter()
+        .map(|(what, ms)| format!("{what} {ms}ms"))
+        .collect();
+    tracing::info!("page start: {}", said.join(", "));
+    (StatusCode::ACCEPTED, Json(json!({ "logged": true })))
+}
+
 #[derive(Deserialize)]
 pub struct OpenUrl {
     pub url: String,

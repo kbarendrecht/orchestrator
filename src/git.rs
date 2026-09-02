@@ -4,14 +4,44 @@ use std::process::Command;
 
 use crate::model::{ChangedFile, FileSet, FileStatus};
 
+/// A git run this slow is worth a line of its own.
+///
+/// Every helper here is an exec, and the daemon does dozens of them per start
+/// and per reconcile. On this machine each costs a couple of milliseconds and
+/// nobody notices; the reports that produced [`crate::timing`] are from machines
+/// where the same call is an order of magnitude dearer. So the threshold is set
+/// where a *single* call is already the story rather than one of eighty, and the
+/// count of the eighty is the boot line's job instead.
+const SLOW_GIT: std::time::Duration = std::time::Duration::from_millis(300);
+
+/// Run git, and record what the exec cost.
+///
+/// The three helpers below are what every *read* goes through, so the count
+/// covers the start and the reconcile, which is the whole of what a slow start
+/// is made of. The write paths (`rebase_onto`, `push_with_lease`, the commit
+/// helpers) still spawn for themselves and are deliberately left alone: they are
+/// one exec each on a path a person has just asked for, so counting them would
+/// only mix a deliberate wait into the boot figure.
+fn run(cwd: &Path, args: &[&str]) -> std::io::Result<std::process::Output> {
+    let began = std::time::Instant::now();
+    let out = Command::new("git").args(args).current_dir(cwd).output();
+    let took = began.elapsed();
+    crate::timing::record_exec(took);
+    if took >= SLOW_GIT {
+        tracing::info!(
+            "slow git: {}ms for `git {}` in {}",
+            took.as_millis(),
+            args.join(" "),
+            cwd.display()
+        );
+    }
+    out
+}
+
 /// Shell out to `git` rather than a library binding — you need fsmonitor and
 /// the real worktree/remote semantics (§1).
 fn git(cwd: &Path, args: &[&str]) -> Result<String> {
-    let out = Command::new("git")
-        .args(args)
-        .current_dir(cwd)
-        .output()
-        .with_context(|| format!("running git {}", args.join(" ")))?;
+    let out = run(cwd, args).with_context(|| format!("running git {}", args.join(" ")))?;
     if !out.status.success() {
         bail!(
             "git {} failed in {}: {}",
@@ -26,11 +56,7 @@ fn git(cwd: &Path, args: &[&str]) -> Result<String> {
 /// Like [`git`] but returns the raw bytes, for `-z` output that is not valid
 /// UTF-8 in the general case.
 fn git_raw(cwd: &Path, args: &[&str]) -> Result<Vec<u8>> {
-    let out = Command::new("git")
-        .args(args)
-        .current_dir(cwd)
-        .output()
-        .with_context(|| format!("running git {}", args.join(" ")))?;
+    let out = run(cwd, args).with_context(|| format!("running git {}", args.join(" ")))?;
     if !out.status.success() {
         bail!(
             "git {} failed in {}: {}",
@@ -44,12 +70,7 @@ fn git_raw(cwd: &Path, args: &[&str]) -> Result<Vec<u8>> {
 
 /// Whether a git command succeeded, for probes where failure is a valid answer.
 fn git_ok(cwd: &Path, args: &[&str]) -> bool {
-    Command::new("git")
-        .args(args)
-        .current_dir(cwd)
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+    run(cwd, args).map(|o| o.status.success()).unwrap_or(false)
 }
 
 // ---------------------------------------------------------------------------

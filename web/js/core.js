@@ -54,6 +54,53 @@ export function setSelected(id, auto = false) {
 export const TOKEN = window.__ORCH__.token;
 export const WS_BASE = `ws://${location.host}`;
 
+/* ---------------------------------------------------------------------------
+ * Boot timing
+ * ------------------------------------------------------------------------- */
+
+/* How long the window took to become a usable board, reported to the daemon so
+ * it lands in the log with the daemon's own phases.
+ *
+ * Here because the client half of a slow start is not measurable from Rust: the
+ * daemon can say when it served the page and when it sent the first snapshot,
+ * and nothing on that side can say when the vendored scripts finished parsing or
+ * when the terminal first painted. Reported rather than logged to the console,
+ * because the app people are complaining about runs in a webview with no console
+ * anybody is going to open.
+ *
+ * Measured from `timeOrigin`, so `scripts` includes the page fetch and the three
+ * classic vendor scripts (xterm, the fit addon, prism) that block this module. */
+const marks = {};
+
+/** Record a boot milestone, the first time it happens.
+ *
+ *  First only: `attach` and `paint` repeat every time a session is switched, and
+ *  a later one is not boot. */
+export function mark(what) {
+  if (marks[what] == null) marks[what] = Math.round(performance.now());
+}
+mark('scripts');
+
+let reported = false;
+let reportTimer = null;
+
+/** Send the marks once, a moment after the last one that is going to arrive.
+ *
+ *  Debounced rather than fired on a particular mark, because which mark is last
+ *  depends on the board: a cold start with no session never paints a terminal at
+ *  all, and waiting for one would mean never reporting on exactly the start that
+ *  is worth reporting. */
+export function reportBoot() {
+  if (reported) return;
+  clearTimeout(reportTimer);
+  reportTimer = setTimeout(() => {
+    reported = true;
+    // Failure is silence. This is a diagnostic, and a toast about it would be
+    // the app complaining to the user on the user's behalf.
+    call('/api/client/timing', { marks }).catch(() => {});
+  }, 1500);
+}
+
 export const $ = (id) => document.getElementById(id);
 
 /** `$` for a form control, where the caller wants `.value` or `.disabled`.

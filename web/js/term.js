@@ -1,7 +1,7 @@
 // The terminals: one xterm per session or process, attached to the daemon's pty
 // over a websocket. The DOM renderer is deliberate in the webview — see CLAUDE.md.
 
-import { $, CHROME, IS_MAC, TOKEN, WS_BASE, el, selected, terms, toast, typingElsewhere, uiScale } from './core.js';
+import { $, CHROME, IS_MAC, TOKEN, WS_BASE, el, mark, reportBoot, selected, terms, toast, typingElsewhere, uiScale } from './core.js';
 
 
 const THEME = {
@@ -172,6 +172,11 @@ function openTerm(target, parent) {
   const entry = { term, fit, sock, host, ready: false };
 
   sock.onopen = () => {
+    // The centre pane's two halves, and they fail separately: `attach` is the
+    // pty being there at all, `paint` is the daemon's replay arriving. A gap
+    // between them is the ring buffer being written into a DOM renderer; a long
+    // `attach` is the session not having been spawned yet.
+    mark('attach');
     entry.ready = true;
     // A fresh socket knows nothing about the size, whatever the last one was told.
     entry.sent = null;
@@ -202,6 +207,8 @@ function openTerm(target, parent) {
        detached; only the parse moves to the moment the pane is looked at. */
     if (host.hidden) return queueChunk(entry, chunk);
     term.write(chunk);
+    mark('paint');
+    reportBoot();
   };
   sock.onclose = () => { entry.ready = false; };
 
