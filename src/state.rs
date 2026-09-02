@@ -286,6 +286,20 @@ pub struct Inner {
 /// an accessor for each would be noise. It is *mutation* that has to carry the
 /// write with it.
 impl Inner {
+    /// Which workspace an absolute path belongs to, without taking the lock.
+    ///
+    /// The body of [`AppState::workspace_for_path`], which delegates here. Split
+    /// out because a caller that already holds the write guard cannot ask the
+    /// `AppState` version for the answer: `RwLock` is not reentrant, so the read
+    /// it takes would deadlock against the write it is called under.
+    pub fn workspace_for_path(&self, path: &Path) -> Option<WorkspaceId> {
+        self.workspaces
+            .values()
+            .filter(|w| path.starts_with(&w.path))
+            .max_by_key(|w| w.path.as_os_str().len())
+            .map(|w| w.id.clone())
+    }
+
     pub fn with_automation(
         &mut self,
         why: &str,
@@ -907,13 +921,7 @@ impl AppState {
     /// Longest match wins so a path inside `.claude/worktrees/<name>` is
     /// attributed to that worktree rather than to main, which contains it.
     pub async fn workspace_for_path(&self, path: &Path) -> Option<WorkspaceId> {
-        let inner = self.inner.read().await;
-        inner
-            .workspaces
-            .values()
-            .filter(|w| path.starts_with(&w.path))
-            .max_by_key(|w| w.path.as_os_str().len())
-            .map(|w| w.id.clone())
+        self.inner.read().await.workspace_for_path(path)
     }
 
     /// Sessions in a workspace that are neither `Exited` nor `Archived`, checked

@@ -46,6 +46,45 @@ pub struct HookPayload {
     pub message: Option<String>,
     #[serde(default)]
     pub error: Option<serde_json::Value>,
+    /// Why a `SessionEnd` fired, which decides whether it is an ending at all.
+    ///
+    /// Read off the agent binary rather than guessed: the schema bound to
+    /// `hook_event_name: "SessionEnd"` accepts
+    /// `["clear","resume","logout","prompt_input_exit","other"]`. Two of those
+    /// leave the process running, which is what [`ends_the_process`] is for.
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+/// Does this `SessionEnd` reason mean the process is going away?
+///
+/// `clear` and `resume` are the conversation ending, not the session: Claude Code
+/// starts a fresh one in the same pty, in the same directory, and announces it with
+/// a `SessionStart` whose `source` is that same word. Everything else, **including
+/// a reason we do not recognise and no reason at all**, is treated as an ending.
+///
+/// The asymmetry is what makes that default safe, and it is the thing to keep in
+/// mind when this list next changes. Refusing a real ending costs a beat, because
+/// `spawn::watch_session_exit` settles every dead pty anyway and does strictly more
+/// than this handler. Accepting a false one costs main's exclusivity: the record
+/// goes `Exited` and `release_main` hands the claim back out from under a live
+/// agent, and no hook path ever calls `reclaim_main`. So a new non-terminal reason
+/// belongs here the day it appears; a new terminal one needs no change.
+fn ends_the_process(reason: Option<&str>) -> bool {
+    !matches!(reason, Some("clear") | Some("resume"))
+}
+
+/// `canonicalize`, or the path as reported.
+///
+/// One home for a rule that had grown eight inline copies, two of them in this
+/// file resolving this same field under near-identical comments. It matters that
+/// every one of them agrees: `session_start` records the cwd and `session_end`
+/// compares against what that recorded, so a copy that resolves where another does
+/// not is not a compile error but a hook that stops being recognised. Invisible on
+/// Linux, the normal case on macOS, where `/tmp`, `/var` and `$TMPDIR` are
+/// symlinks into `/private`.
+fn resolved(path: &std::path::Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
 /// Correlation is exact: the session id is carried in a header interpolated from
@@ -118,8 +157,7 @@ pub async fn session_start(
         // `/private/var/…` would be adopted as no worktree at all, or as one whose
         // edits never attribute. Falls back to what was reported: a cwd that does
         // not resolve is not a reason to drop the adoption.
-        let path = PathBuf::from(cwd);
-        let path = std::fs::canonicalize(&path).unwrap_or(path);
+        let path = resolved(std::path::Path::new(cwd));
         if let Some(name) = crate::spawn::worktree_name_of(&path, &app.cfg.worktrees_dir()) {
             let branch = crate::git::current_branch(&path).ok();
             app.register_worktree(&name, path.clone(), branch).await;
@@ -145,7 +183,13 @@ pub async fn session_start(
                 }
             }
             if let Some(cwd) = payload.cwd.as_deref() {
-                s.cwd = PathBuf::from(cwd);
+                // Resolved, like the adoption above and like everything that is
+                // later compared against it. This line used to take the reported
+                // path raw, which put an unresolved cwd on the record while
+                // `session_end` canonicalized the one it compares: equal paths,
+                // unequal strings, and on macOS that is the normal case rather
+                // than the exception. The transcript slug is read off this too.
+                s.cwd = resolved(std::path::Path::new(cwd));
             }
             if matches!(s.state, State::Starting) {
                 // Started, but nothing is running: the prompt box is empty and
@@ -239,7 +283,7 @@ pub async fn post_tool_use(
             // hook path through realpath before attributing it, or the edit shows
             // as a phantom untracked file in the wrong pane (§4).
             Some(path) => {
-                let real = std::fs::canonicalize(path).unwrap_or_else(|_| path.clone());
+                let real = resolved(path);
                 let owner = app.workspace_for_path(&real).await;
                 let mut inner = app.inner.write().await;
                 if let Some(s) = inner.sessions.get_mut(&id) {
@@ -472,10 +516,18 @@ pub async fn stop_failure(
 /// request and has no handle to compare.
 ///
 /// What it does have is where it ran. A moved conversation is somewhere else by
-/// definition, and the dying process reports the path it was in, so a `cwd` that
-/// disagrees with the record is a hook from a process this session no longer is.
-/// A payload without one settles as before: a guard that cannot tell must not
+/// definition, and the dying process reports the path it was in, so a hook from a
+/// tree this session is no longer in is a hook from a process it no longer is. A
+/// payload without a `cwd` settles as before: a guard that cannot tell must not
 /// start refusing.
+///
+/// **This guard covers the half of that race after the record is installed.** The
+/// other half is `spawn::spawn_session`'s `reclaim_main`: between `claim_main` and
+/// the insert the map still describes the *outgoing* session, whose ending would
+/// look entirely legitimate, so the claim is taken again once the record is in.
+///
+/// The third thing to know is that not every `SessionEnd` is an ending at all; see
+/// [`ends_the_process`].
 pub async fn session_end(
     AxState(app): AxState<Arc<AppState>>,
     headers: HeaderMap,
@@ -484,41 +536,69 @@ pub async fn session_end(
     let Some(id) = session_of(&headers, &payload) else {
         return ok();
     };
-    // Resolved, because `s.cwd` is: `main_checkout` is canonicalized at parse and
-    // the adopted worktree path is canonicalized where the agent reports it. On a
-    // Mac the difference is `/tmp` against `/private/tmp`, which would make every
-    // hook look stale.
+    if !ends_the_process(payload.reason.as_deref()) {
+        // Not a state change, so not a `notify`: the session goes on exactly as it
+        // was, and the `SessionStart` that follows re-reads the transcript this
+        // conversation writes to now.
+        tracing::info!(
+            session = %id,
+            reason = payload.reason.as_deref().unwrap_or_default(),
+            "SessionEnd that ends no process — the conversation restarted in place"
+        );
+        return ok();
+    }
+    // Resolved, because everything it is compared against is: `main_checkout` at
+    // parse, and each worktree where it is registered. On a Mac the difference is
+    // `/tmp` against `/private/tmp`, which would make every hook look stale.
     let said = payload
         .cwd
         .as_deref()
-        .map(|c| std::fs::canonicalize(c).unwrap_or_else(|_| PathBuf::from(c)));
+        .map(|c| resolved(std::path::Path::new(c)));
 
-    let mut stale = false;
     let workspace = {
         let mut inner = app.inner.write().await;
+        /* `Some(path)` when this hook came from a tree the session is not in.
+           Judged by *workspace* rather than by comparing the path to the record.
+           A hook's `cwd` is the live process cwd, so it follows a Bash `cd` and an
+           `EnterWorktree` while only `session_start` ever writes `s.cwd`: path
+           equality called a session that merely ended in a subdirectory of its own
+           workspace "moved", and skipped the reconcile that goes with an ending.
+
+           The worktree name is derived from the path *before* the registry is
+           asked, and that ordering is the point. A tree removed after the
+           conversation left it has no record any more, so the registry would fall
+           back to main, which is exactly where the conversation now is, and the
+           stale hook would be accepted after all. The layout answers that without
+           needing the record to still exist. */
+        let moved = match (said.as_ref(), inner.sessions.get(&id)) {
+            (Some(c), Some(s))
+                if crate::spawn::worktree_name_of(c, &app.cfg.worktrees_dir())
+                    .or_else(|| inner.workspace_for_path(c))
+                    .as_ref()
+                    != Some(&s.workspace) =>
+            {
+                Some(c)
+            }
+            _ => None,
+        };
+        if let Some(c) = moved {
+            tracing::info!(
+                session = %id,
+                "ignored a SessionEnd from {} — this conversation has moved",
+                c.display()
+            );
+            return ok();
+        }
         match inner.sessions.get_mut(&id) {
             Some(s) => {
-                if said.as_ref().is_some_and(|c| *c != s.cwd) {
-                    stale = true;
-                    None
-                } else {
-                    // Buffer is retained: the transcript and scrollback outlive the
-                    // process (§3).
-                    s.set_state(State::Exited);
-                    Some(s.workspace.clone())
-                }
+                // Buffer is retained: the transcript and scrollback outlive the
+                // process (§3).
+                s.set_state(State::Exited);
+                Some(s.workspace.clone())
             }
             None => None,
         }
     };
-    if stale {
-        tracing::info!(
-            session = %id,
-            "ignored a SessionEnd from {} — this conversation has moved",
-            said.unwrap_or_default().display()
-        );
-        return ok();
-    }
     app.release_main(id).await;
     if let Some(ws) = workspace {
         let _ = app.reconcile(&ws).await;
@@ -835,6 +915,13 @@ mod tests {
         let (here, gone) = (dir.join("main"), dir.join("old-worktree"));
         std::fs::create_dir_all(&here).unwrap();
         std::fs::create_dir_all(&gone).unwrap();
+        /* Resolved, and only after the directories exist. `Config::parse` does this
+           to `main_checkout` for the same reason, and this test bypasses it by going
+           through `serde_json`, so the record would hold an unresolved path while
+           the handler resolves the one it is handed. On Linux that is the same
+           string; on macOS `$TMPDIR` is a symlink into `/private`, so the workspace
+           would match nothing and even the real ending would read as moved. */
+        let (here, gone) = (resolved(&here), resolved(&gone));
         let cfg: Config = serde_json::from_str(&format!(
             r#"{{"main_checkout":"{}","port":7797}}"#,
             here.display()
@@ -878,8 +965,202 @@ mod tests {
             ..HookPayload::default()
         };
         session_end(AxState(app.clone()), headers, Json(real)).await;
-        let inner = app.inner.read().await;
-        assert!(!inner.sessions[&id].state.is_live(), "its own ending still ends it");
+        {
+            let inner = app.inner.read().await;
+            assert!(!inner.sessions[&id].state.is_live(), "its own ending still ends it");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A session that ends in a subdirectory of its own workspace has still ended.
+    ///
+    /// The guard above is about *which tree*, not which directory, and a hook
+    /// reports the live process cwd: an agent that ran `cd web && npm test` reports
+    /// `<main>/web`, which no `s.cwd` will ever equal.
+    #[tokio::test]
+    async fn an_ending_from_a_subdirectory_of_the_workspace_still_ends_it() {
+        use crate::config::Config;
+        use crate::model::{Kind, Session, MAIN};
+        use crate::state::AppState;
+
+        let dir = std::env::temp_dir().join(format!("orchd-endsub-{}", std::process::id()));
+        let here = resolved(&{
+            let p = dir.join("main");
+            std::fs::create_dir_all(p.join("web")).unwrap();
+            p
+        });
+        let cfg: Config = serde_json::from_str(&format!(
+            r#"{{"main_checkout":"{}","port":7798}}"#,
+            here.display()
+        ))
+        .unwrap();
+        let app = AppState::new(cfg, "t".into(), crate::window::Chrome::None);
+
+        let id = Uuid::new_v4();
+        {
+            let mut inner = app.inner.write().await;
+            let mut s = Session::new(id, MAIN.to_string(), here.clone(), Kind::Interactive);
+            s.set_state(State::Working);
+            inner.sessions.insert(id, s);
+        }
+        let mut headers = HeaderMap::new();
+        headers.insert("x-orch-session", id.to_string().parse().unwrap());
+
+        let from_below = HookPayload {
+            cwd: Some(here.join("web").to_string_lossy().into_owned()),
+            ..HookPayload::default()
+        };
+        session_end(AxState(app.clone()), headers, Json(from_below)).await;
+
+        {
+            let inner = app.inner.read().await;
+            assert!(
+                !inner.sessions[&id].state.is_live(),
+                "a `cd` inside the workspace is not a conversation that moved"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A cwd reported through a symlink is the same tree, which is what makes this
+    /// handler work on a Mac at all.
+    ///
+    /// The macOS case reproduced on Linux, deliberately: there `$TMPDIR`, `/tmp`
+    /// and `/var` are symlinks into `/private`, so the config resolves to one
+    /// spelling while the agent reports the other, and every comparison across that
+    /// boundary silently fails. Nothing about the fault is Mac-specific except how
+    /// often it happens, so a symlink here catches it on every platform instead of
+    /// waiting for the macos-14 runner.
+    #[tokio::test]
+    async fn a_cwd_reported_through_a_symlink_is_not_a_conversation_that_moved() {
+        use crate::config::Config;
+        use crate::model::{Kind, Session, MAIN};
+        use crate::state::AppState;
+
+        let dir = std::env::temp_dir().join(format!("orchd-endlink-{}", std::process::id()));
+        let real = dir.join("real");
+        std::fs::create_dir_all(&real).unwrap();
+        let link = dir.join("link");
+        let _ = std::fs::remove_file(&link);
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        // The daemon's side is resolved, the way `Config::parse` resolves it.
+        let cfg: Config = serde_json::from_str(&format!(
+            r#"{{"main_checkout":"{}","port":7800}}"#,
+            resolved(&real).display()
+        ))
+        .unwrap();
+        let app = AppState::new(cfg, "t".into(), crate::window::Chrome::None);
+
+        let id = Uuid::new_v4();
+        {
+            let mut inner = app.inner.write().await;
+            let s = Session::new(id, MAIN.to_string(), resolved(&real), Kind::Interactive);
+            inner.sessions.insert(id, s);
+        }
+        let mut headers = HeaderMap::new();
+        headers.insert("x-orch-session", id.to_string().parse().unwrap());
+
+        /* Through `session_start`, which is the half that used to break this: the
+           agent reports the path it was started with, and that line recorded it
+           raw while this handler resolves what it compares. Driving both hooks is
+           what makes this a regression test rather than a restatement of the
+           fixture. */
+        let through_link = || HookPayload {
+            cwd: Some(link.to_string_lossy().into_owned()),
+            ..HookPayload::default()
+        };
+        session_start(AxState(app.clone()), headers.clone(), Json(through_link())).await;
+        {
+            let inner = app.inner.read().await;
+            assert!(inner.sessions[&id].state.is_live(), "the session is up");
+        }
+        session_end(AxState(app.clone()), headers, Json(through_link())).await;
+
+        {
+            let inner = app.inner.read().await;
+            assert!(
+                !inner.sessions[&id].state.is_live(),
+                "the same directory by another name is still the same directory"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `/clear` and `/resume` end the conversation and leave the process running,
+    /// so settling on one hands main's claim back out from under a live agent.
+    #[tokio::test]
+    async fn a_session_end_that_ends_no_process_keeps_the_session_and_its_claim() {
+        use crate::config::Config;
+        use crate::model::{Kind, Session, MAIN};
+        use crate::state::AppState;
+
+        let dir = std::env::temp_dir().join(format!("orchd-endclear-{}", std::process::id()));
+        let here = dir.join("main");
+        std::fs::create_dir_all(&here).unwrap();
+        let here = resolved(&here);
+        let cfg: Config = serde_json::from_str(&format!(
+            r#"{{"main_checkout":"{}","port":7799}}"#,
+            here.display()
+        ))
+        .unwrap();
+        let app = AppState::new(cfg, "t".into(), crate::window::Chrome::None);
+
+        let id = Uuid::new_v4();
+        {
+            let mut inner = app.inner.write().await;
+            let mut s = Session::new(id, MAIN.to_string(), here.clone(), Kind::Interactive);
+            s.set_state(State::Working);
+            inner.sessions.insert(id, s);
+        }
+        app.claim_main(id).await.unwrap();
+
+        let mut headers = HeaderMap::new();
+        headers.insert("x-orch-session", id.to_string().parse().unwrap());
+
+        // Both non-terminal reasons, from exactly where the session lives, which is
+        // what makes the cwd guard useless against them.
+        for reason in ["clear", "resume"] {
+            let payload = HookPayload {
+                cwd: Some(here.to_string_lossy().into_owned()),
+                reason: Some(reason.to_string()),
+                ..HookPayload::default()
+            };
+            session_end(AxState(app.clone()), headers.clone(), Json(payload)).await;
+            let inner = app.inner.read().await;
+            assert!(
+                inner.sessions[&id].state.is_live(),
+                "`{reason}` restarts the conversation, it does not end the process"
+            );
+            drop(inner);
+            assert_eq!(
+                app.main_occupant().await,
+                Some(id),
+                "`{reason}` must not hand main's claim back"
+            );
+        }
+
+        // A reason that really is an ending, and one we do not know, both settle:
+        // refusing costs a beat because the pty watcher settles it anyway, while
+        // accepting a false ending costs main's exclusivity.
+        assert!(ends_the_process(Some("prompt_input_exit")));
+        assert!(ends_the_process(Some("logout")));
+        assert!(ends_the_process(Some("other")));
+        assert!(ends_the_process(Some("something_new")));
+        assert!(ends_the_process(None), "no reason at all must not start refusing");
+
+        let real = HookPayload {
+            cwd: Some(here.to_string_lossy().into_owned()),
+            reason: Some("prompt_input_exit".to_string()),
+            ..HookPayload::default()
+        };
+        session_end(AxState(app.clone()), headers, Json(real)).await;
+        {
+            let inner = app.inner.read().await;
+            assert!(!inner.sessions[&id].state.is_live(), "a real ending still ends it");
+        }
+        assert_eq!(app.main_occupant().await, None, "and releases main");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The rail said "needs permission" for a multiple choice, which is a

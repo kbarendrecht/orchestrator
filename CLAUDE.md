@@ -317,14 +317,22 @@ mean *this* repo; if you do, name it.
 - **Hooks are observers, not gatekeepers.** They answer immediately and finish
   their work detached, because Claude gives a hook one second and a dropped
   future silently loses the state change. Do not make a hook wait on anything.
-- **A hook for a session the daemon has not recorded yet is dropped in silence.**
-  `spawn_session` inserts the record *after* `PtyHandle::spawn`, so an agent quick
-  enough to fire `UserPromptSubmit` in that window loses it — and `Stop` arriving
-  after the insert then leaves a session at `your_turn` with `had_a_turn` false, a
-  conversation the rail will not offer to fork or resume. Real Claude Code takes
-  human-scale seconds to a first prompt and never lands there; anything scripted
-  does, which is why the e2e agent waits to see itself in `sessions.json` before
-  speaking.
+- **Every hook finds its session, and the window where one did not is closed.**
+  `insert_and_spawn` puts the record in *before* `PtyHandle::spawn` and takes it out
+  again if the spawn fails (`a6d4854`, "Record a session before its agent can
+  speak"). It used to insert *after*, so an agent quick enough to fire
+  `UserPromptSubmit` lost it, and a `Stop` arriving after the insert left a session
+  at `your_turn` with `had_a_turn` false, a conversation the rail would not offer to
+  fork or resume. Real Claude Code took human-scale seconds to a first prompt and
+  never landed there; anything scripted did, which is why the e2e agent waits to see
+  itself in `sessions.json` before speaking. That wait is now belt and braces rather
+  than the thing that makes the flows work.
+  **What is left is narrower and still silent.** The pty is attached to the record
+  *after* the spawn returns, and `hooks::session_start` calls `pending_prompt.take()`
+  unconditionally while only writing it when a pty is present. A `SessionStart`
+  landing in that gap takes a `/resolve` prompt and drops it. The gap is one lock
+  acquisition against Claude Code's whole boot, so it is documented rather than
+  guarded.
 - **`github_write.rs` will not resolve a thread, approve, merge or open a PR.**
   That is a design boundary, not a gap. Resolving is the comment author's button.
   Which means **`is_resolved` can never stand for "handled"**: the daemon never
