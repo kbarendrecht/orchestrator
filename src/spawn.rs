@@ -565,7 +565,7 @@ pub async fn spawn_session(
     watch_session_exit(app.clone(), id, spawned.handle);
     crate::agent_update::refresh_detached(&app);
     app.notify().await;
-    phases.log(&format!("session {} start in {workspace}", &id.to_string()[..8]));
+    phases.log(&format!("session {} start in {workspace}", crate::model::short_id(&id)));
     Ok(id)
 }
 
