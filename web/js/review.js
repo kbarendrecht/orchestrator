@@ -1,9 +1,9 @@
 // The review overlay: read a PR's threads, decide each one, then one batch of
 // outward writes. The largest single feature in the SPA.
 
-import { $, call, el, get, MOD_LABEL, newShell, pending, selected, setSelected, snap, toast, setPendingSelect } from './core.js';
+import { $, call, compactAge, el, get, MOD_LABEL, newShell, pending, selected, setSelected, snap, toast, setPendingSelect } from './core.js';
 import * as Diff from './diff.js';
-import { langFor, hlTokens } from './diff.js';
+import { langFor, hlTokens, paintRanges } from './diff.js';
 import { patchStats, hunkEl, fileListLabel } from './review-diff.js';
 
 
@@ -85,10 +85,7 @@ const writesCode = (item, pos) => !!pos.patch && modeOf(item) === 'agent';
 function commentAge(iso) {
   const then = Date.parse(iso);
   if (!then) return '';
-  const h = (Date.now() - then) / 36e5;
-  if (h < 1) return 'now';
-  if (h < 48) return `${Math.round(h)}h`;
-  return `${Math.round(h / 24)}d`;
+  return compactAge((Date.now() - then) / 36e5);
 }
 
 /** The threads triage proposed for, in the order the daemon sorted them —
@@ -132,6 +129,10 @@ function replyOf(item) {
 
 const isHandled = (item) =>
   !reviewState.skipped[item.t.id] && reviewState.picks[item.t.id] !== undefined;
+
+/** Decided: handled or skipped. One word for one idea — the strip, the counts,
+ *  the overview and the final screen all ask this and used to spell it out. */
+const isDecided = (item) => isHandled(item) || !!reviewState.skipped[item.t.id];
 
 /** `renovate.json5:161 · bob`, matching what the daemon's report uses. */
 function threadLabel(t) {
@@ -234,7 +235,7 @@ function rvStrip(cur) {
     strip.appendChild(el('span', cls));
   });
 
-  const done = q.filter((x) => isHandled(x) || reviewState.skipped[x.t.id]).length;
+  const done = q.filter(isDecided).length;
   let left;
   // On a card the strip is a position; everywhere else it is progress, and it says
   // "decided" because that is the one word this flow counts in.
@@ -254,7 +255,7 @@ function rvStrip(cur) {
  *  the tally, the strip and the bar are all showing. */
 function decidedCount() {
   const q = queue();
-  const decided = q.filter((x) => isHandled(x) || reviewState.skipped[x.t.id]).length;
+  const decided = q.filter(isDecided).length;
   const skipped = q.filter((x) => reviewState.skipped[x.t.id]).length;
   const of = `${decided} of ${q.length} decided`;
   return skipped ? `${of} · ${skipped} skipped` : of;
@@ -446,7 +447,7 @@ function rvOverview(root) {
 
   root.appendChild(body);
 
-  const handled = q.filter((x) => isHandled(x) || reviewState.skipped[x.t.id]).length;
+  const handled = q.filter(isDecided).length;
   root.appendChild(rvActs([
     actBtn(handled ? `back to thread ${reviewState.i + 1} of ${q.length}` : `start · thread 1 of ${q.length}`,
       'pri', () => { reviewState.screen = 'card'; renderReview(); }),
@@ -623,21 +624,9 @@ function suggestionEl(code, path) {
   return box;
 }
 
-/** One line of code, syntax-coloured with the viewer's palette. The same
- *  flattening `review-diff`'s rows use; kept here rather than exported from there
- *  because that module is about *diff* text and this is not a diff. */
+/** One line of code, syntax-coloured with the viewer's palette. */
 function hlLine(text, lang) {
-  const s = el('span', 'sgcode');
-  const ranges = lang ? hlTokens(text, lang) : [];
-  if (!ranges.length) { s.textContent = text; return s; }
-  let at = 0;
-  for (const r of ranges) {
-    if (r.s > at) s.appendChild(document.createTextNode(text.slice(at, r.s)));
-    s.appendChild(el('span', 'tok-' + r.cls, text.slice(r.s, r.e)));
-    at = r.e;
-  }
-  if (at < text.length) s.appendChild(document.createTextNode(text.slice(at)));
-  return s;
+  return paintRanges(el('span', 'sgcode'), text, lang ? hlTokens(text, lang) : []);
 }
 
 /** Whether the reads are expanded, for the whole session. Collapsed by default;
@@ -889,17 +878,13 @@ function rvFinal(root) {
   body.appendChild(plan);
   root.appendChild(body);
 
-  const decided = q.every((x) => isHandled(x) || reviewState.skipped[x.t.id]);
+  const decided = q.every(isDecided);
   /* What actually leaves the machine, counted rather than described. This is the
      only irreversible control in the flow — one press writes code *and* speaks to a
      reviewer — and it used to be labelled `send to the session`, which is true of the
      plumbing and silent about GitHub. A button is read on its own, so it names the
      outcome; the hint carries the numbers, which are what change the decision. */
-  const said = [
-    out.replies && `${out.replies} ${out.replies === 1 ? 'reply' : 'replies'}`,
-    out.thumbs && `${out.thumbs} 👍`,
-    out.stories && `${out.stories} ${out.stories === 1 ? 'story' : 'stories'}`,
-  ].filter(Boolean).join(' and ');
+  const said = saidCounts(out);
   root.appendChild(rvActs([
     // A blank reply is not disabled here — that would need a live repaint on every
     // keystroke, which drops focus out of the box. `submitDecisions` refuses it.
@@ -1104,6 +1089,15 @@ function rvRerequestRows(q) {
   return rows;
 }
 
+
+/** `2 replies and 1 👍`: the outward writes in words, or '' for none. */
+function saidCounts(out) {
+  return [
+    out.replies && `${out.replies} ${out.replies === 1 ? 'reply' : 'replies'}`,
+    out.thumbs && `${out.thumbs} 👍`,
+    out.stories && `${out.stories} ${out.stories === 1 ? 'story' : 'stories'}`,
+  ].filter(Boolean).join(' and ');
+}
 
 /** Everything the batch would do, counted. */
 function outward(q) {
@@ -1731,16 +1725,15 @@ function renderSessionReview(root) {
   ](root);
 }
 
-/** The read phase: the session is reading, nothing to decide yet. */
-function rvReading(root) {
+/** A phase the session owns and you only watch: what it is doing, and the one
+ *  way out. Both such phases ask for permissions in the pane, so the pane has to
+ *  be one gesture away. */
+function waitScreen(root, eyebrow, big, para) {
   root.appendChild(rvHead(reviewState.data?.title || 'review'));
   const mid = el('div', 'mid');
-  mid.appendChild(el('div', 'eyebrow', 'the session is reading the threads'));
-  mid.appendChild(el('div', 'big', 'Reading…'));
-  mid.appendChild(el('p', null,
-    'The cards open here when it is done. Permission prompts appear in the session’s pane.'));
-  // The same way out `rvChanging` has: the reading phase is the one that asks for
-  // permissions, so the pane it names has to be one gesture away.
+  mid.appendChild(el('div', 'eyebrow', eyebrow));
+  mid.appendChild(el('div', 'big', big));
+  mid.appendChild(el('p', null, para));
   const row = el('div');
   row.style.cssText = 'display:flex;gap:8px;margin-top:6px';
   row.appendChild(headBtn('go to the pane', 'go', () => { closeReview(); setSelected(reviewState.session); }));
@@ -1748,21 +1741,18 @@ function rvReading(root) {
   root.appendChild(mid);
 }
 
+/** The read phase: the session is reading, nothing to decide yet. */
+function rvReading(root) {
+  waitScreen(root, 'the session is reading the threads', 'Reading…',
+    'The cards open here when it is done. Permission prompts appear in the session’s pane.');
+}
+
 /** Between the decision submit and the post-go ask: the session is writing code. */
 function rvChanging(root) {
-  root.appendChild(rvHead(reviewState.data?.title || 'review'));
-  const mid = el('div', 'mid');
-  mid.appendChild(el('div', 'eyebrow', 'the session is making the changes you picked'));
-  mid.appendChild(el('div', 'big', 'Applying…'));
-  mid.appendChild(el('p', null,
+  waitScreen(root, 'the session is making the changes you picked', 'Applying…',
     'It writes the code for each solution you chose, runs the repo’s checks, amends '
     + 'the owning commit and pushes, then posts your replies. Answer any permission '
-    + 'prompts in the session’s pane. Nothing more is asked of you.'));
-  const row = el('div');
-  row.style.cssText = 'display:flex;gap:8px;margin-top:6px';
-  row.appendChild(headBtn('go to the pane', 'go', () => { closeReview(); setSelected(reviewState.session); }));
-  mid.appendChild(row);
-  root.appendChild(mid);
+    + 'prompts in the session’s pane. Nothing more is asked of you.');
 }
 
 
@@ -1779,11 +1769,7 @@ function rvSessionReport(root) {
      as what was sent rather than what GitHub accepted, because the overlay watched
      the session end and did not watch the API answer: claiming a result it cannot
      see is the one thing a success message must not do. */
-  const said = [
-    out.replies && `${out.replies} ${out.replies === 1 ? 'reply' : 'replies'}`,
-    out.thumbs && `${out.thumbs} 👍`,
-    out.stories && `${out.stories} ${out.stories === 1 ? 'story' : 'stories'}`,
-  ].filter(Boolean).join(' and ');
+  const said = saidCounts(out);
   mid.appendChild(el('div', 'big', said ? `Sent ${said}.` : 'Finished.'));
   mid.appendChild(el('p', null,
     (skipped ? `${skipped} thread${skipped === 1 ? '' : 's'} skipped and still open. ` : '')
@@ -2080,9 +2066,9 @@ function skipCard() {
 function advance() {
   const q = queue();
   const next = q.findIndex((x, i) =>
-    i > reviewState.i && !isHandled(x) && !reviewState.skipped[x.t.id]);
+    i > reviewState.i && !isDecided(x));
   if (next >= 0) reviewState.i = next;
-  else if (q.every((x) => isHandled(x) || reviewState.skipped[x.t.id])) reviewState.screen = 'final';
+  else if (q.every(isDecided)) reviewState.screen = 'final';
   else reviewState.i = Math.min(reviewState.i + 1, q.length - 1);
   renderReview();
 }
@@ -2334,7 +2320,7 @@ function barState() {
   // Nothing has been sent yet and the cards are up: it is your turn, and how many
   // threads are left is the only number worth carrying out here.
   if (!reviewState.decisionsSent && q.length) {
-    const left = q.filter((x) => !isHandled(x) && !reviewState.skipped[x.t.id]).length;
+    const left = q.filter((x) => !isDecided(x)).length;
     return left
       ? { tone: 'attn', what: `${left} of ${q.length} threads waiting on you` }
       : { tone: 'attn', what: `${q.length} threads decided · not sent yet` };
@@ -2375,11 +2361,21 @@ function renderBar() {
   host.hidden = false;
 }
 
+/** What Ctrl+Enter does: press the final screen's send button. Through the button
+ *  rather than straight to `sendBatch`, or the shortcut sends a batch the button
+ *  itself refuses — which it did until now. Off the final screen, nothing. */
+function sendFromKeyboard() {
+  if (reviewState.screen !== 'final') return;
+  const send = /** @type {HTMLButtonElement|null} */ (
+    $('rvoverlay').querySelector('.acts .act.warm'));
+  if (send && !send.disabled) send.click();
+}
+
 // The public surface. Everything else above is private by construction now,
-// which is the point: the rail reaches the overlay through these four or not
-// at all.
+// which is the point: the rail and the keymap reach the overlay through these
+// or not at all.
 
 export {
   reviewState as state, openReview as open, closeReview as close,
-  reviewKey as key, reviewTick as tick, renderBar as bar,
+  reviewKey as key, reviewTick as tick, renderBar as bar, sendFromKeyboard as send,
 };

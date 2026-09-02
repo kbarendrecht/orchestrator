@@ -4,17 +4,17 @@
 // the primitives every part needs; `queue.js` is the first seam extracted whole.
 import {
   TOKEN, WS_BASE, $, el, toast, call, get, duration,
-  snap, receive, sinceSnap, refreshButton, keyActivate,
-  uiScale, setZoom, saveZoom, onScaleChange, ZOOM, zoomScale,
+  snap, receive, keyActivate,
+  setZoom, saveZoom, onScaleChange, ZOOM, zoomScale,
   selected, setSelected, onSelection, prForWorkspace,
-  terms, CHROME, stateLabel, dotClass, stateClass, isWaiting, isArchived,
-  pending, isConversation, byNewest, sessionsOf, currentSession,
-  activeWorkspaceId, currentWorkspaceId, openMenu, closeMenu, menuOpen,
-  newSession, newWorktree, newShell,
+  terms, CHROME, stateLabel, dotClass, isWaiting, isArchived,
+  pending, byNewest, currentSession,
+  activeWorkspaceId, currentWorkspaceId, closeMenu, menuOpen,
+  newSession, newWorktree, newShell, mainWorkspace, workspaceById,
   selectedProc, setSelectedProc, prState, handedToPr, procOrder, setProcOrder,
   drawerTouched, setDrawerTouched, drawerCollapsed, setDrawerCollapsed,
   pendingProcFocus, setPendingProcFocus, pendingSelect, setPendingSelect,
-  prOf, onDrawerChange, appMod, IS_MAC, MOD_LABEL, closeLegend, typingElsewhere,
+  onDrawerChange, appMod, IS_MAC, MOD_LABEL, closeLegend, typingElsewhere,
   mark, reportBoot,
 } from './js/core.js';
 
@@ -460,7 +460,7 @@ import * as Rail from './js/rail.js';
 function renderContext() {
   const s = currentSession();
   const wsId = currentWorkspaceId();
-  const w = snap.workspaces.find((x) => x.id === wsId);
+  const w = workspaceById(wsId);
 
   // PRs are opened against upstream while branches live on the fork (§6), so
   // the header names both rather than collapsing them into one path.
@@ -601,7 +601,7 @@ const shownTab = {};
 function renderDrawer() {
   if (tabDrag !== null) return;
   const wsId = currentWorkspaceId();
-  const w = snap.workspaces.find((x) => x.id === wsId);
+  const w = workspaceById(wsId);
   const tabs = $('dtabs');
   tabs.replaceChildren();
 
@@ -662,9 +662,7 @@ function renderDrawer() {
   for (const p of procs) {
     const isShell = p.kind.kind === 'shell';
     if (isShell) shellNo += 1;
-    const dead = p.kind.kind === 'shell'
-      ? p.kind.exit_code != null
-      : p.health.health === 'dead';
+    const dead = !alive(p);
 
     const tab = el('button', 'dtab' + (dead ? ' dead' : ''));
     tab.setAttribute('aria-selected', String(p.id === active));
@@ -926,24 +924,15 @@ keyActivate($('keysbtn'));
 /* Document-wide, not just the legend: two controls outside it show a chord on
    their face — the drawer's `+ Shell` and the diff editor's Save — and both used
    to carry a hardcoded glyph, which is the wrong key on one of the two platforms.
-   Anything marked `data-mod` is resolved here, wherever it lives. */
+   Anything marked `data-mod` is resolved here, wherever it lives — the empty-pane
+   hint and a legend *description* included: one description names a second
+   spelling ("also MOD `"), and resolving the `dt`s alone left the placeholder on
+   screen. Found by looking at the rendered legend; the test that checked the
+   chords read `dt` text and passed happily. */
 for (const dt of document.querySelectorAll('[data-mod]')) {
   const mac = dt.getAttribute('data-mac');
   if (IS_MAC && mac) dt.innerHTML = mac;
   else dt.innerHTML = dt.innerHTML.replace(/MOD/g, MOD_LABEL);
-}
-// The empty-terminal hint teaches the same chords, so it resolves MOD the same.
-for (const k of $('termempty').querySelectorAll('kbd')) {
-  k.textContent = k.textContent.replace(/MOD/g, MOD_LABEL);
-}
-/* Descriptions too, not only the chords: one of them names a second spelling
-   ("also MOD `"), and substituting the `dt` alone left the placeholder on screen.
-   Found by looking at the rendered legend — the test that checked the chords read
-   `dt` text and passed happily. */
-for (const dd of $('keyhelp').querySelectorAll('.keys dd')) {
-  if (dd.innerHTML.includes('MOD')) {
-    dd.innerHTML = dd.innerHTML.replace(/MOD/g, MOD_LABEL);
-  }
 }
 $('dcollapse').onclick = () => setDrawerCollapsed(!drawerCollapsed);
 $('refreshbtn').onclick = () => {
@@ -1062,13 +1051,7 @@ window.addEventListener('keydown', (e) => {
     }
     if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
       e.preventDefault();
-      // Through the button rather than straight to `sendBatch`, or the shortcut
-      // sends a batch the button itself refuses — which it did until now.
-      if (Review.state.screen === 'final') {
-        const send = /** @type {HTMLButtonElement} */ (
-          $('rvoverlay').querySelector('.acts .act.warm'));
-        if (send && !send.disabled) send.click();
-      }
+      Review.send();
       return;
     }
     // Bare only: a modified key is the app's (the Ctrl layer), never a card's.
@@ -1156,7 +1139,7 @@ window.addEventListener('keydown', (e) => {
     if (k === 'n') {
       e.preventDefault();
       if (e.shiftKey) {
-        const main = snap.workspaces.find((w) => w.is_main);
+        const main = mainWorkspace();
         if (main) newSession(main.id);
       } else {
         // The rail's + is the named variant (Shift+click); a hotkey takes the

@@ -7,7 +7,7 @@
 // rather than reduce it.
 
 import { el } from './core.js';
-import { langFor, hlTokens } from './diff.js';
+import { langFor, hlTokens, paintRanges } from './diff.js';
 
 /** Parse a unified diff into per-path counts — the same arithmetic as
  *  `git apply --numstat`, which is what the daemon re-derives authoritatively
@@ -71,17 +71,7 @@ function fileListLabel(files, verb) {
  *  text. No language, no grammar, or a tokenizer that threw → one text node, which
  *  is the same row minus colour rather than an error. */
 function codeEl(text, lang) {
-  const s = el('s');
-  const ranges = lang ? hlTokens(text, lang) : [];
-  if (!ranges.length) { s.textContent = text; return s; }
-  let at = 0;
-  for (const r of ranges) {
-    if (r.s > at) s.appendChild(document.createTextNode(text.slice(at, r.s)));
-    s.appendChild(el('span', 'tok-' + r.cls, text.slice(r.s, r.e)));
-    at = r.e;
-  }
-  if (at < text.length) s.appendChild(document.createTextNode(text.slice(at)));
-  return s;
+  return paintRanges(el('s'), text, lang ? hlTokens(text, lang) : []);
 }
 
 /** Render diff text as hunk rows.

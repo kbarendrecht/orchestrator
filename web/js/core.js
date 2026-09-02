@@ -241,6 +241,14 @@ export function duration(ms) {
   return `${Math.floor(h / 24)}d ${h % 24}h`;
 }
 
+/** Compact age from hours: `now`, `5h`, `2d`. The review card and the queue row
+ *  share the 48h cut-over, so it lives once. */
+export function compactAge(hours) {
+  if (hours < 1) return 'now';
+  if (hours < 48) return `${Math.round(hours)}h`;
+  return `${Math.round(hours / 24)}d`;
+}
+
 // The poll counter each pane captured when its refresh was pressed; the button
 // spins until the live counter moves past it. null = not spinning.
 const spinFloor = { pr: null, review: null };
@@ -309,7 +317,7 @@ export function refreshButton(kind, pollCount, endpoint, polling) {
 const scaleListeners = [];
 export function onScaleChange(fn) { scaleListeners.push(fn); }
 
-export const FS_BASE = 1.155;
+const FS_BASE = 1.155;
 export const ZOOM = { key: 'orch.uiZoom', def: 1, min: 0.8, max: 1.5, step: 0.05 };
 
 /** The user-facing scale, where 1 is the default. */
@@ -496,10 +504,14 @@ export function activeWorkspaceId() {
   return s && !isArchived(s) ? s.workspace : null;
 }
 
+/** The two questions every pane asks the workspace list. */
+export const mainWorkspace = () => snap.workspaces.find((w) => w.is_main);
+export const workspaceById = (id) => snap.workspaces.find((w) => w.id === id);
+
 export function currentWorkspaceId() {
   const s = currentSession();
   if (s) return s.workspace;
-  return snap.workspaces.find((w) => w.is_main)?.id ?? null;
+  return mainWorkspace()?.id ?? null;
 }
 
 export async function newSession(workspace) {
@@ -670,7 +682,7 @@ export function setDrawerCollapsed(v) {
  *  already been and gone by the time we know its id — and the next snapshot may
  *  be a poll away. Waiting for one is what made a new shell take the cursor
  *  sometimes and not others. */
-export function redrawDrawer() {
+function redrawDrawer() {
   for (const fn of drawerListeners) fn(drawerCollapsed);
 }
 

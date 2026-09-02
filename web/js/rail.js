@@ -1,7 +1,7 @@
 // The rail: what is running, what is waiting on you, and the PRs beside it.
 // Twenty-four names, three out; the rest is how a row decides what it says.
 
-import { $, byNewest, call, caret, dotClass, duration, el, isArchived, isConversation, isWaiting, MOD_LABEL, newSession, newWorktree, openMenu, pending, refreshButton, selected, sessionsOf, setSelected, sinceSnap, snap, stateClass, stateLabel, toast, setPendingSelect } from './core.js';
+import { $, byNewest, call, caret, dotClass, duration, el, isArchived, isConversation, isWaiting, mainWorkspace, MOD_LABEL, newSession, newWorktree, openMenu, pending, refreshButton, selected, sessionsOf, setSelected, sinceSnap, snap, stateClass, stateLabel, toast, setPendingSelect } from './core.js';
 import * as Review from './review.js';
 import * as Term from './term.js';
 
@@ -55,7 +55,7 @@ function renderRail() {
   const rail = $('rail');
   rail.replaceChildren();
 
-  const main = snap.workspaces.find((w) => w.is_main);
+  const main = mainWorkspace();
   const worktrees = snap.workspaces.filter((w) => !w.is_main);
 
   // Main is pinned first (§9).
@@ -253,13 +253,13 @@ function prGroup() {
     row.appendChild(el('span', 'num', `#${p.number}`));
     row.appendChild(el('span', 'ttl', p.title, p.title));
 
-    const auto0 = (snap.automation || {})[p.number];
-    const needsResolve0 = p.needs_you;
-    const needsFix0 = p.checks === 'failing' || p.mergeable === 'CONFLICTING';
+    const auto = (snap.automation || {})[p.number];
+    const needsResolve = p.needs_you;
+    const needsFix = p.checks === 'failing' || p.mergeable === 'CONFLICTING';
 
     // A reason chip next to a button just repeats it and steals width from the
     // title, which is the part you actually read.
-    if (!needsResolve0 && !needsFix0) {
+    if (!needsResolve && !needsFix) {
       const why = [];
       if (p.unresolved_capped) why.push('50+ threads');
       if (p.children && p.children.length) why.push(`${p.children.length} stacked`);
@@ -272,8 +272,6 @@ function prGroup() {
     // guard table a gate you read rather than one that trips behind you. A run can
     // also arrive here already going, from a review handing on the CI it is not
     // allowed to fix — still something a person set off, by sending the decisions.
-    const auto = auto0, needsResolve = needsResolve0, needsFix = needsFix0;
-
     if (auto && auto.state === 'running') {
       const b = el('span', 'pract running', 'fixing');
       b.title = 'Jump to the run';
@@ -587,7 +585,7 @@ function sessionRow(s, w) {
      ever be dead, and a greyed "move out of main" on a worktree row reads as the
      app thinking that row is in main — the opposite of what the rail says two
      lines above it. */
-  const mainWs = snap.workspaces.find((x) => x.is_main);
+  const mainWs = mainWorkspace();
   const inMain = s.workspace === mainWs?.id;
   const moveLabel = inMain
     ? 'move out of main'
@@ -712,8 +710,10 @@ async function moveOutOfMain(s) {
     const r = await call(`/api/session/${s.id}/out-of-main`);
     // A relocated session keeps its id, so the dead terminal is still in `terms`
     // under the key the new pty wants — the same reason the swap and resume close it.
-    if (r.session && r.session.session) Term.close(`session:${r.session.session}`);
-    if (r.session && r.session.session) setPendingSelect(r.session.session);
+    if (r.session && r.session.session) {
+      Term.close(`session:${r.session.session}`);
+      setPendingSelect(r.session.session);
+    }
     toast(r.created
       ? `cut ${r.branch} in ${r.workspace}; main is still on ${r.main}`
       : `${r.branch} is in ${r.workspace}; main is on ${r.main}`);
@@ -749,7 +749,7 @@ let swapInFlight = false;
 
 async function swapWithMain(wsId) {
   if (swapInFlight) return toast('a swap is already running — watch the rail', true);
-  const holds = mainHoldsWork(snap.workspaces.find((x) => x.is_main));
+  const holds = mainHoldsWork(mainWorkspace());
   if (!confirm(holds
     ? `Swap branches between main and ${wsId}?\n\n`
       + `main takes this worktree's branch, and this worktree takes main's. `

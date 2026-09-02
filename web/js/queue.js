@@ -3,17 +3,10 @@
 // The first seam to become a real module: five names, one of which leaves. What
 // it needs from elsewhere is now an import list rather than an assumption about
 // what happens to be in scope.
-import { $, caret, el, snap, refreshButton, duration, sinceSnap } from './core.js';
+import { $, caret, compactAge, el, snap, refreshButton, duration, sinceSnap } from './core.js';
 
 let showReviews = true;
 let showBlockedReviews = false;
-
-/** Compact age: `just now`, `5h`, `2d`. */
-function reviewAge(hours) {
-  if (hours < 1) return 'now';
-  if (hours < 48) return `${Math.round(hours)}h`;
-  return `${Math.round(hours / 24)}d`;
-}
 
 /** Why this row is in your queue, when there is a reason worth the width. */
 function reviewReason(r) {
@@ -101,7 +94,7 @@ function renderReviews() {
     a.appendChild(el('span', 'dot' + dot));
     // Age, not the PR number: how long it has waited is what tells you to pick
     // it up. The whole row already links to the PR, so the number earns nothing.
-    const age = el('span', 'num', reviewAge(r.age_hours || 0));
+    const age = el('span', 'num', compactAge(r.age_hours || 0));
     age.title = `#${r.number}`;
     a.appendChild(age);
     a.appendChild(el('span', 'ttl', r.title, r.title));

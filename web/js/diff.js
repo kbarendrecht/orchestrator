@@ -2,7 +2,12 @@
 // drives it. One module because the three call each other; splitting them would
 // only have turned that into circular imports.
 
-import { $, activeWorkspaceId, call, currentSession, currentWorkspaceId, el, get, openMenu, pending, prForWorkspace, snap, toast } from './core.js';
+import { $, activeWorkspaceId, call, currentSession, currentWorkspaceId, el, get, MOD_LABEL, openMenu, pending, prForWorkspace, snap, toast, workspaceById } from './core.js';
+
+// Written back onto the button after a save, so it is spelled from the same
+// platform label the page resolved `data-mod` with — a hardcoded glyph here was
+// the Mac key on every platform.
+const SAVE_LABEL = `Save ${MOD_LABEL} S`;
 
 
 // ---------------------------------------------------------------------------
@@ -102,7 +107,7 @@ function renderFiles() {
   // The diff overlay is opened against a workspace and keeps describing it while
   // it is open, session or no session.
   const wsId = diffState.open ? diffState.ws : activeWorkspaceId();
-  const w = snap.workspaces.find((x) => x.id === wsId);
+  const w = workspaceById(wsId);
   renderDivergence(w);
   const panes = $('filepanes');
   panes.replaceChildren();
@@ -345,18 +350,23 @@ function diffRanges(text) {
   }
   return out;
 }
-function detailEl(text) {
-  const pre = el('pre', 'oqd');
-  const ranges = diffRanges(text);
-  if (!ranges.length) { pre.textContent = text; return pre; }
+/** Fill `node` with `text`, each range wrapped in a `tok-<cls>` span and the rest
+ *  plain. Ranges do not overlap. No ranges → one text node: the same content minus
+ *  colour, never an error. Shared by every painter of highlighted code, because
+ *  three copies of this loop had already started to drift. */
+export function paintRanges(node, text, ranges) {
+  if (!ranges.length) { node.textContent = text; return node; }
   let at = 0;
   for (const r of ranges) {
-    if (r.s > at) pre.appendChild(document.createTextNode(text.slice(at, r.s)));
-    pre.appendChild(el('span', 'tok-' + r.cls, text.slice(r.s, r.e)));
+    if (r.s > at) node.appendChild(document.createTextNode(text.slice(at, r.s)));
+    node.appendChild(el('span', 'tok-' + r.cls, text.slice(r.s, r.e)));
     at = r.e;
   }
-  if (at < text.length) pre.appendChild(document.createTextNode(text.slice(at)));
-  return pre;
+  if (at < text.length) node.appendChild(document.createTextNode(text.slice(at)));
+  return node;
+}
+function detailEl(text) {
+  return paintRanges(el('pre', 'oqd'), text, diffRanges(text));
 }
 
 function lineEl(row, side) {
@@ -724,7 +734,7 @@ function closeEditor(silent) {
   editState.on = false;
   editState.dirty = false;
   $('ovsave').hidden = true;
-  $('ovsave').textContent = 'Save ⌘S';
+  $('ovsave').textContent = SAVE_LABEL;
   $('ovedit').textContent = 'Edit';
   renderDiff();
   return true;
@@ -752,7 +762,7 @@ async function saveEditor() {
   }
   editState.version = out.version;
   editState.dirty = false;
-  $('ovsave').textContent = 'Save ⌘S';
+  $('ovsave').textContent = SAVE_LABEL;
   toast('saved');
   // Re-diff so the changeset reflects the write.
   await loadSummary();

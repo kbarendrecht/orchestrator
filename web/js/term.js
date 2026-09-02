@@ -169,7 +169,7 @@ function openTerm(target, parent) {
     `${WS_BASE}/ws/pty?token=${encodeURIComponent(TOKEN)}&target=${encodeURIComponent(target)}`
   );
   sock.binaryType = 'arraybuffer';
-  const entry = { term, fit, sock, host, ready: false };
+  const entry = { term, fit, sock, host };
 
   sock.onopen = () => {
     // The centre pane's two halves, and they fail separately: `attach` is the
@@ -177,7 +177,6 @@ function openTerm(target, parent) {
     // between them is the ring buffer being written into a DOM renderer; a long
     // `attach` is the session not having been spawned yet.
     mark('attach');
-    entry.ready = true;
     // A fresh socket knows nothing about the size, whatever the last one was told.
     entry.sent = null;
     entry.box = null;
@@ -210,7 +209,6 @@ function openTerm(target, parent) {
     mark('paint');
     reportBoot();
   };
-  sock.onclose = () => { entry.ready = false; };
 
   term.onData((d) => {
     if (sock.readyState === WebSocket.OPEN) sock.send(new TextEncoder().encode(d));
@@ -280,7 +278,7 @@ function resize(entry) {
   // instead of costing a resize message per frame of a drag.
   if (entry.sent && entry.sent.rows === rows && entry.sent.cols === cols) return;
   entry.sent = { rows, cols };
-  if (entry.ready && entry.sock.readyState === WebSocket.OPEN) {
+  if (entry.sock.readyState === WebSocket.OPEN) {
     entry.sock.send(JSON.stringify({ type: 'resize', rows, cols }));
   }
 }
@@ -351,4 +349,4 @@ function applyScale() {
   refit();
 }
 
-export { showTerm as show, closeTerm as close, resize, termFontSize as fontSize, refit, applyScale };
+export { showTerm as show, closeTerm as close, refit, applyScale };
