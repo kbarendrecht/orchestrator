@@ -6,6 +6,48 @@ this file, which churned it from every build; they now go to a gitignored
 
 ## Next
 
+- **Restart after a self-upgrade cannot find the binary, so the app just goes
+  away.** Reported from the launcher on 2026-09-02 and diagnosed the same morning:
+  press Upgrade, press Restart, and nothing comes back. The journal has the whole
+  thing in one line, `could not restart: No such file or directory (os error 2)`,
+  which is `relaunch`'s `spawn` failing rather than anything about windows or the
+  instance lock.
+
+  The mechanism, measured rather than reasoned about:
+  1. `mise upgrade` installs each version in its own directory and **removes the old
+     one**, so the directory the running process was started from is gone by the
+     time you press Restart. Confirmed on this machine: `2026.9.3` is absent from
+     `installs/github-kbarendrecht-orchestrator`, and the upgrade logged at 09:48:14
+     is what took it.
+  2. `current_exe` is a readlink of `/proc/self/exe`, and Linux answers a deleted
+     binary with the path plus a literal ` (deleted)` suffix. Verified with a copy
+     of `sleep`: before the delete the link reads the path, after it reads
+     `<path> (deleted)`.
+  3. `self_update::stable_exe` is then handed
+     `…/installs/<tool>/2026.9.3/orchestrator-desktop (deleted)`. It swaps the
+     version component for `latest` correctly, but the file name still carries the
+     suffix, so `…/latest/orchestrator-desktop (deleted)` does not exist and the
+     `latest.exists()` guard hands back **the deleted path unchanged**. Driven
+     against the real function: a live path resolves to `latest`, the suffixed one
+     comes back as itself and `exists()` is false.
+  4. `relaunch` spawns that path, gets `ENOENT`, logs it and exits anyway, because
+     the shutdown has already run. Six child processes were killed at 09:48:17, one
+     second before the failed spawn.
+
+  So the guard that exists to keep a version-pinned path out of anything durable is
+  defeated by the one case it matters most in, and it fails in the direction that
+  loses the app. The fix is to strip a trailing ` (deleted)` before the swap, or to
+  resolve `latest` first and only fall back to `current_exe`; either way
+  `stable_exe` wants a test with a suffixed input, since that is the only shape
+  that reaches this.
+
+  **Two things to check while fixing it.** The launcher entry is written from the
+  same `launcher_target`, so an upgrade can also write a `.desktop` file naming a
+  deleted path, which is the failure CLAUDE.md already records as the worst of the
+  three. And `relaunch` currently spawns and then trusts: it should verify the path
+  exists *before* the daemon shuts down its sessions, so a restart that cannot
+  happen refuses instead of taking six agents with it.
+
 - **`rerequest()` has never run.** The fixture drives everything else in the review
   flow (`mise run fixture`, `docs/fixture-pr.md`), but its threads are posted by
   `github-actions[bot]` and a bot cannot be a requested reviewer. That one button
@@ -104,6 +146,78 @@ this file, which churned it from every build; they now go to a gitignored
   ever been exercised against canned data. Blocked on the fixture, which needs
   Actions minutes. `/resolve` stays whatever the answer is — it is the fallback, not
   the thing being replaced.
+
+- **One window, several daemons: make the repository switcher switch.** The header
+  button exists and its only behaviour is a toast reading "not implemented yet".
+  The shape that fits: keep **one checkout per daemon** and run several daemons
+  *inside the one Tauri process*, each on its own port and its own config dir, with
+  the webview navigating between them when you pick a repo.
+
+  **Why not a sidecar, decided by the window rather than by taste.** The frameless
+  titlebar sends its commands over HTTP to the daemon, which drives Tauri through
+  `AppState.window: Option<Arc<dyn WindowControl>>`. A daemon in a *child process*
+  has no Tauri handle, so minimise, maximise, close and the eight resize edges all
+  stop working. Daemons in-process can share the same `Arc<dyn WindowControl>`,
+  which is `Send + Sync` behind an Arc and attached per `AppState`, so the titlebar
+  keeps working across a switch. That single fact rules out the sidecar and rules in this.
+
+  **Why not one daemon holding many repos.** `MAIN` is a workspace *id*, used 93
+  times, and `cfg.main_checkout` 67. With several checkouts the id stops being
+  unique, so `claim_main`, `release_main`, `reclaim_main`, the swap, both PR flows
+  and the rail's pinned group all need a repo qualifier. That is the session model,
+  which is also what has to change to host a second *agent*, so it would spend that
+  budget on repo count instead.
+
+  **The switch itself is nearly free.** `GET /` is deliberately not token-gated and
+  substitutes the serving daemon's own token into the page, so pointing the webview
+  at another port hands the SPA a complete, correctly-tokened session. No IPC and no
+  shared state: checked, and the only process globals are a test-only mutex in
+  `patch.rs` and an atomic that already lives inside `AppState`.
+
+  **What it costs.**
+  1. **`Config::config_dir()` is a process global**, reading `ORCHD_CONFIG_DIR`, and
+     two daemons need two of them, so it moves onto the `Config`. 21 call sites
+     across `instance`, `store`, `spawn`, `worktree`, `reviews`, `story`, `triage`
+     and `config`. Mechanical, but it touches the instance lock and every durable
+     path, so it wants care rather than a sweep.
+  2. **Shared process fate**, which is the isolation given up: a crash, an OOM or a
+     self-upgrade restart takes every repo's live sessions rather than one repo's.
+     The per-repo instance lock still holds, and still refuses a second app on a
+     checkout this one already has open.
+  3. A navigate command beside the existing `WindowCmd` set, and a config key
+     listing known checkouts so the picker has something to offer.
+
+  Until it is built the button stays as it is. `ORCHD_CONFIG_DIR` already gives
+  several repos today by starting a second app, which is how `mise run fixture` runs
+  a whole daemon beside yours, and `config::session_env` injects `ORCH_URL` with the
+  spawning daemon's own port, so an agent's `orch` can never reach the wrong one.
+
+- **Sibling worktrees, for the agent that is not Claude Code.** Not wanted for
+  Claude, which is the whole reason it is not built: `.claude/worktrees` is Claude
+  Code's own `--worktree` location, so nesting is free and delegation works. Another
+  tool will not put them there, and `docs/workspace-isolation.md` already names this
+  as the condition for reopening the decision ("Reconsider if a non-Claude agent is
+  ever hosted"). Sibling trees (`../feat`) are the wider convention, per the research
+  in `docs/research/worktree-docker.md`.
+
+  Today a tree outside `worktrees_dir` is not managed at all: `spawn::worktree_name_of`
+  returns `None` and the daemon logs "ignoring worktree outside the managed dir". So a
+  repo whose own `WorktreeCreate` hook puts trees beside the checkout gets a daemon
+  that manages nothing, and says so once, in a log.
+
+  **What it costs.** The config shape, since `worktrees_subdir` is sanitised to a
+  relative in-main path and would have to admit an absolute one outside. The in-main
+  guard several flows lean on. And a re-check of path attribution, though
+  `workspace_for_path` is longest-match over absolute paths and should hold as it is.
+  One thing gets *simpler*: main's `git status` would no longer contain the worktrees,
+  so the porcelain exclude prefix and the managed block in `.git/info/exclude` stop
+  being needed for that layout.
+
+  **What it loses.** The gitdir moves outside the checkout, which is what a future
+  in-container mode would need inside the mount — devcontainers had to add
+  `--mount-git-worktree-common-dir` for exactly this. So this decision and the
+  container entry below pull in opposite directions, and whichever is built first
+  should say so.
 
 - **Containers and ports, if orchd ever hosts a heavier repo.**
   `docs/workspace-isolation.md` has the decision record and the shape to build,
@@ -368,6 +482,133 @@ this file, which churned it from every build; they now go to a gitignored
   "the log follower exited", which says nothing about the service. It does not even
   avoid the problem — stopping a service is still not killing a pty — so it needed a
   stop mechanism too.
+
+- **`canonicalize(p).unwrap_or_else(|_| p.into())` still has five inline copies**,
+  in `state.rs` (twice), `git.rs`, `config.rs` and `main.rs`. `hooks.rs` had three of
+  the eight and now has one `resolved()` that all of it goes through, which is what
+  turned a macOS-only fault into a test that runs everywhere: `session_start`
+  recorded the reported cwd raw while `session_end` resolved the one it compared, so
+  on a Mac a session's own ending read as a hook from a tree it had left. The
+  remaining five are in modules that would have to import each other to share one
+  helper, so the real home is a `util` the tree does not have yet. Worth doing the
+  day a sixth appears, not before.
+
+- **Archived rows still pile up, and that half is deliberately not automated.**
+  The trees are handled, in two places rather than one. `worktree_retention_days`
+  (default 60, `0` off, editable in settings) removes the worktree of a conversation
+  nobody came back to, hourly, and also one that **no conversation points at at
+  all**. Age is the transcript's last write (`store::last_used`), not the session's
+  start, so a conversation kept open for weeks is not old the day after you stop; an
+  orphaned tree has no transcript to read and is dated by its own directory. And `spawn::watch_session_exit` now removes the tree of a
+  turnless session as it forgets its row, which is where that population came from:
+  32 of 61 trees on this machine were rows the daemon had deleted and trees it had
+  left. Everything goes through the same six-check preflight the button uses.
+
+  Two measurements worth keeping. The per-worktree index mtime looks like the better
+  "last used" signal and is worthless: the daemon's own reconcile runs `git status`
+  in every tree and refreshes it, 0.0 days for all 32, while the directories read 8
+  to 19 days. And the churn here is about **three trees a day at ~230 MB each**, so
+  retention is a disk budget: 60 days is roughly 190 trees and 44 GB, 14 days is
+  roughly 45 and 10 GB. Nothing on this machine is older than 19 days, so the
+  60-day default reaps nothing for the first two months and then holds a steady
+  state. Lower it if the budget is the point.
+
+  The **records** were left out on purpose, and the reasoning is the thing to keep:
+  a tree is rebuildable (`revive`, at the same absolute path, from the recovery
+  record the preflight insists on) so a wrong retention costs one rebuild, while
+  `forget_session` deletes the daemon's archived transcript and cannot be undone. A
+  timer may take the reversible half only. An orphaned tree is the exception that
+  proves it: nothing can resume it and `git worktree remove` leaves its branch, so
+  there is nothing to lose in the first place.
+
+  So the pile of rows is still there, and the honest answer to it is presentation
+  rather than deletion: group the archive by week and put the PR number on the row,
+  which is the entry below. Revisit automatic record deletion only if that is not
+  enough, and if it ever happens, `TranscriptOnly` rows are the only ones with an
+  argument.
+
+- **The archive is a list you cannot find anything in.** 91 rows behind one caret,
+  each carrying a name and an age, with no search, no grouping by date and no PR
+  number. `archivedRow` says out loud that this is the list you scan weeks later,
+  and scanning is the one thing it does not support. Group by week, and put the PR
+  number on the row where there is one.
+
+- **The main checkout is one repo's constraint, drawn as a universal concept.** The
+  reason it is privileged is real and outlives this repo: one checkout hosts one
+  docker stack, one dev URL, one database, so the tree that cannot be duplicated
+  cannot be handed to two agents. But that is a *per-repo* fact, and the UI states
+  it five times whether or not the repo in front of it has a stack: a rail group
+  with its own header and `+`, a chord (`MOD Shift N`), a PR menu item, a drawer
+  badge, and three menu labels for one action (`move to main`, `swap branch with
+  main`, `move out of main`) chosen by git state the reader cannot see. On a repo
+  with no `main_processes` the whole group is chrome around a checkout whose only
+  distinction is having no worktree.
+
+  The shape worth considering: keep the lock and the exclusivity, drop the category.
+  One list of workspaces with main pinned and a lock glyph, its reason read from
+  `workspace_notes.main`, and one verb for the move whose confirm says what happens
+  to main's current branch. Fix the vocabulary in the same pass:
+  `docs/workspace-isolation.md` says never bare "main", and the menu items and every
+  toast say exactly that.
+
+- **Six places the app still assumes this monorepo, all in what you see rather than
+  in what it does.** The config is agnostic and "make it run somewhere other than
+  this machine" above closed the mechanical half. What is left is presentation, and
+  each of these reads as a fault on a repo that simply is not shaped like this one.
+  - **The drawer's stack badge is docker, hardcoded.** `stack_running` polls `docker
+    compose ps` and `renderDrawer` draws `stack up` / `stack down` on every
+    workspace, so a repo with no compose file gets a permanent red dot. It also
+    contradicts `docs/workspace-isolation.md`, which records that orchd carries no
+    container config at all and calls that the portable default. Managed-process
+    health already comes from `ok_patterns`; read it from there, or draw nothing.
+  - **The vendored prompts name this repo's task runner.** `mise run
+    pre-commit:run` is in `commands/fix-pr.md`, `commands/resolve.md` and
+    `commands/review-session.md`, hedged as "where it exists", which is a prompt
+    guessing at a repo. A `checks_command` rendered like `{{UPSTREAM}}` is the fix.
+  - **They name Shortcut in prose too.** `mcp__shortcut__stories-search` and
+    `app.shortcut.com` are written into `commands/resolve.md` and
+    `commands/review-session.md`, and they render for a repo with `tracker: none`.
+    The tracker-seam entry above owns the Rust half; these two files are the half it
+    does not mention.
+  - **Boot warnings never reach the window.** `machine::check` finds a missing
+    `gh`, `node` or `claude`, and a tracker whose MCP server the repo does not
+    declare, and every one becomes a single `tracing::warn!` in `lib.rs`. `Warning`
+    is not in the snapshot at all, so a new user reads `unavailable` and `off` with
+    the cause only in a log they do not have open. That is the case the module's own
+    docs say it exists for.
+  - **The repo switch button's only behaviour is a refusal.** It toasts "switching
+    repositories is not implemented yet". Deliberate, and the markup says why, but a
+    control that can only say no is worse than the header it replaced. Hide it until
+    switching exists.
+  - **Half the settings have no field.** `env_source`, `allow_several_in_main`,
+    `workspace_notes`, `worktree_init` and `shared_worktree_paths` are config-file
+    only. Fine for the operational ones, wrong for `workspace_notes` and
+    `worktree_init`, which are two of the few things a *new* repo has to say. The
+    Worktree setup help text also explains itself in terms of Claude Code's
+    `WorktreeCreate` hook, which is a sentence about this repo.
+
+- **A repo with nothing configured still pays for every pane.** No reviews, no
+  processes, no compose file, and the frame still draws `REVIEW QUEUE off`, `stack
+  down` and a `Processes + Shell` bar. Each label is honest on its own and the sum
+  of them is a window that looks broken on a fresh install. Collapse a pane whose
+  feature is unconfigured rather than labelling it.
+
+- **Nine `confirm()` and `prompt()` boxes, in a window that draws its own
+  titlebar.** The swap confirm is sixty words of system dialog, and naming a
+  worktree is a shift-click on a `+` followed by a `prompt()`, which is a gesture
+  nobody finds. The rail already holds the pattern that replaced one of these:
+  `renameSession` edits the row in place and shows the fallback as a placeholder.
+  The other half of the same problem is that the rule is not one rule. A swap asks,
+  `open in main checkout` moves main's branch without asking, and `fix` starts a run
+  that force-pushes without asking, which CLAUDE.md already notes is easy to fire by
+  accident. Either the gate is "it changes a checkout or it pushes", or there is no
+  gate.
+
+- **Two review verbs on every PR row until the beta gate closes.** `resolve` and
+  `resolve in UI [beta]` sit next to each other in `prMenu`, which asks the reader
+  to pick between two implementations of one intent. The gate is the overlay entry
+  above and is blocked on a real drive; until it closes, the beta item could sit
+  behind a setting rather than in the menu everybody uses.
 
 ## Decisions worth revisiting
 

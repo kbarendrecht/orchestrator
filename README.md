@@ -173,6 +173,7 @@ back to `config.json`; changes take effect on restart.
 | `default_language` | `English` | the language the agent *writes* replies and stories in. Prompts and code stay English regardless. |
 | `shared_worktree_paths` | *(empty)* | directories inside a worktree that are allowed to be symlinks *out* of it, e.g. a plan dir shared back to main. The editable diff pane refuses every other path that resolves outside the workspace. |
 | `worktree_init` / `worktree_setup` | *(empty)* | two commands run in every worktree the daemon cuts itself. See below. |
+| `worktree_retention_days` | `60` | remove the worktree of a conversation not worked in for this many days, hourly, and one that no conversation points at at all. Age is the transcript's last write, not the session's start, so a conversation you kept open for weeks is not old the day after you stop; an orphaned tree is dated by its own directory. **The tree, never the row**: the session stays in the rail and a resume rebuilds the tree, so this reclaims disk rather than losing work, and it removes nothing the teardown preflight would refuse — a dirty tree, an unpushed commit, a live session or a running process all keep it. `0` turns it off. It exists because `claude --worktree` removes its own tree when its session ends and never gets to: the daemon owns the pty and kills it. |
 
 The table above is the set most repos touch. The rest are operational, and most
 repos leave them at the default:
@@ -472,8 +473,10 @@ mise run fixture                         # a throwaway PR to drive the review fl
 app's own config and prints a tokened URL. `mise run shot` drives Chrome while the
 app runs in **WebKitGTK**, so it is good for layout and not the last word.
 
-[`CLAUDE.md`](CLAUDE.md) has the traps, [`TODO.md`](TODO.md) what is open, and
-[`docs/spec.md`](docs/spec.md) the requirements the `(§N)` comments point at.
+[`CLAUDE.md`](CLAUDE.md) has the traps, [`TODO.md`](TODO.md) what is open,
+[`docs/assumptions.md`](docs/assumptions.md) what the daemon assumes and what breaks
+when each is false, and [`docs/spec.md`](docs/spec.md) the requirements the `(§N)`
+comments point at.
 
 Releases are CalVer (`year.month.n`): bump `Cargo.toml`, `desktop/Cargo.toml`,
 `desktop/tauri.conf.json` and `Cargo.lock`, then tag `v<version>`. The workflow
