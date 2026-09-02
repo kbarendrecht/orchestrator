@@ -785,6 +785,9 @@ body.row-resizing{cursor:row-resize;user-select:none}
   font-family:var(--mono);font-size:calc(11.5px * var(--fs));
 }
 .settings-in:focus{outline:none;border-color:var(--focus)}
+/* A checkbox in a settings row: pushed right like `.settings-in`, but never
+   stretched to its 62% width. */
+.settings-check{margin-left:auto}
 /* A `select` takes its colours from the platform unless every part is named, so
    on a dark card WebKitGTK renders black-on-black. The option list is drawn by
    the OS and needs telling separately. */

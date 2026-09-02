@@ -315,6 +315,19 @@
       tree, so this frees disk rather than losing work. <code>0</code> never removes
       anything.</p>
 
+    <div class="settings-group">Sessions</div>
+
+    <label class="settings-field">
+      <span class="settings-k">Several sessions in main</span>
+      <input class="settings-check" id="setseveral" type="checkbox">
+    </label>
+    <p class="settings-help">Let the main checkout hold more than one live session at
+      a time. Off, because one checkout is one working tree and one git index: two
+      agents there share both, the changed-files pane merges their edits without
+      saying who wrote what, and one agent's <code>git add</code> stages the other's
+      work. A worktree is the answer that carries none of those costs. Worktrees are
+      always one at a time, whatever this says.</p>
+
     <div class="settings-group">Processes</div>
 
     <div class="settings-field settings-procs-head">

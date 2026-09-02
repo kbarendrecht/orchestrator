@@ -580,12 +580,13 @@ this file, which churned it from every build; they now go to a gitignored
     repositories is not implemented yet". Deliberate, and the markup says why, but a
     control that can only say no is worse than the header it replaced. Hide it until
     switching exists.
-  - **Half the settings have no field.** `env_source`, `allow_several_in_main`,
-    `workspace_notes`, `worktree_init` and `shared_worktree_paths` are config-file
-    only. Fine for the operational ones, wrong for `workspace_notes` and
-    `worktree_init`, which are two of the few things a *new* repo has to say. The
-    Worktree setup help text also explains itself in terms of Claude Code's
-    `WorktreeCreate` hook, which is a sentence about this repo.
+  - **Half the settings have no field.** `env_source`, `workspace_notes`,
+    `worktree_init` and `shared_worktree_paths` are config-file only. Fine for the
+    operational ones, wrong for `workspace_notes` and `worktree_init`, which are two
+    of the few things a *new* repo has to say. `allow_several_in_main` was in this
+    list and now has a checkbox under Sessions. The Worktree setup help text also
+    explains itself in terms of Claude Code's `WorktreeCreate` hook, which is a
+    sentence about this repo.
 
 - **A repo with nothing configured still pays for every pane.** No reviews, no
   processes, no compose file, and the frame still draws `REVIEW QUEUE off`, `stack

@@ -374,7 +374,7 @@ impl WorkspaceNotes {
 /// The subset of [`Config`] the settings panel reads and writes.
 ///
 /// A distinct struct so the editable surface is explicit: a POST from the panel
-/// can set these eight and nothing else — not the port, the token paths, or the
+/// can set these nine and nothing else — not the port, the token paths, or the
 /// forge. Field names match the `config.json` keys they persist to.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Settings {
@@ -386,6 +386,7 @@ pub struct Settings {
     pub main_processes: Vec<ManagedSpec>,
     pub worktree_setup: Vec<String>,
     pub worktree_retention_days: u32,
+    pub allow_several_in_main: bool,
 }
 
 impl Settings {
@@ -399,6 +400,7 @@ impl Settings {
             main_processes: cfg.main_processes.clone(),
             worktree_setup: cfg.worktree_setup.clone(),
             worktree_retention_days: cfg.worktree_retention_days,
+            allow_several_in_main: cfg.allow_several_in_main,
         }
     }
 
@@ -413,7 +415,7 @@ impl Settings {
         Ok(())
     }
 
-    /// Set these eight keys on a raw `config.json` string, returning the new file
+    /// Set these nine keys on a raw `config.json` string, returning the new file
     /// text. Split from [`Settings::write`] so it is testable without the real
     /// config path.
     pub fn merge_into(&self, raw: &str) -> Result<String> {
@@ -432,6 +434,10 @@ impl Settings {
         obj.insert(
             "worktree_retention_days".into(),
             serde_json::to_value(self.worktree_retention_days)?,
+        );
+        obj.insert(
+            "allow_several_in_main".into(),
+            serde_json::to_value(self.allow_several_in_main)?,
         );
         Ok(serde_json::to_string_pretty(&v)? + "\n")
     }
@@ -1132,6 +1138,7 @@ mod tests {
             main_processes: vec![],
             worktree_setup: vec![".claude/hooks/worktree-setup".into()],
             worktree_retention_days: 60,
+            allow_several_in_main: false,
         };
         let out = s.merge_into(r#"{"main_checkout":"/tmp/x","port":8080}"#).expect("merge");
         let cfg = Config::parse(&out).expect("re-parse");

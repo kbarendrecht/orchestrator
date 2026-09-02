@@ -44,6 +44,7 @@ async function loadConfigInto() {
   // Numbers go in as numbers: `value = 0` on a number input renders "0", which is
   // the setting being off said out loud, where '' would read as unset.
   ctl('setretain').value = String(cfg.worktree_retention_days ?? 0);
+  ctl('setseveral').checked = !!cfg.allow_several_in_main;
   procDraft = (cfg.main_processes || []).map((p) => ({
     name: p.name || '',
     command: (p.command || []).join(' '),
@@ -154,6 +155,7 @@ async function saveSettings() {
     // A blank box means "keep forever" rather than NaN, and a negative number is
     // not a shorter retention.
     worktree_retention_days: Math.max(0, Math.trunc(Number(ctl('setretain').value) || 0)),
+    allow_several_in_main: !!ctl('setseveral').checked,
     main_processes: procDraft.map((p) => ({
       name: p.name.trim(),
       command: argv(p.command),
