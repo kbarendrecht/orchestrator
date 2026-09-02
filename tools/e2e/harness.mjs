@@ -129,6 +129,7 @@ export async function sandbox({
   }
   for (const d of Object.values(dirs)) fs.mkdirSync(d, { recursive: true })
   fs.writeFileSync(path.join(root, 'turns'), String(turns))
+  const turnsNow = () => Number(fs.readFileSync(path.join(root, 'turns'), 'utf8').trim())
 
   // The repo under test. One commit, one extra branch, and an `origin` that is a
   // real local clone — the daemon fetches, and a missing remote turns ordinary
@@ -328,12 +329,23 @@ export async function sandbox({
     /** Wait until a session is idle at its prompt.
      *
      *  `your_turn` and not `working`: a session mid-turn is the one thing the swap
-     *  refuses, so a looser wait makes a flow race its own setup. */
+     *  refuses, so a looser wait makes a flow race its own setup.
+     *
+     *  And not `ready` while the agent still has turns to take. `SessionStart`
+     *  parks a fresh session at `your_turn`/`ready` before its first prompt, and
+     *  a flow that took that for settled acted on a session whose turn was still
+     *  in flight: the swap refused an agent "mid-turn", a kill landed "before its
+     *  first turn" and the daemon forgot the session, and `has_transcript` read
+     *  false. A turnless agent has nothing else to reach, so `ready` is its rest. */
     settled: (id, want = ['your_turn']) =>
       until(`session ${id.slice(0, 8)} to reach ${want.join('|')}`, async () => {
         const s = await state()
         const found = s.sessions.find((x) => x.id === id)
-        return found && want.includes(found.state.state) ? found : null
+        if (!found || !want.includes(found.state.state)) return null
+        if (found.state.state === 'your_turn' && found.state.reason === 'ready' && turnsNow() > 0) {
+          return null
+        }
+        return found
       }),
 
     /** Wait until a session's first turn is on disk.

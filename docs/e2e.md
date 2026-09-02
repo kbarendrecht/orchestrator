@@ -87,6 +87,12 @@ at the far end of a relocation.
 
 `t.settled` waits for `your_turn`, not `working`, deliberately: a session mid-turn
 is the one thing a swap refuses, so a looser wait makes a flow race its own setup.
+It also refuses `your_turn`/`ready` while the agent still has turns to take:
+`SessionStart` parks a fresh session there before its first prompt, and taking
+that for settled once failed five flows at once — a swap refused an agent
+"mid-turn", a kill landed "before its first turn" and the daemon forgot the
+session, and `has_transcript` read false. Only a turnless agent (`turns: 0`)
+settles at `ready`.
 
 ## What it does not cover
 
