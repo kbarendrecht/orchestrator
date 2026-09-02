@@ -360,10 +360,12 @@ this file, which churned it from every build; they now go to a gitignored
   modifier is `⌘`; and no Finder entry at all from a mise install.
 
   What is still unanswered there:
-  - **Scrolling feels sluggish, and halts.** Two of the fixes above plausibly
-    explain it (hidden terminals were being parsed, and the rail rebuilt at 1 Hz),
-    but that is not confirmed. If it survives 2026.9.3, the next suspect is the DOM
-    renderer — see the WebGL decision below, whose evidence is entirely WebKitGTK.
+  - ~~**Scrolling feels sluggish, and halts.**~~ Answered, and it was neither
+    suspect: xterm cuts wheel deltas under 50px to 30% and passes only whole
+    lines, so a slow trackpad drag needs ~4.6 events per line while a mouse needs
+    one. `term.js` owns the wheel now. Typing lag was a separate story with three
+    causes of its own — the DOM renderer on Retina, an uncoalesced board render,
+    and `TCP_NODELAY` never being set.
   - **Chrome::Overlay's traffic lights and `open` for URLs** are written-not-run.
   - The desktop crate still cannot be cross-checked from Linux
     (`objc2-exception-helper` wants a real SDK); `check.yml` on macos-14 is the
@@ -648,18 +650,22 @@ this file, which churned it from every build; they now go to a gitignored
   than failing, and the transcript slug rule has already been wrong once, so a
   rail that goes back to reading `dfafdf` everywhere is the symptom to look for.
 
-- **No WebGL renderer in the desktop window.** Glyphs came back as garbage that a
+- **No WebGL renderer under WebKitGTK.** Glyphs came back as garbage that a
   scroll or a selection cleaned up. Two narrower fixes did not hold: clearing the
   glyph atlas and refreshing after every refit, and disposing the addon on context
-  loss. So the canvas is gone in the webview and xterm draws real text, which
-  cannot garble; a browser tab keeps the fast path.
+  loss. So the canvas is gone under that engine and xterm draws real text, which
+  cannot garble.
 
-  **The evidence is entirely WebKitGTK, and macOS is not WebKitGTK.** `CHROME` is
-  the test, so a Mac gets the DOM renderer on the strength of a bug measured on
-  Linux, and the first Mac user reports scrolling that is sluggish and halts. The
-  cheap experiment is one condition — allow WebGL when the platform is macOS — and
-  the question it answers is whether WKWebView garbles glyphs the way WebKitGTK
-  does. Only a Mac can answer it.
+  **macOS now takes the fast path**, which was the cheap experiment this entry
+  asked for: the condition was `CHROME` alone, so a Mac got the DOM renderer on
+  the strength of a bug measured on Linux. What is still open is the question only
+  a Mac can answer — whether WKWebView garbles glyphs the way WebKitGTK does. If
+  it does, the symptom is noise that a scroll cleans up, and the fix is to drop
+  `IS_MAC` from that condition in `term.js`.
+
+  The *scrolling* half of this entry is answered and was never the renderer: xterm
+  damps sub-50px wheel deltas to 30% and drops the remainder, which is every event
+  of a slow trackpad drag. `term.js` takes the wheel over instead.
 
   The cost of the DOM renderer is now partly measured: parsing into a *hidden*
   terminal cost about five times a visible one under WebKit (172-188 ms a frame

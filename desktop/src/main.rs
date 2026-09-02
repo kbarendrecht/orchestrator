@@ -111,6 +111,94 @@ fn adopt_login_path() {
     if std::io::stdin().is_terminal() || std::env::var_os(ADOPTED).is_some() {
         return;
     }
+    /* **The cache is here because this is on the critical path of the window.**
+       A `.zshrc` that activates a tool manager costs one to three seconds, and
+       the window cannot open until it answers. So a remembered answer is used
+       when there is one, and the shell is asked again *afterwards* only to
+       rewrite the file for next time.
+
+       Why the refresh cannot apply itself: `set_var` is process-global and
+       unsound beside other threads, which is why this whole function runs before
+       the runtime, the daemon and every pty exist. A background refresh that
+       called it would be exactly the thing that ordering exists to prevent. So
+       the refresh writes the file and nothing else, and a changed rc file takes
+       effect on the *next* launch. One launch of lag on a file most people edit
+       once a year, against seconds off every start. */
+    if let Some(cached) = cached_login_path() {
+        apply_login_path(&cached);
+        tracing::info!("adopted the remembered login PATH; refreshing it for next time");
+        // Not a tokio task: there is no runtime yet, and it must not become one
+        // — see above. A bare thread, detached, doing file IO and no more.
+        std::thread::spawn(|| {
+            if let Some(fresh) = ask_login_path() {
+                write_cached_login_path(&fresh);
+            }
+        });
+        return;
+    }
+    // First launch on this machine, or the cache was cleared. Pay for it once.
+    let Some(theirs) = ask_login_path() else {
+        return;
+    };
+    apply_login_path(&theirs);
+    write_cached_login_path(&theirs);
+    tracing::info!("adopted the login shell's PATH");
+}
+
+/// Put a PATH into this process, keeping what it already had.
+fn apply_login_path(theirs: &str) {
+    let current = std::env::var_os("PATH").unwrap_or_default();
+    let merged = merge_paths(theirs, &current);
+    std::env::set_var("PATH", &merged);
+    std::env::set_var(ADOPTED, "1");
+}
+
+/// Where the remembered PATH lives. Beside the config, so `ORCHD_CONFIG_DIR`
+/// moves it with everything else durable.
+fn login_path_cache() -> Option<std::path::PathBuf> {
+    orchd::config::Config::config_dir()
+        .ok()
+        .map(|d| d.join("login-path"))
+}
+
+/// The remembered PATH, if it still looks like one.
+///
+/// Sanity-checked rather than trusted: a truncated or hand-edited file would
+/// otherwise put junk in front of every lookup the daemon makes, and the failure
+/// would be "`claude` not found" with no hint where it came from.
+fn cached_login_path() -> Option<String> {
+    let raw = std::fs::read_to_string(login_path_cache()?).ok()?;
+    usable_path(&raw)
+}
+
+/// Does this file's contents look like a PATH worth adopting?
+///
+/// Its own function so the rule can be tested without a config dir. A truncated
+/// or hand-edited cache would otherwise go in front of every lookup the daemon
+/// makes, and the symptom would be "`claude` not found" with nothing pointing at
+/// a file nobody remembers writing.
+fn usable_path(raw: &str) -> Option<String> {
+    let path = raw.trim();
+    (!path.is_empty() && path.contains('/')).then(|| path.to_string())
+}
+
+fn write_cached_login_path(path: &str) {
+    let Some(file) = login_path_cache() else {
+        return;
+    };
+    if let Some(dir) = file.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    if let Err(e) = std::fs::write(&file, format!("{path}\n")) {
+        tracing::debug!("could not remember the login PATH: {e}");
+    }
+}
+
+/// Ask the user's shell what PATH it would have given us.
+///
+/// `-lic` rather than `-lc`: a login shell reads `.zprofile`, but most people set
+/// PATH in `.zshrc`, which only an *interactive* shell reads.
+fn ask_login_path() -> Option<String> {
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
     let home = std::env::var("HOME").unwrap_or_else(|_| "/".into());
     let argv = [
@@ -124,19 +212,17 @@ fn adopt_login_path() {
         Ok(out) => out,
         Err(e) => {
             tracing::warn!("could not ask the login shell for PATH: {e:#}");
-            return;
+            return None;
         }
     };
     let said = String::from_utf8_lossy(&out.stdout);
-    let Some(theirs) = path_between_marks(&said) else {
-        tracing::warn!("the login shell printed no PATH; keeping the one we were given");
-        return;
-    };
-    let current = std::env::var_os("PATH").unwrap_or_default();
-    let merged = merge_paths(theirs, &current);
-    std::env::set_var("PATH", &merged);
-    std::env::set_var(ADOPTED, "1");
-    tracing::info!("adopted the login shell's PATH");
+    match path_between_marks(&said) {
+        Some(p) => Some(p.to_string()),
+        None => {
+            tracing::warn!("the login shell printed no PATH; keeping the one we were given");
+            None
+        }
+    }
 }
 
 /// The PATH between the two markers, if the shell printed both.
@@ -917,6 +1003,21 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    /// A remembered PATH goes in front of every binary the daemon looks up, so
+    /// junk in that file has to answer "no" rather than "maybe".
+    #[test]
+    fn a_remembered_path_is_checked_before_it_is_trusted() {
+        assert_eq!(
+            usable_path("/opt/homebrew/bin:/usr/bin\n").as_deref(),
+            Some("/opt/homebrew/bin:/usr/bin"),
+            "the trailing newline the writer adds is not part of the value"
+        );
+        // The shapes a half-written or hand-edited file actually takes.
+        assert!(usable_path("").is_none());
+        assert!(usable_path("   \n").is_none(), "whitespace is empty");
+        assert!(usable_path("no-slashes-here").is_none(), "that is not a path list");
     }
 
     /// The fault this prevents costs an upgrade, not a launch: mise installs each

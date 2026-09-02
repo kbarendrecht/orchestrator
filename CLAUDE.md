@@ -178,12 +178,46 @@ mean *this* repo; if you do, name it.
   `tools/` pins `playwright-core` to the version whose WebKit build is on disk so
   an engine-specific fault can be reproduced; stub `/vendor/addon-webgl.js` in
   such a test, because headless WebKit dies on xterm's WebGL renderer.
-- **Terminals in the desktop window use xterm's DOM renderer on purpose.**
-  WebGL garbles glyphs under WebKitGTK: text arrives as noise and only comes back
-  when a scroll or a selection forces a redraw. Clearing the texture atlas after
-  every refit and disposing the addon on context loss both failed to fix it, so
-  the canvas is gone in the webview. A browser tab keeps the fast path. Do not
-  "optimise" WebGL back in without reading the TODO entry first.
+- **The DOM renderer is a WebKitGTK workaround, and only WebKitGTK's.** WebGL
+  garbles glyphs there: text arrives as noise and only comes back when a scroll or
+  a selection forces a redraw. Clearing the texture atlas after every refit and
+  disposing the addon on context loss both failed, so the canvas is gone under
+  that engine. **A browser tab and macOS both keep the fast path** — the condition
+  used to be `chrome` alone, so a Mac took the DOM renderer on the strength of a
+  Linux bug, on a Retina panel compositing four times the pixels, with Claude Code
+  repainting its whole TUI per keystroke. That was the reported typing lag. The
+  macOS half is an **experiment nobody here can settle**: if WKWebView garbles
+  glyphs the way WebKitGTK does, the symptom is unmistakable and the fix is to drop
+  `IS_MAC` from that condition in `term.js`. Do not widen it further without
+  reading the TODO entry.
+- **Slow trackpad scroll in an agent pane is xterm's wheel maths, not the
+  renderer.** With mouse reporting on, `consumeWheelEvent` cuts any event under
+  50px to 30% and passes only whole lines, and it sends one report per event
+  whatever the delta. A mouse never enters that branch; a macOS trackpad always
+  does. Measured against the vendored build: at 1px per event 5 of 300 reached the
+  agent; a real slow drag has a 13px median, so ~4.6 events per line. `term.js`
+  takes the wheel over through `attachCustomWheelEventHandler` and emits one
+  undamped SGR report per line. Three things that matter if you touch it:
+  **agent panes only** (it writes the SGR encoding, which is right because the
+  agent asked for `?1006h` and wrong for a program that did not), `scrollSensitivity`
+  is a dead end (it multiplies before the threshold test, which reads the raw
+  delta, so fixing a trackpad breaks a mouse), and **Shift+wheel** bypasses the
+  whole path into xterm's own scrollback, which is in the legend now.
+- **`window.confirm`, `window.prompt` and `window.alert` do nothing in this app on
+  macOS.** WKWebView shows a script dialog only if the host implements the
+  matching `WKUIDelegate` method, and wry implements exactly three — the file-open
+  panel, media-capture permission and `window.open`. None of the dialogs. So
+  `confirm()` returns **false**, `prompt()` returns **null**, `alert()` is a
+  no-op, and eight guarded actions silently did nothing on a Mac: two naming
+  flows took the cancel branch, and six destructive guards refused. WebKitGTK
+  ships default dialogs, which is why Linux never showed it. `core.js` draws its
+  own (`confirmBox`, `promptBox`) and they are async — the callers had to become
+  `async` with them. **Never reach for the native three again.** Two properties of
+  the replacement worth knowing: the same question asked while it is still open
+  returns the promise already outstanding, because one of these guards is reached
+  from `render` and a refusing guard would otherwise re-ask every frame; and it is
+  first in the `Esc` chain, since a confirm over an overlay must not close the
+  overlay underneath it.
 - **The daemon's session id is Claude's session id.** Every spawn passes
   `--session-id`, which is what makes `--resume`, transcript lookup and hook
   correlation need no mapping. A fork passes `--session-id <new> --resume <old>
@@ -485,6 +519,29 @@ mean *this* repo; if you do, name it.
   `configure_repo` sets fsmonitor on main *only*, so every worktree's `git status`
   is a full scan; and the poller still does its own fetch and sweep ~1.4 s after
   boot has done both, which is redundant and was redundant before this too.
+- **A keystroke is one small frame, so the served sockets set `TCP_NODELAY`.**
+  `axum::serve` defaults it to `None` and only calls `set_nodelay` when the
+  builder is told to, so every connection ran with Nagle on: a small write waits
+  for an ACK that waits for the peer's delayed-ACK timer, the classic ~40ms per
+  round trip. The pty websocket is nothing but small frames in both directions.
+  Loopback made it look like it could not matter, and on Linux it mostly does not.
+- **A slow start is measured, not argued about, and the log is the one place both
+  halves meet.** `src/timing.rs` prints a phase line per start with its own exec
+  count and time (`shell start`, `daemon start`, `window open`, `session … start`),
+  `slow git` names a single call over 300ms, and the SPA posts its own boot marks
+  to `/api/client/timing` as `page start`. On the real monorepo that read: 447
+  child processes, `reconcile_all` 6294ms of a 7836ms start, the page itself 570ms
+  to a painted terminal. **The page was never the problem.** Two follow-ons live
+  in the desktop crate: the login shell's PATH is remembered in
+  `<config_dir>/login-path` and refreshed in the background *for the next launch*,
+  because `set_var` is process-global and unsound beside threads — which is why
+  `adopt_login_path` runs before the runtime exists and why the refresh must never
+  apply itself.
+- **`mise env` per spawn is a decision, not an oversight.** `env_source`'s own
+  docblock says why: caching it needs invalidation against files the daemon does
+  not watch, and a session with a stale environment is a worse bug than a slow one.
+  The 50ms floor `proc::run_bounded` used to add is gone (it backs off from 2ms),
+  and the cost is now in the log per spawn. Revisit it with a number, not a guess.
 - **Nothing may read `Tree` without asking whether it has been measured.** Every
   field on it defaults to a value indistinguishable from a real answer: no changed
   files is a clean tree, `changed_total` 0 is zero files, `(0,0)` divergence is up
