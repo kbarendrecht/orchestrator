@@ -926,7 +926,7 @@ pub async fn thread_committed(
         let note = format!(
             "the branch was rewritten under this run ({} is no longer in its history) — \
              the commit stands but nothing was posted",
-            &base_sha[..base_sha.len().min(7)]
+            crate::git::short(&base_sha)
         );
         mark_thread(&app, number, &thread_id, |t| {
             t.commit = Some(body.sha.clone());
@@ -3825,7 +3825,7 @@ pub async fn pr_proposals(
         if head != &body.base_sha {
             return Err(ApiError(anyhow::anyhow!(
                 "the branch moved during triage ({} → {head}); its patches no longer apply",
-                &body.base_sha[..body.base_sha.len().min(7)]
+                crate::git::short(&body.base_sha)
             )));
         }
     }

@@ -289,8 +289,8 @@ pub async fn revive(
     Ok(moved.map(|tip| {
         format!(
             "{name} moved since this conversation: recorded {}, branch now {}",
-            &head_sha[..head_sha.len().min(7)],
-            &tip[..tip.len().min(7)]
+            git::short(&head_sha),
+            git::short(&tip)
         )
     }))
 }

@@ -112,22 +112,48 @@ impl StoryRef {
         format!("[{}]({})", self.id, self.url)
     }
 
-    /// Does the URL actually point at this id?
+    /// Does the URL actually point at this id, **on the tracker's own host**?
     ///
     /// The agent hands back both, and an id it invented for a story it never
     /// created would put a permanent public link to *somebody else's* story into
-    /// a reply. The id's number appearing in the URL is what ties the two together
-    /// without the daemon having to know Shortcut's URL scheme.
+    /// a reply. The id's number appearing in the URL is what ties the two together.
     ///
     /// Matched as a whole path segment rather than as a substring, because
     /// Shortcut hands out URLs both bare and with a title slug on the end, and a
     /// slug can carry digits of its own.
-    pub fn consistent(&self) -> bool {
+    ///
+    /// **The host and the scheme are checked too, and that is not paranoia.** This
+    /// used to accept any URL carrying the number as a segment, so
+    /// `http://attacker.example/12345` passed — and both halves of the pair come
+    /// out of agent output whose *input* is third-party review comments, with the
+    /// result posted publicly as a link somebody is meant to click. So: `https`
+    /// only, an exact host match (which also rules out `app.shortcut.com.evil.com`
+    /// and a userinfo prefix, since the authority is compared whole), and the
+    /// number as a path segment.
+    pub fn consistent(&self, host: &str) -> bool {
         let number = self.id.trim_start_matches(|c: char| !c.is_ascii_digit());
         if number.is_empty() || !number.chars().all(|c| c.is_ascii_digit()) {
             return false;
         }
-        self.url.split('/').any(|seg| seg == number)
+        // Scheme, then authority, then path — no URL crate, because the shapes
+        // being refused are exactly the ones a hand-rolled split gets right when
+        // it compares the whole authority rather than searching inside it.
+        let Some(rest) = self.url.strip_prefix("https://") else {
+            return false;
+        };
+        let Some((authority, path)) = rest.split_once('/') else {
+            return false;
+        };
+        // Hosts are case-insensitive; everything else here is not.
+        if !authority.eq_ignore_ascii_case(host) {
+            return false;
+        }
+        // The query and fragment are not path, and a number in either proves
+        // nothing about which story this is.
+        let path = path
+            .split_once(['?', '#'])
+            .map_or(path, |(before, _)| before);
+        path.split('/').any(|seg| seg == number)
     }
 }
 
@@ -273,12 +299,33 @@ pub async fn file_all(
         return out;
     }
 
+    // The host a reported URL has to be on, resolved here rather than at the top:
+    // a cache hit needs no tracker and must keep working without one, which is what
+    // resolving it earlier broke.
+    let tracker_host = {
+        use crate::tracker::Tracker as _;
+        match crate::tracker::TrackerImpl::for_kind(app.cfg.tracker) {
+            Some(t) => t.host(),
+            // Nothing configured to file into, so there is no URL to trust and no
+            // run to make. Said per thread, because the caller reports per thread.
+            None => {
+                for w in &todo {
+                    out.insert(
+                        w.thread_id.clone(),
+                        Err("no tracker is configured, so no story can be filed".to_string()),
+                    );
+                }
+                return out;
+            }
+        }
+    };
+
     match run_filer(app, pr, &todo).await {
         Ok(reported) => {
             for w in &todo {
                 match reported.iter().find(|r| r.thread_id == w.thread_id) {
                     Some(r) => {
-                        out.insert(w.thread_id.clone(), accept(r));
+                        out.insert(w.thread_id.clone(), accept(r, tracker_host));
                     }
                     // Every thread given was required to come back. A missing one
                     // is not "nothing happened" — the story may exist — so it says
@@ -323,7 +370,7 @@ pub async fn file_all(
 
 /// Turn one reported entry into a result, refusing a pair that does not hang
 /// together.
-fn accept(r: &Reported) -> std::result::Result<Filed, String> {
+fn accept(r: &Reported, host: &str) -> std::result::Result<Filed, String> {
     if let Some(e) = &r.error {
         return Err(e.clone());
     }
@@ -334,7 +381,7 @@ fn accept(r: &Reported) -> std::result::Result<Filed, String> {
         id: id.trim().to_string(),
         url: url.trim().to_string(),
     };
-    if !story.consistent() {
+    if !story.consistent(host) {
         // The one check that matters here: a fabricated pair would put a permanent
         // public link to somebody else's story into a comment on a colleague's
         // review, and nothing downstream would notice.
@@ -647,7 +694,7 @@ mod tests {
             .unwrap_or_else(|e| panic!("the filer failed: {e}"));
         eprintln!("filed {} at {}", filed.story.id, filed.story.url);
         assert!(!filed.reused, "the first run created it");
-        assert!(filed.story.consistent(), "id and url must agree");
+        assert!(filed.story.consistent(HOST), "id and url must agree");
         assert!(
             filed.story.link().contains(&filed.story.id),
             "the reply substitution carries the id"
@@ -792,35 +839,73 @@ mod tests {
         );
     }
 
+    /// The tracker's host, as `Shortcut::host` reports it.
+    const HOST: &str = "app.shortcut.com";
+
     #[test]
     fn an_id_that_does_not_match_its_url_is_refused() {
         // The agent hands back both. If they disagree, one of them is invented,
         // and posting the link would point a colleague at someone else's story.
-        assert!(story().consistent());
+        assert!(story().consistent(HOST));
 
         let mut swapped = story();
         swapped.url = "https://app.shortcut.com/acme/story/99999".into();
-        assert!(!swapped.consistent());
+        assert!(!swapped.consistent(HOST));
 
         // Shortcut hands out both forms; a title slug on the end is still the
         // same story.
         let mut slugged = story();
         slugged.url =
             "https://app.shortcut.com/acme/story/12345/document-the-schedules".into();
-        assert!(slugged.consistent());
+        assert!(slugged.consistent(HOST));
 
         // ...and a slug carrying digits of its own must not stand in for the id.
         let mut decoy = story();
         decoy.id = "sc-777".into();
         decoy.url = "https://app.shortcut.com/acme/story/12345/fix-777-errors".into();
         assert!(
-            !decoy.consistent(),
+            !decoy.consistent(HOST),
             "matched a slug instead of the id segment"
         );
 
         let mut empty = story();
         empty.id = "sc-".into();
-        assert!(!empty.consistent());
+        assert!(!empty.consistent(HOST));
+    }
+
+    /// **The URL is agent output, and its input is third-party review text.** The
+    /// pair ends up as a permanent public link in a reply, so a number appearing
+    /// somewhere in the string was never enough: every URL below carries the right
+    /// story number and every one of them must still be refused.
+    #[test]
+    fn a_url_off_the_trackers_host_is_refused() {
+        let with = |url: &str| {
+            let mut s = story();
+            s.url = url.into();
+            s.consistent(HOST)
+        };
+
+        assert!(!with("http://attacker.example/12345"), "another host entirely");
+        assert!(!with("https://attacker.example/story/12345"), "https, still not ours");
+        // The shapes a substring check on the host would have let through.
+        assert!(!with("https://app.shortcut.com.evil.example/story/12345"), "suffixed host");
+        assert!(!with("https://evil.example/app.shortcut.com/story/12345"), "host in the path");
+        assert!(
+            !with("https://app.shortcut.com@evil.example/story/12345"),
+            "userinfo pointing elsewhere"
+        );
+        // Scheme matters: a link somebody clicks should not be downgradeable.
+        assert!(!with("http://app.shortcut.com/acme/story/12345"), "plain http");
+        assert!(!with("//app.shortcut.com/acme/story/12345"), "no scheme");
+        // A number in the query or the fragment is not a path segment.
+        assert!(!with("https://app.shortcut.com/acme/story/999?id=12345"), "query");
+        assert!(!with("https://app.shortcut.com/acme/story/999#12345"), "fragment");
+        // And the host on its own, with no path, names no story.
+        assert!(!with("https://app.shortcut.com"), "no path at all");
+
+        // The real thing still passes, including a differently-cased host.
+        assert!(with("https://app.shortcut.com/acme/story/12345"));
+        assert!(with("https://APP.Shortcut.COM/acme/story/12345"), "hosts are case-insensitive");
     }
 
     #[test]

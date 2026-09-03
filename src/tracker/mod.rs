@@ -46,6 +46,15 @@ pub trait Tracker: Send + Sync + Clone + 'static {
     /// environment, so the token never reaches a prompt or a transcript.
     fn token_env(&self) -> &'static str;
 
+    /// The host its story URLs live on, e.g. `app.shortcut.com`.
+    ///
+    /// Used to check that a URL the *agent* reported is really this tracker's.
+    /// The id and the URL both come out of agent output, whose input is
+    /// third-party comment text, and the pair ends up as a permanent public link
+    /// in a reply on somebody's review — so "the number appears somewhere in the
+    /// string" was not enough. See [`crate::story::StoryRef::consistent`].
+    fn host(&self) -> &'static str;
+
     /// The vendored prompt that tells an agent how to file into this tracker.
     ///
     /// Per tracker rather than one templated prompt: the MCP tool names are the
@@ -91,6 +100,13 @@ impl Tracker for TrackerImpl {
         match self {
             TrackerImpl::Shortcut(t) => t.token_env(),
             TrackerImpl::Stub(t) => t.token_env(),
+        }
+    }
+
+    fn host(&self) -> &'static str {
+        match self {
+            TrackerImpl::Shortcut(t) => t.host(),
+            TrackerImpl::Stub(t) => t.host(),
         }
     }
 

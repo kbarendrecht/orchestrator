@@ -20,6 +20,13 @@ impl Tracker for Stub {
         "SHORTCUT_API_TOKEN"
     }
 
+    /// The real tracker's host, for the same reason the MCP name is shared: the
+    /// run under test should be the run that ships, and a story URL it accepts
+    /// here must be one the live tracker would accept too.
+    fn host(&self) -> &'static str {
+        "app.shortcut.com"
+    }
+
     fn prompt(&self) -> &'static str {
         crate::prompt::STORY
     }

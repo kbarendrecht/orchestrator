@@ -680,7 +680,7 @@ pub fn worktree_rebuild(
             bail!(
                 "branch {branch} is gone and {} is unreachable, so there is nothing \
                  to rebuild this conversation on",
-                &recorded[..recorded.len().min(7)]
+                short(&recorded)
             );
         }
     }
@@ -1725,6 +1725,28 @@ mod tests {
     // The amend-target cases moved with nothing but their names: the fixture they
     // share with the blame tests stayed here, so they reach across for `Amend`.
     use crate::review_commit::*;
+
+    /// **A sha is not always seven bytes of ASCII, because it is not always a sha.**
+    /// These strings reach `short` from `sessions.json` (hand-editable), from a
+    /// request body, and from a branch name in an error message — and four call
+    /// sites used to abbreviate them with `&s[..s.len().min(7)]`, which panics
+    /// whenever byte 7 lands inside a character. Confirmed against the real
+    /// slicing: `"日本語です"` is 15 bytes and byte 7 is inside the third character.
+    #[test]
+    fn abbreviating_is_by_character_not_by_byte() {
+        // The ordinary case, unchanged.
+        assert_eq!(short("0123456789abcdef"), "0123456");
+        // Shorter than the cut, so all of it.
+        assert_eq!(short("abc"), "abc");
+        assert_eq!(short(""), "");
+        // The ones that panicked: multibyte, and a boundary inside a character.
+        assert_eq!(short("日本語です"), "日本語です");
+        assert_eq!(short("日本語ですかとても"), "日本語ですかと");
+        assert_eq!(short("éééééééééé"), "ééééééé");
+        // A grapheme cluster is not a character, and seven chars is the contract —
+        // pinned so nobody "fixes" this into something that can slice mid-scalar.
+        assert_eq!(short("🇳🇱🇳🇱🇳🇱🇳🇱").chars().count(), 7);
+    }
 
     /// Whether git refused because the branch is checked out in another tree.
     ///

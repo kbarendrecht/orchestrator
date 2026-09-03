@@ -17,6 +17,10 @@ impl Tracker for Shortcut {
         "SHORTCUT_API_TOKEN"
     }
 
+    fn host(&self) -> &'static str {
+        "app.shortcut.com"
+    }
+
     fn prompt(&self) -> &'static str {
         crate::prompt::STORY
     }
