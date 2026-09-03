@@ -215,8 +215,10 @@ pub async fn relocate_session(
     // the last turn is flushed. Waiting for it to actually be gone is what makes
     // the move below a move of a file nobody is writing to.
     if let Some(h) = handle {
-        let _ = h.kill();
-        h.wait().await;
+        // Bounded, and it escalates. This was `kill(); wait().await`, which against
+        // an agent that traps `SIGHUP` — Node does — never returned: the swap held
+        // its own HTTP request open forever.
+        h.kill_gracefully().await;
     }
 
     // Leaving main means giving up the claim, and this is the only thing that can
@@ -1641,7 +1643,9 @@ pub async fn stop_managed(app: &Arc<AppState>, workspace: &str, name: &str, pty:
             }
         }
     }
-    let _ = pty.kill();
+    // Escalating, because the caller is replacing or removing this process and a
+    // survivor would hold its port or its container exec open.
+    pty.kill_gracefully().await;
 }
 
 /// How long a `stop_command` may take. Short, because closing the window waits on

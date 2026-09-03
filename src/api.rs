@@ -507,9 +507,11 @@ async fn forget_session(app: &Arc<AppState>, id: SessionId) -> anyhow::Result<()
     };
 
     if let Some(h) = pty {
-        // Best effort: a process that is already gone is not a reason to keep
-        // the row you asked to be rid of.
-        let _ = h.kill();
+        // Escalating, and awaited, because the record goes below: an agent that
+        // outlives its row has no watcher, no rail entry and nothing in the UI that
+        // can reach it, so "best effort" here meant leaking a live agent whenever
+        // the child declined `SIGHUP`. A process already gone returns immediately.
+        h.kill_gracefully().await;
     }
     app.release_main(id).await;
 

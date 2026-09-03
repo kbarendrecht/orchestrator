@@ -6,6 +6,24 @@ this file, which churned it from every build; they now go to a gitignored
 
 ## Next
 
+- **Shutdown cannot escalate a kill, because `was_live` is written before it.**
+  `PtyHandle::kill_gracefully` gives every other stop path a `SIGHUP` → grace →
+  `SIGKILL` escalation, and `shutdown` is the one caller that cannot use it: it
+  `persist_now()`s *before* the killing precisely because the exit watchers are
+  about to rewrite `was_live`, so **any await point after the kills lets them run
+  and re-persist**. Tried, and the restart e2e flow caught it — every session came
+  back `was_live: false` and auto-resume restored nothing.
+
+  So an agent that traps `SIGHUP` is not force-killed when the app closes. It is
+  not orphaned either: the process is exiting, the pty master closes, and the kernel
+  hangs up the child's terminal. The gap is a child that survives even that.
+
+  Fixing it properly means separating "the records as they were when you closed"
+  from "what the watchers think now" — either a flag that suppresses persistence for
+  the rest of the shutdown, or capturing the resume set before the kills and writing
+  that verbatim afterwards. The second is probably right, since it also stops
+  depending on watcher timing. Do not simply add the wait back.
+
 - **`rerequest()` has never run.** The fixture drives everything else in the review
   flow (`mise run fixture`, `docs/fixture-pr.md`), but its threads are posted by
   `github-actions[bot]` and a bot cannot be a requested reviewer. That one button

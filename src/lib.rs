@@ -168,6 +168,19 @@ impl Server {
         // how five of them stacked up.
         self.stop_declared_processes().await;
 
+        // **Signal and go — nothing here may `await` after the kills.** Each `kill`
+        // now reaches the child's whole process group (so a session's grandchildren
+        // go too) and returns at once. Waiting for the children to exit was tried
+        // and is wrong: `persist_now` above writes `was_live` *before* the killing
+        // precisely because the exit watchers are about to rewrite it, and any
+        // await point after the kills lets them run and re-persist — auto-resume
+        // then found every session `was_live: false` and restored nothing. Caught by
+        // the restart e2e flow.
+        //
+        // So an agent that traps `SIGHUP` is not escalated to here. It is still not
+        // orphaned: the process is exiting, which closes the pty master, and the
+        // kernel hangs up the child's terminal on the way out. Escalating properly
+        // needs the watcher/persist interaction untangled first — see TODO.md.
         let mut killed = 0usize;
         {
             let mut inner = self.app.inner.write().await;
