@@ -65,3 +65,15 @@ run = "node tools/fixture-pr.mjs"
 description = "Drive the main user flows against a real daemon"
 dir = "{{config_root}}"
 run = "node tools/e2e/run.mjs"
+
+# Drive the terminal in a real browser against a real daemon: attach a pane, type
+# and see the pty echo, drop the socket and watch it reconnect, and type while it
+# is down to prove nothing is lost (#7). Separate from `e2e` because it needs
+# Chrome, where that suite is headless. `tools/e2e/term.mjs` explains the setup.
+#
+#   mise run term-e2e
+#   mise run term-e2e -- --keep   # keep the sandbox to read afterwards
+[tasks.term-e2e]
+description = "Drive the terminal pane in a real browser"
+dir = "{{config_root}}"
+run = "cargo build --bin orchd && node tools/e2e/term.mjs"

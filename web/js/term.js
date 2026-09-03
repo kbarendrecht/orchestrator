@@ -88,6 +88,11 @@ function openTerm(target, parent) {
   term.loadAddon(fit);
   term.open(host);
 
+  // Declared before the key and wheel handlers below so they can send through
+  // `entry.sock`, which `connect` replaces on a reconnect. Closing over the socket
+  // directly is what pinned them to the first, dead one (#7).
+  const entry = { term, fit, host };
+
   /* Copy and paste, in whichever spelling the platform uses: ⌘C/⌘V on a Mac,
    * Ctrl+Shift+C/V elsewhere — the terminal convention, because plain Ctrl+C has
    * to go on reaching the pty, where interrupting is what it means. xterm passes
@@ -109,8 +114,8 @@ function openTerm(target, parent) {
        and needs no setup command run against a terminal the user does not own.
 
        Shift alone: with Ctrl, ⌘ or Alt held it is a different chord and belongs to
-       whoever claims it. `sock` is closed over rather than passed, and it exists
-       by the time any key is pressed.
+       whoever claims it. The newline goes through `sendInput`, so a socket down
+       for a reconnect banks it rather than dropping it like the old direct send.
 
        **Agent panes only, and that is not caution — a shell needs the opposite.**
        Measured in a drawer shell: with the escape sent, the line is still
@@ -124,7 +129,7 @@ function openTerm(target, parent) {
       // textarea, which sends a CR of its own. Measured — the pty received
       // `1b 0d` followed by `0d`, so the agent saw the newline *and* the submit.
       e.preventDefault();
-      if (sock.readyState === WebSocket.OPEN) sock.send(new TextEncoder().encode('\x1b\r'));
+      sendInput(entry, new TextEncoder().encode('\x1b\r'));
       return false;
     }
     const combo = IS_MAC ? e.metaKey && !e.ctrlKey : e.ctrlKey && e.shiftKey;
@@ -253,19 +258,48 @@ function openTerm(target, parent) {
     // reports are a burst the agent has to parse and nobody asked to travel that
     // far in one frame.
     const count = Math.min(Math.abs(lines), term.rows);
-    if (sock.readyState === WebSocket.OPEN) {
-      sock.send(new TextEncoder().encode(`\x1b[<${button};${col};${row}M`.repeat(count)));
+    // A wheel report is transient state, not typing: dropping it while the socket
+    // is down is right, so this does not bank the way `sendInput` does.
+    if (entry.sock && entry.sock.readyState === WebSocket.OPEN) {
+      entry.sock.send(new TextEncoder().encode(`\x1b[<${button};${col};${row}M`.repeat(count)));
     }
     return false;
   });
 
+  term.onData((d) => sendInput(entry, new TextEncoder().encode(d)));
+
+  terms.set(target, entry);
+  connect(entry, target);
+  return entry;
+}
+
+/** Open (or reopen) the pty socket for an entry, replaying the daemon buffer.
+ *
+ *  Split out of `openTerm` so a dropped socket can be replaced in place. The pty
+ *  survives on the daemon — `ws.rs` detaches the client, never the process — and a
+ *  reattach costs one ring-buffer replay and lands the pane where it was. Without
+ *  a reconnect a closed socket stayed closed, and every keystroke took the false
+ *  branch and vanished while the cursor kept blinking on xterm's own buffer (#7). */
+function connect(entry, target) {
   const sock = new WebSocket(
     `${WS_BASE}/ws/pty?token=${encodeURIComponent(TOKEN)}&target=${encodeURIComponent(target)}`
   );
   sock.binaryType = 'arraybuffer';
-  const entry = { term, fit, sock, host };
+  entry.sock = sock;
 
   sock.onopen = () => {
+    // Back to healthy: clear the backoff and the "reconnecting" mark, then flush
+    // anything typed while the socket was down.
+    entry.backoff = 0;
+    entry.host.classList.remove('detached');
+    // A reattach replays the *whole* ring buffer, exactly as a first attach does —
+    // but this terminal already holds the previous buffer, so writing the replay on
+    // top would show the scrollback twice. Clear it before the replay lands, so a
+    // reconnect reconstructs the pane rather than doubling it. Not on the first
+    // open: xterm is empty there, and resetting before the snapshot arrives would
+    // flash. Consumed by `writeChunk` at the first write or queue-flush after this.
+    if (entry.everOpened) entry.needsReset = true;
+    entry.everOpened = true;
     // The centre pane's two halves, and they fail separately: `attach` is the
     // pty being there at all, `paint` is the daemon's replay arriving. A gap
     // between them is the ring buffer being written into a DOM renderer; a long
@@ -275,6 +309,7 @@ function openTerm(target, parent) {
     entry.sent = null;
     entry.box = null;
     resize(entry);
+    flushInput(entry);
     // A session you just created is selected before there is anything to type
     // into, so the focus `select` asked for landed on nothing. Take it once the
     // pty is actually attached, but only if this is still the session you are
@@ -283,7 +318,7 @@ function openTerm(target, parent) {
     // mid-word and committed what had been typed so far.
     if (terms.get(`session:${selected}`) === entry && !typingElsewhere()) {
       try {
-        term.focus();
+        entry.term.focus();
       } catch (e) { /* disposed while the socket was opening */ }
     }
   };
@@ -298,18 +333,57 @@ function openTerm(target, parent) {
 
        The socket stays open, so nothing is renegotiated and the pty is never
        detached; only the parse moves to the moment the pane is looked at. */
-    if (host.hidden) return queueChunk(entry, chunk);
-    term.write(chunk);
+    if (entry.host.hidden) return queueChunk(entry, chunk);
+    writeChunk(entry, chunk);
     mark('paint');
     reportBoot();
   };
+  sock.onclose = () => {
+    // A deliberate teardown, or a session that has left the snapshot: `closeTerm`
+    // disposes the entry, so reconnecting here would race it into reattaching a pty
+    // that is gone — `resolve` would 404 and this would just flap.
+    if (entry.closed || terms.get(target) !== entry) return;
+    // Mark the pane so a deaf terminal is not silent, then reconnect with backoff
+    // the way the events socket does. The replay makes a reattach indistinguishable
+    // from a first attach, so the pane heals itself on wake from sleep or a blip.
+    entry.host.classList.add('detached');
+    const wait = Math.min(600 * 2 ** (entry.backoff || 0), 10000);
+    entry.backoff = (entry.backoff || 0) + 1;
+    entry.reconnectTimer = setTimeout(() => {
+      if (!entry.closed && terms.get(target) === entry) connect(entry, target);
+    }, wait);
+  };
+}
 
-  term.onData((d) => {
-    if (sock.readyState === WebSocket.OPEN) sock.send(new TextEncoder().encode(d));
-  });
+/** How much typed input to bank while the pty socket is down, before dropping it.
+ *
+ *  A dropped keystroke under a blinking cursor is the worst of the outcomes in #7:
+ *  the pane looks alive and silently eats what you type. Banking is bounded by
+ *  human typing speed in the reconnect window, which is tiny — but a paste can be
+ *  large, so cap it and let the `.detached` mark stand rather than grow forever. */
+const INPUT_BUDGET = 1 << 16; // 64 KB
 
-  terms.set(target, entry);
-  return entry;
+/** Send a keystroke, or bank it if the socket is down so nothing is lost silently. */
+function sendInput(entry, bytes) {
+  if (entry.sock && entry.sock.readyState === WebSocket.OPEN) {
+    entry.sock.send(bytes);
+    return;
+  }
+  if (!entry.pending) { entry.pending = []; entry.pendingBytes = 0; }
+  // Over budget: drop, and leave the mark up — a truncated command replayed is
+  // worse than one the user retypes against a pane that says it was not live.
+  if (entry.pendingBytes + bytes.byteLength > INPUT_BUDGET) return;
+  entry.pending.push(bytes);
+  entry.pendingBytes += bytes.byteLength;
+}
+
+/** Replay everything typed while the socket was down, in order. */
+function flushInput(entry) {
+  const pending = entry.pending;
+  entry.pending = [];
+  entry.pendingBytes = 0;
+  if (!pending?.length || entry.sock?.readyState !== WebSocket.OPEN) return;
+  for (const b of pending) entry.sock.send(b);
 }
 
 /** How much a hidden terminal may bank before the oldest of it is dropped.
@@ -339,7 +413,16 @@ function flushQueued(entry) {
   const queued = entry.queued;
   entry.queued = [];
   entry.queuedBytes = 0;
-  for (const chunk of queued) entry.term.write(chunk);
+  for (const chunk of queued) writeChunk(entry, chunk);
+}
+
+/** Write a chunk, first clearing the terminal once if a reconnect is about to
+ *  replay the whole buffer on top of the old one. Both the live and the
+ *  hidden-then-flushed paths go through here so the reset happens exactly once,
+ *  before the replay, whichever arrives first. */
+function writeChunk(entry, chunk) {
+  if (entry.needsReset) { entry.needsReset = false; entry.term.reset(); }
+  entry.term.write(chunk);
 }
 
 function resize(entry) {
@@ -394,7 +477,11 @@ function repaint(entry) {
 function closeTerm(target) {
   const entry = terms.get(target);
   if (!entry) return;
-  try { entry.sock.close(); } catch (e) { /* already gone */ }
+  // Mark it torn down before closing, so the socket's `onclose` does not read a
+  // deliberate close as a drop and schedule a reconnect against a gone pty.
+  entry.closed = true;
+  if (entry.reconnectTimer) clearTimeout(entry.reconnectTimer);
+  try { entry.sock?.close(); } catch (e) { /* already gone */ }
   entry.term.dispose();
   entry.host.remove();
   terms.delete(target);

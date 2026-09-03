@@ -364,6 +364,19 @@ button.ctx-btn:hover{color:var(--text)}
 .termwrap{flex:1;min-height:0;position:relative;padding:8px 6px 8px 12px}
 .termhost{position:absolute;inset:8px 6px 8px 12px;transition:opacity .35s ease}
 .termhost[hidden]{display:none}
+/* A pty socket that dropped and has not reconnected yet. xterm keeps blinking its
+   cursor from its own buffer, so without a mark a deaf pane looks alive and eats
+   keystrokes in silence (#7). This corner pill says the pane is not live; the
+   socket reconnects on its own and clears it. Amber, the same "needs you" note the
+   connbar uses — nothing is broken, it is coming back. */
+.termhost.detached::after{
+  content:'reconnecting\2026';
+  position:absolute;top:6px;right:12px;z-index:2;pointer-events:none;
+  padding:4px 10px;border-radius:20px;
+  background:var(--raised);border:1px solid var(--line);
+  font-family:var(--mono);font-size:calc(10.5px * var(--fs));color:var(--attn);
+  box-shadow:0 4px 14px #0006;
+}
 /* The pty of the session a review is driving, while it is driving it. Dimmed, not
    covered: the scrollback is the thing that proves it is working, so it stays
    readable — this says "nobody is waiting on you here", not "do not look".

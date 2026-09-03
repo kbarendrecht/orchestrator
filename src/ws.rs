@@ -112,7 +112,7 @@ pub async fn pty(
     let session = target
         .strip_prefix("session:")
         .and_then(|rest| Uuid::parse_str(rest).ok());
-    ws.on_upgrade(move |socket| pty_loop(app, session, handle, socket))
+    ws.on_upgrade(move |socket| pty_loop(app, session, target, handle, socket))
 }
 
 /// Targets are named and enumerated — there is no endpoint that runs an
@@ -210,9 +210,15 @@ mod tests {
 async fn pty_loop(
     app: Arc<AppState>,
     session: Option<Uuid>,
+    target: String,
     handle: Arc<PtyHandle>,
     socket: WebSocket,
 ) {
+    // The one place a pane going deaf becomes a line somebody can read. The SPA
+    // reconnects a dropped pty socket on its own, but "typing does nothing" used to
+    // leave no trace at either end (#7); this names the client attaching and, below,
+    // why it left.
+    tracing::info!(%target, "pty client attached");
     let (mut tx, mut rx) = socket.split();
 
     // Subscribe before replaying, so output produced during the replay is
@@ -225,6 +231,10 @@ async fn pty_loop(
 
     let writer = handle.clone();
     let exit = handle.clone();
+    // Why the loop ended, for the detach line below. Defaults to the client going,
+    // which is every reconnect, a tab close and a window shutdown; the process
+    // ending overrides it.
+    let mut reason = "client left";
     loop {
         tokio::select! {
             // The broadcast Sender lives in the PtyHandle, so `recv()` never
@@ -241,6 +251,7 @@ async fn pty_loop(
                         break;
                     }
                 }
+                reason = "process exited";
                 break;
             }
             out = sub.recv() => match out {
@@ -256,7 +267,7 @@ async fn pty_loop(
                         break;
                     }
                 }
-                Err(_) => break,
+                Err(_) => { reason = "process exited"; break }
             },
             incoming = rx.next() => match incoming {
                 Some(Ok(Message::Binary(data))) => {
@@ -284,4 +295,5 @@ async fn pty_loop(
             },
         }
     }
+    tracing::info!(%target, reason, "pty client detached");
 }

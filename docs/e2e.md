@@ -96,8 +96,12 @@ settles at `ready`.
 
 ## What it does not cover
 
-- **The SPA.** Nothing here opens a page. `mise run check-web` and `mise run shot`
-  are that side.
+- **The SPA.** These flows open no page. `mise run check-web` and `mise run shot`
+  are that side — and `mise run term-e2e` is the one exception: it reuses this
+  sandbox but opens a browser on a session's pane to drive the terminal (attach,
+  the pty echo round-trip, a dropped socket reconnecting, and input banked while it
+  is down). It needs Chrome, which is why it is a separate task rather than a flow
+  here. See `tools/e2e/term.mjs`.
 - **What a fix run does.** The rebase, the force-push, `fix_pr::settle` — the fake
   agent takes turns and never touches git or the forge. Only the *start* of fix-pr
   is covered: the guards, the worktree, the automation record.
