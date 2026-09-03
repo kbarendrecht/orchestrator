@@ -765,7 +765,7 @@ pub fn worktree_rebuild(
             bail!(
                 "branch {branch} is gone and {} is unreachable, so there is nothing \
                  to rebuild this conversation on",
-                short(&recorded)
+                short(recorded)
             );
         }
     }

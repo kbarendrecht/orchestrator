@@ -894,7 +894,7 @@ mod tests {
         let host = stub();
         let out = post(host.clone(), "/api/open", &format!("{{\"path\":{:?}}}", repo.to_string_lossy())).await;
         assert_eq!(out["ok"], true);
-        assert_eq!(host.opened.lock().unwrap().as_slice(), &[repo.clone()], "the host was handed the checkout");
+        assert_eq!(host.opened.lock().unwrap().as_slice(), std::slice::from_ref(&repo), "the host was handed the checkout");
 
         // A folder that is not a repo never reaches the host.
         let host = stub();

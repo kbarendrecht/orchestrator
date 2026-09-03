@@ -173,7 +173,7 @@ pub fn evaluate(input: &GuardInput) -> Verdict {
         return no(format!(
             "#{} already has a fix-pr session running ({})",
             pr.number,
-            crate::model::short_id(&session)
+            crate::model::short_id(session)
         ));
     }
 

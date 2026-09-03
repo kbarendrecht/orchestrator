@@ -48,6 +48,8 @@ jobs:
             patchelf
 
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
       - uses: Swatinem/rust-cache@v2
         with:
           # Or the two platforms share one cache key and evict each other.
@@ -60,6 +62,50 @@ jobs:
       # machine that can check that layout against a real Finder's rules.
       - name: Test the daemon
         run: cargo test -p orchd -p orchestrator-desktop
+
+      # Clippy was local-only, so the warnings drifted: 33 of them had
+      # accumulated, including two `items_after_test_module` and a
+      # `result_large_err`. Denied rather than merely reported, or it drifts again —
+      # the tree is clean as of this commit, and the deliberate exceptions carry a
+      # targeted `#[allow]` with the reason beside them.
+      #
+      # On both platforms on purpose: a `#[cfg(target_os = "macos")]` arm is
+      # invisible to a Linux clippy, and this repo has several.
+      #
+      # Worth knowing if this ever fails on a commit that did not touch Rust: the
+      # toolchain is `stable`, unpinned, so a new release can introduce a lint that
+      # was not there yesterday. That is a `rust-toolchain.toml` away from being
+      # impossible, which this repo does not have yet.
+      - name: Lint
+        run: cargo clippy --all-targets -- -D warnings
+
+      # The SPA's own gate, which until now ran *only* in a per-clone pre-commit
+      # hook — so a clone that never ran `git config core.hooksPath .githooks` (a
+      # fresh one, and CI itself) checked none of it. Three things in one: that
+      # `web/snapshot.d.ts` still matches the Rust structs it is generated from,
+      # that the SPA type-checks under `--checkJs`, and that its module graph is
+      # still a DAG.
+      #
+      # Linux only: nothing here is platform-dependent, and `tsc` twice buys
+      # nothing.
+      - name: Set up node
+        if: runner.os == 'Linux'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: SPA dependencies
+        if: runner.os == 'Linux'
+        run: npm ci --prefix tools
+
+      - name: Check the SPA
+        if: runner.os == 'Linux'
+        run: |
+          cargo test --lib export_bindings >/dev/null
+          git diff --exit-code --stat web/snapshot.d.ts \
+            || { echo 'web/snapshot.d.ts is stale: run `mise run check-web` and commit the regenerated file.'; exit 1; }
+          npx --prefix tools tsc -p tools/tsconfig.json
+          npx --prefix tools depcruise --config tools/.dependency-cruiser.cjs web/app.js
 
       # The part no Linux box can answer, so it runs even when the tests above
       # failed: a red test would otherwise skip this step and hide the one signal

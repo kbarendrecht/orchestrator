@@ -1055,6 +1055,11 @@ async fn write_manual(
 }
 
 /// What a local write means to its caller: a report, or a refusal to report.
+///
+/// Both sides are a `PostReport` on purpose — a refusal is a report too, and the
+/// SPA renders it the same way — so the large `Err` clippy sees is the design
+/// rather than an oversight. Boxing it would hide what the signature says.
+#[allow(clippy::result_large_err)]
 fn report_of(written: Written) -> std::result::Result<PostReport, PostReport> {
     match written {
         Written::Committed { files, amend } => Ok(PostReport {
@@ -1129,6 +1134,10 @@ pub enum Posted {
 /// this". Everything the batch reports per thread (`landed`/`failed`/`skipped`)
 /// stays the batch's business — a run answers one thread at a time and has the
 /// card in front of you instead.
+// Eight arguments, and a struct for them would be worse: every one is a distinct
+// thing the caller already holds, none is optional, and bundling them would add a
+// type whose only job is to be unpacked again on the next line.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn post_one(
     app: &Arc<AppState>,
     forge: &ForgeImpl,

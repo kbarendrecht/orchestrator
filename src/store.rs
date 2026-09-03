@@ -453,6 +453,362 @@ pub fn reap_orphans(records: &[SessionRecord]) -> usize {
     killed
 }
 
+/// Whether there is a conversation here, not merely a file.
+///
+/// [`transcript_exists`] is the weaker question and it is not enough before a
+/// When this conversation was last worked in, as evidence rather than bookkeeping.
+///
+/// The transcript's own mtime. Claude Code appends a line per turn, so the file's
+/// last write *is* the conversation's last activity, and the daemon only ever reads
+/// it — `ai_title` tails it, `has_conversation` reads its head, neither touches the
+/// mtime. Measured across 102 records here: readable for 87 of them, and it puts a
+/// session that ran for 66 hours 66 hours later than its start.
+///
+/// Retention counts from this rather than from `created_at`, which is the flaw in
+/// dating a conversation by its beginning: a session you worked in for weeks would
+/// read as ancient the day after you stopped, and its tree would go while you still
+/// remembered it.
+///
+/// The ladder ends at `created_at` on purpose. Claude Code prunes transcripts, so a
+/// missing file is a normal state, and the archived copy is then the best remaining
+/// evidence — its mtime is when the daemon copied it, which is close to when the
+/// session ended. Falling back to the start is the conservative end: it can only
+/// make a tree look *older* than it is, and the six-check preflight is what stands
+/// between that and losing anything.
+pub fn last_used(s: &crate::model::Session) -> std::time::SystemTime {
+    let mtime = |p: Option<&Path>| {
+        p.and_then(|p| std::fs::metadata(p).ok())
+            .and_then(|m| m.modified().ok())
+    };
+    mtime(s.transcript_path.as_deref())
+        .or_else(|| mtime(s.archived_transcript.as_deref()))
+        .unwrap_or(s.created_at)
+}
+
+/// `--resume`: a session that has started but never had a turn *does* have a
+/// `.jsonl`, holding only its `mode` / `permission-mode` / `ai-title` headers —
+/// 266 bytes of it. Resuming that answers "no conversation found" and the process
+/// exits instantly, which cost a live session when the swap's carry trusted the
+/// file's existence and then closed the original.
+///
+/// A `user` entry is the cheapest proof that somebody said something, and the
+/// first one sits just past those headers and never moves — so this reads the
+/// *head*, unlike [`ai_title`], whose answer is rewritten on every append and so
+/// is only ever current at the tail. Tailing here would also answer *wrongly*: a
+/// conversation whose last 128KB is one long run of tool output holds no `user`
+/// line in it at all.
+pub fn has_conversation(id: uuid::Uuid, cwd: &Path, recorded: Option<&Path>) -> bool {
+    let Some(path) = transcript_file(id, cwd, recorded) else {
+        return false;
+    };
+    let Ok(head) = read_head(&path, FIRST_TURN_BYTES) else {
+        return false;
+    };
+    // The pattern holds no newline, so searching the buffer whole is the same
+    // search as scanning it by line, without the split.
+    String::from_utf8_lossy(&head).contains(r#""type":"user""#)
+}
+
+/// Whether a conversation was ever written to disk.
+///
+/// A session killed before its first turn has no `.jsonl` at all, and there is
+/// nothing to come back to: `claude --resume` answers "no conversation found"
+/// and exits. Both the startup resume and the rail's archive ask this, so they
+/// ask it the same way.
+///
+/// Says nothing about whether the file holds a *turn* — see [`has_conversation`]
+/// for that, which is what anything about to `--resume` should ask.
+pub fn transcript_exists(id: uuid::Uuid, cwd: &Path, recorded: Option<&Path>) -> bool {
+    transcript_file(id, cwd, recorded).is_some()
+}
+
+/// The transcript on disk, if there is one.
+///
+/// The path the hook reported is preferred and the slug is the fallback, because
+/// a session adopted into a worktree changes cwd after it starts and the recorded
+/// path is the one that was actually written.
+pub fn transcript_file(id: uuid::Uuid, cwd: &Path, recorded: Option<&Path>) -> Option<PathBuf> {
+    if let Some(p) = recorded {
+        if p.exists() {
+            return Some(p.to_path_buf());
+        }
+    }
+    let candidate = crate::config::transcript_dir_for(cwd)
+        .ok()?
+        .join(format!("{id}.jsonl"));
+    candidate.exists().then_some(candidate)
+}
+
+/// Hunt for a session's transcript anywhere Claude Code keeps them.
+///
+/// The last resort, and it exists because of `claude --worktree`: that session
+/// starts in the main checkout, so Claude Code files its transcript under
+/// *main's* slug, and then the daemon adopts the session into the worktree it
+/// just cut. From then on both of the cheap answers are wrong — the recorded path
+/// names the worktree and so does the cwd — while the file sits under a third
+/// name. The id is a uuid, so finding it by name is unambiguous.
+///
+/// Deliberately not part of [`transcript_file`]: that is asked once per session
+/// per snapshot, and a directory scan for every session that legitimately has no
+/// transcript would be a scan a second, forever. Callers use this once and record
+/// what it found.
+pub fn find_transcript(id: uuid::Uuid) -> Option<PathBuf> {
+    let home = std::env::var("HOME").ok()?;
+    let projects = PathBuf::from(home).join(".claude/projects");
+    let name = format!("{id}.jsonl");
+    for entry in std::fs::read_dir(projects).ok()?.flatten() {
+        let candidate = entry.path().join(&name);
+        if candidate.exists() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+/// Point a session at the transcript it actually has, when the cheap answers are
+/// wrong.
+///
+/// Wraps [`find_transcript`] with the check that says whether the scan is needed
+/// at all, so the three callers cannot disagree about when to pay for it: at
+/// startup, at the first `Stop`, and when the process ends. Those are the moments
+/// the answer can change, and each of them records what it found.
+pub fn pin_transcript(id: uuid::Uuid, cwd: &Path, recorded: &mut Option<PathBuf>) {
+    if transcript_file(id, cwd, recorded.as_deref()).is_some() {
+        return;
+    }
+    if let Some(found) = find_transcript(id) {
+        *recorded = Some(found);
+    }
+}
+
+/// Re-file a session's transcript under the slug of the directory it now runs in.
+///
+/// For a relocated session — one killed in one tree and resumed in another under
+/// the same id, which is how the swap moves a conversation. `--resume` does not
+/// need this: it was measured against `claude` 2.1.240, and it resolves a
+/// conversation by **id wherever the file sits**, appending to whatever location it
+/// finds. Resuming from a second directory with the file left behind continues the
+/// conversation and keeps writing to the *original* slug.
+///
+/// So this is about filing, not about survival, and that is why its failure is not
+/// fatal to a move. What it buys is the invariant every slug-based lookup here
+/// assumes — a session's transcript lives under its own cwd's slug. Left unmoved,
+/// [`transcript_file`]'s cheap path is wrong for the rest of the session's life and
+/// only the recorded path or a [`find_transcript`] scan saves it.
+///
+/// `Ok(None)` means there was nothing to move, which is the ordinary case for a
+/// session that never had a turn.
+pub fn move_transcript(id: uuid::Uuid, from: &Path, to: &Path) -> Result<Option<PathBuf>> {
+    let Some(src) = transcript_file(id, from, None) else {
+        return Ok(None);
+    };
+    let dir = crate::config::transcript_dir_for(to)?;
+    relocate_file(&src, &dir.join(format!("{id}.jsonl"))).map(Some)
+}
+
+/// Where Claude Code believes this conversation is isolated, if anywhere.
+///
+/// The transcript carries a `worktree-state` record and **the last one wins**: a
+/// session that leaves a worktree appends one whose `worktreeSession` is `null`,
+/// and 128 transcripts on this machine end that way. So the pin is a running
+/// value, not a header — read to the end, keep the last answer.
+///
+/// `None` covers both "never isolated" and "isolated and then let go", which are
+/// the same thing to every caller here.
+pub fn worktree_pin(transcript: &Path) -> Option<PathBuf> {
+    let text = std::fs::read_to_string(transcript).ok()?;
+    let mut pin = None;
+    for line in text.lines() {
+        // Cheap reject first: this runs over a file that is megabytes of turns and
+        // holds a handful of these records.
+        if !line.contains("\"worktree-state\"") {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        if v.get("type").and_then(|t| t.as_str()) != Some("worktree-state") {
+            continue;
+        }
+        pin = v
+            .get("worktreeSession")
+            .and_then(|w| w.get("worktreePath"))
+            .and_then(|p| p.as_str())
+            .map(PathBuf::from);
+    }
+    pin
+}
+
+/// Tell a moved conversation it has been moved, in the file it reads it from.
+///
+/// The claim this replaces was that the daemon *cannot* clear Claude Code's
+/// worktree isolation from outside, because `ExitWorktree` is the agent's own
+/// tool. Measured against 128 transcripts, that is wrong: the state is two
+/// appended records, and both are one line with no timestamp and no uuid —
+///
+/// ```text
+/// {"type":"relocated","sessionId":"…","relocatedCwd":"/new/cwd"}
+/// {"type":"worktree-state","worktreeSession":null,"sessionId":"…"}
+/// ```
+///
+/// which is exactly what Claude Code writes for itself when a session relocates.
+/// Asking the agent instead was one instruction, delivered once, that an agent is
+/// free to ignore — and one conversation took the bare "isolated in the worktree"
+/// refusal sixteen times over two days while editing a tree that had since been
+/// cut again for somebody else's branch.
+///
+/// Undocumented format, the same bet as [`ai_title`], and it degrades the same
+/// way: an ignored record leaves things exactly as they were, and the arrival
+/// notice still says the words. **Only safe while the session is not running** —
+/// call it before the pty, never beside a live agent appending to the same file.
+pub fn clear_worktree_pin(id: uuid::Uuid, cwd: &Path, transcript: &Path) -> Result<()> {
+    use std::io::Write;
+    let mut f = std::fs::OpenOptions::new().append(true).open(transcript)?;
+    // `relocated` first, then the pin, in the order Claude Code writes them.
+    writeln!(
+        f,
+        "{}",
+        serde_json::json!({
+            "type": "relocated",
+            "sessionId": id.to_string(),
+            "relocatedCwd": cwd.to_string_lossy(),
+        })
+    )?;
+    writeln!(
+        f,
+        "{}",
+        serde_json::json!({
+            "type": "worktree-state",
+            "worktreeSession": serde_json::Value::Null,
+            "sessionId": id.to_string(),
+        })
+    )?;
+    Ok(())
+}
+
+/// Delete a session's transcript file, wherever it sits.
+///
+/// For a turnless session being dropped rather than archived: the headers-only
+/// file has nothing in it worth keeping, and leaving it lets a later
+/// [`find_transcript`] scan hand it back. Best effort — a missing file is the goal,
+/// not an error — and it reports whether it removed anything, only for the log.
+///
+/// The recorded path is preferred, then the cwd slug, then the id scan, so it
+/// finds the file even when a `--worktree` session filed it under main's slug.
+pub fn delete_transcript(id: uuid::Uuid, cwd: &Path, recorded: Option<&Path>) -> bool {
+    let Some(path) = transcript_file(id, cwd, recorded).or_else(|| find_transcript(id)) else {
+        return false;
+    };
+    match std::fs::remove_file(&path) {
+        Ok(()) => true,
+        Err(e) => {
+            tracing::warn!("could not remove transcript {}: {e}", path.display());
+            false
+        }
+    }
+}
+
+/// The filesystem half of [`move_transcript`], split out for the same reason
+/// [`crate::config::transcript_slug`] is: both ends of the real call are slugs
+/// under `$HOME`, and a test that set `HOME` to reach them would change it under
+/// every other test in the process.
+fn relocate_file(src: &Path, dest: &Path) -> Result<PathBuf> {
+    // Caught before the rename, which would otherwise be a rename onto itself: a
+    // session resumed in the tree it was already in moves nowhere.
+    if src == dest {
+        return Ok(dest.to_path_buf());
+    }
+    if let Some(dir) = dest.parent() {
+        std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    }
+    // Both slugs live under `~/.claude/projects`, so this is normally one inode
+    // moving inside a directory. The copy is for the case where it is not — a `HOME`
+    // that spans a mount gives `EXDEV`, which no amount of retrying fixes.
+    if std::fs::rename(src, dest).is_err() {
+        std::fs::copy(src, dest)
+            .with_context(|| format!("copying {} to {}", src.display(), dest.display()))?;
+        // Only once the copy is real. Removing the source first would put the one
+        // failure that loses the conversation into the path that exists to keep it.
+        std::fs::remove_file(src)
+            .with_context(|| format!("removing {} after copying it", src.display()))?;
+    }
+    Ok(dest.to_path_buf())
+}
+
+/// How much of the transcript's head to read looking for a first turn. The
+/// headers ahead of it are ~266 bytes, so this is slack for a longer preamble
+/// rather than a window that has to grow with the conversation.
+const FIRST_TURN_BYTES: u64 = 8 * 1024;
+
+/// How much of the transcript's tail to read looking for a title.
+const TITLE_TAIL_BYTES: u64 = 128 * 1024;
+
+/// The longest title worth putting in a rail row.
+const TITLE_MAX: usize = 120;
+
+/// The name Claude Code gave this conversation.
+///
+/// Claude Code writes `{"type":"ai-title","aiTitle":"…"}` into the transcript and
+/// re-writes it on every append, so the last one in the file is the current
+/// answer and the tail is enough to find it. That beats anything the daemon
+/// could invent: it is the same sentence `claude --resume` lists the
+/// conversation under.
+///
+/// None is a normal answer, not a failure — the entry only appears after the
+/// first exchange, and the format is Claude Code's own and undocumented. The
+/// caller falls back to the workspace name, which is what the rail showed before
+/// this existed.
+pub fn ai_title(id: uuid::Uuid, cwd: &Path, recorded: Option<&Path>) -> Option<String> {
+    let path = transcript_file(id, cwd, recorded)?;
+    let tail = read_tail(&path, TITLE_TAIL_BYTES).ok()?;
+    let text = String::from_utf8_lossy(&tail);
+    // Skip the first line: a tail read almost always lands mid-record.
+    let mut lines = text.split('\n');
+    lines.next();
+    let mut found = None;
+    for line in lines {
+        // Most of a tail is tool results, tens of KB each; parsing those to learn
+        // they are not the title was the cost of every `Stop`.
+        if !line.contains("\"ai-title\"") {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        if v.get("type").and_then(|t| t.as_str()) != Some("ai-title") {
+            continue;
+        }
+        if let Some(t) = v.get("aiTitle").and_then(|t| t.as_str()) {
+            let t = t.trim();
+            if !t.is_empty() {
+                found = Some(t.chars().take(TITLE_MAX).collect::<String>());
+            }
+        }
+    }
+    found
+}
+
+/// The first `n` bytes of a file, or the whole thing if it is shorter.
+fn read_head(path: &Path, n: u64) -> std::io::Result<Vec<u8>> {
+    use std::io::Read;
+    let mut buf = Vec::new();
+    std::fs::File::open(path)?.take(n).read_to_end(&mut buf)?;
+    Ok(buf)
+}
+
+/// The last `n` bytes of a file, or the whole thing if it is shorter.
+fn read_tail(path: &Path, n: u64) -> std::io::Result<Vec<u8>> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut f = std::fs::File::open(path)?;
+    let len = f.metadata()?.len();
+    if len > n {
+        f.seek(SeekFrom::Start(len - n))?;
+    }
+    let mut buf = Vec::with_capacity(n.min(len) as usize);
+    f.read_to_end(&mut buf)?;
+    Ok(buf)
+}
+
 #[cfg(test)]
 mod tests {
 
@@ -1162,360 +1518,4 @@ mod tests {
             }
         );
     }
-}
-
-/// Whether there is a conversation here, not merely a file.
-///
-/// [`transcript_exists`] is the weaker question and it is not enough before a
-/// When this conversation was last worked in, as evidence rather than bookkeeping.
-///
-/// The transcript's own mtime. Claude Code appends a line per turn, so the file's
-/// last write *is* the conversation's last activity, and the daemon only ever reads
-/// it — `ai_title` tails it, `has_conversation` reads its head, neither touches the
-/// mtime. Measured across 102 records here: readable for 87 of them, and it puts a
-/// session that ran for 66 hours 66 hours later than its start.
-///
-/// Retention counts from this rather than from `created_at`, which is the flaw in
-/// dating a conversation by its beginning: a session you worked in for weeks would
-/// read as ancient the day after you stopped, and its tree would go while you still
-/// remembered it.
-///
-/// The ladder ends at `created_at` on purpose. Claude Code prunes transcripts, so a
-/// missing file is a normal state, and the archived copy is then the best remaining
-/// evidence — its mtime is when the daemon copied it, which is close to when the
-/// session ended. Falling back to the start is the conservative end: it can only
-/// make a tree look *older* than it is, and the six-check preflight is what stands
-/// between that and losing anything.
-pub fn last_used(s: &crate::model::Session) -> std::time::SystemTime {
-    let mtime = |p: Option<&Path>| {
-        p.and_then(|p| std::fs::metadata(p).ok())
-            .and_then(|m| m.modified().ok())
-    };
-    mtime(s.transcript_path.as_deref())
-        .or_else(|| mtime(s.archived_transcript.as_deref()))
-        .unwrap_or(s.created_at)
-}
-
-/// `--resume`: a session that has started but never had a turn *does* have a
-/// `.jsonl`, holding only its `mode` / `permission-mode` / `ai-title` headers —
-/// 266 bytes of it. Resuming that answers "no conversation found" and the process
-/// exits instantly, which cost a live session when the swap's carry trusted the
-/// file's existence and then closed the original.
-///
-/// A `user` entry is the cheapest proof that somebody said something, and the
-/// first one sits just past those headers and never moves — so this reads the
-/// *head*, unlike [`ai_title`], whose answer is rewritten on every append and so
-/// is only ever current at the tail. Tailing here would also answer *wrongly*: a
-/// conversation whose last 128KB is one long run of tool output holds no `user`
-/// line in it at all.
-pub fn has_conversation(id: uuid::Uuid, cwd: &Path, recorded: Option<&Path>) -> bool {
-    let Some(path) = transcript_file(id, cwd, recorded) else {
-        return false;
-    };
-    let Ok(head) = read_head(&path, FIRST_TURN_BYTES) else {
-        return false;
-    };
-    // The pattern holds no newline, so searching the buffer whole is the same
-    // search as scanning it by line, without the split.
-    String::from_utf8_lossy(&head).contains(r#""type":"user""#)
-}
-
-/// Whether a conversation was ever written to disk.
-///
-/// A session killed before its first turn has no `.jsonl` at all, and there is
-/// nothing to come back to: `claude --resume` answers "no conversation found"
-/// and exits. Both the startup resume and the rail's archive ask this, so they
-/// ask it the same way.
-///
-/// Says nothing about whether the file holds a *turn* — see [`has_conversation`]
-/// for that, which is what anything about to `--resume` should ask.
-pub fn transcript_exists(id: uuid::Uuid, cwd: &Path, recorded: Option<&Path>) -> bool {
-    transcript_file(id, cwd, recorded).is_some()
-}
-
-/// The transcript on disk, if there is one.
-///
-/// The path the hook reported is preferred and the slug is the fallback, because
-/// a session adopted into a worktree changes cwd after it starts and the recorded
-/// path is the one that was actually written.
-pub fn transcript_file(id: uuid::Uuid, cwd: &Path, recorded: Option<&Path>) -> Option<PathBuf> {
-    if let Some(p) = recorded {
-        if p.exists() {
-            return Some(p.to_path_buf());
-        }
-    }
-    let candidate = crate::config::transcript_dir_for(cwd)
-        .ok()?
-        .join(format!("{id}.jsonl"));
-    candidate.exists().then_some(candidate)
-}
-
-/// Hunt for a session's transcript anywhere Claude Code keeps them.
-///
-/// The last resort, and it exists because of `claude --worktree`: that session
-/// starts in the main checkout, so Claude Code files its transcript under
-/// *main's* slug, and then the daemon adopts the session into the worktree it
-/// just cut. From then on both of the cheap answers are wrong — the recorded path
-/// names the worktree and so does the cwd — while the file sits under a third
-/// name. The id is a uuid, so finding it by name is unambiguous.
-///
-/// Deliberately not part of [`transcript_file`]: that is asked once per session
-/// per snapshot, and a directory scan for every session that legitimately has no
-/// transcript would be a scan a second, forever. Callers use this once and record
-/// what it found.
-pub fn find_transcript(id: uuid::Uuid) -> Option<PathBuf> {
-    let home = std::env::var("HOME").ok()?;
-    let projects = PathBuf::from(home).join(".claude/projects");
-    let name = format!("{id}.jsonl");
-    for entry in std::fs::read_dir(projects).ok()?.flatten() {
-        let candidate = entry.path().join(&name);
-        if candidate.exists() {
-            return Some(candidate);
-        }
-    }
-    None
-}
-
-/// Point a session at the transcript it actually has, when the cheap answers are
-/// wrong.
-///
-/// Wraps [`find_transcript`] with the check that says whether the scan is needed
-/// at all, so the three callers cannot disagree about when to pay for it: at
-/// startup, at the first `Stop`, and when the process ends. Those are the moments
-/// the answer can change, and each of them records what it found.
-pub fn pin_transcript(id: uuid::Uuid, cwd: &Path, recorded: &mut Option<PathBuf>) {
-    if transcript_file(id, cwd, recorded.as_deref()).is_some() {
-        return;
-    }
-    if let Some(found) = find_transcript(id) {
-        *recorded = Some(found);
-    }
-}
-
-/// Re-file a session's transcript under the slug of the directory it now runs in.
-///
-/// For a relocated session — one killed in one tree and resumed in another under
-/// the same id, which is how the swap moves a conversation. `--resume` does not
-/// need this: it was measured against `claude` 2.1.240, and it resolves a
-/// conversation by **id wherever the file sits**, appending to whatever location it
-/// finds. Resuming from a second directory with the file left behind continues the
-/// conversation and keeps writing to the *original* slug.
-///
-/// So this is about filing, not about survival, and that is why its failure is not
-/// fatal to a move. What it buys is the invariant every slug-based lookup here
-/// assumes — a session's transcript lives under its own cwd's slug. Left unmoved,
-/// [`transcript_file`]'s cheap path is wrong for the rest of the session's life and
-/// only the recorded path or a [`find_transcript`] scan saves it.
-///
-/// `Ok(None)` means there was nothing to move, which is the ordinary case for a
-/// session that never had a turn.
-pub fn move_transcript(id: uuid::Uuid, from: &Path, to: &Path) -> Result<Option<PathBuf>> {
-    let Some(src) = transcript_file(id, from, None) else {
-        return Ok(None);
-    };
-    let dir = crate::config::transcript_dir_for(to)?;
-    relocate_file(&src, &dir.join(format!("{id}.jsonl"))).map(Some)
-}
-
-/// Where Claude Code believes this conversation is isolated, if anywhere.
-///
-/// The transcript carries a `worktree-state` record and **the last one wins**: a
-/// session that leaves a worktree appends one whose `worktreeSession` is `null`,
-/// and 128 transcripts on this machine end that way. So the pin is a running
-/// value, not a header — read to the end, keep the last answer.
-///
-/// `None` covers both "never isolated" and "isolated and then let go", which are
-/// the same thing to every caller here.
-pub fn worktree_pin(transcript: &Path) -> Option<PathBuf> {
-    let text = std::fs::read_to_string(transcript).ok()?;
-    let mut pin = None;
-    for line in text.lines() {
-        // Cheap reject first: this runs over a file that is megabytes of turns and
-        // holds a handful of these records.
-        if !line.contains("\"worktree-state\"") {
-            continue;
-        }
-        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
-            continue;
-        };
-        if v.get("type").and_then(|t| t.as_str()) != Some("worktree-state") {
-            continue;
-        }
-        pin = v
-            .get("worktreeSession")
-            .and_then(|w| w.get("worktreePath"))
-            .and_then(|p| p.as_str())
-            .map(PathBuf::from);
-    }
-    pin
-}
-
-/// Tell a moved conversation it has been moved, in the file it reads it from.
-///
-/// The claim this replaces was that the daemon *cannot* clear Claude Code's
-/// worktree isolation from outside, because `ExitWorktree` is the agent's own
-/// tool. Measured against 128 transcripts, that is wrong: the state is two
-/// appended records, and both are one line with no timestamp and no uuid —
-///
-/// ```text
-/// {"type":"relocated","sessionId":"…","relocatedCwd":"/new/cwd"}
-/// {"type":"worktree-state","worktreeSession":null,"sessionId":"…"}
-/// ```
-///
-/// which is exactly what Claude Code writes for itself when a session relocates.
-/// Asking the agent instead was one instruction, delivered once, that an agent is
-/// free to ignore — and one conversation took the bare "isolated in the worktree"
-/// refusal sixteen times over two days while editing a tree that had since been
-/// cut again for somebody else's branch.
-///
-/// Undocumented format, the same bet as [`ai_title`], and it degrades the same
-/// way: an ignored record leaves things exactly as they were, and the arrival
-/// notice still says the words. **Only safe while the session is not running** —
-/// call it before the pty, never beside a live agent appending to the same file.
-pub fn clear_worktree_pin(id: uuid::Uuid, cwd: &Path, transcript: &Path) -> Result<()> {
-    use std::io::Write;
-    let mut f = std::fs::OpenOptions::new().append(true).open(transcript)?;
-    // `relocated` first, then the pin, in the order Claude Code writes them.
-    writeln!(
-        f,
-        "{}",
-        serde_json::json!({
-            "type": "relocated",
-            "sessionId": id.to_string(),
-            "relocatedCwd": cwd.to_string_lossy(),
-        })
-    )?;
-    writeln!(
-        f,
-        "{}",
-        serde_json::json!({
-            "type": "worktree-state",
-            "worktreeSession": serde_json::Value::Null,
-            "sessionId": id.to_string(),
-        })
-    )?;
-    Ok(())
-}
-
-/// Delete a session's transcript file, wherever it sits.
-///
-/// For a turnless session being dropped rather than archived: the headers-only
-/// file has nothing in it worth keeping, and leaving it lets a later
-/// [`find_transcript`] scan hand it back. Best effort — a missing file is the goal,
-/// not an error — and it reports whether it removed anything, only for the log.
-///
-/// The recorded path is preferred, then the cwd slug, then the id scan, so it
-/// finds the file even when a `--worktree` session filed it under main's slug.
-pub fn delete_transcript(id: uuid::Uuid, cwd: &Path, recorded: Option<&Path>) -> bool {
-    let Some(path) = transcript_file(id, cwd, recorded).or_else(|| find_transcript(id)) else {
-        return false;
-    };
-    match std::fs::remove_file(&path) {
-        Ok(()) => true,
-        Err(e) => {
-            tracing::warn!("could not remove transcript {}: {e}", path.display());
-            false
-        }
-    }
-}
-
-/// The filesystem half of [`move_transcript`], split out for the same reason
-/// [`crate::config::transcript_slug`] is: both ends of the real call are slugs
-/// under `$HOME`, and a test that set `HOME` to reach them would change it under
-/// every other test in the process.
-fn relocate_file(src: &Path, dest: &Path) -> Result<PathBuf> {
-    // Caught before the rename, which would otherwise be a rename onto itself: a
-    // session resumed in the tree it was already in moves nowhere.
-    if src == dest {
-        return Ok(dest.to_path_buf());
-    }
-    if let Some(dir) = dest.parent() {
-        std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
-    }
-    // Both slugs live under `~/.claude/projects`, so this is normally one inode
-    // moving inside a directory. The copy is for the case where it is not — a `HOME`
-    // that spans a mount gives `EXDEV`, which no amount of retrying fixes.
-    if std::fs::rename(src, dest).is_err() {
-        std::fs::copy(src, dest)
-            .with_context(|| format!("copying {} to {}", src.display(), dest.display()))?;
-        // Only once the copy is real. Removing the source first would put the one
-        // failure that loses the conversation into the path that exists to keep it.
-        std::fs::remove_file(src)
-            .with_context(|| format!("removing {} after copying it", src.display()))?;
-    }
-    Ok(dest.to_path_buf())
-}
-
-/// How much of the transcript's head to read looking for a first turn. The
-/// headers ahead of it are ~266 bytes, so this is slack for a longer preamble
-/// rather than a window that has to grow with the conversation.
-const FIRST_TURN_BYTES: u64 = 8 * 1024;
-
-/// How much of the transcript's tail to read looking for a title.
-const TITLE_TAIL_BYTES: u64 = 128 * 1024;
-
-/// The longest title worth putting in a rail row.
-const TITLE_MAX: usize = 120;
-
-/// The name Claude Code gave this conversation.
-///
-/// Claude Code writes `{"type":"ai-title","aiTitle":"…"}` into the transcript and
-/// re-writes it on every append, so the last one in the file is the current
-/// answer and the tail is enough to find it. That beats anything the daemon
-/// could invent: it is the same sentence `claude --resume` lists the
-/// conversation under.
-///
-/// None is a normal answer, not a failure — the entry only appears after the
-/// first exchange, and the format is Claude Code's own and undocumented. The
-/// caller falls back to the workspace name, which is what the rail showed before
-/// this existed.
-pub fn ai_title(id: uuid::Uuid, cwd: &Path, recorded: Option<&Path>) -> Option<String> {
-    let path = transcript_file(id, cwd, recorded)?;
-    let tail = read_tail(&path, TITLE_TAIL_BYTES).ok()?;
-    let text = String::from_utf8_lossy(&tail);
-    // Skip the first line: a tail read almost always lands mid-record.
-    let mut lines = text.split('\n');
-    lines.next();
-    let mut found = None;
-    for line in lines {
-        // Most of a tail is tool results, tens of KB each; parsing those to learn
-        // they are not the title was the cost of every `Stop`.
-        if !line.contains("\"ai-title\"") {
-            continue;
-        }
-        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
-            continue;
-        };
-        if v.get("type").and_then(|t| t.as_str()) != Some("ai-title") {
-            continue;
-        }
-        if let Some(t) = v.get("aiTitle").and_then(|t| t.as_str()) {
-            let t = t.trim();
-            if !t.is_empty() {
-                found = Some(t.chars().take(TITLE_MAX).collect::<String>());
-            }
-        }
-    }
-    found
-}
-
-/// The first `n` bytes of a file, or the whole thing if it is shorter.
-fn read_head(path: &Path, n: u64) -> std::io::Result<Vec<u8>> {
-    use std::io::Read;
-    let mut buf = Vec::new();
-    std::fs::File::open(path)?.take(n).read_to_end(&mut buf)?;
-    Ok(buf)
-}
-
-/// The last `n` bytes of a file, or the whole thing if it is shorter.
-fn read_tail(path: &Path, n: u64) -> std::io::Result<Vec<u8>> {
-    use std::io::{Read, Seek, SeekFrom};
-    let mut f = std::fs::File::open(path)?;
-    let len = f.metadata()?.len();
-    if len > n {
-        f.seek(SeekFrom::Start(len - n))?;
-    }
-    let mut buf = Vec::with_capacity(n.min(len) as usize);
-    f.read_to_end(&mut buf)?;
-    Ok(buf)
 }

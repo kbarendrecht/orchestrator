@@ -179,34 +179,6 @@ async fn note_interrupt(app: &Arc<AppState>, id: Uuid) {
     app.notify().await;
 }
 
-#[cfg(test)]
-mod tests {
-    use super::is_interrupt;
-
-    /// The distinction the whole detector turns on: `0x1b` leads every escape
-    /// sequence a terminal sends, so anything looser than "the chunk *is* an
-    /// escape" reads ordinary typing as the end of a turn.
-    #[test]
-    fn only_a_bare_escape_or_a_ctrl_c_counts() {
-        assert!(is_interrupt(b"\x1b"), "the escape key");
-        assert!(is_interrupt(b"\x03"), "^C");
-
-        // Every one of these arrives while you are watching a turn, and none of
-        // them means stop.
-        for ordinary in [
-            &b"\x1b[A"[..],       // up arrow
-            b"\x1b[B",            // down
-            b"\x1b[200~hi\x1b[201~", // bracketed paste
-            b"\x1b[M   ",         // a mouse report, one per movement
-            b"\x1bb",             // alt+b
-            b"hello",
-            b"",
-        ] {
-            assert!(!is_interrupt(ordinary), "{ordinary:?} is not an interrupt");
-        }
-    }
-}
-
 async fn pty_loop(
     app: Arc<AppState>,
     session: Option<Uuid>,
@@ -304,4 +276,32 @@ async fn pty_loop(
         }
     }
     tracing::info!(%target, reason, "pty client detached");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_interrupt;
+
+    /// The distinction the whole detector turns on: `0x1b` leads every escape
+    /// sequence a terminal sends, so anything looser than "the chunk *is* an
+    /// escape" reads ordinary typing as the end of a turn.
+    #[test]
+    fn only_a_bare_escape_or_a_ctrl_c_counts() {
+        assert!(is_interrupt(b"\x1b"), "the escape key");
+        assert!(is_interrupt(b"\x03"), "^C");
+
+        // Every one of these arrives while you are watching a turn, and none of
+        // them means stop.
+        for ordinary in [
+            &b"\x1b[A"[..],       // up arrow
+            b"\x1b[B",            // down
+            b"\x1b[200~hi\x1b[201~", // bracketed paste
+            b"\x1b[M   ",         // a mouse report, one per movement
+            b"\x1bb",             // alt+b
+            b"hello",
+            b"",
+        ] {
+            assert!(!is_interrupt(ordinary), "{ordinary:?} is not an interrupt");
+        }
+    }
 }

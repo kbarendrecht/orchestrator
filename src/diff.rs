@@ -372,13 +372,16 @@ fn mark_words(rows: &mut [Row]) {
     }
 }
 
+/// The `(start, end)` token spans a row highlights, one side of a pair.
+type WordRanges = Vec<(usize, usize)>;
+
 /// Token-level diff of two lines, returned as byte ranges into each.
 ///
 /// A single span covering everything between the common prefix and suffix is
 /// cheap but wrong for a line with two separate edits: it paints the untouched
 /// middle as changed. This runs a real LCS over the tokens so each edit gets
 /// its own range.
-fn word_ranges(a: &str, b: &str) -> (Vec<(usize, usize)>, Vec<(usize, usize)>) {
+fn word_ranges(a: &str, b: &str) -> (WordRanges, WordRanges) {
     let ta = tokenize(a);
     let tb = tokenize(b);
 

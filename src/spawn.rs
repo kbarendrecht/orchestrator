@@ -1,5 +1,5 @@
 use anyhow::{bail, Context, Result};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::SystemTime;
 use uuid::Uuid;
@@ -588,7 +588,7 @@ pub async fn spawn_session(
     }
 
     watch_session_exit(app.clone(), id, spawned.handle);
-    crate::agent_update::refresh_detached(&app);
+    crate::agent_update::refresh_detached(app);
     app.notify().await;
     phases.log(&format!("session {} start in {workspace}", crate::model::short_id(&id)));
     Ok(id)
@@ -881,7 +881,7 @@ pub async fn spawn_worktree_session(
     let spawned = insert_and_spawn(app, id, session, &cmd, &spawn_cwd, &env, &unset).await?;
 
     watch_session_exit(app.clone(), id, spawned.handle);
-    crate::agent_update::refresh_detached(&app);
+    crate::agent_update::refresh_detached(app);
     app.notify().await;
     Ok(id)
 }
@@ -970,7 +970,7 @@ pub async fn spawn_fix_pr_session(
     let spawned = insert_and_spawn(app, id, session, &cmd, &path, &env, &unset).await?;
 
     watch_session_exit(app.clone(), id, spawned.handle);
-    crate::agent_update::refresh_detached(&app);
+    crate::agent_update::refresh_detached(app);
     app.notify().await;
     Ok(id)
 }
@@ -1933,11 +1933,165 @@ async fn scan(
 ///
 /// `claude --worktree` reports the real path at `SessionStart`; until then the
 /// daemon only knows where it asked for the worktree to be created.
-pub fn worktree_name_of(path: &PathBuf, worktrees_dir: &PathBuf) -> Option<String> {
+pub fn worktree_name_of(path: &Path, worktrees_dir: &Path) -> Option<String> {
     path.strip_prefix(worktrees_dir)
         .ok()
         .and_then(|rest| rest.components().next())
         .map(|c| c.as_os_str().to_string_lossy().into_owned())
+}
+
+/// What the daemon needs the new worktree to have checked out.
+///
+/// The repo's `WorktreeCreate` hook decides its own branch and base, so whatever it
+/// produces has to be put onto this afterwards. Naming the two shapes rather than
+/// passing a branch and a nullable base keeps the "is this a new branch or an
+/// existing one" question answered once, at the call site that knows.
+pub(crate) enum Want<'a> {
+    /// A branch to cut, from this base. A plain new worktree, or a fork from its
+    /// parent's HEAD.
+    New { branch: &'a str, base: &'a str },
+    /// A branch that already exists somewhere, local or on origin. A PR's head ref.
+    Existing { branch: &'a str },
+}
+
+/// Create a worktree the repo's way if it has one, ours otherwise.
+///
+/// **The repo's `WorktreeCreate` hook first, the daemon's own creation behind it.**
+/// A repo that declares the event is stating how worktrees are made here, and
+/// Claude Code treats the hook as the whole mechanism: it reads the request on
+/// stdin and prints the path it made. So the daemon runs it and adopts what it
+/// produced, which is how a repo's fetching, its layout and its post-create work
+/// reach a tree the daemon asked for.
+///
+/// **Then the branch is put right.** The hook chooses its own base, and the
+/// monorepo's hardcodes `upstream/develop`. That is wrong for a PR worktree pinned
+/// to a head ref and wrong for a fork cut from its parent, so [`Want`] is applied to
+/// the tree afterwards. The branch the hook made is left behind; that is the price
+/// of letting it own creation, and it is a stale ref rather than lost work.
+///
+/// **Every failure falls through to the daemon's own creation**, which is the path
+/// that ran before any of this existed. Creating a worktree is the daemon's most
+/// load-bearing operation and a repo script is not allowed to be the reason it
+/// cannot happen. A tree the hook made but we could not use is *removed* first: it
+/// usually sits at the very path and branch the fallback is about to ask for, so
+/// leaving it there turned an adoption failure into a hard spawn failure with a git
+/// error about a branch nobody asked about.
+///
+/// Returns the path the worktree actually landed at, which is the hook's choice when
+/// the hook made it. Callers must use that rather than the path they passed in.
+pub(crate) async fn create_worktree(
+    app: &Arc<AppState>,
+    name: &str,
+    path: &std::path::Path,
+    want: Want<'_>,
+) -> Result<std::path::PathBuf> {
+    // Owned up front: every git call below goes to a blocking thread, because each
+    // one can fetch and a fetch against an unreachable remote parks a runtime worker
+    // for as long as git waits.
+    let main = app.cfg.main_checkout.clone();
+    let branch = match &want {
+        Want::New { branch, .. } | Want::Existing { branch } => branch.to_string(),
+    };
+    let base = match &want {
+        Want::New { base, .. } => Some(base.to_string()),
+        Want::Existing { .. } => None,
+    };
+
+    if let Some(made) = hook_cut_worktree(app, name).await {
+        let (m, tree, b, ba) = (main.clone(), made.clone(), branch.clone(), base.clone());
+        let applied = tokio::task::spawn_blocking(move || match ba {
+            Some(base) => crate::git::checkout_new_branch(&m, &tree, &b, &base),
+            None => crate::git::checkout_existing_branch(&m, &tree, &b),
+        })
+        .await
+        .context("putting the hook's worktree on its branch panicked")?;
+
+        match applied {
+            Ok(()) => return Ok(made),
+            Err(e) => {
+                tracing::warn!(
+                    name,
+                    "the repo's WorktreeCreate made {} but it could not be put on the \
+                     branch this needs, so the daemon is cutting its own: {e:#}",
+                    made.display()
+                );
+                // Out of the way before the fallback asks for the same path, and very
+                // likely the same branch name.
+                let (m, t) = (main.clone(), made.clone());
+                let _ = tokio::task::spawn_blocking(move || crate::git::worktree_remove(&m, &t)).await;
+            }
+        }
+    }
+
+    let p = path.to_path_buf();
+    tokio::task::spawn_blocking(move || match base {
+        Some(base) => crate::git::worktree_add_new(&main, &p, &branch, &base),
+        None => crate::git::worktree_add_existing(&main, &p, &branch),
+    })
+    .await
+    .context("the worktree add panicked")??;
+    Ok(path.to_path_buf())
+}
+
+/// Run the repo's `WorktreeCreate` hooks and return the tree the first usable one
+/// made.
+///
+/// `None` for every way this can decline: no hook declared, a non-zero exit, empty
+/// output, or a path that is not a directory. The caller cuts its own on `None`, so
+/// none of these is an error worth raising.
+async fn hook_cut_worktree(app: &Arc<AppState>, name: &str) -> Option<std::path::PathBuf> {
+    // `name` is the key the monorepo's hook reads, and the only one the contract is
+    // observed to carry.
+    let payload = serde_json::json!({
+        "hook_event_name": "WorktreeCreate",
+        "cwd": app.cfg.main_checkout.to_string_lossy(),
+        "name": name,
+    });
+    for out in crate::worktree::run_repo_hooks(app, "WorktreeCreate", payload).await {
+        let said = String::from_utf8_lossy(&out.stdout);
+        match usable_hook_path(&said) {
+            Some(made) => {
+                tracing::info!(name, "the repo's WorktreeCreate hook made {}", made.display());
+                return Some(made);
+            }
+            None => tracing::warn!(
+                name,
+                "the repo's WorktreeCreate hook emitted an unusable path {:?}",
+                said.trim()
+            ),
+        }
+    }
+    None
+}
+
+/// The worktree path a `WorktreeCreate` hook printed, if it is one the daemon can
+/// use.
+///
+/// Checked the way Claude Code checks it, and for its reasons: a relative path is
+/// ambiguous against a working directory the hook does not control; dot segments can
+/// climb out of the repository, and Claude Code refuses them outright rather than
+/// normalising, so a hook that emits them is one written against a different
+/// contract; and a path that is not a directory is a hook that failed while exiting
+/// zero. The hook's contract is that only the path goes to stdout, so trailing
+/// newlines are trimmed and nothing else is parsed out of it.
+fn usable_hook_path(said: &str) -> Option<std::path::PathBuf> {
+    let said = said.trim();
+    if said.is_empty() {
+        return None;
+    }
+    let made = std::path::PathBuf::from(said);
+    if !made.is_absolute() {
+        return None;
+    }
+    if made.components().any(|c| {
+        matches!(
+            c,
+            std::path::Component::CurDir | std::path::Component::ParentDir
+        )
+    }) {
+        return None;
+    }
+    made.is_dir().then_some(made)
 }
 
 #[cfg(test)]
@@ -2335,7 +2489,7 @@ mod tests {
 
         assert!(err.is_err(), "a missing binary is a failed spawn");
         assert!(
-            app.inner.read().await.sessions.get(&id).is_none(),
+            !app.inner.read().await.sessions.contains_key(&id),
             "the record must not outlive the attempt"
         );
     }
@@ -2665,159 +2819,5 @@ mod tests {
         assert_eq!(worktree_name_of(&p, &dir), Some("invoice".to_string()));
         assert_eq!(worktree_name_of(&PathBuf::from("/repo/src"), &dir), None);
     }
-}
-
-/// What the daemon needs the new worktree to have checked out.
-///
-/// The repo's `WorktreeCreate` hook decides its own branch and base, so whatever it
-/// produces has to be put onto this afterwards. Naming the two shapes rather than
-/// passing a branch and a nullable base keeps the "is this a new branch or an
-/// existing one" question answered once, at the call site that knows.
-pub(crate) enum Want<'a> {
-    /// A branch to cut, from this base. A plain new worktree, or a fork from its
-    /// parent's HEAD.
-    New { branch: &'a str, base: &'a str },
-    /// A branch that already exists somewhere, local or on origin. A PR's head ref.
-    Existing { branch: &'a str },
-}
-
-/// Create a worktree the repo's way if it has one, ours otherwise.
-///
-/// **The repo's `WorktreeCreate` hook first, the daemon's own creation behind it.**
-/// A repo that declares the event is stating how worktrees are made here, and
-/// Claude Code treats the hook as the whole mechanism: it reads the request on
-/// stdin and prints the path it made. So the daemon runs it and adopts what it
-/// produced, which is how a repo's fetching, its layout and its post-create work
-/// reach a tree the daemon asked for.
-///
-/// **Then the branch is put right.** The hook chooses its own base, and the
-/// monorepo's hardcodes `upstream/develop`. That is wrong for a PR worktree pinned
-/// to a head ref and wrong for a fork cut from its parent, so [`Want`] is applied to
-/// the tree afterwards. The branch the hook made is left behind; that is the price
-/// of letting it own creation, and it is a stale ref rather than lost work.
-///
-/// **Every failure falls through to the daemon's own creation**, which is the path
-/// that ran before any of this existed. Creating a worktree is the daemon's most
-/// load-bearing operation and a repo script is not allowed to be the reason it
-/// cannot happen. A tree the hook made but we could not use is *removed* first: it
-/// usually sits at the very path and branch the fallback is about to ask for, so
-/// leaving it there turned an adoption failure into a hard spawn failure with a git
-/// error about a branch nobody asked about.
-///
-/// Returns the path the worktree actually landed at, which is the hook's choice when
-/// the hook made it. Callers must use that rather than the path they passed in.
-pub(crate) async fn create_worktree(
-    app: &Arc<AppState>,
-    name: &str,
-    path: &std::path::Path,
-    want: Want<'_>,
-) -> Result<std::path::PathBuf> {
-    // Owned up front: every git call below goes to a blocking thread, because each
-    // one can fetch and a fetch against an unreachable remote parks a runtime worker
-    // for as long as git waits.
-    let main = app.cfg.main_checkout.clone();
-    let branch = match &want {
-        Want::New { branch, .. } | Want::Existing { branch } => branch.to_string(),
-    };
-    let base = match &want {
-        Want::New { base, .. } => Some(base.to_string()),
-        Want::Existing { .. } => None,
-    };
-
-    if let Some(made) = hook_cut_worktree(app, name).await {
-        let (m, tree, b, ba) = (main.clone(), made.clone(), branch.clone(), base.clone());
-        let applied = tokio::task::spawn_blocking(move || match ba {
-            Some(base) => crate::git::checkout_new_branch(&m, &tree, &b, &base),
-            None => crate::git::checkout_existing_branch(&m, &tree, &b),
-        })
-        .await
-        .context("putting the hook's worktree on its branch panicked")?;
-
-        match applied {
-            Ok(()) => return Ok(made),
-            Err(e) => {
-                tracing::warn!(
-                    name,
-                    "the repo's WorktreeCreate made {} but it could not be put on the \
-                     branch this needs, so the daemon is cutting its own: {e:#}",
-                    made.display()
-                );
-                // Out of the way before the fallback asks for the same path, and very
-                // likely the same branch name.
-                let (m, t) = (main.clone(), made.clone());
-                let _ = tokio::task::spawn_blocking(move || crate::git::worktree_remove(&m, &t)).await;
-            }
-        }
-    }
-
-    let p = path.to_path_buf();
-    tokio::task::spawn_blocking(move || match base {
-        Some(base) => crate::git::worktree_add_new(&main, &p, &branch, &base),
-        None => crate::git::worktree_add_existing(&main, &p, &branch),
-    })
-    .await
-    .context("the worktree add panicked")??;
-    Ok(path.to_path_buf())
-}
-
-/// Run the repo's `WorktreeCreate` hooks and return the tree the first usable one
-/// made.
-///
-/// `None` for every way this can decline: no hook declared, a non-zero exit, empty
-/// output, or a path that is not a directory. The caller cuts its own on `None`, so
-/// none of these is an error worth raising.
-async fn hook_cut_worktree(app: &Arc<AppState>, name: &str) -> Option<std::path::PathBuf> {
-    // `name` is the key the monorepo's hook reads, and the only one the contract is
-    // observed to carry.
-    let payload = serde_json::json!({
-        "hook_event_name": "WorktreeCreate",
-        "cwd": app.cfg.main_checkout.to_string_lossy(),
-        "name": name,
-    });
-    for out in crate::worktree::run_repo_hooks(app, "WorktreeCreate", payload).await {
-        let said = String::from_utf8_lossy(&out.stdout);
-        match usable_hook_path(&said) {
-            Some(made) => {
-                tracing::info!(name, "the repo's WorktreeCreate hook made {}", made.display());
-                return Some(made);
-            }
-            None => tracing::warn!(
-                name,
-                "the repo's WorktreeCreate hook emitted an unusable path {:?}",
-                said.trim()
-            ),
-        }
-    }
-    None
-}
-
-/// The worktree path a `WorktreeCreate` hook printed, if it is one the daemon can
-/// use.
-///
-/// Checked the way Claude Code checks it, and for its reasons: a relative path is
-/// ambiguous against a working directory the hook does not control; dot segments can
-/// climb out of the repository, and Claude Code refuses them outright rather than
-/// normalising, so a hook that emits them is one written against a different
-/// contract; and a path that is not a directory is a hook that failed while exiting
-/// zero. The hook's contract is that only the path goes to stdout, so trailing
-/// newlines are trimmed and nothing else is parsed out of it.
-fn usable_hook_path(said: &str) -> Option<std::path::PathBuf> {
-    let said = said.trim();
-    if said.is_empty() {
-        return None;
-    }
-    let made = std::path::PathBuf::from(said);
-    if !made.is_absolute() {
-        return None;
-    }
-    if made.components().any(|c| {
-        matches!(
-            c,
-            std::path::Component::CurDir | std::path::Component::ParentDir
-        )
-    }) {
-        return None;
-    }
-    made.is_dir().then_some(made)
 }
 

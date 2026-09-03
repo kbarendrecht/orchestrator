@@ -589,6 +589,127 @@ pub async fn reap_old(app: &Arc<AppState>) -> usize {
     removed
 }
 
+/// How long a repo's worktree hook gets. Creation and removal are both filesystem
+/// work with at most a fetch in front of them, and anything slower than this is
+/// stuck rather than busy.
+const WORKTREE_HOOK_TIMEOUT_SECS: u64 = 300;
+
+/// The repo's `command` hooks for one worktree event, in the order Claude Code
+/// would run them.
+///
+/// Read from the repo's own settings rather than the daemon's: these are the
+/// *repo's* worktree policy, and the daemon's `--settings` file is where the
+/// daemon's own hooks live. Both of Claude Code's repo-level files are consulted,
+/// project first then local, which is the layering it uses everywhere else.
+///
+/// Only `type: "command"` is returned. An `http` hook is Claude Code's to deliver
+/// and has no meaning outside a session; skipping it silently is right, because the
+/// daemon's own path follows either way.
+pub(crate) fn repo_worktree_hooks(main: &std::path::Path, event: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for name in [".claude/settings.json", ".claude/settings.local.json"] {
+        let Ok(raw) = std::fs::read_to_string(main.join(name)) else {
+            continue;
+        };
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) else {
+            continue;
+        };
+        let Some(entries) = v.pointer(&format!("/hooks/{event}")).and_then(|h| h.as_array()) else {
+            continue;
+        };
+        for entry in entries {
+            let Some(hooks) = entry.get("hooks").and_then(|h| h.as_array()) else {
+                continue;
+            };
+            for h in hooks {
+                if h.get("type").and_then(|t| t.as_str()) != Some("command") {
+                    continue;
+                }
+                if let Some(cmd) = h.get("command").and_then(|c| c.as_str()) {
+                    out.push(cmd.to_string());
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Run the repo's `command` hooks for one worktree event, in order.
+///
+/// One function because there are two events and they differ only in their payload:
+/// same `sh -c`, same `CLAUDE_PROJECT_DIR`, same bounded exec, same reporting. Two
+/// copies of "how the daemon runs a repo hook" is how the next change to it — an env
+/// key, an exit-code rule, a timeout — reaches one and not the other.
+///
+/// **Never fatal, and never gates the daemon's own work.** A hook that fails must
+/// not strand a worktree, so failures are logged with the hook's own stderr and the
+/// caller carries on. Returns the successful runs' output, in order, for the one
+/// caller that reads stdout.
+///
+/// A shell string, the way Claude Code defines a `command` hook, so `$VAR` and a
+/// pipe mean what the author wrote. `CLAUDE_PROJECT_DIR` is exported on the child
+/// because repo hooks address themselves through it.
+pub(crate) async fn run_repo_hooks(
+    app: &Arc<AppState>,
+    event: &str,
+    payload: serde_json::Value,
+) -> Vec<std::process::Output> {
+    let hooks = repo_worktree_hooks(&app.cfg.main_checkout, event);
+    let mut out = Vec::new();
+    if hooks.is_empty() {
+        return out;
+    }
+    let body = payload.to_string().into_bytes();
+    for cmd in hooks {
+        let argv = vec!["sh".to_string(), "-c".to_string(), cmd];
+        let at = app.cfg.main_checkout.clone();
+        let envs = vec![(
+            "CLAUDE_PROJECT_DIR".to_string(),
+            app.cfg.main_checkout.to_string_lossy().into_owned(),
+        )];
+        let body = body.clone();
+        let label = event.to_string();
+        let run = tokio::task::spawn_blocking(move || {
+            crate::proc::run_bounded_with_input(
+                &at,
+                WORKTREE_HOOK_TIMEOUT_SECS,
+                &argv,
+                &label,
+                Some(body),
+                &envs,
+            )
+        })
+        .await;
+        match run {
+            Ok(Ok(o)) if o.status.success() => out.push(o),
+            Ok(Ok(o)) => tracing::warn!(
+                event,
+                "the repo's {event} hook exited {}: {}",
+                o.status,
+                String::from_utf8_lossy(&o.stderr).trim()
+            ),
+            Ok(Err(e)) => tracing::warn!(event, "the repo's {event} hook failed: {e:#}"),
+            Err(e) => tracing::warn!(event, "the {event} hook task panicked: {e}"),
+        }
+    }
+    out
+}
+
+/// The payload for a `WorktreeRemove`.
+///
+/// `worktreePath` and `worktreeName` are the spellings Claude Code's own binary
+/// carries. That is the strongest evidence available: the monorepo declares no
+/// `WorktreeRemove`, so this has never made a real round trip, and a repo whose hook
+/// reads some other key gets a no-op rather than a wrong action.
+fn remove_payload(main: &std::path::Path, workspace: &str, path: &std::path::Path) -> serde_json::Value {
+    serde_json::json!({
+        "hook_event_name": "WorktreeRemove",
+        "cwd": main.to_string_lossy(),
+        "worktreePath": path.to_string_lossy(),
+        "worktreeName": workspace,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -891,7 +1012,7 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&dir);
     }
-    use super::*;
+    
 
     /// Resuming into a standing worktree skips the rebuild, so the branch was
     /// never looked at. Driven against a fixture: an archived `pr-4` recorded on
@@ -955,125 +1076,4 @@ mod tests {
         // caller says so rather than inventing a name.
         assert!(derive_recovery(std::path::Path::new("/")).is_none());
     }
-}
-
-/// How long a repo's worktree hook gets. Creation and removal are both filesystem
-/// work with at most a fetch in front of them, and anything slower than this is
-/// stuck rather than busy.
-const WORKTREE_HOOK_TIMEOUT_SECS: u64 = 300;
-
-/// The repo's `command` hooks for one worktree event, in the order Claude Code
-/// would run them.
-///
-/// Read from the repo's own settings rather than the daemon's: these are the
-/// *repo's* worktree policy, and the daemon's `--settings` file is where the
-/// daemon's own hooks live. Both of Claude Code's repo-level files are consulted,
-/// project first then local, which is the layering it uses everywhere else.
-///
-/// Only `type: "command"` is returned. An `http` hook is Claude Code's to deliver
-/// and has no meaning outside a session; skipping it silently is right, because the
-/// daemon's own path follows either way.
-pub(crate) fn repo_worktree_hooks(main: &std::path::Path, event: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    for name in [".claude/settings.json", ".claude/settings.local.json"] {
-        let Ok(raw) = std::fs::read_to_string(main.join(name)) else {
-            continue;
-        };
-        let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) else {
-            continue;
-        };
-        let Some(entries) = v.pointer(&format!("/hooks/{event}")).and_then(|h| h.as_array()) else {
-            continue;
-        };
-        for entry in entries {
-            let Some(hooks) = entry.get("hooks").and_then(|h| h.as_array()) else {
-                continue;
-            };
-            for h in hooks {
-                if h.get("type").and_then(|t| t.as_str()) != Some("command") {
-                    continue;
-                }
-                if let Some(cmd) = h.get("command").and_then(|c| c.as_str()) {
-                    out.push(cmd.to_string());
-                }
-            }
-        }
-    }
-    out
-}
-
-/// Run the repo's `command` hooks for one worktree event, in order.
-///
-/// One function because there are two events and they differ only in their payload:
-/// same `sh -c`, same `CLAUDE_PROJECT_DIR`, same bounded exec, same reporting. Two
-/// copies of "how the daemon runs a repo hook" is how the next change to it — an env
-/// key, an exit-code rule, a timeout — reaches one and not the other.
-///
-/// **Never fatal, and never gates the daemon's own work.** A hook that fails must
-/// not strand a worktree, so failures are logged with the hook's own stderr and the
-/// caller carries on. Returns the successful runs' output, in order, for the one
-/// caller that reads stdout.
-///
-/// A shell string, the way Claude Code defines a `command` hook, so `$VAR` and a
-/// pipe mean what the author wrote. `CLAUDE_PROJECT_DIR` is exported on the child
-/// because repo hooks address themselves through it.
-pub(crate) async fn run_repo_hooks(
-    app: &Arc<AppState>,
-    event: &str,
-    payload: serde_json::Value,
-) -> Vec<std::process::Output> {
-    let hooks = repo_worktree_hooks(&app.cfg.main_checkout, event);
-    let mut out = Vec::new();
-    if hooks.is_empty() {
-        return out;
-    }
-    let body = payload.to_string().into_bytes();
-    for cmd in hooks {
-        let argv = vec!["sh".to_string(), "-c".to_string(), cmd];
-        let at = app.cfg.main_checkout.clone();
-        let envs = vec![(
-            "CLAUDE_PROJECT_DIR".to_string(),
-            app.cfg.main_checkout.to_string_lossy().into_owned(),
-        )];
-        let body = body.clone();
-        let label = event.to_string();
-        let run = tokio::task::spawn_blocking(move || {
-            crate::proc::run_bounded_with_input(
-                &at,
-                WORKTREE_HOOK_TIMEOUT_SECS,
-                &argv,
-                &label,
-                Some(body),
-                &envs,
-            )
-        })
-        .await;
-        match run {
-            Ok(Ok(o)) if o.status.success() => out.push(o),
-            Ok(Ok(o)) => tracing::warn!(
-                event,
-                "the repo's {event} hook exited {}: {}",
-                o.status,
-                String::from_utf8_lossy(&o.stderr).trim()
-            ),
-            Ok(Err(e)) => tracing::warn!(event, "the repo's {event} hook failed: {e:#}"),
-            Err(e) => tracing::warn!(event, "the {event} hook task panicked: {e}"),
-        }
-    }
-    out
-}
-
-/// The payload for a `WorktreeRemove`.
-///
-/// `worktreePath` and `worktreeName` are the spellings Claude Code's own binary
-/// carries. That is the strongest evidence available: the monorepo declares no
-/// `WorktreeRemove`, so this has never made a real round trip, and a repo whose hook
-/// reads some other key gets a no-op rather than a wrong action.
-fn remove_payload(main: &std::path::Path, workspace: &str, path: &std::path::Path) -> serde_json::Value {
-    serde_json::json!({
-        "hook_event_name": "WorktreeRemove",
-        "cwd": main.to_string_lossy(),
-        "worktreePath": path.to_string_lossy(),
-        "worktreeName": workspace,
-    })
 }

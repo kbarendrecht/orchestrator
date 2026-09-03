@@ -128,7 +128,7 @@ fn trust_accepted_in(home: &Path, dir: &Path) -> Option<bool> {
     let entry = v.get("projects")?.get(dir.to_string_lossy().as_ref())?;
     // Present and false is untrusted. Present without the key is a project Claude
     // Code knows and has not recorded a decision for, which is not a refusal.
-    Some(entry.get("hasTrustDialogAccepted")?.as_bool()?)
+    entry.get("hasTrustDialogAccepted")?.as_bool()
 }
 
 /// Everything worth saying about this machine, in boot order.

@@ -1015,7 +1015,7 @@ mod tests {
             cwd: Some(gone.to_string_lossy().into_owned()),
             ..HookPayload::default()
         };
-        session_end(AxState(app.clone()), headers.clone(), Json(stale)).await;
+        let _ = session_end(AxState(app.clone()), headers.clone(), Json(stale)).await;
 
         {
             let inner = app.inner.read().await;
@@ -1031,7 +1031,7 @@ mod tests {
             cwd: Some(here.to_string_lossy().into_owned()),
             ..HookPayload::default()
         };
-        session_end(AxState(app.clone()), headers, Json(real)).await;
+        let _ = session_end(AxState(app.clone()), headers, Json(real)).await;
         {
             let inner = app.inner.read().await;
             assert!(!inner.sessions[&id].state.is_live(), "its own ending still ends it");
@@ -1077,7 +1077,7 @@ mod tests {
             cwd: Some(here.join("web").to_string_lossy().into_owned()),
             ..HookPayload::default()
         };
-        session_end(AxState(app.clone()), headers, Json(from_below)).await;
+        let _ = session_end(AxState(app.clone()), headers, Json(from_below)).await;
 
         {
             let inner = app.inner.read().await;
@@ -1137,12 +1137,12 @@ mod tests {
             cwd: Some(link.to_string_lossy().into_owned()),
             ..HookPayload::default()
         };
-        session_start(AxState(app.clone()), headers.clone(), Json(through_link())).await;
+        let _ = session_start(AxState(app.clone()), headers.clone(), Json(through_link())).await;
         {
             let inner = app.inner.read().await;
             assert!(inner.sessions[&id].state.is_live(), "the session is up");
         }
-        session_end(AxState(app.clone()), headers, Json(through_link())).await;
+        let _ = session_end(AxState(app.clone()), headers, Json(through_link())).await;
 
         {
             let inner = app.inner.read().await;
@@ -1193,7 +1193,7 @@ mod tests {
                 reason: Some(reason.to_string()),
                 ..HookPayload::default()
             };
-            session_end(AxState(app.clone()), headers.clone(), Json(payload)).await;
+            let _ = session_end(AxState(app.clone()), headers.clone(), Json(payload)).await;
             let inner = app.inner.read().await;
             assert!(
                 inner.sessions[&id].state.is_live(),
@@ -1221,7 +1221,7 @@ mod tests {
             reason: Some("prompt_input_exit".to_string()),
             ..HookPayload::default()
         };
-        session_end(AxState(app.clone()), headers, Json(real)).await;
+        let _ = session_end(AxState(app.clone()), headers, Json(real)).await;
         {
             let inner = app.inner.read().await;
             assert!(!inner.sessions[&id].state.is_live(), "a real ending still ends it");
@@ -1280,7 +1280,7 @@ mod tests {
 
         let mut headers = HeaderMap::new();
         headers.insert("x-orch-session", id.to_string().parse().unwrap());
-        session_start(AxState(app.clone()), headers, Json(HookPayload::default())).await;
+        let _ = session_start(AxState(app.clone()), headers, Json(HookPayload::default())).await;
 
         // `cat` echoes it straight back, so the buffer proves it was written.
         let mut seen = false;
@@ -1332,7 +1332,7 @@ mod tests {
         headers.insert("x-orch-session", id.to_string().parse().unwrap());
         // A `Bash` call: no `file_path`, which is exactly the shape the old
         // `Edit|Write` matcher never delivered.
-        post_tool_use(AxState(app.clone()), headers, Json(HookPayload::default())).await;
+        let _ = post_tool_use(AxState(app.clone()), headers, Json(HookPayload::default())).await;
 
         let inner = app.inner.read().await;
         assert!(
@@ -1373,7 +1373,7 @@ mod tests {
         }
         let mut headers = HeaderMap::new();
         headers.insert("x-orch-session", id.to_string().parse().unwrap());
-        post_tool_use(AxState(app.clone()), headers, Json(HookPayload::default())).await;
+        let _ = post_tool_use(AxState(app.clone()), headers, Json(HookPayload::default())).await;
 
         let inner = app.inner.read().await;
         assert!(

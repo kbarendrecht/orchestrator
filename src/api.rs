@@ -1402,7 +1402,10 @@ pub async fn nudge_sessions(
             if !s.had_a_turn {
                 continue;
             }
-            match &s.state {
+            // Working, starting, failing: not waiting on you, so not yours to
+            // interrupt — a nudge into a running turn is a stray line of input.
+            // Which is why only `YourTurn` is looked at at all.
+            if let crate::model::State::YourTurn { reason, .. } = &s.state {
                 // `Ready` and interrupted: relaunched with an unfinished turn
                 // behind it and never prompted since, which is the one state
                 // where "continue" is both true and what you meant.
@@ -1412,7 +1415,7 @@ pub async fn nudge_sessions(
                 // unnecessary ones. A finished turn would be told to invent more
                 // work; a thread asking you something would get a non-answer; a
                 // permission prompt or a question takes the keystroke as consent.
-                crate::model::State::YourTurn { reason, .. } => match reason {
+                match reason {
                     // And only one that was cut off mid-turn. A conversation that
                     // had finished before the restart comes back at the same empty
                     // prompt, and "continue" there invents the next piece of work.
@@ -1428,10 +1431,7 @@ pub async fn nudge_sessions(
                         held.push(s.label().unwrap_or(&s.workspace).to_string());
                     }
                     _ => {}
-                },
-                // Working, starting, failing: not waiting on you, so not yours to
-                // interrupt. A nudge into a running turn is a stray line of input.
-                _ => {}
+                }
             }
         }
         (targets, held)
@@ -2689,7 +2689,7 @@ mod tests {
             async move { ask_wait(State(app), Path((id, ask_id)), agent).await }
         });
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        answer(
+        let _ = answer(
             State(app.clone()),
             Path(id),
             Json(AnswerBody {
@@ -2758,11 +2758,10 @@ mod tests {
             Json(AnswerBody { ask: ask_id, answer: "mine".into(), text: None }),
         )
         .await
-        .err()
-        .expect("refused with no words");
+        .expect_err("refused with no words");
         assert!(format!("{}", err.0).contains("none were written"));
 
-        answer(
+        let _ = answer(
             State(app.clone()),
             Path(id),
             Json(AnswerBody {
@@ -2831,8 +2830,7 @@ mod tests {
             }),
         )
         .await
-        .err()
-        .expect("refused");
+        .expect_err("refused");
         assert!(format!("{}", err.0).contains("not one of the options"));
         let _ = std::fs::remove_dir_all(&dir);
     }

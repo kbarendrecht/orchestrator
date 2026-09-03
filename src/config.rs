@@ -620,7 +620,7 @@ impl Config {
         {
             let dir = std::env::temp_dir().join(format!("orchd-test-cfg-{}", std::process::id()));
             std::fs::create_dir_all(&dir)?;
-            return Ok(dir);
+            Ok(dir)
         }
         #[cfg(not(test))]
         {
