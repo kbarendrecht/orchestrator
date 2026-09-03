@@ -50,3 +50,6 @@ opt-level = 2
 
 [dev-dependencies]
 ts-rs = { version = "12.0.1", features = ["uuid-impl"] }
+# Driving the bootstrap router in-process (`oneshot`) so its contract is tested
+# without binding a port or a browser.
+tower = { version = "0.5", features = ["util"] }

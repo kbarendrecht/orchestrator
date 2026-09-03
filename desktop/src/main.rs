@@ -24,6 +24,10 @@ use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
 /// The daemon, once started. Held so the exit hook can tear it down.
 static SERVER: OnceLock<Mutex<Option<orchd::Server>>> = OnceLock::new();
 
+/// The first-run bootstrap server, while one is up. Aborted once a project is
+/// committed and the window has moved to the daemon.
+static BOOTSTRAP: OnceLock<Mutex<Option<tokio::task::AbortHandle>>> = OnceLock::new();
+
 /// Set by `WindowCmd::Restart`, read once the window is down.
 ///
 /// The replacement is started from the exit path rather than from the command,
@@ -669,9 +673,13 @@ fn main() {
                     }
                 }
                 // First run, or a config pointing at a checkout that has since
-                // moved. Ask, rather than dying with a CLI flag in the message
-                // — there is no terminal here to read it in.
-                None => pick_checkout(app_handle, rt),
+                // moved. Bring up the open-project window rather than a bare OS
+                // dialog — there is no terminal here to read a CLI flag in either.
+                None => {
+                    if let Err(e) = first_run(&app_handle, &rt) {
+                        fail(&app_handle, &format!("{e:#}"));
+                    }
+                }
             }
             Ok(())
         })
@@ -704,49 +712,46 @@ fn main() {
     });
 }
 
-/// Ask for the main checkout, then open on it.
+/// First run: no config, so bring up the open-project window instead of a native
+/// dialog fired at nothing.
 ///
-/// The callback form on purpose: `blocking_pick_folder` deadlocks against the
-/// event loop when called from the main thread, and `setup` is the main thread.
-fn pick_checkout(app_handle: AppHandle, rt: tokio::runtime::Handle) {
-    use tauri_plugin_dialog::DialogExt;
-
-    app_handle
-        .clone()
-        .dialog()
-        .file()
-        .set_title("Choose the main checkout")
-        .pick_folder(move |picked| {
-            let Some(picked) = picked else {
-                // Cancelled at the first prompt: there is nothing to show, so
-                // leaving a blank window open would only be confusing.
-                tracing::info!("no checkout chosen — exiting");
-                app_handle.exit(0);
-                return;
-            };
-            let path = match picked.simplified().into_path() {
-                Ok(p) => p,
-                Err(e) => return fail(&app_handle, &format!("that is not a local folder: {e}")),
-            };
-            if let Err(e) = open(&app_handle, &rt, Some(path)) {
-                fail(&app_handle, &format!("{e:#}"));
-            }
-        });
+/// A small HTTP bootstrap server ([`orchd::firstrun`]) serves the page and the JSON
+/// it calls; the window loads it, and choosing a project comes back through
+/// [`TauriBootstrap`], which hands off to [`boot_daemon`]. HTTP rather than Tauri
+/// IPC so the flow is the same shape as the daemon SPA and can be tested headlessly.
+fn first_run(app_handle: &AppHandle, rt: &tokio::runtime::Handle) -> Result<()> {
+    let host: Arc<dyn orchd::firstrun::BootstrapHost> = Arc::new(TauriBootstrap {
+        app: app_handle.clone(),
+        rt: rt.clone(),
+    });
+    let serving = rt
+        .block_on(orchd::firstrun::serve(host))
+        .context("starting the first-run server")?;
+    let url = serving.url().parse().context("the bootstrap URL")?;
+    // Kept so the daemon boot can stop it once a project is committed.
+    *BOOTSTRAP.get_or_init(|| Mutex::new(None)).lock().unwrap() = Some(serving.task.abort_handle());
+    build_window(app_handle, WebviewUrl::External(url))
 }
 
-/// Start the daemon and show it.
+/// Configured already: build the window on the splash and boot the daemon.
 fn open(app_handle: &AppHandle, rt: &tokio::runtime::Handle, main: Option<std::path::PathBuf>) -> Result<()> {
-    // The window comes up on a splash first; the daemon then starts on a background
-    // thread and the window is navigated to it once it is serving. Building the
-    // window before the daemon is what puts something on screen during the ~1.4s
-    // start — `open` used to block on `orchd::start` and only build afterwards, so a
-    // normal boot showed nothing at all until the board appeared.
+    let splash = splash_url().context("preparing the splash")?;
+    build_window(app_handle, WebviewUrl::External(splash))?;
+    boot_daemon(app_handle.clone(), rt.clone(), main);
+    Ok(())
+}
+
+/// Build the one window, on whatever page it opens on.
+///
+/// Called once. The daemon boot and the first-run commit both `navigate` this
+/// window rather than building another — a second window would mean two of every
+/// window command and two things for the exit hook to reason about.
+fn build_window(app_handle: &AppHandle, url: WebviewUrl) -> Result<()> {
     let mut phases = orchd::timing::Phases::start();
     let size = orchd::store::load_window()
         .map(|(w, h)| (w as f64, h as f64))
         .unwrap_or((1728.0, 1080.0));
-    let splash = splash_url().context("preparing the splash")?;
-    let mut builder = WebviewWindowBuilder::new(app_handle, "main", WebviewUrl::External(splash))
+    let mut builder = WebviewWindowBuilder::new(app_handle, "main", url)
         .title("Orchestrator")
         // The size you left it at, or 20% up on the 1440x900 this started at:
         // three columns and a terminal want the room, and every desktop this runs
@@ -764,8 +769,8 @@ fn open(app_handle: &AppHandle, rt: &tokio::runtime::Handle, main: Option<std::p
     }
     #[cfg(not(target_os = "macos"))]
     {
-        // Frameless. The SPA draws the controls and the resize edges; see
-        // `Chrome::Custom`.
+        // Frameless. The SPA — and the first-run page — draw the controls and the
+        // resize edges; see `Chrome::Custom` and `firstrun.html`.
         builder = builder.decorations(false);
     }
 
@@ -814,14 +819,18 @@ fn open(app_handle: &AppHandle, rt: &tokio::runtime::Handle, main: Option<std::p
             });
         });
     }
+    Ok(())
+}
 
-    // Start the daemon off the main thread so the splash paints, then navigate the
-    // window to it. A `std::thread` rather than `rt.spawn` because `orchd::start` is
-    // not required to be `Send` and `block_on` does not ask it to be — the same
-    // reason the resize nudge above is a thread. An error has no terminal to reach,
-    // so it lands in the OS dialog `fail` draws, back on the main thread.
-    let ah = app_handle.clone();
-    let rt = rt.clone();
+/// Start the daemon off the main thread, navigate the window to it, and stop the
+/// first-run server if one was up.
+///
+/// A `std::thread` rather than `rt.spawn` because `orchd::start` is not required to
+/// be `Send` and `block_on` does not ask it to be — the same reason the resize nudge
+/// is a thread. An error has no terminal to reach, so it lands in the OS dialog
+/// `fail` draws, back on the main thread. Reached from a configured boot and from
+/// the first-run commit, so it must not assume the window is on any particular page.
+fn boot_daemon(app_handle: AppHandle, rt: tokio::runtime::Handle, main: Option<std::path::PathBuf>) {
     std::thread::spawn(move || {
         let mut phases = orchd::timing::Phases::start();
         let server = match rt.block_on(orchd::start(orchd::StartOptions {
@@ -834,8 +843,8 @@ fn open(app_handle: &AppHandle, rt: &tokio::runtime::Handle, main: Option<std::p
         })) {
             Ok(s) => s,
             Err(e) => {
-                let ah = ah.clone();
-                let _ = ah.clone().run_on_main_thread(move || fail(&ah, &format!("{e:#}")));
+                let ah = app_handle.clone();
+                let _ = app_handle.run_on_main_thread(move || fail(&ah, &format!("{e:#}")));
                 return;
             }
         };
@@ -845,12 +854,13 @@ fn open(app_handle: &AppHandle, rt: &tokio::runtime::Handle, main: Option<std::p
 
         // Attach the window control before the SPA can call it, and keep the server
         // alive for the life of the process.
-        let control: Arc<dyn WindowControl> = Arc::new(TauriWindow { app: ah.clone() });
+        let control: Arc<dyn WindowControl> = Arc::new(TauriWindow { app: app_handle.clone() });
         rt.block_on(server.app.attach_window(control));
         *SERVER.get_or_init(|| Mutex::new(None)).lock().unwrap() = Some(server);
 
         // Hand the window over to the daemon. GTK calls only on the main thread.
-        let _ = ah.clone().run_on_main_thread(move || {
+        let ah = app_handle.clone();
+        let _ = app_handle.run_on_main_thread(move || {
             let Some(w) = ah.get_webview_window("main") else { return };
             match url.parse::<tauri::Url>() {
                 Ok(u) => {
@@ -861,9 +871,56 @@ fn open(app_handle: &AppHandle, rt: &tokio::runtime::Handle, main: Option<std::p
                 Err(e) => tracing::error!("the daemon's own URL did not parse ({url}): {e}"),
             }
         });
+        // The first-run page and its port are dead weight now.
+        stop_bootstrap();
         phases.log("daemon ready");
     });
-    Ok(())
+}
+
+/// Stop the first-run server if one is still running.
+fn stop_bootstrap() {
+    if let Some(handle) = BOOTSTRAP.get().and_then(|b| b.lock().unwrap().take()) {
+        handle.abort();
+    }
+}
+
+/// The window-side of the first-run flow, handed to [`orchd::firstrun`]'s HTTP
+/// server: the native folder dialog, the daemon boot, and the frameless window
+/// commands the page's own titlebar needs.
+struct TauriBootstrap {
+    app: AppHandle,
+    rt: tokio::runtime::Handle,
+}
+
+impl orchd::firstrun::BootstrapHost for TauriBootstrap {
+    fn pick(&self) -> Option<std::path::PathBuf> {
+        use tauri_plugin_dialog::DialogExt;
+        // Runs on a bootstrap request thread, not the GTK main thread, so blocking
+        // on the dialog's answer is safe — the plugin marshals the dialog to the
+        // main thread and calls back here.
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.app
+            .dialog()
+            .file()
+            .set_title("Choose the main checkout")
+            .pick_folder(move |picked| {
+                let _ = tx.send(picked);
+            });
+        match rx.recv() {
+            Ok(Some(fp)) => fp.simplified().into_path().ok(),
+            _ => None,
+        }
+    }
+
+    fn open(&self, path: std::path::PathBuf) {
+        boot_daemon(self.app.clone(), self.rt.clone(), Some(path));
+    }
+
+    fn window_cmd(&self, cmd: orchd::window::WindowCmd) {
+        if let Err(e) = (TauriWindow { app: self.app.clone() }).dispatch(cmd) {
+            tracing::warn!("first-run window command failed: {e}");
+        }
+    }
 }
 
 /// Write the splash page and hand back a `file://` URL to load it from.

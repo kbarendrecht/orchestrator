@@ -95,6 +95,16 @@ which also fixes the blank gap on normal boots.
       real asset or IPC bridge. Verified: compiles, `navigate()` exists in tauri
       2.11, splash renders. Not yet verified: the live splash→board swap on the real
       window (a hands-on run).
-- [ ] Phase 2 — open-project screen
+- [x] Phase 2 — open-project screen. `orchd::firstrun` holds the recents list,
+      folder validation, and the bootstrap HTTP router (`BootstrapHost` trait +
+      `serve`), all unit-tested (recents, validate, and the router contract via
+      tower oneshot). `src/firstrun.html` is the page. The desktop crate splits
+      `open()` into `build_window` + `boot_daemon`, adds `first_run` (serves the
+      bootstrap, loads it in the window) and `TauriBootstrap` (native dialog, daemon
+      boot, frameless window commands). Choosing a project starts the daemon on it
+      with defaults and navigates. Verified: Rust tests + a headless browser drive of
+      the real page (8/8 interactions). Not yet verified: the live native dialog and
+      the daemon hand-off on the real window. Detected-settings review is Phase 3, so
+      an open currently uses defaults.
 - [ ] Phase 3 — review & confirm
 - [ ] Phase 4 — commit + persist

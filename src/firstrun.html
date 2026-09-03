@@ -1,0 +1,268 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>orchd — open a project</title>
+<style>
+  /* Self-contained: the daemon is not up to serve fonts or /app.css yet, so this
+     leans on the system mono/sans. Same palette as the SPA (app.css :root). */
+  :root{
+    --bg:#101010; --surface:#171717; --raised:#212121; --hover:#1D1D1D;
+    --line:#2C2C2C; --line-soft:#262626; --text:#D2D2D2; --dim:#A8A8A8;
+    --faint:#8E8E8E; --ghost:#787878; --attn:#E0A244;
+    --mono:ui-monospace,'SF Mono',Menlo,Consolas,monospace;
+    --sans:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{background:var(--bg);color:var(--text);font-family:var(--sans);
+    -webkit-font-smoothing:antialiased;overflow:hidden;user-select:none}
+  button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
+  :focus-visible{outline:2px solid #C9C9C9;outline-offset:1px;border-radius:2px}
+
+  /* frameless chrome */
+  .titlebar{height:38px;display:flex;align-items:center;padding:0 6px 0 14px;
+    background:var(--surface);border-bottom:1px solid var(--line-soft);
+    position:fixed;top:0;left:0;right:0;z-index:5}
+  .tb-title{font-family:var(--mono);font-size:11.5px;color:var(--faint);letter-spacing:.04em}
+  .tb-drag{flex:1;align-self:stretch}
+  .wctl{display:flex}
+  .wctl button{width:38px;height:38px;display:flex;align-items:center;justify-content:center;color:var(--ghost)}
+  .wctl button:hover{background:var(--raised);color:var(--text)}
+  .wctl button.close:hover{background:#C9615A;color:#fff}
+  /* invisible resize strips along the edges */
+  .rz{position:fixed;z-index:6}
+  .rz.n{top:0;left:8px;right:8px;height:5px;cursor:ns-resize}
+  .rz.s{bottom:0;left:8px;right:8px;height:5px;cursor:ns-resize}
+  .rz.e{top:8px;bottom:8px;right:0;width:5px;cursor:ew-resize}
+  .rz.w{top:8px;bottom:8px;left:0;width:5px;cursor:ew-resize}
+  .rz.ne{top:0;right:0;width:9px;height:9px;cursor:nesw-resize}
+  .rz.nw{top:0;left:0;width:9px;height:9px;cursor:nwse-resize}
+  .rz.se{bottom:0;right:0;width:9px;height:9px;cursor:nwse-resize}
+  .rz.sw{bottom:0;left:0;width:9px;height:9px;cursor:nesw-resize}
+
+  .app{position:absolute;inset:38px 0 0 0;display:grid;grid-template-columns:1fr 300px}
+  .main{padding:44px 44px 34px;display:flex;flex-direction:column;gap:22px}
+  .side{background:var(--surface);border-left:1px solid var(--line-soft);
+    padding:30px 26px;display:flex;flex-direction:column;gap:14px;overflow-y:auto}
+
+  .brand{display:flex;align-items:center;gap:10px}
+  .brand .dot{width:8px;height:8px;border-radius:50%;background:var(--attn)}
+  .brand .name{font-family:var(--mono);font-size:14px;font-weight:600;letter-spacing:.02em}
+  .brand .name b{color:var(--attn);font-weight:600}
+  h1{font-size:26px;font-weight:600;letter-spacing:-.015em;line-height:1.15}
+  .lede{color:var(--dim);font-size:14.5px;max-width:46ch;margin-top:10px}
+
+  .btn{font-family:var(--sans);font-size:14px;border-radius:9px;padding:12px 18px;
+    display:inline-flex;align-items:center;gap:10px;border:1px solid transparent;
+    transition:background .12s,border-color .12s}
+  .btn.primary{background:var(--attn);color:#1a1206;font-weight:600;align-self:flex-start}
+  .btn.primary:hover{background:#e8ad55}
+  .btn svg{display:block}
+
+  .orrow{display:flex;align-items:center;gap:12px;color:var(--ghost);
+    font-family:var(--mono);font-size:11px;letter-spacing:.1em;text-transform:uppercase}
+  .orrow::before,.orrow::after{content:"";height:1px;flex:1;background:var(--line-soft)}
+
+  .pathrow{display:flex;gap:8px}
+  .pathrow input{flex:1;background:var(--bg);border:1px solid var(--line);border-radius:9px;
+    padding:11px 13px;color:var(--text);font-family:var(--mono);font-size:13px;user-select:text}
+  .pathrow input::placeholder{color:var(--ghost)}
+  .pathrow input:focus{outline:none;border-color:var(--faint)}
+  .pathrow input.bad{border-color:#C9615A}
+  .go{border:1px solid var(--line);border-radius:9px;padding:0 16px;color:var(--dim);
+    font-family:var(--mono);font-size:13px}
+  .go:enabled:hover{border-color:var(--faint);color:var(--text)}
+  .go:disabled{opacity:.45;cursor:default}
+
+  .msg{min-height:18px;font-family:var(--mono);font-size:12px;color:var(--ghost)}
+  .msg.bad{color:#D4726B}
+  .msg.ok{color:#5FA97C}
+
+  .eyebrow{font-family:var(--mono);font-size:10.5px;letter-spacing:.16em;
+    text-transform:uppercase;color:var(--faint)}
+  .recent{display:flex;flex-direction:column;gap:6px}
+  .rec{display:flex;flex-direction:column;gap:2px;padding:10px 12px;border-radius:9px;
+    border:1px solid transparent;cursor:pointer;text-align:left}
+  .rec:hover{background:var(--hover);border-color:var(--line-soft)}
+  .rec .r-name{font-family:var(--mono);font-size:13px;color:var(--text)}
+  .rec .r-path{font-family:var(--mono);font-size:11px;color:var(--ghost);
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .rec .r-when{font-family:var(--mono);font-size:10.5px;color:var(--faint);margin-top:1px}
+  .empty-recent{color:var(--ghost);font-family:var(--mono);font-size:12px;
+    border:1px dashed var(--line);border-radius:9px;padding:16px;text-align:center}
+
+  /* the starting overlay, shown once an open is under way and until the window is
+     navigated to the splash the daemon boot puts up */
+  .starting{position:fixed;inset:0;z-index:10;background:var(--bg);display:none;
+    flex-direction:column;align-items:center;justify-content:center;gap:20px}
+  .starting.on{display:flex}
+  .dots{display:grid;grid-template-columns:repeat(3,9px);gap:5px}
+  .dots i{width:9px;height:9px;border-radius:50%;background:var(--line)}
+  .dots i.on{background:var(--attn);animation:p 1.5s ease-in-out infinite}
+  .dots i.on.b{animation-delay:.25s} .dots i.on.c{animation-delay:.5s}
+  @keyframes p{0%,100%{opacity:.28}50%{opacity:1}}
+  @media(prefers-reduced-motion:reduce){.dots i.on{animation:none;opacity:.85}}
+  .starting .word{font-family:var(--mono);font-size:26px;font-weight:600}
+  .starting .word b{color:var(--attn)}
+  .starting .st{font-family:var(--mono);font-size:11.5px;color:var(--ghost)}
+</style>
+</head>
+<body>
+  <div class="titlebar">
+    <span class="tb-title">Orchestrator</span>
+    <div class="tb-drag" id="drag"></div>
+    <div class="wctl">
+      <button data-cmd="minimize" title="Minimise" aria-label="Minimise">
+        <svg width="12" height="12" viewBox="0 0 12 12"><line x1="2" y1="6" x2="10" y2="6" stroke="currentColor" stroke-width="1.3"/></svg>
+      </button>
+      <button data-cmd="toggle-maximize" title="Maximise" aria-label="Maximise">
+        <svg width="12" height="12" viewBox="0 0 12 12"><rect x="2.5" y="2.5" width="7" height="7" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>
+      </button>
+      <button class="close" data-cmd="close" title="Close" aria-label="Close">
+        <svg width="12" height="12" viewBox="0 0 12 12"><path d="M3 3l6 6M9 3l-6 6" stroke="currentColor" stroke-width="1.3"/></svg>
+      </button>
+    </div>
+  </div>
+
+  <div class="rz n" data-edge="north"></div>
+  <div class="rz s" data-edge="south"></div>
+  <div class="rz e" data-edge="east"></div>
+  <div class="rz w" data-edge="west"></div>
+  <div class="rz ne" data-edge="north-east"></div>
+  <div class="rz nw" data-edge="north-west"></div>
+  <div class="rz se" data-edge="south-east"></div>
+  <div class="rz sw" data-edge="south-west"></div>
+
+  <div class="app">
+    <div class="main">
+      <div class="brand"><span class="dot"></span><span class="name">orch<b>d</b></span></div>
+      <div>
+        <h1>Open a project to orchestrate</h1>
+        <p class="lede">orchd hosts your Claude Code sessions across one repository. Point it at that repo's checkout to begin.</p>
+      </div>
+      <button class="btn primary" id="browse">
+        <svg width="16" height="16" viewBox="0 0 16 16"><path d="M1.5 4.2c0-.6.5-1 1-1h3l1.3 1.4h6c.5 0 1 .4 1 1v6c0 .5-.5 1-1 1h-11c-.6 0-1-.5-1-1z" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>
+        Browse for a folder…
+      </button>
+      <div class="orrow">or</div>
+      <div class="pathrow">
+        <input id="path" placeholder="~/code/my-repo" spellcheck="false" autocomplete="off">
+        <button class="go" id="open" disabled>Open</button>
+      </div>
+      <div class="msg" id="msg"></div>
+    </div>
+    <div class="side">
+      <span class="eyebrow">Recent</span>
+      <div class="recent" id="recent"></div>
+    </div>
+  </div>
+
+  <div class="starting" id="starting">
+    <div class="dots"><i class="on"></i><i></i><i class="on c"></i><i></i><i class="on b"></i><i></i><i class="on c"></i><i></i><i class="on"></i></div>
+    <div class="word">orch<b>d</b></div>
+    <div class="st">starting…</div>
+  </div>
+
+<script>
+  const $ = (id) => document.getElementById(id);
+  const post = (url, body) => fetch(url, {
+    method: 'POST',
+    headers: body ? { 'content-type': 'application/json' } : {},
+    body: body ? JSON.stringify(body) : undefined,
+  });
+
+  // --- window chrome (frameless) ---
+  for (const b of document.querySelectorAll('.wctl button')) {
+    b.addEventListener('click', () => post('/api/window/' + b.dataset.cmd));
+  }
+  // Drag must be sent while the button is still down, like the SPA's own titlebar.
+  $('drag').addEventListener('mousedown', (e) => {
+    if (e.button === 0) post('/api/window/start-drag');
+  });
+  $('drag').addEventListener('dblclick', () => post('/api/window/toggle-maximize'));
+  for (const rz of document.querySelectorAll('.rz')) {
+    rz.addEventListener('mousedown', (e) => {
+      if (e.button === 0) post('/api/window/resize/' + rz.dataset.edge);
+    });
+  }
+
+  // --- open a project ---
+  const msg = (text, kind) => { const m = $('msg'); m.textContent = text || ''; m.className = 'msg' + (kind ? ' ' + kind : ''); };
+  const starting = () => { $('starting').classList.add('on'); };
+
+  async function openPath(path) {
+    msg('opening…');
+    try {
+      const r = await (await post('/api/open', { path })).json();
+      if (r.ok) starting();          // the window is about to be navigated to the daemon
+      else msg(r.error || 'could not open that folder', 'bad');
+    } catch (e) { msg('could not reach the app: ' + e.message, 'bad'); }
+  }
+
+  $('browse').addEventListener('click', async () => {
+    msg('');
+    try {
+      const r = await (await post('/api/pick')).json();
+      if (!r.picked) return;         // cancelled
+      if (r.ok) openPath(r.path);
+      else msg(r.error || 'that folder cannot be used', 'bad');
+    } catch (e) { msg('could not open the folder picker: ' + e.message, 'bad'); }
+  });
+
+  // The path field validates as you type, which is what enables Open and shows why
+  // a folder is refused before you commit to it.
+  let seq = 0;
+  const input = /** @type {HTMLInputElement} */ ($('path'));
+  input.addEventListener('input', async () => {
+    const mine = ++seq;
+    const path = input.value.trim();
+    $('open').disabled = true;
+    input.classList.remove('bad');
+    if (!path) { msg(''); return; }
+    try {
+      const r = await (await post('/api/validate', { path })).json();
+      if (mine !== seq) return;      // a later keystroke already answered
+      if (r.ok) { $('open').disabled = false; msg('✓ ' + r.name, 'ok'); }
+      else { input.classList.add('bad'); msg(r.error || 'not a usable folder', 'bad'); }
+    } catch (e) { if (mine === seq) msg('could not check that path: ' + e.message, 'bad'); }
+  });
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !$('open').disabled) openPath(input.value.trim()); });
+  $('open').addEventListener('click', () => openPath(input.value.trim()));
+
+  // --- recent projects ---
+  function when(ms) {
+    const s = Math.max(0, (Date.now() - ms) / 1000);
+    if (s < 90) return 'just now';
+    const m = s / 60; if (m < 90) return Math.round(m) + ' min ago';
+    const h = m / 60; if (h < 36) return Math.round(h) + ' h ago';
+    return Math.round(h / 24) + ' days ago';
+  }
+  async function loadRecent() {
+    let list = [];
+    try { list = await (await fetch('/api/recent')).json(); } catch (e) { /* none, then */ }
+    const box = $('recent');
+    box.textContent = '';
+    if (!list.length) {
+      const e = document.createElement('div');
+      e.className = 'empty-recent';
+      e.textContent = 'No projects yet — browse to open your first.';
+      box.appendChild(e);
+      return;
+    }
+    for (const r of list) {
+      const row = document.createElement('button');
+      row.className = 'rec';
+      const n = document.createElement('span'); n.className = 'r-name'; n.textContent = r.name;
+      const p = document.createElement('span'); p.className = 'r-path'; p.textContent = r.path; p.title = r.path;
+      const w = document.createElement('span'); w.className = 'r-when'; w.textContent = when(r.last_opened_ms);
+      row.append(n, p, w);
+      row.addEventListener('click', () => openPath(r.path));
+      box.appendChild(row);
+    }
+  }
+  loadRecent();
+</script>
+</body>
+</html>
