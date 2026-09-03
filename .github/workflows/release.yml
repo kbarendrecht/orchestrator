@@ -42,7 +42,13 @@ jobs:
             # tarball, and signing wants a paid Developer ID.
             bundles: dmg
     steps:
-      - uses: actions/checkout@v7
+      # **Actions pinned by SHA, not by tag.** A tag is a mutable pointer: whoever
+      # owns the action can move `v7` to any commit, and this workflow hands what it
+      # runs `contents: write` on this repository plus whatever the release step can
+      # reach. The version each SHA corresponds to is in the comment, which is what
+      # makes a bump reviewable — `gh api repos/<owner>/<repo>/commits/<tag> --jq
+      # .sha` is how to resolve the next one.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Tag matches the version the app reports
         run: |
@@ -50,12 +56,28 @@ jobs:
           # env!("CARGO_PKG_VERSION"), i.e. the root Cargo.toml version. If the
           # tag and that version drift, a released build nags about "an update"
           # that it already is. Refuse to release a mismatch.
-          crate="$(grep -m1 '^version' Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')"
+          #
+          # **All three files, not just the root one.** CLAUDE.md's release steps
+          # say to bump `Cargo.toml`, `desktop/Cargo.toml` and `tauri.conf.json`
+          # together, and this only ever checked the first — so a release could
+          # ship a `.deb` and a `.dmg` whose bundle version disagreed with the
+          # binary inside them, which is the half nobody notices until an upgrade
+          # behaves oddly. Checking what the docs already require costs nothing.
           tag="${GITHUB_REF_NAME#v}"
-          if [ "$crate" != "$tag" ]; then
-            echo "::error::tag v$tag != orchd crate version $crate — bump Cargo.toml before tagging"
-            exit 1
-          fi
+          fail=0
+          check() {
+            if [ "$2" != "$tag" ]; then
+              echo "::error file=$1::$1 says $2, but the tag says $tag — bump it before tagging"
+              fail=1
+            fi
+          }
+          check Cargo.toml \
+            "$(grep -m1 '^version' Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')"
+          check desktop/Cargo.toml \
+            "$(grep -m1 '^version' desktop/Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')"
+          check desktop/tauri.conf.json \
+            "$(grep -m1 '"version"' desktop/tauri.conf.json | sed -E 's/.*"version"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/')"
+          exit "$fail"
 
       - name: System libraries (Tauri/WebKitGTK)
         if: runner.os == 'Linux'
@@ -79,8 +101,16 @@ jobs:
       # install, so a floating toolchain here means a release could be built by a
       # compiler nothing was ever tested on: `check.yml` is what proves a version
       # good, and it can only prove the version it actually used.
-      - uses: dtolnay/rust-toolchain@1.97.1
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@4716b85f2fac3e324e64fa2810f6b5c3905760a5 # 1.97.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+
+      # **Nothing is published from an untested tree.** `check.yml` runs the suite
+      # on pushes to `main`, but a tag is not a push to `main`: it can name any
+      # commit, including one that never went through it or one whose run was red.
+      # Placed before the build, so a failure here happens before this job has
+      # uploaded anything.
+      - name: Test
+        run: cargo test -p orchd -p orchestrator-desktop
 
       - name: Build
         run: |
@@ -92,7 +122,12 @@ jobs:
           # The npm CLI ships a prebuilt binary; `cargo install tauri-cli` would
           # spend minutes compiling one on every release. This also builds
           # `orchestrator-desktop --release`, which is why that step is gone.
-          npx -y @tauri-apps/cli@^2 build --bundles ${{ matrix.bundles }}
+          # Pinned exactly, not `^2`: the bundler decides the layout of the
+          # `.deb`, the AppImage and the `.dmg`, so a minor release of it can change
+          # what ships without a line of this repo changing — and a release is the
+          # one build nobody re-runs to compare. Bump it deliberately, like the
+          # toolchain.
+          npx -y @tauri-apps/cli@2.11.4 build --bundles ${{ matrix.bundles }}
 
       - name: Package
         run: |
@@ -123,7 +158,7 @@ jobs:
           ls -lh
 
       - name: Release
-        uses: softprops/action-gh-release@v3
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3
         with:
           files: dist/*
           generate_release_notes: true
