@@ -24,6 +24,16 @@ use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
 /// The daemon, once started. Held so the exit hook can tear it down.
 static SERVER: OnceLock<Mutex<Option<orchd::Server>>> = OnceLock::new();
 
+/// Whether the window is showing the board yet.
+///
+/// **The splash must not be remembered as the window's geometry.** It is 520x340
+/// and centred, and `remember_window` fires on its `Resized`/`Moved` events like
+/// any other — so it wrote that size into `window.json`, and because 520x340 is
+/// below the board's own minimum, the next launch *rejected* the file and fell
+/// back to the default size. The remembered size was being destroyed on every
+/// boot by the loading screen, and the position with it.
+static BOARD_UP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// The first-run bootstrap server, while one is up. Aborted once a project is
 /// committed and the window has moved to the daemon.
 static BOOTSTRAP: OnceLock<Mutex<Option<tokio::task::AbortHandle>>> = OnceLock::new();
@@ -694,8 +704,11 @@ fn main() {
     app.run(|app_handle, event| {
         // Recorded as it happens, not at exit: by the time the app is exiting the
         // window has already been destroyed, and there is nothing left to measure.
+        // `Moved` as well as `Resized`, or dragging the window somewhere is never
+        // written down and the next launch reopens at the last place it was
+        // *resized* — which reads as the position being ignored.
         if let tauri::RunEvent::WindowEvent {
-            event: tauri::WindowEvent::Resized(_),
+            event: tauri::WindowEvent::Resized(_) | tauri::WindowEvent::Moved(_),
             ..
         } = &event
         {
@@ -798,7 +811,15 @@ fn build_window(
         .title("Orchestrator")
         .inner_size(size.0, size.1)
         .min_inner_size(min.0, min.1);
-    if center {
+    /* **Where it was, or centred — never left to the window manager.** Only the
+       size used to be remembered, so placement was the WM's guess and the window
+       turned up somewhere new on every launch. Centring alone is not the answer
+       either: on a multi-head desktop the centre of the *virtual* screen is the
+       seam between two monitors, which is how a centred splash ends up looking
+       like it landed at random. */
+    /* Applied *after* the window exists, not through the builder — see below. */
+    let restore_to = orchd::store::load_window_pos();
+    if restore_to.is_none() && center {
         builder = builder.center();
     }
 
@@ -822,6 +843,17 @@ fn build_window(
     // asymmetry the report describes. Intercept it at the gtk window and re-inject
     // the DOM event the keymap already handles.
     let _window = builder.build().context("opening the window")?;
+    /* **`set_position` after the build, rather than the builder's `position`.**
+       The builder places the window before its frame exists, so what comes back
+       from `outer_position` afterwards is offset by the decoration — and since that
+       value is what gets saved, every launch subtracted the frame again and the
+       window walked up and left across the desktop until it fell off it. Measured:
+       300,150 → 262,91 → 224,32 → 186,-27. Setting and reading through the same
+       pair round-trips instead. */
+    if let Some((x, y)) = restore_to {
+        let _ = _window.set_position(tauri::LogicalPosition::new(x as f64, y as f64));
+    }
+    ensure_on_screen(&_window);
     #[cfg(target_os = "linux")]
     wire_session_switch_keys(&_window);
     // The window exists here; it is not painted yet. Everything after this is
@@ -910,7 +942,20 @@ fn boot_daemon(app_handle: AppHandle, rt: tokio::runtime::Handle, main: Option<s
             let (bw, bh) = board_size();
             let _ = w.set_min_size(Some(tauri::LogicalSize::new(MIN_SIZE.0, MIN_SIZE.1)));
             let _ = w.set_size(tauri::LogicalSize::new(bw, bh));
-            let _ = w.center();
+            // Back where it was left, and centred only when there is no such place.
+            // Centring unconditionally is what moved the board away from the splash
+            // — and on a multi-head desktop, onto the seam between two monitors.
+            match orchd::store::load_window_pos() {
+                Some((x, y)) => {
+                    let _ = w.set_position(tauri::LogicalPosition::new(x as f64, y as f64));
+                }
+                None => {
+                    let _ = w.center();
+                }
+            }
+            ensure_on_screen(&w);
+            // From here the geometry is the board's, so it is worth remembering.
+            BOARD_UP.store(true, std::sync::atomic::Ordering::SeqCst);
             match url.parse::<tauri::Url>() {
                 Ok(u) => {
                     if let Err(e) = w.navigate(u) {
@@ -924,6 +969,43 @@ fn boot_daemon(app_handle: AppHandle, rt: tokio::runtime::Handle, main: Option<s
         stop_bootstrap();
         phases.log("daemon ready");
     });
+}
+
+/// Put the window back on a monitor if the place it was told to open is not on one.
+///
+/// **A remembered position outlives the display it was remembered on.** Unplug the
+/// second monitor, or dock somewhere with a different arrangement, and the saved
+/// spot is a coordinate nothing can show — the window opens where no mouse can
+/// reach it and the app looks like it failed to start. Cheaper to check than to
+/// explain, and it only ever fires in that case: a position on any attached
+/// monitor is left exactly as it is.
+fn ensure_on_screen(win: &tauri::WebviewWindow) {
+    let Ok(pos) = win.inner_position() else { return };
+    let Ok(monitors) = win.available_monitors() else { return };
+    // **An empty list is "cannot tell", not "off-screen".** Failing the other way
+    // moves the window on a desktop that simply did not answer — which is the
+    // complaint this function exists to fix, caused by the fix.
+    if monitors.is_empty() {
+        return;
+    }
+    // The window's own top-left, against each monitor's rectangle. A window mostly
+    // off the edge is still reachable; one whose corner is on no monitor at all is
+    // the case worth rescuing.
+    let visible = monitors.iter().any(|m| {
+        let (mp, ms) = (m.position(), m.size());
+        pos.x >= mp.x
+            && pos.y >= mp.y
+            && pos.x < mp.x + ms.width as i32
+            && pos.y < mp.y + ms.height as i32
+    });
+    if !visible {
+        tracing::info!(
+            x = pos.x,
+            y = pos.y,
+            "the remembered window position is on no attached monitor — centring instead"
+        );
+        let _ = win.center();
+    }
 }
 
 /// Stop the first-run server if one is still running.
@@ -1145,6 +1227,10 @@ fn wire_session_switch_keys(window: &tauri::WebviewWindow) {
 /// an edge, which is cheaper than the alternative of not knowing the size when it
 /// matters.
 fn remember_window(app: &AppHandle) {
+    // Nothing before the board: see [`BOARD_UP`].
+    if !BOARD_UP.load(std::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
     let Some(win) = app.get_webview_window("main") else {
         return;
     };
@@ -1159,7 +1245,24 @@ fn remember_window(app: &AppHandle) {
     };
     if let Ok(size) = win.inner_size() {
         let logical = size.to_logical::<f64>(scale);
-        orchd::store::save_window(logical.width.round() as u32, logical.height.round() as u32);
+        // The position too, in logical pixels like the size, so a display whose
+        // scale factor changes does not move the window on the next launch.
+        /* **`inner_position`, to pair with `set_position`.** They must be the same
+           reference point or restoring drifts: `set_position` places the client
+           area, while `outer_position` reports the frame origin, and under this
+           window manager those differ by the decoration — a constant (38,59) here.
+           Saving the frame origin and restoring it as the client origin subtracted
+           that on every launch, and the window walked off the desktop in four
+           starts: 300,150 → 262,91 → 224,32 → 186,-27. */
+        let at = win.inner_position().ok().map(|p| {
+            let l = p.to_logical::<f64>(scale);
+            (l.x.round() as i32, l.y.round() as i32)
+        });
+        orchd::store::save_window(
+            logical.width.round() as u32,
+            logical.height.round() as u32,
+            at,
+        );
     }
 }
 

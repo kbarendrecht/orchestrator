@@ -142,14 +142,22 @@ impl SessionRecord {
 ///
 /// Its own file rather than a field in `config.json`: that file is yours to edit,
 /// and a number the app rewrites on every close does not belong in it.
-pub fn save_window(width: u32, height: u32) {
+pub fn save_window(width: u32, height: u32, pos: Option<(i32, i32)>) {
     let Ok(dir) = Config::config_dir() else {
         return;
     };
     let _ = std::fs::create_dir_all(&dir);
+    // **The position is stored too, and it is the half that was missing.** Only the
+    // size was remembered, so every launch handed placement to the window manager
+    // and the window appeared somewhere new each time — worst on a multi-head
+    // desktop, where "somewhere" can be the other monitor.
+    let at = match pos {
+        Some((x, y)) => format!(",\"x\":{x},\"y\":{y}"),
+        None => String::new(),
+    };
     let _ = std::fs::write(
         dir.join("window.json"),
-        format!("{{\"width\":{width},\"height\":{height}}}\n"),
+        format!("{{\"width\":{width},\"height\":{height}{at}}}\n"),
     );
 }
 
@@ -161,6 +169,24 @@ pub fn load_window() -> Option<(u32, u32)> {
     let w = v.get("width")?.as_u64()? as u32;
     let h = v.get("height")?.as_u64()? as u32;
     (w >= 1000 && h >= 600).then_some((w, h))
+}
+
+/// Where the window was, if that was ever written down.
+///
+/// Separate from [`load_window`] and optional on purpose: a `window.json` from
+/// before this was stored carries a size and no position, and must keep working —
+/// it simply means "no opinion", which the caller answers by centring.
+///
+/// Deliberately unvalidated here. Whether a position is *usable* depends on the
+/// monitors attached right now — a spot on a screen that has since been unplugged
+/// would put the window where nobody can reach it — and this module knows nothing
+/// about monitors. The desktop shell checks it against the real ones.
+pub fn load_window_pos() -> Option<(i32, i32)> {
+    let raw = std::fs::read_to_string(Config::config_dir().ok()?.join("window.json")).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    let x = v.get("x")?.as_i64()? as i32;
+    let y = v.get("y")?.as_i64()? as i32;
+    Some((x, y))
 }
 
 fn path() -> Result<PathBuf> {
