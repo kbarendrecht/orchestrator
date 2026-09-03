@@ -10,6 +10,7 @@ pub mod config;
 pub mod diff;
 pub mod edit;
 pub mod env_source;
+pub mod firstrun;
 pub mod git;
 pub mod guard;
 pub mod forge;

@@ -14,13 +14,19 @@ the daemon *before* building the window, so a normal boot shows nothing for the
 
 ## Architecture
 
-**One window, two frontends.** At first boot the daemon cannot start —
-`orchd::start` needs a checkout. So the window loads a small **bundled bootstrap
-page** (the artifact minus its mockup scaffolding) that talks to Rust over **Tauri
-commands**, not HTTP — there is no daemon yet. Once a project is committed, the
-daemon starts and the window **navigates to the daemon URL**, handing over to the
-real SPA. The bootstrap page draws its own frameless chrome via the Tauri window
-API (the daemon's `/api/window/*` route does not exist yet at this point).
+**One window, an HTTP bootstrap.** At first boot the daemon cannot start —
+`orchd::start` needs a checkout. So a tiny **bootstrap HTTP server** (axum, the same
+pattern the daemon SPA already uses) serves the first-run page on an ephemeral port,
+and the window loads `http://127.0.0.1:<port>/`. The page calls JSON endpoints
+(recents, validate, open) with `fetch`; the native folder dialog goes through Tauri
+via a `/api/pick` endpoint that calls `app_handle.dialog()`. On commit the bootstrap
+server stops, the daemon starts, and the window **navigates to the daemon URL**.
+
+Chosen over Tauri IPC deliberately: the HTTP+fetch flow is **testable headlessly**
+with Playwright (like `term-e2e`), where Tauri IPC only runs in the real WebKitGTK
+window and needs a WebDriver harness we do not have. It also avoids Tauri v2's
+capabilities system and lines up with the eventual "daemon without a checkout" shape
+behind the repo switcher.
 
 **Splash for every boot.** `open()` is restructured to build the window on the
 splash first, start the daemon on a background task, and navigate when it is up —
