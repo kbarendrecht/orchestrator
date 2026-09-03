@@ -77,3 +77,14 @@ run = "node tools/e2e/run.mjs"
 description = "Drive the terminal pane in a real browser"
 dir = "{{config_root}}"
 run = "cargo build --bin orchd && node tools/e2e/term.mjs"
+
+# Which renderer each terminal opens with, asserted instead of eyeballed. Proves
+# the *decision* — one live WebGL context per window on macOS (#8) — not that the
+# glyphs are right, which needs a real Mac. `tools/e2e/renderer.mjs` says why.
+#
+#   mise run renderer-check
+#   mise run renderer-check -- --mac   # the macOS rule, simulated
+[tasks.renderer-check]
+description = "Assert which renderer each terminal opens with"
+dir = "{{config_root}}"
+run = "cargo build --bin orchd && E2E_LOG=${E2E_LOG:-info} node tools/e2e/renderer.mjs"
