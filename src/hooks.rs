@@ -468,22 +468,52 @@ async fn refresh_title(app: &Arc<AppState>, id: Uuid) {
     // the worktree, and Claude Code wrote the file under the checkout it started
     // in. Left uncorrected, the session drops out of the archive the moment it
     // finishes, because nothing can find its conversation.
-    app.with_session(id, |s| {
-        crate::store::pin_transcript(s.id, &s.cwd, &mut s.transcript_path)
-    })
-    .await;
-
-    let found = {
+    // What the disk work needs, taken under a short read lock with nothing else
+    // inside it.
+    let Some((cwd, recorded)) = ({
         let inner = app.inner.read().await;
         inner
             .sessions
             .get(&id)
-            .and_then(|s| crate::store::ai_title(s.id, &s.cwd, s.transcript_path.as_deref()))
+            .map(|s| (s.cwd.clone(), s.transcript_path.clone()))
+    }) else {
+        return;
     };
-    let Some(title) = found else { return };
+
+    // **Both of these touch the filesystem, and this runs on every `Stop`.** The
+    // pin falls back to a `read_dir` of `~/.claude/projects` — hundreds of entries
+    // on a working machine, with an `exists()` per entry — and the title reads the
+    // tail of the transcript. They used to run *under the global write lock*
+    // (`with_session` takes it), so every snapshot and every other hook queued
+    // behind that scan. Computed here, off the lock and off the runtime, and
+    // applied below in one short critical section with no I/O in it.
+    let measured_at = cwd.clone();
+    let Ok((pinned, title)) =
+        crate::proc::run_blocking("reading the session's transcript and title", move || {
+            let mut pinned = recorded;
+            crate::store::pin_transcript(id, &cwd, &mut pinned);
+            let title = crate::store::ai_title(id, &cwd, pinned.as_deref());
+            (pinned, title)
+        })
+        .await
+    else {
+        return;
+    };
+
     app.with_session(id, |s| {
-        if s.title.as_deref() != Some(title.as_str()) {
-            s.title = Some(title);
+        // Both answers were derived from the cwd read above, so a relocation in
+        // between makes them answers about a directory this session has left. The
+        // next `Stop` redoes them against the tree it is in now.
+        if s.cwd != measured_at {
+            return;
+        }
+        if s.transcript_path != pinned {
+            s.transcript_path = pinned;
+        }
+        if let Some(title) = title {
+            if s.title.as_deref() != Some(title.as_str()) {
+                s.title = Some(title);
+            }
         }
     })
     .await;

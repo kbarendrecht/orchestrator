@@ -20,11 +20,24 @@ this file, which churned it from every build; they now go to a gitignored
     `hooks.rs`'s remaining reads.
   - `lib.rs` boot-path reads, and `api.rs`'s remaining git *writes* — these run on
     a click that is already slow, so the freeze is less visible.
-  - **B2, the one with teeth left:** filesystem work under the *global write lock* —
-    `hooks::pin_transcript` does a `read_dir` of `~/.claude/projects` per `Stop`
-    while holding `inner.write()`, and `with_automation`/`with_manual`/
-    `with_stories` write their store files under the caller's guard. Every snapshot
-    and every hook waits on that disk. Compute outside the lock and apply under it.
+  - ~~**B2, filesystem work under the global write lock.**~~ The half with teeth is
+    done: `refresh_title` ran `pin_transcript` *and* `ai_title` under the lock on
+    every `Stop` — a `read_dir` of `~/.claude/projects` with an `exists()` per entry
+    (hundreds on a working machine) plus a read of the transcript tail, with every
+    snapshot and hook queued behind it. It now reads what it needs under a short
+    read lock, does the disk work off the lock and off the runtime, and applies in
+    one short critical section — re-checking `cwd`, because a relocation in between
+    makes the answers describe a tree the session has left.
+
+    **The `with_*` store writes are deliberately left alone**, and the measurement
+    is why: `automation.json` is **17 bytes**, and `manual.json`,
+    `resolve-runs.json` and `stories.json` have never been written on this machine
+    at all. A `write` + `rename` of tens of bytes is sub-millisecond. Getting it off
+    the lock properly needs a channel, a writer task and an ordering guarantee, and
+    it would either break the "mutating a durable store carries its own write"
+    invariant or make every call site remember to persist — which is the exact shape
+    `with_*` exists to prevent. Revisit if a store ever grows (`stories` is the only
+    candidate, being a cache), and with a number rather than a guess.
   - **B3:** `ws.rs`'s pty writes are `Mutex` + `write_all` + `flush` on the async
     loop, so a large paste into a child that is not reading parks a worker until it
     drains. Wants a writer thread fed by a channel.
