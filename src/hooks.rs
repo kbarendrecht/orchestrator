@@ -137,12 +137,40 @@ fn ok() -> HookResult {
 /// the whole point of the request.
 pub async fn detach(req: Request, next: Next) -> Response {
     let (parts, body) = req.into_parts();
-    let bytes = axum::body::to_bytes(body, 256 * 1024)
-        .await
-        .unwrap_or_default();
+    /* **The cap has to clear the largest real payload, and 256 KB did not.**
+       `PostToolUse` carries `tool_input` *and* `tool_response`, so a `Write` of a
+       generated file or a `Read` of a long one exceeds it — on exactly the tool
+       calls that change the most. And the failure was silent twice over: an
+       oversized body became an *empty* one (`unwrap_or_default`), the `Json`
+       extractor then rejected it inside the detached task, and the response was
+       dropped unread. So the `Working` flip, `dirty_paths` and the reconcile tick
+       were skipped for those calls with nothing logged anywhere.
+
+       This is loopback traffic the daemon asked for, from a child it spawned, so
+       the cap is only a guard against something pathological. */
+    const MAX_HOOK_BODY: usize = 32 * 1024 * 1024;
+    let bytes = match axum::body::to_bytes(body, MAX_HOOK_BODY).await {
+        Ok(b) => b,
+        Err(e) => {
+            // Answer anyway — a hook that cannot report is not a reason to fail the
+            // agent's tool call — but never in silence.
+            tracing::warn!(
+                "dropped a hook payload larger than {MAX_HOOK_BODY} bytes, so its \
+                 state change is lost: {e}"
+            );
+            return ok().into_response();
+        }
+    };
     tokio::spawn(async move {
-        next.run(Request::from_parts(parts, Body::from(bytes)))
-            .await;
+        let response = next.run(Request::from_parts(parts, Body::from(bytes))).await;
+        // The real answer goes nowhere — the caller already had its `ok()` — so a
+        // rejected body or a failing handler would otherwise vanish entirely.
+        if !response.status().is_success() {
+            tracing::warn!(
+                status = %response.status(),
+                "a detached hook handler refused its own payload; its state change is lost"
+            );
+        }
     });
     ok().into_response()
 }

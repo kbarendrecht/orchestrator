@@ -319,6 +319,29 @@ pub struct Inner {
 /// Reads still go straight at the fields: they are many, harmless, and requiring
 /// an accessor for each would be noise. It is *mutation* that has to carry the
 /// write with it.
+/// Releases a lock taken with [`AppState::try_claim`] when it goes out of scope.
+///
+/// A guard rather than a release at each exit, because the work these protect has
+/// several `?` between the claim and the finish and every one of them would
+/// otherwise leak the lock — which, for a once-per-PR lock, means the button never
+/// works again until a restart.
+pub struct Claim {
+    app: Arc<AppState>,
+    lock: String,
+}
+
+impl Drop for Claim {
+    fn drop(&mut self) {
+        let (app, lock) = (self.app.clone(), self.lock.clone());
+        // `Drop` cannot await, so the release is spawned. Nothing races it: this is
+        // the last thing holding the name.
+        tokio::spawn(async move {
+            let mut inner = app.inner.write().await;
+            inner.locks_held.retain(|l| l != &lock);
+        });
+    }
+}
+
 /// A cheap stand-in for "which sessions exist": their count, and their ids mixed
 /// together. Two different sets colliding would delay one write by a second, which
 /// is why a hash is enough and a clone of every id is not needed.
@@ -912,6 +935,25 @@ impl AppState {
     /// claim is still recorded, because everything else keyed on it — the swap's
     /// hand-back, `reclaim_main`, the rail's label — is about the tree rather than
     /// about exclusivity.
+    /// Take a named lock, or `None` when somebody already holds it.
+    ///
+    /// The wording of the refusal belongs to the caller, so this answers with an
+    /// `Option` rather than an error. Hold the [`Claim`] for as long as the thing
+    /// it protects is in flight: it is given back on drop, which is what makes it
+    /// safe across the `?`s in between.
+    pub async fn try_claim(self: &Arc<Self>, lock: impl Into<String>) -> Option<Claim> {
+        let lock = lock.into();
+        let mut inner = self.inner.write().await;
+        if inner.locks_held.iter().any(|l| l == &lock) {
+            return None;
+        }
+        inner.locks_held.push(lock.clone());
+        Some(Claim {
+            app: self.clone(),
+            lock,
+        })
+    }
+
     pub async fn claim_main(&self, session: SessionId) -> Result<()> {
         let several = self.cfg.allow_several_in_main;
         let mut inner = self.inner.write().await;

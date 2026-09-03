@@ -263,6 +263,14 @@ async fn pty_loop(
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
                     // A client too slow to keep up resyncs from the ring buffer
                     // rather than receiving a torn stream.
+                    //
+                    // **Resubscribe first, or the resync duplicates output.** After
+                    // `Lagged`, tokio leaves the receiver at the *oldest retained*
+                    // chunk — so the next several `recv`s replay bytes the snapshot
+                    // below already carries, and the pane shows them twice.
+                    // Resubscribing drops that backlog and starts from now, which is
+                    // the same subscribe-then-snapshot order the initial attach uses.
+                    sub = sub.resubscribe();
                     if tx.send(Message::Binary(handle.snapshot())).await.is_err() {
                         break;
                     }

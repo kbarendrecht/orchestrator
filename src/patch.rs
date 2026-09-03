@@ -285,6 +285,26 @@ pub fn write_batch(
     // 4/5. The hooks, on what we wrote.
     let paths: Vec<String> = files.iter().map(|f| f.path.clone()).collect();
     if let Some(why) = hooks_refusal(cwd, &paths, false)? {
+        /* **Put the tree back.** The patch is on disk by now, and returning
+           `Refused` used to leave it there — so the report said nothing was
+           committed while the worktree held changes nobody had asked for, and the
+           next attempt was refused by `triage::gate` as `Dirty`, naming files the
+           user never touched. The gate requires a clean tree before any of this, so
+           what `apply` wrote is the only thing in these paths and restoring them to
+           `HEAD` cannot take anyone's work with it.
+
+           This is the arm that applied its own patch. `write_manual` reaches
+           `hooks_refusal` with `own_edits: true` and must **not** do this: those
+           changes are the user's, typed by hand, and reverting them would destroy
+           exactly what the manual phase exists to collect. */
+        let why = match crate::git::restore_paths(cwd, &paths) {
+            Ok(()) => why,
+            // Better a refusal that admits the mess than one that hides it.
+            Err(e) => format!(
+                "{why}\n\n(the applied patch could not be reverted, so it is still in \
+                 the working tree: {e:#})"
+            ),
+        };
         return Ok(Written::Refused(why));
     }
 
@@ -1339,6 +1359,20 @@ mod tests {
             Written::Refused(why) => assert!(why.contains("pre-commit failed"), "{why}"),
             other => panic!("expected Refused, got {other:?}"),
         }
+        /* **And the patch is out of the tree again.** The refusal happens *after*
+           it is on disk, and this used to leave it there: the report said nothing
+           was committed while the worktree held changes nobody asked for, and the
+           next attempt was refused as `Dirty` naming files the user never touched.
+           The old assertion only counted commits, which stayed right throughout.
+
+           Asserted on the patched file rather than on `is_clean`, because this
+           test's own scaffolding (`.pre-commit-config.yaml`, `fake-bin/`) is
+           untracked and would fail a whole-tree check for the wrong reason. */
+        let after = std::fs::read_to_string(d.join("f.txt")).unwrap();
+        assert!(
+            after.contains("mine5") && !after.contains("FIVE"),
+            "the refused patch was left in f.txt:\n{after}"
+        );
 
         // Same repo, same config, no `pre-commit` on PATH: an environment problem
         // must not block the review.

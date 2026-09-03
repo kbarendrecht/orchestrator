@@ -1497,6 +1497,32 @@ pub(crate) fn short(sha: &str) -> String {
     sha.chars().take(7).collect()
 }
 
+/// Put `paths` back to what `HEAD` holds, deleting the ones `HEAD` does not have.
+///
+/// For undoing a patch **this daemon applied** when a later step refused it. Only
+/// ever the paths named: a pre-commit hook that reformatted something else is not
+/// this function's to guess at, and the caller says so in its refusal instead.
+///
+/// Never for a person's own edits. The distinction is the whole safety of it — see
+/// [`crate::patch::write_batch`], which reverts, against `write_manual`, which must
+/// not.
+pub fn restore_paths(cwd: &Path, paths: &[String]) -> Result<()> {
+    for p in paths {
+        if git_ok(cwd, &["cat-file", "-e", &format!("HEAD:{p}")]) {
+            git(cwd, &["checkout", "-q", "HEAD", "--", p])?;
+        } else {
+            // Not in HEAD, so the patch is what created it. `remove_file` rather
+            // than `git clean`, which would take unrelated untracked files with it.
+            let at = cwd.join(p);
+            if at.exists() {
+                std::fs::remove_file(&at)
+                    .with_context(|| format!("removing {}", at.display()))?;
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Does this revision resolve?
 pub(crate) fn rev_exists(cwd: &Path, rev: &str) -> bool {
     git_ok(cwd, &["rev-parse", "--verify", "--quiet", rev])
