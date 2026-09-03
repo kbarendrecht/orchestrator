@@ -93,6 +93,17 @@ function openTerm(target, parent) {
   // directly is what pinned them to the first, dead one (#7).
   const entry = { term, fit, host };
 
+  // The pty-status pill: `starting…` until the first attach, `reconnecting…` if an
+  // open socket later drops, hidden once live. Built here so it exists before the
+  // socket does, and shown starting straight away — a spawn can take a moment, and
+  // a blank pane with a blinking cursor should say why.
+  const badge = el('div', 'term-badge');
+  badge.appendChild(el('span', 'conn-dot'));
+  badge.appendChild(el('span', 'term-badge-t'));
+  host.appendChild(badge);
+  entry.badge = badge;
+  setBadge(entry, 'starting');
+
   /* Copy and paste, in whichever spelling the platform uses: ⌘C/⌘V on a Mac,
    * Ctrl+Shift+C/V elsewhere — the terminal convention, because plain Ctrl+C has
    * to go on reaching the pty, where interrupting is what it means. xterm passes
@@ -291,7 +302,7 @@ function connect(entry, target) {
     // Back to healthy: clear the backoff and the "reconnecting" mark, then flush
     // anything typed while the socket was down.
     entry.backoff = 0;
-    entry.host.classList.remove('detached');
+    setBadge(entry, null);
     // A reattach replays the *whole* ring buffer, exactly as a first attach does —
     // but this terminal already holds the previous buffer, so writing the replay on
     // top would show the scrollback twice. Clear it before the replay lands, so a
@@ -346,7 +357,7 @@ function connect(entry, target) {
     // Mark the pane so a deaf terminal is not silent, then reconnect with backoff
     // the way the events socket does. The replay makes a reattach indistinguishable
     // from a first attach, so the pane heals itself on wake from sleep or a blip.
-    entry.host.classList.add('detached');
+    setBadge(entry, 'reconnecting');
     const wait = Math.min(600 * 2 ** (entry.backoff || 0), 10000);
     entry.backoff = (entry.backoff || 0) + 1;
     entry.reconnectTimer = setTimeout(() => {
@@ -362,6 +373,20 @@ function connect(entry, target) {
  *  human typing speed in the reconnect window, which is tiny — but a paste can be
  *  large, so cap it and let the `.detached` mark stand rather than grow forever. */
 const INPUT_BUDGET = 1 << 16; // 64 KB
+
+/** Show the pane's pty status, or hide it once the pty is live.
+ *
+ *  `'starting'` before the first attach, `'reconnecting'` after an open socket
+ *  drops, `null` when it is carrying output. One pill for both, the connbar's, so
+ *  a pane that is not live never reads as one that is. */
+function setBadge(entry, state) {
+  const b = entry.badge;
+  if (!b) return;
+  if (!state) { b.hidden = true; return; }
+  b.querySelector('.term-badge-t').textContent =
+    state === 'starting' ? 'starting…' : 'reconnecting…';
+  b.hidden = false;
+}
 
 /** Send a keystroke, or bank it if the socket is down so nothing is lost silently. */
 function sendInput(entry, bytes) {

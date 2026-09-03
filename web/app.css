@@ -364,19 +364,23 @@ button.ctx-btn:hover{color:var(--text)}
 .termwrap{flex:1;min-height:0;position:relative;padding:8px 6px 8px 12px}
 .termhost{position:absolute;inset:8px 6px 8px 12px;transition:opacity .35s ease}
 .termhost[hidden]{display:none}
-/* A pty socket that dropped and has not reconnected yet. xterm keeps blinking its
-   cursor from its own buffer, so without a mark a deaf pane looks alive and eats
-   keystrokes in silence (#7). This corner pill says the pane is not live; the
-   socket reconnects on its own and clears it. Amber, the same "needs you" note the
-   connbar uses — nothing is broken, it is coming back. */
-.termhost.detached::after{
-  content:'reconnecting\2026';
+/* A pane whose pty is not yet carrying live output: starting up before the first
+   attach, or a dropped socket reconnecting. xterm keeps blinking its cursor from
+   its own buffer, so without this a blank or deaf pane looks alive and — on a
+   drop — eats keystrokes in silence (#7). Same pill and pulsing dot as the
+   connbar, so a pane that is not live never reads as one that is. Amber, the
+   connbar's "transient, coming" note, not red. `[hidden]` is stated because the
+   author `display:flex` would otherwise beat the UA rule — a recurring trap here. */
+.term-badge{
   position:absolute;top:6px;right:12px;z-index:2;pointer-events:none;
+  display:flex;align-items:center;gap:8px;
   padding:4px 10px;border-radius:20px;
   background:var(--raised);border:1px solid var(--line);
   font-family:var(--mono);font-size:calc(10.5px * var(--fs));color:var(--attn);
   box-shadow:0 4px 14px #0006;
 }
+.term-badge[hidden]{display:none}
+.term-badge .conn-dot{background:var(--attn)}
 /* The pty of the session a review is driving, while it is driving it. Dimmed, not
    covered: the scrollback is the thing that proves it is working, so it stays
    readable — this says "nobody is waiting on you here", not "do not look".

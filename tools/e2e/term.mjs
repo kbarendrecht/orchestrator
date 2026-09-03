@@ -112,17 +112,21 @@ async function main() {
     // rather than going deaf forever. The marker shows while it is down.
     const before = await socketCount(page)
     await page.evaluate(() => window.__pty__.socks.at(-1).close())
-    await page.waitForSelector('#termwrap .termhost.detached', { timeout: 5_000 })
+    await page.waitForFunction(() => {
+      const b = document.querySelector('#termwrap .termhost:not([hidden]) .term-badge')
+      return b && !b.hidden && b.textContent.includes('reconnecting')
+    }, null, { timeout: 5_000 })
       .catch(() => { throw new Error('a dropped pane showed no reconnecting marker') })
     await page.waitForFunction(
       (n) => window.__pty__.socks.length > n
         && window.__pty__.socks.at(-1).readyState === WebSocket.OPEN,
       before, { timeout: 15_000 },
     ).catch(() => { throw new Error('the pane never reconnected after the socket dropped') })
-    await page.waitForFunction(
-      () => !document.querySelector('#termwrap .termhost.detached'),
-      null, { timeout: 5_000 },
-    ).catch(() => { throw new Error('the reconnecting marker never cleared') })
+    await page.waitForFunction(() => {
+      const b = document.querySelector('#termwrap .termhost:not([hidden]) .term-badge')
+      return !b || b.hidden
+    }, null, { timeout: 5_000 })
+      .catch(() => { throw new Error('the reconnecting marker never cleared') })
 
     await focusTerm()
     await page.keyboard.type('echo-two\r')
