@@ -47,7 +47,27 @@ jobs:
             libayatana-appindicator3-dev \
             patchelf
 
-      - uses: dtolnay/rust-toolchain@stable
+      # **Pinned, and this is the one place the version is written.** `cargo clippy
+      # -D warnings` below is a gate, so an unpinned `stable` means a Rust release
+      # six weeks from now can add a lint and fail CI on a commit that touched no
+      # Rust at all — red for a reason the diff cannot explain.
+      #
+      # A `rust-toolchain.toml` was tried and removed, because here it is a silent
+      # no-op: `mise env` exports `RUSTUP_TOOLCHAIN=stable`, and that variable
+      # outranks the file. So the file would be honoured in CI (no mise) and ignored
+      # on every developer's machine (mise always on) — the exact invisible
+      # divergence a pin is supposed to remove, and worse than floating.
+      #
+      # So local stays on mise's `rust = "latest"` and CI is the pinned one. The
+      # drift that leaves is the harmless direction: a developer on a newer rustc
+      # meets a new lint *before* CI does. The reverse — CI ahead of everyone — is
+      # what this prevents.
+      #
+      # Bumping it is deliberate: raise the version, run
+      # `cargo clippy --all-targets -- -D warnings`, and fix what the new release
+      # found in the same commit. To collapse this to one source of truth, CI would
+      # have to provision Rust through mise as well (`jdx/mise-action`).
+      - uses: dtolnay/rust-toolchain@1.97.1
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
@@ -72,10 +92,6 @@ jobs:
       # On both platforms on purpose: a `#[cfg(target_os = "macos")]` arm is
       # invisible to a Linux clippy, and this repo has several.
       #
-      # Worth knowing if this ever fails on a commit that did not touch Rust: the
-      # toolchain is `stable`, unpinned, so a new release can introduce a lint that
-      # was not there yesterday. That is a `rust-toolchain.toml` away from being
-      # impossible, which this repo does not have yet.
       - name: Lint
         run: cargo clippy --all-targets -- -D warnings
 

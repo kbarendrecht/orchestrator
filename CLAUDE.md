@@ -640,6 +640,20 @@ mean *this* repo; if you do, name it.
   The Python script this replaced failed open when `python3` was missing, and
   matched refspecs by spelling — `git push origin main` refused while
   `git push origin HEAD:refs/heads/main` passed.
+- **A `rust-toolchain.toml` is a no-op here, and silently.** `mise env` exports
+  `RUSTUP_TOOLCHAIN=stable`, and that variable **outranks** the file in rustup's
+  precedence — so a pin written there is ignored on any machine with mise active
+  (which is every developer's) and honoured in CI, which has no mise. That is the
+  opposite of what a pin is for: it manufactures an invisible divergence instead of
+  removing one. Measured, not assumed — `rustup show` reports "overridden by
+  environment variable RUSTUP_TOOLCHAIN", and dropping the variable made rustup
+  start downloading the pinned toolchain.
+  So the Rust version is pinned **in the workflows** (`dtolnay/rust-toolchain@<v>`,
+  the same string in `check.yml` and `release.yml`, bumped together) and local stays
+  on mise's `rust = "latest"`. The drift that leaves runs the harmless way round: a
+  developer on a newer rustc meets a new clippy lint *before* CI does, rather than
+  CI failing on a commit that touched no Rust. Collapsing it to one source of truth
+  means provisioning Rust through mise in CI too.
 - **`cargo fmt` is not this repo's formatter.** There is no `rustfmt.toml` and
   `main` is not stable-rustfmt-clean, so running it out of habit reformats around
   27 files you never touched. Revert everything outside your own change before

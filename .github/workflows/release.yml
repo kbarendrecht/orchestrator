@@ -73,7 +73,13 @@ jobs:
             libayatana-appindicator3-dev \
             patchelf
 
-      - uses: dtolnay/rust-toolchain@stable
+      # Pinned, and kept in step with `check.yml` by hand — the two are the same
+      # string in two workflows, which is the cost of GitHub Actions having no
+      # shared value. This is the workflow that produces the artifact people
+      # install, so a floating toolchain here means a release could be built by a
+      # compiler nothing was ever tested on: `check.yml` is what proves a version
+      # good, and it can only prove the version it actually used.
+      - uses: dtolnay/rust-toolchain@1.97.1
       - uses: Swatinem/rust-cache@v2
 
       - name: Build
