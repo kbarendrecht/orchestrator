@@ -309,9 +309,22 @@ fn parse_unified(path: &str, raw: &str) -> FileDiff {
 
 fn parse_hunk_header(line: &str) -> (u32, u32) {
     // @@ -old,count +new,count @@ optional section heading
+    //
+    // **Only the text between the two `@@`.** What follows the second one is git's
+    // funcname heading, which is a line of the file and therefore arbitrary code —
+    // and scanning the whole line read tokens out of it: git's default heading for
+    // Rust is the enclosing `fn` signature, so `-> Result<()>` parsed as an old
+    // range of `>` (nothing, so 0, floored to 1) and `count += 1;` as a new range
+    // of `= 1;`. Every gutter number and gap fold in the hunk was then wrong, on
+    // essentially every hunk inside a function with a return type. The old test
+    // only used a `class Foo {` heading, which carries no `-` or `+`.
+    let ranges = line
+        .strip_prefix("@@")
+        .and_then(|rest| rest.split_once("@@"))
+        .map_or(line, |(ranges, _heading)| ranges);
     let mut old = 0;
     let mut new = 0;
-    for tok in line.split_whitespace() {
+    for tok in ranges.split_whitespace() {
         if let Some(rest) = tok.strip_prefix('-') {
             old = rest.split(',').next().unwrap_or("0").parse().unwrap_or(0);
         } else if let Some(rest) = tok.strip_prefix('+') {
@@ -577,6 +590,28 @@ index 111..222 100644
         // Context after a replacement keeps both sides in step.
         assert_eq!(rows[3].old, Some(12));
         assert_eq!(rows[3].new, Some(12));
+    }
+
+    /// The funcname heading is a line of the file, so it can hold anything — and
+    /// git's default heading for Rust is the enclosing `fn` signature. Scanning the
+    /// whole header read `->` as an old range and `+=` as a new one, which put the
+    /// wrong number on every row of the hunk. The `class Foo` case above never
+    /// caught it because that heading carries neither token.
+    #[test]
+    fn a_funcname_heading_is_not_parsed_as_a_range() {
+        assert_eq!(
+            parse_hunk_header("@@ -10,6 +10,7 @@ pub fn foo() -> Result<()> {"),
+            (10, 10),
+            "`->` in a Rust signature is not an old range"
+        );
+        assert_eq!(
+            parse_hunk_header("@@ -40,6 +40,7 @@ count += 1;"),
+            (40, 40),
+            "`+=` in the heading is not a new range"
+        );
+        // A single-line hunk has no count, and a heading may be absent entirely.
+        assert_eq!(parse_hunk_header("@@ -3 +7 @@"), (3, 7));
+        assert_eq!(parse_hunk_header("@@ -10,4 +10,4 @@ class Foo"), (10, 10));
     }
 
     #[test]

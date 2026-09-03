@@ -681,6 +681,14 @@ pub async fn ask_wait(
     let deadline =
         tokio::time::Instant::now() + std::time::Duration::from_secs(WAIT_SECS);
     loop {
+        // **Register for the wake before reading the answer.** `notify_waiters`
+        // wakes only the futures that already exist, and `Notified` does not join
+        // that list until it is polled — so creating it after the check drops the
+        // answer that lands in between, and the caller waits out the whole deadline
+        // for a question that is already answered. `enable` joins the list now.
+        let wait = app.answered.notified();
+        tokio::pin!(wait);
+        wait.as_mut().enable();
         {
             let inner = app.inner.read().await;
             let s = inner
@@ -707,7 +715,7 @@ pub async fn ask_wait(
             }
         }
         tokio::select! {
-            _ = app.answered.notified() => {}
+            _ = wait => {}
             _ = tokio::time::sleep_until(deadline) => {
                 return Ok(Json(json!({ "answered": false })));
             }
@@ -995,6 +1003,15 @@ pub async fn thread_committed(
     // endpoint and the agent is looping on *this* request, so a timeout would only
     // move the loop somewhere less obvious.
     let verdict = loop {
+        // **Register for the wake before reading the answer.** `notify_waiters`
+        // wakes only the futures that already exist, and `Notified` joins that list
+        // when it is first polled — so creating it after the check loses an answer
+        // that lands in between. This loop has no deadline by design (see above), so
+        // a lost wake here parks the agent's curl until some *unrelated* answer
+        // fires, which is indistinguishable from a hang. `enable` joins the list now.
+        let wait = app.answered.notified();
+        tokio::pin!(wait);
+        wait.as_mut().enable();
         {
             let inner = app.inner.read().await;
             let open = inner
@@ -1011,7 +1028,7 @@ pub async fn thread_committed(
                 None => return Err(ApiError(anyhow::anyhow!("the confirmation was dropped"))),
             }
         }
-        app.answered.notified().await;
+        wait.await;
     };
 
     if verdict != "post" {

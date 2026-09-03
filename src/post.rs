@@ -187,9 +187,18 @@ fn digest_of(batch: &Batch) -> String {
         .iter()
         .map(|d| {
             format!(
-                "{}:{}:{}",
+                "{}:{}:{:?}:{}",
                 d.thread_id,
                 d.position,
+                // **`mode` changes what gets written**, so it belongs in the
+                // fingerprint: it is what decides whether the patch is applied at
+                // all (`patch: … .filter(|_| d.mode == Mode::Agent)` below), and
+                // what `touched` reports. Without it, a half-run whose thread went
+                // out as `Manual` (patch deliberately not applied) matched a resume
+                // re-sending that thread as `Agent`: the digest said "same batch",
+                // the patch was never applied, and the drafted reply was posted for
+                // code nobody had written.
+                d.mode,
                 // A distinct marker for "not overridden", so an empty override and no
                 // override are not the same fingerprint.
                 d.reply.as_deref().unwrap_or("\u{1}none")
@@ -1511,6 +1520,53 @@ mod tests {
     /// The story arms only exist with a tracker configured, so the tests that are
     /// not about that run with one.
     const TRACKER: crate::config::TrackerKind = crate::config::TrackerKind::Stub;
+
+    /// The digest is the resume guard: it exists so a re-sent batch that is not the
+    /// batch the first half ran is refused rather than half-applied. So every field
+    /// that changes *what gets written* has to be in it.
+    ///
+    /// `mode` was not, and it is the field that decides whether the patch is applied
+    /// at all. A first half running a thread as `Manual` (patch deliberately left to
+    /// you) matched a resume re-sending it as `Agent`, so the patch was never applied
+    /// and the drafted reply went out for code that had never been written.
+    #[test]
+    fn the_digest_covers_everything_that_changes_what_is_written() {
+        let decision = |mode, reply: Option<&str>| Batch {
+            base_sha: "abc123".into(),
+            decisions: vec![Decision {
+                thread_id: "T1".into(),
+                position: 0,
+                reply: reply.map(String::from),
+                mode,
+            }],
+        };
+
+        let manual = digest_of(&decision(Mode::Manual, None));
+        let agent = digest_of(&decision(Mode::Agent, None));
+        assert_ne!(manual, agent, "who writes the code changes the fingerprint");
+
+        // The fields it already covered, kept pinned.
+        assert_ne!(
+            digest_of(&decision(Mode::Agent, None)),
+            digest_of(&decision(Mode::Agent, Some(""))),
+            "an empty override is not the same as no override"
+        );
+        assert_ne!(
+            digest_of(&decision(Mode::Agent, Some("a"))),
+            digest_of(&decision(Mode::Agent, Some("b"))),
+            "a different reply is a different batch"
+        );
+        let mut moved = decision(Mode::Agent, None);
+        moved.base_sha = "def456".into();
+        assert_ne!(
+            digest_of(&moved),
+            agent,
+            "a force-push under the batch is a different batch"
+        );
+        // And the same batch twice is the same fingerprint, or a resume could never
+        // continue at all.
+        assert_eq!(agent, digest_of(&decision(Mode::Agent, None)));
+    }
 
     /// The first half: no phase has opened.
     const FIRST_HALF: Option<&std::collections::HashMap<String, String>> = None;
