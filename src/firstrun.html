@@ -126,6 +126,8 @@
   .procs{border:1px solid var(--line);border-radius:10px;overflow:hidden}
   .procs .ph{background:var(--surface);padding:10px 14px;border-bottom:1px solid var(--line-soft);
     font-family:var(--mono);font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--faint)}
+  .procs .psub{padding:11px 14px 12px;border-bottom:1px solid var(--line-soft);color:var(--dim);
+    font-size:12.5px;line-height:1.5}
   .prow{display:flex;align-items:center;gap:12px;padding:12px 14px;border-top:1px solid var(--line-soft);cursor:pointer}
   .prow:first-of-type{border-top:0}
   .prow:hover{background:var(--hover)}
@@ -324,6 +326,10 @@
     if (d.processes && d.processes.length) {
       const card = el('div', 'procs');
       card.appendChild(el('div', 'ph', 'Processes found in this repo — optional'));
+      card.appendChild(el('div', 'psub',
+        'Ticked, orchd starts and manages these alongside your sessions — you can stop, '
+        + 'restart and watch their output in the Processes drawer. Left unticked, they are '
+        + 'not touched.'));
       for (const pr of d.processes) {
         const row = el('div', 'prow');
         const box = el('div', 'cbox');
