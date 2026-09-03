@@ -495,27 +495,41 @@ pub async fn spawn_session(
     // started, so nothing else is appending to that file. Only when the pin really
     // disagrees — a session resumed into the tree it is pinned to is correctly
     // isolated and must stay that way.
-    let transcript = resume.and_then(|_| {
-        // The id scan as a fallback, because the case that breaks the cheap slug
-        // lookup is this one: a relocation whose `move_transcript` failed leaves the
-        // file under the old tree's slug, and that is a conversation that is *more*
-        // likely to be carrying a stale pin, not less.
-        crate::store::transcript_file(id, &path, None).or_else(|| crate::store::find_transcript(id))
-    });
-    if let Some(t) = transcript {
-        match crate::store::worktree_pin(&t) {
-            Some(pin) if pin != path => match crate::store::clear_worktree_pin(id, &path, &t) {
-                Ok(()) => tracing::info!(
-                    session = %id,
-                    "cleared a worktree pin on {} for a conversation now in {}",
-                    pin.display(),
-                    path.display()
-                ),
-                // Not fatal: the arrival notice still says it in words, and a
-                // session that comes back isolated is what happened before this.
-                Err(e) => tracing::warn!(session = %id, "could not clear the worktree pin: {e:#}"),
-            },
-            _ => {}
+    // Off the runtime, all of it: finding the transcript walks
+    // `~/.claude/projects`, and reading the pin reads the whole file — which the
+    // note below says is megabytes of turns. One hop for the lot, since the pin is
+    // the only reason the file is opened.
+    if resume.is_some() {
+        let (at, id_) = (path.clone(), id);
+        let cleared = crate::proc::run_blocking("clearing the worktree pin", move || {
+            // The id scan as a fallback, because the case that breaks the cheap slug
+            // lookup is this one: a relocation whose `move_transcript` failed leaves
+            // the file under the old tree's slug, and that is a conversation that is
+            // *more* likely to be carrying a stale pin, not less.
+            let t = crate::store::transcript_file(id_, &at, None)
+                .or_else(|| crate::store::find_transcript(id_))?;
+            match crate::store::worktree_pin(&t) {
+                Some(pin) if pin != at => {
+                    Some((pin, crate::store::clear_worktree_pin(id_, &at, &t)))
+                }
+                _ => None,
+            }
+        })
+        .await
+        .unwrap_or(None);
+        match cleared {
+            Some((pin, Ok(()))) => tracing::info!(
+                session = %id,
+                "cleared a worktree pin on {} for a conversation now in {}",
+                pin.display(),
+                path.display()
+            ),
+            // Not fatal: the arrival notice still says it in words, and a
+            // session that comes back isolated is what happened before this.
+            Some((_, Err(e))) => {
+                tracing::warn!(session = %id, "could not clear the worktree pin: {e:#}")
+            }
+            None => {}
         }
     }
 
@@ -533,8 +547,17 @@ pub async fn spawn_session(
         session.forked_from = Some(prev);
     }
 
-    let (mut env, unset) =
-        crate::config::session_env(&app.cfg, &path, id, Some(&session.ask_token));
+    // Off the runtime. `session_env` asks the checkout's own env source, which is a
+    // bounded child process (`mise env`, `direnv export`) that `run_bounded` polls
+    // with `thread::sleep` for up to five seconds — on *every* spawn. Parked on a
+    // tokio worker that is the whole board freezing while a session starts.
+    let (mut env, unset) = {
+        let (app, at, tok) = (app.clone(), path.clone(), session.ask_token.clone());
+        crate::proc::run_blocking("reading the session environment", move || {
+            crate::config::session_env(&app.cfg, &at, id, Some(&tok))
+        })
+        .await?
+    };
     // A resumed review or triage run is the same run with the same proposals
     // still to post, and the credential for posting them lives in the
     // environment — which a resume rebuilds from nothing. So one came back able
@@ -803,7 +826,15 @@ pub async fn spawn_worktree_session(
     // After the arms, because only they know where this runs — and in the
     // delegated arm that is the main checkout, whose environment is the one the
     // worktree about to be cut from it would have had anyway.
-    let (env, unset) = crate::config::session_env(&app.cfg, &spawn_cwd, id, Some(&ask_token));
+    // Off the runtime — see the note in `spawn_session`; this is a child process
+    // on the spawn path too.
+    let (env, unset) = {
+        let (app, at, tok) = (app.clone(), spawn_cwd.clone(), ask_token.clone());
+        crate::proc::run_blocking("reading the session environment", move || {
+            crate::config::session_env(&app.cfg, &at, id, Some(&tok))
+        })
+        .await?
+    };
 
     // Without a name the path is not known until `SessionStart` reports the
     // cwd, so the workspace is registered there instead.
@@ -904,7 +935,14 @@ pub async fn spawn_fix_pr_session(
 
     // No ask token: a fix run is handed its URL substituted into its prompt and has
     // nothing to ask, which is the narrower surface 942d01b chose on purpose.
-    let (mut env, unset) = crate::config::session_env(&app.cfg, &path, id, None);
+    // Off the runtime — see the note in `spawn_session`.
+    let (mut env, unset) = {
+        let (app, at) = (app.clone(), path.clone());
+        crate::proc::run_blocking("reading the session environment", move || {
+            crate::config::session_env(&app.cfg, &at, id, None)
+        })
+        .await?
+    };
     // Parallel runs collide on ports and docker resource names, so each gets
     // its own compose project and port base (§8).
     env.push(("COMPOSE_PROJECT_NAME".to_string(), format!("orchd-pr-{pr}")));

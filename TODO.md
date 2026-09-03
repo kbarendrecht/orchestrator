@@ -6,6 +6,33 @@ this file, which churned it from every build; they now go to a gitignored
 
 ## Next
 
+- **The blocking-on-the-runtime sweep is started, not finished.**
+  `proc::run_blocking` is the helper, and the sites where a parked worker was
+  actually visible are done: `session_env` (a child process on *every* spawn, which
+  `run_bounded` polls with `thread::sleep` for up to 5s), the triage gate's
+  `git status`, teardown's preflight/remove/archive, the rebase handler's upstream
+  fetch (a network round trip), the per-click diff and file reads, `read_forge`'s
+  `git remote` + `gh auth token`, `session_start`'s branch read, and the resume
+  transcript read.
+
+  What is left, in rough order of how much it matters:
+  - `post.rs` (several git calls on the posting path), `story.rs`'s filer,
+    `hooks.rs`'s remaining reads.
+  - `lib.rs` boot-path reads, and `api.rs`'s remaining git *writes* — these run on
+    a click that is already slow, so the freeze is less visible.
+  - **B2, the one with teeth left:** filesystem work under the *global write lock* —
+    `hooks::pin_transcript` does a `read_dir` of `~/.claude/projects` per `Stop`
+    while holding `inner.write()`, and `with_automation`/`with_manual`/
+    `with_stories` write their store files under the caller's guard. Every snapshot
+    and every hook waits on that disk. Compute outside the lock and apply under it.
+  - **B3:** `ws.rs`'s pty writes are `Mutex` + `write_all` + `flush` on the async
+    loop, so a large paste into a child that is not reading parks a worker until it
+    drains. Wants a writer thread fed by a channel.
+
+  The rule is worth restating because it was applied unevenly for a long time: **no
+  `std::process::Command` and no `std::fs` on a tokio worker.** `run_blocking` names
+  the work so a panic says what died.
+
 - **Shutdown cannot escalate a kill, because `was_live` is written before it.**
   `PtyHandle::kill_gracefully` gives every other stop path a `SIGHUP` → grace →
   `SIGKILL` escalation, and `shutdown` is the one caller that cannot use it: it

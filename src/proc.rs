@@ -11,6 +11,30 @@ use std::path::Path;
 use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
+/// Run blocking work off the async runtime, naming it so a panic says what died.
+///
+/// The rule this exists to make cheap: **no `std::process::Command` and no
+/// `std::fs` on a tokio worker.** Both park the thread, and a runtime with a
+/// handful of workers has no spare capacity — the symptom is the board freezing
+/// while a `git status` walks a worktree, which is exactly what `reconcile` was
+/// moved off the runtime for. The rule was already written down; it was applied
+/// unevenly, and every un-wrapped site was one worker away from the same freeze.
+///
+/// A helper rather than bare `spawn_blocking` at each site so the `JoinError` is
+/// mapped the same way everywhere: a panic in the closure becomes an error naming
+/// `what`, instead of a `JoinError` the caller has to interpret. Work returning
+/// `Result` yields `Result<Result<T>>`, so those callers finish with `??` — the
+/// shape the codebase already used where it wrapped by hand.
+pub async fn run_blocking<T, F>(what: &'static str, f: F) -> Result<T>
+where
+    F: FnOnce() -> T + Send + 'static,
+    T: Send + 'static,
+{
+    tokio::task::spawn_blocking(f)
+        .await
+        .with_context(|| format!("{what} panicked"))
+}
+
 /// Run `argv` in `cwd`, killed if it outlives `timeout_secs`.
 ///
 /// The child leads **its own process group**, and the *group* is what gets

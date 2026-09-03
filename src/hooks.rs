@@ -175,7 +175,15 @@ pub async fn session_start(
     match &cwd {
         Some(path) => match crate::spawn::worktree_name_of(path, &app.cfg.worktrees_dir()) {
             Some(name) => {
-                let branch = crate::git::current_branch(path).ok();
+                // Off the runtime. A hook has about a second to answer and this is
+                // a child process — a worker parked here is one fewer serving the
+                // board, on a path every session start goes through.
+                let at = path.clone();
+                let branch = crate::proc::run_blocking("reading the worktree's branch", move || {
+                    crate::git::current_branch(&at).ok()
+                })
+                .await
+                .unwrap_or(None);
                 app.register_worktree(&name, path.clone(), branch).await;
                 app.with_session(id, |s| s.workspace = name).await;
             }

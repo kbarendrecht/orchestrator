@@ -68,8 +68,35 @@ pub async fn preflight(app: &Arc<AppState>, workspace: &str) -> Result<Preflight
         },
     });
 
+    // Checks 2 and 3 are three git execs, and two of them walk the whole worktree —
+    // `configure_repo` sets fsmonitor on main only, so in a worktree that is a full
+    // scan. Off the runtime, and batched into one hop rather than three, because
+    // they are asked together and only differ in what they report.
+    let (clean, branch, unpushed) = {
+        let at = path.clone();
+        let fallback = branches.iter().next().cloned();
+        let upstream = app.cfg.upstream_ref.clone();
+        crate::proc::run_blocking("the teardown preflight's git checks", move || {
+            let clean = git::is_clean(&at).unwrap_or(false);
+            let branch = git::current_branch(&at)
+                .ok()
+                .or(fallback)
+                .unwrap_or_default();
+            let unpushed = if branch.is_empty() {
+                Unpushed::NeverPushed {
+                    commits: vec!["(no branch resolved)".to_string()],
+                }
+            } else {
+                git::unpushed(&at, &branch, &upstream).unwrap_or(Unpushed::NeverPushed {
+                    commits: vec!["(could not check origin)".to_string()],
+                })
+            };
+            (clean, branch, unpushed)
+        })
+        .await?
+    };
+
     // 2. Clean tree.
-    let clean = git::is_clean(&path).unwrap_or(false);
     checks.push(Check {
         name: "clean tree",
         passed: clean,
@@ -81,19 +108,6 @@ pub async fn preflight(app: &Arc<AppState>, workspace: &str) -> Result<Preflight
     });
 
     // 3. Nothing unpushed.
-    let branch = git::current_branch(&path)
-        .ok()
-        .or_else(|| branches.iter().next().cloned())
-        .unwrap_or_default();
-    let unpushed = if branch.is_empty() {
-        Unpushed::NeverPushed {
-            commits: vec!["(no branch resolved)".to_string()],
-        }
-    } else {
-        git::unpushed(&path, &branch, &app.cfg.upstream_ref).unwrap_or(Unpushed::NeverPushed {
-            commits: vec!["(could not check origin)".to_string()],
-        })
-    };
     checks.push(Check {
         name: "nothing unpushed",
         passed: !unpushed.blocks_teardown(),
@@ -373,9 +387,18 @@ pub async fn archive(app: &Arc<AppState>, workspace: &str) -> Result<()> {
         };
         let src = src.unwrap_or_else(|| PathBuf::from("/nonexistent"));
         let dest = store.join(format!("{id}.jsonl"));
-        if src.exists() {
-            std::fs::copy(&src, &dest)
-                .with_context(|| format!("copying {} to {}", src.display(), dest.display()))?;
+        // Off the runtime: a transcript is megabytes on a long conversation, and
+        // this copies one per session in the workspace.
+        {
+            let (from, to) = (src.clone(), dest.clone());
+            crate::proc::run_blocking("archiving the transcript", move || {
+                if from.exists() {
+                    std::fs::copy(&from, &to)
+                        .with_context(|| format!("copying {} to {}", from.display(), to.display()))?;
+                }
+                Ok::<(), anyhow::Error>(())
+            })
+            .await??;
         }
 
         let mut inner = app.inner.write().await;
@@ -447,7 +470,15 @@ pub async fn teardown(app: &Arc<AppState>, workspace: &str) -> Result<Preflight>
     // when the hook already did the job.
     let payload = remove_payload(&app.cfg.main_checkout, workspace, &path);
     run_repo_hooks(app, "WorktreeRemove", payload).await;
-    git::worktree_remove(&app.cfg.main_checkout, &path)?;
+    // Off the runtime: this deletes the tree, which on a checkout carrying
+    // `node_modules` is seconds of filesystem work, and it retries a stale lock.
+    {
+        let (main, at) = (app.cfg.main_checkout.clone(), path.clone());
+        crate::proc::run_blocking("removing the worktree", move || {
+            git::worktree_remove(&main, &at)
+        })
+        .await??;
+    }
 
     {
         let mut inner = app.inner.write().await;

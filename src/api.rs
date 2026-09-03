@@ -3436,8 +3436,16 @@ async fn base_for(
         .workspace_path(&q.workspace)
         .await
         .ok_or_else(|| anyhow::anyhow!("unknown workspace {}", q.workspace))?;
-    let base =
-        crate::diff::resolve_base(&path, q.base, &app.cfg.upstream_ref, q.pr_base.as_deref())?;
+    // Off the runtime: `resolve_base` shells out to git, and every diff click and
+    // every editor open comes through here.
+    let base = {
+        let (at, which) = (path.clone(), q.base);
+        let (upstream, pr_base) = (app.cfg.upstream_ref.clone(), q.pr_base.clone());
+        crate::proc::run_blocking("resolving the diff base", move || {
+            crate::diff::resolve_base(&at, which, &upstream, pr_base.as_deref())
+        })
+        .await??
+    };
     Ok((path, base))
 }
 
@@ -3446,7 +3454,13 @@ pub async fn diff_summary(
     Query(q): Query<DiffQuery>,
 ) -> ApiResult<crate::diff::DiffSummary> {
     let (path, base) = base_for(&app, &q).await?;
-    Ok(Json(crate::diff::summary(&path, &base)?))
+    // Off the runtime: a `git diff` over the changeset, per click.
+    Ok(Json(
+        crate::proc::run_blocking("the diff summary", move || {
+            crate::diff::summary(&path, &base)
+        })
+        .await??,
+    ))
 }
 
 #[derive(Deserialize)]
@@ -3478,9 +3492,14 @@ pub async fn diff_file(
     let (path, base) = base_for(&app, &dq).await?;
     // A pathological context value would ask git for the whole repo.
     let context = q.context.min(10_000);
-    Ok(Json(crate::diff::file_diff(
-        &path, &base, &q.path, context,
-    )?))
+    // Off the runtime: another `git diff`, per file you open.
+    let file = q.path.clone();
+    Ok(Json(
+        crate::proc::run_blocking("a file diff", move || {
+            crate::diff::file_diff(&path, &base, &file, context)
+        })
+        .await??,
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -3655,13 +3674,20 @@ fn open_external(url: &str) -> anyhow::Result<()> {
         if !present {
             continue;
         }
-        Command::new(cmd)
+        let child = Command::new(cmd)
             .arg(url)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
             .with_context(|| format!("spawning {cmd}"))?;
+        // Reaped on a thread. Dropping the `Child` unwaited leaves a zombie for
+        // the life of the daemon, and this is a per-click path — `xdg-open` exits
+        // as soon as it has handed the URL on, so the thread is short-lived.
+        std::thread::spawn(move || {
+            let mut child = child;
+            let _ = child.wait();
+        });
         return Ok(());
     }
     anyhow::bail!("no browser opener found (tried {})", candidates.join(", "))
@@ -3695,10 +3721,17 @@ fn write_forge(app: &Arc<AppState>) -> Result<crate::forge::ForgeImpl, ApiError>
 /// Always refetches straight from the forge: a stale thread list is the one
 /// thing this flow must never act on, which is why nothing here caches.
 async fn fetch_threads(app: &Arc<AppState>, pr: u64) -> Result<crate::forge::Threads, ApiError> {
-    let forge = read_forge(app)?;
-    let fetched = tokio::task::spawn_blocking(move || forge.threads(pr))
-        .await
-        .context("the thread fetch panicked")??;
+    // `read_forge` shells out as well — `git remote get-url` for the repo and
+    // `gh auth token` for the credential — so it goes in the *same* hop as the
+    // fetch rather than running on a worker just before it. `lib.rs` wraps the
+    // same call for exactly this reason ("so a slow `gh auth token` never blocks
+    // the runtime"); this was the copy that did not.
+    let app = app.clone();
+    let fetched = crate::proc::run_blocking("the thread fetch", move || {
+        let forge = read_forge(&app).map_err(|e| e.0)?;
+        forge.threads(pr)
+    })
+    .await??;
     Ok(fetched)
 }
 
@@ -4381,9 +4414,15 @@ pub async fn read_file(
         .ok_or_else(|| anyhow::anyhow!("unknown workspace {}", q.workspace))?;
 
     if let Some(base) = q.base {
-        let rev =
-            crate::diff::resolve_base(&root, base, &app.cfg.upstream_ref, q.pr_base.as_deref())?;
-        let content = crate::diff::show_at(&root, &rev, &q.path)?;
+        // Off the runtime, and one hop for the pair: a `resolve_base` exec followed
+        // by a `git show` of the whole file.
+        let (at, file) = (root.clone(), q.path.clone());
+        let (upstream, pr_base) = (app.cfg.upstream_ref.clone(), q.pr_base.clone());
+        let content = crate::proc::run_blocking("reading a file at a revision", move || {
+            let rev = crate::diff::resolve_base(&at, base, &upstream, pr_base.as_deref())?;
+            crate::diff::show_at(&at, &rev, &file)
+        })
+        .await??;
         return Ok(Json(crate::edit::FileContents {
             path: q.path.clone(),
             bytes: content.len() as u64,
@@ -4392,7 +4431,14 @@ pub async fn read_file(
             content,
         }));
     }
-    Ok(Json(crate::edit::read(&root, &q.path, &app.cfg.shared_worktree_paths)?))
+    // Off the runtime: a file read, which is disk and can be a large file.
+    let (file, shared) = (q.path.clone(), app.cfg.shared_worktree_paths.clone());
+    Ok(Json(
+        crate::proc::run_blocking("reading a file", move || {
+            crate::edit::read(&root, &file, &shared)
+        })
+        .await??,
+    ))
 }
 
 #[derive(Deserialize)]
@@ -4579,11 +4625,23 @@ pub async fn rebase(
     // want — but it must not be silent: a network blip would otherwise look
     // identical to a clean rebase onto nothing new, which is the one outcome the
     // button exists to save you from thinking about.
-    let warning = match crate::git::fetch_upstream(&app.cfg.main_checkout, &app.cfg.upstream_ref) {
-        Ok(_) => None,
-        Err(e) => {
-            tracing::warn!("rebase {workspace}: upstream fetch failed, base may be stale: {e:#}");
-            Some(format!("upstream fetch failed — rebased onto the last-known base ({e})"))
+    // Off the runtime, like the `rebase_onto` two lines below it. This is a
+    // *network* round trip — measured at ~1.5s on the monorepo — and it was the
+    // one call on this path still parked on a tokio worker.
+    let warning = {
+        let (main, upstream) = (app.cfg.main_checkout.clone(), app.cfg.upstream_ref.clone());
+        let fetched = crate::proc::run_blocking("the upstream fetch", move || {
+            crate::git::fetch_upstream(&main, &upstream)
+        })
+        .await;
+        match fetched {
+            Ok(Ok(_)) => None,
+            // A panic in the fetch reads the same way here as a failed fetch: the
+            // base may be stale and the caller is told so.
+            Ok(Err(e)) | Err(e) => {
+                tracing::warn!("rebase {workspace}: upstream fetch failed, base may be stale: {e:#}");
+                Some(format!("upstream fetch failed — rebased onto the last-known base ({e})"))
+            }
         }
     };
 

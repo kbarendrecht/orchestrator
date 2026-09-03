@@ -99,19 +99,28 @@ async fn gate_inner(
     let Some(path) = app.workspace_path(workspace).await else {
         return Ok(None);
     };
-    if crate::git::rebase_in_progress(&path) {
-        return Ok(Some(Gate::Rebasing));
-    }
-    if require_clean {
-        // One `git status` answers both questions, and it is the same list the
-        // manual phase's writer refuses on, so the gate never names a different
-        // set than the write does.
-        let files = crate::patch::dirty_paths(&path)?;
-        if !files.is_empty() {
-            return Ok(Some(Gate::Dirty { files }));
+    // Both of these read the worktree from disk, and `dirty_paths` is a full
+    // `git status` — on the monorepo that is a whole-tree scan per worktree, since
+    // `configure_repo` sets fsmonitor on main only. One `spawn_blocking` for the
+    // pair rather than two, because they are asked together.
+    let at = path.clone();
+    let gate = crate::proc::run_blocking("the triage gate's git checks", move || {
+        if crate::git::rebase_in_progress(&at) {
+            return Ok(Some(Gate::Rebasing));
         }
-    }
-    Ok(None)
+        if require_clean {
+            // One `git status` answers both questions, and it is the same list the
+            // manual phase's writer refuses on, so the gate never names a different
+            // set than the write does.
+            let files = crate::patch::dirty_paths(&at)?;
+            if !files.is_empty() {
+                return Ok(Some(Gate::Dirty { files }));
+            }
+        }
+        Ok(None)
+    })
+    .await?;
+    gate
 }
 
 /// Start a triage run pinned to the PR's head branch.
