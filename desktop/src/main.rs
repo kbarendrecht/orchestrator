@@ -727,7 +727,6 @@ fn main() {
 fn first_run(app_handle: &AppHandle, rt: &tokio::runtime::Handle) -> Result<()> {
     let host: Arc<dyn orchd::firstrun::BootstrapHost> = Arc::new(TauriBootstrap {
         app: app_handle.clone(),
-        rt: rt.clone(),
     });
     let serving = rt
         .block_on(orchd::firstrun::serve(host))
@@ -736,13 +735,34 @@ fn first_run(app_handle: &AppHandle, rt: &tokio::runtime::Handle) -> Result<()> 
     // Kept so the daemon boot can stop it once a project is committed.
     *BOOTSTRAP.get_or_init(|| Mutex::new(None)).lock().unwrap() = Some(serving.task.abort_handle());
     // The open-project page wants the full board size; it is the window you work in.
-    build_window(app_handle, WebviewUrl::External(url), board_size(), (1000.0, 600.0), false)
+    build_window(app_handle, WebviewUrl::External(url), board_size(), MIN_SIZE, false)
 }
 
 /// A splash window smaller than the board it grows into. Just big enough for the
 /// wordmark and its dots; `boot_daemon` grows it to the real size when the daemon
 /// is up, so the splash reads as a loading card rather than a full empty window.
 const SPLASH_SIZE: (f64, f64) = (520.0, 340.0);
+
+/// Below this the three-column grid stops being three columns. Applied to the board
+/// and re-applied when the splash grows into it.
+const MIN_SIZE: (f64, f64) = (1000.0, 600.0);
+
+/// Navigate the main window to `url`, on the main thread — GTK calls only run there.
+/// Best effort: a missing window or an unparseable URL is logged, not fatal.
+fn navigate_main(app: &AppHandle, url: String) {
+    let app = app.clone();
+    let _ = app.clone().run_on_main_thread(move || {
+        let Some(w) = app.get_webview_window("main") else { return };
+        match url.parse::<tauri::Url>() {
+            Ok(u) => {
+                if let Err(e) = w.navigate(u) {
+                    tracing::error!("could not navigate to {url}: {e}");
+                }
+            }
+            Err(e) => tracing::error!("bad URL to navigate to ({url}): {e}"),
+        }
+    });
+}
 
 /// The size to open the board at: the one you left it, or 20% up on the 1440x900
 /// this started at — three columns and a terminal want the room.
@@ -888,7 +908,7 @@ fn boot_daemon(app_handle: AppHandle, rt: tokio::runtime::Handle, main: Option<s
         let _ = app_handle.run_on_main_thread(move || {
             let Some(w) = ah.get_webview_window("main") else { return };
             let (bw, bh) = board_size();
-            let _ = w.set_min_size(Some(tauri::LogicalSize::new(1000.0, 600.0)));
+            let _ = w.set_min_size(Some(tauri::LogicalSize::new(MIN_SIZE.0, MIN_SIZE.1)));
             let _ = w.set_size(tauri::LogicalSize::new(bw, bh));
             let _ = w.center();
             match url.parse::<tauri::Url>() {
@@ -950,7 +970,6 @@ fn start_switcher(app: &AppHandle) {
     };
     let host: Arc<dyn orchd::firstrun::BootstrapHost> = Arc::new(TauriBootstrap {
         app: app.clone(),
-        rt: rt.clone(),
     });
     let app = app.clone();
     rt.spawn(async move {
@@ -958,19 +977,8 @@ fn start_switcher(app: &AppHandle) {
             Ok(s) => s,
             Err(e) => return tracing::error!("could not start the switcher: {e:#}"),
         };
-        let url = serving.url();
         *BOOTSTRAP.get_or_init(|| Mutex::new(None)).lock().unwrap() = Some(serving.task.abort_handle());
-        let _ = app.clone().run_on_main_thread(move || {
-            let Some(w) = app.get_webview_window("main") else { return };
-            match url.parse::<tauri::Url>() {
-                Ok(u) => {
-                    if let Err(e) = w.navigate(u) {
-                        tracing::error!("could not open the switcher: {e}");
-                    }
-                }
-                Err(e) => tracing::error!("bad switcher URL ({url}): {e}"),
-            }
-        });
+        navigate_main(&app, serving.url());
     });
 }
 
@@ -979,7 +987,6 @@ fn start_switcher(app: &AppHandle) {
 /// commands the page's own titlebar needs.
 struct TauriBootstrap {
     app: AppHandle,
-    rt: tokio::runtime::Handle,
 }
 
 impl orchd::firstrun::BootstrapHost for TauriBootstrap {
@@ -1010,8 +1017,10 @@ impl orchd::firstrun::BootstrapHost for TauriBootstrap {
             // when you switch to it again.
             tracing::info!("switching project — restarting onto {}", path.display());
             request_restart(&self.app);
+        } else if let Some(rt) = RT.get() {
+            boot_daemon(self.app.clone(), rt.clone(), Some(path));
         } else {
-            boot_daemon(self.app.clone(), self.rt.clone(), Some(path));
+            tracing::error!("no runtime to boot the daemon");
         }
     }
 
@@ -1028,13 +1037,7 @@ impl orchd::firstrun::BootstrapHost for TauriBootstrap {
     fn cancel(&self) {
         // Back to the running board, and drop the switcher server.
         let Some(url) = daemon_url() else { return };
-        let app = self.app.clone();
-        let _ = self.app.clone().run_on_main_thread(move || {
-            let Some(w) = app.get_webview_window("main") else { return };
-            if let Ok(u) = url.parse::<tauri::Url>() {
-                let _ = w.navigate(u);
-            }
-        });
+        navigate_main(&self.app, url);
         stop_bootstrap();
     }
 }

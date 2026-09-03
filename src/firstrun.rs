@@ -254,9 +254,7 @@ pub fn detect(path: &Path) -> Detected {
         .or_else(|| base_branches.first().cloned())
         .unwrap_or_else(|| "origin/HEAD".to_string());
 
-    let repo = crate::forge::remote_url(path, "origin")
-        .as_deref()
-        .and_then(crate::forge::repo_from_remote)
+    let repo = crate::forge::github::GitHubForge::detect(path, "origin")
         .map(|(owner, name)| format!("{owner}/{name}"));
 
     let env_source = if path.join("mise.toml").exists() || path.join(".mise.toml").exists() {
@@ -545,11 +543,7 @@ async fn open_route(
                 ..Default::default()
             })
         }
-        Err(e) => Json(Outcome {
-            ok: false,
-            error: Some(e),
-            ..Default::default()
-        }),
+        Err(e) => Json(Outcome::of(Err(e))),
     }
 }
 

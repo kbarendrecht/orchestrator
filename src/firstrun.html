@@ -419,19 +419,13 @@
     const box = $('recent');
     box.textContent = '';
     if (!list.length) {
-      const e = document.createElement('div');
-      e.className = 'empty-recent';
-      e.textContent = 'No projects yet — browse to open your first.';
-      box.appendChild(e);
+      box.appendChild(el('div', 'empty-recent', 'No projects yet — browse to open your first.'));
       return;
     }
     for (const r of list) {
-      const row = document.createElement('button');
-      row.className = 'rec';
-      const n = document.createElement('span'); n.className = 'r-name'; n.textContent = r.name;
-      const p = document.createElement('span'); p.className = 'r-path'; p.textContent = r.path; p.title = r.path;
-      const w = document.createElement('span'); w.className = 'r-when'; w.textContent = when(r.last_opened_ms);
-      row.append(n, p, w);
+      const row = el('button', 'rec');
+      const p = el('span', 'r-path', r.path); p.title = r.path;
+      row.append(el('span', 'r-name', r.name), p, el('span', 'r-when', when(r.last_opened_ms)));
       row.addEventListener('click', () => openProject(r.path, null)); // seen before → no review
       box.appendChild(row);
     }
