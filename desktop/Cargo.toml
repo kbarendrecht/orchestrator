@@ -28,3 +28,10 @@ tauri-runtime = "2.11"
 tokio = { version = "1", features = ["rt-multi-thread", "time", "net"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Linux only, and pinned to whatever the WebKitGTK stack already resolves to:
+# `Ctrl+Shift+Tab` is a GTK focus-chain accelerator that GTK consumes before the
+# page can see it, so the previous-session chord needs intercepting at the gtk
+# window. Same version tauri's `gtk` is, so `gtk_window()`'s type matches.
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = "0.18"

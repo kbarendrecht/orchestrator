@@ -397,20 +397,17 @@ this file, which churned it from every build; they now go to a gitignored
   Until then the dead code is reachable only by the API, and `web/review-preview.html`
   is what lets the flattened UI be looked at without any of it.
 
-- **`Ctrl+Shift+Tab` for the previous session.** The SPA half is proven correct
-  by reading, so the remaining question is delivery, not the binding. The keydown
-  listener is registered `capture: true` on `window` (`web/app.js`), so it is the
-  first thing to see any key — the `Tab && ctrlKey` arm at the top of it already
-  handles both directions (`switchSession(e.shiftKey ? -1 : 1)`), and xterm's
-  custom handler claims only `Ctrl+Shift+C` and lets everything else through
-  (`web/js/term.js`). Nothing in the page eats it first, and the desktop crate has
-  no key handling at all. So the one consumer left is WebKitGTK itself: `Ctrl+Tab`
-  and `Ctrl+Shift+Tab` are GTK focus-chain accelerators, and the asymmetry the
-  report describes — next works, previous does not — is what a GTK grab on the
-  backward-traversal chord looks like. The fix is therefore at the webview layer
-  (intercept the GTK `key-press-event` before it reaches focus traversal), not in
-  the SPA, and it still wants the real window to confirm the grab and prove the
-  interception. An in-page binding cannot fix an event that never arrives.
+- **`Ctrl+Shift+Tab` for the previous session — implemented, wants one real-window
+  check.** The diagnosis held: the SPA's `Tab && ctrlKey` arm handles both
+  directions, and the one consumer left was WebKitGTK, whose focus chain claims the
+  backward chord before the page sees it. `desktop::wire_session_switch_keys`
+  intercepts it at the gtk window's `key-press-event` (before focus traversal),
+  where Shift+Tab arrives as the `ISO_Left_Tab` keyval, and re-injects the DOM
+  keydown the keymap already understands, returning `Propagation::Stop` so GTK does
+  not also move focus. The forward chord is left alone because it already works. The
+  re-inject payload is verified against the real handler (a synthetic
+  `Ctrl+Shift+Tab` moves the selection), but the GTK grab-bypass itself has only
+  been reasoned about — it needs the real window and a keyboard to confirm.
 
 - **One credential, and it stops being `gh`'s.** Reads already go out over curl with
   a resolved token (`forge/github.rs`); only three places shell `gh` at all:

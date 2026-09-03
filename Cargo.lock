@@ -2344,6 +2344,7 @@ name = "orchestrator-desktop"
 version = "2026.9.6"
 dependencies = [
  "anyhow",
+ "gtk",
  "orchd",
  "tauri",
  "tauri-build",

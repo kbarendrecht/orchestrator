@@ -780,7 +780,14 @@ fn open(app_handle: &AppHandle, rt: &tokio::runtime::Handle, main: Option<std::p
         builder = builder.decorations(false);
     }
 
-    builder.build().context("opening the window")?;
+    // `_window` because only the Linux arm reads it: `Ctrl+Shift+Tab` never reaches
+    // the SPA on WebKitGTK — GTK's focus chain claims the backward-traversal chord
+    // before the page can, while the forward one arrives fine, which is the
+    // asymmetry the report describes. Intercept it at the gtk window and re-inject
+    // the DOM event the keymap already handles.
+    let _window = builder.build().context("opening the window")?;
+    #[cfg(target_os = "linux")]
+    wire_session_switch_keys(&_window);
     // The window exists here; it is not painted yet. Everything after this is
     // the webview fetching the page and the SPA waiting for its first snapshot,
     // which is the client's own half of the wait and is timed in the page.
@@ -826,6 +833,48 @@ fn open(app_handle: &AppHandle, rt: &tokio::runtime::Handle, main: Option<std::p
 
     *SERVER.get_or_init(|| Mutex::new(None)).lock().unwrap() = Some(server);
     Ok(())
+}
+
+/// Make `Ctrl+Shift+Tab` reach the SPA on WebKitGTK.
+///
+/// `Ctrl+Tab` and `Ctrl+Shift+Tab` are GTK focus-chain accelerators. GTK runs them
+/// in the toplevel's own `key-press-event` handler *before* the event is propagated
+/// to the focused widget — the webview — so the backward chord is consumed and the
+/// page's keydown listener never fires. The forward one happens to survive, which is
+/// the exact asymmetry the report names.
+///
+/// `connect_key_press_event` runs before that default handler, so this sees the
+/// chord first. When it is the backward one — Shift+Tab is delivered as the
+/// `ISO_Left_Tab` keyval, not `Tab` with a shift bit — it re-injects the very
+/// keydown the SPA's keymap already understands and returns `Stop`, which skips
+/// GTK's focus move. The forward chord is left untouched precisely because it works.
+#[cfg(target_os = "linux")]
+fn wire_session_switch_keys(window: &tauri::WebviewWindow) {
+    use gtk::prelude::*;
+    let gtk_win = match window.gtk_window() {
+        Ok(w) => w,
+        Err(e) => return tracing::warn!("no gtk window for the previous-session key: {e:#}"),
+    };
+    let webview = window.clone();
+    gtk_win.connect_key_press_event(move |_, ev| {
+        use gtk::gdk;
+        let ctrl = ev.state().contains(gdk::ModifierType::CONTROL_MASK);
+        let shift = ev.state().contains(gdk::ModifierType::SHIFT_MASK);
+        let key = ev.keyval();
+        let backward = ctrl
+            && (key == gdk::keys::constants::ISO_Left_Tab
+                || (key == gdk::keys::constants::Tab && shift));
+        if backward {
+            // isTrusted is false, which the keymap does not check; it reads only
+            // key/ctrlKey/shiftKey, and this is the shape it switches on.
+            let _ = webview.eval(
+                "window.dispatchEvent(new KeyboardEvent('keydown',\
+                 {key:'Tab',ctrlKey:true,shiftKey:true}))",
+            );
+            return gtk::glib::Propagation::Stop;
+        }
+        gtk::glib::Propagation::Proceed
+    });
 }
 
 /// Take the daemon's children down before the process goes.
