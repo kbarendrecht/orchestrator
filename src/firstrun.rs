@@ -159,6 +159,80 @@ pub struct Detected {
     /// Where worktrees are cut. Always the default today; shown so it is not a
     /// surprise later.
     pub worktrees: String,
+    /// Long-running processes the repo appears to define — a compose stack, a dev
+    /// watch. Offered unchecked: orchd never starts someone's stack behind their
+    /// back on first open.
+    pub processes: Vec<DetectedProcess>,
+}
+
+/// A process orchd guessed the repo runs, and how to run it.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct DetectedProcess {
+    /// Short name for the drawer tab.
+    pub name: String,
+    /// The argv to run.
+    pub command: Vec<String>,
+    /// How it reads to a person (`pnpm run dev`).
+    pub label: String,
+    /// The file it was inferred from, shown so a wrong guess is obvious.
+    pub source: String,
+}
+
+/// Long-running processes a repo appears to define. Best effort and conservative:
+/// a compose file means a stack, and a small set of conventional dev scripts in a
+/// `package.json` mean a watcher — anything cleverer would guess wrong more than it
+/// helped, and these are offered unchecked anyway.
+fn detect_processes(path: &Path) -> Vec<DetectedProcess> {
+    let mut out = Vec::new();
+
+    for f in [
+        "compose.yaml",
+        "compose.yml",
+        "docker-compose.yml",
+        "docker-compose.yaml",
+    ] {
+        if path.join(f).exists() {
+            out.push(DetectedProcess {
+                name: "docker".into(),
+                command: vec!["docker".into(), "compose".into(), "up".into()],
+                label: "docker compose up".into(),
+                source: f.into(),
+            });
+            break; // one compose stack, not one per spelling
+        }
+    }
+
+    if let Ok(raw) = std::fs::read_to_string(path.join("package.json")) {
+        if let Ok(pkg) = serde_json::from_str::<serde_json::Value>(&raw) {
+            // The package manager the repo uses, from its lockfile.
+            let pm = if path.join("pnpm-lock.yaml").exists() {
+                "pnpm"
+            } else if path.join("yarn.lock").exists() {
+                "yarn"
+            } else if path.join("bun.lockb").exists() {
+                "bun"
+            } else {
+                "npm"
+            };
+            // Only the conventional long-running ones — not every script, which is
+            // mostly one-shot build and lint tasks nobody wants as a managed pty.
+            const WANTED: &[&str] = &["dev", "start", "watch", "serve", "build-watch", "build:watch"];
+            if let Some(scripts) = pkg.get("scripts").and_then(|s| s.as_object()) {
+                for name in WANTED {
+                    if scripts.contains_key(*name) {
+                        out.push(DetectedProcess {
+                            name: (*name).into(),
+                            command: vec![pm.into(), "run".into(), (*name).into()],
+                            label: format!("{pm} run {name}"),
+                            source: "package.json".into(),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    out
 }
 
 /// Inspect a checkout and propose its settings. Best effort throughout — anything
@@ -202,6 +276,7 @@ pub fn detect(path: &Path) -> Detected {
         repo,
         env_source,
         worktrees: ".claude/worktrees".to_string(),
+        processes: detect_processes(path),
     }
 }
 
@@ -243,6 +318,18 @@ fn write_config_to(file: &Path, path: &Path, ov: &Overrides) -> Result<()> {
         serde_json::from_value::<crate::config::TrackerKind>(json!(tracker))
             .map_err(|_| anyhow::anyhow!("unknown tracker: {tracker}"))?;
         obj.insert("tracker".into(), json!(tracker));
+    }
+    // Ticked processes become managed `main_processes`. `autostart` is true because
+    // ticking one in the review is the consent the setting's default withholds — the
+    // rest of a `ManagedSpec` is left to serde defaults.
+    let procs: Vec<_> = ov
+        .processes
+        .iter()
+        .filter(|p| !p.command.is_empty())
+        .map(|p| json!({ "name": p.name, "command": p.command, "autostart": true }))
+        .collect();
+    if !procs.is_empty() {
+        obj.insert("main_processes".into(), json!(procs));
     }
 
     let raw = serde_json::to_string_pretty(&serde_json::Value::Object(obj))? + "\n";
@@ -301,6 +388,17 @@ pub struct Overrides {
     pub env_source: Option<String>,
     #[serde(default)]
     pub tracker: Option<String>,
+    /// The processes the user ticked in the review, to manage from the start.
+    #[serde(default)]
+    pub processes: Vec<SelectedProcess>,
+}
+
+/// A process the review ticked, to write into `main_processes`.
+#[derive(Deserialize, Default)]
+pub struct SelectedProcess {
+    pub name: String,
+    #[serde(default)]
+    pub command: Vec<String>,
 }
 
 /// The answer to validate/pick/open, flat so the page reads one shape. `picked` is
@@ -566,6 +664,61 @@ mod tests {
         // A mise.toml is read as the environment source.
         std::fs::write(dir.join("mise.toml"), "[tools]\n").unwrap();
         assert_eq!(detect(&dir).env_source, "mise");
+    }
+
+    #[test]
+    fn detect_offers_a_compose_stack_and_conventional_scripts() {
+        let dir = tmp("procs");
+        std::fs::write(dir.join("compose.yaml"), "services: {}\n").unwrap();
+        std::fs::write(dir.join("pnpm-lock.yaml"), "").unwrap();
+        std::fs::write(
+            dir.join("package.json"),
+            r#"{"scripts":{"dev":"vite","build":"vite build","watch":"tsc -w"}}"#,
+        )
+        .unwrap();
+
+        let procs = detect_processes(&dir);
+        let labels: Vec<_> = procs.iter().map(|p| p.label.as_str()).collect();
+        assert!(labels.contains(&"docker compose up"), "the compose stack is offered");
+        assert!(labels.contains(&"pnpm run dev"), "dev is a long-running script");
+        assert!(labels.contains(&"pnpm run watch"), "watch is too");
+        assert!(!labels.iter().any(|l| l.contains("build\"")), "one-shot build is not offered");
+        assert!(
+            !labels.contains(&"pnpm run build"),
+            "a plain build is one-shot, not a managed process"
+        );
+        // The package manager comes from the lockfile.
+        assert!(procs.iter().any(|p| p.command == ["pnpm", "run", "dev"]));
+    }
+
+    #[test]
+    fn write_config_adds_ticked_processes_as_autostart() {
+        let base = std::env::temp_dir().join(format!("orchd-wcp-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let repo = base.join("proj");
+        std::fs::create_dir_all(&repo).unwrap();
+        git_repo(&repo);
+        let cfg = base.join("config.json");
+
+        write_config_to(
+            &cfg,
+            &repo,
+            &Overrides {
+                processes: vec![SelectedProcess {
+                    name: "docker".into(),
+                    command: vec!["docker".into(), "compose".into(), "up".into()],
+                }],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
+        let procs = v["main_processes"].as_array().expect("main_processes written");
+        assert_eq!(procs.len(), 1);
+        assert_eq!(procs[0]["name"], "docker");
+        assert_eq!(procs[0]["autostart"], true, "a ticked process starts with the daemon");
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]

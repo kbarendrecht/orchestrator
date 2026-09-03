@@ -111,10 +111,12 @@ which also fixes the blank gap on normal boots.
       `base_checkout_branch`, GitHub repo via `forge::repo_from_remote`, env from
       `mise.toml`/`.envrc`); `/api/detect` serves it. The review screen in
       `firstrun.html` shows base branch, GitHub repo, agent environment, worktrees
-      and tracker, edited then confirmed. A recent project skips the review. Tested:
-      `detect`, the detect route, and the page's detect→review→confirm flow (15/15).
-      **Deferred:** the "processes found" card (needs `ManagedSpec` construction;
-      off by default, so a follow-up).
+      and tracker, edited then confirmed. A recent project skips the review. The
+      **processes found** card is included: `detect_processes` offers a compose stack
+      and conventional `package.json` scripts (package manager from the lockfile),
+      unchecked; ticking one writes it into `main_processes` with `autostart: true`.
+      Tested: `detect`, `detect_processes`, `write_config` with processes, the detect
+      route, and the page's detect→review→confirm flow (19/19).
 - [x] Phase 4 — commit + persist (folded into Phase 3). `firstrun::write_config`
       writes a slim, validated `config.json` (main_checkout + only the non-default
       overrides) before the daemon reads it; `/api/open` calls it, records the

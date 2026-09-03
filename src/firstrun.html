@@ -122,6 +122,20 @@
   .ractions{margin-top:6px;padding-top:18px;border-top:1px solid var(--line-soft);display:flex;align-items:center;gap:12px}
   .ractions .btn.primary{margin-left:auto}
 
+  /* processes found — opt-in */
+  .procs{border:1px solid var(--line);border-radius:10px;overflow:hidden}
+  .procs .ph{background:var(--surface);padding:10px 14px;border-bottom:1px solid var(--line-soft);
+    font-family:var(--mono);font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--faint)}
+  .prow{display:flex;align-items:center;gap:12px;padding:12px 14px;border-top:1px solid var(--line-soft);cursor:pointer}
+  .prow:first-of-type{border-top:0}
+  .prow:hover{background:var(--hover)}
+  .cbox{width:17px;height:17px;border-radius:5px;border:1px solid var(--line);flex:0 0 auto;
+    background:var(--bg);display:flex;align-items:center;justify-content:center}
+  .cbox.on{background:var(--attn);border-color:var(--attn)}
+  .cbox.on::after{content:"✓";color:#1a1206;font-size:11px;font-weight:700;line-height:1}
+  .prow .pcmd{font-family:var(--mono);font-size:12.5px;color:var(--text)}
+  .prow .psrc{font-family:var(--mono);font-size:11px;color:var(--ghost);margin-left:auto}
+
   /* starting overlay */
   .starting{position:fixed;inset:0;z-index:10;background:var(--bg);display:none;
     flex-direction:column;align-items:center;justify-content:center;gap:20px}
@@ -222,6 +236,7 @@
           </div>
         </div>
       </div>
+      <div id="r-procs"></div>
       <div class="ractions">
         <button class="btn ghost" id="r-cancel">Back</button>
         <button class="btn primary" id="r-open">Open project</button>
@@ -237,6 +252,7 @@
 
 <script>
   const $ = (id) => document.getElementById(id);
+  const el = (tag, cls, txt) => { const n = document.createElement(tag); if (cls) n.className = cls; if (txt != null) n.textContent = txt; return n; };
   const post = (url, body) => fetch(url, {
     method: 'POST',
     headers: body ? { 'content-type': 'application/json' } : {},
@@ -301,6 +317,25 @@
       : d.env_source === 'direnv' ? 'found .envrc' : 'nothing detected — sessions get the daemon’s environment';
     $('r-wt').textContent = d.worktrees;
     $('r-tracker').value = 'none';
+
+    // processes found — a card of opt-in rows, each off by default.
+    const procs = $('r-procs');
+    procs.textContent = '';
+    if (d.processes && d.processes.length) {
+      const card = el('div', 'procs');
+      card.appendChild(el('div', 'ph', 'Processes found in this repo — optional'));
+      for (const pr of d.processes) {
+        const row = el('div', 'prow');
+        const box = el('div', 'cbox');
+        row.append(box, el('span', 'pcmd', pr.label), el('span', 'psrc', pr.source));
+        row._proc = pr;
+        row._on = false;
+        row.addEventListener('click', () => { row._on = !row._on; box.classList.toggle('on', row._on); });
+        card.appendChild(row);
+      }
+      procs.appendChild(card);
+    }
+
     msg('');
     show('review');
   }
@@ -319,11 +354,15 @@
   $('r-cancel').addEventListener('click', () => show('open'));
   $('r-open').addEventListener('click', () => {
     const env = [...$('r-env').children].find((b) => b.classList.contains('sel'));
+    const processes = [...$('r-procs').querySelectorAll('.prow')]
+      .filter((r) => r._on)
+      .map((r) => ({ name: r._proc.name, command: r._proc.command }));
     openProject(reviewing, {
       base_branch: $('r-base').value || null,
       repo: $('r-repo').value.trim() || null,
       env_source: env ? env.dataset.v : null,
       tracker: $('r-tracker').value || null,
+      processes,
     });
   });
 
