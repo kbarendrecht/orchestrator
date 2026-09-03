@@ -578,6 +578,7 @@ fn router(app: Arc<AppState>) -> Router {
         // The page's own boot timing, so a slow start reads as one story rather
         // than a daemon log with a hole where the webview should be.
         .route("/api/client/timing", post(api::client_timing))
+        .route("/api/client/note", post(api::client_note))
         .route("/api/open", post(api::open_url))
         .route("/api/open/file", post(api::open_file))
         .route("/api/pr/:number/review", get(api::pr_review))

@@ -192,14 +192,23 @@ mean *this* repo; if you do, name it.
   garbles glyphs there: text arrives as noise and only comes back when a scroll or
   a selection forces a redraw. Clearing the texture atlas after every refit and
   disposing the addon on context loss both failed, so the canvas is gone under
-  that engine. **A browser tab and macOS both keep the fast path** — the condition
-  used to be `chrome` alone, so a Mac took the DOM renderer on the strength of a
-  Linux bug, on a Retina panel compositing four times the pixels, with Claude Code
-  repainting its whole TUI per keystroke. That was the reported typing lag. The
-  macOS half is an **experiment nobody here can settle**: if WKWebView garbles
-  glyphs the way WebKitGTK does, the symptom is unmistakable and the fix is to drop
-  `IS_MAC` from that condition in `term.js`. Do not widen it further without
-  reading the TODO entry.
+  that engine.
+  **WKWebView garbles too, and the experiment is settled** (#8): on a Retina Mac
+  the agent pane turns to noise cell by cell, and worse than on Linux — a scroll
+  does not clean it up, because the repaint comes from the same corrupted atlas.
+  The trigger is a *second* terminal writing while the pane repaints; a drawer
+  shell running `git status` was enough, and a single terminal never garbled.
+  So the rule is now **one live WebGL context per window on macOS**: the agent
+  pane keeps the canvas, every drawer terminal takes the DOM renderer. Dropping
+  `IS_MAC` outright was the other candidate and is worse — it brings back the
+  typing lag the flag exists for (a Retina panel composites four times the pixels
+  while Claude Code repaints its whole TUI per keystroke) on the one pane you type
+  into. **A browser tab keeps WebGL everywhere**, deliberately: Chromium and
+  Firefox have no such fault, and a shell streaming a build log is where the canvas
+  earns its keep.
+  Which renderer a terminal opened with now reaches `orchd.log` (`page:
+  <target> renderer=… engine=…`, plus a line on context loss), because the report
+  needed a screen recording to answer "which renderer were you on".
 - **Slow trackpad scroll in an agent pane is xterm's wheel maths, not the
   renderer.** With mouse reporting on, `consumeWheelEvent` cuts any event under
   50px to 30% and passes only whole lines, and it sends one report per event

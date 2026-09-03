@@ -696,12 +696,17 @@ this file, which churned it from every build; they now go to a gitignored
   loss. So the canvas is gone under that engine and xterm draws real text, which
   cannot garble.
 
-  **macOS now takes the fast path**, which was the cheap experiment this entry
-  asked for: the condition was `CHROME` alone, so a Mac got the DOM renderer on
-  the strength of a bug measured on Linux. What is still open is the question only
-  a Mac can answer — whether WKWebView garbles glyphs the way WebKitGTK does. If
-  it does, the symptom is noise that a scroll cleans up, and the fix is to drop
-  `IS_MAC` from that condition in `term.js`.
+  ~~**What is still open is whether WKWebView garbles too.**~~ Answered, by a
+  report from a Retina Mac (#8): it does, and worse — a scroll does not clean it
+  up. The trigger is a *second* terminal writing while the agent pane repaints, and
+  a single terminal never garbled, so macOS now keeps **one live WebGL context per
+  window**: the agent pane has the canvas, drawer terminals take the DOM renderer.
+  That was chosen over dropping `IS_MAC`, which would have returned the typing lag
+  to the pane being typed into. A browser tab is unchanged.
+
+  Still unanswered by anyone here: whether one context is *sufficient* on a Mac, or
+  only the trigger that was found first. Only a Mac can say, and the renderer now
+  logs itself (`page: <target> renderer=… engine=…`) so the next report can.
 
   The *scrolling* half of this entry is answered and was never the renderer: xterm
   damps sub-50px wheel deltas to 30% and drops the remainder, which is every event

@@ -2,7 +2,7 @@
 // over a websocket. The DOM renderer is deliberate under WebKitGTK, and only
 // there — see the renderer comment below, and CLAUDE.md.
 
-import { $, CHROME, IS_MAC, TOKEN, WS_BASE, el, mark, reportBoot, selected, terms, toast, typingElsewhere, uiScale, wheelScale } from './core.js';
+import { $, CHROME, IS_MAC, TOKEN, WS_BASE, el, mark, note, reportBoot, selected, terms, toast, typingElsewhere, uiScale, wheelScale } from './core.js';
 
 
 const THEME = {
@@ -175,26 +175,52 @@ function openTerm(target, parent) {
    *   pixels, and Claude Code repaints its whole TUI frame per keystroke. That is
    *   the reported typing lag.
    *
-   * **The macOS half is an experiment, and only a Mac can settle it**: the open
-   * question is whether WKWebView garbles glyphs the way WebKitGTK does. If it
-   * does, the symptom is unmistakable (noise that a scroll cleans up) and the fix
-   * is to drop `IS_MAC` from this condition. The context-loss disposal below is
-   * the safety net either way.
+   * **The macOS experiment was settled, and WKWebView does garble** (#8): on a
+   * Retina Mac the agent pane's glyphs turn to noise, cell by cell, and the
+   * trigger is a *second* terminal writing while the pane repaints — a drawer
+   * shell running `git status` was enough. Worse than the WebKitGTK case, because
+   * a scroll does not clean it up: the repaint comes from the same corrupted
+   * atlas.
+   *
+   * **So macOS gets WebGL for the agent pane only.** That is the narrower of the
+   * two fixes the report offered, and it is narrower in the direction that
+   * matters: dropping `IS_MAC` outright would bring back the typing lag the flag
+   * exists to avoid, on the very pane you type into. Keeping one live context per
+   * window instead removes the trigger — a single terminal never garbled — and
+   * `CLAUDE.md` already named "a context to the visible terminal only" as the
+   * answer for a neighbouring case.
+   *
+   * A **browser tab keeps WebGL for every terminal**, deliberately: Chromium and
+   * Firefox have no such fault, and a drawer shell streaming a build log is
+   * exactly where the canvas earns its keep. The cost of the macOS rule is that
+   * such a shell falls back to the DOM renderer there, which is the trade the
+   * corruption forces.
    *
    * Not the *scrolling* complaint, which was the other suspect this was held
    * against: that turned out to be xterm damping sub-50px wheel deltas, measured
    * separately, and no renderer would have changed it. */
-  if (CHROME === 'none' || IS_MAC) {
+  const webglWanted = CHROME === 'none' || (IS_MAC && agentPane);
+  // Named for the log line below: a bug report could not say which renderer it was
+  // on, and on a packaged app there is no console to ask.
+  const engine = CHROME === 'none' ? 'browser' : IS_MAC ? 'wkwebview' : 'webkitgtk';
+  let renderer = 'dom';
+  if (webglWanted) {
     try {
       const webgl = new WebglAddon.WebglAddon();
       // A lost context leaves the canvas frozen on whatever it last painted, and
       // nothing in xterm notices. Dropping the addon puts the DOM renderer back.
-      webgl.onContextLoss?.(() => webgl.dispose());
+      webgl.onContextLoss?.(() => {
+        note(`${target}: webgl context lost, falling back to the dom renderer`);
+        webgl.dispose();
+      });
       term.loadAddon(webgl);
+      renderer = 'webgl';
     } catch (e) {
       // Software rendering is slower but correct; not worth failing over.
+      note(`${target}: webgl refused (${e}), using the dom renderer`);
     }
   }
+  note(`${target} renderer=${renderer} engine=${engine}`);
 
   /* **A slow trackpad drag scrolls an agent pane in jerks, and xterm's own wheel
    * maths is why.** With mouse reporting on — Claude Code sets `?1000h`,

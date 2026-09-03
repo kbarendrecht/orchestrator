@@ -3555,6 +3555,31 @@ pub async fn client_timing(
 }
 
 #[derive(Deserialize)]
+pub struct ClientNote {
+    pub note: String,
+}
+
+/// One line from the page into the daemon's log.
+///
+/// **The page's own state is otherwise absent from a bug report.** `orchd.log`
+/// records the daemon and nothing else, so "my fonts break" could not say which
+/// renderer was active, which engine it was on, or whether the WebGL context had
+/// been lost — and on a packaged app there is no console to look in either. That
+/// gap is what made the macOS glyph-corruption report (#8) take a screen recording
+/// to diagnose.
+///
+/// Truncated, because it lands in a log the daemon does not control the size of.
+/// Token-gated like every non-agent route, so a session cannot write here.
+pub async fn client_note(
+    State(_app): State<Arc<AppState>>,
+    Json(body): Json<ClientNote>,
+) -> impl IntoResponse {
+    let note: String = body.note.chars().take(300).collect();
+    tracing::info!("page: {note}");
+    (StatusCode::ACCEPTED, Json(json!({ "logged": true })))
+}
+
+#[derive(Deserialize)]
 pub struct OpenUrl {
     pub url: String,
 }

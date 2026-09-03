@@ -90,6 +90,18 @@ let reportTimer = null;
  *  depends on the board: a cold start with no session never paints a terminal at
  *  all, and waiting for one would mean never reporting on exactly the start that
  *  is worth reporting. */
+/** Put one line in the daemon's log, from the page.
+ *
+ *  For facts a bug report needs and cannot otherwise reach: which renderer a
+ *  terminal opened with, which engine it is on, whether a WebGL context was lost.
+ *  `orchd.log` is the daemon's own log and a packaged app has no console, so
+ *  without this the answer to "which renderer were you on" is a screen recording.
+ *
+ *  Best effort and never awaited — a log line must not be able to fail anything. */
+export function note(text) {
+  call('/api/client/note', { note: text }).catch(() => {});
+}
+
 export function reportBoot() {
   if (reported) return;
   clearTimeout(reportTimer);
