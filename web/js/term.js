@@ -2,7 +2,7 @@
 // over a websocket. The DOM renderer is deliberate under WebKitGTK, and only
 // there — see the renderer comment below, and CLAUDE.md.
 
-import { $, CHROME, IS_MAC, TOKEN, WS_BASE, el, mark, reportBoot, selected, terms, toast, typingElsewhere, uiScale } from './core.js';
+import { $, CHROME, IS_MAC, TOKEN, WS_BASE, el, mark, reportBoot, selected, terms, toast, typingElsewhere, uiScale, wheelScale } from './core.js';
 
 
 const THEME = {
@@ -243,7 +243,16 @@ function openTerm(target, parent) {
     const box = host.getBoundingClientRect();
     const cell = box.height / term.rows;
     if (!(cell > 0)) return true;
-    wheelLines += ev.deltaY / cell;
+    /* **The scale goes on the pixel delta, before it becomes lines.** Which is the
+       one thing `scrollSensitivity` gets wrong (see the dead end named above): it
+       multiplies before a threshold test that reads the *raw* delta, so a value
+       that suits a mouse breaks a trackpad. Here there is no threshold left to
+       fool — the damping is gone — so a plain multiplier is honest, and at the
+       default of 1 this line is what it always was.
+       Why anyone would change it: macOS reports an accelerated wheel notch as a
+       ~180px delta with `deltaMode === 0`, so it never takes the line-mode escape
+       above, and at a ~15px cell that is about twelve lines for one notch. */
+    wheelLines += (ev.deltaY * wheelScale) / cell;
     // `trunc`, so the sign is kept and the remainder is banked rather than
     // rounded away. Banking is what makes a slow drag move at all: 0.7 of a line
     // is not nothing, it is the next event's head start.

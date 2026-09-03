@@ -772,6 +772,9 @@ body.row-resizing{cursor:row-resize;user-select:none}
 .settings-info{margin-top:9px}
 .settings-v{margin-left:auto;font-family:var(--mono);font-size:calc(11.5px * var(--fs));color:var(--dim)}
 .settings-k{font-family:var(--mono);font-size:calc(11.5px * var(--fs));color:var(--text)}
+/* Which panes a setting reaches, where that is not obvious from its name. Dimmer
+   and smaller than the key it qualifies, so the row still reads as one label. */
+.settings-hint{color:var(--faint-solid);font-size:calc(9.5px * var(--fs))}
 .settings-step{margin-left:auto;display:flex;align-items:center;gap:2px}
 .stepbtn{
   width:24px;height:24px;border-radius:2px;border:1px solid var(--line);

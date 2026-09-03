@@ -244,6 +244,22 @@
     </div>
     <button class="settings-reset" id="fsreset">Reset to 100%</button>
 
+    <!-- Agent panes only: a drawer shell keeps xterm's own wheel maths, which
+         reads its `scrollSensitivity`. 100% is what the pane has always done, so
+         this changes nothing until asked — see `WHEEL` in core.js for why a
+         discrete wheel and a trackpad cannot share one number. -->
+    <div class="settings-row">
+      <span class="settings-k">Wheel speed
+        <span class="settings-hint">agent panes</span>
+      </span>
+      <span class="settings-step">
+        <button class="stepbtn" id="wsdown" title="Slower">&#8722;</button>
+        <span class="stepval" id="wsval">100%</span>
+        <button class="stepbtn" id="wsup" title="Faster">+</button>
+      </span>
+    </div>
+    <button class="settings-reset" id="wsreset">Reset to 100%</button>
+
     <div class="settings-group">Tracker</div>
 
     <label class="settings-field">

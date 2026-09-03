@@ -479,6 +479,46 @@ export function setZoom(z) {
   return next;
 }
 
+/* **How far one wheel event travels in an agent pane.** A multiplier on the pixel
+ * delta, defaulting to 1 — which is exactly today's behaviour, so a trackpad keeps
+ * the fix that put this handler here in the first place (a slow drag needs every
+ * pixel of its ~13px median delta) and nobody who has not asked for a change gets
+ * one.
+ *
+ * It exists because a *discrete* wheel is the opposite case: macOS accelerates a
+ * notch and reports it as a ~180px delta with `deltaMode === 0`, so it never takes
+ * the line-mode escape, and at a ~15px cell one notch travels about twelve lines.
+ * That is far enough to lose your place in the transcript. Some people want that
+ * speed, which is why this is a setting rather than a new fixed number.
+ *
+ * Applied to the *accumulated pixel delta*, never before a threshold — that is what
+ * makes it work where xterm's own `scrollSensitivity` cannot: it multiplies before
+ * a test that reads the raw delta, so a value that suits a mouse breaks a trackpad.
+ *
+ * localStorage, beside the zoom, for the reason stated there: it is this browser's
+ * opinion — this machine and this mouse — not something the daemon owns. */
+export const WHEEL = { key: 'orch.wheelScale', def: 1, min: 0.1, max: 2, step: 0.1 };
+
+/** The multiplier `term.js` reads. A live binding, so lowering it takes effect on
+ *  the next wheel event without the terminals re-importing anything. */
+export let wheelScale = WHEEL.def;
+
+export function setWheel(w) {
+  const next = Math.min(WHEEL.max, Math.max(WHEEL.min, Math.round(w * 10) / 10));
+  wheelScale = next;
+  $('wsval').textContent = `${Math.round(next * 100)}%`;
+  ctl('wsdown').disabled = next <= WHEEL.min;
+  ctl('wsup').disabled = next >= WHEEL.max;
+  return next;
+}
+
+export function saveWheel(w) {
+  try {
+    if (w === WHEEL.def) localStorage.removeItem(WHEEL.key);
+    else localStorage.setItem(WHEEL.key, String(w));
+  } catch (e) { /* private mode: it still applies for this session */ }
+}
+
 export function saveZoom(z) {
   try {
     if (z === ZOOM.def) localStorage.removeItem(ZOOM.key);

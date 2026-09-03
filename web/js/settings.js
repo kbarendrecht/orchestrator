@@ -1,7 +1,7 @@
 // The settings panel. The zoom control it offers lives in core, because the
 // terminals read the scale too.
 
-import { ctl, $, ZOOM, call, caret, closeLegend, el, get, MOD_LABEL, saveZoom, setZoom, snap, zoomScale } from './core.js';
+import { ctl, $, WHEEL, ZOOM, call, caret, closeLegend, el, get, MOD_LABEL, saveWheel, saveZoom, setWheel, setZoom, snap, wheelScale, zoomScale } from './core.js';
 
 const settingsOpen = () => !$('settings').hidden;
 
@@ -193,6 +193,7 @@ async function saveSettings() {
 
 function setupSettings() {
   setZoom(Number(localStorage.getItem(ZOOM.key)) || ZOOM.def);
+  setWheel(Number(localStorage.getItem(WHEEL.key)) || WHEEL.def);
 
   $('gearbtn').onclick = (ev) => {
     ev.stopPropagation();
@@ -207,6 +208,11 @@ function setupSettings() {
   $('fsdown').onclick = () => saveZoom(setZoom(zoomScale - ZOOM.step));
   $('fsup').onclick = () => saveZoom(setZoom(zoomScale + ZOOM.step));
   $('fsreset').onclick = () => saveZoom(setZoom(ZOOM.def));
+  // No chord for these: the keyboard map's own contract says a plain letter is
+  // taken only where the idiom earns it, and nobody expects one for a wheel.
+  $('wsdown').onclick = () => saveWheel(setWheel(wheelScale - WHEEL.step));
+  $('wsup').onclick = () => saveWheel(setWheel(wheelScale + WHEEL.step));
+  $('wsreset').onclick = () => saveWheel(setWheel(WHEEL.def));
   $('setclose').onclick = () => closeSettings();
 
   $('setprocadd').onclick = () => {
