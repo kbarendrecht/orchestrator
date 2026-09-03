@@ -932,6 +932,21 @@ pub fn base_checkout_branch(main: &Path, upstream_ref: &str) -> Option<String> {
     Some(branch.to_string())
 }
 
+/// The remote-tracking branches (`<remote>/<branch>`), for the first-run base-branch
+/// picker. `*/HEAD` symrefs are dropped: they are pointers, not branches to build
+/// from. Empty on any error, which the picker treats as "nothing to offer".
+pub fn remote_branches(main: &Path) -> Vec<String> {
+    git(main, &["for-each-ref", "--format=%(refname:short)", "refs/remotes/"])
+        .map(|out| {
+            out.lines()
+                .map(str::trim)
+                .filter(|s| !s.is_empty() && !s.ends_with("/HEAD"))
+                .map(String::from)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// What a swap did. See [`Swap::wip_error`] for why re-applying the uncommitted
 /// work failing is a field here rather than an `Err`.
 pub struct Swap {

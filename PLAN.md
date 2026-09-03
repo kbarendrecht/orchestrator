@@ -106,5 +106,25 @@ which also fixes the blank gap on normal boots.
       the real page (8/8 interactions). Not yet verified: the live native dialog and
       the daemon hand-off on the real window. Detected-settings review is Phase 3, so
       an open currently uses defaults.
-- [ ] Phase 3 — review & confirm
-- [ ] Phase 4 — commit + persist
+- [x] Phase 3 — review & confirm. `firstrun::detect` reads a checkout (base-branch
+      candidates via `git::remote_branches`, the resolved default via
+      `base_checkout_branch`, GitHub repo via `forge::repo_from_remote`, env from
+      `mise.toml`/`.envrc`); `/api/detect` serves it. The review screen in
+      `firstrun.html` shows base branch, GitHub repo, agent environment, worktrees
+      and tracker, edited then confirmed. A recent project skips the review. Tested:
+      `detect`, the detect route, and the page's detect→review→confirm flow (15/15).
+      **Deferred:** the "processes found" card (needs `ManagedSpec` construction;
+      off by default, so a follow-up).
+- [x] Phase 4 — commit + persist (folded into Phase 3). `firstrun::write_config`
+      writes a slim, validated `config.json` (main_checkout + only the non-default
+      overrides) before the daemon reads it; `/api/open` calls it, records the
+      recent, and boots. Non-fatal: a write failure loses the edits, not the open.
+      Unit-tested (`write_config_is_slim_and_validated`).
+
+## Left to verify on the real window
+
+The whole flow is tested headlessly (Rust + a browser drive of the real page), but
+three things only the real WebKitGTK window can confirm: the **native folder
+dialog** (`/api/pick`), the **splash→board hand-off** after commit, and the
+**frameless chrome** (drag, resize, min/close) on the bootstrap page. A hands-on
+launch when at the PC settles all three.

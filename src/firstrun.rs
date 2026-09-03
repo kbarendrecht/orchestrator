@@ -138,6 +138,124 @@ pub fn validate(path: &Path) -> std::result::Result<ProjectInfo, String> {
     })
 }
 
+/// What orchd worked out about a chosen checkout, for the review step to confirm.
+/// Every field is a guess with a default, and the page says where each came from —
+/// a wrong one is caught here rather than discovered on the first sweep.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct Detected {
+    pub path: String,
+    pub name: String,
+    /// The base ref worktrees branch from, `<remote>/<branch>`. The resolved
+    /// default (`origin/main`) when the symref is known, else the first remote
+    /// branch, else `origin/HEAD` — the daemon's own default.
+    pub base_branch: String,
+    /// The remote-tracking branches to choose among.
+    pub base_branches: Vec<String>,
+    /// `owner/name` for PR watching, from the origin remote. `None` off GitHub.
+    pub repo: Option<String>,
+    /// Where a session's environment comes from: `mise`, `direnv` or `none`,
+    /// detected from the files in the checkout.
+    pub env_source: String,
+    /// Where worktrees are cut. Always the default today; shown so it is not a
+    /// surprise later.
+    pub worktrees: String,
+}
+
+/// Inspect a checkout and propose its settings. Best effort throughout — anything
+/// it cannot read falls back to the daemon's own default rather than failing, so
+/// the review always has something to show.
+pub fn detect(path: &Path) -> Detected {
+    let base_branches = crate::git::remote_branches(path);
+    // Prefer the remote's recorded default; then a conventional main/master; then
+    // whatever the first remote branch is; then the daemon's own `origin/HEAD`.
+    let base_branch = crate::git::base_checkout_branch(path, "origin/HEAD")
+        .map(|b| format!("origin/{b}"))
+        .filter(|b| base_branches.contains(b))
+        .or_else(|| {
+            base_branches
+                .iter()
+                .find(|b| *b == "origin/main" || *b == "origin/master")
+                .cloned()
+        })
+        .or_else(|| base_branches.first().cloned())
+        .unwrap_or_else(|| "origin/HEAD".to_string());
+
+    let repo = crate::forge::remote_url(path, "origin")
+        .as_deref()
+        .and_then(crate::forge::repo_from_remote)
+        .map(|(owner, name)| format!("{owner}/{name}"));
+
+    let env_source = if path.join("mise.toml").exists() || path.join(".mise.toml").exists() {
+        "mise"
+    } else if path.join(".envrc").exists() {
+        "direnv"
+    } else {
+        "none"
+    }
+    .to_string();
+
+    Detected {
+        path: path.to_string_lossy().into_owned(),
+        name: name_of(path),
+        base_branch,
+        base_branches,
+        repo,
+        env_source,
+        worktrees: ".claude/worktrees".to_string(),
+    }
+}
+
+/// Write the first-run `config.json` from the review's answers, before the daemon
+/// starts and reads it.
+///
+/// Slim on purpose — only `main_checkout` and the fields that differ from a plain
+/// default are written, the same shape a hand-written config takes, so the file
+/// stays readable. Each value is validated by parsing the whole config before it is
+/// written, so a bad override is a caught error rather than a daemon that refuses to
+/// start. Never fatal to the caller: if this fails, the daemon's own `load_or_init`
+/// still writes a sensible default for the checkout — the review's edits are just
+/// lost, which is better than no window.
+pub fn write_config(path: &Path, ov: &Overrides) -> Result<()> {
+    write_config_to(&Config::path()?, path, ov)
+}
+
+fn write_config_to(file: &Path, path: &Path, ov: &Overrides) -> Result<()> {
+    use serde_json::json;
+    let mut obj = serde_json::Map::new();
+    obj.insert("main_checkout".into(), json!(path.to_string_lossy()));
+
+    if let Some(base) = ov.base_branch.as_deref().filter(|s| !s.is_empty()) {
+        obj.insert("upstream_ref".into(), json!(base));
+        // `<remote>/<branch>` — the remote is what the push guard and the fetch use.
+        if let Some((remote, _)) = base.split_once('/') {
+            obj.insert("upstream_remote".into(), json!(remote));
+        }
+    }
+    if let Some(repo) = ov.repo.as_deref().filter(|s| !s.is_empty()) {
+        obj.insert("repo".into(), json!(repo));
+    }
+    if let Some(env) = ov.env_source.as_deref().filter(|s| !s.is_empty()) {
+        serde_json::from_value::<crate::config::EnvSourceKind>(json!(env))
+            .map_err(|_| anyhow::anyhow!("unknown env source: {env}"))?;
+        obj.insert("env_source".into(), json!(env));
+    }
+    if let Some(tracker) = ov.tracker.as_deref().filter(|s| !s.is_empty()) {
+        serde_json::from_value::<crate::config::TrackerKind>(json!(tracker))
+            .map_err(|_| anyhow::anyhow!("unknown tracker: {tracker}"))?;
+        obj.insert("tracker".into(), json!(tracker));
+    }
+
+    let raw = serde_json::to_string_pretty(&serde_json::Value::Object(obj))? + "\n";
+    // The whole thing has to parse, or the daemon would fail to start on it later.
+    Config::parse(&raw).context("the first-run config did not validate")?;
+
+    if let Some(dir) = file.parent() {
+        std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    }
+    std::fs::write(file, raw).with_context(|| format!("writing {}", file.display()))?;
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // The bootstrap server
 // ---------------------------------------------------------------------------
@@ -167,6 +285,22 @@ pub trait BootstrapHost: Send + Sync + 'static {
 #[derive(Deserialize)]
 struct PathReq {
     path: String,
+}
+
+/// The review's answers, sent with the open. Every override is optional — an
+/// unset one leaves the daemon's default, and a `None` `repo` means "watch what
+/// origin resolves to" rather than "watch nothing".
+#[derive(Deserialize, Default)]
+pub struct Overrides {
+    pub path: String,
+    #[serde(default)]
+    pub base_branch: Option<String>,
+    #[serde(default)]
+    pub repo: Option<String>,
+    #[serde(default)]
+    pub env_source: Option<String>,
+    #[serde(default)]
+    pub tracker: Option<String>,
 }
 
 /// The answer to validate/pick/open, flat so the page reads one shape. `picked` is
@@ -209,6 +343,7 @@ pub fn router(host: Arc<dyn BootstrapHost>) -> Router {
         .route("/", get(|| async { Html(include_str!("firstrun.html")) }))
         .route("/api/recent", get(|| async { Json(recent_projects()) }))
         .route("/api/validate", post(validate_route))
+        .route("/api/detect", post(detect_route))
         .route("/api/pick", post(pick_route))
         .route("/api/open", post(open_route))
         .route("/api/window/:cmd", post(window_route))
@@ -246,6 +381,10 @@ async fn validate_route(Json(req): Json<PathReq>) -> Json<Outcome> {
     Json(Outcome::of(validate(Path::new(&req.path))))
 }
 
+async fn detect_route(Json(req): Json<PathReq>) -> Json<Detected> {
+    Json(detect(Path::new(&req.path)))
+}
+
 async fn pick_route(State(host): State<Arc<dyn BootstrapHost>>) -> Json<Outcome> {
     match host.pick() {
         None => Json(Outcome {
@@ -263,15 +402,20 @@ async fn pick_route(State(host): State<Arc<dyn BootstrapHost>>) -> Json<Outcome>
 
 async fn open_route(
     State(host): State<Arc<dyn BootstrapHost>>,
-    Json(req): Json<PathReq>,
+    Json(ov): Json<Overrides>,
 ) -> Json<Outcome> {
-    let path = PathBuf::from(&req.path);
+    let path = PathBuf::from(&ov.path);
     // Validate again server-side: the page validated to enable the button, but the
     // tree could have moved since, and this is the last gate before the daemon.
     match validate(&path) {
         Ok(_) => {
+            // Persist the review's answers before the daemon reads them. Non-fatal:
+            // a failure here loses the edits, not the open — `load_or_init` still
+            // writes a default for the checkout.
+            if let Err(e) = write_config(&path, &ov) {
+                tracing::warn!("could not write the first-run config: {e:#}");
+            }
             if let Err(e) = record_recent(&path) {
-                // A recents write must never block an open — log and go on.
                 tracing::warn!("could not record the recent project: {e:#}");
             }
             host.open(path);
@@ -334,6 +478,16 @@ mod tests {
         std::fs::create_dir_all(at.join(".git")).unwrap();
     }
 
+    fn run_git(dir: &Path, args: &[&str]) {
+        let ok = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        assert!(ok, "git {args:?} failed in {}", dir.display());
+    }
+
     #[test]
     fn validate_wants_a_folder_that_is_a_git_repo() {
         let base = std::env::temp_dir().join(format!("orchd-val-{}", std::process::id()));
@@ -388,6 +542,73 @@ mod tests {
         let dir = tmp("corrupt");
         std::fs::write(recent_file_in(&dir), "not json").unwrap();
         assert!(recent_projects_in(&dir).is_empty(), "garbage does not keep the window shut");
+    }
+
+    // --- detection and config writing ---------------------------------------
+
+    #[test]
+    fn detect_reads_the_repo_and_environment_it_can() {
+        let dir = tmp("detect");
+        run_git(&dir, &["init", "-q"]);
+
+        // No remote, no mise/direnv yet: honest fallbacks.
+        let d = detect(&dir);
+        assert_eq!(d.name, dir.file_name().unwrap().to_string_lossy());
+        assert_eq!(d.repo, None, "no remote means no repo to watch");
+        assert_eq!(d.env_source, "none");
+        assert_eq!(d.worktrees, ".claude/worktrees");
+        assert_eq!(d.base_branch, "origin/HEAD", "nothing fetched, so the daemon default");
+
+        // A GitHub origin becomes the repo to watch.
+        run_git(&dir, &["remote", "add", "origin", "git@github.com:acme/thing.git"]);
+        assert_eq!(detect(&dir).repo.as_deref(), Some("acme/thing"));
+
+        // A mise.toml is read as the environment source.
+        std::fs::write(dir.join("mise.toml"), "[tools]\n").unwrap();
+        assert_eq!(detect(&dir).env_source, "mise");
+    }
+
+    #[test]
+    fn write_config_is_slim_and_validated() {
+        let base = std::env::temp_dir().join(format!("orchd-wc-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let repo = base.join("proj");
+        std::fs::create_dir_all(&repo).unwrap();
+        git_repo(&repo);
+        let cfg = base.join("config.json");
+
+        write_config_to(
+            &cfg,
+            &repo,
+            &Overrides {
+                base_branch: Some("upstream/develop".into()),
+                repo: Some("acme/thing".into()),
+                env_source: Some("direnv".into()),
+                tracker: Some("shortcut".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let written = std::fs::read_to_string(&cfg).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&written).unwrap();
+        assert_eq!(v["upstream_ref"], "upstream/develop");
+        assert_eq!(v["upstream_remote"], "upstream", "the remote is split off the ref");
+        assert_eq!(v["repo"], "acme/thing");
+        assert_eq!(v["env_source"], "direnv");
+        assert_eq!(v["tracker"], "shortcut");
+        // Slim: nothing that was not asked for.
+        assert!(v.get("poll_seconds").is_none(), "defaults are left out");
+
+        // A bad override is refused before anything is written.
+        let bad = base.join("bad.json");
+        assert!(write_config_to(&bad, &repo, &Overrides {
+            env_source: Some("nonsense".into()),
+            ..Default::default()
+        }).is_err());
+        assert!(!bad.exists(), "a rejected override writes no file");
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     // --- the bootstrap router ------------------------------------------------
@@ -452,6 +673,17 @@ mod tests {
         assert_eq!(bad["ok"], false);
         assert!(bad["error"].is_string(), "an invalid folder explains itself");
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[tokio::test]
+    async fn detect_route_returns_the_detected_settings() {
+        let dir = tmp("route-detect");
+        run_git(&dir, &["init", "-q"]);
+        run_git(&dir, &["remote", "add", "origin", "git@github.com:acme/thing.git"]);
+        let out = post(stub(), "/api/detect", &format!("{{\"path\":{:?}}}", dir.to_string_lossy())).await;
+        assert_eq!(out["repo"], "acme/thing");
+        assert_eq!(out["worktrees"], ".claude/worktrees");
+        assert!(out["base_branch"].is_string());
     }
 
     #[tokio::test]

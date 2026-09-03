@@ -10,7 +10,7 @@
   :root{
     --bg:#101010; --surface:#171717; --raised:#212121; --hover:#1D1D1D;
     --line:#2C2C2C; --line-soft:#262626; --text:#D2D2D2; --dim:#A8A8A8;
-    --faint:#8E8E8E; --ghost:#787878; --attn:#E0A244;
+    --faint:#8E8E8E; --ghost:#787878; --attn:#E0A244; --ok:#5FA97C; --bad:#D4726B;
     --mono:ui-monospace,'SF Mono',Menlo,Consolas,monospace;
     --sans:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;
   }
@@ -20,6 +20,7 @@
     -webkit-font-smoothing:antialiased;overflow:hidden;user-select:none}
   button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
   :focus-visible{outline:2px solid #C9C9C9;outline-offset:1px;border-radius:2px}
+  [hidden]{display:none !important}
 
   /* frameless chrome */
   .titlebar{height:38px;display:flex;align-items:center;padding:0 6px 0 14px;
@@ -31,7 +32,6 @@
   .wctl button{width:38px;height:38px;display:flex;align-items:center;justify-content:center;color:var(--ghost)}
   .wctl button:hover{background:var(--raised);color:var(--text)}
   .wctl button.close:hover{background:#C9615A;color:#fff}
-  /* invisible resize strips along the edges */
   .rz{position:fixed;z-index:6}
   .rz.n{top:0;left:8px;right:8px;height:5px;cursor:ns-resize}
   .rz.s{bottom:0;left:8px;right:8px;height:5px;cursor:ns-resize}
@@ -42,59 +42,87 @@
   .rz.se{bottom:0;right:0;width:9px;height:9px;cursor:nwse-resize}
   .rz.sw{bottom:0;left:0;width:9px;height:9px;cursor:nesw-resize}
 
-  .app{position:absolute;inset:38px 0 0 0;display:grid;grid-template-columns:1fr 300px}
+  .screen{position:absolute;inset:38px 0 0 0}
+
+  /* open screen */
+  .open{height:100%;display:grid;grid-template-columns:1fr 300px}
   .main{padding:44px 44px 34px;display:flex;flex-direction:column;gap:22px}
   .side{background:var(--surface);border-left:1px solid var(--line-soft);
     padding:30px 26px;display:flex;flex-direction:column;gap:14px;overflow-y:auto}
-
   .brand{display:flex;align-items:center;gap:10px}
   .brand .dot{width:8px;height:8px;border-radius:50%;background:var(--attn)}
   .brand .name{font-family:var(--mono);font-size:14px;font-weight:600;letter-spacing:.02em}
   .brand .name b{color:var(--attn);font-weight:600}
   h1{font-size:26px;font-weight:600;letter-spacing:-.015em;line-height:1.15}
   .lede{color:var(--dim);font-size:14.5px;max-width:46ch;margin-top:10px}
-
   .btn{font-family:var(--sans);font-size:14px;border-radius:9px;padding:12px 18px;
     display:inline-flex;align-items:center;gap:10px;border:1px solid transparent;
     transition:background .12s,border-color .12s}
-  .btn.primary{background:var(--attn);color:#1a1206;font-weight:600;align-self:flex-start}
+  .btn.primary{background:var(--attn);color:#1a1206;font-weight:600}
   .btn.primary:hover{background:#e8ad55}
+  .btn.ghost{border:1px solid var(--line);color:var(--dim)}
+  .btn.ghost:hover{border-color:var(--faint);color:var(--text)}
   .btn svg{display:block}
-
+  #browse{align-self:flex-start}
   .orrow{display:flex;align-items:center;gap:12px;color:var(--ghost);
     font-family:var(--mono);font-size:11px;letter-spacing:.1em;text-transform:uppercase}
   .orrow::before,.orrow::after{content:"";height:1px;flex:1;background:var(--line-soft)}
-
   .pathrow{display:flex;gap:8px}
   .pathrow input{flex:1;background:var(--bg);border:1px solid var(--line);border-radius:9px;
     padding:11px 13px;color:var(--text);font-family:var(--mono);font-size:13px;user-select:text}
   .pathrow input::placeholder{color:var(--ghost)}
   .pathrow input:focus{outline:none;border-color:var(--faint)}
-  .pathrow input.bad{border-color:#C9615A}
+  .pathrow input.bad{border-color:var(--bad)}
   .go{border:1px solid var(--line);border-radius:9px;padding:0 16px;color:var(--dim);
     font-family:var(--mono);font-size:13px}
   .go:enabled:hover{border-color:var(--faint);color:var(--text)}
   .go:disabled{opacity:.45;cursor:default}
-
   .msg{min-height:18px;font-family:var(--mono);font-size:12px;color:var(--ghost)}
-  .msg.bad{color:#D4726B}
-  .msg.ok{color:#5FA97C}
-
-  .eyebrow{font-family:var(--mono);font-size:10.5px;letter-spacing:.16em;
-    text-transform:uppercase;color:var(--faint)}
+  .msg.bad{color:var(--bad)} .msg.ok{color:var(--ok)}
+  .eyebrow{font-family:var(--mono);font-size:10.5px;letter-spacing:.16em;text-transform:uppercase;color:var(--faint)}
   .recent{display:flex;flex-direction:column;gap:6px}
   .rec{display:flex;flex-direction:column;gap:2px;padding:10px 12px;border-radius:9px;
     border:1px solid transparent;cursor:pointer;text-align:left}
   .rec:hover{background:var(--hover);border-color:var(--line-soft)}
   .rec .r-name{font-family:var(--mono);font-size:13px;color:var(--text)}
-  .rec .r-path{font-family:var(--mono);font-size:11px;color:var(--ghost);
-    white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .rec .r-path{font-family:var(--mono);font-size:11px;color:var(--ghost);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .rec .r-when{font-family:var(--mono);font-size:10.5px;color:var(--faint);margin-top:1px}
   .empty-recent{color:var(--ghost);font-family:var(--mono);font-size:12px;
     border:1px dashed var(--line);border-radius:9px;padding:16px;text-align:center}
 
-  /* the starting overlay, shown once an open is under way and until the window is
-     navigated to the splash the daemon boot puts up */
+  /* review screen */
+  .review{height:100%;overflow-y:auto;padding:30px 44px 28px;display:flex;flex-direction:column;gap:20px;max-width:720px}
+  .back{align-self:flex-start;display:inline-flex;align-items:center;gap:7px;
+    font-family:var(--mono);font-size:12px;color:var(--faint);cursor:pointer}
+  .back:hover{color:var(--text)}
+  .rhead h1{font-size:23px}
+  .rhead .rpath{font-family:var(--mono);font-size:12.5px;color:var(--faint);margin-top:4px}
+  .form{display:flex;flex-direction:column}
+  .frow{display:grid;grid-template-columns:150px 1fr;gap:16px;align-items:start;
+    padding:15px 0;border-top:1px solid var(--line-soft)}
+  .frow:first-child{border-top:0}
+  .frow>.lab{font-size:13.5px;color:var(--text);padding-top:8px}
+  .frow>.lab .sub{display:block;color:var(--faint);font-size:11.5px;font-family:var(--mono);margin-top:3px}
+  .ctl{display:flex;flex-direction:column;gap:6px}
+  .field{background:var(--bg);border:1px solid var(--line);border-radius:8px;
+    padding:9px 12px;font-family:var(--mono);font-size:13px;color:var(--text);
+    display:flex;align-items:center;gap:8px;min-height:38px;width:100%;user-select:text}
+  .field.ro{color:var(--faint);background:var(--surface)}
+  select.field,input.field{appearance:none}
+  input.field:focus,select.field:focus{outline:none;border-color:var(--faint)}
+  .field svg{color:var(--faint);flex:0 0 auto}
+  .field input.bare{flex:1;min-width:0;background:transparent;border:0;color:var(--text);
+    font-family:var(--mono);font-size:13px;outline:none;padding:0;user-select:text}
+  .detected{font-family:var(--mono);font-size:11px;color:var(--ghost)}
+  .detected b{color:var(--faint)}
+  .seg{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden;width:fit-content}
+  .seg button{font-family:var(--mono);font-size:12.5px;color:var(--faint);padding:8px 14px;border-right:1px solid var(--line)}
+  .seg button:last-child{border-right:0}
+  .seg button.sel{background:var(--raised);color:var(--text)}
+  .ractions{margin-top:6px;padding-top:18px;border-top:1px solid var(--line-soft);display:flex;align-items:center;gap:12px}
+  .ractions .btn.primary{margin-left:auto}
+
+  /* starting overlay */
   .starting{position:fixed;inset:0;z-index:10;background:var(--bg);display:none;
     flex-direction:column;align-items:center;justify-content:center;gap:20px}
   .starting.on{display:flex}
@@ -114,28 +142,19 @@
     <span class="tb-title">Orchestrator</span>
     <div class="tb-drag" id="drag"></div>
     <div class="wctl">
-      <button data-cmd="minimize" title="Minimise" aria-label="Minimise">
-        <svg width="12" height="12" viewBox="0 0 12 12"><line x1="2" y1="6" x2="10" y2="6" stroke="currentColor" stroke-width="1.3"/></svg>
-      </button>
-      <button data-cmd="toggle-maximize" title="Maximise" aria-label="Maximise">
-        <svg width="12" height="12" viewBox="0 0 12 12"><rect x="2.5" y="2.5" width="7" height="7" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>
-      </button>
-      <button class="close" data-cmd="close" title="Close" aria-label="Close">
-        <svg width="12" height="12" viewBox="0 0 12 12"><path d="M3 3l6 6M9 3l-6 6" stroke="currentColor" stroke-width="1.3"/></svg>
-      </button>
+      <button data-cmd="minimize" title="Minimise" aria-label="Minimise"><svg width="12" height="12" viewBox="0 0 12 12"><line x1="2" y1="6" x2="10" y2="6" stroke="currentColor" stroke-width="1.3"/></svg></button>
+      <button data-cmd="toggle-maximize" title="Maximise" aria-label="Maximise"><svg width="12" height="12" viewBox="0 0 12 12"><rect x="2.5" y="2.5" width="7" height="7" fill="none" stroke="currentColor" stroke-width="1.2"/></svg></button>
+      <button class="close" data-cmd="close" title="Close" aria-label="Close"><svg width="12" height="12" viewBox="0 0 12 12"><path d="M3 3l6 6M9 3l-6 6" stroke="currentColor" stroke-width="1.3"/></svg></button>
     </div>
   </div>
 
-  <div class="rz n" data-edge="north"></div>
-  <div class="rz s" data-edge="south"></div>
-  <div class="rz e" data-edge="east"></div>
-  <div class="rz w" data-edge="west"></div>
-  <div class="rz ne" data-edge="north-east"></div>
-  <div class="rz nw" data-edge="north-west"></div>
-  <div class="rz se" data-edge="south-east"></div>
-  <div class="rz sw" data-edge="south-west"></div>
+  <div class="rz n" data-edge="north"></div><div class="rz s" data-edge="south"></div>
+  <div class="rz e" data-edge="east"></div><div class="rz w" data-edge="west"></div>
+  <div class="rz ne" data-edge="north-east"></div><div class="rz nw" data-edge="north-west"></div>
+  <div class="rz se" data-edge="south-east"></div><div class="rz sw" data-edge="south-west"></div>
 
-  <div class="app">
+  <!-- open a project -->
+  <div class="screen open" id="screen-open">
     <div class="main">
       <div class="brand"><span class="dot"></span><span class="name">orch<b>d</b></span></div>
       <div>
@@ -159,6 +178,57 @@
     </div>
   </div>
 
+  <!-- review & confirm -->
+  <div class="screen" id="screen-review" hidden>
+    <div class="review">
+      <span class="back" id="back">‹ Choose a different folder</span>
+      <div class="rhead"><h1 id="r-name">Set up project</h1><div class="rpath" id="r-path"></div></div>
+      <div class="form">
+        <div class="frow">
+          <div class="lab">Base branch<span class="sub">worktrees branch from here</span></div>
+          <div class="ctl">
+            <select class="field" id="r-base"></select>
+            <span class="detected">detected from <b>origin/HEAD</b></span>
+          </div>
+        </div>
+        <div class="frow">
+          <div class="lab">GitHub repo<span class="sub">whose PRs orchd watches</span></div>
+          <div class="ctl">
+            <div class="field">
+              <svg width="14" height="14" viewBox="0 0 16 16"><path d="M8 1a7 7 0 00-2.2 13.6c.35.06.48-.15.48-.34v-1.2c-1.95.42-2.36-.94-2.36-.94-.32-.8-.78-1.02-.78-1.02-.64-.44.05-.43.05-.43.7.05 1.07.72 1.07.72.63 1.08 1.64.77 2.04.59.06-.45.24-.77.44-.94-1.56-.18-3.2-.78-3.2-3.46 0-.77.28-1.4.72-1.89-.07-.18-.31-.9.07-1.87 0 0 .59-.19 1.93.72a6.7 6.7 0 013.52 0c1.34-.91 1.93-.72 1.93-.72.38.97.14 1.69.07 1.87.45.49.72 1.12.72 1.89 0 2.69-1.64 3.28-3.2 3.45.25.22.48.65.48 1.31v1.95c0 .19.13.4.48.34A7 7 0 008 1z" fill="currentColor"/></svg>
+              <input class="bare" id="r-repo" spellcheck="false" autocomplete="off" placeholder="not on GitHub">
+            </div>
+            <span class="detected">from <b>origin</b> — its PRs are watched automatically · edit to watch <b>upstream</b> or a fork</span>
+          </div>
+        </div>
+        <div class="frow">
+          <div class="lab">Agent environment<span class="sub">where a session's vars come from</span></div>
+          <div class="ctl">
+            <div class="seg" id="r-env">
+              <button data-v="mise">mise</button><button data-v="direnv">direnv</button><button data-v="none">none</button>
+            </div>
+            <span class="detected" id="r-env-note"></span>
+          </div>
+        </div>
+        <div class="frow">
+          <div class="lab">Worktrees<span class="sub">where sessions are cut</span></div>
+          <div class="ctl"><div class="field ro" id="r-wt">.claude/worktrees</div><span class="detected">default</span></div>
+        </div>
+        <div class="frow">
+          <div class="lab">Issue tracker<span class="sub">file stories from a review</span></div>
+          <div class="ctl">
+            <select class="field" id="r-tracker"><option value="none">None</option><option value="shortcut">Shortcut</option></select>
+            <span class="detected">optional</span>
+          </div>
+        </div>
+      </div>
+      <div class="ractions">
+        <button class="btn ghost" id="r-cancel">Back</button>
+        <button class="btn primary" id="r-open">Open project</button>
+      </div>
+    </div>
+  </div>
+
   <div class="starting" id="starting">
     <div class="dots"><i class="on"></i><i></i><i class="on c"></i><i></i><i class="on b"></i><i></i><i class="on c"></i><i></i><i class="on"></i></div>
     <div class="word">orch<b>d</b></div>
@@ -177,42 +247,97 @@
   for (const b of document.querySelectorAll('.wctl button')) {
     b.addEventListener('click', () => post('/api/window/' + b.dataset.cmd));
   }
-  // Drag must be sent while the button is still down, like the SPA's own titlebar.
-  $('drag').addEventListener('mousedown', (e) => {
-    if (e.button === 0) post('/api/window/start-drag');
-  });
+  $('drag').addEventListener('mousedown', (e) => { if (e.button === 0) post('/api/window/start-drag'); });
   $('drag').addEventListener('dblclick', () => post('/api/window/toggle-maximize'));
   for (const rz of document.querySelectorAll('.rz')) {
-    rz.addEventListener('mousedown', (e) => {
-      if (e.button === 0) post('/api/window/resize/' + rz.dataset.edge);
-    });
+    rz.addEventListener('mousedown', (e) => { if (e.button === 0) post('/api/window/resize/' + rz.dataset.edge); });
   }
 
-  // --- open a project ---
-  const msg = (text, kind) => { const m = $('msg'); m.textContent = text || ''; m.className = 'msg' + (kind ? ' ' + kind : ''); };
-  const starting = () => { $('starting').classList.add('on'); };
+  // --- screens ---
+  const show = (which) => {
+    $('screen-open').hidden = which !== 'open';
+    $('screen-review').hidden = which !== 'review';
+    if (which === 'starting') $('starting').classList.add('on');
+  };
 
-  async function openPath(path) {
-    msg('opening…');
+  const msg = (text, kind) => { const m = $('msg'); m.textContent = text || ''; m.className = 'msg' + (kind ? ' ' + kind : ''); };
+
+  // Open a project. Overrides come from the review; a recent skips it and opens
+  // with none, letting the daemon detect for itself.
+  async function openProject(path, overrides) {
     try {
-      const r = await (await post('/api/open', { path })).json();
-      if (r.ok) starting();          // the window is about to be navigated to the daemon
+      const r = await (await post('/api/open', { path, ...(overrides || {}) })).json();
+      if (r.ok) show('starting');   // the window is about to be navigated to the daemon
+      else if (overrides) reviewMsg(r.error || 'could not open that folder');
       else msg(r.error || 'could not open that folder', 'bad');
     } catch (e) { msg('could not reach the app: ' + e.message, 'bad'); }
   }
 
+  // --- the review step: shown for a freshly chosen folder ---
+  let reviewing = null; // the path under review
+  async function toReview(path) {
+    msg('checking…');
+    let d;
+    try { d = await (await post('/api/detect', { path })).json(); }
+    catch (e) { return msg('could not read that folder: ' + e.message, 'bad'); }
+    reviewing = d.path;
+    $('r-name').textContent = 'Set up ' + d.name;
+    $('r-path').textContent = d.path;
+
+    // base branch: the detected candidates, the detected one selected.
+    const base = $('r-base');
+    base.textContent = '';
+    const options = d.base_branches && d.base_branches.length ? d.base_branches.slice() : [d.base_branch];
+    if (!options.includes(d.base_branch)) options.unshift(d.base_branch);
+    for (const b of options) {
+      const o = document.createElement('option'); o.value = b; o.textContent = b;
+      if (b === d.base_branch) o.selected = true;
+      base.appendChild(o);
+    }
+    $('r-repo').value = d.repo || '';
+    // env: light the detected segment.
+    for (const btn of $('r-env').children) btn.classList.toggle('sel', btn.dataset.v === d.env_source);
+    $('r-env-note').textContent = d.env_source === 'mise' ? 'found mise.toml'
+      : d.env_source === 'direnv' ? 'found .envrc' : 'nothing detected — sessions get the daemon’s environment';
+    $('r-wt').textContent = d.worktrees;
+    $('r-tracker').value = 'none';
+    msg('');
+    show('review');
+  }
+
+  const reviewMsg = (text) => { /* surface an open error on the review, minimally */
+    const el = $('r-path'); el.textContent = text; el.style.color = 'var(--bad)';
+  };
+
+  // env segmented control
+  for (const btn of $('r-env').children) {
+    btn.addEventListener('click', () => {
+      for (const b of $('r-env').children) b.classList.toggle('sel', b === btn);
+    });
+  }
+  $('back').addEventListener('click', () => show('open'));
+  $('r-cancel').addEventListener('click', () => show('open'));
+  $('r-open').addEventListener('click', () => {
+    const env = [...$('r-env').children].find((b) => b.classList.contains('sel'));
+    openProject(reviewing, {
+      base_branch: $('r-base').value || null,
+      repo: $('r-repo').value.trim() || null,
+      env_source: env ? env.dataset.v : null,
+      tracker: $('r-tracker').value || null,
+    });
+  });
+
+  // --- the open screen ---
   $('browse').addEventListener('click', async () => {
     msg('');
     try {
       const r = await (await post('/api/pick')).json();
-      if (!r.picked) return;         // cancelled
-      if (r.ok) openPath(r.path);
+      if (!r.picked) return;               // cancelled
+      if (r.ok) toReview(r.path);          // chosen → review it
       else msg(r.error || 'that folder cannot be used', 'bad');
     } catch (e) { msg('could not open the folder picker: ' + e.message, 'bad'); }
   });
 
-  // The path field validates as you type, which is what enables Open and shows why
-  // a folder is refused before you commit to it.
   let seq = 0;
   const input = /** @type {HTMLInputElement} */ ($('path'));
   input.addEventListener('input', async () => {
@@ -223,15 +348,16 @@
     if (!path) { msg(''); return; }
     try {
       const r = await (await post('/api/validate', { path })).json();
-      if (mine !== seq) return;      // a later keystroke already answered
+      if (mine !== seq) return;
       if (r.ok) { $('open').disabled = false; msg('✓ ' + r.name, 'ok'); }
       else { input.classList.add('bad'); msg(r.error || 'not a usable folder', 'bad'); }
     } catch (e) { if (mine === seq) msg('could not check that path: ' + e.message, 'bad'); }
   });
-  input.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !$('open').disabled) openPath(input.value.trim()); });
-  $('open').addEventListener('click', () => openPath(input.value.trim()));
+  const goReview = () => { if (!$('open').disabled) toReview(input.value.trim()); };
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') goReview(); });
+  $('open').addEventListener('click', goReview);
 
-  // --- recent projects ---
+  // --- recent projects (skip the review) ---
   function when(ms) {
     const s = Math.max(0, (Date.now() - ms) / 1000);
     if (s < 90) return 'just now';
@@ -258,7 +384,7 @@
       const p = document.createElement('span'); p.className = 'r-path'; p.textContent = r.path; p.title = r.path;
       const w = document.createElement('span'); w.className = 'r-when'; w.textContent = when(r.last_opened_ms);
       row.append(n, p, w);
-      row.addEventListener('click', () => openPath(r.path));
+      row.addEventListener('click', () => openProject(r.path, null)); // seen before → no review
       box.appendChild(row);
     }
   }
