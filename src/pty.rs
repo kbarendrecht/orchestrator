@@ -1,3 +1,8 @@
+// Four libc calls live here: `killpg` and `getpgid`/`getpgrp` to stop a session's
+// whole process group, and `kill(pid, 0)` to ask whether a pid is alive. The
+// workspace denies `unsafe_code`; this is one of three modules that opt out, and
+// every block below carries its own SAFETY note.
+#![allow(unsafe_code)]
 use anyhow::{Context, Result};
 use bytes::Bytes;
 use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};

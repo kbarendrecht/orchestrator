@@ -11,6 +11,9 @@
 //! question: a foreign process on 7777 is not another instance, and an instance
 //! on a fallback port still is one.
 
+// One libc call: `flock`, plus the `getpgid`/`getpgrp` guard around it. The
+// workspace denies `unsafe_code`; this is one of three modules that opt out.
+#![allow(unsafe_code)]
 use anyhow::{bail, Context, Result};
 use std::io::Write;
 use std::os::fd::AsRawFd;

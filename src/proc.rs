@@ -5,6 +5,10 @@
 //! This enforces the deadline in Rust — no coreutils — and does it more strictly
 //! than `timeout` did.
 
+// One libc call: `killpg` to take a bounded command's whole process group when its
+// deadline fires. The workspace denies `unsafe_code`; this is one of three modules
+// that opt out.
+#![allow(unsafe_code)]
 use anyhow::{bail, Context, Result};
 use std::io::Read;
 use std::path::Path;

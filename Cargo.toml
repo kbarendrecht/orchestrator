@@ -1,6 +1,43 @@
 [workspace]
 members = ["desktop"]
 
+# The four crates both this daemon and the desktop shell depend on. One version
+# each, in one place: they were declared twice and could drift, and a version skew
+# between the two halves of one binary surfaces as a baffling trait error rather
+# than as a version complaint.
+#
+# **Versions only — features stay with the member that needs them.** Putting
+# `features` here would silently hand every member the union, and
+# `desktop/Cargo.toml` lists exactly the tokio features it needs *and says why*
+# (`enable_all` skips the timer and io drivers unless asked). Inheriting `full`
+# from here would quietly make that comment a lie.
+[workspace.dependencies]
+anyhow = "1"
+tokio = "1"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+
+# Applied to both crates through `[lints] workspace = true`.
+#
+# **`deny`, not `forbid`.** `forbid` cannot be lifted by an inner `allow`, so it
+# would make the three modules that legitimately call libc uncompilable rather than
+# exceptional. `deny` keeps the rule — a new `unsafe` anywhere else is a compile
+# error until somebody says out loud where it lives — while `pty.rs`, `proc.rs` and
+# `instance.rs` opt in at the top of the file with the reason beside it.
+#
+# Six `unsafe` sites in the tree, every one a single libc call: `killpg`,
+# `getpgid`, `getpgrp`, `kill`, `flock`. "Zero unsafe outside the libc calls, all
+# argued" was already true; this is what makes it enforceable.
+#
+# Deliberately *not* here, both measured rather than assumed:
+# `clippy::all = "warn"` is already clippy's default and would only look like
+# enforcement — CI's `-D warnings` is the enforcement. And `clippy::unwrap_used`
+# would cost 755 silenced sites in tests to police 5 in non-test code, every one of
+# those safe by construction (`path.parent()` on a path with a file name,
+# `last_mut()` straight after a push, a value guarded by a count).
+[workspace.lints.rust]
+unsafe_code = "deny"
+
 [package]
 name = "orchd"
 version = "2026.9.6"
@@ -28,7 +65,7 @@ name = "orchd"
 path = "src/main.rs"
 
 [dependencies]
-anyhow = "1"
+anyhow = { workspace = true }
 axum = { version = "0.7", features = ["ws", "macros"] }
 bytes = "1"
 futures = "0.3"
@@ -39,11 +76,14 @@ portable-pty = "0.8"
 rand = "0.8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tokio = { version = "1", features = ["full"] }
+tokio = { workspace = true, features = ["full"] }
 tower-http = { version = "0.5", features = ["fs", "trace"] }
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
 uuid = { version = "1", features = ["v4", "serde"] }
+
+[lints]
+workspace = true
 
 [profile.release]
 opt-level = 2

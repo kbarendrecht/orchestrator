@@ -8,12 +8,15 @@ license = "AGPL-3.0-only"
 authors = ["Kars Barendrecht <18546657+kbarendrecht@users.noreply.github.com>"]
 publish = false
 
+[lints]
+workspace = true
+
 [build-dependencies]
 tauri-build = "2.6"
 
 [dependencies]
 orchd = { path = ".." }
-anyhow = "1"
+anyhow = { workspace = true }
 tauri = "2.11"
 # The native folder picker for first run, when there is no config to read a
 # checkout out of.
@@ -25,9 +28,9 @@ tauri-runtime = "2.11"
 # and io drivers unless they are asked for, and the teardown path builds its own
 # runtime rather than borrowing orchd's. Relying on feature unification through
 # orchd would make that work by accident.
-tokio = { version = "1", features = ["rt-multi-thread", "time", "net"] }
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "time", "net"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
 # Linux only, and pinned to whatever the WebKitGTK stack already resolves to:
 # `Ctrl+Shift+Tab` is a GTK focus-chain accelerator that GTK consumes before the
