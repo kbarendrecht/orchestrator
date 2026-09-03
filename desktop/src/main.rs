@@ -736,28 +736,17 @@ fn pick_checkout(app_handle: AppHandle, rt: tokio::runtime::Handle) {
 
 /// Start the daemon and show it.
 fn open(app_handle: &AppHandle, rt: &tokio::runtime::Handle, main: Option<std::path::PathBuf>) -> Result<()> {
-    // The daemon logs its own phases; this brackets them with the window, which
-    // is the part a person is actually waiting for and which nothing else times.
+    // The window comes up on a splash first; the daemon then starts on a background
+    // thread and the window is navigated to it once it is serving. Building the
+    // window before the daemon is what puts something on screen during the ~1.4s
+    // start — `open` used to block on `orchd::start` and only build afterwards, so a
+    // normal boot showed nothing at all until the board appeared.
     let mut phases = orchd::timing::Phases::start();
-    let server = rt
-        .block_on(orchd::start(orchd::StartOptions {
-            main_checkout: main,
-            // No terminal to complain in, and a stale daemon on the configured
-            // port should not be the difference between an app that opens and
-            // one that does not.
-            fallback_port: true,
-            chrome: CHROME,
-        }))
-        .context("starting the daemon")?;
-
-    phases.mark("daemon");
-    tracing::info!("serving {} on port {}", server.app.cfg.main_checkout.display(), server.port);
-
     let size = orchd::store::load_window()
         .map(|(w, h)| (w as f64, h as f64))
         .unwrap_or((1728.0, 1080.0));
-    let url = server.url().parse().context("the daemon's own URL")?;
-    let mut builder = WebviewWindowBuilder::new(app_handle, "main", WebviewUrl::External(url))
+    let splash = splash_url().context("preparing the splash")?;
+    let mut builder = WebviewWindowBuilder::new(app_handle, "main", WebviewUrl::External(splash))
         .title("Orchestrator")
         // The size you left it at, or 20% up on the 1440x900 this started at:
         // three columns and a terminal want the room, and every desktop this runs
@@ -826,13 +815,105 @@ fn open(app_handle: &AppHandle, rt: &tokio::runtime::Handle, main: Option<std::p
         });
     }
 
-    let control: Arc<dyn WindowControl> = Arc::new(TauriWindow {
-        app: app_handle.clone(),
-    });
-    rt.block_on(server.app.attach_window(control));
+    // Start the daemon off the main thread so the splash paints, then navigate the
+    // window to it. A `std::thread` rather than `rt.spawn` because `orchd::start` is
+    // not required to be `Send` and `block_on` does not ask it to be — the same
+    // reason the resize nudge above is a thread. An error has no terminal to reach,
+    // so it lands in the OS dialog `fail` draws, back on the main thread.
+    let ah = app_handle.clone();
+    let rt = rt.clone();
+    std::thread::spawn(move || {
+        let mut phases = orchd::timing::Phases::start();
+        let server = match rt.block_on(orchd::start(orchd::StartOptions {
+            main_checkout: main,
+            // No terminal to complain in, and a stale daemon on the configured port
+            // should not be the difference between an app that opens and one that
+            // does not.
+            fallback_port: true,
+            chrome: CHROME,
+        })) {
+            Ok(s) => s,
+            Err(e) => {
+                let ah = ah.clone();
+                let _ = ah.clone().run_on_main_thread(move || fail(&ah, &format!("{e:#}")));
+                return;
+            }
+        };
+        phases.mark("daemon");
+        tracing::info!("serving {} on port {}", server.app.cfg.main_checkout.display(), server.port);
+        let url = server.url();
 
-    *SERVER.get_or_init(|| Mutex::new(None)).lock().unwrap() = Some(server);
+        // Attach the window control before the SPA can call it, and keep the server
+        // alive for the life of the process.
+        let control: Arc<dyn WindowControl> = Arc::new(TauriWindow { app: ah.clone() });
+        rt.block_on(server.app.attach_window(control));
+        *SERVER.get_or_init(|| Mutex::new(None)).lock().unwrap() = Some(server);
+
+        // Hand the window over to the daemon. GTK calls only on the main thread.
+        let _ = ah.clone().run_on_main_thread(move || {
+            let Some(w) = ah.get_webview_window("main") else { return };
+            match url.parse::<tauri::Url>() {
+                Ok(u) => {
+                    if let Err(e) = w.navigate(u) {
+                        tracing::error!("could not navigate to the daemon: {e}");
+                    }
+                }
+                Err(e) => tracing::error!("the daemon's own URL did not parse ({url}): {e}"),
+            }
+        });
+        phases.log("daemon ready");
+    });
     Ok(())
+}
+
+/// Write the splash page and hand back a `file://` URL to load it from.
+///
+/// A `file://` asset rather than the daemon's own page, because at this point the
+/// daemon is not up yet — and on first run there is no checkout to start one with.
+/// The splash is passive: it draws identity while the daemon starts and needs no
+/// IPC, so a file is enough. The interactive first-run screens (open a project,
+/// review) come later and will want a real asset or IPC bridge instead.
+fn splash_url() -> Result<tauri::Url> {
+    let dir = orchd::config::Config::config_dir().context("finding the config dir")?;
+    std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+    let path = dir.join("splash.html");
+    std::fs::write(&path, splash_html()).with_context(|| format!("writing {}", path.display()))?;
+    tauri::Url::from_file_path(&path)
+        .map_err(|_| anyhow::anyhow!("splash path is not absolute: {}", path.display()))
+}
+
+/// The splash markup: the wordmark, a cluster of pulsing session dots and the
+/// tagline, on orchd's own near-black ground. Self-contained — no external fonts,
+/// so nothing loads before it paints; the shipped SPA uses IBM Plex, this leans on
+/// the system mono while it is only on screen for about a second.
+fn splash_html() -> String {
+    format!(
+        r#"<!doctype html><html><head><meta charset="utf-8"><style>
+  html,body{{height:100%;margin:0}}
+  body{{background:#101010;color:#D2D2D2;display:flex;flex-direction:column;
+    align-items:center;justify-content:center;gap:22px;
+    font-family:ui-monospace,'SF Mono',Menlo,Consolas,monospace;
+    -webkit-font-smoothing:antialiased;user-select:none;cursor:default}}
+  .dots{{display:grid;grid-template-columns:repeat(3,9px);gap:5px}}
+  .dots i{{width:9px;height:9px;border-radius:50%;background:#2C2C2C}}
+  .dots i.on{{background:#E0A244;animation:p 1.5s ease-in-out infinite}}
+  .dots i.on.b{{animation-delay:.25s}} .dots i.on.c{{animation-delay:.5s}}
+  @keyframes p{{0%,100%{{opacity:.28}}50%{{opacity:1}}}}
+  @media(prefers-reduced-motion:reduce){{.dots i.on{{animation:none;opacity:.85}}}}
+  .mark{{font-size:34px;font-weight:600;letter-spacing:.02em}}
+  .mark b{{color:#E0A244;font-weight:600}}
+  .tag{{font-size:12px;color:#8E8E8E;letter-spacing:.22em;text-transform:uppercase}}
+  .boot{{position:fixed;bottom:22px;font-size:11.5px;color:#787878}}
+  .ver{{position:fixed;top:16px;right:16px;font-size:11px;color:#787878}}
+</style></head><body>
+  <span class="ver">v{version}</span>
+  <div class="dots"><i class="on"></i><i></i><i class="on c"></i><i></i><i class="on b"></i><i></i><i class="on c"></i><i></i><i class="on"></i></div>
+  <div class="mark">orch<b>d</b></div>
+  <div class="tag">session orchestrator</div>
+  <div class="boot">starting daemon…</div>
+</body></html>"#,
+        version = env!("CARGO_PKG_VERSION"),
+    )
 }
 
 /// Make `Ctrl+Shift+Tab` reach the SPA on WebKitGTK.
