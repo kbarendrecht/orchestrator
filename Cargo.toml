@@ -40,7 +40,7 @@ unsafe_code = "deny"
 
 [package]
 name = "orchd"
-version = "2026.9.6"
+version = "2026.9.7"
 edition = "2021"
 description = "Run several Claude Code sessions over one repository from a single window"
 repository = "https://github.com/kbarendrecht/orchestrator"
