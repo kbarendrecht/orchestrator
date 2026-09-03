@@ -730,13 +730,28 @@ fn first_run(app_handle: &AppHandle, rt: &tokio::runtime::Handle) -> Result<()> 
     let url = serving.url().parse().context("the bootstrap URL")?;
     // Kept so the daemon boot can stop it once a project is committed.
     *BOOTSTRAP.get_or_init(|| Mutex::new(None)).lock().unwrap() = Some(serving.task.abort_handle());
-    build_window(app_handle, WebviewUrl::External(url))
+    // The open-project page wants the full board size; it is the window you work in.
+    build_window(app_handle, WebviewUrl::External(url), board_size(), (1000.0, 600.0), false)
+}
+
+/// A splash window smaller than the board it grows into. Just big enough for the
+/// wordmark and its dots; `boot_daemon` grows it to the real size when the daemon
+/// is up, so the splash reads as a loading card rather than a full empty window.
+const SPLASH_SIZE: (f64, f64) = (520.0, 340.0);
+
+/// The size to open the board at: the one you left it, or 20% up on the 1440x900
+/// this started at — three columns and a terminal want the room.
+fn board_size() -> (f64, f64) {
+    orchd::store::load_window()
+        .map(|(w, h)| (w as f64, h as f64))
+        .unwrap_or((1728.0, 1080.0))
 }
 
 /// Configured already: build the window on the splash and boot the daemon.
 fn open(app_handle: &AppHandle, rt: &tokio::runtime::Handle, main: Option<std::path::PathBuf>) -> Result<()> {
     let splash = splash_url().context("preparing the splash")?;
-    build_window(app_handle, WebviewUrl::External(splash))?;
+    // A small, centred splash; `boot_daemon` grows it to `board_size` on hand-off.
+    build_window(app_handle, WebviewUrl::External(splash), SPLASH_SIZE, SPLASH_SIZE, true)?;
     boot_daemon(app_handle.clone(), rt.clone(), main);
     Ok(())
 }
@@ -746,19 +761,21 @@ fn open(app_handle: &AppHandle, rt: &tokio::runtime::Handle, main: Option<std::p
 /// Called once. The daemon boot and the first-run commit both `navigate` this
 /// window rather than building another — a second window would mean two of every
 /// window command and two things for the exit hook to reason about.
-fn build_window(app_handle: &AppHandle, url: WebviewUrl) -> Result<()> {
+fn build_window(
+    app_handle: &AppHandle,
+    url: WebviewUrl,
+    size: (f64, f64),
+    min: (f64, f64),
+    center: bool,
+) -> Result<()> {
     let mut phases = orchd::timing::Phases::start();
-    let size = orchd::store::load_window()
-        .map(|(w, h)| (w as f64, h as f64))
-        .unwrap_or((1728.0, 1080.0));
     let mut builder = WebviewWindowBuilder::new(app_handle, "main", url)
         .title("Orchestrator")
-        // The size you left it at, or 20% up on the 1440x900 this started at:
-        // three columns and a terminal want the room, and every desktop this runs
-        // on has it.
         .inner_size(size.0, size.1)
-        // Below this the three-column grid stops being three columns.
-        .min_inner_size(1000.0, 600.0);
+        .min_inner_size(min.0, min.1);
+    if center {
+        builder = builder.center();
+    }
 
     #[cfg(target_os = "macos")]
     {
@@ -858,10 +875,17 @@ fn boot_daemon(app_handle: AppHandle, rt: tokio::runtime::Handle, main: Option<s
         rt.block_on(server.app.attach_window(control));
         *SERVER.get_or_init(|| Mutex::new(None)).lock().unwrap() = Some(server);
 
-        // Hand the window over to the daemon. GTK calls only on the main thread.
+        // Grow from the splash to the board, centred, then hand the window over.
+        // GTK calls only on the main thread. A first-run window is already board
+        // size, so the resize is a no-op there; the splash path is the one that
+        // grows. `set_min_size` first, so the larger size is never clamped.
         let ah = app_handle.clone();
         let _ = app_handle.run_on_main_thread(move || {
             let Some(w) = ah.get_webview_window("main") else { return };
+            let (bw, bh) = board_size();
+            let _ = w.set_min_size(Some(tauri::LogicalSize::new(1000.0, 600.0)));
+            let _ = w.set_size(tauri::LogicalSize::new(bw, bh));
+            let _ = w.center();
             match url.parse::<tauri::Url>() {
                 Ok(u) => {
                     if let Err(e) = w.navigate(u) {
