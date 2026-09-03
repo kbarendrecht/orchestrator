@@ -6,48 +6,6 @@ this file, which churned it from every build; they now go to a gitignored
 
 ## Next
 
-- **Restart after a self-upgrade cannot find the binary, so the app just goes
-  away.** Reported from the launcher on 2026-09-02 and diagnosed the same morning:
-  press Upgrade, press Restart, and nothing comes back. The journal has the whole
-  thing in one line, `could not restart: No such file or directory (os error 2)`,
-  which is `relaunch`'s `spawn` failing rather than anything about windows or the
-  instance lock.
-
-  The mechanism, measured rather than reasoned about:
-  1. `mise upgrade` installs each version in its own directory and **removes the old
-     one**, so the directory the running process was started from is gone by the
-     time you press Restart. Confirmed on this machine: `2026.9.3` is absent from
-     `installs/github-kbarendrecht-orchestrator`, and the upgrade logged at 09:48:14
-     is what took it.
-  2. `current_exe` is a readlink of `/proc/self/exe`, and Linux answers a deleted
-     binary with the path plus a literal ` (deleted)` suffix. Verified with a copy
-     of `sleep`: before the delete the link reads the path, after it reads
-     `<path> (deleted)`.
-  3. `self_update::stable_exe` is then handed
-     `…/installs/<tool>/2026.9.3/orchestrator-desktop (deleted)`. It swaps the
-     version component for `latest` correctly, but the file name still carries the
-     suffix, so `…/latest/orchestrator-desktop (deleted)` does not exist and the
-     `latest.exists()` guard hands back **the deleted path unchanged**. Driven
-     against the real function: a live path resolves to `latest`, the suffixed one
-     comes back as itself and `exists()` is false.
-  4. `relaunch` spawns that path, gets `ENOENT`, logs it and exits anyway, because
-     the shutdown has already run. Six child processes were killed at 09:48:17, one
-     second before the failed spawn.
-
-  So the guard that exists to keep a version-pinned path out of anything durable is
-  defeated by the one case it matters most in, and it fails in the direction that
-  loses the app. The fix is to strip a trailing ` (deleted)` before the swap, or to
-  resolve `latest` first and only fall back to `current_exe`; either way
-  `stable_exe` wants a test with a suffixed input, since that is the only shape
-  that reaches this.
-
-  **Two things to check while fixing it.** The launcher entry is written from the
-  same `launcher_target`, so an upgrade can also write a `.desktop` file naming a
-  deleted path, which is the failure CLAUDE.md already records as the worst of the
-  three. And `relaunch` currently spawns and then trusts: it should verify the path
-  exists *before* the daemon shuts down its sessions, so a restart that cannot
-  happen refuses instead of taking six agents with it.
-
 - **`rerequest()` has never run.** The fixture drives everything else in the review
   flow (`mise run fixture`, `docs/fixture-pr.md`), but its threads are posted by
   `github-actions[bot]` and a bot cannot be a requested reviewer. That one button

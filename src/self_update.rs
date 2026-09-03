@@ -72,12 +72,35 @@ fn tool_owning(stdout: &[u8], exe: &Path) -> Option<String> {
     best.map(|(_, tool)| tool)
 }
 
+/// Drop the ` (deleted)` Linux appends to a readlink of an unlinked binary.
+///
+/// Only ever a whole-string suffix, because `/proc/self/exe` is one link and the
+/// suffix is on its target. A path that does not carry it comes back untouched.
+fn strip_deleted(exe: &std::path::Path) -> std::path::PathBuf {
+    match exe.to_str().and_then(|s| s.strip_suffix(" (deleted)")) {
+        Some(clean) => std::path::PathBuf::from(clean),
+        None => exe.to_path_buf(),
+    }
+}
+
 /// `…/installs/<tool>/<version>/<file>` → `…/installs/<tool>/latest/<file>`.
 ///
 /// Only when that path really exists, so a layout this does not understand keeps
 /// the resolved path it came with. Pure, and tested, because the fault it prevents
 /// is invisible until an upgrade weeks later.
+///
+/// The input is `current_exe`, which after a self-upgrade is the worst-case shape:
+/// mise removes the versioned directory this process was started from, and Linux
+/// then answers `readlink /proc/self/exe` with the old path plus a literal
+/// ` (deleted)` suffix. Left on, that suffix rode through the swap into
+/// `…/latest/orchestrator-desktop (deleted)`, which never exists, so the guard
+/// handed back the *deleted* path unchanged and `relaunch` spawned it and got
+/// `ENOENT` — the app went away and did not come back. So strip the suffix before
+/// anything else, and let the fallback return the cleaned path rather than the
+/// tombstone.
 pub fn stable_exe(exe: &std::path::Path) -> std::path::PathBuf {
+    let exe = strip_deleted(exe);
+    let exe = exe.as_path();
     let parts: Vec<_> = exe.components().collect();
     // <installs>/<tool>/<version>/<file>: the version is two components from the
     // end, and `installs` two before that.
@@ -130,6 +153,39 @@ mod tests {
         assert_eq!(
             stable_exe(&versioned.join("orchestrator-desktop")),
             latest.join("orchestrator-desktop")
+        );
+    }
+
+    /// The shape a self-upgrade actually hands this: mise removed the versioned
+    /// directory, so `current_exe` reads back the old path with ` (deleted)` on the
+    /// end. The suffix must not ride through into the `latest` path, or the swap
+    /// resolves to a file that never exists and `relaunch` spawns a corpse.
+    #[test]
+    fn a_deleted_suffix_is_stripped_before_the_latest_swap() {
+        let d = std::env::temp_dir().join(format!("orchd-deleted-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let latest = d.join("installs/orchestrator/latest");
+        std::fs::create_dir_all(&latest).unwrap();
+        std::fs::write(latest.join("orchestrator-desktop"), "x").unwrap();
+
+        // The versioned directory is gone, exactly as after `mise upgrade`.
+        let deleted = format!(
+            "{}/installs/orchestrator/2026.9.3/orchestrator-desktop (deleted)",
+            d.display()
+        );
+        assert_eq!(
+            stable_exe(Path::new(&deleted)),
+            latest.join("orchestrator-desktop"),
+            "the ` (deleted)` tombstone must resolve to the live `latest` binary"
+        );
+
+        // And when there is no `latest` to prefer, the fallback is the cleaned path,
+        // not the tombstone — a path that names the file beats one that cannot be run.
+        let _ = std::fs::remove_dir_all(&latest);
+        assert_eq!(
+            stable_exe(Path::new(&deleted)),
+            Path::new(&deleted.strip_suffix(" (deleted)").unwrap()),
+            "with no `latest`, hand back the file without the suffix"
         );
     }
 

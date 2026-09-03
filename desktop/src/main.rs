@@ -967,11 +967,21 @@ impl WindowControl for TauriWindow {
             WindowCmd::Close => w.close()?,
             // Closing *is* the restart: the exit path tears the daemon down and
             // takes the sessions with it, and only then is it safe to start the
-            // process that will spawn their replacements.
-            WindowCmd::Restart => {
-                RESTART.store(true, std::sync::atomic::Ordering::SeqCst);
-                w.close()?
-            }
+            // process that will spawn their replacements. So verify there is a
+            // binary to come back as *before* committing to the close — a restart
+            // that cannot happen must refuse rather than take every live session
+            // with it. `relaunch` runs after `shutdown`, too late to change course.
+            WindowCmd::Restart => match launcher_target() {
+                Ok(exe) if exe.exists() => {
+                    RESTART.store(true, std::sync::atomic::Ordering::SeqCst);
+                    w.close()?
+                }
+                Ok(exe) => tracing::error!(
+                    "not restarting: {} does not exist, sessions kept",
+                    exe.display()
+                ),
+                Err(e) => tracing::error!("not restarting: no path to this binary ({e:#}), sessions kept"),
+            },
             WindowCmd::StartDrag => w.start_dragging()?,
             // Only `Window` has this, not `WebviewWindow`, so go through the
             // webview to reach it. macOS never asks: it keeps its decorations,
