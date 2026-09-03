@@ -145,7 +145,16 @@ this file, which churned it from every build; they now go to a gitignored
   3. A navigate command beside the existing `WindowCmd` set, and a config key
      listing known checkouts so the picker has something to offer.
 
-  Until it is built the button stays as it is. `ORCHD_CONFIG_DIR` already gives
+  **A restart-based switch ships in the meantime**, and this item is the no-restart
+  upgrade of it: the repo-picker button raises the open-project modal and, on
+  committing a checkout, restarts the app onto it (`desktop::start_switcher` +
+  `request_restart`). It reuses the first-run bootstrap whole. The two costs this
+  design removes are exactly its limitations — a switch takes the current project's
+  live sessions with it (auto-resumed on return), and the single global config means
+  a switch to a *recent* opens with detected defaults rather than that repo's saved
+  settings. Per-repo config and in-process daemons are what this item still buys.
+
+  `ORCHD_CONFIG_DIR` already gives
   several repos today by starting a second app, which is how `mise run fixture` runs
   a whole daemon beside yours, and `config::session_env` injects `ORCH_URL` with the
   spawning daemon's own port, so an agent's `orch` can never reach the wrong one.
@@ -533,10 +542,11 @@ this file, which churned it from every build; they now go to a gitignored
     is not in the snapshot at all, so a new user reads `unavailable` and `off` with
     the cause only in a log they do not have open. That is the case the module's own
     docs say it exists for.
-  - **The repo switch button's only behaviour is a refusal.** It toasts "switching
-    repositories is not implemented yet". Deliberate, and the markup says why, but a
-    control that can only say no is worse than the header it replaced. Hide it until
-    switching exists.
+  - ~~**The repo switch button's only behaviour is a refusal.**~~ Done: it now
+    raises the open-project modal over the board and switches by restarting onto the
+    chosen checkout (`WindowCmd::Switcher` → `desktop::start_switcher`, committing a
+    project → `request_restart`). The no-restart version is the multi-daemon item
+    above; this is the restart-based interim.
   - **Half the settings have no field.** `env_source`, `workspace_notes`,
     `worktree_init` and `shared_worktree_paths` are config-file only. Fine for the
     operational ones, wrong for `workspace_notes` and `worktree_init`, which are two

@@ -28,6 +28,10 @@ static SERVER: OnceLock<Mutex<Option<orchd::Server>>> = OnceLock::new();
 /// committed and the window has moved to the daemon.
 static BOOTSTRAP: OnceLock<Mutex<Option<tokio::task::AbortHandle>>> = OnceLock::new();
 
+/// The async runtime handle, so the repo switcher can start a bootstrap server long
+/// after `setup` has returned — it is raised from a window command, not from boot.
+static RT: OnceLock<tokio::runtime::Handle> = OnceLock::new();
+
 /// Set by `WindowCmd::Restart`, read once the window is down.
 ///
 /// The replacement is started from the exit path rather than from the command,
@@ -655,6 +659,7 @@ fn main() {
         .build()
         .expect("building the tokio runtime");
     let handle = rt.handle().clone();
+    let _ = RT.set(handle.clone());
 
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -908,6 +913,67 @@ fn stop_bootstrap() {
     }
 }
 
+/// The URL of the running daemon, if there is one. `None` on first run, before any
+/// project has been opened.
+fn daemon_url() -> Option<String> {
+    SERVER
+        .get()
+        .and_then(|s| s.lock().unwrap().as_ref().map(|srv| srv.url()))
+}
+
+/// Ask for a restart: verify there is a binary to come back as, then close the
+/// window so the exit path tears the daemon down and `relaunch` starts the
+/// replacement. Called off the main thread (a window command or a bootstrap request),
+/// where `close` belongs — wry panics if it is handled on the main thread.
+fn request_restart(app: &AppHandle) {
+    match launcher_target() {
+        Ok(exe) if exe.exists() => {
+            RESTART.store(true, std::sync::atomic::Ordering::SeqCst);
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.close();
+            }
+        }
+        Ok(exe) => tracing::error!("not restarting: {} does not exist, sessions kept", exe.display()),
+        Err(e) => tracing::error!("not restarting: no path to this binary ({e:#}), sessions kept"),
+    }
+}
+
+/// Raise the open-project modal over the running board, to switch projects.
+///
+/// Serves the first-run page again and navigates the window to it. The same
+/// `TauriBootstrap` host — so it knows a daemon is already up (`switching`) and a
+/// committed project restarts onto it rather than booting a second daemon. Cancel
+/// navigates back to the board. Starts the server off `setup`, hence [`RT`].
+fn start_switcher(app: &AppHandle) {
+    let Some(rt) = RT.get() else {
+        return tracing::error!("no runtime to raise the switcher");
+    };
+    let host: Arc<dyn orchd::firstrun::BootstrapHost> = Arc::new(TauriBootstrap {
+        app: app.clone(),
+        rt: rt.clone(),
+    });
+    let app = app.clone();
+    rt.spawn(async move {
+        let serving = match orchd::firstrun::serve(host).await {
+            Ok(s) => s,
+            Err(e) => return tracing::error!("could not start the switcher: {e:#}"),
+        };
+        let url = serving.url();
+        *BOOTSTRAP.get_or_init(|| Mutex::new(None)).lock().unwrap() = Some(serving.task.abort_handle());
+        let _ = app.clone().run_on_main_thread(move || {
+            let Some(w) = app.get_webview_window("main") else { return };
+            match url.parse::<tauri::Url>() {
+                Ok(u) => {
+                    if let Err(e) = w.navigate(u) {
+                        tracing::error!("could not open the switcher: {e}");
+                    }
+                }
+                Err(e) => tracing::error!("bad switcher URL ({url}): {e}"),
+            }
+        });
+    });
+}
+
 /// The window-side of the first-run flow, handed to [`orchd::firstrun`]'s HTTP
 /// server: the native folder dialog, the daemon boot, and the frameless window
 /// commands the page's own titlebar needs.
@@ -937,13 +1003,39 @@ impl orchd::firstrun::BootstrapHost for TauriBootstrap {
     }
 
     fn open(&self, path: std::path::PathBuf) {
-        boot_daemon(self.app.clone(), self.rt.clone(), Some(path));
+        if self.switching() {
+            // A daemon is already up and the new project's config is written, so a
+            // restart brings the app back on it. The current project's live sessions
+            // go with the restart — `auto_resume` brings a project's sessions back
+            // when you switch to it again.
+            tracing::info!("switching project — restarting onto {}", path.display());
+            request_restart(&self.app);
+        } else {
+            boot_daemon(self.app.clone(), self.rt.clone(), Some(path));
+        }
     }
 
     fn window_cmd(&self, cmd: orchd::window::WindowCmd) {
         if let Err(e) = (TauriWindow { app: self.app.clone() }).dispatch(cmd) {
             tracing::warn!("first-run window command failed: {e}");
         }
+    }
+
+    fn switching(&self) -> bool {
+        daemon_url().is_some()
+    }
+
+    fn cancel(&self) {
+        // Back to the running board, and drop the switcher server.
+        let Some(url) = daemon_url() else { return };
+        let app = self.app.clone();
+        let _ = self.app.clone().run_on_main_thread(move || {
+            let Some(w) = app.get_webview_window("main") else { return };
+            if let Ok(u) = url.parse::<tauri::Url>() {
+                let _ = w.navigate(u);
+            }
+        });
+        stop_bootstrap();
     }
 }
 
@@ -1182,17 +1274,10 @@ impl WindowControl for TauriWindow {
             // binary to come back as *before* committing to the close — a restart
             // that cannot happen must refuse rather than take every live session
             // with it. `relaunch` runs after `shutdown`, too late to change course.
-            WindowCmd::Restart => match launcher_target() {
-                Ok(exe) if exe.exists() => {
-                    RESTART.store(true, std::sync::atomic::Ordering::SeqCst);
-                    w.close()?
-                }
-                Ok(exe) => tracing::error!(
-                    "not restarting: {} does not exist, sessions kept",
-                    exe.display()
-                ),
-                Err(e) => tracing::error!("not restarting: no path to this binary ({e:#}), sessions kept"),
-            },
+            WindowCmd::Restart => request_restart(&self.app),
+            // Raise the open-project modal to switch projects. Off the current
+            // thread on purpose — it starts a server and navigates.
+            WindowCmd::Switcher => start_switcher(&self.app),
             WindowCmd::StartDrag => w.start_dragging()?,
             // Only `Window` has this, not `WebviewWindow`, so go through the
             // webview to reach it. macOS never asks: it keeps its decorations,

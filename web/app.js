@@ -927,8 +927,12 @@ $('ovmode').onclick = () => {
 };
 $('ovedit').onclick = () => (Diff.edit.on ? Diff.closeEditor() : Diff.openEditor());
 $('ovsave').onclick = Diff.saveEditor;
+// Raise the open-project modal over the board to switch checkouts. The desktop
+// shell serves the first-run page again and navigates to it; picking a project
+// restarts onto it. In a browser tab there is no window to navigate, so the daemon
+// answers "no native window" — say so rather than looking broken.
 $('reposwitch').onclick = () =>
-  toast('switching repositories is not implemented yet', true);
+  call('/api/window/switcher').catch((e) => toast(e.message, true));
 $('addshell').onclick = newShell;
 $('keyhelpx').onclick = () => { $('keyhelp').hidden = true; };
 // The visible way in, beside the gear. Its tooltip names the chord — the whole

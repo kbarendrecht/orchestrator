@@ -367,6 +367,17 @@ pub trait BootstrapHost: Send + Sync + 'static {
     /// first-run window has no decorations (the SPA that follows draws its own), so
     /// the page draws a titlebar and calls this, the same way the daemon's SPA does.
     fn window_cmd(&self, cmd: crate::window::WindowCmd);
+
+    /// True when a daemon is already running and this is a **switch**, not first
+    /// run. The page shows a way back to the current project when so, and the copy
+    /// changes from "open" to "switch".
+    fn switching(&self) -> bool {
+        false
+    }
+
+    /// Abandon a switch and return to the running project. No-op on first run,
+    /// where there is nothing to go back to.
+    fn cancel(&self) {}
 }
 
 #[derive(Deserialize)]
@@ -439,11 +450,13 @@ impl Outcome {
 pub fn router(host: Arc<dyn BootstrapHost>) -> Router {
     Router::new()
         .route("/", get(|| async { Html(include_str!("firstrun.html")) }))
+        .route("/api/context", get(context_route))
         .route("/api/recent", get(|| async { Json(recent_projects()) }))
         .route("/api/validate", post(validate_route))
         .route("/api/detect", post(detect_route))
         .route("/api/pick", post(pick_route))
         .route("/api/open", post(open_route))
+        .route("/api/cancel", post(cancel_route))
         .route("/api/window/:cmd", post(window_route))
         .route("/api/window/resize/:edge", post(resize_route))
         .with_state(host)
@@ -481,6 +494,16 @@ async fn validate_route(Json(req): Json<PathReq>) -> Json<Outcome> {
 
 async fn detect_route(Json(req): Json<PathReq>) -> Json<Detected> {
     Json(detect(Path::new(&req.path)))
+}
+
+/// Whether the page is a first run or a switch away from a running project.
+async fn context_route(State(host): State<Arc<dyn BootstrapHost>>) -> Json<serde_json::Value> {
+    Json(serde_json::json!({ "switching": host.switching() }))
+}
+
+async fn cancel_route(State(host): State<Arc<dyn BootstrapHost>>) -> StatusCode {
+    host.cancel();
+    StatusCode::OK
 }
 
 async fn pick_route(State(host): State<Arc<dyn BootstrapHost>>) -> Json<Outcome> {
@@ -773,9 +796,12 @@ mod tests {
 
     /// A `BootstrapHost` that records opens and answers the dialog with a fixed
     /// path, so the router's contract can be checked without a window.
+    #[derive(Default)]
     struct StubHost {
         opened: Mutex<Vec<PathBuf>>,
         pick_result: Option<PathBuf>,
+        switching: bool,
+        cancelled: Mutex<bool>,
     }
     impl BootstrapHost for StubHost {
         fn pick(&self) -> Option<PathBuf> {
@@ -785,6 +811,12 @@ mod tests {
             self.opened.lock().unwrap().push(path);
         }
         fn window_cmd(&self, _cmd: crate::window::WindowCmd) {}
+        fn switching(&self) -> bool {
+            self.switching
+        }
+        fn cancel(&self) {
+            *self.cancelled.lock().unwrap() = true;
+        }
     }
 
     async fn post(host: Arc<dyn BootstrapHost>, uri: &str, body: &str) -> serde_json::Value {
@@ -804,10 +836,16 @@ mod tests {
     }
 
     fn stub() -> Arc<StubHost> {
-        Arc::new(StubHost {
-            opened: Mutex::new(Vec::new()),
-            pick_result: None,
-        })
+        Arc::new(StubHost::default())
+    }
+
+    async fn get(host: Arc<dyn BootstrapHost>, uri: &str) -> serde_json::Value {
+        let res = router(host)
+            .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let bytes = to_bytes(res.into_body(), 1 << 16).await.unwrap();
+        serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null)
     }
 
     #[tokio::test]
@@ -826,6 +864,18 @@ mod tests {
         assert_eq!(bad["ok"], false);
         assert!(bad["error"].is_string(), "an invalid folder explains itself");
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[tokio::test]
+    async fn context_says_whether_it_is_a_switch_and_cancel_reaches_the_host() {
+        // First run: not switching, and there is nothing to cancel to.
+        assert_eq!(get(stub(), "/api/context").await["switching"], false);
+
+        // A switch: the page is told so, and cancel reaches the host.
+        let host = Arc::new(StubHost { switching: true, ..Default::default() });
+        assert_eq!(get(host.clone(), "/api/context").await["switching"], true);
+        post(host.clone(), "/api/cancel", "").await;
+        assert!(*host.cancelled.lock().unwrap(), "cancel returns to the running project");
     }
 
     #[tokio::test]
@@ -875,8 +925,8 @@ mod tests {
 
         // A folder was chosen and it validates.
         let host = Arc::new(StubHost {
-            opened: Mutex::new(Vec::new()),
             pick_result: Some(repo.clone()),
+            ..Default::default()
         });
         let picked = post(host, "/api/pick", "").await;
         assert_eq!(picked["picked"], true);

@@ -38,6 +38,12 @@ pub enum WindowCmd {
     /// the decorations, so the app has to put it back or the window is stuck at
     /// whatever size it opened.
     StartResize(ResizeEdge),
+    /// Raise the open-project modal over the running board, to switch to another
+    /// checkout. The desktop shell serves the first-run page again and navigates
+    /// the window to it; committing a project restarts onto it. Here rather than a
+    /// route of its own because it, too, is a thing only the shell can do to its
+    /// own window.
+    Switcher,
 }
 
 /// Which edge or corner the pointer grabbed.

@@ -123,6 +123,28 @@ which also fixes the blank gap on normal boots.
       recent, and boots. Non-fatal: a write failure loses the edits, not the open.
       Unit-tested (`write_config_is_slim_and_validated`).
 
+## Repository switch (restart-based)
+
+The repo-picker button now raises the open-project modal over the running board to
+**switch** checkouts, rather than toasting "not implemented". Reuses the whole
+bootstrap: `WindowCmd::Switcher` → `start_switcher` serves the first-run page again
+and navigates to it; `BootstrapHost::switching`/`cancel` let the page show a "back
+to current project" link and change the copy to "Switch to a project"; committing a
+project writes its config and **restarts the app onto it** (`request_restart`), since
+one daemon serves one checkout.
+
+The cost, accepted: a switch restarts (~1.4s) and takes the current project's live
+sessions with it — `auto_resume` brings a project's sessions back when you return to
+it. And config is a single global file, so switching to a **recent** (which skips the
+review) opens it with detected defaults rather than any base branch / repo it was
+customised with before. The no-restart, per-repo version is the larger multi-daemon
+item in TODO.md.
+
+Tested: `switching`/`cancel` at the router, and the page's switch mode driven
+headlessly (back link + heading appear, cancel reaches the host). Real-window only:
+the navigate to the switcher, the navigate back on cancel, and the restart onto the
+new project.
+
 ## Left to verify on the real window
 
 The whole flow is tested headlessly (Rust + a browser drive of the real page), but

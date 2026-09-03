@@ -49,6 +49,8 @@
   .main{padding:44px 44px 34px;display:flex;flex-direction:column;gap:22px}
   .side{background:var(--surface);border-left:1px solid var(--line-soft);
     padding:30px 26px;display:flex;flex-direction:column;gap:14px;overflow-y:auto}
+  .switchback{align-self:flex-start;font-family:var(--mono);font-size:12px;color:var(--faint);cursor:pointer;margin-bottom:-8px}
+  .switchback:hover{color:var(--text)}
   .brand{display:flex;align-items:center;gap:10px}
   .brand .dot{width:8px;height:8px;border-radius:50%;background:var(--attn)}
   .brand .name{font-family:var(--mono);font-size:14px;font-weight:600;letter-spacing:.02em}
@@ -172,9 +174,10 @@
   <!-- open a project -->
   <div class="screen open" id="screen-open">
     <div class="main">
+      <span class="switchback" id="switchback" hidden>‹ Back to current project</span>
       <div class="brand"><span class="dot"></span><span class="name">orch<b>d</b></span></div>
       <div>
-        <h1>Open a project to orchestrate</h1>
+        <h1 id="open-h1">Open a project to orchestrate</h1>
         <p class="lede">orchd hosts your Claude Code sessions across one repository. Point it at that repo's checkout to begin.</p>
       </div>
       <button class="btn primary" id="browse">
@@ -434,6 +437,20 @@
     }
   }
   loadRecent();
+
+  // --- switch vs first run ---
+  // When a daemon is already running this page is a *switch*: offer a way back to
+  // the board, and say "switch" rather than "open". Cancel returns to the board;
+  // picking a project restarts onto it, handled by the server.
+  (async () => {
+    let switching = false;
+    try { switching = (await (await fetch('/api/context')).json()).switching; } catch (e) { /* first run */ }
+    if (!switching) return;
+    $('open-h1').textContent = 'Switch to a project';
+    const back = $('switchback');
+    back.hidden = false;
+    back.addEventListener('click', () => post('/api/cancel'));
+  })();
 </script>
 </body>
 </html>
