@@ -102,6 +102,12 @@ pub struct AppState {
     pub token: String,
     /// A record write is already scheduled; see [`Self::persist_soon`].
     persist_pending: std::sync::atomic::AtomicBool,
+    /// One writer at a time. `persist_soon` clears `persist_pending` *before* the
+    /// write (so a change arriving during it schedules another flush rather than
+    /// being lost), which means two flushes can overlap — and two writers of the
+    /// same file are two chances to leave the older snapshot on disk. Serialised
+    /// here rather than by trying to make the flag do both jobs.
+    persist_writing: tokio::sync::Mutex<()>,
     /// Which sessions the last written `sessions.json` knows about; see
     /// [`Self::persist_when_due`].
     persisted_ids: std::sync::atomic::AtomicU64,
@@ -313,6 +319,22 @@ pub struct Inner {
 /// Reads still go straight at the fields: they are many, harmless, and requiring
 /// an accessor for each would be noise. It is *mutation* that has to carry the
 /// write with it.
+/// A cheap stand-in for "which sessions exist": their count, and their ids mixed
+/// together. Two different sets colliding would delay one write by a second, which
+/// is why a hash is enough and a clone of every id is not needed.
+///
+/// Free rather than a method, so `persist` can compute it from the guard it already
+/// holds instead of taking the lock a second time — the two reads disagreeing is
+/// what made a brand-new session's record read as already written.
+fn mixed_session_ids(inner: &Inner) -> u64 {
+    let mut mixed = inner.sessions.len() as u64;
+    for id in inner.sessions.keys() {
+        let (hi, lo) = id.as_u64_pair();
+        mixed = mixed.rotate_left(7) ^ hi ^ lo;
+    }
+    mixed
+}
+
 impl Inner {
     /// Which workspace an absolute path belongs to, without taking the lock.
     ///
@@ -476,6 +498,7 @@ impl AppState {
             repos,
             token,
             persist_pending: std::sync::atomic::AtomicBool::new(false),
+            persist_writing: tokio::sync::Mutex::new(()),
             persisted_ids: std::sync::atomic::AtomicU64::new(0),
             inner: RwLock::new(Inner {
                 workspaces,
@@ -564,17 +587,9 @@ impl AppState {
         }
     }
 
-    /// A cheap stand-in for "which sessions exist": their count, and their ids
-    /// mixed together. Two different sets colliding would delay one write by a
-    /// second, which is why a hash is enough and a clone of every id is not needed.
+    /// A cheap stand-in for "which sessions exist" — see [`mixed_session_ids`].
     async fn session_ids(&self) -> u64 {
-        let inner = self.inner.read().await;
-        let mut mixed = inner.sessions.len() as u64;
-        for id in inner.sessions.keys() {
-            let (hi, lo) = id.as_u64_pair();
-            mixed = mixed.rotate_left(7) ^ hi ^ lo;
-        }
-        mixed
+        mixed_session_ids(&*self.inner.read().await)
     }
 
     /// Ask for the records to be written, soon and at most once a second.
@@ -606,20 +621,40 @@ impl AppState {
     /// Session records are written on every state change, so a daemon that dies
     /// unexpectedly still leaves something to resume from (§2).
     async fn persist(&self) {
-        let records: Vec<crate::store::SessionRecord> = {
+        // Serialised, so two overlapping flushes cannot write this file at once.
+        let _writing = self.persist_writing.lock().await;
+        /* **The records and the id hash come from one guard.** They used to be two
+           reads: the records under one, then `session_ids()` taking the lock again.
+           A session inserted between them was hashed into "already persisted"
+           while its record was not in the set just written — so
+           `persist_when_due` read the set as unchanged and *deferred* the write
+           that had to be immediate, which is the one thing its contract promises
+           (the e2e agent waits to see itself in `sessions.json` before speaking). */
+        let (records, ids) = {
             let inner = self.inner.read().await;
-            inner
+            let records: Vec<crate::store::SessionRecord> = inner
                 .sessions
                 .values()
                 .map(crate::store::SessionRecord::of)
-                .collect()
+                .collect();
+            (records, mixed_session_ids(&inner))
         };
         // Recorded before the write, and unconditionally: a failed write is not a
         // reason to keep answering "the set changed" and writing on every notify.
         self.persisted_ids
-            .store(self.session_ids().await, std::sync::atomic::Ordering::SeqCst);
-        if let Err(e) = crate::store::save(&records) {
-            tracing::warn!("could not persist session records: {e:#}");
+            .store(ids, std::sync::atomic::Ordering::SeqCst);
+        // Off the runtime: this serialises every record and writes the file, tens
+        // of kilobytes once a board has been used, and it hangs off `notify` —
+        // about seventy call sites.
+        let written = crate::proc::run_blocking("persisting the session records", move || {
+            crate::store::save(&records)
+        })
+        .await;
+        match written {
+            Ok(Err(e)) | Err(e) => {
+                tracing::warn!("could not persist session records: {e:#}")
+            }
+            Ok(Ok(())) => {}
         }
     }
 

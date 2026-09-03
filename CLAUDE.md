@@ -20,12 +20,22 @@ mise run shot                       # screenshot the running SPA (drives Chrome)
 The agent binary is `claude`, installed by the `claude-code` mise tool so one
 `mise up` in the monorepo covers both.
 
-**One daemon at a time.** The lock is `~/.config/orchd/instance.pid`, not the
-port, so a second instance refuses to start rather than fighting over
-`sessions.json` and the hook settings file. Close the running app before
-`cargo run`. The file is deliberately **left behind** at shutdown —
-`instance::holder` decides by asking whether the pid is alive — so waiting for it
-to disappear is waiting for something that never happens.
+**One daemon at a time.** The lock is an `flock` on
+`~/.config/orchd/instance.pid`, not the port, so a second instance refuses to
+start rather than fighting over `sessions.json` and the hook settings file. Close
+the running app before `cargo run`. The file is deliberately **left behind** — it
+is what the lock is taken *on*, and removing it would let a second daemon lock a
+fresh file while this one holds the old inode — so waiting for it to disappear is
+waiting for something that never happens.
+
+The kernel owns the release: it happens when the process ends however it ends, so
+a crash leaves nothing to clean up and there is no stale-file path. It used to be
+`create_new` plus a `ps`-based `holder` check, and both halves were wrong. The
+stale path was the *common* one (`process::exit` runs no destructors), and two
+launches inside it could both unlink and both create — two daemons, the exact
+thing the lock exists to stop. And guessing from a command line meant a recycled
+pid belonging to `vim ~/orchestrator/x` read as a live holder and wedged the app
+out of starting.
 
 ## One repo is the test, not the specification
 
@@ -306,8 +316,10 @@ mean *this* repo; if you do, name it.
 - **A `/proc` read is a portability bug that compiles.** Two guards stat'd `/proc`
   and so answered *wrongly*, not loudly, off Linux: `pid_alive` read every session
   as dead (teardown would delete a worktree with a live agent — it fails open), and
-  `instance::holder` read every lock as stale (a second daemon starts). Both are
-  now portable — `kill(pid, 0)` and `ps -p <pid> -o command=`. `headroom` still
+  the instance lock's `holder` read every lock as stale (a second daemon starts).
+  `pid_alive` is now `kill(pid, 0)`; the lock stopped asking about pids at all and
+  took an `flock` instead, which is the kernel's answer rather than a guess about a
+  command line. `headroom` still
   reads `/proc/meminfo` on purpose, because it is documented to mean "no opinion"
   when it cannot read. Before adding a `/proc` read, ask which way it fails when
   the file is absent; CI cannot catch this, since it compiles everywhere.

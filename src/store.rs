@@ -1,6 +1,8 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::SystemTime;
 
 use crate::config::Config;
@@ -174,9 +176,39 @@ fn automation_path() -> Result<PathBuf> {
 /// discipline for every store, so a change to it lands everywhere.
 fn save_json<T: Serialize + ?Sized>(p: &Path, value: &T) -> Result<()> {
     std::fs::create_dir_all(p.parent().unwrap())?;
-    let tmp = p.with_extension("json.tmp");
-    std::fs::write(&tmp, serde_json::to_string_pretty(value)?)?;
-    std::fs::rename(&tmp, p)?;
+    /* **A tmp name unique to this write.** Every store shared one
+       `<name>.json.tmp`, so two overlapping writers used the same scratch file:
+       both wrote it, the first rename moved it away, and the second failed
+       `ENOENT` — surfacing as "could not persist session records" for a write that
+       had nothing wrong with it. The counter is per process and the pid is in the
+       name, so neither two writers here nor two daemons can collide. */
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let tmp = p.with_extension(format!(
+        "json.tmp.{}.{}",
+        std::process::id(),
+        SEQ.fetch_add(1, Ordering::Relaxed)
+    ));
+
+    let write = || -> Result<()> {
+        let mut f = std::fs::File::create(&tmp)
+            .with_context(|| format!("creating {}", tmp.display()))?;
+        f.write_all(serde_json::to_string_pretty(value)?.as_bytes())
+            .with_context(|| format!("writing {}", tmp.display()))?;
+        // The rename is atomic in the directory, but it does not promise the
+        // *contents* are on disk first: without this, a power loss can leave the
+        // real name pointing at a file whose blocks were never written — which is
+        // the truncated-store case the write-and-rename exists to prevent.
+        f.sync_all().with_context(|| format!("flushing {}", tmp.display()))?;
+        Ok(())
+    };
+    if let Err(e) = write() {
+        // Never leave scratch behind; the name is unique, so nothing else will
+        // clean it up.
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+    std::fs::rename(&tmp, p)
+        .with_context(|| format!("replacing {} with {}", p.display(), tmp.display()))?;
     Ok(())
 }
 
@@ -193,7 +225,26 @@ fn load_json<T: serde::de::DeserializeOwned + Default>(p: Result<PathBuf>) -> T 
     match serde_json::from_str(&raw) {
         Ok(v) => v,
         Err(e) => {
-            tracing::warn!("could not parse {}: {e}", p.display());
+            /* **Move the unparseable file aside before handing back a default.**
+               The default is what the next `save_*` writes, so defaulting in place
+               did not merely lose the reading — it *overwrote the only copy* with
+               `[]` moments later. For `sessions.json` that is every record of every
+               conversation, which is not what "a corrupt store only costs the
+               resume offers" meant. Renamed rather than copied, so there is exactly
+               one of it and the daemon still boots. */
+            let aside = p.with_extension("json.corrupt");
+            match std::fs::rename(&p, &aside) {
+                Ok(()) => tracing::error!(
+                    "could not parse {}: {e} — kept it at {} and starting from the default",
+                    p.display(),
+                    aside.display()
+                ),
+                Err(move_err) => tracing::error!(
+                    "could not parse {}: {e} — and could not move it aside ({move_err}), \
+                     so the next write will overwrite it",
+                    p.display()
+                ),
+            }
             T::default()
         }
     }
@@ -404,6 +455,84 @@ pub fn reap_orphans(records: &[SessionRecord]) -> usize {
 
 #[cfg(test)]
 mod tests {
+
+    /// **A corrupt store must not be overwritten by the default it degrades to.**
+    /// `load_json` warned and handed back `T::default()`, and the next `save_*`
+    /// wrote that over the only copy — for `sessions.json`, every record of every
+    /// conversation, moments after the one line that said anything was wrong.
+    #[test]
+    fn an_unparseable_store_is_moved_aside_rather_than_lost() {
+        let dir = std::env::temp_dir().join(format!(
+            "orchd-corrupt-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("sessions.json");
+        std::fs::write(&file, "{ this is not json").unwrap();
+
+        // Reads as the default, so the daemon still boots...
+        let out: Vec<u32> = load_json(Ok(file.clone()));
+        assert!(out.is_empty(), "a corrupt store degrades to the default");
+
+        // ...and the bytes are still there under a name that says what they are.
+        let aside = dir.join("sessions.json.corrupt");
+        assert!(aside.exists(), "the unparseable file was not kept");
+        assert_eq!(
+            std::fs::read_to_string(&aside).unwrap(),
+            "{ this is not json",
+            "kept verbatim, so it can be repaired by hand"
+        );
+        assert!(!file.exists(), "it was moved, not copied");
+
+        // And a write now cannot clobber it: the name it lands on is the original.
+        save_json(&file, &vec![1u32, 2]).unwrap();
+        assert!(aside.exists(), "the rescued copy survived the next write");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Two writers of one store used to share `<name>.json.tmp`: both wrote it, the
+    /// first rename took it away, and the second failed `ENOENT` — reported as a
+    /// failed persist for a write with nothing wrong with it.
+    #[test]
+    fn concurrent_writes_do_not_share_a_scratch_file() {
+        let dir = std::env::temp_dir().join(format!(
+            "orchd-tmpname-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("sessions.json");
+
+        std::thread::scope(|scope| {
+            for n in 0..8u32 {
+                let file = file.clone();
+                scope.spawn(move || {
+                    for _ in 0..20 {
+                        save_json(&file, &vec![n; 4]).expect("a write must not lose a race");
+                    }
+                });
+            }
+        });
+
+        // Whoever wrote last, the file parses — never a torn or missing one.
+        let raw = std::fs::read_to_string(&file).unwrap();
+        let parsed: Vec<u32> = serde_json::from_str(&raw).expect("the store is intact");
+        assert_eq!(parsed.len(), 4);
+        // No scratch left behind.
+        let leftovers: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.contains(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "scratch files left behind: {leftovers:?}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
     use super::*;
     use std::path::Path;
 
