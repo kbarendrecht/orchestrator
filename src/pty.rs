@@ -74,7 +74,9 @@ fn is_executable(p: &Path) -> bool {
 /// reattach. What differs is the hook lifecycle and whether it earns a rail
 /// entry, and neither of those lives here.
 pub struct PtyHandle {
-    writer: Mutex<Box<dyn Write + Send>>,
+    /// Input queued for the child, drained by a dedicated writer thread. See
+    /// [`PtyHandle::write`] for why it is a queue rather than the fd.
+    input: tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
     master: Mutex<Box<dyn MasterPty + Send>>,
     killer: Mutex<Box<dyn ChildKiller + Send + Sync>>,
     buffer: Arc<Mutex<RingBuffer>>,
@@ -179,8 +181,25 @@ impl PtyHandle {
         let (tx, _) = broadcast::channel(BROADCAST_CHUNKS);
         let (exit_tx, exit_rx) = watch::channel(None);
 
+        // The child's input goes through a queue and a thread of its own, because
+        // writing to a pty blocks when the child is not reading — see
+        // [`PtyHandle::write`].
+        let (input, mut input_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+        std::thread::spawn(move || {
+            let mut writer = writer;
+            while let Some(data) = input_rx.blocking_recv() {
+                if let Err(e) = writer.write_all(&data).and_then(|()| writer.flush()) {
+                    // Ordinary at the end of a session: the child has gone and the
+                    // fd is closed. Logged rather than dropped, which is what the
+                    // call sites did — every one of them discards the result.
+                    tracing::debug!("pty write failed, giving up on this pty's input: {e}");
+                    break;
+                }
+            }
+        });
+
         let handle = Arc::new(PtyHandle {
-            writer: Mutex::new(writer),
+            input,
             master: Mutex::new(pair.master),
             killer: Mutex::new(killer),
             buffer: buffer.clone(),
@@ -229,14 +248,27 @@ impl PtyHandle {
             .unwrap_or_default()
     }
 
+    /// Queue `data` for the child. Never blocks.
+    ///
+    /// **Writing to a pty blocks when the child is not reading it.** The kernel
+    /// buffer is small — a few kilobytes — so a bracketed paste, or a `/resolve`
+    /// prompt handed to a session still busy starting up, filled it and parked the
+    /// caller until the child drained. That caller was a tokio worker (the pty
+    /// websocket's read loop calls this on every keystroke), and a parked worker is
+    /// one fewer serving the board.
+    ///
+    /// So the fd belongs to a thread of its own, and this hands bytes to it. One
+    /// queue and one consumer, so ordering is preserved — which matters, since
+    /// these are keystrokes.
+    ///
+    /// The cost, stated because it is a real change in meaning: `Ok` now means
+    /// "queued", not "written". Nothing is lost by it — every call site already
+    /// discarded the result — and a failed write is now logged by the thread
+    /// instead of vanishing. Only a dead writer thread is an error here.
     pub fn write(&self, data: &[u8]) -> Result<()> {
-        let mut w = self
-            .writer
-            .lock()
-            .map_err(|_| anyhow::anyhow!("pty writer lock poisoned"))?;
-        w.write_all(data)?;
-        w.flush()?;
-        Ok(())
+        self.input
+            .send(data.to_vec())
+            .map_err(|_| anyhow::anyhow!("this pty's writer has gone"))
     }
 
     pub fn resize(&self, rows: u16, cols: u16) -> Result<()> {
@@ -638,6 +670,71 @@ echo from-the-cwd
             started.elapsed() < KILL_GRACE,
             "an ordinary child should not wait out the grace"
         );
+    }
+
+    /// Writing to a pty blocks once the kernel buffer fills and the child is not
+    /// reading, and this used to happen on the caller's thread — a tokio worker,
+    /// since the websocket read loop writes every keystroke. A child that never
+    /// reads is the worst case, so that is what this uses: the write has to return
+    /// anyway, because the bytes only reach a queue.
+    #[test]
+    fn writing_to_a_child_that_never_reads_does_not_block() {
+        // `sleep` reads nothing at all, so its buffer fills and stays full.
+        let spawned = PtyHandle::spawn(
+            &["/bin/sleep".to_string(), "30".to_string()],
+            Path::new("/tmp"),
+            &[],
+            &[],
+            (24, 80),
+        )
+        .expect("spawn");
+
+        // Comfortably more than a pty's buffer, which is a few KB.
+        let big = vec![b'x'; 512 * 1024];
+        let started = std::time::Instant::now();
+        spawned.handle.write(&big).expect("queued");
+        spawned.handle.write(b"and another").expect("queued");
+        let elapsed = started.elapsed();
+
+        let _ = spawned.handle.kill();
+        assert!(
+            elapsed < Duration::from_millis(250),
+            "the write blocked for {elapsed:?} — it is back on the caller's thread"
+        );
+    }
+
+    /// Keystrokes, so order is the whole point: one queue and one consumer.
+    #[test]
+    fn queued_input_reaches_the_child_in_order() {
+        let spawned = PtyHandle::spawn(
+            // `cat` echoes what it reads, so the pty's own echo is not the only
+            // thing under test.
+            &["/bin/cat".to_string()],
+            Path::new("/tmp"),
+            &[],
+            &[],
+            (24, 80),
+        )
+        .expect("spawn");
+
+        for part in ["alpha\n", "bravo\n", "charlie\n"] {
+            spawned.handle.write(part.as_bytes()).expect("queued");
+        }
+
+        let mut out = String::new();
+        for _ in 0..150 {
+            out = String::from_utf8_lossy(&spawned.handle.snapshot()).to_string();
+            if out.contains("charlie") {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let _ = spawned.handle.kill();
+
+        let a = out.find("alpha").expect("alpha never arrived");
+        let b = out.find("bravo").expect("bravo never arrived");
+        let c = out.find("charlie").expect("charlie never arrived");
+        assert!(a < b && b < c, "input arrived out of order: {out:?}");
     }
 
     /// A name that is nowhere on PATH is an error the caller can read, rather

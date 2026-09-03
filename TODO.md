@@ -38,9 +38,13 @@ this file, which churned it from every build; they now go to a gitignored
     invariant or make every call site remember to persist — which is the exact shape
     `with_*` exists to prevent. Revisit if a store ever grows (`stories` is the only
     candidate, being a cache), and with a number rather than a guess.
-  - **B3:** `ws.rs`'s pty writes are `Mutex` + `write_all` + `flush` on the async
-    loop, so a large paste into a child that is not reading parks a worker until it
-    drains. Wants a writer thread fed by a channel.
+  - ~~**B3, pty writes on the async loop.**~~ Done: each pty owns a writer thread
+    fed by an unbounded queue, and `PtyHandle::write` hands bytes to it instead of
+    touching the fd. Writing to a pty blocks once the kernel's few-KB buffer fills
+    and the child is not reading, and the caller was a tokio worker — the websocket
+    read loop writes every keystroke. `Ok` now means "queued" rather than
+    "written", which costs nothing because all eight call sites already discarded
+    the result, and a failed write is logged by the thread instead of vanishing.
 
   The rule is worth restating because it was applied unevenly for a long time: **no
   `std::process::Command` and no `std::fs` on a tokio worker.** `run_blocking` names
