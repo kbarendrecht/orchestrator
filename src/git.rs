@@ -68,6 +68,89 @@ fn git_raw(cwd: &Path, args: &[&str]) -> Result<Vec<u8>> {
     Ok(out.stdout)
 }
 
+/// How long a git command that touches the network may take.
+///
+/// Generous, because a fetch on a large repo over a slow link is legitimately
+/// slow, and this is a backstop against *hanging*, not a performance budget.
+const NET_TIMEOUT_SECS: u64 = 120;
+
+/// Run a git command that reaches the network: bounded, and unable to prompt.
+///
+/// **`Command::output()` nulls stdin, and that is not enough.** git and ssh ask for
+/// credentials on `/dev/tty`, not on stdin, so a fetch against an https remote with
+/// no credential helper — or an ssh remote whose host key is not yet known — sits
+/// there forever waiting for an answer nobody can give. The desktop app only
+/// escapes it by having no tty at all; `orchd` from a terminal does not, and the
+/// boot path fetches before the window opens.
+///
+/// So three things, and each closes one door:
+/// * `GIT_TERMINAL_PROMPT=0` — git itself must fail rather than ask.
+/// * `GIT_SSH_COMMAND` with `BatchMode=yes` and `StrictHostKeyChecking=accept-new`
+///   — ssh must not ask for a passphrase or about a new host key. `accept-new`
+///   rather than `no`: an unknown host is recorded, a *changed* one still refuses.
+/// * `GIT_ASKPASS` and `SSH_ASKPASS` emptied, or a configured graphical prompt
+///   would be spawned in place of the terminal one and hang just as well.
+///
+/// And a deadline on top, because "cannot prompt" is not the same as "cannot
+/// hang": a half-open TCP connection to a dead host does neither.
+fn git_net(cwd: &Path, args: &[&str], label: &str) -> Result<std::process::Output> {
+    let argv: Vec<String> = std::iter::once("git".to_string())
+        .chain(args.iter().map(|a| (*a).to_string()))
+        .collect();
+    let envs = net_env();
+    let began = std::time::Instant::now();
+    let out = crate::proc::run_bounded_with_input(
+        cwd,
+        NET_TIMEOUT_SECS,
+        &argv,
+        label,
+        None,
+        &envs,
+    );
+    let took = began.elapsed();
+    crate::timing::record_exec(took);
+    if took >= SLOW_GIT {
+        tracing::info!(
+            "slow git: {}ms for `git {}` in {}",
+            took.as_millis(),
+            args.join(" "),
+            cwd.display()
+        );
+    }
+    out
+}
+
+/// The environment that stops git and ssh asking a question nobody can answer.
+///
+/// Its own function so it can be asserted on: dropping one of these is invisible
+/// until a fetch hangs on somebody's machine, which is the least reproducible bug
+/// there is.
+fn net_env() -> Vec<(String, String)> {
+    vec![
+        ("GIT_TERMINAL_PROMPT".to_string(), "0".to_string()),
+        (
+            "GIT_SSH_COMMAND".to_string(),
+            "ssh -oBatchMode=yes -oStrictHostKeyChecking=accept-new".to_string(),
+        ),
+        ("GIT_ASKPASS".to_string(), String::new()),
+        ("SSH_ASKPASS".to_string(), String::new()),
+    ]
+}
+
+/// [`git_net`], failing on a non-zero exit the way [`git`] does.
+fn git_net_ok(cwd: &Path, args: &[&str], label: &str) -> Result<String> {
+    let out = git_net(cwd, args, label)?;
+    if !out.status.success() {
+        bail!(
+            "git {} failed in {}: {}",
+            args.join(" "),
+            cwd.display(),
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
 /// Whether a git command succeeded, for probes where failure is a valid answer.
 fn git_ok(cwd: &Path, args: &[&str]) -> bool {
     run(cwd, args).map(|o| o.status.success()).unwrap_or(false)
@@ -532,7 +615,9 @@ fn stale_lock_pid(main: &Path, path: &Path) -> Option<u32> {
 /// lets a caller skip the fetch entirely by resolving `base` to a sha first.
 fn freshen_base(main: &Path, base: &str) -> Result<()> {
     if let Some((remote, branch)) = base.split_once('/') {
-        if has_remote(main, remote) && git(main, &["fetch", "--quiet", remote, branch]).is_err() {
+        if has_remote(main, remote)
+            && git_net_ok(main, &["fetch", "--quiet", remote, branch], "the base fetch").is_err()
+        {
             tracing::warn!("could not fetch {base}; using the last-known copy");
         }
     }
@@ -554,12 +639,12 @@ fn freshen_base(main: &Path, base: &str) -> Result<()> {
 /// resolves rather than failing with "exists neither locally nor on origin". The
 /// fallback's `fetch --all` runs only on that miss, never on the common path.
 fn remote_branch(main: &Path, branch: &str) -> Option<String> {
-    let _ = git(main, &["fetch", "origin", branch, "--no-tags"]);
+    let _ = git_net_ok(main, &["fetch", "origin", branch, "--no-tags"], "a branch fetch");
     let origin = format!("origin/{branch}");
     if git_ok(main, &["rev-parse", "--verify", "--quiet", &origin]) {
         return Some(origin);
     }
-    let _ = git(main, &["fetch", "--all", "--no-tags"]);
+    let _ = git_net_ok(main, &["fetch", "--all", "--no-tags"], "the fallback fetch");
     let listed = git(main, &["for-each-ref", "--format=%(refname:short)", "refs/remotes/"]).ok()?;
     // The short ref is `<remote>/<branch>`; match the branch part exactly so a
     // slash in the branch name (`feature/x`) does not misfire against a shorter
@@ -847,7 +932,7 @@ pub fn fetch_upstream(main: &Path, upstream_ref: &str) -> Result<()> {
     // names — no dearer than the named case. If that fetch fails the recorded
     // branch is gone (renamed or deleted upstream), so fall through and re-record.
     if let Some(b) = default_branch(main, remote) {
-        if git(main, &["fetch", remote, &b, "--no-tags"]).is_ok() {
+        if git_net_ok(main, &["fetch", remote, &b, "--no-tags"], "the upstream fetch").is_ok() {
             return Ok(());
         }
         tracing::debug!("{remote}/HEAD named {b}, which no longer fetches; re-recording");
@@ -855,7 +940,7 @@ pub fn fetch_upstream(main: &Path, upstream_ref: &str) -> Result<()> {
     // Bootstrap: `git remote set-head -a` picks from the remote-tracking refs, so
     // they have to exist first — which is why this fetches the whole remote
     // before recording. Only the first poll on a checkout pays for it.
-    git(main, &["fetch", remote, "--no-tags"])?;
+    git_net_ok(main, &["fetch", remote, "--no-tags"], "the bootstrap fetch")?;
     if let Err(e) = git(main, &["remote", "set-head", remote, "-a"]) {
         // Not fatal: the refs are fetched, only the symref is missing, and the
         // caller's merge-base will report the real problem.
@@ -1349,11 +1434,15 @@ pub fn push_with_lease(cwd: &Path, branch: &str, base: Option<&str>) -> Result<(
     if base == Some(branch) {
         bail!("refusing to push to {branch}: it is the base branch, open a PR instead");
     }
-    let out = Command::new("git")
-        .args(["push", "--force-with-lease", "origin", branch])
-        .current_dir(cwd)
-        .output()
-        .context("running git push")?;
+    // Bounded and unpromptable like every other network git call: a push against
+    // a remote wanting credentials would otherwise wait on a tty forever, and this
+    // one runs inside an HTTP request somebody is watching.
+    let out = git_net(
+        cwd,
+        &["push", "--force-with-lease", "origin", branch],
+        "the push",
+    )
+    .context("running git push")?;
     if out.status.success() {
         return Ok(());
     }
@@ -1751,6 +1840,46 @@ mod tests {
     // The amend-target cases moved with nothing but their names: the fixture they
     // share with the blame tests stayed here, so they reach across for `Amend`.
     use crate::review_commit::*;
+
+    /// **Every one of these closes a door that leads to a hang**, and a hang is
+    /// what makes this class of bug unreproducible: `Command::output()` nulls
+    /// stdin, but git and ssh ask on `/dev/tty`, so a fetch against an https remote
+    /// with no credential helper — or an ssh remote whose host key is unknown —
+    /// waits forever for an answer nobody can give. The desktop app escapes it only
+    /// by having no tty; `orchd` from a terminal does not, and boot fetches before
+    /// the window opens.
+    #[test]
+    fn network_git_cannot_stop_to_ask_a_question() {
+        let env = net_env();
+        let get = |k: &str| {
+            env.iter()
+                .find(|(name, _)| name == k)
+                .map(|(_, v)| v.as_str())
+                .unwrap_or_else(|| panic!("{k} is not set, so git can prompt again"))
+        };
+
+        // git's own prompt.
+        assert_eq!(get("GIT_TERMINAL_PROMPT"), "0");
+
+        // ssh's passphrase prompt, and its "unknown host, continue?" prompt.
+        let ssh = get("GIT_SSH_COMMAND");
+        assert!(ssh.contains("BatchMode=yes"), "ssh can still ask: {ssh}");
+        assert!(
+            ssh.contains("StrictHostKeyChecking=accept-new"),
+            "ssh can still ask about a new host: {ssh}"
+        );
+        // `accept-new`, not `no`: a *changed* host key must still refuse, because
+        // that is the case worth refusing.
+        assert!(
+            !ssh.contains("StrictHostKeyChecking=no"),
+            "a changed host key must still be refused: {ssh}"
+        );
+
+        // And the graphical helpers, which would be spawned in place of the
+        // terminal prompt and hang exactly as well.
+        assert_eq!(get("GIT_ASKPASS"), "");
+        assert_eq!(get("SSH_ASKPASS"), "");
+    }
 
     /// **A sha is not always seven bytes of ASCII, because it is not always a sha.**
     /// These strings reach `short` from `sessions.json` (hand-editable), from a

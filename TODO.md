@@ -50,6 +50,19 @@ this file, which churned it from every build; they now go to a gitignored
   `std::process::Command` and no `std::fs` on a tokio worker.** `run_blocking` names
   the work so a panic says what died.
 
+- **`gh` and `mise` can still hang the way git could.** The git half is done —
+  `git::git_net` bounds every network git call and sets `GIT_TERMINAL_PROMPT=0`,
+  `BatchMode=yes`, `StrictHostKeyChecking=accept-new` and empty askpass helpers, so
+  a fetch cannot sit on a tty waiting for a credential. Two neighbours were left:
+  - every `gh` subprocess in `forge/github_write.rs` and `forge::resolve_token` is
+    unbounded, while `graphql()` right beside them passes `--max-time 120` to curl.
+    A write runs inside an HTTP request somebody is watching.
+  - `agent_update.rs`'s `mise outdated` reaches the network unbounded, on the
+    update poller.
+
+  Both want `proc::run_bounded`. Neither prompts the way git does — `gh` fails on a
+  missing token rather than asking — so this is about the deadline, not the tty.
+
 - **Shutdown cannot escalate a kill, because `was_live` is written before it.**
   `PtyHandle::kill_gracefully` gives every other stop path a `SIGHUP` → grace →
   `SIGKILL` escalation, and `shutdown` is the one caller that cannot use it: it
