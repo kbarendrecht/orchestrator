@@ -240,9 +240,9 @@
         <button class="stepbtn" id="fsdown" title="Smaller">&#8722;</button>
         <span class="stepval" id="fsval">100%</span>
         <button class="stepbtn" id="fsup" title="Bigger">+</button>
+        <button class="settings-reset" id="fsreset" type="button">Reset</button>
       </span>
     </div>
-    <button class="settings-reset" id="fsreset">Reset to 100%</button>
 
     <!-- Agent panes only: a drawer shell keeps xterm's own wheel maths, which
          reads its `scrollSensitivity`. 100% is what the pane has always done, so
@@ -256,9 +256,9 @@
         <button class="stepbtn" id="wsdown" title="Slower">&#8722;</button>
         <span class="stepval" id="wsval">100%</span>
         <button class="stepbtn" id="wsup" title="Faster">+</button>
+        <button class="settings-reset" id="wsreset" type="button">Reset</button>
       </span>
     </div>
-    <button class="settings-reset" id="wsreset">Reset to 100%</button>
 
     <div class="settings-group">Tracker</div>
 
@@ -355,13 +355,12 @@
       the drawer under the terminal. Health is read from their output.</p>
     <div id="setprocs"></div>
 
-    <div class="settings-actions">
-      <button class="settings-save" id="setsave" type="button">Save &amp; restart</button>
-      <span class="settings-note" id="setnote"></span>
-    </div>
-
+  </div>
+  <div class="settings-foot">
     <!-- Not a setting: the answer to "am I on the build with the fix in it". -->
-    <div class="settings-ver" id="settingsver"></div>
+    <span class="settings-ver" id="settingsver"></span>
+    <span class="settings-note" id="setnote"></span>
+    <button class="settings-save" id="setsave" type="button">Save &amp; restart</button>
   </div>
 </div>
 
