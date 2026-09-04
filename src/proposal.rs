@@ -30,6 +30,9 @@ pub const MAX_FIELD: usize = 64 * 1024;
 /// short enough that a runaway generation is refused rather than filed.
 const MAX_TITLE: usize = 256;
 
+/// The line under a position's label: a sentence or two, not prose.
+const MAX_LINE: usize = 1024;
+
 /// How many positions one thread may offer, before the daemon appends its own.
 ///
 /// The card shows them as a list you scan; past a handful the choice stops being
@@ -178,6 +181,14 @@ impl Position {
         if self.label.trim().is_empty() {
             bail!("{where_}: empty label");
         }
+        // Rendered on the card as a line each, so bounded like a line. Only the
+        // prose fields had a cap; these came straight from the agent unbounded.
+        if self.label.len() > MAX_TITLE {
+            bail!("{where_}: label exceeds {MAX_TITLE} bytes");
+        }
+        if self.sub.len() > MAX_LINE {
+            bail!("{where_}: sub exceeds {MAX_LINE} bytes");
+        }
         let has_reply = self.reply.as_deref().is_some_and(|r| !r.trim().is_empty());
         if self.stance.writes_reply() != has_reply {
             bail!(
@@ -227,7 +238,16 @@ impl Proposal {
         if self.thread_id.trim().is_empty() {
             bail!("a proposal has no thread_id");
         }
+        // A GitHub node id is a few dozen characters; anything a card would render
+        // or a route would carry is bounded here so an agent cannot hand back a
+        // megabyte where a line belongs.
+        if self.thread_id.len() > MAX_TITLE {
+            bail!("a proposal's thread_id exceeds {MAX_TITLE} bytes");
+        }
         let id = &self.thread_id;
+        if self.verified.as_deref().is_some_and(|v| v.len() > MAX_FIELD) {
+            bail!("thread {id}: verified exceeds {MAX_FIELD} bytes");
+        }
         if !(MIN_POSITIONS..=MAX_POSITIONS).contains(&self.positions.len()) {
             bail!(
                 "thread {id}: {} positions, expected {MIN_POSITIONS}–{MAX_POSITIONS}",
@@ -264,7 +284,8 @@ impl Proposal {
     }
 
     /// Whether any position would write to the worktree.
-    pub fn changes_code(&self) -> bool {
+    #[cfg(test)]
+    fn changes_code(&self) -> bool {
         self.positions.iter().any(|p| p.writes_code())
     }
 }
@@ -533,6 +554,17 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("exceeds"), "{err}");
+
+        // The card's own lines, which used to have no bound at all.
+        let refused = |edit: fn(&mut Proposal)| {
+            let mut p = proposal("T1", Stance::Reply);
+            edit(&mut p);
+            set(vec![p]).validate(&["T1".into()]).unwrap_err().to_string()
+        };
+        assert!(refused(|p| p.positions[0].label = "l".repeat(MAX_TITLE + 1)).contains("label exceeds"));
+        assert!(refused(|p| p.positions[0].sub = "s".repeat(MAX_LINE + 1)).contains("sub exceeds"));
+        assert!(refused(|p| p.verified = Some("v".repeat(MAX_FIELD + 1))).contains("verified exceeds"));
+        assert!(refused(|p| p.thread_id = "T".repeat(MAX_TITLE + 1)).contains("thread_id exceeds"));
     }
 
     #[test]

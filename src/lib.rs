@@ -4,7 +4,6 @@
 //! the other caller. Everything the two share — startup order, the router, the
 //! pollers — lives here so neither can drift from the other.
 
-pub mod agent_update;
 pub mod api;
 pub mod config;
 pub mod diff;
@@ -29,17 +28,16 @@ pub mod proposal;
 pub mod pty;
 pub mod review_commit;
 pub mod reviews;
-pub mod self_update;
-pub mod ring;
 pub mod skills;
 pub mod spawn;
 pub mod state;
 pub mod store;
 pub mod story;
-pub mod findings;
+#[cfg(test)]
+pub mod testutil;
 pub mod timing;
-pub mod tracker;
 pub mod triage;
+pub mod update;
 pub mod window;
 pub mod worktree;
 pub mod ws;
@@ -107,17 +105,6 @@ impl Server {
         format!("http://127.0.0.1:{}/?token={}", self.port, self.token)
     }
 
-    /// Kill every child this daemon owns, then stop serving.
-    ///
-    /// Sessions and managed processes both go: an orchd that is not running is
-    /// not supervising `ng-watch`, and a build watcher nobody is watching is
-    /// just a CPU leak with a log file.
-    ///
-    /// This reaches the ptys, and whatever a process declares as its
-    /// `stop_command`. `docker compose up -d` detaches and its pty child is long
-    /// gone by the time we get here, so the containers keep running — which is the
-    /// intent. Long-lived containers are infrastructure; `ng-watch` is a process
-    /// this app started and should therefore finish, wherever it is running.
     /// Run every managed process's `stop_command`, before anything is killed.
     ///
     /// Sequential and bounded: there is normally one such process, and a restart
@@ -151,6 +138,17 @@ impl Server {
         }
     }
 
+    /// Kill every child this daemon owns, then stop serving.
+    ///
+    /// Sessions and managed processes both go: an orchd that is not running is
+    /// not supervising `ng-watch`, and a build watcher nobody is watching is
+    /// just a CPU leak with a log file.
+    ///
+    /// This reaches the ptys, and whatever a process declares as its
+    /// `stop_command`. `docker compose up -d` detaches and its pty child is long
+    /// gone by the time we get here, so the containers keep running — which is the
+    /// intent. Long-lived containers are infrastructure; `ng-watch` is a process
+    /// this app started and should therefore finish, wherever it is running.
     pub async fn shutdown(&self) {
         // Before anything is killed: every pty about to die wakes an exit watcher,
         // and one of them would otherwise read a restart as "you finished with
@@ -246,11 +244,10 @@ pub async fn start(opts: StartOptions) -> Result<Server> {
     }
 
     let settings = {
-        use crate::tracker::Tracker as _;
-        let t = crate::tracker::TrackerImpl::for_kind(cfg.tracker);
+        let t = cfg.tracker.facts();
         // Said before the first session can be spawned, because every one of these
         // otherwise surfaces as a failure that blames something else.
-        for w in machine::check(&cfg, t.as_ref().map(|t| t.mcp_server())) {
+        for w in machine::check(&cfg, t.map(|t| t.mcp_server)) {
             tracing::warn!("{} — {}", w.what, w.cost);
         }
         // The push guard protects the branch this repo is measured against, so it
@@ -260,7 +257,7 @@ pub async fn start(opts: StartOptions) -> Result<Server> {
         let base = git::base_checkout_branch(&cfg.main_checkout, &cfg.upstream_ref);
         hooks::write_settings(
             cfg.port,
-            t.as_ref().map(|t| t.mcp_server()),
+            t.map(|t| t.mcp_server),
             base.as_deref(),
         )?
     };
@@ -286,8 +283,12 @@ pub async fn start(opts: StartOptions) -> Result<Server> {
         tracing::warn!("could not write the default review queue: {e:#}");
     }
 
-    // Repo config from §4. fsmonitor is deliberately main-only.
-    let _ = git::configure_repo(&cfg.main_checkout);
+    // Repo config from §4. fsmonitor is deliberately main-only. Not fatal, but
+    // not silent either: a checkout without fsmonitor scans the whole tree on
+    // every status, and that is worth one line when it is the reason.
+    if let Err(e) = git::configure_repo(&cfg.main_checkout) {
+        tracing::warn!("could not configure the repo: {e:#}");
+    }
 
     let token = state::random_token();
     let app = AppState::new(cfg, token.clone(), opts.chrome);
@@ -360,9 +361,18 @@ pub async fn start(opts: StartOptions) -> Result<Server> {
         // A batch that stopped for the manual phase. Its patches are already
         // committed, so losing this to a restart would strand the branch.
         inner.manual = store::load_manual();
-        if !inner.manual.is_empty() {
-            let prs: Vec<String> = inner.manual.keys().map(|p| format!("#{p}")).collect();
-            tracing::info!("manual phase still open on {}", prs.join(", "));
+        // Only the records that really are a phase. The store also holds
+        // `open: false` markers, which say "we pushed this batch" so a retry after
+        // a failed reply can find its way back in; announcing one as an open phase
+        // would send you looking for work nobody left.
+        let open: Vec<String> = inner
+            .manual
+            .iter()
+            .filter(|(_, p)| p.open)
+            .map(|(pr, _)| format!("#{pr}"))
+            .collect();
+        if !open.is_empty() {
+            tracing::info!("manual phase still open on {}", open.join(", "));
         }
         // A resolve run's commits outlive its session, and this is the only record
         // of which commit answers which thread. Restored as an account: `load`
@@ -382,16 +392,11 @@ pub async fn start(opts: StartOptions) -> Result<Server> {
         match app.cfg.tracker {
             config::TrackerKind::None => tracing::info!("tracker: none — `story+reply` is off"),
             t => {
-                use tracker::Tracker as _;
                 // The main checkout's own environment is the filer's fallback, so
                 // the boot line has to read it too. Without this it would warn
                 // about a missing token that a run then finds.
-                let checkout = env_source::EnvSourceImpl::for_kind(app.cfg.env_source)
-                    .map(|s| env_source::read(&s, &app.cfg.main_checkout))
-                    .unwrap_or_default();
-                let var = tracker::TrackerImpl::for_kind(t)
-                    .map(|i| i.token_env())
-                    .unwrap_or_default();
+                let checkout = env_source::read(app.cfg.env_source, &app.cfg.main_checkout);
+                let var = t.facts().map(|f| f.token_env).unwrap_or_default();
                 match story::resolve_token(&checkout, var) {
                     Ok(_) => tracing::info!(
                         "tracker: {t:?}, token resolved, {} story/ies cached",
@@ -431,15 +436,14 @@ pub async fn start(opts: StartOptions) -> Result<Server> {
     start_stack_poller(app.clone());
     start_workspace_watcher(app.clone());
     start_head_poller(app.clone());
-    start_findings_log(app.clone());
     start_worktree_reaper(app.clone());
     // A debug build is `cargo run` from a checkout; its version is whatever the
     // working tree is, so comparing it against a release only ever nags. Only a
     // release build — which is what a downloaded/`mise`-installed one is — checks.
     if !cfg!(debug_assertions) {
-        start_update_poller(app.clone());
+        update::start_release_poller(app.clone());
         // The agent's own version, which is the one that nags you in a terminal.
-        agent_update::start_poller(app.clone());
+        update::start_agent_poller(app.clone());
     }
 
     let router = router(app.clone());
@@ -565,7 +569,6 @@ fn router(app: Arc<AppState>) -> Router {
         .route("/api/workspace/:id/rebase", post(api::rebase))
         .route("/api/workspace/:id/rebase/abort", post(api::rebase_abort))
         .route("/api/workspace/:id/preflight", get(api::preflight))
-        .route("/api/workspace/:id/archive", post(api::archive_workspace))
         .route("/api/workspace/:id/teardown", post(api::teardown))
         .route("/api/workspace/:id/swap-main", post(api::swap_with_main))
         .route(
@@ -578,7 +581,6 @@ fn router(app: Arc<AppState>) -> Router {
         .route("/api/reviews/refresh", post(api::refresh_reviews))
         .route("/api/prs/refresh", post(api::refresh_prs))
         // The agent's own version: check it now, and install it in the drawer.
-        .route("/api/agent/update/refresh", post(api::refresh_agent_update))
         .route("/api/agent/upgrade/dismiss", post(api::dismiss_agent_upgrade))
         .route("/api/agent/upgrade", post(api::upgrade_agent))
         .route("/api/update/upgrade/dismiss", post(api::dismiss_app_upgrade))
@@ -648,7 +650,8 @@ fn observer_hooks() -> Router<Arc<AppState>> {
 /// The daemon owns worktree creation going forward, but it must not be blind to
 /// the ones a previous run (or a hand-run `claude -w`) left behind.
 async fn adopt_existing_worktrees(app: &Arc<AppState>) -> Result<()> {
-    let entries = git::worktree_list(&app.cfg.main_checkout)?;
+    let main = app.cfg.main_checkout.clone();
+    let entries = proc::run_blocking("listing worktrees", move || git::worktree_list(&main)).await??;
     let dir = app.cfg.worktrees_dir();
     for e in entries {
         let path = PathBuf::from(&e.path);
@@ -762,26 +765,22 @@ fn start_pr_poller(app: Arc<AppState>) {
         tracing::info!("polling PRs for {}/{}", repo.0, repo.1);
 
         let interval = std::time::Duration::from_secs(app.cfg.poll_seconds.max(30));
-        /* **`start` has already done this pass.** It fetches the base ref and
-           spawns the first sweep, both before this task exists, so running them
-           again immediately is one redundant network round trip and one redundant
-           walk of every worktree. Two `git fetch` back to back cost ~1.5s each on
-           the monorepo this is measured on.
+        /* **`start` has already done this pass**, so the first tick skips it: it
+           fetches the base ref and spawns the first sweep before this task exists,
+           and repeating them is a network round trip and a walk of every worktree
+           for an answer just given. (CLAUDE.md carries what the two cost.)
 
-           Skipping is safe because boot's fetch is *unconditional* and awaited:
-           by the time the poller is started it has either refreshed the ref or
-           logged that it could not, and the second case is the offline one that
-           `start` already treats as "the last-known ref still resolves". So the
-           worst this costs is a base one poll interval staler than it would have
-           been, in the case where fetching does not work anyway.
+           Skipping is safe because boot's fetch is *unconditional* and awaited: by
+           now it has either refreshed the ref or logged that it could not, and the
+           second case is the offline one `start` already treats as "the last-known
+           ref still resolves". The worst this costs is a base one poll interval
+           staler, in the case where fetching does not work anyway.
 
-           The sweep half was already *usually* skipped, by `AppState::sweeping`:
-           on a big checkout boot's sweep outlives this fetch, so the `try_lock`
-           refuses. That made the behaviour depend on which of the two finished
-           first — measured here, 119ms against 1395ms, so both ran. Not doing it
-           at all is the same outcome without the race. The lock stays for the
-           cases that are genuinely concurrent: a manual reconcile, the workspace
-           watcher, a later tick that overruns. */
+           The sweep half was already *usually* skipped by `AppState::sweeping`,
+           which made the behaviour depend on which of the two finished first. Not
+           doing it at all is the same outcome without the race; the lock stays for
+           the genuinely concurrent cases (a manual reconcile, the workspace
+           watcher, a later tick that overruns). */
         let mut boot_already_did_this = true;
         loop {
             if boot_already_did_this {
@@ -798,7 +797,15 @@ fn start_pr_poller(app: Arc<AppState>) {
 
             app.inner.write().await.pr_polling = true;
             app.notify().await;
-            let token = forge::resolve_token(app.cfg.github_token_file.as_deref());
+            // Off the runtime. The ladder ends at `gh auth token`, a bounded child
+            // process whose pipes are drained on threads of their own, and this
+            // runs on every tick.
+            let file = app.cfg.github_token_file.clone();
+            let token = crate::proc::run_blocking("resolving the GitHub token", move || {
+                forge::resolve_token(file.as_deref())
+            })
+            .await
+            .unwrap_or_else(Err);
             match token {
                 Ok(t) => {
                     // No warning for a `gh auth token`. §6 wants read scopes only
@@ -878,14 +885,6 @@ fn start_pr_poller(app: Arc<AppState>) {
     });
 }
 
-/// Bring back the sessions that were live when the daemon last went down.
-///
-/// A crash or a reboot takes every Claude process with it, because the daemon
-/// owns the pty. Resuming costs the scrollback — ring buffers are in memory —
-/// but keeps the conversation, which is the part that took time to build.
-///
-/// Deliberately skipped: automation runs, because the PR has moved on and §8
-/// demotes an orphaned run to `Exhausted` rather than resurrecting it.
 /// Of several resumable records, the ones to actually bring back: at most one per
 /// workspace, oldest first.
 ///
@@ -901,6 +900,14 @@ fn first_per_workspace(mut resumable: Vec<store::SessionRecord>) -> Vec<store::S
         .collect()
 }
 
+/// Bring back the sessions that were live when the daemon last went down.
+///
+/// A crash or a reboot takes every Claude process with it, because the daemon
+/// owns the pty. Resuming costs the scrollback — ring buffers are in memory —
+/// but keeps the conversation, which is the part that took time to build.
+///
+/// Deliberately skipped: automation runs, because the PR has moved on and §8
+/// demotes an orphaned run to `Exhausted` rather than resurrecting it.
 fn auto_resume(app: Arc<AppState>, records: Vec<store::SessionRecord>) {
     tokio::spawn(async move {
         // Any session that was live, whatever started it. `/resolve` and the fix
@@ -956,56 +963,6 @@ fn auto_resume(app: Arc<AppState>, records: Vec<store::SessionRecord>) {
             app.notify().await;
         }
     });
-}
-
-/// Write live findings to a gitignored `daemon.log`, but only when the daemon is
-/// managing orchd's own checkout (dogfooding) or `log_path` is set. Anywhere
-/// else there is nothing to dogfood, so no logger starts and no repo the daemon
-/// was not asked about is touched — the old build-time TODO.md write is gone.
-fn start_findings_log(app: Arc<AppState>) {
-    let path = app
-        .cfg
-        .log_path
-        .clone()
-        .or_else(|| findings::dogfood_log(&app.cfg.main_checkout));
-    let Some(path) = path else { return };
-    tokio::spawn(async move {
-        loop {
-            let found = live_findings(&app).await;
-            if let Err(e) = findings::write_log(&path, &found) {
-                tracing::warn!("could not write {}: {e:#}", path.display());
-            }
-            tokio::time::sleep(std::time::Duration::from_secs(app.cfg.poll_seconds.max(60))).await;
-        }
-    });
-}
-
-async fn live_findings(app: &Arc<AppState>) -> Vec<findings::Finding> {
-    let mut out = Vec::new();
-
-    // `gh auth token` was reported here as a finding, and it is gone for the reason
-    // the `⚠` beside `pr_age_ms` went: a condition you have decided to live with is
-    // not a finding, it is furniture, and furniture in a list you read deliberately
-    // teaches you to stop reading it. The fact is still in the snapshot as
-    // `token_source` for anyone diagnosing over the API, and TODO.md's decisions
-    // section says the fallback is accepted.
-    let review_bad = {
-        let inner = app.inner.read().await;
-        match &inner.reviews {
-            crate::reviews::ReviewState::Degraded { reason } => Some(reason.clone()),
-            // Pending is startup, not a fault.
-            _ => None,
-        }
-    };
-
-    if let Some(reason) = review_bad {
-        out.push(findings::Finding {
-            what: "review queue is unavailable".into(),
-            why: format!("the forge is not answering the review query: {}", reason.trim()),
-        });
-    }
-
-    out
 }
 
 /// Own timer, offset from the PR poll so the two do not burst together (§6b).
@@ -1086,7 +1043,11 @@ fn start_workspace_watcher(app: Arc<AppState>) {
                 continue;
             }
             for ws in busy {
-                let _ = app.reconcile(&ws).await;
+                // Debug: a reconcile that cannot read a tree keeps the previous
+                // measurement by design, so this is a note, not a fault.
+                if let Err(e) = app.reconcile(&ws).await {
+                    tracing::debug!(workspace = %ws, "reconcile failed: {e:#}");
+                }
             }
             app.notify().await;
         }
@@ -1124,7 +1085,9 @@ async fn adopt_pending_worktrees(app: &Arc<AppState>) {
     }
 
     let dir = app.cfg.worktrees_dir();
-    let Ok(entries) = git::worktree_list(&app.cfg.main_checkout) else {
+    let main = app.cfg.main_checkout.clone();
+    let Ok(Ok(entries)) = proc::run_blocking("listing worktrees", move || git::worktree_list(&main)).await
+    else {
         return;
     };
     let known: std::collections::HashSet<String> =
@@ -1204,7 +1167,12 @@ fn start_head_poller(app: Arc<AppState>) {
                     // so only once) and its current contents, without reconciling —
                     // the branch was already read when the workspace was registered.
                     Entry::Vacant(e) => {
-                        let Ok(head) = git::head_file(&path) else { continue };
+                        let at = path.clone();
+                        let Ok(Ok(head)) =
+                            proc::run_blocking("resolving HEAD", move || git::head_file(&at)).await
+                        else {
+                            continue;
+                        };
                         let contents = std::fs::read_to_string(&head).unwrap_or_default();
                         e.insert((head, contents));
                     }
@@ -1215,7 +1183,9 @@ fn start_head_poller(app: Arc<AppState>) {
                         let Ok(contents) = std::fs::read_to_string(&*head) else { continue };
                         if contents != *last {
                             *last = contents;
-                            let _ = app.reconcile(&id).await;
+                            if let Err(e) = app.reconcile(&id).await {
+                                tracing::debug!(workspace = %id, "reconcile failed: {e:#}");
+                            }
                             changed = true;
                         }
                     }
@@ -1316,76 +1286,6 @@ fn stack_running(main: &std::path::Path) -> bool {
         .unwrap_or(false)
 }
 
-/// Notice a newer GitHub release than the running build.
-///
-/// The release lives on the fork (`kbarendrecht/orchestrator`), which is where
-/// the app itself ships from — distinct from the *monorepo's* upstream that the
-/// PR poller watches. Checks on launch and every hour; a found update sits
-/// in the snapshot as a dismissible nudge, and `mise up` is what installs it.
-///
-/// **Hourly is one request an hour**, against 5000 with a token and 60 without,
-/// and the only other work — `providing_tool`, which shells `mise ls --json` — runs
-/// only once a newer tag has actually been found. Six hours was the old interval
-/// and its cost was the same; what it bought was being most of a working day
-/// behind a release that was already out.
-fn start_update_poller(app: Arc<AppState>) {
-    // The repo the binary is released from, not the monorepo it hosts.
-    const RELEASE_REPO: (&str, &str) = ("kbarendrecht", "orchestrator");
-    let current = env!("CARGO_PKG_VERSION").to_string();
-    let token_file = app.cfg.github_token_file.clone();
-    tokio::spawn(async move {
-        let interval = std::time::Duration::from_secs(60 * 60);
-        loop {
-            let cur = current.clone();
-            // Rides the same token ladder the PR poller uses. The repo is public,
-            // so an unauthenticated read would usually work — but GitHub rate-limits
-            // those by IP at 60/hour, shared with everything else on the machine,
-            // and a token lifts it to 5000. Resolved per poll, off-thread, so a
-            // rotated token is picked up and a slow `gh auth token` never blocks
-            // the runtime. A missing token is not an error: the nudge just waits.
-            let tf = token_file.clone();
-            if let Ok(Some((tag, url))) = tokio::task::spawn_blocking(move || {
-                let token = forge::resolve_token(tf.as_deref()).ok().map(|t| t.value);
-                forge::latest_release(RELEASE_REPO.0, RELEASE_REPO.1, token.as_deref())
-            })
-            .await
-            {
-                let newer = match (parse_semver(&tag), parse_semver(&cur)) {
-                    (Some(latest), Some(running)) => latest > running,
-                    _ => false,
-                };
-                // Only when there is something to offer, and off-thread because it
-                // shells mise. `None` is the ordinary answer for every install mise
-                // did not make, and it is what leaves the bar as the link it was.
-                let tool = if newer {
-                    let main = app.cfg.main_checkout.clone();
-                    tokio::task::spawn_blocking(move || crate::self_update::providing_tool(&main))
-                        .await
-                        .unwrap_or(None)
-                } else {
-                    None
-                };
-                let next = newer.then(|| crate::state::UpdateInfo {
-                    current: cur.clone(),
-                    latest: tag.trim_start_matches('v').to_string(),
-                    url,
-                    tool,
-                });
-                let mut inner = app.inner.write().await;
-                if inner.update != next {
-                    inner.update = next;
-                    drop(inner);
-                    app.notify().await;
-                }
-            }
-            tokio::time::sleep(interval).await;
-        }
-    });
-}
-
-/// `v1.2.3` / `1.2.3` / `1.2.3-rc1` → `(1, 2, 3)`. Prerelease and build metadata
-/// are dropped: good enough to answer "is there a newer release", which is all
-/// the nudge asks. Anything unparseable is `None` and simply never nags.
 /// The directory the running executable sits in, when `orch` is really there.
 ///
 /// Every packaging puts the two binaries side by side — the tarball, the `.deb`'s
@@ -1399,16 +1299,6 @@ pub fn sibling_bin_dir() -> Option<String> {
     dir.join("orch")
         .is_file()
         .then(|| dir.to_string_lossy().into_owned())
-}
-
-fn parse_semver(s: &str) -> Option<(u64, u64, u64)> {
-    let core = s.trim().trim_start_matches('v');
-    let core = core.split(['-', '+']).next()?;
-    let mut parts = core.split('.');
-    let major = parts.next()?.parse().ok()?;
-    let minor = parts.next().unwrap_or("0").parse().ok()?;
-    let patch = parts.next().unwrap_or("0").parse().ok()?;
-    Some((major, minor, patch))
 }
 
 pub(crate) fn resolve_repo(app: &Arc<AppState>) -> Option<(String, String)> {
@@ -1590,14 +1480,7 @@ mod tests {
     /// seconds.
     #[tokio::test]
     async fn a_sweep_measures_the_workspaces_you_are_looking_at_first() {
-        let dir = std::env::temp_dir().join(format!("orchd-sweep-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let cfg: Config = serde_json::from_str(&format!(
-            r#"{{"main_checkout":"{}","port":7796}}"#,
-            dir.display()
-        ))
-        .unwrap();
-        let app = AppState::new(cfg, "t".into(), window::Chrome::None);
+        let (app, dir) = crate::testutil::app("sweep");
 
         // Named so alphabetical order would put them in exactly the wrong places:
         // `a-empty` first and `z-session` last.

@@ -103,7 +103,7 @@ fn inside(path: &Path, root: &Path, shared: &[String]) -> bool {
     })
 }
 
-pub fn version_of(bytes: &[u8]) -> String {
+fn version_of(bytes: &[u8]) -> String {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
     let mut h = DefaultHasher::new();
@@ -111,16 +111,51 @@ pub fn version_of(bytes: &[u8]) -> String {
     format!("{:016x}", h.finish())
 }
 
+/// Open `path` for reading without following a final symlink. `ELOOP` is the
+/// kernel saying "that is a link", which is the one answer a stat-then-open
+/// cannot give without a window between the two.
+fn open_no_follow(path: &Path) -> std::io::Result<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)
+}
+
 pub fn read(workspace_root: &Path, rel: &str, shared: &[String]) -> Result<FileContents> {
+    use std::io::Read as _;
     let path = resolve_in_workspace(workspace_root, rel, shared)?;
-    let md = std::fs::metadata(&path).with_context(|| format!("stat {}", path.display()))?;
+    // `resolve_in_workspace` checked where a link points, but a stat followed by
+    // an open is two steps, and a path can be made a link between them. So the
+    // open itself refuses to follow: a plain file opens; a link comes back `ELOOP`,
+    // its target is checked again and opened the same way, and a target that is
+    // itself a link is refused rather than followed anywhere.
+    let mut file = match open_no_follow(&path) {
+        Ok(f) => f,
+        Err(e) if e.raw_os_error() == Some(libc::ELOOP) => {
+            let root = std::fs::canonicalize(workspace_root)
+                .with_context(|| format!("resolving {}", workspace_root.display()))?;
+            let target = std::fs::canonicalize(&path)
+                .with_context(|| format!("resolving the symlink {rel}"))?;
+            if !inside(&target, &root, shared) {
+                bail!(
+                    "{rel} is a symlink to {}, which is outside the workspace",
+                    target.display()
+                );
+            }
+            open_no_follow(&target).with_context(|| format!("opening {}", target.display()))?
+        }
+        Err(e) => return Err(e).with_context(|| format!("opening {}", path.display())),
+    };
+    let md = file.metadata().with_context(|| format!("stat {}", path.display()))?;
     if md.len() > MAX_EDIT_BYTES {
         bail!(
             "{rel} is {} bytes, past the {MAX_EDIT_BYTES} byte edit limit",
             md.len()
         );
     }
-    let bytes = std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
+    let mut bytes = Vec::with_capacity(md.len() as usize);
+    file.read_to_end(&mut bytes).with_context(|| format!("reading {}", path.display()))?;
     let content = String::from_utf8(bytes)
         .map_err(|_| anyhow::anyhow!("{rel} is not UTF-8, so it is not editable here"))?;
     Ok(FileContents {
@@ -149,6 +184,16 @@ pub fn write(
     shared: &[String],
 ) -> Result<WriteOutcome> {
     let path = resolve_in_workspace(workspace_root, rel, shared)?;
+    // Never through a link. The rename below replaces whatever is at `path`, so a
+    // write onto an in-tree symlink turned the link into a regular file: a
+    // `typechange` in git, and the file it pointed at untouched. Links are readable
+    // here on purpose; they are not a thing this editor rewrites.
+    let is_link = std::fs::symlink_metadata(&path)
+        .map(|md| md.file_type().is_symlink())
+        .unwrap_or(false);
+    if is_link {
+        bail!("{rel} is a symlink; edit the file it points at instead");
+    }
     let current = std::fs::read(&path).unwrap_or_default();
     let on_disk = version_of(&current);
     if on_disk != expected {
@@ -183,9 +228,10 @@ mod tests {
 
     use super::*;
 
+    /// A workspace root with a `src/` in it, which is what every case below edits
+    /// through.
     fn scratch(name: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("orchd-edit-{}-{name}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
+        let d = crate::testutil::scratch(&format!("edit-{name}"));
         std::fs::create_dir_all(d.join("src")).unwrap();
         d
     }
@@ -298,6 +344,28 @@ mod tests {
         assert!(resolve_in_workspace(&d, "src/../../x", NONE).is_err());
         assert!(resolve_in_workspace(&d, "", NONE).is_err());
         assert!(resolve_in_workspace(&d, "src/a.txt", NONE).is_ok());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// A write lands by rename, which replaces a link rather than following it.
+    /// So an in-tree link, which `read` allows, is refused by `write`: the
+    /// alternative was a `typechange` commit and the real file left as it was.
+    #[test]
+    fn a_write_through_an_in_tree_symlink_is_refused() {
+        let d = scratch("write-link");
+        std::fs::write(d.join("src/real.txt"), "real\n").unwrap();
+        std::os::unix::fs::symlink(d.join("src/real.txt"), d.join("src/alias.txt")).unwrap();
+        let seen = read(&d, "src/alias.txt", NONE).expect("an in-tree link reads");
+        assert_eq!(seen.content, "real\n");
+        let err = write(&d, "src/alias.txt", "other\n", &seen.version, NONE)
+            .expect_err("a write through a link must be refused")
+            .to_string();
+        assert!(err.contains("symlink"), "{err}");
+        assert!(
+            std::fs::symlink_metadata(d.join("src/alias.txt")).unwrap().file_type().is_symlink(),
+            "the link was replaced"
+        );
+        assert_eq!(std::fs::read_to_string(d.join("src/real.txt")).unwrap(), "real\n");
         let _ = std::fs::remove_dir_all(&d);
     }
 

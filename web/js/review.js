@@ -1940,8 +1940,13 @@ async function loadReview(pr) {
     /* A batch that stopped for the manual phase now lives on the daemon, so a reload,
        a restart, or coming back to this PR resumes it instead of stranding a branch
        whose patches are already committed. Only adopted when the screen is not
-       already showing one, so a live phase's own state is never clobbered by a tick. */
-    if (data.manual && !reviewState.report) {
+       already showing one, so a live phase's own state is never clobbered by a tick.
+
+       `open` matters: the same store also holds the daemon's record that it pushed,
+       for a batch that never stopped at all. That entry has no threads, and adopting
+       it landed you on an empty phase screen whose `continue · push and post` was
+       enabled, because every() over no rows is true. */
+    if (data.manual && data.manual.open && !reviewState.report) {
       reviewState.report = {
         refused: null, files: [], amend: null, pushed: null,
         landed: [], failed: [], skipped: [], rerequested: [], held_back: [],

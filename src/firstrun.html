@@ -285,13 +285,19 @@
 
   // Open a project. Overrides come from the review; a recent skips it and opens
   // with none, letting the daemon detect for itself.
+  // One open at a time: a second click while the first is in flight would boot
+  // the daemon twice. The server refuses that too; this keeps the page honest.
+  let opening = false;
   async function openProject(path, overrides) {
+    if (opening) return;
+    opening = true;
     try {
       const r = await (await post('/api/open', { path, ...(overrides || {}) })).json();
-      if (r.ok) show('starting');   // the window is about to be navigated to the daemon
-      else if (overrides) reviewMsg(r.error || 'could not open that folder');
+      if (r.ok) { show('starting'); return; }   // the window is about to be navigated to the daemon
+      if (overrides) reviewMsg(r.error || 'could not open that folder');
       else msg(r.error || 'could not open that folder', 'bad');
     } catch (e) { msg('could not reach the app: ' + e.message, 'bad'); }
+    opening = false;
   }
 
   // --- the review step: shown for a freshly chosen folder ---

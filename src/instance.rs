@@ -137,13 +137,7 @@ mod tests {
     use super::*;
 
     fn scratch(tag: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!(
-            "orchd-lock-{}-{tag}-{:?}",
-            std::process::id(),
-            std::thread::current().id()
-        ));
-        std::fs::create_dir_all(&d).unwrap();
-        d.join("instance.pid")
+        crate::testutil::scratch(&format!("lock-{tag}")).join("instance.pid")
     }
 
     /// The invariant the module exists for, and the one the pid-file version

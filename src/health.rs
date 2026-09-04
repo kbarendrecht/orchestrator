@@ -70,7 +70,7 @@ pub fn scan_lines(spec: &ManagedSpec, pending: &mut String) -> Option<Health> {
 
 
 /// Strip CSI/OSC escape sequences so pattern matching sees the plain text.
-pub fn strip_ansi(s: &str) -> String {
+fn strip_ansi(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut chars = s.chars().peekable();
     while let Some(c) = chars.next() {

@@ -210,10 +210,11 @@ pub fn save_window(rec: &WindowRecord) {
     let Ok(dir) = Config::config_dir() else {
         return;
     };
-    let _ = std::fs::create_dir_all(&dir);
-    if let Ok(json) = serde_json::to_string(rec) {
-        let _ = std::fs::write(dir.join("window.json"), format!("{json}\n"));
-    }
+    // Through `save_json` like every other store, for its write-and-rename: this
+    // is written on every resize and every move, so a crash mid-write could leave
+    // a truncated file, which reads back as no opinion at all and loses the
+    // geometry it was in the middle of remembering.
+    let _ = save_json(&dir.join("window.json"), rec);
 }
 
 /// What [`save_window`] wrote, if it can still be read.
@@ -512,9 +513,6 @@ pub fn reap_orphans(records: &[SessionRecord]) -> usize {
     killed
 }
 
-/// Whether there is a conversation here, not merely a file.
-///
-/// [`transcript_exists`] is the weaker question and it is not enough before a
 /// When this conversation was last worked in, as evidence rather than bookkeeping.
 ///
 /// The transcript's own mtime. Claude Code appends a line per turn, so the file's
@@ -572,12 +570,13 @@ pub fn has_conversation(id: uuid::Uuid, cwd: &Path, recorded: Option<&Path>) -> 
 ///
 /// A session killed before its first turn has no `.jsonl` at all, and there is
 /// nothing to come back to: `claude --resume` answers "no conversation found"
-/// and exits. Both the startup resume and the rail's archive ask this, so they
-/// ask it the same way.
+/// and exits. Test-only now: every caller that had to decide something asks
+/// [`has_conversation`] instead, which is the question worth asking.
 ///
 /// Says nothing about whether the file holds a *turn* — see [`has_conversation`]
 /// for that, which is what anything about to `--resume` should ask.
-pub fn transcript_exists(id: uuid::Uuid, cwd: &Path, recorded: Option<&Path>) -> bool {
+#[cfg(test)]
+fn transcript_exists(id: uuid::Uuid, cwd: &Path, recorded: Option<&Path>) -> bool {
     transcript_file(id, cwd, recorded).is_some()
 }
 
@@ -1060,6 +1059,7 @@ mod tests {
                 draft: String::new(),
             }],
             decisions: "0badc0de0badc0de".into(),
+            open: true,
         };
         let map: std::collections::HashMap<u64, crate::post::ManualPhase> = [(10001, phase)].into();
         let back: std::collections::HashMap<u64, crate::post::ManualPhase> =

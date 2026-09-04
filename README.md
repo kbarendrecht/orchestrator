@@ -170,7 +170,7 @@ back to `config.json`; changes take effect on restart.
 | `upstream_ref` / `upstream_remote` | `origin/HEAD`, `origin` | the base every diff and worktree is measured against. On a **fork workflow** — an `upstream` remote beside `origin` — a first run detects it and writes `upstream/<default branch>` instead, so there is nothing to set by hand. |
 | `reviews_command` | the ejected `reviews.js` | argv printing the review queue as JSON. See below. Empty means the pane reads "not configured" rather than "unavailable". |
 | `main_processes` | *(empty)* | long-running processes shown in the drawer. See below. |
-| `tracker` | `none` | where an out-of-scope review point can be filed as a story. `shortcut` is the one implementation; the seam for adding others is `src/tracker/`. Its token is **not** a config key — set `ORCHD_TRACKER_TOKEN` in the daemon's environment, or let `env_source` read the checkout's own. It also needs the repo to declare a matching **MCP server** — see below. |
+| `tracker` | `none` | where an out-of-scope review point can be filed as a story. `shortcut` is the one implementation; adding another is a variant of `TrackerKind` and its four facts in `config.rs`, plus a prompt. Its token is **not** a config key — set `ORCHD_TRACKER_TOKEN` in the daemon's environment, or let `env_source` read the checkout's own. It also needs the repo to declare a matching **MCP server** — see below. |
 | `env_source` | `mise` | which tool is asked what a session's own directory exports — `mise`, `direnv`, or `none`. Config file only, not in the settings panel. See below. |
 | `default_language` | `English` | the language the agent *writes* replies and stories in. Prompts and code stay English regardless. |
 | `shared_worktree_paths` | *(empty)* | directories inside a worktree that are allowed to be symlinks *out* of it, e.g. a plan dir shared back to main. The editable diff pane refuses every other path that resolves outside the workspace. |
@@ -191,7 +191,6 @@ repos leave them at the default:
 | `poll_seconds` | `300` | how often the PR poll runs. One query per period, negligible against the API budget. |
 | `review_timeout_seconds` | `240` | ceiling for `reviews_command` before the poller gives up on it. |
 | `story_timeout_seconds` | `300` | ceiling for the borrowed story-filing agent — the one timeout in the daemon, because its caller is a blocking request rather than a rail entry someone is watching. |
-| `log_path` | *(none)* | where live findings are written. Unset, they go to a gitignored `daemon.log`, and only when the daemon manages orchd's own checkout. Set it to capture findings from a daemon managing any other repo. |
 | `allow_several_in_main` | `false` | let main hold more than one live session. Off because one checkout is one working tree and one git index: two agents there share both, the changed-file pane merges their edits without saying who wrote what, and one agent's `git add` stages the other's work. Moving main's checkout still refuses while any session is live in it. Editable in the settings panel. |
 | `auto_resume` | `true` | relaunch sessions that were live when the daemon last went down, with `--resume`, so a crash costs the scrollback rather than the conversation. |
 | `forge` | `github` | which forge the repo lives on. Only GitHub is implemented; the key exists so a second platform is a config choice, not a rebuild. |
@@ -496,7 +495,7 @@ src/
   instance.rs   the one-daemon-at-a-time pid lock
   headroom.rs   the pre-spawn resource check every session goes through
   window.rs     Chrome, and the handle the desktop shell registers
-  pty.rs        portable-pty host      ring.rs   scrollback
+  pty.rs        portable-pty host, and the scrollback ring every pty keeps
   proc.rs       run a child with a deadline, portably (no coreutils `timeout`)
   hooks.rs      hook receiver and the generated settings file
   spawn.rs      session / worktree / process spawning, and worktree_setup
@@ -515,20 +514,22 @@ src/
   skills.rs     the vendored skills in skills/, written out as the plugin dir
                 every spawn is handed with --plugin-dir
   story.rs      filing a tracker story for a fair-but-out-of-scope point
-  env_source/   where a session's own variables come from: trait + dispatch
-                (mod.rs), mise.rs, direnv.rs
+  env_source.rs where a session's own variables come from: mise or direnv, asked per spawn
   reviews.rs    review queue: runs reviews_command, parses JSON, degraded states
   fix_pr.rs     automation state, the fix-pr guard table, a run's verdict
-  agent_update.rs   is Claude Code behind (via mise), and the one-click upgrade
-  self_update.rs    which mise tool installed *us*, so the app can upgrade itself
+  update.rs     both upgrade bars: is Claude Code behind (via mise), and which
+                mise tool installed *us*, so the app can upgrade itself
   worktree.rs   teardown preflight, archive, revive, removal
   store.rs      session record persistence, orphan reaping
   api.rs        HTTP surface and the origin/token guards      ws.rs  event stream + pty attach
-  findings.rs   the live findings the daemon can see, written to daemon.log
   guard.rs      the git push rules, run by `orch guard push` as a PreToolUse hook
   machine.rs    what the daemon needs from the machine, warned about at boot
+  testutil.rs   the shared test fixtures (scratch dirs, an AppState, a Pr)
 web/            the SPA (vanilla, xterm.js vendored) — one module graph under js/,
                 booted by app.js; snapshot.d.ts is generated from the Rust structs
+desktop/src/    the Tauri shell: main.rs (window, boot, splash), launcher.rs (the
+                .desktop entry and the macOS .app bundle), login_path.rs (the
+                login shell's PATH, adopted before the runtime exists)
 ```
 
 ## Licence

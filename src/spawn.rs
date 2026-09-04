@@ -1,7 +1,6 @@
 use anyhow::{bail, Context, Result};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::SystemTime;
 use uuid::Uuid;
 
 use crate::config::{Config, ManagedSpec};
@@ -89,7 +88,7 @@ async fn run_worktree_hook(
                 worktree = %path.display(),
                 "{label} `{shown}` exited {}: {}",
                 out.status.code().unwrap_or(-1),
-                crate::proc::stderr_tail(&out)
+                crate::proc::stderr_tail(&out.stderr)
             );
         }
         Ok(Err(e)) => {
@@ -128,7 +127,7 @@ pub enum Source {
 /// Waits on the exit channel rather than polling it, and only *reads* it:
 /// deciding what a death means stays `watch_session_exit`'s job, so there is
 /// still one observer of the exit itself. Timing out is the good answer.
-pub async fn spawn_session_confirmed(
+async fn spawn_session_confirmed(
     app: &Arc<AppState>,
     workspace: &str,
     kind: Kind,
@@ -325,6 +324,14 @@ async fn restore_after_relocate(
 /// A spawn that fails takes the record straight back out, so a refusal still costs
 /// nothing. The record is briefly in the map with no pty, which is a state it
 /// already has to survive: every session restored from disk starts that way.
+///
+/// **The headroom check lives here because this is the only thing every spawned
+/// agent goes through.** It was written at two of the four callers and worded
+/// differently at each, so the rail's new-worktree button, the fork path and the
+/// story filer started an agent on a box with no room while a run and an
+/// interactive session were refused. Managed processes and drawer shells go
+/// straight to [`PtyHandle::spawn`] and are deliberately not covered: a shell is
+/// not what exhausts a machine.
 pub(crate) async fn insert_and_spawn(
     app: &Arc<AppState>,
     id: SessionId,
@@ -334,6 +341,7 @@ pub(crate) async fn insert_and_spawn(
     env: &[(String, String)],
     unset: &[&str],
 ) -> Result<crate::pty::Spawned> {
+    crate::headroom::check().map_err(|why| anyhow::anyhow!("not starting a session: {why}"))?;
     {
         let mut inner = app.inner.write().await;
         inner.sessions.insert(id, session);
@@ -354,6 +362,69 @@ pub(crate) async fn insert_and_spawn(
         }
     }
     Ok(spawned)
+}
+
+/// What a resume or a fork carries over from the record it continues.
+#[derive(Default)]
+struct Carried {
+    /// A resume comes back at an empty prompt, so whether the turn behind it was
+    /// interrupted is the one thing it cannot re-derive. A fork starts a fresh
+    /// direction, so it is never interrupted.
+    interrupted: bool,
+    /// Carries across both: a resumed conversation already had its turns, and a
+    /// fork replays the parent's — so both open on a real conversation, not an
+    /// empty pane, and reading it fresh would say otherwise until the next
+    /// `Working`.
+    had_a_turn: bool,
+    /// Carried first, read second. A resume or a fork continues a conversation
+    /// that already knows what it is about, and the tree it comes back to may have
+    /// been swapped since, so asking git would quietly rewrite the conversation's
+    /// own history to match whatever is checked out now, which is the mismatch the
+    /// field exists to catch. Only a genuinely new session asks the tree.
+    branch: Option<String>,
+    /// The undelivered arrival notice rides along for the same reason: a session
+    /// moved while it was not running is told when auto-resume brings it back, and
+    /// that resume is exactly this path.
+    notice: Option<String>,
+    /// A name you typed survives a resume. The record is rebuilt under the same
+    /// id, so unless it is carried it reverts to the workspace default — which is
+    /// exactly what auto-resume on a restart did, since it resumes through this
+    /// path and never through `restore_after_relocate`. The title needs no carry:
+    /// it is re-read from the transcript. Resume only, not fork: a fork is a new
+    /// conversation and earns its own name (the degraded-relocate fork is the one
+    /// exception, and it gets the name back through `restore_after_relocate`).
+    name: Option<String>,
+    /// When this conversation actually began, which a resume otherwise loses.
+    ///
+    /// `Session::new` stamps it with *now*, and a resume rebuilds the record under
+    /// the same id — so an hours-old conversation came back claiming to have
+    /// started this second. That is not bookkeeping: `claim_stale_warning` refuses
+    /// to warn about a file rewritten *before* the session started, on the grounds
+    /// that a session which never saw the old contents cannot be working from
+    /// them, and after a restart every session says it started just now. So the
+    /// one session that needs the warning is the one that stops getting it.
+    /// `SessionRecord` persists this and `restore` puts it back at boot; auto-resume
+    /// discarded it a moment later. `None` for a fresh session, which really did
+    /// start now.
+    created_at: Option<std::time::SystemTime>,
+}
+
+impl Carried {
+    fn from(prev: Option<&Session>, fork: bool) -> Self {
+        let Some(prev) = prev else {
+            return Self::default();
+        };
+        Carried {
+            interrupted: !fork && prev.interrupted,
+            had_a_turn: prev.had_a_turn,
+            branch: prev.branch.clone(),
+            notice: prev.arrival_notice.clone(),
+            name: if fork { None } else { prev.name.clone() },
+            // Resume only. A fork is a new conversation and started when it was
+            // forked, so the files you rewrote before it existed are news to it.
+            created_at: (!fork).then_some(prev.created_at),
+        }
+    }
 }
 
 /// Spawn an interactive Claude session in an existing workspace.
@@ -413,72 +484,26 @@ pub async fn spawn_session(
     }
     cmd.extend(crate::config::session_flags()?);
 
-    // Asked before anything is created, and for every spawn rather than only the
-    // ones an agent asks for: the button in the rail can be the last straw just
-    // as easily as a CLI call.
-    crate::headroom::check().map_err(|why| anyhow::anyhow!("not starting a session: {why}"))?;
     phases.mark("claim");
 
-    // Built before the spawn so the pty can carry the session's own ask token:
-    // it is minted with the session, and the agent reads it from its environment.
-    // Read before the insert below replaces it: a resume keeps the id, so the
-    // record of what the conversation was doing is about to be overwritten by the
-    // session that continues it.
-    // A resume comes back at an empty prompt, so whether the turn behind it was
-    // interrupted is the one thing it cannot re-derive. A fork starts a fresh
-    // direction, so it is never interrupted. `had_a_turn`, though, carries across
-    // both: a resumed conversation already had its turns, and a fork replays the
-    // parent's — so both open on a real conversation, not an empty pane, and
-    // reading it fresh would say otherwise until the next `Working`.
-    let (interrupted, had_a_turn) = match resume {
-        Some(Source::Resume(prev)) => {
-            let inner = app.inner.read().await;
-            let prev = inner.sessions.get(&prev);
-            (
-                prev.is_some_and(|s| s.interrupted),
-                prev.is_some_and(|s| s.had_a_turn),
-            )
-        }
-        Some(Source::Fork(prev)) => (
-            false,
-            app.inner.read().await.sessions.get(&prev).is_some_and(|s| s.had_a_turn),
-        ),
-        None => (false, false),
-    };
-
-    // Carried first, read second. A resume or a fork continues a conversation that
-    // already knows what it is about, and the tree it comes back to may have been
-    // swapped since, so asking git here would quietly rewrite the conversation's
-    // own history to match whatever is checked out now, which is the mismatch this
-    // field exists to catch. Only a genuinely new session has to ask the tree.
-    //
-    // The undelivered arrival notice rides along for the same reason: a session
-    // moved while it was not running is told when auto-resume brings it back, and
-    // that resume is exactly this path.
-    let (carried_branch, carried_notice) = match resume {
+    // What the previous record hands the session that continues it, read before
+    // the insert below replaces it: a resume keeps the id, so the record of what
+    // the conversation was doing is about to be overwritten. One read for the lot;
+    // these used to be four separate lock acquisitions on the same record.
+    let Carried {
+        interrupted,
+        had_a_turn,
+        branch: carried_branch,
+        notice: carried_notice,
+        name: carried_name,
+        created_at: carried_created_at,
+    } = match resume {
         Some(Source::Resume(prev)) | Some(Source::Fork(prev)) => {
+            let fork = matches!(resume, Some(Source::Fork(_)));
             let inner = app.inner.read().await;
-            let prev = inner.sessions.get(&prev);
-            (
-                prev.and_then(|s| s.branch.clone()),
-                prev.and_then(|s| s.arrival_notice.clone()),
-            )
+            Carried::from(inner.sessions.get(&prev), fork)
         }
-        None => (None, None),
-    };
-
-    // A name you typed survives a resume. The record is rebuilt under the same id,
-    // so unless it is carried here it reverts to the workspace default — which is
-    // exactly what auto-resume on a restart did, since it resumes through this path
-    // and never through `restore_after_relocate`. The title needs no carry: it is
-    // re-read from the transcript. Resume only, not fork: a fork is a new
-    // conversation and earns its own name (the degraded-relocate fork is the one
-    // exception, and it gets the name back through `restore_after_relocate`).
-    let carried_name = match resume {
-        Some(Source::Resume(prev)) => {
-            app.inner.read().await.sessions.get(&prev).and_then(|s| s.name.clone())
-        }
-        _ => None,
+        None => Carried::default(),
     };
 
     // A conversation the daemon has moved still believes it is isolated in the tree
@@ -535,41 +560,49 @@ pub async fn spawn_session(
     // a transcript is megabytes of turns.
     phases.mark("transcript");
 
+    // Off the runtime like every other git call on this path; only a new session
+    // asks (see `Carried::branch`).
+    let branch = match carried_branch {
+        Some(b) => Some(b),
+        None => {
+            let at = path.clone();
+            crate::proc::run_blocking("reading the session's branch", move || {
+                crate::git::current_branch(&at).ok()
+            })
+            .await
+            .unwrap_or(None)
+        }
+    };
+
     let mut session = Session::new(id, workspace.to_string(), path.clone(), kind);
     session.interrupted = interrupted;
     session.had_a_turn = had_a_turn;
-    session.branch = carried_branch.or_else(|| crate::git::current_branch(&path).ok());
+    session.branch = branch;
     session.arrival_notice = carried_notice;
     session.name = carried_name;
+    if let Some(began) = carried_created_at {
+        session.created_at = began;
+    }
     if let Some(Source::Fork(prev)) = resume {
         session.forked_from = Some(prev);
     }
 
+    // A resume rebuilds the environment from nothing, so the run's own credential
+    // has to be re-handed here as well as at a fresh spawn: through the same seam,
+    // because this is the path that forgot it once. See [`post_token_for`].
+    let post = post_token_for(app, &session.kind).await;
     // Off the runtime. `session_env` asks the checkout's own env source, which is a
     // bounded child process (`mise env`, `direnv export`) that `run_bounded` polls
     // with `thread::sleep` for up to five seconds — on *every* spawn. Parked on a
     // tokio worker that is the whole board freezing while a session starts.
-    let (mut env, unset) = {
+    let (env, unset) = {
         let (app, at, tok) = (app.clone(), path.clone(), session.ask_token.clone());
+        let post = post.clone();
         crate::proc::run_blocking("reading the session environment", move || {
-            crate::config::session_env(&app.cfg, &at, id, Some(&tok))
+            run_env(&app.cfg, &at, id, Some(&tok), post.as_deref(), &[])
         })
         .await?
     };
-    // A resumed review or triage run is the same run with the same proposals
-    // still to post, and the credential for posting them lives in the
-    // environment — which a resume rebuilds from nothing. So one came back able
-    // to ask questions, because the ask token is re-minted just above, and unable
-    // to post: the agent reported `ORCH_POST_TOKEN is absent from this
-    // environment` and then asked the human what to do about it, which is a
-    // question nobody can answer. `mint_post_token` records it too, so the route
-    // accepts the value the agent now holds.
-    if let Kind::Automation { pr, command } = &session.kind {
-        if crate::triage::posts_proposals(command) {
-            let token = crate::triage::mint_post_token(app, *pr).await;
-            env.push(("ORCH_POST_TOKEN".to_string(), token));
-        }
-    }
     // Read per spawn on purpose (`env_source`), and it is a bounded run of mise
     // or direnv in a fresh worktree, so it is a cold one.
     phases.mark("env");
@@ -586,7 +619,7 @@ pub async fn spawn_session(
     }
 
     watch_session_exit(app.clone(), id, spawned.handle);
-    crate::agent_update::refresh_detached(app);
+    crate::update::refresh_detached(app);
     app.notify().await;
     phases.log(&format!("session {} start in {workspace}", crate::model::short_id(&id)));
     Ok(id)
@@ -874,7 +907,174 @@ pub async fn spawn_worktree_session(
     let spawned = insert_and_spawn(app, id, session, &cmd, &spawn_cwd, &env, &unset).await?;
 
     watch_session_exit(app.clone(), id, spawned.handle);
-    crate::agent_update::refresh_detached(app);
+    crate::update::refresh_detached(app);
+    app.notify().await;
+    Ok(id)
+}
+
+/// The `Kind::Automation` command a resolve run carries.
+///
+/// Named for the reason `fix_pr::COMMAND` and `triage::COMMAND` are: the spawn,
+/// the prompt table and the exit watcher all have to agree on this string, and it
+/// was a bare literal in four places.
+pub(crate) const RESOLVE_RUN_COMMAND: &str = "resolve-run";
+
+/// The one line typed into a run's prompt box at `SessionStart`.
+///
+/// One line, because it is typed: the instructions themselves are in the file, and
+/// typing the whole prompt would submit at the first newline. `then` is what the
+/// file is for, in the run's own words.
+pub(crate) fn read_and_follow(prompt_file: &Path, then: &str) -> String {
+    format!("Read {} and follow it. {then}", prompt_file.display())
+}
+
+/// One automation run, in the shape every such spawn shares.
+///
+/// Four spawns — fix-pr, `/resolve`, the resolve run and the two posting runs —
+/// each built the `claude --session-id --settings` argv, rendered a prompt to the
+/// config dir and set `pending_prompt` for the `SessionStart` hook to type. They
+/// drifted apart in the one place it mattered: two of them set the prompt *after*
+/// `spawn_session` under a fresh lock, which is the window `insert_and_spawn`
+/// documents — a hook landing in it took the prompt and dropped it. [`spawn_run`]
+/// consumes this and sets everything on the record before the process exists.
+pub struct RunSpec {
+    /// The `Kind::Automation` command the session carries.
+    pub command: String,
+    /// What the `SessionStart` hook types, from [`read_and_follow`].
+    pub pending: String,
+    /// Whether the run takes decisions over the ask channel, and so is handed
+    /// `ORCH_ASK_TOKEN`. A run with nothing to ask is given the narrower surface.
+    pub asks: bool,
+    /// Variables the run needs beyond the checkout's own and the daemon's.
+    pub extra_env: Vec<(String, String)>,
+}
+
+impl RunSpec {
+    /// The session record for this run, as it goes into the map. Pure, so the one
+    /// property the whole struct exists for — the prompt is on the record before
+    /// the spawn — is testable without a `claude` to spawn.
+    fn session(&self, id: SessionId, workspace: &str, path: PathBuf, pr: u64) -> Session {
+        let mut session = Session::new(
+            id,
+            workspace.to_string(),
+            path,
+            Kind::Automation {
+                pr,
+                command: self.command.clone(),
+            },
+        );
+        session.pending_prompt = Some(self.pending.clone());
+        session
+    }
+}
+
+/// The environment a run is handed, and nothing more.
+///
+/// Extracted because this is the seam that decides *which* credential a run holds,
+/// and it used to be `app.token`: the whole API, handed to the pass whose input is
+/// other people's review comments. `ask` is `None` for a run with nobody to ask,
+/// `post` is `Some` only for a run that posts proposals. Both go in the environment
+/// rather than the prompt, because prompt text lands in a transcript and a pty
+/// buffer.
+/// The proposals credential a session of this kind is handed, minted and recorded,
+/// or `None` for one with nothing to post.
+///
+/// Its own function because the *resume* path is where this rule was forgotten
+/// once: `spawn_session` rebuilds a session's environment from nothing, so a
+/// resumed review run came back able to ask questions and unable to post its
+/// proposals, reporting `ORCH_POST_TOKEN is absent from this environment` after it
+/// had read every thread. Re-minted rather than persisted, like the ask token: the
+/// value is only ever compared against the record this write updates.
+pub(crate) async fn post_token_for(app: &Arc<AppState>, kind: &Kind) -> Option<String> {
+    match kind {
+        Kind::Automation { pr, command } if crate::triage::posts_proposals(command) => {
+            Some(crate::triage::mint_post_token(app, *pr).await)
+        }
+        _ => None,
+    }
+}
+
+pub(crate) fn run_env(
+    cfg: &crate::config::Config,
+    cwd: &Path,
+    id: SessionId,
+    ask: Option<&str>,
+    post: Option<&str>,
+    extra: &[(String, String)],
+) -> (Vec<(String, String)>, Vec<&'static str>) {
+    let (mut env, unset) = crate::config::session_env(cfg, cwd, id, ask);
+    if let Some(token) = post {
+        env.push(("ORCH_POST_TOKEN".to_string(), token.to_string()));
+    }
+    env.extend(extra.iter().cloned());
+    (env, unset)
+}
+
+/// Start an automation run in `workspace`: a headed `claude` told to read a file.
+///
+/// Headed, not `-p`: a run you can watch, answer and take over mid-flight. The
+/// guard tables decide whether a run may start; none of them depended on the run
+/// being invisible. The prompt is a file the session is told to read rather than
+/// a slash command, so nothing has to be installed on the agent's side and nothing
+/// is written into the checkout being driven.
+///
+/// **`id` is the caller's to mint, and that is the whole reason it is a parameter
+/// rather than a `Uuid::new_v4()` here.** Every run has a record of the daemon's
+/// own beside the session — `automation.by_pr`, `resolve_runs`, a posting run's
+/// proposals — and each caller used to write it *after* this returned. A `claude`
+/// that dies at once, on a bad `--settings` or the version gate, is reaped before
+/// that write lands, and [`watch_session_exit`] then goes looking for a run to
+/// settle and finds nothing: the resolve run read as in flight until a restart, a
+/// posting run's "exited without posting" warning read the *previous* run's
+/// proposals and stayed silent, and `fix_pr::start` carried a compensating
+/// re-check for exactly this. So the caller mints the id, writes its record under
+/// it, and takes the record back out if this returns `Err` — the same ordering
+/// [`insert_and_spawn`] documents for the session record itself.
+pub(crate) async fn spawn_run(
+    app: &Arc<AppState>,
+    workspace: &str,
+    pr: u64,
+    id: SessionId,
+    spec: RunSpec,
+) -> Result<SessionId> {
+    let path = app
+        .workspace_path(workspace)
+        .await
+        .context("worktree vanished")?;
+
+    let mut cmd = vec![
+        "claude".to_string(),
+        "--session-id".to_string(),
+        id.to_string(),
+    ];
+    // Through `session_flags` like every other spawn: it carries `--settings` and
+    // the vendored skill's `--plugin-dir`, and that flag is per *invocation*, so a
+    // run that built its own argv would be the one session on the board without it.
+    cmd.extend(crate::config::session_flags()?);
+
+    let session = spec.session(id, workspace, path.clone(), pr);
+    // Minted with the session so the same value goes into the environment and onto
+    // the record: the agent reads `ORCH_ASK_TOKEN`, and `/ask`/`/wait` check it
+    // against `session.ask_token`.
+    let ask = spec.asks.then(|| session.ask_token.clone());
+    // Narrow credentials, no broad one: asks are authenticated against this
+    // session, proposals against this PR. Neither opens anything else, which is
+    // what keeps "the daemon owns outward writes" an API rule rather than a
+    // sentence in a prompt this run's own input could argue with.
+    let post = post_token_for(app, &session.kind).await;
+    // Off the runtime — see the note in `spawn_session`.
+    let (env, unset) = {
+        let (app, at, extra) = (app.clone(), path.clone(), spec.extra_env.clone());
+        crate::proc::run_blocking("reading the session environment", move || {
+            run_env(&app.cfg, &at, id, ask.as_deref(), post.as_deref(), &extra)
+        })
+        .await?
+    };
+
+    let spawned = insert_and_spawn(app, id, session, &cmd, &path, &env, &unset).await?;
+
+    watch_session_exit(app.clone(), id, spawned.handle);
+    crate::update::refresh_detached(app);
     app.notify().await;
     Ok(id)
 }
@@ -884,11 +1084,12 @@ pub async fn spawn_worktree_session(
 /// §8 writes this as a headless `--worktree` run, but `--worktree`
 /// always cuts a fresh branch from `upstream/develop` while the same section
 /// requires a worktree "pinned to that PR's head branch". The branch wins: the
-/// worktree is created here and `claude -p` runs inside it.
+/// worktree is created here and the run happens inside it.
 pub async fn spawn_fix_pr_session(
     app: &Arc<AppState>,
     pr: u64,
     head_ref: &str,
+    id: SessionId,
 ) -> Result<SessionId> {
     // One agent per worktree. `ensure_pr_worktree` hands back the worktree a
     // review session is already sitting in, so spawning here unconditionally puts
@@ -902,11 +1103,6 @@ pub async fn spawn_fix_pr_session(
     }
 
     let workspace = ensure_pr_worktree(app, pr, head_ref).await?;
-    let path = app
-        .workspace_path(&workspace)
-        .await
-        .context("worktree vanished")?;
-
     // Headed, not `-p`: a run you can watch, answer and take over mid-flight, the
     // same shape as /resolve. The guard table is what decides whether the run may
     // start (§8); it never depended on the run being invisible.
@@ -914,56 +1110,24 @@ pub async fn spawn_fix_pr_session(
     // The prompt is a file the session is told to read rather than a slash
     // command, so nothing has to be installed on the agent's side and nothing is
     // written into the checkout being driven.
-    let prompt_file = vendored_prompt_file(app, pr, "fix-pr").await?;
-
-    let id = Uuid::new_v4();
-    let mut cmd = vec![
-        "claude".to_string(),
-        "--session-id".to_string(),
-        id.to_string(),
-    ];
-    cmd.extend(crate::config::session_flags()?);
-
-    // No ask token: a fix run is handed its URL substituted into its prompt and has
-    // nothing to ask, which is the narrower surface 942d01b chose on purpose.
-    // Off the runtime — see the note in `spawn_session`.
-    let (mut env, unset) = {
-        let (app, at) = (app.clone(), path.clone());
-        crate::proc::run_blocking("reading the session environment", move || {
-            crate::config::session_env(&app.cfg, &at, id, None)
-        })
-        .await?
+    let prompt_file = vendored_prompt_file(app, pr, crate::fix_pr::COMMAND).await?;
+    let spec = RunSpec {
+        command: crate::fix_pr::COMMAND.to_string(),
+        pending: read_and_follow(&prompt_file, &format!("Those are your instructions for PR {pr}.")),
+        // No ask token: a fix run is handed its URL substituted into its prompt and
+        // has nothing to ask, which is the narrower surface 942d01b chose on purpose.
+        asks: false,
+        // Parallel runs collide on ports and docker resource names, so each gets
+        // its own compose project and port base (§8).
+        extra_env: vec![
+            ("COMPOSE_PROJECT_NAME".to_string(), format!("orchd-pr-{pr}")),
+            (
+                "ORCHD_PORT_BASE".to_string(),
+                (20000 + (pr % 1000) * 20).to_string(),
+            ),
+        ],
     };
-    // Parallel runs collide on ports and docker resource names, so each gets
-    // its own compose project and port base (§8).
-    env.push(("COMPOSE_PROJECT_NAME".to_string(), format!("orchd-pr-{pr}")));
-    env.push((
-        "ORCHD_PORT_BASE".to_string(),
-        (20000 + (pr % 1000) * 20).to_string(),
-    ));
-
-    let mut session = Session::new(
-        id,
-        workspace,
-        path.clone(),
-        Kind::Automation {
-            pr,
-            command: crate::fix_pr::COMMAND.to_string(),
-        },
-    );
-    // Typed in by the `SessionStart` handler, which is the reason this record has
-    // to be in the map before the process starts rather than after: a run whose
-    // hook arrived first was a run that never received its instructions.
-    session.pending_prompt = Some(format!(
-        "Read {} and follow it. Those are your instructions for PR {pr}.",
-        prompt_file.display()
-    ));
-    let spawned = insert_and_spawn(app, id, session, &cmd, &path, &env, &unset).await?;
-
-    watch_session_exit(app.clone(), id, spawned.handle);
-    crate::agent_update::refresh_detached(app);
-    app.notify().await;
-    Ok(id)
+    spawn_run(app, &workspace, pr, id, spec).await
 }
 
 /// Spawn an interactive session pinned to a PR's head branch, and type a slash
@@ -1001,10 +1165,9 @@ pub async fn spawn_command_session(
     // followed for a name the daemon derives from the PR number. `fix-pr` and
     // `triage` never had the check and were unaffected, so one PR answered two ways.
     //
-    // What it claimed to prevent does not happen: transcripts are keyed by session
-    // uuid, so two sessions under one directory slug are two files. The real harm
-    // was elsewhere — resuming an archived session into a worktree cut again at its
-    // path — and `worktree::branch_drift` says so on the resume itself.
+    // What it claimed to prevent does not happen (transcripts are keyed by session
+    // uuid; `spawn_worktree_session` has the whole account), and the real hazard,
+    // a resume into a tree cut again at the same path, is `worktree::branch_drift`'s.
     let name = ensure_pr_worktree(app, pr, head_ref).await?;
     start_with_prompt(app, &name, pr, command).await
 }
@@ -1016,38 +1179,17 @@ async fn start_with_prompt(
     command: &str,
 ) -> Result<SessionId> {
     let prompt_file = vendored_prompt_file(app, pr, command).await?;
-    let id = spawn_session(
-        app,
-        workspace,
-        Kind::Automation {
-            pr,
-            command: command.to_string(),
-        },
-        None,
-    )
-    .await?;
-    let mut inner = app.inner.write().await;
-    if let Some(s) = inner.sessions.get_mut(&id) {
-        // One line, because it is typed into the prompt box: the instructions
-        // themselves are in the file. Typing the whole prompt would submit at the
-        // first newline, and `/{command}` would resolve from the agent's command
-        // path, which is the dependency the vendored prompts exist to remove.
-        s.pending_prompt = Some(format!(
-            "Read {} and follow it. Those are your instructions for PR {pr}.",
-            prompt_file.display()
-        ));
-    }
-    Ok(id)
+    let spec = RunSpec {
+        command: command.to_string(),
+        pending: read_and_follow(&prompt_file, &format!("Those are your instructions for PR {pr}.")),
+        asks: true,
+        extra_env: Vec::new(),
+    };
+    // Its own id: this is the `/resolve` pane, the one run with no record of the
+    // daemon's beside it, so there is nothing for a caller to write first.
+    spawn_run(app, workspace, pr, Uuid::new_v4(), spec).await
 }
 
-/// Render the vendored prompt for `command` and leave it somewhere the session can
-/// read it.
-///
-/// Under the daemon's own config dir, like `story`'s scratch and for the same two
-/// reasons: the repo's `worktree-edit-boundary` hook blocks a write under the main
-/// checkout that lands outside the worktree, and a file *inside* the worktree would
-/// make the tree dirty — which the review flow then checks. Nothing of the
-/// daemon's is written into the checkout it is driving.
 /// The ref a per-PR run rebases onto: the PR's *own* base branch on the upstream
 /// remote, not the daemon's global `upstream_ref`.
 ///
@@ -1065,11 +1207,13 @@ fn rebase_target(upstream_ref: &str, upstream_remote: &str, base_ref: Option<&st
     }
 }
 
+/// Render the vendored prompt for `command` and leave it where the session can
+/// read it (`prompt::write_for_run`).
 async fn vendored_prompt_file(app: &Arc<AppState>, pr: u64, command: &str) -> Result<PathBuf> {
     let template = match command {
         "resolve" => crate::prompt::RESOLVE,
-        "resolve-run" => crate::prompt::RESOLVE_RUN,
-        "fix-pr" => crate::prompt::FIX_PR,
+        RESOLVE_RUN_COMMAND => crate::prompt::RESOLVE_RUN,
+        crate::fix_pr::COMMAND => crate::prompt::FIX_PR,
         other => bail!("no vendored prompt for /{other}"),
     };
     let (owner, repo) =
@@ -1100,17 +1244,9 @@ async fn vendored_prompt_file(app: &Arc<AppState>, pr: u64, command: &str) -> Re
             ..Default::default()
         },
     )?;
-
-    let dir = Config::config_dir()?.join(format!("{command}-{pr}"));
-    std::fs::create_dir_all(&dir)?;
-    let file = dir.join("prompt.md");
-    // Rewritten per run: the login and the repo are resolved fresh, and a stale
-    // copy would be read as this run's instructions.
-    std::fs::write(&file, body).with_context(|| format!("writing {}", file.display()))?;
-    Ok(file)
+    crate::prompt::write_for_run(command, pr, &body)
 }
 
-/// The worktree for a PR's head branch, created if absent.
 /// The worktree holding `head_ref`, if one already does.
 ///
 /// Main is never the answer, even when its branch set says it has been on this
@@ -1257,6 +1393,7 @@ async fn park_main(app: &Arc<AppState>) {
     }
 }
 
+/// The worktree for a PR's head branch, created if absent.
 pub async fn ensure_pr_worktree(app: &Arc<AppState>, pr: u64, head_ref: &str) -> Result<String> {
     let recorded = recorded_worktree_for(app, head_ref).await;
     if let Some((ws, path)) = &recorded {
@@ -1394,13 +1531,14 @@ pub async fn spawn_resolve_run(
     pr: u64,
     head_ref: &str,
     plan: &crate::post::Plan,
+    id: SessionId,
 ) -> Result<SessionId> {
     let workspace = ensure_pr_worktree(app, pr, head_ref).await?;
     if !app.live_sessions_in(&workspace).await.is_empty() {
         bail!("{workspace} already has a live session for #{pr}; finish or close it first");
     }
 
-    let dir = Config::config_dir()?.join(format!("resolve-run-{pr}"));
+    let dir = Config::config_dir()?.join(format!("{RESOLVE_RUN_COMMAND}-{pr}"));
     std::fs::create_dir_all(&dir)?;
     let plan_file = dir.join("plan.json");
     // The agent's view, not the whole record: `for_agent` drops the daemon's
@@ -1408,26 +1546,17 @@ pub async fn spawn_resolve_run(
     std::fs::write(&plan_file, serde_json::to_string_pretty(&plan.for_agent())?)
         .with_context(|| format!("writing {}", plan_file.display()))?;
 
-    let prompt_file = vendored_prompt_file(app, pr, "resolve-run").await?;
-    let id = spawn_session(
-        app,
-        &workspace,
-        Kind::Automation {
-            pr,
-            command: "resolve-run".to_string(),
-        },
-        None,
-    )
-    .await?;
-    let mut inner = app.inner.write().await;
-    if let Some(s) = inner.sessions.get_mut(&id) {
-        s.pending_prompt = Some(format!(
-            "Read {} and follow it. Your plan for PR {pr} is {}.",
-            prompt_file.display(),
-            plan_file.display()
-        ));
-    }
-    Ok(id)
+    let prompt_file = vendored_prompt_file(app, pr, RESOLVE_RUN_COMMAND).await?;
+    let spec = RunSpec {
+        command: RESOLVE_RUN_COMMAND.to_string(),
+        pending: read_and_follow(
+            &prompt_file,
+            &format!("Your plan for PR {pr} is {}.", plan_file.display()),
+        ),
+        asks: true,
+        extra_env: Vec::new(),
+    };
+    spawn_run(app, &workspace, pr, id, spec).await
 }
 
 /// Worktree names become directory names and branch names (`worktree-<name>`),
@@ -1451,7 +1580,12 @@ pub fn validate_worktree_name(name: &str) -> Result<()> {
     Ok(())
 }
 
-fn watch_session_exit(app: Arc<AppState>, id: SessionId, handle: Arc<PtyHandle>) {
+/// The one observer of a session's pty exit: it settles the record and dispatches
+/// whatever that session's kind owes on its way out. Every spawner arms it,
+/// `triage::spawn_posting_run` included — a review session that had its own
+/// watcher never reached the hand-off below, so `fix_pr_on_exit` was set, the
+/// session was killed, and no run ever started.
+pub(crate) fn watch_session_exit(app: Arc<AppState>, id: SessionId, handle: Arc<PtyHandle>) {
     tokio::spawn(async move {
         handle.wait().await;
         // What this session *was* decides whether anything else has to be settled
@@ -1467,6 +1601,10 @@ fn watch_session_exit(app: Arc<AppState>, id: SessionId, handle: Arc<PtyHandle>)
         // above: this is where a pty ending is learned, and the guard `fix_pr::start`
         // has to pass — no live session on the branch — is only true once it has.
         let mut hand_off_for: Option<u64> = None;
+        // A run whose success is "proposals arrived", not "exited zero": an agent
+        // can finish cleanly having posted nothing, and that is the failure the
+        // user would otherwise stare at an empty overlay wondering about.
+        let mut posting_for: Option<u64> = None;
         // A turnless interactive session leaves nothing to come back to, so rather
         // than archive an empty row it is forgotten outright — and its headers-only
         // transcript is deleted here, outside the lock. `(cwd, recorded)` is what
@@ -1495,8 +1633,11 @@ fn watch_session_exit(app: Arc<AppState>, id: SessionId, handle: Arc<PtyHandle>)
                         if command == crate::fix_pr::COMMAND {
                             fix_pr_for = Some(*pr);
                         }
-                        if command == "resolve-run" {
+                        if command == RESOLVE_RUN_COMMAND {
                             resolve_run_for = Some(*pr);
+                        }
+                        if crate::triage::posts_proposals(command) {
+                            posting_for = Some(*pr);
                         }
                         // Only a review that said so. Every other way one ends — you
                         // closed it, it fell over reading, you killed it mid-cards —
@@ -1563,10 +1704,15 @@ fn watch_session_exit(app: Arc<AppState>, id: SessionId, handle: Arc<PtyHandle>)
                 }
             }
         }
+        if let Some(pr) = posting_for {
+            if !app.inner.read().await.proposals.contains_key(&pr) {
+                tracing::warn!(pr, session = %id, "the run exited without posting proposals");
+            }
+        }
         // A fix run's verdict belongs to `fix_pr`, and this is the only place that
         // learns the run is over.
         if let Some(pr) = fix_pr_for {
-            crate::fix_pr::settle(&app, pr).await;
+            crate::fix_pr::settle(&app, pr, id).await;
         }
         // The run's own account, closed. Only if it is still this session's run: a
         // second run on the same PR replaces the record, and stamping that one as
@@ -1611,9 +1757,19 @@ fn watch_session_exit(app: Arc<AppState>, id: SessionId, handle: Arc<PtyHandle>)
             // beside the outgoing, and killing the shells then would pull them out
             // from under the session that is staying.
             if app.live_sessions_in(&ws).await.is_empty() {
-                let killed = app.kill_processes_in(&ws).await;
-                if killed > 0 {
-                    tracing::info!(workspace = %ws, "stopped {killed} process(es) with the last session");
+                // Through `stop_managed`, like every other path that means stop
+                // this: it runs the configured `stop_command` and escalates past a
+                // trapped `SIGHUP`, neither of which a bare `kill` here did.
+                let leaving = app.processes_to_stop(&ws).await;
+                for (name, pty) in &leaving {
+                    stop_managed(&app, &ws, name, pty).await;
+                }
+                if !leaving.is_empty() {
+                    tracing::info!(
+                        workspace = %ws,
+                        "stopped {} process(es) with the last session",
+                        leaving.len()
+                    );
                 }
                 // And main goes back to its base branch, so it stops holding a
                 // PR's branch hostage the moment you are done with it.
@@ -1708,8 +1864,6 @@ pub async fn start_managed(
         health: Health::Starting,
         cwd: path,
         pty: Some(spawned.handle.clone()),
-        pid: spawned.pid,
-        started_at: SystemTime::now(),
     };
 
     {
@@ -1774,8 +1928,6 @@ pub async fn spawn_shell(app: &Arc<AppState>, workspace: &str) -> Result<String>
         health: Health::Ok,
         cwd: path,
         pty: Some(spawned.handle.clone()),
-        pid: spawned.pid,
-        started_at: SystemTime::now(),
     };
 
     {
@@ -2122,16 +2274,11 @@ mod tests {
     /// the subset as "you are not in a session" and said so.
     #[tokio::test]
     async fn a_session_is_handed_the_whole_orch_environment_or_it_cannot_ask() {
-        let dir = std::env::temp_dir().join(format!("orchd-agent-env-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
         // `env_source: none`: this pins what the *daemon* puts in, and a real
-        // source would add whatever the machine running the test exports.
-        let cfg: Config = serde_json::from_str(&format!(
-            r#"{{"main_checkout":"{}","port":7794,"env_source":"none"}}"#,
-            dir.display()
-        ))
-        .unwrap();
-        let app = AppState::new(cfg, "t".into(), crate::window::Chrome::None);
+        // source would add whatever the machine running the test exports. The port
+        // is named because `ORCH_URL` below is read back against it.
+        let (app, dir) =
+            crate::testutil::app_with("agent-env", r#""port":7794,"env_source":"none""#);
 
         let id = Uuid::new_v4();
         let (env, _) = crate::config::session_env(&app.cfg, &dir, id, Some("ask-tok"));
@@ -2158,14 +2305,7 @@ mod tests {
     /// only a child that ends.
     #[tokio::test]
     async fn a_managed_process_that_exits_is_reported_dead() {
-        let dir = std::env::temp_dir().join(format!("orchd-managed-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let cfg: Config = serde_json::from_str(&format!(
-            r#"{{"main_checkout":"{}","port":7796}}"#,
-            dir.display()
-        ))
-        .unwrap();
-        let app = AppState::new(cfg, "t".into(), crate::window::Chrome::None);
+        let (app, _dir) = crate::testutil::app("managed");
 
         let spec = ManagedSpec {
             name: "quick".into(),
@@ -2211,18 +2351,9 @@ mod tests {
     /// tree the flow was about to cut.
     #[tokio::test]
     async fn a_pr_worktree_gets_cut_by_moving_mains_branch_into_it() {
-        let dir = std::env::temp_dir().join(format!("orchd-prcut-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = crate::testutil::scratch("prcut");
         let main = dir.join("repo");
-        let run = |at: &std::path::Path, args: &[&str]| {
-            let out = std::process::Command::new("git")
-                .args(args)
-                .current_dir(at)
-                .output()
-                .expect("git");
-            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
-        };
+        let run = crate::testutil::git;
         run(&dir, &["init", "-q", "-b", "develop", "repo"]);
         run(&main, &["config", "user.email", "t@t"]);
         run(&main, &["config", "user.name", "t"]);
@@ -2233,12 +2364,7 @@ mod tests {
         run(&main, &["switch", "-qc", "feature/theirs"]);
         std::fs::write(main.join("f.txt"), "edited in main\n").unwrap();
 
-        let cfg: Config = serde_json::from_str(&format!(
-            r#"{{"main_checkout":"{}","port":7795,"upstream_ref":"origin/develop"}}"#,
-            main.display()
-        ))
-        .unwrap();
-        let app = AppState::new(cfg, "t".into(), crate::window::Chrome::None);
+        let app = crate::testutil::app_at(&main, r#""upstream_ref":"origin/develop""#);
 
         let ws = ensure_pr_worktree(&app, 4242, "feature/theirs")
             .await
@@ -2306,17 +2432,8 @@ mod tests {
     /// early return, and the spawn was aimed at a path that was not there.
     #[tokio::test]
     async fn a_worktree_whose_directory_is_gone_does_not_hold_a_branch() {
-        use crate::config::Config;
-        use crate::state::AppState;
 
-        let dir = std::env::temp_dir().join(format!("orchd-holding-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let cfg: Config = serde_json::from_str(&format!(
-            r#"{{"main_checkout":"{}","port":7794}}"#,
-            dir.display()
-        ))
-        .unwrap();
-        let app = AppState::new(cfg, "t".into(), crate::window::Chrome::None);
+        let (app, dir) = crate::testutil::app("holding");
 
         let here = dir.join("here");
         std::fs::create_dir_all(&here).unwrap();
@@ -2356,17 +2473,14 @@ mod tests {
     #[tokio::test]
     async fn the_stop_command_runs_before_the_client_is_killed() {
         use crate::config::{Config, ManagedSpec, RestartPolicy};
-        use crate::state::AppState;
 
-        let dir = std::env::temp_dir().join(format!("orchd-stopcmd-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let cfg: Config = serde_json::from_str(&format!(
-            r#"{{"main_checkout":"{}","port":7796}}"#,
-            dir.display()
-        ))
-        .unwrap();
-        let mut cfg = cfg;
+        let dir = crate::testutil::scratch("stopcmd");
+        // Built by hand rather than through `testutil::app`, because the managed
+        // process below is a `ManagedSpec` value rather than something spellable
+        // in the config JSON.
+        let mut cfg: Config =
+            serde_json::from_str(&format!(r#"{{"main_checkout":{:?}}}"#, dir.to_string_lossy()))
+                .unwrap();
         cfg.main_processes = vec![ManagedSpec {
             name: "watcher".into(),
             // Stands in for the exec client: writes its own pid, then waits to be
@@ -2429,17 +2543,8 @@ mod tests {
     /// exactly what a test cannot reproduce.
     #[tokio::test]
     async fn the_record_is_in_the_map_before_the_process_starts() {
-        use crate::config::Config;
-        use crate::state::AppState;
 
-        let dir = std::env::temp_dir().join(format!("orchd-insert-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let cfg: Config = serde_json::from_str(&format!(
-            r#"{{"main_checkout":"{}","port":7792}}"#,
-            dir.display()
-        ))
-        .unwrap();
-        let app = AppState::new(cfg, "t".into(), crate::window::Chrome::None);
+        let (app, dir) = crate::testutil::app("insert");
 
         let id = Uuid::new_v4();
         let session = Session::new(id, MAIN.to_string(), dir.clone(), Kind::Interactive);
@@ -2461,17 +2566,8 @@ mod tests {
     /// workspace against the next attempt.
     #[tokio::test]
     async fn a_refused_spawn_takes_its_record_back_out() {
-        use crate::config::Config;
-        use crate::state::AppState;
 
-        let dir = std::env::temp_dir().join(format!("orchd-refused-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let cfg: Config = serde_json::from_str(&format!(
-            r#"{{"main_checkout":"{}","port":7793}}"#,
-            dir.display()
-        ))
-        .unwrap();
-        let app = AppState::new(cfg, "t".into(), crate::window::Chrome::None);
+        let (app, dir) = crate::testutil::app("refused");
 
         let id = Uuid::new_v4();
         let session = Session::new(id, MAIN.to_string(), dir.clone(), Kind::Interactive);
@@ -2487,18 +2583,9 @@ mod tests {
 
     #[tokio::test]
     async fn a_stale_watcher_does_not_settle_the_session_that_replaced_it() {
-        use crate::config::Config;
         use crate::pty::PtyHandle;
-        use crate::state::AppState;
 
-        let dir = std::env::temp_dir().join(format!("orchd-stale-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let cfg: Config = serde_json::from_str(&format!(
-            r#"{{"main_checkout":"{}","port":7791}}"#,
-            dir.display()
-        ))
-        .unwrap();
-        let app = AppState::new(cfg, "t".into(), crate::window::Chrome::None);
+        let (app, dir) = crate::testutil::app("stale");
 
         let pty = |()| {
             PtyHandle::spawn(&["cat".to_string()], std::path::Path::new("/tmp"), &[], &[], (24, 80))
@@ -2539,31 +2626,159 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// The prompt is on the record the spawn inserts, not set afterwards. Two of
+    /// the four run spawns used to set it under a fresh lock after `spawn_session`
+    /// returned, and a `SessionStart` landing in between took nothing and dropped
+    /// it: a run that never received its instructions.
+    #[test]
+    fn a_run_spec_puts_the_prompt_on_the_record_before_the_spawn() {
+        let spec = RunSpec {
+            command: RESOLVE_RUN_COMMAND.to_string(),
+            pending: read_and_follow(Path::new("/tmp/prompt.md"), "Your plan is /tmp/plan.json."),
+            asks: true,
+            extra_env: Vec::new(),
+        };
+        let id = Uuid::new_v4();
+        let s = spec.session(id, "pr-7", PathBuf::from("/tmp"), 7);
+        assert_eq!(
+            s.pending_prompt.as_deref(),
+            Some("Read /tmp/prompt.md and follow it. Your plan is /tmp/plan.json.")
+        );
+        assert_eq!(s.id, id);
+        assert!(matches!(
+            &s.kind,
+            Kind::Automation { pr: 7, command } if command == RESOLVE_RUN_COMMAND
+        ));
+    }
+
+    /// A review that asked for its checks to be handed on is acted on when its pty
+    /// ends. The review spawner used to arm a watcher of its own that never reached
+    /// the hand-off, so the flag stayed set and nothing started. The start is refused
+    /// here (the PR is not in the poll), and the refusal *taking the flag back* is
+    /// what proves the dispatch ran at all.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_review_exit_acts_on_its_hand_off_flag() {
+        use crate::pty::PtyHandle;
+
+        let (app, dir) = crate::testutil::app("handoff-exit");
+
+        let pty = PtyHandle::spawn(&["cat".to_string()], std::path::Path::new("/tmp"), &[], &[], (24, 80))
+            .unwrap();
+        let id = Uuid::new_v4();
+        {
+            let mut inner = app.inner.write().await;
+            let mut s = Session::new(
+                id,
+                "wt".to_string(),
+                dir.clone(),
+                Kind::Automation {
+                    pr: 4242,
+                    command: crate::triage::COMMAND.to_string(),
+                },
+            );
+            s.pty = Some(pty.handle.clone());
+            s.set_state(State::Working);
+            s.fix_pr_on_exit = true;
+            inner.sessions.insert(id, s);
+        }
+
+        watch_session_exit(app.clone(), id, pty.handle.clone());
+        let _ = pty.handle.kill();
+
+        let mut settled = false;
+        for _ in 0..100 {
+            tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+            let inner = app.inner.read().await;
+            let s = &inner.sessions[&id];
+            if !s.state.is_live() && !s.fix_pr_on_exit {
+                settled = true;
+                break;
+            }
+        }
+        assert!(settled, "the exit neither settled the session nor acted on the hand-off flag");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A run whose record is written before its process exists is settled by the
+    /// exit watcher even when the process dies instantly.
+    ///
+    /// The ordering this pins is the one every automation caller used to get
+    /// wrong: the record went in *after* the spawn returned, so a `claude` that
+    /// died at once — a bad `--settings`, the version gate — was reaped first and
+    /// the watcher matched on a record that was not there yet. The resolve run then
+    /// read as in flight until a restart. Driven the way the fix arranges it:
+    /// record first, under the id the session carries.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_run_recorded_before_its_spawn_is_settled_by_its_own_exit() {
+        use crate::pty::PtyHandle;
+
+        let (app, dir) = crate::testutil::app("run-recorded-first");
+        let (pr, id) = (4242u64, Uuid::new_v4());
+
+        // The caller's half: the record exists before anything could exit.
+        app.inner
+            .write()
+            .await
+            .with_resolve_runs("run started", |runs| {
+                runs.insert(
+                    pr,
+                    crate::state::ResolveRun {
+                        session: id,
+                        plan: crate::post::Plan {
+                            pr,
+                            base_sha: "abc".into(),
+                            threads: Vec::new(),
+                        },
+                        ended: None,
+                    },
+                );
+                true
+            });
+
+        // `true` exits immediately, which is the case that used to be lost.
+        let pty =
+            PtyHandle::spawn(&["/bin/true".to_string()], std::path::Path::new("/tmp"), &[], &[], (24, 80))
+                .unwrap();
+        {
+            let mut inner = app.inner.write().await;
+            let mut s = Session::new(
+                id,
+                "wt".to_string(),
+                dir.clone(),
+                Kind::Automation { pr, command: RESOLVE_RUN_COMMAND.to_string() },
+            );
+            s.pty = Some(pty.handle.clone());
+            s.set_state(State::Working);
+            inner.sessions.insert(id, s);
+        }
+        watch_session_exit(app.clone(), id, pty.handle.clone());
+
+        let mut ended = None;
+        for _ in 0..100 {
+            tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+            let inner = app.inner.read().await;
+            if let Some(e) = inner.resolve_runs.get(&pr).and_then(|r| r.ended.clone()) {
+                ended = Some(e);
+                break;
+            }
+        }
+        assert!(
+            ended.is_some(),
+            "the run stayed in flight; its record was not there for the watcher to close"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// Park returns main to base only for the branch `open_pr(main)` marked, and a
     /// swapped-in branch (no mark) is left exactly where it is — even when it is a
     /// branch name park could otherwise reach. Driven against a real checkout,
     /// because the whole point is that the decision is provenance, not branch name.
     #[tokio::test]
     async fn park_reclaims_only_the_open_pr_branch_never_a_swapped_one() {
-        use crate::config::Config;
-        use crate::state::AppState;
-
-        let dir = std::env::temp_dir().join(format!(
-            "orchd-park-{}-{:?}",
-            std::process::id(),
-            std::thread::current().id()
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = crate::testutil::scratch("park");
         let repo = dir.join("main");
         let git = |args: &[&str], at: &std::path::Path| {
-            let ok = std::process::Command::new("git")
-                .args(args)
-                .current_dir(at)
-                .status()
-                .unwrap()
-                .success();
-            assert!(ok, "git {args:?} failed");
+            crate::testutil::git(at, args);
         };
         git(&["init", "-q", "-b", "main", "main"], &dir);
         git(&["config", "user.email", "t@t"], &repo);
@@ -2575,12 +2790,7 @@ mod tests {
 
         // `origin/main` resolves to the local `main` branch as the base — no remote
         // needed, since only the branch part is used for a non-HEAD ref.
-        let cfg: Config = serde_json::from_str(&format!(
-            r#"{{"main_checkout":"{}","port":7793,"upstream_ref":"origin/main"}}"#,
-            repo.display()
-        ))
-        .unwrap();
-        let app = AppState::new(cfg, "t".into(), crate::window::Chrome::None);
+        let app = crate::testutil::app_at(&repo, r#""upstream_ref":"origin/main""#);
 
         let on = |b: &str| git(&["switch", "-q", b], &repo);
         let branch = || crate::git::current_branch(&repo).unwrap();
@@ -2609,13 +2819,7 @@ mod tests {
     /// too.
     #[tokio::test]
     async fn both_worktree_hooks_run_in_order_and_the_link_survives_a_failed_init() {
-        let dir = std::env::temp_dir().join(format!(
-            "orchd-wthooks-{}-{:?}",
-            std::process::id(),
-            std::thread::current().id()
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = crate::testutil::scratch("wthooks");
         let log = dir.join("order.log");
 
         let mut cfg = crate::config::Config::parse(&format!(
@@ -2651,13 +2855,7 @@ mod tests {
     /// Neither configured is the default, and it must cost nothing.
     #[tokio::test]
     async fn no_worktree_hooks_configured_runs_nothing() {
-        let dir = std::env::temp_dir().join(format!(
-            "orchd-wtnone-{}-{:?}",
-            std::process::id(),
-            std::thread::current().id()
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = crate::testutil::scratch("wtnone");
         let cfg = crate::config::Config::parse(&format!(
             r#"{{"main_checkout":{:?}}}"#,
             dir.to_string_lossy()
@@ -2698,9 +2896,7 @@ mod tests {
     /// branch, which is the next thing the path legitimately trips on.
     #[tokio::test]
     async fn reviewing_a_pr_is_not_refused_because_its_worktree_was_torn_down() {
-        let dir = std::env::temp_dir().join(format!("orchd-reuse-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = crate::testutil::scratch("reuse");
         let cfg = crate::config::Config::parse(&format!(
             r#"{{"main_checkout":{:?}}}"#,
             dir.to_string_lossy()
@@ -2740,8 +2936,7 @@ mod tests {
     /// now read this.
     #[tokio::test]
     async fn an_idle_session_on_the_branch_still_makes_it_busy() {
-        let dir = std::env::temp_dir().join(format!("orchd-busy-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = crate::testutil::scratch("busy");
         let cfg = crate::config::Config::parse(&format!(
             r#"{{"main_checkout":{:?}}}"#,
             dir.to_string_lossy()

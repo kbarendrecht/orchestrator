@@ -61,8 +61,8 @@ pub struct Config {
     /// Explicit rather than auto-detected from whether a token happens to resolve.
     /// Auto-detection would let an expired token silently remove an option from
     /// every triage run, leaving "triage did not propose a story" indistinguishable
-    /// from "the daemon hid it". `none` by default; the implementations live in
-    /// `src/tracker/`.
+    /// from "the daemon hid it". `none` by default; what each tracker is to the
+    /// daemon is [`TrackerKind::facts`].
     ///
     /// Its credential is **not** a config key: `ORCHD_TRACKER_TOKEN` in the
     /// daemon's environment, and nowhere else. See `story::resolve_token`.
@@ -121,12 +121,6 @@ pub struct Config {
     /// so rather than reading as a broken command.
     #[serde(default = "default_reviews_command")]
     pub reviews_command: Vec<String>,
-    /// Where live findings are written. Left unset they go to a gitignored
-    /// `daemon.log`, and only when the daemon is managing orchd's own checkout
-    /// (dogfooding) — see `findings::dogfood_log`. Set it to capture findings
-    /// from a daemon managing some other repo.
-    #[serde(default)]
-    pub log_path: Option<PathBuf>,
     /// Bring back sessions that were live when the daemon last went down.
     ///
     /// The daemon owns every pty, so a crash — or a reboot — takes every Claude
@@ -379,7 +373,7 @@ impl WorkspaceNotes {
 /// The subset of [`Config`] the settings panel reads and writes.
 ///
 /// A distinct struct so the editable surface is explicit: a POST from the panel
-/// can set these nine and nothing else — not the port, the token paths, or the
+/// can set these fields and nothing else — not the port, the token paths, or the
 /// forge. Field names match the `config.json` keys they persist to.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Settings {
@@ -409,7 +403,7 @@ impl Settings {
         }
     }
 
-    /// Persist these into `config.json`, touching only their six keys — the same
+    /// Persist these into `config.json`, touching only their own keys — the same
     /// reparse-the-raw-file reason as [`rewrite_main_checkout`], so a slim
     /// `{ main_checkout }` config stays slim. Takes effect on the next start;
     /// nothing here mutates the running `cfg`.
@@ -420,10 +414,10 @@ impl Settings {
         Ok(())
     }
 
-    /// Set these nine keys on a raw `config.json` string, returning the new file
+    /// Set these keys on a raw `config.json` string, returning the new file
     /// text. Split from [`Settings::write`] so it is testable without the real
     /// config path.
-    pub fn merge_into(&self, raw: &str) -> Result<String> {
+    fn merge_into(&self, raw: &str) -> Result<String> {
         let mut v: serde_json::Value =
             serde_json::from_str(raw).context("config.json is not JSON")?;
         let obj = v
@@ -516,6 +510,75 @@ impl TrackerKind {
     pub fn is_configured(self) -> bool {
         !matches!(self, TrackerKind::None)
     }
+
+    /// What the daemon has to know to point an agent at this tracker, or `None`
+    /// when no tracker is configured.
+    ///
+    /// `None` is not a failure: a repo with no tracker is a supported setup, and
+    /// every caller reads it as "`story+reply` is not on offer" rather than as an
+    /// error to report.
+    ///
+    /// **The stub answers with the real tracker's facts, on purpose.**
+    /// `tools/stub-shortcut-mcp.py` is a real stdio MCP server *named* `shortcut`,
+    /// so the prompt's tool names and the `--allowedTools` scope resolve unchanged
+    /// and the run under test is the run that ships. Only what sits behind the
+    /// socket differs: it records what it was asked to do instead of doing it. The
+    /// host is shared for the same reason: a story URL accepted under the stub must
+    /// be one the live tracker would accept too.
+    pub fn facts(self) -> Option<TrackerFacts> {
+        match self {
+            TrackerKind::None => None,
+            TrackerKind::Shortcut | TrackerKind::Stub => Some(TrackerFacts {
+                mcp_server: "shortcut",
+                token_env: "SHORTCUT_API_TOKEN",
+                host: "app.shortcut.com",
+                prompt: crate::prompt::STORY,
+            }),
+        }
+    }
+}
+
+/// The four facts a tracker is, to the daemon.
+///
+/// Deliberately much smaller than the forge seam, because the two integrations
+/// are not the same kind of thing. The daemon *calls* a forge (polls PRs, posts
+/// replies, reacts), so [`crate::forge::Forge`] is a set of operations. It never
+/// calls a tracker at all: filing a story is done by an agent over MCP, and the
+/// daemon only sets that agent up. Everything else (the two-phase run, the cache,
+/// the report shape, refusing a story whose id and URL disagree) is in
+/// [`crate::story`] and is the same whatever the tracker is. Adding Jira or Linear
+/// is an arm in [`TrackerKind::facts`] plus a prompt, and no change to the flow.
+///
+/// `&'static str` throughout: every one of these is a compile-time constant, so
+/// there is nothing to own and nothing to fail. A trait and an enum dispatching
+/// over two unit structs used to carry these, and both structs answered the same
+/// four constants.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TrackerFacts {
+    /// The MCP server's name in the repo's `.mcp.json`.
+    ///
+    /// Used twice, and they have to agree: `enabledMcpjsonServers` in the hook
+    /// settings approves it (a project server stays *pending* and is dropped
+    /// silently otherwise), and `--allowedTools` scopes the run to `mcp__<name>`.
+    pub mcp_server: &'static str,
+    /// The variable the MCP entry expands for its credential, e.g. a
+    /// `Bearer ${SHORTCUT_API_TOKEN}` header. The daemon resolves the value itself
+    /// and pushes it into the agent's environment, so the token never reaches a
+    /// prompt or a transcript.
+    pub token_env: &'static str,
+    /// The host its story URLs live on, e.g. `app.shortcut.com`.
+    ///
+    /// Used to check that a URL the *agent* reported is really this tracker's. The
+    /// id and the URL both come out of agent output, whose input is third-party
+    /// comment text, and the pair ends up as a permanent public link in a reply on
+    /// somebody's review. See [`crate::story::StoryRef::consistent`].
+    pub host: &'static str,
+    /// The vendored prompt that tells an agent how to file into this tracker.
+    ///
+    /// Per tracker rather than one templated prompt: the MCP tool names are the
+    /// server's own (`stories-search` is not what Jira calls it), so a shared
+    /// prompt would be a lie that fails mid-run.
+    pub prompt: &'static str,
 }
 
 /// Which tool tells the daemon what a checkout's environment is.
@@ -633,7 +696,6 @@ impl Config {
         Ok(Self::config_dir()?.join("config.json"))
     }
 
-    /// Load config, writing a default one on first run so there is something to edit.
     /// The config, if there is a usable one already.
     ///
     /// Usable means more than present: a config naming a checkout that has been
@@ -657,6 +719,7 @@ impl Config {
         Some(cfg)
     }
 
+    /// Load config, writing a default one on first run so there is something to edit.
     pub fn load_or_init(main_checkout: Option<PathBuf>) -> Result<Self> {
         let path = Self::path()?;
         if path.exists() {
@@ -877,10 +940,7 @@ pub fn session_env(
     // The checkout's own variables first, so everything the daemon sets below wins
     // — the pty applies these in order, and a repo exporting `ORCH_ASK_TOKEN` must
     // not be able to overwrite the one this session was given.
-    let mut set = match crate::env_source::EnvSourceImpl::for_kind(cfg.env_source) {
-        Some(source) => crate::env_source::read(&source, cwd),
-        None => Vec::new(),
-    };
+    let mut set = crate::env_source::read(cfg.env_source, cwd);
     set.push((
         "CLAUDE_CODE_FORCE_SESSION_PERSISTENCE".to_string(),
         "1".to_string(),
@@ -1114,17 +1174,6 @@ mod tests {
     }
 
     #[test]
-    fn an_old_config_with_a_profile_key_still_loads() {
-        // `profile` was a config key until the six settings became defaults; a file
-        // written back then must still load, its stale key ignored.
-        let cfg = Config::parse(
-            r#"{"main_checkout":"/tmp/x","profile":"monorepo"}"#,
-        )
-        .expect("parse");
-        assert_eq!(cfg.main_checkout, PathBuf::from("/tmp/x"));
-    }
-
-    #[test]
     fn the_forge_is_spelled_the_way_a_person_would_write_it() {
         // `rename_all = "snake_case"` would make this `git_hub`, so `"github"`
         // was an unknown variant — and a deserialize error here reads as "no
@@ -1184,18 +1233,6 @@ mod tests {
         assert!(set
             .iter()
             .any(|(k, v)| k == "CLAUDE_CODE_FORCE_SESSION_PERSISTENCE" && v == "1"));
-    }
-
-    #[test]
-    fn a_config_still_parses_with_the_dropped_flag_in_it() {
-        // `persist_transcripts` was a config key until it was always-on; a file
-        // written back then must still load.
-        let cfg: Config = serde_json::from_str(
-            r#"{"main_checkout":"/tmp","port":7777,"upstream_ref":"upstream/develop",
-                "persist_transcripts":false}"#,
-        )
-        .expect("parse");
-        assert_eq!(cfg.main_checkout, PathBuf::from("/tmp"));
     }
 
     #[test]

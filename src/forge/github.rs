@@ -1,5 +1,5 @@
 use anyhow::{bail, Context, Result};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::path::Path;
@@ -64,13 +64,17 @@ pub fn resolve_token(token_file: Option<&Path>) -> Result<Token> {
        install sees, and it names three things the reader has never heard of
        instead of the one command that fixes it. The ladder is still worth knowing,
        so it comes second, in the half a pane can show when it has room. */
-    let out = match Command::new("gh").args(["auth", "token"]).output() {
+    // Bounded like every other subprocess that can reach the network: `gh` does
+    // not prompt the way git does, but a keyring or a proxy can still hang it, and
+    // this runs on the poll and inside review requests.
+    let argv = ["gh", "auth", "token"].map(String::from);
+    let out = match crate::proc::run_bounded(Path::new("/"), 15, &argv, "gh auth token") {
         Ok(out) => out,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => bail!(
+        Err(e) if not_installed(&e) => bail!(
             "no GitHub credential: install `gh` and run `gh auth login`, or point \
              github_token_file at a token"
         ),
-        Err(e) => bail!("no GitHub credential: `gh auth token` could not be run: {e}"),
+        Err(e) => bail!("no GitHub credential: `gh auth token` could not be run: {e:#}"),
     };
     if !out.status.success() {
         // gh is there and says why, usually "not logged in". Its own words, since
@@ -87,6 +91,15 @@ pub fn resolve_token(token_file: Option<&Path>) -> Result<Token> {
     Ok(Token {
         value: v,
         source: TokenSource::GhCli,
+    })
+}
+
+/// Was the spawn refused because the binary is not there? `run_bounded` wraps the
+/// io error in context, so the kind is read off the chain rather than the top.
+fn not_installed(e: &anyhow::Error) -> bool {
+    e.chain().any(|c| {
+        c.downcast_ref::<std::io::Error>()
+            .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound)
     })
 }
 
@@ -113,47 +126,51 @@ pub fn warn_if_world_readable(p: &Path) {
 /// daemon's build free of a C toolchain, which this machine does not have. The
 /// token is passed on stdin, never on the command line, so it cannot be read
 /// out of the process table.
+///
+/// Through [`crate::proc::run_bounded_with_input`] like every other subprocess
+/// that can reach the network. `--max-time` below bounds the *transfer*, which is
+/// not the same as bounding the process: a curl wedged before the transfer starts
+/// is outside it. So the Rust deadline sits above curl's own, as a backstop —
+/// in the ordinary timeout curl exits first and its message is the one reported.
+/// `cwd` is `/` because a network call has no working directory to speak of, the
+/// same as [`resolve_token`]'s `gh`.
 pub fn graphql(token: &str, query: &str) -> Result<Value> {
-    use std::io::Write;
-    use std::process::Stdio;
-
     let body = serde_json::json!({ "query": query }).to_string();
-    let mut child = Command::new("curl")
-        .args([
-            "-sS",
-            "--fail-with-body",
-            // A hung request must not pin a poll thread forever. The review query
-            // is one server-side search and the PR poll a handful of requests, so
-            // a generous ceiling never bites a healthy call but bounds a stuck one
-            // — this is where the old external `review_timeout_seconds` went.
-            "--max-time",
-            "120",
-            "-X",
-            "POST",
-            "-H",
-            "@-",
-            "-H",
-            "Content-Type: application/json",
-            // mergeStateStatus is behind this Accept header.
-            "-H",
-            "Accept: application/vnd.github.merge-info-preview+json",
-            "-H",
-            "User-Agent: orchd",
-            "--data-binary",
-            &body,
-            "https://api.github.com/graphql",
-        ])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .context("spawning curl")?;
-    child
-        .stdin
-        .as_mut()
-        .context("curl stdin")?
-        .write_all(format!("Authorization: bearer {token}\n").as_bytes())?;
-    let out = child.wait_with_output()?;
+    let argv: Vec<String> = [
+        "curl",
+        "-sS",
+        "--fail-with-body",
+        // A hung request must not pin a poll thread forever. The review query
+        // is one server-side search and the PR poll a handful of requests, so
+        // a generous ceiling never bites a healthy call but bounds a stuck one
+        // — this is where the old external `review_timeout_seconds` went.
+        "--max-time",
+        "120",
+        "-X",
+        "POST",
+        "-H",
+        "@-",
+        "-H",
+        "Content-Type: application/json",
+        // mergeStateStatus is behind this Accept header.
+        "-H",
+        "Accept: application/vnd.github.merge-info-preview+json",
+        "-H",
+        "User-Agent: orchd",
+        "--data-binary",
+        &body,
+        "https://api.github.com/graphql",
+    ]
+    .map(String::from)
+    .into();
+    let out = crate::proc::run_bounded_with_input(
+        Path::new("/"),
+        150,
+        &argv,
+        "the GitHub API request",
+        Some(format!("Authorization: bearer {token}\n").into_bytes()),
+        &[],
+    )?;
     if !out.status.success() {
         bail!(
             "github request failed: {}",
@@ -161,8 +178,21 @@ pub fn graphql(token: &str, query: &str) -> Result<Value> {
         );
     }
     let v: Value = serde_json::from_slice(&out.stdout).context("parsing the GraphQL response")?;
+    accept(v)
+}
+
+/// A GraphQL answer is not all-or-nothing. GitHub returns `errors` *beside*
+/// `data` when one node could not be read (a PR from a repo you lost access to,
+/// a deleted comment author) and the rest of the page is good. Failing the whole
+/// poll on that made one unreadable PR hide every other one. So: errors with no
+/// data is a failure; errors beside data is a warning and the data is used.
+fn accept(v: Value) -> Result<Value> {
     if let Some(errors) = v.get("errors") {
-        bail!("github returned errors: {errors}");
+        let usable = v.get("data").is_some_and(|d| d.is_object());
+        if !usable {
+            bail!("github returned errors: {errors}");
+        }
+        tracing::warn!("github answered with errors beside the data, using the data: {errors}");
     }
     Ok(v)
 }
@@ -178,12 +208,9 @@ pub fn graphql(token: &str, query: &str) -> Result<Value> {
 /// releases (404), unparseable JSON — is `None`, never an error; the update
 /// nudge is a nicety and must never be able to break startup.
 pub fn latest_release(owner: &str, name: &str, token: Option<&str>) -> Option<(String, String)> {
-    use std::io::Write;
-    use std::process::Stdio;
-
     let url = format!("https://api.github.com/repos/{owner}/{name}/releases/latest");
-    let mut cmd = Command::new("curl");
-    cmd.args([
+    let mut argv: Vec<String> = [
+        "curl",
         "-sS",
         "--max-time",
         "10",
@@ -191,29 +218,28 @@ pub fn latest_release(owner: &str, name: &str, token: Option<&str>) -> Option<(S
         "Accept: application/vnd.github+json",
         "-H",
         "User-Agent: orchd",
-    ]);
+    ]
+    .map(String::from)
+    .into();
     // The token rides on stdin, never argv: the same ladder can resolve a
     // `gh auth token` with wider scopes than this read expects, so it must not
     // show in the process table for the life of the curl — the stdin dance
     // graphql() does, for the same reason.
     let token = token.map(str::trim).filter(|t| !t.is_empty());
     if token.is_some() {
-        cmd.arg("-H").arg("@-").stdin(Stdio::piped());
+        argv.extend(["-H".to_string(), "@-".to_string()]);
     }
-    let mut child = cmd
-        .arg(&url)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .ok()?;
-    if let Some(t) = token {
-        child
-            .stdin
-            .as_mut()?
-            .write_all(format!("Authorization: Bearer {t}\n").as_bytes())
-            .ok()?;
-    }
-    let out = child.wait_with_output().ok()?;
+    argv.push(url);
+    // Bounded above curl's own `--max-time`, for the reason [`graphql`] gives.
+    let out = crate::proc::run_bounded_with_input(
+        Path::new("/"),
+        20,
+        &argv,
+        "the release check",
+        token.map(|t| format!("Authorization: Bearer {t}\n").into_bytes()),
+        &[],
+    )
+    .ok()?;
     if !out.status.success() {
         return None;
     }
@@ -359,12 +385,7 @@ fn query_for(owner: &str, name: &str) -> String {
         commits(last: 1) {{ nodes {{ commit {{ oid committedDate statusCheckRollup {{ state }} }} }} }}
         reviewThreads(first: {PAGE}) {{
           pageInfo {{ hasNextPage endCursor }}
-          nodes {{ isResolved isOutdated
-            comments(last: 1) {{ nodes {{
-              author {{ login }}
-              reactionGroups {{ content viewerHasReacted }}
-            }} }}
-          }}
+          {SLIM_THREAD_NODES}
         }}
         reviews(states: CHANGES_REQUESTED, first: 20) {{ nodes {{ author {{ login }} submittedAt }} }}
       }}
@@ -434,12 +455,7 @@ fn summary_threads_query(owner: &str, name: &str, pr: u64, after: &str) -> Strin
     pullRequest(number: {pr}) {{
       reviewThreads(first: {THREAD_PAGE}, after: {after}) {{
         pageInfo {{ hasNextPage endCursor }}
-        nodes {{ isResolved isOutdated
-          comments(last: 1) {{ nodes {{
-            author {{ login }}
-            reactionGroups {{ content viewerHasReacted }}
-          }} }}
-        }}
+        {SLIM_THREAD_NODES}
       }}
     }}
   }}
@@ -447,18 +463,59 @@ fn summary_threads_query(owner: &str, name: &str, pr: u64, after: &str) -> Strin
     )
 }
 
-/// The raw thread nodes of one page plus the cursor for the next, or `None` if the
-/// PR is missing from the response. Split out so paging is testable without a round
-/// trip, matching [`parse_thread_page`].
-fn parse_summary_thread_page(v: &Value) -> Option<(Vec<Value>, Option<String>)> {
-    let root = v.pointer("/data/repository/pullRequest/reviewThreads")?;
-    let nodes = root
-        .pointer("/nodes")
-        .and_then(|n| n.as_array())
-        .cloned()
-        .unwrap_or_default();
+/// The per-thread fields the poll reads: enough to count and to tell whose turn a
+/// thread is, and no comment bodies. One constant, because it appears in the
+/// first page (inside [`query_for`]) and in every following page
+/// ([`summary_threads_query`]), and the two had to be kept identical by hand.
+const SLIM_THREAD_NODES: &str = "nodes { isResolved isOutdated \
+    comments(last: 1) { nodes { author { login } \
+    reactionGroups { content viewerHasReacted } } } }";
+
+/// The `reviewThreads` connection of a **single-PR** read, insisting it is really
+/// there rather than letting a null one read as an empty one.
+///
+/// This is the other half of [`accept`], and the two must be read together.
+/// `accept` lets `errors` through beside `data` so one unreadable PR cannot sink
+/// a whole poll, and that argument is about a *list*: the poll's search returns
+/// many PRs and each degrades on its own. It does not hold here. GraphQL nulls
+/// the **nearest nullable ancestor** of a failure, and for a timeout inside a
+/// large `reviewThreads` that ancestor is the connection, not the `pullRequest`
+/// above it. Pointer-walking a null then yields no nodes *and* no cursor, which
+/// the paging loop reads as "that was the last page" — so the overlay opens on a
+/// PR that has threads, shows nothing to answer, and says nothing about why.
+///
+/// A refusal is the honest answer: the caller retries on the next poll or the
+/// next open, and a floor it knows about beats a zero it does not.
+fn thread_connection(pull_request: &mut Value, pr: u64) -> Result<&mut Value> {
+    match pull_request.get_mut("reviewThreads") {
+        Some(c) if c.is_object() => Ok(c),
+        Some(_) => bail!(
+            "pr {pr}: github nulled the reviewThreads connection, so this answer is not \
+             the whole set of threads"
+        ),
+        None => bail!("pr {pr}: no reviewThreads in the response"),
+    }
+}
+
+/// The raw thread nodes of one page plus the cursor for the next. Split out so
+/// paging is testable without a round trip, matching [`parse_thread_page`].
+///
+/// Takes the page by value so the nodes are moved out rather than cloned; the
+/// caller has just parsed it out of the response body and wants nothing else
+/// from it.
+fn parse_summary_thread_page(mut v: Value, pr: u64) -> Result<(Vec<Value>, Option<String>)> {
+    let node = v
+        .pointer_mut("/data/repository/pullRequest")
+        .filter(|n| n.is_object())
+        .with_context(|| format!("no pull request {pr} in the response"))?;
+    let root = thread_connection(node, pr)?;
     let next = next_cursor(root);
-    Some((nodes, next))
+    let nodes = root
+        .get_mut("nodes")
+        .and_then(|n| n.as_array_mut())
+        .map(std::mem::take)
+        .unwrap_or_default();
+    Ok((nodes, next))
 }
 
 /// Every review-thread node for one capped PR: the first page (already in `node`)
@@ -476,23 +533,59 @@ fn all_summary_threads(
         .and_then(|n| n.as_array())
         .cloned()
         .unwrap_or_default();
-    let mut cursor = node
+    let cursor = node
         .pointer("/reviewThreads/pageInfo/endCursor")
         .and_then(|c| c.as_str())
         .map(|c| c.to_string());
 
+    // The first page is already in hand, so there is only something to fetch when
+    // it left a cursor behind.
+    let capped = page_threads(
+        token,
+        pr,
+        cursor,
+        |after| summary_threads_query(owner, name, pr, after),
+        |v| parse_summary_thread_page(v, pr),
+        |nodes| all.extend(nodes),
+    )?;
+    Ok((all, capped))
+}
+
+/// Follow `reviewThreads` cursors from `next` until the last page or the runaway
+/// guard.
+///
+/// Both callers hold their own first page before they get here — the poll's came
+/// with the PR, the overlay's is fetched by [`fetch_threads`] — so `next` is a
+/// plain cursor and `None` simply means there is nothing more to fetch. That also
+/// makes [`MAX_THREAD_PAGES`] mean the same thing to both: pages *after* the
+/// first. It did not, while one caller spent an iteration on a page the other
+/// already had.
+///
+/// Each fetched page goes to `on_page`, and the return says whether the guard
+/// fired, in which case what was gathered is a floor rather than the whole. One
+/// loop for the poll's slim pages and the overlay's full ones: the two used to be
+/// written out twice with the same guard and the same warning, and they had to be
+/// kept in step by hand.
+fn page_threads<T>(
+    token: &str,
+    pr: u64,
+    mut next: Option<String>,
+    query: impl Fn(&str) -> String,
+    parse: impl Fn(Value) -> Result<(T, Option<String>)>,
+    mut on_page: impl FnMut(T),
+) -> Result<bool> {
     for _ in 0..MAX_THREAD_PAGES {
-        let Some(c) = cursor else {
-            return Ok((all, false));
+        let Some(cursor) = next.take() else {
+            return Ok(false);
         };
-        let v = graphql(token, &summary_threads_query(owner, name, pr, &c))?;
-        let (nodes, next) = parse_summary_thread_page(&v)
-            .with_context(|| format!("no pull request {pr} in the response"))?;
-        all.extend(nodes);
-        cursor = next;
+        let (page, after) = parse(graphql(token, &query(&cursor))?)?;
+        on_page(page);
+        next = after;
     }
+    // Fell off the guard. Returning what we have beats erroring: a partial list
+    // is still worth triaging, and the caller cannot fix a 10,000-thread PR.
     tracing::warn!("pr {pr}: stopped paging review threads at {MAX_THREAD_PAGES} pages");
-    Ok((all, true))
+    Ok(true)
 }
 
 /// Does this repository permission let you push?
@@ -767,39 +860,27 @@ fn threads_query(owner: &str, name: &str, pr: u64, after: Option<&str>) -> Strin
 /// query on a short timer. This runs when the review overlay opens, for one PR.
 /// Reached through [`GitHubForge::threads`].
 fn fetch_threads(token: &str, owner: &str, name: &str, pr: u64) -> Result<Threads> {
-    let mut out = Threads {
+    // The first page is fetched here rather than inside the loop, so that
+    // `page_threads` only ever deals in a real cursor. See its doc for why the
+    // two callers now agree on what the page budget counts.
+    let first = graphql(token, &threads_query(owner, name, pr, None))?;
+    let (mut out, cursor) = parse_thread_page(first, pr)?;
+    page_threads(
+        token,
         pr,
-        viewer: String::new(),
-        head_sha: None,
-        items: Vec::new(),
-    };
-    let mut cursor: Option<String> = None;
-
-    for _ in 0..MAX_THREAD_PAGES {
-        let v = graphql(token, &threads_query(owner, name, pr, cursor.as_deref()))?;
-        let (page, next) = parse_thread_page(&v, pr)
-            .with_context(|| format!("no pull request {pr} in the response"))?;
-
-        if out.viewer.is_empty() {
-            out.viewer = page.viewer;
-        }
-        if out.head_sha.is_none() {
-            out.head_sha = page.head_sha;
-        }
-        out.items.extend(page.items);
-
-        match next {
-            Some(c) => cursor = Some(c),
-            None => {
-                out.mark_answerable();
-                out.sort_for_review();
-                return Ok(out);
+        cursor,
+        |after| threads_query(owner, name, pr, Some(after)),
+        |v| parse_thread_page(v, pr),
+        |page: Threads| {
+            if out.viewer.is_empty() {
+                out.viewer = page.viewer;
             }
-        }
-    }
-    // Fell off the guard. Returning what we have beats erroring: a partial list
-    // is still worth triaging, and the caller cannot fix a 10,000-thread PR.
-    tracing::warn!("pr {pr}: stopped paging review threads at {MAX_THREAD_PAGES} pages");
+            if out.head_sha.is_none() {
+                out.head_sha = page.head_sha;
+            }
+            out.items.extend(page.items);
+        },
+    )?;
     out.mark_answerable();
     out.sort_for_review();
     Ok(out)
@@ -809,88 +890,139 @@ fn fetch_threads(token: &str, owner: &str, name: &str, pr: u64) -> Result<Thread
 ///
 /// Split out from [`threads`] so the paging and parsing can be tested without a
 /// network round trip.
-fn parse_thread_page(v: &Value, pr: u64) -> Option<(Threads, Option<String>)> {
-    let node = v.pointer("/data/repository/pullRequest")?;
-    let root = node.pointer("/reviewThreads")?;
+fn parse_thread_page(mut v: Value, pr: u64) -> Result<(Threads, Option<String>)> {
+    let viewer = v
+        .pointer("/data/viewer/login")
+        .and_then(|s| s.as_str())
+        .unwrap_or_default()
+        .to_string();
+    let node = v
+        .pointer_mut("/data/repository/pullRequest")
+        .filter(|n| n.is_object())
+        .with_context(|| format!("no pull request {pr} in the response"))?;
+    let head_sha = node
+        .get("headRefOid")
+        .and_then(|s| s.as_str())
+        .map(|s| s.to_string());
 
-    let items = root
-        .pointer("/nodes")
-        .and_then(|n| n.as_array())
-        .map(|ns| ns.iter().filter_map(parse_thread).collect())
-        .unwrap_or_default();
-
+    let root = thread_connection(node, pr)?;
     let next = next_cursor(root);
+    // Moved out rather than iterated by reference: these nodes carry every
+    // comment body and every diff hunk on the PR, and cloning them to
+    // deserialize meant holding two copies of the page at once.
+    let items = root
+        .get_mut("nodes")
+        .and_then(|n| n.as_array_mut())
+        .map(std::mem::take)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(parse_thread)
+        .collect();
 
-    Some((
+    Ok((
         Threads {
             pr,
-            viewer: v
-                .pointer("/data/viewer/login")
-                .and_then(|s| s.as_str())
-                .unwrap_or_default()
-                .to_string(),
-            head_sha: node
-                .get("headRefOid")
-                .and_then(|s| s.as_str())
-                .map(|s| s.to_string()),
+            viewer,
+            head_sha,
             items,
         },
         next,
     ))
 }
 
-fn parse_thread(n: &Value) -> Option<Thread> {
-    let u32_at = |key: &str| n.get(key).and_then(|v| v.as_u64()).map(|v| v as u32);
+/// One `reviewThreads` node as GitHub sends it. A mirror struct rather than
+/// pointer-poking, so the shape is written once and a missing field is a named
+/// default rather than a chain of `and_then`. Everything but the id is optional
+/// with `default`, because GitHub nulls fields freely (a deleted account, an
+/// outdated thread with no line) and a null must read as absent, not as a bad node.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ThreadNode {
+    id: String,
+    #[serde(default)]
+    path: Option<String>,
+    #[serde(default)]
+    line: Option<u32>,
+    #[serde(default)]
+    start_line: Option<u32>,
+    #[serde(default)]
+    original_line: Option<u32>,
+    #[serde(default)]
+    is_resolved: bool,
+    #[serde(default)]
+    is_outdated: bool,
+    #[serde(default)]
+    comments: Nodes,
+}
+
+/// A GraphQL connection's `nodes`, kept as raw values so one bad comment drops
+/// that comment and not the thread.
+#[derive(Deserialize, Default)]
+struct Nodes {
+    #[serde(default)]
+    nodes: Vec<Value>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CommentNode {
+    database_id: u64,
+    #[serde(default)]
+    author: Option<Login>,
+    #[serde(default)]
+    body: String,
+    #[serde(default)]
+    created_at: String,
+    #[serde(default)]
+    url: String,
+    #[serde(default)]
+    diff_hunk: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct Login {
+    #[serde(default)]
+    login: Option<String>,
+}
+
+fn parse_thread(n: Value) -> Option<Thread> {
+    let t: ThreadNode = serde_json::from_value(n).ok()?;
     Some(Thread {
-        id: n.get("id")?.as_str()?.to_string(),
-        path: n
-            .get("path")
-            .and_then(|s| s.as_str())
-            .map(|s| s.to_string()),
-        line: u32_at("line"),
-        start_line: u32_at("startLine"),
-        original_line: u32_at("originalLine"),
-        is_resolved: n
-            .get("isResolved")
-            .and_then(|b| b.as_bool())
-            .unwrap_or(false),
-        is_outdated: n
-            .get("isOutdated")
-            .and_then(|b| b.as_bool())
-            .unwrap_or(false),
-        comments: n
-            .pointer("/comments/nodes")
-            .and_then(|c| c.as_array())
-            .map(|cs| cs.iter().filter_map(parse_comment).collect())
-            .unwrap_or_default(),
+        id: t.id,
+        path: t.path,
+        line: t.line,
+        start_line: t.start_line,
+        original_line: t.original_line,
+        is_resolved: t.is_resolved,
+        is_outdated: t.is_outdated,
+        comments: t
+            .comments
+            .nodes
+            .into_iter()
+            .filter_map(parse_comment)
+            .collect(),
         // Filled in by `Threads::mark_answerable`, which knows the viewer.
         answerable: false,
     })
 }
 
-fn parse_comment(n: &Value) -> Option<Comment> {
-    let str_at = |key: &str| {
-        n.get(key)
-            .and_then(|s| s.as_str())
-            .unwrap_or_default()
-            .to_string()
-    };
+fn parse_comment(n: Value) -> Option<Comment> {
+    // Read before the node is consumed, so the one rule for "did you 👍 this"
+    // stays in `viewer_thumbed` and is not restated on a typed mirror.
+    let thumbed = viewer_thumbed(&n);
+    let c: CommentNode = serde_json::from_value(n).ok()?;
     Some(Comment {
-        database_id: n.get("databaseId")?.as_u64()?,
-        author: n
-            .pointer("/author/login")
-            // A deleted account leaves the comment with a null author.
-            .and_then(|s| s.as_str())
-            .unwrap_or("ghost")
-            .to_string(),
-        body: str_at("body"),
-        created_at: str_at("createdAt"),
-        url: str_at("url"),
-        diff_hunk: n
-            .get("diffHunk")
-            .and_then(|s| s.as_str())
-            .map(|s| s.to_string()),
-        viewer_thumbed: viewer_thumbed(n),
+        database_id: c.database_id,
+        // A deleted account leaves the comment with a null author.
+        author: c
+            .author
+            .and_then(|a| a.login)
+            .unwrap_or_else(|| "ghost".to_string()),
+        body: c.body,
+        created_at: c.created_at,
+        url: c.url,
+        diff_hunk: c.diff_hunk,
+        viewer_thumbed: thumbed,
     })
 }
 
@@ -940,6 +1072,23 @@ pub fn remote_url(cwd: &Path, remote: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// One unreadable node must not hide the rest of the poll. GitHub answers
+    /// with `errors` beside `data` for exactly that, and it used to fail whole.
+    #[test]
+    fn errors_beside_data_are_a_warning_and_alone_are_a_failure() {
+        let partial = serde_json::json!({
+            "data": { "search": { "nodes": [ {"number": 1} ] } },
+            "errors": [ { "message": "Could not resolve to a node" } ]
+        });
+        assert!(accept(partial.clone()).unwrap()["data"]["search"].is_object());
+        let dead = serde_json::json!({ "data": null, "errors": [ { "message": "bad token" } ] });
+        assert!(accept(dead).is_err());
+        let absent = serde_json::json!({ "errors": [ { "message": "bad token" } ] });
+        assert!(accept(absent).is_err());
+        let clean = serde_json::json!({ "data": { "x": 1 } });
+        assert_eq!(accept(clean.clone()).unwrap(), clean);
+    }
 
     #[test]
     fn reads_owner_and_name_from_either_remote_form() {
@@ -1143,7 +1292,7 @@ mod tests {
                 "comments":{"nodes":[{"author":{"login":"them"},"reactionGroups":[]}]}}"#,
             Some("Y3Vy"),
         );
-        let (nodes, next) = parse_summary_thread_page(&v).unwrap();
+        let (nodes, next) = parse_summary_thread_page(v, 10001).unwrap();
         assert_eq!(nodes.len(), 1);
         assert_eq!(next.as_deref(), Some("Y3Vy"));
         // The nodes carry exactly what `count_open` reads.
@@ -1159,13 +1308,13 @@ mod tests {
             r#"{"data":{"repository":{"pullRequest":{"reviewThreads":{
                 "pageInfo":{"hasNextPage":true,"endCursor":null},"nodes":[]}}}}}"#,
         );
-        assert_eq!(parse_summary_thread_page(&v).unwrap().1, None);
+        assert_eq!(parse_summary_thread_page(v, 10001).unwrap().1, None);
     }
 
     #[test]
-    fn a_missing_pull_request_in_a_summary_page_is_none() {
+    fn a_missing_pull_request_in_a_summary_page_is_an_error() {
         let v = node(r#"{"data":{"repository":{"pullRequest":null}}}"#);
-        assert!(parse_summary_thread_page(&v).is_none());
+        assert!(parse_summary_thread_page(v, 10001).is_err());
     }
 
     #[test]
@@ -1230,7 +1379,7 @@ mod tests {
             &thread_node("PRRT_1", false, false, &["alice"]),
             Some("Y3Vy"),
         );
-        let (page, next) = parse_thread_page(&v, 10001).unwrap();
+        let (page, next) = parse_thread_page(v, 10001).unwrap();
 
         assert_eq!(page.viewer, "viewer");
         assert_eq!(page.head_sha.as_deref(), Some("abc123"));
@@ -1250,7 +1399,7 @@ mod tests {
     #[test]
     fn the_last_page_reports_no_cursor() {
         let v = thread_page("viewer", &thread_node("PRRT_1", false, false, &["alice"]), None);
-        assert_eq!(parse_thread_page(&v, 10001).unwrap().1, None);
+        assert_eq!(parse_thread_page(v, 10001).unwrap().1, None);
     }
 
     #[test]
@@ -1262,20 +1411,61 @@ mod tests {
                 "headRefOid":"abc123","reviewThreads":{
                   "pageInfo":{"hasNextPage":true,"endCursor":null},"nodes":[]}}}}}"#,
         );
-        assert_eq!(parse_thread_page(&v, 10001).unwrap().1, None);
+        assert_eq!(parse_thread_page(v, 10001).unwrap().1, None);
     }
 
     #[test]
     fn a_missing_pull_request_is_an_error_not_an_empty_list() {
         // A deleted or mistyped PR must not read as "no threads to answer".
         let v = node(r#"{"data":{"viewer":{"login":"viewer"},"repository":{"pullRequest":null}}}"#);
-        assert!(parse_thread_page(&v, 10001).is_none());
+        assert!(parse_thread_page(v, 10001).is_err());
+    }
+
+    /// **A nulled connection is not an empty one**, and this is the pair of tests
+    /// that keeps [`accept`]'s tolerance from reaching where it does not belong.
+    ///
+    /// GraphQL nulls the nearest nullable ancestor of a failure, so a timeout
+    /// inside a large `reviewThreads` nulls the connection while leaving the
+    /// `pullRequest` above it an object. Walked with pointers that yields no nodes
+    /// and no cursor, and the paging loop reads that as the last page: the overlay
+    /// opens on a PR with threads and offers nothing to answer, silently.
+    #[test]
+    fn a_nulled_thread_connection_is_an_error_not_an_empty_page() {
+        let detailed = node(
+            r#"{"data":{"viewer":{"login":"me"},"repository":{"pullRequest":
+                {"headRefOid":"abc","reviewThreads":null}}},
+                "errors":[{"message":"Something went wrong while executing your query"}]}"#,
+        );
+        let err = parse_thread_page(detailed, 10001).unwrap_err().to_string();
+        assert!(err.contains("nulled"), "{err}");
+
+        let summary = node(
+            r#"{"data":{"repository":{"pullRequest":{"reviewThreads":null}}},
+                "errors":[{"message":"timeout"}]}"#,
+        );
+        assert!(parse_summary_thread_page(summary, 10001).is_err());
+    }
+
+    /// The other half: the poll's *list* keeps the tolerance, because there the
+    /// "one unreadable node must not hide the rest" argument holds — each PR
+    /// degrades on its own, and the next poll fixes it.
+    #[test]
+    fn a_partial_search_page_still_yields_the_prs_it_could_read() {
+        let partial = serde_json::json!({
+            "data": { "viewer": { "login": "me" }, "search": { "nodes": [
+                { "number": 7, "title": "t", "headRefName": "f", "url": "u" }
+            ] } },
+            "errors": [ { "message": "Could not resolve to a node" } ]
+        });
+        let v = accept(partial).expect("errors beside data are usable");
+        let nodes = v.pointer("/data/search/nodes").unwrap().as_array().unwrap();
+        assert_eq!(parse_pr(&nodes[0], "me").unwrap().number, 7);
     }
 
     #[test]
     fn a_resolved_thread_needs_no_answer() {
         let v = thread_page("viewer", &thread_node("PRRT_1", true, false, &["alice"]), None);
-        let (page, _) = parse_thread_page(&v, 10001).unwrap();
+        let (page, _) = parse_thread_page(v, 10001).unwrap();
         assert!(!page.items[0].is_answerable("viewer"));
     }
 
@@ -1284,7 +1474,7 @@ mod tests {
         // The code moved, but the point may still stand — unlike the rail's
         // unresolved count, triage keeps these.
         let v = thread_page("viewer", &thread_node("PRRT_1", false, true, &["alice"]), None);
-        let (page, _) = parse_thread_page(&v, 10001).unwrap();
+        let (page, _) = parse_thread_page(v, 10001).unwrap();
         assert!(page.items[0].is_answerable("viewer"));
     }
 
@@ -1295,7 +1485,7 @@ mod tests {
             &thread_node("PRRT_1", false, false, &["alice", "viewer"]),
             None,
         );
-        let (page, _) = parse_thread_page(&v, 10001).unwrap();
+        let (page, _) = parse_thread_page(v, 10001).unwrap();
         assert!(!page.items[0].is_answerable("viewer"));
 
         // ...but one where they got the last word still does.
@@ -1304,7 +1494,7 @@ mod tests {
             &thread_node("PRRT_2", false, false, &["alice", "viewer", "alice"]),
             None,
         );
-        let (page, _) = parse_thread_page(&v, 10001).unwrap();
+        let (page, _) = parse_thread_page(v, 10001).unwrap();
         assert!(page.items[0].is_answerable("viewer"));
     }
 
@@ -1317,7 +1507,7 @@ mod tests {
                   "comments":{"nodes":[
                     {"databaseId":1,"author":null,"body":"b","createdAt":"t","url":"u"}]}}]}}}}}"#,
         );
-        let (page, _) = parse_thread_page(&v, 10001).unwrap();
+        let (page, _) = parse_thread_page(v, 10001).unwrap();
         assert_eq!(page.items[0].comments[0].author, "ghost");
         assert_eq!(page.items[0].diff_hunk(), None);
     }
@@ -1362,7 +1552,7 @@ mod tests {
             &thread_node("PRRT_1", false, false, &["alice", "viewer", "alice"]),
             None,
         );
-        let (page, _) = parse_thread_page(&v, 10001).unwrap();
+        let (page, _) = parse_thread_page(v, 10001).unwrap();
         let root = page.root_for("PRRT_1").expect("a root");
         assert_eq!(root.pr(), 10001);
         // The opening comment, not the latest one — replying to the last comment
@@ -1377,7 +1567,7 @@ mod tests {
         // id it hands back has to be looked up rather than trusted. There is no
         // other constructor: an unvalidated id cannot reach `gh`.
         let v = thread_page("viewer", &thread_node("PRRT_1", false, false, &["alice"]), None);
-        let (page, _) = parse_thread_page(&v, 10001).unwrap();
+        let (page, _) = parse_thread_page(v, 10001).unwrap();
         assert!(page.root_for("PRRT_somebody_elses_pr").is_none());
         assert!(page.root_for("").is_none());
     }
@@ -1390,7 +1580,7 @@ mod tests {
                 "nodes":[{"id":"PRRT_1","isResolved":false,"isOutdated":false,
                   "comments":{"nodes":[]}}]}}}}}"#,
         );
-        let (page, _) = parse_thread_page(&v, 1).unwrap();
+        let (page, _) = parse_thread_page(v, 1).unwrap();
         assert!(page.root_for("PRRT_1").is_none());
     }
 
@@ -1416,26 +1606,15 @@ mod tests {
         assert_eq!(parse_pr(&n, "me").unwrap().checks, Checks::Unknown);
     }
 
+    /// Only the two refs matter here: these tests are about how a stack is read
+    /// off `base_ref`.
     fn pr(number: u64, head: &str, base: &str) -> Pr {
         Pr {
-            number,
             title: String::new(),
-            url: String::new(),
             head_ref: head.into(),
-            head_repo: None,
-            head_pushable: None,
             base_ref: base.into(),
-            is_draft: false,
-            mergeable: "MERGEABLE".into(),
-            merge_state: "CLEAN".into(),
             checks: Checks::Passing,
-            head_sha: None,
-            unresolved: 0,
-            unresolved_capped: false,
-            awaiting_you: 0,
-            changes_requested: false,
-            needs_you: false,
-            children: vec![],
+            ..crate::testutil::pr(number)
         }
     }
 

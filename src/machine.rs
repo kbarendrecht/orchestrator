@@ -31,7 +31,7 @@ pub struct Warning {
 /// Is this executable on `PATH`?
 ///
 /// `which` rather than a shell builtin: the daemon's other probes already use it
-/// (`agent_update`, `api`), and every command it spawns is deliberately POSIX.
+/// (`update`, `api`), and every command it spawns is deliberately POSIX.
 /// A `which` that cannot run at all answers "yes" — a preflight that produces a
 /// false alarm on a machine it cannot inspect is worse than one that says nothing.
 fn on_path(exe: &str) -> bool {
@@ -232,9 +232,7 @@ mod tests {
     use super::*;
 
     fn tmp(name: &str) -> std::path::PathBuf {
-        let d = std::env::temp_dir().join(format!("orchd-pre-{}-{name}", std::process::id()));
-        std::fs::create_dir_all(&d).unwrap();
-        d
+        crate::testutil::scratch(&format!("pre-{name}"))
     }
 
     /// The three shapes a checkout can be in, told apart.

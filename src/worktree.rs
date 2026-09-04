@@ -358,8 +358,18 @@ pub async fn archive(app: &Arc<AppState>, workspace: &str) -> Result<()> {
         (w.path.clone(), name)
     };
 
-    let branch = git::current_branch(&path).unwrap_or_else(|_| format!("worktree-{name}"));
-    let head_sha = git::head_sha(&path).ok();
+    // Off the runtime, like the transcript copy below: two git reads on a
+    // teardown that is already waiting on a preflight and a remove.
+    let (branch, head_sha) = {
+        let (at, name) = (path.clone(), name.clone());
+        crate::proc::run_blocking("reading the worktree's branch", move || {
+            (
+                git::current_branch(&at).unwrap_or_else(|_| format!("worktree-{name}")),
+                git::head_sha(&at).ok(),
+            )
+        })
+        .await?
+    };
 
     let store = crate::config::Config::config_dir()?.join("transcripts");
     std::fs::create_dir_all(&store)?;
@@ -748,18 +758,13 @@ mod tests {
     /// The whole point, driven end to end: the tree goes, the conversation stays.
     #[tokio::test]
     async fn reaping_removes_an_old_tree_and_keeps_the_conversation() {
-        use crate::config::Config;
         use crate::model::{ArchiveState, Kind, Session};
-        use crate::state::AppState;
 
         let (main, wt, sha) = repo_with_a_worktree("old");
-        let cfg: Config = serde_json::from_str(&format!(
-            r#"{{"main_checkout":"{}","port":7801,"worktree_retention_days":60,
-                 "upstream_ref":"develop","upstream_remote":"origin"}}"#,
-            main.display()
-        ))
-        .unwrap();
-        let app = AppState::new(cfg, "t".into(), crate::window::Chrome::None);
+        let app = crate::testutil::app_at(
+            &main,
+            r#""worktree_retention_days":60,"upstream_ref":"develop","upstream_remote":"origin""#,
+        );
         app.register_worktree("old", wt.clone(), Some("worktree-old".into())).await;
 
         let id = uuid::Uuid::new_v4();
@@ -803,18 +808,13 @@ mod tests {
     /// what matters, not the size.
     #[tokio::test]
     async fn a_long_running_conversation_is_dated_by_its_last_turn() {
-        use crate::config::Config;
         use crate::model::{ArchiveState, Kind, Session};
-        use crate::state::AppState;
 
         let (main, wt, sha) = repo_with_a_worktree("lastused");
-        let cfg: Config = serde_json::from_str(&format!(
-            r#"{{"main_checkout":"{}","port":7804,"worktree_retention_days":60,
-                 "upstream_ref":"develop","upstream_remote":"origin"}}"#,
-            main.display()
-        ))
-        .unwrap();
-        let app = AppState::new(cfg, "t".into(), crate::window::Chrome::None);
+        let app = crate::testutil::app_at(
+            &main,
+            r#""worktree_retention_days":60,"upstream_ref":"develop","upstream_remote":"origin""#,
+        );
         app.register_worktree("lastused", wt.clone(), Some("worktree-old".into())).await;
 
         // Started 90 days ago, and its transcript was written to a moment ago.
@@ -862,17 +862,12 @@ mod tests {
     /// record is what dates a tree. 32 of 61 trees were in this state.
     #[tokio::test]
     async fn a_worktree_no_conversation_points_at_is_dated_by_its_directory() {
-        use crate::config::Config;
-        use crate::state::AppState;
 
         let (main, wt, _) = repo_with_a_worktree("orphan");
-        let cfg: Config = serde_json::from_str(&format!(
-            r#"{{"main_checkout":"{}","port":7803,"worktree_retention_days":60,
-                 "upstream_ref":"develop","upstream_remote":"origin"}}"#,
-            main.display()
-        ))
-        .unwrap();
-        let app = AppState::new(cfg, "t".into(), crate::window::Chrome::None);
+        let app = crate::testutil::app_at(
+            &main,
+            r#""worktree_retention_days":60,"upstream_ref":"develop","upstream_remote":"origin""#,
+        );
         // Registered the way `adopt_existing_worktrees` registers every tree on
         // disk at boot, and with no session record at all.
         app.register_worktree("orphan", wt.clone(), Some("worktree-old".into())).await;
@@ -909,23 +904,18 @@ mod tests {
     /// Three ways it must decline, none of which reach the preflight.
     #[tokio::test]
     async fn reaping_declines_young_trees_live_sessions_and_a_zero_setting() {
-        use crate::config::Config;
         use crate::model::{Kind, Session};
-        use crate::state::AppState;
 
         let (main, wt, _) = repo_with_a_worktree("keep");
-        let with = |days: u32| -> Config {
-            serde_json::from_str(&format!(
-                r#"{{"main_checkout":"{}","port":7802,"worktree_retention_days":{days},
-                     "upstream_ref":"develop","upstream_remote":"origin"}}"#,
-                main.display()
-            ))
-            .unwrap()
-        };
-        let fresh = |cfg: Config| {
-            let wt = wt.clone();
+        let fresh = |days: u32| {
+            let (wt, main) = (wt.clone(), main.clone());
             async move {
-                let app = AppState::new(cfg, "t".into(), crate::window::Chrome::None);
+                let app = crate::testutil::app_at(
+                    &main,
+                    &format!(
+                        r#""worktree_retention_days":{days},"upstream_ref":"develop","upstream_remote":"origin""#
+                    ),
+                );
                 app.register_worktree("keep", wt, Some("worktree-old".into())).await;
                 app
             }
@@ -950,20 +940,20 @@ mod tests {
         let old = std::time::SystemTime::now() - std::time::Duration::from_secs(90 * 86_400);
 
         // 1. Old, but the setting is off.
-        let app = fresh(with(0)).await;
+        let app = fresh(0).await;
         add(&app, &wt, State::Archived { resumable: true }, old).await;
         assert_eq!(reap_old(&app).await, 0, "`0` never reaps");
         assert!(wt.exists());
 
         // 2. Old, but something is still running in it. Age never outvotes that.
-        let app = fresh(with(60)).await;
+        let app = fresh(60).await;
         add(&app, &wt, State::Archived { resumable: true }, old).await;
         add(&app, &wt, State::Working, old).await;
         assert_eq!(reap_old(&app).await, 0, "a live session keeps its tree");
         assert!(wt.exists());
 
         // 3. Archived, clean, and simply not old enough.
-        let app = fresh(with(60)).await;
+        let app = fresh(60).await;
         add(&app, &wt, State::Archived { resumable: true }, std::time::SystemTime::now()).await;
         assert_eq!(reap_old(&app).await, 0, "a young tree is left alone");
         assert!(wt.exists());

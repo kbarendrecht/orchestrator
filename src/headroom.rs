@@ -32,7 +32,7 @@ pub const FLOOR_MB: u64 = 1500;
 /// `None` when the file is not there or does not say — every caller treats that
 /// as "no opinion" and allows the spawn, because refusing to work on a platform
 /// whose memory we cannot read would be worse than the problem.
-pub fn available_mb() -> Option<u64> {
+fn available_mb() -> Option<u64> {
     read_available(Path::new("/proc/meminfo"))
 }
 

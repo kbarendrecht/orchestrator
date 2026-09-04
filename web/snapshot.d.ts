@@ -508,7 +508,7 @@ export type UpdateInfo = { current: string, latest: string, url: string,
  * What decides whether the bar can offer a button at all: `Some` is an install
  * the app can upgrade itself (`mise upgrade <tool>`), `None` is a `.deb`, an
  * AppImage, a `.dmg` or a checkout, where the honest offer is the release link
- * it already had. Resolved by `self_update::providing_tool` at check time,
+ * it already had. Resolved by `update::app_providing_tool` at check time,
  * off-thread, because it shells mise.
  */
 tool: string | null, };
@@ -571,11 +571,8 @@ stopped_processes: Array<string>,
  * Every file this workspace changed since it branched, committed work
  * included, plus anything untracked. What the changed-files pane lists.
  *
- * **Capped at [`CHANGED_CAP`]**, with the real number in `changed_total`. It
- * is cloned into every snapshot, for every workspace, and a snapshot goes out
- * on every `notify` — which `post_tool_use` calls once per tool call. At the
- * measured ~155-200 bytes a file, one wiped repository put ~0.8 MB through
- * that path several times a second and took the whole app down with it.
+ * **Capped at [`CHANGED_CAP`]**, with the real number in `changed_total`.
+ * That constant carries the measurement and the incident behind it.
  */
 changed: Array<DiffFile>, 
 /**

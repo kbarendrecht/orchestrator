@@ -46,9 +46,7 @@ pub fn token_env_pair(
     kind: crate::config::TrackerKind,
     checkout: &[(String, String)],
 ) -> Option<(String, String)> {
-    use crate::tracker::Tracker as _;
-    let tracker = crate::tracker::TrackerImpl::for_kind(kind)?;
-    let var = tracker.token_env();
+    let var = kind.facts()?.token_env;
     Some((var.to_string(), resolve_token(checkout, var).ok()?))
 }
 
@@ -95,12 +93,39 @@ pub fn resolve_token(checkout: &[(String, String)], var: &str) -> Result<String>
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StoryRef {
     /// Short form, `sc-12345`. What the report shows.
-    pub id: String,
+    ///
+    /// Private, with [`StoryRef::new`] the only way in, because the pair is agent
+    /// text that ends up as a link in a public comment: a value that has not been
+    /// through [`StoryRef::consistent`] must not be constructible outside this
+    /// module. Serde is the exception it cannot police — a `stories.json` written
+    /// before the id was checked deserializes straight past the constructor, which
+    /// is why [`Cache::get`] re-checks on the way out.
+    id: String,
     /// The clickable one, `https://app.shortcut.com/<org>/story/12345`.
-    pub url: String,
+    url: String,
 }
 
 impl StoryRef {
+    /// A story reference, or `None` when the id and the URL do not hang together.
+    ///
+    /// The one constructor, so [`StoryRef::link`] cannot be handed a pair nobody
+    /// checked.
+    pub fn new(id: &str, url: &str, host: &str) -> Option<Self> {
+        let s = StoryRef {
+            id: id.trim().to_string(),
+            url: url.trim().to_string(),
+        };
+        s.consistent(host).then_some(s)
+    }
+
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    pub fn url(&self) -> &str {
+        &self.url
+    }
+
     /// What `{story}` becomes in the posted reply.
     ///
     /// A markdown link rather than either half alone: the skill's rule is "never
@@ -130,11 +155,15 @@ impl StoryRef {
     /// only, an exact host match (which also rules out `app.shortcut.com.evil.com`
     /// and a userinfo prefix, since the authority is compared whole), and the
     /// number as a path segment.
-    pub fn consistent(&self, host: &str) -> bool {
-        let number = self.id.trim_start_matches(|c: char| !c.is_ascii_digit());
-        if number.is_empty() || !number.chars().all(|c| c.is_ascii_digit()) {
+    fn consistent(&self, host: &str) -> bool {
+        // The id is agent text too, and it lands inside markdown link syntax.
+        // "Ends in digits" was the whole check, so `x](https://evil.example)
+        // [sc-12345` with a legitimate URL passed and rendered as a clickable link
+        // to an arbitrary host — the hole the URL check closes, through the other
+        // field. So the id has to be a tracker prefix and a number, nothing else.
+        let Some(number) = well_formed_id(&self.id) else {
             return false;
-        }
+        };
         // Scheme, then authority, then path — no URL crate, because the shapes
         // being refused are exactly the ones a hand-rolled split gets right when
         // it compares the whole authority rather than searching inside it.
@@ -155,6 +184,19 @@ impl StoryRef {
             .map_or(path, |(before, _)| before);
         path.split('/').any(|seg| seg == number)
     }
+}
+
+/// The number in a story id of the shape `sc-12345`: one to eight letters, an
+/// optional dash, one to twelve digits. Anything else — a bracket, a newline, a
+/// second id, an unbounded string — is `None`, and the caller refuses it.
+fn well_formed_id(id: &str) -> Option<&str> {
+    let letters = id.len() - id.trim_start_matches(|c: char| c.is_ascii_alphabetic()).len();
+    if !(1..=8).contains(&letters) {
+        return None;
+    }
+    let rest = id[letters..].strip_prefix('-').unwrap_or(&id[letters..]);
+    let digits = (1..=12).contains(&rest.len()) && rest.chars().all(|c| c.is_ascii_digit());
+    digits.then_some(rest)
 }
 
 /// One story asked for: which thread it answers, and the text approved on the card.
@@ -196,8 +238,34 @@ pub struct Cache {
 }
 
 impl Cache {
-    pub fn get(&self, pr: u64, thread_id: &str) -> Option<&StoryRef> {
-        self.by_pr.get(&pr)?.get(thread_id)
+    /// A stored story, if it is still one this daemon would be willing to write.
+    ///
+    /// The file is durable and the check on the id is newer than some of what is in
+    /// it: an entry written when "ends in digits" was the whole test could carry
+    /// `x](https://evil.example) [sc-12345`, which [`StoryRef::link`] renders as a
+    /// clickable link to somebody else's host in a comment on a colleague's review.
+    /// Validating only what the agent reports leaves that entry served from disk
+    /// for as long as the file lives, so the way out re-checks too.
+    ///
+    /// The id is checked unconditionally because it is the half that escapes the
+    /// markdown; the URL's host only when the caller knows one. A cache hit
+    /// deliberately works with no tracker configured, and there is then nothing to
+    /// compare a host against.
+    pub fn get(&self, pr: u64, thread_id: &str, host: Option<&str>) -> Option<&StoryRef> {
+        let hit = self.by_pr.get(&pr)?.get(thread_id)?;
+        let ok = match host {
+            Some(h) => hit.consistent(h),
+            None => well_formed_id(&hit.id).is_some(),
+        };
+        if !ok {
+            tracing::warn!(
+                pr,
+                thread_id,
+                "a cached story does not hold together; refusing to link it"
+            );
+            return None;
+        }
+        Some(hit)
     }
 
     pub fn put(&mut self, pr: u64, thread_id: &str, story: StoryRef) {
@@ -276,12 +344,15 @@ pub async fn file_all(
     }
 
     // The cache first, so a retry of a half-finished batch only asks about what is
-    // actually missing.
+    // actually missing. The host is passed when there is one, so a stored entry is
+    // held to the same rule the agent's own answer is; a cache hit still works
+    // without a tracker, and `Cache::get` then checks what it can.
+    let known_host = app.cfg.tracker.facts().map(|t| t.host);
     let mut todo: Vec<&Wanted> = Vec::new();
     {
         let inner = app.inner.read().await;
         for w in wanted {
-            match inner.stories.get(pr, &w.thread_id) {
+            match inner.stories.get(pr, &w.thread_id, known_host) {
                 Some(hit) => {
                     out.insert(
                         w.thread_id.clone(),
@@ -303,9 +374,8 @@ pub async fn file_all(
     // a cache hit needs no tracker and must keep working without one, which is what
     // resolving it earlier broke.
     let tracker_host = {
-        use crate::tracker::Tracker as _;
-        match crate::tracker::TrackerImpl::for_kind(app.cfg.tracker) {
-            Some(t) => t.host(),
+        match app.cfg.tracker.facts() {
+            Some(t) => t.host,
             // Nothing configured to file into, so there is no URL to trust and no
             // run to make. Said per thread, because the caller reports per thread.
             None => {
@@ -377,19 +447,17 @@ fn accept(r: &Reported, host: &str) -> std::result::Result<Filed, String> {
     let (Some(id), Some(url)) = (&r.id, &r.url) else {
         return Err("reported neither a story nor an error".to_string());
     };
-    let story = StoryRef {
-        id: id.trim().to_string(),
-        url: url.trim().to_string(),
-    };
-    if !story.consistent(host) {
-        // The one check that matters here: a fabricated pair would put a permanent
-        // public link to somebody else's story into a comment on a colleague's
-        // review, and nothing downstream would notice.
-        return Err(format!(
+    // The one check that matters here: a fabricated pair would put a permanent
+    // public link to somebody else's story into a comment on a colleague's review,
+    // and nothing downstream would notice. It is the constructor rather than a
+    // check beside one, so there is no way to build the value without it.
+    let story = StoryRef::new(id, url, host).ok_or_else(|| {
+        format!(
             "reported {} with url {}, which is not that story — refusing to link it",
-            story.id, story.url
-        ));
-    }
+            id.trim(),
+            url.trim()
+        )
+    })?;
     Ok(Filed {
         story,
         reused: !r.created,
@@ -404,10 +472,11 @@ async fn run_filer(
 ) -> Result<Vec<Reported>> {
     use crate::config::Config;
     use crate::model::{Kind, Session};
-    use crate::pty::PtyHandle;
 
-    use crate::tracker::Tracker as _;
-    let tracker = crate::tracker::TrackerImpl::for_kind(app.cfg.tracker)
+    let tracker = app
+        .cfg
+        .tracker
+        .facts()
         .context("no tracker configured, so there is nothing to file into")?;
     let head_ref = {
         let inner = app.inner.read().await;
@@ -452,10 +521,14 @@ async fn run_filer(
         })
         .collect();
 
-    let (owner, repo) =
-        crate::resolve_repo(app).context("no GitHub repo configured and none on the remote")?;
+    // `git remote get-url`, off the runtime like every other git call on this path.
+    let (owner, repo) = {
+        let a = app.clone();
+        crate::proc::run_blocking("resolving the repo", move || crate::resolve_repo(&a)).await?
+    }
+    .context("no GitHub repo configured and none on the remote")?;
     let body = crate::prompt::render(
-        tracker.prompt(),
+        tracker.prompt,
         &crate::prompt::Vars {
             pr,
             owner,
@@ -491,7 +564,7 @@ async fn run_filer(
         // rule and denies everything. Where it may write is scoped by `--add-dir`
         // instead, which is the only mechanism that actually constrains a path.
         "--allowedTools".to_string(),
-        format!("mcp__{} Read Write", tracker.mcp_server()),
+        format!("mcp__{} Read Write", tracker.mcp_server),
         // The scratch dir is outside the worktree, so it has to be granted.
         "--add-dir".to_string(),
         scratch.to_string_lossy().into_owned(),
@@ -511,39 +584,54 @@ async fn run_filer(
 
     // The tracker variable this run needs is pushed by `session_env` now, for every
     // session rather than only this one.
-    let (env, unset) = crate::config::session_env(&app.cfg, &path, id, None);
+    //
+    // Off the runtime, like the three copies of this in `spawn.rs`: `session_env`
+    // runs a bounded child (`mise env`, `direnv export`) that `run_bounded` polls
+    // with `thread::sleep` for up to five seconds, and a tokio worker parked on
+    // that is the whole board freezing while this run starts.
+    let (env, unset) = crate::proc::run_blocking("reading the session environment", {
+        let (cfg, at) = (app.cfg.clone(), path.clone());
+        move || crate::config::session_env(&cfg, &at, id, None)
+    })
+    .await?;
     // Still refused before the agent runs: `session_env` shrugs when there is no
     // token, which is right for every other session and not for this one. Asked of
     // the environment it just built rather than of the daemon's, because the
     // checkout's own copy is the other place a token comes from.
-    resolve_token(&env, tracker.token_env())?;
+    resolve_token(&env, tracker.token_env)?;
 
-    let spawned = PtyHandle::spawn(&cmd, &path, &env, &unset, crate::spawn::DEFAULT_SIZE)?;
-    let worktree = path.clone();
-    let handle = spawned.handle.clone();
     // A real session, so its pty is there to read when a story goes wrong. It is
-    // automation like `fix-pr` and triage, and archives the same way.
-    let mut session = Session::new(
+    // automation like `fix-pr` and triage, and archives the same way — and it goes
+    // through the same two seams as every other spawn: `insert_and_spawn`, so the
+    // record is in the map before the agent can fire a hook, and
+    // `watch_session_exit`, the one observer that settles a pty ending. This used to
+    // insert the record by hand after the spawn and settle nothing, so a filer's
+    // row stayed live in the rail after the process had gone.
+    let session = Session::new(
         id,
         workspace,
-        path,
+        path.clone(),
         Kind::Automation {
             pr,
             command: "story".to_string(),
         },
     );
-    session.pty = Some(spawned.handle.clone());
-    session.pid = spawned.pid;
-    app.inner.write().await.sessions.insert(id, session);
+    let spawned = crate::spawn::insert_and_spawn(app, id, session, &cmd, &path, &env, &unset).await?;
+    let worktree = path;
+    let handle = spawned.handle.clone();
+    crate::spawn::watch_session_exit(app.clone(), id, spawned.handle);
     app.notify().await;
 
     // The one timeout in this daemon. Every other agent runs under a rail entry
     // somebody is watching; this one runs inside an HTTP request the SPA is
-    // blocking on, so a hang has to end by itself.
+    // blocking on, so a hang has to end by itself. Waiting here is only deciding
+    // when to stop waiting; the record is settled by the watcher above.
     let budget = std::time::Duration::from_secs(app.cfg.story_timeout_seconds);
     let timed_out = tokio::time::timeout(budget, handle.wait()).await.is_err();
     if timed_out {
-        let _ = handle.kill();
+        // Escalating: a filer that trapped `SIGHUP` outlived its timeout and kept
+        // the worktree, which is what the check below is about to inspect.
+        handle.kill_gracefully().await;
         tracing::warn!(pr, session = %id, "story run timed out after {budget:?}");
     }
     app.notify().await;
@@ -553,7 +641,16 @@ async fn run_filer(
     // to. So the tree is checked rather than assumed. Nothing here is recoverable —
     // the commit is already pushed — but leftover junk would otherwise surface as a
     // confusing `Gate::Dirty` on the next review, with no clue where it came from.
-    match crate::git::is_clean(&worktree) {
+    // One hop for both: the `git status` is the expensive half, and the report is a
+    // small file the daemon just caused to be written, at the same moment. Reading
+    // it in a hop of its own bought a task dispatch and a thread handoff for a
+    // `read_to_string`.
+    let (clean, read) = crate::proc::run_blocking("checking the worktree after the story run", {
+        let (w, f) = (worktree.clone(), drop_file.clone());
+        move || (crate::git::is_clean(&w), std::fs::read_to_string(f))
+    })
+    .await?;
+    match clean {
         Ok(true) => {}
         Ok(false) => tracing::warn!(
             pr, session = %id,
@@ -562,7 +659,7 @@ async fn run_filer(
         Err(e) => tracing::warn!("could not check the worktree after the story run: {e:#}"),
     }
 
-    let raw = std::fs::read_to_string(&drop_file).map_err(|_| {
+    let raw = read.map_err(|_| {
         if timed_out {
             anyhow::anyhow!(
                 "the story run was killed after {}s without reporting. If it got as far as \
@@ -804,24 +901,9 @@ mod tests {
 
     fn fake_pr(number: u64, head_ref: &str) -> crate::forge::Pr {
         crate::forge::Pr {
-            number,
             title: "story test".into(),
-            url: String::new(),
             head_ref: head_ref.into(),
-            head_repo: None,
-            head_pushable: None,
-            base_ref: "develop".into(),
-            is_draft: false,
-            mergeable: "MERGEABLE".into(),
-            merge_state: "CLEAN".into(),
-            checks: crate::forge::Checks::Unknown,
-            head_sha: None,
-            unresolved: 0,
-            unresolved_capped: false,
-            awaiting_you: 0,
-            changes_requested: false,
-            needs_you: false,
-            children: vec![],
+            ..crate::testutil::pr(number)
         }
     }
 
@@ -878,6 +960,28 @@ mod tests {
     /// pair ends up as a permanent public link in a reply, so a number appearing
     /// somewhere in the string was never enough: every URL below carries the right
     /// story number and every one of them must still be refused.
+    /// The other field. Every id below carries the right number *and* a legitimate
+    /// URL, and every one must still be refused: the id is rendered verbatim into
+    /// `[id](url)`, so a bracket in it closes the link text and opens another.
+    #[test]
+    fn an_id_that_is_not_a_prefix_and_a_number_is_refused() {
+        let with = |id: &str| {
+            let mut s = story();
+            s.id = id.into();
+            s.consistent(HOST)
+        };
+        assert!(with("sc-12345"), "the ordinary shape");
+        assert!(with("SC12345"), "no dash is fine");
+        assert!(!with("x](https://evil.example) [sc-12345"), "a link injected through the id");
+        assert!(!with("sc-12345\nsee also"), "a newline");
+        assert!(!with("sc-12345 sc-12345"), "two ids");
+        assert!(!with("12345"), "no prefix");
+        assert!(!with("sc-"), "no number");
+        assert!(!with("storyprefix-12345"), "a prefix too long to be a tracker's");
+        assert!(!with("sc-1234567890123"), "a number too long to be a story's");
+        assert!(!with(""), "empty");
+    }
+
     #[test]
     fn a_url_off_the_trackers_host_is_refused() {
         let with = |url: &str| {
@@ -914,11 +1018,37 @@ mod tests {
         let mut c = Cache::default();
         assert!(c.is_empty());
         c.put(10001, "PRRT_1", story());
-        assert_eq!(c.get(10001, "PRRT_1"), Some(&story()));
+        assert_eq!(c.get(10001, "PRRT_1", Some(HOST)), Some(&story()));
         // Same thread id under a different PR is a different story.
-        assert_eq!(c.get(10004, "PRRT_1"), None);
-        assert_eq!(c.get(10001, "PRRT_2"), None);
+        assert_eq!(c.get(10004, "PRRT_1", Some(HOST)), None);
+        assert_eq!(c.get(10001, "PRRT_2", Some(HOST)), None);
         assert_eq!(c.len(), 1);
+    }
+
+    /// The file outlives the rule. An entry written when "ends in digits" was the
+    /// whole check carries an id that breaks out of `[id](url)` markdown, and
+    /// validating only what the agent reports left it served from disk for good.
+    #[test]
+    fn a_poisoned_cache_entry_is_refused_on_the_way_out() {
+        let mut c = Cache::default();
+        // Straight into the map, the way a `stories.json` from an older build
+        // deserializes: past the constructor, which is the point.
+        let poisoned = StoryRef {
+            id: "x](https://evil.example) [sc-12345".into(),
+            url: "https://app.shortcut.com/acme/story/12345".into(),
+        };
+        c.put(10001, "PRRT_1", poisoned);
+        assert_eq!(c.get(10001, "PRRT_1", Some(HOST)), None, "the host is known");
+        assert_eq!(
+            c.get(10001, "PRRT_1", None),
+            None,
+            "and the id alone is enough to refuse it, with no tracker configured"
+        );
+
+        // A sound entry still comes back either way.
+        c.put(10002, "PRRT_1", story());
+        assert_eq!(c.get(10002, "PRRT_1", Some(HOST)), Some(&story()));
+        assert_eq!(c.get(10002, "PRRT_1", None), Some(&story()));
     }
 
     #[test]
@@ -926,6 +1056,6 @@ mod tests {
         let mut c = Cache::default();
         c.put(10001, "PRRT_1", story());
         let back: Cache = serde_json::from_str(&serde_json::to_string(&c).unwrap()).unwrap();
-        assert_eq!(back.get(10001, "PRRT_1"), Some(&story()));
+        assert_eq!(back.get(10001, "PRRT_1", Some(HOST)), Some(&story()));
     }
 }

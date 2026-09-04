@@ -16,9 +16,8 @@
 
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
-use std::io::Write;
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::Output;
 
 use super::model::ThreadRoot;
 
@@ -93,18 +92,11 @@ impl Target {
     /// Per reviewer, not per PR: one whose every thread is addressed is
     /// re-requested even while another's are still open.
     pub fn rerequest(&self, pr: u64, login: &str) -> Result<()> {
-        let out = self
-            .gh(&[
-                "pr",
-                "edit",
-                &pr.to_string(),
-                "--repo",
-                &self.slug(),
-                "--add-reviewer",
-                login,
-            ])
-            .output()
-            .context("spawning gh pr edit")?;
+        let out = self.gh(
+            &["pr", "edit", &pr.to_string(), "--repo", &self.slug(), "--add-reviewer", login],
+            None,
+            "gh pr edit",
+        )?;
         if !out.status.success() {
             bail!(
                 "re-requesting {login} on #{pr} failed: {}",
@@ -125,24 +117,8 @@ impl Target {
             args.extend_from_slice(&["--input", "-"]);
         }
 
-        let mut child = self
-            .gh(&args)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .context("spawning gh api")?;
-        if let Some(b) = body {
-            child
-                .stdin
-                .as_mut()
-                .context("gh stdin")?
-                .write_all(b.to_string().as_bytes())?;
-        }
-        // Dropping stdin closes it; without this `gh` waits on EOF forever.
-        drop(child.stdin.take());
-
-        let out = child.wait_with_output()?;
+        let input = body.map(|b| b.to_string().into_bytes());
+        let out = self.gh(&args, input, "gh api")?;
         if !out.status.success() {
             bail!(
                 "gh api {path} failed: {}",
@@ -152,12 +128,24 @@ impl Target {
         serde_json::from_slice(&out.stdout).context("parsing the gh api response")
     }
 
-    fn gh(&self, args: &[&str]) -> Command {
-        let mut c = Command::new("gh");
-        c.args(args).current_dir(&self.cwd);
-        c
+    /// Run `gh` in the checkout, with `input` on stdin and a deadline.
+    ///
+    /// Through `proc::run_bounded_with_input` rather than a bare `Command`: every
+    /// write here runs inside an HTTP request somebody is watching, and `gh` can
+    /// hang on a keyring or a proxy the same way git could on a credential prompt.
+    /// The primitive also closes stdin after writing it, which `gh` needs (it
+    /// waits on EOF otherwise), and gathers stderr for the error the caller reports.
+    fn gh(&self, args: &[&str], input: Option<Vec<u8>>, label: &str) -> Result<Output> {
+        let argv: Vec<String> = std::iter::once("gh".to_string())
+            .chain(args.iter().map(|a| (*a).to_string()))
+            .collect();
+        crate::proc::run_bounded_with_input(&self.cwd, WRITE_TIMEOUT_SECS, &argv, label, input, &[])
     }
 }
+
+/// How long one `gh` write may take. Generous, because a slow GitHub is not a
+/// reason to lose a reply, and bounded, because a hung one inside a request is.
+const WRITE_TIMEOUT_SECS: u64 = 60;
 
 /// Which reviewers have nothing of theirs left open.
 ///
@@ -177,13 +165,13 @@ pub fn ready_to_rerequest<'a>(all: &[&'a str], open: &[&str]) -> Vec<&'a str> {
 }
 
 /// The path `gh api` is given for a thread reply. Split out to be testable.
-pub fn reply_path(owner: &str, name: &str, pr: u64, comment_id: u64) -> String {
+fn reply_path(owner: &str, name: &str, pr: u64, comment_id: u64) -> String {
     format!("repos/{owner}/{name}/pulls/{pr}/comments/{comment_id}/replies")
 }
 
 /// The path `gh api` is given for a reaction. Note it is **not** nested under
 /// the PR: reactions hang off the review comment directly.
-pub fn reaction_path(owner: &str, name: &str, comment_id: u64) -> String {
+fn reaction_path(owner: &str, name: &str, comment_id: u64) -> String {
     format!("repos/{owner}/{name}/pulls/comments/{comment_id}/reactions")
 }
 

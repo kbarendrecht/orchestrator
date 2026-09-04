@@ -28,7 +28,6 @@ const RECONCILE_EVERY: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// The subset of the hook payload the daemon reads.
 #[derive(Debug, Deserialize, Default)]
-#[allow(dead_code)] // hook_event_name is read when debugging a matcher
 pub struct HookPayload {
     #[serde(default)]
     pub session_id: Option<String>,
@@ -36,8 +35,6 @@ pub struct HookPayload {
     pub transcript_path: Option<String>,
     #[serde(default)]
     pub cwd: Option<String>,
-    #[serde(default)]
-    pub hook_event_name: Option<String>,
     #[serde(default)]
     pub tool_name: Option<String>,
     #[serde(default)]
@@ -94,7 +91,7 @@ impl HookPayload {
     /// is `/tmp` against `/private/tmp`, which would make every hook look stale or
     /// every adoption miss. Falls back to what was reported: a cwd that does not
     /// resolve is not a reason to drop the hook.
-    pub fn resolved_cwd(&self) -> Option<PathBuf> {
+    fn resolved_cwd(&self) -> Option<PathBuf> {
         self.cwd.as_deref().map(|c| resolved(std::path::Path::new(c)))
     }
 }
@@ -200,6 +197,9 @@ pub async fn session_start(
        the log line is the only thing that can point at it. */
     let cwd = payload.resolved_cwd();
     let pending = app.session_workspace(id).await.as_deref() == Some(crate::spawn::PENDING_WORKTREE);
+    // The workspace this session turns out to be in, applied with the rest of the
+    // record below rather than in a write of its own.
+    let mut adopted: Option<String> = None;
     match &cwd {
         Some(path) => match crate::spawn::worktree_name_of(path, &app.cfg.worktrees_dir()) {
             Some(name) => {
@@ -213,7 +213,7 @@ pub async fn session_start(
                 .await
                 .unwrap_or(None);
                 app.register_worktree(&name, path.clone(), branch).await;
-                app.with_session(id, |s| s.workspace = name).await;
+                adopted = Some(name);
             }
             // Not a warning unless it matters: every session in main reports a
             // cwd outside the worktrees dir, and that is the ordinary case.
@@ -234,19 +234,35 @@ pub async fn session_start(
         None => {}
     }
 
-    {
+    // Everything the record learns from this hook, in one critical section. This
+    // used to be three separate writes (the workspace, the record, the prompt),
+    // each queueing behind whatever else held the lock, on a path every session
+    // start goes through.
+    //
+    // The transcript path only if it is really there. A `--worktree` session
+    // reports the worktree's project dir, which Claude Code creates and then never
+    // writes to, having filed the conversation under the checkout it started in.
+    // Taking that on every hook undid the correction `refresh_title` had just
+    // made, and the session dropped out of the archive when it finished.
+    //
+    // The prompt is typed in rather than passed as an argument:
+    // `initialUserMessage` is only honoured in non-interactive mode, and a
+    // `/resolve` session is interactive so you can take it over mid-flight (§8).
+    let transcript = payload
+        .transcript_path
+        .as_deref()
+        .map(PathBuf::from)
+        .filter(|tp| tp.exists());
+    // Named for what it is, because a `pending` bool meaning "this session's
+    // workspace is `PENDING_WORKTREE`" is still live above.
+    let prompt_to_type = {
         let mut inner = app.inner.write().await;
-        if let Some(s) = inner.sessions.get_mut(&id) {
-            // Only if it is really there. A `--worktree` session reports the
-            // worktree's project dir, which Claude Code creates and then never
-            // writes to, having filed the conversation under the checkout it
-            // started in. Taking that on every hook undid the correction
-            // `refresh_title` had just made, and the session dropped out of the
-            // archive when it finished.
-            if let Some(tp) = payload.transcript_path.as_deref().map(PathBuf::from) {
-                if tp.exists() {
-                    s.transcript_path = Some(tp);
-                }
+        inner.sessions.get_mut(&id).and_then(|s| {
+            if let Some(name) = adopted {
+                s.workspace = name;
+            }
+            if let Some(tp) = transcript {
+                s.transcript_path = Some(tp);
             }
             if let Some(cwd) = cwd {
                 s.cwd = cwd;
@@ -260,37 +276,21 @@ pub async fn session_start(
                     reason: TurnReason::Ready,
                 });
             }
-        }
-    }
+            s.pending_prompt.take().map(|p| (p, s.pty.clone()))
+        })
+    };
 
     // A resumed session already has a conversation behind it, and Claude Code has
     // already named it. Waiting for the next `Stop` to read that would leave every
     // row you just resumed showing its worktree until you happen to use it.
     refresh_title(&app, id).await;
 
-    // The prompt is typed in rather than passed as an argument:
-    // `initialUserMessage` is only honoured in non-interactive mode, and a
-    // `/resolve` session is interactive so you can take it over mid-flight (§8).
-    let pending = {
-        let mut inner = app.inner.write().await;
-        inner
-            .sessions
-            .get_mut(&id)
-            .and_then(|s| s.pending_prompt.take().map(|p| (p, s.pty.clone())))
-    };
-    if let Some((prompt, Some(pty))) = pending {
+    if let Some((prompt, Some(pty))) = prompt_to_type {
         tokio::spawn(async move {
             // The prompt box is not ready the instant SessionStart fires; typing
             // into it too early drops characters.
             tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
-            let _ = pty.write(prompt.as_bytes());
-            // The return goes in its own write, after a beat. A line of text and
-            // its newline arriving as one burst reads as a *paste*, and a pasted
-            // newline is a line break in the prompt box rather than a send — so
-            // the instructions sat there typed but never submitted. Short slash
-            // commands got away with it; a sentence with a path in it does not.
-            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-            let _ = pty.write(b"\r");
+            pty.type_and_send(prompt.as_bytes(), std::time::Duration::from_millis(300));
         });
     }
 
@@ -764,12 +764,6 @@ pub async fn boundary_block(
 // Settings file generation
 // ---------------------------------------------------------------------------
 
-/// Write the daemon-owned settings file handed to every spawned session.
-///
-/// Verified at spike time that `--settings` *merges* with project and user
-/// settings rather than replacing them, so the repo's own `worktree-create`,
-/// `worktree-link`, `worktree-edit-boundary` and `pre-bash` hooks keep firing
-/// alongside these. §3's fallback of inlining the repo's hooks is unnecessary.
 /// The `orch` binary, which carries the `git push` guard (§8).
 ///
 /// A sibling of the running executable, because that is true in every layout
@@ -794,7 +788,7 @@ pub async fn boundary_block(
 fn orch_binary() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
     let name = if cfg!(windows) { "orch.exe" } else { "orch" };
-    let stable = crate::self_update::stable_exe(&exe);
+    let stable = crate::update::stable_exe(&exe);
     // The stable path first, the running one as the fallback: a layout without a
     // `latest` beside it gets exactly what it got before.
     let candidates = [
@@ -844,6 +838,12 @@ fn push_guard_hook(base_branch: Option<&str>) -> Option<serde_json::Value> {
     }]}))
 }
 
+/// Write the daemon-owned settings file handed to every spawned session.
+///
+/// Verified at spike time that `--settings` *merges* with project and user
+/// settings rather than replacing them, so the repo's own `worktree-create`,
+/// `worktree-link`, `worktree-edit-boundary` and `pre-bash` hooks keep firing
+/// alongside these. §3's fallback of inlining the repo's hooks is unnecessary.
 pub fn write_settings(
     port: u16,
     tracker: Option<&str>,
@@ -974,11 +974,9 @@ mod tests {
     /// and main's claim is what the old ending would have handed back.
     #[tokio::test]
     async fn a_session_end_from_the_tree_the_conversation_left_settles_nothing() {
-        use crate::config::Config;
         use crate::model::{Kind, Session, MAIN};
-        use crate::state::AppState;
 
-        let dir = std::env::temp_dir().join(format!("orchd-endhook-{}", std::process::id()));
+        let dir = crate::testutil::scratch("endhook");
         let (here, gone) = (dir.join("main"), dir.join("old-worktree"));
         std::fs::create_dir_all(&here).unwrap();
         std::fs::create_dir_all(&gone).unwrap();
@@ -989,12 +987,7 @@ mod tests {
            string; on macOS `$TMPDIR` is a symlink into `/private`, so the workspace
            would match nothing and even the real ending would read as moved. */
         let (here, gone) = (resolved(&here), resolved(&gone));
-        let cfg: Config = serde_json::from_str(&format!(
-            r#"{{"main_checkout":"{}","port":7797}}"#,
-            here.display()
-        ))
-        .unwrap();
-        let app = AppState::new(cfg, "t".into(), crate::window::Chrome::None);
+        let app = crate::testutil::app_at(&here, "");
 
         // The session as a relocation leaves it: same id, now living in main.
         let id = Uuid::new_v4();
@@ -1046,22 +1039,15 @@ mod tests {
     /// `<main>/web`, which no `s.cwd` will ever equal.
     #[tokio::test]
     async fn an_ending_from_a_subdirectory_of_the_workspace_still_ends_it() {
-        use crate::config::Config;
         use crate::model::{Kind, Session, MAIN};
-        use crate::state::AppState;
 
-        let dir = std::env::temp_dir().join(format!("orchd-endsub-{}", std::process::id()));
+        let dir = crate::testutil::scratch("endsub");
         let here = resolved(&{
             let p = dir.join("main");
             std::fs::create_dir_all(p.join("web")).unwrap();
             p
         });
-        let cfg: Config = serde_json::from_str(&format!(
-            r#"{{"main_checkout":"{}","port":7798}}"#,
-            here.display()
-        ))
-        .unwrap();
-        let app = AppState::new(cfg, "t".into(), crate::window::Chrome::None);
+        let app = crate::testutil::app_at(&here, "");
 
         let id = Uuid::new_v4();
         {
@@ -1100,11 +1086,9 @@ mod tests {
     /// waiting for the macos-14 runner.
     #[tokio::test]
     async fn a_cwd_reported_through_a_symlink_is_not_a_conversation_that_moved() {
-        use crate::config::Config;
         use crate::model::{Kind, Session, MAIN};
-        use crate::state::AppState;
 
-        let dir = std::env::temp_dir().join(format!("orchd-endlink-{}", std::process::id()));
+        let dir = crate::testutil::scratch("endlink");
         let real = dir.join("real");
         std::fs::create_dir_all(&real).unwrap();
         let link = dir.join("link");
@@ -1112,12 +1096,7 @@ mod tests {
         std::os::unix::fs::symlink(&real, &link).unwrap();
 
         // The daemon's side is resolved, the way `Config::parse` resolves it.
-        let cfg: Config = serde_json::from_str(&format!(
-            r#"{{"main_checkout":"{}","port":7800}}"#,
-            resolved(&real).display()
-        ))
-        .unwrap();
-        let app = AppState::new(cfg, "t".into(), crate::window::Chrome::None);
+        let app = crate::testutil::app_at(&resolved(&real), "");
 
         let id = Uuid::new_v4();
         {
@@ -1158,20 +1137,13 @@ mod tests {
     /// so settling on one hands main's claim back out from under a live agent.
     #[tokio::test]
     async fn a_session_end_that_ends_no_process_keeps_the_session_and_its_claim() {
-        use crate::config::Config;
         use crate::model::{Kind, Session, MAIN};
-        use crate::state::AppState;
 
-        let dir = std::env::temp_dir().join(format!("orchd-endclear-{}", std::process::id()));
+        let dir = crate::testutil::scratch("endclear");
         let here = dir.join("main");
         std::fs::create_dir_all(&here).unwrap();
         let here = resolved(&here);
-        let cfg: Config = serde_json::from_str(&format!(
-            r#"{{"main_checkout":"{}","port":7799}}"#,
-            here.display()
-        ))
-        .unwrap();
-        let app = AppState::new(cfg, "t".into(), crate::window::Chrome::None);
+        let app = crate::testutil::app_at(&here, "");
 
         let id = Uuid::new_v4();
         {
@@ -1251,21 +1223,13 @@ mod tests {
     /// process is involved.
     #[tokio::test]
     async fn session_start_types_the_pending_prompt_into_the_pty() {
-        use crate::config::Config;
         use crate::pty::PtyHandle;
-        use crate::state::AppState;
         use std::path::Path;
 
-        let dir = std::env::temp_dir().join(format!("orchd-hook-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = crate::testutil::scratch("hook");
         std::env::set_var("HOME", &dir);
 
-        let cfg: Config = serde_json::from_str(&format!(
-            r#"{{"main_checkout":"{}","port":7799}}"#,
-            dir.display()
-        ))
-        .unwrap();
-        let app = AppState::new(cfg, "t".into(), crate::window::Chrome::None);
+        let app = crate::testutil::app_at(&dir, "");
 
         let spawned =
             PtyHandle::spawn(&["cat".to_string()], Path::new("/tmp"), &[], &[], (24, 80)).unwrap();
@@ -1304,18 +1268,10 @@ mod tests {
     /// A session that resumed on its own must stop claiming it wants you.
     #[tokio::test]
     async fn a_tool_call_clears_a_finished_turn() {
-        use crate::config::Config;
-        use crate::state::AppState;
 
-        let dir = std::env::temp_dir().join(format!("orchd-tool-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = crate::testutil::scratch("tool");
         std::env::set_var("HOME", &dir);
-        let cfg: Config = serde_json::from_str(&format!(
-            r#"{{"main_checkout":"{}","port":7798}}"#,
-            dir.display()
-        ))
-        .unwrap();
-        let app = AppState::new(cfg, "t".into(), crate::window::Chrome::None);
+        let app = crate::testutil::app_at(&dir, "");
 
         let id = Uuid::new_v4();
         {
@@ -1354,12 +1310,7 @@ mod tests {
     async fn a_late_tool_result_does_not_undo_an_interrupt() {
         let dir = std::env::temp_dir().join(format!("orchd-hooks-int-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
-        let cfg: Config = serde_json::from_str(&format!(
-            r#"{{"main_checkout":"{}","port":7793}}"#,
-            dir.display()
-        ))
-        .unwrap();
-        let app = AppState::new(cfg, "t".into(), crate::window::Chrome::None);
+        let app = crate::testutil::app_at(&dir, "");
 
         let id = uuid::Uuid::new_v4();
         {
@@ -1400,7 +1351,7 @@ mod tests {
 
     #[test]
     fn hooks_carry_the_correlation_header_and_a_short_timeout() {
-        let dir = std::env::temp_dir().join(format!("orchd-test-{}", std::process::id()));
+        let dir = crate::testutil::scratch("test");
         std::env::set_var("HOME", &dir);
         let path = write_settings(7777, Some("shortcut"), Some("main")).expect("write settings");
         let raw = std::fs::read_to_string(&path).expect("read back");

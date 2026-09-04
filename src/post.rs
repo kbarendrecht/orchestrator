@@ -122,12 +122,6 @@ pub struct Skipped {
     pub waiting_on: String,
 }
 
-/// What the failure panel renders.
-///
-/// `refused` is the local half saying no — the ladder found a stale patch, the
-/// hooks rewrote a file, pre-commit failed. Nothing was committed and nothing was
-/// pushed, so every other field is empty and the screen is panel 7 rather than
-/// panel 8.
 /// A thread the human said they would handle themselves.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ManualThread {
@@ -169,13 +163,36 @@ pub struct ManualPhase {
     /// *which* decisions produced that commit. A decision half one never saw would
     /// otherwise post a reply describing code that was never applied.
     pub decisions: String,
+    /// Is there a phase here to finish, or only a push to remember?
+    ///
+    /// [`remember_push`] needs somewhere durable to say "the daemon pushed this,
+    /// for these decisions", so a retry after a failed reply is not refused as
+    /// "the branch moved since triage"; the phase store is the one per-PR record a
+    /// batch has. But a batch that never stopped for the manual phase has no phase,
+    /// so that record went in as an entry with empty `threads` — and emptiness was
+    /// the only thing telling the two apart.
+    ///
+    /// Nothing read it that way. The boot log announced "manual phase still open",
+    /// the review payload served it, and the SPA adopted it: it dropped you on a
+    /// manual screen with no rows, where `threads.every(…)` is vacuously true and
+    /// `continue · push and post` was therefore enabled. Worse, the record is
+    /// cleared only when nothing failed, so it survived exactly when it was wrong.
+    /// Hence a field rather than a shape a reader has to infer.
+    #[serde(default = "phase_is_open")]
+    pub open: bool,
+}
+
+/// A record written before [`ManualPhase::open`] existed is a real phase — the
+/// push-only entry is the newcomer, so absence has to mean `true`.
+fn phase_is_open() -> bool {
+    true
 }
 
 /// A stable fingerprint of what a batch decided.
 ///
 /// Only the parts that change what gets written or posted: the thread, the position
-/// index, and whether the wording was overridden. Sorted, because the client's order
-/// is not a decision.
+/// index, the mode, and the wording when it was overridden (with "not overridden"
+/// as its own marker). Sorted, because the client's order is not a decision.
 ///
 /// **FNV-1a rather than `DefaultHasher`.** The digest is written to disk with the
 /// phase, so it has to mean the same thing in the next process — and `Hasher`'s output
@@ -219,6 +236,12 @@ fn digest_of(batch: &Batch) -> String {
     format!("{hash:016x}")
 }
 
+/// What the failure panel renders.
+///
+/// `refused` is the local half saying no — the ladder found a stale patch, the
+/// hooks rewrote a file, pre-commit failed. Nothing was committed and nothing was
+/// pushed, so every other field is empty and the screen is panel 7 rather than
+/// panel 8.
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct PostReport {
     pub refused: Option<String>,
@@ -728,6 +751,15 @@ async fn run_inner(
         .await
         .context("the worktree vanished")?;
 
+    // Resolved with the gates, before anything is written. It used to be asked
+    // after the push, so a remote the daemon could not name failed the request with
+    // the commit already public and no report to retry from.
+    let (owner, name) = {
+        let a = app.clone();
+        crate::proc::run_blocking("resolving the repo", move || crate::resolve_repo(&a)).await?
+    }
+    .context("no GitHub repo configured and none on the remote")?;
+
     // The branch must start level with origin, on the first half only.
     //
     // Not a nicety: `git push` sends the whole branch, so once this batch commits
@@ -739,7 +771,16 @@ async fn run_inner(
     //
     // Skipped on the resume, where being ahead of origin is exactly what half one
     // was for.
-    let local_head = crate::git::head_sha(&path)?;
+    let local_head = head_of(&path).await?;
+    // The daemon's own record that *it* pushed what origin now holds, for these
+    // very decisions. It is what gives a failure past the push a route back: the
+    // SPA retries with the batch it sent, and without this the retry read as "the
+    // branch moved since triage" (agent-only) or "moved while the phase was open"
+    // (manual), with the code public and the replies unsent either way.
+    let landed_before = {
+        let inner = app.inner.read().await;
+        pushed_by_us(inner.manual.get(&pr.number), &batch, &local_head, fresh.head_sha.as_deref())
+    };
     if !level_with_origin(&local_head, fresh.head_sha.as_deref(), resume.is_some()) {
         return Ok(PostReport::refused(format!(
             "this branch has work origin does not: local is {} and origin is {}. Pushing \
@@ -756,7 +797,7 @@ async fn run_inner(
         // the daemon being killed. Without this arm that is a permanent refusal with
         // the code public and not one reply posted, which is the same family of bug
         // as the dead end this whole round is closing.
-        let ours = resume.is_some() && head == &local_head;
+        let ours = landed_before || (resume.is_some() && head == &local_head);
         if head != &batch.base_sha && !ours {
             return Ok(PostReport::refused(format!(
                 "the branch moved since triage ({} → {}). The patches were generated against \
@@ -794,6 +835,11 @@ async fn run_inner(
 
     // --- half one: local, undoable -----------------------------------------
     let mut report = match &resume {
+        // Half one landed and was pushed, by us: there is nothing to write, and
+        // re-applying the patches would only find them stale against the commit
+        // they are already in. Straight to the outward half, which re-derives what
+        // is still missing.
+        None if landed_before => PostReport::default(),
         None => match write_local(&path, app, &handled).await? {
             Ok(w) => w,
             Err(refusal) => return Ok(refusal),
@@ -802,14 +848,27 @@ async fn run_inner(
             // The phase's own staleness check, and the reason there is no
             // server-side pending state to go stale: what the first half produced
             // is a commit, so git is the record.
-            let head = crate::git::head_sha(&path)?;
-            if head != done.committed {
+            //
+            // Against the *stored* phase's sha, not the payload's. The fold and the
+            // push both move `HEAD`, and the daemon records that on the phase, while
+            // the SPA replays the payload it sent the first time; comparing against
+            // the payload refused every retry after a push as "moved", finally.
+            let head = head_of(&path).await?;
+            let expected = app
+                .inner
+                .read()
+                .await
+                .manual
+                .get(&pr.number)
+                .map(|p| p.committed.clone())
+                .unwrap_or_else(|| done.committed.clone());
+            if head != expected {
                 return Ok(PostReport::refused_finally(format!(
                     "the branch moved while the manual phase was open ({} → {}). The accepted \
                      patches are still committed on it and nothing has been pushed or posted; \
                      whatever moved it may not account for your edits, so look at the branch \
                      before continuing.",
-                    crate::git::short(&done.committed),
+                    crate::git::short(&expected),
                     crate::git::short(&head)
                 )));
             }
@@ -838,13 +897,14 @@ async fn run_inner(
     // After the local commit, before the push. So you edit a tree that already
     // reflects every other decision — often why the thread needed hands — and
     // nothing has left the machine yet if you walk away.
-    if resume.is_none() && !waiting.is_empty() {
+    if resume.is_none() && !waiting.is_empty() && !landed_before {
         let phase = ManualPhase {
-            committed: crate::git::head_sha(&path)?,
+            committed: head_of(&path).await?,
             files: std::mem::take(&mut report.files),
             amend: report.amend.take(),
             threads: waiting,
             decisions: digest_of(&batch),
+            open: true,
         };
         // Durable, so a reload or a restart does not strand a batch whose patches are
         // already committed.
@@ -868,23 +928,23 @@ async fn run_inner(
     // phase with `mem::take`, and `write_manual` legitimately writes nothing when a
     // Manual thread changed no code. Both left an unpushed commit while every reply
     // went out saying a fix had landed.
-    let head_now = crate::git::head_sha(&path)?;
+    let head_now = head_of(&path).await?;
     let unpushed = match &fresh.head_sha {
         Some(remote) => &head_now != remote,
         // No remote head to compare against — the same case that skips the staleness
         // check above. Ask git rather than the report: on a resume `report.files` is
         // routinely empty (the fold already happened, or you changed nothing), and
         // reading it there would post replies saying a fix landed without pushing it.
-        None => crate::git::has_unpushed(&path, &pr.head_ref),
+        None => {
+            let (p, b) = (path.clone(), pr.head_ref.clone());
+            crate::proc::run_blocking("counting unpushed commits", move || {
+                crate::git::has_unpushed(&p, &b)
+            })
+            .await?
+        }
     };
     if unpushed {
-        let branch = pr.head_ref.clone();
-        let p = path.clone();
-        let base = crate::git::base_checkout_branch(&app.cfg.main_checkout, &app.cfg.upstream_ref);
-        let pushed =
-            tokio::task::spawn_blocking(move || crate::git::push_with_lease(&p, &branch, base.as_deref()))
-                .await
-                .context("the push panicked")?;
+        let pushed = crate::api::push_branch(app, path.clone(), pr.head_ref.clone()).await;
         if let Err(e) = pushed {
             // **HEAD has moved by now**, on both halves — the local write committed.
             // Returning an `Err` here 500s the request, the SPA only toasts, and the
@@ -899,7 +959,7 @@ async fn run_inner(
         report.pushed = Some(head_now.clone());
         // Recorded before anything outward runs: if the story call or a reply then
         // fails, a retry must know the push already landed.
-        set_phase_head(app, pr.number, head_now).await;
+        remember_push(app, pr.number, head_now, &batch).await;
     }
 
     // --- the stories, before the replies that carry their ids ---------------
@@ -920,22 +980,59 @@ async fn run_inner(
         .collect();
     let filed = crate::story::file_all(app, pr.number, &wanted).await;
 
-    let (owner, name) =
-        crate::resolve_repo(app).context("no GitHub repo configured and none on the remote")?;
     // Writes shell `gh`, so no read token; `path` is the worktree it runs in.
     let forge = ForgeImpl::for_kind(app.cfg.forge, owner, name, String::new());
     post_outward(&forge, &path, pr.number, fresh, &handled, &filed, &mut report).await;
 
     // The batch is over. Keeping the phase would offer to finish something that
     // already finished — and a later batch on this PR would inherit its digest.
-    // Anything still failed is retried through the report, not the phase.
+    // Anything still failed is retried through the report, and the record the push
+    // left (`remember_push`) is what lets that retry in.
     if report.failed.is_empty() {
         let mut inner = app.inner.write().await;
         inner.with_manual("batch finished", |m| m.remove(&pr.number).is_some());
-    } else {
-        update_phase_head(app, pr.number, &path).await;
     }
     Ok(report)
+}
+
+/// `HEAD`, read off the runtime: `git rev-parse` is a process, and this whole path
+/// runs inside an HTTP request on a tokio worker.
+async fn head_of(path: &Path) -> Result<String> {
+    let p = path.to_path_buf();
+    crate::proc::run_blocking("reading HEAD", move || crate::git::head_sha(&p)).await?
+}
+
+/// Did the daemon itself push what origin now holds, for exactly this batch?
+///
+/// Three things have to agree: the phase store names this batch's decisions, its
+/// recorded commit is the local `HEAD`, and origin is at that same commit. Any one
+/// missing and the sha on origin is somebody else's business — the ordinary
+/// "moved since triage" refusal is right.
+fn pushed_by_us(
+    phase: Option<&ManualPhase>,
+    batch: &Batch,
+    local_head: &str,
+    remote_head: Option<&str>,
+) -> bool {
+    phase.is_some_and(|p| {
+        p.decisions == digest_of(batch)
+            && p.committed == local_head
+            && remote_head == Some(local_head)
+    })
+}
+
+/// Record that the push for `batch` landed at `head`.
+///
+/// In the phase store, because it is the one durable per-PR record a batch has. A
+/// batch that never stopped for the manual phase had no record there at all, so
+/// when a reply failed after its push there was nothing to update: the retry
+/// arrived with the original `base_sha`, found origin at a sha this daemon had
+/// pushed, and was refused as "the branch moved since triage". [`pushed_by_us`]
+/// reads this back; the entry it writes is `open: false`, which is what keeps it
+/// from being served to the phase screen as a phase with nothing in it.
+async fn remember_push(app: &Arc<AppState>, pr: u64, head: String, batch: &Batch) {
+    let decisions = digest_of(batch);
+    set_phase_head(app, pr, head, Some(decisions)).await;
 }
 
 /// May a batch start here, or is the branch already ahead of origin?
@@ -973,7 +1070,9 @@ async fn carry_phase(
     mut report: PostReport,
 ) -> PostReport {
     update_phase_head(app, pr, path).await;
-    if let Some(phase) = app.inner.read().await.manual.get(&pr) {
+    // Only an open phase. A push-only record is not something the report can offer
+    // to finish, and attaching one set `retryable` off a phase that does not exist.
+    if let Some(phase) = app.inner.read().await.manual.get(&pr).filter(|p| p.open) {
         report.manual = Some(phase.clone());
         report.retryable = true;
     }
@@ -982,23 +1081,48 @@ async fn carry_phase(
 
 /// Point the stored phase at the worktree's current `HEAD`.
 async fn update_phase_head(app: &Arc<AppState>, pr: u64, path: &Path) {
-    let Ok(head) = crate::git::head_sha(path) else {
+    let Ok(head) = head_of(path).await else {
         return;
     };
-    set_phase_head(app, pr, head).await;
+    set_phase_head(app, pr, head, None).await;
 }
 
-/// [`update_phase_head`] for a caller that has already read the sha.
-async fn set_phase_head(app: &Arc<AppState>, pr: u64, head: String) {
+/// Point this PR's phase record at `head`, creating a push-only one when there is
+/// none and `create` names the decisions it belongs to.
+///
+/// One function because the two callers were the same write twice over, down to
+/// the comment: both took `with_manual`, both moved `committed` only when it had
+/// actually moved. The only thing they disagreed about was whether a missing
+/// record should be conjured, which is now the argument.
+async fn set_phase_head(app: &Arc<AppState>, pr: u64, head: String, create: Option<String>) {
     let mut inner = app.inner.write().await;
     // Returning `false` when nothing moved keeps this from rewriting the file on
     // every commit that happens to land on the same head.
     inner.with_manual("phase head moved", |m| match m.get_mut(&pr) {
-        Some(phase) if phase.committed != head => {
+        Some(phase) if phase.committed == head => false,
+        Some(phase) => {
             phase.committed = head;
             true
         }
-        _ => false,
+        None => match create {
+            Some(decisions) => {
+                m.insert(
+                    pr,
+                    ManualPhase {
+                        committed: head,
+                        files: Vec::new(),
+                        amend: None,
+                        threads: Vec::new(),
+                        decisions,
+                        // Not a phase: nothing to edit, nothing to show, and
+                        // nothing for the phase screen to offer to finish.
+                        open: false,
+                    },
+                );
+                true
+            }
+            None => false,
+        },
     });
 }
 
@@ -1384,13 +1508,8 @@ fn split_reviewers<'a>(fresh: &'a Threads, done: &[&str]) -> Split<'a> {
         if who == fresh.viewer {
             continue;
         }
-        // Everyone who reviewed, whatever became of their threads. This used to
-        // count only `answerable` ones, which worked for the batch because it
-        // judges a fetch taken *before* it posts — and left the run's button
-        // finding nobody at all, because by the time it fetches, every thread it
-        // answered has your comment last. Measured, not reasoned: a run that
-        // answered all three fixture threads re-requested nobody and held nobody
-        // back, because this list was empty.
+        // Everyone who reviewed, whatever became of their threads; `answerable`
+        // alone left the run's button finding nobody, see [`rerequest_all`].
         s.all.push(who);
         // Still wants an answer: we did not settle it, and nobody has answered it
         // since. Both halves are needed — `done` catches the thread this run
@@ -1424,6 +1543,12 @@ pub(crate) struct Rerequested {
 /// thread a run had just answered still counted as holding its author back, and
 /// the button could never re-request anybody. Answering that question needs
 /// `done`: the threads this run or batch actually settled.
+///
+/// The same mistake, one step earlier, was counting only `answerable` threads for
+/// `all`: right for the batch, which judges a fetch taken *before* it posts, and
+/// empty for the run, whose fetch already has your comment last on every thread it
+/// answered. Measured on the fixture: a run that answered all three threads
+/// re-requested nobody and held nobody back.
 pub(crate) async fn rerequest_all(
     forge: &ForgeImpl,
     at: &Path,
@@ -1579,34 +1704,10 @@ mod tests {
 
     /// The first half: no phase has opened.
     const FIRST_HALF: Option<&std::collections::HashMap<String, String>> = None;
-    use crate::forge::{Comment, Thread};
+    use crate::forge::Thread;
     use crate::proposal::{Proposal, ProposalSet, StoryDraft};
 
-    fn comment(id: u64, author: &str, body: &str) -> Comment {
-        Comment {
-            database_id: id,
-            author: author.into(),
-            body: body.into(),
-            created_at: "2026-08-17T00:00:00Z".into(),
-            url: "u".into(),
-            diff_hunk: None,
-            viewer_thumbed: false,
-        }
-    }
-
-    fn thread(id: &str, path: Option<&str>, line: Option<u32>, author: &str) -> Thread {
-        Thread {
-            id: id.into(),
-            path: path.map(str::to_string),
-            line,
-            start_line: None,
-            original_line: None,
-            is_resolved: false,
-            is_outdated: false,
-            comments: vec![comment(100, author, "you call this twice")],
-            answerable: true,
-        }
-    }
+    use crate::testutil::{comment, thread};
 
     fn fetched(items: Vec<Thread>) -> Threads {
         Threads {
@@ -1761,6 +1862,53 @@ mod tests {
                 story: None,
             }],
         )
+    }
+
+    /// The route back after a failure past the push. Three things have to agree
+    /// before origin's sha is read as our own push rather than somebody else's move;
+    /// each is dropped in turn here.
+    #[test]
+    fn only_our_own_push_for_these_decisions_counts_as_landed() {
+        let b = batch("PRRT_1", 0, None);
+        let phase = ManualPhase {
+            committed: "abc".into(),
+            files: vec![],
+            amend: None,
+            threads: vec![],
+            decisions: digest_of(&b),
+            open: false,
+        };
+        assert!(pushed_by_us(Some(&phase), &b, "abc", Some("abc")));
+        assert!(!pushed_by_us(None, &b, "abc", Some("abc")), "no record: not ours");
+        assert!(!pushed_by_us(Some(&phase), &b, "abc", Some("def")), "origin is elsewhere");
+        assert!(!pushed_by_us(Some(&phase), &b, "abc", None), "no remote head to agree with");
+        assert!(!pushed_by_us(Some(&phase), &b, "def", Some("def")), "the record names another commit");
+        let other = batch("PRRT_1", 1, None);
+        assert!(!pushed_by_us(Some(&phase), &other, "abc", Some("abc")), "other decisions");
+    }
+
+    /// An agent-only batch has no phase, so its push used to leave no record, and a
+    /// reply failing after it left the retry with nowhere to go. The record is made
+    /// on the push whether or not a phase was open, and moves with a later push.
+    #[tokio::test]
+    async fn a_push_is_remembered_even_when_no_phase_was_open() {
+        let app = app().await;
+        let pr = 424_242;
+        let b = batch("PRRT_1", 0, None);
+        remember_push(&app, pr, "abc".into(), &b).await;
+        let stored = app.inner.read().await.manual.get(&pr).cloned().expect("a record of the push");
+        assert!(stored.threads.is_empty(), "nothing is waiting on a human");
+        assert!(pushed_by_us(Some(&stored), &b, "abc", Some("abc")), "and it reads back as ours");
+        // And it is not a phase. Emptiness used to be the only thing saying so, and
+        // every reader took it for one: the boot log announced it, the payload
+        // served it, and the SPA opened a phase screen with no rows whose
+        // `continue · push and post` was enabled because `every()` over nothing is
+        // true.
+        assert!(!stored.open, "a push record is not something to finish");
+
+        remember_push(&app, pr, "def".into(), &b).await;
+        assert_eq!(app.inner.read().await.manual[&pr].committed, "def");
+        app.inner.write().await.with_manual("test cleanup", |m| m.remove(&pr).is_some());
     }
 
     #[test]
@@ -2207,13 +2355,8 @@ mod tests {
         assert!(split.holding.is_empty());
     }
 
-    /// The fault that made this one implementation instead of two.
-    ///
-    /// `api::pr_run_rerequest` asked "is the thread unresolved?" — but resolving is
-    /// the reviewer's own button and the daemon never presses it, so every thread a
-    /// run had just answered still counted as open, every reviewer stayed held
-    /// back, and the button could not re-request anybody, ever. The question has to
-    /// be "did *we* settle it", which is what `done` carries.
+    /// The fault that made [`rerequest_all`] the one implementation: "did *we*
+    /// settle it" is what `done` carries, and `!is_resolved` can never mean it.
     #[test]
     fn an_answered_thread_still_unresolved_does_not_hold_its_author_back() {
         let fresh = fetched(vec![
@@ -2289,14 +2432,7 @@ mod tests {
     }
 
     async fn app() -> Arc<AppState> {
-        let dir = std::env::temp_dir().join(format!("orchd-post-one-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let cfg: crate::config::Config = serde_json::from_str(&format!(
-            r#"{{"main_checkout":"{}","port":7799}}"#,
-            dir.display()
-        ))
-        .unwrap();
-        AppState::new(cfg, "t".into(), crate::window::Chrome::None)
+        crate::testutil::app("post-one").0
     }
 
     /// A forge is needed to call `post_one`, but these cases all return before any
@@ -2343,10 +2479,10 @@ mod tests {
     #[tokio::test]
     async fn the_story_token_is_replaced_by_the_link_before_anything_is_posted() {
         let app = app().await;
-        let story = crate::story::StoryRef {
-            id: "sc-1".into(),
-            url: "https://tracker/story/1".into(),
-        };
+        // Through the constructor, which is the only way in now: the pair has to
+        // hang together before anything can render it as a link.
+        let story = crate::story::StoryRef::new("sc-1", "https://tracker/story/1", "tracker")
+            .expect("a consistent pair");
         app.inner
             .write()
             .await

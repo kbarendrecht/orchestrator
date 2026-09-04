@@ -37,8 +37,12 @@ pub fn resolve_base(cwd: &Path, base: Base, upstream: &str, pr_base: Option<&str
         Base::Head => Ok("HEAD".to_string()),
         Base::PrBase => {
             let r = pr_base.unwrap_or(upstream);
-            // The PR base lives on upstream, not on the fork.
-            let candidates = [format!("upstream/{r}"), r.to_string()];
+            // The PR base lives on the remote PRs are opened against, which is the
+            // remote in `upstream_ref`, not a remote called `upstream`: on a repo
+            // whose real remote is `origin` the hardcoded name resolved nothing and
+            // the review diff failed with "could not resolve the PR base".
+            let remote = upstream.split_once('/').map_or("origin", |(remote, _)| remote);
+            let candidates = [format!("{remote}/{r}"), r.to_string()];
             for c in &candidates {
                 if let Ok(out) = git(cwd, &["merge-base", c, "HEAD"]) {
                     return Ok(out.trim().to_string());
@@ -99,45 +103,62 @@ pub struct DiffSummary {
 
 /// `--numstat` first so the file list renders immediately; hunks come later,
 /// per file (§5).
+///
+/// **`-z` on both halves, and the shared parser for the numstat.** The plain form
+/// applies `core.quotePath`, so a non-ASCII path arrives quoted and escaped, and it
+/// collapses a rename into the single field `dir/{old.txt => new.txt}`. Neither
+/// matched the `--name-status` map, which is keyed on the new path alone: the
+/// lookup could not hit, so *every* renamed file came back `status: "M"` with no
+/// `old_path` and a brace-form `path` that the SPA then used to request hunks and
+/// open the file. `patch::parse_numstat_z` already knew the record shapes, so this
+/// is the third parser of one format retired rather than a fourth written.
 pub fn summary(cwd: &Path, base: &str) -> Result<DiffSummary> {
-    let numstat = git(cwd, &["diff", "--numstat", base])?;
-    let namestatus = git(cwd, &["diff", "--name-status", base])?;
+    let numstat = git(cwd, &["diff", "--numstat", "-z", base])?;
+    let namestatus = git(cwd, &["diff", "--name-status", "-z", base])?;
 
+    // `-z` makes this a flat NUL-separated stream rather than lines: a status, then
+    // its path, and for a rename or a copy the old path and the new one in turn.
     let mut statuses = std::collections::HashMap::new();
-    for line in namestatus.lines() {
-        let mut parts = line.split('\t');
-        let Some(code) = parts.next() else { continue };
-        let Some(first) = parts.next() else { continue };
-        // Renames and copies carry both paths; the new one is what is shown.
-        let path = parts.next().unwrap_or(first);
-        statuses.insert(path.to_string(), (code.to_string(), parts_old(code, first)));
+    let mut fields = namestatus.split('\0').filter(|f| !f.is_empty());
+    while let Some(code) = fields.next() {
+        let Some(first) = fields.next() else { break };
+        let renamed = code.starts_with('R') || code.starts_with('C');
+        let (path, old) = if renamed {
+            match fields.next() {
+                Some(new) => (new.to_string(), Some(first.to_string())),
+                None => break,
+            }
+        } else {
+            (first.to_string(), None)
+        };
+        statuses.insert(path, (code.to_string(), old));
     }
 
     let mut files = Vec::new();
     let (mut total_add, mut total_del) = (0u32, 0u32);
-    for line in numstat.lines() {
-        let mut parts = line.split('\t');
-        let a = parts.next().unwrap_or("0");
-        let d = parts.next().unwrap_or("0");
-        let Some(path) = parts.next() else { continue };
-        // Binary files report "-" for both counts.
-        let binary = a == "-" || d == "-";
-        let added: u32 = a.parse().unwrap_or(0);
-        let deleted: u32 = d.parse().unwrap_or(0);
-        total_add += added;
-        total_del += deleted;
+    for row in crate::patch::parse_numstat_z(&numstat) {
+        // A binary file reports "-" for both counts, which the parser surfaces as
+        // zero; the two are told apart by asking the row whether it counted lines.
+        let binary = row.binary;
+        total_add += row.added;
+        total_del += row.deleted;
         let (status, old_path) = statuses
-            .get(path)
+            .get(&row.path)
             .cloned()
-            .unwrap_or_else(|| ("M".to_string(), None));
+            // A rename the numstat saw and name-status did not is still a rename,
+            // and the row carries the old path itself.
+            .unwrap_or_else(|| {
+                let code = if row.from.is_some() { "R" } else { "M" };
+                (code.to_string(), row.from.clone())
+            });
         files.push(DiffFile {
-            path: path.to_string(),
+            path: row.path,
             status,
-            added,
-            deleted,
+            added: row.added,
+            deleted: row.deleted,
             binary,
             // Binary and generated content is collapsed rather than rendered.
-            eager: !binary && (added + deleted) as usize <= EAGER_LINE_CAP,
+            eager: !binary && (row.added + row.deleted) as usize <= EAGER_LINE_CAP,
             old_path,
         });
     }
@@ -149,14 +170,6 @@ pub fn summary(cwd: &Path, base: &str) -> Result<DiffSummary> {
         added: total_add,
         deleted: total_del,
     })
-}
-
-fn parts_old(code: &str, first: &str) -> Option<String> {
-    if code.starts_with('R') || code.starts_with('C') {
-        Some(first.to_string())
-    } else {
-        None
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -510,6 +523,75 @@ fn tokenize(s: &str) -> Vec<(usize, &str)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The PR base is looked up on the configured remote. A repo whose only
+    /// remote is `origin` has no `upstream/<branch>` to find, and the diff view
+    /// used to fail on exactly that.
+    #[test]
+    fn the_pr_base_is_resolved_on_the_configured_remote() {
+        let dir = std::env::temp_dir().join(format!("orchd-prbase-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let run = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .args(args)
+                .current_dir(&dir)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+        run(&["init", "-q", "-b", "main"]);
+        run(&["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "x"]);
+        let head = run(&["rev-parse", "HEAD"]);
+        // The PR's base branch exists only as a remote-tracking ref on `origin`.
+        run(&["update-ref", "refs/remotes/origin/dev", "HEAD"]);
+
+        let sha = resolve_base(&dir, Base::PrBase, "origin/main", Some("dev")).unwrap();
+        assert_eq!(sha, head);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A rename and a non-ASCII path, which the plain `--numstat` got wrong in the
+    /// same way: it prints `dir/{old => new}` for the first and a quoted, escaped
+    /// string for the second, while the `--name-status` map is keyed on the real new
+    /// path. The lookup could never hit, so every rename came back `M` with no
+    /// `old_path` and a brace-form `path` the SPA then asked for hunks on.
+    #[test]
+    fn a_rename_and_a_non_ascii_path_survive_the_summary() {
+        let dir = crate::testutil::scratch_repo("diff-rename");
+        let g = |args: &[&str]| crate::testutil::git(&dir, args);
+
+        std::fs::write(dir.join("old.txt"), "one\ntwo\n").unwrap();
+        std::fs::write(dir.join("café.md"), "bonjour\n").unwrap();
+        g(&["add", "-A"]);
+        g(&["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "base"]);
+        let base = crate::git::head_sha(&dir).unwrap();
+
+        g(&["mv", "old.txt", "new.txt"]);
+        std::fs::write(dir.join("café.md"), "bonjour\nencore\n").unwrap();
+        g(&["add", "-A"]);
+        g(&["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "rename"]);
+
+        let s = summary(&dir, &base).unwrap();
+        let renamed = s
+            .files
+            .iter()
+            .find(|f| f.path == "new.txt")
+            .expect("the rename is named by its new path, not by a brace form");
+        assert!(renamed.status.starts_with('R'), "status was {}", renamed.status);
+        assert_eq!(renamed.old_path.as_deref(), Some("old.txt"));
+
+        let accented = s
+            .files
+            .iter()
+            .find(|f| f.path == "café.md")
+            .expect("a non-ASCII path arrives raw, not quoted and escaped");
+        assert_eq!(accented.status, "M");
+        assert_eq!(accented.added, 1);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn highlights_only_the_changed_word() {

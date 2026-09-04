@@ -67,7 +67,7 @@ fn now_ms() -> u64 {
 /// The recent-projects list, newest first. Missing or corrupt file reads as empty
 /// rather than failing — a first run has no list, and a garbled one should not keep
 /// the window shut.
-pub fn recent_projects() -> Vec<RecentProject> {
+fn recent_projects() -> Vec<RecentProject> {
     match Config::config_dir() {
         Ok(dir) => recent_projects_in(&dir),
         Err(_) => Vec::new(),
@@ -88,7 +88,7 @@ const MAX_RECENT: usize = 12;
 /// Record that `path` was just opened: move it to the front with a fresh timestamp,
 /// drop any older entry for the same path, and cap the list. Best effort — a failure
 /// to write the list must never fail an open, so the caller logs and carries on.
-pub fn record_recent(path: &Path) -> Result<()> {
+fn record_recent(path: &Path) -> Result<()> {
     let dir = Config::config_dir()?;
     record_recent_in(&dir, path)
 }
@@ -123,19 +123,38 @@ fn record_recent_in(dir: &Path, path: &Path) -> Result<()> {
 /// mistake this does not police. Returns a human message, not an error type,
 /// because it goes straight to the page.
 pub fn validate(path: &Path) -> std::result::Result<ProjectInfo, String> {
+    let path = expand_home(path, std::env::var_os("HOME").map(PathBuf::from).as_deref());
     if !path.exists() {
         return Err("No such folder.".into());
     }
     if !path.is_dir() {
         return Err("That is a file, not a folder.".into());
     }
+    // Canonical, because this string is what `config.json` gets: a relative path
+    // typed into the box would be resolved against whatever the daemon's cwd
+    // happened to be on the next launch, and a symlinked one would fail the
+    // path comparisons `Config::parse` canonicalises everything else for.
+    let path = std::fs::canonicalize(&path).map_err(|e| format!("Cannot resolve that folder: {e}"))?;
     if !path.join(".git").exists() {
         return Err("Not a git repository — orchd works on a git checkout.".into());
     }
     Ok(ProjectInfo {
-        name: name_of(path),
+        name: name_of(&path),
         path: path.to_string_lossy().into_owned(),
     })
+}
+
+/// `~` and `~/x` mean the home directory, the way the box's own placeholder
+/// writes it. A shell expands this; a text field does not, so the page's own
+/// example was refused as "No such folder".
+fn expand_home(path: &Path, home: Option<&Path>) -> PathBuf {
+    let Some(home) = home else {
+        return path.to_path_buf();
+    };
+    match path.strip_prefix("~") {
+        Ok(rest) => home.join(rest),
+        Err(_) => path.to_path_buf(),
+    }
 }
 
 /// What orchd worked out about a chosen checkout, for the review step to confirm.
@@ -240,21 +259,44 @@ fn detect_processes(path: &Path) -> Vec<DetectedProcess> {
 /// the review always has something to show.
 pub fn detect(path: &Path) -> Detected {
     let base_branches = crate::git::remote_branches(path);
+    // A fork layout first — an `upstream` remote beside `origin` — because on one
+    // every other guess below is the fork, and the review then pre-filled the
+    // fork's default branch and the fork's repo. The daemon's own first write asks
+    // the same question (`git::detect_base`), so the review shows what it would do.
+    let fork = crate::git::detect_base(path);
+    let remote = fork.as_ref().map(|(_, r)| r.as_str()).unwrap_or("origin");
+    let prefix = format!("{remote}/");
     // Prefer the remote's recorded default; then a conventional main/master; then
-    // whatever the first remote branch is; then the daemon's own `origin/HEAD`.
-    let base_branch = crate::git::base_checkout_branch(path, "origin/HEAD")
-        .map(|b| format!("origin/{b}"))
+    // any branch of that remote; then whatever branch there is.
+    //
+    // Every arm but the last is filtered on `base_branches`, because this fills a
+    // `<select>` and pre-selecting a branch the list does not offer shows the
+    // picker as blank. The last arm is deliberately *not* filtered: it is only
+    // reached when there are no remote branches at all, so there is no list to be
+    // absent from, and naming the daemon's own default ref is more use than "".
+    let base_branch = fork
+        .as_ref()
+        .map(|(b, _)| b.clone())
         .filter(|b| base_branches.contains(b))
+        .or_else(|| {
+            crate::git::base_checkout_branch(path, &format!("{prefix}HEAD"))
+                .map(|b| format!("{prefix}{b}"))
+                .filter(|b| base_branches.contains(b))
+        })
         .or_else(|| {
             base_branches
                 .iter()
-                .find(|b| *b == "origin/main" || *b == "origin/master")
+                .find(|b| *b == &format!("{prefix}main") || *b == &format!("{prefix}master"))
+                .or_else(|| base_branches.iter().find(|b| b.starts_with(&prefix)))
                 .cloned()
         })
         .or_else(|| base_branches.first().cloned())
-        .unwrap_or_else(|| "origin/HEAD".to_string());
+        .unwrap_or_else(|| match &fork {
+            Some((b, _)) => b.clone(),
+            None => "origin/HEAD".to_string(),
+        });
 
-    let repo = crate::forge::github::GitHubForge::detect(path, "origin")
+    let repo = crate::forge::github::GitHubForge::detect(path, remote)
         .map(|(owner, name)| format!("{owner}/{name}"));
 
     let env_source = if path.join("mise.toml").exists() || path.join(".mise.toml").exists() {
@@ -281,6 +323,13 @@ pub fn detect(path: &Path) -> Detected {
 /// Write the first-run `config.json` from the review's answers, before the daemon
 /// starts and reads it.
 ///
+/// **Merged into the file that is there, never written over it.** This runs on
+/// every open — a fresh checkout, a recent, a switch — and it used to build the
+/// object from scratch, so a checkout that had moved was re-picked and every
+/// hand-tuned key (`reviews_command`, `worktree_setup`, `main_processes`, the notes)
+/// was gone with no copy kept. Only the keys the review answered change; the
+/// previous file is kept beside it as `config.json.bak`.
+///
 /// Slim on purpose — only `main_checkout` and the fields that differ from a plain
 /// default are written, the same shape a hand-written config takes, so the file
 /// stays readable. Each value is validated by parsing the whole config before it is
@@ -288,13 +337,55 @@ pub fn detect(path: &Path) -> Detected {
 /// start. Never fatal to the caller: if this fails, the daemon's own `load_or_init`
 /// still writes a sensible default for the checkout — the review's edits are just
 /// lost, which is better than no window.
-pub fn write_config(path: &Path, ov: &Overrides) -> Result<()> {
+fn write_config(path: &Path, ov: &Overrides) -> Result<Written> {
     write_config_to(&Config::path()?, path, ov)
 }
 
-fn write_config_to(file: &Path, path: &Path, ov: &Overrides) -> Result<()> {
+/// What [`write_config`] did, so a caller whose open is then refused can put the
+/// file back the way it was: a switch writes the new checkout first and only then
+/// learns whether the restart is possible, and without this a refused restart left
+/// the daemon on one checkout and the disk naming another, so the *next* launch
+/// opened the wrong project.
+struct Written {
+    file: PathBuf,
+    /// The file's contents before the write; `None` when there was no file.
+    ///
+    /// **Held in memory rather than read back from `config.json.bak`.** The backup
+    /// is written best effort, so a failed copy left this `None` while the config
+    /// it was meant to preserve still had content, and undoing then *deleted* it.
+    /// The text was already in hand at that point, which is what makes the whole
+    /// question moot; the `.bak` stays as a convenience for a person, not as this
+    /// function's memory.
+    previous: Option<String>,
+}
+
+impl Written {
+    /// Undo the write: put the previous contents back, or remove the file when
+    /// nothing existed before. Best effort, logged.
+    fn undo(&self) {
+        let outcome = match &self.previous {
+            Some(raw) => std::fs::write(&self.file, raw),
+            None => std::fs::remove_file(&self.file),
+        };
+        if let Err(e) = outcome {
+            tracing::warn!("could not restore {} after a refused open: {e}", self.file.display());
+        }
+    }
+}
+
+fn write_config_to(file: &Path, path: &Path, ov: &Overrides) -> Result<Written> {
     use serde_json::json;
-    let mut obj = serde_json::Map::new();
+    let previous = std::fs::read_to_string(file).ok();
+    let mut obj = match previous.as_deref().map(serde_json::from_str::<serde_json::Value>) {
+        Some(Ok(serde_json::Value::Object(m))) => m,
+        None => serde_json::Map::new(),
+        // Not JSON, or not an object: nothing in it can be kept by key, so start
+        // over. The backup below is what keeps whatever it was.
+        Some(_) => {
+            tracing::warn!("{} is not a JSON object; replacing it", file.display());
+            serde_json::Map::new()
+        }
+    };
     obj.insert("main_checkout".into(), json!(path.to_string_lossy()));
 
     if let Some(base) = ov.base_branch.as_deref().filter(|s| !s.is_empty()) {
@@ -303,18 +394,42 @@ fn write_config_to(file: &Path, path: &Path, ov: &Overrides) -> Result<()> {
         if let Some((remote, _)) = base.split_once('/') {
             obj.insert("upstream_remote".into(), json!(remote));
         }
+    } else if !obj.contains_key("upstream_ref") {
+        // A recent opens with no review, so nothing answered the one question a
+        // checkout can answer for itself. `Config::default_for` asked it on a fresh
+        // file, but this write comes first and so that path is never reached from
+        // the app — without this a fork layout was measured against `origin/HEAD`.
+        if let Some((base, remote)) = crate::git::detect_base(path) {
+            tracing::info!(%base, %remote, "detected a fork layout");
+            obj.insert("upstream_ref".into(), json!(base));
+            obj.insert("upstream_remote".into(), json!(remote));
+        }
     }
     if let Some(repo) = ov.repo.as_deref().filter(|s| !s.is_empty()) {
-        obj.insert("repo".into(), json!(repo));
+        // Only a repo the remote does *not* already derive is worth pinning. The
+        // review pre-fills this field from a remote, and writing that back made an
+        // explicit override out of a default — one that kept PR polling on the fork
+        // after the base had been pointed at `upstream`.
+        let remote = obj
+            .get("upstream_remote")
+            .and_then(|v| v.as_str())
+            .unwrap_or("origin");
+        // Through `detect`, which is that pair of calls, and is what filled the
+        // field the review is handing back — so the two answers cannot disagree.
+        let derived = crate::forge::github::GitHubForge::detect(path, remote)
+            .map(|(o, n)| format!("{o}/{n}"));
+        if derived.as_deref() == Some(repo) {
+            obj.remove("repo");
+        } else {
+            obj.insert("repo".into(), json!(repo));
+        }
     }
-    if let Some(env) = ov.env_source.as_deref().filter(|s| !s.is_empty()) {
-        serde_json::from_value::<crate::config::EnvSourceKind>(json!(env))
-            .map_err(|_| anyhow::anyhow!("unknown env source: {env}"))?;
+    // Typed on the way in, so an unknown value is refused by serde while the
+    // request is being read rather than round-tripped through a string here.
+    if let Some(env) = ov.env_source {
         obj.insert("env_source".into(), json!(env));
     }
-    if let Some(tracker) = ov.tracker.as_deref().filter(|s| !s.is_empty()) {
-        serde_json::from_value::<crate::config::TrackerKind>(json!(tracker))
-            .map_err(|_| anyhow::anyhow!("unknown tracker: {tracker}"))?;
+    if let Some(tracker) = ov.tracker {
         obj.insert("tracker".into(), json!(tracker));
     }
     // Ticked processes become managed `main_processes`. `autostart` is true because
@@ -337,8 +452,20 @@ fn write_config_to(file: &Path, path: &Path, ov: &Overrides) -> Result<()> {
     if let Some(dir) = file.parent() {
         std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
     }
+    // One generation back on disk, for the edit above that turns out to be wrong
+    // and is only noticed later, by a person. Best effort: a failed backup is not
+    // a reason to refuse the open, and [`Written`] does not depend on it.
+    if previous.is_some() {
+        let bak = file.with_extension("json.bak");
+        if let Err(e) = std::fs::copy(file, &bak) {
+            tracing::warn!("could not keep {}: {e}", bak.display());
+        }
+    }
     std::fs::write(file, raw).with_context(|| format!("writing {}", file.display()))?;
-    Ok(())
+    Ok(Written {
+        file: file.to_path_buf(),
+        previous,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -358,9 +485,11 @@ pub trait BootstrapHost: Send + Sync + 'static {
     /// Open the native folder dialog and block until the user answers. `None` on
     /// cancel. Runs on a request thread, never the GTK main thread.
     fn pick(&self) -> Option<PathBuf>;
-    /// Commit to a checkout: start the daemon on it and hand the window over. Fire
-    /// and forget — the page has already been told the open is under way.
-    fn open(&self, path: PathBuf);
+    /// Commit to a checkout: start the daemon on it and hand the window over.
+    /// `true` when the hand-over is under way; `false` when it was refused (a
+    /// switch that cannot restart, a second open while the first boots), so the
+    /// caller can undo what it wrote for it.
+    fn open(&self, path: PathBuf) -> bool;
     /// Drive the frameless window — drag, resize edges, minimise, close. The
     /// first-run window has no decorations (the SPA that follows draws its own), so
     /// the page draws a titlebar and calls this, the same way the daemon's SPA does.
@@ -393,10 +522,13 @@ pub struct Overrides {
     pub base_branch: Option<String>,
     #[serde(default)]
     pub repo: Option<String>,
+    /// Typed rather than a string, so serde refuses a value the daemon could not
+    /// have loaded — the page sends the enum's own spelling, and a mismatch is a
+    /// 422 naming the field instead of a config written and then rejected.
     #[serde(default)]
-    pub env_source: Option<String>,
+    pub env_source: Option<crate::config::EnvSourceKind>,
     #[serde(default)]
-    pub tracker: Option<String>,
+    pub tracker: Option<crate::config::TrackerKind>,
     /// The processes the user ticked in the review, to manage from the start.
     #[serde(default)]
     pub processes: Vec<SelectedProcess>,
@@ -444,8 +576,9 @@ impl Outcome {
     }
 }
 
-/// The bootstrap router: the first-run page and the JSON it calls.
-pub fn router(host: Arc<dyn BootstrapHost>) -> Router {
+/// The bootstrap router: the first-run page and the JSON it calls. `port` is the
+/// one it is served on, for the Host and Origin checks in [`guard`].
+pub fn router(host: Arc<dyn BootstrapHost>, port: u16) -> Router {
     Router::new()
         .route("/", get(|| async { Html(include_str!("firstrun.html")) }))
         .route("/api/context", get(context_route))
@@ -457,19 +590,55 @@ pub fn router(host: Arc<dyn BootstrapHost>) -> Router {
         .route("/api/cancel", post(cancel_route))
         .route("/api/window/:cmd", post(window_route))
         .route("/api/window/resize/:edge", post(resize_route))
+        .layer(axum::middleware::from_fn(
+            move |req: axum::extract::Request, next: axum::middleware::Next| guard(port, req, next),
+        ))
         .with_state(host)
+}
+
+/// The daemon's own Host and Origin rules, for the same reason it has them: a
+/// loopback port is reachable by any page in any browser on the machine.
+///
+/// Body-less POSTs are CORS "simple requests", so without this every route here
+/// was one `fetch` away from any site you had open — `/api/window/restart`, which
+/// on a switch takes every live session with it, and `/api/pick`, which raises a
+/// dialog. With DNS rebinding `GET /api/recent` read paths under `$HOME`. The
+/// JSON routes were covered only by axum's content-type check, which is
+/// incidental. The page is same-origin, so it costs nothing; no token, because
+/// unlike the daemon's page this one has no secret to carry and nothing behind it
+/// worth more than the window.
+async fn guard(
+    port: u16,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    let host = req
+        .headers()
+        .get("host")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    if !crate::api::host_allowed(host, port) {
+        return (StatusCode::FORBIDDEN, "bad host").into_response();
+    }
+    let origin = req.headers().get("origin").and_then(|v| v.to_str().ok());
+    let is_get = req.method() == axum::http::Method::GET;
+    if !crate::api::origin_ok(origin, port, false, is_get, false) {
+        return (StatusCode::FORBIDDEN, "bad origin").into_response();
+    }
+    next.run(req).await
 }
 
 async fn window_route(
     State(host): State<Arc<dyn BootstrapHost>>,
     AxPath(cmd): AxPath<String>,
 ) -> StatusCode {
-    match serde_json::from_value::<crate::window::WindowCmd>(serde_json::json!(cmd)) {
-        Ok(cmd) => {
+    match crate::api::parse_window_cmd(&cmd) {
+        Some(cmd) => {
             host.window_cmd(cmd);
             StatusCode::OK
         }
-        Err(_) => StatusCode::BAD_REQUEST,
+        None => StatusCode::BAD_REQUEST,
     }
 }
 
@@ -477,12 +646,12 @@ async fn resize_route(
     State(host): State<Arc<dyn BootstrapHost>>,
     AxPath(edge): AxPath<String>,
 ) -> StatusCode {
-    match serde_json::from_value::<crate::window::ResizeEdge>(serde_json::json!(edge)) {
-        Ok(edge) => {
+    match crate::api::parse_resize_edge(&edge) {
+        Some(edge) => {
             host.window_cmd(crate::window::WindowCmd::StartResize(edge));
             StatusCode::OK
         }
-        Err(_) => StatusCode::BAD_REQUEST,
+        None => StatusCode::BAD_REQUEST,
     }
 }
 
@@ -490,8 +659,14 @@ async fn validate_route(Json(req): Json<PathReq>) -> Json<Outcome> {
     Json(Outcome::of(validate(Path::new(&req.path))))
 }
 
-async fn detect_route(Json(req): Json<PathReq>) -> Json<Detected> {
-    Json(detect(Path::new(&req.path)))
+async fn detect_route(Json(req): Json<PathReq>) -> Result<Json<Detected>, StatusCode> {
+    let path = PathBuf::from(req.path);
+    // Several git runs, so off the runtime worker like every other git call: on a
+    // switch this runtime is also serving the live daemon.
+    crate::proc::run_blocking("detecting a checkout", move || detect(&path))
+        .await
+        .map(Json)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
 
 /// Whether the page is a first run or a switch away from a running project.
@@ -505,7 +680,16 @@ async fn cancel_route(State(host): State<Arc<dyn BootstrapHost>>) -> StatusCode 
 }
 
 async fn pick_route(State(host): State<Arc<dyn BootstrapHost>>) -> Json<Outcome> {
-    match host.pick() {
+    // The dialog blocks until you answer it, and the trait promises "a request
+    // thread" for exactly that — so give it one, rather than parking a runtime
+    // worker for as long as the dialog is open.
+    let picked = crate::proc::run_blocking("the folder dialog", move || host.pick())
+        .await
+        .unwrap_or_else(|e| {
+            tracing::warn!("{e:#}");
+            None
+        });
+    match picked {
         None => Json(Outcome {
             ok: false,
             picked: Some(false),
@@ -523,21 +707,49 @@ async fn open_route(
     State(host): State<Arc<dyn BootstrapHost>>,
     Json(ov): Json<Overrides>,
 ) -> Json<Outcome> {
-    let path = PathBuf::from(&ov.path);
-    // Validate again server-side: the page validated to enable the button, but the
-    // tree could have moved since, and this is the last gate before the daemon.
-    match validate(&path) {
-        Ok(_) => {
-            // Persist the review's answers before the daemon reads them. Non-fatal:
-            // a failure here loses the edits, not the open — `load_or_init` still
-            // writes a default for the checkout.
-            if let Err(e) = write_config(&path, &ov) {
-                tracing::warn!("could not write the first-run config: {e:#}");
+    // Off the runtime, like `detect_route` beside it: `validate` canonicalises and
+    // `write_config` spawns git twice (the fork probe and the repo derivation), and
+    // on a switch this runtime is also serving the live daemon.
+    let prepared = crate::proc::run_blocking("preparing the chosen project", move || {
+        // Validate again server-side: the page validated to enable the button, but
+        // the tree could have moved since, and this is the last gate before the
+        // daemon.
+        let info = validate(Path::new(&ov.path))?;
+        // The canonical path, not the one typed: it is what the config and the
+        // recents record.
+        let path = PathBuf::from(&info.path);
+        // Persist the review's answers before the daemon reads them. Non-fatal:
+        // a failure here loses the edits, not the open — `load_or_init` still
+        // writes a default for the checkout. Written *before* the open on
+        // purpose: on a switch the open closes the window, and the process may
+        // be gone before a write placed after it lands.
+        let written = write_config(&path, &ov)
+            .map_err(|e| tracing::warn!("could not write the first-run config: {e:#}"))
+            .ok();
+        Ok((path, written))
+    })
+    .await
+    .unwrap_or_else(|e| {
+        tracing::warn!("{e:#}");
+        Err("Could not read that folder. See the log.".to_string())
+    });
+
+    match prepared {
+        Ok((path, written)) => {
+            if !host.open(path.clone()) {
+                // A refused open must not leave the disk naming a checkout the
+                // daemon is not on, or the next launch opens the wrong project.
+                if let Some(w) = written {
+                    w.undo();
+                }
+                return Json(Outcome::of(Err(
+                    "Could not switch to that project; the running one is kept. See the log."
+                        .to_string(),
+                )));
             }
             if let Err(e) = record_recent(&path) {
                 tracing::warn!("could not record the recent project: {e:#}");
             }
-            host.open(path);
             Json(Outcome {
                 ok: true,
                 ..Default::default()
@@ -566,7 +778,7 @@ pub async fn serve(host: Arc<dyn BootstrapHost>) -> Result<Serving> {
         .await
         .context("binding the bootstrap server")?;
     let addr = listener.local_addr()?;
-    let app = router(host);
+    let app = router(host, addr.port());
     let task = tokio::spawn(async move {
         if let Err(e) = axum::serve(listener, app).await {
             tracing::error!("bootstrap server stopped: {e}");
@@ -583,30 +795,18 @@ mod tests {
     /// their dir-taking half with no global `ORCHD_CONFIG_DIR` — the tests run in
     /// parallel, and one process-wide env var would race between them.
     fn tmp(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("orchd-firstrun-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+        crate::testutil::scratch(&format!("firstrun-{tag}"))
     }
 
     fn git_repo(at: &Path) {
         std::fs::create_dir_all(at.join(".git")).unwrap();
     }
 
-    fn run_git(dir: &Path, args: &[&str]) {
-        let ok = std::process::Command::new("git")
-            .args(args)
-            .current_dir(dir)
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false);
-        assert!(ok, "git {args:?} failed in {}", dir.display());
-    }
+    use crate::testutil::git as run_git;
 
     #[test]
     fn validate_wants_a_folder_that_is_a_git_repo() {
-        let base = std::env::temp_dir().join(format!("orchd-val-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&base);
+        let base = tmp("val");
 
         let missing = base.join("nope");
         assert!(validate(&missing).is_err(), "a path that does not exist");
@@ -621,7 +821,26 @@ mod tests {
         let info = validate(&repo).expect("a git repo validates");
         assert_eq!(info.name, "myrepo", "the name is the last path component");
 
+        // What is handed on is the canonical path: `..` segments and links are
+        // resolved, since the string ends up in `config.json`.
+        let roundabout = base.join("plain").join("..").join("myrepo");
+        let info = validate(&roundabout).expect("a roundabout spelling still validates");
+        assert_eq!(info.path, std::fs::canonicalize(&repo).unwrap().to_string_lossy());
+        assert_eq!(info.name, "myrepo");
+
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// The placeholder in the box says `~/code/project`, and a text field does not
+    /// expand `~` the way a shell does.
+    #[test]
+    fn a_tilde_means_the_home_directory() {
+        let home = Path::new("/home/someone");
+        assert_eq!(expand_home(Path::new("~/code/x"), Some(home)), PathBuf::from("/home/someone/code/x"));
+        assert_eq!(expand_home(Path::new("~"), Some(home)), PathBuf::from("/home/someone"));
+        assert_eq!(expand_home(Path::new("/abs/x"), Some(home)), PathBuf::from("/abs/x"));
+        assert_eq!(expand_home(Path::new("~user/x"), Some(home)), PathBuf::from("~user/x"), "not a shell");
+        assert_eq!(expand_home(Path::new("~/x"), None), PathBuf::from("~/x"), "no home, no expansion");
     }
 
     #[test]
@@ -710,8 +929,7 @@ mod tests {
 
     #[test]
     fn write_config_adds_ticked_processes_as_autostart() {
-        let base = std::env::temp_dir().join(format!("orchd-wcp-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&base);
+        let base = tmp("wcp");
         let repo = base.join("proj");
         std::fs::create_dir_all(&repo).unwrap();
         git_repo(&repo);
@@ -740,8 +958,7 @@ mod tests {
 
     #[test]
     fn write_config_is_slim_and_validated() {
-        let base = std::env::temp_dir().join(format!("orchd-wc-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&base);
+        let base = tmp("wc");
         let repo = base.join("proj");
         std::fs::create_dir_all(&repo).unwrap();
         git_repo(&repo);
@@ -753,8 +970,8 @@ mod tests {
             &Overrides {
                 base_branch: Some("upstream/develop".into()),
                 repo: Some("acme/thing".into()),
-                env_source: Some("direnv".into()),
-                tracker: Some("shortcut".into()),
+                env_source: Some(crate::config::EnvSourceKind::Direnv),
+                tracker: Some(crate::config::TrackerKind::Shortcut),
                 ..Default::default()
             },
         )
@@ -770,14 +987,166 @@ mod tests {
         // Slim: nothing that was not asked for.
         assert!(v.get("poll_seconds").is_none(), "defaults are left out");
 
-        // A bad override is refused before anything is written.
-        let bad = base.join("bad.json");
-        assert!(write_config_to(&bad, &repo, &Overrides {
-            env_source: Some("nonsense".into()),
-            ..Default::default()
-        }).is_err());
-        assert!(!bad.exists(), "a rejected override writes no file");
+        // A bad override never reaches this function at all: the field is typed,
+        // so serde refuses the request that carries it. Asserted where the refusal
+        // now lives, because a value that cannot be constructed cannot be passed.
+        assert!(
+            serde_json::from_str::<Overrides>(r#"{"path":"/x","env_source":"nonsense"}"#).is_err(),
+            "an unknown env source has to be refused while the request is read"
+        );
+        assert!(
+            serde_json::from_str::<Overrides>(r#"{"path":"/x","tracker":"jira"}"#).is_err(),
+            "and an unknown tracker"
+        );
+        // The spellings the page really sends, so a rename of either enum fails
+        // here rather than on somebody's first run.
+        let ok: Overrides = serde_json::from_str(
+            r#"{"path":"/x","env_source":"mise","tracker":"shortcut"}"#,
+        )
+        .expect("the page's own values");
+        assert_eq!(ok.env_source, Some(crate::config::EnvSourceKind::Mise));
+        assert_eq!(ok.tracker, Some(crate::config::TrackerKind::Shortcut));
 
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// A write that is then undone puts the previous file back, or removes the new
+    /// one when there was none: the two shapes a refused switch can leave behind.
+    #[test]
+    fn a_written_config_can_be_undone() {
+        let base = tmp("wc-undo");
+        let repo = base.join("proj");
+        std::fs::create_dir_all(&repo).unwrap();
+        git_repo(&repo);
+        let cfg = base.join("config.json");
+
+        // Nothing before: undo removes.
+        let w = write_config_to(&cfg, &repo, &Overrides::default()).unwrap();
+        assert!(cfg.exists());
+        w.undo();
+        assert!(!cfg.exists(), "a first write is undone by removing the file");
+
+        // Something before: undo restores it byte for byte.
+        let old = r#"{"main_checkout":"/somewhere/else"}"#;
+        std::fs::write(&cfg, old).unwrap();
+        let w = write_config_to(&cfg, &repo, &Overrides::default()).unwrap();
+        assert_ne!(std::fs::read_to_string(&cfg).unwrap(), old);
+        w.undo();
+        assert_eq!(std::fs::read_to_string(&cfg).unwrap(), old);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// And it puts it back when the `.bak` copy failed, which is the case that
+    /// made undoing *destructive*: the backup is best effort, so a failed copy
+    /// used to leave the restore with nothing to restore from, and it removed a
+    /// config that had content. A directory sitting on the `.bak` path is the
+    /// cheapest way to make `fs::copy` fail.
+    #[test]
+    fn an_undo_survives_a_backup_that_could_not_be_written() {
+        let base = tmp("wc-undo-nobak");
+        let repo = base.join("proj");
+        std::fs::create_dir_all(&repo).unwrap();
+        git_repo(&repo);
+        let cfg = base.join("config.json");
+        let old = r#"{"main_checkout":"/somewhere/else"}"#;
+        std::fs::write(&cfg, old).unwrap();
+        std::fs::create_dir_all(cfg.with_extension("json.bak")).unwrap();
+
+        let w = write_config_to(&cfg, &repo, &Overrides::default()).unwrap();
+        assert_ne!(std::fs::read_to_string(&cfg).unwrap(), old, "the write still happened");
+        w.undo();
+        assert_eq!(
+            std::fs::read_to_string(&cfg).unwrap(),
+            old,
+            "the previous config came back rather than being deleted"
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// Re-picking a checkout keeps every key the review did not answer, and keeps
+    /// the previous file beside it. Building the object from scratch lost them all.
+    #[test]
+    fn write_config_merges_into_the_existing_file_and_keeps_a_backup() {
+        let base = tmp("wc-merge");
+        let repo = base.join("proj");
+        std::fs::create_dir_all(&repo).unwrap();
+        git_repo(&repo);
+        let cfg = base.join("config.json");
+        let old = r#"{"main_checkout":"/somewhere/else","worktree_setup":["mise","trust"],"repo":"acme/thing"}"#;
+        std::fs::write(&cfg, old).unwrap();
+
+        write_config_to(&cfg, &repo, &Overrides::default()).unwrap();
+
+        let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
+        assert_eq!(v["main_checkout"], repo.to_string_lossy().as_ref());
+        assert_eq!(v["worktree_setup"], serde_json::json!(["mise", "trust"]));
+        assert_eq!(v["repo"], "acme/thing", "a key the review did not answer is left alone");
+        assert_eq!(
+            std::fs::read_to_string(base.join("config.json.bak")).unwrap(),
+            old,
+            "the previous file is kept"
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// The review pre-fills `repo` from a remote, so writing it back pinned a
+    /// default as an override. Only a repo the remote does not derive is written.
+    #[test]
+    fn write_config_pins_a_repo_only_when_the_remote_does_not_derive_it() {
+        let base = tmp("wc-repo");
+        let repo = base.join("proj");
+        std::fs::create_dir_all(&repo).unwrap();
+        run_git(&repo, &["init", "-q"]);
+        run_git(&repo, &["remote", "add", "origin", "git@github.com:acme/thing.git"]);
+        let cfg = base.join("config.json");
+
+        let with = |r: &str| Overrides {
+            repo: Some(r.into()),
+            ..Default::default()
+        };
+        write_config_to(&cfg, &repo, &with("acme/thing")).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
+        assert!(v.get("repo").is_none(), "the derived repo is not pinned: {v}");
+
+        write_config_to(&cfg, &repo, &with("other/name")).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
+        assert_eq!(v["repo"], "other/name");
+
+        // Answering with the derived one again lifts the pin.
+        write_config_to(&cfg, &repo, &with("acme/thing")).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
+        assert!(v.get("repo").is_none(), "{v}");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// A fork layout is what a checkout can answer for itself, and it used to be
+    /// answered only by the daemon's own first write — which this write pre-empts.
+    /// So the detection lives here too, for the review's pre-fill and for a recent
+    /// that opens with no review at all.
+    #[test]
+    fn a_fork_layout_is_detected_by_the_review_and_by_an_unreviewed_open() {
+        let base = tmp("wc-fork");
+        let repo = base.join("proj");
+        std::fs::create_dir_all(&repo).unwrap();
+        run_git(&repo, &["init", "-q", "-b", "main"]);
+        run_git(&repo, &["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "x"]);
+        run_git(&repo, &["remote", "add", "origin", "git@github.com:fork/thing.git"]);
+        run_git(&repo, &["remote", "add", "upstream", "git@github.com:acme/thing.git"]);
+        run_git(&repo, &["update-ref", "refs/remotes/origin/main", "HEAD"]);
+        run_git(&repo, &["update-ref", "refs/remotes/upstream/develop", "HEAD"]);
+
+        let d = detect(&repo);
+        assert_eq!(d.base_branch, "upstream/develop", "the upstream's branch, not the fork's");
+        assert_eq!(d.repo.as_deref(), Some("acme/thing"), "the upstream's repo, not the fork's");
+
+        let cfg = base.join("config.json");
+        write_config_to(&cfg, &repo, &Overrides::default()).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
+        assert_eq!(v["upstream_remote"], "upstream");
+        assert!(
+            v["upstream_ref"].as_str().unwrap().starts_with("upstream/"),
+            "an unreviewed open still measures against upstream: {v}"
+        );
         let _ = std::fs::remove_dir_all(&base);
     }
 
@@ -796,13 +1165,18 @@ mod tests {
         pick_result: Option<PathBuf>,
         switching: bool,
         cancelled: Mutex<bool>,
+        refuse_open: bool,
     }
     impl BootstrapHost for StubHost {
         fn pick(&self) -> Option<PathBuf> {
             self.pick_result.clone()
         }
-        fn open(&self, path: PathBuf) {
+        fn open(&self, path: PathBuf) -> bool {
+            if self.refuse_open {
+                return false;
+            }
             self.opened.lock().unwrap().push(path);
+            true
         }
         fn window_cmd(&self, _cmd: crate::window::WindowCmd) {}
         fn switching(&self) -> bool {
@@ -813,12 +1187,18 @@ mod tests {
         }
     }
 
+    /// The port the test router claims to serve on; the helpers send the Host and
+    /// Origin a same-origin page would, so the guard lets them through.
+    const PORT: u16 = 7777;
+
     async fn post(host: Arc<dyn BootstrapHost>, uri: &str, body: &str) -> serde_json::Value {
-        let res = router(host)
+        let res = router(host, PORT)
             .oneshot(
                 Request::builder()
                     .method("POST")
                     .uri(uri)
+                    .header("host", format!("127.0.0.1:{PORT}"))
+                    .header("origin", format!("http://127.0.0.1:{PORT}"))
                     .header("content-type", "application/json")
                     .body(Body::from(body.to_string()))
                     .unwrap(),
@@ -834,18 +1214,62 @@ mod tests {
     }
 
     async fn get(host: Arc<dyn BootstrapHost>, uri: &str) -> serde_json::Value {
-        let res = router(host)
-            .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+        let res = router(host, PORT)
+            .oneshot(
+                Request::builder()
+                    .uri(uri)
+                    .header("host", format!("127.0.0.1:{PORT}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         let bytes = to_bytes(res.into_body(), 1 << 16).await.unwrap();
         serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null)
     }
 
+    /// The bootstrap server is a loopback port like the daemon's, and gets the
+    /// daemon's rules: a request from another page — a foreign Host, or a POST
+    /// whose Origin is not ours or is missing — is refused before any handler.
+    #[tokio::test]
+    async fn the_bootstrap_router_refuses_a_foreign_page() {
+        let status = |req: Request<Body>| async {
+            router(stub(), PORT).oneshot(req).await.unwrap().status()
+        };
+        let ours = format!("127.0.0.1:{PORT}");
+
+        // A rebound host name, on the innocuous-looking GET.
+        let req = Request::builder()
+            .uri("/api/recent")
+            .header("host", "evil.example:7777")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(status(req).await, StatusCode::FORBIDDEN);
+
+        // A cross-site POST: body-less, so a "simple request" no browser blocks.
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/window/restart")
+            .header("host", &ours)
+            .header("origin", "https://evil.example")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(status(req).await, StatusCode::FORBIDDEN);
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/pick")
+            .header("host", &ours)
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(status(req).await, StatusCode::FORBIDDEN, "no Origin at all");
+
+        // And the page's own requests still pass.
+        assert_eq!(get(stub(), "/api/context").await["switching"], false);
+    }
+
     #[tokio::test]
     async fn validate_route_answers_ok_or_a_message() {
-        let base = std::env::temp_dir().join(format!("orchd-router-val-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&base);
+        let base = tmp("router-val");
         let repo = base.join("proj");
         std::fs::create_dir_all(&repo).unwrap();
         git_repo(&repo);
@@ -885,8 +1309,7 @@ mod tests {
 
     #[tokio::test]
     async fn open_route_validates_then_hands_the_path_to_the_host() {
-        let base = std::env::temp_dir().join(format!("orchd-router-open-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&base);
+        let base = tmp("router-open");
         let repo = base.join("proj");
         std::fs::create_dir_all(&repo).unwrap();
         git_repo(&repo);
@@ -894,7 +1317,15 @@ mod tests {
         let host = stub();
         let out = post(host.clone(), "/api/open", &format!("{{\"path\":{:?}}}", repo.to_string_lossy())).await;
         assert_eq!(out["ok"], true);
-        assert_eq!(host.opened.lock().unwrap().as_slice(), std::slice::from_ref(&repo), "the host was handed the checkout");
+        let canonical = std::fs::canonicalize(&repo).unwrap();
+        assert_eq!(host.opened.lock().unwrap().as_slice(), std::slice::from_ref(&canonical), "the host was handed the checkout");
+
+        // A host that cannot take the open (a switch with no binary to restart
+        // into) is reported as such, not as a success the window never follows.
+        let host = Arc::new(StubHost { refuse_open: true, ..Default::default() });
+        let out = post(host.clone(), "/api/open", &format!("{{\"path\":{:?}}}", repo.to_string_lossy())).await;
+        assert_eq!(out["ok"], false);
+        assert!(out["error"].as_str().unwrap().contains("kept"), "{out}");
 
         // A folder that is not a repo never reaches the host.
         let host = stub();
@@ -906,8 +1337,7 @@ mod tests {
 
     #[tokio::test]
     async fn pick_route_distinguishes_cancel_from_a_chosen_folder() {
-        let base = std::env::temp_dir().join(format!("orchd-router-pick-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&base);
+        let base = tmp("router-pick");
         let repo = base.join("proj");
         std::fs::create_dir_all(&repo).unwrap();
         git_repo(&repo);

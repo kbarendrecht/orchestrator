@@ -1,8 +1,9 @@
 //! The triage run: read the threads, propose, exit.
 //!
-//! Modelled on [`crate::spawn::spawn_fix_pr_session`], and headed the same way —
-//! a `claude` session you can watch and take over, not a `-p` run that happens
-//! out of sight. The prompt is rendered from `commands/triage.md`, written to a
+//! One of the four runs [`crate::spawn::spawn_run`] starts, beside `fix-pr` and
+//! the resolve run, and shaped the same way — a `claude` session you can watch
+//! and take over, not a `-p` run that happens out of sight. The prompt is
+//! rendered from `commands/triage.md`, written to a
 //! file, and the session is told to *read* that file. Not a `/triage <pr>` slash
 //! command (that resolves from the agent's own command path, which depends on a
 //! repo usually not installed) and not typed inline (it is multi-line, so it
@@ -16,14 +17,10 @@
 //! worse source of truth.
 
 use anyhow::{Context, Result};
-use std::path::Path;
 use std::sync::Arc;
-use uuid::Uuid;
 
-use crate::config::Config;
 use crate::model::*;
 use crate::prompt;
-use crate::pty::PtyHandle;
 use crate::spawn::ensure_pr_worktree;
 use crate::state::AppState;
 
@@ -130,7 +127,6 @@ async fn gate_inner(
 pub async fn spawn(app: &Arc<AppState>, pr: u64, head_ref: &str, login: &str) -> Result<SessionId> {
     let kind = RunKind {
         prompt: prompt::TRIAGE,
-        dir: "triage",
         command: TRIAGE_COMMAND,
         asks: false,
     };
@@ -201,7 +197,6 @@ pub async fn spawn_review(
 ) -> Result<SessionId> {
     let kind = RunKind {
         prompt: prompt::REVIEW_SESSION,
-        dir: "review",
         command: COMMAND,
         asks: true,
     };
@@ -212,9 +207,10 @@ pub async fn spawn_review(
 /// spawns is the same, and was written twice until the copies drifted.
 struct RunKind {
     prompt: &'static str,
-    /// Prefix of the scratch dir under the config dir: `<dir>-<pr>`.
-    dir: &'static str,
-    /// The `Kind::Automation` command the session carries.
+    /// The `Kind::Automation` command the session carries, and the prefix of its
+    /// scratch dir under the config dir (`<command>-<pr>`). One field, because it
+    /// was two that were always the same string, in the struct whose whole purpose
+    /// is to stop two copies drifting.
     command: &'static str,
     /// Whether the run takes decisions over the ask channel, and so needs
     /// `ORCH_ASK_TOKEN` in its environment.
@@ -233,11 +229,6 @@ async fn spawn_posting_run(
     if let Some(g) = gate(app, pr, &workspace).await? {
         anyhow::bail!("{}", g.say());
     }
-
-    let path = app
-        .workspace_path(&workspace)
-        .await
-        .context("worktree vanished")?;
 
     let (owner, repo) =
         crate::resolve_repo(app).context("no GitHub repo configured and none on the remote")?;
@@ -264,118 +255,55 @@ async fn spawn_posting_run(
         },
     )?;
 
-    let id = Uuid::new_v4();
-
     // Written to a file the session is told to read, not typed in: the prompt is
-    // multi-line and typing it would submit at the first newline. Under the
-    // daemon's own config dir, never inside the checkout, so the tree the review
-    // flow inspects stays clean — the same reasoning as `vendored_prompt_file`.
-    let dir = Config::config_dir()?.join(format!("{}-{pr}", kind.dir));
-    std::fs::create_dir_all(&dir)?;
-    let prompt_file = dir.join("prompt.md");
-    std::fs::write(&prompt_file, body)
-        .with_context(|| format!("writing {}", prompt_file.display()))?;
+    // multi-line and typing it would submit at the first newline.
+    let prompt_file = prompt::write_for_run(kind.command, pr, &body)?;
 
-    let mut cmd = vec![
-        "claude".to_string(),
-        "--session-id".to_string(),
-        id.to_string(),
-    ];
-    cmd.extend(crate::config::session_flags()?);
+    // The post token is minted by `spawn_run`, because both posting runs spawn
+    // there and `posts_proposals` names them; the ask token only when the run has
+    // somebody to ask.
+    let spec = crate::spawn::RunSpec {
+        command: kind.command.to_string(),
+        pending: crate::spawn::read_and_follow(
+            &prompt_file,
+            &format!("Those are your instructions for PR {pr}."),
+        ),
+        asks: kind.asks,
+        extra_env: Vec::new(),
+    };
 
-    // Minted here so the same value goes into the environment and onto the record:
-    // the agent reads it from `ORCH_ASK_TOKEN`, and `/ask`/`/wait` check it against
-    // `session.ask_token`. `Session::new` sets its own, overwritten below.
-    let ask_token = kind.asks.then(crate::state::random_token);
-    // Narrow credentials, no broad one: asks are authenticated against this
-    // session, proposals against this PR. Neither opens anything else, which is
-    // what keeps "the daemon owns outward writes" an API rule rather than a
-    // sentence in a prompt this run's own input could argue with.
-    let post_token = mint_post_token(app, pr).await;
-
-    let (env, unset) = run_env(&app.cfg, &path, id, &post_token, ask_token.as_deref());
-
-    let mut session = Session::new(
-        id,
-        workspace,
-        path.clone(),
-        Kind::Automation {
-            pr,
-            command: kind.command.to_string(),
-        },
-    );
-    if let Some(token) = ask_token {
-        session.ask_token = token;
-    }
-    // Typed in by the `SessionStart` handler, which is why the record has to be in
-    // the map before the process starts: `insert_and_spawn` says the rest.
-    session.pending_prompt = Some(format!(
-        "Read {} and follow it. Those are your instructions for PR {pr}.",
-        prompt_file.display()
-    ));
-    let spawned =
-        crate::spawn::insert_and_spawn(app, id, session, &cmd, &path, &env, &unset).await?;
+    // Cleared *before* the spawn, not after. This is the run's own bookkeeping in
+    // the sense `spawn::spawn_run` describes: a `claude` that dies at once is
+    // reaped first, and the exit watcher's "exited without posting proposals"
+    // warning then reads the *previous* run's proposals, finds them, and stays
+    // silent about exactly the failure it was written for.
+    //
+    // Nothing to undo if the spawn fails. A fresh run supersedes whatever the last
+    // one proposed, and a run that could not start has superseded it just as much:
+    // keeping stale proposals on screen because the new run failed would be the
+    // worse of the two gaps.
     {
         let mut inner = app.inner.write().await;
-        // A fresh run supersedes whatever the last one proposed; keeping stale
-        // proposals visible while a new run works would be worse than a gap.
         inner.proposals.remove(&pr);
         // And with them any batch that stopped for the manual phase: its decisions
         // point at positions that no longer exist, so finishing it is impossible and
         // offering to would be a screen whose button always fails. The local commit it
         // left behind is not silently lost — the next batch's own gate names it.
+        //
+        // Both kinds of record go, because a new run supersedes a push marker as
+        // squarely as it supersedes a phase. Only the *warning* has to tell them
+        // apart: saying "a manual phase was open" about a marker sends you looking
+        // for half-finished work that was never there.
         let why = format!("re-{} abandoned a phase", kind.command);
-        if inner.with_manual(&why, |m| m.remove(&pr).is_some()) {
+        let was_open = inner.manual.get(&pr).is_some_and(|p| p.open);
+        if inner.with_manual(&why, |m| m.remove(&pr).is_some()) && was_open {
             tracing::warn!(pr, "a manual phase was open; a new {} run abandons it", kind.command);
         }
     }
 
-    watch(app.clone(), pr, id, spawned.handle);
+    let id = crate::spawn::spawn_run(app, &workspace, pr, uuid::Uuid::new_v4(), spec).await?;
     app.notify().await;
     Ok(id)
-}
-
-/// The environment a proposals-posting run is given, and nothing more.
-///
-/// One function for both runs so the two cannot drift — and extracted at all
-/// because this is the seam that decides *which* credential a run holds, and it
-/// used to be `app.token`: the whole API, handed to the pass whose input is other
-/// people's review comments.
-///
-/// Both credentials go in the environment rather than the prompt, because prompt
-/// text lands in a transcript and a pty buffer. `ask` is `None` for the headless
-/// triage pass, which has nobody to ask.
-///
-/// Testable on purpose. Verifying it live needs a real triage run against a PR
-/// with unanswered threads, and the fixture that provides one depends on GitHub
-/// Actions — so when Actions is unavailable, this is the only thing standing
-/// between a two-line plumbing slip and a review flow that cannot post.
-fn run_env(
-    cfg: &crate::config::Config,
-    cwd: &Path,
-    id: SessionId,
-    post_token: &str,
-    ask: Option<&str>,
-) -> (Vec<(String, String)>, Vec<&'static str>) {
-    let (mut env, unset) = crate::config::session_env(cfg, cwd, id, ask);
-    env.push(("ORCH_POST_TOKEN".to_string(), post_token.to_string()));
-    (env, unset)
-}
-
-/// Notice when a run ends without having proposed anything.
-///
-/// Success is "proposals arrived", not "exited zero" — an agent can finish
-/// cleanly having posted nothing, and that is the failure the user would
-/// otherwise stare at an empty overlay wondering about.
-fn watch(app: Arc<AppState>, pr: u64, id: SessionId, handle: Arc<PtyHandle>) {
-    tokio::spawn(async move {
-        handle.wait().await;
-        let posted = app.inner.read().await.proposals.contains_key(&pr);
-        if !posted {
-            tracing::warn!(pr, session = %id, "triage exited without posting proposals");
-        }
-        app.notify().await;
-    });
 }
 
 #[cfg(test)]
@@ -385,7 +313,8 @@ mod tests {
     /// The credential a run is handed, pinned. This is the one thing about seam 2
     /// a unit test can see: the route guard and the token check are driven over
     /// real HTTP in `api::tests`, but *which* value reaches the agent is decided
-    /// here, and the prompts read it by name.
+    /// by `spawn::run_env`, and the prompts read it by name. Kept here rather than
+    /// beside that function because the prompts it checks are this module's.
     #[test]
     fn a_run_is_given_the_narrow_token_and_never_the_app_token() {
         let id = uuid::Uuid::new_v4();
@@ -396,7 +325,10 @@ mod tests {
             ..crate::config::test_config()
         };
         let dir = std::env::temp_dir();
-        let (env, _) = run_env(&cfg, &dir, id, "post-tok", Some("ask-tok"));
+        let run_env = |post: Option<&str>, ask: Option<&str>| {
+            crate::spawn::run_env(&cfg, &dir, id, ask, post, &[])
+        };
+        let (env, _) = run_env(Some("post-tok"), Some("ask-tok"));
         let get = |k: &str| {
             env.iter()
                 .find(|(n, _)| n == k)
@@ -421,9 +353,12 @@ mod tests {
         assert!(crate::prompt::REVIEW_SESSION.contains("$ORCH_POST_TOKEN"));
 
         // The headless triage pass has nobody to ask, so it gets no ask token.
-        let (solo, _) = run_env(&cfg, &dir, id, "post-tok", None);
+        let (solo, _) = run_env(Some("post-tok"), None);
         assert!(!solo.iter().any(|(n, _)| n == "ORCH_ASK_TOKEN"));
         assert!(solo.iter().any(|(n, _)| n == "ORCH_POST_TOKEN"));
+        // And a run that posts nothing is handed no post token at all.
+        let (fix, _) = run_env(None, None);
+        assert!(!fix.iter().any(|(n, _)| n == "ORCH_POST_TOKEN"));
     }
 
     /// Which runs the resume path has to re-credential.

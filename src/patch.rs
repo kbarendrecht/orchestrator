@@ -11,7 +11,8 @@
 //! - non-overlapping edits to one file both apply, offsets sliding;
 //! - a combined stream is **atomic** — one bad hunk and nothing lands;
 //! - `--check` and `--numstat` are dry runs that write nothing;
-//! - `../escape`, a symlink write, and `.git/**` are all refused.
+//! - `../escape`, a write through a symlink, and `.git/**` are all refused
+//!   (`git_apply_refuses_an_escape_a_symlink_and_the_git_dir`).
 //!
 //! The ladder below runs three `git apply` passes before a byte is written, so
 //! the reason a batch will not apply can be named — git's own "patch does not
@@ -42,8 +43,16 @@ pub struct FileStat {
 /// What the check ladder concluded. Only `Clean` may be applied.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Check {
-    /// Every patch applies, alone and together. Carries the combined file list.
-    Clean(Vec<FileStat>),
+    /// Every patch applies, alone and together.
+    ///
+    /// Carries both answers the one numstat pass can give, because they were being
+    /// asked twice: `files` is the combined list the card renders, and `touched` is
+    /// every path the batch writes, rename sources included, for the two checks the
+    /// caller makes against the tree after the apply.
+    Clean {
+        files: Vec<FileStat>,
+        touched: Vec<String>,
+    },
     /// These threads' patches no longer apply on their own — the file moved
     /// under them since triage. Re-triage is the only fix.
     Stale(Vec<String>),
@@ -85,14 +94,50 @@ fn applies(cwd: &Path, diff: &str) -> Result<bool> {
     Ok(git_apply(cwd, &["--check"], diff)?.0)
 }
 
-/// The paths a diff touches, with line counts. `--numstat` writes nothing, so
-/// this is safe to call before the user has confirmed anything.
-fn numstat(cwd: &Path, diff: &str) -> Result<Vec<FileStat>> {
-    let (ok, stdout, err) = git_apply(cwd, &["--numstat"], diff)?;
+/// The paths a diff touches, with line counts, and every path it writes.
+///
+/// One `git apply --numstat` for both, because they used to be two: `check` asked
+/// for the file list and `write_batch` then asked the same question again over a
+/// stream it rebuilt from scratch, which is a second child process and a second
+/// serialization of the whole batch through a pipe.
+///
+/// The two answers differ over renames. A numstat row names one by its new path,
+/// which is right for the card and wrong for the two questions asked after the
+/// apply — is anything dirty that the patch did not touch, and what has to be put
+/// back if a later step refuses — since a refused rename would otherwise leave the
+/// old file deleted and the new one removed.
+///
+/// `--numstat` writes nothing, so this is safe before the user has confirmed
+/// anything.
+fn numstat(cwd: &Path, diff: &str) -> Result<(Vec<FileStat>, Vec<String>)> {
+    let rows = numstat_rows(cwd, diff)?;
+    let mut touched = Vec::new();
+    for r in &rows {
+        if let Some(from) = &r.from {
+            touched.push(from.clone());
+        }
+        touched.push(r.path.clone());
+    }
+    touched.sort();
+    touched.dedup();
+    let files = aggregate(
+        rows.into_iter()
+            .map(|r| FileStat {
+                path: r.path,
+                added: r.added,
+                deleted: r.deleted,
+            })
+            .collect(),
+    );
+    Ok((files, touched))
+}
+
+fn numstat_rows(cwd: &Path, diff: &str) -> Result<Vec<NumstatRow>> {
+    let (ok, stdout, err) = git_apply(cwd, &["--numstat", "-z"], diff)?;
     // The caller only reaches here once the diff has passed --check, so a
     // failure now is a real fault, not a stale patch.
     anyhow::ensure!(ok, "git apply --numstat failed: {err}");
-    Ok(aggregate(parse_numstat(&stdout)))
+    Ok(parse_numstat_z(&stdout))
 }
 
 /// One row per path. A combined stream carries a separate `diff --git` block per
@@ -112,23 +157,61 @@ fn aggregate(rows: Vec<FileStat>) -> Vec<FileStat> {
     out
 }
 
-/// `git apply --numstat` prints `<added>\t<deleted>\t<path>` a line each; a
-/// binary file prints `-\t-\t<path>`, which we surface as zero counts rather
-/// than dropping the path — it is still being written.
-fn parse_numstat(raw: &str) -> Vec<FileStat> {
-    raw.lines()
-        .filter_map(|line| {
-            let mut cols = line.splitn(3, '\t');
-            let added = cols.next()?;
-            let deleted = cols.next()?;
-            let path = cols.next()?;
-            Some(FileStat {
-                path: path.to_string(),
-                added: added.parse().unwrap_or(0),
-                deleted: deleted.parse().unwrap_or(0),
-            })
-        })
-        .collect()
+/// One `--numstat -z` record. `from` is set for a rename: the path the change
+/// deleted to make `path`.
+#[derive(Debug, PartialEq, Eq)]
+pub struct NumstatRow {
+    pub path: String,
+    pub from: Option<String>,
+    pub added: u32,
+    pub deleted: u32,
+    /// git printed `-` for both counts. Kept as a flag because the counts are
+    /// surfaced as zero, and a binary file is otherwise indistinguishable from a
+    /// change that added and removed nothing — which the diff pane has to tell
+    /// apart, since it collapses one and renders the other.
+    pub binary: bool,
+}
+
+/// The one numstat parser, for `git apply --numstat -z` and `git diff --numstat -z`
+/// alike — it used to be written twice, once per flag shape.
+///
+/// `-z` so paths come through raw, matching `git::status`, and so a rename is
+/// visible at all: the plain form prints only the new path. The record shapes
+/// differ: an ordinary entry is `added\tdeleted\tpath\0`, a rename is
+/// `added\tdeleted\t\0old\0new\0` — the path field is empty and the two paths
+/// follow as their own records. A binary file prints `-\t-`, surfaced as zero
+/// counts rather than dropped: it is still being written.
+pub fn parse_numstat_z(raw: &str) -> Vec<NumstatRow> {
+    let mut fields = raw.split('\0');
+    let mut rows = Vec::new();
+    while let Some(field) = fields.next() {
+        if field.is_empty() {
+            continue;
+        }
+        let mut cols = field.splitn(3, '\t');
+        let (Some(added), Some(deleted), Some(path)) = (cols.next(), cols.next(), cols.next())
+        else {
+            continue;
+        };
+        let n = |s: &str| s.parse().unwrap_or(0);
+        let (path, from) = if path.is_empty() {
+            let old = fields.next().map(str::to_string);
+            match fields.next() {
+                Some(new) => (new.to_string(), old),
+                None => continue,
+            }
+        } else {
+            (path.to_string(), None)
+        };
+        rows.push(NumstatRow {
+            path,
+            from,
+            added: n(added),
+            deleted: n(deleted),
+            binary: added == "-" || deleted == "-",
+        });
+    }
+    rows
 }
 
 /// The concatenation of every patch's diff — one stream git applies atomically.
@@ -149,7 +232,10 @@ fn combined(patches: &[Patch]) -> String {
 /// 3. otherwise clean.
 pub fn check(cwd: &Path, patches: &[Patch]) -> Result<Check> {
     if patches.is_empty() {
-        return Ok(Check::Clean(Vec::new()));
+        return Ok(Check::Clean {
+            files: Vec::new(),
+            touched: Vec::new(),
+        });
     }
 
     // Pass 1 — stale detection. A patch that will not apply by itself has gone
@@ -172,8 +258,9 @@ pub fn check(cwd: &Path, patches: &[Patch]) -> Result<Check> {
         return Ok(Check::Overlap(overlapping(cwd, patches)?));
     }
 
-    // Pass 3 — clean. The file list is the combined numstat.
-    Ok(Check::Clean(numstat(cwd, &all)?))
+    // Pass 3 — clean. The file list and the touched paths are the combined numstat.
+    let (files, touched) = numstat(cwd, &all)?;
+    Ok(Check::Clean { files, touched })
 }
 
 /// Which threads collide. Every patch applies alone (pass 1 established that),
@@ -261,9 +348,17 @@ pub fn write_batch(
     // committed state and blaming it is correct.
     let amend = crate::review_commit::amend_target(cwd, None, merge_base, touched, my_email)?;
 
+    // What the tree already held. The gate upstream requires a clean tree, so this
+    // is normally empty — but `write_batch` is `pub` and states no such
+    // precondition of its own, and the two checks below both mean "beyond what was
+    // here when we started". Taking the snapshot rather than trusting the gate is
+    // what keeps the revert from reaching somebody's uncommitted work if a caller
+    // ever arrives without one.
+    let before = dirty_paths(cwd)?;
+
     // 2. The ladder.
-    let files = match check(cwd, patches)? {
-        Check::Clean(files) => files,
+    let (files, touched_paths) = match check(cwd, patches)? {
+        Check::Clean { files, touched } => (files, touched),
         Check::Stale(threads) => {
             return Ok(Written::Refused(format!(
                 "the file moved under {} since triage — re-triage before accepting",
@@ -282,38 +377,119 @@ pub fn write_batch(
     // 3. Apply, atomically.
     apply(cwd, patches)?;
 
-    // 4/5. The hooks, on what we wrote.
+    // 4/5/6, and every way out of them but a commit puts the tree back.
     let paths: Vec<String> = files.iter().map(|f| f.path.clone()).collect();
-    if let Some(why) = hooks_refusal(cwd, &paths, false)? {
-        /* **Put the tree back.** The patch is on disk by now, and returning
-           `Refused` used to leave it there — so the report said nothing was
-           committed while the worktree held changes nobody had asked for, and the
-           next attempt was refused by `triage::gate` as `Dirty`, naming files the
-           user never touched. The gate requires a clean tree before any of this, so
-           what `apply` wrote is the only thing in these paths and restoring them to
-           `HEAD` cannot take anyone's work with it.
+    let why = match land(cwd, &paths, &before, &touched_paths, &amend) {
+        // The one way out that keeps what it wrote.
+        Ok(None) => {
+            return Ok(Written::Committed {
+                files,
+                amend: amend.describe(),
+            })
+        }
+        other => other,
+    };
 
-           This is the arm that applied its own patch. `write_manual` reaches
-           `hooks_refusal` with `own_edits: true` and must **not** do this: those
-           changes are the user's, typed by hand, and reverting them would destroy
-           exactly what the manual phase exists to collect. */
-        let why = match crate::git::restore_paths(cwd, &paths) {
-            Ok(()) => why,
-            // Better a refusal that admits the mess than one that hides it.
-            Err(e) => format!(
-                "{why}\n\n(the applied patch could not be reverted, so it is still in \
-                 the working tree: {e:#})"
-            ),
-        };
-        return Ok(Written::Refused(why));
+    /* **Put the tree back.** The patch is on disk by now, and returning `Refused`
+       used to leave it there — so the report said nothing was committed while the
+       worktree held changes nobody had asked for, and the next attempt was refused
+       by `triage::gate` as `Dirty`, naming files the user never touched. It used to
+       run only on the hooks' refusal, so an `Err` from the hooks or the fold left
+       the same mess by the other door.
+
+       Everything that has gone dirty *since we started*, not only the patch's own
+       paths: whatever is dirty beyond `before` is the patch or what the hooks did
+       to the tree on its account. Scoping to the patch's paths is what left a
+       rename half-reverted, since numstat names it by the new path alone; scoping
+       to the whole tree, which this did at first, would revert a caller's own
+       uncommitted work on the strength of a gate taken in another module.
+
+       This is the arm that applied its own patch. `write_manual` reaches
+       `hooks_refusal` with `own_edits: true` and must **not** do this: those
+       changes are the user's, typed by hand, and reverting them would destroy
+       exactly what the manual phase exists to collect. */
+    const UNREVERTED: &str =
+        "the applied patch could not be reverted, so it is still in the working tree";
+    let restored = added_since(cwd, &before).and_then(|ours| crate::git::restore_paths(cwd, &ours));
+    match (why, restored) {
+        (Ok(Some(why)), Ok(())) => Ok(Written::Refused(why)),
+        // Better a refusal that admits the mess than one that hides it.
+        (Ok(Some(why)), Err(e)) => Ok(Written::Refused(format!("{why}\n\n({UNREVERTED}: {e:#})"))),
+        (Err(e), Ok(())) => Err(e),
+        (Err(e), Err(r)) => Err(e.context(format!("and {UNREVERTED}: {r:#}"))),
+        // `Ok(None)` returned above; the compiler cannot see that through the match.
+        (Ok(None), _) => Ok(Written::NothingToWrite),
     }
+}
 
-    // 6. Fold.
-    crate::git::fold_in(cwd, &amend)?;
-    Ok(Written::Committed {
-        files,
-        amend: amend.describe(),
-    })
+/// What the working tree holds beyond `before` — the paths this pass is
+/// answerable for.
+fn added_since(cwd: &Path, before: &[String]) -> Result<Vec<String>> {
+    Ok(dirty_paths(cwd)?
+        .into_iter()
+        .filter(|p| !before.contains(p))
+        .collect())
+}
+
+/// Steps 4 to 6 of [`write_batch`], with the patch already in the tree: the hooks,
+/// the check that they touched nothing else, and the fold. `Some` is a refusal to
+/// report; `None` is a commit.
+///
+/// A function of its own so that the caller has one place to put the tree back
+/// from, whichever of the three said no.
+fn land(
+    cwd: &Path,
+    paths: &[String],
+    before: &[String],
+    touched: &[String],
+    amend: &crate::review_commit::Amend,
+) -> Result<Option<String>> {
+    if let Some(why) = hooks_refusal(cwd, paths, false)? {
+        return Ok(Some(why));
+    }
+    if let Some(why) = hooks_wrote_elsewhere(cwd, before, touched, "the accepted patch")? {
+        return Ok(Some(why));
+    }
+    crate::git::fold_in(cwd, amend)?;
+    Ok(None)
+}
+
+/// Did the hooks write outside `allowed`? The refusal to report, or `None`.
+///
+/// The hooks are judged on a path list, but `fold_in` commits with `git add -A`, so
+/// a hook that regenerated a lockfile or an index passed as `Passed` and was swept
+/// into the fixup and the push unseen — the "reformats beyond the approved diff"
+/// this design refuses, arriving by a side door.
+///
+/// Called by both writers, and it has to be, which is the whole reason it is a
+/// function. `write_manual`'s stray check looks like this one and is not: it runs
+/// *before* the hooks, off the tree as it stood at entry, so a file a hook creates
+/// during the manual phase is not a stray (that check is already over), is not
+/// `Reformatted` (`hash_files` only hashes what it was handed), and on
+/// `own_edits: true` a rewrite is allowed anyway. It went into the commit and the
+/// force-push — on the path where the clean-tree gate is stood down and the work
+/// being committed is a person's own.
+///
+/// `before` is the tree as this pass found it, so a file that was already dirty is
+/// not blamed on the hooks.
+fn hooks_wrote_elsewhere(
+    cwd: &Path,
+    before: &[String],
+    allowed: &[String],
+    what: &str,
+) -> Result<Option<String>> {
+    let extra: Vec<String> = dirty_paths(cwd)?
+        .into_iter()
+        .filter(|p| !allowed.contains(p) && !before.contains(p))
+        .collect();
+    if extra.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(format!(
+        "the hooks wrote to {}, which {what} does not touch — what would land is no \
+         longer what you approved. Nothing was committed.",
+        extra.join(", ")
+    )))
 }
 
 /// Run the repo's pre-commit hooks over `paths`: the refusal to report, or `None`
@@ -474,6 +650,15 @@ pub fn write_manual(
     if let Some(why) = hooks_refusal(cwd, &paths, true)? {
         return Ok(Written::Refused(why));
     }
+    // The strays check above ran before the hooks did, against the tree as it stood
+    // at entry, so it cannot see a file a hook *creates* — and nothing else here
+    // could either: a created file is not a rewrite of an approved one, so
+    // `hooks_refusal` passes it, and `own_edits` allows a rewrite in any case. It
+    // went into the fixup and the force-push unseen. `before` is empty because this
+    // path's whole input is the dirty tree, and `paths` is that same list.
+    if let Some(why) = hooks_wrote_elsewhere(cwd, &[], &paths, "the work the phase showed you")? {
+        return Ok(Written::Refused(why));
+    }
 
     // Recounted after the hooks, so the file list is what will actually land.
     let files = numstat_worktree(cwd)?;
@@ -576,7 +761,7 @@ fn numstat_worktree(cwd: &Path) -> Result<Vec<FileStat>> {
             None => {
                 let added = std::fs::read_to_string(cwd.join(&path))
                     .map(|s| s.lines().count() as u32)
-                    // Binary or unreadable: still name it, as `parse_numstat` does.
+                    // Binary or unreadable: still name it, as `parse_numstat_z` does.
                     .unwrap_or(0);
                 FileStat {
                     path,
@@ -641,32 +826,11 @@ pub fn dirty_paths(cwd: &Path) -> Result<Vec<String>> {
 /// follow as their own records.
 fn numstat_counts(cwd: &Path) -> Result<std::collections::HashMap<String, (u32, u32)>> {
     let raw = crate::git::git(cwd, &["diff", "--numstat", "-z", "HEAD"])?;
-    let mut fields = raw.split('\0').peekable();
-    let mut counts = std::collections::HashMap::new();
-    while let Some(field) = fields.next() {
-        if field.is_empty() {
-            continue;
-        }
-        let mut cols = field.splitn(3, '\t');
-        let (Some(added), Some(deleted), Some(path)) = (cols.next(), cols.next(), cols.next())
-        else {
-            continue;
-        };
-        let n = |s: &str| s.parse().unwrap_or(0);
-        // An empty path field means a rename: old then new follow. Keyed on the new
-        // one, so it matches what `git status` reported.
-        let key = if path.is_empty() {
-            let _old = fields.next();
-            match fields.next() {
-                Some(new) => new.to_string(),
-                None => continue,
-            }
-        } else {
-            path.to_string()
-        };
-        counts.insert(key, (n(added), n(deleted)));
-    }
-    Ok(counts)
+    // Keyed on a rename's new path, so it matches what `git status` reported.
+    Ok(parse_numstat_z(&raw)
+        .into_iter()
+        .map(|r| (r.path, (r.added, r.deleted)))
+        .collect())
 }
 
 #[cfg(test)]
@@ -677,13 +841,7 @@ mod tests {
     /// editing that file in a scratch checkout and diffing — the exact path the
     /// real agent uses, so the tests exercise real git-generated diffs.
     fn scratch() -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "orchd-patch-{}-{:?}",
-            std::process::id(),
-            std::thread::current().id()
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = crate::testutil::scratch("patch");
         run(&dir, &["init", "-q", "-b", "main"]);
         run(&dir, &["config", "user.email", "t@t"]);
         run(&dir, &["config", "user.name", "t"]);
@@ -728,11 +886,13 @@ mod tests {
         let b = patch_line(&d, "B", 30, "THIRTY");
         let got = check(&d, &[a, b]).unwrap();
         match got {
-            Check::Clean(files) => {
+            Check::Clean { files, touched } => {
                 // One row despite two patches touching the same file.
                 assert_eq!(files.len(), 1);
                 assert_eq!(files[0].path, "f.txt");
                 assert_eq!((files[0].added, files[0].deleted), (2, 2));
+                // And one path, from the same numstat pass.
+                assert_eq!(touched, vec!["f.txt".to_string()]);
             }
             other => panic!("expected clean, got {other:?}"),
         }
@@ -786,10 +946,43 @@ mod tests {
         assert!(!after.contains("line5\n"));
     }
 
+    /// A diff creating `path` from nothing, as `git diff` would print it.
+    fn new_file_diff(path: &str) -> String {
+        format!(
+            "diff --git a/{path} b/{path}\nnew file mode 100644\n--- /dev/null\n+++ b/{path}\n@@ -0,0 +1 @@\n+x\n"
+        )
+    }
+
+    /// The three paths the module doc says git refuses, checked against git
+    /// rather than believed: a patch is agent output, and these are the shapes
+    /// that would let one write outside the worktree or into its metadata.
+    #[test]
+    fn git_apply_refuses_an_escape_a_symlink_and_the_git_dir() {
+        let dir = scratch();
+        // A directory that is a symlink out of the tree, committed as the repo
+        // would carry it.
+        std::os::unix::fs::symlink(std::env::temp_dir(), dir.join("out")).unwrap();
+        run(&dir, &["add", "-A"]);
+        run(&dir, &["commit", "-qm", "link"]);
+
+        for path in ["../escape.txt", ".git/hooks/pre-commit", "out/through-the-link.txt"] {
+            let (ok, _, err) = git_apply(&dir, &["--check"], &new_file_diff(path)).unwrap();
+            assert!(!ok, "{path} was accepted");
+            assert!(!err.is_empty(), "{path}: refused without a reason");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn an_empty_batch_is_vacuously_clean() {
         let d = scratch();
-        assert_eq!(check(&d, &[]).unwrap(), Check::Clean(vec![]));
+        assert_eq!(
+            check(&d, &[]).unwrap(),
+            Check::Clean {
+                files: vec![],
+                touched: vec![]
+            }
+        );
         apply(&d, &[]).unwrap();
     }
 
@@ -1305,7 +1498,6 @@ mod tests {
     #[test]
     fn a_hook_that_rewrites_files_stops_the_batch_with_nothing_committed() {
         let d = batch_repo();
-        let before = commit_count(&d);
         // A hook that "formats" by rewriting the file it was handed.
         std::fs::write(
             d.join(".pre-commit-config.yaml"),
@@ -1318,6 +1510,11 @@ mod tests {
             &bin.join("pre-commit"),
             "#!/bin/sh\nprintf 'reformatted\\n' >> f.txt\nexit 0\n",
         );
+        // Committed, so the tree is clean the way the gate guarantees it, and the
+        // restore below can be asserted on the whole tree.
+        run(&d, &["add", "-A"]);
+        run(&d, &["commit", "-qm", "hook fixture"]);
+        let before = commit_count(&d);
         let p = patch_mine(&d, "A", 5, "FIVE");
 
         let got = with_path(&bin, || {
@@ -1333,6 +1530,7 @@ mod tests {
             other => panic!("expected Refused, got {other:?}"),
         }
         assert_eq!(commit_count(&d), before, "must not have committed");
+        assert!(crate::git::is_clean(&d).unwrap(), "the patch and the rewrite must both be gone");
     }
 
     #[test]
@@ -1349,6 +1547,9 @@ mod tests {
             &bin.join("pre-commit"),
             "#!/bin/sh\necho 'phpstan.....Failed' \nexit 1\n",
         );
+        // Committed, so the tree starts clean the way the gate guarantees.
+        run(&d, &["add", "-A"]);
+        run(&d, &["commit", "-qm", "hook fixture"]);
 
         let p = patch_mine(&d, "A", 5, "FIVE");
         let got = with_path(&bin, || {
@@ -1363,16 +1564,13 @@ mod tests {
            it is on disk, and this used to leave it there: the report said nothing
            was committed while the worktree held changes nobody asked for, and the
            next attempt was refused as `Dirty` naming files the user never touched.
-           The old assertion only counted commits, which stayed right throughout.
-
-           Asserted on the patched file rather than on `is_clean`, because this
-           test's own scaffolding (`.pre-commit-config.yaml`, `fake-bin/`) is
-           untracked and would fail a whole-tree check for the wrong reason. */
+           The old assertion only counted commits, which stayed right throughout. */
         let after = std::fs::read_to_string(d.join("f.txt")).unwrap();
         assert!(
             after.contains("mine5") && !after.contains("FIVE"),
             "the refused patch was left in f.txt:\n{after}"
         );
+        assert!(crate::git::is_clean(&d).unwrap(), "the tree must be back to HEAD");
 
         // Same repo, same config, no `pre-commit` on PATH: an environment problem
         // must not block the review.
@@ -1438,22 +1636,202 @@ mod tests {
     }
 
     #[test]
-    fn numstat_parses_counts_and_keeps_binary_paths() {
-        let rows = parse_numstat("2\t1\tsrc/f.rs\n-\t-\tlogo.png\n");
+    fn numstat_parses_counts_keeps_binary_paths_and_sees_both_halves_of_a_rename() {
+        let rows = parse_numstat_z(concat!(
+            "2\t1\tsrc/f.rs\0",
+            "-\t-\tlogo.png\0",
+            "0\t0\t\0old.rs\0new.rs\0"
+        ));
         assert_eq!(
             rows,
             vec![
-                FileStat {
+                NumstatRow {
                     path: "src/f.rs".into(),
+                    from: None,
                     added: 2,
-                    deleted: 1
+                    deleted: 1,
+                    binary: false
                 },
-                FileStat {
+                // `-\t-` counts as zero lines, and says so: the flag is what tells
+                // a binary file from a change that added and removed nothing.
+                NumstatRow {
                     path: "logo.png".into(),
+                    from: None,
                     added: 0,
-                    deleted: 0
+                    deleted: 0,
+                    binary: true
+                },
+                NumstatRow {
+                    path: "new.rs".into(),
+                    from: Some("old.rs".into()),
+                    added: 0,
+                    deleted: 0,
+                    binary: false
                 },
             ]
         );
+    }
+
+    /// A hook that writes *beside* the patch — a regenerated lockfile, an index —
+    /// used to pass as `Passed`, because the rewrite check hashed the patch's own
+    /// paths while the fold committed the whole tree. Refused now, by name, and the
+    /// tree is put back.
+    #[test]
+    fn a_hook_that_writes_outside_the_patch_is_refused_and_the_tree_put_back() {
+        let d = batch_repo();
+        std::fs::write(
+            d.join(".pre-commit-config.yaml"),
+            "repos:\n  - repo: local\n    hooks: []\n",
+        )
+        .unwrap();
+        let bin = d.join("fake-bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        write_exec(
+            &bin.join("pre-commit"),
+            "#!/bin/sh\nprintf 'regenerated\\n' > lock.txt\nexit 0\n",
+        );
+        // Committed, as a real repo's hook config is, so the tree is clean the way
+        // the gate guarantees before a batch — which is what makes "everything
+        // dirty afterwards is the patch's doing" true.
+        run(&d, &["add", "-A"]);
+        run(&d, &["commit", "-qm", "hook fixture"]);
+        let before = commit_count(&d);
+
+        let p = patch_mine(&d, "A", 5, "FIVE");
+        let got = with_path(&bin, || {
+            write_batch(&d, "base", "me@here", &[p], &[("f.txt".into(), 5)])
+        })
+        .unwrap();
+        match got {
+            Written::Refused(why) => {
+                assert!(why.contains("lock.txt"), "{why}");
+                assert!(why.contains("Nothing was committed"), "{why}");
+            }
+            other => panic!("expected Refused, got {other:?}"),
+        }
+        assert_eq!(commit_count(&d), before);
+        assert!(crate::git::is_clean(&d).unwrap(), "the hook's file and the patch must both be gone");
+    }
+
+    /// The manual phase's half of the same hole, and the one with the worse blast
+    /// radius: the clean-tree gate is stood down here and the work being committed
+    /// is a person's own.
+    ///
+    /// The strays check runs *before* the hooks, off the tree as it stood at entry,
+    /// so a file a hook creates during the phase is invisible to it. It is not a
+    /// rewrite either, so `hooks_refusal` passes it, and `own_edits` allows a
+    /// rewrite regardless. It went into the fixup and the force-push unseen.
+    #[test]
+    fn a_hook_that_writes_during_the_manual_phase_is_refused() {
+        let d = batch_repo();
+        std::fs::write(
+            d.join(".pre-commit-config.yaml"),
+            "repos:\n  - repo: local\n    hooks: []\n",
+        )
+        .unwrap();
+        let bin = d.join("fake-bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        write_exec(
+            &bin.join("pre-commit"),
+            "#!/bin/sh\nprintf 'regenerated\\n' > lock.txt\nexit 0\n",
+        );
+        run(&d, &["add", "-A"]);
+        run(&d, &["commit", "-qm", "hook fixture"]);
+        let before = commit_count(&d);
+
+        // The human's own edit, which the phase showed them and approved.
+        let f = d.join("f.txt");
+        let edited = std::fs::read_to_string(&f).unwrap().replace("mine5", "by hand");
+        std::fs::write(&f, edited).unwrap();
+
+        let touched = vec![("f.txt".to_string(), 5)];
+        let approved = vec!["f.txt".to_string()];
+        let head = crate::git::head_sha(&d).unwrap();
+        let got = with_path(&bin, || {
+            write_manual(&d, "base", "me@here", &touched, &approved, &head)
+        })
+        .unwrap();
+        match got {
+            Written::Refused(why) => {
+                assert!(why.contains("lock.txt"), "{why}");
+                assert!(why.contains("Nothing was committed"), "{why}");
+            }
+            other => panic!("expected Refused, got {other:?}"),
+        }
+        assert_eq!(commit_count(&d), before, "nothing may land");
+    }
+
+    /// The revert puts back what this pass dirtied, not whatever the tree happens to
+    /// hold. `write_batch` is `pub` and states no precondition; reverting everything
+    /// dirty meant trusting a clean-tree gate taken in another module, and a caller
+    /// arriving without one would have had its uncommitted work reset to `HEAD`.
+    #[test]
+    fn a_refusal_reverts_only_what_this_pass_wrote() {
+        let d = batch_repo();
+        std::fs::write(
+            d.join(".pre-commit-config.yaml"),
+            "repos:\n  - repo: local\n    hooks: []\n",
+        )
+        .unwrap();
+        let bin = d.join("fake-bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        write_exec(&bin.join("pre-commit"), "#!/bin/sh\necho 'lint.....Failed'\nexit 1\n");
+        run(&d, &["add", "-A"]);
+        run(&d, &["commit", "-qm", "hook fixture"]);
+
+        // Somebody's own work, already in the tree when the batch arrives.
+        std::fs::write(d.join("mine.txt"), "do not touch\n").unwrap();
+
+        let p = patch_mine(&d, "A", 5, "FIVE");
+        let got = with_path(&bin, || {
+            write_batch(&d, "base", "me@here", &[p], &[("f.txt".into(), 5)])
+        })
+        .unwrap();
+        assert!(matches!(got, Written::Refused(_)), "{got:?}");
+
+        assert_eq!(
+            std::fs::read_to_string(d.join("mine.txt")).unwrap(),
+            "do not touch\n",
+            "the caller's own uncommitted file must survive the revert"
+        );
+        // And the patch itself is gone.
+        assert!(!std::fs::read_to_string(d.join("f.txt")).unwrap().contains("FIVE"));
+    }
+
+    /// A refused rename has two halves to put back. Numstat names it by the new path
+    /// alone, so restoring only that removed the new file and left the old one
+    /// deleted: a refusal that lost a file.
+    #[test]
+    fn a_refused_rename_restores_both_halves() {
+        let d = batch_repo();
+        std::fs::write(
+            d.join(".pre-commit-config.yaml"),
+            "repos:\n  - repo: local\n    hooks: []\n",
+        )
+        .unwrap();
+        let bin = d.join("fake-bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        write_exec(&bin.join("pre-commit"), "#!/bin/sh\necho 'lint.....Failed'\nexit 1\n");
+        run(&d, &["add", "-A"]);
+        run(&d, &["commit", "-qm", "hook fixture"]);
+
+        // A real rename patch, the way an agent's `git diff` would print one.
+        run(&d, &["mv", "f.txt", "g.txt"]);
+        let diff = run(&d, &["diff", "--cached", "-M"]);
+        run(&d, &["reset", "-q", "--hard"]);
+        assert!(diff.contains("rename from f.txt"), "{diff}");
+        let p = Patch {
+            thread_id: "A".into(),
+            diff,
+        };
+
+        let got = with_path(&bin, || {
+            write_batch(&d, "base", "me@here", &[p], &[("f.txt".into(), 5)])
+        })
+        .unwrap();
+        assert!(matches!(got, Written::Refused(_)), "{got:?}");
+        assert!(d.join("f.txt").exists(), "the old half of the rename was not restored");
+        assert!(!d.join("g.txt").exists(), "the new half of the rename was left behind");
+        assert!(crate::git::is_clean(&d).unwrap());
     }
 }

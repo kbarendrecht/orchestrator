@@ -4,8 +4,7 @@
 //! through the [`Forge`] trait. GitHub is the only implementation today
 //! ([`GitHubForge`]), but the whole point of the seam is that a second platform
 //! is a sibling module behind the same trait rather than a rewrite of every
-//! caller. TODO.md's "GitHub is the only forge" item is this boundary: the seam
-//! is these modules, not the code that calls them.
+//! caller. The seam is these modules, not the code that calls them.
 //!
 //! Two things deliberately sit *outside* the trait:
 //!

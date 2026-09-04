@@ -312,29 +312,23 @@ impl Threads {
 mod tests {
     use super::*;
 
+    /// No comments: these tests are about where a thread sits, not who spoke.
     fn thread_at(path: Option<&str>, line: Option<u32>) -> Thread {
         Thread {
-            id: format!("PRRT_{}_{:?}", path.unwrap_or("none"), line),
-            path: path.map(|p| p.to_string()),
-            line,
-            start_line: None,
-            original_line: None,
-            is_resolved: false,
-            is_outdated: false,
             comments: Vec::new(),
-            answerable: true,
+            ..crate::testutil::thread(
+                &format!("PRRT_{}_{:?}", path.unwrap_or("none"), line),
+                path,
+                line,
+                "anyone",
+            )
         }
     }
 
     fn said(author: &str, thumbed: bool) -> Comment {
         Comment {
-            database_id: 1,
-            author: author.into(),
-            body: "b".into(),
-            created_at: "2026-08-17T00:00:00Z".into(),
-            url: "u".into(),
-            diff_hunk: None,
             viewer_thumbed: thumbed,
+            ..crate::testutil::comment(1, author, "b")
         }
     }
 

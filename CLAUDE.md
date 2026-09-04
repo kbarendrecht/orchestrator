@@ -276,14 +276,30 @@ mean *this* repo; if you do, name it.
   are Claude Code's doing, not a bug here: one `ai-title` string turned up in 8
   transcripts across 3 repositories, each correctly attributed to its own
   sessionId. The reader is right; the file says that.
-- **Live findings go to a gitignored `daemon.log`, only when dogfooding.**
-  `findings::write_log` overwrites `daemon.log` with what the daemon can see
-  right now, each poll — but `start_findings_log` starts at all only when the
-  repo being managed *is* this source tree (`findings::dogfood_log` compares
-  `main_checkout` to the build-time `CARGO_MANIFEST_DIR`), or when `log_path` is
-  set. So a daemon pointed at any other repo — or a throwaway build — writes
-  nothing, and never dirties a tracked file. This replaced an older block spliced
-  into `TODO.md` at the build-time path, which churned this repo from every build.
+- **There is no findings log any more.** `daemon.log` and `log_path` are gone: the
+  one finding the daemon ever produced (the review queue is unavailable) was already
+  in the snapshot and the pane, so the file was a second copy of one line. It once
+  spliced a block into `TODO.md` at the build-time path and churned this repo from
+  every build; do not bring back a file the daemon writes into a checkout.
+- **Stopping a session is `kill_gracefully`, on every path.** One `SIGHUP` is a
+  request Node is entitled to decline, and three sites still sent only that: the
+  rail's kill button "succeeded" while the row stayed Working, a review's hand-off
+  was armed on an exit that never came, and the story filer outlived its timeout.
+  `kill_gracefully` signals the *group* (the group id is the leader's pid, since
+  `portable-pty` `setsid`s the child; asking `getpgid` failed the moment the leader
+  was reaped, which is exactly when a HUP-ignoring grandchild needed reaching),
+  waits `KILL_GRACE`, `SIGKILL`s, and sweeps the group once more after the leader
+  exits. `kill` and `kill_hard` refuse an exited child, because a reaped pid may
+  already be somebody else's.
+- **The first-run page merges into `config.json`, never replaces it.** It runs on
+  every open (fresh checkout, recent, switch) and used to build the file from
+  scratch, so re-picking a moved checkout dropped every hand-tuned key. It keeps
+  the previous file as `config.json.bak`, pins `repo` only when the remote does not
+  already derive it, detects a fork layout itself (the daemon's own first write no
+  longer runs, since this write comes first), and undoes the write when a switch's
+  restart is refused. Its bootstrap server carries the daemon's Host and Origin
+  rules: body-less POSTs are CORS simple requests, so `/api/window/restart` was one
+  `fetch` away from any page in any browser.
 - **A session's environment is not the shell's, and the gap is invisible.** The
   daemon's environment is whatever started it; from a desktop launcher that is the
   systemd user manager's, which holds no checkout's variables. So a `.mcp.json`
@@ -291,7 +307,7 @@ mean *this* repo; if you do, name it.
   server answered 401 — while the same session started by typing `claude` in that
   checkout worked, because `mise activate` exports at a shell prompt and an app has
   no prompt. That is why the terminal is the worst place to reproduce this.
-  `config::session_env` now asks the tool itself (`src/env_source/`, `mise` by
+  `config::session_env` now asks the tool itself (`src/env_source.rs`, `mise` by
   default, `direnv` beside it, `none` to turn it off), per spawn, in the session's
   own cwd. Two things it will not do: it never fails a spawn (a missing variable is
   degraded, a refused spawn is lost), and it cannot trust a config for you — mise
@@ -302,8 +318,11 @@ mean *this* repo; if you do, name it.
   ran its command under `timeout`, which is GNU and not on a Mac, so it failed at
   the spawn and the pane blamed the review command for a missing binary it never
   named. `proc::run_bounded` enforces the deadline in Rust instead — one
-  bounded-exec primitive (own process group, SIGKILL the group, pipes drained on
-  threads), used by both the review queue and `worktree_setup`. Every other
+  bounded-exec primitive (own process group; at the deadline SIGTERM the group,
+  a second's grace, then SIGKILL, because git removes its `.lock` files on TERM
+  and not on KILL; pipes drained on threads; the timeout error carries the stderr
+  tail), used by the review queue, `worktree_setup`, `mise` queries and every
+  network git call. Every other
   command the daemon spawns is POSIX (`git`, `curl`, `gh`, `ps`, `which`, `kill`) —
   keep it that way, and check `command -v` before reaching for a GNU flag.
 - **`WorktreeCreate` is not a setup hook. It *is* the creation, and a daemon-cut
@@ -365,7 +384,7 @@ mean *this* repo; if you do, name it.
   of the three, because a `type: "command"` hook whose binary is missing fails
   **open**. That one showed up as four `PreToolUse:Bash hook error` lines in a
   session, with the guard silently not running for any of those pushes.
-  `self_update::stable_exe` is the one rule: swap the version component for
+  `update::stable_exe` is the one rule: swap the version component for
   `latest` when that path really exists, else keep what you had. Use it anywhere a
   path is persisted.
 - **A missing `cwd` is not an error to `portable-pty` — it is `$HOME`.**
@@ -405,6 +424,14 @@ mean *this* repo; if you do, name it.
   landing in that gap takes a `/resolve` prompt and drops it. The gap is one lock
   acquisition against Claude Code's whole boot, so it is documented rather than
   guarded.
+  **An automation run's record follows the same rule now.** A `claude` that exits
+  at once — a bad `--settings`, the version gate — was reaped before its
+  `Running` / `ResolveRun` record existed, so the exit watcher found nothing to
+  settle and the record named a corpse until a restart. The caller mints the id,
+  writes the record, then spawns, and takes the record back out on failure.
+  `headroom::check` moved into `insert_and_spawn` for the same reason: it was at
+  two of the four spawners, so the rail's new-worktree button, the fork path and
+  the story filer had no check at all.
 - **`github_write.rs` will not resolve a thread, approve, merge or open a PR.**
   That is a design boundary, not a gap. Resolving is the comment author's button.
   Which means **`is_resolved` can never stand for "handled"**: the daemon never
@@ -482,7 +509,7 @@ mean *this* repo; if you do, name it.
   green suite as more than that.
 - **`ORCHD_CONFIG_DIR` relocates every piece of durable state**, which is what
   makes a fixture daemon safe: config, `sessions.json`, `automation.json`,
-  `hooks.json`, the instance lock and the findings block all follow it. Overriding
+  `hooks.json`, `window.json` and the instance lock all follow it. Overriding
   `HOME` would do the same for free and is wrong — `claude` reads its credentials
   from there, so every spawned session would come up unauthenticated. The one
   exception is `mise run e2e`, where the agent is a fake with no credentials to
@@ -555,8 +582,8 @@ mean *this* repo; if you do, name it.
   fill in as it goes. What is left on the critical path is the **upstream fetch,
   which is a network round trip**. Two things still true and worth knowing:
   `configure_repo` sets fsmonitor on main *only*, so every worktree's `git status`
-  is a full scan; and the poller still does its own fetch and sweep ~1.4 s after
-  boot has done both, which is redundant and was redundant before this too.
+  is a full scan; and the poller's first tick deliberately skips the fetch and the
+  sweep, because boot has just done both.
 - **A keystroke is one small frame, so the served sockets set `TCP_NODELAY`.**
   `axum::serve` defaults it to `None` and only calls `set_nodelay` when the
   builder is told to, so every connection ran with Nagle on: a small write waits
@@ -599,8 +626,7 @@ mean *this* repo; if you do, name it.
   terminal nobody had. `init_logging` in `desktop/src/main.rs` now writes the same
   lines to `<config_dir>/orchd.log`, one generation kept as `orchd.log.1`, and says
   the path in its first line. It follows `ORCHD_CONFIG_DIR`, so a fixture daemon
-  does not write over the real one. Unrelated to `daemon.log`, which is
-  `findings::write_log` and only exists while dogfooding.
+  does not write over the real one.
 - **The page's own boot timing is not visible from Rust.** The daemon can time up
   to serving the page and sending the first snapshot; the vendored script parse, the
   first render, and the centre pane's terminal attaching and painting only exist in
@@ -663,9 +689,8 @@ mean *this* repo; if you do, name it.
   It is a **mistake-catcher, not a control** — Bash only, so `gh` or a script the
   agent writes goes around it. Do not write docs that claim otherwise; the README
   did, and that is the kind of sentence that earns misplaced trust.
-  The Python script this replaced failed open when `python3` was missing, and
-  matched refspecs by spelling — `git push origin main` refused while
-  `git push origin HEAD:refs/heads/main` passed.
+  It replaced a Python script that failed open and matched refspecs by spelling;
+  `src/guard.rs`'s module doc has the three defects.
 - **A `rust-toolchain.toml` is a no-op here, and silently.** `mise env` exports
   `RUSTUP_TOOLCHAIN=stable`, and that variable **outranks** the file in rustup's
   precedence — so a pin written there is ignored on any machine with mise active

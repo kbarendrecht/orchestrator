@@ -595,7 +595,6 @@ pub enum ProcKind {
 
 /// Any non-Claude pty owned by a workspace. Same hosting as a session pty —
 /// ring buffer, reattach — but no hook lifecycle and no rail entry.
-#[allow(dead_code)] // pid feeds the /proc preflight; started_at the dead-shell footer
 pub struct Process {
     pub id: String,
     pub name: String,
@@ -605,10 +604,6 @@ pub struct Process {
     /// session above it.
     pub cwd: PathBuf,
     pub pty: Option<Arc<PtyHandle>>,
-    pub pid: Option<u32>,
-    /// Retained so a dead shell keeps its buffer and shows its exit code until
-    /// dismissed.
-    pub started_at: SystemTime,
 }
 
 impl Process {
@@ -619,13 +614,15 @@ impl Process {
 
 // ---------------------------------------------------------------------------
 // Changed files (§4)
+//
+// None of the three below carries a `ts_rs` export: `git::status` still produces
+// them, but nothing reaches them from `Snapshot` any more — the changed-files
+// pane reads `changed`, and `WorkspaceView.files` was sent to every client on
+// every tick and read by none.
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
-// No `ts_rs` export: `git::status` still produces these, but nothing reaches them
-// from `Snapshot` any more — the changed-files pane reads `changed`, and
-// `WorkspaceView.files` was sent to every client on every tick and read by none.
 pub enum FileStatus {
     Staged,
     Unstaged,
@@ -633,9 +630,6 @@ pub enum FileStatus {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-// No `ts_rs` export: `git::status` still produces these, but nothing reaches them
-// from `Snapshot` any more — the changed-files pane reads `changed`, and
-// `WorkspaceView.files` was sent to every client on every tick and read by none.
 pub struct ChangedFile {
     pub path: String,
     pub status: FileStatus,
@@ -644,9 +638,6 @@ pub struct ChangedFile {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-// No `ts_rs` export: `git::status` still produces these, but nothing reaches them
-// from `Snapshot` any more — the changed-files pane reads `changed`, and
-// `WorkspaceView.files` was sent to every client on every tick and read by none.
 pub struct FileSet {
     pub staged: Vec<ChangedFile>,
     pub unstaged: Vec<ChangedFile>,

@@ -32,7 +32,10 @@ Queue {
 
 QueueEntry {
   pr: Pr
-  reviewers: string[]    // humans who already reviewed
+  reviewers: number      // how many humans already reviewed. The daemon also
+                         // accepts an array and counts it, because this said
+                         // `string[]` while the shipped script emitted the count,
+                         // and a strict parser would have dropped every real row.
   blockers: string[]     // 'draft' | 'conflicts' | 'failing checks' | 'changes requested'
   needsReReview: boolean
   ageDays: number

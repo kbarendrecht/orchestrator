@@ -1,5 +1,5 @@
 use anyhow::{bail, Context, Result};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::Path;
 
@@ -123,7 +123,7 @@ fn run(main: &Path, timeout_secs: u64, command: &[String], repo: Option<&str>) -
         bail!(
             "reviews exited {}: {}",
             out.status.code().unwrap_or(-1),
-            crate::proc::stderr_tail(&out)
+            crate::proc::stderr_tail(&out.stderr)
         );
     }
 
@@ -140,101 +140,141 @@ fn run(main: &Path, timeout_secs: u64, command: &[String], repo: Option<&str>) -
             bail!("reviews reported version {ver}, which this daemon does not understand");
         }
     }
-    parse(&v, repo)
+    parse(v, repo)
 }
 
-fn parse(v: &Value, repo: Option<&str>) -> Result<ReviewQueue> {
-    let entries = |key: &str| -> Vec<Review> {
-        v.get(key)
-            .and_then(|a| a.as_array())
-            .map(|a| a.iter().filter_map(|e| parse_entry(e, repo)).collect())
-            .unwrap_or_default()
-    };
-    let actionable = entries("actionable");
-    let blocked = entries("blocked");
-    if v.get("actionable").is_none() && v.get("blocked").is_none() {
+/// The `Queue` the source prints (`docs/reviews-json.md`), as far as the daemon
+/// reads it. A mirror struct rather than pointer-poking so the shape is written
+/// down once; `actionable`/`blocked` stay raw so one bad row is dropped and named
+/// rather than sinking the whole queue.
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+struct QueueDoc {
+    for_login: String,
+    total: u32,
+    skipped: u32,
+    actionable: Option<Vec<Value>>,
+    blocked: Option<Vec<Value>>,
+}
+
+/// One `QueueEntry`. `pr` is required; everything else has a default, because the
+/// source has grown fields over time and an older one must still parse.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct EntryDoc {
+    pr: PrDoc,
+    /// How many humans already reviewed.
+    ///
+    /// `Value` rather than a typed field, because the two sources disagree and
+    /// both are real: `docs/reviews-json.md` documents `reviewers: string[]`, and
+    /// the shipped script's own captured output (the test below) has
+    /// `"reviewers":0`. Typing it either way would drop every row from the other.
+    #[serde(default)]
+    reviewers: Value,
+    #[serde(default)]
+    blockers: Vec<String>,
+    #[serde(default)]
+    needs_re_review: bool,
+    #[serde(default)]
+    age_hours: Option<f64>,
+    #[serde(default)]
+    age_days: Option<f64>,
+    #[serde(default)]
+    prio: Option<u32>,
+}
+
+/// The `Pr` inside an entry. `number` is the one field a row is useless without.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PrDoc {
+    number: u64,
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    url: Option<String>,
+    #[serde(default)]
+    author: Option<String>,
+    #[serde(default)]
+    is_draft: bool,
+    #[serde(default)]
+    changed_files: Option<u32>,
+    #[serde(default)]
+    checks: Option<String>,
+}
+
+/// Takes the document by value: it holds every actionable and blocked row, and
+/// the caller has no use for it afterwards, so deserializing from a clone copied
+/// the whole queue once per poll for nothing.
+fn parse(v: Value, repo: Option<&str>) -> Result<ReviewQueue> {
+    let doc: QueueDoc = serde_json::from_value(v).context("reviews output shape")?;
+    if doc.actionable.is_none() && doc.blocked.is_none() {
         bail!("reviews output has neither `actionable` nor `blocked`");
     }
+    let entries = |key: &str, rows: Option<Vec<Value>>| -> Vec<Review> {
+        rows.unwrap_or_default()
+            .into_iter()
+            .filter_map(|e| match serde_json::from_value::<EntryDoc>(e) {
+                Ok(d) => Some(review_of(d, repo)),
+                // Dropped, but said: a silently vanishing row is the failure this
+                // pane exists to avoid, and the message names what the shape was.
+                Err(err) => {
+                    tracing::warn!("reviews: skipping a `{key}` row the daemon cannot read: {err}");
+                    None
+                }
+            })
+            .collect()
+    };
     Ok(ReviewQueue {
-        login: v
-            .get("forLogin")
-            .and_then(|s| s.as_str())
-            .unwrap_or_default()
-            .to_string(),
-        actionable,
-        blocked,
-        total: v.get("total").and_then(|n| n.as_u64()).unwrap_or(0) as u32,
-        skipped: v.get("skipped").and_then(|n| n.as_u64()).unwrap_or(0) as u32,
+        login: doc.for_login,
+        actionable: entries("actionable", doc.actionable),
+        blocked: entries("blocked", doc.blocked),
+        total: doc.total,
+        skipped: doc.skipped,
     })
 }
 
-fn parse_entry(e: &Value, repo: Option<&str>) -> Option<Review> {
-    let pr = e.get("pr")?;
-    let number = pr.get("number")?.as_u64()?;
-
-    // The source has expressed age as both `ageHours` and `ageDays`; take
-    // whichever is there rather than depending on which day it is.
-    let age_hours = e
-        .get("ageHours")
-        .and_then(|n| n.as_f64())
-        .or_else(|| e.get("ageDays").and_then(|n| n.as_f64()).map(|d| d * 24.0))
-        .unwrap_or(0.0);
-
-    Some(Review {
+fn review_of(e: EntryDoc, repo: Option<&str>) -> Review {
+    let number = e.pr.number;
+    Review {
         number,
-        title: pr.get("title").and_then(|s| s.as_str()).unwrap_or("").to_string(),
+        title: e.pr.title,
         // Deriving the url keeps a row clickable even if the field is dropped.
         // From the *configured* repo: this used to name one hardcoded repo, so
         // every other user's rows linked somewhere they could not see. GitHub's
         // URL shape, which is the only forge there is an impl for; with no repo
         // known the row simply does not link.
-        url: pr
-            .get("url")
-            .and_then(|s| s.as_str())
-            .map(|s| s.to_string())
+        url: e
+            .pr
+            .url
             .or_else(|| repo.map(|r| format!("https://github.com/{r}/pull/{number}")))
             .unwrap_or_default(),
-        author: pr
-            .get("author")
-            .and_then(|s| s.as_str())
-            .unwrap_or("unknown")
-            .to_string(),
-        age_hours,
-        prio: e.get("prio").and_then(|n| n.as_u64()).unwrap_or(9) as u32,
-        needs_re_review: e
-            .get("needsReReview")
-            .and_then(|b| b.as_bool())
-            .unwrap_or(false),
-        is_draft: pr.get("isDraft").and_then(|b| b.as_bool()).unwrap_or(false),
-        blockers: e
-            .get("blockers")
-            .and_then(|a| a.as_array())
-            .map(|a| {
-                a.iter()
-                    .filter_map(|x| x.as_str().map(|s| s.to_string()))
-                    .collect()
-            })
-            .unwrap_or_default(),
-        reviewers: e
-            .get("reviewers")
-            .and_then(|a| a.as_array())
-            .map(|a| a.len() as u32)
-            .unwrap_or(0),
-        changed_files: pr
-            .get("changedFiles")
-            .and_then(|n| n.as_u64())
-            .map(|n| n as u32),
-        checks: pr
-            .get("checks")
-            .and_then(|s| s.as_str())
-            .map(|s| s.to_string()),
-    })
+        author: e.pr.author.unwrap_or_else(|| "unknown".to_string()),
+        // The source has expressed age as both `ageHours` and `ageDays`; take
+        // whichever is there rather than depending on which day it is.
+        age_hours: e
+            .age_hours
+            .or_else(|| e.age_days.map(|d| d * 24.0))
+            .unwrap_or(0.0),
+        prio: e.prio.unwrap_or(9),
+        needs_re_review: e.needs_re_review,
+        is_draft: e.pr.is_draft,
+        blockers: e.blockers,
+        reviewers: match &e.reviewers {
+            Value::Array(a) => a.len() as u32,
+            // Already a count. Reading it as one rather than as "not an array,
+            // so zero", which is what the pointer-poking version did.
+            Value::Number(n) => n.as_u64().unwrap_or(0) as u32,
+            _ => 0,
+        },
+        changed_files: e.pr.changed_files,
+        checks: e.pr.checks,
+    }
 }
 
 #[cfg(test)]
 mod tests {
     /// The tests that do not care about link derivation.
-    fn parse_t(v: &Value) -> Result<ReviewQueue> {
+    fn parse_t(v: Value) -> Result<ReviewQueue> {
         parse(v, Some("acme/monorepo"))
     }
 
@@ -247,7 +287,7 @@ mod tests {
 
     #[test]
     fn reads_the_shape_the_source_actually_emits() {
-        let q = parse_t(&v(r#"{
+        let q = parse_t(v(r#"{
             "forLogin":"kbarendrecht","total":16,"skipped":4,
             "actionable":[{"pr":{"number":2001,"title":"Refactor a config loader",
                 "url":"https://github.com/x/y/pull/2001","author":"dana","isDraft":false},
@@ -269,7 +309,7 @@ mod tests {
 
     #[test]
     fn accepts_age_in_days_as_well_as_hours() {
-        let q = parse_t(&v(r#"{"actionable":[{"pr":{"number":1,"title":"t","author":"a"},
+        let q = parse_t(v(r#"{"actionable":[{"pr":{"number":1,"title":"t","author":"a"},
             "ageDays":2}],"blocked":[]}"#))
         .unwrap();
         assert!((q.actionable[0].age_hours - 48.0).abs() < 0.01);
@@ -278,7 +318,7 @@ mod tests {
     #[test]
     fn derives_a_url_from_the_configured_repo_when_the_field_is_missing() {
         let q = parse(
-            &v(r#"{"actionable":[{"pr":{"number":99,"title":"t","author":"a"}}],
+            v(r#"{"actionable":[{"pr":{"number":99,"title":"t","author":"a"}}],
             "blocked":[]}"#),
             Some("acme/monorepo"),
         )
@@ -291,7 +331,7 @@ mod tests {
     #[test]
     fn an_unknown_repo_yields_no_link_rather_than_a_wrong_one() {
         let q = parse(
-            &v(r#"{"actionable":[{"pr":{"number":99,"title":"t","author":"a"}}],
+            v(r#"{"actionable":[{"pr":{"number":99,"title":"t","author":"a"}}],
             "blocked":[]}"#),
             None,
         )
@@ -302,7 +342,40 @@ mod tests {
     #[test]
     fn output_of_the_wrong_shape_is_an_error_not_an_empty_queue() {
         // The failure that would cost a colleague a day.
-        assert!(parse_t(&v(r#"{"something":"else"}"#)).is_err());
+        assert!(parse_t(v(r#"{"something":"else"}"#)).is_err());
+    }
+
+    /// One row the daemon cannot read is dropped and named, not the whole queue
+    /// and not silently: the other rows still show. A row with no PR number is
+    /// the case, because a row that cannot be opened is not a row.
+    #[test]
+    fn a_bad_row_is_skipped_and_the_rest_still_parse() {
+        let q = parse_t(v(r#"{"actionable":[
+            {"pr":{"title":"no number"}},
+            {"pr":{"number":7,"title":"fine","author":"a"}},
+            {"nothing":"like an entry"},
+            {"pr":{"number":8,"title":"also fine","author":"b"}}],
+            "blocked":[]}"#))
+        .unwrap();
+        assert_eq!(q.actionable.iter().map(|r| r.number).collect::<Vec<_>>(), vec![7, 8]);
+    }
+
+    /// The count of reviewers arrives as an array in one place and as a number in
+    /// the other, and both have to read. See `EntryDoc::reviewers`.
+    #[test]
+    fn a_reviewer_count_is_read_as_an_array_or_as_a_number() {
+        let of = |rev: &str| {
+            parse_t(v(&format!(
+                r#"{{"actionable":[{{"pr":{{"number":1,"title":"t"}},"reviewers":{rev}}}],"blocked":[]}}"#
+            )))
+            .unwrap()
+            .actionable[0]
+                .reviewers
+        };
+        assert_eq!(of(r#"["a","b"]"#), 2);
+        assert_eq!(of("0"), 0);
+        assert_eq!(of("3"), 3);
+        assert_eq!(of("null"), 0);
     }
 
     #[test]
@@ -314,7 +387,7 @@ mod tests {
 
     #[test]
     fn an_empty_but_valid_queue_is_ok_not_degraded() {
-        let q = parse_t(&v(r#"{"forLogin":"me","actionable":[],"blocked":[]}"#)).unwrap();
+        let q = parse_t(v(r#"{"forLogin":"me","actionable":[],"blocked":[]}"#)).unwrap();
         assert!(q.actionable.is_empty());
     }
 
@@ -335,7 +408,7 @@ mod tests {
                    "mergeable":"MERGEABLE","checks":"SUCCESS"},
              "prio":3,"ageHours":70.4,"reviewers":0,"needsReReview":false,
              "blockers":[]}],"blocked":[]}"#;
-        let q = parse(&v(real), Some("acme/monorepo")).expect("the shipped shape parses");
+        let q = parse(v(real), Some("acme/monorepo")).expect("the shipped shape parses");
         assert_eq!(q.login, "kbarendrecht");
         assert_eq!(q.total, 1);
         let e = &q.actionable[0];
@@ -353,7 +426,7 @@ mod tests {
     #[test]
     fn an_empty_queue_from_the_script_is_ok() {
         let q = parse(
-            &v(r#"{"forLogin":"me","total":0,"skipped":0,"actionable":[],"blocked":[]}"#),
+            v(r#"{"forLogin":"me","total":0,"skipped":0,"actionable":[],"blocked":[]}"#),
             None,
         )
         .expect("empty is valid");

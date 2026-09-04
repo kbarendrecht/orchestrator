@@ -23,6 +23,15 @@ const SLOW_GIT: std::time::Duration = std::time::Duration::from_millis(300);
 /// one exec each on a path a person has just asked for, so counting them would
 /// only mix a deliberate wait into the boot figure.
 fn run(cwd: &Path, args: &[&str]) -> std::io::Result<std::process::Output> {
+    /* **"Is this on a tokio worker" cannot be asked here, and it was worth finding
+       out why.** Every git read funnels through this function, so it looks like the
+       one place a `debug_assert` could turn `proc::run_blocking`'s convention into
+       a check. It cannot: `Handle::try_current()` succeeds on a *blocking-pool*
+       thread as well as on a worker, because the runtime handle stays in scope
+       across `spawn_blocking`. Asserting on it failed 36 tests, and every one was
+       correctly wrapped code — `reconcile` and `worktree::preflight` inside their
+       own `spawn_blocking`. Tokio exposes nothing that separates the two, so the
+       rule stays a convention and the reviewer stays the enforcement. */
     let began = std::time::Instant::now();
     let out = Command::new("git").args(args).current_dir(cwd).output();
     let took = began.elapsed();
@@ -42,21 +51,19 @@ fn run(cwd: &Path, args: &[&str]) -> std::io::Result<std::process::Output> {
 /// the real worktree/remote semantics (§1).
 pub(crate) fn git(cwd: &Path, args: &[&str]) -> Result<String> {
     let out = run(cwd, args).with_context(|| format!("running git {}", args.join(" ")))?;
-    if !out.status.success() {
-        bail!(
-            "git {} failed in {}: {}",
-            args.join(" "),
-            cwd.display(),
-            String::from_utf8_lossy(&out.stderr).trim()
-        );
-    }
-    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    Ok(String::from_utf8_lossy(&checked(cwd, args, out)?).into_owned())
 }
 
 /// Like [`git`] but returns the raw bytes, for `-z` output that is not valid
 /// UTF-8 in the general case.
 fn git_raw(cwd: &Path, args: &[&str]) -> Result<Vec<u8>> {
     let out = run(cwd, args).with_context(|| format!("running git {}", args.join(" ")))?;
+    checked(cwd, args, out)
+}
+
+/// A finished git command's stdout, or its stderr as the error. The one place the
+/// failure is phrased, so every runner refuses in the same words.
+fn checked(cwd: &Path, args: &[&str], out: std::process::Output) -> Result<Vec<u8>> {
     if !out.status.success() {
         bail!(
             "git {} failed in {}: {}",
@@ -97,7 +104,7 @@ fn git_net(cwd: &Path, args: &[&str], label: &str) -> Result<std::process::Outpu
     let argv: Vec<String> = std::iter::once("git".to_string())
         .chain(args.iter().map(|a| (*a).to_string()))
         .collect();
-    let envs = net_env();
+    let envs = net_env(cwd);
     let began = std::time::Instant::now();
     let out = crate::proc::run_bounded_with_input(
         cwd,
@@ -125,30 +132,64 @@ fn git_net(cwd: &Path, args: &[&str], label: &str) -> Result<std::process::Outpu
 /// Its own function so it can be asserted on: dropping one of these is invisible
 /// until a fetch hangs on somebody's machine, which is the least reproducible bug
 /// there is.
-fn net_env() -> Vec<(String, String)> {
+///
+/// **The ssh command is yours with two options appended, not a fixed `ssh`.**
+/// `GIT_SSH_COMMAND` outranks `core.sshCommand`, so a fixed value threw away a
+/// multi-identity setup — `core.sshCommand = ssh -i ~/.ssh/id_work`, a 1Password
+/// or YubiKey wrapper — and every daemon-side fetch and push then failed with
+/// "Permission denied (publickey)" on a machine where `git fetch` at a prompt
+/// worked. The base is the inherited variable, else the repo's own config, else
+/// plain `ssh`; the two options go on the end either way.
+fn net_env(cwd: &Path) -> Vec<(String, String)> {
+    let base = std::env::var("GIT_SSH_COMMAND")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .or_else(|| configured_ssh_command(cwd).clone())
+        .unwrap_or_else(|| "ssh".to_string());
     vec![
         ("GIT_TERMINAL_PROMPT".to_string(), "0".to_string()),
         (
             "GIT_SSH_COMMAND".to_string(),
-            "ssh -oBatchMode=yes -oStrictHostKeyChecking=accept-new".to_string(),
+            format!("{base} -oBatchMode=yes -oStrictHostKeyChecking=accept-new"),
         ),
         ("GIT_ASKPASS".to_string(), String::new()),
         ("SSH_ASKPASS".to_string(), String::new()),
     ]
 }
 
+/// The repo's `core.sshCommand`, read once for the life of the process.
+///
+/// **Cached because [`net_env`] runs before every network git call**, and reading
+/// it per call put a whole extra `git` exec in front of each one: the boot fetch
+/// that the window waits on, every poller tick, every `freshen_base` on a
+/// daemon-cut worktree, every push. A start here was measured at 447 child
+/// processes, so an exec that answers the same thing every time is exactly the
+/// kind this daemon cannot afford to repeat.
+///
+/// Repo-static is what makes the cache honest: every worktree shares the main
+/// checkout's config, so the answer does not depend on `cwd`. The inherited
+/// `GIT_SSH_COMMAND` is deliberately *not* cached with it — that one is read per
+/// call in [`net_env`], because it outranks this and a caller may set it.
+fn configured_ssh_command(cwd: &Path) -> &'static Option<String> {
+    static SSH_COMMAND: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    SSH_COMMAND.get_or_init(|| read_ssh_command(cwd))
+}
+
+/// The uncached read, split out so a test can ask twice about two configs without
+/// the process-wide cache answering for the first one.
+fn read_ssh_command(cwd: &Path) -> Option<String> {
+    run(cwd, &["config", "--get", "core.sshCommand"])
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
 /// [`git_net`], failing on a non-zero exit the way [`git`] does.
 fn git_net_ok(cwd: &Path, args: &[&str], label: &str) -> Result<String> {
     let out = git_net(cwd, args, label)?;
-    if !out.status.success() {
-        bail!(
-            "git {} failed in {}: {}",
-            args.join(" "),
-            cwd.display(),
-            String::from_utf8_lossy(&out.stderr).trim()
-        );
-    }
-    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    Ok(String::from_utf8_lossy(&checked(cwd, args, out)?).into_owned())
 }
 
 /// Whether a git command succeeded, for probes where failure is a valid answer.
@@ -325,11 +366,7 @@ pub fn has_unpushed(cwd: &Path, branch: &str) -> bool {
         format!("@{{upstream}}..{branch}"),
         format!("origin/{branch}..{branch}"),
     ] {
-        if let Ok(out) = Command::new("git")
-            .args(["rev-list", "--count", &range])
-            .current_dir(cwd)
-            .output()
-        {
+        if let Ok(out) = run(cwd, &["rev-list", "--count", &range]) {
             if out.status.success() {
                 return String::from_utf8_lossy(&out.stdout).trim() != "0";
             }
@@ -345,10 +382,7 @@ pub fn has_unpushed(cwd: &Path, branch: &str) -> bool {
 /// identity means "match nobody", which degrades the fold to a plain HEAD amend
 /// instead of failing the batch.
 pub fn user_email(cwd: &Path) -> String {
-    Command::new("git")
-        .args(["config", "user.email"])
-        .current_dir(cwd)
-        .output()
+    run(cwd, &["config", "user.email"])
         .ok()
         .filter(|o| o.status.success())
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
@@ -589,19 +623,6 @@ fn stale_lock_pid(main: &Path, path: &Path) -> Option<u32> {
     None
 }
 
-/// Add a worktree checked out on an **existing** branch.
-///
-/// `claude --worktree` always cuts a fresh `worktree-<name>` from
-/// `upstream/develop`, which is wrong for `/resolve`: that has to land on the
-/// PR's own head branch (§8). The repo's `worktree-create` hook is therefore
-/// not involved here, but `worktree-link` still runs at `SessionStart` and does
-/// the symlinks, which is the same path §2 describes for rebuilding a worktree
-/// on resume.
-/// Cut a worktree on a **new** branch, based on `base`.
-///
-/// The daemon's own version of what `claude --worktree` does, for a repo whose
-/// worktrees do not live where that command puts them. Mirrors its naming
-/// (`worktree-<name>`) so a worktree is recognisable whichever path created it.
 /// Freshen a base ref that can go stale, then prove it resolves.
 ///
 /// The repo's own `WorktreeCreate` hook opens with `git fetch upstream develop`, and
@@ -685,6 +706,11 @@ fn refuse_if_dirty(tree: &Path, branch: &str) -> Result<()> {
     Ok(())
 }
 
+/// Cut a worktree on a **new** branch, based on `base`.
+///
+/// The daemon's own version of what `claude --worktree` does, for a repo whose
+/// worktrees do not live where that command puts them. Mirrors its naming
+/// (`worktree-<name>`) so a worktree is recognisable whichever path created it.
 pub fn worktree_add_new(main: &Path, path: &Path, branch: &str, base: &str) -> Result<()> {
     if branch_exists(main, branch) {
         bail!("branch {branch} already exists");
@@ -720,6 +746,14 @@ pub fn checkout_existing_branch(main: &Path, tree: &Path, branch: &str) -> Resul
     Ok(())
 }
 
+/// Add a worktree checked out on an **existing** branch.
+///
+/// `claude --worktree` always cuts a fresh `worktree-<name>` from
+/// `upstream/develop`, which is wrong for `/resolve`: that has to land on the
+/// PR's own head branch (§8). The repo's `worktree-create` hook is therefore
+/// not involved here, but `worktree-link` still runs at `SessionStart` and does
+/// the symlinks, which is the same path §2 describes for rebuilding a worktree
+/// on resume.
 pub fn worktree_add_existing(main: &Path, path: &Path, branch: &str) -> Result<()> {
     let path_str = path.to_string_lossy().into_owned();
     match locate_branch(main, branch)? {
@@ -792,7 +826,7 @@ pub fn switch_branch(cwd: &Path, branch: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn branch_exists(main: &Path, branch: &str) -> bool {
+fn branch_exists(main: &Path, branch: &str) -> bool {
     git_ok(
         main,
         &[
@@ -869,11 +903,7 @@ pub fn rebase_in_progress(cwd: &Path) -> bool {
 /// stopped — that is the state you resolve from — and reported rather than
 /// silently aborted.
 pub fn rebase_onto(cwd: &Path, upstream: &str) -> Result<()> {
-    let out = Command::new("git")
-        .args(["rebase", upstream])
-        .current_dir(cwd)
-        .output()
-        .context("running git rebase")?;
+    let out = run(cwd, &["rebase", upstream]).context("running git rebase")?;
     if out.status.success() {
         return Ok(());
     }
@@ -903,7 +933,7 @@ pub fn rebase_abort(cwd: &Path) -> Result<()> {
     Ok(())
 }
 
-pub fn conflicted_files(cwd: &Path) -> Result<Vec<String>> {
+fn conflicted_files(cwd: &Path) -> Result<Vec<String>> {
     let out = git(cwd, &["diff", "--name-only", "--diff-filter=U"])?;
     Ok(out.lines().map(|l| l.to_string()).collect())
 }
@@ -925,7 +955,11 @@ pub fn conflicted_files(cwd: &Path) -> Result<Vec<String>> {
 pub fn fetch_upstream(main: &Path, upstream_ref: &str) -> Result<()> {
     let (remote, branch) = split_upstream(upstream_ref);
     if !branch.eq_ignore_ascii_case("HEAD") {
-        git(main, &upstream_fetch_argv(upstream_ref))?;
+        // Through `git_net_ok` like the two `HEAD` arms below, not `git`: this is
+        // the arm a configured `upstream_ref` takes, on the boot path, and an
+        // https remote without a credential helper prompted on `/dev/tty` here
+        // while the window never opened.
+        git_net_ok(main, &upstream_fetch_argv(upstream_ref), "the upstream fetch")?;
         return Ok(());
     }
     // Steady state: the symref is already recorded, so fetch just the branch it
@@ -1361,7 +1395,6 @@ pub fn copy_wip(from: &Path, to: &Path) -> Result<Option<String>> {
 }
 
 /// Re-apply banked work onto whatever this tree now has checked out.
-/// Re-apply banked work onto whatever this tree now has checked out.
 ///
 /// `what_happened` opens the failure message, because the recovery advice is the
 /// same for every caller and the cause is not: a swap and a fork both leave the work
@@ -1449,7 +1482,7 @@ pub fn push_with_lease(cwd: &Path, branch: &str, base: Option<&str>) -> Result<(
     let err = String::from_utf8_lossy(&out.stderr);
     // The lease failing is the one refusal worth naming: it means the remote
     // moved, and the fix is to look at both sides rather than push harder.
-    if err.contains("stale info") || err.contains("fetch first") || err.contains("rejected") {
+    if lease_refused(&err) {
         bail!(
             "push refused: {branch} moved on origin since this review started. \
              Someone else pushed, or fix-pr ran. Re-triage rather than overwrite it."
@@ -1461,6 +1494,19 @@ pub fn push_with_lease(cwd: &Path, branch: &str, base: Option<&str>) -> Result<(
             .find(|l| !l.trim().is_empty())
             .unwrap_or("no output")
     );
+}
+
+/// Did the remote refuse the push because it had moved?
+///
+/// Git's own markers, and only those: `--force-with-lease` reports `[rejected] …
+/// (stale info)`, and an unforced push behind the remote says `fetch first` or
+/// `non-fast-forward`. A bare `rejected` used to count too, and it also matches a
+/// hook's `pre-receive hook declined` and a protected branch's refusal, both of
+/// which were then blamed on somebody else's push and answered with "re-triage".
+fn lease_refused(stderr: &str) -> bool {
+    stderr.contains("stale info")
+        || stderr.contains("fetch first")
+        || stderr.contains("non-fast-forward")
 }
 
 /// Who last touched a line, and who wrote that commit.
@@ -1489,11 +1535,7 @@ pub fn blame_line(cwd: &Path, rev: Option<&str>, path: &str, line: u32) -> Resul
         args.push(r);
     }
     args.extend_from_slice(&["-L", &range, "--porcelain", "--", path]);
-    let out = Command::new("git")
-        .args(&args)
-        .current_dir(cwd)
-        .output()
-        .context("running git blame")?;
+    let out = run(cwd, &args).context("running git blame")?;
     if !out.status.success() {
         return Ok(None);
     }
@@ -1522,10 +1564,7 @@ pub fn blame_line(cwd: &Path, rev: Option<&str>, path: &str, line: u32) -> Resul
 /// identity", which the authorship checks below would take to mean *every* commit
 /// belongs to somebody else.
 pub fn effective_email(cwd: &Path) -> Option<String> {
-    let ident = Command::new("git")
-        .args(["var", "GIT_AUTHOR_IDENT"])
-        .current_dir(cwd)
-        .output()
+    let ident = run(cwd, &["var", "GIT_AUTHOR_IDENT"])
         .ok()
         .filter(|o| o.status.success())
         .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())?;
@@ -1550,12 +1589,7 @@ pub fn effective_email(cwd: &Path) -> Option<String> {
 pub(crate) fn authors_in(cwd: &Path, args: &[&str]) -> Option<Vec<String>> {
     let mut argv = vec!["log", "--format=%ae"];
     argv.extend_from_slice(args);
-    let out = Command::new("git")
-        .args(&argv)
-        .current_dir(cwd)
-        .output()
-        .ok()
-        .filter(|o| o.status.success())?;
+    let out = run(cwd, &argv).ok().filter(|o| o.status.success())?;
     Some(
         String::from_utf8_lossy(&out.stdout)
             .lines()
@@ -1567,10 +1601,7 @@ pub(crate) fn authors_in(cwd: &Path, args: &[&str]) -> Option<Vec<String>> {
 
 /// Does `rev` have more than one parent?
 pub(crate) fn is_merge(cwd: &Path, rev: &str) -> bool {
-    Command::new("git")
-        .args(["rev-list", "--parents", "-n", "1", rev])
-        .current_dir(cwd)
-        .output()
+    run(cwd, &["rev-list", "--parents", "-n", "1", rev])
         .ok()
         .filter(|o| o.status.success())
         .map(|o| {
@@ -1619,12 +1650,7 @@ pub(crate) fn rev_exists(cwd: &Path, rev: &str) -> bool {
 
 /// Is `a` an ancestor of `b`? Exit status only, so a failure means "no".
 pub(crate) fn is_ancestor(cwd: &Path, a: &str, b: &str) -> bool {
-    Command::new("git")
-        .args(["merge-base", "--is-ancestor", a, b])
-        .current_dir(cwd)
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+    git_ok(cwd, &["merge-base", "--is-ancestor", a, b])
 }
 
 /// Commit everything staged-or-not into the shape [`Amend`] chose.
@@ -1687,7 +1713,6 @@ pub fn fold_in(cwd: &Path, amend: &crate::review_commit::Amend) -> Result<()> {
     }
 }
 
-/// Commit the worktree as it stands — the gate's `commit…` button.
 /// One commit's own diff, for showing what an agent actually wrote.
 ///
 /// `--format=` so the header does not ride along: the card wants the change, not
@@ -1701,6 +1726,7 @@ pub fn commit_diff(cwd: &Path, sha: &str, max: usize) -> Result<String> {
     })
 }
 
+/// Commit the worktree as it stands — the gate's `commit…` button.
 pub fn commit_all(cwd: &Path, message: &str) -> Result<()> {
     anyhow::ensure!(!message.trim().is_empty(), "a commit needs a message");
     git(cwd, &["add", "-A"])?;
@@ -1850,7 +1876,7 @@ mod tests {
     /// the window opens.
     #[test]
     fn network_git_cannot_stop_to_ask_a_question() {
-        let env = net_env();
+        let env = net_env(Path::new("/"));
         let get = |k: &str| {
             env.iter()
                 .find(|(name, _)| name == k)
@@ -1879,6 +1905,71 @@ mod tests {
         // terminal prompt and hang exactly as well.
         assert_eq!(get("GIT_ASKPASS"), "");
         assert_eq!(get("SSH_ASKPASS"), "");
+    }
+
+    /// The repo's own `core.sshCommand` is the base the options are appended to,
+    /// not replaced by. A fixed `ssh` threw away the identity a multi-key setup
+    /// depends on, and every daemon-side fetch then failed on `publickey`.
+    #[test]
+    fn network_git_keeps_the_configured_ssh_command() {
+        // The inherited variable outranks the config on purpose, and it is
+        // process-global, so on a machine that exports it this test has nothing
+        // it can safely assert.
+        if std::env::var_os("GIT_SSH_COMMAND").is_some() {
+            return;
+        }
+        let dir = crate::testutil::scratch("sshcmd");
+        assert!(run(&dir, &["init", "-q"]).unwrap().status.success());
+        assert!(run(&dir, &["config", "core.sshCommand", "ssh -i /tmp/id_work"])
+            .unwrap()
+            .status
+            .success());
+
+        // The uncached reader, because `net_env`'s is a process-wide `OnceLock` and
+        // this asks about two different configs in a row.
+        assert_eq!(read_ssh_command(&dir).as_deref(), Some("ssh -i /tmp/id_work"));
+
+        // And a repo that says nothing gets plain `ssh`.
+        assert!(run(&dir, &["config", "--unset", "core.sshCommand"]).unwrap().status.success());
+        assert_eq!(read_ssh_command(&dir), None);
+        let ssh = net_env(&dir)
+            .into_iter()
+            .find(|(k, _)| k == "GIT_SSH_COMMAND")
+            .map(|(_, v)| v)
+            .unwrap();
+        assert!(
+            ssh.ends_with(" -oBatchMode=yes -oStrictHostKeyChecking=accept-new"),
+            "the two options go on the end whatever the base is: {ssh}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The config is read once, not once per network call. It sat in front of the
+    /// boot fetch, every poller tick and every push, each one an extra `git` exec
+    /// for an answer that cannot change while the process runs.
+    #[test]
+    fn the_configured_ssh_command_is_read_once() {
+        let dir = crate::testutil::scratch("sshcmd-cached");
+        assert!(run(&dir, &["init", "-q"]).unwrap().status.success());
+
+        let first = configured_ssh_command(&dir).clone();
+        // Change the repo's answer under it. A second read would see this; the
+        // cache must not.
+        assert!(run(&dir, &["config", "core.sshCommand", "ssh -i /tmp/changed"])
+            .unwrap()
+            .status
+            .success());
+        assert_eq!(
+            configured_ssh_command(&dir).clone(),
+            first,
+            "the cached answer was re-read from the repo"
+        );
+        assert_eq!(
+            read_ssh_command(&dir).as_deref(),
+            Some("ssh -i /tmp/changed"),
+            "and the uncached reader still sees the real config, so the cache is what differs"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// **A sha is not always seven bytes of ASCII, because it is not always a sha.**
@@ -2169,9 +2260,6 @@ mod tests {
         assert_eq!(cut.branch, "worktree-work-2");
     }
 
-    /// The swap, and the refusal it is built around: git will not check one branch
-    /// out twice, so the naive "switch each tree" fails on the first move. Both
-    /// halves are pinned here because the three-step order *is* the feature.
     /// Removal is a backstop, so "already gone" is a success.
     ///
     /// The repo's `WorktreeRemove` hook runs first and may do the whole job. Without
@@ -2366,6 +2454,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// The swap, and the refusal it is built around: git will not check one branch
+    /// out twice, so the naive "switch each tree" fails on the first move. Both
+    /// halves are pinned here because the three-step order *is* the feature.
     #[test]
     fn swapping_exchanges_two_branches_and_is_its_own_inverse() {
         let dir = std::env::temp_dir().join(format!(
@@ -2845,14 +2936,9 @@ mod tests {
         assert_eq!(set.untracked[0].path, ".claude/worktrees/x.php");
     }
 
+    /// One commit carrying `f.txt`, which the ancestry and blame tests read back.
     fn scratch_repo() -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "orchd-git-{}-{:?}",
-            std::process::id(),
-            std::thread::current().id()
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = crate::testutil::scratch("git");
         let run = |args: &[&str]| {
             std::process::Command::new("git")
                 .args(args)
@@ -3364,6 +3450,25 @@ mod tests {
         // No resolvable base refuses nothing here either.
         let err = push_with_lease(&d, "trunk", None).unwrap_err().to_string();
         assert!(!err.contains("refusing to push"), "{err}");
+    }
+
+    /// The lease refusal is classified from git's wording, so the wording is pinned:
+    /// a hook declining or a protected branch also say `rejected`, and neither means
+    /// the remote moved.
+    #[test]
+    fn only_a_moved_remote_reads_as_a_lease_refusal() {
+        assert!(lease_refused(
+            " ! [rejected]        feature -> feature (stale info)\nerror: failed to push some refs"
+        ));
+        assert!(lease_refused(" ! [rejected]        feature -> feature (fetch first)"));
+        assert!(lease_refused(" ! [rejected]        feature -> feature (non-fast-forward)"));
+        assert!(!lease_refused(
+            " ! [remote rejected] feature -> feature (pre-receive hook declined)"
+        ));
+        assert!(!lease_refused(
+            " ! [remote rejected] main -> main (protected branch hook declined)"
+        ));
+        assert!(!lease_refused("fatal: could not read from remote repository"));
     }
 
     #[test]

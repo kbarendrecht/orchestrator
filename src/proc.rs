@@ -55,8 +55,8 @@ pub fn run_bounded(cwd: &Path, timeout_secs: u64, argv: &[String], label: &str) 
 
 /// The last three stderr lines of a failed command, on one line, for a log entry
 /// that says what went wrong without pasting the whole stream.
-pub fn stderr_tail(out: &Output) -> String {
-    let tail: String = String::from_utf8_lossy(&out.stderr)
+pub fn stderr_tail(stderr: &[u8]) -> String {
+    let tail: String = String::from_utf8_lossy(stderr)
         .lines()
         .rev()
         .take(3)
@@ -146,11 +146,33 @@ pub fn run_bounded_with_input(
             break status;
         }
         if Instant::now() >= deadline {
-            // SAFETY: a group this call created, and SIGKILL takes the whole of
-            // it — the command's own children included.
+            // SIGTERM first, and a second to act on it. Git removes its `.lock`
+            // files on SIGTERM and not on SIGKILL, and network git now runs under
+            // this deadline: a fetch killed outright left `packed-refs.lock`
+            // behind, and every later fetch failed on it.
+            // SAFETY: a group this call created; the signal goes to the whole of
+            // it, the command's own children included.
+            unsafe { libc::killpg(pgid, libc::SIGTERM) };
+            let grace = Instant::now() + Duration::from_secs(1);
+            while Instant::now() < grace {
+                if child.try_wait().ok().flatten().is_some() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            // SIGKILL regardless of whether the leader went: a child of the
+            // command that ignored SIGTERM would otherwise keep the output pipes
+            // open, and the joins below would wait on it for as long as it lived.
+            // SAFETY: as above.
             unsafe { libc::killpg(pgid, libc::SIGKILL) };
             let _ = child.wait();
-            bail!("{label} timed out after {timeout_secs}s");
+            // What it said before it was stopped, because "timed out" alone is the
+            // least useful line a log can carry about a stuck command.
+            let stderr = err_thread.join().unwrap_or_default();
+            bail!(
+                "{label} timed out after {timeout_secs}s ({})",
+                stderr_tail(&stderr)
+            );
         }
         std::thread::sleep(wait);
         wait = (wait * 2).min(Duration::from_millis(50));
@@ -207,6 +229,23 @@ mod tests {
         }
         let _ = std::fs::remove_file(&marker);
         assert!(!alive, "the group's grandchild survived the deadline");
+    }
+
+    /// The deadline is SIGTERM before SIGKILL, so a command that cleans up on
+    /// SIGTERM gets to. Git does, for its lock files. The shell here says so on
+    /// stderr and exits, and that line has to come back in the error, which is
+    /// the other half: a timeout that names what the command was saying.
+    #[test]
+    fn the_deadline_asks_before_it_kills_and_reports_what_it_heard() {
+        let dir = std::env::temp_dir();
+        let script = "trap 'echo cleaned-up >&2; exit 3' TERM; sleep 30".to_string();
+        let argv = vec!["sh".to_string(), "-c".to_string(), script];
+        let start = Instant::now();
+        let err = run_bounded(&dir, 1, &argv, "test").expect_err("must time out");
+        let said = format!("{err:#}");
+        assert!(said.contains("timed out after 1s"), "got {said}");
+        assert!(said.contains("cleaned-up"), "the trap's stderr is not in the error: {said}");
+        assert!(start.elapsed() < Duration::from_secs(5), "did not stop at the deadline");
     }
 
     /// A hook is defined as reading one JSON object on stdin, so the payload has to

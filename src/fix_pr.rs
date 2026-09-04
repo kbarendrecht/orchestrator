@@ -1,11 +1,9 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::time::SystemTime;
-use uuid::Uuid;
 
 use crate::forge::{Checks, Pr};
-
-pub type SessionId = Uuid;
+use crate::model::SessionId;
 
 /// Per-PR automation state (§8).
 ///
@@ -197,7 +195,7 @@ fn no(reason: String) -> Verdict {
 /// Whether a finished run left the PR in a state that counts as exhausted.
 ///
 /// A run that ends with the PR still red means the run is asking for you (§8).
-pub fn ended_red(pr: &Pr) -> bool {
+fn ended_red(pr: &Pr) -> bool {
     pr.checks == Checks::Failing || pr.mergeable == "CONFLICTING"
 }
 
@@ -291,12 +289,19 @@ pub async fn start(
         anyhow::bail!("{reason}");
     }
 
-    let session = crate::spawn::spawn_fix_pr_session(app, number, &pr.head_ref).await?;
-    {
-        let mut inner = app.inner.write().await;
-        // If this never reaches disk, a restart forgets the run started and the
-        // one-run-per-PR cap can re-fire, so the write is not optional.
-        inner.with_automation(&format!("PR #{number} run started"), |a| {
+    // Recorded *before* the process can exist, under the id it will spawn with:
+    // `spawn::spawn_run` says why. A `claude` that dies at once is reaped before a
+    // write placed after the spawn, and the exit watcher then finds no run of its
+    // own to close — so the record named a corpse as running until a restart
+    // demoted it, and `evaluate` refused every press in between.
+    //
+    // If this never reaches disk, a restart forgets the run started and the
+    // one-run-per-PR cap can re-fire, so the write is not optional.
+    let session = uuid::Uuid::new_v4();
+    app.inner
+        .write()
+        .await
+        .with_automation(&format!("PR #{number} run started"), |a| {
             a.by_pr.insert(
                 number,
                 PrAutomation::Running {
@@ -306,6 +311,17 @@ pub async fn start(
             );
             true
         });
+    if let Err(e) = crate::spawn::spawn_fix_pr_session(app, number, &pr.head_ref, session).await {
+        // Nothing started, so nothing may be left claiming to run. Straight back
+        // out rather than through `settle`, which would read the PR's checks and
+        // write down a verdict for a run that never looked at them.
+        app.inner
+            .write()
+            .await
+            .with_automation(&format!("PR #{number} never started"), |a| {
+                a.by_pr.remove(&number).is_some()
+            });
+        return Err(e);
     }
 
     // Exhaustion is recorded by the session's own exit watcher, which is the
@@ -321,8 +337,24 @@ pub async fn start(
 /// the HTTP layer: both saw the same real event, so it worked, but "is this run
 /// over" had two answers maintained independently and the automation record lived
 /// nowhere in particular.
-pub async fn settle(app: &std::sync::Arc<crate::state::AppState>, pr: u64) {
+pub async fn settle(app: &std::sync::Arc<crate::state::AppState>, pr: u64, session: SessionId) {
     let mut inner = app.inner.write().await;
+    settle_in(&mut inner, pr, session);
+}
+
+/// [`settle`] under a lock the caller already holds.
+///
+/// **Only this session's run.** The record is keyed on the PR, and a second run
+/// on the same PR replaces it: stamping the exit of the one it replaced onto the
+/// live one would bury a running run under a verdict.
+fn settle_in(inner: &mut crate::state::Inner, pr: u64, session: SessionId) {
+    let ours = matches!(
+        inner.automation.get(pr),
+        Some(PrAutomation::Running { session: s, .. }) if *s == session
+    );
+    if !ours {
+        return;
+    }
     let found = inner.pr(pr).cloned();
     let v = verdict(found.as_ref());
     // The write rides with the mutation: a lost one makes a restart mis-remember
@@ -366,26 +398,14 @@ fn verdict(found: Option<&Pr>) -> Option<PrAutomation> {
 mod tests {
     use super::*;
 
+    /// A PR a run would legitimately be started for: red, and yours to push to.
     fn pr(number: u64) -> Pr {
         Pr {
-            number,
-            title: "t".into(),
-            url: String::new(),
-            head_ref: "feature/x".into(),
             head_repo: Some("me/monorepo".into()),
             head_pushable: Some(true),
-            base_ref: "develop".into(),
-            is_draft: false,
-            mergeable: "MERGEABLE".into(),
-            merge_state: "CLEAN".into(),
             checks: Checks::Failing,
             head_sha: Some("abc".into()),
-            unresolved: 0,
-            unresolved_capped: false,
-            awaiting_you: 0,
-            changes_requested: false,
-            needs_you: false,
-            children: vec![],
+            ..crate::testutil::pr(number)
         }
     }
 
@@ -408,7 +428,7 @@ mod tests {
     fn a_second_run_for_the_same_pr_is_refused() {
         let p = pr(1);
         let a = PrAutomation::Running {
-            session: Uuid::new_v4(),
+            session: uuid::Uuid::new_v4(),
             started: SystemTime::now(),
         };
         let mut i = input(&p);

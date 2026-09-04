@@ -7,8 +7,10 @@
 //! and a missing command fails as "no such command" at the worst possible moment,
 //! after a session has already spawned.
 //!
-//! Rendered text is passed to `claude -p` inline. Nothing is typed into a pty as
-//! a `/command`, so nothing has to exist on the agent's side for a run to work.
+//! Rendered text is written to a file the session is told to read
+//! ([`write_for_run`]); only the headless story filer passes its prompt to
+//! `claude -p` inline. Nothing is typed into a pty as a `/command`, so nothing
+//! has to exist on the agent's side for a run to work.
 
 use anyhow::{bail, Result};
 
@@ -89,6 +91,27 @@ pub struct Vars {
     /// Where a running session asks a question: the base the two interaction
     /// routes hang off, since the session id itself comes from the environment.
     pub ask_base: String,
+}
+
+/// Leave a rendered prompt where a run's session can read it:
+/// `<config_dir>/<name>-<pr>/prompt.md`.
+///
+/// Under the daemon's own config dir, like `story`'s scratch and for the same two
+/// reasons: the repo's `worktree-edit-boundary` hook blocks a write under the main
+/// checkout that lands outside the worktree, and a file *inside* the worktree would
+/// make the tree dirty — which the review flow then checks. Nothing of the
+/// daemon's is written into the checkout it is driving.
+///
+/// Rewritten per run: the login and the repo are resolved fresh, and a stale copy
+/// would be read as this run's instructions. One function because four spawns
+/// each spelled the path and the write themselves, and a fifth would have too.
+pub fn write_for_run(name: &str, pr: u64, body: &str) -> Result<std::path::PathBuf> {
+    use anyhow::Context;
+    let dir = crate::config::Config::config_dir()?.join(format!("{name}-{pr}"));
+    std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+    let file = dir.join("prompt.md");
+    std::fs::write(&file, body).with_context(|| format!("writing {}", file.display()))?;
+    Ok(file)
 }
 
 /// Substitute every `{{PLACEHOLDER}}`, and refuse to ship one that is left.

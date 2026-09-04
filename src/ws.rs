@@ -6,7 +6,6 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
-use futures::{sink::SinkExt, stream::StreamExt};
 use serde::Deserialize;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -43,23 +42,25 @@ pub async fn events(
     ws.on_upgrade(move |socket| events_loop(app, socket))
 }
 
-async fn events_loop(app: Arc<AppState>, socket: WebSocket) {
-    let (mut tx, mut rx) = socket.split();
+async fn events_loop(app: Arc<AppState>, mut socket: WebSocket) {
     let mut sub = app.events.subscribe();
 
     // The SPA is stateless and disposable: it gets a full snapshot on connect
     // rather than replaying a delta log (§1).
     if let Ok(json) = serde_json::to_string(&app.snapshot().await) {
-        if tx.send(Message::Text(json)).await.is_err() {
+        if socket.send(Message::Text(json)).await.is_err() {
             return;
         }
     }
 
+    // One socket, no `split()`: `select!` drops its pending futures before it runs
+    // the chosen arm, so the `recv` borrow is gone by the time an arm sends. That
+    // is what let the `futures` crate go.
     loop {
         tokio::select! {
             msg = sub.recv() => match msg {
                 Ok(json) => {
-                    if tx.send(Message::Text(json)).await.is_err() {
+                    if socket.send(Message::Text(json)).await.is_err() {
                         break;
                     }
                 }
@@ -67,14 +68,14 @@ async fn events_loop(app: Arc<AppState>, socket: WebSocket) {
                     // Snapshots are whole, so a dropped one costs nothing but
                     // freshness; send the current state and carry on.
                     if let Ok(json) = serde_json::to_string(&app.snapshot().await) {
-                        if tx.send(Message::Text(json)).await.is_err() {
+                        if socket.send(Message::Text(json)).await.is_err() {
                             break;
                         }
                     }
                 }
                 Err(_) => break,
             },
-            incoming = rx.next() => match incoming {
+            incoming = socket.recv() => match incoming {
                 None | Some(Err(_)) | Some(Ok(Message::Close(_))) => break,
                 _ => {}
             },
@@ -191,13 +192,13 @@ async fn pty_loop(
     // leave no trace at either end (#7); this names the client attaching and, below,
     // why it left.
     tracing::info!(%target, "pty client attached");
-    let (mut tx, mut rx) = socket.split();
+    let mut socket = socket;
 
     // Subscribe before replaying, so output produced during the replay is
     // queued rather than lost.
     let mut sub = handle.subscribe();
     let snapshot = handle.snapshot();
-    if !snapshot.is_empty() && tx.send(Message::Binary(snapshot)).await.is_err() {
+    if !snapshot.is_empty() && socket.send(Message::Binary(snapshot)).await.is_err() {
         return;
     }
 
@@ -219,7 +220,7 @@ async fn pty_loop(
                 // left; otherwise the last lines of output are lost.
                 tokio::time::sleep(std::time::Duration::from_millis(150)).await;
                 while let Ok(bytes) = sub.try_recv() {
-                    if tx.send(Message::Binary(bytes.to_vec())).await.is_err() {
+                    if socket.send(Message::Binary(bytes.to_vec())).await.is_err() {
                         break;
                     }
                 }
@@ -228,7 +229,7 @@ async fn pty_loop(
             }
             out = sub.recv() => match out {
                 Ok(bytes) => {
-                    if tx.send(Message::Binary(bytes.to_vec())).await.is_err() {
+                    if socket.send(Message::Binary(bytes.to_vec())).await.is_err() {
                         break;
                     }
                 }
@@ -243,13 +244,13 @@ async fn pty_loop(
                     // Resubscribing drops that backlog and starts from now, which is
                     // the same subscribe-then-snapshot order the initial attach uses.
                     sub = sub.resubscribe();
-                    if tx.send(Message::Binary(handle.snapshot())).await.is_err() {
+                    if socket.send(Message::Binary(handle.snapshot())).await.is_err() {
                         break;
                     }
                 }
                 Err(_) => { reason = "process exited"; break }
             },
-            incoming = rx.next() => match incoming {
+            incoming = socket.recv() => match incoming {
                 Some(Ok(Message::Binary(data))) => {
                     let _ = writer.write(&data);
                     if let Some(id) = session.filter(|_| is_interrupt(&data)) {

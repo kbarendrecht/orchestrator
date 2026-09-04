@@ -1,8 +1,7 @@
 # TODO
 
 Hand-written, and it survives. The daemon's live findings used to be spliced into
-this file, which churned it from every build; they now go to a gitignored
-`daemon.log` instead, and only when the repo being managed is this source tree.
+this file, which churned it from every build; that feature is gone.
 
 ## Next
 
@@ -61,20 +60,45 @@ this file, which churned it from every build; they now go to a gitignored
   `commands/review-session.md` and its overlay flow stay for now and get promoted
   once the triage flow has run for real, so there is a working path throughout.
 
+- **Four gaps the v2 review pass found and left, each too deep for the change that
+  found it.**
+  - `spawn_session` takes `claim_main` before several fallible steps and never
+    releases it on the error path, so a failed spawn in main leaks the claim until
+    the next `reclaim_main`. Pre-existing, and slightly wider now that
+    `headroom::check` sits in `insert_and_spawn` rather than before the claim.
+  - `ensure_pr_worktree`'s move arm and `park_main` move main's branch without the
+    `swapping` lock, while three handlers now take it. `AppState::swapping`'s own
+    doc states the rule generally: every swap involves main, so two are never
+    independent. `park_main` fires from a detached exit watcher, so it should skip
+    rather than refuse, which is why this is a behaviour change rather than a lift.
+  - `edit::read` closes the symlink race on the final component only. The parents
+    are canonicalised earlier and can still be swapped between the check and the
+    open; closing it properly needs `openat2` with `RESOLVE_BENEATH`.
+  - `git::pre_commit` is an unbounded `Command::output()` on the same request chain
+    where every `gh` call is now bounded, and on a cold cache it can clone and build
+    hook environments over the network.
+
+  And one thing that cannot be built, recorded so nobody tries again: a
+  `debug_assert` in `git::run` cannot tell a blocking-git-on-a-tokio-worker
+  violation from correct usage. `Handle::try_current()` succeeds on blocking-pool
+  threads too, because the runtime handle stays in scope across `spawn_blocking`,
+  so it flagged 36 correctly-wrapped calls. The note is in `git::run`.
+
 - **The blocking-on-the-runtime sweep is started, not finished.**
   `proc::run_blocking` is the helper, and the sites where a parked worker was
   actually visible are done: `session_env` (a child process on *every* spawn, which
   `run_bounded` polls with `thread::sleep` for up to 5s), the triage gate's
   `git status`, teardown's preflight/remove/archive, the rebase handler's upstream
   fetch (a network round trip), the per-click diff and file reads, `read_forge`'s
-  `git remote` + `gh auth token`, `session_start`'s branch read, and the resume
-  transcript read.
+  `gh auth token` (its `git remote` is gone: the repo comes from `repos.upstream`),
+  `session_start`'s branch read, the resume transcript read, `post.rs`'s posting
+  path, `story.rs`'s filer, the rebase handler's two checks, `spawn_session`'s
+  branch read, `archive`'s reads, the worktree adoption at boot, and the first-run
+  page's `detect` and folder dialog.
 
   What is left, in rough order of how much it matters:
-  - `post.rs` (several git calls on the posting path), `story.rs`'s filer,
-    `hooks.rs`'s remaining reads.
-  - `lib.rs` boot-path reads, and `api.rs`'s remaining git *writes* — these run on
-    a click that is already slow, so the freeze is less visible.
+  - `hooks.rs`'s remaining reads, and `api.rs`'s remaining git *writes* — these run
+    on a click that is already slow, so the freeze is less visible.
   - ~~**B2, filesystem work under the global write lock.**~~ The half with teeth is
     done: `refresh_title` ran `pin_transcript` *and* `ai_title` under the lock on
     every `Stop` — a `read_dir` of `~/.claude/projects` with an `exists()` per entry
@@ -105,18 +129,14 @@ this file, which churned it from every build; they now go to a gitignored
   `std::process::Command` and no `std::fs` on a tokio worker.** `run_blocking` names
   the work so a panic says what died.
 
-- **`gh` and `mise` can still hang the way git could.** The git half is done —
-  `git::git_net` bounds every network git call and sets `GIT_TERMINAL_PROMPT=0`,
-  `BatchMode=yes`, `StrictHostKeyChecking=accept-new` and empty askpass helpers, so
-  a fetch cannot sit on a tty waiting for a credential. Two neighbours were left:
-  - every `gh` subprocess in `forge/github_write.rs` and `forge::resolve_token` is
-    unbounded, while `graphql()` right beside them passes `--max-time 120` to curl.
-    A write runs inside an HTTP request somebody is watching.
-  - `agent_update.rs`'s `mise outdated` reaches the network unbounded, on the
-    update poller.
-
-  Both want `proc::run_bounded`. Neither prompts the way git does — `gh` fails on a
-  missing token rather than asking — so this is about the deadline, not the tty.
+- ~~**`gh` and `mise` can still hang the way git could.**~~ Done. `git::git_net`
+  bounds every network git call and sets `GIT_TERMINAL_PROMPT=0`, `BatchMode=yes`,
+  `StrictHostKeyChecking=accept-new` and empty askpass helpers, so a fetch cannot
+  sit on a tty waiting for a credential, and the ssh command is the configured one
+  with those options appended rather than a fixed `ssh`. Every `gh` subprocess is
+  bounded too (60s for a write, 15s for `gh auth token`), and so is every `mise`
+  query. None of these prompt the way git does, so it was always the deadline that
+  mattered rather than the tty.
 
 - **Shutdown cannot escalate a kill, because `was_live` is written before it.**
   `PtyHandle::kill_gracefully` gives every other stop path a `SIGHUP` → grace →
@@ -281,8 +301,10 @@ this file, which churned it from every build; they now go to a gitignored
   `request_restart`). It reuses the first-run bootstrap whole. The two costs this
   design removes are exactly its limitations — a switch takes the current project's
   live sessions with it (auto-resumed on return), and the single global config means
-  a switch to a *recent* opens with detected defaults rather than that repo's saved
-  settings. Per-repo config and in-process daemons are what this item still buys.
+  a switch carries the previous repo's settings over: `firstrun::write_config` merges
+  into the file, so only `main_checkout`, the keys the review answered and, when the
+  file has no base ref, a detected fork layout change. Per-repo config and
+  in-process daemons are what this item still buys.
 
   `ORCHD_CONFIG_DIR` already gives
   several repos today by starting a second app, which is how `mise run fixture` runs
@@ -388,10 +410,11 @@ this file, which churned it from every build; they now go to a gitignored
     spawn `claude`, and the real coupling is untouched: `--session-id` correlation,
     the transcript slug, the `ai-title` field, `--resume`, and the whole
     hook-observer plumbing. Hosting another agent means abstracting *that*.
-  - **Give the tracker the same seam the forge has.** Shortcut is nominally behind a
-    `Tracker` enum but not behind a trait, and its specifics are spread through
-    `story.rs`: the MCP server name in the allowlist, the `SHORTCUT_API_TOKEN` the
-    MCP entry reads, and `Story::url`'s knowledge of the URL scheme. Mirror
+  - **Give the tracker the same seam the forge has.** Shortcut is
+    `TrackerKind::facts` in `config.rs`, four constants, but some of its specifics
+    are still spread through `story.rs`: the MCP server name in the allowlist, the
+    `SHORTCUT_API_TOKEN` the MCP entry reads, and `Story::url`'s knowledge of the
+    URL scheme. Mirror
     `ForgeImpl`: a `Tracker` trait plus enum-dispatch keyed on `config.tracker`,
     holding the MCP id and tool allowlist, the token env/file, the story-URL
     grammar, and a tracker-agnostic `Story` beside it. Two things to settle while
@@ -525,6 +548,15 @@ this file, which churned it from every build; they now go to a gitignored
   `rvGate`/`rvRun`/`rvManual`. `proposal.rs` then loses `patch`, `Mode`, `verified`
   and the "change without evidence" check, which is what makes the model actually
   flat rather than flat-looking.
+
+  **The size of it, measured at 5cfdb65 rather than guessed:** about 5,300 lines in
+  the PR half alone (all of `post.rs`, `patch.rs` minus `dirty_paths`,
+  `review_commit.rs`, `forge/github_write.rs`, most of `story.rs`, a quarter of
+  `triage.rs`, the stub tracker, three prompts), plus `git.rs`'s fold/pre-commit/
+  blame helpers, three store files, some 700 lines of `api.rs` handlers and 800 of
+  `review.js` — roughly 7,500 lines, near a fifth of the repo. Weigh the gate below
+  against that number, not the smaller one this item used to carry; the dead path
+  also keeps collecting fixes that a deletion would make moot.
 
   **Deliberately not done yet, and the order matters.** The session flow has never
   driven a real PR end-to-end: the change and post-go phases are unverified, and the

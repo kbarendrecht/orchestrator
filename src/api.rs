@@ -39,11 +39,22 @@ impl<E: Into<anyhow::Error>> From<E> for ApiError {
 
 type ApiResult<T> = Result<Json<T>, ApiError>;
 
+/// `bail!` for a handler: refuse the request with this message.
+///
+/// The same thing as `return Err(ApiError(anyhow::anyhow!(..)))`, which was
+/// spelled out at forty-odd sites over three lines each. The rest of the crate
+/// says `bail!`; this is the handler-shaped one.
+macro_rules! refuse {
+    ($($arg:tt)*) => {
+        return Err(ApiError(anyhow::anyhow!($($arg)*)))
+    };
+}
+
 // ---------------------------------------------------------------------------
 // Guards (§12)
 // ---------------------------------------------------------------------------
 
-fn host_allowed(host: &str, port: u16) -> bool {
+pub(crate) fn host_allowed(host: &str, port: u16) -> bool {
     let expected = [format!("127.0.0.1:{port}"), format!("localhost:{port}")];
     expected.iter().any(|e| e == host)
 }
@@ -78,7 +89,7 @@ fn origin_allowed(origin: &str, port: u16) -> bool {
 ///   cannot omit the header on a cross-origin fetch or form POST, and it cannot
 ///   read the token to forge this. Absence is positive evidence of a non-browser
 ///   caller; the token is what authenticates it.
-fn origin_ok(origin: Option<&str>, port: u16, is_hook: bool, is_get: bool, token_ok: bool) -> bool {
+pub(crate) fn origin_ok(origin: Option<&str>, port: u16, is_hook: bool, is_get: bool, token_ok: bool) -> bool {
     match origin {
         Some(o) => origin_allowed(o, port),
         None => is_hook || is_get || token_ok,
@@ -130,6 +141,21 @@ fn is_agent_route(path: &str) -> bool {
 /// Binding to 127.0.0.1 is necessary but not sufficient: any web page you visit
 /// can issue requests to it, and the daemon's surface is effectively local code
 /// execution (§12).
+///
+/// **The token does not close the "any local process" hole, and this used to say
+/// it did.** `GET /` is exempt and the page it returns has the token substituted
+/// into it, so any process that can reach loopback can read it and then hold
+/// everything. That is a deliberate trade — the threat model is a machine you do
+/// not share, where a hostile local process can ptrace this daemon anyway — but it
+/// is a trade, not a boundary, and the README says so in those words now. What the
+/// token *does* close is the cross-origin hole, together with the Host and Origin
+/// checks: a web page you visit cannot read the token, so it cannot forge these
+/// calls.
+///
+/// Hooks cannot easily carry it, which is why they are confined to a separate
+/// prefix and a schema that only ever updates state. GETs are otherwise exempt so
+/// a same-origin address-bar read works — with the exception
+/// [`SPENDS_GITHUB_TOKEN`] names.
 pub async fn guard(
     State(app): State<Arc<AppState>>,
     req: Request<axum::body::Body>,
@@ -182,31 +208,17 @@ pub async fn guard(
         return (StatusCode::FORBIDDEN, "bad origin").into_response();
     }
 
-    // **The token does not close the "any local process" hole, and this comment
-    // used to say it did.** `GET /` is exempt below and the page it returns has
-    // the token substituted into it, so any process that can reach loopback can
-    // read it and then hold everything. That is a deliberate trade — the threat
-    // model is a machine you do not share, where a hostile local process can
-    // ptrace this daemon anyway — but it is a trade, not a boundary, and the
-    // README says so in those words now. What the token *does* close is the
-    // cross-origin hole, together with the Host and Origin checks above: a web
-    // page you visit cannot read the token, so it cannot forge these calls.
-    //
-    // Hooks cannot easily carry it, which is why they are confined to a separate
-    // prefix and a schema that only ever updates state.
-    //
-    // GETs are otherwise exempt so a same-origin address-bar read works. That
-    // holds while a GET only hands back state the daemon already had; a GET
-    // that *spends the GitHub token* on an outbound call is a different
-    // proposition, because any local process could then drive authenticated
-    // GitHub traffic through the daemon and burn its rate limit. Those carry
-    // the token like a mutating route does — the SPA's `get()` already sends it
-    // on every request, so this costs the UI nothing.
-    // Every GET that reaches GitHub on our credential, not just the first one.
-    // This started as a match on `/threads` alone and `/review` was added later
-    // without it — so the list is named here, with the rule, rather than left as
-    // a suffix nobody notices they have to extend. `/threads` itself is gone now
-    // (nothing called it); a dead entry here would read as a route that exists.
+    /* Every GET that reaches GitHub on our credential, not just the first one.
+       A GET is otherwise exempt from the token because it hands back state the
+       daemon already had; one that *spends the GitHub token* is a different
+       proposition, because any local process could then drive authenticated
+       GitHub traffic through the daemon and burn its rate limit. These carry the
+       token like a mutating route does, which costs the UI nothing — the SPA's
+       `get()` already sends it on every request.
+
+       A named list rather than a suffix match: this started as `/threads` alone
+       and `/review` was added later without it. `/threads` itself is gone now
+       (nothing called it); a dead entry here would read as a route that exists. */
     const SPENDS_GITHUB_TOKEN: [&str; 1] = ["/review"];
     let spends_github_token =
         path.starts_with("/api/pr/") && SPENDS_GITHUB_TOKEN.iter().any(|s| path.ends_with(s));
@@ -339,7 +351,13 @@ pub async fn kill_session(
     };
     match handle {
         Some(h) => {
-            h.kill()?;
+            // Escalating, and detached: one `SIGHUP` is a request Node is entitled
+            // to decline, so the button "succeeded" while the row stayed Working
+            // and the exit watcher never fired. The route answers at once; the
+            // watcher settles the row when the exit really lands.
+            tokio::spawn(async move {
+                h.kill_gracefully().await;
+            });
             Ok(Json(json!({ "killed": id })))
         }
         None => Err(ApiError(anyhow::anyhow!("no such session {id}"))),
@@ -421,33 +439,31 @@ pub async fn rewind_session(
         // Nothing to rewind to. The picker opens on an empty conversation and has
         // nothing to offer, which reads as a broken button.
         if !s.had_a_turn {
-            return Err(ApiError(anyhow::anyhow!(
-                "this session has no conversation to rewind"
-            )));
+            refuse!("this session has no conversation to rewind");
         }
         match &s.state {
             crate::model::State::YourTurn { reason, .. } => match reason {
                 crate::model::TurnReason::AskedAQuestion => {
-                    return Err(ApiError(anyhow::anyhow!(
+                    refuse!(
                         "it is asking you something — an escape would cancel the question, not rewind"
-                    )))
+                    )
                 }
                 crate::model::TurnReason::NeedsPermission => {
-                    return Err(ApiError(anyhow::anyhow!(
+                    refuse!(
                         "it is waiting for permission — an escape would decline it, not rewind"
-                    )))
+                    )
                 }
                 _ => {}
             },
             other => {
-                return Err(ApiError(anyhow::anyhow!(
+                refuse!(
                     "the picker only opens at the prompt, and this session is {}",
                     match other {
                         crate::model::State::Working => "mid-turn",
                         crate::model::State::Starting => "still starting",
                         _ => "not live",
                     }
-                )))
+                )
             }
         }
         s.pty
@@ -460,11 +476,11 @@ pub async fn rewind_session(
     // is timing two key events. One burst risks arriving as a single escape — or
     // as the `ESC ESC` meta prefix — and the difference is invisible from here.
     // The gap is the same shape as the nudge's, which learned the lesson first.
-    tokio::spawn(async move {
-        let _ = pty.write(b"\x1b");
-        tokio::time::sleep(std::time::Duration::from_millis(60)).await;
-        let _ = pty.write(b"\x1b");
-    });
+    // On the pty's own queue, not this task's clock: `write` only *queues*, so
+    // sleeping here separates two `send`s and not the two bytes at the fd.
+    let _ = pty.write(b"\x1b");
+    let _ = pty.pause(std::time::Duration::from_millis(60));
+    let _ = pty.write(b"\x1b");
     Ok(Json(json!({ "rewinding": id })))
 }
 
@@ -559,9 +575,7 @@ pub async fn discard_spawned(
             .get(&child)
             .ok_or_else(|| anyhow::anyhow!("no such session {child}"))?;
         if s.spawned_by != Some(id) {
-            return Err(ApiError(anyhow::anyhow!(
-                "{child} is not a session you spawned; close it in the app"
-            )));
+            refuse!("{child} is not a session you spawned; close it in the app");
         }
         (s.workspace.clone(), s.spawn_cut_worktree)
     };
@@ -626,12 +640,10 @@ pub async fn ask(
 ) -> ApiResult<serde_json::Value> {
     ask_token_ok(&app, id, &headers).await?;
     if body.question.trim().is_empty() {
-        return Err(ApiError(anyhow::anyhow!("a question with no words")));
+        refuse!("a question with no words");
     }
     if body.options.is_empty() {
-        return Err(ApiError(anyhow::anyhow!(
-            "a question with no options: the overlay renders buttons, not a prompt"
-        )));
+        refuse!("a question with no options: the overlay renders buttons, not a prompt");
     }
     let interaction = crate::model::Interaction {
         id: Uuid::new_v4(),
@@ -652,9 +664,7 @@ pub async fn ask(
             .ok_or_else(|| anyhow::anyhow!("no such session {id}"))?;
         if let Some(open) = &s.interaction {
             if open.answer.is_none() {
-                return Err(ApiError(anyhow::anyhow!(
-                    "session {id} is already asking something else"
-                )));
+                refuse!("session {id} is already asking something else");
             }
         }
         s.interaction = Some(interaction);
@@ -710,9 +720,7 @@ pub async fn ask_wait(
                 // Gone, or replaced by a later question: either way this one will
                 // never be answered, and looping would hang the agent forever.
                 _ => {
-                    return Err(ApiError(anyhow::anyhow!(
-                        "question {ask_id} is no longer open on session {id}"
-                    )))
+                    refuse!("question {ask_id} is no longer open on session {id}")
                 }
             }
         }
@@ -746,7 +754,7 @@ async fn ask_token_ok(app: &Arc<AppState>, id: Uuid, headers: &axum::http::Heade
         .get(&id)
         .ok_or_else(|| ApiError(anyhow::anyhow!("no such session {id}")))?;
     if given.is_empty() || given != s.ask_token {
-        return Err(ApiError(anyhow::anyhow!("bad ask token for session {id}")));
+        refuse!("bad ask token for session {id}");
     }
     Ok(())
 }
@@ -825,9 +833,7 @@ pub async fn thread_stuck(
     if note.is_empty() {
         // A bare "could not do it" is worse than silence: it removes the thread
         // from the list of things still moving and says nothing about why.
-        return Err(ApiError(anyhow::anyhow!(
-            "say what stopped it — the note is all the overview can show"
-        )));
+        refuse!("say what stopped it — the note is all the overview can show");
     }
     let number = {
         let inner = app.inner.read().await;
@@ -837,9 +843,7 @@ pub async fn thread_stuck(
             .find(|(_, r)| r.session == id)
             .ok_or_else(|| anyhow::anyhow!("session {id} is not carrying out a resolve run"))?;
         if !run.plan.threads.iter().any(|t| t.thread_id == thread_id) {
-            return Err(ApiError(anyhow::anyhow!(
-                "thread {thread_id} is not in this run's plan"
-            )));
+            refuse!("thread {thread_id} is not in this run's plan");
         }
         *number
     };
@@ -1027,7 +1031,7 @@ pub async fn thread_committed(
                         break a.clone();
                     }
                 }
-                None => return Err(ApiError(anyhow::anyhow!("the confirmation was dropped"))),
+                None => refuse!("the confirmation was dropped"),
             }
         }
         wait.await;
@@ -1140,16 +1144,16 @@ pub async fn answer(
             .ok_or_else(|| anyhow::anyhow!("{} is not one of the options", body.answer))?;
         let text = body.text.as_deref().map(str::trim).filter(|t| !t.is_empty());
         if picked.free && text.is_none() {
-            return Err(ApiError(anyhow::anyhow!(
+            refuse!(
                 "\"{}\" is the option that asks for words, and none were written",
                 picked.label
-            )));
+            );
         }
         if !picked.free && text.is_some() {
-            return Err(ApiError(anyhow::anyhow!(
+            refuse!(
                 "\"{}\" takes no words",
                 picked.label
-            )));
+            );
         }
         open.answer = Some(body.answer.clone());
         open.answer_text = text.map(str::to_string);
@@ -1214,9 +1218,7 @@ pub async fn spawn_from_session(
     // Two names for one place is a request nobody can honour, and guessing which
     // half was meant is how a fixer ends up in the tree you were reading.
     if named.is_some() && body.worktree {
-        return Err(ApiError(anyhow::anyhow!(
-            "name a workspace or ask for a worktree, not both"
-        )));
+        refuse!("name a workspace or ask for a worktree, not both");
     }
     // An unknown name is an error, and it now says what the names *are*. The old
     // message ("unknown workspace dependabot-management-api") reads as a rule you
@@ -1226,10 +1228,10 @@ pub async fn spawn_from_session(
         if !known.workspaces.contains_key(w) {
             let mut names: Vec<&str> = known.workspaces.keys().map(String::as_str).collect();
             names.sort_unstable();
-            return Err(ApiError(anyhow::anyhow!(
+            refuse!(
                 "unknown workspace {w} — known: {}. Use worktree:true to cut a new one",
                 names.join(", ")
-            )));
+            );
         }
     }
 
@@ -1346,10 +1348,10 @@ pub async fn process_from_session(
                 .any(|p| p.name == spec.name && p.pty.as_ref().is_some_and(|h| h.exit_code().is_none()))
         });
         if alive {
-            return Err(ApiError(anyhow::anyhow!(
+            refuse!(
                 "{} is already running in {workspace}",
                 spec.name
-            )));
+            );
         }
     }
 
@@ -1445,14 +1447,9 @@ pub async fn nudge_sessions(
             // being typed into on the same tick is four prompt boxes competing for
             // the same instant, and one of them swallowed the return.
             tokio::time::sleep(std::time::Duration::from_millis(250 * n as u64)).await;
-            let _ = pty.write(text.as_bytes());
-            // The return goes separately, for the reason `SessionStart` learned:
-            // text and newline in one burst read as a paste, and a pasted newline
-            // is a line break in the box rather than a send. 500ms rather than
-            // 300: the shorter gap left one session in four holding typed text it
-            // never sent.
-            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-            let _ = pty.write(b"\r");
+            // 500ms rather than `SessionStart`'s 300: the shorter gap left one
+            // session in four holding typed text it never sent.
+            pty.type_and_send(text.as_bytes(), std::time::Duration::from_millis(500));
         });
     }
     Ok(Json(json!({ "nudged": nudged, "held": held })))
@@ -1510,10 +1507,10 @@ pub async fn fork_session(
     // The SPA greys the menu item on the same bit, but a stale snapshot or a direct
     // call reaches here regardless, which is why the guard lives on this side too.
     if !had_a_turn {
-        return Err(ApiError(anyhow::anyhow!(
+        refuse!(
             "session {} has no conversation yet — nothing to fork",
             crate::model::short_id(&id)
-        )));
+        );
     }
     if automation {
         return revive(&app, id, true).await;
@@ -1535,9 +1532,9 @@ async fn revive(app: &Arc<AppState>, id: Uuid, fork: bool) -> ApiResult<serde_js
     let path_exists = cwd.exists();
 
     if matches!(recovery, Some(ArchiveState::TranscriptOnly)) {
-        return Err(ApiError(anyhow::anyhow!(
+        refuse!(
             "session {id} is transcript-only: the branch is gone and the commit is unreachable"
-        )));
+        );
     }
 
     // Resume-into-occupied: the worktree this session lived in may hold a fresh
@@ -1594,7 +1591,7 @@ pub async fn new_shell(
 ///
 /// Deliberately not a blocking call: mise fetches and unpacks, so the button
 /// answers at once and the bar follows the run through the snapshot
-/// (`agent_update::UpgradeRun`). A failure keeps the *end* of the output, which is
+/// (`update::UpgradeRun`). A failure keeps the *end* of the output, which is
 /// the part that says why — an upgrade that fails silently behind a toast is worse
 /// than no button.
 ///
@@ -1614,33 +1611,33 @@ pub async fn new_shell(
 /// that there is nothing to name. And refuses a second run while one is going,
 /// because two `mise upgrade`s of one tool race over the same install directory.
 pub async fn upgrade_agent(State(app): State<Arc<AppState>>) -> ApiResult<serde_json::Value> {
-    let u = {
-        let mut inner = app.inner.write().await;
-        if inner.upgrade_run.as_ref().is_some_and(|r| r.running) {
-            return Err(ApiError(anyhow::anyhow!("that upgrade is already running")));
-        }
-        let Some(u) = inner.agent_update.clone() else {
-            return Err(ApiError(anyhow::anyhow!(
-                "no agent update to install — refresh the check first"
-            )));
-        };
-        // Claimed under the same guard that checked, so the refusal above cannot be
-        // raced past by a second press.
-        inner.upgrade_run = Some(crate::agent_update::UpgradeRun {
-            to: u.latest.clone(),
-            running: true,
-            tail: String::new(),
-        });
-        u
-    };
-    app.notify().await;
-    crate::agent_update::run_upgrade(
-        app.clone(),
-        u.tool.clone(),
-        u.latest.clone(),
-        crate::agent_update::Subject::Agent,
-    );
-    Ok(Json(json!({ "from": u.current, "to": u.latest })))
+    upgrade(&app, crate::update::Subject::Agent).await
+}
+
+/// Both upgrade routes, which differ only in their subject.
+///
+/// The refusals, the claim and the answer are `update::start_upgrade`'s; this is
+/// the HTTP shape over it. Two copies is how one of them would keep a fix the
+/// other got, and the reporting here has already been got wrong once.
+async fn upgrade(
+    app: &Arc<AppState>,
+    subject: crate::update::Subject,
+) -> ApiResult<serde_json::Value> {
+    let v = crate::update::start_upgrade(app, subject)
+        .await
+        .map_err(|why| ApiError(anyhow::anyhow!(why)))?;
+    Ok(Json(json!({ "from": v.from, "to": v.to })))
+}
+
+/// The same for the two dismiss routes.
+async fn dismiss(
+    app: &Arc<AppState>,
+    subject: crate::update::Subject,
+) -> ApiResult<serde_json::Value> {
+    crate::update::dismiss(app, subject)
+        .await
+        .map_err(|why| ApiError(anyhow::anyhow!(why)))?;
+    Ok(Json(json!({ "dismissed": true })))
 }
 
 /// Upgrade the app itself to the release the bar is offering.
@@ -1655,51 +1652,13 @@ pub async fn upgrade_agent(State(app): State<Arc<AppState>>) -> ApiResult<serde_
 /// Refuses when there is no update, when the install is not mise's (nothing to
 /// name in `mise upgrade`), and when a run is already going.
 pub async fn upgrade_app(State(app): State<Arc<AppState>>) -> ApiResult<serde_json::Value> {
-    let (tool, u) = {
-        let mut inner = app.inner.write().await;
-        if inner.self_upgrade_run.as_ref().is_some_and(|r| r.running) {
-            return Err(ApiError(anyhow::anyhow!("that upgrade is already running")));
-        }
-        let Some(u) = inner.update.clone() else {
-            return Err(ApiError(anyhow::anyhow!(
-                "no release to install — the check has not found one"
-            )));
-        };
-        let Some(tool) = u.tool.clone() else {
-            return Err(ApiError(anyhow::anyhow!(
-                "this build was not installed by mise, so it cannot upgrade itself"
-            )));
-        };
-        // Claimed under the same guard that checked, so a second press cannot race
-        // past the refusal above.
-        inner.self_upgrade_run = Some(crate::agent_update::UpgradeRun {
-            to: u.latest.clone(),
-            running: true,
-            tail: String::new(),
-        });
-        (tool, u)
-    };
-    app.notify().await;
-    crate::agent_update::run_upgrade(
-        app.clone(),
-        tool,
-        u.latest.clone(),
-        crate::agent_update::Subject::App,
-    );
-    Ok(Json(json!({ "from": u.current, "to": u.latest })))
+    upgrade(&app, crate::update::Subject::App).await
 }
 
 /// Put the app upgrade's report away. [`dismiss_agent_upgrade`]'s sibling, and
 /// refuses mid-run for the same reason.
 pub async fn dismiss_app_upgrade(State(app): State<Arc<AppState>>) -> ApiResult<serde_json::Value> {
-    let mut inner = app.inner.write().await;
-    if inner.self_upgrade_run.as_ref().is_some_and(|r| r.running) {
-        return Err(ApiError(anyhow::anyhow!("the upgrade is still running")));
-    }
-    inner.self_upgrade_run = None;
-    drop(inner);
-    app.notify().await;
-    Ok(Json(json!({ "dismissed": true })))
+    dismiss(&app, crate::update::Subject::App).await
 }
 
 /// Put a finished upgrade's report away.
@@ -1709,25 +1668,9 @@ pub async fn dismiss_app_upgrade(State(app): State<Arc<AppState>>) -> ApiResult<
 /// with you. Refuses while the run is going — there is nothing to dismiss yet, and
 /// clearing it would leave the button enabled beside a running `mise upgrade`.
 pub async fn dismiss_agent_upgrade(State(app): State<Arc<AppState>>) -> ApiResult<serde_json::Value> {
-    let mut inner = app.inner.write().await;
-    if inner.upgrade_run.as_ref().is_some_and(|r| r.running) {
-        return Err(ApiError(anyhow::anyhow!("the upgrade is still running")));
-    }
-    inner.upgrade_run = None;
-    drop(inner);
-    app.notify().await;
-    Ok(Json(json!({ "dismissed": true })))
+    dismiss(&app, crate::update::Subject::Agent).await
 }
 
-/// Re-run the agent version check now.
-pub async fn refresh_agent_update(State(app): State<Arc<AppState>>) -> ApiResult<serde_json::Value> {
-    crate::agent_update::refresh(&app).await?;
-    let now = app.inner.read().await.agent_update.clone();
-    Ok(Json(json!({ "update": now })))
-}
-
-/// The configured process of that name for that workspace, or nothing.
-///
 /// The names that workspace could start, for an error worth reading.
 fn managed_names(app: &Arc<AppState>, workspace: &str) -> Vec<String> {
     app.cfg.processes_for(workspace).iter().map(|s| s.name.clone()).collect()
@@ -1770,9 +1713,9 @@ pub async fn window_cmd(
     State(app): State<Arc<AppState>>,
     Path(cmd): Path<String>,
 ) -> ApiResult<serde_json::Value> {
-    let cmd: crate::window::WindowCmd = serde_json::from_value(json!(cmd))
-        .map_err(|_| ApiError(anyhow::anyhow!("no such window command: {cmd}")))?;
-    dispatch_window(&app, cmd).await
+    let parsed = parse_window_cmd(&cmd)
+        .ok_or_else(|| ApiError(anyhow::anyhow!("no such window command: {cmd}")))?;
+    dispatch_window(&app, parsed).await
 }
 
 /// Resize takes an edge, so it gets its own route rather than bending the
@@ -1781,9 +1724,22 @@ pub async fn window_resize(
     State(app): State<Arc<AppState>>,
     Path(edge): Path<String>,
 ) -> ApiResult<serde_json::Value> {
-    let edge: crate::window::ResizeEdge = serde_json::from_value(json!(edge))
-        .map_err(|_| ApiError(anyhow::anyhow!("no such window edge: {edge}")))?;
-    dispatch_window(&app, crate::window::WindowCmd::StartResize(edge)).await
+    let parsed = parse_resize_edge(&edge)
+        .ok_or_else(|| ApiError(anyhow::anyhow!("no such window edge: {edge}")))?;
+    dispatch_window(&app, crate::window::WindowCmd::StartResize(parsed)).await
+}
+
+/// The path segment the titlebar sends, as a command. Shared with the bootstrap
+/// server, which serves the same chrome before a daemon exists: the two dispatch
+/// differently (it has no `WindowControl` to refuse) but must accept exactly the
+/// same words, or a button works on one page and 400s on the other.
+pub(crate) fn parse_window_cmd(cmd: &str) -> Option<crate::window::WindowCmd> {
+    serde_json::from_value(json!(cmd)).ok()
+}
+
+/// The same for a resize edge.
+pub(crate) fn parse_resize_edge(edge: &str) -> Option<crate::window::ResizeEdge> {
+    serde_json::from_value(json!(edge)).ok()
 }
 
 async fn dispatch_window(
@@ -1794,7 +1750,7 @@ async fn dispatch_window(
     let Some(control) = control else {
         // Running in a browser tab. The tab has its own chrome; this is not an
         // error worth a toast, but it is not a success either.
-        return Err(ApiError(anyhow::anyhow!("no native window attached")));
+        refuse!("no native window attached");
     };
     control.dispatch(cmd)?;
     Ok(Json(json!({ "ok": true })))
@@ -1848,12 +1804,25 @@ pub async fn preflight(
     Ok(Json(worktree::preflight(&app, &workspace).await?))
 }
 
-pub async fn archive_workspace(
+/// Log every outcome, not only the good one.
+///
+/// A swap has six ways to refuse — main occupied, an agent mid-turn, a stopped
+/// rebase, an unknown workspace, a concurrent swap, git itself — and every one of
+/// them used to reach you as a toast and leave nothing behind. So "it did not move
+/// the worktree that time, and worked when I pressed it again" had no record to
+/// read afterwards, which is the one thing needed to tell a refusal from a bug.
+pub async fn swap_with_main(
     State(app): State<Arc<AppState>>,
     Path(workspace): Path<String>,
 ) -> ApiResult<serde_json::Value> {
-    worktree::archive(&app, &workspace).await?;
-    Ok(Json(json!({ "archived": workspace })))
+    tracing::info!(%workspace, "swap requested");
+    let out = swap_with_main_inner(app, workspace.clone()).await;
+    if let Err(e) = &out {
+        // Warn, not error: most of these are the daemon correctly declining, and a
+        // refusal you can read is the point rather than a fault to page about.
+        tracing::warn!(%workspace, "swap refused: {:#}", e.0);
+    }
+    out
 }
 
 /// Exchange the branches checked out in main and a worktree.
@@ -1892,35 +1861,12 @@ pub async fn archive_workspace(
 /// with `is_busy`.
 ///
 /// Main having no session at all is equally fine — nothing here requires one.
-/// Log every outcome, not only the good one.
-///
-/// A swap has six ways to refuse — main occupied, an agent mid-turn, a stopped
-/// rebase, an unknown workspace, a concurrent swap, git itself — and every one of
-/// them used to reach you as a toast and leave nothing behind. So "it did not move
-/// the worktree that time, and worked when I pressed it again" had no record to
-/// read afterwards, which is the one thing needed to tell a refusal from a bug.
-pub async fn swap_with_main(
-    State(app): State<Arc<AppState>>,
-    Path(workspace): Path<String>,
-) -> ApiResult<serde_json::Value> {
-    tracing::info!(%workspace, "swap requested");
-    let out = swap_with_main_inner(app, workspace.clone()).await;
-    if let Err(e) = &out {
-        // Warn, not error: most of these are the daemon correctly declining, and a
-        // refusal you can read is the point rather than a fault to page about.
-        tracing::warn!(%workspace, "swap refused: {:#}", e.0);
-    }
-    out
-}
-
 async fn swap_with_main_inner(
     app: Arc<AppState>,
     workspace: String,
 ) -> ApiResult<serde_json::Value> {
     if workspace == MAIN {
-        return Err(ApiError(anyhow::anyhow!(
-            "main cannot be swapped with itself"
-        )));
+        refuse!("main cannot be swapped with itself");
     }
     // One swap at a time, and refused rather than queued: a swap kills and respawns
     // the conversations that follow the branches, and it decides which ones those
@@ -1955,10 +1901,10 @@ async fn swap_with_main_inner(
         };
         for (label, ws) in [("main", MAIN), ("this worktree", workspace.as_str())] {
             if let Some(who) = busy(ws) {
-                return Err(ApiError(anyhow::anyhow!(
+                refuse!(
                     "{label} has an agent mid-turn ({who}); the swap replaces every file \
                      under it, so let that turn finish first"
-                )));
+                );
             }
         }
     }
@@ -2137,6 +2083,16 @@ pub async fn move_out_of_main(
     State(app): State<Arc<AppState>>,
     Path(id): Path<Uuid>,
 ) -> ApiResult<serde_json::Value> {
+    // Main's checkout moves here, so this holds the swap's lock for the swap's
+    // reason: two moves of main at once each read "who was on the branch that just
+    // left" and each relocate on the strength of it. Nothing in the SPA stops the
+    // two buttons being pressed together. Refused rather than queued, like the swap.
+    let _swap = app.swapping.try_lock().map_err(|_| {
+        ApiError(anyhow::anyhow!(
+            "a swap is already running; it moves main's checkout, so give it a moment \
+             and look at the rail before asking again"
+        ))
+    })?;
     let (busy, live) = {
         let inner = app.inner.read().await;
         let s = inner
@@ -2144,18 +2100,18 @@ pub async fn move_out_of_main(
             .get(&id)
             .ok_or_else(|| anyhow::anyhow!("no such session {id}"))?;
         if s.workspace != MAIN {
-            return Err(ApiError(anyhow::anyhow!(
+            refuse!(
                 "{} is not in main, so there is nothing to move it out of",
                 crate::model::short_id(&id)
-            )));
+            );
         }
         (s.state.is_busy(), s.state.is_live())
     };
     if busy {
-        return Err(ApiError(anyhow::anyhow!(
+        refuse!(
             "that agent is mid-turn; the move replaces every file under it, so let \
              the turn finish first"
-        )));
+        );
     }
 
     let main = app.cfg.main_checkout.clone();
@@ -2455,17 +2411,6 @@ fn arrival_notice(
     note
 }
 
-/// Move a session that is not running. The record follows its branch, and the
-/// transcript follows the record.
-///
-/// Separate from `spawn::relocate_session` because there is no pty to kill and no
-/// `--resume` to watch stay up, so none of that machinery applies and none of its
-/// failure modes exist. Auto-resume brings this conversation back in the directory
-/// recorded here, which is the whole reason the record has to move at all.
-///
-/// The transcript move is best effort for the reason `store::move_transcript`
-/// documents: `--resume` resolves a conversation by id wherever the file sits, so a
-/// failure costs the slug lookup its cheap path and nothing else.
 /// Prove a move left every conversation in the tree that holds its branch.
 ///
 /// A post-condition, not a guard: the move has already happened, and the point is
@@ -2506,6 +2451,17 @@ async fn check_moves_landed(app: &Arc<AppState>, what: &str) {
     }
 }
 
+/// Move a session that is not running. The record follows its branch, and the
+/// transcript follows the record.
+///
+/// Separate from `spawn::relocate_session` because there is no pty to kill and no
+/// `--resume` to watch stay up, so none of that machinery applies and none of its
+/// failure modes exist. Auto-resume brings this conversation back in the directory
+/// recorded here, which is the whole reason the record has to move at all.
+///
+/// The transcript move is best effort for the reason `store::move_transcript`
+/// documents: `--resume` resolves a conversation by id wherever the file sits, so a
+/// failure costs the slug lookup its cheap path and nothing else.
 async fn carry_record(
     app: &Arc<AppState>,
     id: SessionId,
@@ -2574,17 +2530,9 @@ mod tests {
     /// anyway would upgrade some *other* copy of the app and report success.
     #[tokio::test]
     async fn a_build_mise_did_not_install_cannot_upgrade_itself() {
-        use crate::config::Config;
-        use crate::state::{AppState, UpdateInfo};
+        use crate::update::UpdateInfo;
 
-        let dir = std::env::temp_dir().join(format!("orchd-selfup-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let cfg: Config = serde_json::from_str(&format!(
-            r#"{{"main_checkout":"{}","port":7795}}"#,
-            dir.display()
-        ))
-        .unwrap();
-        let app = AppState::new(cfg, "t".into(), crate::window::Chrome::None);
+        let (app, _dir) = crate::testutil::app("selfup");
 
         // Nothing found yet: nothing to install.
         assert!(upgrade_app(State(app.clone())).await.is_err());
@@ -2619,7 +2567,7 @@ mod tests {
         // claim itself is three lines above this in the handler and is read there.
         info.tool = Some("github:kbarendrecht/orchestrator".into());
         app.inner.write().await.update = Some(info);
-        app.inner.write().await.self_upgrade_run = Some(crate::agent_update::UpgradeRun {
+        app.inner.write().await.self_upgrade_run = Some(crate::update::UpgradeRun {
             to: "2026.9.2".into(),
             running: true,
             tail: String::new(),
@@ -2631,18 +2579,9 @@ mod tests {
     /// rather than by a timeout, and it comes back carrying the choice.
     #[tokio::test]
     async fn an_answer_releases_the_poll_the_agent_is_sitting_in() {
-        use crate::config::Config;
         use crate::model::{Interaction, InteractionOption, Kind, Session, MAIN};
-        use crate::state::AppState;
 
-        let dir = std::env::temp_dir().join(format!("orchd-ask-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let cfg: Config = serde_json::from_str(&format!(
-            r#"{{"main_checkout":"{}","port":7797}}"#,
-            dir.display()
-        ))
-        .unwrap();
-        let app = AppState::new(cfg, "t".into(), crate::window::Chrome::None);
+        let (app, dir) = crate::testutil::app("ask");
 
         let id = Uuid::new_v4();
         let ask_id = Uuid::new_v4();
@@ -2717,18 +2656,9 @@ mod tests {
     /// it, and the words travel beside the value rather than as it.
     #[tokio::test]
     async fn the_option_that_asks_for_words_is_not_answered_without_them() {
-        use crate::config::Config;
         use crate::model::{Interaction, InteractionOption, Kind, Session, MAIN};
-        use crate::state::AppState;
 
-        let dir = std::env::temp_dir().join(format!("orchd-ask3-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let cfg: Config = serde_json::from_str(&format!(
-            r#"{{"main_checkout":"{}","port":7795}}"#,
-            dir.display()
-        ))
-        .unwrap();
-        let app = AppState::new(cfg, "t".into(), crate::window::Chrome::None);
+        let (app, dir) = crate::testutil::app("ask3");
         let id = Uuid::new_v4();
         let ask_id = Uuid::new_v4();
         {
@@ -2786,18 +2716,9 @@ mod tests {
     /// was written for.
     #[tokio::test]
     async fn an_answer_that_was_not_offered_is_refused() {
-        use crate::config::Config;
         use crate::model::{Interaction, InteractionOption, Kind, Session, MAIN};
-        use crate::state::AppState;
 
-        let dir = std::env::temp_dir().join(format!("orchd-ask2-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let cfg: Config = serde_json::from_str(&format!(
-            r#"{{"main_checkout":"{}","port":7796}}"#,
-            dir.display()
-        ))
-        .unwrap();
-        let app = AppState::new(cfg, "t".into(), crate::window::Chrome::None);
+        let (app, dir) = crate::testutil::app("ask2");
         let id = Uuid::new_v4();
         let ask_id = Uuid::new_v4();
         {
@@ -2878,18 +2799,9 @@ mod tests {
     /// *answer* — cancelling the one, declining the other — rather than do nothing.
     #[tokio::test]
     async fn rewind_refuses_every_state_that_would_read_an_escape_as_an_answer() {
-        use crate::config::Config;
         use crate::model::{Kind, Session, State as S, TurnReason as R, MAIN};
-        use crate::state::AppState;
 
-        let dir = std::env::temp_dir().join(format!("orchd-rewind-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let cfg: Config = serde_json::from_str(&format!(
-            r#"{{"main_checkout":"{}","port":7796}}"#,
-            dir.display()
-        ))
-        .unwrap();
-        let app = AppState::new(cfg, "t".into(), crate::window::Chrome::None);
+        let (app, dir) = crate::testutil::app("rewind");
 
         let at = |reason| S::YourTurn { since: std::time::SystemTime::now(), reason };
         for (state, want) in [
@@ -2941,18 +2853,9 @@ mod tests {
     /// record and tears a worktree down, which is what the e2e flows are for.
     #[tokio::test]
     async fn discard_reaches_only_the_sessions_the_caller_spawned() {
-        use crate::config::Config;
         use crate::model::{Kind, Session, MAIN};
-        use crate::state::AppState;
 
-        let dir = std::env::temp_dir().join(format!("orchd-discard-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let cfg: Config = serde_json::from_str(&format!(
-            r#"{{"main_checkout":"{}","port":7795}}"#,
-            dir.display()
-        ))
-        .unwrap();
-        let app = AppState::new(cfg, "t".into(), crate::window::Chrome::None);
+        let (app, dir) = crate::testutil::app("discard");
 
         let caller = Uuid::new_v4();
         let mine = Uuid::new_v4();
@@ -3063,7 +2966,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_run_posts_proposals_on_a_token_that_opens_nothing_else() {
-        let (app, dir) = app_in("proposaltok");
+        let (app, dir) = crate::testutil::app("proposaltok");
         let pr = 10001u64;
         let narrow = crate::state::random_token();
         app.inner
@@ -3107,28 +3010,16 @@ mod tests {
         use crate::forge::{Checks, Pr};
         use crate::model::{Kind, Session};
 
-        let (app, dir) = app_in("handoff");
+        let (app, dir) = crate::testutil::app("handoff");
         let pr_num = 10001u64;
 
+        // Red and pushable: a PR there is something to hand over about.
         let mut red = Pr {
-            number: pr_num,
-            title: "t".into(),
-            url: String::new(),
-            head_ref: "feature/x".into(),
             head_repo: Some("me/repo".into()),
             head_pushable: Some(true),
-            base_ref: "develop".into(),
-            is_draft: false,
-            mergeable: "MERGEABLE".into(),
-            merge_state: "CLEAN".into(),
             checks: Checks::Failing,
             head_sha: Some("abc".into()),
-            unresolved: 0,
-            unresolved_capped: false,
-            awaiting_you: 0,
-            changes_requested: false,
-            needs_you: false,
-            children: vec![],
+            ..crate::testutil::pr(pr_num)
         };
 
         let put = |kind: Kind| {
@@ -3214,25 +3105,6 @@ mod tests {
         assert!(!host_allowed("127.0.0.1", 7777));
     }
 
-    /// Build an app whose main checkout is a scratch directory, with no git in it.
-    /// Enough for everything below: the carry decides from session records, and the
-    /// only filesystem it touches is a transcript move that finds nothing.
-    fn app_in(tag: &str) -> (std::sync::Arc<crate::state::AppState>, std::path::PathBuf) {
-        let dir = std::env::temp_dir().join(format!(
-            "orchd-{tag}-{}-{:?}",
-            std::process::id(),
-            std::thread::current().id()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        let cfg: crate::config::Config = serde_json::from_str(&format!(
-            r#"{{"main_checkout":"{}","port":7798}}"#,
-            dir.display()
-        ))
-        .unwrap();
-        let app = crate::state::AppState::new(cfg, "t".into(), crate::window::Chrome::None);
-        (app, dir)
-    }
-
     /// The bug this is here for. Two swaps moved three branches between three trees
     /// and carried no conversation at all, because every session involved happened
     /// to be archived at the time, so days later a pane's transcript was about one
@@ -3245,7 +3117,7 @@ mod tests {
     async fn a_swap_carries_the_conversation_that_was_not_running() {
         use crate::model::{ArchiveState, Kind, Session, State};
 
-        let (app, dir) = app_in("carry-archived");
+        let (app, dir) = crate::testutil::app("carry-archived");
         let put = |ws: &str, branch: Option<&str>, state: State, recovery: Option<ArchiveState>| {
             let mut s = Session::new(Uuid::new_v4(), ws.to_string(), dir.clone(), Kind::Interactive);
             s.branch = branch.map(str::to_string);
@@ -3307,7 +3179,7 @@ mod tests {
     async fn the_newest_conversation_is_not_the_one_that_travels() {
         use crate::model::{Kind, Session, State};
 
-        let (app, dir) = app_in("carry-newest");
+        let (app, dir) = crate::testutil::app("carry-newest");
         let (wanted, newer) = {
             let mut inner = app.inner.write().await;
             let mut wanted =
@@ -3341,21 +3213,13 @@ mod tests {
     async fn a_carried_conversation_is_told_where_it_now_is() {
         use crate::model::{Kind, Session, MAIN};
 
-        let dir = std::env::temp_dir().join(format!(
-            "orchd-carry-notice-{}-{:?}",
-            std::process::id(),
-            std::thread::current().id()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        // The half only the project knows. orchd supplies the facts about the move;
-        // this sentence is the repo's business and comes from its own config.
-        let cfg: crate::config::Config = serde_json::from_str(&format!(
-            r#"{{"main_checkout":"{}","port":7799,
-                 "workspace_notes":{{"main":"the dev stack only runs here"}}}}"#,
-            dir.display()
-        ))
-        .unwrap();
-        let app = crate::state::AppState::new(cfg, "t".into(), crate::window::Chrome::None);
+        // The note is the half only the project knows. orchd supplies the facts
+        // about the move; this sentence is the repo's business and comes from its
+        // own config.
+        let (app, dir) = crate::testutil::app_with(
+            "carry-notice",
+            r#""workspace_notes":{"main":"the dev stack only runs here"}"#,
+        );
 
         let id = Uuid::new_v4();
         {
@@ -3574,7 +3438,9 @@ pub async fn client_note(
     State(_app): State<Arc<AppState>>,
     Json(body): Json<ClientNote>,
 ) -> impl IntoResponse {
-    let note: String = body.note.chars().take(300).collect();
+    // No control characters: a newline in the body would end this line and start
+    // another, in the one file this feature exists to make trustworthy.
+    let note: String = body.note.chars().filter(|c| !c.is_control()).take(300).collect();
     tracing::info!("page: {note}");
     (StatusCode::ACCEPTED, Json(json!({ "logged": true })))
 }
@@ -3597,7 +3463,7 @@ pub async fn open_url(
 ) -> ApiResult<serde_json::Value> {
     let url = body.url.trim();
     if !(url.starts_with("https://") || url.starts_with("http://")) {
-        return Err(ApiError(anyhow::anyhow!("refusing to open non-http URL")));
+        refuse!("refusing to open non-http URL");
     }
     open_external(url)?;
     Ok(Json(json!({ "opened": url })))
@@ -3633,7 +3499,7 @@ pub async fn open_file(
 ) -> ApiResult<serde_json::Value> {
     let path = body.path.trim();
     if path.is_empty() {
-        return Err(ApiError(anyhow::anyhow!("no path given")));
+        refuse!("no path given");
     }
     let (head_sha, at) = {
         let inner = app.inner.read().await;
@@ -3724,7 +3590,7 @@ fn open_external(url: &str) -> anyhow::Result<()> {
 /// spot the four-line resolve/token/build dance lived; now the same for every
 /// read endpoint, and dispatched by `cfg.forge`.
 fn read_forge(app: &Arc<AppState>) -> Result<crate::forge::ForgeImpl, ApiError> {
-    let (owner, name) = crate::resolve_repo(app)
+    let (owner, name) = repo_of(app)
         .ok_or_else(|| anyhow::anyhow!("no GitHub repo configured and none on the remote"))?;
     let token = crate::forge::resolve_token(app.cfg.github_token_file.as_deref())?;
     Ok(crate::forge::ForgeImpl::for_kind(app.cfg.forge, owner, name, token.value))
@@ -3734,8 +3600,29 @@ fn read_forge(app: &Arc<AppState>) -> Result<crate::forge::ForgeImpl, ApiError> 
 /// needed — the forge carries only the repo it writes to.
 fn write_forge(app: &Arc<AppState>) -> Result<crate::forge::ForgeImpl, ApiError> {
     let (owner, name) =
-        crate::resolve_repo(app).context("no GitHub repo configured and none on the remote")?;
+        repo_of(app).context("no GitHub repo configured and none on the remote")?;
     Ok(crate::forge::ForgeImpl::for_kind(app.cfg.forge, owner, name, String::new()))
+}
+
+/// The repo the forge talks to, without a child process.
+///
+/// `resolve_repo` shells `git remote get-url` every time, and the two forge
+/// constructors called it on every review action, on the runtime. `AppState::new`
+/// already read the same remote into `repos.upstream` at boot, so that is the
+/// answer here; the shell-out stays only as the fallback for a boot that could
+/// not read the remote (an explicit `repo` in the config is `resolve_repo`'s
+/// first arm either way, and `repos.upstream` is derived from the same remote).
+fn repo_of(app: &Arc<AppState>) -> Option<(String, String)> {
+    if let Some(r) = &app.cfg.repo {
+        let (o, n) = r.split_once('/')?;
+        return Some((o.to_string(), n.to_string()));
+    }
+    app.repos
+        .upstream
+        .as_deref()
+        .and_then(|r| r.split_once('/'))
+        .map(|(o, n)| (o.to_string(), n.to_string()))
+        .or_else(|| crate::resolve_repo(app))
 }
 
 /// Fetch a PR's threads and hand back the parsed set.
@@ -3744,11 +3631,10 @@ fn write_forge(app: &Arc<AppState>) -> Result<crate::forge::ForgeImpl, ApiError>
 /// Always refetches straight from the forge: a stale thread list is the one
 /// thing this flow must never act on, which is why nothing here caches.
 async fn fetch_threads(app: &Arc<AppState>, pr: u64) -> Result<crate::forge::Threads, ApiError> {
-    // `read_forge` shells out as well — `git remote get-url` for the repo and
-    // `gh auth token` for the credential — so it goes in the *same* hop as the
-    // fetch rather than running on a worker just before it. `lib.rs` wraps the
-    // same call for exactly this reason ("so a slow `gh auth token` never blocks
-    // the runtime"); this was the copy that did not.
+    // `read_forge` shells out as well — `gh auth token` for the credential — so it
+    // goes in the *same* hop as the fetch rather than running on a worker just
+    // before it. The PR poller wraps its own copy of that call for the same
+    // reason.
     let app = app.clone();
     let fetched = crate::proc::run_blocking("the thread fetch", move || {
         let forge = read_forge(&app).map_err(|e| e.0)?;
@@ -3787,18 +3673,7 @@ pub async fn pr_triage(
     State(app): State<Arc<AppState>>,
     Path(number): Path<u64>,
 ) -> ApiResult<serde_json::Value> {
-    let pr = {
-        let inner = app.inner.read().await;
-        pr_from_poll(&inner.prs, number)?
-    };
-    let fetched = fetch_threads(&app, number).await?;
-    if fetched.answerable_count() == 0 {
-        return Err(ApiError(anyhow::anyhow!(
-            "PR #{number} has no threads awaiting an answer"
-        )));
-    }
-    let session = crate::triage::spawn(&app, number, &pr.head_ref, &fetched.viewer).await?;
-    Ok(Json(json!({ "session": session })))
+    start_posting_run(app, number, PostingRun::Triage).await
 }
 
 /// Start the overlay review session.
@@ -3811,17 +3686,43 @@ pub async fn pr_review_session(
     State(app): State<Arc<AppState>>,
     Path(number): Path<u64>,
 ) -> ApiResult<serde_json::Value> {
+    start_posting_run(app, number, PostingRun::Review).await
+}
+
+/// Which of the two proposal-posting runs a route is asking for.
+enum PostingRun {
+    Triage,
+    Review,
+}
+
+/// What the two posting-run routes do, which is everything but which run they
+/// start.
+///
+/// The pair had drifted to being identical, refusal text included, while
+/// `triage::spawn_posting_run` was already the one function they both funnel into
+/// and already runs the worktree gates. Only the "nothing to answer" refusal
+/// belongs here, because it needs the fetch this makes.
+async fn start_posting_run(
+    app: Arc<AppState>,
+    number: u64,
+    which: PostingRun,
+) -> ApiResult<serde_json::Value> {
     let pr = {
         let inner = app.inner.read().await;
         pr_from_poll(&inner.prs, number)?
     };
     let fetched = fetch_threads(&app, number).await?;
     if fetched.answerable_count() == 0 {
-        return Err(ApiError(anyhow::anyhow!(
-            "PR #{number} has no threads awaiting an answer"
-        )));
+        refuse!("PR #{number} has no threads awaiting an answer");
     }
-    let session = crate::triage::spawn_review(&app, number, &pr.head_ref, &fetched.viewer).await?;
+    let session = match which {
+        PostingRun::Triage => {
+            crate::triage::spawn(&app, number, &pr.head_ref, &fetched.viewer).await?
+        }
+        PostingRun::Review => {
+            crate::triage::spawn_review(&app, number, &pr.head_ref, &fetched.viewer).await?
+        }
+    };
     Ok(Json(json!({ "session": session })))
 }
 
@@ -3846,10 +3747,10 @@ pub async fn pr_proposals(
 
     if let Some(head) = &fetched.head_sha {
         if head != &body.base_sha {
-            return Err(ApiError(anyhow::anyhow!(
+            refuse!(
                 "the branch moved during triage ({} → {head}); its patches no longer apply",
                 crate::git::short(&body.base_sha)
-            )));
+            );
         }
     }
 
@@ -3888,7 +3789,10 @@ pub async fn pr_review(
         let inner = app.inner.read().await;
         (
             inner.proposals.get(&number).cloned(),
-            inner.manual.get(&number).cloned(),
+            // A closed record is a "we pushed this" marker, not a phase to resume;
+            // serving one put the overlay on an empty manual screen with its push
+            // button enabled.
+            inner.manual.get(&number).filter(|p| p.open).cloned(),
         )
     };
 
@@ -3925,7 +3829,9 @@ pub async fn pr_commit(
     Json(body): Json<CommitBody>,
 ) -> ApiResult<serde_json::Value> {
     let path = gate_worktree(&app, number).await?;
-    crate::git::commit_all(&path, &body.message)?;
+    let message = body.message.clone();
+    crate::proc::run_blocking("the gate's commit", move || crate::git::commit_all(&path, &message))
+        .await??;
     app.notify().await;
     Ok(Json(json!({ "committed": true })))
 }
@@ -3936,7 +3842,7 @@ pub async fn pr_stash(
     Path(number): Path<u64>,
 ) -> ApiResult<serde_json::Value> {
     let path = gate_worktree(&app, number).await?;
-    crate::git::stash(&path)?;
+    crate::proc::run_blocking("the gate's stash", move || crate::git::stash(&path)).await??;
     app.notify().await;
     Ok(Json(json!({ "stashed": true })))
 }
@@ -3964,23 +3870,14 @@ pub async fn pr_post(
     // story is neither. Both would search, both would find nothing, both would
     // create — so the check-then-file is a plain race on the one action that cannot
     // be undone.
-    let lock = format!("post:{number}");
-    {
-        let mut inner = app.inner.write().await;
-        if inner.locks_held.iter().any(|l| l == &lock) {
-            return Err(ApiError(anyhow::anyhow!(
-                "a batch for PR #{number} is already running; wait for it rather than \
-                 sending a second one"
-            )));
-        }
-        inner.locks_held.push(lock.clone());
-    }
     // Held for the whole batch and released however it ends, including a panic in
     // the middle: a leaked lock would make the PR unpostable until a restart.
-    let released = Released {
-        app: app.clone(),
-        lock,
-    };
+    let released = app.try_claim(format!("post:{number}")).await.ok_or_else(|| {
+        anyhow::anyhow!(
+            "a batch for PR #{number} is already running; wait for it rather than \
+             sending a second one"
+        )
+    })?;
 
     let pr = {
         let inner = app.inner.read().await;
@@ -4027,16 +3924,22 @@ pub async fn pr_resolve_run(
     // starts rather than discovering per thread.
     if let Some(ws) = workspace_for(&app, &pr.head_ref).await {
         if let Some(g) = crate::triage::gate(&app, number, &ws).await? {
-            return Err(ApiError(anyhow::anyhow!("{}", g.say())));
+            refuse!("{}", g.say());
         }
     }
     // Fetched now, not from the cache: it is what makes the thread ids real and
     // the drift check mean anything.
     let fresh = fetch_threads(&app, number).await?;
     let plan = crate::post::plan(number, &proposals, &fresh, &batch, app.cfg.tracker)?;
-    let session = spawn::spawn_resolve_run(&app, number, &pr.head_ref, &plan).await?;
     // Kept so the daemon can answer "what does this thread say" when the session
     // reports a commit. The agent is never told the reply is its to send.
+    //
+    // Written before the spawn, under the id it will run as: `spawn::spawn_run`
+    // has the account. A run whose `claude` died at once was reaped before this
+    // write, and the exit watcher — the only thing that sets `ended` — matched on
+    // a record that was not there yet, so the run read as in flight until a
+    // restart and every thread in it stayed `pending`.
+    let session = Uuid::new_v4();
     app.inner
         .write()
         .await
@@ -4051,6 +3954,13 @@ pub async fn pr_resolve_run(
             );
             true
         });
+    if let Err(e) = spawn::spawn_resolve_run(&app, number, &pr.head_ref, &plan, session).await {
+        app.inner
+            .write()
+            .await
+            .with_resolve_runs("run never started", |runs| runs.remove(&number).is_some());
+        return Err(e.into());
+    }
     app.notify().await;
 
     let answered = sweep_words_only(&app, number, &plan, &fresh).await;
@@ -4159,6 +4069,29 @@ async fn sweep_words_only(
     answered
 }
 
+/// `--force-with-lease` a branch, off the runtime, with its base read on the same
+/// hop.
+///
+/// One function because the two callers had it written out identically and each
+/// disagreed with itself a few lines away: both reached for a bare
+/// `spawn_blocking` and a hand-written `.context("the push panicked")` while their
+/// neighbours used [`crate::proc::run_blocking`], which exists so the `JoinError`
+/// is named the same way everywhere. `push_with_lease` re-states the base-branch
+/// rule itself, because a daemon push never passes through the `PreToolUse` hook.
+pub(crate) async fn push_branch(
+    app: &Arc<AppState>,
+    path: std::path::PathBuf,
+    branch: String,
+) -> anyhow::Result<()> {
+    let (main, upstream) = (app.cfg.main_checkout.clone(), app.cfg.upstream_ref.clone());
+    crate::proc::run_blocking("the push", move || {
+        // The base read is a git run too, so it rides the same hop as the push.
+        let base = crate::git::base_checkout_branch(&main, &upstream);
+        crate::git::push_with_lease(&path, &branch, base.as_deref())
+    })
+    .await?
+}
+
 /// Push the branch a run has been committing to.
 ///
 /// Its own button, and deliberately not the end of the run: a run can answer four
@@ -4174,11 +4107,7 @@ pub async fn pr_run_push(
         pr_from_poll(&inner.prs, number)?
     };
     let path = gate_worktree(&app, number).await?;
-    let branch = pr.head_ref.clone();
-    let base = crate::git::base_checkout_branch(&app.cfg.main_checkout, &app.cfg.upstream_ref);
-    tokio::task::spawn_blocking(move || crate::git::push_with_lease(&path, &branch, base.as_deref()))
-        .await
-        .context("the push panicked")??;
+    push_branch(&app, path, pr.head_ref.clone()).await?;
     // Re-measure, or the overview keeps saying there is work to push: `unpushed`
     // is the last reconcile's number, and this is the moment it stopped being true.
     if let Some(ws) = workspace_for(&app, &pr.head_ref).await {
@@ -4268,21 +4197,12 @@ pub async fn pr_manual_done(
     Path(number): Path<u64>,
     Json(done): Json<crate::post::Finish>,
 ) -> ApiResult<crate::post::PostReport> {
-    let lock = format!("post:{number}");
-    {
-        let mut inner = app.inner.write().await;
-        if inner.locks_held.iter().any(|l| l == &lock) {
-            return Err(ApiError(anyhow::anyhow!(
-                "a batch for PR #{number} is already running; wait for it rather than \
-                 sending a second one"
-            )));
-        }
-        inner.locks_held.push(lock.clone());
-    }
-    let released = Released {
-        app: app.clone(),
-        lock,
-    };
+    let released = app.try_claim(format!("post:{number}")).await.ok_or_else(|| {
+        anyhow::anyhow!(
+            "a batch for PR #{number} is already running; wait for it rather than \
+             sending a second one"
+        )
+    })?;
 
     let pr = {
         let inner = app.inner.read().await;
@@ -4295,11 +4215,6 @@ pub async fn pr_manual_done(
     Ok(Json(report))
 }
 
-/// The rail's default review action: spawn a session and run `/resolve <pr>`.
-///
-/// The robust path. The agent does the work in a pane you supervise; the daemon
-/// itself makes no irreversible write. The native overlay (`/triage` → cards →
-/// `/post`) is the opt-in alternative, chosen from the same rail row.
 /// Where an `open` request wants the session.
 #[derive(Deserialize)]
 pub struct OpenPr {
@@ -4327,8 +4242,17 @@ pub async fn open_pr(
 
     let workspace = match body.place.as_str() {
         "worktree" => spawn::ensure_pr_worktree(&app, number, &pr.head_ref).await?,
-        "main" => spawn::switch_main_to_pr(&app, &pr.head_ref).await?,
-        other => return Err(ApiError(anyhow::anyhow!("unknown place {other}"))),
+        "main" => {
+            // Moves main's checkout, so under the swap's lock — see `move_out_of_main`.
+            let _swap = app.swapping.try_lock().map_err(|_| {
+                ApiError(anyhow::anyhow!(
+                    "a swap is already running; it moves main's checkout, so give it a \
+                     moment and look at the rail before asking again"
+                ))
+            })?;
+            spawn::switch_main_to_pr(&app, &pr.head_ref).await?
+        }
+        other => refuse!("unknown place {other}"),
     };
 
     // `ensure_pr_worktree` reuses a worktree that already holds the branch, so
@@ -4339,6 +4263,11 @@ pub async fn open_pr(
     Ok(Json(json!({ "session": id, "workspace": workspace })))
 }
 
+/// The rail's default review action: spawn a session and run `/resolve <pr>`.
+///
+/// The robust path. The agent does the work in a pane you supervise; the daemon
+/// itself makes no irreversible write. The native overlay (`/triage` → cards →
+/// `/post`) is the opt-in alternative, chosen from the same rail row.
 pub async fn resolve_pr(
     State(app): State<Arc<AppState>>,
     Path(number): Path<u64>,
@@ -4366,35 +4295,13 @@ pub async fn resolve_pr(
         }
     };
     if answerable == 0 && !pr.needs_you {
-        return Err(ApiError(anyhow::anyhow!(
+        refuse!(
             "PR #{number} has nothing waiting on you: every open thread has your \
              reply or your 👍 on it"
-        )));
+        );
     }
     let id = spawn::spawn_command_session(&app, number, &pr.head_ref, "resolve").await?;
     Ok(Json(json!({ "session": id })))
-}
-
-/// Releases a lock in `locks_held` when it goes out of scope.
-///
-/// A guard rather than a `let _ = ...` at each exit, because `pr_post` has several
-/// `?` between taking the lock and finishing, and every one of them would otherwise
-/// leak it.
-struct Released {
-    app: Arc<AppState>,
-    lock: String,
-}
-
-impl Drop for Released {
-    fn drop(&mut self) {
-        let (app, lock) = (self.app.clone(), self.lock.clone());
-        // `Drop` cannot await, so the release is spawned. It is the last thing
-        // touching this lock, so nothing races it.
-        tokio::spawn(async move {
-            let mut inner = app.inner.write().await;
-            inner.locks_held.retain(|l| l != &lock);
-        });
-    }
 }
 
 /// The worktree the gate buttons act on, refusing when there is not one.
@@ -4538,9 +4445,7 @@ pub async fn session_handoff(
         let pr = match inner.sessions.get(&id).map(|s| &s.kind) {
             Some(Kind::Automation { pr, command }) if command == crate::triage::COMMAND => *pr,
             _ => {
-                return Err(ApiError(anyhow::anyhow!(
-                    "only a review session hands over, and {id} is not one"
-                )))
+                refuse!("only a review session hands over, and {id} is not one")
             }
         };
         // No poll to read is not a reason to start a force-pushing run. Same
@@ -4571,8 +4476,11 @@ pub async fn session_handoff(
             inner.sessions.get(&id).and_then(|s| s.pty.clone())
         };
         if let Some(h) = handle {
-            if let Err(e) = h.kill() {
-                tracing::warn!(session = %id, "review handed over but would not close: {e}");
+            // Escalating, because the hand-off is *armed on the exit*: a review
+            // that trapped `SIGHUP` would keep the flag set and the branch held,
+            // and the run it asked for could never start.
+            if h.kill_gracefully().await.is_none() {
+                tracing::warn!(session = %id, "review handed over but would not close");
             }
         }
     });
@@ -4620,15 +4528,20 @@ pub async fn rebase(
         .await
         .ok_or_else(|| anyhow::anyhow!("unknown workspace {workspace}"))?;
 
-    if crate::git::rebase_in_progress(&path) {
-        return Err(ApiError(anyhow::anyhow!(
-            "a rebase is already stopped part-way here; finish or abort it first"
-        )));
+    // `is_clean` is a full `git status` scan on a worktree without fsmonitor, so
+    // both checks go off the runtime with the rest of this handler.
+    let (mid_rebase, clean) = {
+        let p = path.clone();
+        crate::proc::run_blocking("checking the tree before a rebase", move || {
+            (crate::git::rebase_in_progress(&p), crate::git::is_clean(&p).unwrap_or(false))
+        })
+        .await?
+    };
+    if mid_rebase {
+        refuse!("a rebase is already stopped part-way here; finish or abort it first");
     }
-    if !crate::git::is_clean(&path).unwrap_or(false) {
-        return Err(ApiError(anyhow::anyhow!(
-            "uncommitted changes — commit or stash before rebasing"
-        )));
+    if !clean {
+        refuse!("uncommitted changes — commit or stash before rebasing");
     }
     {
         let inner = app.inner.read().await;
@@ -4637,9 +4550,7 @@ pub async fn rebase(
             .values()
             .any(|s| s.workspace == workspace && s.state.is_busy())
         {
-            return Err(ApiError(anyhow::anyhow!(
-                "a session is working here; rebasing under it would fight it"
-            )));
+            refuse!("a session is working here; rebasing under it would fight it");
         }
     }
 
@@ -4648,9 +4559,9 @@ pub async fn rebase(
     // want — but it must not be silent: a network blip would otherwise look
     // identical to a clean rebase onto nothing new, which is the one outcome the
     // button exists to save you from thinking about.
-    // Off the runtime, like the `rebase_onto` two lines below it. This is a
-    // *network* round trip — measured at ~1.5s on the monorepo — and it was the
-    // one call on this path still parked on a tokio worker.
+    // Off the runtime, like the `rebase_onto` two lines below it and the tree
+    // checks above. This is a *network* round trip, measured at ~1.5s on the
+    // monorepo.
     let warning = {
         let (main, upstream) = (app.cfg.main_checkout.clone(), app.cfg.upstream_ref.clone());
         let fetched = crate::proc::run_blocking("the upstream fetch", move || {
@@ -4690,7 +4601,8 @@ pub async fn rebase_abort(
         .workspace_path(&workspace)
         .await
         .ok_or_else(|| anyhow::anyhow!("unknown workspace {workspace}"))?;
-    crate::git::rebase_abort(&path)?;
+    crate::proc::run_blocking("aborting the rebase", move || crate::git::rebase_abort(&path))
+        .await??;
     let _ = app.reconcile(&workspace).await;
     app.notify().await;
     Ok(Json(json!({ "aborted": workspace })))

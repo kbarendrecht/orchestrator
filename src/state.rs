@@ -100,6 +100,15 @@ pub struct AppState {
     /// Random per-start token embedded in the served SPA and required on the
     /// WebSocket and every mutating endpoint (§12).
     pub token: String,
+    /// Named resources currently held by a run (§7 rule 2), taken through
+    /// [`AppState::try_claim`] and given back by the [`Claim`]'s `Drop`.
+    ///
+    /// A `std` mutex beside `inner` rather than a field inside it, because a `Drop`
+    /// cannot await. When this lived in `inner` the release was a spawned task, and
+    /// a claim taken straight after a `?` returned was refused as still held: the
+    /// lock lagged its own guard by one scheduler hop. Never held across an await,
+    /// so a blocking lock is the right one.
+    pub locks_held: std::sync::Mutex<HashSet<String>>,
     /// A record write is already scheduled; see [`Self::persist_soon`].
     persist_pending: std::sync::atomic::AtomicBool,
     /// One writer at a time. `persist_soon` clears `persist_pending` *before* the
@@ -172,12 +181,12 @@ pub struct AppState {
     /// Set by the desktop shell once it has a window; `None` when orchd is
     /// running headless and the UI is a browser tab that owns its own chrome.
     pub window: RwLock<Option<Arc<dyn crate::window::WindowControl>>>,
-    /// Pulsed by the refresh button to make the review poller fetch now rather
-    /// than wait out the rest of its period.
     /// Pulsed whenever an interaction is answered. Every waiting long poll wakes
     /// and re-checks its own question; there are only ever a handful of waiters,
     /// and one notify beats a channel per question.
     pub answered: Arc<Notify>,
+    /// Pulsed by the refresh button to make the review poller fetch now rather
+    /// than wait out the rest of its period.
     pub review_refresh: Arc<Notify>,
     /// The same, for the PR poller.
     pub pr_refresh: Arc<Notify>,
@@ -187,10 +196,12 @@ pub struct AppState {
 /// instead of listing.
 ///
 /// Not a display preference — a bound on the snapshot. `changed` is cloned per
-/// workspace into every snapshot and `notify` builds one per tool call, so the
-/// list's length is multiplied by the busiest loop in the daemon. Measured at
-/// ~155-200 bytes a file: 500 costs about 80 KB, 5,000 costs 0.8 MB, and the
-/// second number is what an agent that wiped a repository actually produced.
+/// workspace into every snapshot and `notify` builds one per tool call (
+/// `post_tool_use` calls it once per call), so the list's length is multiplied by
+/// the busiest loop in the daemon. Measured at ~155-200 bytes a file: 500 costs
+/// about 80 KB, 5,000 costs 0.8 MB, and the second number is what an agent that
+/// wiped a repository actually produced — several times a second, which took the
+/// whole app down.
 ///
 /// Well past what anyone reads down. The number exists so the *pane* stays useful
 /// on a big branch, not so the list stays complete.
@@ -280,51 +291,36 @@ pub struct Inner {
     /// In memory only: the plan is also on disk beside the prompt, and a daemon
     /// that restarted has lost the session it belonged to anyway.
     pub resolve_runs: HashMap<u64, ResolveRun>,
-    /// Shared resources currently held by a run (§7 rule 2).
-    pub locks_held: Vec<String>,
     /// Whether the main checkout's `docker compose` stack has running containers.
     /// `None` before the first probe; the drawer header reads it as up/down.
     pub stack_up: Option<bool>,
     /// A newer GitHub release than the running build, if the update poller has
     /// found one. Surfaced to the SPA as a dismissible nudge, with a button when
     /// mise is what installed us.
-    pub update: Option<UpdateInfo>,
+    pub update: Option<crate::update::UpdateInfo>,
     /// The app's own upgrade, while it runs and after it ends. The sibling of
     /// `upgrade_run`, kept apart from it because both can be in flight at once and
     /// a shared slot would let one report the other's outcome.
-    pub self_upgrade_run: Option<crate::agent_update::UpgradeRun>,
+    pub self_upgrade_run: Option<crate::update::UpgradeRun>,
     /// A newer Claude Code than the one installed, if the agent poller has found
     /// one. Unlike `update` this one is actionable in place: upgrading cannot
     /// disturb a running session, so the SPA offers a button rather than a link.
-    pub agent_update: Option<crate::agent_update::AgentUpdate>,
+    pub agent_update: Option<crate::update::AgentUpdate>,
     /// An agent upgrade in flight, or the failure one left behind. Deliberately
-    /// not a workspace process — see `agent_update::UpgradeRun`.
-    pub upgrade_run: Option<crate::agent_update::UpgradeRun>,
+    /// not a workspace process — see `update::UpgradeRun`.
+    pub upgrade_run: Option<crate::update::UpgradeRun>,
 }
 
-/// Mutating the three stores that outlive the daemon.
-///
-/// `sessions.json` is written by every `notify()`, so a session record cannot be
-/// changed without being persisted. `automation`, `manual` and `stories` had no
-/// such guarantee: each was durable only because every mutation site remembered
-/// to call the matching `store::save_*` afterwards. That held, but it made
-/// durability a property of the caller's memory — and a lost automation write in
-/// particular defeats the one-run-per-PR cap rather than merely losing a label.
-///
-/// So the write lives with the mutation. `why` is the caller's own context, kept
-/// because "could not persist automation" is far less useful than knowing which
-/// PR and which moment. The closure returns whether it changed anything, so a
-/// no-op does not rewrite the file.
-///
-/// Reads still go straight at the fields: they are many, harmless, and requiring
-/// an accessor for each would be noise. It is *mutation* that has to carry the
-/// write with it.
 /// Releases a lock taken with [`AppState::try_claim`] when it goes out of scope.
 ///
 /// A guard rather than a release at each exit, because the work these protect has
 /// several `?` between the claim and the finish and every one of them would
 /// otherwise leak the lock — which, for a once-per-PR lock, means the button never
 /// works again until a restart.
+///
+/// The one guard for every named lock. `api.rs` carried a second copy of this for
+/// the post lock, and both released through a spawned task; see
+/// [`AppState::locks_held`] for why the release is synchronous now.
 pub struct Claim {
     app: Arc<AppState>,
     lock: String,
@@ -332,13 +328,9 @@ pub struct Claim {
 
 impl Drop for Claim {
     fn drop(&mut self) {
-        let (app, lock) = (self.app.clone(), self.lock.clone());
-        // `Drop` cannot await, so the release is spawned. Nothing races it: this is
-        // the last thing holding the name.
-        tokio::spawn(async move {
-            let mut inner = app.inner.write().await;
-            inner.locks_held.retain(|l| l != &lock);
-        });
+        if let Ok(mut held) = self.app.locks_held.lock() {
+            held.remove(&self.lock);
+        }
     }
 }
 
@@ -378,6 +370,23 @@ impl Inner {
         self.prs.iter().find(|p| p.number == number)
     }
 
+    /// Mutating the three stores that outlive the daemon.
+    ///
+    /// `sessions.json` is written by every `notify()`, so a session record cannot be
+    /// changed without being persisted. `automation`, `manual` and `stories` had no
+    /// such guarantee: each was durable only because every mutation site remembered
+    /// to call the matching `store::save_*` afterwards. That held, but it made
+    /// durability a property of the caller's memory — and a lost automation write in
+    /// particular defeats the one-run-per-PR cap rather than merely losing a label.
+    ///
+    /// So the write lives with the mutation. `why` is the caller's own context, kept
+    /// because "could not persist automation" is far less useful than knowing which
+    /// PR and which moment. The closure returns whether it changed anything, so a
+    /// no-op does not rewrite the file.
+    ///
+    /// Reads still go straight at the fields: they are many, harmless, and requiring
+    /// an accessor for each would be noise. It is *mutation* that has to carry the
+    /// write with it. `with_manual` and `with_stories` below are the same shape.
     pub fn with_automation(
         &mut self,
         why: &str,
@@ -442,22 +451,9 @@ impl Inner {
     }
 }
 
-/// A release newer than what is running.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
-pub struct UpdateInfo {
-    pub current: String,
-    pub latest: String,
-    pub url: String,
-    /// The mise tool that installed this binary, when one did.
-    ///
-    /// What decides whether the bar can offer a button at all: `Some` is an install
-    /// the app can upgrade itself (`mise upgrade <tool>`), `None` is a `.deb`, an
-    /// AppImage, a `.dmg` or a checkout, where the honest offer is the release link
-    /// it already had. Resolved by `self_update::providing_tool` at check time,
-    /// off-thread, because it shells mise.
-    pub tool: Option<String>,
-}
+/// How long a [`HumanEdit`] is kept before [`AppState::record_human_edit`] prunes
+/// it. See there for why a bound at all.
+const HUMAN_EDIT_TTL: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
 
 #[derive(Debug, Clone)]
 pub struct HumanEdit {
@@ -520,6 +516,7 @@ impl AppState {
             cfg,
             repos,
             token,
+            locks_held: std::sync::Mutex::new(HashSet::new()),
             persist_pending: std::sync::atomic::AtomicBool::new(false),
             persist_writing: tokio::sync::Mutex::new(()),
             persisted_ids: std::sync::atomic::AtomicU64::new(0),
@@ -544,7 +541,6 @@ impl AppState {
                 reviews_fetched: None,
                 human_edits: HashMap::new(),
                 automation: Default::default(),
-                locks_held: Vec::new(),
                 stack_up: None,
                 update: None,
                 self_upgrade_run: None,
@@ -853,6 +849,13 @@ impl AppState {
     pub async fn record_human_edit(&self, path: PathBuf) {
         let real = std::fs::canonicalize(&path).unwrap_or(path);
         let mut inner = self.inner.write().await;
+        // The map only ever grew. Each entry is small, but an edit from days ago is
+        // no longer news to anybody: every session that could have read the old
+        // file has either been told or has ended. A day is generous; the point is
+        // a bound, not a tuning.
+        inner
+            .human_edits
+            .retain(|_, e| e.at.elapsed().map_or(true, |d| d < HUMAN_EDIT_TTL));
         inner.human_edits.insert(
             real,
             HumanEdit {
@@ -862,10 +865,6 @@ impl AppState {
         );
     }
 
-    /// Whether this session should be interrupted before writing `path`.
-    ///
-    /// Returns the message once per session per edit; afterwards the write is
-    /// allowed, so the agent's retry after re-reading succeeds.
     /// The one-off notice for a session the daemon moved, taken so it is said once.
     ///
     /// Lives beside [`Self::claim_stale_warning`] because it is the same idea and the
@@ -876,10 +875,25 @@ impl AppState {
         inner.sessions.get_mut(&session)?.arrival_notice.take()
     }
 
+    /// Whether this session should be interrupted before writing `path`.
+    ///
+    /// Returns the message once per session per edit; afterwards the write is
+    /// allowed, so the agent's retry after re-reading succeeds.
+    ///
+    /// **Only a session that could have read the old file.** The message says
+    /// "after you last read it", and for a session started after the edit that is
+    /// false: whatever it read was already the new file. It used to be refused all
+    /// the same, on its first write to anything you had touched days before, with a
+    /// message about a rewrite it never saw. So an edit older than the session is
+    /// no edit to it.
     pub async fn claim_stale_warning(&self, session: SessionId, path: &Path) -> Option<String> {
         let real = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
         let mut inner = self.inner.write().await;
+        let started = inner.sessions.get(&session).map(|s| s.created_at);
         let edit = inner.human_edits.get_mut(&real)?;
+        if started.is_some_and(|since| edit.at < since) {
+            return None;
+        }
         if !edit.told.insert(session) {
             return None;
         }
@@ -928,6 +942,28 @@ impl AppState {
         })
     }
 
+    /// Take a named lock, or `None` when somebody already holds it.
+    ///
+    /// The wording of the refusal belongs to the caller, so this answers with an
+    /// `Option` rather than an error. Hold the [`Claim`] for as long as the thing
+    /// it protects is in flight: it is given back on drop, which is what makes it
+    /// safe across the `?`s in between.
+    ///
+    /// `async` for its callers' sake only; nothing here awaits. The set is its own
+    /// `std` mutex (see [`AppState::locks_held`]), so taking and releasing are both
+    /// immediate and a claim taken right after a release sees the release.
+    pub async fn try_claim(self: &Arc<Self>, lock: impl Into<String>) -> Option<Claim> {
+        let lock = lock.into();
+        let mut held = self.locks_held.lock().ok()?;
+        if !held.insert(lock.clone()) {
+            return None;
+        }
+        Some(Claim {
+            app: self.clone(),
+            lock,
+        })
+    }
+
     /// Main is exclusive: one Claude session at a time (§2). There is no queue —
     /// the UI disables "new session in main" and shows which session holds it.
     ///
@@ -935,25 +971,6 @@ impl AppState {
     /// claim is still recorded, because everything else keyed on it — the swap's
     /// hand-back, `reclaim_main`, the rail's label — is about the tree rather than
     /// about exclusivity.
-    /// Take a named lock, or `None` when somebody already holds it.
-    ///
-    /// The wording of the refusal belongs to the caller, so this answers with an
-    /// `Option` rather than an error. Hold the [`Claim`] for as long as the thing
-    /// it protects is in flight: it is given back on drop, which is what makes it
-    /// safe across the `?`s in between.
-    pub async fn try_claim(self: &Arc<Self>, lock: impl Into<String>) -> Option<Claim> {
-        let lock = lock.into();
-        let mut inner = self.inner.write().await;
-        if inner.locks_held.iter().any(|l| l == &lock) {
-            return None;
-        }
-        inner.locks_held.push(lock.clone());
-        Some(Claim {
-            app: self.clone(),
-            lock,
-        })
-    }
-
     pub async fn claim_main(&self, session: SessionId) -> Result<()> {
         let several = self.cfg.allow_several_in_main;
         let mut inner = self.inner.write().await;
@@ -1059,8 +1076,6 @@ impl AppState {
         self.inner.read().await.workspace_for_path(path)
     }
 
-    /// Sessions in a workspace that are neither `Exited` nor `Archived`, checked
-    /// against `/proc` rather than in-memory state (§8b).
     /// Drop a branch a workspace no longer has checked out.
     ///
     /// `reconcile` only ever *adds* to a workspace's branch set, which was safe
@@ -1078,6 +1093,8 @@ impl AppState {
         }
     }
 
+    /// Sessions in a workspace that are neither `Exited` nor `Archived`, checked
+    /// against the process (`pid_alive`) rather than in-memory state (§8b).
     pub async fn live_sessions_in(&self, workspace: &str) -> Vec<SessionId> {
         let inner = self.inner.read().await;
         inner
@@ -1089,35 +1106,34 @@ impl AppState {
             .collect()
     }
 
-    /// Kill everything running in a workspace nobody is in any more.
+    /// Everything running in a workspace nobody is in any more, by name and pty.
     ///
     /// The shells and the hand-started processes exist for the session that
     /// opened them: once it is gone they are output nobody reads and a prompt
-    /// nobody types into, still holding the port and the CPU. Their own exit
-    /// watchers do the bookkeeping, so this only has to pull the trigger.
-    /// Anything config autostarts is spared, see `is_autostart`.
+    /// nobody types into, still holding the port and the CPU. Anything config
+    /// autostarts is spared, see `is_autostart`.
     ///
-    /// Containers are not reached, the same as at shutdown: `docker compose up`
-    /// has already detached by the time its pty dies.
-    pub async fn kill_processes_in(&self, workspace: &str) -> usize {
-        let handles: Vec<_> = {
-            let inner = self.inner.read().await;
-            inner
-                .workspaces
-                .get(workspace)
-                .map(|w| {
-                    w.processes
-                        .iter()
-                        .filter(|p| !self.is_autostart(workspace, &p.name))
-                        .filter_map(|p| p.pty.clone())
-                        .collect()
-                })
-                .unwrap_or_default()
-        };
-        for h in &handles {
-            let _ = h.kill();
-        }
-        handles.len()
+    /// **Named rather than killed here**, because stopping a managed process
+    /// means running its `stop_command` first and that lives in `spawn`, one layer
+    /// up. This used to send a bare `SIGHUP` to each pty instead: no escalation, so
+    /// anything that traps it stayed, and no `stop_command`, which is the whole
+    /// reason `spawn::stop_managed` exists — killing the pty leaves the real
+    /// process running with nothing pointing at it. Containers are still not
+    /// reached, the same as at shutdown: `docker compose up` has already detached
+    /// by the time its pty dies.
+    pub async fn processes_to_stop(&self, workspace: &str) -> Vec<(String, Arc<crate::pty::PtyHandle>)> {
+        let inner = self.inner.read().await;
+        inner
+            .workspaces
+            .get(workspace)
+            .map(|w| {
+                w.processes
+                    .iter()
+                    .filter(|p| !self.is_autostart(workspace, &p.name))
+                    .filter_map(|p| Some((p.name.clone(), p.pty.clone()?)))
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// Does config start this process by itself?
@@ -1353,16 +1369,16 @@ pub struct Snapshot {
     /// `docker compose` stack has running containers; `None` before first probe.
     pub stack_up: Option<bool>,
     /// A newer release than the running build, or `None`.
-    pub update: Option<UpdateInfo>,
+    pub update: Option<crate::update::UpdateInfo>,
     /// The app's own upgrade run: `running` while `mise upgrade` goes, then a tail
     /// that is empty on success. Success means *installed*, not applied — this
     /// process is still the old build, so the bar then asks for a restart.
-    pub self_upgrade_run: Option<crate::agent_update::UpgradeRun>,
+    pub self_upgrade_run: Option<crate::update::UpgradeRun>,
     /// A newer Claude Code than the installed one, or `None`. Actionable in the
     /// UI: the upgrade cannot disturb a session already running.
-    pub agent_update: Option<crate::agent_update::AgentUpdate>,
+    pub agent_update: Option<crate::update::AgentUpdate>,
     /// The upgrade the update bar reports on, while it runs and after it fails.
-    pub upgrade_run: Option<crate::agent_update::UpgradeRun>,
+    pub upgrade_run: Option<crate::update::UpgradeRun>,
     /// Resolve runs in flight, by PR: what each thread's outcome was so far. The
     /// overview reads this rather than the report of a batch that has finished,
     /// because a run is watchable while it happens.
@@ -1415,11 +1431,8 @@ pub struct WorkspaceView {
     /// Every file this workspace changed since it branched, committed work
     /// included, plus anything untracked. What the changed-files pane lists.
     ///
-    /// **Capped at [`CHANGED_CAP`]**, with the real number in `changed_total`. It
-    /// is cloned into every snapshot, for every workspace, and a snapshot goes out
-    /// on every `notify` — which `post_tool_use` calls once per tool call. At the
-    /// measured ~155-200 bytes a file, one wiped repository put ~0.8 MB through
-    /// that path several times a second and took the whole app down with it.
+    /// **Capped at [`CHANGED_CAP`]**, with the real number in `changed_total`.
+    /// That constant carries the measurement and the incident behind it.
     pub changed: Vec<crate::diff::DiffFile>,
     /// How many there really are, when `changed` is a prefix of them.
     ///
@@ -1558,47 +1571,26 @@ impl SessionView {
     }
 }
 
+/// A fresh secret: 32 lowercase hex characters, 122 random bits.
+///
+/// A v4 uuid rather than a second RNG dependency: `uuid` already draws from the
+/// OS RNG for every session id, and nothing anywhere parses the token's shape,
+/// only compares it whole.
 pub fn random_token() -> String {
-    use rand::Rng;
-    let mut rng = rand::thread_rng();
-    (0..32)
-        .map(|_| {
-            let n: u8 = rng.gen_range(0..36);
-            if n < 10 {
-                (b'0' + n) as char
-            } else {
-                (b'a' + n - 10) as char
-            }
-        })
-        .collect()
+    uuid::Uuid::new_v4().simple().to_string()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::Config;
 
     async fn app() -> Arc<AppState> {
-        let dir = std::env::temp_dir().join(format!("orchd-state-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let cfg: Config = serde_json::from_str(&format!(
-            r#"{{"main_checkout":"{}","port":7798}}"#,
-            dir.display()
-        ))
-        .unwrap();
-        AppState::new(cfg, "t".into(), crate::window::Chrome::None)
+        crate::testutil::app("state").0
     }
 
     /// The same fixture with `allow_several_in_main` on.
     async fn app_sharing_main() -> Arc<AppState> {
-        let dir = std::env::temp_dir().join(format!("orchd-share-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let cfg: Config = serde_json::from_str(&format!(
-            r#"{{"main_checkout":"{}","port":7799,"allow_several_in_main":true}}"#,
-            dir.display()
-        ))
-        .unwrap();
-        AppState::new(cfg, "t".into(), crate::window::Chrome::None)
+        crate::testutil::app_with("share", r#""allow_several_in_main":true"#).0
     }
 
     /// Put a live session in main, the way a spawn does.
@@ -1720,8 +1712,7 @@ mod tests {
     #[tokio::test]
     async fn an_agent_is_warned_once_then_allowed_through() {
         let app = app().await;
-        let dir = std::env::temp_dir().join(format!("orchd-warn-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = crate::testutil::scratch("warn");
         let f = dir.join("a.txt");
         std::fs::write(&f, "x").unwrap();
 
@@ -1760,6 +1751,71 @@ mod tests {
         let _ = std::fs::remove_file(&other);
     }
 
+    /// The warning is about a file the session read before you rewrote it. A
+    /// session that started *after* the rewrite read the new file, so it is owed
+    /// nothing; it used to be refused its first edit of anything you had touched
+    /// days earlier.
+    #[tokio::test]
+    async fn a_session_started_after_the_edit_is_not_warned() {
+        let app = app().await;
+        let dir = crate::testutil::scratch("warn-late");
+        let f = dir.join("a.txt");
+        std::fs::write(&f, "x").unwrap();
+
+        app.record_human_edit(f.clone()).await;
+        // Created after the edit, and recorded so the daemon knows when.
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        let late = Session::new(Uuid::new_v4(), MAIN.to_string(), dir.clone(), Kind::Interactive);
+        let late_id = late.id;
+        app.inner.write().await.sessions.insert(late_id, late);
+        assert!(
+            app.claim_stale_warning(late_id, &f).await.is_none(),
+            "a session that never saw the old file is not told about it"
+        );
+
+        // A session that predates the edit still is. Written straight into the map
+        // with an old clock so the order is not left to timing.
+        let mut early = Session::new(Uuid::new_v4(), MAIN.to_string(), dir.clone(), Kind::Interactive);
+        early.created_at = SystemTime::now() - std::time::Duration::from_secs(60);
+        let early_id = early.id;
+        app.inner.write().await.sessions.insert(early_id, early);
+        assert!(app.claim_stale_warning(early_id, &f).await.is_some());
+
+        // Old entries are pruned when a new one is recorded.
+        {
+            let mut inner = app.inner.write().await;
+            let e = inner.human_edits.get_mut(&std::fs::canonicalize(&f).unwrap()).unwrap();
+            e.at = SystemTime::now() - HUMAN_EDIT_TTL - std::time::Duration::from_secs(1);
+        }
+        app.record_human_edit(dir.join("b.txt")).await;
+        assert!(
+            !app.inner.read().await.human_edits.contains_key(&std::fs::canonicalize(&f).unwrap()),
+            "an edit past its TTL is forgotten"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The named lock: refused while held, free the moment the guard drops, and
+    /// free after an early `?` return, which is the case the guard exists for.
+    #[tokio::test]
+    async fn a_claim_is_exclusive_and_released_by_its_guard() {
+        let app = app().await;
+        let held = app.try_claim("post:1").await.expect("first claim");
+        assert!(app.try_claim("post:1").await.is_none(), "refused while held");
+        assert!(app.try_claim("post:2").await.is_some(), "another name is independent");
+        drop(held);
+        // Synchronous release: no scheduler hop between the drop and this claim.
+        assert!(app.try_claim("post:1").await.is_some(), "free once the guard is dropped");
+
+        async fn bails_early(app: &Arc<AppState>) -> anyhow::Result<()> {
+            let _claim = app.try_claim("post:3").await.ok_or_else(|| anyhow::anyhow!("held"))?;
+            Err::<(), _>(anyhow::anyhow!("something went wrong"))?;
+            Ok(())
+        }
+        assert!(bails_early(&app).await.is_err());
+        assert!(app.try_claim("post:3").await.is_some(), "the early return let go of it");
+    }
+
     /// A changeset larger than the pane can usefully list is cut down, and says so.
     ///
     /// The bound is on the *snapshot*, not the pane: `changed` is cloned per
@@ -1771,18 +1827,8 @@ mod tests {
     /// truncated list that reports its own length reads as a complete answer.
     #[tokio::test]
     async fn a_huge_changeset_is_capped_and_counted() {
-        let dir = std::env::temp_dir().join(format!("orchd-cap-{}", Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let sh = |args: &[&str]| {
-            std::process::Command::new("git")
-                .args(args)
-                .current_dir(&dir)
-                .output()
-                .expect("git");
-        };
-        sh(&["init", "-q", "-b", "main"]);
-        sh(&["config", "user.email", "t@t"]);
-        sh(&["config", "user.name", "t"]);
+        let dir = crate::testutil::scratch_repo("cap");
+        let sh = |args: &[&str]| crate::testutil::git(&dir, args);
         std::fs::write(dir.join("seed"), "1").unwrap();
         sh(&["add", "-A"]);
         sh(&["commit", "-qm", "base"]);
@@ -1796,12 +1842,7 @@ mod tests {
         sh(&["add", "-A"]);
         sh(&["commit", "-qm", "many"]);
 
-        let cfg: Config = serde_json::from_str(&format!(
-            r#"{{"main_checkout":"{}","port":7797,"upstream_ref":"base"}}"#,
-            dir.display()
-        ))
-        .unwrap();
-        let app = AppState::new(cfg, "t".into(), crate::window::Chrome::None);
+        let app = crate::testutil::app_at(&dir, r#""upstream_ref":"base""#);
         app.reconcile(MAIN).await.expect("reconcile");
 
         let inner = app.inner.read().await;
@@ -1826,28 +1867,13 @@ mod tests {
     /// looked at.
     #[tokio::test]
     async fn a_tree_is_unmeasured_until_it_is_reconciled() {
-        let dir = std::env::temp_dir().join(format!("orchd-measured-{}", Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let sh = |args: &[&str]| {
-            std::process::Command::new("git")
-                .args(args)
-                .current_dir(&dir)
-                .output()
-                .expect("git");
-        };
-        sh(&["init", "-q", "-b", "main"]);
-        sh(&["config", "user.email", "t@t"]);
-        sh(&["config", "user.name", "t"]);
+        let dir = crate::testutil::scratch_repo("measured");
+        let sh = |args: &[&str]| crate::testutil::git(&dir, args);
         std::fs::write(dir.join("seed"), "1").unwrap();
         sh(&["add", "-A"]);
         sh(&["commit", "-qm", "base"]);
 
-        let cfg: Config = serde_json::from_str(&format!(
-            r#"{{"main_checkout":"{}","port":7798}}"#,
-            dir.display()
-        ))
-        .unwrap();
-        let app = AppState::new(cfg, "t".into(), crate::window::Chrome::None);
+        let app = crate::testutil::app_at(&dir, "");
         assert!(
             !app.inner.read().await.workspaces.get(MAIN).unwrap().tree.measured,
             "a workspace starts having measured nothing"
@@ -1875,29 +1901,13 @@ mod tests {
     /// separately readable, which is the whole of the fix.
     #[tokio::test]
     async fn a_workspace_says_what_it_holds_now_as_well_as_what_it_has_held() {
-        let dir = std::env::temp_dir().join(format!("orchd-branchnow-{}", Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let sh = |args: &[&str]| {
-            let out = std::process::Command::new("git")
-                .args(args)
-                .current_dir(&dir)
-                .output()
-                .expect("git");
-            assert!(out.status.success(), "git {args:?}");
-        };
-        sh(&["init", "-q", "-b", "main"]);
-        sh(&["config", "user.email", "t@t"]);
-        sh(&["config", "user.name", "t"]);
+        let dir = crate::testutil::scratch_repo("branchnow");
+        let sh = |args: &[&str]| crate::testutil::git(&dir, args);
         std::fs::write(dir.join("f"), "1").unwrap();
         sh(&["add", "-A"]);
         sh(&["commit", "-qm", "base"]);
 
-        let cfg: Config = serde_json::from_str(&format!(
-            r#"{{"main_checkout":"{}","port":7791,"upstream_ref":"main"}}"#,
-            dir.display()
-        ))
-        .unwrap();
-        let app = AppState::new(cfg, "t".into(), crate::window::Chrome::None);
+        let app = crate::testutil::app_at(&dir, r#""upstream_ref":"main""#);
 
         app.reconcile(MAIN).await.expect("reconcile");
         {
