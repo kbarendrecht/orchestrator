@@ -2,9 +2,9 @@
 
 `orchd` is a Rust daemon plus a vanilla-JS SPA that hosts several Claude Code
 sessions over one monorepo. **README.md** has the architecture and the module
-map; **TODO.md** has what is open, the decisions worth revisiting, and the things
-deliberately not built. Read TODO.md before proposing work: several obvious ideas
-are already in there with the reason they were not done.
+map; **TODO.md** has what is open. Read it before proposing work: several obvious
+ideas are already in there, with what has been tried and why the shape is what it
+is.
 
 ## Build and run
 
