@@ -837,6 +837,7 @@ fn navigate_main(app: &AppHandle, url: String) {
 /// this started at — three columns and a terminal want the room.
 fn board_size() -> (f64, f64) {
     orchd::store::load_window()
+        .and_then(|r| r.size())
         .map(|(w, h)| (w as f64, h as f64))
         .unwrap_or((1728.0, 1080.0))
 }
@@ -844,8 +845,21 @@ fn board_size() -> (f64, f64) {
 /// Configured already: build the window on the splash and boot the daemon.
 fn open(app_handle: &AppHandle, rt: &tokio::runtime::Handle, main: Option<std::path::PathBuf>) -> Result<()> {
     let splash = splash_url().context("preparing the splash")?;
-    // A small, centred splash; `boot_daemon` grows it to `board_size` on hand-off.
-    build_window(app_handle, WebviewUrl::External(splash), SPLASH_SIZE, SPLASH_SIZE, true)?;
+    /* A small, centred splash; `boot_daemon` grows it to `board_size` on hand-off.
+       **Except where the window cannot be moved afterwards.** A compositor that
+       places the window keeps its top-left corner where it put it, so growing a
+       520x340 card into a 1728x1080 board leaves the board hanging down and to
+       the right of the spot the splash was centred on, and nothing may pull it
+       back. Opening at the board's size instead means the one placement the
+       compositor makes is the one the board keeps. The splash page is a centred
+       flex column, so it is a wordmark in the middle of the window rather than a
+       card, which is what a splash looks like anyway. */
+    let (size, min) = if can_place_windows() {
+        (SPLASH_SIZE, SPLASH_SIZE)
+    } else {
+        (board_size(), MIN_SIZE)
+    };
+    build_window(app_handle, WebviewUrl::External(splash), size, min, true)?;
     boot_daemon(app_handle.clone(), rt.clone(), main);
     Ok(())
 }
@@ -865,6 +879,14 @@ fn build_window(
     let mut phases = orchd::timing::Phases::start();
     let mut builder = WebviewWindowBuilder::new(app_handle, "main", url)
         .title("Orchestrator")
+        /* **The ground is the app's, not the toolkit's white.** A webview paints
+           white until a document says otherwise, and there are two moments here
+           when nothing has: while the splash is still being fetched, and across the
+           navigate to the daemon. Both showed as the page in the top-left corner
+           with white filling the rest of the window, because the surface is already
+           board-sized while the document is not. `background_color` on this builder
+           sets the window *and* the webview, so there is no white to flash. */
+        .background_color(tauri::window::Color(0x10, 0x10, 0x10, 0xFF))
         .inner_size(size.0, size.1)
         .min_inner_size(min.0, min.1);
     /* **Where it was, or centred — never left to the window manager.** Only the
@@ -873,9 +895,13 @@ fn build_window(
        either: on a multi-head desktop the centre of the *virtual* screen is the
        seam between two monitors, which is how a centred splash ends up looking
        like it landed at random. */
-    /* Applied *after* the window exists, not through the builder — see below. */
-    let restore_to = orchd::store::load_window_pos();
-    if restore_to.is_none() && center {
+    /* Applied *after* the window exists, not through the builder — see below.
+       Both halves are the compositor's business where the app cannot place a
+       window ([`can_place_windows`]), and asking anyway is not harmless: it is
+       what wrote (0,0) into the file that then suppressed the centring. */
+    let rec = orchd::store::load_window().unwrap_or_default();
+    let restore_to = rec.pos().filter(|_| can_place_windows());
+    if restore_to.is_none() && center && can_place_windows() {
         builder = builder.center();
     }
 
@@ -909,7 +935,20 @@ fn build_window(
     if let Some((x, y)) = restore_to {
         let _ = _window.set_position(tauri::LogicalPosition::new(x as f64, y as f64));
     }
-    ensure_on_screen(&_window);
+    // Nothing to rescue where nothing was placed: the check reads a position that
+    // is always (0,0) there, and the rescue is a `center()` that does nothing.
+    if can_place_windows() {
+        ensure_on_screen(&_window);
+    } else {
+        /* **The state belongs where the size does.** This window already opened at
+           the board's size (see `open`), so there is nothing left for the hand-off
+           to do — and applying the state there instead is what put the splash in a
+           corner: maximising grew the surface under a page that had already
+           painted, and the compositor showed that old frame at the origin of the
+           new one until the document caught up. Applied before anything is drawn,
+           the first frame is the final geometry. */
+        restore_state(&_window, &rec);
+    }
     #[cfg(target_os = "linux")]
     wire_session_switch_keys(&_window);
     // The window exists here; it is not painted yet. Everything after this is
@@ -988,28 +1027,42 @@ fn boot_daemon(app_handle: AppHandle, rt: tokio::runtime::Handle, main: Option<s
         rt.block_on(server.app.attach_window(control));
         *SERVER.get_or_init(|| Mutex::new(None)).lock().unwrap() = Some(server);
 
-        // Grow from the splash to the board, centred, then hand the window over.
-        // GTK calls only on the main thread. A first-run window is already board
-        // size, so the resize is a no-op there; the splash path is the one that
-        // grows. `set_min_size` first, so the larger size is never clamped.
+        /* Grow from the splash to the board, then hand the window over. GTK calls
+           only on the main thread.
+
+           **All of it, only where the splash opened small.** Where the app cannot
+           place a window the splash was already board-sized and already in its
+           final state (see `open` and `build_window`), so every call here would be
+           a no-op or an undo: `set_size` on a maximised window is the one that
+           bites, and applying the state this late is what put the splash in a
+           corner — the surface grew under a page that had painted, and the
+           compositor showed that old frame at the origin of the new one. */
         let ah = app_handle.clone();
         let _ = app_handle.run_on_main_thread(move || {
             let Some(w) = ah.get_webview_window("main") else { return };
-            let (bw, bh) = board_size();
-            let _ = w.set_min_size(Some(tauri::LogicalSize::new(MIN_SIZE.0, MIN_SIZE.1)));
-            let _ = w.set_size(tauri::LogicalSize::new(bw, bh));
-            // Back where it was left, and centred only when there is no such place.
-            // Centring unconditionally is what moved the board away from the splash
-            // — and on a multi-head desktop, onto the seam between two monitors.
-            match orchd::store::load_window_pos() {
-                Some((x, y)) => {
-                    let _ = w.set_position(tauri::LogicalPosition::new(x as f64, y as f64));
+            if can_place_windows() {
+                // `set_min_size` first, so the larger size is never clamped.
+                let (bw, bh) = board_size();
+                let _ = w.set_min_size(Some(tauri::LogicalSize::new(MIN_SIZE.0, MIN_SIZE.1)));
+                let _ = w.set_size(tauri::LogicalSize::new(bw, bh));
+                // Back where it was left, and centred only when there is no such
+                // place. Centring unconditionally is what moved the board away from
+                // the splash — and on a multi-head desktop, onto the seam between
+                // two monitors.
+                let rec = orchd::store::load_window().unwrap_or_default();
+                match rec.pos() {
+                    Some((x, y)) => {
+                        let _ = w.set_position(tauri::LogicalPosition::new(x as f64, y as f64));
+                    }
+                    None => {
+                        let _ = w.center();
+                    }
                 }
-                None => {
-                    let _ = w.center();
-                }
+                ensure_on_screen(&w);
+                // Last, so it grows over the size and place it would otherwise have
+                // had: leaving the state then puts the window back where it was.
+                restore_state(&w, &rec);
             }
-            ensure_on_screen(&w);
             // From here the geometry is the board's, so it is worth remembering.
             BOARD_UP.store(true, std::sync::atomic::Ordering::SeqCst);
             match url.parse::<tauri::Url>() {
@@ -1025,6 +1078,128 @@ fn boot_daemon(app_handle: AppHandle, rt: tokio::runtime::Handle, main: Option<s
         stop_bootstrap();
         phases.log("daemon ready");
     });
+}
+
+/// Whether this platform lets a window know where it is and choose where to be.
+///
+/// **A Wayland client is neither told its position nor allowed to set one.** The
+/// protocol has no window coordinates at all: placement belongs to the
+/// compositor, `gtk_window_move` is ignored, and `gtk_window_get_position`
+/// answers (0,0) for every window. So `inner_position` returns a real number that
+/// is not a position, and `window.json` recorded `"x":0,"y":0` on every save while
+/// the window sat wherever the user had dragged it. Restoring it then did nothing,
+/// which is "remembering the position is broken" exactly as reported: nothing here
+/// was wrong except the assumption that the question can be asked.
+///
+/// Read the way GDK itself picks a backend: `GDK_BACKEND` wins when it is set,
+/// otherwise a `WAYLAND_DISPLAY` in the environment means Wayland. Asking GDK for
+/// its display type would be the direct question, and it cannot be asked before
+/// the display exists — this one can, and it is the same answer.
+#[cfg(target_os = "linux")]
+fn can_place_windows() -> bool {
+    match std::env::var("GDK_BACKEND") {
+        // A comma-separated preference list; the first one that works is used, and
+        // wayland-first is the case that matters.
+        Ok(b) => !b
+            .split(',')
+            .next()
+            .unwrap_or_default()
+            .eq_ignore_ascii_case("wayland"),
+        Err(_) => std::env::var_os("WAYLAND_DISPLAY").is_none(),
+    }
+}
+
+/// Everywhere else a window is placed by the application.
+#[cfg(not(target_os = "linux"))]
+fn can_place_windows() -> bool {
+    true
+}
+
+/// Which display the window is on, as far as the display server will say.
+///
+/// **This is the one placement question Wayland answers.** A client is never told
+/// where it is and may not move itself, but the compositor does tell a surface
+/// which output it is being shown on, and GTK passes that through — so "which
+/// screen was it on" is recordable even where "where was it" is not.
+#[cfg(target_os = "linux")]
+fn monitor_of(win: &tauri::WebviewWindow) -> Option<orchd::store::MonitorRef> {
+    use gtk::prelude::*;
+    let gw = win.gtk_window().ok()?;
+    let display = gtk::gdk::Display::default()?;
+    let m = display.monitor_at_window(&gw.window()?)?;
+    let g = m.geometry();
+    Some(orchd::store::MonitorRef {
+        name: m.model().map(|s| s.to_string()).unwrap_or_default(),
+        x: g.x(),
+        y: g.y(),
+        width: g.width(),
+        height: g.height(),
+    })
+}
+
+/// Elsewhere the position already says which screen, so there is nothing to record.
+#[cfg(not(target_os = "linux"))]
+fn monitor_of(_win: &tauri::WebviewWindow) -> Option<orchd::store::MonitorRef> {
+    None
+}
+
+/// Put the window back the way it was left: maximised, fullscreen, or neither.
+///
+/// **Fullscreen is the only way to name a screen on Wayland.** `xdg_toplevel` has
+/// no coordinates, so nothing can move a window to a monitor — but
+/// `set_fullscreen` takes an output, and GTK exposes it as
+/// `fullscreen_on_monitor`. That is why a window left fullscreen can come back on
+/// the display it was on, and a merely *maximised* one lands wherever the
+/// compositor puts it. It is a protocol limit, not an oversight.
+fn restore_state(win: &tauri::WebviewWindow, rec: &orchd::store::WindowRecord) {
+    if rec.is("fullscreen") {
+        #[cfg(target_os = "linux")]
+        if fullscreen_on_recorded_monitor(win, rec) {
+            return;
+        }
+        let _ = win.set_fullscreen(true);
+    } else if rec.is("maximized") {
+        let _ = win.maximize();
+    }
+}
+
+/// Fullscreen on the display the record names, if it is still attached.
+///
+/// Matched on geometry first: two of the three monitors this was written on report
+/// the same model string, so a name alone is a coin toss between them. The name is
+/// the fallback for a desk rearranged since, and only when it is unambiguous —
+/// guessing between two screens is what this exists to stop.
+#[cfg(target_os = "linux")]
+fn fullscreen_on_recorded_monitor(
+    win: &tauri::WebviewWindow,
+    rec: &orchd::store::WindowRecord,
+) -> bool {
+    use gtk::prelude::{GtkWindowExt, MonitorExt};
+    let Some(want) = rec.monitor.as_ref() else { return false };
+    let (Ok(gw), Some(display)) = (win.gtk_window(), gtk::gdk::Display::default()) else {
+        return false;
+    };
+    let mut by_name = Vec::new();
+    let mut exact = None;
+    for i in 0..display.n_monitors() {
+        let Some(m) = display.monitor(i) else { continue };
+        let g = m.geometry();
+        if (g.x(), g.y(), g.width(), g.height()) == (want.x, want.y, want.width, want.height) {
+            exact = Some(i);
+            break;
+        }
+        if !want.name.is_empty() && m.model().map(|s| s.to_string()).as_deref() == Some(&want.name) {
+            by_name.push(i);
+        }
+    }
+    let Some(idx) = exact.or_else(|| (by_name.len() == 1).then(|| by_name[0])) else {
+        tracing::info!(monitor = %want.name, "the display it was left on is not attached");
+        return false;
+    };
+    let screen = GtkWindowExt::screen(&gw);
+    let Some(screen) = screen else { return false };
+    gw.fullscreen_on_monitor(&screen, idx);
+    true
 }
 
 /// Put the window back on a monitor if the place it was told to open is not on one.
@@ -1290,10 +1465,20 @@ fn remember_window(app: &AppHandle) {
     let Some(win) = app.get_webview_window("main") else {
         return;
     };
-    // Not while maximised or fullscreen: that size belongs to the screen, not to
-    // the window, and restoring into it means every launch opens full-screen with
-    // nothing to un-maximise back to.
-    if win.is_maximized().unwrap_or(false) || win.is_fullscreen().unwrap_or(false) {
+    /* **The size of a maximised window belongs to the screen, not to the window**,
+       so it is not recorded: restoring into it opens every launch full-screen with
+       nothing to un-maximise back to. What *is* recorded is that it was maximised,
+       over whatever size was last written — otherwise a window left maximised
+       comes back at the size it had before, which is "the geometry is not
+       remembered" as reported. Fullscreen counts as maximised here: the window
+       comes back maximised rather than fullscreen, because a window that reopens
+       with no chrome and no way out is worse than one a click puts back. */
+    let full = win.is_fullscreen().unwrap_or(false);
+    if full || win.is_maximized().unwrap_or(false) {
+        let mut rec = orchd::store::load_window().unwrap_or_default();
+        rec.state = Some(if full { "fullscreen" } else { "maximized" }.to_string());
+        rec.monitor = monitor_of(&win).or(rec.monitor);
+        orchd::store::save_window(&rec);
         return;
     }
     let Ok(scale) = win.scale_factor() else {
@@ -1310,15 +1495,26 @@ fn remember_window(app: &AppHandle) {
            Saving the frame origin and restoring it as the client origin subtracted
            that on every launch, and the window walked off the desktop in four
            starts: 300,150 → 262,91 → 224,32 → 186,-27. */
-        let at = win.inner_position().ok().map(|p| {
-            let l = p.to_logical::<f64>(scale);
-            (l.x.round() as i32, l.y.round() as i32)
+        /* Only where the answer means something: GTK reports (0,0) for every
+           Wayland window, and writing that down turns "the platform does not say"
+           into a coordinate the next launch would try to honour. Left out, the
+           file carries a size and no position, which `load_window_pos` already
+           reads as "no opinion". */
+        let at = can_place_windows()
+            .then(|| win.inner_position().ok())
+            .flatten()
+            .map(|p| {
+                let l = p.to_logical::<f64>(scale);
+                (l.x.round() as i32, l.y.round() as i32)
+            });
+        orchd::store::save_window(&orchd::store::WindowRecord {
+            width: logical.width.round() as u32,
+            height: logical.height.round() as u32,
+            x: at.map(|(x, _)| x),
+            y: at.map(|(_, y)| y),
+            state: None,
+            monitor: monitor_of(&win),
         });
-        orchd::store::save_window(
-            logical.width.round() as u32,
-            logical.height.round() as u32,
-            at,
-        );
     }
 }
 

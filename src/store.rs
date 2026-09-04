@@ -138,55 +138,88 @@ impl SessionRecord {
     }
 }
 
-/// The window's last size, remembered so the app opens the way you left it.
+/// What the window looked like when it was last written down.
 ///
 /// Its own file rather than a field in `config.json`: that file is yours to edit,
 /// and a number the app rewrites on every close does not belong in it.
-pub fn save_window(width: u32, height: u32, pos: Option<(i32, i32)>) {
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+pub struct WindowRecord {
+    pub width: u32,
+    pub height: u32,
+    /* **The position is stored too, and it is the half that was missing.** Only
+       the size was remembered, so every launch handed placement to the window
+       manager and the window appeared somewhere new each time. Absent where the
+       display server will not say — a Wayland client is never told where it is. */
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub x: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub y: Option<i32>,
+    /// `maximized` or `fullscreen`; absent for an ordinary window.
+    ///
+    /// **The size of a maximised window belongs to the screen, not to the
+    /// window**, so it is never saved as a size: restoring it would open every
+    /// launch full-screen with nothing to un-maximise back to. The state is
+    /// recorded instead, beside the size it is not, so what comes back is the same
+    /// window in the same state over the same underlying geometry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state: Option<String>,
+    /// Which display it was on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub monitor: Option<MonitorRef>,
+}
+
+/// A display, named well enough to find again.
+///
+/// **The model is not an identifier.** Two of the three monitors this was written
+/// on report `LG IPS QHD`, so a name alone puts a window back on whichever of them
+/// the display server happens to list first. The geometry is what tells them
+/// apart; the name is the fallback for a desk that has been rearranged since.
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MonitorRef {
+    pub name: String,
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
+}
+
+impl WindowRecord {
+    /// The size, when it is one the layout can use. A size below the three-column
+    /// minimum is ignored rather than honoured.
+    pub fn size(&self) -> Option<(u32, u32)> {
+        (self.width >= 1000 && self.height >= 600).then_some((self.width, self.height))
+    }
+
+    /// Where it was, if that was ever written down.
+    ///
+    /// Deliberately unvalidated here. Whether a position is *usable* depends on
+    /// the monitors attached right now — a spot on a screen that has since been
+    /// unplugged would put the window where nobody can reach it — and this module
+    /// knows nothing about monitors. The desktop shell checks it against the real
+    /// ones.
+    pub fn pos(&self) -> Option<(i32, i32)> {
+        self.x.zip(self.y)
+    }
+
+    pub fn is(&self, state: &str) -> bool {
+        self.state.as_deref() == Some(state)
+    }
+}
+
+pub fn save_window(rec: &WindowRecord) {
     let Ok(dir) = Config::config_dir() else {
         return;
     };
     let _ = std::fs::create_dir_all(&dir);
-    // **The position is stored too, and it is the half that was missing.** Only the
-    // size was remembered, so every launch handed placement to the window manager
-    // and the window appeared somewhere new each time — worst on a multi-head
-    // desktop, where "somewhere" can be the other monitor.
-    let at = match pos {
-        Some((x, y)) => format!(",\"x\":{x},\"y\":{y}"),
-        None => String::new(),
-    };
-    let _ = std::fs::write(
-        dir.join("window.json"),
-        format!("{{\"width\":{width},\"height\":{height}{at}}}\n"),
-    );
+    if let Ok(json) = serde_json::to_string(rec) {
+        let _ = std::fs::write(dir.join("window.json"), format!("{json}\n"));
+    }
 }
 
-/// What [`save_window`] wrote, if it is still sane. A size smaller than the
-/// layout's own minimum is ignored rather than honoured.
-pub fn load_window() -> Option<(u32, u32)> {
+/// What [`save_window`] wrote, if it can still be read.
+pub fn load_window() -> Option<WindowRecord> {
     let raw = std::fs::read_to_string(Config::config_dir().ok()?.join("window.json")).ok()?;
-    let v: serde_json::Value = serde_json::from_str(&raw).ok()?;
-    let w = v.get("width")?.as_u64()? as u32;
-    let h = v.get("height")?.as_u64()? as u32;
-    (w >= 1000 && h >= 600).then_some((w, h))
-}
-
-/// Where the window was, if that was ever written down.
-///
-/// Separate from [`load_window`] and optional on purpose: a `window.json` from
-/// before this was stored carries a size and no position, and must keep working —
-/// it simply means "no opinion", which the caller answers by centring.
-///
-/// Deliberately unvalidated here. Whether a position is *usable* depends on the
-/// monitors attached right now — a spot on a screen that has since been unplugged
-/// would put the window where nobody can reach it — and this module knows nothing
-/// about monitors. The desktop shell checks it against the real ones.
-pub fn load_window_pos() -> Option<(i32, i32)> {
-    let raw = std::fs::read_to_string(Config::config_dir().ok()?.join("window.json")).ok()?;
-    let v: serde_json::Value = serde_json::from_str(&raw).ok()?;
-    let x = v.get("x")?.as_i64()? as i32;
-    let y = v.get("y")?.as_i64()? as i32;
-    Some((x, y))
+    serde_json::from_str(&raw).ok()
 }
 
 fn path() -> Result<PathBuf> {
