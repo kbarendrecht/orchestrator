@@ -671,8 +671,7 @@ fn main() {
     let handle = rt.handle().clone();
     let _ = RT.set(handle.clone());
 
-    let app = tauri::Builder::default()
-        .plugin(tauri_plugin_dialog::init())
+    let app = with_settings_item(tauri::Builder::default().plugin(tauri_plugin_dialog::init()))
         .setup(move |app| {
             let app_handle = app.handle().clone();
             let rt = handle.clone();
@@ -728,6 +727,63 @@ fn main() {
             std::process::exit(code.unwrap_or(0));
         }
     });
+}
+
+/// The id the Settings item is recognised by in [`with_settings_item`].
+#[cfg(target_os = "macos")]
+const SETTINGS_ITEM: &str = "settings";
+
+/// Put `Settings…` in the macOS application menu, where the platform says it lives.
+///
+/// The SPA has its own gear and no chord for it, so on a Mac the menu bar was the
+/// one place a user looks first and found nothing. Only there: everywhere else this
+/// window is frameless and carries no menu bar at all.
+///
+/// Built by amending [`Menu::default`] rather than by writing the whole menu out,
+/// so About, Services, Hide and Quit stay whatever Tauri makes them. The app
+/// submenu is its first item, and About plus its separator are that submenu's
+/// first two, which is why the pair goes in at 2: About, separator, `Settings…`,
+/// separator, Services, as every other Mac application reads.
+///
+/// A failure anywhere here loses the item, not the menu: the window matters more
+/// than the shortcut to a panel that has a button.
+#[cfg(target_os = "macos")]
+fn with_settings_item(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wry> {
+    use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+
+    builder
+        .menu(|app| {
+            let menu = Menu::default(app)?;
+            let items = menu.items()?;
+            let Some(app_menu) = items.first().and_then(|i| i.as_submenu()) else {
+                tracing::warn!("no application submenu to hang Settings on");
+                return Ok(menu);
+            };
+            let item = MenuItem::with_id(app, SETTINGS_ITEM, "Settings\u{2026}", true, Some("Cmd+,"))?;
+            app_menu.insert(&PredefinedMenuItem::separator(app)?, 2)?;
+            app_menu.insert(&item, 2)?;
+            Ok(menu)
+        })
+        .on_menu_event(|app, event| {
+            if event.id() != SETTINGS_ITEM {
+                return;
+            }
+            let Some(win) = app.get_webview_window("main") else { return };
+            /* The page is a remote origin, so there is no IPC to call: this crate
+               exposes none on purpose (see the module docs). `eval` is the whole
+               channel, and the name is `web/app.js`'s. Guarded because the same
+               window shows the splash and the first-run page, neither of which
+               has an SPA in it. */
+            if let Err(e) = win.eval("window.orchSettings && window.orchSettings()") {
+                tracing::warn!("could not open settings from the menu: {e}");
+            }
+        })
+}
+
+/// No menu bar off macOS: the window is frameless and the SPA draws its own chrome.
+#[cfg(not(target_os = "macos"))]
+fn with_settings_item(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wry> {
+    builder
 }
 
 /// First run: no config, so bring up the open-project window instead of a native

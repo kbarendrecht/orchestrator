@@ -1611,4 +1611,10 @@ connect();
 setInterval(() => { Rail.tick(); }, 1000);
 
 window.orchTeardown = teardown;
+/* The macOS menu bar's Settings item. A native menu cannot reach a module, so
+   `desktop/src/main.rs` evals this name; keep the two spellings together. It
+   opens rather than toggles, because choosing Settings from a menu is never a
+   request to close it. Absent on the splash and the first-run page, where the
+   item therefore does nothing. */
+window.orchSettings = Settings.open;
 

@@ -20,6 +20,8 @@ interface Window {
   /** Prism is driven manually; this switches its auto-highlight off. */
   Prism: any;
   WebglAddon: any;
-  /** The one thing the SPA still hangs on the global object, for the drawer. */
+  /** Hung on the global object by the SPA, for the drawer. */
   orchTeardown: (wsId: string) => void;
+  /** The macOS menu bar's Settings item, which is native and evals this name. */
+  orchSettings: () => void;
 }

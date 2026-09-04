@@ -240,4 +240,4 @@ function setupSettings() {
      nothing said. */
 }
 
-export { settingsOpen as isOpen, closeSettings as close, setupSettings as setup };
+export { settingsOpen as isOpen, openSettings as open, closeSettings as close, setupSettings as setup };
