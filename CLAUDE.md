@@ -237,6 +237,23 @@ mean *this* repo; if you do, name it.
   from `render` and a refusing guard would otherwise re-ask every frame; and it is
   first in the `Esc` chain, since a confirm over an overlay must not close the
   overlay underneath it.
+- **A skill reaches a session through `--plugin-dir`, and that flag is per
+  *invocation*.** Measured against Claude Code 2.1.260: a session spawned with it
+  runs the skill both ways, typed as `/orchd:orch` and picked up by the model from
+  its description — and resuming that same session id *without* the flag answers
+  `Unknown command` for the skill it had a moment ago. So it is a property of the
+  process, not of the conversation, and every site that builds a `claude` argv has
+  to push it. `config::session_flags` is the one spelling, and it carries
+  `--settings` too — the pair beside `session_env`, for the reason that docblock
+  gives: these sites have drifted before.
+  Two things that make it safe to push unconditionally. A directory that is not
+  there is not an error — Claude Code starts and says nothing — so a failed write
+  degrades to a session without the skill rather than a session that will not
+  start. And the layout is Claude Code's, not ours: the manifest at
+  `.claude-plugin/plugin.json` names the namespace, the skill lives at
+  `skills/<name>/SKILL.md`, and either one in the wrong place fails silently.
+  **Adding a skill is a Rust change**, `include_str!` again, like the SPA's
+  modules and the vendored prompts.
 - **The daemon's session id is Claude's session id.** Every spawn passes
   `--session-id`, which is what makes `--resume`, transcript lookup and hook
   correlation need no mapping. A fork passes `--session-id <new> --resume <old>

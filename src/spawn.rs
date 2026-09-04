@@ -389,7 +389,6 @@ pub async fn spawn_session(
         app.claim_main(id).await?;
     }
 
-    let settings = Config::hooks_settings_path()?;
     let mut cmd = vec!["claude".to_string()];
     // Assigning the id keeps the daemon's session id and Claude's own the same
     // value, so resume and transcript lookup need no mapping. `--resume` already
@@ -412,8 +411,7 @@ pub async fn spawn_session(
             cmd.push(id.to_string());
         }
     }
-    cmd.push("--settings".into());
-    cmd.push(settings.to_string_lossy().into_owned());
+    cmd.extend(crate::config::session_flags()?);
 
     // Asked before anything is created, and for every spawn rather than only the
     // ones an agent asks for: the button in the rail can be the last straw just
@@ -708,7 +706,6 @@ pub async fn spawn_worktree_session(
     }
 
     let id = Uuid::new_v4();
-    let settings = Config::hooks_settings_path()?;
     // Minted here rather than taken off the record, because the record cannot exist
     // yet: without a name the workspace is only known once `SessionStart` reports
     // the cwd, so `Session::new` happens after the pty. The token has to be in the
@@ -817,12 +814,8 @@ pub async fn spawn_worktree_session(
         cmd.push(prev.to_string());
         cmd.push("--fork-session".into());
     }
-    cmd.extend([
-        "--session-id".to_string(),
-        id.to_string(),
-        "--settings".to_string(),
-        settings.to_string_lossy().into_owned(),
-    ]);
+    cmd.extend(["--session-id".to_string(), id.to_string()]);
+    cmd.extend(crate::config::session_flags()?);
     // After the arms, because only they know where this runs — and in the
     // delegated arm that is the main checkout, whose environment is the one the
     // worktree about to be cut from it would have had anyway.
@@ -924,14 +917,12 @@ pub async fn spawn_fix_pr_session(
     let prompt_file = vendored_prompt_file(app, pr, "fix-pr").await?;
 
     let id = Uuid::new_v4();
-    let settings = Config::hooks_settings_path()?;
-    let cmd = vec![
+    let mut cmd = vec![
         "claude".to_string(),
         "--session-id".to_string(),
         id.to_string(),
-        "--settings".to_string(),
-        settings.to_string_lossy().into_owned(),
     ];
+    cmd.extend(crate::config::session_flags()?);
 
     // No ask token: a fix run is handed its URL substituted into its prompt and has
     // nothing to ask, which is the narrower surface 942d01b chose on purpose.

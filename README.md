@@ -69,6 +69,8 @@ is what `mise` reads, and is still two binaries you place yourself.
   `orch new --worktree` gives a helper session its own tree and branch, which is the
   difference between two parallel jobs and two agents sharing one git index.
   `orch <command> --help` documents the flags. Nothing requires it.
+  Every session is told it is there: the daemon hands each spawn a vendored
+  `orch` skill, so an agent reaches for the CLI without being told to in a prompt.
 
 Apple Silicon and x86-64 Linux are built.
 
@@ -510,6 +512,8 @@ src/
   post.rs       the review batch end to end
   patch.rs      applying and committing what you approved, with staleness checks
   prompt.rs     rendering the vendored prompts in commands/
+  skills.rs     the vendored skills in skills/, written out as the plugin dir
+                every spawn is handed with --plugin-dir
   story.rs      filing a tracker story for a fair-but-out-of-scope point
   env_source/   where a session's own variables come from: trait + dispatch
                 (mod.rs), mise.rs, direnv.rs

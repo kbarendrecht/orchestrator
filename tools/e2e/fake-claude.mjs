@@ -11,7 +11,8 @@
 // depends on, and nothing else:
 //
 //   1. The argv contract — `--session-id`, `--resume`, `--fork-session`,
-//      `--settings`, and `--worktree` when the daemon delegates the cut.
+//      `--settings`, `--plugin-dir`, and `--worktree` when the daemon delegates
+//      the cut.
 //   2. The hooks in the settings file the daemon wrote, fired at the right
 //      moments. Read from that file rather than hardcoded, so a change to
 //      `hooks::write_settings` reaches these flows instead of passing them by.
@@ -41,6 +42,20 @@ const forking = flag('--fork-session')
 // daemon depends on both, so the id is picked the same way it picks it.
 const sessionId = value('--session-id') ?? resumeOf
 const home = process.env.HOME
+
+// The vendored skills reach a session through `--plugin-dir`, and that flag is
+// per *invocation*: a resume without it loses the skill the same id had a moment
+// ago. So a spawn site that forgets it is the fault worth catching, and no unit
+// test can see it — this is the only place every real spawn goes through.
+// Real Claude Code ignores a directory that is not there, silently, which is why
+// the layout is checked rather than the flag alone.
+const pluginDir = value('--plugin-dir')
+if (!pluginDir || !fs.existsSync(path.join(pluginDir, 'skills/orch/SKILL.md'))) {
+  throw new Error(
+    `spawned without a usable --plugin-dir (got ${pluginDir ?? 'nothing'}) — ` +
+      'every site building a claude argv must push `config::session_flags()`',
+  )
+}
 
 /** Claude Code keys its transcript dir by cwd, slugging every `/` *and* `.`. */
 const transcriptDir = (cwd) =>

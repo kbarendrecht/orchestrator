@@ -928,6 +928,29 @@ pub fn session_env(
     (set, vec!["CLAUDE_CODE_CHILD_SESSION"])
 }
 
+/// The argv every spawned `claude` carries whatever the run is: the daemon's hook
+/// settings, and the plugin dir its vendored skills live in.
+///
+/// The pair beside [`session_env`], and here for the same reason. Both halves are
+/// per *process*, not per conversation — a resume that omits either gets a session
+/// with no hooks or no skill, and neither says so — and both were spelled out at
+/// each spawn site, which is exactly how the environment drifted before. One call
+/// is what a sixth site has to remember instead of two.
+///
+/// It cannot be made un-forgettable the way `session_env`'s signature was: an argv
+/// tail a site simply never appends is invisible to the compiler. The e2e fake
+/// agent checks it for that reason.
+pub fn session_flags() -> Result<Vec<String>> {
+    let mut v = vec![
+        "--settings".to_string(),
+        Config::hooks_settings_path()?
+            .to_string_lossy()
+            .into_owned(),
+    ];
+    v.extend(crate::skills::flag());
+    Ok(v)
+}
+
 /// Claude Code keys its transcript directory by working directory, slugging the
 /// absolute path by replacing every `/` **and every `.`** with `-`.
 ///

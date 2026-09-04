@@ -653,6 +653,22 @@ this file, which churned it from every build; they now go to a gitignored
   above and is blocked on a real drive; until it closes, the beta item could sit
   behind a setting rather than in the menu everybody uses.
 
+- **The vendored prompts could be skills now, and it is not obvious they should
+  be.** `skills::flag` puts a plugin dir in front of every session, so
+  `commands/fix-pr.md` and its neighbours *could* ship as `skills/fix-pr/SKILL.md`
+  and be invoked as `/orchd:fix-pr` instead of rendered to a file the session is
+  told to read. What that would buy: one mechanism instead of two, and a human in
+  the pane able to reach a flow the daemon currently only starts for them.
+  What stands in the way is the substitution. A prompt is rendered per run —
+  `{{PR}}`, `{{ASK_BASE}}`, `{{LANGUAGE}}`, the rebase target that is the *PR's*
+  base rather than the configured one — and a skill file is static, so the run's
+  values have to reach it another way: an argument the agent is told to pass, or
+  the environment it already has. The cheap half is the environment, since
+  `ORCH_SESSION_ID` and `ORCH_URL` are there and `orch` can answer the rest.
+  Worth doing when a second reader needs these flows; not worth a rewrite for its
+  own sake, and `prompt::render`'s tests are the thing that would have to be
+  replaced rather than deleted.
+
 ## Decisions worth revisiting
 
 - **History keeps its AI attribution.** *Decided, not overlooked.* The monorepo

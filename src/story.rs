@@ -467,7 +467,6 @@ async fn run_filer(
     )?;
 
     let id = uuid::Uuid::new_v4();
-    let settings = Config::hooks_settings_path()?;
     let mut cmd = vec![
         "claude".to_string(),
         "-p".to_string(),
@@ -477,8 +476,6 @@ async fn run_filer(
         "--verbose".to_string(),
         "--session-id".to_string(),
         id.to_string(),
-        "--settings".to_string(),
-        settings.to_string_lossy().into_owned(),
         // Scoped to the tracker server, reading the skill, and writing its report.
         //
         // `mcp__<server>` without parentheses, because MCP rules do not support
@@ -499,6 +496,10 @@ async fn run_filer(
         "--add-dir".to_string(),
         scratch.to_string_lossy().into_owned(),
     ];
+    // The plugin dir rides along, though `--allowedTools` above means this run
+    // cannot invoke a skill at all. Uniform on purpose: the allowlist is what
+    // scopes this run, not a flag a site left out.
+    cmd.extend(crate::config::session_flags()?);
     if app.cfg.tracker == crate::config::TrackerKind::Stub {
         // Only the stub, and nothing else: `--strict-mcp-config` ignores every
         // configured server, which is what keeps a verification run from reaching

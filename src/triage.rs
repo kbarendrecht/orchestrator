@@ -265,7 +265,6 @@ async fn spawn_posting_run(
     )?;
 
     let id = Uuid::new_v4();
-    let settings = Config::hooks_settings_path()?;
 
     // Written to a file the session is told to read, not typed in: the prompt is
     // multi-line and typing it would submit at the first newline. Under the
@@ -277,13 +276,12 @@ async fn spawn_posting_run(
     std::fs::write(&prompt_file, body)
         .with_context(|| format!("writing {}", prompt_file.display()))?;
 
-    let cmd = vec![
+    let mut cmd = vec![
         "claude".to_string(),
         "--session-id".to_string(),
         id.to_string(),
-        "--settings".to_string(),
-        settings.to_string_lossy().into_owned(),
     ];
+    cmd.extend(crate::config::session_flags()?);
 
     // Minted here so the same value goes into the environment and onto the record:
     // the agent reads it from `ORCH_ASK_TOKEN`, and `/ask`/`/wait` check it against

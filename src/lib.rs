@@ -31,6 +31,7 @@ pub mod review_commit;
 pub mod reviews;
 pub mod self_update;
 pub mod ring;
+pub mod skills;
 pub mod spawn;
 pub mod state;
 pub mod store;
@@ -264,6 +265,13 @@ pub async fn start(opts: StartOptions) -> Result<Server> {
         )?
     };
     tracing::info!("hook settings at {}", settings.display());
+    // Non-fatal on purpose: a session without the `orch` skill still works, and
+    // Claude Code ignores a `--plugin-dir` that is not there — so the flag every
+    // spawn pushes costs nothing when this failed.
+    match skills::write_plugin() {
+        Ok(at) => tracing::info!("session skills at {}", at.display()),
+        Err(e) => tracing::warn!("could not write the session skills: {e:#}"),
+    }
     // `machine::check`, the base-branch read and the settings write together.
     // They share a phase because they share a cause: each is a small run of
     // child processes, and the fix for any of them is the same fix.
