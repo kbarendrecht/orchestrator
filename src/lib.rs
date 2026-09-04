@@ -1320,15 +1320,21 @@ fn stack_running(main: &std::path::Path) -> bool {
 ///
 /// The release lives on the fork (`kbarendrecht/orchestrator`), which is where
 /// the app itself ships from — distinct from the *monorepo's* upstream that the
-/// PR poller watches. Checks on launch and every six hours; a found update sits
+/// PR poller watches. Checks on launch and every hour; a found update sits
 /// in the snapshot as a dismissible nudge, and `mise up` is what installs it.
+///
+/// **Hourly is one request an hour**, against 5000 with a token and 60 without,
+/// and the only other work — `providing_tool`, which shells `mise ls --json` — runs
+/// only once a newer tag has actually been found. Six hours was the old interval
+/// and its cost was the same; what it bought was being most of a working day
+/// behind a release that was already out.
 fn start_update_poller(app: Arc<AppState>) {
     // The repo the binary is released from, not the monorepo it hosts.
     const RELEASE_REPO: (&str, &str) = ("kbarendrecht", "orchestrator");
     let current = env!("CARGO_PKG_VERSION").to_string();
     let token_file = app.cfg.github_token_file.clone();
     tokio::spawn(async move {
-        let interval = std::time::Duration::from_secs(6 * 60 * 60);
+        let interval = std::time::Duration::from_secs(60 * 60);
         loop {
             let cur = current.clone();
             // Rides the same token ladder the PR poller uses. The repo is public,
