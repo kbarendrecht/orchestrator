@@ -389,7 +389,13 @@ function lineEl(row, side) {
   const empty = !row || (side === 'old' && row.kind === 'add') ||
                         (side === 'new' && row.kind === 'del');
   const div = el('div', 'ln' + (empty ? ' empty' : row.kind === 'add' ? ' add' : row.kind === 'del' ? ' del' : ''));
-  const num = el('i', null, empty ? '' : String((side === 'old' ? row.old : row.new) ?? ''));
+  /* **The number is drawn, not written.** `user-select:none` was already on the
+     gutter and is not enough: WebKit includes an unselectable element's text when
+     a selection *crosses* it, so dragging over a hunk and copying it brought the
+     line numbers along into whatever you pasted it into. Generated content is not
+     in the document at all, so no engine can take it. */
+  const num = el('i');
+  num.dataset.n = empty ? '' : String((side === 'old' ? row.old : row.new) ?? '');
   div.appendChild(num);
   const body = el('s');
   if (!empty) {

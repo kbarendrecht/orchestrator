@@ -1054,7 +1054,11 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
 .pane{min-width:0}
 .gutter{background:var(--surface);border-left:1px solid var(--line-soft);border-right:1px solid var(--line-soft);height:100%}
 .ln{display:grid;grid-template-columns:44px 1fr;white-space:pre-wrap;word-break:break-word}
+/* The number is generated content, which no engine puts in a selection. The
+   `user-select` stays for the box itself, so a drag starting in the gutter does
+   not begin a selection there. */
 .ln i{color:#8E8E8E;text-align:right;padding-right:12px;font-style:normal;user-select:none}
+.ln i::before{content:attr(data-n)}
 .ln s{text-decoration:none;padding:0 12px;display:block}
 .ln.add s{background:var(--add)}
 .ln.del s{background:var(--del)}

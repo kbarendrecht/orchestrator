@@ -126,7 +126,11 @@ function hunkEl(text, hitLast, path) {
     // A "\ No newline at end of file" marker is not a line of the file.
     if (kind !== '+' && kind !== '-' && kind !== ' ') continue;
     const row = el('div', 'ln' + (kind === '+' ? ' add' : kind === '-' ? ' del' : ''));
-    row.appendChild(el('i', null, kind === '-' ? String(oldNo) : String(newNo)));
+    // Drawn rather than written, so copying a hunk cannot take the gutter with
+    // it; `lineEl` in diff.js says why the CSS rule alone was not enough.
+    const num = el('i');
+    num.dataset.n = kind === '-' ? String(oldNo) : String(newNo);
+    row.appendChild(num);
     row.appendChild(codeEl(line.slice(1), lang));
     if (kind === '-') oldNo++;
     else if (kind === '+') newNo++;
