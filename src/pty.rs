@@ -87,6 +87,9 @@ pub struct PtyHandle {
     buffer: Arc<Mutex<RingBuffer>>,
     tx: broadcast::Sender<Bytes>,
     exit_rx: watch::Receiver<Option<i32>>,
+    /// The geometry the child has been told, so [`PtyHandle::resize`] can tell a
+    /// real change from a client re-stating what it already asked for.
+    size: Mutex<(u16, u16)>,
     /// Kept so a stop can reach the child's whole **process group** rather than
     /// only its leader — see [`PtyHandle::kill`].
     pid: Option<u32>,
@@ -210,6 +213,7 @@ impl PtyHandle {
             buffer: buffer.clone(),
             tx: tx.clone(),
             exit_rx,
+            size: Mutex::new((rows, cols)),
             pid,
         });
 
@@ -276,7 +280,22 @@ impl PtyHandle {
             .map_err(|_| anyhow::anyhow!("this pty's writer has gone"))
     }
 
+    /// Tell the child it has a new window size.
+    ///
+    /// **The same size twice is not a resize, and saying so costs something.**
+    /// `MasterPty::resize` is a `TIOCSWINSZ`, which raises `SIGWINCH` whatever the
+    /// numbers are, and a full-screen TUI answers that by repainting itself. Every
+    /// attached client states its geometry, and a client must be free to re-state
+    /// it — that is how a pane recovers a size some *other* client changed — so
+    /// without this the re-assertion flickers the pane it is trying to fix.
     pub fn resize(&self, rows: u16, cols: u16) -> Result<()> {
+        let mut size = self
+            .size
+            .lock()
+            .map_err(|_| anyhow::anyhow!("pty size lock poisoned"))?;
+        if *size == (rows, cols) {
+            return Ok(());
+        }
         let m = self
             .master
             .lock()
@@ -287,6 +306,7 @@ impl PtyHandle {
             pixel_width: 0,
             pixel_height: 0,
         })?;
+        *size = (rows, cols);
         Ok(())
     }
 

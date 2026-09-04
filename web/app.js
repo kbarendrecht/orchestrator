@@ -1246,6 +1246,14 @@ function queueRefit() {
   }, 120);
 }
 
+/* **Coming back to the window takes the geometry back.** A pty has one size and
+   any number of clients; the last to speak wins and nobody tells the rest, so a
+   second client — `mise run shot` is the one that does this in practice — can
+   leave the agent pane painting at a fraction of its box, with nothing here aware
+   of it. Nothing drifted means nothing sent: the fit is unchanged and the daemon
+   drops a same-size resize. See `resize` in term.js. */
+window.addEventListener('focus', () => Term.refit(true));
+
 const hostObserver = new ResizeObserver(queueRefit);
 for (const id of ['termwrap', 'drawerbody']) {
   const host = $(id);

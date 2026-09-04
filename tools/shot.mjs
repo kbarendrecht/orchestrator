@@ -69,7 +69,11 @@ const page = await browser.newPage({
 });
 page.on('pageerror', (e) => console.error('page error:', e.message));
 
-await page.goto(`${base}/?token=${token}`, { waitUntil: 'domcontentloaded' });
+// `observe`: this browser is a different size than the window, and fitting a
+// terminal to it would resize the *session's* pty and leave it there — the agent
+// pane in the real window then paints at the size of whatever took the last
+// screenshot. The flag keeps the fit local. See `OBSERVE` in web/js/term.js.
+await page.goto(`${base}/?token=${token}&observe=1`, { waitUntil: 'domcontentloaded' });
 
 // The page renders on its first websocket snapshot. Poke the daemon so one is
 // pushed now rather than waiting out a poll, then wait for the render.

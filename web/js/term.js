@@ -15,6 +15,16 @@ const THEME = {
   selectionBackground: '#2C2C2C',
 };
 
+/** A client that watches without reshaping what it watches.
+ *
+ *  `mise run shot` loads this same SPA to photograph it, and fitting a terminal
+ *  is what a browser at some other size does on the way — which resizes the pty
+ *  of a session somebody is using. A screenshot has no business doing that, so it
+ *  asks for `?observe`, and this stops the resize being sent. The pane still fits
+ *  itself, so the picture is of a laid-out terminal; it just shows the geometry
+ *  the real window chose. Never set in the desktop window. */
+const OBSERVE = new URLSearchParams(location.search).has('observe');
+
 /** The terminal's font in px. xterm draws its own text, so the stylesheet's
  *  multiplier cannot reach it; this applies the same factor natively, which is
  *  also why it stays crisp. */
@@ -485,14 +495,30 @@ function writeChunk(entry, chunk) {
   entry.term.write(chunk);
 }
 
-function resize(entry) {
+/* `force` re-states the geometry even when nothing here has moved.
+ *
+ * **A pty has one size and any number of clients, so the last one to speak wins
+ * and the others are never told.** `mise run shot` drives the real SPA in a
+ * headless browser, so a screenshot fitted a live session to a 1440x900 viewport
+ * and left it there: the agent pane in the window went on painting at about half
+ * its width and height, with nothing in the app aware of it. The caches below are
+ * what made it permanent — the host box had not moved and the geometry matched
+ * what this client last sent, so every later refit returned at the first line.
+ *
+ * There is no message that says "somebody else resized this", and adding one
+ * would make the losers fight over the size. So the rule is instead: the client
+ * you are looking at re-states its own geometry when you come back to it (window
+ * focus, and switching to the pane). A same-size resize is a no-op in the daemon
+ * — `PtyHandle::resize` says why — so re-stating costs nothing when nothing
+ * drifted. */
+function resize(entry, force) {
   if (!entry || entry.host.hidden) return;
   // Nothing moved, nothing to do. Without this a repeated observation refits at
   // the same size, and a box whose width lands between two whole cells can flip
   // the answer back and forth — which reads as the terminal resizing itself.
   const box = entry.host.getBoundingClientRect();
   const seen = `${Math.round(box.width)}x${Math.round(box.height)}`;
-  if (entry.box === seen) return;
+  if (entry.box === seen && !force) return;
   // A host that is visible but not laid out yet measures as nothing, and fitting
   // to that hands the pty a couple of columns. The TUI on the other end redraws
   // itself to fit and its previous frame is gone, so the pane comes back shrunk
@@ -513,8 +539,10 @@ function resize(entry) {
   // Only tell the pty when the geometry actually moved. That makes a refit
   // idempotent, which is what lets the observer below fire as often as it likes
   // instead of costing a resize message per frame of a drag.
-  if (entry.sent && entry.sent.rows === rows && entry.sent.cols === cols) return;
+  if (entry.sent && entry.sent.rows === rows && entry.sent.cols === cols && !force) return;
   entry.sent = { rows, cols };
+  // An observer never reshapes the session it is watching: see `OBSERVE`.
+  if (OBSERVE) return;
   if (entry.sock.readyState === WebSocket.OPEN) {
     entry.sock.send(JSON.stringify({ type: 'resize', rows, cols }));
   }
@@ -563,7 +591,9 @@ function showTerm(target, parent) {
   if (parent === $('termwrap')) $('termempty').hidden = !!target;
   if (entry) {
     requestAnimationFrame(() => {
-      resize(entry);
+      // Forced: switching to a pane is one of the two moments this client takes
+      // the geometry back off whoever changed it last.
+      resize(entry, true);
       // A hidden xterm has no dimensions, so its renderer parks; coming back
       // does not always repaint what is already in the buffer, which is the
       // black pane you get from switching sessions quickly. Ask for the redraw
@@ -576,8 +606,8 @@ function showTerm(target, parent) {
 
 /** Re-fit every attached terminal. Lives with the terminals rather than with the
  *  zoom control, which is what stopped the two depending on each other. */
-function refit() {
-  for (const entry of terms.values()) resize(entry);
+function refit(force) {
+  for (const entry of terms.values()) resize(entry, force);
 }
 
 /** Apply a new UI scale here: xterm draws its own text, so its font is set
