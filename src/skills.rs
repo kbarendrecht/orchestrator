@@ -35,12 +35,23 @@ use crate::config::Config;
 /// every session's `PATH` already.
 pub const ORCH: &str = include_str!("../skills/orch/SKILL.md");
 
+/// Getting a PR green: rebase, fix the easy red, ask about the rest, amend, push,
+/// watch.
+///
+/// Bundled from the monorepo's own `/green` command, which is where it was proven,
+/// and it is the reason `fix-pr` does not need to grow an ask channel: this is the
+/// same job written for a person to invoke and for an agent to be handed. The two
+/// lines that are that repo's convention rather than a rule (its task runner, its
+/// `upstream` remote) are marked as such in the file, per the repo's own portability
+/// rule.
+pub const GREEN: &str = include_str!("../skills/green/SKILL.md");
+
 /// Every vendored skill, as `(directory name, body)`.
 ///
 /// A table rather than a write per skill, because the writer and the frontmatter
 /// test both walk it: adding a skill is then a line here, and it cannot be
 /// written out without also being checked.
-const VENDORED: &[(&str, &str)] = &[("orch", ORCH)];
+const VENDORED: &[(&str, &str)] = &[("orch", ORCH), ("green", GREEN)];
 
 /// The plugin manifest.
 ///
