@@ -21,6 +21,14 @@ this file, which churned it from every build; that feature is gone.
   go to `/api/pr/:n/resolve-run`, which is the pass that writes code. What changes is
   how the read pass is *delivered* and what the UI does while it runs.
 
+  **That code was on its way out, and is not any more.** An item here proposed
+  deleting the whole batch path (`/triage`, `pr_resolve_run`, `resolve_runs`,
+  `/committed`, the gate/commit/stash endpoints, `patch.rs`) on the grounds that
+  the flatten had made it unreachable from the UI. It is the foundation of the flow
+  above, so that item is gone. What was true in it and still is: this path has never
+  driven a real PR end to end, and the fixture cannot post its bot-authored threads
+  without Actions minutes.
+
   What is missing:
   - `skills/triage/SKILL.md`, from `commands/triage.md`, plus its line in
     `skills::VENDORED`. It is invoked as `/orchd:triage <pr>`, so the PR number is an
@@ -238,23 +246,6 @@ this file, which churned it from every build; that feature is gone.
   the ancestry check needs a single exemption rather than continuous forgiveness, and
   every card still shows a real standalone diff while you are approving it.
 
-- **Promote the in-UI review overlay out of beta.** The overlay now does the
-  real work: threads listed under the PR with their file, hunk, and a reply box,
-  and replies/reactions/re-request go straight through the GitHub API
-  (`src/forge/github_write.rs`). It ships as the `resolve in ui [beta]` menu item
-  beside the old `/resolve`-into-a-terminal path. What remains is deciding when
-  to make the overlay the default and retire the terminal spawn. Resolving a
-  thread is deliberately *not* an API call — that is the author's button, by
-  design (`forge/github_write.rs:10-13`) — so this item is about the beta gate, not
-  the missing action.
-
-  The gate now has one concrete condition rather than a feeling: **the session flow
-  has to drive a real PR once.** The overlay is session-only since the flatten, so
-  the beta label is carrying the fact that its change and post-go phases have only
-  ever been exercised against canned data. Blocked on the fixture, which needs
-  Actions minutes. `/resolve` stays whatever the answer is — it is the fallback, not
-  the thing being replaced.
-
 - **One window, several daemons: make the repository switcher switch.** The header
   button exists and its only behaviour is a toast reading "not implemented yet".
   The shape that fits: keep **one checkout per daemon** and run several daemons
@@ -426,11 +417,6 @@ this file, which churned it from every build; that feature is gone.
     is a REST id, and both `GitHubForge::detect`'s URL parsing and the read-token
     ladder are github.com-specific — `for_kind`'s single `token` argument does not
     yet model per-forge credentials.
-  - **First run asks one question.** The folder picker exists
-    (`desktop/src/main.rs`, shown when `Config::existing()` is `None`); the rest of
-    the questions do not. A probe that *suggests* managed processes from a compose
-    file or a `package.json` script was scoped and deferred.
-
 - **Cut every worktree with the daemon, including new interactive ones.** *Low
   priority — nothing is broken today, both paths work.* The point is not tidiness:
   `claude --worktree` is the one place the daemon asks the **agent** to do something
@@ -525,7 +511,9 @@ this file, which churned it from every build; that feature is gone.
   owning how it is reached, and the trait's own doc — "which MCP server in the
   repo's `.mcp.json` speaks to it" — is the sentence that changes.
 
-- **The review pane is still `[beta]`, and the label is the honest part.** Needs a
+- **The review pane is still `[beta]`, and the label is the honest part.**
+  *The promotion order is decided:* drop the old non-beta `/resolve` first, then
+  promote the overlay once the triage flow has run for real. What is left is the
   list of what is actually wrong before anything is touched — collect that from a
   real session rather than guessing. Two gaps already known from the code:
   `is_resolved` is never set by the daemon (`github_write` will not resolve a
@@ -538,35 +526,6 @@ this file, which churned it from every build; that feature is gone.
   `commands/review-session.md` rather than folded away in the UI, and the card as
   one flat list. The one worth remembering: shortening a thing at its source beats
   hiding it at the end.
-
-- **Delete the batch the overlay no longer reaches, and flatten `proposal.rs`.**
-  The flatten took the triage+batch path out of the UI, so a large amount of proven,
-  tested daemon code is now unreachable: `/triage` + `triage::spawn`,
-  `pr_resolve_run`/`spawn_resolve_run`, `pr_post`, `post::resolve`'s apply path,
-  `resolve_runs` state and its store file, `/committed` + `thread_committed`, the
-  gate/commit/stash endpoints, `patch.rs`'s apply-and-fold ladder, and the SPA's
-  `rvGate`/`rvRun`/`rvManual`. `proposal.rs` then loses `patch`, `Mode`, `verified`
-  and the "change without evidence" check, which is what makes the model actually
-  flat rather than flat-looking.
-
-  **The size of it, measured at 5cfdb65 rather than guessed:** about 5,300 lines in
-  the PR half alone (all of `post.rs`, `patch.rs` minus `dirty_paths`,
-  `review_commit.rs`, `forge/github_write.rs`, most of `story.rs`, a quarter of
-  `triage.rs`, the stub tracker, three prompts), plus `git.rs`'s fold/pre-commit/
-  blame helpers, three store files, some 700 lines of `api.rs` handlers and 800 of
-  `review.js` — roughly 7,500 lines, near a fifth of the repo. Weigh the gate below
-  against that number, not the smaller one this item used to carry; the dead path
-  also keeps collecting fixes that a deletion would make moot.
-
-  **Deliberately not done yet, and the order matters.** The session flow has never
-  driven a real PR end-to-end: the change and post-go phases are unverified, and the
-  fixture cannot post its bot-authored threads without Actions minutes (the run failed
-  on the billing gate, not on our code). Removing the proven path before its
-  replacement has run once would leave no way back. `/resolve` into a pane is
-  untouched and is the real fallback either way.
-
-  Until then the dead code is reachable only by the API, and `web/review-preview.html`
-  is what lets the flattened UI be looked at without any of it.
 
 - **`Ctrl+Shift+Tab` for the previous session — implemented, wants one real-window
   check.** The diagnosis held: the SPA's `Tab && ctrlKey` arm handles both
@@ -595,13 +554,12 @@ this file, which churned it from every build; that feature is gone.
   warning that treats `TokenSource::GhCli` as too wide loses its subject. The README
   describes today's split rather than this plan.
 
-- **Declare the watch as a managed process, with its `stop_command`.** The daemon
-  half is done (`stop_command` on `ManagedSpec`): a command that stops what the pty
-  is a *client* of, run before the kill, on close, restart and shutdown. What is
-  left is repo-side — put the watch in `main_processes` with
-  `docker compose exec -T <assets> pnpm run build-watch` and a `pkill -f` beside it,
-  and confirm on the box that starting and stopping it twice leaves no watcher
-  behind.
+- **Give the declared watch its `stop_command`.** Both halves that existed are done:
+  `stop_command` on `ManagedSpec` (a command that stops what the pty is a *client*
+  of, run before the kill, on close, restart and shutdown), and the watch is now
+  declared in `main_processes` and autostarts. Its `stop_command` is still empty,
+  which is the whole point of the item: confirm on the box that starting and
+  stopping it twice leaves no watcher behind.
 
   *The compose-service alternative was rejected, and the reasoning is worth keeping.*
   Moving the watch to its own compose service and following `docker compose logs -f`
@@ -723,12 +681,10 @@ this file, which churned it from every build; that feature is gone.
   of them is a window that looks broken on a fresh install. Collapse a pane whose
   feature is unconfigured rather than labelling it.
 
-- **Nine `confirm()` and `prompt()` boxes, in a window that draws its own
-  titlebar.** The swap confirm is sixty words of system dialog, and naming a
-  worktree is a shift-click on a `+` followed by a `prompt()`, which is a gesture
-  nobody finds. The rail already holds the pattern that replaced one of these:
-  `renameSession` edits the row in place and shows the fallback as a placeholder.
-  The other half of the same problem is that the rule is not one rule. A swap asks,
+- **The guard rule is not one rule.** The boxes themselves are done: nothing in the
+  SPA calls `window.confirm` or `window.prompt` any more, `core.js` draws
+  `confirmBox`/`promptBox`, and naming a worktree edits the row in place
+  (`renameSession`). What is left is which actions get a guard at all. A swap asks,
   `open in main checkout` moves main's branch without asking, and `fix` starts a run
   that force-pushes without asking, which CLAUDE.md already notes is easy to fire by
   accident. Either the gate is "it changes a checkout or it pushes", or there is no
@@ -746,15 +702,11 @@ this file, which churned it from every build; that feature is gone.
   and be invoked as `/orchd:fix-pr` instead of rendered to a file the session is
   told to read. What that would buy: one mechanism instead of two, and a human in
   the pane able to reach a flow the daemon currently only starts for them.
-  What stands in the way is the substitution. A prompt is rendered per run —
-  `{{PR}}`, `{{ASK_BASE}}`, `{{LANGUAGE}}`, the rebase target that is the *PR's*
-  base rather than the configured one — and a skill file is static, so the run's
-  values have to reach it another way: an argument the agent is told to pass, or
-  the environment it already has. The cheap half is the environment, since
-  `ORCH_SESSION_ID` and `ORCH_URL` are there and `orch` can answer the rest.
-  Worth doing when a second reader needs these flows; not worth a rewrite for its
-  own sake, and `prompt::render`'s tests are the thing that would have to be
-  replaced rather than deleted.
+  What stands in the way is the substitution, and the first entry in this file
+  works it through for `triage`: a prompt is rendered per run and a skill file is
+  static, so the run's values have to reach it as an argument or over a route.
+  Do these two the same way if triage's works, one at a time. `prompt::render`'s
+  tests are the thing that would have to be replaced rather than deleted.
 
 ## Decisions worth revisiting
 
@@ -792,34 +744,6 @@ this file, which churned it from every build; that feature is gone.
   own format and can change under us. It degrades to the workspace name rather
   than failing, and the transcript slug rule has already been wrong once, so a
   rail that goes back to reading `dfafdf` everywhere is the symptom to look for.
-
-- **No WebGL renderer under WebKitGTK.** Glyphs came back as garbage that a
-  scroll or a selection cleaned up. Two narrower fixes did not hold: clearing the
-  glyph atlas and refreshing after every refit, and disposing the addon on context
-  loss. So the canvas is gone under that engine and xterm draws real text, which
-  cannot garble.
-
-  ~~**What is still open is whether WKWebView garbles too.**~~ Answered, by a
-  report from a Retina Mac (#8): it does, and worse — a scroll does not clean it
-  up. The trigger is a *second* terminal writing while the agent pane repaints, and
-  a single terminal never garbled, so macOS now keeps **one live WebGL context per
-  window**: the agent pane has the canvas, drawer terminals take the DOM renderer.
-  That was chosen over dropping `IS_MAC`, which would have returned the typing lag
-  to the pane being typed into. A browser tab is unchanged.
-
-  Still unanswered by anyone here: whether one context is *sufficient* on a Mac, or
-  only the trigger that was found first. Only a Mac can say, and the renderer now
-  logs itself (`page: <target> renderer=… engine=…`) so the next report can.
-
-  The *scrolling* half of this entry is answered and was never the renderer: xterm
-  damps sub-50px wheel deltas to 30% and drops the remainder, which is every event
-  of a slow trackpad drag. `term.js` takes the wheel over instead.
-
-  The cost of the DOM renderer is now partly measured: parsing into a *hidden*
-  terminal cost about five times a visible one under WebKit (172-188 ms a frame
-  with seven of eight hidden, against 37-41 with all visible), which is why hidden
-  terminals now queue instead of writing. What that leaves unmeasured is the
-  visible pane under a heavy scroll, which is the report.
 
 - **Sessions archived before the rename still say `green`.** `Kind::Automation`
   carries the command as a free string, so records already in `sessions.json` keep
@@ -872,9 +796,16 @@ this file, which churned it from every build; that feature is gone.
   click you were going to aim anyway, and the audit's own finding was that the
   scheme wins by being *smaller*. Add it only if the PR pane ever grows long
   enough to scroll.
-- Adopting shell-started sessions. The daemon spawns every session so that
-  `$ORCH_SESSION_ID` correlation is exact (§2); adopting one would reintroduce
-  the cwd/pid heuristics the spec rejects.
+- Adopting shell-started sessions. **The old reason no longer holds and the
+  conclusion still does.** It was that adopting one reintroduces the cwd/pid
+  heuristics the spec rejects; `hooks::session_of` now falls back to the payload's
+  own `session_id`, so correlation is exact without them. What blocks it is the
+  pty: every session in the rail is one the daemon owns and the SPA attaches to,
+  and a `claude` in your terminal has its own tty, so the row could only ever be a
+  status card. Add to that hooks that reach it (`.claude/settings.local.json` in
+  the managed checkout, not the global file), a record with no pty for every path
+  that assumes `alive` means there is one, and nothing to say it ended. The
+  read-only half is about a day; item three is where it would go wrong quietly.
 - A generic "run this command" endpoint (§12).
 - Reworking the rail row (id into a tooltip, workspace onto the second line). The
   naming work that motivated it — `railName` showing the PR title or the
