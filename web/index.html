@@ -4,6 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>orchd — session board</title>
+<!-- The ground, before the stylesheet that carries it has parsed. Without this the
+     window is white for as long as app.css takes, which is what the splash-to-board
+     hand-off looked like: the page in one corner and white around it. -->
+<style>html,body{background:#101010;margin:0}</style>
 <!-- Fonts are @font-face'd from app.css against the daemon's own /vendor/fonts. -->
 <link rel="stylesheet" href="/vendor/xterm.css">
 <link rel="stylesheet" href="/app.css">
@@ -378,7 +382,7 @@
     <dl class="keys">
       <div class="settings-group">Navigate</div>
       <dt>Ctrl&nbsp;Tab</dt><dd>next session (Shift: previous)</dd>
-      <dt data-mod>MOD&nbsp;Space</dt><dd>jump to the first session that needs you</dd>
+      <dt data-mod>MOD&nbsp;Space</dt><dd>go to the first session that needs you</dd>
 
       <div class="settings-group">Create</div>
       <dt data-mod>MOD&nbsp;N</dt><dd>new worktree</dd>

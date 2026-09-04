@@ -147,6 +147,54 @@ export function caret() {
   return s;
 }
 
+/** A duration that keeps moving, without the tree being rebuilt to move it.
+ *
+ *  The base value is kept on the node, so [`tick`] can recompute it against the
+ *  same `sinceSnap` clock a second later. That is the whole mechanism, and it
+ *  exists because the alternative was calling `renderRail` on a timer: a rebuild
+ *  destroys the node under your pointer, `:hover` is not re-targeted until the
+ *  mouse moves, and a native `title` tooltip needs the pointer resting on one
+ *  element for about half a second — which a 1 Hz rebuild never leaves it.
+ *  Rebuilding was never slow (0.46 ms for a 430-node rail); it was simply the
+ *  wrong verb for "one more second has passed".
+ *
+ *  Here rather than in the rail because `tick` was always document-wide, and the
+ *  second pane to want a moving duration wrote its own instead: the review
+ *  queue's "· 3s ago" was re-rendered by the rebuild this change is removing, so
+ *  once the pane stopped rebuilding the clock stopped with it.
+ */
+export function clock(cls, ms, suffix = '', prefix = '') {
+  // An absent base renders empty and is left un-marked. `Number('')` is 0, so a
+  // null written into the dataset would come back as a clock counting up from the
+  // epoch of nothing — a "0s" that grows where there had been no text at all.
+  if (ms == null) return el('span', cls, '');
+  /* **The instant it started, not its age when the snapshot was taken.**
+     `sinceSnap` measures from the *newest* snapshot's arrival, so a node built
+     from an older one reads its own age against a clock that has since been
+     reset, and every push that does not rebuild the node walks the number
+     backwards: measured at 55s, then 53s five seconds later. Invisible while
+     every push rebuilt the rail, and the first thing the render guards exposed.
+     An absolute instant does not care how often a snapshot lands. */
+  const started = Date.now() - sinceSnap(ms);
+  const span = el('span', cls, prefix + duration(Date.now() - started) + suffix);
+  span.dataset.clock = String(started);
+  if (suffix) span.dataset.clockSuffix = suffix;
+  if (prefix) span.dataset.clockPrefix = prefix;
+  return span;
+}
+
+/** Advance every duration on the page. The timer calls this, not render. */
+export function tick() {
+  for (const node of document.querySelectorAll('[data-clock]')) {
+    const el_ = /** @type {HTMLElement} */ (node);
+    const started = Number(el_.dataset.clock);
+    if (!Number.isFinite(started)) continue;
+    el_.textContent = (el_.dataset.clockPrefix || '')
+      + duration(Date.now() - started)
+      + (el_.dataset.clockSuffix || '');
+  }
+}
+
 /* One row per message, stacked newest at the bottom. A receipt fades on its own;
  * an error stays until dismissed, because a refusal names a branch, a pid or a
  * path you may need to copy — and a second error must no longer erase the first
@@ -436,9 +484,30 @@ export function keyActivate(el) {
  *  snapshot is taken, so they differ on every push by construction, and none of
  *  them is drawn directly: each goes through `clock()` into a `data-clock` node
  *  that `Rail.tick` rewrites in place once a second. Keeping them would make
- *  every signature differ and the guard a no-op. */
-export function paintSig(value) {
-  return JSON.stringify(value, (k, v) => (k.endsWith('_ms') ? undefined : v));
+ *  every signature differ and the guard a no-op.
+ *
+ *  `drop` names the fields a *particular* pane does not draw. Passing the whole
+ *  snapshot is the safe way to build one of these — a signature that lists its
+ *  inputs is one refactor away from freezing its pane — but safe is not free: the
+ *  rail was rebuilt on every edit an agent made, because a `PostToolUse` sweep
+ *  rewrites the workspace's changed-file list and that rides the same snapshot,
+ *  and the rail does not draw it. Naming what to ignore keeps "any change
+ *  rebuilds" as the default and takes the churn out one pane at a time. */
+function paintSig(value, drop = []) {
+  return JSON.stringify(value, (k, v) => (k.endsWith('_ms') || drop.includes(k) ? undefined : v));
+}
+
+/** True when `value` renders the same as it did last time this box was asked.
+ *
+ *  The box is the pane's own `{ sig: null }`: five panes were each carrying a
+ *  module-level `let xSig`, the same three lines of compare-and-remember, and the
+ *  same comment with one noun changed. One name for the idiom means a reader
+ *  confirms it once. */
+export function unchanged(box, value, drop = []) {
+  const sig = paintSig(value, drop);
+  if (box.sig === sig) return true;
+  box.sig = sig;
+  return false;
 }
 
 export function refreshButton(kind, pollCount, endpoint, polling) {
@@ -631,6 +700,37 @@ export const isWaiting = (s) => s.wants_attention;
  * handler renders the row disabled, so right-clicking a session that has
  * already ended still says what the menu would have offered.
  */
+/** Put text on the clipboard, whatever the webview allows.
+ *
+ *  WebKitGTK refuses the async clipboard API in a webview often enough that its
+ *  `NotAllowedError` was showing up as a toast that read like a bug. The old
+ *  `execCommand` path has no permission to refuse: inside a user gesture it just
+ *  copies, which is what a keypress or a menu item is.
+ *
+ *  Here rather than in `term.js` because the rail's `copy id` needs the same two
+ *  attempts, and the fallback is the part that is easy to get subtly wrong. */
+export async function copyText(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch (e) { /* fall through to the one that works */ }
+  try {
+    const ta = el('textarea');
+    ta.value = text;
+    // Off-screen rather than hidden: a `display:none` textarea cannot be selected.
+    ta.style.cssText = 'position:fixed;top:-1000px;opacity:0';
+    document.body.appendChild(ta);
+    ta.select();
+    const ok = document.execCommand('copy');
+    ta.remove();
+    if (!ok) throw new Error('refused');
+    return true;
+  } catch (e) {
+    toast('this window is not allowed to write to the clipboard', true);
+    return false;
+  }
+}
+
 export function openMenu(ev, items) {
   ev.preventDefault();
   const menu = $('ctxmenu');

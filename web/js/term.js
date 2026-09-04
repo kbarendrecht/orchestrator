@@ -2,7 +2,7 @@
 // over a websocket. The DOM renderer is deliberate under WebKitGTK, and only
 // there — see the renderer comment below, and CLAUDE.md.
 
-import { $, CHROME, IS_MAC, TOKEN, WS_BASE, el, mark, note, reportBoot, selected, terms, toast, typingElsewhere, uiScale, wheelScale } from './core.js';
+import { $, CHROME, IS_MAC, TOKEN, WS_BASE, copyText, el, mark, note, reportBoot, selected, terms, toast, typingElsewhere, uiScale, wheelScale } from './core.js';
 
 
 const THEME = {
@@ -30,34 +30,6 @@ const OBSERVE = new URLSearchParams(location.search).has('observe');
  *  also why it stays crisp. */
 const TERM_FONT = 12;
 const termFontSize = () => Math.round(TERM_FONT * uiScale());
-
-/** Put text on the clipboard, whatever the webview allows.
- *
- *  WebKitGTK refuses the async clipboard API in a webview often enough that its
- *  `NotAllowedError` was showing up as a toast that read like a bug. The old
- *  `execCommand` path has no permission to refuse: inside a user gesture it just
- *  copies, which is what a keypress in a terminal is. */
-async function copyText(text) {
-  try {
-    await navigator.clipboard.writeText(text);
-    return true;
-  } catch (e) { /* fall through to the one that works */ }
-  try {
-    const ta = el('textarea');
-    ta.value = text;
-    // Off-screen rather than hidden: a `display:none` textarea cannot be selected.
-    ta.style.cssText = 'position:fixed;top:-1000px;opacity:0';
-    document.body.appendChild(ta);
-    ta.select();
-    const ok = document.execCommand('copy');
-    ta.remove();
-    if (!ok) throw new Error('refused');
-    return true;
-  } catch (e) {
-    toast('this window is not allowed to write to the clipboard', true);
-    return false;
-  }
-}
 
 /** Attach to a pty, replaying the daemon's buffer first. */
 function openTerm(target, parent) {
@@ -103,16 +75,21 @@ function openTerm(target, parent) {
   // directly is what pinned them to the first, dead one (#7).
   const entry = { term, fit, host };
 
-  // The pty-status pill: `starting…` until the first attach, `reconnecting…` if an
-  // open socket later drops, hidden once live. Built here so it exists before the
-  // socket does, and shown starting straight away — a spawn can take a moment, and
-  // a blank pane with a blinking cursor should say why.
+  /* The pty-status pill: `connecting…` until the socket is up, `starting…` until
+     the pty says its first word, `reconnecting…` if an open socket later drops,
+     hidden once there is output. Built here so it exists before the socket does.
+
+     **It used to come down when the socket opened**, which is a local connection
+     and therefore instant — while the thing you are waiting for is the agent,
+     which on a resume is several seconds of Claude Code booting. So the pill
+     flashed and the pane then sat empty with a blinking cursor, saying nothing,
+     for exactly the wait it was built to explain. */
   const badge = el('div', 'term-badge');
   badge.appendChild(el('span', 'conn-dot'));
   badge.appendChild(el('span', 'term-badge-t'));
   host.appendChild(badge);
   entry.badge = badge;
-  setBadge(entry, 'starting');
+  setBadge(entry, 'connecting');
 
   /* Copy and paste, in whichever spelling the platform uses: ⌘C/⌘V on a Mac,
    * Ctrl+Shift+C/V elsewhere — the terminal convention, because plain Ctrl+C has
@@ -347,7 +324,7 @@ function connect(entry, target) {
     // Back to healthy: clear the backoff and the "reconnecting" mark, then flush
     // anything typed while the socket was down.
     entry.backoff = 0;
-    setBadge(entry, null);
+    setBadge(entry, 'starting');
     // A reattach replays the *whole* ring buffer, exactly as a first attach does —
     // but this terminal already holds the previous buffer, so writing the replay on
     // top would show the scrollback twice. Clear it before the replay lands, so a
@@ -379,6 +356,10 @@ function connect(entry, target) {
     }
   };
   sock.onmessage = (ev) => {
+    // The first word out of the pty is what "live" means; see the badge comment
+    // in `openTerm`. Before the hidden check below, or a pane that filled while
+    // it was parked comes back still wearing the pill.
+    if (entry.badge && !entry.badge.hidden) setBadge(entry, null);
     const chunk = typeof ev.data === 'string' ? ev.data : new Uint8Array(ev.data);
     /* A terminal nobody is looking at is not written to, it is queued. `hidden`
        is `display:none`, which parks the *renderer* — it does not stop `write`,
@@ -424,12 +405,23 @@ const INPUT_BUDGET = 1 << 16; // 64 KB
  *  `'starting'` before the first attach, `'reconnecting'` after an open socket
  *  drops, `null` when it is carrying output. One pill for both, the connbar's, so
  *  a pane that is not live never reads as one that is. */
+const BADGE = {
+  connecting: 'connecting…',
+  starting: 'starting…',
+  reconnecting: 'reconnecting…',
+};
+
 function setBadge(entry, state) {
   const b = entry.badge;
   if (!b) return;
+  /* **Nothing to blink at while nothing is attached.** A cursor on an empty pane
+     reads as a live prompt ignoring what you type, which is the opposite of what
+     it is. Hidden through the theme rather than a CSS rule, because the DOM and
+     the WebGL renderer draw the cursor in different places and the option is the
+     one lever that reaches both. */
+  entry.term.options.theme = state ? { ...THEME, cursor: THEME.background } : THEME;
   if (!state) { b.hidden = true; return; }
-  b.querySelector('.term-badge-t').textContent =
-    state === 'starting' ? 'starting…' : 'reconnecting…';
+  b.querySelector('.term-badge-t').textContent = BADGE[state] || BADGE.connecting;
   b.hidden = false;
 }
 

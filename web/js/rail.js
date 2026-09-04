@@ -1,7 +1,7 @@
 // The rail: what is running, what is waiting on you, and the PRs beside it.
 // Twenty-four names, three out; the rest is how a row decides what it says.
 
-import { $, byNewest, call, caret, confirmBox, dotClass, duration, el, isArchived, isConversation, isWaiting, mainWorkspace, MOD_LABEL, newSession, newWorktree, openMenu, paintSig, pending, refreshButton, selected, sessionsOf, setSelected, sinceSnap, snap, stateClass, stateLabel, toast, setPendingSelect } from './core.js';
+import { $, byNewest, call, caret, clock, confirmBox, copyText, dotClass, duration, el, isArchived, isConversation, isWaiting, mainWorkspace, MOD_LABEL, newSession, newWorktree, openMenu, pending, refreshButton, selected, sessionsOf, setSelected, sinceSnap, snap, stateClass, stateLabel, toast, unchanged, setPendingSelect } from './core.js';
 import * as Review from './review.js';
 import * as Term from './term.js';
 
@@ -15,43 +15,26 @@ const showArchived = { main: false, worktrees: false };
  * `renderDrawer`. `renameSession` sets it and clears it. */
 let editingName = null;
 
-/** A duration that keeps moving, without the tree being rebuilt to move it.
- *
- *  The base value is kept on the node, so [`tick`] can recompute it against the
- *  same `sinceSnap` clock a second later. That is the whole mechanism, and it
- *  exists because the alternative was calling `renderRail` on a timer: a rebuild
- *  destroys the node under your pointer, `:hover` is not re-targeted until the
- *  mouse moves, and a native `title` tooltip needs the pointer resting on one
- *  element for about half a second — which a 1 Hz rebuild never leaves it.
- *  Rebuilding was never slow (0.46 ms for a 430-node rail); it was simply the
- *  wrong verb for "one more second has passed".
- */
-function clock(cls, ms, suffix = '', prefix = '') {
-  // An absent base renders empty and is left un-marked. `Number('')` is 0, so a
-  // null written into the dataset would come back as a clock counting up from the
-  // epoch of nothing — a "0s" that grows where there had been no text at all.
-  if (ms == null) return el('span', cls, '');
-  const span = el('span', cls, prefix + duration(sinceSnap(ms)) + suffix);
-  span.dataset.clock = String(ms);
-  if (suffix) span.dataset.clockSuffix = suffix;
-  if (prefix) span.dataset.clockPrefix = prefix;
-  return span;
-}
 
-/** Advance every duration the rail is showing. The timer calls this, not render. */
-function tick() {
-  for (const node of document.querySelectorAll('[data-clock]')) {
-    const el_ = /** @type {HTMLElement} */ (node);
-    const base = Number(el_.dataset.clock);
-    if (!Number.isFinite(base)) continue;
-    el_.textContent = (el_.dataset.clockPrefix || '')
-      + duration(sinceSnap(base))
-      + (el_.dataset.clockSuffix || '');
-  }
-}
+/* **What a tree measures is the changed-files pane's business, not the rail's.**
+   A row is a dot, a name, a state and a clock; `sessionRow` says so in as many
+   words ("No dirty-file count"). But every edit an agent makes triggers a sweep,
+   and the new counts ride the same snapshot — so with these in the signature the
+   rail was rebuilt continuously while anyone was working, and the `+` beside the
+   worktrees header strobed under the pointer. `dirty_count` is here for a blunter
+   reason: nothing in the SPA reads it at all.
 
-/** What the rail was last built from — see `paintSig`. */
-let railSig = null;
+   Matched by bare name wherever it appears, the way the `_ms` rule is. Nothing
+   else in the snapshot carries these names today; a session field called
+   `measured` or `ahead` would be dropped here too, and the rail would go stale on
+   it rather than churn. */
+const NOT_DRAWN = [
+  'changed', 'changed_total', 'changed_since', 'behind', 'ahead', 'rebasing',
+  'measured', 'dirty_count',
+];
+
+/** What the rail was last built from — see `unchanged`. */
+const drawn = { sig: null };
 
 function renderRail() {
   if (editingName !== null) return;
@@ -65,9 +48,9 @@ function renderRail() {
      anything the daemon changes rebuilds it, and a push carrying nothing but new
      durations does not. `showArchived` and the rest are the view state the
      snapshot cannot see. */
-  const sig = paintSig([snap, showArchived, showPrs, picked, selected, swapInFlight]);
-  if (sig === railSig) return;
-  railSig = sig;
+  if (unchanged(drawn, [snap, showArchived, showPrs, picked, selected, swapInFlight], NOT_DRAWN)) {
+    return;
+  }
 
   const rail = $('rail');
   rail.replaceChildren();
@@ -127,8 +110,8 @@ function reviewButtons(p) {
 
 /* Menu copy, one convention for all of them: a lowercase verb phrase, and the
    object only when it is *not* the row you right-clicked — the row already says
-   which session, so "fork session" says it twice, while "swap branch with main"
-   names something else and earns it. No trailing ellipsis on the ones that open a
+   which session, so "fork session" says it twice, while "swap with main" names
+   something else and earns it. No trailing ellipsis on the ones that open a
    prompt or a picker: every item here leads somewhere, so marking three of them
    is noise rather than a distinction. */
 
@@ -256,7 +239,8 @@ function prGroup() {
   }
 
   for (const p of prs) {
-    // Rows for PRs that already have a session are dimmed and jump to it (§9).
+    // Rows for PRs that already have a session are dimmed, and the chip at the
+    // end of the row goes to it (§9).
     const row = el('a', 'prrow' + (p.session ? ' linked' : ''));
     row.href = p.url || '#';
     row.oncontextmenu = (ev) => openMenu(ev, prMenu(p, null));
@@ -289,7 +273,7 @@ function prGroup() {
     // allowed to fix — still something a person set off, by sending the decisions.
     if (auto && auto.state === 'running') {
       const b = el('span', 'pract running', 'fixing');
-      b.title = 'Jump to the run';
+      b.title = 'Go to the run';
       b.onclick = (ev) => { ev.preventDefault(); ev.stopPropagation(); setSelected(auto.session); };
       row.appendChild(b);
     } else {
@@ -297,20 +281,36 @@ function prGroup() {
         // The skill stopped without turning it green: it wants you.
         row.appendChild(el('span', 'why gaveup', 'gave up'));
       }
-      if (needsResolve) row.appendChild(reviewButtons(p));
-      /* No `fix` while a session holds the branch, because the daemon refuses that
-         run: `spawn_fix_pr_session` bails with "already has a live session for
+      /* **Neither button while a session holds the branch**, because a button whose
+         only outcome is an error toast is worse than no button, and the `session`
+         chip beside them is the thing to press.
+
+         `fix`: `spawn_fix_pr_session` bails with "already has a live session for
          #<n>" the moment `branch_busy` answers, and `PrView.session` is that same
-         live session. A button whose only outcome is an error toast is worse than
-         no button — the `jump` chip beside it is the thing to press. Review keeps
-         its buttons: `/resolve` takes you *to* that session rather than refusing. */
+         live session.
+
+         `review ▾`: checked one by one against the daemon, and all four of its
+         items are spent. `open in main checkout` and `open in worktree` hit
+         `refuse_if_occupied`; `resolve in UI` hits `triage::spawn_posting_run`'s
+         gate. `resolve` is the odd one — `spawn_command_session` hands back the
+         live session rather than refusing — but "take me to the session on this
+         branch" is what the chip already does, one control to the left. The menu
+         stays on a right-click for anyone who wants to read the refusal. */
+      if (needsResolve && !p.session) row.appendChild(reviewButtons(p));
       if (needsFix && !p.session) row.appendChild(actionButton(p, 'fix-pr', 'fix'));
     }
 
-    // The row opens the PR; jumping to its session is the explicit chip, so
-    // one does not swallow the other.
-    if (p.session) {
-      const j = el('button', 'jump', 'jump');
+    /* The row opens the PR; going to its session is the explicit chip, so one does
+       not swallow the other. It names the destination rather than the motion,
+       because every other chip on this row — `review`, `fix`, `fixing` — is about
+       the PR, and this is the only one that moves you somewhere.
+
+       **Not while a run is showing.** `PrView.session` is "a live session in that
+       workspace", and a running `fix-pr` is exactly that, so the row drew two
+       chips onto the same uuid: `fixing`, which says what is happening, and this,
+       which only says that something is. */
+    if (p.session && !(auto && auto.state === 'running')) {
+      const j = el('button', 'jump', 'session');
       j.title = 'Go to the session on this branch';
       j.onclick = (ev) => {
         ev.preventDefault();
@@ -458,6 +458,7 @@ function archivedRow(s) {
     // Not gated on `resumable` the way opening it is: a fork cuts its own
     // worktree, so a conversation whose branch is gone can still be branched off.
     ['fork', null, s.has_transcript ? () => forkSession(s) : null],
+    ['copy id', null, () => copyId(s)],
     ['delete', 'bad', () => deleteSession(s)],
   ]);
   return btn;
@@ -594,7 +595,7 @@ function sessionRow(s, w) {
 
        on main                        → move out of main, into a tree of its own
        on a worktree, main is free    → move to main
-       on a worktree, main holds work → swap branch with main
+       on a worktree, main holds work → swap with main
 
      Never two of them. A session is in main or it is not, so the other could only
      ever be dead, and a greyed "move out of main" on a worktree row reads as the
@@ -604,7 +605,7 @@ function sessionRow(s, w) {
   const inMain = s.workspace === mainWs?.id;
   const moveLabel = inMain
     ? 'move out of main'
-    : mainHoldsWork(mainWs) ? 'swap branch with main' : 'move to main';
+    : mainHoldsWork(mainWs) ? 'swap with main' : 'move to main';
   // A worktree Claude Code has not named yet has no path to swap.
   const moveDo = inMain
     ? () => moveOutOfMain(s)
@@ -619,6 +620,7 @@ function sessionRow(s, w) {
     // where the daemon refuses it — mid-turn an escape interrupts the turn, and at
     // a question or a permission prompt it answers instead of rewinding.
     ['rewind', null, isRewindable(s) ? () => rewindSession(s) : null],
+    ['copy id', null, () => copyId(s)],
     // The worktree, not the session: the row is the only place a worktree is
     // visible, so its workspace-level action lives here too.
     [moveLabel, null, moveDo],
@@ -626,6 +628,16 @@ function sessionRow(s, w) {
     ['delete', 'bad', () => deleteSession(s)],
   ]);
   return btn;
+}
+
+/** The session's uuid, on the clipboard.
+ *
+ *  It is Claude Code's session id as well as the daemon's — every spawn passes
+ *  `--session-id` — so it is what `claude --resume`, a transcript path and a hook
+ *  correlation all key on. The rail is the only place it is visible, and it is
+ *  not selectable text there. */
+async function copyId(s) {
+  if (await copyText(s.id)) toast('id copied');
 }
 
 /** Sessions whose prompt would take a double-escape as "rewind".
@@ -694,7 +706,7 @@ function mainHoldsWork(main) {
   // What main has checked out *now*. This used to ask `branches`, which accumulates
   // every branch a tree has ever held and is never pruned — so one visit from any
   // other branch made main look occupied for the rest of the daemon's life, and the
-  // row went on offering "swap branch with main" over a main sitting on its base.
+  // row went on offering a swap with a main sitting on its base.
   // Unknown before the first reconcile, and unknown is the cautious answer: a swap
   // refuses when there is nothing to exchange, a move would move onto a branch
   // somebody else holds.
@@ -939,8 +951,8 @@ const isNudgeable = (s) =>
   // at the same empty prompt — so the bar was calling finished work "paused".
   && s.interrupted;
 
-/** What the bar was last built from — see `paintSig`. */
-let waitSig = null;
+/** What the bar was last built from — see `unchanged`. */
+const barDrawn = { sig: null };
 
 function renderWaitbar() {
   const waiting = snap.sessions.filter(isWaiting);
@@ -951,9 +963,7 @@ function renderWaitbar() {
      set cannot change while the set does not. Without this the `continue` button
      was rebuilt under the pointer several times a second and its border strobed
      as `:hover` was re-targeted on each one. */
-  const sig = paintSig([waiting.map((s) => s.id), ready.map((s) => s.id)]);
-  if (sig === waitSig) return;
-  waitSig = sig;
+  if (unchanged(barDrawn, [waiting.map((s) => s.id), ready.map((s) => s.id)])) return;
   if (!waiting.length && ready.length < 2) {
     bar.className = 'waitbar';
     bar.replaceChildren();
@@ -975,7 +985,7 @@ function renderWaitbar() {
        snapshot, the duration changes every second. */
     bar.appendChild(el('span', null, `${waiting.length} need you · longest `));
     bar.appendChild(clock(null, longest.waiting_ms ?? 0));
-    bar.title = `Jump to the one that has needed you longest · ${MOD_LABEL} Space`;
+    bar.title = `Go to the one that has needed you longest · ${MOD_LABEL} Space`;
     bar.onclick = () => setSelected(longest.id);
   } else {
     /* Nobody is asking for you; a restart has just put several agents back at an
@@ -1014,4 +1024,4 @@ async function nudgeAll() {
   }
 }
 
-export { renderRail as render, tick, railName as rowName, closeSession };
+export { renderRail as render, railName as rowName, closeSession };

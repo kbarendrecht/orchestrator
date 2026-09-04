@@ -15,7 +15,7 @@ import {
   drawerTouched, setDrawerTouched, drawerCollapsed, setDrawerCollapsed,
   pendingProcFocus, setPendingProcFocus, pendingSelect, setPendingSelect,
   onDrawerChange, appMod, IS_MAC, MOD_LABEL, closeLegend, typingElsewhere,
-  mark, reportBoot, confirmBox, dialogOpen, dismissDialog,
+  mark, reportBoot, confirmBox, dialogOpen, dismissDialog, unchanged, tick,
 } from './js/core.js';
 
 // The daemon owns all state. This SPA is stateless and disposable: closing the
@@ -627,10 +627,22 @@ new MutationObserver(updateTabOverflow).observe($('dtabs'), { childList: true })
  *  the strip back while you are reading the other end of it. */
 const shownTab = {};
 
+/** What the drawer was last built from — see `unchanged`. */
+const drawerDrawn = { sig: null };
+
 function renderDrawer() {
   if (tabDrag !== null) return;
   const wsId = currentWorkspaceId();
   const w = workspaceById(wsId);
+  /* Rebuilt only when it would come out different. Every input this reads is
+     listed, because unlike the rail this pane is small enough to enumerate and
+     every one of them is right here in the function. A tab is a button you click
+     and drag; rebuilding the strip on every snapshot took the drag target out
+     from under the pointer several times a second while an agent worked. */
+  if (unchanged(drawerDrawn, [wsId, w ? w.processes : null, snap.stack_up, drawerCollapsed,
+    selectedProc[wsId], procOrder[wsId], drawerTouched, pendingProcFocus, shownTab[wsId]])) {
+    return;
+  }
   const tabs = $('dtabs');
   tabs.replaceChildren();
 
@@ -968,6 +980,17 @@ for (const dt of document.querySelectorAll('[data-mod]')) {
   else dt.innerHTML = dt.innerHTML.replace(/MOD/g, MOD_LABEL);
 }
 $('dcollapse').onclick = () => setDrawerCollapsed(!drawerCollapsed);
+/* The bar itself is the second way in, on a double-click: the same gesture the
+   splitter above it already takes, and the header is mostly empty space that
+   looked inert. Single-click is not offered here — the bar carries the tabs, the
+   `+ Shell` button and the stack badge, and a stray click while aiming at one of
+   them must not fold the pane. `closest` keeps it to the background: a
+   double-click that lands on a control is that control's. */
+document.querySelector('.drawer-head')?.addEventListener('dblclick', (ev) => {
+  const t = /** @type {HTMLElement} */ (ev.target);
+  if (t.closest('button, .dtab, input')) return;
+  setDrawerCollapsed(!drawerCollapsed);
+});
 $('refreshbtn').onclick = () => {
   const wsId = currentWorkspaceId();
   if (wsId) call(`/api/workspace/${encodeURIComponent(wsId)}/reconcile`).catch((e) => toast(e.message, true));
@@ -1047,7 +1070,26 @@ function switchSession(step) {
   setSelected(ordered[(from + step + ordered.length) % ordered.length].id);
 }
 
+/* **A key the app claims must not also reach the pty.**
+ *
+ * This runs in the capture phase, so it sees a keystroke before the terminal
+ * does — but `preventDefault` alone does not stop the event travelling on, and
+ * xterm's keydown path never asks whether it was defaulted (one `defaultPrevented`
+ * in the whole vendored build, in `keyup` bookkeeping). So the key was handled
+ * *and* written to the pty: measured, closing the legend with `Esc` while an agent
+ * pane had focus sent `1b` on that session's socket, which is an interrupt to
+ * Claude Code — and two of them in a row is its rewind picker.
+ *
+ * One rule in one place, rather than a second call on every branch: whatever the
+ * map claimed, the terminal does not see. `defaultPrevented` is exactly the
+ * question "did we take it", because every branch that acts calls
+ * `preventDefault`. */
 window.addEventListener('keydown', (e) => {
+  keymap(e);
+  if (e.defaultPrevented) e.stopPropagation();
+}, true);
+
+function keymap(e) {
   /* First in the chain, because it is modal and the topmost thing on screen: a
      confirm drawn over the review overlay has to be the thing `Esc` answers, or
      the overlay closes underneath the question about it. Cancelling is the safe
@@ -1057,6 +1099,11 @@ window.addEventListener('keydown', (e) => {
     dismissDialog();
     return;
   }
+  /* Modal means modal: below this line the map is about the app's own panes, and
+     a bare Enter aimed at a confirm would otherwise also accept the review card
+     behind it. The dialog draws its own Enter (`dlgOpen` in core.js), and Escape
+     is the branch above. */
+  if (dialogOpen()) return;
   if (e.key === 'Escape' && !$('keyhelp').hidden) {
     e.preventDefault();
     $('keyhelp').hidden = true;
@@ -1223,8 +1270,7 @@ window.addEventListener('keydown', (e) => {
     }
     return;
   }
-
-}, true);
+}
 
 /* A terminal sizes itself to its host, and the host changes size for more reasons
  * than any one event covers: a window resize, a column drag, a font-size step, or
@@ -1616,7 +1662,7 @@ connect();
    `title` tooltip — which wants the pointer resting on one element for about half
    a second — arrived late or never. `tick` rewrites the duration strings in
    place. */
-setInterval(() => { Rail.tick(); }, 1000);
+setInterval(() => { tick(); }, 1000);
 
 window.orchTeardown = teardown;
 /* The macOS menu bar's Settings item. A native menu cannot reach a module, so

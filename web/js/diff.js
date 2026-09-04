@@ -2,7 +2,7 @@
 // drives it. One module because the three call each other; splitting them would
 // only have turned that into circular imports.
 
-import { $, activeWorkspaceId, call, confirmBox, currentSession, currentWorkspaceId, el, get, MOD_LABEL, openMenu, paintSig, pending, prForWorkspace, selected, snap, toast, workspaceById } from './core.js';
+import { $, activeWorkspaceId, call, confirmBox, currentSession, currentWorkspaceId, el, get, MOD_LABEL, openMenu, pending, prForWorkspace, snap, toast, unchanged, workspaceById } from './core.js';
 
 // Written back onto the button after a save, so it is spelled from the same
 // platform label the page resolved `data-mod` with — a hardcoded glyph here was
@@ -103,8 +103,8 @@ function counting() {
   return box;
 }
 
-/** What the pane was last built from — see `paintSig`. */
-let filesSig = null;
+/** What the pane was last built from — see `unchanged`. */
+const drawn = { sig: null };
 
 function renderFiles() {
   // The diff overlay is opened against a workspace and keeps describing it while
@@ -113,12 +113,16 @@ function renderFiles() {
   const w = workspaceById(wsId);
   /* Rebuilt only when it would come out different: a file row is a button you
      hover and click, and a snapshot lands several times a second while an agent
-     works. `selected` is in here because `activeWorkspaceId` reads it, and the
-     four `diffState` fields are the ones this pane draws from — `file` and its
-     hunks belong to the overlay, not to the list. */
-  const sig = paintSig([snap, selected, wsId, diffState.open, diffState.path, diffState.summary]);
-  if (sig === filesSig) return;
-  filesSig = sig;
+     works.
+     **This workspace, not the snapshot.** Passing the whole snapshot is the safe
+     default and it is the wrong one here: with sixty worktrees and several agents
+     running, an edit in any *other* worktree rewrote its changed-file list and
+     rebuilt this pane, which describes one workspace and never reads another. So
+     the inputs are named — `w` and the current session cover both branches below,
+     and the `diffState` fields are the ones drawn here, `file` and its hunks
+     being the overlay's rather than the list's. */
+  if (unchanged(drawn, [wsId, w, currentSession(), diffState.open, diffState.path,
+    diffState.summary])) return;
   renderDivergence(w);
   const panes = $('filepanes');
   panes.replaceChildren();

@@ -1161,10 +1161,17 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
 /* Always on, and dimmed rather than hidden. The pane is rebuilt on every daemon
    snapshot, so a chip that fades in on row hover replays that fade a few times a
    minute under a stationary cursor, which reads as a pulse. */
-.prrow .jump{font-family:var(--mono);font-size:calc(9px * var(--fs));color:var(--ghost);
-  flex:0 0 auto}
+/* Outlined like `.pract`, so a noun on a chip still reads as something to press —
+   a quiet word with no edge reads as a label, which is how "Reset to 100%" in the
+   settings pane came to look like the name of the row under it. Neutral rather
+   than amber: amber is "this needs you", and going to a session is only an offer. */
+.prrow .jump{
+  font-family:var(--mono);font-size:calc(9px * var(--fs));color:var(--ghost);
+  padding:2px 8px;border:1px solid var(--line);border-radius:2px;
+  flex:0 0 auto;white-space:nowrap;
+}
 .prrow:hover .jump{color:var(--faint-solid)}
-.prrow .jump:hover{color:var(--text)}
+.prrow .jump:hover{color:var(--text);background:var(--raised);border-color:var(--dim)}
 .dot.ok{background:var(--ok)}
 
 /* ---------- review queue (§6b) ---------- */

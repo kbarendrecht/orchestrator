@@ -1625,9 +1625,19 @@ function sessionAsk() {
 }
 const askHasValue = (ask, v) => !!ask && ask.options.some((o) => o.value === v);
 
-/** Start one session that reads, then makes the changes you pick and posts. Unlike
- *  triage it does not close the overlay: it stays open and advances itself when the
- *  session has read the threads (the decision ask is how we know it has). */
+/** Start one session that reads, then makes the changes you pick and posts.
+ *
+ *  **It hands you back to the pane and lets the bar do the talking.** The overlay
+ *  used to stay open on a full screen that said the session was reading, which is
+ *  a whole window spent on one sentence — and the sentence was already on the bar,
+ *  beside the pane where the permission prompts it warns about actually appear.
+ *  The read phase is minutes of somebody else's work.
+ *
+ *  The screen stays `reading`, so `MOD⇧R` while it is still going lands on that
+ *  copy rather than on nothing. Coming back is deliberately yours: `reviewTick`
+ *  advances the phase whether or not you are looking, and the bar flips to
+ *  `N of M threads waiting on you` when the cards are ready. Nothing opens the
+ *  overlay over the top of whatever you moved on to. */
 async function startReviewSession() {
   if (reviewState.busy) return;
   reviewState.busy = true;
@@ -1642,6 +1652,9 @@ async function startReviewSession() {
     reviewState.proposalsLoaded = false;
     reviewState.decisionsSent = false;
     toast('reading the threads…');
+    // The bar takes it from here; `closeReview` keeps the pr, the session and the
+    // screen, so this is putting the window away rather than ending anything.
+    closeReview();
   } catch (e) {
     toast(e.message, true);
     reviewState.screen = 'intake';
@@ -1658,6 +1671,36 @@ function reviewTick() {
   // are, so the phase has to go on advancing while you are looking at another
   // session — otherwise coming back would show you the screen you left rather than
   // the one the review has reached.
+  /* **A restart forgets the review; the daemon does not.** `reviewState` lives in
+     the page, so restarting the app left a resumed and still-working review with no
+     bar, no `MOD⇧R`, and no way back but hunting for its session in the rail.
+     `auto_resume` brings that session back with its `Kind` intact, and the kind is
+     the whole record needed to pick the thread up: automation, command `review`,
+     with the PR on it.
+
+     Deliberately not `resolve_runs`: `store::load_resolve_runs` marks every run
+     ended at boot, on purpose, because no pty survives a restart. It is an account
+     of which commit answered which thread, not a claim that anything is running.
+
+     Only the session you are looking at. That is the one the bar would draw for
+     anyway — `renderBar` refuses to caption another session's pane — and it is the
+     one question with a single answer when two reviews are in flight. */
+  if (!reviewState.session && selected) {
+    const s = (snap.sessions || []).find((x) => x.id === selected);
+    const k = s && s.alive ? s.kind : null;
+    if (k && k.kind === 'automation' && k.command === 'review') {
+      reviewState.pr = k.pr;
+      reviewState.session = s.id;
+      reviewState.proposalsLoaded = false;
+      /* Which phase, inferred, because nothing states it: a thread leaves
+         `pending` when the apply phase acts on it, so anything else means the
+         decisions went in before the restart. The cost of being wrong is one
+         caption on the bar, and the next decision ask corrects it. */
+      const run = (snap.resolve_runs || {})[k.pr];
+      reviewState.decisionsSent = !!run && run.threads.some((t) => t.status !== 'pending');
+      reviewState.screen = 'reading';
+    }
+  }
   if (!reviewState.session) return;
   const ask = sessionAsk();
 
