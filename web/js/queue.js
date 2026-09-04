@@ -8,6 +8,25 @@ import { $, caret, compactAge, el, snap, refreshButton, duration, sinceSnap } fr
 let showReviews = true;
 let showBlockedReviews = false;
 
+/* **The pane is rebuilt only when it would come out different.**
+ *
+ * The daemon pushes a whole snapshot on every state change — `notify` is called
+ * from about seventy places, and three running sessions measured at ~7 pushes a
+ * second — and `render()` calls this on each one. `replaceChildren` then destroys
+ * the row under the pointer seven times a second: `:hover` is re-targeted on
+ * every rebuild so the highlight strobes, and a click whose mousedown and mouseup
+ * land on two different elements is never delivered, which is the review row that
+ * does not open when you click it. The rail's waiting clock was moved off
+ * `Rail.render()` for this same reason, and this is the same fault one pane over.
+ *
+ * The signature deliberately leaves out the "· 3s ago" text, which is the one
+ * thing here that really does change every second. Rebuilding the pane for it
+ * would put the strobe back at 1Hz, so it is written into the span in place. */
+let renderedSig = null;
+/** The `· 3s ago` span while it is on screen, so the clock can tick without a
+ *  rebuild. Null when the head does not show one. */
+let ageSpan = null;
+
 /** Why this row is in your queue, when there is a reason worth the width. */
 function reviewReason(r) {
   if (r.blockers && r.blockers.length) return r.blockers.join(', ');
@@ -23,11 +42,26 @@ function renderReviews() {
   const block = $('rvblock');
   const head = $('rvhead');
   const list = $('rvlist');
+  const rv = snap.reviews;
+
+  // How fresh the queue is. Computed up here because it is the one string that
+  // changes without the pane changing, so it is also the one the signature omits.
+  const ageText = rv && rv.state === 'ok' && snap.reviews_age_ms != null && !snap.reviews_polling
+    ? ` · ${duration(sinceSnap(snap.reviews_age_ms))} ago`
+    : null;
+  /* `snap.reviews_poll` earns its place: `refreshButton` clears the spinner it
+     started when that counter moves, and it can only do that when it is built. */
+  const sig = JSON.stringify([showReviews, showBlockedReviews, rv,
+    snap.reviews_poll ?? 0, !!snap.reviews_polling, ageText != null]);
+  block.classList.toggle('closed', !showReviews);
+  if (sig === renderedSig) {
+    if (ageSpan) ageSpan.textContent = ageText || '';
+    return;
+  }
+  renderedSig = sig;
+  ageSpan = null;
   head.replaceChildren();
   list.replaceChildren();
-  block.classList.toggle('closed', !showReviews);
-
-  const rv = snap.reviews;
   head.setAttribute('aria-expanded', String(showReviews));
   head.appendChild(caret());
   head.appendChild(el('span', 'eyebrow', 'Review queue'));
@@ -62,10 +96,11 @@ function renderReviews() {
   const blocked = rv.blocked || [];
   count.appendChild(el('span', rows.length ? 'n' : null,
     rows.length ? `${rows.length} waiting` : 'clear'));
-  // How fresh the queue is, the same line the PR pane shows. Hidden mid-poll so
-  // it does not flicker to "0s ago" and back.
-  if (snap.reviews_age_ms != null && !snap.reviews_polling) {
-    count.appendChild(el('span', 'prage', ` · ${duration(sinceSnap(snap.reviews_age_ms))} ago`));
+  // The same line the PR pane shows. Hidden mid-poll so it does not flicker to
+  // "0s ago" and back. Kept, so the clock ticks without rebuilding the pane.
+  if (ageText != null) {
+    ageSpan = el('span', 'prage', ageText);
+    count.appendChild(ageSpan);
   }
   head.appendChild(count);
   head.appendChild(refresh);

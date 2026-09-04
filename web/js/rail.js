@@ -1,7 +1,7 @@
 // The rail: what is running, what is waiting on you, and the PRs beside it.
 // Twenty-four names, three out; the rest is how a row decides what it says.
 
-import { $, byNewest, call, caret, confirmBox, dotClass, duration, el, isArchived, isConversation, isWaiting, mainWorkspace, MOD_LABEL, newSession, newWorktree, openMenu, pending, refreshButton, selected, sessionsOf, setSelected, sinceSnap, snap, stateClass, stateLabel, toast, setPendingSelect } from './core.js';
+import { $, byNewest, call, caret, confirmBox, dotClass, duration, el, isArchived, isConversation, isWaiting, mainWorkspace, MOD_LABEL, newSession, newWorktree, openMenu, paintSig, pending, refreshButton, selected, sessionsOf, setSelected, sinceSnap, snap, stateClass, stateLabel, toast, setPendingSelect } from './core.js';
 import * as Review from './review.js';
 import * as Term from './term.js';
 
@@ -50,8 +50,25 @@ function tick() {
   }
 }
 
+/** What the rail was last built from — see `paintSig`. */
+let railSig = null;
+
 function renderRail() {
   if (editingName !== null) return;
+  // Before the guard: the bar has its own inputs and its own guard, and being
+  // skipped by the rail's would leave it saying "2 need you" after they stopped.
+  renderWaitbar();
+
+  /* The whole snapshot rather than the fields this reads, on purpose: a
+     signature that lists its inputs is one refactor away from freezing the rail,
+     and the rail is the one pane where stale is worse than an extra rebuild. So
+     anything the daemon changes rebuilds it, and a push carrying nothing but new
+     durations does not. `showArchived` and the rest are the view state the
+     snapshot cannot see. */
+  const sig = paintSig([snap, showArchived, showPrs, picked, selected, swapInFlight]);
+  if (sig === railSig) return;
+  railSig = sig;
+
   const rail = $('rail');
   rail.replaceChildren();
 
@@ -64,8 +81,6 @@ function renderRail() {
 
   // Its own pane below the scroller, so it stays put while sessions scroll.
   $('prpane').replaceChildren(prGroup());
-
-  renderWaitbar();
 }
 
 
@@ -924,12 +939,24 @@ const isNudgeable = (s) =>
   // at the same empty prompt — so the bar was calling finished work "paused".
   && s.interrupted;
 
+/** What the bar was last built from — see `paintSig`. */
+let waitSig = null;
+
 function renderWaitbar() {
   const waiting = snap.sessions.filter(isWaiting);
   const ready = snap.sessions.filter(isNudgeable);
   const bar = $('waitbar');
+  /* Which sessions, not how long they have waited: the duration is a
+     `data-clock` node that `tick` rewrites in place, and the longest of a fixed
+     set cannot change while the set does not. Without this the `continue` button
+     was rebuilt under the pointer several times a second and its border strobed
+     as `:hover` was re-targeted on each one. */
+  const sig = paintSig([waiting.map((s) => s.id), ready.map((s) => s.id)]);
+  if (sig === waitSig) return;
+  waitSig = sig;
   if (!waiting.length && ready.length < 2) {
     bar.className = 'waitbar';
+    bar.replaceChildren();
     return;
   }
   bar.replaceChildren();

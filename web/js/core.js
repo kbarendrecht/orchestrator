@@ -420,6 +420,27 @@ export function keyActivate(el) {
  * `pollCount` is the pane's monotonic poll counter from the snapshot; `endpoint`
  * is the POST that pulses that poller. Used by both the PR and review panes.
  */
+/** A signature of what a pane draws from, for skipping a rebuild that would
+ *  change nothing.
+ *
+ *  **The daemon pushes a whole snapshot on every state change** — `notify` is
+ *  called from about seventy places, and three running sessions measured at ~7
+ *  pushes a second. A pane that rebuilds on each one destroys the node under the
+ *  pointer seven times a second: `:hover` is re-targeted on every rebuild, so a
+ *  highlight or a border strobes; a native `title` never gets the half second of
+ *  rest it needs; and a click whose mousedown and mouseup land on two different
+ *  elements is not delivered at all. That is the review row that does not open
+ *  and the `continue` button that flickers.
+ *
+ *  **Every `_ms` field is left out on purpose.** They are measured when the
+ *  snapshot is taken, so they differ on every push by construction, and none of
+ *  them is drawn directly: each goes through `clock()` into a `data-clock` node
+ *  that `Rail.tick` rewrites in place once a second. Keeping them would make
+ *  every signature differ and the guard a no-op. */
+export function paintSig(value) {
+  return JSON.stringify(value, (k, v) => (k.endsWith('_ms') ? undefined : v));
+}
+
 export function refreshButton(kind, pollCount, endpoint, polling) {
   // Drawn, not typed — see the files-header refresh in index.html for why the
   // reload glyph is an SVG rather than U+21BB. 1em tracks the font-size setting.
