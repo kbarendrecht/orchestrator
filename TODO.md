@@ -6,6 +6,61 @@ this file, which churned it from every build; they now go to a gitignored
 
 ## Next
 
+- **Triage as a skill, and the review flow rebuilt around it.** Specified in full,
+  not started; the daemon edits that had begun were reverted so this is the only
+  record. The flow, as asked for:
+
+  Right-click an open PR, pick `review`. A session opens on the PR's branch, the
+  daemon types `/orchd:triage <pr>` into it, and the **bar** comes up rather than
+  the overlay: `REVIEW · PR 35264 · triaging thread 3 of 7`. When the pass is done
+  the bar says so and the cards are there when you go to them. The card flow itself
+  is good and stays as it is.
+
+  **Most of the path already exists**, which is the thing to know before starting:
+  `POST /api/pr/:n/triage` spawns a headless triage run, the run POSTs to
+  `/api/pr/:n/proposals`, the cards read `GET /api/pr/:n/review`, and the decisions
+  go to `/api/pr/:n/resolve-run`, which is the pass that writes code. What changes is
+  how the read pass is *delivered* and what the UI does while it runs.
+
+  What is missing:
+  - `skills/triage/SKILL.md`, from `commands/triage.md`, plus its line in
+    `skills::VENDORED`. It is invoked as `/orchd:triage <pr>`, so the PR number is an
+    argument rather than a substitution.
+  - `GET /api/pr/:n/triage-context`. **A skill is static, and the prompt is not**:
+    `commands/triage.md` carries seven substitutions (`{{PR}}`, `{{OWNER}}`,
+    `{{REPO}}`, `{{LOGIN}}`, `{{LANGUAGE}}`, `{{TRACKER}}`, `{{PROPOSALS_URL}}`)
+    that `prompt::render` fills in before the agent sees them. A skill has to fetch
+    them instead, and one route that answers all seven is the cheap way. It is also
+    what makes the skill work when a person types it by hand, which is the whole
+    difference between a skill and a vendored prompt.
+  - `POST /api/pr/:n/triage/progress {done, total}`, a `TriageProgress` per PR in
+    `Inner`, and a `triage` map on the snapshot. In memory only: it is a progress
+    bar for a pass that ends with its session. **Only the agent can count this** —
+    the daemon knows how many threads it handed over, but the read is a judgement
+    per thread rather than a loop the daemon drives, and `total` is the agent's own
+    count of what it decided to read (an already-answered thread is skipped, and a
+    bar counting those would never reach its end).
+  - Both new routes need a line in `is_agent_route`, or they are refused twice over
+    and the skill's only caller cannot reach them. See the note in CLAUDE.md.
+  - The spawn: a *visible* session on the PR branch whose `pending_prompt` is
+    `/orchd:triage <n>`, rather than `triage::spawn`'s headless run reading a
+    rendered file.
+  - `renderBar` copy, and the phases it reads: `triaging thread x of x` while the
+    progress map has an entry, `triage done · N threads need your call` after.
+  - **Nothing opens the overlay by itself.** The cards arriving is not a reason to
+    take the screen away from whatever you moved on to; the bar says they are ready
+    and `MOD⇧R` is how you go.
+  - Delete the duplicate. When a review checkpoint is waiting, the ask box says
+    `needs your call` *and* the bar says the same thing, one above the other
+    (`renderInteraction` in `web/app.js` draws the box for a review session's
+    non-checkpoint asks; a checkpoint ask with the overlay closed falls through to
+    it). The bar is the one to keep.
+
+  **Scope, decided:** only the old non-beta `resolve` goes — `commands/resolve.md`,
+  `POST /api/pr/:n/resolve`, `prompt::RESOLVE` and the `resolve` menu item.
+  `commands/review-session.md` and its overlay flow stay for now and get promoted
+  once the triage flow has run for real, so there is a working path throughout.
+
 - **The blocking-on-the-runtime sweep is started, not finished.**
   `proc::run_blocking` is the helper, and the sites where a parked worker was
   actually visible are done: `session_env` (a child process on *every* spawn, which
