@@ -79,14 +79,20 @@ the worktree; you may not change it. Then a numbered list, one line each:
 - **straightforward**: they are right and the fix carries no behaviour decision.
 - **needs a decision**: a real question, a design call, or you think they are wrong.
 
-**Say where you are, after each thread you finish reading.** Nothing else can
-count this: the daemon knows how many threads it handed you, not which one you
-are on, and the person watching sees a bar that says `triaging thread 3 of 7`.
+**Post where you are the moment you finish a thread, before you start the next
+one.** Somebody is watching a bar that reads `triaging thread 2 of 5`, and it is
+the only sign the pass is moving. So the first POST goes out when thread one is
+done, not when the reading is:
 
 ```bash
 curl -sS -X POST "$PROGRESS_URL" -H "x-orch-token: $ORCH_POST_TOKEN" \
-  -H 'content-type: application/json' -d '{"done":3,"total":7}'
+  -H 'content-type: application/json' -d '{"done":1,"total":5}'
 ```
+
+**Never send them together at the end.** A loop that posts 1, 2 and 3 once the
+reading is over is the same as sending nothing: the bar sat at nought for the
+whole pass and then jumped to done in one frame. Measured on the first real run
+of this skill, which did exactly that.
 
 `total` is **your** count: the threads you decided to read, not every thread on
 the PR. An answered thread you skipped was never going to be reached, and a bar
@@ -145,7 +151,7 @@ reads your options and picks.
 One POST, then exit. A run that exits without posting is a failed run.
 
 ```bash
-curl -sS -X POST '$PROPOSALS_URL' \
+curl -sS -X POST "$PROPOSALS_URL" \
   -H "x-orch-token: $ORCH_POST_TOKEN" \
   -H 'content-type: application/json' \
   --data-binary @proposals.json
