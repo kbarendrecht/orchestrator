@@ -180,9 +180,11 @@ function renderInteraction() {
   const q = s && s.interaction && !s.interaction.answer ? s.interaction : null;
   if (!q) { host.hidden = true; host.replaceChildren(); return; }
 
-  // The PR a review session is answering, or null for every other session. Its
+  // The PR a review pass is answering, or null for every other session. Its
   // checkpoints are the overlay's cards, so this box behaves differently below.
-  const rvPr = s.kind.kind === 'automation' && s.kind.command === 'review' ? s.kind.pr : null;
+  // Both commands, because the triage pass reaches the same cards.
+  const rvPr = s.kind.kind === 'automation'
+    && (s.kind.command === 'review' || s.kind.command === 'triage') ? s.kind.pr : null;
   /* **Only a checkpoint belongs to the overlay.** This used to be true of every
      ask a review session made, and that is what stranded one: the session hit a
      problem, asked about it in its own words, and this box refused to render the
@@ -190,8 +192,13 @@ function renderInteraction() {
      from neither place, and the session sat on "needs your call" for good.
      Anything the overlay does not own is answered right here, like any other
      session's question. */
+  /* **Whether the overlay is open or not.** It used to be `&& Review.state.open`,
+     which was right while the flow ended by opening the overlay for you: closed,
+     the box was the only way in. The bar is that now, and it says the same thing
+     one line lower ("triage done · 7 threads need your call"), so the pair read as
+     two questions where there is one. The cards are still a chord away. */
   const mine = q.options.some((o) => o.value === DECISIONS);
-  if (rvPr !== null && mine && Review.state.open && Review.state.session === s.id) {
+  if (rvPr !== null && mine && Review.state.session === s.id) {
     host.hidden = true; host.replaceChildren(); return;
   }
   const folded = askFolded === q.id;

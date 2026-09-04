@@ -46,12 +46,21 @@ pub const ORCH: &str = include_str!("../skills/orch/SKILL.md");
 /// rule.
 pub const GREEN: &str = include_str!("../skills/green/SKILL.md");
 
+/// The read-and-propose pass over a PR's review threads.
+///
+/// Converted from `commands/triage.md`, which was rendered per run: a skill is
+/// static, so the seven values that were substituted come from
+/// `/api/pr/:n/triage-context` at the start of the pass instead. That is also what
+/// makes it work when a person types it, which a prompt file the daemon wrote
+/// never did.
+pub const TRIAGE: &str = include_str!("../skills/triage/SKILL.md");
+
 /// Every vendored skill, as `(directory name, body)`.
 ///
 /// A table rather than a write per skill, because the writer and the frontmatter
 /// test both walk it: adding a skill is then a line here, and it cannot be
 /// written out without also being checked.
-const VENDORED: &[(&str, &str)] = &[("orch", ORCH), ("green", GREEN)];
+const VENDORED: &[(&str, &str)] = &[("orch", ORCH), ("green", GREEN), ("triage", TRIAGE)];
 
 /// The plugin manifest.
 ///

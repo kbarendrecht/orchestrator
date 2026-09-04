@@ -593,6 +593,9 @@ fn router(app: Arc<AppState>) -> Router {
         .route("/api/open/file", post(api::open_file))
         .route("/api/pr/:number/review", get(api::pr_review))
         .route("/api/pr/:number/triage", post(api::pr_triage))
+        // The two the vendored `triage` skill calls. Both are in `is_agent_route`.
+        .route("/api/pr/:number/triage-context", get(api::pr_triage_context))
+        .route("/api/pr/:number/triage/progress", post(api::pr_triage_progress))
         .route("/api/pr/:number/review-session", post(api::pr_review_session))
         // The one route a subprocess calls. Hostile input; see `pr_proposals`.
         .route("/api/pr/:number/proposals", post(api::pr_proposals))
@@ -609,7 +612,6 @@ fn router(app: Arc<AppState>) -> Router {
         .route("/api/pr/:number/manual/done", post(api::pr_manual_done))
         // The rail's default: spawn a session running `/resolve <pr>` in a pane.
         .route("/api/pr/:number/open", post(api::open_pr))
-        .route("/api/pr/:number/resolve", post(api::resolve_pr))
         .route("/api/pr/:number/fix-pr", post(api::fix_pr))
         .route("/ws/events", get(ws::events))
         .route("/ws/pty", get(ws::pty))

@@ -1211,7 +1211,6 @@ fn rebase_target(upstream_ref: &str, upstream_remote: &str, base_ref: Option<&st
 /// read it (`prompt::write_for_run`).
 async fn vendored_prompt_file(app: &Arc<AppState>, pr: u64, command: &str) -> Result<PathBuf> {
     let template = match command {
-        "resolve" => crate::prompt::RESOLVE,
         RESOLVE_RUN_COMMAND => crate::prompt::RESOLVE_RUN,
         crate::fix_pr::COMMAND => crate::prompt::FIX_PR,
         other => bail!("no vendored prompt for /{other}"),

@@ -14,7 +14,7 @@ use uuid::Uuid;
 use crate::forge::Forge;
 use crate::model::*;
 use crate::spawn;
-use crate::state::AppState;
+use crate::state::{AppState, TriageProgress};
 use crate::worktree;
 
 pub struct ApiError(anyhow::Error);
@@ -127,13 +127,25 @@ fn is_proposals_route(path: &str) -> bool {
     path.starts_with("/api/pr/") && path.ends_with("/proposals")
 }
 
+/// The two routes the vendored `triage` skill calls before it can propose
+/// anything: what to work on, and how far it has got.
+///
+/// Keyed on a PR like the proposals route and carrying the same run credential.
+/// A route missing from here is refused twice over, and neither refusal names the
+/// cause: the Origin check has no arm for it, and `needs_token` then wants a
+/// credential the agent is deliberately not given.
+fn is_triage_route(path: &str) -> bool {
+    path.starts_with("/api/pr/")
+        && (path.ends_with("/triage-context") || path.ends_with("/triage/progress"))
+}
+
 /// Every route an *agent* calls, on a credential that is not the app token.
 ///
 /// One predicate because the guard has to make the same two allowances for all of
 /// them — skip `needs_token`, and accept a missing `Origin` — and splitting that
 /// is how `…/committed` shipped reachable by neither. See [`guard`].
 fn is_agent_route(path: &str) -> bool {
-    is_ask_route(path) || is_proposals_route(path)
+    is_ask_route(path) || is_proposals_route(path) || is_triage_route(path)
 }
 
 /// Reject anything that is not the SPA's own origin.
@@ -2953,7 +2965,7 @@ mod tests {
     fn the_proposals_post_is_an_agent_route_and_reachable_without_an_origin() {
         let p = "/api/pr/10001/proposals";
         assert!(is_proposals_route(p));
-        assert!(is_agent_route(p), "{p} is curled by triage.md and review-session.md");
+        assert!(is_agent_route(p), "{p} is curled by the triage skill and review-session.md");
         // Not an *ask* route: it is keyed on a PR, and has no session to check.
         assert!(!is_ask_route(p));
         // The Origin allowance the agent's curl depends on.
@@ -2962,6 +2974,24 @@ mod tests {
         for other in ["/api/pr/10001/review", "/api/pr/10001/fix-pr", "/api/pr/10001"] {
             assert!(!is_agent_route(other), "{other} is not the agent's to call");
         }
+    }
+
+    /// The two the vendored `triage` skill calls before it can propose anything.
+    ///
+    /// Same trap as the proposals route and the same reason for a test: the skill
+    /// is the only caller, it curls with no Origin and the run credential, and a
+    /// route missing from `is_agent_route` is refused twice over without either
+    /// refusal naming the cause.
+    #[test]
+    fn the_triage_skill_can_reach_its_two_routes() {
+        for p in ["/api/pr/10001/triage-context", "/api/pr/10001/triage/progress"] {
+            assert!(is_triage_route(p));
+            assert!(is_agent_route(p), "{p} is curled by skills/triage/SKILL.md");
+            // Keyed on a PR, so not an ask route: there is no session in the path.
+            assert!(!is_ask_route(p));
+        }
+        // The run that *starts* a triage pass is the SPA's, on the app token.
+        assert!(!is_agent_route("/api/pr/10001/triage"));
     }
 
     #[tokio::test]
@@ -3669,6 +3699,94 @@ fn pr_from_poll(prs: &[crate::forge::Pr], number: u64) -> Result<crate::forge::P
 /// Refuses on the worktree gates rather than starting a run whose output could
 /// not be applied. The threads are fetched first so the viewer login is current
 /// and the run has something to triage.
+/// What the vendored `triage` skill needs to know before it can read anything.
+///
+/// **A skill is static; the prompt it replaces was rendered per run.**
+/// `commands/triage.md` carried seven substitutions that `prompt::render` filled
+/// in, and a file handed to every session cannot have any of them. So the values
+/// come from here instead, which is also what makes the skill work when a person
+/// types `/orchd:triage` by hand rather than the daemon typing it.
+///
+/// Carries the run credential like the proposals route, and answers the same way
+/// to the app token, so the SPA can look at it too.
+pub async fn pr_triage_context(
+    State(app): State<Arc<AppState>>,
+    Path(number): Path<u64>,
+    headers: axum::http::HeaderMap,
+) -> ApiResult<serde_json::Value> {
+    proposal_token_ok(&app, number, &headers).await?;
+    let (owner, repo) =
+        crate::resolve_repo(&app).context("no GitHub repo configured and none on the remote")?;
+    // The viewer, from the same fetch every other caller takes it from: the skill
+    // uses it to spot a thread it has already answered, and `gh api user` from the
+    // agent would be a second source for a fact the daemon just fetched.
+    let login = fetch_threads(&app, number).await.map(|f| f.viewer).ok();
+    let base = format!("http://127.0.0.1:{}/api/pr/{number}", app.cfg.port);
+    Ok(Json(json!({
+        "pr": number,
+        "owner": owner,
+        "repo": repo,
+        // Whose PR it is, which is how the skill spots a thread it has already
+        // answered. `None` when the poll has not seen this PR, and the skill then
+        // asks GitHub itself rather than guessing.
+        "login": login,
+        "language": app.cfg.default_language,
+        // Whether `story+reply` may be offered at all: an option the daemon would
+        // refuse should never reach a card.
+        "tracker": app.cfg.tracker.is_configured(),
+        "proposals_url": format!("{base}/proposals"),
+        "progress_url": format!("{base}/triage/progress"),
+    })))
+}
+
+/// How far the triage pass has read. One POST per thread, from the skill.
+///
+/// Nothing here is durable: see [`crate::state::TriageProgress`]. A post for a PR
+/// whose session has gone is kept anyway, because the run that ends by posting its
+/// proposals is the ordinary case and the bar reads `posted` to say so.
+pub async fn pr_triage_progress(
+    State(app): State<Arc<AppState>>,
+    Path(number): Path<u64>,
+    headers: axum::http::HeaderMap,
+    Json(body): Json<TriageProgressBody>,
+) -> ApiResult<serde_json::Value> {
+    proposal_token_ok(&app, number, &headers).await?;
+    let session = {
+        let inner = app.inner.read().await;
+        // The run reading this PR right now, so the bar can refuse to caption a
+        // pane that belongs to somebody else.
+        inner
+            .sessions
+            .values()
+            .find(|s| s.state.is_live() && crate::triage::is_triage_of(&s.kind, number))
+            .map(|s| s.id)
+    };
+    let Some(session) = session else {
+        refuse!("no triage run for PR #{number}");
+    };
+    {
+        let mut inner = app.inner.write().await;
+        let at = inner.triage_progress.entry(number).or_insert(TriageProgress {
+            done: 0,
+            total: body.total,
+            posted: false,
+            session,
+        });
+        at.done = body.done;
+        at.total = body.total;
+        at.session = session;
+    }
+    app.notify().await;
+    Ok(Json(json!({ "ok": true })))
+}
+
+/// One thread read, out of how many this pass means to read.
+#[derive(serde::Deserialize)]
+pub struct TriageProgressBody {
+    pub done: u32,
+    pub total: u32,
+}
+
 pub async fn pr_triage(
     State(app): State<Arc<AppState>>,
     Path(number): Path<u64>,
@@ -3763,7 +3881,18 @@ pub async fn pr_proposals(
     let validated = body.validate(&answerable)?;
     let count = validated.proposals.len();
 
-    app.inner.write().await.proposals.insert(number, validated);
+    {
+        let mut inner = app.inner.write().await;
+        inner.proposals.insert(number, validated);
+        // What turns the review bar from a count into "your turn". Only when a
+        // pass reported progress: a run that posted without one leaves nothing to
+        // caption, and inventing an entry here would caption a pane with a total
+        // nobody counted.
+        if let Some(at) = inner.triage_progress.get_mut(&number) {
+            at.posted = true;
+            at.done = at.total;
+        }
+    }
     app.notify().await;
     Ok(Json(json!({ "accepted": count })))
 }
@@ -4263,46 +4392,6 @@ pub async fn open_pr(
     Ok(Json(json!({ "session": id, "workspace": workspace })))
 }
 
-/// The rail's default review action: spawn a session and run `/resolve <pr>`.
-///
-/// The robust path. The agent does the work in a pane you supervise; the daemon
-/// itself makes no irreversible write. The native overlay (`/triage` → cards →
-/// `/post`) is the opt-in alternative, chosen from the same rail row.
-pub async fn resolve_pr(
-    State(app): State<Arc<AppState>>,
-    Path(number): Path<u64>,
-) -> ApiResult<serde_json::Value> {
-    let pr = {
-        let inner = app.inner.read().await;
-        inner.pr(number).cloned()
-    };
-    let pr = pr.ok_or_else(|| anyhow::anyhow!("PR #{number} is not in the current poll"))?;
-    // Asked of the threads, not only of `needs_you`. They are different questions
-    // and this button is the flow's, not the rail's: `needs_you` drops outdated
-    // threads so a PR stops nagging about code that is gone, but the flow can
-    // answer those — so a PR whose only unanswered threads were outdated refused
-    // a run that had work to do, with a message saying there was none.
-    //
-    // `needs_you` still passes on its own, because it covers one thing threads
-    // cannot: a review that requested changes and left no thread at all. And a
-    // failed fetch falls back to it rather than refusing — a network blip is not
-    // evidence there is nothing to do.
-    let answerable = match fetch_threads(&app, number).await {
-        Ok(fresh) => fresh.items.iter().filter(|t| t.answerable).count(),
-        Err(e) => {
-            tracing::warn!(pr = number, "could not check the threads: {:#}", e.0);
-            0
-        }
-    };
-    if answerable == 0 && !pr.needs_you {
-        refuse!(
-            "PR #{number} has nothing waiting on you: every open thread has your \
-             reply or your 👍 on it"
-        );
-    }
-    let id = spawn::spawn_command_session(&app, number, &pr.head_ref, "resolve").await?;
-    Ok(Json(json!({ "session": id })))
-}
 
 /// The worktree the gate buttons act on, refusing when there is not one.
 async fn gate_worktree(app: &Arc<AppState>, number: u64) -> Result<std::path::PathBuf, ApiError> {

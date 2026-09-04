@@ -1,21 +1,45 @@
-# Triage review feedback — the orchd read-and-propose pass
+---
+name: triage
+description: Read a PR's review threads and propose a way to answer each one, for a human to pick from. Reads only: no commits, no comments, no git. Use when somebody asks you to triage or review the feedback on a pull request, and the orchestrator is there to hand the proposals to.
+---
 
-Named `triage` rather than `resolve`, because this pass
-resolves nothing. It reads, judges and proposes; the human resolves. Vendored here so the
-daemon carries its own copy — substituted and passed to `claude -p` inline rather than
-looked up on the agent's command path, so the filename is internal and never typed.
+# Triage review feedback
 
-You are triaging the review threads on PR **{{PR}}** of `{{OWNER}}/{{REPO}}`.
+`/orchd:triage <pr>`. This pass **resolves nothing**. It reads, judges and
+proposes; the human resolves, and a later pass writes the code.
 
-**Read only. Write nothing, and do not touch git.** Not the worktree, not a commit, not a
-comment, not a branch — and no scratch worktree either. This pass is a fast read: you work
-out what each thread is asking and *how you would answer it*, and hand that to the daemon.
-A human then goes through your proposals, picks one way per thread, and only then does a
-later pass write any code. Making changes here is what used to make triage slow; the whole
-point of this pass is that it does not.
+**Read only. Write nothing, and do not touch git.** Not the worktree, not a
+commit, not a comment, not a branch, and no scratch worktree either. Making
+changes here is what used to make triage slow; the whole point of this pass is
+that it does not.
 
-Placeholders `{{PR}}`, `{{OWNER}}`, `{{REPO}}`, `{{LOGIN}}` and `{{PROPOSALS_URL}}` are
-filled in by the daemon before you see this.
+## First, ask the daemon what this is
+
+Everything below needs values only the daemon has. One call, before anything
+else:
+
+```bash
+curl -sS "$ORCH_URL/api/pr/$PR/triage-context" -H "x-orch-token: $ORCH_POST_TOKEN"
+```
+
+```jsonc
+{
+  "pr": 35264,
+  "owner": "…", "repo": "…",   // the repo the PR is on
+  "login": "…",                // you: a thread whose last comment is yours is answered
+  "language": "…",             // what to write replies and stories in
+  "tracker": true,             // false: never propose `story+reply`
+  "proposals_url": "…",        // where this pass ends
+  "progress_url": "…"          // one POST per thread, as you go
+}
+```
+
+`$ORCH_URL` and `$ORCH_POST_TOKEN` are in your environment already. If they are
+not, you are not in a session the daemon started: say so and stop, because
+nothing here can be handed anywhere.
+
+Below, `$OWNER`, `$REPO`, `$LOGIN`, `$LANGUAGE`, `$PROGRESS_URL` and
+`$PROPOSALS_URL` are the fields of that answer.
 
 ## Fetch
 
@@ -26,16 +50,16 @@ query($owner:String!,$repo:String!,$num:Int!){
     headRefName headRefOid
     reviewThreads(first:100){ nodes{ id isResolved isOutdated
       comments(first:20){ nodes{ databaseId author{login} body path line url diffHunk } } } } } } }
-' -F owner={{OWNER}} -F repo={{REPO}} -F num={{PR}}
+' -F owner=$OWNER -F repo=$REPO -F num=$PR
 ```
 
-Plus `gh pr view {{PR}} --json reviews,comments` for review-level bodies. Those often
+Plus `gh pr view $PR --json reviews,comments` for review-level bodies. Those often
 carry a `path` and `line` too — keep them when they do.
 
 Skip `isResolved`. **Keep `isOutdated`**: the code moved, the point may still stand. A
-thread whose last comment is `{{LOGIN}}`'s is already answered; leave it alone.
+thread whose last comment is `$LOGIN`'s is already answered; leave it alone.
 
-**A thread `{{LOGIN}}` already replied to, where the reviewer came back, is `continued`.**
+**A thread `$LOGIN` already replied to, where the reviewer came back, is `continued`.**
 Read it as a conversation, not a fresh request: what was promised, what they have come back
 with, and whether their point lands. It matters more here than anywhere else that the reply
 is consistent with what was already said — going back on it, or ignoring that it was said,
@@ -54,6 +78,19 @@ the worktree; you may not change it. Then a numbered list, one line each:
 
 - **straightforward**: they are right and the fix carries no behaviour decision.
 - **needs a decision**: a real question, a design call, or you think they are wrong.
+
+**Say where you are, after each thread you finish reading.** Nothing else can
+count this: the daemon knows how many threads it handed you, not which one you
+are on, and the person watching sees a bar that says `triaging thread 3 of 7`.
+
+```bash
+curl -sS -X POST "$PROGRESS_URL" -H "x-orch-token: $ORCH_POST_TOKEN" \
+  -H 'content-type: application/json' -d '{"done":3,"total":7}'
+```
+
+`total` is **your** count: the threads you decided to read, not every thread on
+the PR. An answered thread you skipped was never going to be reached, and a bar
+counting it would stop short of its own end.
 
 Both kinds get a card. The difference is only what you recommend and how much you explain
 — nothing is auto-handled, so there is no bar a thread has to clear to reach the human.
@@ -95,7 +132,7 @@ reads your options and picks.
 
 ### Replies
 
-- Match the thread's language; default to {{LANGUAGE}} when unclear. Keep technical
+- Match the thread's language; default to $LANGUAGE when unclear. Keep technical
   terms in their conventional form.
 - Say what will change and why. No mechanics: no rebasing, no amending, no "good catch", no
   restating their comment back at them.
@@ -108,7 +145,7 @@ reads your options and picks.
 One POST, then exit. A run that exits without posting is a failed run.
 
 ```bash
-curl -sS -X POST '{{PROPOSALS_URL}}' \
+curl -sS -X POST '$PROPOSALS_URL' \
   -H "x-orch-token: $ORCH_POST_TOKEN" \
   -H 'content-type: application/json' \
   --data-binary @proposals.json
@@ -159,8 +196,10 @@ curl -sS -X POST '{{PROPOSALS_URL}}' \
   for whichever option the human picks.
 - A `story+reply` reply must contain the literal `{story}`, which the daemon replaces with
   the id once the story exists. It cannot be written in advance.
-- {{TRACKER}}
-- A `story` is `title` and `body` only. Write both in {{LANGUAGE}}. **No em
+- `story+reply` exists only when the context says `"tracker": true`. When it is
+  false, never propose it: the daemon would refuse the option, and a refused
+  option should not reach a card.
+- A `story` is `title` and `body` only. Write both in $LANGUAGE. **No em
   dashes and no internal path or label references** — the tracker rejects the first
   and nobody outside this session understands the second. Say what the follow-up work is, and
   why it is out of scope for this PR; the daemon appends the link back to the thread, so
@@ -180,4 +219,4 @@ offer them:
 - **Resolving threads.** Closing a conversation is the comment author's button.
 
 CI red or the branch behind its base → say so in your final message and stop. That is
-`fix-pr`'s job, not this pass.
+`/orchd:green`'s job, not this pass.

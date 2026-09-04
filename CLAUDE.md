@@ -421,7 +421,7 @@ mean *this* repo; if you do, name it.
   **What is left is narrower and still silent.** The pty is attached to the record
   *after* the spawn returns, and `hooks::session_start` calls `pending_prompt.take()`
   unconditionally while only writing it when a pty is present. A `SessionStart`
-  landing in that gap takes a `/resolve` prompt and drops it. The gap is one lock
+  landing in that gap takes a run's first turn and drops it. The gap is one lock
   acquisition against Claude Code's whole boot, so it is documented rather than
   guarded.
   **An automation run's record follows the same rule now.** A `claude` that exits

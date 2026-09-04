@@ -125,8 +125,11 @@ function prMenu(p, btn) {
   return [
     ['open in main checkout', null, () => openPr(p.number, 'main')],
     ['open in worktree', null, () => openPr(p.number, 'worktree')],
-    ['resolve', null, () => runResolve(p.number, btn)],
-    ['resolve in UI [beta]', null, () => Review.open(p.number)],
+    /* One review verb. It starts the triage pass and hands you its pane; the bar
+       reports from there and the cards open from the bar. `/resolve` into a
+       terminal was the other one and is gone: it read the threads a second way,
+       into a session nothing watched. */
+    ['review', null, () => startTriage(p.number, btn)],
   ];
 }
 
@@ -143,13 +146,20 @@ async function openPr(number, where) {
 }
 
 /** Spawn the session that answers #`number`'s threads, and switch to its pane. */
-async function runResolve(number, btn) {
+/** Start the read pass on a PR, and land on the session doing it.
+ *
+ *  The overlay is deliberately not opened. The pass takes minutes of somebody
+ *  else's work, and a full screen saying so is a window spent on one sentence:
+ *  the bar carries it beside the pane where the agent's own questions appear, and
+ *  `MOD⇧R` is how you go to the cards once it says they are there. */
+async function startTriage(number, btn) {
   // No button when this came from a right-click on the row.
   if (btn) btn.disabled = true;
   try {
-    const r = await call(`/api/pr/${number}/resolve`);
+    const r = await call(`/api/pr/${number}/triage`);
+    Review.adopt(number, r.session);
     setPendingSelect(r.session);
-    toast(`resolve ${number}`);
+    toast(`reading #${number}`);
   } catch (e) {
     toast(e.message, true);
   } finally {

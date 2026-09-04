@@ -145,7 +145,7 @@ record in *before* `PtyHandle::spawn` and removes it again if the spawn fails, s
 `a6d4854`, "Record a session before its agent can speak". What remains is far
 narrower: the pty is attached to the record after the spawn returns, and
 `session_start` calls `pending_prompt.take()` unconditionally while only writing it
-when a pty is there, so a `SessionStart` landing in that gap would take a `/resolve`
+when a pty is there, so a `SessionStart` landing in that gap would take a run's
 prompt and drop it without a word. The gap is one lock acquisition against Claude
 Code's entire boot, so it is unreachable in practice and documented rather than
 guarded.

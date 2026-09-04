@@ -460,6 +460,10 @@ upgrade_run: UpgradeRun | null,
  */
 resolve_runs: { [key in string]: RunView }, 
 /**
+ * How far each triage pass has read, by PR. The review bar counts with it.
+ */
+triage: { [key in string]: TriageProgress }, 
+/**
  * The running build's own version, for the settings panel. Always here,
  * unlike `update`, which only appears when there is something newer: "which
  * build am I on" is a question worth answering when the answer is "the
@@ -488,6 +492,41 @@ export type ThreadStatus = "pending" | "committed" | "replied" | "held" | "manua
  * unnecessary blast radius.
  */
 export type TokenSource = "env" | "file" | "gh_cli";
+
+/**
+ * A resolve run: the session doing it, and the decisions it carries.
+ *
+ * How far a triage pass has read, and whether it has handed anything over.
+ *
+ * **The agent is the only thing that can count this.** The daemon knows how many
+ * threads it handed over, but the read is a judgement per thread rather than a
+ * loop the daemon drives, so the skill posts after each one and this is where it
+ * lands. `total` is the agent's own count of what it means to read, which can be
+ * fewer than the threads on the PR: an answered thread is skipped, and a bar
+ * counting those would never reach its end.
+ *
+ * In memory only, and deliberately: it is a progress bar for a pass that ends
+ * with its session. The proposals themselves are stored, so a restart loses the
+ * caption and not the work.
+ */
+export type TriageProgress = { 
+/**
+ * Threads read so far.
+ */
+done: number, 
+/**
+ * Threads this pass means to read.
+ */
+total: number, 
+/**
+ * The proposals have landed, so the cards are there to go to.
+ */
+posted: boolean, 
+/**
+ * The session doing the reading, so the bar can refuse to caption another
+ * session's pane.
+ */
+session: string, };
 
 /**
  * Why a session is waiting on you.

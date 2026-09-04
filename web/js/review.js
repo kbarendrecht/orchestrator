@@ -1663,6 +1663,21 @@ async function startReviewSession() {
   renderReview();
 }
 
+/** Take up a triage pass the rail just started, without opening the overlay.
+ *
+ *  The bar draws from `reviewState`, so something has to put the PR and the
+ *  session there. `reviewTick` does it on its own for a pass already running when
+ *  the page loaded; this is the same two fields, set at the moment the run starts,
+ *  so the bar is up before the first snapshot carrying it arrives. */
+function adoptTriage(pr, session) {
+  reviewState.pr = pr;
+  reviewState.session = session;
+  reviewState.screen = 'reading';
+  reviewState.proposalsLoaded = false;
+  reviewState.decisionsSent = false;
+  reviewState.data = null;
+}
+
 /** Driven every websocket tick (from app.js). Watches the session's ask and moves
  *  the overlay between phases — the ask is the whole signal, so there is no polling
  *  of `/review` and no second source of truth. */
@@ -1688,7 +1703,7 @@ function reviewTick() {
   if (!reviewState.session && selected) {
     const s = (snap.sessions || []).find((x) => x.id === selected);
     const k = s && s.alive ? s.kind : null;
-    if (k && k.kind === 'automation' && k.command === 'review') {
+    if (k && k.kind === 'automation' && (k.command === 'review' || k.command === 'triage')) {
       reviewState.pr = k.pr;
       reviewState.session = s.id;
       reviewState.proposalsLoaded = false;
@@ -1704,6 +1719,17 @@ function reviewTick() {
   if (!reviewState.session) return;
   const ask = sessionAsk();
 
+  /* **The triage pass says so by posting, not by asking.** It has `asks: false`
+     and ends at the proposals POST, so the decision ask below never comes and the
+     screen would sit on `reading` with the cards already waiting behind it. The
+     daemon sets `posted` in the same write that stores them. */
+  const t = (snap.triage || {})[reviewState.pr];
+  if (t && t.posted && !reviewState.proposalsLoaded) {
+    reviewState.proposalsLoaded = true;
+    reviewState.screen = 'overview';
+    loadReview(reviewState.pr);
+    return;
+  }
   // The decision ask appears only after the session has posted its proposals, so it
   // is the proof they are ready. Fetch them once, then show the cards.
   if (askHasValue(ask, 'decisions') && !reviewState.proposalsLoaded) {
@@ -2376,6 +2402,17 @@ function barState() {
       : { tone: 'attn', what: `${q.length} threads decided · not sent yet` };
   }
   if (reviewState.decisionsSent) return { tone: 'work', what: 'writing the code' };
+  /* What the triage pass is doing, counted by the pass itself: the daemon knows
+     how many threads it handed over, not which one the agent is on. `posted` is
+     the moment the cards exist, and it is the only thing that turns this bar from
+     a progress report into a request. */
+  const t = (snap.triage || {})[reviewState.pr];
+  if (t && t.posted) {
+    return { tone: 'attn', what: `triage done · ${t.total} threads need your call` };
+  }
+  if (t && t.total) {
+    return { tone: 'work', what: `triaging thread ${Math.min(t.done + 1, t.total)} of ${t.total}` };
+  }
   return { tone: 'work', what: 'reading the threads' };
 }
 
@@ -2403,7 +2440,7 @@ function renderBar() {
   host.replaceChildren();
   host.className = `rvbar ${st.tone}`;
   host.appendChild(el('span', 'dot'));
-  host.appendChild(el('span', 'k', `review · pr ${reviewState.pr}`));
+  host.appendChild(el('span', 'k', `REVIEW · PR ${reviewState.pr}`));
   host.appendChild(el('span', 'what', st.what));
   const go = el('button', 'go', `open · ${MOD_LABEL}\u21e7R`);
   go.onclick = () => openReview(reviewState.pr);
@@ -2426,6 +2463,6 @@ function sendFromKeyboard() {
 // or not at all.
 
 export {
-  reviewState as state, openReview as open, closeReview as close,
+  reviewState as state, openReview as open, closeReview as close, adoptTriage as adopt,
   reviewKey as key, reviewTick as tick, renderBar as bar, sendFromKeyboard as send,
 };

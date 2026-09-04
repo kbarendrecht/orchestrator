@@ -64,6 +64,33 @@ impl RunView {
 
 /// A resolve run: the session doing it, and the decisions it carries.
 ///
+/// How far a triage pass has read, and whether it has handed anything over.
+///
+/// **The agent is the only thing that can count this.** The daemon knows how many
+/// threads it handed over, but the read is a judgement per thread rather than a
+/// loop the daemon drives, so the skill posts after each one and this is where it
+/// lands. `total` is the agent's own count of what it means to read, which can be
+/// fewer than the threads on the PR: an answered thread is skipped, and a bar
+/// counting those would never reach its end.
+///
+/// In memory only, and deliberately: it is a progress bar for a pass that ends
+/// with its session. The proposals themselves are stored, so a restart loses the
+/// caption and not the work.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
+pub struct TriageProgress {
+    /// Threads read so far.
+    pub done: u32,
+    /// Threads this pass means to read.
+    pub total: u32,
+    /// The proposals have landed, so the cards are there to go to.
+    pub posted: bool,
+    /// The session doing the reading, so the bar can refuse to caption another
+    /// session's pane.
+    #[cfg_attr(test, ts(as = "String"))]
+    pub session: SessionId,
+}
+
 /// Persisted, because the commits outlive the record and an account of them is
 /// the only thing that says which commit answers which thread. Losing it to a
 /// restart left a branch of commits nobody could map back to a reviewer.
@@ -291,6 +318,8 @@ pub struct Inner {
     /// In memory only: the plan is also on disk beside the prompt, and a daemon
     /// that restarted has lost the session it belonged to anyway.
     pub resolve_runs: HashMap<u64, ResolveRun>,
+    /// How far each triage pass has read, by PR. See [`TriageProgress`].
+    pub triage_progress: HashMap<u64, TriageProgress>,
     /// Whether the main checkout's `docker compose` stack has running containers.
     /// `None` before the first probe; the drawer header reads it as up/down.
     pub stack_up: Option<bool>,
@@ -532,6 +561,7 @@ impl AppState {
                 pr_error: None,
                 pr_fetched: None,
                 resolve_runs: HashMap::new(),
+                triage_progress: HashMap::new(),
                 pr_poll: 0,
                 pr_polling: false,
                 token_source: None,
@@ -820,6 +850,7 @@ impl AppState {
             self_upgrade_run: inner.self_upgrade_run.clone(),
             agent_update: inner.agent_update.clone(),
             upgrade_run: inner.upgrade_run.clone(),
+            triage: inner.triage_progress.clone(),
             resolve_runs: inner
                 .resolve_runs
                 .iter()
@@ -1384,6 +1415,9 @@ pub struct Snapshot {
     /// because a run is watchable while it happens.
     #[cfg_attr(test, ts(as = "std::collections::HashMap<String, RunView>"))]
     pub resolve_runs: HashMap<u64, RunView>,
+    /// How far each triage pass has read, by PR. The review bar counts with it.
+    #[cfg_attr(test, ts(as = "std::collections::HashMap<String, TriageProgress>"))]
+    pub triage: HashMap<u64, TriageProgress>,
     /// The running build's own version, for the settings panel. Always here,
     /// unlike `update`, which only appears when there is something newer: "which
     /// build am I on" is a question worth answering when the answer is "the

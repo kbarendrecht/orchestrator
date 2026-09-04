@@ -14,8 +14,6 @@
 
 use anyhow::{bail, Result};
 
-/// The read-and-propose pass. Never applies, never posts.
-pub const TRIAGE: &str = include_str!("../commands/triage.md");
 
 /// The rebase-and-fix pass. Pushes, unlike triage.
 pub const FIX_PR: &str = include_str!("../commands/fix-pr.md");
@@ -24,9 +22,6 @@ pub const FIX_PR: &str = include_str!("../commands/fix-pr.md");
 /// writing one file — the only agent here whose *output* the daemon reads.
 pub const STORY: &str = include_str!("../commands/story.md");
 
-/// The interactive review pass. Unlike the others this one runs in a pane you can
-/// take over, so it reaches the session as a file to read rather than as `-p`.
-pub const RESOLVE: &str = include_str!("../commands/resolve.md");
 
 /// The session that carries out a triaged review: applies the fixes, commits, and
 /// stops to ask. It writes code and nothing outward.
@@ -178,10 +173,8 @@ mod tests {
         // The real templates, not fixtures: a placeholder added to either file
         // without being added here should fail this test, not a triage run.
         for (name, t) in [
-            ("triage", TRIAGE),
             ("fix-pr", FIX_PR),
             ("story", STORY),
-            ("resolve", RESOLVE),
             // The newest and most interpolated of them, and the one this guard
             // was missing: `resolve-run.md` carries three built URLs, so it is
             // the likeliest to gain a placeholder nobody substitutes.
@@ -222,28 +215,6 @@ mod tests {
     }
 
     #[test]
-    fn the_tracker_sentence_reads_both_ways() {
-        // The schema block still lists `story+reply` as a valid `does`, so the
-        // prose is the only thing that tells the agent not to use it. If these
-        // two drift apart, the agent proposes an option the daemon refuses.
-        let on = render(TRIAGE, &vars()).unwrap();
-        assert!(on.contains("`story+reply` is available"), "tracker on");
-
-        let off = render(
-            TRIAGE,
-            &Vars {
-                tracker: TRACKER_OFF.into(),
-                ..vars()
-            },
-        )
-        .unwrap();
-        assert!(off.contains("never propose `story+reply`"), "tracker off");
-        // Either way the vocabulary itself is unchanged — the daemon validates
-        // against it and the schema is one list, not two.
-        assert!(off.contains("story+reply"));
-    }
-
-    #[test]
     fn the_story_prompt_still_says_the_things_it_must() {
         let out = render(
             STORY,
@@ -272,9 +243,10 @@ mod tests {
     #[test]
     fn the_output_language_is_substituted_and_no_language_is_hardcoded() {
         // Prompts stay English; the language the agent *writes* in is a setting.
-        let out = render(TRIAGE, &Vars { language: "Portuguese".into(), ..vars() }).unwrap();
-        assert!(out.contains("default to Portuguese"), "reply language substituted");
-        assert!(out.contains("Write both in Portuguese"), "story language substituted");
+        // Asked of the review session, which is the interpolated prompt left that
+        // writes replies; triage asks the daemon for the same value instead.
+        let out = render(REVIEW_SESSION, &Vars { language: "Portuguese".into(), ..vars() }).unwrap();
+        assert!(out.contains("Portuguese"), "reply language substituted");
     }
 
     #[test]
@@ -287,11 +259,9 @@ mod tests {
         // Whole words, not substrings: "een" is inside "between".
         const DUTCH: [&str; 9] =
             ["naar", "niet", "wordt", "werd", "voor", "het", "een", "bron", "losgetrokken"];
-        const PROMPTS: [(&str, &str); 6] = [
-            ("triage", TRIAGE),
+        const PROMPTS: [(&str, &str); 4] = [
             ("fix-pr", FIX_PR),
             ("story", STORY),
-            ("resolve", RESOLVE),
             ("resolve-run", RESOLVE_RUN),
             ("review-session", REVIEW_SESSION),
         ];
@@ -312,31 +282,6 @@ mod tests {
         // nonsense value, silently.
         let err = render("hello {{VIEWER}}", &vars()).unwrap_err().to_string();
         assert!(err.contains("{{VIEWER}}"), "{err}");
-    }
-
-    #[test]
-    fn the_triage_prompt_still_says_the_things_it_must() {
-        let out = render(TRIAGE, &vars()).unwrap();
-        // The invariants the daemon depends on. If the prompt is reworded past
-        // these, the contract in `proposal.rs` no longer matches what was asked.
-        // The *narrow* one, from the environment. `$ORCHD_TOKEN` here would mean
-        // the run was handed the whole API again.
-        assert!(out.contains("$ORCH_POST_TOKEN"), "post token must come from the env");
-        assert!(!out.contains("ORCHD_TOKEN"), "the app token must not reach this run");
-        assert!(out.contains("/api/pr/10001/proposals"), "handoff URL");
-        assert!(out.contains("kbarendrecht"), "viewer login substituted");
-        // The read-only invariant everything downstream rests on. `patch.rs`
-        // assumes the tree the run inspected was clean, which is only true if the
-        // prompt told the agent to write nothing in it — this pass proposes, a
-        // later one makes the change.
-        assert!(
-            out.contains("Write nothing, and do not touch git"),
-            "the read-only invariant must be stated"
-        );
-        assert!(
-            out.contains("committing, amending, rebasing, pushing"),
-            "the writes the daemon owns must be listed as not the agent's"
-        );
     }
 
     #[test]
