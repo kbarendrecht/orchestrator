@@ -1,16 +1,21 @@
-// Opening a worktree the other way: Claude Code cuts it, the daemon adopts it.
+// Opening a worktree at Claude Code's own layout, which the daemon cuts too.
 //
-// With `worktrees_subdir` left at `.claude/worktrees` the daemon does not create
-// the tree at all — it spawns `claude --worktree` from the main checkout and takes
-// whatever cwd `SessionStart` reports. Worth its own flow because the workspace is
-// registered at a different moment, and because it is the arm that leaves a git
-// lock behind for teardown to clear.
+// `worktrees_subdir` left at `.claude/worktrees` used to change who created the
+// tree: the daemon spawned `claude --worktree` from the main checkout and adopted
+// whatever cwd `SessionStart` reported. It does not any more — `spawn_worktree_session`
+// says why, and the short version is that arm pinned worktree isolation into the
+// transcript, which refuses writes as well as git. So this flow pins the layout
+// making no difference to who cuts, and the lock the old arm left behind being gone.
+//
+// It also drives the stale-lock retry, on a lock put there by hand: that is now the
+// only way to reach it, and it is still reachable in the wild by a repo that locks
+// its own trees.
 
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import { branchOf, git, until } from '../harness.mjs'
 
-export const name = 'open a worktree (claude --worktree)'
+export const name = 'open a worktree (Claude Code layout)'
 export const options = { delegated: true }
 
 export async function run(t) {
@@ -18,20 +23,28 @@ export async function run(t) {
   await t.settled(session)
 
   const dir = t.worktreePath('invoice')
-  assert.ok(fs.existsSync(dir), `claude --worktree cut nothing at ${dir}`)
+  assert.ok(fs.existsSync(dir), `nothing was cut at ${dir}`)
   assert.equal(branchOf(dir), 'worktree-invoice')
 
   const s = await t.session(session)
   assert.equal(s.workspace, 'invoice')
   assert.equal(s.has_transcript, true)
 
-  // The tree is locked, which is what `claude --worktree` really does — and what
-  // makes a plain `git worktree remove` refuse forever once the session is gone.
-  assert.match(
+  // The daemon cut it, so nothing locked it. `claude --worktree` did, and that is
+  // what made a plain `git worktree remove` refuse forever once its session was gone.
+  assert.doesNotMatch(
     git(t.repo, ['worktree', 'list', '--porcelain']),
     /^locked /m,
-    'the delegated cut should leave a lock for teardown to deal with',
+    'a daemon-cut tree should carry no lock',
   )
+
+  /* Stand in for a repo that locks its own trees, so teardown still has to clear a
+     lock whose owner is dead. The reason has to carry a pid: `stale_lock_pid` only
+     clears a lock it can prove is orphaned, and a lock with no pid in it is left to
+     refuse on purpose. Pid 1 is init and alive, so this uses a pid that cannot be —
+     one past the maximum. */
+  const deadPid = Number(fs.readFileSync('/proc/sys/kernel/pid_max', 'utf8').trim()) + 1
+  git(t.repo, ['worktree', 'lock', '--reason', `claude code session (pid ${deadPid})`, dir])
 
   await t.api('POST', `/api/session/${session}/kill`)
   await until('the session to stop being live', async () =>

@@ -320,6 +320,20 @@ pub struct Session {
     /// about it: the agent asks, the SPA renders this from the snapshot, and the
     /// answer releases the tool call the agent is sitting in.
     pub interaction: Option<Interaction>,
+    /// You said this session may run git outside its own worktree.
+    ///
+    /// [`crate::guard::isolation`] refuses that by default, and the refusal tells
+    /// the agent to ask; `orch outside` puts the question to you through the
+    /// ordinary ask box and this is what a yes leaves behind. **Deliberately not
+    /// on [`crate::store::SessionRecord`]**: it is a decision about the
+    /// conversation in front of you, and a restart is exactly the moment to ask
+    /// again rather than to assume.
+    pub outside_ok: bool,
+    /// The ask that would grant it, so only the daemon's own question can.
+    ///
+    /// Without this the grant would key on an option *value*, and an agent can
+    /// write any value it likes into `orch ask` — it would be asking itself.
+    pub outside_ask: Option<Uuid>,
     /// Whether the last turn was cut off rather than allowed to finish.
     ///
     /// Every resumed session comes back `YourTurn { Ready }`: `SessionStart`
@@ -428,6 +442,8 @@ impl Session {
             forked_from: None,
             spawned_by: None,
             spawn_cut_worktree: false,
+            outside_ok: false,
+            outside_ask: None,
             pending_prompt: None,
             fix_pr_on_exit: false,
             // Always a real one, so an empty stored token can never match an

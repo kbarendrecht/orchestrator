@@ -819,18 +819,25 @@ pub fn sh_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', r"'\''"))
 }
 
-/// The `PreToolUse` entry for the push guard, or `None` when `orch` is missing.
+/// The `PreToolUse` entry for the git guard, or `None` when `orch` is missing.
 ///
-/// The base branch is baked into the command rather than read from config by the
-/// guard process: settings are rewritten at every start, so this tracks
-/// `upstream_ref` on the same restart boundary the rest of the config does, and
-/// the rule in force is visible in the settings file instead of being implied.
-fn push_guard_hook(base_branch: Option<&str>) -> Option<serde_json::Value> {
+/// The base branch and the main checkout are baked into the command rather than
+/// read from config by the guard process: settings are rewritten at every start,
+/// so this tracks `upstream_ref` and `main_checkout` on the same restart boundary
+/// the rest of the config does, and the rules in force are visible in the settings
+/// file instead of being implied.
+///
+/// **One file serves every session, so nothing here may name one.** The worktree
+/// rule needs to know which tree the session may reach, and it works that out from
+/// the payload's own cwd against this path — not from a flag, which would be the
+/// first session's answer given to all of them.
+fn push_guard_hook(base_branch: Option<&str>, main: &std::path::Path) -> Option<serde_json::Value> {
     let orch = orch_binary()?;
     let mut command = format!("{} guard push", sh_quote(&orch.to_string_lossy()));
     if let Some(b) = base_branch {
         command.push_str(&format!(" --base {}", sh_quote(b)));
     }
+    command.push_str(&format!(" --main {}", sh_quote(&main.to_string_lossy())));
     Some(json!({ "matcher": "Bash", "hooks": [{
         "type": "command",
         "command": command,
@@ -848,6 +855,7 @@ pub fn write_settings(
     port: u16,
     tracker: Option<&str>,
     base_branch: Option<&str>,
+    main: &std::path::Path,
 ) -> Result<PathBuf> {
     let base = format!("http://127.0.0.1:{port}/hooks");
     let http = |path: &str| {
@@ -941,7 +949,7 @@ pub fn write_settings(
     // Appended rather than written inline, because it is the one hook that can be
     // absent. Additive to the repo's own `pre-bash`: any hook exiting 2 blocks, so
     // both sets of rules apply (§11).
-    match push_guard_hook(base_branch) {
+    match push_guard_hook(base_branch, main) {
         Some(hook) => {
             settings["hooks"]["PreToolUse"]
                 .as_array_mut()
@@ -951,8 +959,8 @@ pub fn write_settings(
         // Loud, because the whole point of moving this guard in-process was that
         // its predecessor could stop existing without saying anything.
         None => tracing::warn!(
-            "no `orch` binary beside this executable — the git push guard is not \
-             registered, and agent pushes are unguarded"
+            "no `orch` binary beside this executable — the git guard is not \
+             registered, so agent pushes and cross-worktree git are unguarded"
         ),
     }
 
@@ -1353,7 +1361,8 @@ mod tests {
     fn hooks_carry_the_correlation_header_and_a_short_timeout() {
         let dir = crate::testutil::scratch("test");
         std::env::set_var("HOME", &dir);
-        let path = write_settings(7777, Some("shortcut"), Some("main")).expect("write settings");
+        let path = write_settings(7777, Some("shortcut"), Some("main"), std::path::Path::new("/repo"))
+            .expect("write settings");
         let raw = std::fs::read_to_string(&path).expect("read back");
         let v: serde_json::Value = serde_json::from_str(&raw).unwrap();
         let stop = &v["hooks"]["Stop"][0]["hooks"][0];
@@ -1409,7 +1418,7 @@ mod tests {
     /// stopped existing. Absent must mean *no hook*, never a broken one.
     #[test]
     fn push_guard_hook_is_absent_rather_than_broken() {
-        match push_guard_hook(Some("main")) {
+        match push_guard_hook(Some("main"), std::path::Path::new("/repo")) {
             None => {}
             Some(hook) => {
                 let cmd = hook["hooks"][0]["command"].as_str().expect("a command");
@@ -1426,7 +1435,7 @@ mod tests {
     /// force rather than passing a `HEAD` symref through as a branch name.
     #[test]
     fn an_unresolvable_base_still_registers_the_force_rule() {
-        if let Some(hook) = push_guard_hook(None) {
+        if let Some(hook) = push_guard_hook(None, std::path::Path::new("/repo")) {
             let cmd = hook["hooks"][0]["command"].as_str().expect("a command");
             assert!(cmd.ends_with("guard push"), "no --base should be passed: {cmd}");
         }

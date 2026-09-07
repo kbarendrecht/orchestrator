@@ -205,6 +205,25 @@ const autoTurns = turnsFile && fs.existsSync(turnsFile)
   ? Number(fs.readFileSync(turnsFile, 'utf8').trim())
   : 1
 
+/** Leave this session's ask token where a flow can find it.
+ *
+ *  The token is minted per spawn and deliberately never persisted (see
+ *  `proposal_tokens`), so the session's own environment is the only place it
+ *  exists — and a flow that drives an agent-authenticated route by hand has no
+ *  other way to hold it. Read from the environment the daemon handed us, written
+ *  under the sandbox, one file per session. Test-only, in a temp dir, alongside a
+ *  fake agent that has no credentials of its own.
+ */
+function recordAskToken() {
+  const dir = process.env.ORCH_E2E_DIR
+  const token = process.env.ORCH_ASK_TOKEN
+  if (!dir || !token) return
+  try {
+    fs.mkdirSync(path.join(dir, 'ask-tokens'), { recursive: true })
+    fs.writeFileSync(path.join(dir, 'ask-tokens', sessionId), token)
+  } catch { /* a flow that needs it will say so; this is not worth failing over */ }
+}
+
 /** Wait until the daemon has a record of this session before speaking.
  *
  *  `spawn_session` inserts the record *after* spawning the pty, so an agent that
@@ -247,6 +266,7 @@ function note(line) {
 }
 
 const started = async () => {
+  recordAskToken()
   await recorded()
   for (let i = 0; i < autoTurns; i++) await turn(`e2e turn ${i + 1}`)
   // Typed input is a turn too, so a flow can drive one over the pty websocket.

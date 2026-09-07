@@ -94,9 +94,10 @@ export async function until(what, predicate, { timeout = 10_000, every = 50, con
  *
  * @param {object} [opts]
  * @param {boolean} [opts.delegated] Put worktrees under `.claude/worktrees`,
- *   Claude Code's own default, which is what makes the daemon delegate the cut to
- *   `claude --worktree` instead of doing it itself. The two arms register the
- *   workspace at different moments, so a flow that matters in both says so.
+ *   Claude Code's own default. It used to decide who cut the tree; the daemon cuts
+ *   it either way now (`spawn_worktree_session` says why), so what this changes is
+ *   the path. The name is kept because the flow that pins the layout is still
+ *   worth having.
  * @param {number} [opts.turns] Turns the agent takes unprompted. `0` is the
  *   session that was never typed into — the one fork and resume refuse.
  * @param {string} [opts.repo] `owner/name` to poll PRs for. Setting it is what
@@ -300,6 +301,11 @@ export async function sandbox({
 
     /** How many turns the next spawned agent takes on its own. */
     setTurns: (n) => fs.writeFileSync(path.join(root, 'turns'), String(n)),
+
+    /** A session's ask token, for a flow driving a route the *agent* is meant to
+     *  call. The daemon never persists it, so this comes from the agent's own
+     *  environment — see `recordAskToken` in `fake-claude.mjs`. */
+    askToken: (id) => fs.readFileSync(path.join(root, 'ask-tokens', id), 'utf8').trim(),
 
     /** What the next GitHub poll sees. See `fake-curl.mjs` for the fields. */
     setPrs: (prs, viewer) =>

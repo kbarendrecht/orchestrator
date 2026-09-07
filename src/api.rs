@@ -101,9 +101,13 @@ pub(crate) fn origin_ok(origin: Option<&str>, port: u16, is_hook: bool, is_get: 
 /// A list rather than a growing chain of `ends_with`, because it has been
 /// outgrown once already — see the note in [`guard`].
 fn is_ask_route(path: &str) -> bool {
-    const ASK_ROUTES: [&str; 9] = [
+    const ASK_ROUTES: [&str; 10] = [
         "/ask",
         "/wait",
+        // The worktree grant, asked by the agent and read by the push guard —
+        // which is a `command` hook Claude Code spawns, so it arrives with the
+        // session's ask token and no Origin, exactly like a vendored prompt.
+        "/outside",
         "/spawn",
         "/committed",
         "/stuck",
@@ -1123,6 +1127,12 @@ pub async fn answer(
         }
         open.answer = Some(body.answer.clone());
         open.answer_text = text.map(str::to_string);
+        /* A yes to the daemon's own worktree question, and only to that one: the
+           ask id is compared rather than the option value, because an agent writes
+           its own values in `orch ask` and could otherwise grant itself. */
+        if s.outside_ask == Some(body.ask) && body.answer == OUTSIDE_ALLOW {
+            s.outside_ok = true;
+        }
         // Answered, so it is going again. `Stop` will correct this if the turn
         // ends for real a moment later.
         s.set_state(crate::model::State::Working);
@@ -1130,6 +1140,128 @@ pub async fn answer(
     app.answered.notify_waiters();
     app.notify().await;
     Ok(Json(json!({ "answered": body.answer })))
+}
+
+/// The two option values [`allow_outside`] offers, and the one a yes carries.
+///
+/// Constants because three places have to agree on the spelling: the question,
+/// the grant in [`answer`], and the words `orch outside` prints back.
+pub const OUTSIDE_ALLOW: &str = "outside-allow";
+pub const OUTSIDE_NO: &str = "outside-no";
+
+#[derive(Deserialize)]
+pub struct OutsideBody {
+    /// What the agent was refused, named in the question so the answer is an
+    /// informed one rather than a blanket yes.
+    pub path: String,
+}
+
+/// Ask whether this session may run git outside its own worktree.
+///
+/// The other half of [`crate::guard::isolation`]: the guard refuses by default and
+/// its refusal names this command, so "not allowed" is a question rather than a
+/// wall. It is the *ordinary* ask — the same `Interaction`, the same box in the
+/// SPA, the same `/ask/:id/wait` the agent already polls — because a second
+/// permission mechanism beside that one is how two of them come to disagree.
+///
+/// The grant is remembered on the session and nowhere else, so it lasts exactly as
+/// long as the conversation in front of you; `Session::outside_ok` says why a
+/// restart asks again.
+pub async fn allow_outside(
+    State(app): State<Arc<AppState>>,
+    Path(id): Path<Uuid>,
+    headers: axum::http::HeaderMap,
+    Json(body): Json<OutsideBody>,
+) -> ApiResult<serde_json::Value> {
+    ask_token_ok(&app, id, &headers).await?;
+    let path = body.path.trim().to_string();
+    if path.is_empty() {
+        refuse!("name the path you were refused");
+    }
+    {
+        let inner = app.inner.read().await;
+        let s = inner
+            .sessions
+            .get(&id)
+            .ok_or_else(|| anyhow::anyhow!("no such session {id}"))?;
+        // Already yes: answered once, and asking again would spend attention on a
+        // decision that is still in force.
+        if s.outside_ok {
+            return Ok(Json(json!({ "allowed": true, "asked": false })));
+        }
+    }
+    let interaction = crate::model::Interaction {
+        id: Uuid::new_v4(),
+        thread_id: None,
+        question: format!(
+            "This session works in one worktree, and it wants to run git in {path}. \
+             Allow that for the rest of this session?"
+        ),
+        // What the guard protects, in the words of the thing that could go wrong.
+        detail: Some(
+            "Changing another checkout from here can move a branch the app is \
+             tracking, or leave main on a branch nothing recorded."
+                .to_string(),
+        ),
+        options: vec![
+            crate::model::InteractionOption {
+                value: OUTSIDE_ALLOW.to_string(),
+                label: "Allow it".to_string(),
+                sub: "for this session, until it ends".to_string(),
+                free: false,
+            },
+            crate::model::InteractionOption {
+                value: OUTSIDE_NO.to_string(),
+                label: "Keep it in its worktree".to_string(),
+                sub: "the guard goes on refusing".to_string(),
+                free: false,
+            },
+        ],
+        asked_at: std::time::SystemTime::now(),
+        answer: None,
+        answer_text: None,
+    };
+    let ask_id = interaction.id;
+    {
+        let mut inner = app.inner.write().await;
+        let s = inner
+            .sessions
+            .get_mut(&id)
+            .ok_or_else(|| anyhow::anyhow!("no such session {id}"))?;
+        if let Some(open) = &s.interaction {
+            if open.answer.is_none() {
+                refuse!("session {id} is already asking something else");
+            }
+        }
+        s.interaction = Some(interaction);
+        // The ask that may grant it, so `answer` can tell this question from one
+        // the agent wrote itself — see `Session::outside_ask`.
+        s.outside_ask = Some(ask_id);
+        s.set_state(crate::model::State::YourTurn {
+            since: std::time::SystemTime::now(),
+            reason: crate::model::TurnReason::AskedAQuestion,
+        });
+    }
+    app.notify().await;
+    Ok(Json(json!({ "allowed": false, "asked": true, "ask": ask_id })))
+}
+
+/// Whether the grant is in force, which is what the guard reads per git command.
+///
+/// A read the guard makes before it refuses anything, so it is cheap on purpose:
+/// no git, no disk, one map lookup.
+pub async fn outside_allowed(
+    State(app): State<Arc<AppState>>,
+    Path(id): Path<Uuid>,
+    headers: axum::http::HeaderMap,
+) -> ApiResult<serde_json::Value> {
+    ask_token_ok(&app, id, &headers).await?;
+    let inner = app.inner.read().await;
+    let s = inner
+        .sessions
+        .get(&id)
+        .ok_or_else(|| anyhow::anyhow!("no such session {id}"))?;
+    Ok(Json(json!({ "allowed": s.outside_ok })))
 }
 
 #[derive(Deserialize)]
@@ -2920,6 +3052,11 @@ mod tests {
             "/api/session/<id>/teardown",
             // Phase 4 of `commands/review-session.md`: the review saying it is done.
             "/api/session/<id>/handoff",
+            // `orch outside`, and the push guard's read of what it granted. The
+            // guard is a `command` hook: it has the session's ask token and no
+            // app token, so a missing entry here would make the grant unreadable
+            // and the refusal permanent.
+            "/api/session/<id>/outside",
         ] {
             assert!(is_ask_route(p), "{p} must not need the app token");
         }

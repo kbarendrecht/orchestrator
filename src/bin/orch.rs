@@ -41,7 +41,10 @@ orch — talk to the orchestrator you are running inside
   orch run <name>
       Start one of the processes this workspace declares.
 
-  orch guard push [--base <branch>]
+  orch outside <path>
+      Ask to run git outside this worktree. Remembered for this session.
+
+  orch guard push [--base <branch>] [--main <path>]
       Not for you to call — the daemon registers this as a PreToolUse hook.
 
 `orch <command> --help` for the flags each one takes.
@@ -166,14 +169,27 @@ anything else, so this cannot run arbitrary things. Refused when it is already
 up, which is the answer you wanted anyway.
 ";
 
+const HELP_OUTSIDE: &str = "\
+orch outside <path>
+
+Ask to run git outside this session's own worktree. The push guard refuses that
+by default; this puts the question to the user and remembers a yes for the rest of
+the session. Blocks until they answer, then prints `allowed` or `refused`.
+
+  <path>  What you were refused, named in the question so the answer is informed.
+";
+
 const HELP_GUARD: &str = "\
-orch guard push [--base <branch>]
+orch guard push [--base <branch>] [--main <path>]
 
 Not for you to call. The daemon registers this as a PreToolUse hook; it reads the
-payload on stdin and exits 2 to refuse a dangerous push.
+payload on stdin and exits 2 to refuse a dangerous push, or a git command aimed
+out of the worktree the session works in.
 
   --base <branch>  The branch that must never be pushed to. Defaults to the
                    daemon's configured upstream ref.
+  --main <path>    The main checkout. Without it the worktree rule is skipped,
+                   since there is nothing to measure \"another checkout\" against.
 ";
 
 /// The states `--state` will accept, which are the ones `model::State` has.
@@ -198,6 +214,7 @@ fn help_for(cmd: &str) -> Option<&'static str> {
         "ls" => HELP_LS,
         "ask" => HELP_ASK,
         "run" => HELP_RUN,
+        "outside" => HELP_OUTSIDE,
         "guard" => HELP_GUARD,
         _ => return None,
     })
@@ -244,7 +261,8 @@ fn spec(cmd: &str) -> Option<&'static [(&'static str, Arity)]> {
             ("--free", Arity::Value),
         ],
         "run" => &[],
-        "guard" => &[("--base", Arity::Value)],
+        "outside" => &[],
+        "guard" => &[("--base", Arity::Value), ("--main", Arity::Value)],
         _ => return None,
     })
 }
@@ -255,6 +273,7 @@ fn words_wanted(cmd: &str) -> (usize, &'static str) {
         "kill" => (1, "kill needs the id of a session you spawned"),
         "teardown" => (1, "teardown needs the name of a worktree — `orch ls` prints them"),
         "run" => (1, "run needs the name of a process"),
+        "outside" => (1, "outside needs the path you were refused"),
         // `guard push`: the sub-verb is a word, and `guard` checks which one.
         "guard" => (1, "the only guard is `orch guard push`"),
         _ => (0, ""),
@@ -423,6 +442,31 @@ fn http(method: &str, url: &str, token: &str, body: Option<&str>) -> Result<Stri
 /// wrong `"state"` and the wrong `"id"` often enough to need two comments saying
 /// where to start looking. `serde_json` is already linked in for the guard's
 /// payload, so there is nothing left to save.
+/// Block until an ask is answered: the option value, and the words if any came.
+///
+/// Each poll blocks up to a minute and comes back "not yet"; looping is what makes
+/// a human taking ten minutes safe. Shared by `ask` and `outside`, which differ
+/// only in what they do with the answer — the loop was `ask`'s alone and the second
+/// caller is exactly when a copy would start drifting.
+fn await_answer(base: &str, me: &str, token: &str, ask: &str) -> Result<(String, String), String> {
+    loop {
+        let r = http(
+            "GET",
+            &format!("{base}/api/session/{me}/ask/{ask}/wait"),
+            token,
+            None,
+        )?;
+        let v = reply(&r)?;
+        if v.get("answered").and_then(Value::as_bool) != Some(true) {
+            continue;
+        }
+        return Ok((
+            v.get("answer").and_then(Value::as_str).unwrap_or("").to_string(),
+            v.get("text").and_then(Value::as_str).unwrap_or("").to_string(),
+        ));
+    }
+}
+
 fn reply(out: &str) -> Result<Value, String> {
     let v: Value = serde_json::from_str(out.trim()).map_err(|e| {
         format!(
@@ -485,7 +529,9 @@ fn main() -> ExitCode {
     };
 
     // The guard is spawned by Claude Code, not by the daemon, so `ORCH_URL` and the
-    // ask token are not guaranteed to be there — and it talks to nothing anyway.
+    // ask token are not guaranteed to be there. It asks the daemon one thing when
+    // they are (the worktree grant) and refuses as usual when they are not, so it
+    // is the one command that must not be gated on a session environment.
     if cmd == "guard" {
         return guard(&parsed);
     }
@@ -532,15 +578,41 @@ fn guard(a: &Parsed) -> ExitCode {
     // The branch only matters for a bare `git push`, and it is read from the
     // payload's own cwd rather than this process's — a hook's working directory
     // is not promised to be the checkout the command runs in.
-    let branch = v
-        .get("cwd")
-        .and_then(Value::as_str)
-        .and_then(current_branch);
+    let cwd = v.get("cwd").and_then(Value::as_str);
+    let branch = cwd.and_then(current_branch);
+
+    /* The worktree this session may reach, asked of git rather than derived from
+       the path: one `rev-parse` answers both halves, and the git dir is the
+       exemption the rule cannot do without — a worktree's real one sits under the
+       *main* checkout. Only when there is a git command to judge, so the ordinary
+       Bash call pays nothing, and only outside main, which is not isolated from
+       anything. */
+    let (worktree, git_dir) = match (a.value("--main"), cwd.filter(|_| mentions_git(command))) {
+        (Some(main), Some(cwd)) => match worktree_of(cwd) {
+            Some((top, dir)) if top != std::path::Path::new(main) => (Some(top), Some(dir)),
+            _ => (None, None),
+        },
+        _ => (None, None),
+    };
+    /* **A grant turns the rule off rather than being checked inside it.** The
+       daemon holds the answer per session (`api::allow_outside`), and `None` for the
+       worktree is already how [`orchd::guard::isolation`] says "no opinion" — so
+       asking here keeps the rule itself a pure function of the command.
+       Only when there *is* a worktree to be let out of, so an ordinary session in
+       main pays nothing, and "cannot ask" leaves the rule on: a daemon that does
+       not answer must not silently widen what an agent may reach. */
+    let worktree = match &worktree {
+        Some(_) if outside_allowed() => None,
+        _ => worktree,
+    };
 
     let call = orchd::guard::Call {
         tool_name,
         command,
         current_branch: branch.as_deref(),
+        cwd: cwd.map(std::path::Path::new),
+        worktree: worktree.as_deref(),
+        git_dir: git_dir.as_deref(),
     };
     match orchd::guard::check(&call, a.value("--base")) {
         Some(reason) => {
@@ -550,6 +622,52 @@ fn guard(a: &Parsed) -> ExitCode {
         }
         None => ExitCode::SUCCESS,
     }
+}
+
+/// Has the user allowed this session out of its worktree?
+///
+/// False on anything unreadable, which is the direction that keeps the guard
+/// honest: the environment may be missing (this runs as Claude Code's child, not
+/// the daemon's), the daemon may be gone, and neither is a reason to allow what it
+/// would otherwise refuse. The agent's own `orch outside` is what makes it true.
+fn outside_allowed() -> bool {
+    let Ok((base, me, token)) = session_env() else {
+        return false;
+    };
+    let Ok(out) = http("GET", &format!("{base}/api/session/{me}/outside"), &token, None) else {
+        return false;
+    };
+    reply(&out)
+        .ok()
+        .and_then(|v| v.get("allowed").and_then(Value::as_bool))
+        .unwrap_or(false)
+}
+
+/// Is there a `git` anywhere in this command? The cheap gate in front of the two
+/// subprocesses the worktree rule needs, since most Bash calls are not git at all.
+fn mentions_git(command: &str) -> bool {
+    command.split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+        .any(|w| w == "git")
+}
+
+/// The worktree root and the real git dir of `cwd`, in one `rev-parse`.
+///
+/// `--absolute-git-dir` rather than `--git-dir`, which answers a bare `.git` from
+/// inside the checkout and would then be resolved against the wrong directory.
+fn worktree_of(cwd: &str) -> Option<(std::path::PathBuf, std::path::PathBuf)> {
+    let out = std::process::Command::new("git")
+        .args(["-C", cwd, "rev-parse", "--show-toplevel", "--absolute-git-dir"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut lines = text.lines();
+    let top = lines.next()?.trim();
+    let dir = lines.next()?.trim();
+    (!top.is_empty() && !dir.is_empty())
+        .then(|| (std::path::PathBuf::from(top), std::path::PathBuf::from(dir)))
 }
 
 fn current_branch(cwd: &str) -> Option<String> {
@@ -697,6 +815,31 @@ fn run(cmd: &str, a: &Parsed) -> Result<String, String> {
             )?;
             Ok(str_at(&reply(&out)?, "process"))
         }
+        "outside" => {
+            let path = &a.words[0];
+            let out = http(
+                "POST",
+                &format!("{base}/api/session/{me}/outside"),
+                &token,
+                Some(&json!({ "path": path }).to_string()),
+            )?;
+            let v = reply(&out)?;
+            // Answered once already, and still in force: no second question.
+            if v.get("allowed").and_then(Value::as_bool) == Some(true) {
+                return Ok("allowed".into());
+            }
+            let ask = v
+                .get("ask")
+                .and_then(Value::as_str)
+                .ok_or_else(|| format!("the daemon did not take the question: {}", out.trim()))?
+                .to_string();
+            let (answer, _) = await_answer(&base, &me, &token, &ask)?;
+            Ok(if answer == orchd::api::OUTSIDE_ALLOW {
+                "allowed".into()
+            } else {
+                "refused — keep git inside this worktree".into()
+            })
+        }
         "ask" => {
             let question = a.value("--question").ok_or("ask needs --question")?;
             let mut opts: Vec<Value> = Vec::new();
@@ -738,27 +881,12 @@ fn run(cmd: &str, a: &Parsed) -> Result<String, String> {
                 .ok_or_else(|| format!("the daemon did not take the question: {}", out.trim()))?
                 .to_string();
 
-            // Each poll blocks up to a minute and comes back "not yet"; looping is
-            // what makes a human taking ten minutes safe.
-            loop {
-                let r = http(
-                    "GET",
-                    &format!("{base}/api/session/{me}/ask/{ask}/wait"),
-                    &token,
-                    None,
-                )?;
-                let v = reply(&r)?;
-                if v.get("answered").and_then(Value::as_bool) != Some(true) {
-                    continue;
-                }
-                let answer = v.get("answer").and_then(Value::as_str).unwrap_or("");
-                let text = v.get("text").and_then(Value::as_str).unwrap_or("");
-                return Ok(if text.is_empty() {
-                    answer.to_string()
-                } else {
-                    format!("{answer}\n{text}")
-                });
-            }
+            let (answer, text) = await_answer(&base, &me, &token, &ask)?;
+            Ok(if text.is_empty() {
+                answer
+            } else {
+                format!("{answer}\n{text}")
+            })
         }
         other => Err(format!("unknown command `{other}`\n\n{USAGE}")),
     }
@@ -781,7 +909,7 @@ mod tests {
         assert!(e.contains("unknown flag --nonsense"), "{e}");
         // And on every command, not just the one that bit: a tolerated flag on
         // `ask` sends a question nobody meant to ask.
-        for cmd in ["ask", "ls", "run", "kill", "teardown", "guard"] {
+        for cmd in ["ask", "ls", "run", "kill", "teardown", "outside", "guard"] {
             assert!(
                 parse(cmd, &argv(&["--nonsense"])).is_err(),
                 "{cmd} tolerated it"
@@ -838,7 +966,7 @@ mod tests {
     /// workspace must already exist" came to be learnable only by triggering it.
     #[test]
     fn every_command_documents_its_own_flags() {
-        for cmd in ["new", "kill", "teardown", "ls", "ask", "run", "guard"] {
+        for cmd in ["new", "kill", "teardown", "ls", "ask", "run", "outside", "guard"] {
             let h = help_for(cmd).unwrap_or_else(|| panic!("{cmd} has no help"));
             let flags = spec(cmd).unwrap_or_else(|| panic!("{cmd} has no flag spec"));
             for (flag, _) in flags {

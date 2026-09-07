@@ -515,9 +515,17 @@ pub async fn spawn_session(
     //
     // So the correction is written rather than requested. Here because this is the
     // one moment it is safe: the previous process is gone and the next has not
-    // started, so nothing else is appending to that file. Only when the pin really
-    // disagrees — a session resumed into the tree it is pinned to is correctly
-    // isolated and must stay that way.
+    // started, so nothing else is appending to that file.
+    //
+    // **Any pin, not only one that disagrees.** It used to be left alone when it
+    // matched the cwd, on the reading that such a session is correctly isolated.
+    // That reading is gone with the delegated arm (`spawn_worktree_session`): the
+    // daemon does not want Claude Code's isolation at all now, because it refuses
+    // writes as well as git — an agreeing pin is what made a scratch dir shared
+    // into the tree unwritable from either side of its symlink — and the isolation
+    // the daemon does want is [`crate::guard::isolation`], on the agent's Bash.
+    // Sessions cut by the old arm carry a pin that agrees, so this is the only
+    // thing that ever releases them.
     // Off the runtime, all of it: finding the transcript walks
     // `~/.claude/projects`, and reading the pin reads the whole file — which the
     // note below says is megabytes of turns. One hop for the lot, since the pin is
@@ -531,19 +539,15 @@ pub async fn spawn_session(
             // *more* likely to be carrying a stale pin, not less.
             let t = crate::store::transcript_file(id_, &at, None)
                 .or_else(|| crate::store::find_transcript(id_))?;
-            match crate::store::worktree_pin(&t) {
-                Some(pin) if pin != at => {
-                    Some((pin, crate::store::clear_worktree_pin(id_, &at, &t)))
-                }
-                _ => None,
-            }
+            let pin = crate::store::worktree_pin(&t)?;
+            Some((pin.clone(), crate::store::clear_worktree_pin(id_, &at, &t)))
         })
         .await
         .unwrap_or(None);
         match cleared {
             Some((pin, Ok(()))) => tracing::info!(
                 session = %id,
-                "cleared a worktree pin on {} for a conversation now in {}",
+                "cleared the worktree pin on {}; the session runs in {}",
                 pin.display(),
                 path.display()
             ),
@@ -672,19 +676,32 @@ fn carry_into(parent: &std::path::Path, fork: &std::path::Path, exclude: &str) -
 
 /// Create a worktree and start a session in it.
 ///
-/// Two paths, decided by where this repo keeps its worktrees:
+/// **The daemon cuts the tree, wherever this repo keeps them, and starts a plain
+/// session in it.** `create_worktree` runs the repo's own `WorktreeCreate` first
+/// and adopts the tree it prints, so nothing the repo does at creation is
+/// reimplemented or skipped — it bases on a freshly fetched upstream and
+/// configures triangular push exactly as it did before. The hook is invoked with
+/// **cwd = main** (`hook_cut_worktree`), which is what its no-nesting rule wants,
+/// and the daemon cuts its own tree only when the repo has no such hook or its
+/// tree cannot be put on the branch this needs.
 ///
-/// - **At Claude Code's own default** (`.claude/worktrees`), creation is
-///   delegated to `claude --worktree` rather than `git worktree add` here (§11).
-///   The repo's `worktree-create` / `worktree-link` hooks already base on a
-///   freshly fetched upstream and configure triangular push, and reimplementing
-///   that would fight them. Spawned with **cwd = main**, because
-///   `worktree-create` refuses to nest a worktree inside a worktree (§2).
-/// - **Anywhere else**, the daemon cuts the worktree itself and spawns a plain
-///   session in it. `claude --worktree` always writes to `.claude/worktrees/`,
-///   so delegating there would create the worktree somewhere the daemon does not
-///   look: it would register a path that does not exist, reconcile against a
-///   missing directory, and fail to adopt the real one at `SessionStart`.
+/// **`claude --worktree` used to do the cutting at Claude Code's own layout, and
+/// that is what changed.** It pins worktree isolation into the transcript, and the
+/// pin refuses *writes* as well as git: the monorepo shares a `.plan` scratch dir
+/// into every tree as a relative symlink, and a pinned session could write neither
+/// the link (a "raw dot segment" it will not resolve) nor the shared checkout
+/// behind it (isolated). Measured across 119 worktree transcripts: 49 carried the
+/// pin and every one of them came from that arm, while the 70 the daemon cut
+/// carried none. The isolation the daemon actually needs is narrower and is its
+/// own — main's branch and occupant are what `claim_main`, `park_main`,
+/// `switch_main_to_pr` and `branch_busy` read — so [`crate::guard::isolation`]
+/// enforces that on the agent's Bash and says nothing about writes.
+///
+/// Two things it gives up. Claude Code invents a name for an unnamed tree and the
+/// daemon does not, so those are `wt-<8 hex>` rather than
+/// `robust-enchanting-rainbow`. And Claude Code locked and removed its own tree;
+/// `worktree::teardown` owns both anyway, and `git::worktree_remove` keeps its
+/// stale-lock retry for a repo that locks its own.
 ///
 /// `fork` carries a conversation into the new worktree, **and its files with it**.
 /// A fork therefore always takes the second path, whatever this repo's layout: it
@@ -753,8 +770,6 @@ pub async fn spawn_worktree_session(
     // carrying the parent's files is possible through it. `create_worktree` still
     // runs the repo's `WorktreeCreate`, so the only thing a fork gives up is Claude
     // Code choosing the name.
-    let delegated = app.cfg.worktrees_subdir_is_claude_default() && fork.is_none();
-
     // The tree a fork is cut from and carries the work of. `None` when there is no
     // parent tree left — a fork is deliberately cheaper than a resume, so a
     // conversation whose worktree is long gone can still be forked; it just comes
@@ -769,27 +784,14 @@ pub async fn spawn_worktree_session(
     // What travelled, in words, for the arrival notice below.
     let mut carried: Option<String> = None;
 
-    // A name is required when the daemon cuts the worktree: only
-    // `claude --worktree` can invent one, and the daemon must know the path up
-    // front to create it.
-    let owned_name = match (delegated, name) {
-        (false, None) => Some(format!("wt-{}", &id.simple().to_string()[..8])),
-        _ => None,
-    };
+    // A name is always required now: the daemon cuts the tree, so it has to know
+    // the path up front, and nothing else invents one. `wt-<8 hex>` is what an
+    // unnamed request gets — see the docblock on what that replaced.
+    let owned_name =
+        name.is_none().then(|| format!("wt-{}", &id.simple().to_string()[..8]));
     let name = name.or(owned_name.as_deref());
 
-    let (spawn_cwd, cmd, made_at) = if delegated {
-        let mut cmd = vec!["claude".to_string(), "--worktree".to_string()];
-        // With no name, Claude Code generates one. That is also the only path
-        // that cannot collide with an archived worktree by construction, since
-        // it has never been used before.
-        if let Some(name) = name {
-            cmd.push(name.to_string());
-        }
-        // cwd is the main checkout, not the worktree-to-be, and the path is Claude
-        // Code's to choose and to report at `SessionStart`.
-        (app.cfg.main_checkout.clone(), cmd, None)
-    } else {
+    let (spawn_cwd, cmd, made_at) = {
         let name = name.context("a worktree name is required")?;
         let path = app.cfg.worktree_path(name);
         // A fork branches from the parent's HEAD, not from upstream: the point is a
@@ -849,9 +851,9 @@ pub async fn spawn_worktree_session(
     }
     cmd.extend(["--session-id".to_string(), id.to_string()]);
     cmd.extend(crate::config::session_flags()?);
-    // After the arms, because only they know where this runs — and in the
-    // delegated arm that is the main checkout, whose environment is the one the
-    // worktree about to be cut from it would have had anyway.
+    // After the tree exists, because the environment is read in the directory the
+    // session will run in — a fresh worktree is a fresh path, and `mise` answers
+    // per directory.
     // Off the runtime — see the note in `spawn_session`; this is a child process
     // on the spawn path too.
     let (env, unset) = {
@@ -862,12 +864,15 @@ pub async fn spawn_worktree_session(
         .await?
     };
 
-    // Without a name the path is not known until `SessionStart` reports the
-    // cwd, so the workspace is registered there instead.
+    /* The path is always known here now, because the daemon cut the tree. The
+       `None` arm is kept rather than made unreachable-by-construction: nothing in
+       this spawner reaches it any more, and `hooks::session_start`'s adoption of a
+       `PENDING_WORKTREE` row with it — that pair existed for `claude --worktree`,
+       which reported its path only at `SessionStart`. */
     let (workspace, cwd) = match name {
         Some(name) => {
-            // Where it actually is when the daemon cut it, and where Claude Code puts
-            // one otherwise.
+            // Where the tree actually is, which is the repo hook's answer when it
+            // has one and `worktree_path` when it does not.
             let at = made_at.unwrap_or_else(|| app.cfg.worktree_path(name));
             app.register_worktree(name, at.clone(), Some(format!("worktree-{name}")))
                 .await;

@@ -361,8 +361,8 @@ is logged and the pty is killed anyway.
 ## Troubleshooting
 
 - **Every session dies the instant it starts.** Claude Code's workspace trust has
-  not been accepted for that checkout, so `claude --worktree` refuses. Accept it in
-  the dialog once, per checkout.
+  not been accepted for that checkout, so `claude` refuses. Accept it in the dialog
+  once, per checkout.
 - **It will not start: "Orchestrator is already running".** One instance at a time,
   held by a pid file in the config dir, because a second one would spawn sessions
   into the same worktrees and take over the hook settings. Close the running app.
@@ -402,13 +402,17 @@ is logged and the pty is killed anyway.
   `Stop`, `SessionEnd`, …) POST to the daemon, which is how a row knows whether it
   is working or waiting. The daemon's hook settings *merge* with the repo's own,
   so your project hooks keep firing.
-- **Worktrees.** At Claude Code's default layout the daemon launches
-  `claude --worktree`. Everywhere else it makes the tree itself: it asks your repo's
-  `WorktreeCreate` hook first and adopts what that hook made, cuts its own with
-  `git worktree add` when the hook declines, then runs `worktree_init` and
-  `worktree_setup`. Teardown is a six-check preflight, then your repo's
-  `WorktreeRemove` hooks, then `git worktree remove`. Never `rm -rf`, because a
-  worktree is full of symlinks into main.
+- **Worktrees.** The daemon makes the tree, at whatever layout your repo uses: it
+  asks your repo's `WorktreeCreate` hook first and adopts what that hook made, cuts
+  its own with `git worktree add` when the hook declines, then runs `worktree_init`
+  and `worktree_setup`, then starts a session *in* the tree. It used to hand the cut
+  to `claude --worktree` at Claude Code's own layout, which pinned that session into
+  worktree isolation — and that pin refuses writes as well as git, so a scratch dir
+  shared into the tree by symlink could not be written from either side of the link.
+  The isolation the daemon needs instead is its own, on the agent's Bash, and it is
+  git-only: see the push guard below. Teardown is a six-check preflight, then your
+  repo's `WorktreeRemove` hooks, then `git worktree remove`. Never `rm -rf`, because
+  a worktree is full of symlinks into main.
 - **The review flow.** Triage reads a PR's open threads and proposes, per thread,
   a stance and whether code changes; a run commits per thread and drafts a reply
   you see beside the real diff before the daemon posts it on its own credentials.
@@ -451,12 +455,21 @@ run posts with `ORCH_POST_TOKEN`, good for one route on one PR. Neither is the a
 token — which matters because those are the runs that read other people's review
 comments.
 
-There is a `PreToolUse` guard on `git push` (`orch guard push`) that refuses a
-lease-less `--force` and a push to the base branch. Read it as a **mistake-catcher,
-not a control**: it sees `Bash` tool calls only, so `gh`, an MCP git server, or a
-script the agent writes and then runs all go around it. It is there because a
-fix-pr run force-pushes with nobody watching, and that is the mistake worth
-catching — not because an agent could be prevented from pushing.
+There is a `PreToolUse` guard on the agent's git (`orch guard push`) with three
+rules: no lease-less `--force`, no push to the base branch, and no git aimed out of
+the worktree the session works in. The third replaces the isolation
+`claude --worktree` used to pin, and it is deliberately narrower — git only, never
+your writes, because main's branch and its recorded occupant are what the daemon
+needs protected and a shared scratch dir is not its business.
+
+The third rule is a question rather than a wall: its refusal names `orch outside
+<path>`, which puts "may this session run git there?" to you through the same ask
+box every other question uses, and a yes is remembered for the rest of that
+session. Nothing persists it, so a restart asks again. Read all three as a
+**mistake-catcher, not a control**: it sees `Bash` tool calls only, so `gh`, an MCP
+git server, or a script the agent writes and then runs all go around it. It is there
+because a fix-pr run force-pushes with nobody watching, and that is the mistake
+worth catching — not because an agent could be prevented from pushing.
 
 ## Developing
 
@@ -523,7 +536,7 @@ src/
   worktree.rs   teardown preflight, archive, revive, removal
   store.rs      session record persistence, orphan reaping
   api.rs        HTTP surface and the origin/token guards      ws.rs  event stream + pty attach
-  guard.rs      the git push rules, run by `orch guard push` as a PreToolUse hook
+  guard.rs      the git rules (push blast radius, worktree isolation), run by `orch guard push`
   machine.rs    what the daemon needs from the machine, warned about at boot
   testutil.rs   the shared test fixtures (scratch dirs, an AppState, a Pr)
 web/            the SPA (vanilla, xterm.js vendored) — one module graph under js/,

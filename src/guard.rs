@@ -31,6 +31,8 @@
 //! the repo — so a guard that refuses the normal `push -u` of a single-remote
 //! checkout is refusing the common case.
 
+use std::path::{Component, Path, PathBuf};
+
 /// Everything the guard needs from a `PreToolUse` payload.
 pub struct Call<'a> {
     pub tool_name: &'a str,
@@ -38,6 +40,13 @@ pub struct Call<'a> {
     /// The branch the checkout is on, when it could be read. `None` disables the
     /// bare-`git push` rule rather than guessing.
     pub current_branch: Option<&'a str>,
+    /// Where the command runs, from the payload's own `cwd`.
+    pub cwd: Option<&'a Path>,
+    /// The worktree this session may reach, and its own git dir. Both `None` for a
+    /// session in the main checkout, which has nothing to be isolated from — and
+    /// either one absent disables [`isolation`] rather than guessing.
+    pub worktree: Option<&'a Path>,
+    pub git_dir: Option<&'a Path>,
 }
 
 /// The base branch to protect, as a plain name (`main`).
@@ -52,9 +61,21 @@ pub fn check(call: &Call, base: Base) -> Option<String> {
     if call.tool_name != "Bash" {
         return None;
     }
+    /* The directory the next segment runs in, which is not a constant: `cd
+       <somewhere> && git commit` is one tool call, and the git in it operates
+       where the `cd` left off rather than where the payload says the session is.
+       `None` means it could not be worked out, and then [`isolation`] goes quiet —
+       the same fail-open this module makes everywhere else. */
+    let mut at = call.cwd.map(|c| c.to_path_buf());
     for segment in segments(call.command) {
         if let Some(reason) = check_one(&segment, base, call.current_branch) {
             return Some(reason);
+        }
+        if let Some(reason) = isolation(&segment, at.as_deref(), call.worktree, call.git_dir) {
+            return Some(reason);
+        }
+        if let Some(moved) = cd_target(&segment) {
+            at = moved.map(|to| resolve(at.as_deref(), &to));
         }
     }
     None
@@ -165,6 +186,120 @@ fn check_one(segment: &str, base: Base, current_branch: Option<&str>) -> Option<
     None
 }
 
+/// Refuse a git command that reaches out of the session's own worktree.
+///
+/// **This is the daemon's invariant, not Claude Code's.** Main's branch and its
+/// recorded occupant are what `claim_main`, `park_main`, `switch_main_to_pr` and
+/// `branch_busy` all read, so one `git -C <main> checkout -b` from an agent in a
+/// worktree breaks four flows at once and nothing else notices. It replaces the
+/// isolation `claude --worktree` used to pin, which the daemon no longer takes
+/// (§11) — and it is deliberately narrower than that one was: **git only**. Claude
+/// Code's version also refused writes, which is how a shared `.plan` symlink
+/// spelled `../../../.plan` became unwritable from the tree it was linked into,
+/// with the shared-checkout copy refused in the same breath. Writes are the repo's
+/// own business; `worktree-edit-boundary` is where the monorepo keeps that opinion.
+///
+/// Three spellings reach another checkout, and the session's own git dir is the
+/// one exemption: a worktree's real git dir lives under the *main* checkout
+/// (`<main>/.git/worktrees/<name>`), so `--git-dir=$(git rev-parse --git-dir)` is
+/// both ordinary and outside the tree.
+fn isolation(
+    segment: &str,
+    at: Option<&Path>,
+    worktree: Option<&Path>,
+    git_dir: Option<&Path>,
+) -> Option<String> {
+    let worktree = worktree?;
+    let tokens: Vec<&str> = segment.split_whitespace().collect();
+    let first = tokens.first()?;
+    if *first != "git" && !first.ends_with("/git") {
+        return None;
+    }
+    let allowed = |p: &Path| {
+        p.starts_with(worktree) || git_dir.is_some_and(|g| p.starts_with(g))
+    };
+
+    // Where an explicit redirection points, and otherwise where the command
+    // stands: a `cd` out of the tree makes a plain `git commit` the same mistake.
+    let mut aimed: Vec<PathBuf> = Vec::new();
+    let mut i = 1;
+    while let Some(tok) = tokens.get(i) {
+        i += 1;
+        let value = |flag: &str, i: &mut usize| -> Option<String> {
+            if let Some(v) = tok.strip_prefix(&format!("{flag}=")) {
+                return Some(v.to_string());
+            }
+            if *tok == flag {
+                let v = tokens.get(*i).map(|s| s.to_string());
+                *i += 1;
+                return v;
+            }
+            None
+        };
+        for flag in ["-C", "--git-dir", "--work-tree"] {
+            if let Some(v) = value(flag, &mut i) {
+                aimed.push(resolve(at, Path::new(v.trim_matches(|c| c == '\'' || c == '"'))));
+            }
+        }
+    }
+    if aimed.is_empty() {
+        aimed.push(at?.to_path_buf());
+    }
+    let out = aimed.into_iter().find(|p| !allowed(p))?;
+    // The way out is in the refusal, because a guard that only says no makes the
+    // agent guess: `orch outside` puts the question to the user through the
+    // ordinary ask box, and a yes lasts the rest of the session.
+    Some(format!(
+        "orchd: this session works in {}, and this command aims git at {}. Run it \
+         against your own worktree, or ask first with `orch outside {}` — changing \
+         another checkout from here moves branches the app is keeping track of.",
+        worktree.display(),
+        out.display(),
+        out.display()
+    ))
+}
+
+/// Where a `cd` segment lands: `Some(Some(path))` for a target that can be read,
+/// `Some(None)` for a `cd` whose destination this cannot know (`cd` alone is
+/// `$HOME`, `cd -` is wherever you were), and `None` when the segment is not a
+/// `cd` at all.
+fn cd_target(segment: &str) -> Option<Option<PathBuf>> {
+    let tokens: Vec<&str> = segment.split_whitespace().collect();
+    if tokens.first()? != &"cd" {
+        return None;
+    }
+    match tokens.get(1) {
+        Some(to) if *to != "-" && !to.starts_with('-') => {
+            Some(Some(PathBuf::from(to.trim_matches(|c| c == '\'' || c == '"'))))
+        }
+        _ => Some(None),
+    }
+}
+
+/// Resolve `path` against `at` and fold away `.` and `..`, textually.
+///
+/// No filesystem, so this stays a pure rule with pure tests, and a symlink is not
+/// followed. That is the fail-open trade again: a link out of the tree is not seen,
+/// and every spelling that is seen is answered the same way twice.
+fn resolve(at: Option<&Path>, path: &Path) -> PathBuf {
+    let joined = match (at, path.is_absolute()) {
+        (_, true) => path.to_path_buf(),
+        (Some(at), false) => at.join(path),
+        (None, false) => path.to_path_buf(),
+    };
+    let mut out = PathBuf::new();
+    for c in joined.components() {
+        match c {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other),
+        }
+    }
+    out
+}
+
 /// The refs a push would write to, normalised to plain branch names.
 ///
 /// The destination of `<src>:<dst>` is `dst`; a lone `<ref>` is its own
@@ -208,7 +343,33 @@ mod tests {
     use super::*;
 
     fn bash<'a>(command: &'a str, branch: Option<&'a str>) -> Call<'a> {
-        Call { tool_name: "Bash", command, current_branch: branch }
+        Call {
+            tool_name: "Bash",
+            command,
+            current_branch: branch,
+            cwd: None,
+            worktree: None,
+            git_dir: None,
+        }
+    }
+
+    const MAIN: &str = "/repo";
+    const TREE: &str = "/repo/.claude/worktrees/invoice";
+    /// A worktree's real git dir lives under the main checkout, which is why the
+    /// rule needs it named rather than inferred from the tree.
+    const GITDIR: &str = "/repo/.git/worktrees/invoice";
+
+    /// A session standing in its own worktree, which is the only case the rule has
+    /// an opinion about.
+    fn inside<'a>(command: &'a str) -> Call<'a> {
+        Call {
+            tool_name: "Bash",
+            command,
+            current_branch: None,
+            cwd: Some(Path::new(TREE)),
+            worktree: Some(Path::new(TREE)),
+            git_dir: Some(Path::new(GITDIR)),
+        }
     }
 
     #[test]
@@ -289,7 +450,99 @@ mod tests {
         assert!(!denied("echo git push --force"));
         assert!(!denied("git pull --force"));
         // Another tool entirely is not this guard's business.
-        let call = Call { tool_name: "Edit", command: "git push --force", current_branch: None };
+        let call = Call { tool_name: "Edit", ..bash("git push --force", None) };
         assert!(check(&call, Some("main")).is_none());
     }
+
+    #[test]
+    fn git_aimed_out_of_the_worktree_is_refused() {
+        let denied = |c: &str| check(&inside(c), Some("main")).is_some();
+        // The mistake this exists for: main's branch and its recorded occupant are
+        // what four flows read, and this is how an agent moves them from elsewhere.
+        assert!(denied(&format!("git -C {MAIN} checkout -b topic")));
+        assert!(denied(&format!("git --git-dir={MAIN}/.git branch -f main HEAD")));
+        assert!(denied(&format!("git --work-tree={MAIN} checkout .")));
+        assert!(denied("git -C /repo/.claude/worktrees/other status"));
+        // Relative, and `..` folded rather than compared as text.
+        assert!(denied("git -C ../other status"));
+        assert!(denied("git -C ../../.. status"));
+        // A `cd` in the same tool call moves where the git runs.
+        assert!(denied(&format!("cd {MAIN} && git status")));
+    }
+
+    #[test]
+    fn git_inside_the_worktree_is_left_alone() {
+        let denied = |c: &str| check(&inside(c), Some("main")).is_some();
+        assert!(!denied("git status"));
+        assert!(!denied("git -C . commit -m x"));
+        assert!(!denied(&format!("git -C {TREE}/src add -A")));
+        assert!(!denied("cd src && git add -A"));
+        // The exemption: `--git-dir=$(git rev-parse --git-dir)` is ordinary, and it
+        // points under the main checkout by construction.
+        assert!(!denied(&format!("git --git-dir={GITDIR} log -1")));
+        // Not git at all, whatever it mentions.
+        assert!(!denied(&format!("echo git -C {MAIN}")));
+        assert!(!denied(&format!("rg -l 'git -C {MAIN}'")));
+    }
+
+    #[test]
+    fn a_session_in_main_is_isolated_from_nothing() {
+        // `worktree: None` is how the binary reports "this session is in main", and
+        // the rule has to be silent then rather than measuring main against itself.
+        let call = Call {
+            tool_name: "Bash",
+            command: &format!("git -C {TREE} status"),
+            current_branch: None,
+            cwd: Some(Path::new(MAIN)),
+            worktree: None,
+            git_dir: None,
+        };
+        assert!(check(&call, Some("main")).is_none());
+    }
+
+    #[test]
+    fn what_cannot_be_worked_out_is_allowed() {
+        let denied = |c: &str| check(&inside(c), Some("main")).is_some();
+        /* Fail open, the same trade as the rest of this module. `cd` with no
+           argument is `$HOME` and `cd -` is wherever you were; neither is knowable
+           here, so the tracked directory becomes unknown and later segments go
+           unjudged rather than being refused on a guess. */
+        assert!(!denied("cd && git status"));
+        assert!(!denied("cd - && git status"));
+        // Not the segment's first token, so it is not seen — `time git …` has the
+        // same hole in the push rules above.
+        assert!(!denied(&format!("time git -C {MAIN} status")));
+        // A subshell is not parsed, and the doc says so.
+        assert!(!denied(&format!("echo $(cd {MAIN} && git status)")));
+    }
+
+    #[test]
+    fn the_refusal_names_both_paths_and_the_way_out() {
+        // The message has to say where it may work as well as what it refused, or
+        // the agent's next attempt is another guess — and it has to name the ask,
+        // or "not allowed" reads as "never".
+        let said = check(&inside(&format!("git -C {MAIN} status")), Some("main"))
+            .expect("refused");
+        assert!(said.contains(TREE), "{said}");
+        assert!(said.contains(MAIN), "{said}");
+        assert!(said.contains(&format!("orch outside {MAIN}")), "{said}");
+    }
+
+    #[test]
+    fn a_granted_session_is_told_by_the_worktree_being_absent() {
+        /* How `orch guard push` applies the user's yes: it drops the worktree from
+           the `Call` rather than passing a flag into the rule, so the rule stays a
+           pure function of the command. Pinned here because the two halves live in
+           different files and only this one is testable. */
+        let call = Call {
+            tool_name: "Bash",
+            command: &format!("git -C {MAIN} checkout -b topic"),
+            current_branch: None,
+            cwd: Some(Path::new(TREE)),
+            worktree: None,
+            git_dir: None,
+        };
+        assert!(check(&call, Some("main")).is_none());
+    }
+
 }

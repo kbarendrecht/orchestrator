@@ -270,6 +270,7 @@ pub async fn start(opts: StartOptions) -> Result<Server> {
             cfg.port,
             t.map(|t| t.mcp_server),
             base.as_deref(),
+            &cfg.main_checkout,
         )?
     };
     tracing::info!("hook settings at {}", settings.display());
@@ -553,6 +554,12 @@ fn router(app: Arc<AppState>) -> Router {
         .route("/api/sessions/nudge", post(api::nudge_sessions))
         .route("/api/session/:id/fork", post(api::fork_session))
         .route("/api/session/:id/spawn", post(api::spawn_from_session))
+        // Both halves of the worktree grant on one path: the agent asks with a
+        // POST, the push guard reads with a GET before it refuses anything.
+        .route(
+            "/api/session/:id/outside",
+            post(api::allow_outside).get(api::outside_allowed),
+        )
         // `/discard` rather than the `/kill` or `/delete` the SPA already uses:
         // `is_ask_route` matches by *suffix*, so reusing either name would hand the
         // agent the rail's own unrestricted verbs on every session at once.

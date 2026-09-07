@@ -345,8 +345,10 @@ mean *this* repo; if you do, name it.
   `worktree_setup` remains for a repo that puts real setup inside `WorktreeCreate`,
   where a daemon-cut tree would genuinely miss it: `spawn::run_worktree_setup` runs
   the configured command in each daemon-cut worktree, before the session, non-fatal.
-  Do **not** add it to the `claude --worktree` arm, where the repo's own hook already
-  ran. A relative script path resolves against `main_checkout`; cwd is the worktree.
+  A relative script path resolves against `main_checkout`; cwd is the worktree.
+  **There is no `claude --worktree` arm any more** — the daemon cuts every tree, so
+  every tree runs this. See the entry below on the isolation pin for why that arm
+  went.
   The matching teardown event is `WorktreeRemove`, which the daemon also does not
   fire; `git::worktree_remove` does its own thing.
 - **Paths are resolved at one boundary, and comparing across it silently fails.**
@@ -441,6 +443,23 @@ mean *this* repo; if you do, name it.
   trap is `answerable`, which flips the moment you post: it answers "is anyone
   owed a reply", so it is only "who reviewed" on a fetch taken *before* the
   posting.
+- **The daemon no longer asks Claude Code to cut a worktree, and the isolation pin
+  is why.** `claude --worktree` was the creation path at Claude Code's own layout,
+  and every session it starts is pinned into worktree isolation. That pin refuses
+  **writes** as well as git, and both refusals landed on one ordinary thing: the
+  monorepo shares a `.plan` scratch dir into each tree as a relative symlink, and a
+  pinned session could write neither the link ("the path is spelled in a form that
+  cannot be safely resolved … a symlink storing a raw dot segment") nor the shared
+  checkout behind it ("This session is isolated in the worktree …"). Both doors
+  shut, and the hooks were fine — a session spent chasing them because `.plan`'s
+  mtime looks like evidence and is not: `worktree-link` re-links on every start, so
+  that timestamp is the *last* session start in the tree, never the first.
+  Measured across 119 worktree transcripts: 49 carry a pin and every one came from
+  that arm; the 70 the daemon cut carry none. So `spawn_worktree_session` cuts every
+  tree itself (the repo's `WorktreeCreate` still does the work, adopted), and the
+  isolation the daemon actually needs — main's branch and occupant, which
+  `claim_main`, `park_main`, `switch_main_to_pr` and `branch_busy` all read — is
+  `guard::isolation`, on the agent's Bash, git-only and silent about writes.
 - **Claude Code pins worktree isolation in the transcript, and the daemon clears it
   by writing to that same file.** Every turn re-appends a `worktree-state` record
   (`worktreePath`, `worktreeName`, `hookBased: true`), and on resume its own hook
@@ -449,6 +468,11 @@ mean *this* repo; if you do, name it.
   record, conversation all correct) left the agent unable to run `git status` on
   its own work: "This session is isolated in the worktree …, but this command
   redirects git to the shared checkout".
+
+  **A resume now clears any pin, not only one that disagrees with the cwd.** The old
+  rule read an agreeing pin as correct isolation; the entry above is why that is
+  wrong, and sessions cut by the old arm carry exactly that kind of pin, so this is
+  the only thing that ever releases them.
 
   It used to say here that the daemon cannot clear that from outside, since
   `ExitWorktree` is the agent's own tool, so `api::arrival_notice` asked the agent
@@ -690,9 +714,32 @@ mean *this* repo; if you do, name it.
 - **Pushes are guarded, by two halves that must agree.** `src/guard.rs` holds the
   rules; `orch guard push` runs them as a `PreToolUse` hook on the agent's Bash,
   and `git::push_with_lease` re-states the base-branch rule because a *daemon*
-  push never passes through a hook. Two rules only: no lease-less `--force`, and
-  no push to the base branch, which comes from `upstream_ref` rather than a list
-  of likely names. Never `git merge` into a branch here, rebase.
+  push never passes through a hook. Three rules: no lease-less `--force`, no push
+  to the base branch (which comes from `upstream_ref` rather than a list of likely
+  names), and no git aimed out of the worktree the session works in. Never `git
+  merge` into a branch here, rebase.
+  The third rule replaced Claude Code's isolation pin and is deliberately narrower
+  than it was — git only, never writes; the entry above has the reason. It needs
+  two facts the hook cannot name per session, because one settings file serves them
+  all: `--main` is baked in, and the tree is read from the payload's own cwd. Its
+  one exemption is the session's own git dir, since a worktree's real one lives
+  under the *main* checkout, so `--git-dir=$(git rev-parse --git-dir)` is both
+  ordinary and outside the tree.
+  **And it is a question, not a wall.** The refusal names `orch outside <path>`,
+  which raises an *ordinary* `Interaction` — the same field, the same box, the same
+  `/ask/:id/wait` the agent already polls — and a yes sets `Session::outside_ok`
+  for that session only. Three things about it are deliberate: the grant keys on
+  the **ask id** (`Session::outside_ask`), because an agent writes its own option
+  values through `orch ask` and would otherwise be asking itself; it is **not** on
+  `SessionRecord`, so a restart asks again rather than assuming; and a granted
+  session is told by `worktree: None` reaching the rule rather than by a flag
+  inside it, which keeps `guard::check` a pure function of the command.
+  The guard reads the grant over HTTP with the session's ask token, and **false is
+  what it answers when it cannot ask** — a missing environment or an absent daemon
+  must never widen what an agent may reach. `tools/e2e/flows/14-outside-grant.mjs`
+  drives the whole path, and the ask token it needs comes from the agent's own
+  environment (`fake-claude.mjs` writes it under the sandbox), because the daemon
+  deliberately never persists it.
   It is a **mistake-catcher, not a control** — Bash only, so `gh` or a script the
   agent writes goes around it. Do not write docs that claim otherwise; the README
   did, and that is the kind of sentence that earns misplaced trust.

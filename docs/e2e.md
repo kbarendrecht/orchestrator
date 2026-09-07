@@ -68,8 +68,8 @@ export async function run(t) {
 ```
 
 `options` picks the sandbox: `delegated` puts worktrees under
-`.claude/worktrees`, which is what makes the daemon hand the cut to
-`claude --worktree` instead of doing it itself; `turns` is how many turns the agent
+`.claude/worktrees`, Claude Code's own layout, which the daemon cuts like any
+other now — so what it changes is the path; `turns` is how many turns the agent
 takes unprompted, and `0` is the session that was never typed into — the one fork
 and resume refuse. `repo` turns GitHub on and installs the curl shim. `autoResume`
 brings live sessions back across `t.restart()`.
