@@ -3482,6 +3482,10 @@ pub async fn open_url(
     if !(url.starts_with("https://") || url.starts_with("http://")) {
         refuse!("refusing to open non-http URL");
     }
+    // Logged because the report this answers cannot be told apart otherwise: a
+    // review row that "does not open" is either a click the page never delivered
+    // or an opener that did nothing, and those have different fixes.
+    tracing::info!("opening {url} in the browser");
     open_external(url)?;
     Ok(Json(json!({ "opened": url })))
 }
