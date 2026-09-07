@@ -76,8 +76,11 @@ function openTerm(target, parent) {
   const entry = { term, fit, host };
 
   /* The pty-status pill: `connecting…` until the socket is up, `starting…` until
-     the pty says its first word, `reconnecting…` if an open socket later drops,
-     hidden once there is output. Built here so it exists before the socket does.
+     there is something readable on the pane, `reconnecting…` if an open socket
+     later drops. Built here so it exists before the socket does.
+
+     `somethingOnScreen` is the test, and the bar is deliberately that high: bytes
+     arriving is not the pane saying anything.
 
      **It used to come down when the socket opened**, which is a local connection
      and therefore instant — while the thing you are waiting for is the agent,
@@ -356,10 +359,6 @@ function connect(entry, target) {
     }
   };
   sock.onmessage = (ev) => {
-    // The first word out of the pty is what "live" means; see the badge comment
-    // in `openTerm`. Before the hidden check below, or a pane that filled while
-    // it was parked comes back still wearing the pill.
-    if (entry.badge && !entry.badge.hidden) setBadge(entry, null);
     const chunk = typeof ev.data === 'string' ? ev.data : new Uint8Array(ev.data);
     /* A terminal nobody is looking at is not written to, it is queued. `hidden`
        is `display:none`, which parks the *renderer* — it does not stop `write`,
@@ -484,7 +483,31 @@ function flushQueued(entry) {
  *  before the replay, whichever arrives first. */
 function writeChunk(entry, chunk) {
   if (entry.needsReset) { entry.needsReset = false; entry.term.reset(); }
-  entry.term.write(chunk);
+  /* The callback, not the call: xterm parses asynchronously, so the buffer holds
+     nothing yet on the line after `write`. */
+  entry.term.write(chunk, () => {
+    if (entry.closed || !entry.badge || entry.badge.hidden) return;
+    if (somethingOnScreen(entry.term)) setBadge(entry, null);
+  });
+}
+
+/** Is there anything readable on the pane, as opposed to bytes having arrived?
+ *
+ *  **The pill used to come down on the first message**, which is the same mistake
+ *  as taking it down when the socket opened, one layer in: a resuming agent's
+ *  first bytes are terminal setup — alt screen, clear, cursor moves — and they
+ *  land in milliseconds, seconds before Claude Code draws anything. So the pill
+ *  flashed and the pane sat blank for exactly the wait it exists to explain.
+ *
+ *  The viewport rather than the whole buffer, because that is what the pane shows,
+ *  and only while the pill is up, so the cost is bounded to the wait itself. */
+function somethingOnScreen(term) {
+  const buf = term.buffer.active;
+  for (let i = 0; i < term.rows; i++) {
+    const line = buf.getLine(buf.viewportY + i);
+    if (line && line.translateToString(true).trim()) return true;
+  }
+  return false;
 }
 
 /* `force` re-states the geometry even when nothing here has moved.
