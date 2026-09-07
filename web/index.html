@@ -114,8 +114,10 @@
          cannot. -->
     <div class="overlay rv" id="rvoverlay"></div>
 
-    <!-- What the running session is blocked on. Over the pty rather than beside
-         it: the terminal is not where you answer, and burying the question in
+    <!-- What the running session is blocked on. Overlays the pty, docked near the
+         bottom but raised clear of the agent's input box (--oq-clear) so the
+         question sits over the conversation without covering the line you would type
+         into. The terminal is not where you answer, and burying the question in
          scrollback is what this exists to stop. -->
     <div class="oq" id="oq" hidden></div>
 

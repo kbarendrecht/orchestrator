@@ -68,6 +68,12 @@
   --rail:290px;
   --files:296px;
   --drawer:210px;
+  /* How far a bottom-docked bar is raised off the pty's floor, sized to clear the
+     agent's own input box (~4-5 rows of the ~18px terminal line) so it never covers
+     the line you would type into. Shared by the open question's sheet and the
+     review bar so the two sit at the same height. Tune here if a taller composer
+     still peeks out. */
+  --oq-clear:88px;
 }
 
 *{box-sizing:border-box;margin:0;padding:0}
@@ -396,12 +402,14 @@ button.ctx-btn:hover{color:var(--text)}
 .termwrap.rvwork .termhost{opacity:.6}
 
 /* ---------- what a review is doing, while its overlay is closed ---------- */
-/* Bottom of the *terminal*, not of the column: `.oq` sits at the top and blocks a
-   turn, this only reports, and anchoring it to `.center` would have put it over the
-   drawer. Coloured by phase on the rail's own three tones, so a review reads like
-   every other thing in the app that is working, waiting or done. */
+/* Bottom of the *terminal*, not of the column: anchoring it to `.center` would put
+   it over the drawer. Raised to `--oq-clear`, the same height the open question's
+   sheet floats at, so the two line up and this one also clears the agent's input
+   box rather than sitting on it. Coloured by phase on the rail's own three tones,
+   so a review reads like every other thing in the app that is working, waiting or
+   done. */
 .rvbar{
-  position:absolute;left:6px;right:6px;bottom:8px;z-index:5;
+  position:absolute;left:6px;right:6px;bottom:var(--oq-clear);z-index:5;
   display:flex;align-items:center;gap:12px;
   background:var(--raised);border:1px solid var(--line);border-radius:2px;
   padding:8px 12px;font-family:var(--mono);font-size:calc(11.5px * var(--fs));
@@ -431,14 +439,19 @@ button.ctx-btn:hover{color:var(--text)}
 .rvbar.ok{border-color:var(--ok);color:var(--ok)}
 
 /* ---------- the open question ---------- */
-/* The session is stopped until this is answered, so it sits over the pty rather
-   than beside it. Amber throughout: this is the legend's "needs you", and a
-   blocked agent is the clearest case of it there is. */
+/* The session is stopped until this is answered. A rising sheet docked over the pty
+   near the bottom, but raised `--oq-clear` off the floor so it clears the agent's
+   own input box — the line you would type into is the one thing it must not cover.
+   Grows upward from there as the question gets longer, capped so it can never
+   starve the pane it answers about. The amber is a top hairline, not a full border
+   — the weight the severity direction settled on. Amber throughout: this is the
+   legend's "needs you", and a blocked agent is the clearest case of it there is. */
 .oq{
-  position:absolute;left:12px;right:6px;top:8px;z-index:5;
-  background:var(--surface);border:1px solid var(--attn);border-radius:2px;
-  padding:12px 16px;display:flex;flex-direction:column;gap:12px;
-  box-shadow:0 10px 30px rgba(0,0,0,.5);max-height:calc(100% - 16px);overflow:auto;
+  position:absolute;left:12px;right:6px;bottom:var(--oq-clear);z-index:5;
+  background:var(--surface);border:1px solid var(--line);border-top:2px solid var(--attn);
+  border-radius:2px;padding:12px 16px;display:flex;flex-direction:column;gap:12px;
+  box-shadow:0 10px 34px rgba(0,0,0,.55);
+  max-height:calc(100% - var(--oq-clear) - 12px);overflow:auto;
 }
 .oq[hidden]{display:none}
 /* Folded: the header alone, a one-line strip that keeps saying the session is
