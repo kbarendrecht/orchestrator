@@ -2,12 +2,14 @@
 //!
 //! One of the four runs [`crate::spawn::spawn_run`] starts, beside `fix-pr` and
 //! the resolve run, and shaped the same way — a `claude` session you can watch
-//! and take over, not a `-p` run that happens out of sight. The prompt is
-//! rendered from `commands/triage.md`, written to a
-//! file, and the session is told to *read* that file. Not a `/triage <pr>` slash
-//! command (that resolves from the agent's own command path, which depends on a
-//! repo usually not installed) and not typed inline (it is multi-line, so it
-//! would submit at the first newline).
+//! and take over, not a `-p` run that happens out of sight. Its first turn is the
+//! vendored skill, typed as `/orchd:triage <pr>` ([`FirstTurn::Skill`]). A slash
+//! command used to be the wrong shape here because it resolved from the agent's own
+//! command path, which depends on a repo usually not installed — the daemon now
+//! ships the skill itself and pushes `--plugin-dir` on every spawn
+//! ([`crate::config::session_flags`]), so the path is one it owns. The runs that
+//! still have a multi-line prompt render it to a file instead and are told to read
+//! it; see [`render_prompt_file`] for why that half was split out.
 //!
 //! Following `fix-pr`'s lesson ([`crate::fix_pr::settle`]): **the agent's stdout
 //! is not parsed.** The pty stream stays raw for xterm.js, and the run reports by

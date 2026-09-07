@@ -155,8 +155,8 @@ pub fn check(cfg: &Config, tracker_server: Option<&str>) -> Vec<Warning> {
         });
     }
 
-    // The one prerequisite whose failure is silent. `claude --worktree` refuses an
-    // untrusted directory, the session exits before its first turn, and
+    // The one prerequisite whose failure is silent. `claude` refuses an untrusted
+    // directory, the session exits before its first turn, and
     // `watch_session_exit` forgets a turnless session on purpose — so the rail row
     // *disappears* and the new-worktree button reads as doing nothing at all.
     if trust_accepted(&cfg.main_checkout) == Some(false) {

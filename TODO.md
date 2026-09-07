@@ -312,12 +312,13 @@ this file, which churned it from every build; that feature is gone.
     The accepted cost is that a fresh checkout gets **no** queue until it configures
     one, and the pane reads `off`. Revisit only if a second consumer wants a queue
     without a script.
-  - **Worktree *creation* is decoupled; the session model is not.** At Claude Code's
-    default layout `spawn_worktree_session` delegates to `claude --worktree`; at any
-    other `worktrees_subdir` the daemon cuts the tree itself. But both arms still
-    spawn `claude`, and the real coupling is untouched: `--session-id` correlation,
-    the transcript slug, the `ai-title` field, `--resume`, and the whole
-    hook-observer plumbing. Hosting another agent means abstracting *that*.
+  - **Worktree *creation* is decoupled; the session model is not.** The daemon cuts
+    every tree itself now — `spawn_worktree_session` runs the repo's own
+    `WorktreeCreate` through `create_worktree` and adopts it, with no `--worktree`
+    arm left. But the session still spawns `claude`, and the real coupling is
+    untouched: `--session-id` correlation, the transcript slug, the `ai-title`
+    field, `--resume`, and the whole hook-observer plumbing. Hosting another agent
+    means abstracting *that*.
   - **Give the tracker the same seam the forge has.** Shortcut is
     `TrackerKind::facts` in `config.rs`, four constants, but some of its specifics
     are still spread through `story.rs`: the MCP server name in the allowlist, the
@@ -334,47 +335,6 @@ this file, which churned it from every build; that feature is gone.
     is a REST id, and both `GitHubForge::detect`'s URL parsing and the read-token
     ladder are github.com-specific — `for_kind`'s single `token` argument does not
     yet model per-forge credentials.
-- **Cut every worktree with the daemon, including new interactive ones.** *Low
-  priority — nothing is broken today, both paths work.* The point is not tidiness:
-  `claude --worktree` is the one place the daemon asks the **agent** to do something
-  only that agent can do, so collapsing it is the first real step towards being
-  agent-agnostic. It is also the smaller half of the coupling — the session model is
-  the rest, see "Worktree creation is decoupled" above.
-
-  Mechanically it is already possible and already the exercised path: every PR
-  worktree and every resume is cut with `git worktree add`. Only
-  `spawn_worktree_session` delegates, and only when `worktrees_subdir` happens to be
-  Claude Code's default — so today you cannot ask for daemon-cutting without moving
-  your worktrees elsewhere, which is an unrelated decision. It wants an explicit
-  mode, not a subdir inference.
-
-  **From the outside nothing changes.** Same paths (`<main>/.claude/worktrees/<name>`),
-  same branch names (`worktree-<name>`), same rail, same gestures.
-
-  **What was called the actual work here is done.** A daemon-cut tree already runs
-  the target repo's own `WorktreeCreate` hooks: `spawn::create_worktree` asks them
-  first through `hook_cut_worktree`, adopts the tree they printed, puts it on the
-  branch it needs, and cuts its own only when that declines. So this entry is now
-  the smaller thing it always claimed to be — an explicit mode instead of a subdir
-  inference. Still watch the double-run: a repo with both a `WorktreeCreate` hook
-  and a configured `worktree_setup` must not get both.
-
-  **Trust stays Claude's**, checked when the session opens in the tree. What
-  disappears is *creation* depending on it: today an unaccepted trust dialog makes
-  `claude --worktree` refuse, the session exit instantly, and leaves a workspace
-  record for a worktree that was never created.
-
-  **`PENDING_WORKTREE` goes.** The daemon would know the path before the pty exists,
-  so no `…creating` placeholder, no adopting the workspace from the agent-reported
-  cwd, and no requirement to `canonicalize` at that boundary. The one thing lost is
-  `--worktree` with no name inventing a collision-proof one; the daemon already has
-  `wt-<8 hex>` for that.
-
-  **Measure first, in an afternoon:** cut a worktree each way and diff what Claude
-  Code writes into its own state. Locking the tree is the only difference anybody has
-  confirmed, and that is what `worktree_remove`'s stale-lock retry exists for — which
-  becomes deletable once no locked trees remain, but not before.
-
 - **macOS: launched now, and mostly working.** A second person ran it on a Mac on
   2026-09-01, which closed the "never executed" half of this. What that afternoon
   found, all fixed: an app started from Finder inherits none of your shell's `PATH`,

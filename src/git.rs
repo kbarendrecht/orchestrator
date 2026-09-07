@@ -626,8 +626,9 @@ fn stale_lock_pid(main: &Path, path: &Path) -> Option<u32> {
 /// Freshen a base ref that can go stale, then prove it resolves.
 ///
 /// The repo's own `WorktreeCreate` hook opens with `git fetch upstream develop`, and
-/// a daemon-cut tree never runs that hook, so every PR worktree and every worktree
-/// the daemon made started from whatever the last fetch happened to leave behind.
+/// this is the path taken when there was no usable hook — `create_worktree` falls
+/// through to the daemon's own creation — so without the fetch here those trees
+/// started from whatever the last fetch happened to leave behind.
 /// Non-fatal exactly as the hook has it: offline is a reason to cut from the
 /// last-known base, not a reason to refuse.
 ///
@@ -2301,8 +2302,9 @@ mod tests {
     /// A remote-tracking base is fetched before the cut, so a daemon-cut worktree
     /// does not start from whatever the last fetch happened to leave behind.
     ///
-    /// The repo's own `WorktreeCreate` hook opens with this fetch and a daemon-cut
-    /// tree never runs that hook. Driven against a real second repository, because
+    /// The repo's own `WorktreeCreate` hook opens with this fetch, and this is the
+    /// fallback taken when there was no usable hook to run it. Driven against a real
+    /// second repository, because
     /// the thing being asserted is that the new tree holds a commit that existed
     /// only on the remote a moment ago.
     #[test]

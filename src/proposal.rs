@@ -12,8 +12,9 @@
 //! `forge::model::ThreadRoot`). Nothing in this module trusts a field because it
 //! parsed.
 //!
-//! `Proposal`, deliberately not `Finding`: [`crate::findings::Finding`] already
-//! owns that word for the conditions the daemon writes to its `daemon.log`.
+//! `Proposal`, deliberately not `Finding`: that word belonged to the findings log,
+//! which is gone. The name outlived it because these are things the agent *offers*
+//! and you accept, which is not what a finding was.
 
 use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};

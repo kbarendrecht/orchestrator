@@ -342,9 +342,13 @@ mean *this* repo; if you do, name it.
   `remote.pushDefault`, the shared `.plan` and every symlink, because the monorepo
   hangs its `worktree-link` there. Do not "fix" a gap here without checking which
   event the repo in front of you actually uses.
-  `worktree_setup` remains for a repo that puts real setup inside `WorktreeCreate`,
-  where a daemon-cut tree would genuinely miss it: `spawn::run_worktree_setup` runs
-  the configured command in each daemon-cut worktree, before the session, non-fatal.
+  `worktree_init` and `worktree_setup` remain for a repo that puts real setup inside
+  `WorktreeCreate`, where a daemon-cut tree would genuinely miss it:
+  `spawn::run_worktree_hooks` runs both in each daemon-cut worktree, before the
+  session, non-fatal. They mirror the monorepo's two hooks — `worktree-create` bases
+  the tree, `worktree-link` puts the shared files in place — so a repo with two
+  scripts needs no wrapper to fan back out. Order is fixed and the second runs even
+  if the first failed, because an un-based tree is still worth linking.
   A relative script path resolves against `main_checkout`; cwd is the worktree.
   **There is no `claude --worktree` arm any more** — the daemon cuts every tree, so
   every tree runs this. See the entry below on the isolation pin for why that arm
@@ -434,7 +438,7 @@ mean *this* repo; if you do, name it.
   `headroom::check` moved into `insert_and_spawn` for the same reason: it was at
   two of the four spawners, so the rail's new-worktree button, the fork path and
   the story filer had no check at all.
-- **`github_write.rs` will not resolve a thread, approve, merge or open a PR.**
+- **`forge/github_write.rs` will not resolve a thread, approve, merge or open a PR.**
   That is a design boundary, not a gap. Resolving is the comment author's button.
   Which means **`is_resolved` can never stand for "handled"**: the daemon never
   sets it, so every thread it has ever answered is still unresolved. A re-request

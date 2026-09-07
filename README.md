@@ -504,6 +504,7 @@ src/
   lib.rs        wiring, the router, the pollers, startup recovery, SPA serving
   main.rs       the headless CLI over the library; desktop/ is the other caller
   config.rs     config file, defaults, Settings read/write, transcript slug
+  firstrun.rs   the first-run page: merges config, detects a fork layout, restarts
   model.rs      Workspace / Session / Process, State, ArchiveState
   state.rs      the daemon's owned state, snapshots, reconcile, durable-store writes
   instance.rs   the one-daemon-at-a-time pid lock
@@ -538,6 +539,7 @@ src/
   api.rs        HTTP surface and the origin/token guards      ws.rs  event stream + pty attach
   guard.rs      the git rules (push blast radius, worktree isolation), run by `orch guard push`
   machine.rs    what the daemon needs from the machine, warned about at boot
+  timing.rs     per-start phase lines: exec counts, share of the time, slow git
   testutil.rs   the shared test fixtures (scratch dirs, an AppState, a Pr)
 web/            the SPA (vanilla, xterm.js vendored) — one module graph under js/,
                 booted by app.js; snapshot.d.ts is generated from the Rust structs

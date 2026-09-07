@@ -424,7 +424,7 @@ let agentDismissed = null;
 function renderAgentUpdate() {
   const bar = $('agentbar');
   const u = snap.agent_update;
-  /* The daemon's own state (`agent_update::UpgradeRun`), not a flag set on click:
+  /* The daemon's own state (`update::UpgradeRun`), not a flag set on click:
      a local "in progress" boolean has no way to learn that the run died, so it
      would sit disabled forever. It also survives a reload and shows in every
      window, which a local flag cannot. */

@@ -60,7 +60,7 @@ pub struct Pr {
     /// the run gave up", not a provenance record (§8).
     pub head_sha: Option<String>,
     /// GitHub's sense of resolved — a conversation the comment author closed.
-    /// Not to be confused with `/api/pr/:n/resolve`, which is *our* flow for
+    /// Not to be confused with `/api/pr/:number/resolve-run`, which is *our* flow for
     /// answering threads and deliberately never closes one.
     pub unresolved: u32,
     /// True when `reviewThreads` had another page, so `unresolved` is a floor.

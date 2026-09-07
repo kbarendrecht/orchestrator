@@ -605,10 +605,11 @@ pub async fn discard_spawned(
     // session, and the session it would be refusing for is the one just discarded.
     let mut out = json!({ "killed": child, "workspace": workspace });
     // `MAIN` cannot be the answer here — `spawn_cut_worktree` is never true of it —
-    // but the placeholder can: at Claude Code's own layout the tree is cut by
-    // `claude --worktree` and has no name until `SessionStart` reports one. Teardown
-    // would refuse "unknown workspace …creating", which reads as a broken command
-    // rather than "you were faster than the hook".
+    // but the placeholder can, for a record an older daemon left behind: the tree
+    // used to be cut by `claude --worktree`, which reported its name only at
+    // `SessionStart`. No spawner produces it now (see `spawn_worktree_session`), so
+    // this arm is defensive. Teardown would refuse "unknown workspace …creating",
+    // which reads as a broken command rather than "you were faster than the hook".
     if cut && workspace != MAIN && workspace != spawn::PENDING_WORKTREE {
         match worktree::teardown(&app, &workspace).await {
             Ok(_) => out["removed"] = json!(workspace),
@@ -1158,7 +1159,7 @@ pub struct OutsideBody {
 
 /// Ask whether this session may run git outside its own worktree.
 ///
-/// The other half of [`crate::guard::isolation`]: the guard refuses by default and
+/// The other half of `guard::isolation`: the guard refuses by default and
 /// its refusal names this command, so "not allowed" is a question rather than a
 /// wall. It is the *ordinary* ask — the same `Interaction`, the same box in the
 /// SPA, the same `/ask/:id/wait` the agent already polls — because a second
@@ -1365,9 +1366,10 @@ pub async fn spawn_from_session(
     app.notify().await;
     // Read back off the record rather than echoed, because when the default cut a
     // worktree the caller never named it and has no other way to learn where its
-    // request landed. It can still be the `…creating` placeholder: at Claude Code's
-    // own layout the tree is cut by `claude --worktree` and only `SessionStart`
-    // reports the name.
+    // request landed. It can still be the `…creating` placeholder for a record an
+    // older daemon left behind — the tree used to be cut by `claude --worktree`,
+    // which reported its name only at `SessionStart` — but no spawner produces one
+    // now.
     //
     // The path comes back for the same reason the workspace does, one step further:
     // a bare id told the caller nothing about *where*, so confirming a spawn went

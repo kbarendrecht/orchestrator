@@ -55,8 +55,8 @@ Deep-research pass, adversarially verified; cited findings in
 The main checkout is untouched unless asked for.
 
 **Worktrees stay nested at `.claude/worktrees`.** It is Claude Code's own
-`--worktree` location, so delegation gives it for free, and it is one layout for
-every profile. Siblings are the wider convention and are deliberately *not*
+`--worktree` location, so a repo's own `WorktreeCreate` hook already targets it,
+and it is one layout for every profile. Siblings are the wider convention and are deliberately *not*
 offered: they would cost a config-shape change (a worktrees dir that may sit
 outside main) and relaxing the in-main guard, for a gain that does not pay while
 Claude Code is the only agent hosted. Nesting also keeps the gitdir inside the
@@ -100,9 +100,9 @@ tree".
 
 The decisions above are implemented: `worktrees_subdir` makes the layout
 configurable, `main_processes` are `autostart:false` specs a fresh checkout never
-starts, and the capability subsystem is gone. `spawn_worktree_session` branches on
-whether the subdir is Claude Code's default, delegating there and cutting the tree
-itself anywhere else.
+starts, and the capability subsystem is gone. `spawn_worktree_session` cuts every
+tree itself, running the repo's own `WorktreeCreate` hook through `create_worktree`
+and adopting what it made — there is no `claude --worktree` arm left.
 
 The build plan that used to close this file is dropped: part of it shipped, and the
 rest was written against a shape that has since moved. `TODO.md` is where the

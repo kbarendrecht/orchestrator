@@ -694,7 +694,7 @@ fn carry_into(parent: &std::path::Path, fork: &std::path::Path, exclude: &str) -
 /// pin and every one of them came from that arm, while the 70 the daemon cut
 /// carried none. The isolation the daemon actually needs is narrower and is its
 /// own — main's branch and occupant are what `claim_main`, `park_main`,
-/// `switch_main_to_pr` and `branch_busy` read — so [`crate::guard::isolation`]
+/// `switch_main_to_pr` and `branch_busy` read — so `guard::isolation`
 /// enforces that on the agent's Bash and says nothing about writes.
 ///
 /// Two things it gives up. Claude Code invents a name for an unnamed tree and the
@@ -821,9 +821,9 @@ pub async fn spawn_worktree_session(
             },
         )
         .await?;
-        // `worktree_setup` on top, for a repo that keeps real setup inside its
-        // `WorktreeCreate` and would otherwise have it run twice or not at all. It
-        // is configured per repo and does nothing when unset.
+        // Both worktree hooks on top, `worktree_init` then `worktree_setup`, for a
+        // repo whose setup does not hang off the `WorktreeCreate` the line above
+        // just ran. Configured per repo, and nothing at all when unset.
         run_worktree_hooks(app, &path).await;
         // Now the parent's uncommitted work, on top of the parent's HEAD the tree
         // was just cut from. Before the session starts, so the agent never sees the

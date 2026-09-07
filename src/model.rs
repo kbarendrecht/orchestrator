@@ -322,7 +322,7 @@ pub struct Session {
     pub interaction: Option<Interaction>,
     /// You said this session may run git outside its own worktree.
     ///
-    /// [`crate::guard::isolation`] refuses that by default, and the refusal tells
+    /// `guard::isolation` refuses that by default, and the refusal tells
     /// the agent to ask; `orch outside` puts the question to you through the
     /// ordinary ask box and this is what a yes leaves behind. **Deliberately not
     /// on [`crate::store::SessionRecord`]**: it is a decision about the

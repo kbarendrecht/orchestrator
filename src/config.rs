@@ -166,19 +166,19 @@ pub struct Config {
     ///
     /// # Why two
     ///
-    /// Claude Code's `WorktreeCreate` hook fires only for `claude --worktree`, so a
-    /// PR worktree or a resumed one — both cut by the daemon with plain
-    /// `git worktree add` — silently skips whatever the repo does at creation. The
-    /// case this was written for wrote a file that stops the repo's rules
-    /// double-loading, and the PR worktrees were missing it.
+    /// `spawn::create_worktree` runs the repo's own `WorktreeCreate` where
+    /// it cuts a tree, so a repo that keeps its setup there is already served — and
+    /// pointing these at the same scripts runs them twice. What they cover is a tree
+    /// that reaches a session without that hook: one rebuilt at its old path by a
+    /// resume, and one main's branch moved into. The case this was written for wrote
+    /// a file that stops the repo's rules double-loading, and the daemon-cut trees
+    /// were missing it.
     ///
     /// One command had to cover both concerns, which meant a repo with two hooks
     /// needed a wrapper script to fan back out. Two settings mirror the two hooks,
     /// so each points straight at the script that already exists.
     ///
-    /// Empty by default: a plain checkout needs neither. Neither runs on the
-    /// `claude --worktree` path, where the repo's own hooks already did the work —
-    /// running both would double it.
+    /// Empty by default: a plain checkout needs neither.
     #[serde(default)]
     pub worktree_setup: Vec<String>,
 

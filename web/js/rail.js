@@ -548,9 +548,10 @@ function sessionRow(s, w) {
   if (s.kind.kind === 'automation') sub.appendChild(el('span', 'sess-cmd', s.kind.command));
   sub.appendChild(el('span', 'sess-state ' + stateClass(s), stateLabel(s)));
   // The waiting duration is the number to optimise down (§2). A start has a
-  // clock for a different reason: `claude --worktree` cuts the worktree and runs
-  // the repo's link hooks before it says anything, which is ten seconds of
-  // nothing. A number that moves is the difference between slow and hung.
+  // clock for a different reason: the daemon cuts the worktree and runs the
+  // repo's create and link hooks before the agent says anything, which is ten
+  // seconds of nothing. A number that moves is the difference between slow and
+  // hung.
   if (isWaiting(s) && s.waiting_ms != null) {
     sub.appendChild(clock(null, s.waiting_ms));
   } else if (s.state.state === 'starting') {

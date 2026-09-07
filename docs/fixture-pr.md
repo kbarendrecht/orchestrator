@@ -60,16 +60,16 @@ Overriding `HOME` would have relocated all of it for free and is the wrong lever
 `claude` reads its credentials from there, so every session the fixture daemon
 spawned would come up unauthenticated.
 
-The live-findings log needs no fixture handling: `findings::dogfood_log` writes
-only when the managed checkout *is* orchd's own source tree, and then only to the
-gitignored `daemon.log`, so a fixture clone dirties nothing. Set `log_path` to
-force the log elsewhere.
+The log follows it too. `init_logging` writes to `<config_dir>/orchd.log`, so a
+fixture run does not overwrite the log of the daemon you were just debugging.
 
 ## A fresh clone needs Claude Code's trust accepted once
 
-A daemon on a just-cloned fixture cannot create worktrees: `claude --worktree`
-refuses with "Workspace trust not yet accepted" and the spawned session exits
-instantly, leaving a workspace record pointing at a path that was never created.
+A daemon on a just-cloned fixture cuts the worktree and then loses the session:
+`claude` refuses an untrusted directory with "Workspace trust not yet accepted"
+and exits before its first turn, and `watch_session_exit` forgets a turnless
+session on purpose — so the rail row *disappears* and the button reads as having
+done nothing.
 Accept trust once for the clone — run `claude` in it and accept the dialog, or
 set `hasTrustDialogAccepted: true` for that directory in `~/.claude.json`. The
 monorepo never shows this because it was trusted long ago; a fixture is the first
