@@ -878,18 +878,12 @@ onSelection((id, auto) => {
   // review session ending is when the overlay has its report to show, and the
   // snapshot then lands you on another session on its own.
   if (id && !auto && Review.state.open && id !== Review.state.session) Review.close();
-  // And the other direction, which is the half that was missing: the overlay *is*
-  // that session's view, so going to the session is going to the overlay. Without
-  // this you landed on the pane with the generic ask box over it and no way back to
-  // the cards that were supposed to answer it. Gestures only — the app picking a
-  // session for you when another ends is not you asking for the review.
-  //
-  // On *arriving*, not on being here. `go to the pane` is the overlay closing and
-  // selecting its own session in one move, and reopening on that is the button
-  // undoing itself. Closed while you stand on the session, the bar is the way back.
-  if (id && !auto && arrived && !Review.state.open && Review.state.session === id) {
-    Review.open(Review.state.pr);
-  }
+  /* **Arriving at a review's session does not open the overlay.** It used to,
+     because the overlay was that session's only view and landing on the pane left
+     you with an ask box over it and no way back to the cards. The bar is that way
+     back now: it names the phase, it carries `open · MOD⇧R`, and it is on screen
+     exactly when the overlay is not. Reopening on arrival meant every glance at
+     another session cost a full screen on the way back. */
   const s = currentSession();
   // A session created a moment ago is not in the snapshot yet. Blanking the
   // terminal here would strand it: the next snapshot sees `selected` already

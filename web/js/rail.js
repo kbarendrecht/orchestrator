@@ -86,25 +86,23 @@ let showPrs = true;
  *  again. See `sessionRow`. */
 let picked = null;
 
-/** How to answer a PR's threads: asked per PR, not remembered.
+/** The one button on a PR row: start the pass that answers its threads.
  *
- *  `/resolve` spawns a session pinned to the PR worktree and runs the vendored
- *  prompt in a pane — the agent doing the reading, fixing and drafting while you
- *  supervise, the daemon making no irreversible write itself. The overlay answers
- *  the threads here instead: triage, a card per thread, one batched post. The
- *  overlay is still the unstable one, so the menu says so rather than one of the
- *  two being the default you fall into. */
+ *  **It does the thing rather than offering a menu of things.** It used to open
+ *  `prMenu`, which is the same list a right-click already gives, so the row had two
+ *  gestures for one menu and none for the action everybody wanted. A right-click
+ *  still opens the menu; this is the verb. */
 function reviewButtons(p) {
   const wrap = el('span', 'prpair');
-
-  const btn = el('button', 'pract', 'review ▾');
-  btn.title = `Answer #${p.number}'s review threads`;
+  const btn = el('button', 'pract', 'resolve');
+  btn.title = `Read #${p.number}'s review threads and propose an answer to each`;
   btn.onclick = (ev) => {
+    // The row is an anchor to the PR on GitHub; this is not that.
+    ev.preventDefault();
     ev.stopPropagation();
-    openMenu(ev, prMenu(p, btn));
+    startTriage(p.number, btn);
   };
   wrap.appendChild(btn);
-
   return wrap;
 }
 
@@ -129,7 +127,7 @@ function prMenu(p, btn) {
        reports from there and the cards open from the bar. `/resolve` into a
        terminal was the other one and is gone: it read the threads a second way,
        into a session nothing watched. */
-    ['review', null, () => startTriage(p.number, btn)],
+    ['resolve', null, () => startTriage(p.number, btn)],
   ];
 }
 
@@ -299,13 +297,10 @@ function prGroup() {
          #<n>" the moment `branch_busy` answers, and `PrView.session` is that same
          live session.
 
-         `review ▾`: checked one by one against the daemon, and all four of its
-         items are spent. `open in main checkout` and `open in worktree` hit
-         `refuse_if_occupied`; `resolve in UI` hits `triage::spawn_posting_run`'s
-         gate. `resolve` is the odd one — `spawn_command_session` hands back the
-         live session rather than refusing — but "take me to the session on this
-         branch" is what the chip already does, one control to the left. The menu
-         stays on a right-click for anyone who wants to read the refusal. */
+         `resolve`: it starts a pass in the PR's worktree, and a live session there
+         is exactly what `triage::spawn_posting_run`'s gate refuses. The `session`
+         chip beside it is where you were going anyway. The menu stays on a
+         right-click for anyone who wants to read the refusal. */
       if (needsResolve && !p.session) row.appendChild(reviewButtons(p));
       if (needsFix && !p.session) row.appendChild(actionButton(p, 'fix-pr', 'fix'));
     }

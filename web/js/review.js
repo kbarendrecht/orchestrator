@@ -1421,15 +1421,13 @@ function rvManual(root) {
   root.appendChild(body);
 
   const ready = m.threads.every((th) => (manualState.comments[th.thread_id] || '').trim());
+  /* Same rule as the run screen: the batch this phase interrupted has already
+     applied and pushed, so `final` behind it is a screen whose only button the
+     daemon refuses ("a manual batch retried through `/post` is refused every
+     time" — see the report's retry). The phase is kept when you `Esc` out, so
+     leaving and coming back is the way round, not a button that lies. */
   root.appendChild(rvActs([
     actBtn('continue · push and post', 'warm', () => finishManual(), !ready),
-    actBtn('back', null, () => {
-      /* The commit stays — it is on the branch and unpushed, which is a state git
-         is perfectly happy in. Only the phase is left. */
-      reviewState.report = null;
-      reviewState.screen = 'final';
-      renderReview();
-    }),
   ], ready
     ? 'writes nothing further · your edits are already on disk'
     : `a comment is required on ${m.threads.length === 1 ? 'this thread' : 'each thread'}`));
@@ -1703,7 +1701,14 @@ function reviewTick() {
   if (!reviewState.session && selected) {
     const s = (snap.sessions || []).find((x) => x.id === selected);
     const k = s && s.alive ? s.kind : null;
-    if (k && k.kind === 'automation' && (k.command === 'review' || k.command === 'triage')) {
+    if (k && k.kind === 'automation' && k.command === 'resolve-run') {
+      // Mid-run, from a reload or from landing on its pane: the plan is gone and
+      // the run's own record is what the screen and the bar read.
+      reviewState.pr = k.pr;
+      reviewState.session = s.id;
+      reviewState.decisionsSent = true;
+      reviewState.screen = 'run';
+    } else if (k && k.kind === 'automation' && (k.command === 'review' || k.command === 'triage')) {
       reviewState.pr = k.pr;
       reviewState.session = s.id;
       reviewState.proposalsLoaded = false;
@@ -1741,6 +1746,23 @@ function reviewTick() {
   // The session ended.
   const s = (snap.sessions || []).find((x) => x.id === reviewState.session);
   if (s && s.alive) return;
+
+  /* **The read pass ending is a hand-over, not the end of the review.**
+     `spawn_resolve_run` closes it to take its worktree, so from here the work is
+     the run's: follow it. Without this the tail below let go of the whole state —
+     session null, `proposalsLoaded` false — and the triage branch above then fired
+     again on the next tick, which is the overview appearing over a run you had just
+     approved a commit for. */
+  const run = (snap.resolve_runs || {})[reviewState.pr];
+  if (run && !run.ended) {
+    if (reviewState.session !== run.session || reviewState.screen !== 'run') {
+      reviewState.session = run.session;
+      reviewState.decisionsSent = true;
+      reviewState.screen = 'run';
+      renderReview();
+    }
+    return;
+  }
 
   // Handed the checks on. The review's last act is `/handoff`, which ends the
   // session and lets its exit start a `fix-pr` run — so the work is somewhere else
@@ -1812,7 +1834,14 @@ function waitScreen(root, eyebrow, big, para) {
   root.appendChild(mid);
 }
 
-/** The read phase: the session is reading, nothing to decide yet. */
+/** The read phase: the session is reading, nothing to decide yet.
+ *
+ *  **Not reachable from a triage pass**, which is the flow the rail's `resolve`
+ *  starts: `busyOnItsOwn` shuts every door into the overlay while one is running,
+ *  because a full window saying somebody else is working is worse than the one
+ *  line the bar already carries, and it covers the pane the agent asks its own
+ *  questions in. This is the overlay session's flow (`commands/review-session.md`),
+ *  which stays open across its own read phase and has nowhere else to say so. */
 function rvReading(root) {
   waitScreen(root, 'the session is reading the threads', 'Reading…',
     'The cards open here when it is done. Permission prompts appear in the session’s pane.');
@@ -1917,6 +1946,18 @@ async function submitDecisions() {
     return toast(
       `write instructions for ${noInstr.map((x) => threadLabel(x.t)).join(', ')}`, true);
   }
+  /* **Who applies these depends on who read them.**
+     The overlay session stays alive and waits on a decision ask, so its picks are
+     the answer to that ask and it goes on into the change phase itself. The triage
+     pass is over by now — it has `asks: false` and ends at the proposals POST — so
+     there is nothing to answer, and the picks start a resolve run instead. That is
+     the same plan, handed to the pass built to carry it out.
+
+     The ask is the test rather than the command, because it is the thing that is
+     actually true or not at this moment: reported as "the session is not waiting
+     on anything just now", on a screen whose only button was the one that said it. */
+  if (!sessionAsk()) return startRun();
+
   reviewState.busy = true;
   const ok = await answerSession('decisions', { decisions: decisionSet() });
   reviewState.busy = false;
@@ -2007,7 +2048,37 @@ function adoptable(s) {
   return !i || (!i.answer && i.options.some((o) => o.value === 'decisions'));
 }
 
+/** Is a pass working through this PR, with nothing yet for you to act on?
+ *
+ *  **The one question both the door and the bar ask.** Asking it two ways is what
+ *  hid the `open` button at the moment it was wanted: the bar's phases are ordered
+ *  so that "N threads waiting on you" answers before the posted branch does, so a
+ *  flag set in that branch was never reached once the cards existed.
+ *
+ *  Two phases answer yes, and the overlay has nothing worth a window in either.
+ *  Reading: no cards yet. Applying: the cards are spent, the decisions are made,
+ *  and what is left is an agent working — which the bar reports in a line, next to
+ *  the pane where that agent asks anything it needs. The screen becomes worth
+ *  opening again when the run is done and its push and re-request buttons are. */
+function busyOnItsOwn(pr) {
+  const t = (snap.triage || {})[pr];
+  if (t && !t.posted) return true;
+  const run = (snap.resolve_runs || {})[pr];
+  return !!run && !run.ended && run.threads.some((x) => x.status === 'pending');
+}
+
 async function openReview(pr) {
+  /* Nothing to open while the pass is still reading: the only screen the overlay
+     has then is a full window repeating what the bar says in a line, over the pane
+     where the agent's own questions appear. Guarded here rather than at the button,
+     because the chord and the ask box's `back to the review` reach the same
+     place. */
+  if (busyOnItsOwn(pr)) {
+    const t = (snap.triage || {})[pr];
+    return toast(t && !t.posted
+      ? `triage is reading thread ${Math.min(t.done + 1, t.total)} of ${t.total}`
+      : 'the run is applying your decisions');
+  }
   // Two overlays at the same z-index would stack; the diff viewer goes first.
   if (Diff.state.open) Diff.close();
   if (reviewState.pr !== pr) {
@@ -2215,14 +2286,31 @@ async function startRun() {
   if (!decisions.length) return toast('nothing to hand over — every thread was skipped', true);
 
   reviewState.busy = true;
+  /* **The screen moves before the round trip, not after.** Handing over takes a
+     moment, and a `loadReview` already in flight from the tick lands inside it and
+     repaints — which is the overview flashing up between pressing the button and
+     the run appearing. Put back on a refusal, which is the only way this returns
+     without a run. */
+  const was = reviewState.screen;
+  reviewState.screen = 'run';
+  // The picks are gone the moment this is sent, and that is what the flag means.
+  // The bar reads it for `writing the code`, and the tick reads it to know a
+  // session that ends has a result rather than nothing to come back to.
+  reviewState.decisionsSent = true;
   renderReview();
   try {
     const r = await call(`/api/pr/${reviewState.pr}/resolve-run`, batchPayload());
-    reviewState.screen = 'run';
-    // The session is where the work is now, so the rail should be pointing at it
-    // when you close the overlay.
+    /* **The work is somebody else's now, so the screen goes back to them.** The
+       same reason `read threads` hands you the pane: a full window saying a session
+       is applying your picks is one sentence the bar already carries, and the pane
+       it covers is where that session asks its own questions — which it does, per
+       thread, before each commit goes out. The run screen is still there on the
+       bar's `open` when you want the per-thread list. */
     if (r.session) setPendingSelect(r.session);
+    closeReview();
   } catch (e) {
+    reviewState.screen = was;
+    reviewState.decisionsSent = false;
     toast(e.message, true);
   }
   reviewState.busy = false;
@@ -2233,7 +2321,9 @@ async function startRun() {
  *  settled, because a run is watched, not read afterwards. */
 const RUN_STATE = {
   pending: ['wait', 'waiting its turn'],
-  committed: ['work', 'committed — your call on the reply'],
+  // Committed and on its way out: the daemon posts as each commit lands, so this
+  // is a moment the run passes through rather than a state that waits for you.
+  committed: ['work', 'committed · posting'],
   replied: ['done', 'answered'],
   held: ['held', 'committed, reply kept back'],
   manual: ['manual', 'yours to write'],
@@ -2299,10 +2389,14 @@ function rvRun(root) {
   body.appendChild(foot);
   root.appendChild(body);
 
+  /* **No way back to the cards from here.** The decisions are out: replies are
+     posted, commits are made, and the cards' own button would offer to apply and
+     push a batch that has already gone. It did not fail loudly either, which is
+     the worst shape for a dead end. `Esc` leaves the overlay and the bar keeps
+     reporting, which is the honest exit from a phase you cannot undo. */
   root.appendChild(rvActs([
     actBtn('push the branch', 'warm', () => runTail('push')),
     actBtn('re-request review', null, () => runTail('rerequest')),
-    actBtn('back to the threads', null, () => { reviewState.screen = 'card'; renderReview(); }),
   ], 'resolving a thread stays the reviewer\'s own button, by design'));
 }
 
@@ -2401,7 +2495,18 @@ function barState() {
       ? { tone: 'attn', what: `${left} of ${q.length} threads waiting on you` }
       : { tone: 'attn', what: `${q.length} threads decided · not sent yet` };
   }
-  if (reviewState.decisionsSent) return { tone: 'work', what: 'writing the code' };
+  /* The run's own record, counted the way the read pass is: what is settled out of
+     what was handed over. `pending` is the only status that means "not yet". */
+  if (reviewState.decisionsSent) {
+    const run = (snap.resolve_runs || {})[reviewState.pr];
+    if (run && run.threads.length) {
+      const done = run.threads.filter((t) => t.status !== 'pending').length;
+      return done < run.threads.length
+        ? { tone: 'work', what: `applying · thread ${done + 1} of ${run.threads.length}` }
+        : { tone: 'ok', what: `applied · ${run.threads.length} answered` };
+    }
+    return { tone: 'work', what: 'applying · writing the code' };
+  }
   /* What the triage pass is doing, counted by the pass itself: the daemon knows
      how many threads it handed over, not which one the agent is on. `posted` is
      the moment the cards exist, and it is the only thing that turns this bar from
@@ -2410,10 +2515,16 @@ function barState() {
   if (t && t.posted) {
     return { tone: 'attn', what: `triage done · ${t.total} threads need your call` };
   }
+  /* The phase, then the step inside it. `triage` is the pass; `reading thread 2 of
+     3` is where it has got to, and the two answer different questions: what is
+     happening at all, and whether it is moving. */
   if (t && t.total) {
-    return { tone: 'work', what: `triaging thread ${Math.min(t.done + 1, t.total)} of ${t.total}` };
+    return {
+      tone: 'work',
+      what: `triage · reading thread ${Math.min(t.done + 1, t.total)} of ${t.total}`,
+    };
   }
-  return { tone: 'work', what: 'reading the threads' };
+  return { tone: 'work', what: 'triage · reading the threads' };
 }
 
 /** Draw the bar, or take it away.
@@ -2442,9 +2553,15 @@ function renderBar() {
   host.appendChild(el('span', 'dot'));
   host.appendChild(el('span', 'k', `REVIEW · PR ${reviewState.pr}`));
   host.appendChild(el('span', 'what', st.what));
-  const go = el('button', 'go', `open · ${MOD_LABEL}\u21e7R`);
-  go.onclick = () => openReview(reviewState.pr);
-  host.appendChild(go);
+  /* **Only when there is something to open.** While the pass reads, the overlay
+     has one screen and it is a full window saying somebody else is working: the
+     bar already says that, in one line, next to the pane where the agent's own
+     questions appear. The button arrives with the cards. */
+  if (!busyOnItsOwn(reviewState.pr)) {
+    const go = el('button', 'go', `open · ${MOD_LABEL}\u21e7R`);
+    go.onclick = () => openReview(reviewState.pr);
+    host.appendChild(go);
+  }
   host.hidden = false;
 }
 
