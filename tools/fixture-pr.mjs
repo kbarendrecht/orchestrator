@@ -22,7 +22,7 @@
 //   node tools/fixture-pr.mjs --destroy  # delete the repo and the local state
 
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, rmSync, writeFileSync, existsSync, readdirSync, unlinkSync } from 'node:fs';
+import { mkdirSync, rmSync, writeFileSync, readFileSync, existsSync, readdirSync, unlinkSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
 
@@ -265,7 +265,14 @@ function ensureRepo(owner) {
   // The local clone is always thrown away: the things this fixture unblocks
   // delete worktrees and commit into it, so carrying one over between builds
   // would mean debugging the leftovers of the last run.
-  if (existsSync(ROOT)) rmSync(ROOT, { recursive: true, force: true });
+  //
+  // **The clone, not the whole root.** This took `ROOT` with it, and `ROOT` holds
+  // the daemon's config dir: a rebuild deleted `hooks.json` and the plugin dir out
+  // from under a *running* fixture daemon, whose every spawn then died with
+  // "settings file not found" — a failure that names neither the rebuild nor the
+  // file it removed. Both are written at start, so the daemon repairs them on a
+  // restart, which is what the closing note now asks for.
+  if (existsSync(CLONE)) rmSync(CLONE, { recursive: true, force: true });
   mkdirSync(CLONE, { recursive: true });
   // SSH rather than HTTPS: `gh` holds the API token but is not necessarily
   // installed as a git credential helper, so an HTTPS push prompts. A clone in
@@ -481,6 +488,14 @@ function writeConfig() {
     auto_resume: false,
     output_language: 'English',
   };
+  /* **A port already chosen is kept.** The config carries none by default, so a
+     fixture daemon wants 7777 and refuses to start beside the real app — the note
+     at the end says to add one, and then every rebuild threw it away again. Read
+     back rather than remembered, so this stays true for whatever port you picked. */
+  try {
+    const had = JSON.parse(readFileSync(join(CONFIG, 'config.json'), 'utf8'));
+    if (had.port) cfg.port = had.port;
+  } catch { /* no previous config, or an unreadable one: the default stands */ }
   writeFileSync(join(CONFIG, 'config.json'), JSON.stringify(cfg, null, 2) + '\n');
   done(`${join(CONFIG, 'config.json')}`);
 }
@@ -523,4 +538,7 @@ an ephemeral port, so both can run, but only one can have the default.
 
 Rebuild it fresh before anything destructive (teardown, a resolve run):
   node tools/fixture-pr.mjs
+
+A daemon already pointed at this fixture wants restarting after a rebuild: the
+clone it recorded worktrees in is gone, and only a start clears those records.
 `);
