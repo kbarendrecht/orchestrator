@@ -174,6 +174,30 @@ fn init_logging() {
     }
 }
 
+/// A panic reaches the log file, not only stderr.
+///
+/// The default hook prints to stderr, and a launcher-started app has none, so a
+/// daemon that died this way left `orchd.log` ending mid-sweep with no line about
+/// it: the last two and a half minutes read like a process that was still fine.
+/// Written through `tracing` so it lands in the same file as everything else,
+/// and *before* the default hook, which is kept: a terminal run still sees it.
+///
+/// `force_capture` rather than `capture`, because `RUST_BACKTRACE` is not set in
+/// a Finder launch and this is the one place a backtrace is wanted regardless.
+/// The release profile does not strip, so the frames carry names.
+fn install_panic_hook() {
+    let default = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let backtrace = std::backtrace::Backtrace::force_capture();
+        let thread = std::thread::current();
+        tracing::error!(
+            thread = thread.name().unwrap_or("unnamed"),
+            "panic: {info}\n{backtrace}"
+        );
+        default(info);
+    }));
+}
+
 fn main() {
     // Before anything opens a window: a one-shot for the person who wants the
     // entry written now, or written again somewhere the refresh below declines to
@@ -193,6 +217,8 @@ fn main() {
     wsl_render_workaround();
 
     init_logging();
+    // Right after the logger exists, since the hook writes through it.
+    install_panic_hook();
 
     // Held from the first thing `main` does that can be slow, because the phases
     // before the daemon are the ones a person launching from Finder pays for and
