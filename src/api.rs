@@ -101,7 +101,7 @@ pub(crate) fn origin_ok(origin: Option<&str>, port: u16, is_hook: bool, is_get: 
 /// A list rather than a growing chain of `ends_with`, because it has been
 /// outgrown once already — see the note in [`guard`].
 fn is_ask_route(path: &str) -> bool {
-    const ASK_ROUTES: [&str; 8] = [
+    const ASK_ROUTES: [&str; 9] = [
         "/ask",
         "/wait",
         "/spawn",
@@ -112,6 +112,9 @@ fn is_ask_route(path: &str) -> bool {
         // any session — a suffix matcher cannot tell those apart from a narrower
         // verb spelled the same way.
         "/discard",
+        // `orch teardown`. Safe as a suffix only because the SPA's own teardown is
+        // `/api/workspace/:id/teardown`, outside the `/api/session/` prefix.
+        "/teardown",
         // Phase 4 of `commands/review-session.md`: the review saying it is done.
         "/handoff",
     ];
@@ -2533,6 +2536,34 @@ pub async fn teardown(
     Ok(Json(worktree::teardown(&app, &workspace).await?))
 }
 
+#[derive(Deserialize)]
+pub struct TeardownBody {
+    pub workspace: String,
+}
+
+/// `orch teardown <workspace>`: the same teardown as the rail's button, reached
+/// on the ask token.
+///
+/// Wider than `discard_spawned`, on purpose, and no wider than the button: any
+/// worktree, but through the same preflight, so a live session, a dirty tree or
+/// an unpushed commit refuses here exactly as it refuses a right-click, and main
+/// is never a worktree. Closed to agents until #10, which left bulk cleanup to
+/// `git worktree remove` by hand, and that skips the transcript archive and the
+/// recovery record the preflight exists to write.
+///
+/// The one refusal an agent will meet that a person does not: its own workspace
+/// holds a live session, itself. The help says so, because the preflight's
+/// wording ("a live session") reads as somebody else's.
+pub async fn teardown_from_session(
+    State(app): State<Arc<AppState>>,
+    Path(id): Path<Uuid>,
+    headers: axum::http::HeaderMap,
+    Json(body): Json<TeardownBody>,
+) -> ApiResult<worktree::Preflight> {
+    ask_token_ok(&app, id, &headers).await?;
+    Ok(Json(worktree::teardown(&app, &body.workspace).await?))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2934,6 +2965,8 @@ mod tests {
             // enforces from the record — the exemption is what lets it be called at
             // all, not what decides which sessions it reaches.
             "/api/session/<id>/spawned/<child>/discard",
+            // `orch teardown`. Any worktree, through the ordinary preflight.
+            "/api/session/<id>/teardown",
             // Phase 4 of `commands/review-session.md`: the review saying it is done.
             "/api/session/<id>/handoff",
         ] {
@@ -2951,6 +2984,9 @@ mod tests {
             // The drawer's own button, which restarts a *running* process. Named
             // the same thing, deliberately not the agent's.
             "/api/workspace/main/process/docker/restart",
+            // The rail's teardown. Same verb as `orch teardown`, which is only safe
+            // because this one is outside the `/api/session/` prefix.
+            "/api/workspace/pr-1/teardown",
         ] {
             assert!(!is_ask_route(p), "{p} is not the agent's to call");
         }

@@ -550,6 +550,10 @@ fn router(app: Arc<AppState>) -> Router {
             post(api::discard_spawned),
         )
         .route("/api/session/:id/process", post(api::process_from_session))
+        // The workspace travels in the body, not the path, for the same suffix
+        // reason: `/api/session/:id/teardown/:workspace` would end in a name the
+        // matcher cannot know.
+        .route("/api/session/:id/teardown", post(api::teardown_from_session))
         .route("/api/session/:id/handoff", post(api::session_handoff))
         .route("/api/session/:id/ask", post(api::ask))
         .route("/api/session/:id/ask/:ask/wait", get(api::ask_wait))

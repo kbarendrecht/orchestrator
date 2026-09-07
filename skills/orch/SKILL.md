@@ -19,6 +19,7 @@ Then none of this applies, and you must not simulate it.
 | `orch ask` | Ask the human something, and block until they answer |
 | `orch new` | Start another session, beside you or in a worktree of its own |
 | `orch kill` | Undo one of your own spawns |
+| `orch teardown` | Remove a worktree nobody is working in, when the human asks for a cleanup |
 | `orch ls` | The sessions, their state, their branch and their path |
 | `orch run` | Start one of the processes this workspace declares |
 

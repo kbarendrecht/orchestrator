@@ -64,7 +64,8 @@ is what `mise` reads, and is still two binaries you place yourself.
 - **`orchestrator-desktop`** is the app. The daemon and the web UI are compiled
   into it, so this one binary on its own is a complete install.
 - **`orch` is optional.** `orch new` starts another session with a prompt,
-  `orch kill` undoes one of its own spawns, `orch ask` puts a question in front of
+  `orch kill` undoes one of its own spawns, `orch teardown` removes a clean worktree
+  through the same checks as the button, `orch ask` puts a question in front of
   you and blocks until you answer, `orch ls` lists what is running.
   `orch new --worktree` gives a helper session its own tree and branch, which is the
   difference between two parallel jobs and two agents sharing one git index.

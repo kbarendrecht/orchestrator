@@ -7,8 +7,9 @@
 //! It needs no configuration. A session's environment already says where the
 //! daemon is (`ORCH_URL`), who the session is (`ORCH_SESSION_ID`) and what it is
 //! allowed to do (`ORCH_ASK_TOKEN`). That token opens asking, spawning, starting a
-//! declared process and undoing your own spawns, and nothing else: this is not a
-//! remote control for the daemon, it is what an agent legitimately needs.
+//! declared process, undoing your own spawns and tearing down a clean worktree,
+//! and nothing else: this is not a remote control for the daemon, it is what an
+//! agent legitimately needs.
 //!
 //! It replaces a page of `curl | jq` in `commands/resolve-run.md`, where the
 //! long-poll loop was written out by hand and easy to get wrong.
@@ -25,6 +26,10 @@ orch — talk to the orchestrator you are running inside
   orch kill <id>
       Undo one of your own spawns: end it, drop its row, and remove the
       worktree if that spawn cut one.
+
+  orch teardown <workspace>
+      Remove a worktree nobody is working in, through the same checks as the
+      app's button. Refuses one holding a live session or unpushed work.
 
   orch ls [--state <state>] [--all]
       The sessions the daemon knows about, one per line. Archived ones are
@@ -89,6 +94,23 @@ conversation somebody is sitting in is a button in the app, not a command here.
 The worktree goes through the ordinary teardown checks, so one holding
 uncommitted or unpushed work is kept and says why. The session is gone either
 way.
+";
+
+const HELP_TEARDOWN: &str = "\
+orch teardown <workspace>
+
+Remove a worktree, the way the app's own button does. The transcripts of the
+sessions that ran there are archived first, and each of them stays in the rail as
+a resumable conversation — a resume rebuilds the tree at the same path.
+
+**Every check the button runs, runs here.** A live session, uncommitted changes,
+unpushed commits or an attached process refuse, and the refusal names which. It
+is never forced. Use it when the person asks for a cleanup; `git worktree remove`
+by hand skips the archive and leaves a row the daemon has to skip forever.
+
+Your own workspace is refused too: the live session in it is you. Ask for it from
+a session in main, or let the person remove it once you are done. `main` is not a
+worktree and is never torn down.
 ";
 
 const HELP_LS: &str = "\
@@ -172,6 +194,7 @@ fn help_for(cmd: &str) -> Option<&'static str> {
     Some(match cmd {
         "new" => HELP_NEW,
         "kill" => HELP_KILL,
+        "teardown" => HELP_TEARDOWN,
         "ls" => HELP_LS,
         "ask" => HELP_ASK,
         "run" => HELP_RUN,
@@ -211,6 +234,7 @@ fn spec(cmd: &str) -> Option<&'static [(&'static str, Arity)]> {
             ("--prompt", Arity::Value),
         ],
         "kill" => &[],
+        "teardown" => &[],
         "ls" => &[("--state", Arity::Value), ("--all", Arity::Flag)],
         "ask" => &[
             ("--question", Arity::Value),
@@ -229,6 +253,7 @@ fn spec(cmd: &str) -> Option<&'static [(&'static str, Arity)]> {
 fn words_wanted(cmd: &str) -> (usize, &'static str) {
     match cmd {
         "kill" => (1, "kill needs the id of a session you spawned"),
+        "teardown" => (1, "teardown needs the name of a worktree — `orch ls` prints them"),
         "run" => (1, "run needs the name of a process"),
         // `guard push`: the sub-verb is a word, and `guard` checks which one.
         "guard" => (1, "the only guard is `orch guard push`"),
@@ -601,6 +626,19 @@ fn run(cmd: &str, a: &Parsed) -> Result<String, String> {
             }
             Ok(said)
         }
+        "teardown" => {
+            let workspace = &a.words[0];
+            let out = http(
+                "POST",
+                &format!("{base}/api/session/{me}/teardown"),
+                &token,
+                Some(&json!({ "workspace": workspace }).to_string()),
+            )?;
+            // A refusal comes back as the error, with the failed checks in its
+            // text; success is the preflight that passed, which needs no reading.
+            let v = reply(&out)?;
+            Ok(format!("removed worktree {}", str_at(&v, "workspace")))
+        }
         "ls" => {
             if let Some(want) = a.value("--state") {
                 if !STATES.contains(&want) {
@@ -743,7 +781,7 @@ mod tests {
         assert!(e.contains("unknown flag --nonsense"), "{e}");
         // And on every command, not just the one that bit: a tolerated flag on
         // `ask` sends a question nobody meant to ask.
-        for cmd in ["ask", "ls", "run", "kill", "guard"] {
+        for cmd in ["ask", "ls", "run", "kill", "teardown", "guard"] {
             assert!(
                 parse(cmd, &argv(&["--nonsense"])).is_err(),
                 "{cmd} tolerated it"
@@ -800,7 +838,7 @@ mod tests {
     /// workspace must already exist" came to be learnable only by triggering it.
     #[test]
     fn every_command_documents_its_own_flags() {
-        for cmd in ["new", "kill", "ls", "ask", "run", "guard"] {
+        for cmd in ["new", "kill", "teardown", "ls", "ask", "run", "guard"] {
             let h = help_for(cmd).unwrap_or_else(|| panic!("{cmd} has no help"));
             let flags = spec(cmd).unwrap_or_else(|| panic!("{cmd} has no flag spec"));
             for (flag, _) in flags {
