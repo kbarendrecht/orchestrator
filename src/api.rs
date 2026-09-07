@@ -2007,6 +2007,42 @@ async fn swap_with_main_inner(
         }
     }
 
+    /* **Who travels is decided from state read before anything moves.**
+       `to_carry` matches a session by `Session::branch`, and `AppState::reconcile`
+       re-stamps that field for every *live* session from whatever its tree has
+       checked out now — the right rule everywhere else, and exactly wrong in the
+       window this flow opens.
+       It used to be read after the exchange, which is safe against the reconcile
+       *this* function runs and not against the background sweep, which holds
+       `AppState::sweeping` rather than `swapping` and so runs straight through a
+       swap. On the monorepo this was written against, a sweep is ~9s over 78
+       worktrees and they run back to back, so that window is open almost always:
+       observed live, a swap moved both branches and carried nothing
+       (`into_main=None into_worktree=None`), and the next swap put the branches
+       back and moved the conversation — leaving a session in main whose branch had
+       gone home, with only a WARN to say so.
+       Reading first removes the race rather than narrowing it: who was working on
+       the branch that is about to leave is knowable before it leaves, and once the
+       ids are captured a re-stamp cannot change the answer. */
+    let (m0, t0) = (main.clone(), tree.clone());
+    let (main_was, tree_was) = tokio::task::spawn_blocking(
+        move || -> anyhow::Result<(String, String)> {
+            Ok((crate::git::current_branch(&m0)?, crate::git::current_branch(&t0)?))
+        },
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("reading the branches panicked: {e}"))??;
+    // By branch, not by address: each side asks "who here is working on the branch
+    // that is about to move out". Both are picked before either moves, because
+    // choosing as we go would let the second choice see the session the first one
+    // just delivered — for the moment in between, both live in the worktree — and
+    // send it straight back.
+    let (outgoing, outgoing_records) = to_carry(&app, MAIN, &main_was).await;
+    let (incoming, incoming_records) = to_carry(&app, &workspace, &tree_was).await;
+    // Counted here because the loops below consume the vectors, and the log at the
+    // end is the only place this number is ever read.
+    let carried_records = outgoing_records.len() + incoming_records.len();
+
     // Uncommitted work is carried, not refused — see `git::swap_branches`. Only a
     // stopped rebase is still a refusal: a tree mid-rebase cannot switch at all.
     let (m, t) = (main.clone(), tree.clone());
@@ -2035,27 +2071,23 @@ async fn swap_with_main_inner(
     // provenance mark is cleared: a swap is a deliberate placement that stays.
     *app.main_pr_park.write().await = None;
 
-    // Who travels is decided **here**, before `reconcile` runs, and the ordering is
-    // load-bearing. `reconcile` re-stamps a live session's branch from whatever its
-    // tree has checked out now, which is the right rule everywhere else and is
-    // exactly wrong in this window: the branches have already moved, so a reconcile
-    // first would tell every live session it had always been on the branch that just
-    // arrived, and then nobody matches the branch that left. Driving this against a
-    // fixture daemon is what caught it: the swap reported carrying nothing while
-    // two live conversations sat in the two trees.
-    //
-    // By branch, not by address: `swapped.worktree_now` is what left main and
-    // `swapped.main_now` is what left the worktree, so each side asks "who here was
-    // working on the branch that just moved out".
-    //
-    // Both are picked before either moves. Choosing as we go would let the second
-    // choice see the session the first one just delivered — for the moment in
-    // between, both conversations live in the worktree — and send it straight back.
-    let (outgoing, outgoing_records) = to_carry(&app, MAIN, &swapped.worktree_now).await;
-    let (incoming, incoming_records) = to_carry(&app, &workspace, &swapped.main_now).await;
-    // Counted here because the loops below consume the vectors, and the log at the
-    // end is the only place this number is ever read.
-    let carried_records = outgoing_records.len() + incoming_records.len();
+    /* The identity a swap is: what main holds now is what the worktree held, and
+       the other way round. If that does not hold, something moved between the read
+       above and the exchange — a hand-typed `git checkout` in either tree — and the
+       carriers were picked against a world that has since changed. Said out loud
+       rather than guarded, because the exchange has already happened and the
+       branches are where git says they are; what is uncertain is only who should
+       follow them. */
+    if swapped.main_now != tree_was || swapped.worktree_now != main_was {
+        tracing::warn!(
+            %workspace,
+            "the branches moved between reading them ({main_was} in main, {tree_was} here) \
+             and the exchange ({} in main, {} here), so a conversation may have stayed \
+             behind; check the rail",
+            swapped.main_now,
+            swapped.worktree_now
+        );
+    }
 
     // Each tree gave a branch away, and `reconcile` only adds. Left in, the
     // worktree would go on claiming the branch main now holds, and a PR flow for it
