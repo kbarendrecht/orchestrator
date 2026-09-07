@@ -1,7 +1,7 @@
 // The review overlay: read a PR's threads, decide each one, then one batch of
 // outward writes. The largest single feature in the SPA.
 
-import { $, call, compactAge, confirmBox, el, get, MOD_LABEL, newShell, pending, promptBox, selected, setSelected, snap, toast, setPendingSelect } from './core.js';
+import { $, call, compactAge, confirmBox, el, get, MOD_LABEL, newShell, pending, promptBox, selected, setSelected, snap, toast, unchanged, setPendingSelect } from './core.js';
 import * as Diff from './diff.js';
 import { langFor, hlTokens, paintRanges } from './diff.js';
 import { patchStats, hunkEl, fileListLabel } from './review-diff.js';
@@ -2538,10 +2538,22 @@ function barState() {
  *  Rendered from `app.js`'s tick like every other pane, and into a host that lives
  *  outside `#rvoverlay` — `renderReview` replaces that element's children on every
  *  snapshot and would tear a live node out from under itself once a second. */
+const barDrawn = { sig: null };
+
 function renderBar() {
   const host = $('rvbar');
   const mine = !!selected && selected === reviewState.session;
   const st = reviewState.open || !mine ? null : barState();
+  /* **Rebuilt only when it would come out different**, like every other pane.
+     This one had no guard, and the review it captions is exactly when the daemon
+     pushes hardest: an agent taking a turn is ~7 snapshots a second, and each one
+     replaced the bar's own children. `:hover` is re-targeted on every rebuild, so
+     the `open` button strobed under the pointer, and a click whose mousedown and
+     mouseup land on two different nodes is never delivered — the button that
+     flickers and does not open. `busyOnItsOwn` is in the signature because it
+     decides whether that button exists at all, and the class toggle below is
+     idempotent, so skipping it costs nothing. */
+  if (unchanged(barDrawn, [st, reviewState.pr, busyOnItsOwn(reviewState.pr)])) return;
   // The pane is Claude's while the agent has the turn, so it reads as Claude's:
   // dimmed, with the bar at full strength over it. Only on `work` — the lift back
   // to normal is itself the signal that the turn came back to you.

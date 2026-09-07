@@ -134,6 +134,8 @@ function render() {
  *  rule below turns on that difference. */
 const DECISIONS = 'decisions';
 
+const askDrawn = { sig: null };
+
 /** The ask the user has folded away, by its id.
  *
  *  Per ask rather than a plain flag, so the next question opens by itself: a box
@@ -141,6 +143,14 @@ const DECISIONS = 'decisions';
  *  the agent is still stopped, so a control that made the question go away would
  *  be this box disagreeing with the rail and the waitbar beside it. */
 let askFolded = null;
+
+/* Whether the free-text box is open, by the option it belongs to.
+ *
+ * In the page rather than read off the DOM, because it is an input to the guard
+ * above: the box replaces the option row, and `back to the options` puts the row
+ * back by re-rendering. Without this the guard saw an unchanged signature and
+ * that button did nothing. */
+let askFree = null;
 
 /** Fold the open question away, or open it again. */
 function foldAsk(id) {
@@ -178,13 +188,23 @@ function renderInteraction() {
   const host = $('oq');
   const s = currentSession();
   const q = s && s.interaction && !s.interaction.answer ? s.interaction : null;
-  if (!q) { host.hidden = true; host.replaceChildren(); return; }
-
   // The PR a review pass is answering, or null for every other session. Its
   // checkpoints are the overlay's cards, so this box behaves differently below.
   // Both commands, because the triage pass reaches the same cards.
-  const rvPr = s.kind.kind === 'automation'
+  const rvPr = q && s.kind.kind === 'automation'
     && (s.kind.command === 'review' || s.kind.command === 'triage') ? s.kind.pr : null;
+  const mine = !!q && q.options.some((o) => o.value === DECISIONS);
+  /* **Rebuilt only when it would come out different**, like every other pane.
+     This one had no guard, and the box is up precisely while an agent is taking
+     turns: ~7 snapshots a second, each one replacing the header and the option
+     buttons under the pointer, so `:hover` strobed and a click split across two
+     rebuilds was never delivered. It also threw away what you had typed into the
+     free-text answer on every push, which is the same fault with a worse cost.
+     The overlay's claim is in the signature because a box hidden while the cards
+     own the ask has to come back when they let go of it. */
+  if (unchanged(askDrawn, [s && s.id, q, rvPr, mine, Review.state.session, askFolded, askFree])) return;
+  if (!q) { host.hidden = true; host.replaceChildren(); return; }
+
   /* **Only a checkpoint belongs to the overlay.** This used to be true of every
      ask a review session made, and that is what stranded one: the session hit a
      problem, asked about it in its own words, and this box refused to render the
@@ -197,7 +217,6 @@ function renderInteraction() {
      the box was the only way in. The bar is that now, and it says the same thing
      one line lower ("triage done · 7 threads need your call"), so the pair read as
      two questions where there is one. The cards are still a chord away. */
-  const mine = q.options.some((o) => o.value === DECISIONS);
   if (rvPr !== null && mine && Review.state.session === s.id) {
     host.hidden = true; host.replaceChildren(); return;
   }
@@ -269,6 +288,7 @@ function renderInteraction() {
  *  thing on screen to finish rather than a form beside a button that also works. */
 function openFreeAnswer(opts, session, ask, option) {
   if (opts.querySelector('.oqfree')) return;
+  askFree = option.value;
   const wrap = el('div', 'oqfree');
   const box = el('textarea', 'box');
   box.setAttribute('aria-label', option.label);
@@ -282,7 +302,7 @@ function openFreeAnswer(opts, session, ask, option) {
     answerInteraction(session, ask, option.value, opts.parentElement, box.value);
   };
   const back = el('button', 'oqback', 'back to the options');
-  back.onclick = () => renderInteraction();
+  back.onclick = () => { askFree = null; renderInteraction(); };
   row.appendChild(send);
   row.appendChild(back);
   wrap.appendChild(row);
