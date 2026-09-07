@@ -704,12 +704,59 @@ fn sweep_order(inner: &state::Inner) -> Vec<String> {
     ids
 }
 
-/// Measure every workspace's tree.
+/// How many workspaces a sweep measures at once.
 ///
-/// Sequential on purpose, even now that it is off the boot path: each pass is a
-/// run of git processes over a working tree, and doing 64 of them at once turns a
-/// slow start into a slow machine. What makes it feel fast is [`sweep_order`],
-/// not concurrency.
+/// The sweep is bound by process starts, not by CPU: seven git processes per tree,
+/// and on a Mac every exec costs 8 to 9 ms before git does anything (#10 measured
+/// 200 execs of `/usr/bin/true` at 1.7 s, with or without the endpoint agent). 58
+/// trees took 20 to 46 s one at a time, and the per-tree half of that product is
+/// nothing a user can configure away, so the width is the only side that moves.
+/// Four rather than "all of them": the old concern that 64 git processes at once
+/// turn a slow start into a slow machine still holds, and four is four blocking
+/// threads and four `git status` reads, which no machine notices.
+const SWEEP_WIDTH: usize = 4;
+
+/// What one pass of the sweep did with a workspace.
+#[derive(Debug, PartialEq, Eq)]
+enum Swept {
+    /// The tree was there and was measured, or git said why it could not be,
+    /// which `reconcile` logs itself.
+    Measured,
+    /// The directory is gone, so nothing was run in it.
+    Skipped,
+}
+
+/// Measure one workspace, or skip it when its directory is not there.
+///
+/// **A row whose tree is gone is kept, on purpose.** `claude --worktree` removes
+/// its own tree when its session ends, and a person runs `git worktree remove` by
+/// hand; either way the record is the point the PR flows and `revive` rebuild the
+/// tree *at* (`recorded_worktree_for` says why a second tree elsewhere is worse).
+/// What the row must not do is cost anything meanwhile: measuring it ran seven git
+/// processes into ENOENT and logged a warning per sweep, 68 of them after 34 trees
+/// were removed by hand (#10), and the tally still counted the ghosts.
+async fn sweep_one(app: &Arc<AppState>, id: &str) -> Swept {
+    // Main is canonicalised in `Config::parse`, so it is only ever absent when the
+    // checkout itself went, and a warning is then the right answer.
+    if id != MAIN {
+        if let Some(path) = app.workspace_path(id).await {
+            if !path.is_dir() {
+                tracing::debug!(workspace = %id, "tree is gone, not measured: {}", path.display());
+                return Swept::Skipped;
+            }
+        }
+    }
+    if let Err(e) = app.reconcile(id).await {
+        tracing::warn!("reconcile {id} failed: {e:#}");
+    }
+    Swept::Measured
+}
+
+/// Measure every workspace's tree, [`SWEEP_WIDTH`] at a time.
+///
+/// Off the boot path, so what makes it *feel* fast is [`sweep_order`]: the first
+/// tasks started are the panes being looked at. The width is what makes it *be*
+/// fast on a machine where an exec is expensive; see the constant.
 async fn reconcile_all(app: &Arc<AppState>) {
     let Ok(_sweep) = app.sweeping.try_lock() else {
         tracing::debug!("a reconcile sweep is already running; skipping this one");
@@ -718,20 +765,35 @@ async fn reconcile_all(app: &Arc<AppState>) {
     let ids = sweep_order(&*app.inner.read().await);
     let total = ids.len();
     let began = std::time::Instant::now();
-    for id in ids {
-        if let Err(e) = app.reconcile(&id).await {
-            tracing::warn!("reconcile {id} failed: {e:#}");
+    let mut queue = ids.into_iter();
+    let mut running = tokio::task::JoinSet::new();
+    let mut skipped = 0usize;
+    loop {
+        // Topped up in sweep order, so the visible panes are the first four in
+        // flight and a slow tree elsewhere never holds a slot they need.
+        while running.len() < SWEEP_WIDTH {
+            let Some(id) = queue.next() else { break };
+            let app = app.clone();
+            running.spawn(async move { sweep_one(&app, &id).await });
         }
-        // Per workspace, not per sweep. The pane is on screen while this runs, so
-        // each answer has to reach it as it lands rather than 64 of them at the
-        // end — which would be the loader sitting there for the whole sweep and
-        // then everything appearing at once.
-        app.notify().await;
+        match running.join_next().await {
+            None => break,
+            Some(Ok(Swept::Skipped)) => skipped += 1,
+            // Per workspace, not per sweep. The pane is on screen while this runs,
+            // so each answer has to reach it as it lands rather than 64 of them at
+            // the end, which would be the loader sitting there for the whole sweep
+            // and then everything appearing at once.
+            Some(Ok(Swept::Measured)) => app.notify().await,
+            Some(Err(e)) => tracing::warn!("a reconcile task died: {e}"),
+        }
     }
-    tracing::info!(
-        "reconciled {total} workspace(s) in {}ms",
-        began.elapsed().as_millis()
-    );
+    let ms = began.elapsed().as_millis();
+    let measured = total - skipped;
+    if skipped == 0 {
+        tracing::info!("reconciled {measured} workspace(s) in {ms}ms");
+    } else {
+        tracing::info!("reconciled {measured} workspace(s) in {ms}ms, skipped {skipped} whose tree is gone");
+    }
 }
 
 /// Managed processes start only when config says so.
@@ -1509,6 +1571,29 @@ mod tests {
             vec!["z-session", MAIN, "a-empty", "m-empty"],
             "sessions first, then main, then the rest alphabetically"
         );
+    }
+
+    /// A workspace whose directory is gone is skipped, and its row survives the
+    /// sweep. The row is what `revive` and the PR flows rebuild the tree at, so
+    /// dropping it would trade a warning per sweep for a second tree on the same
+    /// branch; the sweep's only job here is to stop paying for it.
+    #[tokio::test]
+    async fn a_sweep_skips_a_workspace_whose_tree_is_gone_and_keeps_its_row() {
+        let (app, dir) = crate::testutil::app("sweep-gone");
+        app.register_worktree("gone", dir.join("no-such-tree"), Some("worktree-gone".into()))
+            .await;
+        app.register_worktree("here", dir.clone(), None).await;
+
+        assert_eq!(sweep_one(&app, "gone").await, Swept::Skipped);
+        // Not a git repo, so the measurement itself fails and is logged; the point
+        // is that it was attempted, because the directory is there.
+        assert_eq!(sweep_one(&app, "here").await, Swept::Measured);
+        // Main is never skipped: its path is canonicalised at parse and exists.
+        assert_eq!(sweep_one(&app, MAIN).await, Swept::Measured);
+
+        let inner = app.inner.read().await;
+        assert!(inner.workspaces.contains_key("gone"), "the row is the rebuild point");
+        assert!(!inner.workspaces["gone"].tree.measured, "nothing was measured in it");
     }
 
     /// One record per workspace comes back, and it is the oldest — the rule that,

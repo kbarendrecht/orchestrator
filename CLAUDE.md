@@ -584,6 +584,13 @@ mean *this* repo; if you do, name it.
   `configure_repo` sets fsmonitor on main *only*, so every worktree's `git status`
   is a full scan; and the poller's first tick deliberately skips the fetch and the
   sweep, because boot has just done both.
+  **The sweep runs four wide, not one** (`SWEEP_WIDTH`), because its cost is execs:
+  seven git processes per tree at 8 to 9 ms each on a Mac, so 58 trees took 20 to
+  46 s in a row (#10) and the per-tree half is nothing a user can change. And it
+  **skips a workspace whose directory is gone without dropping the row**: the row
+  is where `revive` and the PR flows rebuild the tree, so dropping it would trade
+  a warning per sweep for a second tree on the same branch. The tally says how
+  many were skipped.
 - **A keystroke is one small frame, so the served sockets set `TCP_NODELAY`.**
   `axum::serve` defaults it to `None` and only calls `set_nodelay` when the
   builder is told to, so every connection ran with Nagle on: a small write waits
