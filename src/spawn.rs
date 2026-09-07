@@ -2778,7 +2778,13 @@ mod tests {
 
         // `true` exits immediately, which is the case that used to be lost.
         let pty =
-            PtyHandle::spawn(&["/bin/true".to_string()], std::path::Path::new("/tmp"), &[], &[], (24, 80))
+            PtyHandle::spawn(
+                &[crate::pty::tests::TRUE_BIN.to_string()],
+                std::path::Path::new("/tmp"),
+                &[],
+                &[],
+                (24, 80),
+            )
                 .unwrap();
         {
             let mut inner = app.inner.write().await;

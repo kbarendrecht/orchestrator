@@ -618,7 +618,16 @@ pub fn pid_alive(pid: u32) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
+    /// A command that exits at once, spelled the one way both platforms have.
+    ///
+    /// **Not `/bin/true`, which macOS does not have** — only `/usr/bin/true`. Three
+    /// tests hardcoded the Linux path and so failed on the macos-14 runner alone,
+    /// with `ENOENT` from `portable-pty` rather than anything about the code they
+    /// were testing. The same shape as every other portability trap in this repo:
+    /// it compiles everywhere and answers wrongly on one platform.
+    pub(crate) const TRUE_BIN: &str = "/usr/bin/true";
+
     use super::*;
     use std::time::Duration;
 
@@ -975,7 +984,7 @@ echo from-the-cwd
     #[tokio::test(flavor = "multi_thread")]
     async fn the_writer_goes_when_the_child_does() {
         let spawned = PtyHandle::spawn(
-            &["/bin/true".to_string()],
+            &[TRUE_BIN.to_string()],
             Path::new("/tmp"),
             &[],
             &[],
@@ -1001,7 +1010,7 @@ echo from-the-cwd
     #[tokio::test(flavor = "multi_thread")]
     async fn killing_an_exited_child_does_nothing() {
         let spawned = PtyHandle::spawn(
-            &["/bin/true".to_string()],
+            &[TRUE_BIN.to_string()],
             Path::new("/tmp"),
             &[],
             &[],
