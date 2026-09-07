@@ -51,7 +51,16 @@ export async function run(t) {
     number: PR, head_ref: HEAD,
     head_repo: 'someone-else/monorepo', head_permission: 'READ',
   }], VIEWER)
-  const seen = await t.pollPrs()
+  /* Polled until it shows up, for the reason spelled out at the second `setPrs`
+     below: a fetch already in flight when the file changed answers from the old
+     copy, and `pr_poll` moves on that answer — so one poll can legitimately come
+     back empty. This assertion trusted a single poll and failed about one full run
+     in three, always in a full run and never alone, which reads exactly like a
+     mis-shaped canned node and is not. */
+  const seen = await until('the poll to report the canned PR', async () => {
+    const s = await t.pollPrs()
+    return s.prs.some((p) => p.number === PR) ? s : null
+  })
   const pr = seen.prs.find((p) => p.number === PR)
   assert.ok(pr, `the poll saw ${JSON.stringify(seen.prs)} — a mis-shaped canned node reads as no PRs`)
   assert.equal(pr.head_ref, HEAD)
