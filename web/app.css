@@ -78,6 +78,9 @@ body{
   -webkit-font-smoothing:antialiased;overflow:hidden;
 }
 button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
+/* Anchors get the hand too, including the ones whose href is set from script
+   (the update-bar link starts hrefless, so the default anchor cursor misses it). */
+a{cursor:pointer}
 :focus-visible{outline:2px solid var(--focus);outline-offset:1px;border-radius:2px}
 /* Selection is a real gesture here — the error toast and review errors are made
    selectable so you can copy them (see `.toast.bad`) — so it gets a palette wash
