@@ -28,8 +28,9 @@ happen, say so in your report and stop.
       "reviewer_said": "…",  // the comment being answered
       "stance": "reply",     // agree | reply | story
       "mode": "agent",       // agent | manual
+      "solution": "…",       // the option the human picked: your instruction
       "reply": "…",          // what the daemon will post once your work lands
-      "patch": "diff --git …", // the staged fix, when there is one
+      "patch": null,         // a staged fix, on the rare flow that stages one
       "story": null }
   ]
 }
@@ -41,10 +42,10 @@ them, and a later fix often depends on an earlier one.
 ## Before you touch anything
 
 `git rev-parse HEAD` against `base_sha`. If they differ the branch moved after the
-decisions were taken: every patch in the plan was cut against a tree that is no
-longer there. Do not stop for that on its own — rebuilding a moved patch is the
-normal case and is your job — but say it in the report, and be more careful about
-each hunk than the diff alone suggests.
+decisions were taken, so the code you are about to change is not the code they were
+read against. Do not stop for that on its own — writing against a branch that has
+moved is the normal case and is your job — but say it in the report, and read each
+site before you change it rather than trusting the location.
 
 A dirty tree is different: stop and say so. You cannot tell your own work from
 somebody else's half-finished edit, and committing both is how a review answer
@@ -52,11 +53,19 @@ starts containing things nobody reviewed.
 
 ## Per thread
 
-**`mode: "agent"` with a `patch`.** Apply it. It is a suggestion, not a
-transcription: if it does not apply cleanly because the surrounding code moved,
-rebuild the same change by hand. What has to survive is the *intent* the reply
-promises, not the literal diff. If you cannot make the change without inventing a
-decision the human did not make, use the question tool below rather than guessing.
+**`stance: "reply"`, `mode: "agent"`.** The change is yours to write. `solution` is
+what the human picked out of the options they were shown, and `reply` is what the
+reviewer will be told about it: between them they say what has to be true when you
+are done. **There is normally no `patch`** — the pass that read these threads
+proposes solutions and writes no code — so do not wait for one and do not read its
+absence as "nothing to do here". Where one is present it is a suggestion, not a
+transcription.
+
+Read the code at the location first. If the solution turns out to need no code —
+the reply is a pushback, or the thing it promises is already true — say so in the
+report and move on without a commit; that is a finding, not a failure. If you
+cannot write it without inventing a decision the human did not make, report the
+thread as one you could not finish rather than guessing.
 
 Then commit, one commit per thread, subject naming what changed and why in the
 reviewer's terms. Nothing else in that commit: a commit that carries two threads
@@ -71,29 +80,29 @@ curl -sS -X POST -H 'content-type: application/json' \
   "{{ASK_BASE}}/$ORCH_SESSION_ID/thread/<thread_id>/committed"
 ```
 
-This blocks. The human is shown your actual commit next to the reply that was
-drafted for it, and decides whether it goes out. `posted: true` means the reviewer
-has been answered. `posted: false` means one of three things, and the other field
-says which:
+The daemon posts the reply and answers. It does not stop to ask: the human
+approved these decisions when they sent them, and the button that sent them says
+`apply, push and post`.
+
+`posted: true` means the reviewer has been answered. `posted: false` means one of
+two things, and the other field says which:
 
 - `"reacted": true` — the stance was a bare thumbs up, there were never any words,
   and the daemon has already left the reaction. Nothing was held back and your
   report must not say it was.
-- `"reason": "held back"` — they kept it back and will answer that one themselves.
-- any other `"reason"` — the daemon refused to post and the string says why. Read
-  it. If it says the branch was rewritten under you, **stop**: your commits are on
-  a history that is no longer the branch's, and every thread after this one would
-  land in the same place. Report which threads you had finished and that the branch
-  moved.
+- a `"reason"` — the daemon refused to post and the string says why. Read it. If it
+  says the branch was rewritten under you, **stop**: your commits are on a history
+  that is no longer the branch's, and every thread after this one would land in the
+  same place. Report which threads you had finished and that the branch moved.
 
-Otherwise the commit stands and you carry on to the next thread. Do not re-send it
-and do not argue with a hold.
+Otherwise the commit stands and you carry on to the next thread. Do not re-send
+it.
 
 **`mode: "manual"`.** You are not writing this one. Ask the question below to hand
 it over, wait, and carry on when it comes back. Do not helpfully do it anyway.
 
-**No `patch`.** Words only. There is nothing for you to do locally; the daemon
-posts the reply. Move on.
+**`stance: "agree"`.** A thumbs up, no words and no change. The daemon leaves the
+reaction. Nothing local.
 
 **`stance: "story"`.** The story is the daemon's to file. Nothing local.
 
@@ -113,46 +122,25 @@ the truth of it. The note is the whole of what the human gets, so name what
 stopped you, not that something did.
 
 Use it when the work is not yours to invent: a patch whose surrounding code is
-gone, a fix that needs a decision nobody made, a test you cannot get past. Do not
-use it instead of the question below when the answer is one you could be given —
-ask, wait, and finish the thread. And do not leave a thread silently unfinished:
-one you neither committed nor reported reads as one you have not reached yet.
+gone, a fix that needs a decision nobody made, a test you cannot get past. And do
+not leave a thread silently unfinished: one you neither committed nor reported
+reads as one you have not reached yet.
 
-## Asking the human
+## You are not asked to ask
 
-You have one way to reach them, and it blocks until they answer:
+**There is no question channel here, on purpose.** The decisions were made per
+thread by the person who read your options: which solution, and what the reviewer
+will be told about it. A run that stops to ask spends their attention on a decision
+they already took, and it holds the whole run until somebody looks at the pane.
 
-```bash
-ASK=$(curl -sS -X POST \
-  -H 'content-type: application/json' \
-  -H "x-orch-ask: $ORCH_ASK_TOKEN" \
-  -d '{"question":"…","thread_id":"…","detail":"…",
-       "options":[{"value":"…","label":"…","sub":"…"},
-                  {"value":"mine","label":"Let me write it…","free":true}]}' \
-  "{{ASK_BASE}}/$ORCH_SESSION_ID/ask" | jq -r .ask)
+So carry each decision out as written. An `agree` is a thumbs up and no change,
+even where another thread's reply implies one. A solution you would have chosen
+differently is still the one to carry out. Where you disagree, or where two
+decisions sit oddly together, **say it in the report** — that is what the report is
+for, and it costs nobody a stall.
 
-# Then wait. Each call blocks up to a minute and answers "not yet"; loop.
-while :; do
-  R=$(curl -sS -H "x-orch-ask: $ORCH_ASK_TOKEN" \
-    "{{ASK_BASE}}/$ORCH_SESSION_ID/ask/$ASK/wait")
-  [ "$(jq -r .answered <<<"$R")" = true ] && break
-done
-jq -r '.answer, .text' <<<"$R"
-```
-
-`answered: false` is normal: it means they have not decided yet, not that anything
-failed. Keep looping. A human takes minutes, and the loop is what makes that safe.
-
-**Frame the decision, do not hand over a blank.** Offer the two to four choices
-that actually exist, each with a short line on what it costs. `value` is the word
-you branch on, so pick your own vocabulary; `label` is what they read. Include one
-`"free": true` option for the case where none of yours fit — they type, and the
-text comes back in `.text`.
-
-Ask when the code genuinely forks and only the author can pick: which of two ways
-to structure a fix, whether a rename belongs in this PR, how something should be
-worded in a document. Do not ask what you can read: run the test, grep the caller,
-open the file.
+What is left when you truly cannot act is the thread you cannot finish, above: it
+posts nothing, blocks nothing, and names what stopped you.
 
 ## When you are done
 

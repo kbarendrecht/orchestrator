@@ -1533,8 +1533,45 @@ pub async fn spawn_resolve_run(
     id: SessionId,
 ) -> Result<SessionId> {
     let workspace = ensure_pr_worktree(app, pr, head_ref).await?;
-    if !app.live_sessions_in(&workspace).await.is_empty() {
-        bail!("{workspace} already has a live session for #{pr}; finish or close it first");
+    /* **The read pass is over, and it is the thing standing in the way.**
+       A triage run posts its proposals and then sits at its prompt like any other
+       Claude Code session: it does not exit, so it still holds the branch, and this
+       guard refused the very run its own proposals asked for. Those proposals are
+       what the human just approved, so the pass has no work left by definition.
+       End it here rather than at the POST: this is the moment somebody decided,
+       and a pane that closes when you press the button reads as one pass handing
+       over to the next.
+       Only a triage run for *this* PR, and only one at rest. Anything else in that
+       worktree — an interactive session, a pass still reading — is somebody's work
+       and still refuses. */
+    for id in app.live_sessions_in(&workspace).await {
+        let finished_read = {
+            let inner = app.inner.read().await;
+            let is_the_pass = inner
+                .sessions
+                .get(&id)
+                .is_some_and(|s| crate::triage::is_triage_of(&s.kind, pr));
+            /* **Posted, not idle.** `is_busy` was the first test and it read the
+               wrong thing: a pass that has handed over its proposals goes on
+               printing for a few seconds, so a click that came straight off the
+               cards met "already has a live session" from the pass those cards came
+               from. What it is still saying is a farewell. */
+            is_the_pass && inner.triage_progress.get(&pr).is_some_and(|t| t.posted)
+        };
+        if !finished_read {
+            bail!("{workspace} already has a live session for #{pr}; finish or close it first");
+        }
+        tracing::info!(pr, session = %id, "ending the read pass so its decisions can be carried out");
+        let handle = {
+            let inner = app.inner.read().await;
+            inner.sessions.get(&id).and_then(|s| s.pty.clone())
+        };
+        // Awaited rather than detached, unlike the kill button: the run spawning
+        // below wants this branch, and `kill_gracefully` is what makes "gone" true
+        // rather than requested.
+        if let Some(h) = handle {
+            h.kill_gracefully().await;
+        }
     }
 
     let dir = Config::config_dir()?.join(format!("{RESOLVE_RUN_COMMAND}-{pr}"));

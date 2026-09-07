@@ -327,6 +327,12 @@ async fn spawn_posting_run(
     {
         let mut inner = app.inner.write().await;
         inner.proposals.remove(&pr);
+        /* And the last pass's progress, for the same reason and one of its own: the
+           map is keyed by PR, so a fresh run inherited `posted: true` from the run
+           before it. The bar then opened amber on `3 threads need your call` before
+           the new pass had read a line, and the overlay loaded the proposals that
+           were about to be superseded. */
+        inner.triage_progress.remove(&pr);
         // And with them any batch that stopped for the manual phase: its decisions
         // point at positions that no longer exist, so finishing it is impossible and
         // offering to would be a screen whose button always fails. The local commit it
@@ -344,6 +350,20 @@ async fn spawn_posting_run(
     }
 
     let id = crate::spawn::spawn_run(app, &workspace, pr, uuid::Uuid::new_v4(), spec).await?;
+    /* **A read pass is "reading" from the spawn, not from its first report.**
+       The skill posts after each thread it finishes, so the first ping is a minute
+       of reading away — and until it landed the map held nothing, which every
+       reader takes to mean no pass is running. The bar offered `open` and the
+       overlay would have shown a full screen saying the session is reading.
+       Zero of zero is the honest opening state: a pass exists, and it has not said
+       how many threads it means to read. */
+    if matches!(kind.first_turn, FirstTurn::Skill(TRIAGE_COMMAND)) {
+        let mut inner = app.inner.write().await;
+        inner.triage_progress.insert(
+            pr,
+            crate::state::TriageProgress { done: 0, total: 0, posted: false, session: id },
+        );
+    }
     app.notify().await;
     Ok(id)
 }

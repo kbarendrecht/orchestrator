@@ -654,6 +654,26 @@ pub async fn ask(
     Json(body): Json<AskBody>,
 ) -> ApiResult<serde_json::Value> {
     ask_token_ok(&app, id, &headers).await?;
+    /* **A resolve run has nothing to ask.** Its plan is the answer to the only
+       question it could have: which solution per thread, and what the reviewer is
+       told about it, both decided by the person who pressed the button. An ask here
+       spends their attention on a decision they already took and holds the run
+       until somebody looks at the pane. `commands/resolve-run.md` says so, and this
+       is the same rule where it cannot be argued with: a thread it truly cannot act
+       on goes to `/stuck`, which posts nothing and blocks nothing, and everything
+       else belongs in the report. */
+    {
+        let inner = app.inner.read().await;
+        let is_run = inner.sessions.get(&id).is_some_and(|s| {
+            matches!(&s.kind, crate::model::Kind::Automation { command, .. }
+                if command == crate::spawn::RESOLVE_RUN_COMMAND)
+        });
+        if is_run {
+            refuse!(
+                "a resolve run carries out decisions rather than asking about them:                  report it, or mark the thread stuck"
+            );
+        }
+    }
     if body.question.trim().is_empty() {
         refuse!("a question with no words");
     }
@@ -911,22 +931,15 @@ pub async fn thread_committed(
         (*number, planned, cwd, run.plan.base_sha.clone())
     };
 
-    // The real diff, not the one triage staged: what the reviewer is about to be
-    // told happened is what actually landed, including whatever the agent had to
-    // change to make it apply.
-    //
-    // Taken with the ancestry check below, because both ask git about this worktree
-    // and both must describe the same moment.
-    let (sha, dir, base) = (body.sha.clone(), cwd.clone(), base_sha.clone());
-    let (diff, still_ours) = tokio::task::spawn_blocking(move || {
-        (
-            crate::git::commit_diff(&dir, &sha, crate::proposal::MAX_FIELD),
-            crate::git::is_ancestor(&dir, &base, "HEAD"),
-        )
-    })
-    .await
-    .context("reading the commit panicked")?;
-    let diff = diff?;
+    // The commit's own diff was read here too, to show beside the reply in a
+    // per-commit confirmation. That confirmation is gone (see below) and it was the
+    // only reader: the record keeps the sha, which is what the run screen and the
+    // report name, and a diff comes from `git show` afterwards.
+    let (dir, base) = (cwd.clone(), base_sha.clone());
+    let still_ours =
+        tokio::task::spawn_blocking(move || crate::git::is_ancestor(&dir, &base, "HEAD"))
+            .await
+            .context("reading the commit panicked")?;
 
     // Is the tree this run was triaged against still in our history?
     //
@@ -983,84 +996,22 @@ pub async fn thread_committed(
         return Ok(Json(json!({ "posted": false, "reacted": planned.stance.gives_thumbs_up() })));
     };
 
-    let ask_id = Uuid::new_v4();
-    {
-        let mut inner = app.inner.write().await;
-        let s = inner
-            .sessions
-            .get_mut(&id)
-            .ok_or_else(|| anyhow::anyhow!("no such session {id}"))?;
-        s.interaction = Some(crate::model::Interaction {
-            id: ask_id,
-            thread_id: Some(planned.location.clone()),
-            question: format!("Post this reply on {}?", planned.location),
-            detail: Some(format!("{diff}\n--- the reply ---\n{reply}")),
-            options: vec![
-                crate::model::InteractionOption {
-                    value: "post".into(),
-                    label: "Post it".into(),
-                    sub: "the change is on the branch; the reviewer is told".into(),
-                    free: false,
-                },
-                crate::model::InteractionOption {
-                    value: "hold".into(),
-                    label: "Hold it back".into(),
-                    sub: "keep the commit, say nothing — you answer this one yourself".into(),
-                    free: false,
-                },
-            ],
-            asked_at: std::time::SystemTime::now(),
-            answer: None,
-            answer_text: None,
-        });
-        s.set_state(crate::model::State::YourTurn {
-            since: std::time::SystemTime::now(),
-            reason: crate::model::TurnReason::AskedAQuestion,
-        });
-    }
-    app.notify().await;
+    /* **Posted on the strength of the button you already pressed.**
+       This used to raise an ask per commit — the diff beside the drafted reply,
+       `Post it` / `Hold it back` — and block the run on it. That was the shape when
+       the decisions were a plan the daemon applied; the button that sends them is
+       called `apply, push and post`, so asking again per thread is asking twice for
+       one answer, and it stops a run that has nothing left to decide.
 
-    // Wait it out. No deadline: unlike `ask`, the caller here is the daemon's own
-    // endpoint and the agent is looping on *this* request, so a timeout would only
-    // move the loop somewhere less obvious.
-    let verdict = loop {
-        // **Register for the wake before reading the answer.** `notify_waiters`
-        // wakes only the futures that already exist, and `Notified` joins that list
-        // when it is first polled — so creating it after the check loses an answer
-        // that lands in between. This loop has no deadline by design (see above), so
-        // a lost wake here parks the agent's curl until some *unrelated* answer
-        // fires, which is indistinguishable from a hang. `enable` joins the list now.
-        let wait = app.answered.notified();
-        tokio::pin!(wait);
-        wait.as_mut().enable();
-        {
-            let inner = app.inner.read().await;
-            let open = inner
-                .sessions
-                .get(&id)
-                .and_then(|s| s.interaction.as_ref())
-                .filter(|i| i.id == ask_id);
-            match open {
-                Some(i) => {
-                    if let Some(a) = &i.answer {
-                        break a.clone();
-                    }
-                }
-                None => refuse!("the confirmation was dropped"),
-            }
-        }
-        wait.await;
-    };
+       What went with it: `hold`, the one-thread "say nothing, I will answer this
+       one myself". Nothing else here is weakened — the ancestry refusal above is a
+       safety check rather than a preference, and it still holds the reply and says
+       why. The ask channel is untouched for what it is for: a run that hits a
+       question only you can answer still asks it (`orch ask`, `/stuck`).
 
-    if verdict != "post" {
-        mark_thread(&app, number, &thread_id, |t| {
-            t.status = crate::post::ThreadStatus::Held;
-        })
-        .await;
-        app.notify().await;
-        return Ok(Json(json!({ "posted": false, "reason": "held back" })));
-    }
-
+       What you inspect instead is the commit itself: its sha is on the record, the
+       run screen and the report name it, and the reply that went out is beside it
+       there. */
     // Fetched now: the thread must still be there, and the ids the write needs are
     // this fetch's, not the ones triage saw.
     let fresh = fetch_threads(&app, number).await?;

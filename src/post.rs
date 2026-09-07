@@ -580,8 +580,16 @@ pub struct PlannedThread {
     /// post them; it is told them so its commit message and its own reasoning
     /// match what the reviewer will read.
     pub reply: Option<String>,
-    /// The fix triage staged, for the session to apply and adapt. Absent under
-    /// `manual`, where you are writing it.
+    /// **The option the human picked, in their own list's words.**
+    ///
+    /// The run needs it and used to be told only the reply. Triage proposes
+    /// *solutions* now rather than staged patches, so "make the rate an argument"
+    /// is the instruction and the reply is only what the reviewer will read about
+    /// it. Without this the run had to infer the work from the promise, and the
+    /// first real one stopped to ask whether it should write the change at all.
+    pub solution: String,
+    /// The fix triage staged, when a flow stages one. The triage skill does not:
+    /// it proposes and the run writes. `commands/review-session.md` still can.
     pub patch: Option<String>,
     pub story: Option<crate::proposal::StoryDraft>,
     /// Where this thread has got to — the daemon's account of the run, not the
@@ -622,6 +630,8 @@ struct AgentThread<'a> {
     stance: crate::proposal::Stance,
     mode: crate::proposal::Mode,
     reply: Option<&'a str>,
+    /// What was chosen. See [`PlannedThread::solution`].
+    solution: &'a str,
     patch: Option<&'a str>,
     story: Option<&'a crate::proposal::StoryDraft>,
 }
@@ -649,6 +659,7 @@ impl Plan {
                     stance: t.stance,
                     mode: t.mode,
                     reply: t.reply.as_deref(),
+                    solution: &t.solution,
                     patch: t.patch.as_deref(),
                     story: t.story.as_ref(),
                 })
@@ -673,19 +684,30 @@ pub fn plan(
             .into_iter()
             .map(|h| PlannedThread {
                 location: h.label.clone(),
-                // What it starts as, rather than a blanket `Pending`: a thread the
-                // session will never touch should not sit in the overview looking
-                // like one it has not got to yet.
-                status: match (h.mode, h.patch.is_some()) {
+                /* What it starts as, rather than a blanket `Pending`: a thread the
+                   session will never touch should not sit in the overview looking
+                   like one it has not got to yet.
+
+                   **Keyed on the stance, not on a patch.** It asked
+                   `patch.is_some()`, which was true while triage staged fixes and
+                   is false for every decision now — so every thread opened as
+                   `WordsOnly`, the daemon posted the reply at once, and the change
+                   that reply promised was nobody's job. A `reply` is work until the
+                   run says otherwise; an `agree` is a thumbs up and a `story` is
+                   the daemon's to file. */
+                status: match (h.mode, h.stance) {
                     (crate::proposal::Mode::Manual, _) => ThreadStatus::Manual,
-                    (_, false) => ThreadStatus::WordsOnly,
-                    (_, true) => ThreadStatus::Pending,
+                    (_, crate::proposal::Stance::Agree | crate::proposal::Stance::Story) => {
+                        ThreadStatus::WordsOnly
+                    }
+                    (_, crate::proposal::Stance::Reply) => ThreadStatus::Pending,
                 },
                 thread_id: h.thread_id,
                 reviewer_said: h.reviewer_said,
                 stance: h.stance,
                 mode: h.mode,
                 reply: h.reply.or(Some(h.draft).filter(|d| !d.is_empty())),
+                solution: h.label,
                 patch: h.patch,
                 story: h.story,
                 commit: None,
@@ -1984,11 +2006,13 @@ mod tests {
             thread("PRRT_1", Some("a.ts"), Some(10), "alice"),
             thread("PRRT_2", Some("b.ts"), Some(99), "alice"),
             thread("PRRT_3", Some("c.ts"), Some(12), "alice"),
+            thread("PRRT_4", Some("d.ts"), Some(3), "alice"),
         ]);
         let mut set = proposed("PRRT_1", vec![with_patch(Stance::Reply, true)]);
         for (id, pos) in [
             ("PRRT_2", with_patch(Stance::Reply, true)),
             ("PRRT_3", position(Stance::Reply)),
+            ("PRRT_4", position(Stance::Agree)),
         ] {
             set.proposals.push(Proposal {
                 thread_id: id.into(),
@@ -2006,8 +2030,13 @@ mod tests {
                 Decision { thread_id: "PRRT_1".into(), position: 0, reply: None, mode: Mode::Agent },
                 // the same, but you are writing it
                 Decision { thread_id: "PRRT_2".into(), position: 0, reply: None, mode: Mode::Manual },
-                // words only: nothing to build at all
+                /* A reply with nothing staged, which is every triage decision:
+                   the run works the change out from the solution. This read
+                   `WordsOnly` while a missing patch meant nothing to build, and
+                   that is what left the change nobody wrote. */
                 Decision { thread_id: "PRRT_3".into(), position: 0, reply: None, mode: Mode::Agent },
+                // A thumbs up. This is what words-only means now.
+                Decision { thread_id: "PRRT_4".into(), position: 0, reply: None, mode: Mode::Agent },
             ],
         };
         let plan = plan(4812, &set, &fresh, &batch, TRACKER).expect("planned");
@@ -2017,15 +2046,19 @@ mod tests {
             vec![
                 ThreadStatus::Pending,
                 ThreadStatus::Manual,
+                ThreadStatus::Pending,
                 ThreadStatus::WordsOnly
             ]
         );
         // And the manual one carries no patch for the session to apply behind you.
         assert!(plan.threads[1].patch.is_none());
+        // Every thread carries what was chosen, which is the run's instruction now
+        // that nothing is staged for it.
+        assert!(plan.threads.iter().all(|t| !t.solution.is_empty()));
         // The words-only one carries the words: `sweep_words_only` answers it off
         // the plan, so a `WordsOnly` thread with nothing to say would be a thread
         // nothing ever posts.
-        assert!(plan.threads[2].reply.is_some());
+        assert!(plan.threads[3].reply.is_some() || plan.threads[3].stance == Stance::Agree);
     }
 
     /// The plan is two files' worth of one type, and each must keep what the other
