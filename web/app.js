@@ -1482,6 +1482,9 @@ function setupChrome() {
     b.addEventListener('click', () => wcmd(b.dataset.cmd));
   }
 
+  /** How far the pointer must travel before a press on a bar becomes a drag. */
+  const DRAG_SLOP = 3;
+
   for (const bar of document.querySelectorAll('.top')) {
     bar.addEventListener('mousedown', (/** @type {MouseEvent} */ e) => {
       // Left button only, and only on the bar's own background: a drag that
@@ -1493,7 +1496,35 @@ function setupChrome() {
       // start a drag; the compositor keeps the drag alive past mouseup, which
       // would eat the second click.
       if (e.detail > 1) return;
-      wcmd('start-drag');
+      /* **A press is not a drag until the pointer moves, and on macOS asking too
+         early crashes the app.** `start_dragging` posts a message the event loop
+         drains later, and tao's `drag_window` then hands AppKit's *current* event
+         to `performWindowDragWithEvent:` — substituting a synthetic mouse-down for
+         one event type only (`0x15`, application-defined, which is the wake-up the
+         post itself causes). So a request that is still queued when the next real
+         event arrives is handed that one instead: press the header, press a key,
+         and a keyDown reaches a call that accepts nothing but a mouse event. The
+         Objective-C exception aborts the process, which on this app is the daemon
+         and every session with it.
+         Waiting for movement means the request is only ever sent mid-gesture, with
+         the button down and AppKit dispatching mouse events. A plain click on a bar
+         now asks for nothing at all, which is also what a click should do. */
+      const from = { x: e.clientX, y: e.clientY };
+      const stop = () => {
+        window.removeEventListener('mousemove', moved);
+        window.removeEventListener('mouseup', stop);
+        // The native drag takes the mouse, so no `mouseup` is coming once it
+        // starts; losing focus is what says the gesture left the page.
+        window.removeEventListener('blur', stop);
+      };
+      const moved = (/** @type {MouseEvent} */ m) => {
+        if (Math.abs(m.clientX - from.x) + Math.abs(m.clientY - from.y) < DRAG_SLOP) return;
+        stop();
+        wcmd('start-drag');
+      };
+      window.addEventListener('mousemove', moved);
+      window.addEventListener('mouseup', stop);
+      window.addEventListener('blur', stop);
     });
     bar.addEventListener('dblclick', (e) => {
       if (/** @type {HTMLElement} */ (e.target).closest('button, input, a, kbd, .ctx-btn')) return;
