@@ -230,6 +230,17 @@ pub async fn start(opts: StartOptions) -> Result<Server> {
 
     let mut cfg = Config::load_or_init(opts.main_checkout)?;
     check_config(&cfg)?;
+    /* **Every open counts as recent, not only the ones picked in the picker.**
+       `firstrun` recorded the list from its own switch route alone, so a daemon
+       that started on the checkout already in `config.json` — which is every
+       launch after the first — wrote nothing. The list the "open a project"
+       screen offers was therefore empty for anyone who had never switched, and
+       the one project they actually use was the one entry it could not show.
+       Best effort: a list that cannot be written is not a reason to refuse a
+       start. */
+    if let Err(e) = firstrun::record_recent(&cfg.main_checkout) {
+        tracing::warn!("could not record the recent project: {e:#}");
+    }
     phases.mark("config");
 
     // Bind before anything else reads the port. The hook settings bake it into

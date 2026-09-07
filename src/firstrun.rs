@@ -88,7 +88,7 @@ const MAX_RECENT: usize = 12;
 /// Record that `path` was just opened: move it to the front with a fresh timestamp,
 /// drop any older entry for the same path, and cap the list. Best effort — a failure
 /// to write the list must never fail an open, so the caller logs and carries on.
-fn record_recent(path: &Path) -> Result<()> {
+pub fn record_recent(path: &Path) -> Result<()> {
     let dir = Config::config_dir()?;
     record_recent_in(&dir, path)
 }
