@@ -501,13 +501,17 @@ fn default_review_timeout() -> u64 {
 /// }
 /// ```
 ///
-/// **One shape, and no names.** This was an enum arm per tracker holding those as
-/// compile-time constants, so adding Jira or Linear meant a release; then briefly
-/// both, with `"shortcut"` and `"stub"` accepted as shorthands beside the object.
-/// Two spellings of one setting is worse than either: the config file stops being
-/// readable on its own, the SPA can offer one form and not the other, and every
-/// reader needs an arm per shape. A string is refused with the object to write —
-/// see the `Deserialize` impl, which exists for that message and nothing else.
+/// **One shape to write, and two names still readable.** This was an enum arm per
+/// tracker holding those as compile-time constants, so adding Jira or Linear meant
+/// a release. The object is the only form the daemon offers, documents or writes,
+/// because two spellings of one *setting* is worse than either: the config file
+/// stops being readable on its own, the SPA can offer one form and not the other,
+/// and every reader needs an arm per shape.
+///
+/// But `"shortcut"` and `"stub"` shipped, so files on disk say them, and the
+/// `Deserialize` impl reads those two as what they meant. Any other string is
+/// refused with the object to write. See that impl for why this is not a
+/// migration.
 ///
 /// **Explicit, never detected.** The daemon could read the repo's `.mcp.json` and
 /// guess, and deliberately does not: `machine::check` *verifies* that the server
@@ -566,17 +570,43 @@ pub struct Tracker {
     pub stub: bool,
 }
 
+/// The two names the daemon shipped, as the objects they meant.
+///
+/// Constants in the code again, which the enum-per-tracker shape was removed to be
+/// rid of — but as **how a file is read**, never as what the daemon believes: no
+/// caller reaches this, `Config::default_for` writes no tracker, and nothing here
+/// is consulted for a config that spells the object out. `store::OnDiskKind` holds
+/// exactly this position for `sessions.json`.
+fn shipped_name(stub: bool) -> Tracker {
+    Tracker {
+        mcp_server: "shortcut".to_string(),
+        host: "app.shortcut.com".to_string(),
+        token_env: Some("SHORTCUT_API_TOKEN".to_string()),
+        stub,
+    }
+}
+
 impl<'de> Deserialize<'de> for Tracker {
-    /// Hand-written for one reason: serde's own answer to a name is `invalid type:
-    /// string "shortcut", expected struct Tracker`, which names the problem and
-    /// not the fix.
+    /// Hand-written for two reasons: it reads the two names that shipped, and
+    /// serde's own answer to any other one is `invalid type: string "jira",
+    /// expected struct Tracker`, which names the problem and not the fix.
     ///
-    /// **Not a migration, and nothing here expires.** A name is a shape this will
-    /// never accept, so the message is as right for somebody writing a config from
-    /// scratch and guessing as it is for a file that predates the change. The
-    /// alternative was rewriting the user's file on start, which would have been
-    /// code with a deletion date and would have had to carry one tracker's
-    /// constants as *behaviour* rather than as advice.
+    /// **The names are read, not refused, and that is not negotiable.** They were a
+    /// valid setting in a released build, so refusing them makes an upgrade a
+    /// hand-edit — and there is no hand-edit to ask for, because the whole file is
+    /// dropped when one key does not parse (`Config::existing`) and the app then
+    /// shows a *folder picker* for a project you configured months ago. One key
+    /// nobody touched cost every setting in the file.
+    ///
+    /// **Not a migration, and nothing here expires.** This is how the file is read,
+    /// permanently, like `store::OnDiskKind`. The alternative was rewriting the
+    /// user's config on start, which is code with a deletion date; nothing is
+    /// written back, so a downgrade keeps working and a file that says `"shortcut"`
+    /// goes on saying it.
+    ///
+    /// A name that never shipped is still refused with the object, because that
+    /// message is as right for somebody writing a config today and guessing as it
+    /// is for anything historical.
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
         #[derive(Deserialize)]
         #[serde(untagged)]
@@ -601,22 +631,18 @@ impl<'de> Deserialize<'de> for Tracker {
                 token_env: s.token_env,
                 stub: s.stub,
             }),
+            // The two that shipped, read as what they meant. `"stub"` differed from
+            // `"shortcut"` in one field, which is why one constructor serves both.
+            Shape::Name(name) if name == "shortcut" => Ok(shipped_name(false)),
+            Shape::Name(name) if name == "stub" => Ok(shipped_name(true)),
             Shape::Name(name) => Err(serde::de::Error::custom(match name.as_str() {
                 "none" => "`tracker` is not a name: drop the key entirely for no tracker"
                     .to_string(),
-                // The two this was developed against, spelled out as a courtesy.
-                // Advice, never a value the daemon reads — which is why keeping it
-                // does not put a tracker's constants back into the code.
-                "shortcut" | "stub" => format!(
+                _ => format!(
                     "`tracker: \"{name}\"` is not a name — it takes `mcp_server`, `host` \
                      and an optional `token_env`. For Shortcut that is: \
                      {{\"mcp_server\": \"shortcut\", \"host\": \"app.shortcut.com\", \
-                     \"token_env\": \"SHORTCUT_API_TOKEN\"{}}}",
-                    if name == "stub" { ", \"stub\": true" } else { "" }
-                ),
-                _ => format!(
-                    "`tracker: \"{name}\"` is not a name — it takes `mcp_server`, `host` \
-                     and an optional `token_env`"
+                     \"token_env\": \"SHORTCUT_API_TOKEN\"}}"
                 ),
             })),
         }
@@ -1129,14 +1155,15 @@ mod tests {
         assert!(Config::default_for(PathBuf::from("/tmp/x")).main_processes.is_empty());
     }
 
-    /// One shape, and the refusal that says what to write instead.
+    /// One shape to write, the two names that shipped still read, and a refusal
+    /// that says what to write for anything else.
     ///
-    /// The message is the whole reason `Tracker` has a hand-written `Deserialize`:
-    /// serde's own answer names the problem (`invalid type: string`) and not the
-    /// fix. It is not a migration notice — a name is a shape this never accepts,
-    /// so the same message serves a config written from scratch today.
+    /// The names are the load-bearing half: they were a valid setting in a released
+    /// build, and refusing one costs the *whole file* (`Config::existing` drops a
+    /// config it cannot parse), which lands the user in a folder picker for a
+    /// project they configured months ago. An upgrade may not need a hand-edit.
     #[test]
-    fn a_tracker_is_three_fields_and_a_name_says_what_to_write() {
+    fn a_tracker_is_three_fields_and_the_names_that_shipped_still_read() {
         let linear = Config::parse(
             r#"{"main_checkout":"/tmp/x","tracker":{"mcp_server":"linear","host":"linear.app"}}"#,
         )
@@ -1157,18 +1184,50 @@ mod tests {
         // Absent, which is a supported setup rather than a gap.
         assert!(Config::parse(r#"{"main_checkout":"/tmp/x"}"#).unwrap().tracker.is_none());
 
-        // And the three things a config might still say, each answered with the fix.
+        // The spelling every released config has, read as what it meant — and the
+        // rest of the file with it, which is the part that was lost.
+        let shipped = Config::parse(
+            r#"{"main_checkout":"/tmp/x","tracker":"shortcut","port":9001}"#,
+        )
+        .expect("a name that shipped must load, not cost the whole file");
+        let t = shipped.tracker.expect("read as the object it meant");
+        assert_eq!(t.mcp_server, "shortcut");
+        assert_eq!(t.host, "app.shortcut.com");
+        assert_eq!(t.token_env.as_deref(), Some("SHORTCUT_API_TOKEN"));
+        assert!(!t.stub);
+        assert_eq!(shipped.port, 9001, "the rest of the file has to survive with it");
+
+        // `"stub"` differed in exactly one field, and the fixture's config says it.
+        let stub = Config::parse(r#"{"main_checkout":"/tmp/x","tracker":"stub"}"#)
+            .expect("the other name that shipped");
+        assert!(stub.tracker.expect("configured").stub);
+
+        // Nothing is written back, so the file goes on saying what it says and a
+        // downgrade keeps working.
+        assert_eq!(
+            Config::parse(r#"{"main_checkout":"/tmp/x","tracker":"shortcut"}"#)
+                .unwrap()
+                .tracker,
+            Config::parse(
+                r#"{"main_checkout":"/tmp/x","tracker":{"mcp_server":"shortcut",
+                     "host":"app.shortcut.com","token_env":"SHORTCUT_API_TOKEN"}}"#
+            )
+            .unwrap()
+            .tracker,
+            "a name and the object it means have to read as the same tracker",
+        );
+
+        // A name that never shipped is refused, with the object to write: the
+        // message is for somebody guessing today, not for a file from before.
         let refused = |raw: &str| {
             format!(
                 "{:#}",
-                Config::parse(raw).expect_err("a name must be refused, not read")
+                Config::parse(raw).expect_err("a name that never shipped must be refused")
             )
         };
-        let old = refused(r#"{"main_checkout":"/tmp/x","tracker":"shortcut"}"#);
-        assert!(old.contains("mcp_server"), "the refusal must name the fix: {old}");
-        assert!(old.contains("app.shortcut.com"), "{old}");
-        let stub = refused(r#"{"main_checkout":"/tmp/x","tracker":"stub"}"#);
-        assert!(stub.contains("\"stub\": true"), "{stub}");
+        let guessed = refused(r#"{"main_checkout":"/tmp/x","tracker":"jira"}"#);
+        assert!(guessed.contains("mcp_server"), "the refusal must name the fix: {guessed}");
+        assert!(guessed.contains("app.shortcut.com"), "{guessed}");
         let none = refused(r#"{"main_checkout":"/tmp/x","tracker":"none"}"#);
         assert!(none.contains("drop the key"), "{none}");
     }

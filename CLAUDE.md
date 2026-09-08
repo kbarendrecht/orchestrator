@@ -302,9 +302,20 @@ mean *this* repo; if you do, name it.
   enum arm per tracker, then briefly both — the object *and* `"shortcut"`/`"stub"`
   as shorthands — and two spellings of one setting is worse than either: the file
   stops being readable on its own, the SPA can offer one form and not the other,
-  and every reader needs an arm per shape. A name is **refused with the object to
-  write**, which is the only reason `Tracker` has a hand-written `Deserialize`;
-  serde's own answer names the problem and not the fix.
+  and every reader needs an arm per shape. A name that never shipped is **refused
+  with the object to write**, which is one of the two reasons `Tracker` has a
+  hand-written `Deserialize`; serde's own answer names the problem and not the fix.
+  **`"shortcut"` and `"stub"` are still read, permanently**, because they shipped —
+  and a refusal there does not cost you a key, it costs you **the whole file**:
+  `Config::existing` drops a config it cannot parse, and the app then reads that as
+  first run and shows a *folder picker* for a project you configured months ago.
+  With no way back, since `firstrun::write_config` merges by JSON key and so keeps
+  the very line that is being refused. One key nobody touched, every setting gone.
+  So the two names read as the objects they meant, nothing is written back (a
+  downgrade keeps working), and this is how the file is read rather than a
+  migration — `store::OnDiskKind` holds the same position for `sessions.json`.
+  The constants are back in the code and that is the trade: they are *file
+  reading*, never what the daemon believes, and no caller can reach them.
   It is also gone from `config::Settings` and from the settings pane's controls.
   The pane shows `snap.tracker_server` read-only, because a write of that whole
   struct is how a hand-edited tracker would have been replaced by whichever name a

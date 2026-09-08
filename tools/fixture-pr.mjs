@@ -479,7 +479,10 @@ function writeConfig() {
     // panes would read as broken commands rather than as absent.
     main_processes: [],
     reviews_command: [],
-    tracker: 'none',
+    // No `tracker` key at all, which is how "no tracker" is spelled: `'none'` is a
+    // name, and `Config::parse` refuses every name it did not ship — so this line
+    // made the whole fixture config unparseable, and a config the daemon cannot
+    // parse is dropped entirely (checkout and base ref included).
     // Not this repo's TODO.md, and not inside the clone either — the daemon
     // rewrites the live-findings block, which would make the fixture worktree
     // dirty and quietly change what `triage::gate` sees.
