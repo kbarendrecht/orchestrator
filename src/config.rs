@@ -64,7 +64,7 @@ pub struct Config {
     ///
     /// Its credential is **not** a config key: `ORCHD_TRACKER_TOKEN` in the
     /// daemon's environment, and nowhere else. See `story::resolve_token`.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "tracker_or_warn")]
     pub tracker: Option<Tracker>,
     /// Which tool a spawned session's own environment comes from.
     ///
@@ -568,6 +568,43 @@ pub struct Tracker {
     /// under test is the run that ships; only what sits behind the socket differs.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub stub: bool,
+}
+
+/// A tracker this build cannot read costs you the tracker, not the config.
+///
+/// **The asymmetry is the whole argument.** A tracker is one optional flow: with
+/// it, an out-of-scope review point can be filed as a story. Refusing the *file*
+/// over it costs the checkout, the port, the managed processes and every hand-tuned
+/// key — and `Config::existing` then reads that as first run, so the app offers a
+/// folder picker for a project configured months ago. Measured: a daemon started
+/// from a terminal on `tracker: "jira"` exited 1 and served nothing.
+///
+/// So the value's own refusal becomes a **warning that names the fix**, and the
+/// rest of the config loads. `Tracker`'s `Deserialize` is unchanged and still
+/// refuses — that is what produces the sentence — this only decides who pays for
+/// it. What it does *not* do is guess: a name nobody shipped stays unconfigured
+/// rather than being pointed at somebody's host.
+///
+/// `migrate::config_file` is the other half and runs first: the three names that
+/// ever shipped are rewritten on disk, so this is the fallback for a value no
+/// migration knows and for a config dir we cannot write.
+fn tracker_or_warn<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> std::result::Result<Option<Tracker>, D::Error> {
+    let raw = Option::<serde_json::Value>::deserialize(d)?;
+    let Some(raw) = raw else { return Ok(None) };
+    if raw.is_null() {
+        return Ok(None);
+    }
+    match serde_json::from_value::<Tracker>(raw) {
+        Ok(t) => Ok(Some(t)),
+        Err(e) => {
+            // Loudly, and with the same sentence the refusal would have carried:
+            // the setting is gone until it is fixed, and `story+reply` says so too.
+            tracing::warn!("ignoring `tracker`: {e}");
+            Ok(None)
+        }
+    }
 }
 
 /// The two names the daemon shipped, as the objects they meant.
@@ -1236,26 +1273,48 @@ mod tests {
             "a name and the object it means have to read as the same tracker",
         );
 
-        // A name that never shipped is refused, with the object to write: the
-        // message is for somebody guessing today, not for a file from before.
+        /* **The value is refused; the file is not.** `Tracker` itself still
+           produces the sentence — asserted directly, since that is where it lives —
+           while the field's own `tracker_or_warn` decides who pays for it: a
+           tracker is one optional flow, and refusing the whole config over it costs
+           the checkout, the port and every hand-tuned key, then reads as first run.
+           Measured before this: a daemon on `tracker: "jira"` exited 1. */
         let refused = |raw: &str| {
             format!(
                 "{:#}",
-                Config::parse(raw).expect_err("a name that never shipped must be refused")
+                serde_json::from_str::<Tracker>(raw).expect_err("this value is not a tracker")
             )
         };
-        let guessed = refused(r#"{"main_checkout":"/tmp/x","tracker":"jira"}"#);
+        let guessed = refused(r#""jira""#);
         assert!(guessed.contains("mcp_server"), "the refusal must name the fix: {guessed}");
         assert!(guessed.contains("app.shortcut.com"), "{guessed}");
 
         /* And an *object* fails on its own terms, which `#[serde(untagged)]` cost:
-           it answered `data did not match any variant` for a missing field, on a
-           config whose whole file is then dropped. The key that is wrong is the
-           only useful thing to say. */
-        let missing = refused(r#"{"main_checkout":"/tmp/x","tracker":{"mcp_server":"linear"}}"#);
+           it answered `data did not match any variant` for a missing field. The key
+           that is wrong is the only useful thing to say. */
+        let missing = refused(r#"{"mcp_server":"linear"}"#);
         assert!(missing.contains("host"), "the field is what to name: {missing}");
         assert!(!missing.contains("did not match any variant"), "{missing}");
-        let none = refused(r#"{"main_checkout":"/tmp/x","tracker":"none"}"#);
+
+        // Both of those, in a config: the tracker is dropped and everything else
+        // survives, which is the difference between a lost feature and a lost app.
+        for bad in [
+            r#"{"main_checkout":"/tmp/x","port":9001,"tracker":"jira"}"#,
+            r#"{"main_checkout":"/tmp/x","port":9001,"tracker":{"mcp_server":"linear"}}"#,
+            r#"{"main_checkout":"/tmp/x","port":9001,"tracker":42}"#,
+        ] {
+            let cfg = Config::parse(bad).expect("a bad tracker must not cost the file");
+            assert!(cfg.tracker.is_none(), "and it must not be guessed at either");
+            assert_eq!(cfg.port, 9001, "the rest of the file has to survive: {bad}");
+        }
+
+        // `"none"` is the one name a *migration* handles, so it never reaches the
+        // reader — but if it does, it costs nothing either.
+        let cfg = Config::parse(r#"{"main_checkout":"/tmp/x","tracker":"none"}"#)
+            .expect("the old default must not cost the file");
+        assert!(cfg.tracker.is_none());
+        // Its own sentence is still the one that names the fix.
+        let none = refused(r#""none""#);
         assert!(none.contains("drop the key"), "{none}");
     }
 

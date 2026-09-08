@@ -10,7 +10,7 @@ is.
 
 ```
 cargo check                         # the daemon
-cargo test                          # 518 tests, all in-tree
+cargo test                          # 519 tests, all in-tree
 cargo clippy --all-targets          # what CI lints with, and it denies warnings
 mise run check-web                  # type-check the SPA + enforce its module graph
 mise run e2e                        # 16 flows against a real daemon, ~60s
@@ -326,6 +326,15 @@ mean *this* repo; if you do, name it.
   and every reader needs an arm per shape. A name that never shipped is **refused
   with the object to write**, which is one of the two reasons `Tracker` has a
   hand-written `Deserialize`; serde's own answer names the problem and not the fix.
+  **But the refusal costs you the tracker, not the config.** `config::tracker_or_warn`
+  turns it into a warning and loads the rest of the file, because the asymmetry is
+  not close: a tracker is one optional flow, while refusing the file costs the
+  checkout, the port and every hand-tuned key — and `Config::existing` then reads
+  that as first run and offers a folder picker. Measured before it: a daemon on
+  `tracker: "jira"` exited 1 and served nothing. `Tracker`'s own `Deserialize` is
+  unchanged and still produces the sentence; this only decides who pays. It does
+  not guess either — an unreadable value leaves the tracker unconfigured rather
+  than pointed at somebody's host.
   **The file is migrated on start, and the reader is the fallback.**
   `migrate::config_file` rewrites `"tracker": "<name>"` into the object it meant
   before either reader parses the file — see the entry below. `"shortcut"` and
