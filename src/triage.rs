@@ -18,11 +18,10 @@
 //! exit 0 having said nothing useful, and parsing its output would be a second,
 //! worse source of truth.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use std::sync::Arc;
 
 use crate::model::*;
-use crate::prompt;
 use crate::spawn::ensure_pr_worktree;
 use crate::state::AppState;
 
@@ -126,13 +125,12 @@ async fn gate_inner(
 ///
 /// `login` is the viewer whose PR this is; it comes from the thread fetch that
 /// preceded this, rather than a second `gh api user` call.
-pub async fn spawn(app: &Arc<AppState>, pr: u64, head_ref: &str, login: &str) -> Result<SessionId> {
+pub async fn spawn(app: &Arc<AppState>, pr: u64, head_ref: &str) -> Result<SessionId> {
     let kind = RunKind {
-        first_turn: FirstTurn::Skill(TRIAGE_COMMAND),
         command: TRIAGE_COMMAND,
         asks: false,
     };
-    spawn_posting_run(app, pr, head_ref, login, kind).await
+    spawn_posting_run(app, pr, head_ref, kind).await
 }
 
 /// The `Kind::Automation` command a review session carries.
@@ -205,20 +203,17 @@ pub async fn spawn_review(
     app: &Arc<AppState>,
     pr: u64,
     head_ref: &str,
-    login: &str,
 ) -> Result<SessionId> {
     let kind = RunKind {
-        first_turn: FirstTurn::Prompt(prompt::REVIEW_SESSION),
         command: COMMAND,
         asks: true,
     };
-    spawn_posting_run(app, pr, head_ref, login, kind).await
+    spawn_posting_run(app, pr, head_ref, kind).await
 }
 
 /// What tells a triage run from a review session. Everything else about the two
 /// spawns is the same, and was written twice until the copies drifted.
 struct RunKind {
-    first_turn: FirstTurn,
     /// The `Kind::Automation` command the session carries, and the prefix of its
     /// scratch dir under the config dir (`<command>-<pr>`). One field, because it
     /// was two that were always the same string, in the struct whose whole purpose
@@ -229,70 +224,10 @@ struct RunKind {
     asks: bool,
 }
 
-/// How the run is told what to do on its first turn.
-///
-/// **A rendered prompt and a skill are not interchangeable.** A prompt is
-/// substituted per run and written to a file the session is told to read, because
-/// it is multi-line and typing it would submit at the first newline. A skill is
-/// static and is typed as one line, so the values a prompt had substituted have to
-/// reach it another way: `/orchd:triage` fetches them from `triage-context`.
-enum FirstTurn {
-    /// A template from `crate::prompt`, rendered and written to the config dir.
-    Prompt(&'static str),
-    /// A vendored skill, typed as `/orchd:<name> <pr>`.
-    Skill(&'static str),
-}
-
-/// Render a run's vendored prompt and leave it where the session can read it.
-///
-/// Split out when `triage` stopped having one: the substitution, the file and the
-/// "read this" sentence are what a *prompt* run needs and a skill run does not.
-async fn render_prompt_file(
-    app: &Arc<AppState>,
-    pr: u64,
-    login: &str,
-    template: &'static str,
-    kind: &RunKind,
-) -> Result<String> {
-    let (owner, repo) =
-        crate::resolve_repo(app).context("no GitHub repo configured and none on the remote")?;
-    let body = prompt::render(
-        template,
-        &prompt::Vars {
-            pr,
-            owner,
-            repo,
-            login: login.to_string(),
-            upstream: app.cfg.upstream_ref.clone(),
-            upstream_remote: app.cfg.upstream_remote.clone(),
-            proposals_url: format!("http://127.0.0.1:{}/api/pr/{pr}/proposals", app.cfg.port),
-            ask_base: format!("http://127.0.0.1:{}/api/session", app.cfg.port),
-            // Whether the agent may offer `story+reply` at all: an option the
-            // daemon would refuse should never reach a card.
-            tracker: if app.cfg.tracker.is_configured() {
-                prompt::TRACKER_ON.to_string()
-            } else {
-                prompt::TRACKER_OFF.to_string()
-            },
-            language: app.cfg.default_language.clone(),
-            ..Default::default()
-        },
-    )?;
-
-    // Written to a file the session is told to read, not typed in: the prompt is
-    // multi-line and typing it would submit at the first newline.
-    let prompt_file = prompt::write_for_run(kind.command, pr, &body)?;
-    Ok(crate::spawn::read_and_follow(
-        &prompt_file,
-        &format!("Those are your instructions for PR {pr}."),
-    ))
-}
-
 async fn spawn_posting_run(
     app: &Arc<AppState>,
     pr: u64,
     head_ref: &str,
-    login: &str,
     kind: RunKind,
 ) -> Result<SessionId> {
     let workspace = ensure_pr_worktree(app, pr, head_ref).await?;
@@ -301,10 +236,12 @@ async fn spawn_posting_run(
         anyhow::bail!("{}", g.say());
     }
 
-    let pending = match kind.first_turn {
-        FirstTurn::Skill(name) => format!("/orchd:{name} {pr}"),
-        FirstTurn::Prompt(template) => render_prompt_file(app, pr, login, template, &kind).await?,
-    };
+    /* Both posting runs are skills now, so the first turn is one typed line and
+       `FirstTurn` went with the last rendered prompt: what a template substituted,
+       `/api/pr/:n/triage-context` answers. The command string is the skill's
+       directory name — `skills::a_skill_is_named_after_the_command_that_types_it`
+       is what keeps those two spellings together. */
+    let pending = format!("/orchd:{} {pr}", kind.command);
 
     // The post token is minted by `spawn_run`, because both posting runs spawn
     // there and `posts_proposals` names them; the ask token only when the run has
@@ -359,7 +296,7 @@ async fn spawn_posting_run(
        overlay would have shown a full screen saying the session is reading.
        Zero of zero is the honest opening state: a pass exists, and it has not said
        how many threads it means to read. */
-    if matches!(kind.first_turn, FirstTurn::Skill(TRIAGE_COMMAND)) {
+    if kind.command == TRIAGE_COMMAND {
         let mut inner = app.inner.write().await;
         inner.triage_progress.insert(
             pr,
@@ -415,7 +352,7 @@ mod tests {
         // The triage half is a skill now and is checked the same way, because the
         // file being static rather than rendered changes nothing about the name.
         assert!(crate::skills::TRIAGE.contains("$ORCH_POST_TOKEN"));
-        assert!(crate::prompt::REVIEW_SESSION.contains("$ORCH_POST_TOKEN"));
+        assert!(crate::skills::REVIEW.contains("$ORCH_POST_TOKEN"));
 
         // The headless triage pass has nobody to ask, so it gets no ask token.
         let (solo, _) = run_env(Some("post-tok"), None);

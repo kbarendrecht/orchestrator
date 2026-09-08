@@ -20,11 +20,6 @@ use anyhow::{bail, Result};
 pub const STORY: &str = include_str!("../commands/story.md");
 
 
-/// One session for the whole overlay-driven review: read-only triage, then the
-/// change and the post, with the human's decisions arriving over the ask channel
-/// between the phases. The single-session replacement for triage + the batch.
-pub const REVIEW_SESSION: &str = include_str!("../commands/review-session.md");
-
 /// What `{{TRACKER}}` becomes when a tracker is configured.
 ///
 /// A sentence rather than a boolean, so the prompt reads as prose in both states
@@ -163,47 +158,20 @@ mod tests {
 
     #[test]
     fn every_vendored_prompt_renders_with_nothing_left_over() {
-        // The real templates, not fixtures: a placeholder added to either file
-        // without being added here should fail this test, not a triage run.
-        for (name, t) in [
-            ("story", STORY),
-            // The newest and most interpolated of them, and the one this guard
-            // was missing: `resolve-run.md` carries three built URLs, so it is
-            // the likeliest to gain a placeholder nobody substitutes.
-            // The overlay session, most interpolated of all: proposals URL, ask
-            // base, tracker, language and upstream in one file.
-            ("review-session", REVIEW_SESSION),
-        ] {
+        /* The real template, not a fixture: a placeholder added to it without
+           being added here should fail this test rather than a story run.
+           **One template left.** The other three became skills, which substitute
+           nothing — `skills.rs` checks those against the variables their runs set
+           instead. The story run keeps its prompt because `--allowedTools` scopes
+           it to `mcp__<tracker> Read Write`, and a skill invocation is not in that
+           allowlist. */
+        for (name, t) in [("story", STORY)] {
             let out = render(t, &vars()).unwrap_or_else(|e| panic!("{name}: {e}"));
             assert!(!out.contains("{{"), "{name} still has a placeholder");
             assert!(out.contains("10001"), "{name} did not get the PR number");
         }
     }
 
-    #[test]
-    fn the_review_session_prompt_carries_its_contract() {
-        let out = render(REVIEW_SESSION, &vars()).unwrap();
-        // The three phases the overlay and the daemon both depend on being in order.
-        assert!(out.contains("Phase 1 — Read"), "the read phase");
-        assert!(out.contains("Phase 2 — Change"), "the change phase");
-        assert!(out.contains("Phase 3 — Post"), "the post phase");
-        // The two seams the overlay answers over the ask channel.
-        assert!(out.contains("/api/session/$ORCH_SESSION_ID/ask"), "the ask channel URL");
-        assert!(out.contains("\"decisions\""), "the decision-set contract");
-        // Read-only in phase 1, and the same push guard the interactive resolve obeys.
-        assert!(out.contains("Read only"), "the read-only invariant");
-        assert!(out.contains("--force-with-lease"), "the push discipline");
-        // The daemon recognises its own replies by this exact footer.
-        assert!(out.contains("(via orchestrator)"), "the footer that dedups our replies");
-        // Phase 4 is the only thing that tells the overlay the review is over, and
-        // the only route by which a review reaches `fix-pr`. A rewording that drops
-        // the call leaves the overlay saying "applying" for good.
-        assert!(out.contains("Phase 4 — Hand over"), "the hand-over phase");
-        assert!(
-            out.contains("/api/session/$ORCH_SESSION_ID/handoff"),
-            "the hand-over URL"
-        );
-    }
 
     #[test]
     fn the_story_prompt_still_says_the_things_it_must() {
@@ -231,14 +199,6 @@ mod tests {
         assert!(out.contains("must both come from the tool response"));
     }
 
-    #[test]
-    fn the_output_language_is_substituted_and_no_language_is_hardcoded() {
-        // Prompts stay English; the language the agent *writes* in is a setting.
-        // Asked of the review session, which is the interpolated prompt left that
-        // writes replies; triage asks the daemon for the same value instead.
-        let out = render(REVIEW_SESSION, &Vars { language: "Portuguese".into(), ..vars() }).unwrap();
-        assert!(out.contains("Portuguese"), "reply language substituted");
-    }
 
     #[test]
     fn no_prompt_carries_the_language_it_was_extracted_from() {
@@ -250,9 +210,8 @@ mod tests {
         // Whole words, not substrings: "een" is inside "between".
         const DUTCH: [&str; 9] =
             ["naar", "niet", "wordt", "werd", "voor", "het", "een", "bron", "losgetrokken"];
-        const PROMPTS: [(&str, &str); 2] = [
+        const PROMPTS: [(&str, &str); 1] = [
             ("story", STORY),
-            ("review-session", REVIEW_SESSION),
         ];
         for (name, body) in PROMPTS {
             for word in body.split(|c: char| !c.is_alphabetic()) {

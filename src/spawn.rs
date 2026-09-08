@@ -943,15 +943,6 @@ pub async fn spawn_worktree_session(
 /// was a bare literal in four places.
 pub(crate) const RESOLVE_RUN_COMMAND: &str = "resolve-run";
 
-/// The one line typed into a run's prompt box at `SessionStart`.
-///
-/// One line, because it is typed: the instructions themselves are in the file, and
-/// typing the whole prompt would submit at the first newline. `then` is what the
-/// file is for, in the run's own words.
-pub(crate) fn read_and_follow(prompt_file: &Path, then: &str) -> String {
-    format!("Read {} and follow it. {then}", prompt_file.display())
-}
-
 /// One automation run, in the shape every such spawn shares.
 ///
 /// Four spawns — fix-pr, `/resolve`, the resolve run and the two posting runs —
@@ -1264,7 +1255,11 @@ async fn start_with_prompt(
 /// to the configured base when the PR is not in the poll or GitHub named no base,
 /// which for a normal PR is identical to it (`upstream_remote`/`base_ref` ==
 /// `upstream_ref`), so nothing changes for the ordinary case.
-fn rebase_target(upstream_ref: &str, upstream_remote: &str, base_ref: Option<&str>) -> String {
+pub(crate) fn rebase_target(
+    upstream_ref: &str,
+    upstream_remote: &str,
+    base_ref: Option<&str>,
+) -> String {
     match base_ref {
         Some(b) if !b.is_empty() => format!("{upstream_remote}/{b}"),
         _ => upstream_ref.to_string(),
@@ -2703,16 +2698,13 @@ mod tests {
     fn a_run_spec_puts_the_prompt_on_the_record_before_the_spawn() {
         let spec = RunSpec {
             command: RESOLVE_RUN_COMMAND.to_string(),
-            pending: read_and_follow(Path::new("/tmp/prompt.md"), "Your plan is /tmp/plan.json."),
+            pending: "/orchd:resolve-run 7".to_string(),
             asks: true,
             extra_env: Vec::new(),
         };
         let id = Uuid::new_v4();
         let s = spec.session(id, "pr-7", PathBuf::from("/tmp"), 7);
-        assert_eq!(
-            s.pending_prompt.as_deref(),
-            Some("Read /tmp/prompt.md and follow it. Your plan is /tmp/plan.json.")
-        );
+        assert_eq!(s.pending_prompt.as_deref(), Some("/orchd:resolve-run 7"));
         assert_eq!(s.id, id);
         assert!(matches!(
             &s.kind,

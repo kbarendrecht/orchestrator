@@ -66,6 +66,16 @@ pub const TRIAGE: &str = include_str!("../skills/triage/SKILL.md");
 /// environment it is already building for that run.
 pub const FIX_PR: &str = include_str!("../skills/fix-pr/SKILL.md");
 
+/// The overlay session: read the threads, propose, make what the human picked, post.
+///
+/// Converted from `commands/review-session.md`, the most interpolated of them —
+/// nine substitutions, and the values reach it the way `triage`'s do, because this
+/// pass has the same post token and asks the same route. `upstream` was added to
+/// `triage-context` for it: the prompt used it for "CI red or behind the base is
+/// fix-pr's job", and deriving it in the skill would have been a second answer to
+/// what "behind" means.
+pub const REVIEW: &str = include_str!("../skills/review/SKILL.md");
+
 /// Carrying out a triaged review: apply, commit per thread, tell the daemon.
 ///
 /// Converted from `commands/resolve-run.md`, and the conversion cost nothing that
@@ -107,6 +117,7 @@ const VENDORED: &[(&str, &str)] = &[
     ("triage", TRIAGE),
     ("fix-pr", FIX_PR),
     ("resolve-run", RESOLVE_RUN),
+    ("review", REVIEW),
 ];
 
 /// The plugin manifest.
@@ -196,7 +207,6 @@ mod tests {
         }
     }
 
-    #[test]
     /// The fix run's two halves, checked against each other.
     ///
     /// A run gets these four out of its environment rather than out of a context
@@ -222,15 +232,41 @@ mod tests {
     /// It is typed as one line, so a newline in the invocation would submit half a
     /// command — and the daemon builds that line from `fix_pr::COMMAND`, which has
     /// to be the directory the skill is written to.
+    /// Each is typed as `/orchd:<command> <pr>` from the command string the run
+    /// carries, so the directory it is written to has to *be* that string. A
+    /// mismatch is `Unknown command` on the run's first turn and nothing before it.
     #[test]
-    fn the_fix_skill_is_named_after_the_command_that_types_it() {
-        assert!(
-            VENDORED.iter().any(|(name, _)| *name == crate::fix_pr::COMMAND),
-            "no vendored skill directory called {}",
-            crate::fix_pr::COMMAND
-        );
+    fn a_skill_is_named_after_the_command_that_types_it() {
+        for command in [
+            crate::fix_pr::COMMAND,
+            crate::spawn::RESOLVE_RUN_COMMAND,
+            crate::triage::COMMAND,
+            crate::triage::TRIAGE_COMMAND,
+        ] {
+            assert!(
+                VENDORED.iter().any(|(name, _)| *name == command),
+                "no vendored skill directory called {command}"
+            );
+        }
     }
 
+    /// The language a run writes replies in is a setting, and a skill cannot have
+    /// it substituted — so it has to *ask*. Moved here from `prompt.rs`, where the
+    /// same rule was checked against the rendered template this replaced.
+    #[test]
+    fn the_review_skill_asks_for_the_language_rather_than_naming_one() {
+        assert!(REVIEW.contains("$LANGUAGE"), "the review skill hardcodes a language");
+        for (name, body) in VENDORED {
+            for word in body.split(|c: char| !c.is_alphabetic()) {
+                assert!(
+                    !["Dutch", "Portuguese", "Nederlands"].contains(&word),
+                    "{name} names a language instead of asking for one"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn manifest_is_json_and_names_the_namespace() {
         let v: serde_json::Value = serde_json::from_str(MANIFEST).expect("valid json");
         assert_eq!(v["name"], "orchd", "the namespace `/orchd:orch` resolves through");

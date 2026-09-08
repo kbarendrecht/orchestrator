@@ -119,7 +119,7 @@ fn is_ask_route(path: &str) -> bool {
         // `orch teardown`. Safe as a suffix only because the SPA's own teardown is
         // `/api/workspace/:id/teardown`, outside the `/api/session/` prefix.
         "/teardown",
-        // Phase 4 of `commands/review-session.md`: the review saying it is done.
+        // Phase 4 of `skills/review/SKILL.md`: the review saying it is done.
         "/handoff",
     ];
     path.starts_with("/api/session/") && ASK_ROUTES.iter().any(|s| path.ends_with(s))
@@ -663,7 +663,7 @@ pub async fn ask(
        question it could have: which solution per thread, and what the reviewer is
        told about it, both decided by the person who pressed the button. An ask here
        spends their attention on a decision they already took and holds the run
-       until somebody looks at the pane. `commands/resolve-run.md` says so, and this
+       until somebody looks at the pane. `skills/resolve-run/SKILL.md` says so, and this
        is the same rule where it cannot be argued with: a thread it truly cannot act
        on goes to `/stuck`, which posts nothing and blocks nothing, and everything
        else belongs in the report. */
@@ -3066,7 +3066,7 @@ mod tests {
 
     #[test]
     fn every_route_the_vendored_prompts_call_on_the_ask_token_is_exempt() {
-        // The three in `commands/resolve-run.md` plus `/spawn`. `/committed` was
+        // The three in `skills/resolve-run/SKILL.md` plus `/spawn`. `/committed` was
         // missing and the run's central seam answered 403 to the only caller it
         // has; these are the literal paths those prompts curl.
         for p in [
@@ -3084,7 +3084,7 @@ mod tests {
             "/api/session/<id>/spawned/<child>/discard",
             // `orch teardown`. Any worktree, through the ordinary preflight.
             "/api/session/<id>/teardown",
-            // Phase 4 of `commands/review-session.md`: the review saying it is done.
+            // Phase 4 of `skills/review/SKILL.md`: the review saying it is done.
             "/api/session/<id>/handoff",
             // `orch outside`, and the push guard's read of what it granted. The
             // guard is a `command` hook: it has the session's ask token and no
@@ -3123,7 +3123,7 @@ mod tests {
     fn the_proposals_post_is_an_agent_route_and_reachable_without_an_origin() {
         let p = "/api/pr/10001/proposals";
         assert!(is_proposals_route(p));
-        assert!(is_agent_route(p), "{p} is curled by the triage skill and review-session.md");
+        assert!(is_agent_route(p), "{p} is curled by the triage and review skills");
         // Not an *ask* route: it is keyed on a PR, and has no session to check.
         assert!(!is_ask_route(p));
         // The Origin allowance the agent's curl depends on.
@@ -3898,6 +3898,15 @@ pub async fn pr_triage_context(
         "tracker": app.cfg.tracker.is_configured(),
         "proposals_url": format!("{base}/proposals"),
         "progress_url": format!("{base}/triage/progress"),
+        // The ref the branch is measured against, for the review session's "CI red
+        // or behind the base → stop, that is fix-pr's job". The PR's *own* base
+        // where the poller knows it, which is what `rebase_target` decides, so the
+        // two passes cannot disagree about what "behind" means.
+        "upstream": crate::spawn::rebase_target(
+            &app.cfg.upstream_ref,
+            &app.cfg.upstream_remote,
+            app.inner.read().await.pr(number).map(|p| p.base_ref.clone()).as_deref(),
+        ),
     })))
 }
 
@@ -3997,10 +4006,10 @@ async fn start_posting_run(
     }
     let session = match which {
         PostingRun::Triage => {
-            crate::triage::spawn(&app, number, &pr.head_ref, &fetched.viewer).await?
+            crate::triage::spawn(&app, number, &pr.head_ref).await?
         }
         PostingRun::Review => {
-            crate::triage::spawn_review(&app, number, &pr.head_ref, &fetched.viewer).await?
+            crate::triage::spawn_review(&app, number, &pr.head_ref).await?
         }
     };
     Ok(Json(json!({ "session": session })))
@@ -4666,7 +4675,7 @@ pub async fn write_file(
 
 /// A review session reporting that its own work is finished.
 ///
-/// The last thing `commands/review-session.md` does. Its phase 3 ends with the code
+/// The last thing `skills/review/SKILL.md` does. Its phase 3 ends with the code
 /// pushed and the replies posted, and the prompt then forbids the one job that is
 /// left — "CI still red or the branch behind → say so and stop. That is `fix-pr`'s
 /// job". This is how it says so to something that can act on it.

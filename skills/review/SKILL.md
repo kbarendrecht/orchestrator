@@ -1,18 +1,45 @@
+---
+name: review
+description: Answer a pull request's review threads end to end with a human deciding in the orchestrator's overlay — read the threads and propose options, make the changes they pick, then post the replies. Use when the orchestrator starts a review session, or when somebody asks you to work a PR's review feedback with the overlay driving.
+---
+
 # Review a PR's threads — the orchd overlay session
 
-One session answers the whole of PR **{{PR}}** of `{{OWNER}}/{{REPO}}`: you read the
+`/orchd:review <pr>`. One session answers the whole of a PR: you read the
 threads, the human picks a way to resolve each one in the review overlay, you make
-the changes they picked, and you post. Vendored here so the daemon carries its own
-copy — substituted and written to a file the daemon owns, and you are told to read
-that file. Nothing is looked up on your command path.
+the changes they picked, and you post.
 
 This is **overlay-driven**, not a pane you are steered from. You do not sort the
 threads or choose between options — you propose, the human decides in the overlay,
 and their decisions come back to you over the one channel that reaches them. So there
 is no numbered list to keep stable and no `AskUserQuestion`: the cards are the UI.
 
-Placeholders `{{PR}}`, `{{OWNER}}`, `{{REPO}}`, `{{LOGIN}}`, `{{UPSTREAM}}`,
-`{{PROPOSALS_URL}}` and `{{ASK_BASE}}` are filled in by the daemon before you read this.
+## First, ask the daemon what this is
+
+Everything below needs values only the daemon has. One call, before anything else:
+
+```bash
+curl -sS "$ORCH_URL/api/pr/$PR/triage-context" -H "x-orch-token: $ORCH_POST_TOKEN"
+```
+
+```jsonc
+{
+  "pr": 35264,
+  "owner": "…", "repo": "…",   // the repo the PR is on
+  "login": "…",                // you: a thread whose last comment is yours is answered
+  "language": "…",             // what to write replies and stories in
+  "tracker": true,             // false: never propose `story+reply`
+  "upstream": "…",             // the ref this branch is measured against
+  "proposals_url": "…"         // where phase 1 ends
+}
+```
+
+`$PR` is the number you were invoked with. `$ORCH_URL`, `$ORCH_POST_TOKEN` and
+`$ORCH_ASK_TOKEN` are in your environment already. If they are not, you are not in a session the daemon started:
+say so and stop, because nothing here can be handed anywhere.
+
+Below, `$PR`, `$OWNER`, `$REPO`, `$LOGIN`, `$LANGUAGE`, `$TRACKER`, `$UPSTREAM` and
+`$PROPOSALS_URL` are the fields of that answer.
 
 Three phases, in order: **read** (write nothing), **change** (only what they picked),
 **post** (only on their go). Do not run ahead of the human between them.
@@ -23,7 +50,7 @@ The daemon created a worktree pinned to this PR's head branch and started you in
 it. Do not switch branches and do not create one — the run stays on the PR's head ref.
 Confirm rather than assume: `git rev-parse --abbrev-ref HEAD` against `headRefName`
 from the fetch. A mismatch is a stop, not something to correct by switching. Head owner
-not `{{LOGIN}}` → stop, it is someone else's branch to force-push.
+not `$LOGIN` → stop, it is someone else's branch to force-push.
 
 # Phase 1 — Read (write nothing)
 
@@ -40,15 +67,15 @@ query($owner:String!,$repo:String!,$num:Int!){
     headRefName headRefOid headRepositoryOwner{login}
     reviewThreads(first:100){ nodes{ id isResolved isOutdated
       comments(first:20){ nodes{ databaseId author{login} body path line url diffHunk } } } } } } }
-' -F owner={{OWNER}} -F repo={{REPO}} -F num={{PR}}
+' -F owner=$OWNER -F repo=$REPO -F num=$PR
 ```
 
-Plus `gh pr view {{PR}} --json reviews,comments` for review-level bodies. Those often
+Plus `gh pr view $PR --json reviews,comments` for review-level bodies. Those often
 carry a `path` and `line` too — keep them when they do.
 
 Skip `isResolved`. **Keep `isOutdated`**: the code moved, the point may still stand. A
-thread whose last comment is `{{LOGIN}}`'s is already answered; leave it alone. A thread
-`{{LOGIN}}` already replied to where the reviewer came back is `continued` — read it as a
+thread whose last comment is `$LOGIN`'s is already answered; leave it alone. A thread
+`$LOGIN` already replied to where the reviewer came back is `continued` — read it as a
 conversation, lead the `read` with the earlier commitment, and set `"continued": true`.
 
 Record `headRefOid` before anything else — it goes back as `base_sha`, and is how the
@@ -77,7 +104,7 @@ Do not describe *how* to implement a solution and do not write any code yet. The
 appends one fixed option — the human's own answer, in their words — so do not include it
 yourself. Recommend exactly one option per thread by index.
 
-Replies: match the thread's language, default to {{LANGUAGE}}; say what will change and
+Replies: match the thread's language, default to $LANGUAGE; say what will change and
 why, no mechanics, one or two sentences; no footer, the daemon appends `(via
 orchestrator)`; an `agree` option has no reply text.
 
@@ -86,7 +113,7 @@ orchestrator)`; an `agree` option has no reply text.
 One POST — this is what fills the overlay's cards.
 
 ```bash
-curl -sS -X POST '{{PROPOSALS_URL}}' \
+curl -sS -X POST '$PROPOSALS_URL' \
   -H "x-orch-token: $ORCH_POST_TOKEN" \
   -H 'content-type: application/json' \
   --data-binary @proposals.json
@@ -116,8 +143,10 @@ curl -sS -X POST '{{PROPOSALS_URL}}' \
   a `reply` or `story` option must have one; a `story` option must have a `story`.
 - **No patches.** You are not writing code in this phase.
 - A `story+reply` reply must contain the literal `{story}`, replaced once the story exists
-  with a markdown link to it — `[sc-12345](<url>)`, never a bare id. {{TRACKER}}
-- A `story` is `title` and `body` only, in {{LANGUAGE}}, no em dashes and no internal path
+  with a markdown link to it — `[sc-12345](<url>)`, never a bare id. `$TRACKER` false means
+  **never propose `story+reply`**: there is nowhere to file one and the daemon would refuse
+  it, so a fair but out-of-scope point goes in a plain reply rather than a promised story.
+- A `story` is `title` and `body` only, in $LANGUAGE, no em dashes and no internal path
   or label references. Every unresolved thread needs an entry.
 - Do not send `hunk` or the current code — the daemon reads `diffHunk` from GitHub.
 
@@ -130,10 +159,10 @@ it blocks until they answer:
 ASK=$(curl -sS -X POST -H 'content-type: application/json' -H "x-orch-ask: $ORCH_ASK_TOKEN" \
   -d '{"question":"Waiting for your decisions in the review overlay.",
        "options":[{"value":"decisions","label":"Decisions submitted","free":true}]}' \
-  "{{ASK_BASE}}/$ORCH_SESSION_ID/ask" | jq -r .ask)
+  "$ORCH_URL/api/session/$ORCH_SESSION_ID/ask" | jq -r .ask)
 
 while :; do
-  R=$(curl -sS -H "x-orch-ask: $ORCH_ASK_TOKEN" "{{ASK_BASE}}/$ORCH_SESSION_ID/ask/$ASK/wait")
+  R=$(curl -sS -H "x-orch-ask: $ORCH_ASK_TOKEN" "$ORCH_URL/api/session/$ORCH_SESSION_ID/ask/$ASK/wait")
   [ "$(jq -r .answered <<<"$R")" = true ] && break
 done
 DECISIONS=$(jq -r .text <<<"$R")   # the JSON below
@@ -189,7 +218,7 @@ mcp__shortcut__stories-search   query: the thread's own URL
 mcp__shortcut__stories-create   name + description, Backlog
 ```
 
-The description ends exactly with `Source: review of #{{PR}} — <thread url>` (the dedup
+The description ends exactly with `Source: review of #$PR — <thread url>` (the dedup
 key). Follow the repo's tracker skill for the team, story type, state and epic. One story
 per thread; a refused create is retried as the *same* create, never a second.
 
@@ -216,14 +245,14 @@ Say nothing about a thread whose decision was `skip`.
 
 - **Reactions**: a thread answered by agreeing gets a 👍 and no reply — the change it
   agreed to was already made and pushed in phase 2, so the reaction is the whole of what is
-  said. `gh api -X POST repos/{{OWNER}}/{{REPO}}/pulls/comments/<id>/reactions -f content=+1`
+  said. `gh api -X POST repos/$OWNER/$REPO/pulls/comments/<id>/reactions -f content=+1`
 - **Replies**: last line of every posted comment is `(via orchestrator)` — that exact
   string is how the daemon knows its own replies (`post::mine_by_footer`), so a thread
   answered here is not answered again by a run. Post threaded, with the comment id from the
   thread URL's `#discussion_r<id>`:
-  `gh api repos/{{OWNER}}/{{REPO}}/pulls/{{PR}}/comments/<id>/replies -f body="$reply"`
+  `gh api repos/$OWNER/$REPO/pulls/$PR/comments/<id>/replies -f body="$reply"`
 - **Re-request** each reviewer whose every thread is now addressed, per reviewer not per
-  PR: `gh pr edit {{PR}} --add-reviewer <login>`. Addressed means applied or replied to
+  PR: `gh pr edit $PR --add-reviewer <login>`. Addressed means applied or replied to
   with a posted reply. Report who was skipped and which thread holds each one back.
 
 Resolving the threads stays the reviewer's button — never resolve one yourself.
@@ -231,7 +260,7 @@ Resolving the threads stays the reviewer's button — never resolve one yourself
 ## Not your job, and when to stop
 
 - **Resolving threads.** Closing a conversation is the comment author's button.
-- CI still red or the branch behind `{{UPSTREAM}}` → say so and stop. That is `fix-pr`'s
+- CI still red or the branch behind `$UPSTREAM` → say so and stop. That is `fix-pr`'s
   job; do not rebase for it and do not start one yourself. Phase 4 hands it over.
 
 When you are done, a short report in the pane: what you changed, what you posted, and any
@@ -242,7 +271,7 @@ thread you held and why.
 Last thing, after the report. One call, and it ends the session:
 
 ```bash
-curl -sS -X POST -H "x-orch-ask: $ORCH_ASK_TOKEN" "{{ASK_BASE}}/$ORCH_SESSION_ID/handoff"
+curl -sS -X POST -H "x-orch-ask: $ORCH_ASK_TOKEN" "$ORCH_URL/api/session/$ORCH_SESSION_ID/handoff"
 ```
 
 Do not report its answer or act on it — the pty is closing as it returns, so a `curl:
