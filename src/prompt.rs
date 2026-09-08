@@ -15,9 +15,6 @@
 use anyhow::{bail, Result};
 
 
-/// The rebase-and-fix pass. Pushes, unlike triage.
-pub const FIX_PR: &str = include_str!("../commands/fix-pr.md");
-
 /// The story pass. Places records the human already approved, and reports back by
 /// writing one file — the only agent here whose *output* the daemon reads.
 pub const STORY: &str = include_str!("../commands/story.md");
@@ -173,7 +170,6 @@ mod tests {
         // The real templates, not fixtures: a placeholder added to either file
         // without being added here should fail this test, not a triage run.
         for (name, t) in [
-            ("fix-pr", FIX_PR),
             ("story", STORY),
             // The newest and most interpolated of them, and the one this guard
             // was missing: `resolve-run.md` carries three built URLs, so it is
@@ -259,8 +255,7 @@ mod tests {
         // Whole words, not substrings: "een" is inside "between".
         const DUTCH: [&str; 9] =
             ["naar", "niet", "wordt", "werd", "voor", "het", "een", "bron", "losgetrokken"];
-        const PROMPTS: [(&str, &str); 4] = [
-            ("fix-pr", FIX_PR),
+        const PROMPTS: [(&str, &str); 3] = [
             ("story", STORY),
             ("resolve-run", RESOLVE_RUN),
             ("review-session", REVIEW_SESSION),
@@ -284,10 +279,4 @@ mod tests {
         assert!(err.contains("{{VIEWER}}"), "{err}");
     }
 
-    #[test]
-    fn the_fix_prompt_gets_the_upstream_ref() {
-        let out = render(FIX_PR, &vars()).unwrap();
-        assert!(out.contains("upstream/develop"));
-        assert!(!out.contains("{{UPSTREAM"));
-    }
 }

@@ -55,12 +55,36 @@ pub const GREEN: &str = include_str!("../skills/green/SKILL.md");
 /// never did.
 pub const TRIAGE: &str = include_str!("../skills/triage/SKILL.md");
 
+/// Getting a PR green, mechanically: rebase, fix the red, amend, force-push with a
+/// lease, watch.
+///
+/// Converted from `commands/fix-pr.md`, and the six values that prompt substituted
+/// reach it through the *environment* rather than a context call. That is not
+/// symmetry with `triage` for its own sake — a fix run force-pushes unattended and
+/// was deliberately given no ask token (`942d01b`), so a route would have meant
+/// handing it a credential to read values the daemon can just as easily put in the
+/// environment it is already building for that run.
+pub const FIX_PR: &str = include_str!("../skills/fix-pr/SKILL.md");
+
+/// The four values a fix run finds in its environment.
+///
+/// Named here because **the two halves must agree**: `spawn::spawn_fix_pr_session`
+/// sets these and `skills/fix-pr/SKILL.md` reads them, and a rename on one side
+/// alone is silent — the skill would fall back to asking `gh` for a value the
+/// daemon had already handed it, or stop for one it thinks is missing. The same
+/// reason `RESOLVE_RUN_COMMAND` is a constant rather than four literals.
+pub const VAR_PR: &str = "ORCH_PR";
+pub const VAR_UPSTREAM: &str = "ORCH_UPSTREAM";
+pub const VAR_UPSTREAM_REMOTE: &str = "ORCH_UPSTREAM_REMOTE";
+pub const VAR_LOGIN: &str = "ORCH_LOGIN";
+
 /// Every vendored skill, as `(directory name, body)`.
 ///
 /// A table rather than a write per skill, because the writer and the frontmatter
 /// test both walk it: adding a skill is then a line here, and it cannot be
 /// written out without also being checked.
-const VENDORED: &[(&str, &str)] = &[("orch", ORCH), ("green", GREEN), ("triage", TRIAGE)];
+const VENDORED: &[(&str, &str)] =
+    &[("orch", ORCH), ("green", GREEN), ("triage", TRIAGE), ("fix-pr", FIX_PR)];
 
 /// The plugin manifest.
 ///
@@ -150,6 +174,35 @@ mod tests {
     }
 
     #[test]
+    /// The fix run's two halves, checked against each other.
+    ///
+    /// A run gets these four out of its environment rather than out of a context
+    /// call, so nothing at runtime would complain if the skill read a name the
+    /// spawner does not set: it would quietly take the `gh` fallback for a value
+    /// it had been given, and the run would rebase onto whatever it worked out for
+    /// itself. That is the failure this test exists for.
+    #[test]
+    fn the_fix_skill_reads_the_variables_the_run_is_given() {
+        for v in [VAR_PR, VAR_UPSTREAM, VAR_UPSTREAM_REMOTE, VAR_LOGIN] {
+            assert!(
+                FIX_PR.contains(&format!("${v}")),
+                "skills/fix-pr/SKILL.md never reads ${v}, which the run sets"
+            );
+        }
+    }
+
+    /// It is typed as one line, so a newline in the invocation would submit half a
+    /// command — and the daemon builds that line from `fix_pr::COMMAND`, which has
+    /// to be the directory the skill is written to.
+    #[test]
+    fn the_fix_skill_is_named_after_the_command_that_types_it() {
+        assert!(
+            VENDORED.iter().any(|(name, _)| *name == crate::fix_pr::COMMAND),
+            "no vendored skill directory called {}",
+            crate::fix_pr::COMMAND
+        );
+    }
+
     fn manifest_is_json_and_names_the_namespace() {
         let v: serde_json::Value = serde_json::from_str(MANIFEST).expect("valid json");
         assert_eq!(v["name"], "orchd", "the namespace `/orchd:orch` resolves through");

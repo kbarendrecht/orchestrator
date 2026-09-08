@@ -1127,29 +1127,64 @@ pub async fn spawn_fix_pr_session(
     }
 
     let workspace = ensure_pr_worktree(app, pr, head_ref).await?;
+
+    /* **The instructions are a skill, and what the prompt substituted the
+       environment carries.** `/orchd:fix-pr` is one typed line, so the six values
+       `commands/fix-pr.md` had rendered into it need another way in — and for this
+       run that way is not a context route. A fix run force-pushes unattended and
+       is deliberately given no ask token, so a route would have meant handing it a
+       credential to read four values the daemon is already building an environment
+       for. `triage` went the other way for the opposite reason: it has a post token
+       already and its context is a fetch the daemon would otherwise repeat.
+
+       Being a skill is also what makes it work when *you* type `/orchd:fix-pr 42`
+       in a checkout the daemon never started: the file names a fallback for each
+       variable, which a prompt file rendered per run could not have. */
+    let (login, base_ref) = {
+        let inner = app.inner.read().await;
+        (inner.viewer.clone(), inner.pr(pr).map(|p| p.base_ref.clone()))
+    };
+    let mut extra_env = vec![
+        // Parallel runs collide on ports and docker resource names, so each gets
+        // its own compose project and port base (§8).
+        ("COMPOSE_PROJECT_NAME".to_string(), format!("orchd-pr-{pr}")),
+        (
+            "ORCHD_PORT_BASE".to_string(),
+            (20000 + (pr % 1000) * 20).to_string(),
+        ),
+        (crate::skills::VAR_PR.to_string(), pr.to_string()),
+        // Not `upstream_ref` as configured: the run rebases onto the PR's *own*
+        // base when the poller knows it, which is what `rebase_target` decides.
+        (
+            crate::skills::VAR_UPSTREAM.to_string(),
+            rebase_target(
+                &app.cfg.upstream_ref,
+                &app.cfg.upstream_remote,
+                base_ref.as_deref(),
+            ),
+        ),
+        (
+            crate::skills::VAR_UPSTREAM_REMOTE.to_string(),
+            app.cfg.upstream_remote.clone(),
+        ),
+    ];
+    /* Omitted rather than empty when the poller has not run yet, and that turns a
+       refusal into a degradation: rendering the prompt *failed* the spawn here
+       ("no GitHub login yet"), where the skill asks `gh api user` for it. */
+    if let Some(login) = login {
+        extra_env.push((crate::skills::VAR_LOGIN.to_string(), login));
+    }
+
     // Headed, not `-p`: a run you can watch, answer and take over mid-flight, the
     // same shape as /resolve. The guard table is what decides whether the run may
     // start (§8); it never depended on the run being invisible.
-    //
-    // The prompt is a file the session is told to read rather than a slash
-    // command, so nothing has to be installed on the agent's side and nothing is
-    // written into the checkout being driven.
-    let prompt_file = vendored_prompt_file(app, pr, crate::fix_pr::COMMAND).await?;
     let spec = RunSpec {
         command: crate::fix_pr::COMMAND.to_string(),
-        pending: read_and_follow(&prompt_file, &format!("Those are your instructions for PR {pr}.")),
-        // No ask token: a fix run is handed its URL substituted into its prompt and
-        // has nothing to ask, which is the narrower surface 942d01b chose on purpose.
+        pending: format!("/orchd:{} {pr}", crate::fix_pr::COMMAND),
+        // No ask token: a fix run has nothing to ask, which is the narrower surface
+        // 942d01b chose on purpose.
         asks: false,
-        // Parallel runs collide on ports and docker resource names, so each gets
-        // its own compose project and port base (§8).
-        extra_env: vec![
-            ("COMPOSE_PROJECT_NAME".to_string(), format!("orchd-pr-{pr}")),
-            (
-                "ORCHD_PORT_BASE".to_string(),
-                (20000 + (pr % 1000) * 20).to_string(),
-            ),
-        ],
+        extra_env,
     };
     spawn_run(app, &workspace, pr, id, spec).await
 }
@@ -1236,7 +1271,6 @@ fn rebase_target(upstream_ref: &str, upstream_remote: &str, base_ref: Option<&st
 async fn vendored_prompt_file(app: &Arc<AppState>, pr: u64, command: &str) -> Result<PathBuf> {
     let template = match command {
         RESOLVE_RUN_COMMAND => crate::prompt::RESOLVE_RUN,
-        crate::fix_pr::COMMAND => crate::prompt::FIX_PR,
         other => bail!("no vendored prompt for /{other}"),
     };
     let (owner, repo) =

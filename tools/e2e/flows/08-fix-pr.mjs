@@ -85,6 +85,13 @@ export async function run(t) {
 
   const { session } = await t.api('POST', `/api/pr/${PR}/fix-pr`)
 
+  /* The run is told what to do by a *skill* now, not a prompt file it is asked to
+     read, and the difference is one typed line — so this is where a wrong command
+     name would show up. The fake agent turns anything typed at it into a turn and
+     logs it, which is the only view of the first turn a flow has. */
+  await until('the run to be typed its instructions', async () =>
+    t.agentLog().includes(`turn: /orchd:fix-pr ${PR}`))
+
   // The worktree is pinned to the PR's head branch, not cut fresh from the base:
   // §8 asks for a worktree "pinned to that PR's head branch", and `--worktree`
   // would have given a new branch off upstream instead.
