@@ -31,10 +31,16 @@ had been working off a *global* config. `mise run deps` installs
 version whose WebKit build is on disk, and playwright drives a browser it does not
 install.
 
-Each task is a stanza pointing at a script in `tools/`, and it stays that way:
-`shot.mjs` resolves `playwright-core` out of `tools/node_modules` and
-`e2e/run.mjs` imports `./harness.mjs` and reads `flows/`, so neither survives
-being moved to `.mise/tasks/` or inlined into a TOML string.
+A task is inline when it can be and a stanza pointing at `tools/` when it cannot.
+`release` and `check-web` are inline shell; the rest point at scripts, and have to
+— `shot.mjs` resolves `playwright-core` out of `tools/node_modules`, `e2e/run.mjs`
+imports `./harness.mjs` and reads `flows/`, and `fixture-pr.mjs` is 547 lines of
+GitHub setup. Two things bite when writing an inline one. **Arguments are appended
+to the last line**, not bound to `$1`, so a script that wants them ends in `main
+"$@"` and mise's echo of the command then looks wrong while being right. And it is
+POSIX `sh` on whatever machine cuts the release, so no `sed -i` (that flag takes an
+argument on a Mac and not on Linux) and no other GNU-only flag — write to a temp
+file and `mv`, which is what `release` does.
 
 **`cargo clippy --all-targets` is a gate and was not in this list.** CI runs it
 with warnings denied, so a lint that is a warning here is a red build there — and

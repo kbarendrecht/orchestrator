@@ -127,12 +127,124 @@ run = "cargo build --bin orchd && E2E_LOG=${E2E_LOG:-info} node tools/e2e/render
 # the tag has to be deleted by hand, and the next one starts over. It has happened
 # twice, both times a test that passed on Linux and failed on macos-14.
 #
-#   mise run release            # bump the patch component, tag, push
-#   mise run release -- 2027.1.1
+#   mise run release              # bump the last CalVer component
+#   mise run release -- 2027.1.1  # or say the version
+#   mise run release -- --dry-run
 #
-# Everything it does by hand is in CLAUDE.md § Releases; this is that list with the
-# waiting done for you. It never force-pushes and never moves an existing tag.
+# **Arguments arrive by being appended to the last line**, which is why this ends
+# in `main "$@"`: mise pastes a task's arguments onto the end of the script rather
+# than setting `$1`, so `$@` inside a function body is empty and `main "$@" 2027.1.1`
+# is what actually runs. Measured, because the obvious spelling silently ignores
+# everything you pass.
+#
+# POSIX shell, and no `sed -i`: a release is cut on whatever machine you are on,
+# and that flag takes an argument on a Mac and not on Linux — the same trap the
+# daemon avoids by never shelling out to a GNU-only flag.
 [tasks.release]
 description = "Bump the version, wait for CI, tag and push"
 dir = "{{config_root}}"
-run = "node tools/release.mjs"
+run = """
+set -e
+
+die() { printf '\\033[31m✗\\033[0m %s\\n' "$1" >&2; exit 1; }
+step() { printf '\\033[36m▸\\033[0m %s\\n' "$1"; }
+
+# Rewrite `want` occurrences of a version string, refusing any other number: a
+# file with one where two were expected has moved on, and a release that bumps
+# three files of four is what the workflow's own tag-matches-version step refuses
+# — after the tag is pushed. `grep -c` counts *lines*, which is the same thing
+# here because every version line stands alone.
+bump() {
+  file=$1; from=$2; to=$3; want=$4
+  seen=$(grep -c "$from" "$file" || true)
+  [ "$seen" = "$want" ] || die "$file has $seen of \\`$from\\`, expected $want"
+  [ "$DRY" = 1 ] && { printf '  %s: %s (dry)\\n' "$file" "$want"; return 0; }
+  sed "s|$from|$to|g" "$file" > "$file.bump" && mv "$file.bump" "$file"
+  printf '  %s: %s\\n' "$file" "$want"
+}
+
+main() {
+  DRY=0
+  VERSION=""
+  for a in "$@"; do
+    case $a in
+      --dry-run) DRY=1 ;;
+      -*) die "unknown flag $a" ;;
+      *) VERSION=$a ;;
+    esac
+  done
+
+  cur=$(sed -n 's/^version = "\\(.*\\)"$/\\1/p' Cargo.toml | head -1)
+  [ -n "$cur" ] || die "no version line in Cargo.toml"
+  if [ -z "$VERSION" ]; then
+    # CalVer, and only the last component is bumped here: a new month is a
+    # decision rather than an increment, so it is passed in.
+    y=${cur%%.*}; rest=${cur#*.}; m=${rest%%.*}; n=${rest#*.}
+    case $y$m$n in *[!0-9]*) die "$cur is not <year>.<month>.<n> — pass the version you want" ;; esac
+    VERSION="$y.$m.$((n + 1))"
+  fi
+  tag="v$VERSION"
+  step "releasing $cur → $VERSION"
+
+  # Every refusal before anything is written.
+  [ "$(git rev-parse --abbrev-ref HEAD)" = main ] || die "a release is cut from main"
+  [ -z "$(git status --porcelain)" ] || die "the tree is dirty — commit or stash first, so the tag names what you tested"
+  [ -z "$(git tag --list "$tag")" ] || die "$tag already exists locally"
+  [ -z "$(git ls-remote --tags origin "$tag")" ] || die "$tag already exists on origin"
+  git fetch --quiet origin main
+  behind=$(git rev-list --count HEAD..origin/main)
+  [ "$behind" = 0 ] || die "main is $behind commit(s) behind origin — pull first"
+  command -v gh >/dev/null || die "gh is not installed, so CI cannot be asked (it is in [tools]: mise install)"
+
+  # The commit being released is HEAD, so that is the run to wait on. By sha and
+  # not by branch: `--branch main` answers about whatever main pointed at when the
+  # run started, which is the wrong question the moment two pushes land close
+  # together.
+  head=$(git rev-parse HEAD)
+  step "waiting for check on $(echo "$head" | cut -c1-8)"
+  deadline=$(( $(date +%s) + 1800 ))
+  while :; do
+    run=$(gh run list --workflow=check.yml --commit "$head" --limit 1 \\
+            --json status,conclusion,url --jq '.[] | .status + " " + (.conclusion // "") + " " + .url')
+    status=$(echo "$run" | cut -d' ' -f1)
+    case $status in
+      completed)
+        [ "$(echo "$run" | cut -d' ' -f2)" = success ] \\
+          || die "check is $(echo "$run" | cut -d' ' -f2) for this commit — fix it before tagging
+  $(echo "$run" | cut -d' ' -f3)"
+        printf '  check succeeded — %s\\n' "$(echo "$run" | cut -d' ' -f3)"
+        break
+        ;;
+      # No run yet is the normal answer for a push made seconds ago, which is also
+      # why this polls rather than `gh run watch`: that needs an id to watch.
+      "") printf '  no check run for this commit yet…\\n' ;;
+      *) printf '  check is %s…\\n' "$status" ;;
+    esac
+    [ "$(date +%s)" -lt "$deadline" ] || die "check has not finished in 30 minutes; look at it rather than tagging blind"
+    sleep 15
+  done
+
+  step "bumping the version"
+  bump Cargo.toml "version = \\"$cur\\"" "version = \\"$VERSION\\"" 1
+  bump desktop/Cargo.toml "version = \\"$cur\\"" "version = \\"$VERSION\\"" 1
+  bump desktop/tauri.conf.json "\\"version\\": \\"$cur\\"" "\\"version\\": \\"$VERSION\\"" 1
+  # Both crates, and only those two: every dependency in the lock carries its own
+  # version line, so the count is the check.
+  bump Cargo.lock "version = \\"$cur\\"" "version = \\"$VERSION\\"" 2
+
+  [ "$DRY" = 1 ] && { printf '\\n(dry run: nothing written, nothing tagged; %s would have been pushed)\\n' "$tag"; return 0; }
+
+  step "committing, tagging and pushing"
+  git add -A
+  # `--no-verify`: CI has just answered for the commit underneath this one, and a
+  # version bump cannot fail the hook's checks.
+  git commit --no-verify -m "Release $VERSION"
+  git push origin main
+  git tag "$tag"
+  git push origin "$tag"
+  printf '  %s pushed\\n' "$tag"
+  printf '\\nThe release workflow is running. Watch it with:\\n  gh run watch $(gh run list --workflow=release.yml --limit 1 --json databaseId -q ".[0].databaseId")\\n'
+}
+
+main "$@"
+"""
