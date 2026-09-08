@@ -419,6 +419,30 @@ mean *this* repo; if you do, name it.
   refuses an untrusted `mise.toml`, a fresh worktree is a fresh path, and the only
   sign is one warning in the log. Put `mise trust` in `worktree_setup` if that
   bites.
+- **No `std::process::Command` and no `std::fs` on a tokio worker.**
+  `proc::run_blocking` is the helper, and it takes a label so a panic says what
+  died. The rule was applied unevenly for a long time and the sweep that fixed
+  that is finished, so what is worth carrying is the rule plus the three places
+  it deliberately does *not* apply — each measured, so nobody re-opens them on a
+  hunch.
+  - **Single syscalls stay where they are.** `hooks.rs` has four `canonicalize`
+    calls and one `exists`; `api.rs` has `revive`'s `cwd.exists()`,
+    `forget_session`'s one `remove_file` and `free_worktree_name`'s stat loop. A
+    `spawn_blocking` hop costs more than a stat, and `post_tool_use` runs per
+    `Edit`.
+  - **The `with_*` store writes stay under the global write lock.**
+    `automation.json` is **17 bytes**, and `manual.json`, `resolve-runs.json` and
+    `stories.json` have never been written on this machine at all — a `write` +
+    `rename` of tens of bytes is sub-millisecond. Getting them off the lock needs
+    a channel, a writer task and an ordering guarantee, and it would either break
+    the "mutating a durable store carries its own write" invariant or make every
+    call site remember to persist, which is the exact shape `with_*` exists to
+    prevent. Revisit if a store grows (`stories` is the only candidate, being a
+    cache), with a number.
+  - **A `debug_assert` cannot enforce it.** `Handle::try_current()` succeeds on
+    blocking-pool threads too, because the runtime handle stays in scope across
+    `spawn_blocking`, so the check flagged 36 correctly-wrapped calls. The note is
+    in `git::run`.
 - **Shelling out to coreutils is the other portability trap.** The review queue
   ran its command under `timeout`, which is GNU and not on a Mac, so it failed at
   the spawn and the pane blamed the review command for a missing binary it never

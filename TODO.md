@@ -5,123 +5,13 @@ this file, which churned it from every build; that feature is gone.
 
 ## Next
 
-- **One gap of the four the v2 review pass found is left.** The other three are
-  done, and one of them was less than it looked.
-  - `edit::read` closes the symlink race on the final component only. The parents
-    are canonicalised earlier and can still be swapped between the check and the
-    open; closing it properly needs `openat2` with `RESOLVE_BENEATH`, which is
-    Linux-only and so wants a second path for macOS. And the threat is narrower
-    than the leaf's was: a symlink *committed* on a PR branch is caught by the
-    parent check, so what is left needs a live process racing the open rather than
-    content somebody pushed.
-  - ~~`spawn_session` leaks main's claim on a failed spawn.~~ Released now, at the
-    one place that knows the spawn failed (`spawn_session` wraps
-    `spawn_session_with_id`). **It could never have been observed**, which is worth
-    recording: `claim_main` and `main_occupant` both filter the recorded occupant
-    on the session being *live*, and the SPA's rail filters on `alive`, so an
-    occupant naming a session that was never inserted reads as unoccupied
-    everywhere and the next claim overwrites it. Closed because the invariant is
-    cheap to hold and every reader currently has to defend it.
-  - ~~`ensure_pr_worktree`'s move arm and `park_main` move main's branch without
-    the `swapping` lock.~~ Both take it now. `ensure_pr_worktree` **refuses**, like
-    the three handlers, and takes the lock only once main really holds the branch —
-    then re-reads under it, so an ordinary worktree cut is not refused for the
-    length of an unrelated swap. `park_main` **skips**, because it fires from a
-    detached exit watcher: there is no request to answer, and a skip costs only
-    that main stays where it is until the next session there closes.
-  - ~~`git::pre_commit` is an unbounded `Command::output()`.~~ On
-    `proc::run_bounded` now, at 300s — generous, because a cold cache clones and
-    builds an environment per hook. `NotInstalled` still has to read as a warning
-    rather than a refused review, and `run_bounded` reports a spawn failure through
-    `anyhow::Context`, so the kernel's `NotFound` is looked for down the error
-    chain.
-
-  And one thing that cannot be built, recorded so nobody tries again: a
-  `debug_assert` in `git::run` cannot tell a blocking-git-on-a-tokio-worker
-  violation from correct usage. `Handle::try_current()` succeeds on blocking-pool
-  threads too, because the runtime handle stays in scope across `spawn_blocking`,
-  so it flagged 36 correctly-wrapped calls. The note is in `git::run`.
-
-- **The blocking-on-the-runtime sweep is started, not finished.**
-  `proc::run_blocking` is the helper, and the sites where a parked worker was
-  actually visible are done: `session_env` (a child process on *every* spawn, which
-  `run_bounded` polls with `thread::sleep` for up to 5s), the triage gate's
-  `git status`, teardown's preflight/remove/archive, the rebase handler's upstream
-  fetch (a network round trip), the per-click diff and file reads, `read_forge`'s
-  `gh auth token` (its `git remote` is gone: the repo comes from `repos.upstream`),
-  `session_start`'s branch read, the resume transcript read, `post.rs`'s posting
-  path, `story.rs`'s filer, the rebase handler's two checks, `spawn_session`'s
-  branch read, `archive`'s reads, the worktree adoption at boot, and the first-run
-  page's `detect` and folder dialog.
-
-  What is left, in rough order of how much it matters:
-  - ~~`hooks.rs`'s remaining reads, and `api.rs`'s remaining git *writes*.~~ Both
-    inventoried, and what was worth moving is moved: the swap's transcript re-file
-    (`store::move_transcript`, a rename whose cross-filesystem fallback copies
-    megabytes of turns), the swap's `has_conversation` reads, `revive`'s
-    `branch_drift` (a git child process) and `/api/open*`'s opener probe (up to four
-    `which` calls plus a spawn per click). Every git *write* in `api.rs` was already
-    wrapped.
-
-    **What is deliberately left is single syscalls**, and that is the measurement
-    rather than a shrug: `hooks.rs` has four `canonicalize` calls and one `exists`,
-    `api.rs` has `revive`'s `cwd.exists()`, `forget_session`'s one `remove_file` and
-    `free_worktree_name`'s stat loop. A `spawn_blocking` hop costs more than a stat,
-    so wrapping them would trade a measured nothing for a thread handoff on the
-    hottest path in the file (`post_tool_use` runs per `Edit`).
-  - ~~**B2, filesystem work under the global write lock.**~~ The half with teeth is
-    done: `refresh_title` ran `pin_transcript` *and* `ai_title` under the lock on
-    every `Stop` — a `read_dir` of `~/.claude/projects` with an `exists()` per entry
-    (hundreds on a working machine) plus a read of the transcript tail, with every
-    snapshot and hook queued behind it. It now reads what it needs under a short
-    read lock, does the disk work off the lock and off the runtime, and applies in
-    one short critical section — re-checking `cwd`, because a relocation in between
-    makes the answers describe a tree the session has left.
-
-    **The `with_*` store writes are deliberately left alone**, and the measurement
-    is why: `automation.json` is **17 bytes**, and `manual.json`,
-    `resolve-runs.json` and `stories.json` have never been written on this machine
-    at all. A `write` + `rename` of tens of bytes is sub-millisecond. Getting it off
-    the lock properly needs a channel, a writer task and an ordering guarantee, and
-    it would either break the "mutating a durable store carries its own write"
-    invariant or make every call site remember to persist — which is the exact shape
-    `with_*` exists to prevent. Revisit if a store ever grows (`stories` is the only
-    candidate, being a cache), and with a number rather than a guess.
-  - ~~**B3, pty writes on the async loop.**~~ Done: each pty owns a writer thread
-    fed by an unbounded queue, and `PtyHandle::write` hands bytes to it instead of
-    touching the fd. Writing to a pty blocks once the kernel's few-KB buffer fills
-    and the child is not reading, and the caller was a tokio worker — the websocket
-    read loop writes every keystroke. `Ok` now means "queued" rather than
-    "written", which costs nothing because all eight call sites already discarded
-    the result, and a failed write is logged by the thread instead of vanishing.
-
-  The rule is worth restating because it was applied unevenly for a long time: **no
-  `std::process::Command` and no `std::fs` on a tokio worker.** `run_blocking` names
-  the work so a panic says what died.
-
-- ~~**`gh` and `mise` can still hang the way git could.**~~ Done. `git::git_net`
-  bounds every network git call and sets `GIT_TERMINAL_PROMPT=0`, `BatchMode=yes`,
-  `StrictHostKeyChecking=accept-new` and empty askpass helpers, so a fetch cannot
-  sit on a tty waiting for a credential, and the ssh command is the configured one
-  with those options appended rather than a fixed `ssh`. Every `gh` subprocess is
-  bounded too (60s for a write, 15s for `gh auth token`), and so is every `mise`
-  query. None of these prompt the way git does, so it was always the deadline that
-  mattered rather than the tty.
-
-- ~~**Shutdown cannot escalate a kill, because `was_live` is written before it.**~~
-  Done, and it took **both** halves of what this entry proposed rather than either:
-  `shutdown` captures the resume set (`AppState::session_records`) before it kills
-  anything and writes that set verbatim at the end, *and* `AppState::persist`
-  refuses to write while `shutting_down` is set. The capture is what makes the kills
-  waitable; the freeze is what stops a watcher — or a `persist_soon` timer landing a
-  second later — having the last word on the file auto-resume reads.
-
-  With no await point left to protect, `shutdown` uses `kill_gracefully` like every
-  other stop path, and in parallel (`JoinSet`) so the grace is spent once rather
-  than once per child. Measured against a managed process spelled `trap '' HUP;
-  sleep 1000`: shutdown took 2.05s, logged "the child did not go on SIGHUP within
-  2s — killing its group", and both the shell and its `sleep` grandchild were gone.
-  The restart e2e flow — the one that caught the first attempt — passes.
+- **`edit::read` closes the symlink race on the final component only.** The parents
+  are canonicalised earlier and can still be swapped between the check and the open;
+  closing it properly needs `openat2` with `RESOLVE_BENEATH`, which is Linux-only
+  and so wants a second path for macOS. The threat is narrower than the leaf's was:
+  a symlink *committed* on a PR branch is caught by the parent check, so what is
+  left needs a live process racing the open rather than content somebody pushed.
+  The last of the four gaps the v2 review pass found.
 
 - **`rerequest()` has never run.** The fixture drives everything else in the review
   flow (`mise run fixture`, `docs/fixture-pr.md`), but its threads are posted by
@@ -365,12 +255,6 @@ this file, which churned it from every build; that feature is gone.
   modifier is `⌘`; and no Finder entry at all from a mise install.
 
   What is still unanswered there:
-  - ~~**Scrolling feels sluggish, and halts.**~~ Answered, and it was neither
-    suspect: xterm cuts wheel deltas under 50px to 30% and passes only whole
-    lines, so a slow trackpad drag needs ~4.6 events per line while a mouse needs
-    one. `term.js` owns the wheel now. Typing lag was a separate story with three
-    causes of its own — the DOM renderer on Retina, an uncoalesced board render,
-    and `TCP_NODELAY` never being set.
   - **Chrome::Overlay's traffic lights and `open` for URLs** are written-not-run.
   - The desktop crate still cannot be cross-checked from Linux
     (`objc2-exception-helper` wants a real SDK); `check.yml` on macos-14 is the
@@ -564,11 +448,6 @@ this file, which churned it from every build; that feature is gone.
     is not in the snapshot at all, so a new user reads `unavailable` and `off` with
     the cause only in a log they do not have open. That is the case the module's own
     docs say it exists for.
-  - ~~**The repo switch button's only behaviour is a refusal.**~~ Done: it now
-    raises the open-project modal over the board and switches by restarting onto the
-    chosen checkout (`WindowCmd::Switcher` → `desktop::start_switcher`, committing a
-    project → `request_restart`). The no-restart version is the multi-daemon item
-    above; this is the restart-based interim.
   - **Half the settings have no field.** `env_source`, `workspace_notes`,
     `worktree_init` and `shared_worktree_paths` are config-file only. Fine for the
     operational ones, wrong for `workspace_notes` and `worktree_init`, which are two
