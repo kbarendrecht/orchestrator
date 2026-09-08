@@ -1190,6 +1190,12 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
 }
 .prrow:hover .jump{color:var(--faint-solid)}
 .prrow .jump:hover{color:var(--text);background:var(--raised);border-color:var(--dim)}
+/* The chip pointing at the session you are already in. Filled rather than
+   brighter, because "you are here" is a state and every other treatment on this
+   chip is an offer — and it has to read without a hover, since the question it
+   answers is asked *before* you press it. */
+.prrow .jump.here,
+.prrow:hover .jump.here{color:var(--text);background:var(--raised);border-color:var(--dim)}
 .dot.ok{background:var(--ok)}
 
 /* ---------- review queue (§6b) ---------- */

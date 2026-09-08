@@ -1,7 +1,7 @@
 // The rail: what is running, what is waiting on you, and the PRs beside it.
 // Twenty-four names, three out; the rest is how a row decides what it says.
 
-import { $, byNewest, call, caret, clock, confirmBox, copyText, dotClass, duration, el, isArchived, isConversation, isWaiting, mainWorkspace, MOD_LABEL, newSession, newWorktree, openMenu, pending, refreshButton, selected, sessionsOf, setSelected, sinceSnap, snap, stateClass, stateLabel, toast, unchanged, setPendingSelect } from './core.js';
+import { $, byNewest, call, caret, clock, confirmBox, copyText, creating, dotClass, duration, el, isArchived, isConversation, isWaiting, mainWorkspace, MOD_LABEL, newSession, newWorktree, openMenu, pending, refreshButton, selected, sessionsOf, setSelected, sinceSnap, snap, stateClass, stateLabel, toast, unchanged, setPendingSelect } from './core.js';
 import * as Review from './review.js';
 import * as Term from './term.js';
 
@@ -345,11 +345,22 @@ function prGroup() {
        chips onto the same uuid: `fixing`, which says what is happening, and this,
        which only says that something is. */
     if (p.session && !(auto && auto.state === 'running')) {
-      const j = el('button', 'jump', 'session');
-      j.title = 'Go to the session on this branch';
+      /* Marked when it points at the session you are already in, because pressing
+         it then is a no-op and a chip that answers before you press it is better
+         than one that answers by doing nothing. `setSelected` is instant and
+         local — no request, no snapshot — so there was nothing to see at all. */
+      const here = p.session === selected;
+      const j = el('button', 'jump' + (here ? ' here' : ''), 'session');
+      j.title = here ? 'You are in this session' : 'Go to the session on this branch';
       j.onclick = (ev) => {
         ev.preventDefault();
         ev.stopPropagation();
+        // Said out loud as well as shown, for the press that changes nothing: the
+        // marked state is easy to miss on a row you were already looking past.
+        if (here) {
+          toast('already in this session');
+          return;
+        }
         setSelected(p.session);
       };
       row.appendChild(j);
@@ -384,14 +395,18 @@ function mainGroup(w) {
   const several = !!snap.several_in_main;
 
   const add = el('button', 'plus', '+');
-  add.disabled = !!occupant && !several;
+  // Occupied, or already making something: the second reason is the one that used
+  // to be invisible, and pressing through it is how you get two of them.
+  add.disabled = (!!occupant && !several) || !!creating();
   /* The chord belongs in the tooltip of the button that does the same thing:
      finding the button once is how you stop needing it, which is the argument the
      legend button already makes for itself. `MOD_LABEL` rather than a literal —
      the modifier is ⌘ on macOS and Ctrl everywhere else. */
-  add.title = occupant
-    ? `main is held by ${occupant.title || occupant.id.slice(0, 8)}${several ? ' · another is allowed' : ''}`
-    : `New session in main · ${MOD_LABEL} Shift N`;
+  add.title = creating()
+    ? creating()
+    : occupant
+      ? `main is held by ${occupant.title || occupant.id.slice(0, 8)}${several ? ' · another is allowed' : ''}`
+      : `New session in main · ${MOD_LABEL} Shift N`;
   add.onclick = () => newSession(w.id);
   group.appendChild(groupHead('Main checkout', add));
 
@@ -411,7 +426,21 @@ function mainGroup(w) {
 function worktreeGroup(mainId) {
   const group = el('div', 'ws');
   const add = el('button', 'plus', '+');
-  add.title = `New worktree session · ${MOD_LABEL} N (shift-click to name it)`;
+  /* Dead while one is being cut, and it says which one in the tooltip.
+     Two things make one press look like none: the POST is a worktree, the repo's
+     hooks and a `claude` boot, and the row that lands after it says `…creating`
+     for as long as it takes Claude Code to name the tree. Both are covered — the
+     claim in `core` for the first, `pending` for the second — because the second
+     window is the longer one and a `+` that came back to life halfway is the same
+     invitation to press again.
+
+     Live ones only. A placeholder session that died before `SessionStart` keeps
+     the placeholder workspace for good, and counting that would leave the `+`
+     dead until a restart. */
+  const cutting = creating()
+    || (snap.sessions.some((s) => pending(s) && !isArchived(s)) ? 'creating a worktree' : null);
+  add.disabled = !!cutting;
+  add.title = cutting || `New worktree session · ${MOD_LABEL} N (shift-click to name it)`;
   add.onclick = (ev) => newWorktree(ev.shiftKey);
   group.appendChild(groupHead('Worktrees', add));
 
@@ -549,9 +578,13 @@ function railName(s, w) {
  *
  *  A fork keeps its parent's title, so two rows read identically and the only
  *  thing telling them apart is an eight-character id. This says which is the
- *  copy, and the title says what it is a copy of. */
+ *  copy, and the title says what it is a copy of.
+ *
+ *  The word is `fork`, not `forked`: this row *is* the fork, and a past participle
+ *  on it reads as "forked from", which points at the other row. A noun for the
+ *  thing the row is has no direction to get wrong. */
 function forkBadge(s) {
-  return s.forked_from ? el('span', 'forked', 'forked') : null;
+  return s.forked_from ? el('span', 'forked', 'fork') : null;
 }
 
 function sessionRow(s, w) {

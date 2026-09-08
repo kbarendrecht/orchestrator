@@ -14,7 +14,7 @@ import {
   selectedProc, setSelectedProc, prState, handedToPr, procOrder, setProcOrder,
   drawerTouched, setDrawerTouched, drawerCollapsed, setDrawerCollapsed,
   pendingProcFocus, setPendingProcFocus, pendingSelect, setPendingSelect,
-  onDrawerChange, appMod, IS_MAC, MOD_LABEL, closeLegend, typingElsewhere,
+  onDrawerChange, onCreatingChange, appMod, IS_MAC, MOD_LABEL, closeLegend, typingElsewhere,
   mark, reportBoot, confirmBox, dialogOpen, dismissDialog, unchanged, tick,
 } from './js/core.js';
 
@@ -53,6 +53,10 @@ onScaleChange(() => Term.applyScale());
 // Collapsing the drawer redraws it and gives the terminal above its height back;
 // xterm only refits on an explicit nudge, not on a sibling's size change.
 onDrawerChange(() => { renderDrawer(); Term.refit(); });
+// A create claiming or releasing the `+`. Straight through rather than queued: the
+// whole point is that the frame after the press shows something, and a worktree
+// being cut may be the only thing happening, so there is no snapshot behind it.
+onCreatingChange(() => Rail.render());
 
 // ---------------------------------------------------------------------------
 // Context menu

@@ -826,13 +826,55 @@ export function currentWorkspaceId() {
   return mainWorkspace()?.id ?? null;
 }
 
-export async function newSession(workspace) {
-  try {
-    const r = await call('/api/session', { workspace });
-    pendingSelect = r.session;
-  } catch (e) {
-    toast(e.message, true);
+/* One create at a time, and the `+` says so.
+ *
+ * A session is a worktree, a set of repo hooks and a `claude` boot, which is
+ * seconds during which the rail had nothing new on it — so the second press was
+ * the reasonable thing to do and it made a second session. Blocked here rather
+ * than at the buttons because the keyboard map calls the same two functions
+ * (`MOD⇧N`, `MOD N`), and a guard on the click alone would leave the chord able
+ * to do what the button refuses.
+ *
+ * It does not replace the daemon's own refusals: main is exclusive
+ * (`refuse_if_occupied`) and says so with a disabled `+`. This is about the gap
+ * *before* any of that state exists. */
+let creatingWhat = null;
+export const creating = () => creatingWhat;
+
+const creatingListeners = [];
+export function onCreatingChange(fn) { creatingListeners.push(fn); }
+
+/** Run `go` as the one create in flight, or say what is already going.
+ *
+ *  Announced rather than rendered, on the seam `setDrawerCollapsed` uses: this
+ *  layer must not reach into the rail that sits on it. Announced *both* ways,
+ *  because the interesting frame is the one where the button goes dead — the
+ *  snapshot that would have redrawn it is not promised to arrive while a worktree
+ *  is being cut. */
+async function asTheOnlyCreate(what, go) {
+  if (creatingWhat) {
+    toast(`still ${creatingWhat}`);
+    return;
   }
+  creatingWhat = what;
+  for (const fn of creatingListeners) fn(creatingWhat);
+  try {
+    await go();
+  } finally {
+    creatingWhat = null;
+    for (const fn of creatingListeners) fn(null);
+  }
+}
+
+export async function newSession(workspace) {
+  await asTheOnlyCreate('starting a session', async () => {
+    try {
+      const r = await call('/api/session', { workspace });
+      pendingSelect = r.session;
+    } catch (e) {
+      toast(e.message, true);
+    }
+  });
 }
 
 /** Claude Code names the worktree unless you shift-click and name it yourself.
@@ -849,13 +891,18 @@ export async function newWorktree(named) {
     if (name === null) return;
     name = name.trim() || null;
   }
-  try {
-    const r = await call('/api/worktree', name ? { name } : {});
-    pendingSelect = r.session;
-    toast(name ? `creating worktree ${name}` : 'creating worktree');
-  } catch (e) {
-    toast(e.message, true);
-  }
+  // Claimed after the name box, not before: the prompt is open for as long as you
+  // take to type, and holding the claim across it would disable the `+` on a
+  // dialog you might cancel.
+  await asTheOnlyCreate(name ? `creating worktree ${name}` : 'creating a worktree', async () => {
+    try {
+      const r = await call('/api/worktree', name ? { name } : {});
+      pendingSelect = r.session;
+      toast(name ? `creating worktree ${name}` : 'creating worktree');
+    } catch (e) {
+      toast(e.message, true);
+    }
+  });
 }
 
 export async function newShell() {
