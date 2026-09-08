@@ -795,7 +795,12 @@ impl Config {
     /// which are deliberately generic. An old file with a stale `"profile"` key
     /// still loads — serde ignores the unknown field.
     pub fn parse(raw: &str) -> Result<Config> {
-        let mut cfg: Config = serde_json::from_str(raw).context("config is not JSON")?;
+        // "could not be read", not "is not JSON": serde refuses a *value* it cannot
+        // make sense of as readily as malformed syntax, and `tracker` does exactly
+        // that with a message naming the fix. Claiming the file is not JSON sent the
+        // reader looking for a missing brace.
+        let mut cfg: Config =
+            serde_json::from_str(raw).context("config.json could not be read")?;
         // Sanitise once, here, so every accessor can trust the field and the
         // warning fires at load rather than on every hook event.
         cfg.worktrees_subdir = match normalize_worktrees_subdir(&cfg.worktrees_subdir) {
