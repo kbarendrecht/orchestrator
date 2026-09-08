@@ -1881,7 +1881,14 @@ async fn revive(app: &Arc<AppState>, id: Uuid) -> ApiResult<serde_json::Value> {
     let warning = if path_exists {
         // Standing, but not necessarily *this* conversation's tree — the rebuild
         // that would have noticed is the branch that is skipped here.
-        crate::worktree::branch_drift(&cwd, recovery.as_ref())
+        // Off the runtime, because it reads the tree's branch with a git child
+        // process, like every other git call on this path.
+        let (at, rec) = (cwd.clone(), recovery.clone());
+        crate::proc::run_blocking("reading the revived tree's branch", move || {
+            crate::worktree::branch_drift(&at, rec.as_ref())
+        })
+        .await
+        .unwrap_or(None)
     } else {
         crate::worktree::revive(app, &cwd, recovery)
             .await
@@ -2684,12 +2691,17 @@ async fn to_carry(
     // owns a file of headers — so this asks `has_conversation`. Newest-first,
     // stopping at the first hit, so the usual cost is one read rather than one per
     // session to then discard all but the newest.
-    let carried = live
-        .drain(..)
-        .find(|(_, id, cwd, recorded)| {
-            crate::store::has_conversation(*id, cwd, recorded.as_deref())
-        })
-        .map(|(_, id, ..)| id);
+    // Off the runtime, because each of those reads opens a file, and a swap runs
+    // this three times.
+    let carried = crate::proc::run_blocking("looking for the conversation to carry", move || {
+        live.drain(..)
+            .find(|(_, id, cwd, recorded)| {
+                crate::store::has_conversation(*id, cwd, recorded.as_deref())
+            })
+            .map(|(_, id, ..)| id)
+    })
+    .await
+    .unwrap_or(None);
     (carried, records)
 }
 
@@ -2824,7 +2836,17 @@ async fn carry_record(
             None => return,
         }
     };
-    let refiled = match crate::store::move_transcript(id, &src_cwd, dest_path) {
+    // Off the runtime: a rename is cheap, but the fallback across filesystems is a
+    // whole-file copy, and a transcript is megabytes of turns.
+    let moved = {
+        let (from, to) = (src_cwd.clone(), dest_path.to_path_buf());
+        crate::proc::run_blocking("re-filing the transcript", move || {
+            crate::store::move_transcript(id, &from, &to)
+        })
+        .await
+        .unwrap_or_else(Err)
+    };
+    let refiled = match moved {
         Ok(moved) => moved,
         Err(e) => {
             tracing::warn!(
@@ -4014,7 +4036,7 @@ pub async fn open_url(
     // review row that "does not open" is either a click the page never delivered
     // or an opener that did nothing, and those have different fixes.
     tracing::info!("opening {url} in the browser");
-    open_external(url)?;
+    open_detached(url).await?;
     Ok(Json(json!({ "opened": url })))
 }
 
@@ -4101,8 +4123,21 @@ pub async fn open_file(
     }
     let forge = write_forge(&app)?;
     let url = forge.blob_url(&r#ref, path);
-    open_external(&url)?;
+    open_detached(&url).await?;
     Ok(Json(json!({ "opened": url })))
+}
+
+/// [`open_external`], off the runtime.
+///
+/// It probes each candidate with `which` and then spawns one, so a single click is
+/// up to four child processes plus a `/proc/version` read — all of it fork and exec
+/// rather than work this machine can be fast at.
+async fn open_detached(url: &str) -> anyhow::Result<()> {
+    let url = url.to_string();
+    crate::proc::run_blocking("handing the URL to the browser", move || {
+        open_external(&url)
+    })
+    .await?
 }
 
 /// Hand a URL to the platform browser opener, detached.
