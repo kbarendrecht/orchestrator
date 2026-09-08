@@ -252,6 +252,12 @@ The tracker is reached **over MCP**, by an agent the daemon borrows for the valu
 So two things have to be true beyond the token, and both live in the repo you
 pointed the daemon at, not in its config:
 
+- **`tracker` in `config.json` is three fields**, and one shape only:
+  `{"mcp_server": "shortcut", "host": "app.shortcut.com", "token_env":
+  "SHORTCUT_API_TOKEN"}`. Absent means no tracker, and a bare name is refused with
+  the object to write. It is not settable from the settings pane, which shows it
+  read-only: a per-site host is not a dropdown, and a partial write would replace
+  what you hand-edited.
 - **`.mcp.json` declares a server named for the tracker**, and `tracker.mcp_server`
   in the config is that name. The daemon approves that one server for the sessions
   it spawns — never all of them, since a repo may declare a dozen and a

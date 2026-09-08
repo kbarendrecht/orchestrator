@@ -268,19 +268,20 @@
 
     <div class="settings-group">Tracker</div>
 
-    <label class="settings-field">
+    <!-- Shown, not offered. A tracker is three fields including a host that is
+         per-site for Jira, so a control here would either be a dropdown of names
+         the config format no longer has, or three inputs whose write could replace
+         a hand-edited one. `config::Settings` leaves `tracker` out for the same
+         reason. -->
+    <div class="settings-field">
       <span class="settings-k">Tracker</span>
-      <!-- `stub` is deliberately not here: it is a test-only backend
-           (`--strict-mcp-config` against a recording server) for proving the
-           plumbing, not a tracker anyone runs. The enum still has it; the panel
-           just does not offer it. -->
-      <select class="settings-in" id="settracker">
-        <option value="none">none</option>
-        <option value="shortcut">shortcut</option>
-      </select>
-    </label>
-    <p class="settings-help">Where a "file a story" answer goes. With none, that
-      option is never offered rather than offered and refused.</p>
+      <span class="settings-in settings-ro" id="settracker">none</span>
+    </div>
+    <p class="settings-help">Where a "file a story" answer goes, and the only
+      setting here that is read-only: set <code>tracker</code> in
+      <code>config.json</code> as <code>mcp_server</code>, <code>host</code> and an
+      optional <code>token_env</code>. With none, that option is never offered
+      rather than offered and refused.</p>
 
     <label class="settings-field">
       <span class="settings-k">Output language</span>

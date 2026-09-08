@@ -289,12 +289,21 @@ mean *this* repo; if you do, name it.
   files. The real hazard of reusing a worktree name is elsewhere — a resume landing
   in a tree cut again for something else — and `worktree::branch_drift` says so
   rather than refusing.
-- **A tracker is three config fields, and only two trackers have shorthands.**
+- **A tracker is three config fields, and there is one way to write it.**
   `mcp_server`, `host` and an optional `token_env` (`config::Tracker`), so pointing
-  the daemon at Linear or Jira is a config edit rather than a release. `"shortcut"`
-  and `"stub"` stay as names, and a settings write hands either form back the way
-  it came — the SPA's dropdown cannot render the object one, so `settings.js` holds
-  it rather than overwriting it, which is the failure that would have been silent.
+  the daemon at Linear or Jira is a config edit rather than a release. It was an
+  enum arm per tracker, then briefly both — the object *and* `"shortcut"`/`"stub"`
+  as shorthands — and two spellings of one setting is worse than either: the file
+  stops being readable on its own, the SPA can offer one form and not the other,
+  and every reader needs an arm per shape. A name is **refused with the object to
+  write**, which is the only reason `Tracker` has a hand-written `Deserialize`;
+  serde's own answer names the problem and not the fix.
+  It is also gone from `config::Settings` and from the settings pane's controls.
+  The pane shows `snap.tracker_server` read-only, because a write of that whole
+  struct is how a hand-edited tracker would have been replaced by whichever name a
+  dropdown happened to show — and no control can spell a per-site host anyway.
+  The first-run page never collected one either; that override existed only in a
+  test.
   Three things the research settled, none of them guessable from the Shortcut setup
   this was built against:
   - **Both official remote trackers are OAuth-first.** Linear is

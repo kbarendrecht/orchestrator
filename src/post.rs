@@ -843,7 +843,7 @@ async fn run_inner(
         .cloned()
         .with_context(|| format!("PR #{} has no triage proposals to post", pr.number))?;
     let comments = resume.as_ref().map(|r| &r.comments);
-    let handled = resolve(&proposals, fresh, &batch, app.cfg.tracker.is_configured(), comments)?;
+    let handled = resolve(&proposals, fresh, &batch, app.cfg.tracker.is_some(), comments)?;
 
     // Hoisted above the local write: the recovery path below needs it to carry the
     // phase forward, and a phase whose `threads` is empty renders a list with no rows

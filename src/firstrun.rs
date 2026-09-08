@@ -429,9 +429,6 @@ fn write_config_to(file: &Path, path: &Path, ov: &Overrides) -> Result<Written> 
     if let Some(env) = ov.env_source {
         obj.insert("env_source".into(), json!(env));
     }
-    if let Some(tracker) = &ov.tracker {
-        obj.insert("tracker".into(), json!(tracker));
-    }
     // Ticked processes become managed `main_processes`. `autostart` is true because
     // ticking one in the review is the consent the setting's default withholds — the
     // rest of a `ManagedSpec` is left to serde defaults.
@@ -527,8 +524,6 @@ pub struct Overrides {
     /// 422 naming the field instead of a config written and then rejected.
     #[serde(default)]
     pub env_source: Option<crate::config::EnvSourceKind>,
-    #[serde(default)]
-    pub tracker: Option<crate::config::Tracker>,
     /// The processes the user ticked in the review, to manage from the start.
     #[serde(default)]
     pub processes: Vec<SelectedProcess>,
@@ -971,7 +966,6 @@ mod tests {
                 base_branch: Some("upstream/develop".into()),
                 repo: Some("acme/thing".into()),
                 env_source: Some(crate::config::EnvSourceKind::Direnv),
-                tracker: Some(crate::config::Tracker::Named(crate::config::NamedTracker::Shortcut)),
                 ..Default::default()
             },
         )
@@ -983,7 +977,6 @@ mod tests {
         assert_eq!(v["upstream_remote"], "upstream", "the remote is split off the ref");
         assert_eq!(v["repo"], "acme/thing");
         assert_eq!(v["env_source"], "direnv");
-        assert_eq!(v["tracker"], "shortcut");
         // Slim: nothing that was not asked for.
         assert!(v.get("poll_seconds").is_none(), "defaults are left out");
 
@@ -994,21 +987,13 @@ mod tests {
             serde_json::from_str::<Overrides>(r#"{"path":"/x","env_source":"nonsense"}"#).is_err(),
             "an unknown env source has to be refused while the request is read"
         );
-        assert!(
-            serde_json::from_str::<Overrides>(r#"{"path":"/x","tracker":"jira"}"#).is_err(),
-            "and an unknown tracker"
-        );
         // The spellings the page really sends, so a rename of either enum fails
         // here rather than on somebody's first run.
         let ok: Overrides = serde_json::from_str(
-            r#"{"path":"/x","env_source":"mise","tracker":"shortcut"}"#,
+            r#"{"path":"/x","env_source":"mise"}"#,
         )
         .expect("the page's own values");
         assert_eq!(ok.env_source, Some(crate::config::EnvSourceKind::Mise));
-        assert_eq!(
-            ok.tracker,
-            Some(crate::config::Tracker::Named(crate::config::NamedTracker::Shortcut))
-        );
 
         let _ = std::fs::remove_dir_all(&base);
     }

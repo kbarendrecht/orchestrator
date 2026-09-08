@@ -391,7 +391,16 @@ handed_off: boolean, };
  * old name there, the way `pr_age_ms` sat unread and the divergence strip named
  * a ref it had not measured.
  */
-export type Snapshot = { workspaces: Array<WorkspaceView>, sessions: Array<SessionView>, prs: Array<PrView>, 
+export type Snapshot = { 
+/**
+ * The configured tracker's MCP server name, or `None` for no tracker.
+ *
+ * Here rather than on `/api/config` because it is read-only to the SPA: a
+ * tracker is three fields (`config::Tracker`), one of them a per-site host, so
+ * the settings pane shows it and does not offer it — and `Settings` leaves it
+ * out so a write of the whole struct cannot replace a hand-edited one.
+ */
+tracker_server: string | null, workspaces: Array<WorkspaceView>, sessions: Array<SessionView>, prs: Array<PrView>, 
 /**
  * Set when the last poll failed; the pane says so rather than showing an
  * empty list.

@@ -257,7 +257,7 @@ pub async fn start(opts: StartOptions) -> Result<Server> {
     let settings = {
         // Said before the first session can be spawned, because every one of these
         // otherwise surfaces as a failure that blames something else.
-        for w in machine::check(&cfg, cfg.tracker.mcp_server()) {
+        for w in machine::check(&cfg, cfg.tracker.as_ref().map(|t| t.mcp_server.as_str())) {
             tracing::warn!("{} — {}", w.what, w.cost);
         }
         // The push guard protects the branch this repo is measured against, so it
@@ -267,7 +267,7 @@ pub async fn start(opts: StartOptions) -> Result<Server> {
         let base = git::base_checkout_branch(&cfg.main_checkout, &cfg.upstream_ref);
         hooks::write_settings(
             cfg.port,
-            cfg.tracker.mcp_server(),
+            cfg.tracker.as_ref().map(|t| t.mcp_server.as_str()),
             base.as_deref(),
             &cfg.main_checkout,
         )?
@@ -400,13 +400,13 @@ pub async fn start(opts: StartOptions) -> Result<Server> {
         // Said out loud at boot, because `tracker` decides whether a whole option
         // appears on every review card. A misconfigured one must not read as
         // "triage never proposes stories".
-        match app.cfg.tracker.mcp_server() {
+        match app.cfg.tracker.as_ref().map(|t| t.mcp_server.as_str()) {
             None => tracing::info!("tracker: none — `story+reply` is off"),
             /* A tracker that names no token variable authenticates itself — both
                official Linear and Atlassian servers are OAuth-first — so there is
                nothing to resolve, and a warning here would be about a credential
                the daemon was never meant to hold. */
-            Some(server) => match app.cfg.tracker.token_env() {
+            Some(server) => match app.cfg.tracker.as_ref().and_then(|t| t.token_env.as_deref()) {
                 None => tracing::info!(
                     "tracker: {server}, authenticating itself, {} story/ies cached",
                     inner.stories.len()

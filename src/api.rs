@@ -3897,7 +3897,7 @@ pub async fn pr_triage_context(
         "language": app.cfg.default_language,
         // Whether `story+reply` may be offered at all: an option the daemon would
         // refuse should never reach a card.
-        "tracker": app.cfg.tracker.is_configured(),
+        "tracker": app.cfg.tracker.is_some(),
         "proposals_url": format!("{base}/proposals"),
         "progress_url": format!("{base}/triage/progress"),
         // The ref the branch is measured against, for the review session's "CI red
@@ -4115,7 +4115,7 @@ pub async fn pr_review(
         // Whether a `story+reply` position can be acted on at all. The overlay
         // should not be welded to Shortcut, so with no tracker it hides the
         // option rather than offering something that would be refused.
-        "tracker": app.cfg.tracker.is_configured(),
+        "tracker": app.cfg.tracker.is_some(),
     })))
 }
 
@@ -4232,7 +4232,7 @@ pub async fn pr_resolve_run(
     // Fetched now, not from the cache: it is what makes the thread ids real and
     // the drift check mean anything.
     let fresh = fetch_threads(&app, number).await?;
-    let plan = crate::post::plan(number, &proposals, &fresh, &batch, app.cfg.tracker.is_configured())?;
+    let plan = crate::post::plan(number, &proposals, &fresh, &batch, app.cfg.tracker.is_some())?;
     // Kept so the daemon can answer "what does this thread say" when the session
     // reports a commit. The agent is never told the reply is its to send.
     //

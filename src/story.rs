@@ -43,12 +43,12 @@ use std::path::Path;
 /// `checkout` is the environment built so far, which is where the token comes from
 /// when the daemon's own has none.
 pub fn token_env_pair(
-    tracker: &crate::config::Tracker,
+    tracker: &Option<crate::config::Tracker>,
     checkout: &[(String, String)],
 ) -> Option<(String, String)> {
     // `None` is two different things and both mean "push nothing": no tracker at
     // all, and a tracker that authenticates itself. Neither is a failure.
-    let var = tracker.token_env()?;
+    let var = tracker.as_ref()?.token_env.as_deref()?;
     Some((var.to_string(), resolve_token(checkout, var).ok()?))
 }
 
@@ -372,7 +372,7 @@ pub async fn file_all(
     // actually missing. The host is passed when there is one, so a stored entry is
     // held to the same rule the agent's own answer is; a cache hit still works
     // without a tracker, and `Cache::get` then checks what it can.
-    let known_host = app.cfg.tracker.host();
+    let known_host = app.cfg.tracker.as_ref().map(|t| t.host.as_str());
     let mut todo: Vec<&Wanted> = Vec::new();
     {
         let inner = app.inner.read().await;
@@ -399,7 +399,7 @@ pub async fn file_all(
     // a cache hit needs no tracker and must keep working without one, which is what
     // resolving it earlier broke.
     let tracker_host = {
-        match app.cfg.tracker.host() {
+        match app.cfg.tracker.as_ref().map(|t| t.host.as_str()) {
             Some(h) => h,
             // Nothing configured to file into, so there is no URL to trust and no
             // run to make. Said per thread, because the caller reports per thread.
@@ -498,10 +498,12 @@ async fn run_filer(
     use crate::config::Config;
     use crate::model::{Kind, Session};
 
-    let tracker = &app.cfg.tracker;
-    let mcp_server = tracker
-        .mcp_server()
+    let tracker = app
+        .cfg
+        .tracker
+        .as_ref()
         .context("no tracker configured, so there is nothing to file into")?;
+    let mcp_server = &tracker.mcp_server;
     let head_ref = {
         let inner = app.inner.read().await;
         inner
@@ -599,7 +601,7 @@ async fn run_filer(
     // tool calls and a typed command is expanded before the model acts. Model-
     // *chosen* skills are a different question — those go through a tool.
     cmd.extend(crate::config::session_flags()?);
-    if app.cfg.tracker.is_stub() {
+    if tracker.stub {
         // Only the stub, and nothing else: `--strict-mcp-config` ignores every
         // configured server, which is what keeps a verification run from reaching
         // the real tracker by accident.
@@ -626,7 +628,8 @@ async fn run_filer(
        could write into a prompt. */
     env.push((crate::skills::VAR_STORIES.to_string(), stories_file.to_string_lossy().into_owned()));
     env.push((crate::skills::VAR_DROP.to_string(), drop_file.to_string_lossy().into_owned()));
-    if let Some(host) = tracker.host() {
+    {
+        let host = &tracker.host;
         env.push((crate::skills::VAR_TRACKER_HOST.to_string(), host.to_string()));
     }
     // Still refused before the agent runs: `session_env` shrugs when there is no
@@ -637,7 +640,7 @@ async fn run_filer(
        OAuth login the user did earlier — both official Linear and Atlassian servers
        are OAuth-first — and there is then nothing here to resolve and nothing to
        refuse the run for. */
-    if let Some(var) = tracker.token_env() {
+    if let Some(var) = tracker.token_env.as_deref() {
         resolve_token(&env, var)?;
     }
 
@@ -773,7 +776,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "spawns a claude process"]
     async fn files_for_real_against_the_stub() {
-        use crate::config::{Config, NamedTracker, Tracker};
+        use crate::config::{Config, Tracker};
 
         let cfg = Config::load_or_init(None).expect("the daemon's own config");
         // The agent has to run inside a real checkout of the repo, or `.mcp.json`
@@ -788,7 +791,12 @@ mod tests {
         // The stub ignores the value, but `resolve_token` still has to find one.
         std::env::set_var("ORCHD_TRACKER_TOKEN", "stub-token-not-used-by-the-stub");
         let cfg = Config {
-            tracker: Tracker::Named(NamedTracker::Stub),
+            tracker: Some(Tracker {
+                mcp_server: "shortcut".into(),
+                host: "app.shortcut.com".into(),
+                token_env: Some("SHORTCUT_API_TOKEN".into()),
+                stub: true,
+            }),
             // Long enough for a cold start plus the skill read.
             story_timeout_seconds: 300,
             ..cfg
@@ -886,13 +894,18 @@ mod tests {
     #[tokio::test]
     #[ignore = "spawns a claude process"]
     async fn a_run_that_overruns_is_killed_and_says_what_a_retry_does() {
-        use crate::config::{Config, NamedTracker, Tracker};
+        use crate::config::{Config, Tracker};
 
         let cfg = Config::load_or_init(None).expect("config");
         let main = cfg.main_checkout.clone();
         std::env::set_var("ORCHD_TRACKER_TOKEN", "stub-token");
         let cfg = Config {
-            tracker: Tracker::Named(NamedTracker::Stub),
+            tracker: Some(Tracker {
+                mcp_server: "shortcut".into(),
+                host: "app.shortcut.com".into(),
+                token_env: Some("SHORTCUT_API_TOKEN".into()),
+                stub: true,
+            }),
             story_timeout_seconds: 5,
             ..cfg
         };

@@ -825,6 +825,7 @@ impl AppState {
         prs.sort_by(|a, b| a.rank.cmp(&b.rank).then(b.pr.number.cmp(&a.pr.number)));
 
         Snapshot {
+            tracker_server: self.cfg.tracker.as_ref().map(|t| t.mcp_server.clone()),
             workspaces,
             sessions,
             prs,
@@ -1359,6 +1360,13 @@ impl AppState {
 #[derive(Debug, Serialize)]
 #[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
 pub struct Snapshot {
+    /// The configured tracker's MCP server name, or `None` for no tracker.
+    ///
+    /// Here rather than on `/api/config` because it is read-only to the SPA: a
+    /// tracker is three fields (`config::Tracker`), one of them a per-site host, so
+    /// the settings pane shows it and does not offer it — and `Settings` leaves it
+    /// out so a write of the whole struct cannot replace a hand-edited one.
+    pub tracker_server: Option<String>,
     pub workspaces: Vec<WorkspaceView>,
     pub sessions: Vec<SessionView>,
     pub prs: Vec<PrView>,
