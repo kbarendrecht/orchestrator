@@ -34,6 +34,16 @@ use crate::state::AppState;
 /// Several tests build a `sh -c` command around this path, and unquoted
 /// parentheses in it are a shell syntax error rather than a missing directory —
 /// so the failure lands somewhere else entirely, as it did here once.
+///
+/// **Canonical, and that is not a nicety — it is what makes a fixture behave like
+/// the real thing on a Mac.** `Config::parse` resolves `main_checkout`, so every
+/// path the daemon holds is resolved, and so is every path git prints. `$TMPDIR`
+/// on macOS is a symlink into `/private`, so a fixture that skips this step hands
+/// the code under test a path that matches *nothing* it will be compared against —
+/// and the comparisons that fail are the silent kind: `workspace_for_path` decides
+/// no workspace owns the directory, `holder_of_branch`'s answer looks like a
+/// different tree. Two tests shipped that way and failed only on the macos-14
+/// runner, after the tag was already pushed.
 pub fn scratch(tag: &str) -> PathBuf {
     let thread: String = format!("{:?}", std::thread::current().id())
         .chars()
@@ -42,7 +52,10 @@ pub fn scratch(tag: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("orchd-{tag}-{}-{thread}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    dir
+    // After the directory exists, since `canonicalize` reads the filesystem. The
+    // fallback keeps a fixture on a platform that cannot resolve it working, which
+    // is the same trade `git::holder_of_branch` makes.
+    std::fs::canonicalize(&dir).unwrap_or(dir)
 }
 
 /// Run git in `dir`, asserting it worked, and hand back its stdout trimmed.
@@ -66,11 +79,7 @@ pub fn git(dir: &Path, args: &[&str]) -> String {
 
 /// A scratch git repository on `main`, with one empty commit so `HEAD` resolves.
 ///
-/// **Canonicalised**, because git reports resolved paths and a test comparing its
-/// output against this one has to agree with it. `$TMPDIR` on macOS is under
-/// `/var`, which is a symlink into `/private`, so unresolved it matched nothing
-/// there — while on Linux `/tmp` is a real directory and the difference never
-/// showed.
+/// Canonical, like every [`scratch`] path now is; that docblock has the reason.
 ///
 /// The commit is empty on purpose: a test that cares what is in the tree writes
 /// and commits its own content, and one that only needs a repo with a history
@@ -81,7 +90,7 @@ pub fn scratch_repo(tag: &str) -> PathBuf {
     git(&dir, &["config", "user.email", "t@t"]);
     git(&dir, &["config", "user.name", "t"]);
     git(&dir, &["commit", "-q", "--allow-empty", "-m", "root"]);
-    std::fs::canonicalize(&dir).unwrap_or(dir)
+    dir
 }
 
 /// An `AppState` over a scratch directory, and that directory.

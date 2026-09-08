@@ -436,6 +436,15 @@ mean *this* repo; if you do, name it.
   changed-files pane. Do not introduce a workspace path that skipped that step.
   Barely visible on Linux; on macOS `/tmp`, `/var` and `$TMPDIR` are symlinks into
   `/private`, so it is the normal case.
+  **Which is why `testutil::scratch` canonicalises.** A fixture that skips that
+  step is on the wrong side of this boundary from everything it will be compared
+  against — the daemon's own paths (resolved by `Config::parse`) and every path git
+  prints — and the comparisons that then fail are the silent kind:
+  `workspace_for_path` decides no workspace owns the directory, and
+  `git::holder_of_branch`'s answer looks like a different tree. Two tests shipped
+  that way, passed on every Linux run, and failed only on the macos-14 runner after
+  the tag had been pushed. `holder_of_branch` resolves its own answer for the same
+  reason, so the invariant does not rest on git happening to.
 - **A `/proc` read is a portability bug that compiles.** Two guards stat'd `/proc`
   and so answered *wrongly*, not loudly, off Linux: `pid_alive` read every session
   as dead (teardown would delete a worktree with a live agent — it fails open), and
@@ -933,11 +942,25 @@ mean *this* repo; if you do, name it.
 
 ## Releases
 
-Bump the version in `Cargo.toml`, `desktop/Cargo.toml`, `desktop/tauri.conf.json`
-and `Cargo.lock`, commit as `Release <version>`, then `git tag v<version> && git
-push origin v<version>`. The workflow refuses a tag that does not match the crate
-version, because a released build that disagrees with its own tag nags about an
-update it already is. Versions are CalVer: `<year>.<month>.<n>`.
+`mise run release` — it bumps the version, **waits for `check` to go green on the
+commit you are on**, then commits, tags and pushes. `mise run release -- 2027.1.1`
+names a version instead of bumping the last component; `--dry-run` stops before
+anything is written.
+
+**The waiting is the whole point, and it is why the task exists.** `check` is the
+only thing that runs the test suite on **macOS**, and the release workflow runs it
+again *after* the tag exists — so a tag pushed before `check` answers is a tag
+that may publish nothing. That has happened twice, both times a test that passed
+on Linux and failed on macos-14, and both times it cost the same: a version number
+spent, a tag deleted by hand, the next release starting over. Nothing in git stops
+you tagging a red commit, so the guard has to be in front of the tag.
+
+By hand it is: bump the version in `Cargo.toml`, `desktop/Cargo.toml`,
+`desktop/tauri.conf.json` and `Cargo.lock` (two lines there), commit as `Release
+<version>`, then `git tag v<version> && git push origin v<version>`. The workflow
+refuses a tag that does not match the crate version, because a released build that
+disagrees with its own tag nags about an update it already is. Versions are
+CalVer: `<year>.<month>.<n>`.
 
 ## Style
 

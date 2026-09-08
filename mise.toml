@@ -88,3 +88,21 @@ run = "cargo build --bin orchd && node tools/e2e/term.mjs"
 description = "Assert which renderer each terminal opens with"
 dir = "{{config_root}}"
 run = "cargo build --bin orchd && E2E_LOG=${E2E_LOG:-info} node tools/e2e/renderer.mjs"
+
+# Cut a release, refusing while CI has not answered for the commit you are on.
+#
+# The rule this enforces: **`check` is what runs the tests on macOS, and the
+# release workflow only tells you afterwards.** A tag pushed before that run is
+# green is a tag that may publish nothing — and then the version number is spent,
+# the tag has to be deleted by hand, and the next one starts over. It has happened
+# twice, both times a test that passed on Linux and failed on macos-14.
+#
+#   mise run release            # bump the patch component, tag, push
+#   mise run release -- 2027.1.1
+#
+# Everything it does by hand is in CLAUDE.md § Releases; this is that list with the
+# waiting done for you. It never force-pushes and never moves an existing tag.
+[tasks.release]
+description = "Bump the version, wait for CI, tag and push"
+dir = "{{config_root}}"
+run = "node tools/release.mjs"

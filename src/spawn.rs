@@ -2928,13 +2928,9 @@ mod tests {
             crate::testutil::git(at, args);
         };
         git(&["init", "-q", "-b", "main", "main"], &dir);
-        /* **Canonical, like the real thing.** `Config::parse` resolves
-           `main_checkout`, so every workspace path the daemon holds is resolved —
-           and `park_main` asks `workspace_for_path` about a path git reported, which
-           is resolved too. A fixture that skips that step matches nothing, and on
-           macOS that is not a corner case: `$TMPDIR` is a symlink into `/private`,
-           so the reclaim quietly did nothing and only the macos-14 runner said so. */
-        let repo = std::fs::canonicalize(dir.join("main")).unwrap();
+        // Canonical because `scratch` is, which is what makes this fixture behave
+        // like a real checkout on a Mac — see that docblock.
+        let repo = dir.join("main");
         git(&["config", "user.email", "t@t"], &repo);
         git(&["config", "user.name", "t"], &repo);
         std::fs::write(repo.join("f.txt"), "base\n").unwrap();
