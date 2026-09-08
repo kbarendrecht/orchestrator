@@ -10,10 +10,10 @@ is.
 
 ```
 cargo check                         # the daemon
-cargo test                          # 511 tests, all in-tree
+cargo test                          # 514 tests, all in-tree
 cargo clippy --all-targets          # what CI lints with, and it denies warnings
 mise run check-web                  # type-check the SPA + enforce its module graph
-mise run e2e                        # 15 flows against a real daemon, ~55s
+mise run e2e                        # 16 flows against a real daemon, ~60s
 cargo run -p orchestrator-desktop   # the app, daemon embedded in-process
 mise run shot                       # screenshot the running SPA (drives Chrome)
 mise run release                    # bump, wait for CI, tag and push
@@ -631,6 +631,24 @@ mean *this* repo; if you do, name it.
   session** keeps its branch (a name changing under a working agent is a surprise
   the log cannot undo) and a directory that is not a workspace of ours is never
   touched; both leave main where it is and say why.
+- **The drawer can hand a pane's output to the session, and the daemon owns
+  *when*.** `api::tell_session` types text into one session's pty, reached from a
+  right-click on a process tab or on the pane itself (`paneMenu` in `web/app.js`).
+  It lands as an ordinary **user turn**, which is what it is — you pointed at
+  something, and the transcript should read as though a human did.
+  Three states refuse it, and each is a keystroke meaning something other than a
+  prompt: mid-turn (Claude Code submits whatever is half-typed), a permission
+  prompt (consent) and an open question (the highlighted choice). `nudge_sessions`
+  learned those first; this is the same table with one target. The refusal is a
+  sentence the pane toasts, because a press that silently did nothing reads as a
+  broken button.
+  Two things keep it **agnostic**, which is the whole point of the shape: the text
+  is read out of *xterm* (`Term.readTerm` — the selection if there is one, else the
+  last 50 non-blank rows), so no output is parsed anywhere and the payload is
+  whatever you highlighted; and the only name involved is the one the repo's config
+  gave the process. `ng-watch` appears nowhere in the code — only in comments and
+  test fixtures — and this must not be what changes that. 8 KB is the cap, because
+  a ring buffer holds ~3600 lines and a prompt is a line somebody reads, not a log.
 - **One pty exit, one observer.** `spawn::watch_session_exit` is the only thing
   that waits on a session's handle; it dispatches onward (a fix run's verdict goes
   to `fix_pr::settle`). A second `pty.wait()` on the same handle would work and

@@ -9,7 +9,7 @@ import {
   selected, setSelected, onSelection, prForWorkspace,
   terms, CHROME, stateLabel, dotClass, isWaiting, isArchived,
   pending, byNewest, currentSession,
-  activeWorkspaceId, currentWorkspaceId, closeMenu, menuOpen,
+  activeWorkspaceId, currentWorkspaceId, closeMenu, menuOpen, openMenu,
   newSession, newWorktree, newShell, mainWorkspace, workspaceById,
   selectedProc, setSelectedProc, prState, handedToPr, procOrder, setProcOrder,
   drawerTouched, setDrawerTouched, drawerCollapsed, setDrawerCollapsed,
@@ -661,6 +661,55 @@ const shownTab = {};
 /** What the drawer was last built from — see `unchanged`. */
 const drawerDrawn = { sig: null };
 
+/** Hand what a process pane is showing to the session beside it.
+ *
+ *  **Why this exists.** A watcher's output is what explains what an agent just
+ *  broke, and the only ways across were to retype it or to describe it. This types
+ *  it, so it lands as an ordinary user turn — which is what it is: you pointed at
+ *  it, and the transcript should read as though a human did.
+ *
+ *  **Agnostic on purpose.** It sends *what the pane shows*, never "the build
+ *  error": no output is parsed here, no process is special, and the only name
+ *  involved is the one the repo's own config gave it. A repo with three watchers
+ *  gets the same behaviour three times.
+ *
+ *  The daemon owns *when* — only it knows whether a keystroke would land in a
+ *  prompt, a permission dialog or the middle of a turn (`api::tell_session`) — so
+ *  a refusal comes back as its sentence rather than being guessed at here. */
+async function sendPaneToSession(target, label) {
+  const s = currentSession();
+  if (!s) return toast('no session in this workspace to send to', true);
+  const text = Term.readTerm(target);
+  if (!text) return toast('that pane has nothing to send', true);
+  // Named, so the turn does not open with a wall of output nobody attributed.
+  // The name is the config's, which is what keeps this free of any one workflow.
+  const body = { text: `${label} says:\n\n${text}` };
+  try {
+    await call(`/api/session/${encodeURIComponent(s.id)}/tell`, body);
+    toast(`sent to ${s.title || 'the session'}`);
+  } catch (e) {
+    toast(e.message, true);
+  }
+}
+
+/** The one menu, offered from the tab and from the pane itself.
+ *
+ *  Two items rather than one, because the wording is the affordance: with a
+ *  selection this sends *that*, and without one it sends the tail. A single item
+ *  saying "send output" would leave you guessing which. */
+function paneMenu(target, label) {
+  const picked = Term.hasSelection(target);
+  const to = currentSession();
+  const named = to ? (to.title || 'the session') : null;
+  return [
+    picked
+      ? [`send selection to ${named ?? 'session'}`, null,
+        named ? () => sendPaneToSession(target, label) : null]
+      : [`send the last lines to ${named ?? 'session'}`, null,
+        named ? () => sendPaneToSession(target, label) : null],
+  ];
+}
+
 function renderDrawer() {
   if (tabDrag !== null) return;
   const wsId = currentWorkspaceId();
@@ -757,6 +806,11 @@ function renderDrawer() {
       : p.name;
     tab.appendChild(el('span', null, label));
     tab.onclick = () => { setSelectedProc(wsId, p.id); setDrawerTouched(true); renderDrawer(); };
+    /* The tab's menu, which is the same one the pane body offers. It goes here
+       rather than on a fourth glyph: the tab already holds a dot, a label, ✕, ⟳
+       and a drag, and "type this into your agent" one stray click from Close and
+       Restart is the wrong neighbourhood. */
+    tab.oncontextmenu = (ev) => openMenu(ev, paneMenu(`proc:${p.id}`, label));
 
     // The same glyph every other dismiss uses; this one was a multiplication sign.
     const x = el('span', 'x', '\u2715');
@@ -833,6 +887,19 @@ function renderDrawer() {
   }
 
   const shown = Term.show(active ? `proc:${active}` : null, $('drawerbody'));
+  /* The pane's own menu, which is where this feature is really used: you select
+     the lines that matter and send *those*. Registered on the wrapper rather than
+     on the host xterm builds, because `Term.show` replaces hosts and a listener on
+     one would go with it — and the wrapper is the element that survives.
+     Set every render, which is idempotent: one property, one handler. */
+  $('drawerbody').oncontextmenu = (ev) => {
+    if (!active) return;
+    const p = procs.find((x) => x.id === active);
+    if (!p) return;
+    // The tab's own label, so the turn says the same word the strip does.
+    const label = p.kind.kind === 'shell' ? 'the shell' : p.name;
+    openMenu(ev, paneMenu(`proc:${active}`, label));
+  };
   if (shown && pendingProcFocus && active === pendingProcFocus) {
     setPendingProcFocus(null);
     // After the frame that un-hides it: xterm refuses focus while its host has no

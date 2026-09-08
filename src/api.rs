@@ -1151,6 +1151,97 @@ pub async fn answer(
     Ok(Json(json!({ "answered": body.answer })))
 }
 
+/// Text the drawer is handing to a session, and how much of it is allowed.
+#[derive(Deserialize)]
+pub struct TellBody {
+    pub text: String,
+}
+
+/// A prompt is a line somebody reads, not a log. 8 KB is about 100 lines of build
+/// output, which is more than the pane offers to send and far less than a ring
+/// buffer holds (~3600 lines): a paste of that size is not a message, and it costs
+/// the agent its context to be told so.
+const TELL_MAX: usize = 8 * 1024;
+
+/// Hand a session some text, as though you had typed it.
+///
+/// **The drawer's way of pointing at something.** A process pane holds the output
+/// that explains what an agent just broke, and the only ways to get it across were
+/// to retype it or to describe it. This types it, so it lands as an ordinary user
+/// turn — which is what it is: you asked for it, and the transcript should say a
+/// human said so.
+///
+/// The daemon owns *when*, because only it knows the session's state, and the
+/// guards are [`nudge_sessions`]' with one target instead of every eligible one.
+/// They are the whole safety story here:
+///
+/// * **Never into a working session.** A keystroke mid-turn is a stray line of
+///   input, and Claude Code takes `Enter` on a half-typed prompt as a submit.
+/// * **Never into a permission prompt or an open question.** Both read a keystroke
+///   as an answer — consent, or whichever choice is highlighted. Refused by name,
+///   so a press that did nothing says why rather than looking broken.
+/// * **Never into an archived one**, which has no pty at all.
+///
+/// The text is the *client's*, not read out of the ring buffer here, because the
+/// useful payload is usually a selection and only the pane knows what you
+/// highlighted. That is no wider a door than the app token already opens
+/// (`nudge_sessions` takes arbitrary text too, for every session at once).
+pub async fn tell_session(
+    State(app): State<Arc<AppState>>,
+    Path(id): Path<Uuid>,
+    Json(body): Json<TellBody>,
+) -> ApiResult<serde_json::Value> {
+    let text = body.text.trim_end().to_string();
+    if text.trim().is_empty() {
+        refuse!("nothing to send");
+    }
+    if text.len() > TELL_MAX {
+        refuse!(
+            "that is {} KB — send a selection or the last lines, not the whole buffer",
+            text.len() / 1024
+        );
+    }
+
+    let pty = {
+        let inner = app.inner.read().await;
+        let s = inner
+            .sessions
+            .get(&id)
+            .ok_or_else(|| anyhow::anyhow!("no such session {id}"))?;
+        let name = s.label().unwrap_or(&s.workspace).to_string();
+        let Some(pty) = s.pty.clone().filter(|p| p.is_alive()) else {
+            refuse!("{name} is not running — resume it first");
+        };
+        match &s.state {
+            crate::model::State::Starting => {
+                refuse!("{name} is still starting")
+            }
+            crate::model::State::YourTurn { reason, .. } => match reason {
+                // Both take a keystroke as an answer rather than as a prompt.
+                crate::model::TurnReason::NeedsPermission => {
+                    refuse!("{name} is waiting on a permission prompt; answer that first")
+                }
+                crate::model::TurnReason::AskedAQuestion => {
+                    refuse!("{name} is asking you something; answer that first")
+                }
+                _ => {}
+            },
+            // Working, and everything else that is not a prompt: mid-turn.
+            other => {
+                if other.is_busy() {
+                    refuse!("{name} is mid-turn; wait for it to finish")
+                }
+            }
+        }
+        pty
+    };
+
+    // The same two-step every typed line uses: write, wait, then send. Claude
+    // Code's prompt box drops a `\r` that arrives in the same breath as the text.
+    pty.type_and_send(text.as_bytes(), std::time::Duration::from_millis(500));
+    Ok(Json(json!({ "told": true })))
+}
+
 /// The two option values [`allow_outside`] offers, and the one a yes carries.
 ///
 /// Constants because three places have to agree on the spelling: the question,
@@ -2749,6 +2840,85 @@ mod tests {
     }
 
     /// The whole point of the channel: the agent's poll is released by the answer
+    /// The drawer may hand a session text only when a keystroke means "a prompt".
+    ///
+    /// Every refusal here is a state where `Enter` means something else — a submit
+    /// mid-turn, consent to a permission prompt, an answer to a question — so this
+    /// walks them rather than testing the happy path alone. Driven against a real
+    /// pty, because `type_and_send` is what the guards are protecting.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn text_reaches_a_session_at_its_prompt_and_no_other_state() {
+        use crate::model::{Session, State as S, TurnReason as R, MAIN};
+        use crate::pty::PtyHandle;
+        use std::time::SystemTime;
+
+        let (app, dir) = crate::testutil::app("tell");
+        let id = Uuid::new_v4();
+        // `cat` echoes, so the pty is both alive and readable — the happy path can
+        // assert the text actually arrived rather than that nothing complained.
+        let spawned = PtyHandle::spawn(&["cat".to_string()], &dir, &[], &[], (24, 80))
+            .expect("a pty to type into");
+        {
+            let mut inner = app.inner.write().await;
+            let mut s = Session::new(id, MAIN.to_string(), dir.clone(), None);
+            s.pty = Some(spawned.handle.clone());
+            s.had_a_turn = true;
+            inner.sessions.insert(id, s);
+        }
+        let set = |st: S| {
+            let app = app.clone();
+            async move { app.with_session(id, |s| s.set_state(st)).await }
+        };
+        let tell = |text: &str| {
+            let (app, text) = (app.clone(), text.to_string());
+            async move {
+                tell_session(State(app), Path(id), Json(TellBody { text })).await
+            }
+        };
+
+        // Mid-turn: a stray line of input, and `Enter` submits whatever is typed.
+        set(S::Working).await;
+        let said = |e: ApiError| format!("{:#}", e.0);
+        let e = said(tell("ng-watch said: TS2345").await.expect_err("mid-turn is refused"));
+        assert!(e.contains("mid-turn"), "{e}");
+
+        // Both of these read a keystroke as an *answer*.
+        set(S::YourTurn { since: SystemTime::now(), reason: R::NeedsPermission }).await;
+        assert!(tell("x").await.is_err(), "a permission prompt takes it as consent");
+        set(S::YourTurn { since: SystemTime::now(), reason: R::AskedAQuestion }).await;
+        assert!(tell("x").await.is_err(), "a question takes it as the highlighted choice");
+
+        // Size, which is the other half of "a prompt is not a log".
+        set(S::YourTurn { since: SystemTime::now(), reason: R::TurnComplete }).await;
+        assert!(tell(&"x".repeat(9 * 1024)).await.is_err(), "a buffer-sized paste is refused");
+        assert!(tell("   ").await.is_err(), "and so is nothing at all");
+
+        // At its prompt: it goes, and `cat` hands it back.
+        assert!(
+            tell("ng-watch said: TS2345").await.is_ok(),
+            "a session at its prompt takes it",
+        );
+        let seen = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let out = String::from_utf8_lossy(&spawned.handle.snapshot()).into_owned();
+                if out.contains("TS2345") {
+                    return out;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+        })
+        .await;
+        assert!(seen.is_ok(), "the text never reached the pty");
+
+        // A session with no pty is a resume, not a target.
+        app.with_session(id, |s| s.pty = None).await;
+        let e = said(tell("x").await.expect_err("nothing to type into"));
+        assert!(e.contains("resume it first"), "{e}");
+
+        let _ = spawned.handle.kill();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// rather than by a timeout, and it comes back carrying the choice.
     #[tokio::test]
     async fn an_answer_releases_the_poll_the_agent_is_sitting_in() {

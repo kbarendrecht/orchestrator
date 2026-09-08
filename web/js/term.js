@@ -635,4 +635,43 @@ function applyScale() {
   refit();
 }
 
-export { showTerm as show, closeTerm as close, refit, applyScale };
+/** What a pane is showing, as text somebody could read: the selection if there is
+ *  one, else the last `lines` non-empty rows.
+ *
+ *  **Read out of xterm rather than out of the daemon's ring buffer**, for two
+ *  reasons that point the same way. The useful payload is usually a *selection*,
+ *  and only the pane knows what you highlighted. And xterm has already parsed the
+ *  stream, so what it holds is text — no escape sequences, no half-written line,
+ *  no cursor moves to strip.
+ *
+ *  `null` when the pane is not attached or holds nothing. Blank rows are dropped
+ *  from the tail because a watcher that has been idle leaves the screen padded,
+ *  and 50 rows of nothing is not what you meant to send.
+ */
+function readTerm(target, lines = 50) {
+  const entry = terms.get(target);
+  if (!entry) return null;
+  const picked = entry.term.getSelection();
+  if (picked && picked.trim()) return picked.replace(/\s+$/, '');
+  const buf = entry.term.buffer.active;
+  const out = [];
+  // Backwards from the last row, so the *end* of the output is what survives the
+  // bound — a build error is at the bottom.
+  for (let y = buf.length - 1; y >= 0 && out.length < lines; y--) {
+    const row = buf.getLine(y);
+    if (!row) continue;
+    const text = row.translateToString(true).replace(/\s+$/, '');
+    if (!text && !out.length) continue;   // trailing blanks, not content
+    out.push(text);
+  }
+  const text = out.reverse().join('\n').replace(/^\n+|\n+$/g, '');
+  return text || null;
+}
+
+/** Whether this pane has a selection, which is what the menu's wording turns on. */
+function hasSelection(target) {
+  const entry = terms.get(target);
+  return !!entry && !!entry.term.getSelection().trim();
+}
+
+export { showTerm as show, closeTerm as close, refit, applyScale, readTerm, hasSelection };

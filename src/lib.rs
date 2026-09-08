@@ -581,6 +581,7 @@ fn router(app: Arc<AppState>) -> Router {
         // matcher cannot know.
         .route("/api/session/:id/teardown", post(api::teardown_from_session))
         .route("/api/session/:id/handoff", post(api::session_handoff))
+        .route("/api/session/:id/tell", post(api::tell_session))
         .route("/api/session/:id/ask", post(api::ask))
         .route("/api/session/:id/ask/:ask/wait", get(api::ask_wait))
         .route("/api/session/:id/answer", post(api::answer))
