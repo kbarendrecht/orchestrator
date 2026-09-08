@@ -525,7 +525,7 @@ src/
   proposal.rs   what triage proposes: Stance × Mode, positions, patches, stories
   post.rs       the review batch end to end
   patch.rs      applying and committing what you approved, with staleness checks
-  prompt.rs     rendering the vendored prompts in commands/
+  prompt.rs     rendering commands/story.md, the one prompt that is not a skill
   skills.rs     the vendored skills in skills/, written out as the plugin dir
                 every spawn is handed with --plugin-dir
   story.rs      filing a tracker story for a fair-but-out-of-scope point

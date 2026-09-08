@@ -253,7 +253,21 @@ mean *this* repo; if you do, name it.
   `.claude-plugin/plugin.json` names the namespace, the skill lives at
   `skills/<name>/SKILL.md`, and either one in the wrong place fails silently.
   **Adding a skill is a Rust change**, `include_str!` again, like the SPA's
-  modules and the vendored prompts.
+  modules and `commands/story.md`.
+  **Three of the four vendored prompts are skills now** (`fix-pr`, `resolve-run`,
+  `review`), and the conversion has one rule worth knowing: a prompt is substituted
+  per run and written to a file, a skill is static and typed as one line, so every
+  value a template interpolated has to arrive another way. Two ways are in use, and
+  which one is not a style choice. A run that already has a token asks
+  `/api/pr/:n/triage-context` (`triage`, `review`). A run that deliberately has
+  none reads its values out of the environment (`fix-pr`, `resolve-run`), because a
+  route would have meant handing an unattended force-pushing run a credential to
+  read what the daemon can just put there. `skills::VAR_*` names those variables
+  once, since the spawner sets them and the skill reads them and a rename on one
+  side alone is silent.
+  **`story` cannot become one**: its `--allowedTools` is `mcp__<tracker> Read
+  Write`, and a skill invocation is not in that allowlist — so it keeps its prompt,
+  and `prompt.rs` exists for that one template.
 - **The daemon's session id is Claude's session id.** Every spawn passes
   `--session-id`, which is what makes `--resume`, transcript lookup and hook
   correlation need no mapping. A fork passes `--session-id <new> --resume <old>
@@ -790,7 +804,7 @@ mean *this* repo; if you do, name it.
   `git::refused_as_already_checked_out` matches either. The refusal is the
   invariant; its phrasing is not.
 - **A route an agent calls needs a line in `is_ask_route`, and forgetting it fails
-  as `bad origin`.** The vendored prompts curl with no `Origin` and carry the
+  as `bad origin`.** The vendored skills curl with no `Origin` and carry the
   session's ask token, not the app token — so a session route missing from that
   list is refused twice: the Origin check has no arm for it, and `needs_token`
   then wants a token the agent is deliberately not given.
