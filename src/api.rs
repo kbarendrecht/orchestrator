@@ -1283,6 +1283,25 @@ pub async fn allow_outside(
     if path.is_empty() {
         refuse!("name the path you were refused");
     }
+    /* **Absolute, and folded, because the grant is *compared* — not stored and
+       forgotten.** `guard::isolation` judges paths it has resolved against the
+       command's own cwd, so a grant kept as the agent's literal `../other` or `.`
+       matches nothing it will ever be asked about. And the loop that leaves is
+       silent: `outside_granted` matches the same literal string, so every later
+       `orch outside ../other` short-circuits to `allowed` without a question being
+       raised, while the guard goes on refusing. The agent then retries a permission
+       it believes it holds.
+       Refused rather than resolved here, because *this* process is the daemon and
+       resolving against its cwd would invent a path in the wrong tree — and the
+       refusal the agent was handed already names an absolute one. */
+    if !std::path::Path::new(&path).is_absolute() {
+        refuse!(
+            "{path} is not an absolute path — ask about the one the refusal named"
+        );
+    }
+    let path = crate::guard::fold(std::path::Path::new(&path))
+        .to_string_lossy()
+        .into_owned();
     {
         let inner = app.inner.read().await;
         let s = inner
@@ -2839,7 +2858,6 @@ mod tests {
         assert!(upgrade_app(State(app.clone())).await.is_err(), "one run at a time");
     }
 
-    /// The whole point of the channel: the agent's poll is released by the answer
     /// The drawer may hand a session text only when a keystroke means "a prompt".
     ///
     /// Every refusal here is a state where `Enter` means something else — a submit
@@ -2919,6 +2937,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// The whole point of the channel: the agent's poll is released by the answer
     /// rather than by a timeout, and it comes back carrying the choice.
     #[tokio::test]
     async fn an_answer_releases_the_poll_the_agent_is_sitting_in() {

@@ -204,8 +204,11 @@ main() {
   step "waiting for check on $(echo "$head" | cut -c1-8)"
   deadline=$(( $(date +%s) + 1800 ))
   while :; do
+    # `|| true` because this is under `set -e`: one rate limit or dropped
+    # connection would otherwise abort the wait rather than retrying on the next
+    # tick, and the empty answer already has an arm below.
     run=$(gh run list --workflow=check.yml --commit "$head" --limit 1 \\
-            --json status,conclusion,url --jq '.[] | .status + " " + (.conclusion // "") + " " + .url')
+            --json status,conclusion,url --jq '.[] | .status + " " + (.conclusion // "") + " " + .url' || true)
     status=$(echo "$run" | cut -d' ' -f1)
     case $status in
       completed)

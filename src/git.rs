@@ -2116,8 +2116,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// The guards that stand between "you closed the last pane in main" and
-    /// someone's uncommitted work landing on develop.
     /// A ref has the files it was committed with, and not the ones beside them.
     ///
     /// The question a blob URL is about: the changed-files pane lists untracked
@@ -2210,6 +2208,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&real);
     }
 
+    /// The guards that stand between "you closed the last pane in main" and
+    /// someone's uncommitted work landing on develop.
     #[test]
     fn parking_leaves_a_dirty_checkout_exactly_where_it_is() {
         let dir = std::env::temp_dir().join(format!(

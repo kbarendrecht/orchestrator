@@ -159,13 +159,6 @@ async function openPr(number, where) {
   }
 }
 
-/** Spawn the session that answers #`number`'s threads, and switch to its pane. */
-/** Start the read pass on a PR, and land on the session doing it.
- *
- *  The overlay is deliberately not opened. The pass takes minutes of somebody
- *  else's work, and a full screen saying so is a window spent on one sentence:
- *  the bar carries it beside the pane where the agent's own questions appear, and
- *  `MOD⇧R` is how you go to the cards once it says they are there. */
 /** Start the pane pass on a PR, and land on the session doing it. */
 async function startHandleReview(number, btn) {
   if (btn) btn.disabled = true;
@@ -180,6 +173,12 @@ async function startHandleReview(number, btn) {
   }
 }
 
+/** Start the read pass on a PR, and land on the session doing it.
+ *
+ *  The overlay is deliberately not opened. The pass takes minutes of somebody
+ *  else's work, and a full screen saying so is a window spent on one sentence:
+ *  the bar carries it beside the pane where the agent's own questions appear, and
+ *  `MOD⇧R` is how you go to the cards once it says they are there. */
 async function startTriage(number, btn) {
   // No button when this came from a right-click on the row.
   if (btn) btn.disabled = true;

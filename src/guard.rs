@@ -295,6 +295,15 @@ fn cd_target(segment: &str) -> Option<Option<PathBuf>> {
     }
 }
 
+/// Fold away `.` and `..` in an absolute path, textually.
+///
+/// The spelling half of [`resolve`], for the one caller with no cwd to resolve
+/// against: `api::allow_outside` stores a grant that this module later compares,
+/// so `/repo/../repo` and `/repo` have to be the same string on both sides.
+pub(crate) fn fold(path: &Path) -> PathBuf {
+    resolve(None, path)
+}
+
 /// Resolve `path` against `at` and fold away `.` and `..`, textually.
 ///
 /// No filesystem, so this stays a pure rule with pure tests, and a symlink is not

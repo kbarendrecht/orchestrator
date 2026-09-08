@@ -1408,18 +1408,42 @@ async fn park_main(app: &Arc<AppState>) {
        the moment it is needed, and only from a tree **nobody is working in**: the
        content does not move (`release_branch` cuts at the same commit), but a name
        changing under a live agent is a surprise the log cannot undo. A tree that is
-       busy leaves main where it is, and says so. */
-    let holder = {
-        let (at, base_ref) = (path.clone(), base_ref.clone());
+       busy leaves main where it is, and says so.
+
+       **Asked in the same breath as "can main park at all", and that order is the
+       whole of it.** Releasing first and finding out afterwards renames a
+       worktree's branch for a park that then does not happen — `park_on_base`
+       returns `Ok(None)` on a dirty main, silently and by design, so a session
+       closed after editing files in main would have undone the swap for nothing
+       and said only that the tree "is on worktree-w now". Nothing moves unless
+       everything can. */
+    let plan = {
+        let (at, base_ref, exclude) = (path.clone(), base_ref.clone(), exclude.clone());
         tokio::task::spawn_blocking(move || {
             let base = crate::git::base_checkout_branch(&at, &base_ref)?;
-            let holder = crate::git::holder_of_branch(&at, &base).ok().flatten()?;
-            (holder != at).then_some((holder, base))
+            // Already there, or carrying work: `park_on_base` would do nothing, so
+            // there is nothing to clear the way for either.
+            if crate::git::current_branch(&at).ok()? == base {
+                return None;
+            }
+            if !crate::git::is_clean_excluding(&at, Some(&exclude)).ok()? {
+                return None;
+            }
+            let holder = crate::git::holder_of_branch(&at, &base)
+                .ok()
+                .flatten()
+                .filter(|h| h != &at);
+            Some((base, holder))
         })
         .await
         .ok()
         .flatten()
     };
+    // Nothing parkable: dirty, already on base, or no base ref fetched yet.
+    let Some((base, holder)) = plan else {
+        return;
+    };
+    let holder = holder.map(|tree| (tree, base.clone()));
     if let Some((tree, base)) = holder {
         let ws = app.workspace_for_path(&tree).await;
         let busy = match &ws {
@@ -1445,10 +1469,20 @@ async fn park_main(app: &Arc<AppState>) {
         );
         let at = tree.clone();
         match tokio::task::spawn_blocking(move || crate::git::release_branch(&at, &stem)).await {
-            Ok(Ok(fresh)) => tracing::info!(
-                "{} was on {base} and main needs it; it is on {fresh} now",
-                tree.display()
-            ),
+            Ok(Ok(fresh)) => {
+                /* The record follows the branch, because `reconcile` only ever
+                   *adds* to a workspace's set: left in, that tree would go on
+                   claiming the base for good, and two workspaces claiming it is
+                   what `worktree_holding` and the snapshot's PR lookup both read.
+                   `move_out_of_main` does the same for the same reason. */
+                if let Some(id) = &ws {
+                    app.forget_branch(id, &base).await;
+                }
+                tracing::info!(
+                    "{} was on {base} and main needs it; it is on {fresh} now",
+                    tree.display()
+                );
+            }
             Ok(Err(e)) => {
                 tracing::warn!("main stays off {base}: {} could not let go of it: {e:#}", tree.display());
                 return;
@@ -1469,13 +1503,10 @@ async fn park_main(app: &Arc<AppState>) {
        branch is not lost either — it is still a branch, and `move_branch_out` is how
        it gets a tree if you want one.
 
-       `park_on_base` still refuses a dirty main, which is the safety that matters:
-       a checkout carries uncommitted work with it. */
+       `park_on_base` re-checks the dirty tree itself, which is not a duplicate
+       worth removing: the plan above was read before the base was reclaimed, and
+       this is the check that runs against the tree as it stands now. */
     let moved = tokio::task::spawn_blocking(move || {
-        // Resolved, not the raw branch part: the default base is `origin/HEAD`, and
-        // `git switch HEAD` fails with "a branch is expected". Unresolvable means
-        // the symref has not been fetched yet, so there is nowhere to park.
-        let base = crate::git::base_checkout_branch(&path, &base_ref)?;
         match crate::git::park_on_base(&path, &base, Some(&exclude)) {
             Ok(was) => was,
             Err(e) => {
@@ -2974,12 +3005,35 @@ mod tests {
             "git must refuse a branch checked out elsewhere",
         );
 
+        /* **Nothing moves unless everything can.** A dirty main cannot park —
+           `park_on_base` says so by doing nothing — so taking the base off the
+           worktree first would undo a swap for a park that never happens, and say
+           only that the tree "is on worktree-w now". Asserted before the happy
+           path, because the happy path would hide it. */
+        std::fs::write(repo.join("f.txt"), "editing in main\n").unwrap();
+        park_main(&app).await;
+        assert_eq!(branch(), "feature/x-2", "a dirty main does not park");
+        assert_eq!(
+            crate::git::current_branch(&tree).unwrap(),
+            "main",
+            "and nothing was taken off the worktree for it",
+        );
+        git(&["checkout", "-q", "--", "f.txt"], &repo);
+
         park_main(&app).await;
         assert_eq!(branch(), "main", "main took its base back");
         assert_eq!(
             crate::git::current_branch(&tree).unwrap(),
             "worktree-w",
             "the tree keeps its content and gets a name of its own",
+        );
+        /* And the *record* followed the branch. `reconcile` only ever adds to a
+           workspace's set, so a base left in there is claimed by two workspaces
+           for good — which `worktree_holding` and the snapshot's PR lookup both
+           read. Asserted here because the git side passing says nothing about it. */
+        assert!(
+            !app.inner.read().await.workspaces["w"].branches.iter().any(|b| b == "main"),
+            "the worktree still claims the base it gave up",
         );
 
         let _ = std::fs::remove_dir_all(&dir);

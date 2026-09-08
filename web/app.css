@@ -797,6 +797,14 @@ body.row-resizing{cursor:row-resize;user-select:none}
   font-family:var(--mono);font-size:.9em;padding:0 4px;border-radius:2px;
   border:1px solid var(--line);background:var(--raised);color:var(--text);
 }
+/* A value the pane reports and no control can set — the tracker, which is three
+   fields and a per-site host that no dropdown can spell. It borrowed `.settings-in`
+   for its metrics and so borrowed the border, the background and the focus ring
+   too, which reads as a field that ignores typing. Flat, dim, and no edge: a
+   label, which is what it is. */
+.settings-in.settings-ro{
+  border-color:transparent;background:none;color:var(--dim);padding-left:0;cursor:default;
+}
 .settings-row{display:flex;align-items:center;gap:12px;margin-top:18px}
 .settings-info{margin-top:9px}
 .settings-v{margin-left:auto;font-family:var(--mono);font-size:calc(11.5px * var(--fs));color:var(--dim)}

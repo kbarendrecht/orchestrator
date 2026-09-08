@@ -609,13 +609,6 @@ impl<'de> Deserialize<'de> for Tracker {
     /// is for anything historical.
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
         #[derive(Deserialize)]
-        #[serde(untagged)]
-        enum Shape {
-            Spelled(Spelled),
-            /// Only to be refused with a message.
-            Name(String),
-        }
-        #[derive(Deserialize)]
         struct Spelled {
             mcp_server: String,
             host: String,
@@ -624,7 +617,24 @@ impl<'de> Deserialize<'de> for Tracker {
             #[serde(default)]
             stub: bool,
         }
-        match Shape::deserialize(d)? {
+        /* **Dispatched on the value, not with `untagged`.** That attribute reports
+           `data did not match any variant` and throws the *field* error away, so an
+           object missing `host` — or with a typo'd key — got a message worse than
+           serde's own, on a config whose whole file is then dropped
+           (`Config::existing`). The shape is known from one look: a string is a
+           name, anything else is the object and gets to fail on its own terms. */
+        let v = serde_json::Value::deserialize(d).map_err(serde::de::Error::custom)?;
+        let shape = match v {
+            serde_json::Value::String(name) => Shape::Name(name),
+            other => Shape::Spelled(
+                serde_json::from_value::<Spelled>(other).map_err(serde::de::Error::custom)?,
+            ),
+        };
+        enum Shape {
+            Spelled(Spelled),
+            Name(String),
+        }
+        match shape {
             Shape::Spelled(s) => Ok(Tracker {
                 mcp_server: s.mcp_server,
                 host: s.host,
@@ -1237,6 +1247,14 @@ mod tests {
         let guessed = refused(r#"{"main_checkout":"/tmp/x","tracker":"jira"}"#);
         assert!(guessed.contains("mcp_server"), "the refusal must name the fix: {guessed}");
         assert!(guessed.contains("app.shortcut.com"), "{guessed}");
+
+        /* And an *object* fails on its own terms, which `#[serde(untagged)]` cost:
+           it answered `data did not match any variant` for a missing field, on a
+           config whose whole file is then dropped. The key that is wrong is the
+           only useful thing to say. */
+        let missing = refused(r#"{"main_checkout":"/tmp/x","tracker":{"mcp_server":"linear"}}"#);
+        assert!(missing.contains("host"), "the field is what to name: {missing}");
+        assert!(!missing.contains("did not match any variant"), "{missing}");
         let none = refused(r#"{"main_checkout":"/tmp/x","tracker":"none"}"#);
         assert!(none.contains("drop the key"), "{none}");
     }
