@@ -1860,6 +1860,22 @@ pub fn stash(cwd: &Path) -> Result<()> {
     Ok(())
 }
 
+/// How long the repo's pre-commit hooks may take.
+///
+/// Generous for [`NET_TIMEOUT_SECS`]'s reason and one more: a first run builds an
+/// environment per hook, which clones and installs, and a hook is itself a whole
+/// linter over the files it was given. This is a backstop against hanging.
+const PRE_COMMIT_TIMEOUT_SECS: u64 = 300;
+
+/// Does this error chain end in the kernel saying the binary is not there?
+fn is_not_found(e: &anyhow::Error) -> bool {
+    e.chain().any(|c| {
+        c.downcast_ref::<std::io::Error>()
+            .map(|io| io.kind() == std::io::ErrorKind::NotFound)
+            .unwrap_or(false)
+    })
+}
+
 /// What running the repo's pre-commit hooks concluded.
 #[derive(Debug, PartialEq, Eq)]
 pub enum PreCommit {
@@ -1888,6 +1904,13 @@ pub enum PreCommit {
 ///
 /// Called with the patches applied but **not yet committed**, so a rewrite can be
 /// refused with nothing to undo.
+///
+/// **Bounded, like every other child process the daemon starts.** This one is
+/// somebody else's program running somebody else's hooks: on a cold cache
+/// `pre-commit` clones each hook's repository and builds its environment, so it
+/// reaches the network and it can take minutes — and it sits on the request chain
+/// that answers a review. It was a plain `Command::output()`, which has no deadline
+/// at all, so a hook waiting on a prompt or a dead host hung the request for good.
 pub fn pre_commit(cwd: &Path, files: &[String]) -> Result<PreCommit> {
     if !cwd.join(".pre-commit-config.yaml").exists() {
         return Ok(PreCommit::NotConfigured);
@@ -1900,15 +1923,15 @@ pub fn pre_commit(cwd: &Path, files: &[String]) -> Result<PreCommit> {
     // "passed and rewrote your file" is to look.
     let before = hash_files(cwd, files);
 
-    let mut args: Vec<&str> = vec!["run", "--files"];
-    args.extend(files.iter().map(String::as_str));
-    let out = match Command::new("pre-commit")
-        .args(&args)
-        .current_dir(cwd)
-        .output()
-    {
+    let mut argv: Vec<String> = vec!["pre-commit".into(), "run".into(), "--files".into()];
+    argv.extend(files.iter().cloned());
+    let out = match crate::proc::run_bounded(cwd, PRE_COMMIT_TIMEOUT_SECS, &argv, "pre-commit") {
         Ok(o) => o,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(PreCommit::NotInstalled),
+        // The one error that is not a failure. `run_bounded` reports a spawn error
+        // through `anyhow::Context`, so the kernel's own answer is a source rather
+        // than the top of the chain — and "not installed" has to keep reading as a
+        // warning, not as a refused review.
+        Err(e) if is_not_found(&e) => return Ok(PreCommit::NotInstalled),
         Err(e) => return Err(e).context("running pre-commit"),
     };
 
