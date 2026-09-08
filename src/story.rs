@@ -182,7 +182,21 @@ impl StoryRef {
         let path = path
             .split_once(['?', '#'])
             .map_or(path, |(before, _)| before);
-        path.split('/').any(|seg| seg == number)
+        /* A segment equal to the number, **or to the whole id**.
+
+           Which of the two a tracker uses is not a detail: Shortcut's URLs carry
+           the bare number (`/story/12345` for `sc-12345`), while Linear's and
+           Jira's carry the whole key (`/issue/ENG-123`, `/browse/ABC-123`). The
+           digits-only match this replaced would have refused every story either of
+           those files — and refused it as "the agent reported an id and URL that
+           disagree", which reads like the agent's fault rather than a rule that
+           only ever fitted one tracker.
+           Still two exact comparisons against one path segment, so the decoy the
+           test names (a slug with digits of its own) is refused exactly as before.
+           Case-insensitive for the id because a key is conventionally uppercase and
+           an agent writing prose around it may not be; a number has no case. */
+        path.split('/')
+            .any(|seg| seg == number || seg.eq_ignore_ascii_case(&self.id))
     }
 }
 
@@ -954,6 +968,52 @@ mod tests {
         let mut empty = story();
         empty.id = "sc-".into();
         assert!(!empty.consistent(HOST));
+    }
+
+    /// The other two trackers anyone is likely to point this at, whose URLs carry
+    /// the whole key rather than the bare number.
+    ///
+    /// Looked up rather than guessed: Linear is `linear.app/<workspace>/issue/ENG-123/<slug>`
+    /// and Jira is `<site>.atlassian.net/browse/ABC-123`. Both parse as an id here
+    /// already — `well_formed_id` takes one to eight letters and a number — so the
+    /// only thing that refused them was the path match.
+    #[test]
+    fn a_key_in_the_path_agrees_with_its_id_too() {
+        let linear = StoryRef::new(
+            "ENG-123".into(),
+            "https://linear.app/acme/issue/ENG-123/stop-the-flaky-poller".into(),
+            "linear.app",
+        );
+        assert!(linear.is_some(), "a Linear issue URL was refused");
+
+        let jira = StoryRef::new(
+            "ABC-123".into(),
+            "https://acme.atlassian.net/browse/ABC-123".into(),
+            "acme.atlassian.net",
+        );
+        assert!(jira.is_some(), "a Jira browse URL was refused");
+
+        // The pair still has to agree: a different key in the path is a different
+        // issue, whichever tracker it is.
+        assert!(
+            StoryRef::new(
+                "ENG-123".into(),
+                "https://linear.app/acme/issue/ENG-999/other".into(),
+                "linear.app",
+            )
+            .is_none(),
+            "a mismatched key passed"
+        );
+        // And the host rule is untouched by any of it.
+        assert!(
+            StoryRef::new(
+                "ENG-123".into(),
+                "https://evil.example/acme/issue/ENG-123".into(),
+                "linear.app",
+            )
+            .is_none(),
+            "a foreign host passed"
+        );
     }
 
     /// **The URL is agent output, and its input is third-party review text.** The
