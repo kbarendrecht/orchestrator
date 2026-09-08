@@ -425,7 +425,7 @@ is logged and the pty is killed anyway.
   git-only: see the push guard below. Teardown is a six-check preflight, then your
   repo's `WorktreeRemove` hooks, then `git worktree remove`. Never `rm -rf`, because
   a worktree is full of symlinks into main.
-- **The review flow, and there are two.** The rail's `resolve` button starts
+- **The review flow, and there are two.** The rail's `handle` button starts
   `/orchd:handle-review` in a pane: one agent in the PR's worktree, reading the
   threads, applying what is right, asking you about the rest, and drafting replies
   it posts only on an explicit go. That is the default because the other one is not

@@ -102,7 +102,12 @@ let picked = null;
  *  worse default than one that hands you a terminal. */
 function reviewButtons(p) {
   const wrap = el('span', 'prpair');
-  const btn = el('button', 'pract', 'resolve');
+  /* `handle`, not `resolve`. GitHub has a literal "Resolve conversation" button,
+     and this flow's own first paragraph says marking a thread resolved stays the
+     reviewer's — so a row button saying `resolve`, beside a PR, promised the one
+     thing the pass refuses to do. It also now says the same word as the skill it
+     starts. */
+  const btn = el('button', 'pract', 'handle');
   btn.title = `Work #${p.number}'s review threads in a pane you can take over`;
   btn.onclick = (ev) => {
     // The row is an anchor to the PR on GitHub; this is not that.
@@ -137,7 +142,7 @@ function prMenu(p, btn) {
        questionable — the answer for now is that the cards are not finished, so the
        flow that needs no new screen is the default and this menu is where the other
        one lives. */
-    ['resolve in a pane', null, () => startHandleReview(p.number, btn)],
+    ['handle in a pane', null, () => startHandleReview(p.number, btn)],
     ['read into the cards', null, () => startTriage(p.number, btn)],
   ];
 }
@@ -167,7 +172,7 @@ async function startHandleReview(number, btn) {
   try {
     const r = await call(`/api/pr/${number}/handle-review`);
     setPendingSelect(r.session);
-    toast(`#${number} in a pane`);
+    toast(`handling #${number}`);
   } catch (e) {
     toast(e.message, true);
   } finally {

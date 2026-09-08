@@ -640,12 +640,16 @@ mean *this* repo; if you do, name it.
   `proposal_tokens` says it is deliberately not persisted, and that is still right
   — the token is only ever compared against the record, so re-minting is the fix
   and persisting would be the wrong one.
-- **The rail's review button starts a pane, not the overlay.** `/orchd:handle-review`
+- **The rail's `handle` button starts a pane, not the overlay.** `/orchd:handle-review`
   (`skills/handle-review/SKILL.md`, vendored from the monorepo's own `/resolve` and
   generalised) is one agent in the PR's worktree with a person watching: it asks with
   `AskUserQuestion`, drafts replies and posts nothing without a go. The
   triage-into-cards flow is the menu's second review item and still carries out what
   the cards decide.
+  The label is `handle` rather than `resolve` because GitHub has a literal "Resolve
+  conversation" button and this pass deliberately does not press it — marking a
+  thread resolved stays the reviewer's. The internal `resolve-run` keeps its name:
+  that is the overlay's carry-out step, and it is not a button.
   This is a **reversal**, and the reason is the UI rather than the flow: the cards
   are not good enough to be the only way through a review yet. `spawn_command_session`
   is the seam, and it had no caller but a test for a while — its docblock claimed the
