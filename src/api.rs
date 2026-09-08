@@ -4230,7 +4230,7 @@ pub async fn pr_resolve_run(
     // Fetched now, not from the cache: it is what makes the thread ids real and
     // the drift check mean anything.
     let fresh = fetch_threads(&app, number).await?;
-    let plan = crate::post::plan(number, &proposals, &fresh, &batch, app.cfg.tracker)?;
+    let plan = crate::post::plan(number, &proposals, &fresh, &batch, app.cfg.tracker.is_configured())?;
     // Kept so the daemon can answer "what does this thread say" when the session
     // reports a commit. The agent is never told the reply is its to send.
     //

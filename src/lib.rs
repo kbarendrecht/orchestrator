@@ -256,10 +256,9 @@ pub async fn start(opts: StartOptions) -> Result<Server> {
     }
 
     let settings = {
-        let t = cfg.tracker.facts();
         // Said before the first session can be spawned, because every one of these
         // otherwise surfaces as a failure that blames something else.
-        for w in machine::check(&cfg, t.map(|t| t.mcp_server)) {
+        for w in machine::check(&cfg, cfg.tracker.mcp_server()) {
             tracing::warn!("{} — {}", w.what, w.cost);
         }
         // The push guard protects the branch this repo is measured against, so it
@@ -269,7 +268,7 @@ pub async fn start(opts: StartOptions) -> Result<Server> {
         let base = git::base_checkout_branch(&cfg.main_checkout, &cfg.upstream_ref);
         hooks::write_settings(
             cfg.port,
-            t.map(|t| t.mcp_server),
+            cfg.tracker.mcp_server(),
             base.as_deref(),
             &cfg.main_checkout,
         )?
@@ -402,22 +401,31 @@ pub async fn start(opts: StartOptions) -> Result<Server> {
         // Said out loud at boot, because `tracker` decides whether a whole option
         // appears on every review card. A misconfigured one must not read as
         // "triage never proposes stories".
-        match app.cfg.tracker {
-            config::TrackerKind::None => tracing::info!("tracker: none — `story+reply` is off"),
-            t => {
-                // The main checkout's own environment is the filer's fallback, so
-                // the boot line has to read it too. Without this it would warn
-                // about a missing token that a run then finds.
-                let checkout = env_source::read(app.cfg.env_source, &app.cfg.main_checkout);
-                let var = t.facts().map(|f| f.token_env).unwrap_or_default();
-                match story::resolve_token(&checkout, var) {
-                    Ok(_) => tracing::info!(
-                        "tracker: {t:?}, token resolved, {} story/ies cached",
-                        inner.stories.len()
-                    ),
-                    Err(e) => tracing::warn!("tracker: {t:?} but no usable token — {e:#}"),
+        match app.cfg.tracker.mcp_server() {
+            None => tracing::info!("tracker: none — `story+reply` is off"),
+            /* A tracker that names no token variable authenticates itself — both
+               official Linear and Atlassian servers are OAuth-first — so there is
+               nothing to resolve, and a warning here would be about a credential
+               the daemon was never meant to hold. */
+            Some(server) => match app.cfg.tracker.token_env() {
+                None => tracing::info!(
+                    "tracker: {server}, authenticating itself, {} story/ies cached",
+                    inner.stories.len()
+                ),
+                Some(var) => {
+                    // The main checkout's own environment is the filer's fallback,
+                    // so the boot line has to read it too. Without this it would
+                    // warn about a missing token that a run then finds.
+                    let checkout = env_source::read(app.cfg.env_source, &app.cfg.main_checkout);
+                    match story::resolve_token(&checkout, var) {
+                        Ok(_) => tracing::info!(
+                            "tracker: {server}, token resolved, {} story/ies cached",
+                            inner.stories.len()
+                        ),
+                        Err(e) => tracing::warn!("tracker: {server} but no usable token — {e:#}"),
+                    }
                 }
-            }
+            },
         }
     }
     // The tracker's boot line asks the env source for the main checkout, which

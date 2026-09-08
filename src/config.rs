@@ -62,12 +62,12 @@ pub struct Config {
     /// Auto-detection would let an expired token silently remove an option from
     /// every triage run, leaving "triage did not propose a story" indistinguishable
     /// from "the daemon hid it". `none` by default; what each tracker is to the
-    /// daemon is [`TrackerKind::facts`].
+    /// daemon is [`Tracker`].
     ///
     /// Its credential is **not** a config key: `ORCHD_TRACKER_TOKEN` in the
     /// daemon's environment, and nowhere else. See `story::resolve_token`.
     #[serde(default = "default_tracker")]
-    pub tracker: TrackerKind,
+    pub tracker: Tracker,
     /// Which tool a spawned session's own environment comes from.
     ///
     /// This is how the tracker's credential reaches the agent at all when the
@@ -378,7 +378,7 @@ impl WorkspaceNotes {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Settings {
     pub default_language: String,
-    pub tracker: TrackerKind,
+    pub tracker: Tracker,
     pub upstream_ref: String,
     pub upstream_remote: String,
     pub reviews_command: Vec<String>,
@@ -392,7 +392,7 @@ impl Settings {
     pub fn of(cfg: &Config) -> Self {
         Settings {
             default_language: cfg.default_language.clone(),
-            tracker: cfg.tracker,
+            tracker: cfg.tracker.clone(),
             upstream_ref: cfg.upstream_ref.clone(),
             upstream_remote: cfg.upstream_remote.clone(),
             reviews_command: cfg.reviews_command.clone(),
@@ -451,8 +451,8 @@ fn default_upstream_remote() -> String {
     "origin".to_string()
 }
 
-fn default_tracker() -> TrackerKind {
-    TrackerKind::None
+fn default_tracker() -> Tracker {
+    Tracker::default()
 }
 
 /// The ejected default queue, so the pane works on a fresh install.
@@ -492,10 +492,57 @@ fn default_review_timeout() -> u64 {
     240
 }
 
-/// Where a `story+reply` position's story goes.
+/// What a tracker is to the daemon: an MCP server's name, the host its URLs live
+/// on, and optionally the variable holding its token.
+///
+/// **It used to be an enum arm per tracker**, with those three as `&'static str`
+/// compile-time constants, so adding Jira or Linear meant a code change and a
+/// release. They are per-repo strings — the same shape as `upstream_ref` and
+/// `worktrees_subdir`, which are settings for exactly this reason.
+///
+/// Two shapes are accepted, and the string one is kept rather than tolerated: a
+/// settings write round-trips `"shortcut"` as `"shortcut"` instead of expanding it
+/// into three fields the SPA's dropdown could not offer back.
+///
+/// ```jsonc
+/// "tracker": "shortcut"                    // the two this was developed against
+/// "tracker": { "mcp_server": "linear", "host": "linear.app" }
+/// ```
+///
+/// **`token_env` is optional, and that is the fact the research turned up.** The
+/// official Linear and Atlassian MCP servers are remote and OAuth-first; both offer
+/// a bearer path, and Claude Code has an open issue where a configured
+/// `Authorization` header is ignored when the server also advertises OAuth. So a
+/// tracker may well authenticate itself out of a login the user did earlier, with
+/// nothing for the daemon to push. Naming a variable is a *preference* — it is
+/// fewer logins than an OAuth dance, which is why Shortcut is set up that way here
+/// even though it offers OAuth too — and never a requirement.
+///
+/// What is deliberately *not* here: tool names. Linear does not document them,
+/// Atlassian's are versioned, and the repo's own tracker skill is where that
+/// knowledge belongs (README says so). Nothing in the daemon may name one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum Tracker {
+    /// One the daemon carries the facts for, by name.
+    Named(NamedTracker),
+    /// Any other, spelled out.
+    Spelled(SpelledTracker),
+}
+
+impl Default for Tracker {
+    fn default() -> Self {
+        Tracker::Named(NamedTracker::None)
+    }
+}
+
+/// The trackers this was developed against, as shorthands.
+///
+/// `none` is a value rather than an absent key so an existing config keeps
+/// parsing and so the settings dropdown has something to select.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum TrackerKind {
+pub enum NamedTracker {
     /// No tracker. `story+reply` is never offered and would be refused.
     #[default]
     None,
@@ -503,87 +550,98 @@ pub enum TrackerKind {
     Shortcut,
     /// A stub MCP server that speaks the same tool names and records what it was
     /// asked to do. For proving the plumbing without filing a real story.
-    Stub,
-}
-
-impl TrackerKind {
-    pub fn is_configured(self) -> bool {
-        !matches!(self, TrackerKind::None)
-    }
-
-    /// What the daemon has to know to point an agent at this tracker, or `None`
-    /// when no tracker is configured.
-    ///
-    /// `None` is not a failure: a repo with no tracker is a supported setup, and
-    /// every caller reads it as "`story+reply` is not on offer" rather than as an
-    /// error to report.
     ///
     /// **The stub answers with the real tracker's facts, on purpose.**
     /// `tools/stub-shortcut-mcp.py` is a real stdio MCP server *named* `shortcut`,
-    /// so the prompt's tool names and the `--allowedTools` scope resolve unchanged
-    /// and the run under test is the run that ships. Only what sits behind the
-    /// socket differs: it records what it was asked to do instead of doing it. The
-    /// host is shared for the same reason: a story URL accepted under the stub must
-    /// be one the live tracker would accept too.
-    pub fn facts(self) -> Option<TrackerFacts> {
-        match self {
-            TrackerKind::None => None,
-            TrackerKind::Shortcut | TrackerKind::Stub => Some(TrackerFacts {
-                mcp_server: "shortcut",
-                token_env: "SHORTCUT_API_TOKEN",
-                host: "app.shortcut.com",
-                prompt: crate::prompt::STORY,
-            }),
-        }
-    }
+    /// so the tool names and the `--allowedTools` scope resolve unchanged and the
+    /// run under test is the run that ships. Only what sits behind the socket
+    /// differs: it records what it was asked to do instead of doing it. The host is
+    /// shared for the same reason: a story URL accepted under the stub must be one
+    /// the live tracker would accept too.
+    Stub,
 }
 
-/// The four facts a tracker is, to the daemon.
-///
-/// Deliberately much smaller than the forge seam, because the two integrations
-/// are not the same kind of thing. The daemon *calls* a forge (polls PRs, posts
-/// replies, reacts), so [`crate::forge::Forge`] is a set of operations. It never
-/// calls a tracker at all: filing a story is done by an agent over MCP, and the
-/// daemon only sets that agent up. Everything else (the two-phase run, the cache,
-/// the report shape, refusing a story whose id and URL disagree) is in
-/// [`crate::story`] and is the same whatever the tracker is. Adding Jira or Linear
-/// is an arm in [`TrackerKind::facts`] plus a prompt, and no change to the flow.
-///
-/// `&'static str` throughout: every one of these is a compile-time constant, so
-/// there is nothing to own and nothing to fail. A trait and an enum dispatching
-/// over two unit structs used to carry these, and both structs answered the same
-/// four constants.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct TrackerFacts {
+/// A tracker spelled out, for anything the daemon has no shorthand for.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SpelledTracker {
     /// The MCP server's name in the repo's `.mcp.json`.
     ///
     /// Used twice, and they have to agree: `enabledMcpjsonServers` in the hook
     /// settings approves it (a project server stays *pending* and is dropped
     /// silently otherwise), and `--allowedTools` scopes the run to `mcp__<name>`.
-    pub mcp_server: &'static str,
-    /// The variable the MCP entry expands for its credential, e.g. a
-    /// `Bearer ${SHORTCUT_API_TOKEN}` header. The daemon resolves the value itself
-    /// and pushes it into the agent's environment, so the token never reaches a
-    /// prompt or a transcript.
-    pub token_env: &'static str,
-    /// The host its story URLs live on, e.g. `app.shortcut.com`.
+    /// Transport-independent — a remote server is a name in that file like any
+    /// other.
+    pub mcp_server: String,
+    /// The host its story URLs live on, e.g. `app.shortcut.com`, `linear.app`, or
+    /// your own `<site>.atlassian.net`.
     ///
     /// Used to check that a URL the *agent* reported is really this tracker's. The
     /// id and the URL both come out of agent output, whose input is third-party
     /// comment text, and the pair ends up as a permanent public link in a reply on
     /// somebody's review. See [`crate::story::StoryRef::consistent`].
-    pub host: &'static str,
-    /// The vendored prompt that tells an agent how to file into this tracker.
+    pub host: String,
+    /// The variable the MCP entry expands for its credential, e.g. a
+    /// `Bearer ${SHORTCUT_API_TOKEN}` header. The daemon resolves the value itself
+    /// and pushes it into the agent's environment, so the token never reaches a
+    /// prompt or a transcript.
     ///
-    /// Per tracker rather than one templated prompt: the MCP tool names are the
-    /// server's own (`stories-search` is not what Jira calls it), so a shared
-    /// prompt would be a lie that fails mid-run.
-    pub prompt: &'static str,
+    /// Absent means the server authenticates itself — an OAuth login the user did
+    /// earlier, which the daemon has nothing to add to.
+    #[serde(default)]
+    pub token_env: Option<String>,
+    /// Point the run at the local stub rather than the real server.
+    #[serde(default)]
+    pub stub: bool,
+}
+
+impl Tracker {
+    pub fn is_configured(&self) -> bool {
+        !matches!(self, Tracker::Named(NamedTracker::None))
+    }
+
+    /// Whether this points at the stub rather than the real thing.
+    pub fn is_stub(&self) -> bool {
+        match self {
+            Tracker::Named(n) => *n == NamedTracker::Stub,
+            Tracker::Spelled(t) => t.stub,
+        }
+    }
+
+    /// The MCP server's name, or `None` with no tracker configured.
+    ///
+    /// `None` is not a failure: a repo with no tracker is a supported setup, and
+    /// every caller reads it as "`story+reply` is not on offer" rather than as an
+    /// error to report.
+    pub fn mcp_server(&self) -> Option<&str> {
+        match self {
+            Tracker::Named(NamedTracker::None) => None,
+            Tracker::Named(_) => Some("shortcut"),
+            Tracker::Spelled(t) => Some(&t.mcp_server),
+        }
+    }
+
+    /// The host a reported story URL has to be on.
+    pub fn host(&self) -> Option<&str> {
+        match self {
+            Tracker::Named(NamedTracker::None) => None,
+            Tracker::Named(_) => Some("app.shortcut.com"),
+            Tracker::Spelled(t) => Some(&t.host),
+        }
+    }
+
+    /// The variable holding its token, when one is named.
+    pub fn token_env(&self) -> Option<&str> {
+        match self {
+            Tracker::Named(NamedTracker::None) => None,
+            Tracker::Named(_) => Some("SHORTCUT_API_TOKEN"),
+            Tracker::Spelled(t) => t.token_env.as_deref(),
+        }
+    }
 }
 
 /// Which tool tells the daemon what a checkout's environment is.
 ///
-/// Explicit rather than probed for, the same call as [`TrackerKind`]: probing
+/// Explicit rather than probed for, the same call as [`Tracker`]: probing
 /// would make "the session has no token" and "the daemon picked the other tool"
 /// indistinguishable. `mise` by default because a session that inherits nothing
 /// is the broken case, not a neutral one — a `.mcp.json` credential read from the
@@ -982,7 +1040,7 @@ pub fn session_env(
     // said was that no token had been sent. In the child's environment rather than
     // the settings file the daemon writes, which would put a secret in
     // `~/.config/orchd/`.
-    if let Some(pair) = crate::story::token_env_pair(cfg.tracker, &set) {
+    if let Some(pair) = crate::story::token_env_pair(&cfg.tracker, &set) {
         set.push(pair);
     }
     (set, vec!["CLAUDE_CODE_CHILD_SESSION"])
@@ -1075,11 +1133,62 @@ mod tests {
             "the ejected default, not a repo task: {:?}",
             cfg.reviews_command
         );
-        assert_eq!(cfg.tracker, TrackerKind::None);
+        assert!(!cfg.tracker.is_configured());
         assert_eq!(cfg.default_language, "English");
         // `default_for` (the first-run write) goes through the same path, so a
         // fresh install writes the same nothing.
         assert!(Config::default_for(PathBuf::from("/tmp/x")).main_processes.is_empty());
+    }
+
+    /// Both spellings of `tracker`, and the round trip that protects the second.
+    ///
+    /// The shorthand is what every existing config has, so it keeps parsing; the
+    /// object is what a tracker the daemon has no shorthand for needs. **The
+    /// serialisation matters as much as the parse**: `Settings` is written back
+    /// whole by the settings panel, so a spelled-out tracker that came back as
+    /// `"shortcut"` — or as three fields the panel's dropdown cannot offer — would
+    /// be a config the app quietly rewrites.
+    #[test]
+    fn a_tracker_is_a_name_or_three_fields_and_survives_a_write() {
+        let named = Config::parse(r#"{"main_checkout":"/tmp/x","tracker":"shortcut"}"#)
+            .expect("the shorthand every existing config uses");
+        assert!(named.tracker.is_configured());
+        assert_eq!(named.tracker.mcp_server(), Some("shortcut"));
+        assert_eq!(named.tracker.host(), Some("app.shortcut.com"));
+        assert_eq!(named.tracker.token_env(), Some("SHORTCUT_API_TOKEN"));
+        assert!(!named.tracker.is_stub());
+
+        let none = Config::parse(r#"{"main_checkout":"/tmp/x","tracker":"none"}"#).expect("none");
+        assert!(!none.tracker.is_configured());
+        assert_eq!(none.tracker.mcp_server(), None);
+
+        // OAuth: no variable to name, which must not read as a broken config.
+        let linear = Config::parse(
+            r#"{"main_checkout":"/tmp/x","tracker":{"mcp_server":"linear","host":"linear.app"}}"#,
+        )
+        .expect("a spelled-out tracker");
+        assert!(linear.tracker.is_configured());
+        assert_eq!(linear.tracker.mcp_server(), Some("linear"));
+        assert_eq!(linear.tracker.host(), Some("linear.app"));
+        assert_eq!(linear.tracker.token_env(), None, "no variable is not a missing one");
+
+        let jira = Config::parse(
+            r#"{"main_checkout":"/tmp/x","tracker":{"mcp_server":"jira",
+                 "host":"acme.atlassian.net","token_env":"JIRA_API_TOKEN"}}"#,
+        )
+        .expect("a bearer-header tracker");
+        assert_eq!(jira.tracker.token_env(), Some("JIRA_API_TOKEN"));
+
+        // The round trip, both ways.
+        let back = |cfg: &Config| {
+            serde_json::to_value(Settings::of(cfg)).expect("settings serialise")["tracker"].clone()
+        };
+        assert_eq!(back(&named), serde_json::json!("shortcut"), "expanded a shorthand");
+        assert_eq!(
+            back(&linear),
+            serde_json::json!({"mcp_server":"linear","host":"linear.app","token_env":null,"stub":false}),
+            "a spelled-out tracker did not survive a settings write"
+        );
     }
 
     /// The example in the README has to keep working, because it is what anyone
@@ -1111,7 +1220,7 @@ mod tests {
         .expect("parse");
         assert_eq!(cfg.port, 9000);
         assert_eq!(cfg.default_language, "English");
-        assert_eq!(cfg.tracker, TrackerKind::None);
+        assert!(!cfg.tracker.is_configured());
         assert_eq!(cfg.reviews_command, vec!["mise", "run", "reviews:mine"]);
         // ...but an unmentioned key still comes from the defaults.
         assert_eq!(cfg.upstream_ref, "origin/HEAD");
@@ -1199,7 +1308,7 @@ mod tests {
         // and leaves everything else (here, just main_checkout) alone.
         let s = Settings {
             default_language: "English".into(),
-            tracker: TrackerKind::None,
+            tracker: Tracker::default(),
             upstream_ref: "origin/main".into(),
             upstream_remote: "origin".into(),
             reviews_command: vec!["gh".into(), "pr".into()],
@@ -1213,7 +1322,7 @@ mod tests {
         assert_eq!(cfg.main_checkout, PathBuf::from("/tmp/x"), "untouched key kept");
         assert_eq!(cfg.port, 8080, "untouched key kept");
         assert_eq!(cfg.default_language, "English");
-        assert_eq!(cfg.tracker, TrackerKind::None);
+        assert!(!cfg.tracker.is_configured());
         assert_eq!(cfg.upstream_ref, "origin/main");
         assert_eq!(cfg.reviews_command, vec!["gh", "pr"]);
         assert!(cfg.main_processes.is_empty());

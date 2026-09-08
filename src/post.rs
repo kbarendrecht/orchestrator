@@ -331,7 +331,9 @@ pub(crate) fn resolve(
     positions: &crate::proposal::ProposalSet,
     fresh: &Threads,
     batch: &Batch,
-    tracker: crate::config::TrackerKind,
+    // Whether a tracker is configured at all, which is the only thing the story
+    // arms need to know: `files_story` has nowhere to file without one.
+    tracker: bool,
     // `None` on the first half, `Some` on the resume.
     //
     // Deliberately an `Option` around the map rather than an empty map: with a map
@@ -358,7 +360,7 @@ pub(crate) fn resolve(
             )
         })?;
 
-        if pos.stance.files_story() && !tracker.is_configured() {
+        if pos.stance.files_story() && !tracker {
             bail!(
                 "thread {}: no tracker is configured, so there is nowhere to file this. \
                  Set `tracker` in the config, pick another position, or skip.",
@@ -674,7 +676,9 @@ pub fn plan(
     positions: &crate::proposal::ProposalSet,
     fresh: &Threads,
     batch: &Batch,
-    tracker: crate::config::TrackerKind,
+    // Whether a tracker is configured at all, which is the only thing the story
+    // arms need to know: `files_story` has nowhere to file without one.
+    tracker: bool,
 ) -> Result<Plan> {
     let handled = resolve(positions, fresh, batch, tracker, None)?;
     Ok(Plan {
@@ -839,7 +843,7 @@ async fn run_inner(
         .cloned()
         .with_context(|| format!("PR #{} has no triage proposals to post", pr.number))?;
     let comments = resume.as_ref().map(|r| &r.comments);
-    let handled = resolve(&proposals, fresh, &batch, app.cfg.tracker, comments)?;
+    let handled = resolve(&proposals, fresh, &batch, app.cfg.tracker.is_configured(), comments)?;
 
     // Hoisted above the local write: the recovery path below needs it to carry the
     // phase forward, and a phase whose `threads` is empty renders a list with no rows
@@ -1675,7 +1679,8 @@ mod tests {
 
     /// The story arms only exist with a tracker configured, so the tests that are
     /// not about that run with one.
-    const TRACKER: crate::config::TrackerKind = crate::config::TrackerKind::Stub;
+    /// A tracker is configured, in the tests that need story arms to exist.
+    const TRACKER: bool = true;
 
     /// The digest is the resume guard: it exists so a re-sent batch that is not the
     /// batch the first half ran is refused rather than half-applied. So every field
@@ -2243,7 +2248,7 @@ mod tests {
             &story_set(),
             &fresh,
             &batch("PRRT_1", 0, None),
-            crate::config::TrackerKind::None,
+            false,
             FIRST_HALF,
         )
         .unwrap_err()

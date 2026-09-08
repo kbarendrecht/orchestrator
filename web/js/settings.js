@@ -27,6 +27,13 @@ function openSettings() {
   loadConfigInto();
 }
 
+/** A tracker spelled out in `config.json`, kept so a save hands it back whole.
+ *
+ *  The daemon accepts a name (`shortcut`) or three fields, and the panel can only
+ *  render the names. Holding the object here is what keeps the panel from being
+ *  the thing that destroys the other form. */
+let spelledTracker = null;
+
 async function loadConfigInto() {
   let cfg;
   try {
@@ -36,7 +43,28 @@ async function loadConfigInto() {
     return;
   }
   ctl('setlang').value = cfg.default_language || '';
-  ctl('settracker').value = cfg.tracker || 'none';
+  /* `tracker` is a name *or* an object, and the dropdown can only offer the names.
+     A spelled-out tracker is shown as a name the select does not have, so it stays
+     visible, stays selected, and goes back the way it came — see `spelledTracker`.
+     Writing back `[object Object]`, which reading `.value` straight off the select
+     would have done, is the one outcome worth code: it would silently rewrite a
+     config somebody hand-edited. */
+  spelledTracker = cfg.tracker && typeof cfg.tracker === 'object' ? cfg.tracker : null;
+  const trackerSel = ctl('settracker');
+  if (spelledTracker) {
+    const label = `${spelledTracker.mcp_server} (in config.json)`;
+    let opt = trackerSel.querySelector('option[data-spelled]');
+    if (!opt) {
+      opt = document.createElement('option');
+      opt.dataset.spelled = '1';
+      trackerSel.appendChild(opt);
+    }
+    opt.value = 'spelled';
+    opt.textContent = label;
+    trackerSel.value = 'spelled';
+  } else {
+    trackerSel.value = cfg.tracker || 'none';
+  }
   ctl('setupref').value = cfg.upstream_ref || '';
   ctl('setupremote').value = cfg.upstream_remote || '';
   ctl('setreviews').value = (cfg.reviews_command || []).join(' ');
@@ -147,7 +175,8 @@ async function saveSettings() {
   const list = (s) => s.split(',').map((x) => x.trim()).filter(Boolean);
   const body = {
     default_language: ctl('setlang').value.trim(),
-    tracker: ctl('settracker').value,
+    // The object it came as, or the name the dropdown offers.
+    tracker: ctl('settracker').value === 'spelled' ? spelledTracker : ctl('settracker').value,
     upstream_ref: ctl('setupref').value.trim(),
     upstream_remote: ctl('setupremote').value.trim(),
     reviews_command: argv(ctl('setreviews').value),
