@@ -3708,6 +3708,20 @@ pub async fn open_file(
     if path.is_empty() {
         refuse!("no path given");
     }
+    /* A blob URL is a *tracked file at a ref*, and the pane lists two things that
+       are neither: an untracked file (`DiffFile::untracked`, which git has never
+       seen, so no ref has a blob for it) and a whole untracked directory, which
+       `--untracked-files=normal` collapses to a trailing `/`. Both used to open a
+       404 in the browser, which reads as the forge being broken rather than as the
+       file not being there.
+
+       Asked of git rather than of the `?` status the client happens to hold: the
+       route is reachable without the pane, and "does this ref have this path" is
+       the question the URL is about. The directory case is refused before the git
+       call, since `ls-tree` on `x/` answers nothing useful either way. */
+    if path.ends_with('/') {
+        refuse!("{path} is a directory, and a blob URL is for a file");
+    }
     let (head_sha, at) = {
         let inner = app.inner.read().await;
         let w = inner
@@ -3723,6 +3737,7 @@ pub async fn open_file(
             .and_then(|p| p.head_sha.clone());
         (sha, w.path.clone())
     };
+    let at2 = at.clone();
     let r#ref = match head_sha {
         Some(sha) => sha,
         None => tokio::task::spawn_blocking(move || crate::git::head_sha(&at))
@@ -3730,6 +3745,18 @@ pub async fn open_file(
             .context("resolving HEAD panicked")?
             .context("could not resolve HEAD for this workspace")?,
     };
+    // Off the runtime like every other git call, and *after* the ref is resolved,
+    // because the question is about this ref rather than about the working tree.
+    let (at2, ref2, p2) = (at2, r#ref.clone(), path.to_string());
+    let tracked = tokio::task::spawn_blocking(move || crate::git::has_path_at(&at2, &ref2, &p2))
+        .await
+        .context("asking git about the path panicked")?;
+    if !tracked {
+        refuse!(
+            "{path} is not in {} — an untracked file has no blob to open",
+            &r#ref[..r#ref.len().min(8)]
+        );
+    }
     let forge = write_forge(&app)?;
     let url = forge.blob_url(&r#ref, path);
     open_external(&url)?;

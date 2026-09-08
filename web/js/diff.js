@@ -183,11 +183,24 @@ function renderFiles() {
         openDiff(f.path);
       }
     };
-    // These rows carry no menu of their own, and the one thing worth reaching
-    // for is the file on the forge. Whether it can be linked is the daemon's
-    // answer, so the item is always live and a refusal comes back as a toast.
+    /* These rows carry no menu of their own, and the one thing worth reaching for
+       is the file on the forge — when the forge can serve it, which is not every
+       row. A blob URL is a *tracked file at a ref*, and two kinds of row are
+       neither:
+
+         * `status: '?'` is untracked (`DiffFile::untracked`). Git has never seen
+           it, so no ref has a blob for it and the link is a guaranteed 404.
+         * a path ending in `/` is a whole untracked *directory*, collapsed by
+           `--untracked-files=normal`. GitHub spells those `/tree/`, not `/blob/`.
+
+       Greyed rather than hidden, because a missing item reads as a missing feature
+       and the reason is worth one line. The daemon refuses the same two anyway
+       (`api::open_file`), the way the fork guard lives on both sides. */
+    const linkable = f.status !== '?' && !f.path.endsWith('/');
     row.oncontextmenu = (ev) => {
-      openMenu(ev, [['open on forge', null, () => openFileOnForge(w, f.path)]]);
+      openMenu(ev, [linkable
+        ? ['open on forge', null, () => openFileOnForge(w, f.path)]
+        : ['open on forge', null, null]]);
     };
     panes.appendChild(row);
   }

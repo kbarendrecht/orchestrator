@@ -1412,6 +1412,23 @@ fn apply_wip(cwd: &Path, sha: &str, what_happened: &str) -> Result<()> {
         .map(|_| ())
 }
 
+/// Does `at_ref` contain `path`?
+///
+/// Asked before a blob URL is built, because a URL for a path the ref does not
+/// have opens a 404 in the browser and that reads as the forge being broken rather
+/// than as the file not being there. An untracked file is the ordinary case: the
+/// changed-files pane lists it (`diff::DiffFile::untracked`) precisely because git
+/// has never seen it.
+///
+/// `ls-tree` rather than `cat-file`, so a large file is not read to answer whether
+/// it exists. Its exit status is 0 either way, so the *output* is the answer: empty
+/// means no such path at that ref.
+pub fn has_path_at(cwd: &Path, at_ref: &str, path: &str) -> bool {
+    git(cwd, &["ls-tree", "--name-only", at_ref, "--", path])
+        .map(|out| !out.trim().is_empty())
+        .unwrap_or(false)
+}
+
 /// Which working tree has `branch` checked out, if any.
 ///
 /// Asked because git allows one checkout per branch, so "main cannot return to
@@ -2101,6 +2118,35 @@ mod tests {
 
     /// The guards that stand between "you closed the last pane in main" and
     /// someone's uncommitted work landing on develop.
+    /// A ref has the files it was committed with, and not the ones beside them.
+    ///
+    /// The question a blob URL is about: the changed-files pane lists untracked
+    /// files on purpose, and offering "open on forge" for one opened a 404.
+    #[test]
+    fn a_ref_has_its_tracked_paths_and_not_the_untracked_ones() {
+        let main = crate::testutil::scratch("haspath").join("repo");
+        git(main.parent().unwrap(), &["init", "-q", "-b", "main", "repo"]).unwrap();
+        git(&main, &["config", "user.email", "t@t"]).unwrap();
+        git(&main, &["config", "user.name", "t"]).unwrap();
+        std::fs::write(main.join("kept.txt"), "in the commit\n").unwrap();
+        git(&main, &["add", "-A"]).unwrap();
+        git(&main, &["commit", "-qm", "base"]).unwrap();
+        // On disk and never added, which is what the pane shows as `?`.
+        std::fs::write(main.join("new.txt"), "not in any ref\n").unwrap();
+        std::fs::create_dir_all(main.join("cache")).unwrap();
+        std::fs::write(main.join("cache/x"), "nor this\n").unwrap();
+
+        assert!(has_path_at(&main, "HEAD", "kept.txt"));
+        assert!(!has_path_at(&main, "HEAD", "new.txt"), "on disk is not in the ref");
+        // The shape `--untracked-files=normal` collapses a directory to, which is
+        // not a blob at any ref whatever it holds.
+        assert!(!has_path_at(&main, "HEAD", "cache/"));
+        // A ref that does not resolve answers no rather than opening a URL.
+        assert!(!has_path_at(&main, "deadbeef", "kept.txt"));
+
+        let _ = std::fs::remove_dir_all(main.parent().unwrap());
+    }
+
     /// Who has a branch checked out, and the two answers that must not be a path.
     ///
     /// The porcelain listing is parsed rather than the human one, so this pins the
