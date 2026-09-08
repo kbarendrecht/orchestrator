@@ -758,7 +758,7 @@ mod tests {
     /// The whole point, driven end to end: the tree goes, the conversation stays.
     #[tokio::test]
     async fn reaping_removes_an_old_tree_and_keeps_the_conversation() {
-        use crate::model::{ArchiveState, Kind, Session};
+        use crate::model::{ArchiveState, Session};
 
         let (main, wt, sha) = repo_with_a_worktree("old");
         let app = crate::testutil::app_at(
@@ -770,7 +770,7 @@ mod tests {
         let id = uuid::Uuid::new_v4();
         {
             let mut inner = app.inner.write().await;
-            let mut s = Session::new(id, "old".to_string(), wt.clone(), Kind::Interactive);
+            let mut s = Session::new(id, "old".to_string(), wt.clone(), None);
             // Ninety days back, and everything the preflight wants already settled:
             // the interesting question is the timer, not the archive.
             s.created_at = std::time::SystemTime::now() - std::time::Duration::from_secs(90 * 86_400);
@@ -808,7 +808,7 @@ mod tests {
     /// what matters, not the size.
     #[tokio::test]
     async fn a_long_running_conversation_is_dated_by_its_last_turn() {
-        use crate::model::{ArchiveState, Kind, Session};
+        use crate::model::{ArchiveState, Session};
 
         let (main, wt, sha) = repo_with_a_worktree("lastused");
         let app = crate::testutil::app_at(
@@ -823,7 +823,7 @@ mod tests {
         let id = uuid::Uuid::new_v4();
         {
             let mut inner = app.inner.write().await;
-            let mut s = Session::new(id, "lastused".to_string(), wt.clone(), Kind::Interactive);
+            let mut s = Session::new(id, "lastused".to_string(), wt.clone(), None);
             s.created_at = std::time::SystemTime::now() - std::time::Duration::from_secs(90 * 86_400);
             s.transcript_path = Some(transcript.clone());
             s.transcript_archived = true;
@@ -904,7 +904,7 @@ mod tests {
     /// Three ways it must decline, none of which reach the preflight.
     #[tokio::test]
     async fn reaping_declines_young_trees_live_sessions_and_a_zero_setting() {
-        use crate::model::{Kind, Session};
+        use crate::model::{Session};
 
         let (main, wt, _) = repo_with_a_worktree("keep");
         let fresh = |days: u32| {
@@ -930,7 +930,7 @@ mod tests {
         ) {
             let mut inner = app.inner.write().await;
             let id = uuid::Uuid::new_v4();
-            let mut s = Session::new(id, "keep".to_string(), wt.to_path_buf(), Kind::Interactive);
+            let mut s = Session::new(id, "keep".to_string(), wt.to_path_buf(), None);
             s.created_at = at;
             s.transcript_archived = true;
             s.set_state(state);

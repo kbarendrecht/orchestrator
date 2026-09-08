@@ -54,12 +54,11 @@ export async function run(t) {
   await until('the pane to be typed its instructions', async () =>
     t.agentLog().includes(`turn: /orchd:handle-review ${PR}`))
 
-  /* An automation record carrying this command, which is how the rail colours it
-     and how `branch_busy` and the PR guards recognise it — even though what you get
-     is a pane you can take over. `spawn_run` is the seam, so it is a run by
-     bookkeeping and a session by feel. */
-  assert.equal(s.kind.kind, 'automation')
-  assert.equal(s.kind.command, 'handle-review')
+  /* A pass record carrying this command, which is how the PR guards recognise the
+     session — even though what you get is a pane you take over. `spawn_run` is the
+     seam, so it is a run by bookkeeping and a session by feel. */
+  assert.equal(s.pass.pr, PR)
+  assert.equal(s.pass.command, 'handle-review')
 
   // Pressing it again lands on the session already doing it rather than cutting a
   // second agent into the same tree.

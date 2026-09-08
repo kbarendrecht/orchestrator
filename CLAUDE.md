@@ -491,7 +491,7 @@ mean *this* repo; if you do, name it.
   landing in that gap takes a run's first turn and drops it. The gap is one lock
   acquisition against Claude Code's whole boot, so it is documented rather than
   guarded.
-  **An automation run's record follows the same rule now.** A `claude` that exits
+  **A PR run's record follows the same rule now.** A `claude` that exits
   at once — a bad `--settings`, the version gate — was reaped before its
   `Running` / `ResolveRun` record existed, so the exit watcher found nothing to
   settle and the record named a corpse until a restart. The caller mints the id,
@@ -634,8 +634,9 @@ mean *this* repo; if you do, name it.
   review run came back able to ask you questions and unable to post its
   proposals — reported by the agent as `ORCH_POST_TOKEN is absent from this
   environment`, after it had read every thread. Two ways in, neither exotic: the
-  app restarting (`auto_resume` resumes automation runs on purpose) and the rail's
-  own resume button (`api::revive` carries the recorded `Kind`). The rule now lives
+  app restarting (`auto_resume` resumes every session that was live, runs
+  included) and the rail's own resume button (`api::revive` carries the recorded
+  `Pass`). The rule now lives
   in `triage::mint_post_token` / `posts_proposals`, called by all three spawns.
   `proposal_tokens` says it is deliberately not persisted, and that is still right
   — the token is only ever compared against the record, so re-minting is the fix

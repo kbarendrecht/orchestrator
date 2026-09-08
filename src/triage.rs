@@ -133,7 +133,7 @@ pub async fn spawn(app: &Arc<AppState>, pr: u64, head_ref: &str) -> Result<Sessi
     spawn_posting_run(app, pr, head_ref, kind).await
 }
 
-/// The `Kind::Automation` command a review session carries.
+/// The `Pass` command a review session carries.
 ///
 /// Named for the same reason `fix_pr::COMMAND` is: the spawn, the handoff route and
 /// the exit watcher all have to agree on this string, and three literals is how
@@ -147,21 +147,22 @@ pub const COMMAND: &str = "review";
 /// and a spelling that lives in one place cannot drift.
 pub const TRIAGE_COMMAND: &str = "triage";
 
-/// Does this automation run post proposals, and so need the credential for it?
+/// Is this session the triage pass for `pr`?
+///
+/// Asked by the progress route, which is handed a PR number and has to find the
+/// run that may report against it. One place, because "which command is a triage
+/// run" is the same question `posts_proposals` answers and the pair drifting apart
+/// is what the named constants exist to stop.
+pub fn is_triage_of(pass: &Option<crate::model::Pass>, pr: u64) -> bool {
+    pass.as_ref()
+        .is_some_and(|p| p.pr == pr && p.command == TRIAGE_COMMAND)
+}
+
+/// Does this run post proposals, and so need the credential for it?
 ///
 /// Asked by the *resume* path, which is the only caller that cannot see how the
 /// run was started. Both posting runs spawn themselves here, so this is where
 /// the answer belongs.
-/// Is this session the triage pass for `pr`?
-///
-/// Asked by the progress route, which is handed a PR number and has to find the
-/// run that may report against it. One place, because "which kind is a triage run"
-/// is the same question `posts_proposals` answers and the pair drifting apart is
-/// what the named constants exist to stop.
-pub fn is_triage_of(kind: &crate::model::Kind, pr: u64) -> bool {
-    matches!(kind, crate::model::Kind::Automation { pr: p, command } if *p == pr && command == TRIAGE_COMMAND)
-}
-
 pub fn posts_proposals(command: &str) -> bool {
     command == COMMAND || command == TRIAGE_COMMAND
 }
@@ -214,7 +215,7 @@ pub async fn spawn_review(
 /// What tells a triage run from a review session. Everything else about the two
 /// spawns is the same, and was written twice until the copies drifted.
 struct RunKind {
-    /// The `Kind::Automation` command the session carries, and the prefix of its
+    /// The `Pass` command the session carries, and the prefix of its
     /// scratch dir under the config dir (`<command>-<pr>`). One field, because it
     /// was two that were always the same string, in the struct whose whole purpose
     /// is to stop two copies drifting.

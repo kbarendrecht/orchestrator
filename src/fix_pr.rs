@@ -216,7 +216,7 @@ pub fn wants_watching(pr: &Pr) -> bool {
     ended_red(pr) || pr.checks == Checks::Pending
 }
 
-/// The `Kind::Automation` command a fix run carries.
+/// The `Pass` command a fix run carries.
 ///
 /// Named rather than spelled at the spawn site and again at the place that reacts
 /// to the exit: those two have to agree, and a literal in both is how they stop

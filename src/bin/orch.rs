@@ -383,8 +383,8 @@ fn parse(cmd: &str, args: &[String]) -> Result<Parsed, String> {
 /// It does not say whose fault a subset is, because from here that is unknowable:
 /// `ORCH_SESSION_ID` is set for every session the daemon starts, since the hooks
 /// correlate on it, while `ORCH_URL` and the ask token are the *ask channel* — and
-/// an automation run legitimately has none, taking its URL substituted into its
-/// prompt instead. Naming the variables is the part that saves the time either way.
+/// a run with nothing to ask legitimately has none. Naming the variables is the
+/// part that saves the time either way.
 fn session_env() -> Result<(String, String, String), String> {
     let get = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
     let (url, me, token) = (

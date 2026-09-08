@@ -191,8 +191,8 @@ function renderInteraction() {
   // The PR a review pass is answering, or null for every other session. Its
   // checkpoints are the overlay's cards, so this box behaves differently below.
   // Both commands, because the triage pass reaches the same cards.
-  const rvPr = q && s.kind.kind === 'automation'
-    && (s.kind.command === 'review' || s.kind.command === 'triage') ? s.kind.pr : null;
+  const rvPr = q && s.pass
+    && (s.pass.command === 'review' || s.pass.command === 'triage') ? s.pass.pr : null;
   const mine = !!q && q.options.some((o) => o.value === DECISIONS);
   /* **Rebuilt only when it would come out different**, like every other pane.
      This one had no guard, and the box is up precisely while an agent is taking

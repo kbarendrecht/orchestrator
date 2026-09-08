@@ -52,7 +52,7 @@ pub fn token_env_pair(
     Some((var.to_string(), resolve_token(checkout, var).ok()?))
 }
 
-/// The `Kind::Automation` command a story pass carries, and the skill the daemon
+/// The `Pass` command a story pass carries, and the skill the daemon
 /// types at it.
 ///
 /// One spelling, because three things have to agree: the record (the rail colours
@@ -496,7 +496,7 @@ async fn run_filer(
     todo: &[&Wanted],
 ) -> Result<Vec<Reported>> {
     use crate::config::Config;
-    use crate::model::{Kind, Session};
+    use crate::model::{Pass, Session};
 
     let tracker = app
         .cfg
@@ -644,8 +644,8 @@ async fn run_filer(
         resolve_token(&env, var)?;
     }
 
-    // A real session, so its pty is there to read when a story goes wrong. It is
-    // automation like `fix-pr` and triage, and archives the same way — and it goes
+    // A real session, so its pty is there to read when a story goes wrong. It is a
+    // run like `fix-pr` and triage, and archives the same way — and it goes
     // through the same two seams as every other spawn: `insert_and_spawn`, so the
     // record is in the map before the agent can fire a hook, and
     // `watch_session_exit`, the one observer that settles a pty ending. This used to
@@ -655,10 +655,10 @@ async fn run_filer(
         id,
         workspace,
         path.clone(),
-        Kind::Automation {
+        Some(Pass {
             pr,
             command: COMMAND.to_string(),
-        },
+        }),
     );
     let spawned = crate::spawn::insert_and_spawn(app, id, session, &cmd, &path, &env, &unset).await?;
     let worktree = path;

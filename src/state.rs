@@ -1518,7 +1518,7 @@ pub struct SessionView {
     pub id: Uuid,
     pub workspace: String,
     pub state: State,
-    pub kind: Kind,
+    pub pass: Option<Pass>,
     /// What to call this session — the name you gave it, else Claude Code's own
     /// ai-title (`Session::label`). The panes read this and stay out of the
     /// precedence.
@@ -1583,12 +1583,12 @@ impl SessionView {
             id: s.id,
             workspace: s.workspace.clone(),
             state: s.state.clone(),
-            kind: s.kind.clone(),
+            pass: s.pass.clone(),
             title: s.label().map(str::to_owned),
             name: s.name.clone(),
             cwd: s.cwd.to_string_lossy().into_owned(),
             branch: s.branch.clone(),
-            rank: s.sort_rank(),
+            rank: s.state.rank(),
             wants_attention: s.state.wants_attention(),
             waiting_ms,
             created_ms: now
@@ -1639,7 +1639,7 @@ mod tests {
     async fn live_in_main(app: &Arc<AppState>) -> SessionId {
         let id = Uuid::new_v4();
         let mut inner = app.inner.write().await;
-        let mut s = Session::new(id, MAIN.to_string(), std::path::PathBuf::from("/tmp"), Kind::Interactive);
+        let mut s = Session::new(id, MAIN.to_string(), std::path::PathBuf::from("/tmp"), None);
         s.set_state(State::Working);
         inner.sessions.insert(id, s);
         id
@@ -1739,7 +1739,7 @@ mod tests {
         let id = Uuid::new_v4();
         {
             let mut inner = app.inner.write().await;
-            let mut s = Session::new(id, MAIN.to_string(), std::path::PathBuf::from("/tmp"), Kind::Interactive);
+            let mut s = Session::new(id, MAIN.to_string(), std::path::PathBuf::from("/tmp"), None);
             s.set_state(State::Exited); // gone, but still the recorded occupant
             inner.sessions.insert(id, s);
             if let Some(w) = inner.workspaces.get_mut(MAIN) {
@@ -1807,7 +1807,7 @@ mod tests {
         app.record_human_edit(f.clone()).await;
         // Created after the edit, and recorded so the daemon knows when.
         tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-        let late = Session::new(Uuid::new_v4(), MAIN.to_string(), dir.clone(), Kind::Interactive);
+        let late = Session::new(Uuid::new_v4(), MAIN.to_string(), dir.clone(), None);
         let late_id = late.id;
         app.inner.write().await.sessions.insert(late_id, late);
         assert!(
@@ -1817,7 +1817,7 @@ mod tests {
 
         // A session that predates the edit still is. Written straight into the map
         // with an old clock so the order is not left to timing.
-        let mut early = Session::new(Uuid::new_v4(), MAIN.to_string(), dir.clone(), Kind::Interactive);
+        let mut early = Session::new(Uuid::new_v4(), MAIN.to_string(), dir.clone(), None);
         early.created_at = SystemTime::now() - std::time::Duration::from_secs(60);
         let early_id = early.id;
         app.inner.write().await.sessions.insert(early_id, early);

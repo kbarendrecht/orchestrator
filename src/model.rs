@@ -169,9 +169,12 @@ pub enum State {
 }
 
 impl State {
-    /// Rail ordering (§9): BuildFailing → YourTurn → Working → Automation →
-    /// Archived. Automation is handled by the caller, since it depends on the
-    /// session's kind rather than its state.
+    /// Rail ordering (§9): BuildFailing → YourTurn → Working → Archived.
+    ///
+    /// One rank per state and nothing else. A run started with a skill used to be
+    /// demoted below an interactive `Working`, on the reasoning that it is
+    /// unattended by definition; it is an ordinary session now, and it sits where
+    /// its state puts it.
     pub fn rank(&self) -> u8 {
         match self {
             State::BuildFailing { .. } => 0,
@@ -225,22 +228,32 @@ impl State {
     }
 }
 
+/// The PR pass a session was started to run, when it was started as one.
+///
+/// **One field rather than two.** `pr` and `command` are inseparable — a pass with
+/// no PR means nothing, and a PR with no pass is just a session that happens to be
+/// on a branch — so they live in one `Option` and the impossible pair cannot be
+/// written down.
+///
+/// **What reads `command`, and why a skill cannot answer it.** The instructions
+/// live in `skills/` now, so this is no longer "which prompt did the daemon type".
+/// It is the five things the daemon has to know *around* the agent rather than
+/// inside it: which settle path an exit dispatches to (`spawn::watch_session_exit`),
+/// which spawn is handed `ORCH_POST_TOKEN` (`triage::posts_proposals`), that a
+/// resolve run may not ask questions (`api::ask`), that one triage pass per PR is
+/// enough (`triage::is_triage_of`), and which PR the review bar is reporting on.
+/// Every one of those happens before the first turn or after the last.
+///
+/// It carries **no opinion about attention.** `Kind::Automation` used to, and the
+/// rail demoted a running pass and painted it teal on the strength of it — which
+/// went wrong the moment a pass meant "a pane you are watching" as well as "a run
+/// nobody is". A session is a session; its state says whether it wants you.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(tag = "kind", rename_all = "snake_case")]
 #[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
-pub enum Kind {
-    Interactive,
-    /// An ordinary session whose first turn is one of the vendored skills in
-    /// `skills/` (§8). Nothing about it needs a separate view.
-    ///
-    /// `alias = "skill"` so records written before the rename still load: these
-    /// were called skills when they resolved from the agent's command path.
-    Automation {
-        #[cfg_attr(test, ts(type = "number"))]
-        pr: u64,
-        #[serde(alias = "skill")]
-        command: String,
-    },
+pub struct Pass {
+    #[cfg_attr(test, ts(type = "number"))]
+    pub pr: u64,
+    pub command: String,
 }
 
 /// How to rebuild a torn-down worktree so an archived session can be resumed (§2).
@@ -264,7 +277,8 @@ pub struct Session {
     pub id: SessionId,
     pub workspace: WorkspaceId,
     pub state: State,
-    pub kind: Kind,
+    /// The PR pass this session runs, if it was started as one. See [`Pass`].
+    pub pass: Option<Pass>,
     pub pty: Option<Arc<PtyHandle>>,
     pub pid: Option<u32>,
     pub cwd: PathBuf,
@@ -414,13 +428,13 @@ pub struct Session {
 }
 
 impl Session {
-    pub fn new(id: SessionId, workspace: WorkspaceId, cwd: PathBuf, kind: Kind) -> Self {
+    pub fn new(id: SessionId, workspace: WorkspaceId, cwd: PathBuf, pass: Option<Pass>) -> Self {
         let now = SystemTime::now();
         Session {
             id,
             workspace,
             state: State::Starting,
-            kind,
+            pass,
             pty: None,
             pid: None,
             cwd,
@@ -460,10 +474,6 @@ impl Session {
     /// a title you no longer use is the same bug as a rail row doing it.
     pub fn label(&self) -> Option<&str> {
         self.name.as_deref().or(self.title.as_deref())
-    }
-
-    pub fn is_automation(&self) -> bool {
-        matches!(self.kind, Kind::Automation { .. })
     }
 
     /// Whether resuming this session would find a conversation to continue.
@@ -513,21 +523,6 @@ impl Session {
             self.state = state;
             self.state_since = SystemTime::now();
         }
-    }
-
-    /// Sort key for the rail. Automation sits second-from-bottom on purpose: a
-    /// run in progress is unattended by definition. It promotes back into the
-    /// attention band only on failure (§9).
-    pub fn sort_rank(&self) -> u8 {
-        let base = self.state.rank();
-        if self.is_automation() && base >= 2 && !matches!(self.state, State::Archived { .. }) {
-            // Working automation ranks below interactive Working; a failing or
-            // waiting one keeps its own rank.
-            if matches!(self.state, State::Working | State::Starting) {
-                return 4;
-            }
-        }
-        base
     }
 }
 
@@ -680,7 +675,7 @@ mod tests {
             uuid::Uuid::new_v4(),
             "wt".into(),
             std::path::Path::new("/tmp").to_path_buf(),
-            Kind::Interactive,
+            None,
         );
         assert!(!s.interrupted, "a session that has done nothing owes no turn");
 
@@ -747,7 +742,7 @@ mod tests {
             uuid::Uuid::new_v4(),
             "wt".into(),
             std::path::Path::new("/tmp").to_path_buf(),
-            Kind::Interactive,
+            None,
         );
         s.set_state(State::Working);
         assert!(s.interrupted);

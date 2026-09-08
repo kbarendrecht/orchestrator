@@ -104,12 +104,11 @@ export async function run(t) {
   assert.equal(ws.path, dir)
   assert.ok(ws.branches.includes(HEAD), `pr-${PR} claims ${ws.branches}`)
 
-  // Automation, not interactive: the kind is what the rail reads to keep the run
-  // out of the ordinary session list, and what `watch_session_exit` reads to send
-  // the verdict to `fix_pr::settle`.
+  // The pass record, which is what `watch_session_exit` reads to send the verdict
+  // to `fix_pr::settle`.
   const s = await t.settled(session)
   assert.equal(s.workspace, `pr-${PR}`)
-  assert.deepEqual(s.kind, { kind: 'automation', pr: PR, command: 'fix-pr' })
+  assert.deepEqual(s.pass, { pr: PR, command: 'fix-pr' })
 
   // Recorded, and recorded against this session. The write is what survives a
   // restart, and it is the whole of the one-run-per-PR cap.

@@ -80,7 +80,29 @@ value: string, label: string, sub: string,
  */
 free: boolean, };
 
-export type Kind = { "kind": "interactive" } | { "kind": "automation", pr: number, command: string, };
+/**
+ * The PR pass a session was started to run, when it was started as one.
+ *
+ * **One field rather than two.** `pr` and `command` are inseparable — a pass with
+ * no PR means nothing, and a PR with no pass is just a session that happens to be
+ * on a branch — so they live in one `Option` and the impossible pair cannot be
+ * written down.
+ *
+ * **What reads `command`, and why a skill cannot answer it.** The instructions
+ * live in `skills/` now, so this is no longer "which prompt did the daemon type".
+ * It is the five things the daemon has to know *around* the agent rather than
+ * inside it: which settle path an exit dispatches to (`spawn::watch_session_exit`),
+ * which spawn is handed `ORCH_POST_TOKEN` (`triage::posts_proposals`), that a
+ * resolve run may not ask questions (`api::ask`), that one triage pass per PR is
+ * enough (`triage::is_triage_of`), and which PR the review bar is reporting on.
+ * Every one of those happens before the first turn or after the last.
+ *
+ * It carries **no opinion about attention.** `Kind::Automation` used to, and the
+ * rail demoted a running pass and painted it teal on the strength of it — which
+ * went wrong the moment a pass meant "a pane you are watching" as well as "a run
+ * nobody is". A session is a session; its state says whether it wants you.
+ */
+export type Pass = { pr: number, command: string, };
 
 export type Pr = { number: number, title: string, url: string, head_ref: string, 
 /**
@@ -317,7 +339,7 @@ ended: string | null,
  */
 unpushed: number, };
 
-export type SessionView = { id: string, workspace: string, state: State, kind: Kind, 
+export type SessionView = { id: string, workspace: string, state: State, pass: Pass | null, 
 /**
  * What to call this session — the name you gave it, else Claude Code's own
  * ai-title (`Session::label`). The panes read this and stay out of the

@@ -982,7 +982,7 @@ mod tests {
     /// and main's claim is what the old ending would have handed back.
     #[tokio::test]
     async fn a_session_end_from_the_tree_the_conversation_left_settles_nothing() {
-        use crate::model::{Kind, Session, MAIN};
+        use crate::model::{Session, MAIN};
 
         let dir = crate::testutil::scratch("endhook");
         let (here, gone) = (dir.join("main"), dir.join("old-worktree"));
@@ -1001,7 +1001,7 @@ mod tests {
         let id = Uuid::new_v4();
         {
             let mut inner = app.inner.write().await;
-            let mut s = Session::new(id, MAIN.to_string(), here.clone(), Kind::Interactive);
+            let mut s = Session::new(id, MAIN.to_string(), here.clone(), None);
             s.set_state(State::Working);
             inner.sessions.insert(id, s);
         }
@@ -1047,7 +1047,7 @@ mod tests {
     /// `<main>/web`, which no `s.cwd` will ever equal.
     #[tokio::test]
     async fn an_ending_from_a_subdirectory_of_the_workspace_still_ends_it() {
-        use crate::model::{Kind, Session, MAIN};
+        use crate::model::{Session, MAIN};
 
         let dir = crate::testutil::scratch("endsub");
         let here = resolved(&{
@@ -1060,7 +1060,7 @@ mod tests {
         let id = Uuid::new_v4();
         {
             let mut inner = app.inner.write().await;
-            let mut s = Session::new(id, MAIN.to_string(), here.clone(), Kind::Interactive);
+            let mut s = Session::new(id, MAIN.to_string(), here.clone(), None);
             s.set_state(State::Working);
             inner.sessions.insert(id, s);
         }
@@ -1094,7 +1094,7 @@ mod tests {
     /// waiting for the macos-14 runner.
     #[tokio::test]
     async fn a_cwd_reported_through_a_symlink_is_not_a_conversation_that_moved() {
-        use crate::model::{Kind, Session, MAIN};
+        use crate::model::{Session, MAIN};
 
         let dir = crate::testutil::scratch("endlink");
         let real = dir.join("real");
@@ -1109,7 +1109,7 @@ mod tests {
         let id = Uuid::new_v4();
         {
             let mut inner = app.inner.write().await;
-            let s = Session::new(id, MAIN.to_string(), resolved(&real), Kind::Interactive);
+            let s = Session::new(id, MAIN.to_string(), resolved(&real), None);
             inner.sessions.insert(id, s);
         }
         let mut headers = HeaderMap::new();
@@ -1145,7 +1145,7 @@ mod tests {
     /// so settling on one hands main's claim back out from under a live agent.
     #[tokio::test]
     async fn a_session_end_that_ends_no_process_keeps_the_session_and_its_claim() {
-        use crate::model::{Kind, Session, MAIN};
+        use crate::model::{Session, MAIN};
 
         let dir = crate::testutil::scratch("endclear");
         let here = dir.join("main");
@@ -1156,7 +1156,7 @@ mod tests {
         let id = Uuid::new_v4();
         {
             let mut inner = app.inner.write().await;
-            let mut s = Session::new(id, MAIN.to_string(), here.clone(), Kind::Interactive);
+            let mut s = Session::new(id, MAIN.to_string(), here.clone(), None);
             s.set_state(State::Working);
             inner.sessions.insert(id, s);
         }
@@ -1244,7 +1244,7 @@ mod tests {
         let id = Uuid::new_v4();
         {
             let mut inner = app.inner.write().await;
-            let mut s = Session::new(id, MAIN.to_string(), dir.clone(), Kind::Interactive);
+            let mut s = Session::new(id, MAIN.to_string(), dir.clone(), None);
             s.pty = Some(spawned.handle.clone());
             s.pending_prompt = Some("/resolve 4812".to_string());
             inner.sessions.insert(id, s);
@@ -1284,7 +1284,7 @@ mod tests {
         let id = Uuid::new_v4();
         {
             let mut inner = app.inner.write().await;
-            let mut s = Session::new(id, MAIN.to_string(), dir.clone(), Kind::Interactive);
+            let mut s = Session::new(id, MAIN.to_string(), dir.clone(), None);
             s.set_state(State::YourTurn {
                 since: SystemTime::now(),
                 reason: TurnReason::TurnComplete,
@@ -1323,7 +1323,7 @@ mod tests {
         let id = uuid::Uuid::new_v4();
         {
             let mut inner = app.inner.write().await;
-            let mut s = Session::new(id, MAIN.to_string(), dir.clone(), Kind::Interactive);
+            let mut s = Session::new(id, MAIN.to_string(), dir.clone(), None);
             s.set_state(State::YourTurn {
                 since: SystemTime::now(),
                 reason: TurnReason::Interrupted,

@@ -90,7 +90,9 @@ struct Session {
     claude_session_id: Option<String>,
     workspace: WorkspaceId,
     state: State,
-    kind: Kind,                         // Interactive | Automation { pr, skill }
+    pass: Option<Pass>,                 // `Some { pr, command }` when the daemon
+                                        // started it as a pass over a PR. Was
+                                        // `Kind: Interactive | Automation`; see §8.
     pty: PtyHandle,
     buffer: RingBuffer,
     transcript_path: Option<PathBuf>,   // ~/.claude/projects/<cwd-slug>/<uuid>.jsonl
@@ -602,7 +604,7 @@ An automation run is an ordinary Claude Code session whose first prompt is the
 skill invocation — `/green 4812`. It appears in the rail like any other session,
 renders in the same terminal pane, and has a kill button. Nothing about it needs
 a separate view; the only differences are that the daemon started it and that it
-carries `Kind::Automation { pr, skill }`. No invisible work. Automation **never occupies main** — but it may
+carries `Pass { pr, command }`. No invisible work. Automation **never occupies main** — but it may
 acquire the `main:instances` lock for e2e teardown (§7 rule 2), which is
 displayed on the main workspace row while held.
 
@@ -743,8 +745,15 @@ Sort within the PR group: needs-resolving → failing → automation running →
 and clean → draft.
 
 Sessions sort `BuildFailing` → `YourTurn` (by wait time, longest first) →
-`Working` → **`Automation`** → `Archived`. The waiting duration is
-shown on the row and is the number to optimise down.
+`Working` → `Archived`. The waiting duration is shown on the row and is the
+number to optimise down.
+
+> **There is no `Automation` band any more, and no `Kind` to put a session in
+> one.** A session started as a pass is a session: it sorts by state like every
+> other row and wears the colour its state earns. The paragraph below is the
+> reasoning that band was built on, kept because it is still the right reasoning
+> about a *run nobody watches* — what changed is that a pass is now as often a
+> pane you sit in (`handle-review`), and one row cannot be both.
 
 The attempt counter is not shown on a first attempt. A `/green` run doing its job
 needs no annotation; the count only earns space once it is heading somewhere bad,
@@ -752,17 +761,18 @@ so it surfaces from attempt 2 onward and the row goes red when the circuit
 breaker trips. The general rule: if it needs you, it changes colour — quiet
 states do not narrate themselves.
 
-Automation sits second-from-bottom on purpose: a `/green` run in progress is
-unattended by definition and needs nothing from you. **It promotes back into the
+Automation sat second-from-bottom on purpose: a `/green` run in progress is
+unattended by definition and needs nothing from you. **It promoted back into the
 attention band only on failure** — a failed remediation, a tripped circuit
 breaker, or a run that ends `NeedsMain`. Those are the only moments an automation
-session is worth your attention, so those are the only moments it moves.
+session is worth your attention, so those were the only moments it moved.
 
 Dot colours are shared across sessions and PRs so one legend covers both:
 **red** failing or conflicted · **yellow** needs resolving · **green** open and
-clean · **grey** draft, idle or archived · **teal** a `/green` session is active.
-Teal outranks everything: while automation holds a PR, "already being handled" is
-the more useful signal than the underlying failure.
+clean · **grey** draft, idle or archived · **teal** a session is working this PR.
+Teal outranks everything on a **PR** row: while a session holds a PR, "already
+being handled" is the more useful signal than the underlying failure. A *session*
+row no longer takes it — see the note above.
 
 > **Not purple.** GitHub uses purple for merged, so a purple dot on an open PR
 > reads as already-merged at a glance. Teal is unclaimed in GitHub's PR

@@ -130,11 +130,11 @@ pub enum Source {
 async fn spawn_session_confirmed(
     app: &Arc<AppState>,
     workspace: &str,
-    kind: Kind,
+    pass: Option<Pass>,
     resume: Option<Source>,
     grace: std::time::Duration,
 ) -> Result<SessionId> {
-    let id = spawn_session(app, workspace, kind, resume).await?;
+    let id = spawn_session(app, workspace, pass, resume).await?;
     let handle = {
         let inner = app.inner.read().await;
         inner.sessions.get(&id).and_then(|s| s.pty.clone())
@@ -193,7 +193,7 @@ pub async fn relocate_session(
     // Read before anything moves: `spawn_session` rebuilds the record under this
     // same id, so what the conversation *was* has to be captured now or it is
     // overwritten by defaults.
-    let (src_cwd, src_workspace, handle, title, name, created_at, kind) = {
+    let (src_cwd, src_workspace, handle, title, name, created_at, pass) = {
         let inner = app.inner.read().await;
         let s = inner
             .sessions
@@ -206,7 +206,7 @@ pub async fn relocate_session(
             s.title.clone(),
             s.name.clone(),
             s.created_at,
-            s.kind.clone(),
+            s.pass.clone(),
         )
     };
 
@@ -240,10 +240,10 @@ pub async fn relocate_session(
         ),
     }
 
-    // Its own kind, not `Interactive`: relocating must not quietly promote an
-    // automation run into a session the guard table counts differently.
+    // Its recorded pass, not `None`: relocating must not quietly turn a run into a
+    // session the guard table counts differently.
     let resumed =
-        spawn_session_confirmed(app, dest_workspace, kind.clone(), Some(Source::Resume(id)), grace)
+        spawn_session_confirmed(app, dest_workspace, pass.clone(), Some(Source::Resume(id)), grace)
             .await;
 
     match resumed {
@@ -256,7 +256,7 @@ pub async fn relocate_session(
             let forked = spawn_session_confirmed(
                 app,
                 dest_workspace,
-                kind,
+                pass,
                 Some(Source::Fork(id)),
                 grace,
             )
@@ -435,7 +435,7 @@ impl Carried {
 pub async fn spawn_session(
     app: &Arc<AppState>,
     workspace: &str,
-    kind: Kind,
+    pass: Option<Pass>,
     resume: Option<Source>,
 ) -> Result<SessionId> {
     // The centre pane is empty until this returns, so this is the number people
@@ -578,7 +578,7 @@ pub async fn spawn_session(
         }
     };
 
-    let mut session = Session::new(id, workspace.to_string(), path.clone(), kind);
+    let mut session = Session::new(id, workspace.to_string(), path.clone(), pass);
     session.interrupted = interrupted;
     session.had_a_turn = had_a_turn;
     session.branch = branch;
@@ -594,7 +594,7 @@ pub async fn spawn_session(
     // A resume rebuilds the environment from nothing, so the run's own credential
     // has to be re-handed here as well as at a fresh spawn: through the same seam,
     // because this is the path that forgot it once. See [`post_token_for`].
-    let post = post_token_for(app, &session.kind).await;
+    let post = post_token_for(app, &session.pass).await;
     // Off the runtime. `session_env` asks the checkout's own env source, which is a
     // bounded child process (`mise env`, `direnv export`) that `run_bounded` polls
     // with `thread::sleep` for up to five seconds — on *every* spawn. Parked on a
@@ -901,7 +901,7 @@ pub async fn spawn_worktree_session(
     };
 
     // `cwd` is cloned because the arrival notice below names it.
-    let mut session = Session::new(id, workspace, cwd.clone(), Kind::Interactive);
+    let mut session = Session::new(id, workspace, cwd.clone(), None);
     // The one the pty already holds. `Session::new` always mints a fresh token, so
     // leaving this out is not a missing credential but a *mismatched* one, and the
     // agent's asks would be refused rather than failing to be attempted.
@@ -936,7 +936,7 @@ pub async fn spawn_worktree_session(
     Ok(id)
 }
 
-/// The `Kind::Automation` command a resolve run carries.
+/// The `Pass` command a resolve run carries.
 ///
 /// Named for the reason `fix_pr::COMMAND` and `triage::COMMAND` are: the spawn,
 /// the prompt table and the exit watcher all have to agree on this string, and it
@@ -950,7 +950,7 @@ pub(crate) const RESOLVE_RUN_COMMAND: &str = "resolve-run";
 /// is written to all have to agree.
 pub const HANDLE_REVIEW_COMMAND: &str = "handle-review";
 
-/// One automation run, in the shape every such spawn shares.
+/// One run over a PR, in the shape every such spawn shares.
 ///
 /// Four spawns — fix-pr, `/resolve`, the resolve run and the two posting runs —
 /// each built the `claude --session-id --settings` argv, rendered a prompt to the
@@ -960,7 +960,7 @@ pub const HANDLE_REVIEW_COMMAND: &str = "handle-review";
 /// documents — a hook landing in it took the prompt and dropped it. [`spawn_run`]
 /// consumes this and sets everything on the record before the process exists.
 pub struct RunSpec {
-    /// The `Kind::Automation` command the session carries.
+    /// The `Pass` command the session carries.
     pub command: String,
     /// What the `SessionStart` hook types: one line, `/orchd:<command> <pr>`.
     pub pending: String,
@@ -980,10 +980,10 @@ impl RunSpec {
             id,
             workspace.to_string(),
             path,
-            Kind::Automation {
+            Some(Pass {
                 pr,
                 command: self.command.clone(),
-            },
+            }),
         );
         session.pending_prompt = Some(self.pending.clone());
         session
@@ -998,7 +998,7 @@ impl RunSpec {
 /// `post` is `Some` only for a run that posts proposals. Both go in the environment
 /// rather than the prompt, because prompt text lands in a transcript and a pty
 /// buffer.
-/// The proposals credential a session of this kind is handed, minted and recorded,
+/// The proposals credential a session with this pass is handed, minted and recorded,
 /// or `None` for one with nothing to post.
 ///
 /// Its own function because the *resume* path is where this rule was forgotten
@@ -1007,9 +1007,9 @@ impl RunSpec {
 /// proposals, reporting `ORCH_POST_TOKEN is absent from this environment` after it
 /// had read every thread. Re-minted rather than persisted, like the ask token: the
 /// value is only ever compared against the record this write updates.
-pub(crate) async fn post_token_for(app: &Arc<AppState>, kind: &Kind) -> Option<String> {
-    match kind {
-        Kind::Automation { pr, command } if crate::triage::posts_proposals(command) => {
+pub(crate) async fn post_token_for(app: &Arc<AppState>, pass: &Option<Pass>) -> Option<String> {
+    match pass {
+        Some(Pass { pr, command }) if crate::triage::posts_proposals(command) => {
             Some(crate::triage::mint_post_token(app, *pr).await)
         }
         _ => None,
@@ -1032,13 +1032,13 @@ pub(crate) fn run_env(
     (env, unset)
 }
 
-/// Start an automation run in `workspace`: a headed `claude` told to read a file.
+/// Start a run over a PR in `workspace`: an ordinary session, typed one line.
 ///
 /// Headed, not `-p`: a run you can watch, answer and take over mid-flight. The
 /// guard tables decide whether a run may start; none of them depended on the run
-/// being invisible. The prompt is a file the session is told to read rather than
-/// a slash command, so nothing has to be installed on the agent's side and nothing
-/// is written into the checkout being driven.
+/// being invisible. The line the `SessionStart` hook types is a skill invocation
+/// (`/orchd:<command> <pr>`), so nothing is written into the checkout being
+/// driven.
 ///
 /// **`id` is the caller's to mint, and that is the whole reason it is a parameter
 /// rather than a `Uuid::new_v4()` here.** Every run has a record of the daemon's
@@ -1083,7 +1083,7 @@ pub(crate) async fn spawn_run(
     // session, proposals against this PR. Neither opens anything else, which is
     // what keeps "the daemon owns outward writes" an API rule rather than a
     // sentence in a prompt this run's own input could argue with.
-    let post = post_token_for(app, &session.kind).await;
+    let post = post_token_for(app, &session.pass).await;
     // Off the runtime — see the note in `spawn_session`.
     let (env, unset) = {
         let (app, at, extra) = (app.clone(), path.clone(), spec.extra_env.clone());
@@ -1593,7 +1593,7 @@ pub async fn spawn_resolve_run(
             let is_the_pass = inner
                 .sessions
                 .get(&id)
-                .is_some_and(|s| crate::triage::is_triage_of(&s.kind, pr));
+                .is_some_and(|s| crate::triage::is_triage_of(&s.pass, pr));
             /* **Posted, not idle.** `is_busy` was the first test and it read the
                wrong thing: a pass that has handed over its proposals goes on
                printing for a few seconds, so a click that came straight off the
@@ -1667,7 +1667,7 @@ pub fn validate_worktree_name(name: &str) -> Result<()> {
 }
 
 /// The one observer of a session's pty exit: it settles the record and dispatches
-/// whatever that session's kind owes on its way out. Every spawner arms it,
+/// whatever that session's pass owes on its way out. Every spawner arms it,
 /// `triage::spawn_posting_run` included — a review session that had its own
 /// watcher never reached the hand-off below, so `fix_pr_on_exit` was set, the
 /// session was killed, and no run ever started.
@@ -1715,7 +1715,7 @@ pub(crate) fn watch_session_exit(app: Arc<AppState>, id: SessionId, handle: Arc<
                     if s.state.is_live() {
                         s.set_state(State::Exited);
                     }
-                    if let Kind::Automation { pr, command } = &s.kind {
+                    if let Some(Pass { pr, command }) = &s.pass {
                         if command == crate::fix_pr::COMMAND {
                             fix_pr_for = Some(*pr);
                         }
@@ -1740,12 +1740,13 @@ pub(crate) fn watch_session_exit(app: Arc<AppState>, id: SessionId, handle: Arc<
                     // archived nothing else goes looking.
                     crate::store::pin_transcript(s.id, &s.cwd, &mut s.transcript_path);
                     let ws = s.workspace.clone();
-                    // An interactive session that never had a turn is an empty pane,
-                    // not a conversation: keeping its row and header file would only
+                    // A session that never had a turn is an empty pane, not a
+                    // conversation: keeping its row and header file would only
                     // offer a resume that exits instantly and a fork that dies in a
-                    // fresh worktree. Automation is exempt — a run that never got
-                    // going is tracked as `Exhausted`, not deleted (§8).
-                    if matches!(s.kind, Kind::Interactive) && !s.had_a_turn {
+                    // fresh worktree. A session started as a pass is exempt — a run
+                    // that never got going is tracked as `Exhausted`, not deleted
+                    // (§8).
+                    if s.pass.is_none() && !s.had_a_turn {
                         forget = Some((s.cwd.clone(), s.transcript_path.clone()));
                         inner.sessions.remove(&id);
                     }
@@ -2633,7 +2634,7 @@ mod tests {
         let (app, dir) = crate::testutil::app("insert");
 
         let id = Uuid::new_v4();
-        let session = Session::new(id, MAIN.to_string(), dir.clone(), Kind::Interactive);
+        let session = Session::new(id, MAIN.to_string(), dir.clone(), None);
         let cmd = ["cat".to_string()];
         let spawned = insert_and_spawn(&app, id, session, &cmd, &dir, &[], &[])
             .await
@@ -2656,7 +2657,7 @@ mod tests {
         let (app, dir) = crate::testutil::app("refused");
 
         let id = Uuid::new_v4();
-        let session = Session::new(id, MAIN.to_string(), dir.clone(), Kind::Interactive);
+        let session = Session::new(id, MAIN.to_string(), dir.clone(), None);
         let cmd = ["orchd-no-such-binary-ever".to_string()];
         let err = insert_and_spawn(&app, id, session, &cmd, &dir, &[], &[]).await;
 
@@ -2684,7 +2685,7 @@ mod tests {
         let id = Uuid::new_v4();
         {
             let mut inner = app.inner.write().await;
-            let mut s = Session::new(id, MAIN.to_string(), dir.clone(), Kind::Interactive);
+            let mut s = Session::new(id, MAIN.to_string(), dir.clone(), None);
             s.pty = Some(new.handle.clone());
             s.set_state(State::Working);
             inner.sessions.insert(id, s);
@@ -2729,8 +2730,8 @@ mod tests {
         assert_eq!(s.pending_prompt.as_deref(), Some("/orchd:resolve-run 7"));
         assert_eq!(s.id, id);
         assert!(matches!(
-            &s.kind,
-            Kind::Automation { pr: 7, command } if command == RESOLVE_RUN_COMMAND
+            &s.pass,
+            Some(Pass { pr: 7, command }) if command == RESOLVE_RUN_COMMAND
         ));
     }
 
@@ -2754,10 +2755,10 @@ mod tests {
                 id,
                 "wt".to_string(),
                 dir.clone(),
-                Kind::Automation {
+                Some(Pass {
                     pr: 4242,
                     command: crate::triage::COMMAND.to_string(),
-                },
+                }),
             );
             s.pty = Some(pty.handle.clone());
             s.set_state(State::Working);
@@ -2785,7 +2786,7 @@ mod tests {
     /// A run whose record is written before its process exists is settled by the
     /// exit watcher even when the process dies instantly.
     ///
-    /// The ordering this pins is the one every automation caller used to get
+    /// The ordering this pins is the one every run caller used to get
     /// wrong: the record went in *after* the spawn returned, so a `claude` that
     /// died at once — a bad `--settings`, the version gate — was reaped first and
     /// the watcher matched on a record that was not there yet. The resolve run then
@@ -2834,7 +2835,7 @@ mod tests {
                 id,
                 "wt".to_string(),
                 dir.clone(),
-                Kind::Automation { pr, command: RESOLVE_RUN_COMMAND.to_string() },
+                Some(Pass { pr, command: RESOLVE_RUN_COMMAND.to_string() }),
             );
             s.pty = Some(pty.handle.clone());
             s.set_state(State::Working);
@@ -2995,7 +2996,7 @@ mod tests {
         {
             let mut inner = app.inner.write().await;
             let id = uuid::Uuid::new_v4();
-            let mut s = Session::new(id, "pr-4".into(), dir.join("pr-4"), Kind::Interactive);
+            let mut s = Session::new(id, "pr-4".into(), dir.join("pr-4"), None);
             s.had_a_turn = true;
             s.set_state(State::Archived { resumable: true });
             // Exactly what `worktree::archive` writes when a pr-4 tree is torn down.
@@ -3048,7 +3049,7 @@ mod tests {
                     tree: Default::default(),
                 },
             );
-            let mut s = Session::new(id, "pr-4".into(), dir.join("pr-4"), Kind::Interactive);
+            let mut s = Session::new(id, "pr-4".into(), dir.join("pr-4"), None);
             // Idle, not mid-turn — the case the two rules disagreed on. Its pid is
             // this test process, because `live_sessions_in` also wants it alive.
             s.set_state(State::YourTurn {

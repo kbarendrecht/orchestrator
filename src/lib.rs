@@ -1002,14 +1002,11 @@ fn first_per_workspace(mut resumable: Vec<store::SessionRecord>) -> Vec<store::S
 /// A crash or a reboot takes every Claude process with it, because the daemon
 /// owns the pty. Resuming costs the scrollback — ring buffers are in memory —
 /// but keeps the conversation, which is the part that took time to build.
-///
-/// Deliberately skipped: automation runs, because the PR has moved on and §8
-/// demotes an orphaned run to `Exhausted` rather than resurrecting it.
 fn auto_resume(app: Arc<AppState>, records: Vec<store::SessionRecord>) {
     tokio::spawn(async move {
-        // Any session that was live, whatever started it. `/resolve` and the fix
-        // run are `Automation`, and skipping them silently meant the pane you
-        // were actually sitting in was the one that did not come back. `--resume`
+        // Any session that was live, whatever started it. A run started with a
+        // skill used to be skipped here, and skipping it silently meant the pane
+        // you were actually sitting in was the one that did not come back. `--resume`
         // reopens the conversation at its prompt; it re-runs nothing, so there is
         // no rebase or push waiting to fire on boot.
         let candidates: Vec<store::SessionRecord> =
@@ -1040,9 +1037,10 @@ fn auto_resume(app: Arc<AppState>, records: Vec<store::SessionRecord>) {
         let to_resume = first_per_workspace(resumable);
         let mut resumed = 0usize;
         for r in to_resume {
-            // Its own kind, not `Interactive`: a resumed fix run is still the
-            // automation the rail colours teal and the guard table counts.
-            match spawn::spawn_session(&app, &r.workspace, r.kind.clone(), Some(spawn::Source::Resume(r.id)))
+            // Its recorded pass, not `None`: a resumed fix run is still the run
+            // the guard table counts, and the one `posts_proposals` mints a post
+            // token for.
+            match spawn::spawn_session(&app, &r.workspace, r.kind.clone().pass(), Some(spawn::Source::Resume(r.id)))
                 .await
             {
                 Ok(id) => {
@@ -1593,7 +1591,7 @@ mod tests {
                 uuid::Uuid::new_v4(),
                 "z-session".to_string(),
                 dir.clone(),
-                model::Kind::Interactive,
+                None,
             );
             inner.sessions.insert(s.id, s);
         }
@@ -1640,7 +1638,7 @@ mod tests {
                 uuid::Uuid::new_v4(),
                 ws.to_string(),
                 std::path::PathBuf::from("/tmp"),
-                model::Kind::Interactive,
+                None,
             );
             // Older = smaller created_at. Distinct so "oldest wins" is unambiguous.
             s.created_at = UNIX_EPOCH + Duration::from_secs(1_000_000 - age_secs);

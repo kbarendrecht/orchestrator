@@ -336,7 +336,7 @@ pub async fn new_session(
     Json(body): Json<NewSession>,
 ) -> ApiResult<serde_json::Value> {
     refuse_if_occupied(&app, &body.workspace).await?;
-    let id = spawn::spawn_session(&app, &body.workspace, Kind::Interactive, None).await?;
+    let id = spawn::spawn_session(&app, &body.workspace, None, None).await?;
     Ok(Json(json!({ "session": id })))
 }
 
@@ -513,9 +513,9 @@ pub async fn rewind_session(
 ///
 /// A live session is killed first: deleting the record while its pty runs would
 /// leave an agent working in a worktree with nothing in the rail pointing at it.
-/// Its own exit watcher still runs and still releases the locks and the
-/// automation slot, because it holds the pty handle rather than looking the
-/// session up again.
+/// Its own exit watcher still runs and still releases the locks and the PR's run
+/// slot, because it holds the pty handle rather than looking the session up
+/// again.
 ///
 /// Claude Code's own transcript under `~/.claude/projects` is deliberately left
 /// alone. It is not the daemon's file, and `claude --resume` outside orchd still
@@ -670,8 +670,7 @@ pub async fn ask(
     {
         let inner = app.inner.read().await;
         let is_run = inner.sessions.get(&id).is_some_and(|s| {
-            matches!(&s.kind, crate::model::Kind::Automation { command, .. }
-                if command == crate::spawn::RESOLVE_RUN_COMMAND)
+            s.pass.as_ref().is_some_and(|p| p.command == crate::spawn::RESOLVE_RUN_COMMAND)
         });
         if is_run {
             refuse!(
@@ -1344,9 +1343,9 @@ pub async fn spawn_from_session(
     let name = body.name.as_deref().map(str::trim).filter(|n| !n.is_empty());
     let cut = body.worktree || (named.is_none() && mine == MAIN);
     let child = match named {
-        Some(w) => spawn::spawn_session(&app, w, Kind::Interactive, None).await?,
+        Some(w) => spawn::spawn_session(&app, w, None, None).await?,
         None if cut => spawn::spawn_worktree_session(&app, name, None).await?,
-        None => spawn::spawn_session(&app, &mine, Kind::Interactive, None).await?,
+        None => spawn::spawn_session(&app, &mine, None, None).await?,
     };
     {
         let mut inner = app.inner.write().await;
@@ -1566,7 +1565,7 @@ pub async fn resume_session(
     State(app): State<Arc<AppState>>,
     Path(id): Path<Uuid>,
 ) -> ApiResult<serde_json::Value> {
-    revive(&app, id, false).await
+    revive(&app, id).await
 }
 
 /// Branch off a conversation instead of continuing it.
@@ -1585,20 +1584,22 @@ pub async fn resume_session(
 /// That also makes a fork cheaper than a resume: nothing has to be rebuilt, so a
 /// conversation whose branch is long gone can still be forked.
 ///
-/// **Except an automation.** A fix or resolve run is an agent working that PR's
-/// branch, and a fresh worktree is cut from upstream — the fork would come back
-/// on the wrong code entirely. Those stay in the workspace they were run in.
+/// A session started as a [`Pass`](crate::model::Pass) forks like any other. It
+/// used to resume instead, on the reasoning that a run cut a fresh worktree from
+/// upstream and so would come back on the wrong code — but "fork" that silently
+/// continues one conversation is the worse surprise, and the new tree is the
+/// answer to two agents in one checkout either way.
 pub async fn fork_session(
     State(app): State<Arc<AppState>>,
     Path(id): Path<Uuid>,
 ) -> ApiResult<serde_json::Value> {
-    let (automation, had_a_turn) = {
+    let had_a_turn = {
         let inner = app.inner.read().await;
-        let s = inner
+        inner
             .sessions
             .get(&id)
-            .ok_or_else(|| anyhow::anyhow!("no such session {id}"))?;
-        (s.is_automation(), s.had_a_turn)
+            .ok_or_else(|| anyhow::anyhow!("no such session {id}"))?
+            .had_a_turn
     };
     // Refuse before a worktree is cut, not after the fork dies in it. A fork
     // replays the conversation with `--resume`, so a session that never had a turn
@@ -1612,15 +1613,12 @@ pub async fn fork_session(
             crate::model::short_id(&id)
         );
     }
-    if automation {
-        return revive(&app, id, true).await;
-    }
     let new_id = spawn::spawn_worktree_session(&app, None, Some(id)).await?;
     Ok(Json(json!({ "session": new_id, "warning": None::<String> })))
 }
 
-/// The shared half of resume and fork: get the worktree back, then relaunch.
-async fn revive(app: &Arc<AppState>, id: Uuid, fork: bool) -> ApiResult<serde_json::Value> {
+/// Resume: get the worktree back, then relaunch under the same id.
+async fn revive(app: &Arc<AppState>, id: Uuid) -> ApiResult<serde_json::Value> {
     let (workspace, recovery, cwd) = {
         let inner = app.inner.read().await;
         let s = inner
@@ -1656,22 +1654,15 @@ async fn revive(app: &Arc<AppState>, id: Uuid, fork: bool) -> ApiResult<serde_js
             .with_context(|| format!("session {id}"))?
     };
 
-    // Its recorded kind, not `Interactive`: reopening a fix run should come back as
-    // the automation the rail colours and the guard table counts.
-    let kind = {
+    // Its recorded pass, not `None`: the run's PR and command are what
+    // `posts_proposals` reads for the post token, and what the bar reads to say
+    // which PR this session is a pass over.
+    let pass = {
         let inner = app.inner.read().await;
-        inner
-            .sessions
-            .get(&id)
-            .map(|s| s.kind.clone())
-            .unwrap_or(Kind::Interactive)
+        inner.sessions.get(&id).and_then(|s| s.pass.clone())
     };
-    let source = if fork {
-        spawn::Source::Fork(id)
-    } else {
-        spawn::Source::Resume(id)
-    };
-    let new_id = spawn::spawn_session(app, &workspace, kind, Some(source)).await?;
+    let new_id =
+        spawn::spawn_session(app, &workspace, pass, Some(spawn::Source::Resume(id))).await?;
     Ok(Json(json!({ "session": new_id, "warning": warning })))
 }
 
@@ -2429,9 +2420,9 @@ fn carried_json(r: &Option<anyhow::Result<spawn::Relocated>>) -> serde_json::Val
 /// "about the work that is leaving" are different questions. A session with no
 /// recorded branch answers neither and stays put.
 ///
-/// Automation is left alone deliberately: a fix or resolve run belongs to its PR's
-/// worktree, and moving one into main would put an agent that rebases and
-/// force-pushes on the tree every worktree is cut from.
+/// A session started as a pass is left alone deliberately: a fix or resolve run
+/// belongs to its PR's worktree, and moving one into main would put an agent that
+/// rebases and force-pushes on the tree every worktree is cut from.
 async fn to_carry(
     app: &Arc<AppState>,
     workspace: &str,
@@ -2446,7 +2437,7 @@ async fn to_carry(
             .sessions
             .values()
             .filter(|s| s.workspace == workspace)
-            .filter(|s| matches!(s.kind, Kind::Interactive))
+            .filter(|s| s.pass.is_none())
             .filter(|s| s.branch.as_deref() == Some(branch));
         let mut live = Vec::new();
         let mut records = Vec::new();
@@ -2551,13 +2542,13 @@ fn arrival_notice(
 /// record in one checkout, its uncommitted edits in another — and each time the only
 /// symptom was the agent eventually noticing.
 ///
-/// Live interactive sessions only. An archived one is history and is allowed to name
-/// a branch that has since moved; automation is pinned to its PR's branch by
+/// Live sessions with no pass only. An archived one is history and is allowed to
+/// name a branch that has since moved; a pass is pinned to its PR's branch by
 /// construction.
 async fn check_moves_landed(app: &Arc<AppState>, what: &str) {
     let inner = app.inner.read().await;
     for s in inner.sessions.values() {
-        if !s.state.is_live() || !matches!(s.kind, Kind::Interactive) {
+        if !s.state.is_live() || s.pass.is_some() {
             continue;
         }
         let Some(mine) = s.branch.as_deref() else {
@@ -2739,7 +2730,7 @@ mod tests {
     /// rather than by a timeout, and it comes back carrying the choice.
     #[tokio::test]
     async fn an_answer_releases_the_poll_the_agent_is_sitting_in() {
-        use crate::model::{Interaction, InteractionOption, Kind, Session, MAIN};
+        use crate::model::{Interaction, InteractionOption, Session, MAIN};
 
         let (app, dir) = crate::testutil::app("ask");
 
@@ -2747,7 +2738,7 @@ mod tests {
         let ask_id = Uuid::new_v4();
         {
             let mut inner = app.inner.write().await;
-            let mut sess = Session::new(id, MAIN.to_string(), dir.clone(), Kind::Interactive);
+            let mut sess = Session::new(id, MAIN.to_string(), dir.clone(), None);
             sess.interaction = Some(Interaction {
                 id: ask_id,
                 thread_id: None,
@@ -2816,14 +2807,14 @@ mod tests {
     /// it, and the words travel beside the value rather than as it.
     #[tokio::test]
     async fn the_option_that_asks_for_words_is_not_answered_without_them() {
-        use crate::model::{Interaction, InteractionOption, Kind, Session, MAIN};
+        use crate::model::{Interaction, InteractionOption, Session, MAIN};
 
         let (app, dir) = crate::testutil::app("ask3");
         let id = Uuid::new_v4();
         let ask_id = Uuid::new_v4();
         {
             let mut inner = app.inner.write().await;
-            let mut sess = Session::new(id, MAIN.to_string(), dir.clone(), Kind::Interactive);
+            let mut sess = Session::new(id, MAIN.to_string(), dir.clone(), None);
             sess.interaction = Some(Interaction {
                 id: ask_id,
                 thread_id: None,
@@ -2876,14 +2867,14 @@ mod tests {
     /// was written for.
     #[tokio::test]
     async fn an_answer_that_was_not_offered_is_refused() {
-        use crate::model::{Interaction, InteractionOption, Kind, Session, MAIN};
+        use crate::model::{Interaction, InteractionOption, Session, MAIN};
 
         let (app, dir) = crate::testutil::app("ask2");
         let id = Uuid::new_v4();
         let ask_id = Uuid::new_v4();
         {
             let mut inner = app.inner.write().await;
-            let mut sess = Session::new(id, MAIN.to_string(), dir.clone(), Kind::Interactive);
+            let mut sess = Session::new(id, MAIN.to_string(), dir.clone(), None);
             sess.interaction = Some(Interaction {
                 id: ask_id,
                 thread_id: None,
@@ -2959,7 +2950,7 @@ mod tests {
     /// *answer* — cancelling the one, declining the other — rather than do nothing.
     #[tokio::test]
     async fn rewind_refuses_every_state_that_would_read_an_escape_as_an_answer() {
-        use crate::model::{Kind, Session, State as S, TurnReason as R, MAIN};
+        use crate::model::{Session, State as S, TurnReason as R, MAIN};
 
         let (app, dir) = crate::testutil::app("rewind");
 
@@ -2973,7 +2964,7 @@ mod tests {
             let id = Uuid::new_v4();
             {
                 let mut inner = app.inner.write().await;
-                let mut s = Session::new(id, MAIN.to_string(), dir.clone(), Kind::Interactive);
+                let mut s = Session::new(id, MAIN.to_string(), dir.clone(), None);
                 s.had_a_turn = true;
                 s.state = state.clone();
                 inner.sessions.insert(id, s);
@@ -2992,7 +2983,7 @@ mod tests {
         let id = Uuid::new_v4();
         {
             let mut inner = app.inner.write().await;
-            let mut s = Session::new(id, MAIN.to_string(), dir.clone(), Kind::Interactive);
+            let mut s = Session::new(id, MAIN.to_string(), dir.clone(), None);
             s.state = at(R::TurnComplete);
             inner.sessions.insert(id, s); // had_a_turn stays false
         }
@@ -3013,7 +3004,7 @@ mod tests {
     /// record and tears a worktree down, which is what the e2e flows are for.
     #[tokio::test]
     async fn discard_reaches_only_the_sessions_the_caller_spawned() {
-        use crate::model::{Kind, Session, MAIN};
+        use crate::model::{Session, MAIN};
 
         let (app, dir) = crate::testutil::app("discard");
 
@@ -3023,7 +3014,7 @@ mod tests {
         {
             let mut inner = app.inner.write().await;
             for id in [caller, mine, someone_elses] {
-                let s = Session::new(id, MAIN.to_string(), dir.clone(), Kind::Interactive);
+                let s = Session::new(id, MAIN.to_string(), dir.clone(), None);
                 inner.sessions.insert(id, s);
             }
             // Spawned by a third session, not by the caller — the shape an agent
@@ -3196,7 +3187,7 @@ mod tests {
     #[tokio::test]
     async fn only_a_review_hands_over_and_only_when_the_pr_needs_watching() {
         use crate::forge::{Checks, Pr};
-        use crate::model::{Kind, Session};
+        use crate::model::{Pass, Session};
 
         let (app, dir) = crate::testutil::app("handoff");
         let pr_num = 10001u64;
@@ -3210,21 +3201,23 @@ mod tests {
             ..crate::testutil::pr(pr_num)
         };
 
-        let put = |kind: Kind| {
-            let s = Session::new(Uuid::new_v4(), "wt".to_string(), dir.clone(), kind);
+        let put = |pass: Option<Pass>| {
+            let s = Session::new(Uuid::new_v4(), "wt".to_string(), dir.clone(), pass);
             (s.id, s.ask_token.clone(), s)
         };
-        let review = |pr: u64| Kind::Automation {
-            pr,
-            command: crate::triage::COMMAND.to_string(),
+        let review = |pr: u64| {
+            Some(Pass {
+                pr,
+                command: crate::triage::COMMAND.to_string(),
+            })
         };
 
         let (rid, rtok, r) = put(review(pr_num));
-        let (fid, ftok, f) = put(Kind::Automation {
+        let (fid, ftok, f) = put(Some(Pass {
             pr: pr_num,
             command: crate::fix_pr::COMMAND.to_string(),
-        });
-        let (iid, itok, i) = put(Kind::Interactive);
+        }));
+        let (iid, itok, i) = put(None);
         {
             let mut inner = app.inner.write().await;
             inner.prs = vec![red.clone()];
@@ -3303,11 +3296,11 @@ mod tests {
     /// usually the one you just stopped.
     #[tokio::test]
     async fn a_swap_carries_the_conversation_that_was_not_running() {
-        use crate::model::{ArchiveState, Kind, Session, State};
+        use crate::model::{ArchiveState, Session, State};
 
         let (app, dir) = crate::testutil::app("carry-archived");
         let put = |ws: &str, branch: Option<&str>, state: State, recovery: Option<ArchiveState>| {
-            let mut s = Session::new(Uuid::new_v4(), ws.to_string(), dir.clone(), Kind::Interactive);
+            let mut s = Session::new(Uuid::new_v4(), ws.to_string(), dir.clone(), None);
             s.branch = branch.map(str::to_string);
             s.had_a_turn = true;
             s.recovery = recovery;
@@ -3365,19 +3358,19 @@ mod tests {
     /// one that was.
     #[tokio::test]
     async fn the_newest_conversation_is_not_the_one_that_travels() {
-        use crate::model::{Kind, Session, State};
+        use crate::model::{Session, State};
 
         let (app, dir) = crate::testutil::app("carry-newest");
         let (wanted, newer) = {
             let mut inner = app.inner.write().await;
             let mut wanted =
-                Session::new(Uuid::new_v4(), "wt".into(), dir.clone(), Kind::Interactive);
+                Session::new(Uuid::new_v4(), "wt".into(), dir.clone(), None);
             wanted.branch = Some("feature/a".into());
             wanted.had_a_turn = true;
             wanted.state = State::Archived { resumable: true };
 
             let mut newer =
-                Session::new(Uuid::new_v4(), "wt".into(), dir.clone(), Kind::Interactive);
+                Session::new(Uuid::new_v4(), "wt".into(), dir.clone(), None);
             newer.branch = Some("feature/b".into());
             newer.had_a_turn = true;
             newer.state = State::Archived { resumable: true };
@@ -3399,7 +3392,7 @@ mod tests {
     /// prompt, and the project's own note about the destination rides along.
     #[tokio::test]
     async fn a_carried_conversation_is_told_where_it_now_is() {
-        use crate::model::{Kind, Session, MAIN};
+        use crate::model::{Session, MAIN};
 
         // The note is the half only the project knows. orchd supplies the facts
         // about the move; this sentence is the repo's business and comes from its
@@ -3412,7 +3405,7 @@ mod tests {
         let id = Uuid::new_v4();
         {
             let mut inner = app.inner.write().await;
-            let mut s = Session::new(id, "wt".to_string(), dir.join("wt"), Kind::Interactive);
+            let mut s = Session::new(id, "wt".to_string(), dir.join("wt"), None);
             // Recorded on the branch it is *leaving*, which is the state a second
             // move finds a session in: the first carry moved it and nothing had
             // re-stamped the record yet. `carry_record` has to correct that itself,
@@ -3936,7 +3929,7 @@ pub async fn pr_triage_progress(
         inner
             .sessions
             .values()
-            .find(|s| s.state.is_live() && crate::triage::is_triage_of(&s.kind, number))
+            .find(|s| s.state.is_live() && crate::triage::is_triage_of(&s.pass, number))
             .map(|s| s.id)
     };
     let Some(session) = session else {
@@ -4594,7 +4587,7 @@ pub async fn open_pr(
     // pressing this twice would otherwise stack a second session in it. (The `main`
     // arm already refused an occupied main inside `switch_main_to_pr`.)
     refuse_if_occupied(&app, &workspace).await?;
-    let id = spawn::spawn_session(&app, &workspace, Kind::Interactive, None).await?;
+    let id = spawn::spawn_session(&app, &workspace, None, None).await?;
     Ok(Json(json!({ "session": id, "workspace": workspace })))
 }
 
@@ -4737,8 +4730,8 @@ pub async fn session_handoff(
     // last said about it.
     let hand_on = {
         let inner = app.inner.read().await;
-        let pr = match inner.sessions.get(&id).map(|s| &s.kind) {
-            Some(Kind::Automation { pr, command }) if command == crate::triage::COMMAND => *pr,
+        let pr = match inner.sessions.get(&id).and_then(|s| s.pass.as_ref()) {
+            Some(Pass { pr, command }) if command == crate::triage::COMMAND => *pr,
             _ => {
                 refuse!("only a review session hands over, and {id} is not one")
             }

@@ -1687,9 +1687,9 @@ function reviewTick() {
   /* **A restart forgets the review; the daemon does not.** `reviewState` lives in
      the page, so restarting the app left a resumed and still-working review with no
      bar, no `MOD⇧R`, and no way back but hunting for its session in the rail.
-     `auto_resume` brings that session back with its `Kind` intact, and the kind is
-     the whole record needed to pick the thread up: automation, command `review`,
-     with the PR on it.
+     `auto_resume` brings that session back with its `Pass` intact, and the pass is
+     the whole record needed to pick the thread up: command `review`, with the PR
+     on it.
 
      Deliberately not `resolve_runs`: `store::load_resolve_runs` marks every run
      ended at boot, on purpose, because no pty survives a restart. It is an account
@@ -1700,15 +1700,15 @@ function reviewTick() {
      one question with a single answer when two reviews are in flight. */
   if (!reviewState.session && selected) {
     const s = (snap.sessions || []).find((x) => x.id === selected);
-    const k = s && s.alive ? s.kind : null;
-    if (k && k.kind === 'automation' && k.command === 'resolve-run') {
+    const k = s && s.alive ? s.pass : null;
+    if (k && k.command === 'resolve-run') {
       // Mid-run, from a reload or from landing on its pane: the plan is gone and
       // the run's own record is what the screen and the bar read.
       reviewState.pr = k.pr;
       reviewState.session = s.id;
       reviewState.decisionsSent = true;
       reviewState.screen = 'run';
-    } else if (k && k.kind === 'automation' && (k.command === 'review' || k.command === 'triage')) {
+    } else if (k && (k.command === 'review' || k.command === 'triage')) {
       reviewState.pr = k.pr;
       reviewState.session = s.id;
       reviewState.proposalsLoaded = false;
@@ -2032,7 +2032,7 @@ async function loadReview(pr) {
 /** The live session answering this PR, whichever window started it. */
 function liveReviewSession(pr) {
   return (snap.sessions || []).find((x) => x.alive
-    && x.kind.kind === 'automation' && x.kind.command === 'review' && x.kind.pr === pr) || null;
+    && x.pass && x.pass.command === 'review' && x.pass.pr === pr) || null;
 }
 
 /** Can this window pick up that session where it stands?

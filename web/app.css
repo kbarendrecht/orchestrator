@@ -47,8 +47,8 @@
   --work:#4C9AAF;
   --ok:#5FA97C;
   --bad:#D4726B;
-  --auto:#5B8FC9;        /* automation — azure, parted from --work's teal so the two
-                            no longer collide as 6px dots. Still NOT purple: purple
+  --auto:#5B8FC9;        /* a pass's command — azure, parted from --work's teal so
+                            the two no longer collide. Still NOT purple: purple
                             reads as merged on GitHub. */
 
   --mono:'IBM Plex Mono',ui-monospace,monospace;
@@ -286,11 +286,9 @@ button.ctx-btn:hover{color:var(--text)}
 .dot.blocked{background:var(--attn)}
 /* Handed to a PR: the work is elsewhere now, so it wears a ring rather than a
    fill — the same outline an archived session gets, since both mean "not the
-   thing in front of you". The outline also parts it from the teal automation
-   used to share, for an eye that cannot tell the two hues apart. */
+   thing in front of you". */
 .dot.pr{background:none;border:1px solid var(--work)}
 .dot.build{background:var(--bad)}
-.dot.auto{background:var(--auto)}
 .dot.working{background:#6A6A6A}
 .dot.idle{background:#6B6B6B}
 .dot.archived{background:transparent;border:1px solid var(--faint-solid)}
@@ -299,7 +297,6 @@ button.ctx-btn:hover{color:var(--text)}
   font-family:var(--mono);font-size:calc(11.5px * var(--fs));flex:1;
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
 }
-.sess.auto .sess-name{color:var(--auto)}
 /* The rename box, in place of the name. Same metrics as `.sess-name` so the row
    does not shift when it opens, with a visible edge so it reads as editable. */
 .sess-rename{
@@ -316,7 +313,8 @@ button.ctx-btn:hover{color:var(--text)}
   display:flex;align-items:center;gap:13px;padding-left:14px;margin-top:2px;
   font-family:var(--mono);font-size:calc(10.5px * var(--fs));color:var(--faint-solid);
 }
-/* The automation's own name, in the accent its rows already wear. */
+/* Which pass a session is running, in the one accent nothing else uses — the
+   command is the only thing on the row that is not about state. */
 .sess-cmd{color:var(--auto)}
 .sess-state{color:var(--dim)}
 .sess-state.blocked{color:var(--attn)}

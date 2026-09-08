@@ -675,9 +675,10 @@ export function dotClass(s) {
      left it out of the count — the dot shouting about the one thing the rail had
      decided not to shout about. */
   if (k === 'your_turn') return s.state.reason === 'ready' ? 'idle' : 'blocked';
-  // Teal outranks the underlying state: while automation holds a session,
-  // "already being handled" is the more useful signal.
-  if (s.kind.kind === 'automation') return 'auto';
+  /* No colour of its own for a session started as a pass. It used to wear azure
+     ahead of its state, on the reasoning that "already being handled" outranks
+     what the session is doing — which stopped being true the moment a pass meant
+     a pane you sit in as often as a run nobody watches. The state is the signal. */
   if (k === 'working' || k === 'starting') return 'working';
   if (k === 'archived' || k === 'exited') return 'archived';
   return 'idle';
@@ -947,11 +948,11 @@ export function prState(p) {
  *  next move is on the PR, and the PR's own state is the useful thing to show.
  *  A question or a permission prompt is still about this session, so those keep
  *  the amber and their own words. */
-/** The PR a session's work belongs to, whether by branch or by automation. */
+/** The PR a session's work belongs to, whether by branch or by its pass. */
 export function prOf(s) {
   if (!s) return null;
-  if (s.kind.kind === 'automation') {
-    return (snap.prs || []).find((p) => p.number === s.kind.pr) || null;
+  if (s.pass) {
+    return (snap.prs || []).find((p) => p.number === s.pass.pr) || null;
   }
   return prForWorkspace(s.workspace);
 }

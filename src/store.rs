@@ -9,6 +9,50 @@ use crate::config::Config;
 use crate::model::*;
 use crate::pty::pid_alive;
 
+/// The `kind` field as the state file spells it, which is not what a session
+/// carries any more.
+///
+/// Records on disk hold `{"kind":"interactive"}` or
+/// `{"kind":"automation","pr":N,"command":…}`, and older ones spell that last key
+/// `skill`. A session has no kind now — only an optional [`Pass`] — so this is the
+/// one place the translation happens, in both directions.
+///
+/// **Not a migration, and nothing here expires.** It is how the file is read,
+/// permanently, the way `alias = "skill"` already was: a daemon that cannot read
+/// its own state file loses every archived session, and there is no message that
+/// would make that acceptable. New records are written in the same shape, so a
+/// downgrade keeps working too.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum OnDiskKind {
+    #[default]
+    Interactive,
+    Automation {
+        pr: u64,
+        #[serde(alias = "skill")]
+        command: String,
+    },
+}
+
+impl OnDiskKind {
+    fn of(pass: Option<&Pass>) -> Self {
+        match pass {
+            Some(p) => OnDiskKind::Automation {
+                pr: p.pr,
+                command: p.command.clone(),
+            },
+            None => OnDiskKind::Interactive,
+        }
+    }
+
+    pub(crate) fn pass(self) -> Option<Pass> {
+        match self {
+            OnDiskKind::Interactive => None,
+            OnDiskKind::Automation { pr, command } => Some(Pass { pr, command }),
+        }
+    }
+}
+
 /// The durable half of a session.
 ///
 /// Ring buffers are in-memory and are not persisted — session *records* are
@@ -20,7 +64,8 @@ pub struct SessionRecord {
     pub id: SessionId,
     pub workspace: WorkspaceId,
     pub cwd: PathBuf,
-    pub kind: Kind,
+    #[serde(default)]
+    pub kind: OnDiskKind,
     pub title: Option<String>,
     /// The name you gave this session. Persisted, or a rename would last exactly
     /// as long as the daemon.
@@ -89,7 +134,7 @@ impl SessionRecord {
             id: s.id,
             workspace: s.workspace.clone(),
             cwd: s.cwd.clone(),
-            kind: s.kind.clone(),
+            kind: OnDiskKind::of(s.pass.as_ref()),
             title: s.title.clone(),
             name: s.name.clone(),
             transcript_path: s.transcript_path.clone(),
@@ -112,7 +157,7 @@ impl SessionRecord {
     /// Rebuild a session from its record. It comes back `Archived`, never live:
     /// the daemon owned the pty and restarting it killed the process.
     pub fn restore(self) -> Session {
-        let mut s = Session::new(self.id, self.workspace, self.cwd, self.kind);
+        let mut s = Session::new(self.id, self.workspace, self.cwd, self.kind.pass());
         s.title = self.title;
         s.name = self.name;
         s.transcript_path = self.transcript_path;
@@ -969,7 +1014,7 @@ mod tests {
                 // A cwd with no transcript directory of its own, so only the paths
                 // set explicitly below can make a record worth keeping.
                 cwd: dir.clone(),
-                kind: crate::model::Kind::Interactive,
+                kind: OnDiskKind::Interactive,
                 title: None,
                 name: None,
                 transcript_path: transcript,
@@ -1323,7 +1368,7 @@ mod tests {
             uuid::Uuid::new_v4(),
             "wt".into(),
             std::path::Path::new("/tmp").to_path_buf(),
-            crate::model::Kind::Interactive,
+            None,
         );
         s.title = Some("Generated conversation name".into());
         s.name = Some("the swap bug".into());
@@ -1366,7 +1411,7 @@ mod tests {
             uuid::Uuid::new_v4(),
             "wt".into(),
             std::path::Path::new("/tmp").to_path_buf(),
-            crate::model::Kind::Interactive,
+            None,
         );
         s.branch = Some("feature/a".into());
         s.arrival_notice = Some("you were moved".into());
@@ -1402,7 +1447,7 @@ mod tests {
             uuid::Uuid::new_v4(),
             "wt".into(),
             Path::new("/tmp").to_path_buf(),
-            Kind::Interactive,
+            None,
         );
         s.set_state(State::Working);
         assert!(SessionRecord::of(&s).restore().interrupted);
@@ -1423,7 +1468,7 @@ mod tests {
             uuid::Uuid::new_v4(),
             "wt".into(),
             Path::new("/tmp").to_path_buf(),
-            Kind::Interactive,
+            None,
         );
         assert!(!s.had_a_turn, "a fresh session has had none");
 
@@ -1446,7 +1491,7 @@ mod tests {
             uuid::Uuid::new_v4(),
             "wt".into(),
             Path::new("/tmp").to_path_buf(),
-            Kind::Interactive,
+            None,
         );
         s.had_a_turn = true;
         let restored = SessionRecord::of(&s).restore();
@@ -1466,7 +1511,7 @@ mod tests {
             uuid::Uuid::new_v4(),
             "wt".into(),
             Path::new("/tmp").to_path_buf(),
-            Kind::Interactive,
+            None,
         );
         assert!(!s.had_a_turn);
         let restored = SessionRecord::of(&s).restore();
@@ -1482,7 +1527,7 @@ mod tests {
             uuid::Uuid::new_v4(),
             "wt".into(),
             Path::new("/tmp").to_path_buf(),
-            Kind::Interactive,
+            None,
         );
         s.had_a_turn = true;
         s.recovery = Some(ArchiveState::TranscriptOnly);
@@ -1499,10 +1544,10 @@ mod tests {
             uuid::Uuid::new_v4(),
             "invoice".into(),
             Path::new("/repo/.claude/worktrees/invoice").to_path_buf(),
-            Kind::Automation {
+            Some(crate::model::Pass {
                 pr: 4812,
                 command: "fix-pr".into(),
-            },
+            }),
         );
         s.transcript_archived = true;
         s.recovery = Some(ArchiveState::Recoverable {
@@ -1517,11 +1562,11 @@ mod tests {
         assert_eq!(r.id, s.id);
         assert!(r.transcript_archived);
         assert_eq!(
-            r.kind,
-            Kind::Automation {
+            r.kind.pass(),
+            Some(crate::model::Pass {
                 pr: 4812,
                 command: "fix-pr".into()
-            }
+            })
         );
         assert!(matches!(r.recovery, Some(ArchiveState::Recoverable { .. })));
     }
@@ -1537,7 +1582,7 @@ mod tests {
             uuid::Uuid::new_v4(),
             "fixer-a".into(),
             Path::new("/repo/.claude/worktrees/fixer-a").to_path_buf(),
-            Kind::Interactive,
+            None,
         );
         s.spawned_by = Some(parent);
         s.spawn_cut_worktree = true;
@@ -1568,13 +1613,13 @@ mod tests {
         // into `commands/`. Sessions already on disk say `skill`, and a daemon
         // that cannot read its own state file loses every archived session.
         let old = r#"{"kind":"automation","pr":4812,"skill":"green"}"#;
-        let k: Kind = serde_json::from_str(old).unwrap();
+        let k: OnDiskKind = serde_json::from_str(old).unwrap();
         assert_eq!(
-            k,
-            Kind::Automation {
+            k.pass(),
+            Some(crate::model::Pass {
                 pr: 4812,
                 command: "green".into()
-            }
+            })
         );
     }
 }

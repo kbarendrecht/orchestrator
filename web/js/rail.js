@@ -526,7 +526,7 @@ async function openArchived(s) {
 
 /** What the row calls itself.
  *
- *  In order of how much it tells you: the PR an automation run is working on, the
+ *  In order of how much it tells you: the PR a pass is working on, the
  *  name Claude Code gave the conversation, then the workspace it sits in. The
  *  workspace is last because it is the coarsest — a worktree holds one session at a
  *  time, so its name says where, not which conversation.
@@ -535,12 +535,12 @@ async function openArchived(s) {
  *  still being cut says what is happening instead. */
 function railName(s, w) {
   if (pending(s)) return 'creating worktree';
-  // An automation row's workspace is `pr-10006`, which repeats the number it is
-  // about to print and says nothing else. The PR's own title is already in the
-  // snapshot, put there for the pane at the bottom of this rail.
-  if (s.kind.kind === 'automation') {
-    const pr = (snap.prs || []).find((p) => p.number === s.kind.pr);
-    return pr ? `#${s.kind.pr} ${pr.title}` : `#${s.kind.pr}`;
+  // A pass's workspace is `pr-10006`, which repeats the number it is about to
+  // print and says nothing else. The PR's own title is already in the snapshot,
+  // put there for the pane at the bottom of this rail.
+  if (s.pass) {
+    const pr = (snap.prs || []).find((p) => p.number === s.pass.pr);
+    return pr ? `#${s.pass.pr} ${pr.title}` : `#${s.pass.pr}`;
   }
   return s.title || w.id;
 }
@@ -555,7 +555,7 @@ function forkBadge(s) {
 }
 
 function sessionRow(s, w) {
-  const btn = el('button', 'sess' + (s.kind.kind === 'automation' ? ' auto' : ''));
+  const btn = el('button', 'sess');
   btn.setAttribute('aria-current', String(s.id === selected));
   // So a rename can find this row's name span again after any re-render.
   btn.dataset.id = s.id;
@@ -573,9 +573,9 @@ function sessionRow(s, w) {
   btn.appendChild(row);
 
   const sub = el('div', 'sess-sub');
-  // Which run it is. The name above says which PR, and `fix-pr` and `resolve` do
-  // very different things to it.
-  if (s.kind.kind === 'automation') sub.appendChild(el('span', 'sess-cmd', s.kind.command));
+  // Which pass it is. The name above says which PR, and `fix-pr` and
+  // `handle-review` do very different things to it.
+  if (s.pass) sub.appendChild(el('span', 'sess-cmd', s.pass.command));
   sub.appendChild(el('span', 'sess-state ' + stateClass(s), stateLabel(s)));
   // The waiting duration is the number to optimise down (§2). A start has a
   // clock for a different reason: the daemon cuts the worktree and runs the
