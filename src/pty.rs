@@ -498,10 +498,10 @@ impl PtyHandle {
     /// `SIGKILL` the child's group, without waiting.
     ///
     /// The escalation half on its own, and [`Self::kill_gracefully`] is the only
-    /// caller: it is what happens once the grace has run out. Shutdown does *not*
-    /// use it — `lib.rs` says why it cannot escalate yet — so do not read this as
-    /// a second stop path. It stays separate because the two halves of
-    /// "ask, then insist" are easier to read named than inlined.
+    /// caller: it is what happens once the grace has run out. So do not read this
+    /// as a second stop path — it stays separate because the two halves of "ask,
+    /// then insist" are easier to read named than inlined. Shutdown was the one
+    /// caller that could only ask; it escalates like everything else now.
     fn kill_hard(&self) {
         // Same reason as in [`Self::kill`]: a reaped pid may be somebody else's.
         if self.exit_code().is_some() {
@@ -519,7 +519,7 @@ impl PtyHandle {
     ///
     /// Use this wherever the caller depends on the process actually being gone —
     /// a swap moving a session's branch, a managed process being replaced, a
-    /// session the UI has just dropped. `kill(); wait().await` was the shape
+    /// session the UI has just dropped, the daemon closing. `kill(); wait().await` was the shape
     /// before, and with a child that ignores `SIGHUP` it waits forever: a swap
     /// hung its own HTTP request, and a dropped session left an agent running with
     /// no record, no watcher and nothing in the UI that could reach it.

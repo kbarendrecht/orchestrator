@@ -596,12 +596,24 @@ impl AppState {
 
     /// Write the session records without pushing a snapshot, right now.
     ///
-    /// Shutdown wants this: `was_live` is read off session state, and killing
-    /// the ptys flips that state from under you a moment later. Persisting
-    /// first is what lets auto-resume rebuild the rail next launch. Immediate
-    /// rather than coalesced for the same reason — there is no later.
+    /// Immediate rather than coalesced, for a caller that knows there is no later.
     pub async fn persist_now(&self) {
         self.persist().await;
+    }
+
+    /// The resume set as it stands: one record per session, live state included.
+    ///
+    /// Shutdown takes this **before** it kills anything, because `was_live` is read
+    /// off session state and the exit watchers are about to rewrite it. Writing this
+    /// verbatim afterwards is what lets the kills be awaited at all — see
+    /// [`crate::Server::shutdown`], which is the only caller.
+    pub async fn session_records(&self) -> Vec<crate::store::SessionRecord> {
+        let inner = self.inner.read().await;
+        inner
+            .sessions
+            .values()
+            .map(crate::store::SessionRecord::of)
+            .collect()
     }
 
     /// Write the records now if the *set* of sessions changed, and soon otherwise.
@@ -656,6 +668,19 @@ impl AppState {
     /// Session records are written on every state change, so a daemon that dies
     /// unexpectedly still leaves something to resume from (§2).
     async fn persist(&self) {
+        /* **Nothing writes live state once shutdown has begun.** Shutdown captures
+           the resume set before it kills anything and writes that set verbatim at
+           the end, precisely because every dying pty wakes an exit watcher that
+           flips `was_live` to false. Without this the last word on disk belonged to
+           whichever watcher ran last, or to a `persist_soon` timer landing a second
+           later — and auto-resume then restored nothing.
+
+           This is what replaced "no await point after the kills". The rule cost
+           shutdown its `SIGHUP` → `SIGKILL` escalation, since escalating means
+           waiting. */
+        if self.shutting_down.load(std::sync::atomic::Ordering::SeqCst) {
+            return;
+        }
         // Serialised, so two overlapping flushes cannot write this file at once.
         let _writing = self.persist_writing.lock().await;
         /* **The records and the id hash come from one guard.** They used to be two

@@ -158,9 +158,17 @@ impl Server {
             .shutting_down
             .store(true, std::sync::atomic::Ordering::SeqCst);
 
-        // Before the killing, not after: `was_live` is read off session state,
-        // which the exit watchers are about to rewrite.
-        self.app.persist_now().await;
+        /* **The resume set is captured here and written at the very end.** It is
+           read off session state, which the exit watchers are about to rewrite, so
+           it has to be taken before anything is killed. It used to be *written*
+           here instead, and that is what stopped shutdown escalating a kill: any
+           await point after the kills let the watchers run and re-persist, and
+           auto-resume then found every session `was_live: false` and restored
+           nothing (caught by the restart e2e flow).
+           `AppState::persist` now refuses to write while `shutting_down` is set, so
+           the last word on disk is this set rather than whichever watcher ran last
+           — and the kills below can be waited on. */
+        let resume_set = self.app.session_records().await;
 
         // And before the lock is taken, because each of these is a bounded child
         // process. A watcher running through `docker compose exec` outlives its
@@ -168,47 +176,61 @@ impl Server {
         // how five of them stacked up.
         self.stop_declared_processes().await;
 
-        // **Signal and go — nothing here may `await` after the kills.** Each `kill`
-        // now reaches the child's whole process group (so a session's grandchildren
-        // go too) and returns at once. Waiting for the children to exit was tried
-        // and is wrong: `persist_now` above writes `was_live` *before* the killing
-        // precisely because the exit watchers are about to rewrite it, and any
-        // await point after the kills lets them run and re-persist — auto-resume
-        // then found every session `was_live: false` and restored nothing. Caught by
-        // the restart e2e flow.
-        //
-        // So an agent that traps `SIGHUP` is not escalated to here. It is still not
-        // orphaned: the process is exiting, which closes the pty master, and the
-        // kernel hangs up the child's terminal on the way out. Escalating properly
-        // needs the watcher/persist interaction untangled first — see TODO.md.
-        let mut killed = 0usize;
-        {
+        // The handles, out from under the lock: the escalation below awaits, and
+        // holding the write lock across it would park every hook and snapshot for
+        // as long as the slowest child takes to go.
+        let handles: Vec<std::sync::Arc<crate::pty::PtyHandle>> = {
             let mut inner = self.app.inner.write().await;
-            for s in inner.sessions.values() {
-                if let Some(h) = &s.pty {
-                    if h.is_alive() {
-                        let _ = h.kill();
-                        killed += 1;
-                    }
-                }
-            }
+            let mut all: Vec<_> = inner
+                .sessions
+                .values()
+                .filter_map(|s| s.pty.clone())
+                .filter(|h| h.is_alive())
+                .collect();
             for w in inner.workspaces.values_mut() {
-                for p in &w.processes {
-                    if let Some(h) = &p.pty {
-                        if h.is_alive() {
-                            // The pty only. A `stop_command` is a bounded child of
-                            // its own and this runs under the write lock on the way
-                            // out; `shutdown_processes` below does that half first,
-                            // with the lock released.
-                            let _ = h.kill();
-                            killed += 1;
-                        }
-                    }
-                }
+                // The pty only. A `stop_command` is a bounded child of its own and
+                // `stop_declared_processes` above did that half already, with the
+                // lock released.
+                all.extend(
+                    w.processes
+                        .iter()
+                        .filter_map(|p| p.pty.clone())
+                        .filter(|h| h.is_alive()),
+                );
                 w.processes.clear();
             }
+            all
+        };
+        let killed = handles.len();
+
+        /* **`SIGHUP`, a grace, then `SIGKILL` — the same escalation every other stop
+           path gets.** One `SIGHUP` is a request a child is entitled to decline, and
+           this used to be the one caller that could only ask: an agent that traps it
+           was left to the pty master closing as the process exited, and a child that
+           survives even that was never reached at all.
+
+           **In parallel, so the grace is spent once rather than once per child.**
+           `kill_gracefully` is bounded by construction (two `KILL_GRACE` waits at
+           worst), so a board of thirty sessions still closes in seconds — and the
+           ordinary case is unchanged, since a child that goes on `SIGHUP` resolves
+           the first wait in under a millisecond. */
+        let mut going = tokio::task::JoinSet::new();
+        for h in handles {
+            going.spawn(async move { h.kill_gracefully().await });
         }
+        while going.join_next().await.is_some() {}
         tracing::info!("shutdown: killed {killed} child process(es)");
+
+        /* And now the set captured before any of that, verbatim. Every watcher woken
+           by those kills has had its say and `persist` has been refusing them all
+           along, so this is the only thing that writes the file after the killing —
+           which is what auto-resume reads next launch. */
+        let written =
+            crate::proc::run_blocking("persisting the resume set", move || store::save(&resume_set))
+                .await;
+        if let Ok(Err(e)) | Err(e) = written {
+            tracing::warn!("could not persist the resume set: {e:#}");
+        }
         self.serve.abort();
     }
 }
