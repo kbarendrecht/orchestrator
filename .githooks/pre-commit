@@ -1,10 +1,11 @@
 #!/bin/sh
-# The identity guard and the SPA's two checks, before the commit rather than
-# after the bug.
+# The identity guard, clippy, and the SPA's two checks — before the commit rather
+# than after the bug.
 #
 # Kept honest about cost: the build checks run only when something they could
 # possibly fail on is staged, because a hook that takes half a minute on a docs
-# commit is a hook everybody learns to pass `--no-verify` to. Warm, this is ~2s.
+# commit is a hook everybody learns to pass `--no-verify` to. Warm, this is ~2s
+# on a `web/` change and ~9s on a Rust one, which is clippy.
 # The identity guard is the exception and runs always — it is two `git var` calls,
 # and the commit it has to catch is as likely to be a docs one as a Rust one.
 #
@@ -103,6 +104,25 @@ if [ "$rust" = 1 ]; then
     echo "pre-commit: web/snapshot.d.ts is out of date with the Rust structs." >&2
     echo "            The regenerated file is in your tree — stage it:" >&2
     echo "              git add web/snapshot.d.ts" >&2
+    exit 1
+  fi
+fi
+
+# What CI lints with, spelled the same way it spells it (`check.yml`'s Lint step),
+# because the two have to agree: CI denies warnings, so a lint that is only a
+# warning locally is a red build there.
+#
+# `--all-targets` is the load-bearing half. The eight that got through on
+# 2026-09-08 were every one of them in test code, which a plain `cargo clippy`
+# never compiles — green `cargo test`, `check-web` and e2e said nothing, and the
+# push went red on a `.into()` that did nothing.
+#
+# ~7s warm, which is more than the rest of this hook and a fifth of the e2e flows.
+# Cold after a toolchain bump it is a minute or two, once.
+if [ "$rust" = 1 ]; then
+  if ! cargo clippy --all-targets --quiet -- -D warnings; then
+    echo "pre-commit: clippy denies the warning above, and so does CI." >&2
+    echo "            Fix it, or commit with --no-verify if you know why." >&2
     exit 1
   fi
 fi
