@@ -623,6 +623,9 @@ fn router(app: Arc<AppState>) -> Router {
         .route("/api/open/file", post(api::open_file))
         .route("/api/pr/:number/review", get(api::pr_review))
         .route("/api/pr/:number/triage", post(api::pr_triage))
+        // The rail's default review verb: one agent and one pane, which the
+        // overlay is not good enough to replace yet.
+        .route("/api/pr/:number/handle-review", post(api::pr_handle_review))
         // The two the vendored `triage` skill calls. Both are in `is_agent_route`.
         .route("/api/pr/:number/triage-context", get(api::pr_triage_context))
         .route("/api/pr/:number/triage/progress", post(api::pr_triage_progress))

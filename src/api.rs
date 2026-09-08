@@ -3972,6 +3972,34 @@ pub async fn pr_triage(
     start_posting_run(app, number, PostingRun::Triage).await
 }
 
+/// Work a PR's review threads in a pane, with a person watching.
+///
+/// **The default review verb**, and deliberately the older shape: one agent in the
+/// PR's worktree running `/orchd:handle-review`, asking with `AskUserQuestion`,
+/// drafting replies and posting nothing without a go. The overlay flow
+/// (`pr_triage` into the cards, then a resolve run) stays a menu item away — the
+/// cards are not good enough to be the only way through a review yet.
+///
+/// No worktree gate of its own beyond `spawn_command_session`'s: it takes you to a
+/// live session already on the branch when there is one, rather than refusing.
+pub async fn pr_handle_review(
+    State(app): State<Arc<AppState>>,
+    Path(number): Path<u64>,
+) -> ApiResult<serde_json::Value> {
+    let pr = {
+        let inner = app.inner.read().await;
+        pr_from_poll(&inner.prs, number)?
+    };
+    let session = crate::spawn::spawn_command_session(
+        &app,
+        number,
+        &pr.head_ref,
+        crate::spawn::HANDLE_REVIEW_COMMAND,
+    )
+    .await?;
+    Ok(Json(json!({ "session": session })))
+}
+
 /// Start the overlay review session.
 ///
 /// The single-session flow: it posts proposals like triage, then stays alive to

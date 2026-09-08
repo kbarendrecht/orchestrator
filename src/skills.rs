@@ -66,6 +66,25 @@ pub const TRIAGE: &str = include_str!("../skills/triage/SKILL.md");
 /// environment it is already building for that run.
 pub const FIX_PR: &str = include_str!("../skills/fix-pr/SKILL.md");
 
+/// Working a PR's review threads in a pane, with a person watching.
+///
+/// **The default answer to the rail's review button**, and the reason is the
+/// overlay rather than this file: the cards are not good enough to be the only way
+/// through a review yet, so the flow that puts one agent and one terminal in front
+/// of you is the one the button starts. `triage` and the overlay stay a menu item
+/// away, and `RESOLVE_RUN` still carries out what the cards decide.
+///
+/// Vendored from the monorepo's own `/resolve`, which is where it was proven —
+/// and generalised on the way, per this repo's own rule about one repo not being
+/// the specification: no owner/repo hardcoded, no tracker tool named (the repo's
+/// tracker skill knows those), the task runner hedged, and the story dedup line
+/// spelled the way the daemon's own story pass spells it so a later search finds
+/// what this pass filed.
+///
+/// It asks with `AskUserQuestion` rather than over the ask channel, which is right
+/// for a pane and wrong for the overlay: nobody is reading a card here.
+pub const HANDLE_REVIEW: &str = include_str!("../skills/handle-review/SKILL.md");
+
 /// Filing the stories a human approved on the cards.
 ///
 /// Converted from `commands/story.md`, which was the one prompt left — and the
@@ -123,6 +142,9 @@ pub const VAR_PLAN: &str = "ORCH_PLAN";
 pub const VAR_STORIES: &str = "ORCH_STORIES";
 pub const VAR_DROP: &str = "ORCH_DROP";
 pub const VAR_TRACKER_HOST: &str = "ORCH_TRACKER_HOST";
+/// The pane review pass: what language to write a reply in when the thread it
+/// answers does not settle it.
+pub const VAR_LANGUAGE: &str = "ORCH_LANGUAGE";
 
 /// Every vendored skill, as `(directory name, body)`.
 ///
@@ -137,6 +159,7 @@ const VENDORED: &[(&str, &str)] = &[
     ("resolve-run", RESOLVE_RUN),
     ("review", REVIEW),
     ("story", STORY),
+    ("handle-review", HANDLE_REVIEW),
 ];
 
 /// The plugin manifest.
@@ -266,6 +289,7 @@ mod tests {
             crate::triage::COMMAND,
             crate::triage::TRIAGE_COMMAND,
             crate::story::COMMAND,
+            crate::spawn::HANDLE_REVIEW_COMMAND,
         ] {
             assert!(
                 VENDORED.iter().any(|(name, _)| *name == command),

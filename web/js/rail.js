@@ -91,16 +91,24 @@ let picked = null;
  *  **It does the thing rather than offering a menu of things.** It used to open
  *  `prMenu`, which is the same list a right-click already gives, so the row had two
  *  gestures for one menu and none for the action everybody wanted. A right-click
- *  still opens the menu; this is the verb. */
+ *  still opens the menu; this is the verb.
+ *
+ *  **And the verb is the pane pass, not the overlay.** `/orchd:handle-review` in a
+ *  session you watch: one agent, `AskUserQuestion` for the calls it cannot make,
+ *  replies drafted and posted only on a go. The triage-into-cards flow is still
+ *  here and still where a decided review is carried out — it is the menu's second
+ *  review item — but the cards are not good enough to be the only way through a
+ *  review yet, and a button whose result you have to learn a new screen for is a
+ *  worse default than one that hands you a terminal. */
 function reviewButtons(p) {
   const wrap = el('span', 'prpair');
   const btn = el('button', 'pract', 'resolve');
-  btn.title = `Read #${p.number}'s review threads and propose an answer to each`;
+  btn.title = `Work #${p.number}'s review threads in a pane you can take over`;
   btn.onclick = (ev) => {
     // The row is an anchor to the PR on GitHub; this is not that.
     ev.preventDefault();
     ev.stopPropagation();
-    startTriage(p.number, btn);
+    startHandleReview(p.number, btn);
   };
   wrap.appendChild(btn);
   return wrap;
@@ -123,11 +131,14 @@ function prMenu(p, btn) {
   return [
     ['open in main checkout', null, () => openPr(p.number, 'main')],
     ['open in worktree', null, () => openPr(p.number, 'worktree')],
-    /* One review verb. It starts the triage pass and hands you its pane; the bar
-       reports from there and the cards open from the bar. `/resolve` into a
-       terminal was the other one and is gone: it read the threads a second way,
-       into a session nothing watched. */
-    ['resolve', null, () => startTriage(p.number, btn)],
+    /* Two review verbs, and the first is the button's. The pane pass is one agent
+       you watch; the read pass proposes into the cards and a later run carries them
+       out. Both read the threads, which is the thing that made having two of them
+       questionable — the answer for now is that the cards are not finished, so the
+       flow that needs no new screen is the default and this menu is where the other
+       one lives. */
+    ['resolve in a pane', null, () => startHandleReview(p.number, btn)],
+    ['read into the cards', null, () => startTriage(p.number, btn)],
   ];
 }
 
@@ -150,6 +161,20 @@ async function openPr(number, where) {
  *  else's work, and a full screen saying so is a window spent on one sentence:
  *  the bar carries it beside the pane where the agent's own questions appear, and
  *  `MOD⇧R` is how you go to the cards once it says they are there. */
+/** Start the pane pass on a PR, and land on the session doing it. */
+async function startHandleReview(number, btn) {
+  if (btn) btn.disabled = true;
+  try {
+    const r = await call(`/api/pr/${number}/handle-review`);
+    setPendingSelect(r.session);
+    toast(`#${number} in a pane`);
+  } catch (e) {
+    toast(e.message, true);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
 async function startTriage(number, btn) {
   // No button when this came from a right-click on the row.
   if (btn) btn.disabled = true;

@@ -943,6 +943,13 @@ pub async fn spawn_worktree_session(
 /// was a bare literal in four places.
 pub(crate) const RESOLVE_RUN_COMMAND: &str = "resolve-run";
 
+/// The pane pass over a PR's review threads, and the rail's default review verb.
+///
+/// One spelling, for the same reason `RESOLVE_RUN_COMMAND` is one: the record the
+/// rail colours by, the typed `/orchd:handle-review`, and the directory the skill
+/// is written to all have to agree.
+pub const HANDLE_REVIEW_COMMAND: &str = "handle-review";
+
 /// One automation run, in the shape every such spawn shares.
 ///
 /// Four spawns — fix-pr, `/resolve`, the resolve run and the two posting runs —
@@ -1183,11 +1190,19 @@ pub async fn spawn_fix_pr_session(
 /// Spawn an interactive session pinned to a PR's head branch, and type a slash
 /// command into it once it is ready.
 ///
-/// The default answer to the rail's review button: a `claude` session in the PR
-/// worktree running `/resolve <pr>` in the pane, the agent doing the reading,
-/// fixing, pushing and posting itself while you supervise. The daemon does no
-/// irreversible writes here — the agent does, in a shell you can take over. This is
-/// the robust path; the native overlay is the opt-in alternative.
+/// The default answer to the rail's review button, again: a `claude` session in the
+/// PR worktree running `/orchd:handle-review <pr>` in the pane, the agent doing the
+/// reading, fixing, pushing and posting itself while you supervise. The daemon does
+/// no irreversible writes here — the agent does, in a shell you can take over.
+///
+/// **"Again" because this had no caller for a while.** The button went to the
+/// triage-into-cards flow, and the docblock went on claiming the pane was the
+/// default while the only path in was a test — with a prompt lookup that could not
+/// have answered anyway. The overlay is the opt-in alternative once more, for the
+/// reason it was written down as the robust path in the first place: the cards are
+/// not good enough to be the only way through a review yet, and a review you can
+/// only finish by learning a new screen is a worse default than one that hands you
+/// a terminal.
 pub async fn spawn_command_session(
     app: &Arc<AppState>,
     pr: u64,
@@ -1228,17 +1243,24 @@ async fn start_with_prompt(
     pr: u64,
     command: &str,
 ) -> Result<SessionId> {
-    /* The slash command itself, which is what this function's docblock has always
-       said it does: "a `claude` session in the PR worktree running `/resolve <pr>`
-       in the pane". It rendered a *vendored prompt* instead, and the lookup had no
-       arm for `resolve` — so the only path into here could only ever bail. Typing
-       the command reaches the repo's own `/resolve`, and a vendored one would be
-       reached the same way now that they are skills. */
+    /* A vendored skill, typed. This rendered a *prompt* until the conversion, and
+       the lookup had no arm for the command it was called with — so the only path
+       into here could only ever bail, which is why it had no caller but a test.
+       Namespaced (`/orchd:<command>`), because what it types now is one of this
+       daemon's own skills rather than whatever the repo happens to define. */
     let spec = RunSpec {
         command: command.to_string(),
-        pending: format!("/{command} {pr}"),
+        pending: format!("/orchd:{command} {pr}"),
         asks: true,
-        extra_env: vec![(crate::skills::VAR_PR.to_string(), pr.to_string())],
+        extra_env: vec![
+            (crate::skills::VAR_PR.to_string(), pr.to_string()),
+            // The language a reply is written in when the thread does not settle
+            // it. Config, so the skill cannot carry it.
+            (
+                crate::skills::VAR_LANGUAGE.to_string(),
+                app.cfg.default_language.clone(),
+            ),
+        ],
     };
     // Its own id: this is the `/resolve` pane, the one run with no record of the
     // daemon's beside it, so there is nothing for a caller to write first.

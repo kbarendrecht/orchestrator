@@ -425,10 +425,15 @@ is logged and the pty is killed anyway.
   git-only: see the push guard below. Teardown is a six-check preflight, then your
   repo's `WorktreeRemove` hooks, then `git worktree remove`. Never `rm -rf`, because
   a worktree is full of symlinks into main.
-- **The review flow.** Triage reads a PR's open threads and proposes, per thread,
-  a stance and whether code changes; a run commits per thread and drafts a reply
-  you see beside the real diff before the daemon posts it on its own credentials.
-  Resolving a thread stays your button, by design.
+- **The review flow, and there are two.** The rail's `resolve` button starts
+  `/orchd:handle-review` in a pane: one agent in the PR's worktree, reading the
+  threads, applying what is right, asking you about the rest, and drafting replies
+  it posts only on an explicit go. That is the default because the other one is not
+  finished. The other one is the overlay — triage reads the threads and proposes,
+  per thread, a stance and whether code changes; you decide on cards; a run commits
+  per thread and drafts a reply you see beside the real diff before the daemon posts
+  it on its own credentials. It is the second review item in a PR row's menu.
+  Resolving a thread stays your button either way, by design.
 - **`fix-pr` is hand-triggered, never automatic.** The guards that protect the
   machine and the repo remain (authorship, one run per PR, a busy branch, the push
   guard below); the automatic trigger does not. It is a gate you read before starting, not one that trips

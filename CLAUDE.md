@@ -13,7 +13,7 @@ cargo check                         # the daemon
 cargo test                          # 510 tests, all in-tree
 cargo clippy --all-targets          # what CI lints with, and it denies warnings
 mise run check-web                  # type-check the SPA + enforce its module graph
-mise run e2e                        # 14 flows against a real daemon, ~50s
+mise run e2e                        # 15 flows against a real daemon, ~55s
 cargo run -p orchestrator-desktop   # the app, daemon embedded in-process
 mise run shot                       # screenshot the running SPA (drives Chrome)
 ```
@@ -640,6 +640,18 @@ mean *this* repo; if you do, name it.
   `proposal_tokens` says it is deliberately not persisted, and that is still right
   — the token is only ever compared against the record, so re-minting is the fix
   and persisting would be the wrong one.
+- **The rail's review button starts a pane, not the overlay.** `/orchd:handle-review`
+  (`skills/handle-review/SKILL.md`, vendored from the monorepo's own `/resolve` and
+  generalised) is one agent in the PR's worktree with a person watching: it asks with
+  `AskUserQuestion`, drafts replies and posts nothing without a go. The
+  triage-into-cards flow is the menu's second review item and still carries out what
+  the cards decide.
+  This is a **reversal**, and the reason is the UI rather than the flow: the cards
+  are not good enough to be the only way through a review yet. `spawn_command_session`
+  is the seam, and it had no caller but a test for a while — its docblock claimed the
+  pane was the default the whole time, with a prompt lookup that could not have
+  answered. If the overlay ever becomes the default again, that docblock and
+  `README.md`'s "there are two" are the two sentences to change.
 - **An ask the review overlay does not own must still be answerable in the box.**
   `renderInteraction` dropped *every* free-text option for a review session, on
   the assumption that the only one is the overlay's decision payload. The prompt's
