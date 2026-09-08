@@ -148,19 +148,6 @@ pub struct AppState {
     /// [`Self::persist_when_due`].
     persisted_ids: std::sync::atomic::AtomicU64,
     pub inner: RwLock<Inner>,
-    /// The branch `open_pr(place=main)` checked into main, which `park_main` may
-    /// return to base when the last session there closes.
-    ///
-    /// Provenance, not a branch name lookup: after a swap, main also holds a branch
-    /// that can be a PR head, and parking *that* away would undo the swap. Only an
-    /// explicit "the daemon put this here for a PR" mark tells the two apart —
-    /// `current ∈ poll head refs` cannot. Set by `switch_main_to_pr`, cleared by a
-    /// swap and by parking.
-    ///
-    /// Deliberately in-memory and inverse-polarity to the old `swapped_with_main`
-    /// flag: losing it on a restart means main is *not* auto-parked (a harmless
-    /// squat on a PR branch), never that a swap is silently undone.
-    pub main_pr_park: RwLock<Option<String>>,
     /// Held for the length of a swap, so two of them cannot interleave.
     ///
     /// Not a nicety. A swap chooses *who travels* from a snapshot of session state
@@ -577,7 +564,6 @@ impl AppState {
                 agent_update: None,
                 upgrade_run: None,
             }),
-            main_pr_park: RwLock::new(None),
             swapping: tokio::sync::Mutex::new(()),
             sweeping: tokio::sync::Mutex::new(()),
             shutting_down: std::sync::atomic::AtomicBool::new(false),

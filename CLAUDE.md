@@ -10,7 +10,7 @@ is.
 
 ```
 cargo check                         # the daemon
-cargo test                          # 510 tests, all in-tree
+cargo test                          # 511 tests, all in-tree
 cargo clippy --all-targets          # what CI lints with, and it denies warnings
 mise run check-web                  # type-check the SPA + enforce its module graph
 mise run e2e                        # 15 flows against a real daemon, ~55s
@@ -579,6 +579,28 @@ mean *this* repo; if you do, name it.
   `ensure_pr_worktree` moves branch *and* work into the tree it was about to cut
   and puts main back on base, logging that it did. Only a live session in main is
   still refused. It is not a read-only flow with respect to main.
+- **Main goes back to base when the last session leaves it, and it takes the base
+  back to do so.** `park_main` parks whatever main holds — a PR branch, a
+  swapped-in one, a hand-checkout — and not only what `open_pr(main)` put there.
+  It used to need that provenance (an `AppState::main_pr_park` mark, now gone), on
+  the reasoning that parking a swapped-in branch would undo the swap; but nobody is
+  working it once the last session has gone, and a branch resting in main blocks
+  every flow that needs main on base. The branch is not lost, and
+  `move_branch_out` is how it gets a tree if you want one. `park_on_base` still
+  refuses a dirty main, which is the safety that matters.
+  **The other half is that base can be somewhere else entirely.** Git allows one
+  checkout per branch, so a worktree sitting on `develop` makes main's return
+  *impossible* rather than refused, and a swap is how it gets there: main resting
+  on base, a worktree swapped in, base handed out as the exchange. It surfaced days
+  later as `fatal: 'develop' is already used by worktree at …` from four calls deep
+  inside `move_branch_out`. So `park_main` reclaims it — `git::holder_of_branch`
+  finds the tree and `git::release_branch` gives that tree a `worktree-<name>` at
+  the commit it already has, so every file and commit stays put and only the name
+  changes. Reclaimed at park rather than refused at the swap, because pressing swap
+  twice has to stay the undo. Two things it will not do: a tree with a **live
+  session** keeps its branch (a name changing under a working agent is a surprise
+  the log cannot undo) and a directory that is not a workspace of ours is never
+  touched; both leave main where it is and say why.
 - **One pty exit, one observer.** `spawn::watch_session_exit` is the only thing
   that waits on a session's handle; it dispatches onward (a fix run's verdict goes
   to `fix_pr::settle`). A second `pty.wait()` on the same handle would work and

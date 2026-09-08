@@ -1391,40 +1391,102 @@ async fn park_main(app: &Arc<AppState>) {
     if !app.live_sessions_in(MAIN).await.is_empty() {
         return;
     }
-    // Only the branch `open_pr(main)` checked in for a PR is ours to return to base.
-    // A swapped-in branch (which can itself be a PR head) or a hand-checkout is a
-    // deliberate placement, and parking it would undo the swap — the two features
-    // fighting. Provenance, not a branch-name guess: `main_pr_park` records the one
-    // action that means "return this to base when you're done".
-    let parked_for_pr = app.main_pr_park.read().await.clone();
-    let Some(parked_for_pr) = parked_for_pr else {
-        return;
-    };
     let path = app.cfg.main_checkout.clone();
     let base_ref = app.cfg.upstream_ref.clone();
-    // Resolved, not the raw branch part: the default base is `origin/HEAD`, and
-    // `git switch HEAD` fails with "a branch is expected". Unresolvable means the
-    // symref has not been fetched yet, so there is nowhere to park.
     let exclude = app.cfg.worktrees_subdir_str();
-    let moved = tokio::task::spawn_blocking(move || {
-        // Reading the branch is a git call. If main has moved off the branch the
-        // mark named — a swap, or a hand-checkout since — the mark is stale and
-        // there is nothing of ours to park.
-        let current = crate::git::current_branch(&path).ok()?;
-        if current != parked_for_pr {
-            tracing::debug!(%current, "main is not on its open-PR branch; not parking it");
-            return None;
+
+    /* **The base has to be free, and main is the only checkout that may hold it.**
+       Git allows one checkout per branch, so a worktree sitting on `develop` makes
+       "main goes back to base" impossible — not refused, *impossible* — and every
+       flow that needs main on base is blocked until somebody notices. A swap is how
+       it happens: main resting on base, a worktree swapped in, and base goes out as
+       the exchange. Reported as `fatal: 'develop' is already used by worktree at …`
+       from four calls deep, days later.
+
+       Reclaimed rather than prevented at the swap, because pressing swap twice has
+       to stay the undo — the exchange is the feature. So the branch comes home at
+       the moment it is needed, and only from a tree **nobody is working in**: the
+       content does not move (`release_branch` cuts at the same commit), but a name
+       changing under a live agent is a surprise the log cannot undo. A tree that is
+       busy leaves main where it is, and says so. */
+    let holder = {
+        let (at, base_ref) = (path.clone(), base_ref.clone());
+        tokio::task::spawn_blocking(move || {
+            let base = crate::git::base_checkout_branch(&at, &base_ref)?;
+            let holder = crate::git::holder_of_branch(&at, &base).ok().flatten()?;
+            (holder != at).then_some((holder, base))
+        })
+        .await
+        .ok()
+        .flatten()
+    };
+    if let Some((tree, base)) = holder {
+        let ws = app.workspace_for_path(&tree).await;
+        let busy = match &ws {
+            Some(id) => !app.live_sessions_in(id).await.is_empty(),
+            // No workspace of ours: a tree the daemon does not manage, and moving a
+            // branch in it is not the daemon's business at all.
+            None => true,
+        };
+        if busy {
+            tracing::warn!(
+                "main stays off {base}: {} has it checked out{}",
+                tree.display(),
+                match ws {
+                    Some(_) => " and a session is live there",
+                    None => ", and it is not a worktree this daemon manages",
+                }
+            );
+            return;
         }
+        let stem = format!(
+            "worktree-{}",
+            tree.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+        );
+        let at = tree.clone();
+        match tokio::task::spawn_blocking(move || crate::git::release_branch(&at, &stem)).await {
+            Ok(Ok(fresh)) => tracing::info!(
+                "{} was on {base} and main needs it; it is on {fresh} now",
+                tree.display()
+            ),
+            Ok(Err(e)) => {
+                tracing::warn!("main stays off {base}: {} could not let go of it: {e:#}", tree.display());
+                return;
+            }
+            Err(e) => {
+                tracing::warn!("releasing {base} panicked: {e}");
+                return;
+            }
+        }
+    }
+
+    /* Whatever main holds, not only a branch `open_pr(main)` put there. It used to
+       park on provenance — a mark set by that one flow — so a swapped-in branch or
+       a hand-checkout stayed in main for good, on the reasoning that parking it
+       would undo the swap. But nobody is working it: the last session just left, and
+       a branch parked in main with no session on it blocks every PR flow that needs
+       main on base, which is the thing that goes wrong far away from here. The
+       branch is not lost either — it is still a branch, and `move_branch_out` is how
+       it gets a tree if you want one.
+
+       `park_on_base` still refuses a dirty main, which is the safety that matters:
+       a checkout carries uncommitted work with it. */
+    let moved = tokio::task::spawn_blocking(move || {
+        // Resolved, not the raw branch part: the default base is `origin/HEAD`, and
+        // `git switch HEAD` fails with "a branch is expected". Unresolvable means
+        // the symref has not been fetched yet, so there is nowhere to park.
         let base = crate::git::base_checkout_branch(&path, &base_ref)?;
-        crate::git::park_on_base(&path, &base, Some(&exclude)).ok().flatten()
+        match crate::git::park_on_base(&path, &base, Some(&exclude)) {
+            Ok(was) => was,
+            Err(e) => {
+                tracing::warn!("main could not go back to {base}: {e:#}");
+                None
+            }
+        }
     })
     .await
     .ok()
     .flatten();
-
-    // Whatever the branch was, the mark has done its job now the last session is
-    // gone; a fresh `open_pr(main)` sets it again.
-    *app.main_pr_park.write().await = None;
 
     if let Some(was) = moved {
         // Said out loud: the checkout under every worktree just changed, and the
@@ -1479,10 +1541,8 @@ pub async fn ensure_pr_worktree(app: &Arc<AppState>, pr: u64, head_ref: &str) ->
                 .await
                 .map_err(|e| anyhow::anyhow!("moving main's branch out panicked: {e}"))??
             };
-            // Main gave the branch away, and `reconcile` only adds; the open-PR mark
-            // has done its job, since main is back on base by our own hand.
+            // Main gave the branch away, and `reconcile` only adds.
             app.forget_branch(MAIN, head_ref).await;
-            *app.main_pr_park.write().await = None;
             let _ = app.reconcile(MAIN).await;
             /* A log line rather than something in the response, for `park_main`'s
                reason: the checkout under every worktree just changed and that is
@@ -1551,11 +1611,6 @@ pub async fn switch_main_to_pr(app: &Arc<AppState>, head_ref: &str) -> Result<St
     })
     .await
     .map_err(|e| anyhow::anyhow!("switch task failed: {e}"))??;
-
-    // Provenance for `park_main`: main is on this branch because *this* put it here
-    // for a PR, so returning it to base when the session closes is right. A swap
-    // that later moves main clears this, so its branch is never parked away.
-    *app.main_pr_park.write().await = Some(head_ref.to_string());
 
     // The pane must be right about what is checked out the moment it changes.
     let _ = app.reconcile(MAIN).await;
@@ -2859,12 +2914,15 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Park returns main to base only for the branch `open_pr(main)` marked, and a
-    /// swapped-in branch (no mark) is left exactly where it is — even when it is a
-    /// branch name park could otherwise reach. Driven against a real checkout,
-    /// because the whole point is that the decision is provenance, not branch name.
+    /// Main goes back to base when the last session leaves it, whatever put the
+    /// branch there — and it takes the base back off a worktree that is sitting on
+    /// it, because git allows one checkout per branch and that tree is the reason
+    /// the switch is impossible rather than merely refused.
+    ///
+    /// Driven against a real checkout: the interesting half is git's own refusal,
+    /// which no hand-built state can produce.
     #[tokio::test]
-    async fn park_reclaims_only_the_open_pr_branch_never_a_swapped_one() {
+    async fn park_returns_main_to_base_and_takes_the_base_back_to_do_it() {
         let dir = crate::testutil::scratch("park");
         let repo = dir.join("main");
         let git = |args: &[&str], at: &std::path::Path| {
@@ -2885,17 +2943,42 @@ mod tests {
         let on = |b: &str| git(&["switch", "-q", b], &repo);
         let branch = || crate::git::current_branch(&repo).unwrap();
 
-        // Marked as open-PR provenance → parked back to base, mark cleared.
+        // Whatever put it there. This used to need an `open_pr(main)` mark, so a
+        // swapped-in branch or a hand-checkout stayed in main for good — and a
+        // branch nobody is working blocks every flow that needs main on base.
         on("feature/x");
-        *app.main_pr_park.write().await = Some("feature/x".to_string());
         park_main(&app).await;
-        assert_eq!(branch(), "main", "an open-PR branch returns to base");
-        assert!(app.main_pr_park.read().await.is_none(), "the mark is spent");
+        assert_eq!(branch(), "main", "the last session left; main goes back to base");
 
-        // Same branch checked out, but no mark (the swap case) → left in place.
-        on("feature/x");
+        // Already there: nothing to do and nothing said.
         park_main(&app).await;
-        assert_eq!(branch(), "feature/x", "a swapped-in branch is never parked away");
+        assert_eq!(branch(), "main");
+
+        // --- and now the case that could not be fixed from inside main ---
+        //
+        // A worktree holding base is what a swap leaves behind when main was resting
+        // on base, and `git switch main` in main then fails outright.
+        let tree = repo.join(".claude/worktrees/w");
+        git(&["worktree", "add", "-q", tree.to_str().unwrap(), "feature/x"], &repo);
+        git(&["switch", "-q", "-c", "feature/x-2"], &repo);
+        git(&["switch", "-q", "main"], &tree);
+        assert_eq!(crate::git::current_branch(&tree).unwrap(), "main");
+        // Registered, because "is anybody working in there" is asked of the
+        // workspace, and an unmanaged directory is deliberately left alone.
+        app.register_worktree("w", tree.clone(), Some("main".into())).await;
+
+        assert!(
+            crate::git::switch_branch(&repo, "main").is_err(),
+            "git must refuse a branch checked out elsewhere",
+        );
+
+        park_main(&app).await;
+        assert_eq!(branch(), "main", "main took its base back");
+        assert_eq!(
+            crate::git::current_branch(&tree).unwrap(),
+            "worktree-w",
+            "the tree keeps its content and gets a name of its own",
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }

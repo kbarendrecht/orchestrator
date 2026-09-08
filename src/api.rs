@@ -2090,11 +2090,6 @@ async fn swap_with_main_inner(
         .await
         .map_err(|e| anyhow::anyhow!("the swap task panicked: {e}"))??;
 
-    // Main now holds a swapped-in branch, which can itself be a PR head. That must
-    // not be parked away as if `open_pr(main)` had left it there, so the open-PR
-    // provenance mark is cleared: a swap is a deliberate placement that stays.
-    *app.main_pr_park.write().await = None;
-
     /* The identity a swap is: what main holds now is what the worktree held, and
        the other way round. If that does not hold, something moved between the read
        above and the exchange — a hand-typed `git checkout` in either tree — and the
@@ -2328,10 +2323,6 @@ pub async fn move_out_of_main(
     // Main gave the branch away, and `reconcile` only adds: left in, main would go
     // on claiming a branch that lives in the new tree.
     app.forget_branch(MAIN, &moved.branch).await;
-    // Main is on base by our own hand, so there is nothing left for `park_main` to
-    // return there — and a stale mark would park a branch a later open-PR puts back.
-    *app.main_pr_park.write().await = None;
-
     let moved_branch = moved.branch.clone();
 
     // Read *before* the reconciles, for the swap's reason: `reconcile` re-stamps a

@@ -16,6 +16,9 @@ this file, which churned it from every build; that feature is gone.
     doc states the rule generally: every swap involves main, so two are never
     independent. `park_main` fires from a detached exit watcher, so it should skip
     rather than refuse, which is why this is a behaviour change rather than a lift.
+    Wider now: `park_main` also moves a *worktree's* branch when it reclaims the
+    base (`git::release_branch`), so a swap of that tree racing it is a second
+    unguarded pair.
   - `edit::read` closes the symlink race on the final component only. The parents
     are canonicalised earlier and can still be swapped between the check and the
     open; closing it properly needs `openat2` with `RESOLVE_BENEATH`.

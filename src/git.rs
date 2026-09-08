@@ -1412,6 +1412,53 @@ fn apply_wip(cwd: &Path, sha: &str, what_happened: &str) -> Result<()> {
         .map(|_| ())
 }
 
+/// Which working tree has `branch` checked out, if any.
+///
+/// Asked because git allows one checkout per branch, so "main cannot return to
+/// base" and "some worktree is sitting on base" are the same fact — and the bare
+/// git refusal names the tree without saying that is what it means.
+///
+/// `--porcelain` rather than the human listing: the readable one pads with spaces
+/// and puts the branch in brackets, and a path with a space in it then cannot be
+/// told from the columns. Detached trees have no `branch` line at all and so
+/// answer nothing, which is right.
+pub fn holder_of_branch(main: &Path, branch: &str) -> Result<Option<PathBuf>> {
+    let out = git(main, &["worktree", "list", "--porcelain"])?;
+    let want = format!("refs/heads/{branch}");
+    let mut at: Option<PathBuf> = None;
+    for line in out.lines() {
+        if let Some(path) = line.strip_prefix("worktree ") {
+            at = Some(PathBuf::from(path));
+        } else if line.strip_prefix("branch ") == Some(want.as_str()) {
+            return Ok(at);
+        }
+    }
+    Ok(None)
+}
+
+/// Give `tree` a branch of its own at the commit it already has, releasing
+/// whatever it held.
+///
+/// The content does not move: the new branch starts at this tree's own HEAD, so
+/// every commit and every file stays exactly where it is. Only the name changes,
+/// which is what makes this safe to do to a tree nobody is working in — and the
+/// name is the thing that was in the way.
+///
+/// Refuses a dirty tree, like every other move in here: a switch carries
+/// uncommitted work with it, and `-c` at the same commit would leave that work on
+/// a branch the user never chose.
+///
+/// Returns the branch it created. `stem` is uniquified, so calling this twice on
+/// two trees cut from the same name does not collide.
+pub fn release_branch(tree: &Path, stem: &str) -> Result<String> {
+    let held = current_branch(tree)?;
+    refuse_if_dirty(tree, stem)?;
+    let fresh = free_branch(tree, stem);
+    git(tree, &["switch", "-c", &fresh, "-q"])
+        .with_context(|| format!("{} could not be moved off {held}", tree.display()))?;
+    Ok(fresh)
+}
+
 /// Put a checkout back on `base`, unless something says not to.
 ///
 /// Returns the branch it left, or `None` when it did nothing: already there, or
@@ -2040,6 +2087,49 @@ mod tests {
 
     /// The guards that stand between "you closed the last pane in main" and
     /// someone's uncommitted work landing on develop.
+    /// Who has a branch checked out, and the two answers that must not be a path.
+    ///
+    /// The porcelain listing is parsed rather than the human one, so this pins the
+    /// two shapes that carry no branch: a detached tree prints no `branch` line at
+    /// all, and a branch nobody has is simply absent.
+    #[test]
+    fn the_holder_of_a_branch_is_the_tree_that_has_it_checked_out() {
+        let dir = crate::testutil::scratch("holder");
+        let main = dir.join("repo");
+        git(&dir, &["init", "-q", "-b", "main", "repo"]).unwrap();
+        git(&main, &["config", "user.email", "t@t"]).unwrap();
+        git(&main, &["config", "user.name", "t"]).unwrap();
+        std::fs::write(main.join("f.txt"), "base\n").unwrap();
+        git(&main, &["add", "-A"]).unwrap();
+        git(&main, &["commit", "-qm", "base"]).unwrap();
+        git(&main, &["branch", "feature/b"]).unwrap();
+        git(&main, &["branch", "nobody/has-this"]).unwrap();
+        let tree = main.join(".claude/worktrees/w");
+        git(&main, &["worktree", "add", "-q", tree.to_str().unwrap(), "feature/b"]).unwrap();
+
+        assert_eq!(holder_of_branch(&main, "main").unwrap().as_deref(), Some(main.as_path()));
+        assert_eq!(holder_of_branch(&main, "feature/b").unwrap().as_deref(), Some(tree.as_path()));
+        assert_eq!(holder_of_branch(&main, "nobody/has-this").unwrap(), None);
+
+        // Released: the tree keeps the commit it had, under a name of its own, and
+        // the branch it held is free for somebody else — which is the whole point.
+        let fresh = release_branch(&tree, "worktree-w").expect("a clean tree may be moved");
+        assert_eq!(fresh, "worktree-w");
+        assert_eq!(current_branch(&tree).unwrap(), "worktree-w");
+        assert_eq!(holder_of_branch(&main, "feature/b").unwrap(), None);
+        assert!(switch_branch(&main, "feature/b").is_ok(), "main can have it now");
+
+        // A detached tree answers nothing rather than answering its commit.
+        switch_detach(&tree).unwrap();
+        assert_eq!(holder_of_branch(&main, "worktree-w").unwrap(), None);
+
+        // And a tree carrying work is refused: a switch would take the work with it.
+        std::fs::write(tree.join("f.txt"), "edited\n").unwrap();
+        assert!(release_branch(&tree, "worktree-w").is_err(), "dirty is refused");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn parking_leaves_a_dirty_checkout_exactly_where_it_is() {
         let dir = std::env::temp_dir().join(format!(
