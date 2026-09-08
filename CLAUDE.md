@@ -10,15 +10,22 @@ is.
 
 ```
 cargo check                         # the daemon
-cargo test                          # 398 tests, all in-tree
+cargo test                          # 510 tests, all in-tree
+cargo clippy --all-targets          # what CI lints with, and it denies warnings
 mise run check-web                  # type-check the SPA + enforce its module graph
-mise run e2e                        # 13 flows against a real daemon, ~50s
+mise run e2e                        # 14 flows against a real daemon, ~50s
 cargo run -p orchestrator-desktop   # the app, daemon embedded in-process
 mise run shot                       # screenshot the running SPA (drives Chrome)
 ```
 
 The agent binary is `claude`, installed by the `claude-code` mise tool so one
 `mise up` in the monorepo covers both.
+
+**`cargo clippy --all-targets` is a gate and was not in this list.** CI runs it
+with warnings denied, so a lint that is a warning here is a red build there — and
+`--all-targets` matters, because the eight that caught this were all in test code
+that a plain `cargo clippy` never compiles. Green tests, `check-web` and e2e are
+not enough on their own.
 
 **One daemon at a time.** The lock is an `flock` on
 `~/.config/orchd/instance.pid`, not the port, so a second instance refuses to

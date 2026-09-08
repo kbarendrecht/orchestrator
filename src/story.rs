@@ -1020,15 +1020,15 @@ mod tests {
     #[test]
     fn a_key_in_the_path_agrees_with_its_id_too() {
         let linear = StoryRef::new(
-            "ENG-123".into(),
-            "https://linear.app/acme/issue/ENG-123/stop-the-flaky-poller".into(),
+            "ENG-123",
+            "https://linear.app/acme/issue/ENG-123/stop-the-flaky-poller",
             "linear.app",
         );
         assert!(linear.is_some(), "a Linear issue URL was refused");
 
         let jira = StoryRef::new(
-            "ABC-123".into(),
-            "https://acme.atlassian.net/browse/ABC-123".into(),
+            "ABC-123",
+            "https://acme.atlassian.net/browse/ABC-123",
             "acme.atlassian.net",
         );
         assert!(jira.is_some(), "a Jira browse URL was refused");
@@ -1037,8 +1037,8 @@ mod tests {
         // issue, whichever tracker it is.
         assert!(
             StoryRef::new(
-                "ENG-123".into(),
-                "https://linear.app/acme/issue/ENG-999/other".into(),
+                "ENG-123",
+                "https://linear.app/acme/issue/ENG-999/other",
                 "linear.app",
             )
             .is_none(),
@@ -1047,8 +1047,8 @@ mod tests {
         // And the host rule is untouched by any of it.
         assert!(
             StoryRef::new(
-                "ENG-123".into(),
-                "https://evil.example/acme/issue/ENG-123".into(),
+                "ENG-123",
+                "https://evil.example/acme/issue/ENG-123",
                 "linear.app",
             )
             .is_none(),
