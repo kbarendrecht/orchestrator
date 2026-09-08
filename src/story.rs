@@ -52,6 +52,15 @@ pub fn token_env_pair(
     Some((var.to_string(), resolve_token(checkout, var).ok()?))
 }
 
+/// The `Kind::Automation` command a story pass carries, and the skill the daemon
+/// types at it.
+///
+/// One spelling, because three things have to agree: the record (the rail colours
+/// and the guards read it), the typed `/orchd:story`, and the directory the skill
+/// is written to. `skills::a_skill_is_named_after_the_command_that_types_it` walks
+/// the last two.
+pub const COMMAND: &str = "story";
+
 /// The tracker's API token, for its MCP server's `Authorization` header.
 ///
 /// **Environment only.** The forge keeps a file ladder because its token is read
@@ -536,29 +545,26 @@ async fn run_filer(
         })
         .collect();
 
-    // `git remote get-url`, off the runtime like every other git call on this path.
-    let (owner, repo) = {
-        let a = app.clone();
-        crate::proc::run_blocking("resolving the repo", move || crate::resolve_repo(&a)).await?
-    }
-    .context("no GitHub repo configured and none on the remote")?;
-    let body = crate::prompt::render(
-        crate::prompt::STORY,
-        &crate::prompt::Vars {
-            pr,
-            owner,
-            repo,
-            stories: serde_json::to_string_pretty(&drafts)?,
-            drop_file: drop_file.to_string_lossy().into_owned(),
-            ..Default::default()
-        },
-    )?;
+    /* The entries go in a file rather than into the prompt, because the prompt is
+       a skill now and a skill is static: `/orchd:story <pr>` is one line, so what
+       a template used to substitute has to be somewhere the agent can read. The
+       resolve run's plan is the same shape for the same reason.
+       Dropped with the substitution: the `git remote` call that resolved
+       `owner/repo` for a sentence. It was the only thing that could fail this
+       spawn for a reason unrelated to filing a story. */
+    let stories_file = scratch.join("stories.json");
+    std::fs::write(&stories_file, serde_json::to_string_pretty(&drafts)?)
+        .with_context(|| format!("writing {}", stories_file.display()))?;
 
     let id = uuid::Uuid::new_v4();
     let mut cmd = vec![
         "claude".to_string(),
         "-p".to_string(),
-        body,
+        // The skill, typed. Measured against 2.1.263 that `-p "/orchd:<name>"`
+        // expands under a tight `--allowedTools`: the allowlist gates *tool calls*
+        // and Claude Code expands a typed command before the model acts. The
+        // comment below used to say the opposite and it was never measured.
+        format!("/orchd:{COMMAND} {pr}"),
         "--output-format".to_string(),
         "stream-json".to_string(),
         "--verbose".to_string(),
@@ -568,9 +574,10 @@ async fn run_filer(
         //
         // `mcp__<server>` without parentheses, because MCP rules do not support
         // them — and the whole server rather than a list of tool names, because
-        // the skill routes through `epics-search`, `labels-list`,
-        // `workflows-list` and more, and an enumerated allowlist would fight it
-        // and fail as a silent mid-run denial.
+        // the repo's tracker skill routes through search, labels, workflows and
+        // whatever else that tracker needs, an enumerated allowlist would fight it
+        // and fail as a silent mid-run denial, and the daemon deliberately knows
+        // none of those names (`config::Tracker` says why).
         //
         // **Bare `Write`.** Measured, because all three plausible spellings
         // behave differently: `Write` permits creating the report, `Edit` does
@@ -584,9 +591,13 @@ async fn run_filer(
         "--add-dir".to_string(),
         scratch.to_string_lossy().into_owned(),
     ];
-    // The plugin dir rides along, though `--allowedTools` above means this run
-    // cannot invoke a skill at all. Uniform on purpose: the allowlist is what
-    // scopes this run, not a flag a site left out.
+    // The plugin dir, which this run's own instructions come out of.
+    //
+    // It used to say the allowlist above meant this run could not invoke a skill.
+    // That was never measured and is false: `claude -p "/orchd:orch"` under
+    // `--allowedTools "Read Write"` runs the skill, because the allowlist gates
+    // tool calls and a typed command is expanded before the model acts. Model-
+    // *chosen* skills are a different question — those go through a tool.
     cmd.extend(crate::config::session_flags()?);
     if app.cfg.tracker.is_stub() {
         // Only the stub, and nothing else: `--strict-mcp-config` ignores every
@@ -604,11 +615,20 @@ async fn run_filer(
     // runs a bounded child (`mise env`, `direnv export`) that `run_bounded` polls
     // with `thread::sleep` for up to five seconds, and a tokio worker parked on
     // that is the whole board freezing while this run starts.
-    let (env, unset) = crate::proc::run_blocking("reading the session environment", {
+    let (mut env, unset) = crate::proc::run_blocking("reading the session environment", {
         let (cfg, at) = (app.cfg.clone(), path.clone());
         move || crate::config::session_env(&cfg, &at, id, None)
     })
     .await?;
+    /* What the skill reads instead of what a template substituted. The host is in
+       here too, because the skill has to tell the agent which host a URL it hands
+       back must be on — and that is now config rather than a constant the daemon
+       could write into a prompt. */
+    env.push((crate::skills::VAR_STORIES.to_string(), stories_file.to_string_lossy().into_owned()));
+    env.push((crate::skills::VAR_DROP.to_string(), drop_file.to_string_lossy().into_owned()));
+    if let Some(host) = tracker.host() {
+        env.push((crate::skills::VAR_TRACKER_HOST.to_string(), host.to_string()));
+    }
     // Still refused before the agent runs: `session_env` shrugs when there is no
     // token, which is right for every other session and not for this one. Asked of
     // the environment it just built rather than of the daemon's, because the
@@ -634,7 +654,7 @@ async fn run_filer(
         path.clone(),
         Kind::Automation {
             pr,
-            command: "story".to_string(),
+            command: COMMAND.to_string(),
         },
     );
     let spawned = crate::spawn::insert_and_spawn(app, id, session, &cmd, &path, &env, &unset).await?;

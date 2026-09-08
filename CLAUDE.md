@@ -254,20 +254,26 @@ mean *this* repo; if you do, name it.
   `skills/<name>/SKILL.md`, and either one in the wrong place fails silently.
   **Adding a skill is a Rust change**, `include_str!` again, like the SPA's
   modules and `commands/story.md`.
-  **Three of the four vendored prompts are skills now** (`fix-pr`, `resolve-run`,
-  `review`), and the conversion has one rule worth knowing: a prompt is substituted
-  per run and written to a file, a skill is static and typed as one line, so every
-  value a template interpolated has to arrive another way. Two ways are in use, and
-  which one is not a style choice. A run that already has a token asks
-  `/api/pr/:n/triage-context` (`triage`, `review`). A run that deliberately has
-  none reads its values out of the environment (`fix-pr`, `resolve-run`), because a
-  route would have meant handing an unattended force-pushing run a credential to
-  read what the daemon can just put there. `skills::VAR_*` names those variables
-  once, since the spawner sets them and the skill reads them and a rename on one
-  side alone is silent.
-  **`story` cannot become one**: its `--allowedTools` is `mcp__<tracker> Read
-  Write`, and a skill invocation is not in that allowlist — so it keeps its prompt,
-  and `prompt.rs` exists for that one template.
+  **Every vendored prompt is a skill now**, and `commands/` and `prompt.rs` are
+  gone with them. The conversion has one rule worth knowing: a prompt was
+  substituted per run and written to a file, a skill is static and typed as one
+  line, so every value a template interpolated has to arrive another way. Two ways
+  are in use, and which one is not a style choice. A run that already has a token
+  asks `/api/pr/:n/triage-context` (`triage`, `review`). A run that deliberately
+  has none reads its values out of the environment (`fix-pr`, `resolve-run`,
+  `story`), because a route would have meant handing an unattended force-pushing
+  run a credential to read what the daemon can just put there. `skills::VAR_*`
+  names those variables once, since the spawner sets them and the skill reads them
+  and a rename on one side alone is silent.
+  **`--allowedTools` does not gate a typed skill, and the opposite was written in
+  three places.** `story.rs` and `skills.rs` both claimed its allowlist
+  (`mcp__<tracker> Read Write`) meant that run could not invoke a skill at all, and
+  this file repeated it. Measured against 2.1.263: `claude -p "/orchd:orch"` under
+  `--allowedTools "Read Write"` runs the skill and answers out of its contents. The
+  allowlist gates **tool calls**, and Claude Code expands a typed command before the
+  model acts — which is also why `-p` is the shape that proves it, since that is
+  exactly how the story run is spawned. Model-*chosen* skill use is the open half:
+  that goes through a `Skill` tool, which an allowlist would gate.
 - **The daemon's session id is Claude's session id.** Every spawn passes
   `--session-id`, which is what makes `--resume`, transcript lookup and hook
   correlation need no mapping. A fork passes `--session-id <new> --resume <old>
@@ -283,6 +289,31 @@ mean *this* repo; if you do, name it.
   files. The real hazard of reusing a worktree name is elsewhere — a resume landing
   in a tree cut again for something else — and `worktree::branch_drift` says so
   rather than refusing.
+- **A tracker is three config fields, and only two trackers have shorthands.**
+  `mcp_server`, `host` and an optional `token_env` (`config::Tracker`), so pointing
+  the daemon at Linear or Jira is a config edit rather than a release. `"shortcut"`
+  and `"stub"` stay as names, and a settings write hands either form back the way
+  it came — the SPA's dropdown cannot render the object one, so `settings.js` holds
+  it rather than overwriting it, which is the failure that would have been silent.
+  Three things the research settled, none of them guessable from the Shortcut setup
+  this was built against:
+  - **Both official remote trackers are OAuth-first.** Linear is
+    `https://mcp.linear.app/mcp`, Atlassian `https://mcp.atlassian.com/v2/mcp`, and
+    each offers a bearer path *and* there is an open Claude Code issue where a
+    configured `Authorization` header is ignored when the server advertises OAuth.
+    So `token_env` is optional and its absence is not a broken config: the run
+    authenticates out of a login the user did earlier and the boot line says
+    "authenticating itself" rather than warning about a variable.
+  - **No tracker tool name may live in the daemon.** Linear does not publish theirs
+    and Atlassian's are versioned. `skills/story/SKILL.md` says "your tracker's own
+    search" and leans on the repo's tracker skill, which is where the README already
+    put the team id, the workflow state and the epic routing.
+  - **The id/URL agreement rule was Shortcut-shaped.** `StoryRef::consistent`
+    required a path segment equal to the id's *digits*, which is true of
+    `sc-12345` → `/story/12345` and false of every Linear (`/issue/ENG-123`) and
+    Jira (`/browse/ABC-123`) URL there is. It accepts the whole id in a segment too
+    now. It would have refused every story either tracker filed, as "the agent
+    reported an id and URL that disagree".
 - **Session names come from an undocumented field.** `store::ai_title` tails the
   transcript for `{"type":"ai-title","aiTitle":…}`. It degrades to the workspace
   name rather than failing, so a rail that suddenly reads `dfafdf` everywhere

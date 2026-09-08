@@ -24,7 +24,6 @@ pub mod names;
 pub mod patch;
 pub mod post;
 pub mod proc;
-pub mod prompt;
 pub mod proposal;
 pub mod pty;
 pub mod review_commit;

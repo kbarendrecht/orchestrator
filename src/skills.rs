@@ -66,6 +66,20 @@ pub const TRIAGE: &str = include_str!("../skills/triage/SKILL.md");
 /// environment it is already building for that run.
 pub const FIX_PR: &str = include_str!("../skills/fix-pr/SKILL.md");
 
+/// Filing the stories a human approved on the cards.
+///
+/// Converted from `commands/story.md`, which was the one prompt left — and the
+/// thing that had kept it a prompt was a comment claiming `--allowedTools` stops
+/// this run invoking a skill. Measured against 2.1.263: `claude -p "/orchd:orch"`
+/// under `--allowedTools "Read Write"` runs the skill, because the allowlist gates
+/// tool calls and a typed command is expanded before the model acts.
+///
+/// It names no tracker tool, deliberately. `config::Tracker`'s docblock has the
+/// research; the short of it is that Linear does not publish its tool names and
+/// Atlassian's are versioned, so the repo's own tracker skill is the only place
+/// that knowledge can live without going stale in a release.
+pub const STORY: &str = include_str!("../skills/story/SKILL.md");
+
 /// The overlay session: read the threads, propose, make what the human picked, post.
 ///
 /// Converted from `commands/review-session.md`, the most interpolated of them —
@@ -105,6 +119,10 @@ pub const VAR_LOGIN: &str = "ORCH_LOGIN";
 /// Where a resolve run finds the plan it is carrying out. Same rule as the four
 /// above: the daemon writes the file and names it here, the skill reads it here.
 pub const VAR_PLAN: &str = "ORCH_PLAN";
+/// The story pass: what to file, where to report, and the host a URL must be on.
+pub const VAR_STORIES: &str = "ORCH_STORIES";
+pub const VAR_DROP: &str = "ORCH_DROP";
+pub const VAR_TRACKER_HOST: &str = "ORCH_TRACKER_HOST";
 
 /// Every vendored skill, as `(directory name, body)`.
 ///
@@ -118,6 +136,7 @@ const VENDORED: &[(&str, &str)] = &[
     ("fix-pr", FIX_PR),
     ("resolve-run", RESOLVE_RUN),
     ("review", REVIEW),
+    ("story", STORY),
 ];
 
 /// The plugin manifest.
@@ -219,6 +238,7 @@ mod tests {
         for (name, body, vars) in [
             ("fix-pr", FIX_PR, &[VAR_PR, VAR_UPSTREAM, VAR_UPSTREAM_REMOTE, VAR_LOGIN][..]),
             ("resolve-run", RESOLVE_RUN, &[VAR_PLAN][..]),
+            ("story", STORY, &[VAR_STORIES, VAR_DROP, VAR_TRACKER_HOST][..]),
         ] {
             for v in vars {
                 assert!(
@@ -242,6 +262,7 @@ mod tests {
             crate::spawn::RESOLVE_RUN_COMMAND,
             crate::triage::COMMAND,
             crate::triage::TRIAGE_COMMAND,
+            crate::story::COMMAND,
         ] {
             assert!(
                 VENDORED.iter().any(|(name, _)| *name == command),

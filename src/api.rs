@@ -3863,11 +3863,13 @@ fn pr_from_poll(prs: &[crate::forge::Pr], number: u64) -> Result<crate::forge::P
 /// and the run has something to triage.
 /// What the vendored `triage` skill needs to know before it can read anything.
 ///
-/// **A skill is static; the prompt it replaces was rendered per run.**
-/// `commands/triage.md` carried seven substitutions that `prompt::render` filled
-/// in, and a file handed to every session cannot have any of them. So the values
-/// come from here instead, which is also what makes the skill work when a person
-/// types `/orchd:triage` by hand rather than the daemon typing it.
+/// **A skill is static; the prompt it replaced was rendered per run.**
+/// `commands/triage.md` carried seven substitutions a renderer filled in, and a
+/// file handed to every session cannot have any of them. So the values come from
+/// here instead, which is also what makes the skill work when a person types
+/// `/orchd:triage` by hand rather than the daemon typing it. `review` reads the
+/// same answer; every other run takes its values out of the environment, and
+/// `commands/` and its renderer are gone.
 ///
 /// Carries the run credential like the proposals route, and answers the same way
 /// to the app token, so the SPA can look at it too.

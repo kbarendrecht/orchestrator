@@ -252,10 +252,16 @@ The tracker is reached **over MCP**, by an agent the daemon borrows for the valu
 So two things have to be true beyond the token, and both live in the repo you
 pointed the daemon at, not in its config:
 
-- **`.mcp.json` declares a server named for the tracker** (`shortcut`). The daemon
-  approves that one server by name for the sessions it spawns — never all of them,
-  since a repo may declare a dozen and a story-filing agent has business with none
-  of the others.
+- **`.mcp.json` declares a server named for the tracker**, and `tracker.mcp_server`
+  in the config is that name. The daemon approves that one server for the sessions
+  it spawns — never all of them, since a repo may declare a dozen and a
+  story-filing agent has business with none of the others. Remote or stdio makes no
+  difference: it is a name in that file either way.
+- **`tracker.token_env` is optional.** Name it and the daemon resolves the variable
+  and pushes it into the agent's environment, so the token never reaches a prompt or
+  a transcript. Leave it out and the MCP server authenticates itself — which is what
+  the official Linear and Atlassian servers do, both being OAuth-first. Naming one
+  is a preference: it is fewer logins.
 - **A tracker skill** (`.claude/skills/*/SKILL.md`) holds the team id, the workflow
   state, the story type and the epic routing. Those are yours and they change
   without this project changing, which is why they are not settings.
@@ -525,7 +531,6 @@ src/
   proposal.rs   what triage proposes: Stance × Mode, positions, patches, stories
   post.rs       the review batch end to end
   patch.rs      applying and committing what you approved, with staleness checks
-  prompt.rs     rendering commands/story.md, the one prompt that is not a skill
   skills.rs     the vendored skills in skills/, written out as the plugin dir
                 every spawn is handed with --plugin-dir
   story.rs      filing a tracker story for a fair-but-out-of-scope point
