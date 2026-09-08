@@ -1244,6 +1244,20 @@ impl AppState {
                     let mut files = crate::diff::summary(&path, b)
                         .map(|s| s.files)
                         .unwrap_or_default();
+                    /* Which of these rows is *also* uncommitted, from the status
+                       already read above. The pane's git verbs turn on this: the
+                       list is a diff against the merge base, so most rows on a PR
+                       branch differ because of a commit and have nothing to stage
+                       or discard. Joined by path, which is what `FileSet` is keyed
+                       on. */
+                    let staged: std::collections::HashSet<&str> =
+                        set.staged.iter().map(|f| f.path.as_str()).collect();
+                    let unstaged: std::collections::HashSet<&str> =
+                        set.unstaged.iter().map(|f| f.path.as_str()).collect();
+                    for f in &mut files {
+                        f.staged = staged.contains(f.path.as_str());
+                        f.unstaged = unstaged.contains(f.path.as_str());
+                    }
                     files.extend(set.untracked.iter().map(crate::diff::DiffFile::untracked));
                     files.sort_by(|a, b| a.path.cmp(&b.path));
                     let total = files.len() as u32;

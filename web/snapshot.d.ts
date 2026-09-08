@@ -30,7 +30,23 @@ eager: boolean,
 /**
  * Present for renames.
  */
-old_path: string | null, };
+old_path: string | null, 
+/**
+ * Whether this file has changes in the **index**, and whether it has changes
+ * in the **working tree** — `git status`'s two answers, joined on by path.
+ *
+ * **Not derivable from `status` above, and that is the point.** This list is
+ * `git diff <merge-base>`, so most rows on a PR branch differ from the base
+ * because of a *commit* and are otherwise clean. Offering "discard changes"
+ * against that list would be offering to throw away nothing on some rows and
+ * a commit's content on others, from a menu that cannot tell them apart. The
+ * pane's git verbs are drawn from these two instead, so what is offered is
+ * exactly what exists: staged → unstage, working-tree → stage, discard.
+ *
+ * Both `false` is the ordinary case (changed in a commit, clean on disk) and
+ * gets no verbs at all.
+ */
+staged: boolean, unstaged: boolean, };
 
 export type Health = { "health": "starting" } | { "health": "ok" } | { "health": "failing", summary: string, } | { "health": "dead" };
 

@@ -1412,6 +1412,34 @@ fn apply_wip(cwd: &Path, sha: &str, what_happened: &str) -> Result<()> {
         .map(|_| ())
 }
 
+/// Stage one path, unstage it, or throw its working-tree changes away.
+///
+/// One function for the three because they are one decision with one guard in
+/// front of it, and splitting them is how two of them keep a check the third
+/// loses. Pathspec-terminated (`--`) on all three: a file called `-f` is a file,
+/// not a flag.
+///
+/// **`Discard` cannot be undone by git.** `git restore` overwrites the working
+/// tree from the index, so uncommitted content is gone — there is no reflog for a
+/// file that was never committed. The confirm in front of it is not politeness;
+/// it is the only thing between a click and lost work.
+pub enum FileVerb {
+    Stage,
+    Unstage,
+    Discard,
+}
+
+pub fn file_verb(cwd: &Path, verb: FileVerb, path: &str) -> Result<()> {
+    let args: &[&str] = match verb {
+        // `add` also covers an untracked file, which is the one row where staging
+        // is the only verb on offer.
+        FileVerb::Stage => &["add", "--", path],
+        FileVerb::Unstage => &["restore", "--staged", "--", path],
+        FileVerb::Discard => &["restore", "--", path],
+    };
+    git(cwd, args).map(|_| ())
+}
+
 /// Does `at_ref` contain `path`?
 ///
 /// Asked before a blob URL is built, because a URL for a path the ref does not
@@ -2114,6 +2142,58 @@ mod tests {
             "unexpected refusal: {err:#}"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The three file verbs, and the asymmetry that decides which is confirmed.
+    ///
+    /// Stage and unstage are each other's undo. Discard is not undoable by git at
+    /// all — `restore` overwrites the working tree from the index and there is no
+    /// reflog for content that was never committed — which is the whole reason the
+    /// pane asks first for that one and not for the others.
+    #[test]
+    fn staging_is_reversible_and_discarding_is_not() {
+        let main = crate::testutil::scratch("fileverb").join("repo");
+        git(main.parent().unwrap(), &["init", "-q", "-b", "main", "repo"]).unwrap();
+        git(&main, &["config", "user.email", "t@t"]).unwrap();
+        git(&main, &["config", "user.name", "t"]).unwrap();
+        std::fs::write(main.join("f.txt"), "committed\n").unwrap();
+        git(&main, &["add", "-A"]).unwrap();
+        git(&main, &["commit", "-qm", "base"]).unwrap();
+
+        let set = || status(&main, None, Untracked::Each).unwrap();
+        let has = |v: &[crate::model::ChangedFile], p: &str| v.iter().any(|f| f.path == p);
+
+        std::fs::write(main.join("f.txt"), "edited\n").unwrap();
+        assert!(has(&set().unstaged, "f.txt"));
+
+        file_verb(&main, FileVerb::Stage, "f.txt").unwrap();
+        assert!(has(&set().staged, "f.txt"), "staged");
+        assert!(!has(&set().unstaged, "f.txt"));
+
+        // Pressing the other one is the undo, which is why neither is confirmed.
+        file_verb(&main, FileVerb::Unstage, "f.txt").unwrap();
+        assert!(!has(&set().staged, "f.txt"));
+        assert!(has(&set().unstaged, "f.txt"), "back where it was, content intact");
+        assert_eq!(std::fs::read_to_string(main.join("f.txt")).unwrap(), "edited\n");
+
+        // And discard is the one that takes the content with it.
+        file_verb(&main, FileVerb::Discard, "f.txt").unwrap();
+        assert_eq!(std::fs::read_to_string(main.join("f.txt")).unwrap(), "committed\n");
+        assert!(!has(&set().unstaged, "f.txt"), "nothing left to discard");
+
+        // Staging covers an untracked file too, which is the one row where it is
+        // the only verb on offer.
+        std::fs::write(main.join("new.txt"), "never added\n").unwrap();
+        assert!(has(&set().untracked, "new.txt"));
+        file_verb(&main, FileVerb::Stage, "new.txt").unwrap();
+        assert!(has(&set().staged, "new.txt"));
+
+        // A path that looks like a flag is a path: `--` is what makes that true.
+        std::fs::write(main.join("-f"), "dashed\n").unwrap();
+        file_verb(&main, FileVerb::Stage, "-f").unwrap();
+        assert!(has(&set().staged, "-f"));
+
+        let _ = std::fs::remove_dir_all(main.parent().unwrap());
     }
 
     /// A ref has the files it was committed with, and not the ones beside them.

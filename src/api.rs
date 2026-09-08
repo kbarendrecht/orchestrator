@@ -1151,6 +1151,99 @@ pub async fn answer(
     Ok(Json(json!({ "answered": body.answer })))
 }
 
+#[derive(Deserialize)]
+pub struct FileVerbBody {
+    pub workspace: String,
+    pub path: String,
+    /// `stage`, `unstage` or `discard`.
+    pub verb: String,
+}
+
+/// Stage a changed file, unstage it, or throw its working-tree changes away.
+///
+/// **The changed-files pane's right-click.** It reads `DiffFile::staged` and
+/// `unstaged` to decide which verbs a row gets, so it offers only what exists —
+/// most rows on a PR branch differ from the base because of a *commit* and get
+/// none. That is presentation; the rules below are the daemon's, because the route
+/// is reachable without the pane and a snapshot is a moment old by the time you
+/// click.
+///
+/// Three refusals, and the middle one is the reason this is not just a git call:
+///
+/// * **A path that leaves the workspace.** `edit::resolve_in_workspace` is the one
+///   spelling: relative, no `..`, and resolved under the root.
+/// * **A session mid-turn in that workspace.** Staging or discarding under a
+///   working agent changes what its next `git commit` picks up and what its next
+///   read returns, which is the "changed underneath it" case `pre_edit`'s stale
+///   notice exists for — and this one would be *your* doing rather than another
+///   agent's. Refused rather than announced, because the fix is to wait a moment.
+/// * **A verb the file has nothing for.** Asked of `git status` here rather than
+///   trusted from the request: discarding a file with no working-tree change is a
+///   no-op the user would read as the button not working, and staging one that is
+///   already staged the same.
+///
+/// `Discard` is not undoable by git and the SPA confirms it by name. This side
+/// refuses what it can and does not second-guess the rest: a confirmed discard is
+/// an answer, not a suggestion.
+pub async fn file_verb(
+    State(app): State<Arc<AppState>>,
+    Json(body): Json<FileVerbBody>,
+) -> ApiResult<serde_json::Value> {
+    use crate::git::FileVerb as V;
+    let verb = match body.verb.as_str() {
+        "stage" => V::Stage,
+        "unstage" => V::Unstage,
+        "discard" => V::Discard,
+        other => refuse!("{other} is not a file verb"),
+    };
+    let Some(root) = app.workspace_path(&body.workspace).await else {
+        refuse!("no such workspace: {}", body.workspace);
+    };
+    // Relative, no `..`, under the root — and the same call every other
+    // client-named path in this daemon goes through.
+    let path = crate::edit::resolve_in_workspace(&root, body.path.trim(), &[])?;
+    let rel = path
+        .strip_prefix(&root)
+        .unwrap_or(&path)
+        .to_string_lossy()
+        .into_owned();
+
+    let busy = {
+        let inner = app.inner.read().await;
+        inner
+            .sessions
+            .values()
+            .any(|s| s.workspace == body.workspace && s.state.is_busy())
+    };
+    if busy {
+        refuse!("an agent is mid-turn in {} — wait for it", body.workspace);
+    }
+
+    let (at, want) = (root.clone(), rel.clone());
+    let has = tokio::task::spawn_blocking(move || {
+        crate::git::status(&at, None, crate::git::Untracked::Each)
+    })
+    .await
+    .context("reading the status panicked")??;
+    let in_set = |set: &[crate::model::ChangedFile]| set.iter().any(|f| f.path == want);
+    let ok = match verb {
+        V::Stage => in_set(&has.unstaged) || in_set(&has.untracked),
+        V::Unstage => in_set(&has.staged),
+        V::Discard => in_set(&has.unstaged),
+    };
+    if !ok {
+        refuse!("{rel} has nothing to {}", body.verb);
+    }
+
+    let (at, p) = (root.clone(), rel.clone());
+    tokio::task::spawn_blocking(move || crate::git::file_verb(&at, verb, &p))
+        .await
+        .context("the git call panicked")??;
+    // The pane is drawn from the reconcile, so it has to be the fresh one.
+    let _ = app.reconcile(&body.workspace).await;
+    Ok(Json(json!({ "done": body.verb, "path": rel })))
+}
+
 /// Text the drawer is handing to a session, and how much of it is allowed.
 #[derive(Deserialize)]
 pub struct TellBody {
@@ -2858,6 +2951,66 @@ mod tests {
         assert!(upgrade_app(State(app.clone())).await.is_err(), "one run at a time");
     }
 
+    /// The route's own rules, which the pane cannot be trusted to keep.
+    ///
+    /// A snapshot is a moment old by the time you click it, and the route is
+    /// reachable without the pane at all — so the path, the verb and "is anybody
+    /// working in there" are all asked here rather than inferred from what the
+    /// client sent.
+    #[tokio::test]
+    async fn a_file_verb_stays_in_its_workspace_and_off_a_working_tree() {
+        use crate::model::{Session, State as S, MAIN};
+
+        let (app, dir) = crate::testutil::app("fileverb-api");
+        crate::testutil::git(&dir, &["init", "-q", "-b", "main"]);
+        crate::testutil::git(&dir, &["config", "user.email", "t@t"]);
+        crate::testutil::git(&dir, &["config", "user.name", "t"]);
+        std::fs::write(dir.join("f.txt"), "committed\n").unwrap();
+        crate::testutil::git(&dir, &["add", "-A"]);
+        crate::testutil::git(&dir, &["commit", "-qm", "base"]);
+        std::fs::write(dir.join("f.txt"), "edited\n").unwrap();
+
+        let go = |path: &str, verb: &str| {
+            let (app, path, verb) = (app.clone(), path.to_string(), verb.to_string());
+            async move {
+                file_verb(
+                    State(app),
+                    Json(FileVerbBody { workspace: MAIN.to_string(), path, verb }),
+                )
+                .await
+            }
+        };
+        let said = |e: ApiError| format!("{:#}", e.0);
+
+        // Out of the workspace, both spellings. `edit::resolve_in_workspace` is the
+        // one rule, and this is the route that would otherwise hand git a path
+        // somebody else's tree.
+        assert!(go("../elsewhere/f.txt", "stage").await.is_err());
+        assert!(go("/etc/passwd", "stage").await.is_err());
+        // Not a verb at all.
+        let e = said(go("f.txt", "delete").await.expect_err("not a verb"));
+        assert!(e.contains("not a file verb"), "{e}");
+
+        // Nothing to do is refused rather than silently succeeding: a button that
+        // does nothing reads as broken.
+        let e = said(go("f.txt", "unstage").await.expect_err("nothing staged"));
+        assert!(e.contains("nothing to unstage"), "{e}");
+
+        // The happy path, and then the guard that only this daemon needs.
+        assert!(go("f.txt", "stage").await.is_ok());
+        {
+            let mut inner = app.inner.write().await;
+            let id = Uuid::new_v4();
+            let mut s = Session::new(id, MAIN.to_string(), dir.clone(), None);
+            s.set_state(S::Working);
+            inner.sessions.insert(id, s);
+        }
+        let e = said(go("f.txt", "unstage").await.expect_err("an agent is working"));
+        assert!(e.contains("mid-turn"), "{e}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// The drawer may hand a session text only when a keystroke means "a prompt".
     ///
     /// Every refusal here is a state where `Enter` means something else — a submit
@@ -4211,8 +4364,14 @@ pub async fn pr_triage(
 /// (`pr_triage` into the cards, then a resolve run) stays a menu item away — the
 /// cards are not good enough to be the only way through a review yet.
 ///
-/// No worktree gate of its own beyond `spawn_command_session`'s: it takes you to a
-/// live session already on the branch when there is one, rather than refusing.
+/// **The same worktree gates as the other review verb**, because the pass writes
+/// into that tree: a rebase stopped part-way cannot take a commit, a running
+/// `fix-pr` is rewriting the same history, and a dirty tree means the first thing
+/// this agent amends is work somebody else left there.
+///
+/// It takes you to a live session already on the branch when there is one rather
+/// than refusing (`spawn_command_session`), which is why the gate is asked *after*
+/// that: landing on the pane that is already doing this is not a refusal case.
 pub async fn pr_handle_review(
     State(app): State<Arc<AppState>>,
     Path(number): Path<u64>,
@@ -4221,6 +4380,16 @@ pub async fn pr_handle_review(
         let inner = app.inner.read().await;
         pr_from_poll(&inner.prs, number)?
     };
+    // Only when a tree already exists: gating a PR whose worktree has not been cut
+    // yet would read a workspace that is not there and refuse nothing, and the cut
+    // itself is `ensure_pr_worktree`'s to make.
+    if let Some(ws) = crate::spawn::worktree_holding(&app, &pr.head_ref).await {
+        if app.live_sessions_in(&ws).await.is_empty() {
+            if let Some(g) = crate::triage::gate(&app, number, &ws).await? {
+                refuse!("{}", g.say());
+            }
+        }
+    }
     let session = crate::spawn::spawn_command_session(
         &app,
         number,

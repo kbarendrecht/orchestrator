@@ -10,7 +10,7 @@ is.
 
 ```
 cargo check                         # the daemon
-cargo test                          # 516 tests, all in-tree
+cargo test                          # 518 tests, all in-tree
 cargo clippy --all-targets          # what CI lints with, and it denies warnings
 mise run check-web                  # type-check the SPA + enforce its module graph
 mise run e2e                        # 16 flows against a real daemon, ~60s
@@ -679,6 +679,25 @@ mean *this* repo; if you do, name it.
   its own input and leave anything else alone: the name migration does not invent a
   host for `"jira"`, because `Tracker`'s refusal already names the object to write
   and a guess written to disk is worse than a message.
+- **The changed-files pane's git verbs are drawn from `git status`, not from its
+  own list.** That list is `git diff <merge-base>` plus untracked files, so most
+  rows on a PR branch differ from the base because of a **commit** and are clean on
+  disk — `discard changes` there would offer to throw away nothing on some rows and
+  a commit's content on others, from a menu that cannot tell them apart.
+  `DiffFile::staged` / `unstaged` carry `git status`'s two answers, joined on by
+  path in the same closure that already reads them, and the menu offers exactly
+  what exists: staged → `unstage`, working-tree → `stage` and `discard changes`,
+  untracked → `stage`, and a row that is neither gets no git verbs at all.
+  `api::file_verb` keeps three rules the pane cannot: the path goes through
+  `edit::resolve_in_workspace` (relative, no `..`, under the root), the verb is
+  checked against a *fresh* status rather than the snapshot the click came from,
+  and **everything is refused while a session in that workspace is mid-turn** —
+  staging under a working agent changes what its next `git commit` picks up, which
+  is the "changed underneath it" case `pre_edit`'s stale notice exists for, except
+  this time it would be your doing. Only `discard` is confirmed, and that is the
+  asymmetry that matters: stage and unstage are each other's undo, while `git
+  restore` overwrites the working tree and git keeps no copy of content that was
+  never committed.
 - **One pty exit, one observer.** `spawn::watch_session_exit` is the only thing
   that waits on a session's handle; it dispatches onward (a fix run's verdict goes
   to `fix_pr::settle`). A second `pty.wait()` on the same handle would work and

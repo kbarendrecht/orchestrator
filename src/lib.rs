@@ -623,6 +623,7 @@ fn router(app: Arc<AppState>) -> Router {
         .route("/api/client/note", post(api::client_note))
         .route("/api/open", post(api::open_url))
         .route("/api/open/file", post(api::open_file))
+        .route("/api/file/verb", post(api::file_verb))
         .route("/api/pr/:number/review", get(api::pr_review))
         .route("/api/pr/:number/triage", post(api::pr_triage))
         // The rail's default review verb: one agent and one pane, which the

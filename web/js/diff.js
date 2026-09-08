@@ -85,6 +85,52 @@ function openFileOnForge(w, path) {
     .catch((err) => toast(err.message, true));
 }
 
+/** Stage a file, unstage it, or throw its working-tree changes away.
+ *
+ *  **`discard` asks first, and names the file.** `git restore` overwrites the
+ *  working tree from the index, so uncommitted content is gone — there is no
+ *  reflog for a change that was never committed. The other two are reversible by
+ *  pressing the other one, so they go straight through.
+ *
+ *  The daemon refuses what the row cannot do, and refuses everything while an
+ *  agent is mid-turn in that workspace, so this does not pre-judge: it sends the
+ *  verb and shows the answer. */
+async function fileVerb(w, f, verb) {
+  if (verb === 'discard') {
+    const yes = await confirmBox(
+      `Throw away your changes to ${f.path}? Uncommitted content cannot be `
+      + 'recovered — git keeps no copy of it.',
+      { ok: 'Discard' },
+    );
+    if (!yes) return;
+  }
+  try {
+    await call('/api/file/verb', { workspace: w.id, path: f.path, verb });
+    toast(`${verb === 'discard' ? 'discarded' : verb + 'd'} ${f.path}`);
+  } catch (e) {
+    toast(e.message, true);
+  }
+}
+
+/** What a changed row can be asked to do, which is not the same for every row.
+ *
+ *  The list is `git diff <merge-base>`, so most rows on a PR branch differ from
+ *  the base because of a **commit** and have nothing to stage or discard: those
+ *  get no git verbs at all, rather than items that would do nothing. `staged` and
+ *  `unstaged` come from `git status` on the daemon side for exactly this.
+ *
+ *  `discard` is last, being the only one that cannot be pressed back; `open on
+ *  forge` stays on top because it is the one you reach for while reading. */
+function fileMenu(w, f) {
+  const items = [];
+  const linkable = f.status !== '?' && !f.path.endsWith('/');
+  items.push(['open on forge', null, linkable ? () => openFileOnForge(w, f.path) : null]);
+  if (f.unstaged || f.status === '?') items.push(['stage', null, () => fileVerb(w, f, 'stage')]);
+  if (f.staged) items.push(['unstage', null, () => fileVerb(w, f, 'unstage')]);
+  if (f.unstaged) items.push(['discard changes', 'danger', () => fileVerb(w, f, 'discard')]);
+  return items;
+}
+
 /** "The daemon has not counted this tree yet."
  *
  *  The same pulsing dot the empty terminal uses while the first snapshot is in
@@ -183,25 +229,18 @@ function renderFiles() {
         openDiff(f.path);
       }
     };
-    /* These rows carry no menu of their own, and the one thing worth reaching for
-       is the file on the forge — when the forge can serve it, which is not every
-       row. A blob URL is a *tracked file at a ref*, and two kinds of row are
-       neither:
+    /* The row's menu: the file on the forge, and what git can be asked to do with
+       it. `open on forge` is greyed rather than hidden for the two rows the forge
+       cannot serve, because a missing item reads as a missing feature:
 
          * `status: '?'` is untracked (`DiffFile::untracked`). Git has never seen
            it, so no ref has a blob for it and the link is a guaranteed 404.
          * a path ending in `/` is a whole untracked *directory*, collapsed by
            `--untracked-files=normal`. GitHub spells those `/tree/`, not `/blob/`.
 
-       Greyed rather than hidden, because a missing item reads as a missing feature
-       and the reason is worth one line. The daemon refuses the same two anyway
-       (`api::open_file`), the way the fork guard lives on both sides. */
-    const linkable = f.status !== '?' && !f.path.endsWith('/');
-    row.oncontextmenu = (ev) => {
-      openMenu(ev, [linkable
-        ? ['open on forge', null, () => openFileOnForge(w, f.path)]
-        : ['open on forge', null, null]]);
-    };
+       The daemon refuses the same two anyway (`api::open_file`), the way the fork
+       guard lives on both sides. */
+    row.oncontextmenu = (ev) => openMenu(ev, fileMenu(w, f));
     panes.appendChild(row);
   }
 

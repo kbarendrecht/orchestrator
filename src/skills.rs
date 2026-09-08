@@ -265,6 +265,10 @@ mod tests {
             ("fix-pr", FIX_PR, &[VAR_PR, VAR_UPSTREAM, VAR_UPSTREAM_REMOTE, VAR_LOGIN][..]),
             ("resolve-run", RESOLVE_RUN, &[VAR_PLAN][..]),
             ("story", STORY, &[VAR_STORIES, VAR_DROP, VAR_TRACKER_HOST][..]),
+            // The pane pass gets two and reads both. It deliberately does *not*
+            // read `VAR_LOGIN`, which its run does not set: its authorship stop
+            // asks `gh` instead, the way `green` does.
+            ("handle-review", HANDLE_REVIEW, &[VAR_PR, VAR_LANGUAGE][..]),
         ] {
             for v in vars {
                 assert!(
@@ -273,6 +277,13 @@ mod tests {
                 );
             }
         }
+        // And the other way for the one variable that is easy to reach for and is
+        // not there: the pane pass has no `$ORCH_LOGIN`, so a stop written against
+        // it would compare against the empty string and pass.
+        assert!(
+            !HANDLE_REVIEW.contains(&format!("${VAR_LOGIN}")),
+            "handle-review reads ${VAR_LOGIN}, which its run does not set"
+        );
     }
 
     /// It is typed as one line, so a newline in the invocation would submit half a

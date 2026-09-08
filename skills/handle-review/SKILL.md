@@ -33,6 +33,17 @@ query($owner:String!,$repo:String!,$num:Int!){
 `gh repo view --json owner,name` gives the two you need. Plus `gh pr view $ORCH_PR
 --json reviews,comments` for review-level bodies that are not anchored to a line.
 
+**`headRepositoryOwner.login` is not `gh api user --jq .login` → stop, it is
+someone else's branch to force-push.** Say whose it is. Reading the threads is
+welcome on anybody's PR; the Apply step below amends commits and pushes
+`--force-with-lease`, which is not, and there is no way to do half of this pass.
+`fix-pr`, `green` and `review` all stop on the same line — this is the one you are
+most likely to press by accident, because it is the button on the row.
+
+Asked of `gh` rather than read from the environment, like `green` does: this run is
+handed `$ORCH_PR` and the output language, and a skill that reads a variable its
+spawner does not set takes the empty string for an answer and carries on.
+
 Skip `isResolved`. **Keep `isOutdated`**: the code moved, the point may still stand.
 A thread whose last comment is your own is already answered; do not re-answer it.
 

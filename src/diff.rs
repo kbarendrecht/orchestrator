@@ -70,6 +70,23 @@ pub struct DiffFile {
     pub eager: bool,
     /// Present for renames.
     pub old_path: Option<String>,
+    /// Whether this file has changes in the **index**, and whether it has changes
+    /// in the **working tree** — `git status`'s two answers, joined on by path.
+    ///
+    /// **Not derivable from `status` above, and that is the point.** This list is
+    /// `git diff <merge-base>`, so most rows on a PR branch differ from the base
+    /// because of a *commit* and are otherwise clean. Offering "discard changes"
+    /// against that list would be offering to throw away nothing on some rows and
+    /// a commit's content on others, from a menu that cannot tell them apart. The
+    /// pane's git verbs are drawn from these two instead, so what is offered is
+    /// exactly what exists: staged → unstage, working-tree → stage, discard.
+    ///
+    /// Both `false` is the ordinary case (changed in a commit, clean on disk) and
+    /// gets no verbs at all.
+    #[serde(default)]
+    pub staged: bool,
+    #[serde(default)]
+    pub unstaged: bool,
 }
 
 impl DiffFile {
@@ -89,6 +106,10 @@ impl DiffFile {
             // Nothing to diff against, so there are no hunks to fetch.
             eager: false,
             old_path: None,
+            // Untracked is neither: nothing of it is in the index, and there is no
+            // tracked version for the working tree to differ from.
+            staged: false,
+            unstaged: false,
         }
     }
 }
@@ -160,6 +181,10 @@ pub fn summary(cwd: &Path, base: &str) -> Result<DiffSummary> {
             // Binary and generated content is collapsed rather than rendered.
             eager: !binary && (row.added + row.deleted) as usize <= EAGER_LINE_CAP,
             old_path,
+            // Filled by the caller, which has the `git status` sets already: this
+            // is a diff against a ref and knows nothing about the index.
+            staged: false,
+            unstaged: false,
         });
     }
     files.sort_by(|a, b| a.path.cmp(&b.path));

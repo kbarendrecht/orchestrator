@@ -1295,7 +1295,7 @@ pub(crate) fn rebase_target(
 /// ref: main's branches accumulate and are never removed (§2), so a PR whose head
 /// main once visited would otherwise send a fix or a review run into the main
 /// checkout — rebasing and force-pushing the one tree every worktree is cut from.
-async fn worktree_holding(app: &Arc<AppState>, head_ref: &str) -> Option<String> {
+pub(crate) async fn worktree_holding(app: &Arc<AppState>, head_ref: &str) -> Option<String> {
     let inner = app.inner.read().await;
     inner
         .workspaces
