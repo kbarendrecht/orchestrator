@@ -38,4 +38,15 @@ export async function run(t) {
     () => t.api('POST', '/api/session', { workspace: 'invoice' }),
     /already has a live session/,
   )
+
+  /* A create with no name at all, which the rail's button allows and which used to
+     produce `wt-<8 hex>`. The daemon invents one in Claude Code's own shape now
+     (`src/names.rs`), and this is the only place that path is exercised end to
+     end: the name has to reach a real directory and a real branch, so a word the
+     spawn's own validator refuses would fail here rather than in front of a user. */
+  const { session: unnamed } = await t.api('POST', '/api/worktree', {})
+  const it = await t.session(unnamed)
+  assert.match(it.workspace, /^[a-z]+-[a-z]+-[a-z]+$/, `not a generated name: ${it.workspace}`)
+  assert.ok(fs.existsSync(t.worktreePath(it.workspace)), 'the named tree was not cut')
+  assert.equal(branchOf(t.worktreePath(it.workspace)), `worktree-${it.workspace}`)
 }

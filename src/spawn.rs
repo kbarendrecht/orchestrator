@@ -697,9 +697,10 @@ fn carry_into(parent: &std::path::Path, fork: &std::path::Path, exclude: &str) -
 /// `switch_main_to_pr` and `branch_busy` read — so `guard::isolation`
 /// enforces that on the agent's Bash and says nothing about writes.
 ///
-/// Two things it gives up. Claude Code invents a name for an unnamed tree and the
-/// daemon does not, so those are `wt-<8 hex>` rather than
-/// `robust-enchanting-rainbow`. And Claude Code locked and removed its own tree;
+/// One thing it gives up, and it is not the naming: [`crate::names`] generates in
+/// the same shape Claude Code did, from word lists mined out of the names it had
+/// already made here. What is gone is that Claude Code locked and removed its own
+/// tree;
 /// `worktree::teardown` owns both anyway, and `git::worktree_remove` keeps its
 /// stale-lock retry for a repo that locks its own.
 ///
@@ -784,11 +785,29 @@ pub async fn spawn_worktree_session(
     // What travelled, in words, for the arrival notice below.
     let mut carried: Option<String> = None;
 
-    // A name is always required now: the daemon cuts the tree, so it has to know
-    // the path up front, and nothing else invents one. `wt-<8 hex>` is what an
-    // unnamed request gets — see the docblock on what that replaced.
-    let owned_name =
-        name.is_none().then(|| format!("wt-{}", &id.simple().to_string()[..8]));
+    /* A name is always required now: the daemon cuts the tree, so it has to know
+       the path up front. An unnamed request gets one in Claude Code's own shape
+       (`crate::names`), which is what that arm was pleasant for — `wt-ca12db78`
+       is a row you find by position, `federated-seeking-quasar` is one you can say.
+       Checked against the two things the *named* path refuses above, because a
+       generated name never reaches those checks: a live workspace holding the id,
+       and a directory a torn-down one left behind. `wt-<8 hex>` stays as the
+       fallback for the case that cannot happen, since a spawn that fails to invent
+       a name is worse than an ugly one. */
+    let owned_name = match name {
+        Some(_) => None,
+        None => {
+            let held = {
+                let inner = app.inner.read().await;
+                inner.workspaces.keys().cloned().collect::<std::collections::HashSet<_>>()
+            };
+            Some(
+                crate::names::candidates()
+                    .find(|c| !held.contains(c) && !app.cfg.worktree_path(c).exists())
+                    .unwrap_or_else(|| format!("wt-{}", &id.simple().to_string()[..8])),
+            )
+        }
+    };
     let name = name.or(owned_name.as_deref());
 
     let (spawn_cwd, cmd, made_at) = {

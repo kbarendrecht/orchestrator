@@ -20,6 +20,7 @@ pub mod hooks;
 pub mod instance;
 pub mod machine;
 pub mod model;
+pub mod names;
 pub mod patch;
 pub mod post;
 pub mod proc;
