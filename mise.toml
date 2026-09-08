@@ -5,10 +5,36 @@
 claude-code = "latest"
 node = "latest"
 rust = "latest"
+# `gh` is a *task* dependency, not the daemon's: the review flow reaches GitHub
+# through `curl` and resolves its token itself, so nothing in `orchd` needs this
+# binary. `mise run release` asks CI whether the commit is green and `mise run
+# fixture` builds a throwaway repo, and both refuse without it.
+#
+# Declared because it was working by accident. It is on this machine from a
+# *global* mise config, so a fresh clone had a release task that could not run and
+# nothing saying why — the same class of thing as a rule derived from one repo.
+gh = "latest"
+
+# The SPA checks and the browser-driving tasks need `tools/node_modules`, and that
+# was a sentence in a comment and an error in the pre-commit hook. Declared as a
+# task instead, with `sources`/`outputs` so mise skips it when nothing changed —
+# so `mise run e2e` on a fresh clone installs what it needs rather than failing on
+# a missing module.
+#
+# `--prefix tools` rather than a `dir`, because npm resolves its lockfile relative
+# to the prefix and this task can then be depended on from anywhere.
+[tasks.deps]
+description = "Install the SPA and tooling dependencies (tools/node_modules)"
+dir = "{{config_root}}"
+sources = ["tools/package.json", "tools/package-lock.json"]
+outputs = ["tools/node_modules/.package-lock.json"]
+run = "npm install --prefix tools --no-audit --no-fund"
 
 # Screenshot the running app from a terminal — the only way to check a UI change
-# when you cannot see the screen. Needs the app running and Chrome installed;
-# `npm i` in tools/ first (playwright-core only, no browser download).
+# when you cannot see the screen. Needs the app running and **Chrome installed**,
+# which is the one dependency `[tools]` cannot carry: `tools/` pins
+# `playwright-core` to the version whose WebKit build is already on disk, and
+# playwright drives a browser it does not install.
 #
 #   mise run shot
 #   mise run shot -- '.drawer-head'
@@ -24,6 +50,7 @@ rust = "latest"
 #     make these modules a layering rather than six files that call each other.
 [tasks.check-web]
 description = "Type-check the SPA and enforce its module graph"
+depends = ["deps"]
 run = """
 cargo test --lib export_bindings >/dev/null
 git diff --exit-code --stat web/snapshot.d.ts \
@@ -34,6 +61,7 @@ npx --prefix tools depcruise --config tools/.dependency-cruiser.cjs web/app.js
 
 [tasks.shot]
 description = "Screenshot the running SPA (optionally one selector)"
+depends = ["deps"]
 dir = "{{config_root}}"
 run = "node tools/shot.mjs"
 
@@ -75,6 +103,7 @@ run = "node tools/e2e/run.mjs"
 #   mise run term-e2e -- --keep   # keep the sandbox to read afterwards
 [tasks.term-e2e]
 description = "Drive the terminal pane in a real browser"
+depends = ["deps"]
 dir = "{{config_root}}"
 run = "cargo build --bin orchd && node tools/e2e/term.mjs"
 
@@ -86,6 +115,7 @@ run = "cargo build --bin orchd && node tools/e2e/term.mjs"
 #   mise run renderer-check -- --mac   # the macOS rule, simulated
 [tasks.renderer-check]
 description = "Assert which renderer each terminal opens with"
+depends = ["deps"]
 dir = "{{config_root}}"
 run = "cargo build --bin orchd && E2E_LOG=${E2E_LOG:-info} node tools/e2e/renderer.mjs"
 

@@ -16,10 +16,25 @@ mise run check-web                  # type-check the SPA + enforce its module gr
 mise run e2e                        # 15 flows against a real daemon, ~55s
 cargo run -p orchestrator-desktop   # the app, daemon embedded in-process
 mise run shot                       # screenshot the running SPA (drives Chrome)
+mise run release                    # bump, wait for CI, tag and push
 ```
 
-The agent binary is `claude`, installed by the `claude-code` mise tool so one
-`mise up` in the monorepo covers both.
+**mise carries the toolchain and every task, and nothing in CI uses it.** `[tools]`
+has `rust`, `node`, `claude-code` and `gh` — the agent binary is `claude`, under
+the `claude-code` name so one `mise up` in the monorepo covers both, and `gh` is
+there because `mise run release` and `mise run fixture` refuse without it and it
+had been working off a *global* config. `mise run deps` installs
+`tools/node_modules` and every task that needs it depends on that, with
+`sources`/`outputs` so it is skipped when nothing changed — so a fresh clone runs
+`mise run e2e` rather than failing on a missing module. The one dependency
+`[tools]` cannot carry is **Chrome**: `tools/` pins `playwright-core` to the
+version whose WebKit build is on disk, and playwright drives a browser it does not
+install.
+
+Each task is a stanza pointing at a script in `tools/`, and it stays that way:
+`shot.mjs` resolves `playwright-core` out of `tools/node_modules` and
+`e2e/run.mjs` imports `./harness.mjs` and reads `flows/`, so neither survives
+being moved to `.mise/tasks/` or inlined into a TOML string.
 
 **`cargo clippy --all-targets` is a gate and was not in this list.** CI runs it
 with warnings denied, so a lint that is a warning here is a red build there — and

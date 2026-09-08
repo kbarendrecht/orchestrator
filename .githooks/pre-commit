@@ -89,8 +89,8 @@ if printf '%s\n' "$staged" | grep -qE '^tools/e2e/'; then e2e=1; fi
 
 if [ "$web" = 1 ] || [ "$rust" = 1 ]; then
 if [ ! -d tools/node_modules ]; then
-  echo "pre-commit: tools/node_modules is missing — run 'npm install --prefix tools'" >&2
-  echo "            (or commit with --no-verify)" >&2
+  echo "pre-commit: tools/node_modules is missing — run 'mise run deps'" >&2
+  echo "            (or 'npm install --prefix tools', or commit with --no-verify)" >&2
   exit 1
 fi
 fi
