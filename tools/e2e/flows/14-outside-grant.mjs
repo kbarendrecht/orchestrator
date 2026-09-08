@@ -23,6 +23,10 @@ export async function run(t) {
   const { session } = await t.api('POST', '/api/worktree', { name: 'invoice' })
   await t.settled(session)
   const tree = t.worktreePath('invoice')
+  // A second checkout, for the half of this flow that proves one yes is not every
+  // yes. The bare clone the sandbox already made is a real directory outside the
+  // main checkout, which is exactly the shape the grant must not reach.
+  const elsewhere = path.join(t.root, 'origin.git')
 
   // What Claude Code gives a `command` hook: the session's own environment.
   const env = {
@@ -53,19 +57,22 @@ export async function run(t) {
 
   // The agent asks, and blocks in its tool call until somebody answers — which is
   // why this is started rather than awaited.
-  const asking = new Promise((resolve, reject) => {
-    execFile(ORCH, ['outside', t.repo], { env, encoding: 'utf8' },
+  const rx = (p) => new RegExp(p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+  const askFor = (folder) => new Promise((resolve, reject) => {
+    execFile(ORCH, ['outside', folder], { env, encoding: 'utf8' },
       (err, out) => (err ? reject(err) : resolve(out.trim())))
   })
+  const question = () => until('the question to reach the session', async () => {
+    const s = await t.session(session)
+    return s && s.interaction && !s.interaction.answer ? s.interaction : null
+  })
+  const asking = askFor(t.repo)
 
   // It arrives as an ordinary interaction: the same field, the same box, the same
   // `your_turn`. A second permission mechanism beside that one is how two of them
   // come to disagree.
-  const ask = await until('the question to reach the session', async () => {
-    const s = await t.session(session)
-    return s && s.interaction && !s.interaction.answer ? s.interaction : null
-  })
-  assert.match(ask.question, new RegExp(t.repo.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
+  const ask = await question()
+  assert.match(ask.question, rx(t.repo))
   assert.deepEqual(ask.options.map((o) => o.value), ['outside-allow', 'outside-no'])
   assert.equal((await t.session(session)).state.state, 'your_turn')
 
@@ -77,9 +84,33 @@ export async function run(t) {
   assert.equal(after.exit, 0, `still refused after the grant: ${after.said}`)
   assert.equal(guard('git push --force').exit, 2, 'the grant must not widen the push rules')
 
-  // Remembered, so the second question is never asked.
+  // Remembered for that folder, so the same question is never asked twice.
   const again = execFileSync(ORCH, ['outside', t.repo], { env, encoding: 'utf8' }).trim()
   assert.equal(again, 'allowed')
   assert.equal((await t.session(session)).interaction.answer, 'outside-allow',
     'a second ask would have replaced the answered one')
+
+  // --- and one yes is not every yes -----------------------------------------
+  //
+  // The half no unit test can see: a grant lives on the session in the daemon and
+  // is read by a *different process* per git command, so "per folder" is only true
+  // if the list makes that trip. It was a bool, and the first yes let the session
+  // reach every checkout on the machine for the rest of the conversation.
+  const other = `git -C ${elsewhere} status`
+  const refused = guard(other)
+  assert.equal(refused.exit, 2, `the grant on ${t.repo} reached ${elsewhere}`)
+  assert.match(refused.said, rx(`orch outside ${elsewhere}`))
+
+  // So it is asked about, on its own, and answered on its own.
+  const asking2 = askFor(elsewhere)
+  const ask2 = await question()
+  assert.notEqual(ask2.id, ask.id, 'the answered question was handed back instead of a new one')
+  assert.match(ask2.question, rx(elsewhere))
+  await t.api('POST', `/api/session/${session}/answer`, { ask: ask2.id, answer: 'outside-allow' })
+  assert.equal(await asking2, 'allowed')
+  assert.equal(guard(other).exit, 0, `still refused after the grant on ${elsewhere}`)
+
+  // Both stand, and neither widened the push rules.
+  assert.equal(guard(aimed).exit, 0, 'the second grant dropped the first')
+  assert.equal(guard('git push --force').exit, 2)
 }

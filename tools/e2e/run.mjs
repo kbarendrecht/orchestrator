@@ -26,7 +26,13 @@ const filters = args.filter((a) => !a.startsWith('--'))
 
 // Built here rather than assumed: the flows drive the binary, and a stale one is
 // the failure that wastes the most time, because everything still runs.
-const build = spawnSync('cargo', ['build', '--bin', 'orchd'], {
+//
+// **Both binaries.** `orchd` is the daemon, and `orch` is what the hooks and the
+// agent call — flow 14 runs `orch guard push` directly. This built only the daemon,
+// so a change to the guard's own half was tested against whatever `orch` happened
+// to be on disk: the grant flow passed while refusing every command, because a
+// stale `orch` read a reply shape the daemon no longer sends.
+const build = spawnSync('cargo', ['build', '--bin', 'orchd', '--bin', 'orch'], {
   cwd: repoRoot,
   stdio: 'inherit',
 })

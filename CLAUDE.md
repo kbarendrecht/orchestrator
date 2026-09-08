@@ -809,19 +809,33 @@ mean *this* repo; if you do, name it.
   ordinary and outside the tree.
   **And it is a question, not a wall.** The refusal names `orch outside <path>`,
   which raises an *ordinary* `Interaction` — the same field, the same box, the same
-  `/ask/:id/wait` the agent already polls — and a yes sets `Session::outside_ok`
-  for that session only. Three things about it are deliberate: the grant keys on
-  the **ask id** (`Session::outside_ask`), because an agent writes its own option
-  values through `orch ask` and would otherwise be asking itself; it is **not** on
-  `SessionRecord`, so a restart asks again rather than assuming; and a granted
-  session is told by `worktree: None` reaching the rule rather than by a flag
-  inside it, which keeps `guard::check` a pure function of the command.
-  The guard reads the grant over HTTP with the session's ask token, and **false is
+  `/ask/:id/wait` the agent already polls — and a yes appends that folder to
+  `Session::outside_grants`.
+  **A yes is one folder, not the session.** It was a `bool`, so the first grant —
+  a `git -C` at one checkout you had a reason for — let the session reach *every*
+  checkout for the rest of the conversation, and the question that named a folder
+  had answered about all of them. A grant now covers the path it names and what is
+  under it (`Session::outside_granted`, prefix, textual like `guard::resolve`), and
+  the next checkout is asked about on its own.
+  Three things about it are deliberate: the grant keys on the **ask id**
+  (`Session::outside_ask` carries the id *and* the path, since the answer route
+  sees neither otherwise), because an agent writes its own option values through
+  `orch ask` and would otherwise be asking itself; it is **not** on
+  `SessionRecord`, so a restart asks again rather than assuming; and the folders
+  are handed to the rule as `Call::granted` rather than switching it off, which
+  keeps `guard::check` a pure function of the command. That last one is what the
+  old shape could not do: `orch guard push` dropped the worktree from the `Call` on
+  a blanket yes, and no list of folders can be expressed that way.
+  The guard reads the grants over HTTP with the session's ask token, and **empty is
   what it answers when it cannot ask** — a missing environment or an absent daemon
   must never widen what an agent may reach. `tools/e2e/flows/14-outside-grant.mjs`
   drives the whole path, and the ask token it needs comes from the agent's own
   environment (`fake-claude.mjs` writes it under the sandbox), because the daemon
   deliberately never persists it.
+  **`mise run e2e` builds `orch` as well as `orchd`**, and did not: flow 14 runs
+  `orch guard push` directly, so a change to the guard's own half was measured
+  against whatever binary was on disk. It read as the grant refusing every command
+  it had just allowed.
   It is a **mistake-catcher, not a control** — Bash only, so `gh` or a script the
   agent writes goes around it. Do not write docs that claim otherwise; the README
   did, and that is the kind of sentence that earns misplaced trust.

@@ -481,8 +481,9 @@ needs protected and a shared scratch dir is not its business.
 
 The third rule is a question rather than a wall: its refusal names `orch outside
 <path>`, which puts "may this session run git there?" to you through the same ask
-box every other question uses, and a yes is remembered for the rest of that
-session. Nothing persists it, so a restart asks again. Read all three as a
+box every other question uses. A yes is remembered **for that folder and what is
+under it**, for the rest of that session, so the next checkout is a question of its
+own. Nothing persists it, so a restart asks again. Read all three as a
 **mistake-catcher, not a control**: it sees `Bash` tool calls only, so `gh`, an MCP
 git server, or a script the agent writes and then runs all go around it. It is there
 because a fix-pr run force-pushes with nobody watching, and that is the mistake

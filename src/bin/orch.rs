@@ -42,7 +42,7 @@ orch — talk to the orchestrator you are running inside
       Start one of the processes this workspace declares.
 
   orch outside <path>
-      Ask to run git outside this worktree. Remembered for this session.
+      Ask to run git in that folder. Remembered for it, for this session.
 
   orch guard push [--base <branch>] [--main <path>]
       Not for you to call — the daemon registers this as a PreToolUse hook.
@@ -173,10 +173,12 @@ const HELP_OUTSIDE: &str = "\
 orch outside <path>
 
 Ask to run git outside this session's own worktree. The push guard refuses that
-by default; this puts the question to the user and remembers a yes for the rest of
-the session. Blocks until they answer, then prints `allowed` or `refused`.
+by default; this puts the question to the user and remembers a yes for that folder
+for the rest of the session. Another folder is another question. Blocks until they
+answer, then prints `allowed` or `refused`.
 
   <path>  What you were refused, named in the question so the answer is informed.
+          A yes covers this folder and what is under it, and nothing else.
 ";
 
 const HELP_GUARD: &str = "\
@@ -594,16 +596,18 @@ fn guard(a: &Parsed) -> ExitCode {
         },
         _ => (None, None),
     };
-    /* **A grant turns the rule off rather than being checked inside it.** The
-       daemon holds the answer per session (`api::allow_outside`), and `None` for the
-       worktree is already how [`orchd::guard::isolation`] says "no opinion" — so
-       asking here keeps the rule itself a pure function of the command.
-       Only when there *is* a worktree to be let out of, so an ordinary session in
-       main pays nothing, and "cannot ask" leaves the rule on: a daemon that does
-       not answer must not silently widen what an agent may reach. */
-    let worktree = match &worktree {
-        Some(_) if outside_allowed() => None,
-        _ => worktree,
+    /* **The grants are handed to the rule rather than turning it off.** The daemon
+       holds them per session (`api::allow_outside`), one folder per yes, and
+       [`orchd::guard::isolation`] reads them exactly like the worktree — so the rule
+       stays a pure function of the command and can still say no to the checkout you
+       never approved. This used to drop the worktree from the `Call` on a blanket
+       yes, which no list of folders can be expressed as.
+       Only asked when there *is* a worktree to be let out of, so an ordinary session
+       in main pays nothing, and an empty answer leaves the rule on: a daemon that
+       does not answer must not silently widen what an agent may reach. */
+    let granted = match &worktree {
+        Some(_) => outside_grants(),
+        None => Vec::new(),
     };
 
     let call = orchd::guard::Call {
@@ -613,6 +617,7 @@ fn guard(a: &Parsed) -> ExitCode {
         cwd: cwd.map(std::path::Path::new),
         worktree: worktree.as_deref(),
         git_dir: git_dir.as_deref(),
+        granted: &granted,
     };
     match orchd::guard::check(&call, a.value("--base")) {
         Some(reason) => {
@@ -624,23 +629,32 @@ fn guard(a: &Parsed) -> ExitCode {
     }
 }
 
-/// Has the user allowed this session out of its worktree?
+/// Which folders has the user let this session out to?
 ///
-/// False on anything unreadable, which is the direction that keeps the guard
+/// Empty on anything unreadable, which is the direction that keeps the guard
 /// honest: the environment may be missing (this runs as Claude Code's child, not
 /// the daemon's), the daemon may be gone, and neither is a reason to allow what it
-/// would otherwise refuse. The agent's own `orch outside` is what makes it true.
-fn outside_allowed() -> bool {
+/// would otherwise refuse. The agent's own `orch outside <path>` is what fills it,
+/// one folder per answer.
+fn outside_grants() -> Vec<std::path::PathBuf> {
     let Ok((base, me, token)) = session_env() else {
-        return false;
+        return Vec::new();
     };
     let Ok(out) = http("GET", &format!("{base}/api/session/{me}/outside"), &token, None) else {
-        return false;
+        return Vec::new();
     };
-    reply(&out)
-        .ok()
-        .and_then(|v| v.get("allowed").and_then(Value::as_bool))
-        .unwrap_or(false)
+    let Ok(v) = reply(&out) else {
+        return Vec::new();
+    };
+    v.get("paths")
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(Value::as_str)
+                .map(std::path::PathBuf::from)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Is there a `git` anywhere in this command? The cheap gate in front of the two

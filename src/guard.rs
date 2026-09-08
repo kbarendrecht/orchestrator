@@ -47,6 +47,15 @@ pub struct Call<'a> {
     /// either one absent disables [`isolation`] rather than guessing.
     pub worktree: Option<&'a Path>,
     pub git_dir: Option<&'a Path>,
+    /// The folders you have already let this session out to, from
+    /// `Session::outside_grants`. Each covers what is under it, so the rule reads
+    /// them exactly like the worktree itself.
+    ///
+    /// Handed in rather than asked for, which is what keeps [`check`] a pure
+    /// function of the command: the binary fetches the list once per git command
+    /// it judges, and **empty is what it passes when it cannot ask** — a daemon
+    /// that does not answer must never widen what an agent may reach.
+    pub granted: &'a [PathBuf],
 }
 
 /// The base branch to protect, as a plain name (`main`).
@@ -71,7 +80,9 @@ pub fn check(call: &Call, base: Base) -> Option<String> {
         if let Some(reason) = check_one(&segment, base, call.current_branch) {
             return Some(reason);
         }
-        if let Some(reason) = isolation(&segment, at.as_deref(), call.worktree, call.git_dir) {
+        if let Some(reason) =
+            isolation(&segment, at.as_deref(), call.worktree, call.git_dir, call.granted)
+        {
             return Some(reason);
         }
         if let Some(moved) = cd_target(&segment) {
@@ -203,11 +214,17 @@ fn check_one(segment: &str, base: Base, current_branch: Option<&str>) -> Option<
 /// one exemption: a worktree's real git dir lives under the *main* checkout
 /// (`<main>/.git/worktrees/<name>`), so `--git-dir=$(git rev-parse --git-dir)` is
 /// both ordinary and outside the tree.
+///
+/// `granted` is the rest of what a session may reach: the folders you answered yes
+/// about, read exactly like the worktree. It arrives as a list rather than as a
+/// flag because a yes is **about one folder**, so a session let out to one
+/// checkout is still refused at the next and asked about it.
 fn isolation(
     segment: &str,
     at: Option<&Path>,
     worktree: Option<&Path>,
     git_dir: Option<&Path>,
+    granted: &[PathBuf],
 ) -> Option<String> {
     let worktree = worktree?;
     let tokens: Vec<&str> = segment.split_whitespace().collect();
@@ -216,7 +233,9 @@ fn isolation(
         return None;
     }
     let allowed = |p: &Path| {
-        p.starts_with(worktree) || git_dir.is_some_and(|g| p.starts_with(g))
+        p.starts_with(worktree)
+            || git_dir.is_some_and(|g| p.starts_with(g))
+            || granted.iter().any(|g| p.starts_with(g))
     };
 
     // Where an explicit redirection points, and otherwise where the command
@@ -248,7 +267,7 @@ fn isolation(
     let out = aimed.into_iter().find(|p| !allowed(p))?;
     // The way out is in the refusal, because a guard that only says no makes the
     // agent guess: `orch outside` puts the question to the user through the
-    // ordinary ask box, and a yes lasts the rest of the session.
+    // ordinary ask box, and a yes covers that folder for the rest of the session.
     Some(format!(
         "orchd: this session works in {}, and this command aims git at {}. Run it \
          against your own worktree, or ask first with `orch outside {}` — changing \
@@ -350,6 +369,7 @@ mod tests {
             cwd: None,
             worktree: None,
             git_dir: None,
+            granted: &[],
         }
     }
 
@@ -369,6 +389,7 @@ mod tests {
             cwd: Some(Path::new(TREE)),
             worktree: Some(Path::new(TREE)),
             git_dir: Some(Path::new(GITDIR)),
+            granted: &[],
         }
     }
 
@@ -496,6 +517,7 @@ mod tests {
             cwd: Some(Path::new(MAIN)),
             worktree: None,
             git_dir: None,
+            granted: &[],
         };
         assert!(check(&call, Some("main")).is_none());
     }
@@ -529,20 +551,37 @@ mod tests {
     }
 
     #[test]
-    fn a_granted_session_is_told_by_the_worktree_being_absent() {
-        /* How `orch guard push` applies the user's yes: it drops the worktree from
-           the `Call` rather than passing a flag into the rule, so the rule stays a
-           pure function of the command. Pinned here because the two halves live in
-           different files and only this one is testable. */
-        let call = Call {
+    fn a_grant_is_one_folder_and_not_the_next_one() {
+        /* How `orch guard push` applies the user's yes: the folders it was told
+           about go into the `Call`, so the rule stays a pure function of the
+           command *and* still refuses the checkout nobody approved. It used to drop
+           the worktree instead, which said yes to everything at once.
+
+           Pinned here because the two halves live in different files and only this
+           one is testable. */
+        let elsewhere = "/other/checkout";
+        let granted = [PathBuf::from(MAIN)];
+        let call = |command: &'static str| Call {
             tool_name: "Bash",
-            command: &format!("git -C {MAIN} checkout -b topic"),
+            command,
             current_branch: None,
             cwd: Some(Path::new(TREE)),
-            worktree: None,
-            git_dir: None,
+            worktree: Some(Path::new(TREE)),
+            git_dir: Some(Path::new(GITDIR)),
+            granted: &granted,
         };
-        assert!(check(&call, Some("main")).is_none());
+        // The folder you said yes about, and what is under it: an agent refused at
+        // a checkout aims inside it next, and asking twice for that is the noise
+        // the prefix rule exists to avoid.
+        assert!(check(&call("git -C /repo checkout -b topic"), Some("main")).is_none());
+        assert!(check(&call("git -C /repo/apps/web status"), Some("main")).is_none());
+        // Any other one is still refused, and the refusal still names the way out.
+        let said = check(&call("git -C /other/checkout status"), Some("main"))
+            .expect("a grant elsewhere must not cover this");
+        assert!(said.contains(&format!("orch outside {elsewhere}")), "{said}");
+        // And a grant is not a licence to push: the two rules share a hook and
+        // grant each other nothing.
+        assert!(check(&call("git push --force"), Some("main")).is_some());
     }
 
 }

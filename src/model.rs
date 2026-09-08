@@ -256,6 +256,17 @@ pub struct Pass {
     pub command: String,
 }
 
+/// An outstanding "may this session reach that folder?" question.
+///
+/// Both halves are needed at the moment the answer lands: the id says the question
+/// was the daemon's own rather than one the agent wrote for itself, and the path
+/// says what a yes grants. See [`Session::outside_ask`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OutsideAsk {
+    pub id: Uuid,
+    pub path: PathBuf,
+}
+
 /// How to rebuild a torn-down worktree so an archived session can be resumed (§2).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "recovery", rename_all = "snake_case")]
@@ -334,20 +345,35 @@ pub struct Session {
     /// about it: the agent asks, the SPA renders this from the snapshot, and the
     /// answer releases the tool call the agent is sitting in.
     pub interaction: Option<Interaction>,
-    /// You said this session may run git outside its own worktree.
+    /// The folders you said this session may run git in, beyond its own worktree.
     ///
-    /// `guard::isolation` refuses that by default, and the refusal tells
-    /// the agent to ask; `orch outside` puts the question to you through the
-    /// ordinary ask box and this is what a yes leaves behind. **Deliberately not
-    /// on [`crate::store::SessionRecord`]**: it is a decision about the
-    /// conversation in front of you, and a restart is exactly the moment to ask
-    /// again rather than to assume.
-    pub outside_ok: bool,
-    /// The ask that would grant it, so only the daemon's own question can.
+    /// `guard::isolation` refuses every other one by default, and the refusal
+    /// tells the agent to ask; `orch outside <path>` puts the question to you
+    /// through the ordinary ask box and this is what a yes appends.
     ///
-    /// Without this the grant would key on an option *value*, and an agent can
-    /// write any value it likes into `orch ask` — it would be asking itself.
-    pub outside_ask: Option<Uuid>,
+    /// **One folder per yes, not one per session.** It was a `bool`, so the first
+    /// grant — a `git -C` at one checkout you had a reason for — let the session
+    /// reach *every* checkout for the rest of the conversation, and the question
+    /// that named a folder was answered about all of them. A grant covers the
+    /// folder it names and what is under it ([`Session::outside_granted`]), which
+    /// is the smallest thing that still answers the case the ask is raised for.
+    ///
+    /// **Deliberately not on [`crate::store::SessionRecord`]**: these are
+    /// decisions about the conversation in front of you, and a restart is exactly
+    /// the moment to ask again rather than to assume.
+    ///
+    /// Compared textually, like the rule that reads them: `guard::resolve` folds
+    /// `.` and `..` and follows no symlink, and a grant that canonicalised would
+    /// stop matching the paths the refusal names.
+    pub outside_grants: Vec<PathBuf>,
+    /// The ask that would grant one, and the folder it would grant.
+    ///
+    /// The id is here so only the daemon's own question can grant: without it the
+    /// grant would key on an option *value*, and an agent can write any value it
+    /// likes into `orch ask` — it would be asking itself. The path is here because
+    /// the answer route sees an id and an option, and the folder being granted is
+    /// no longer derivable from either.
+    pub outside_ask: Option<OutsideAsk>,
     /// Whether the last turn was cut off rather than allowed to finish.
     ///
     /// Every resumed session comes back `YourTurn { Ready }`: `SessionStart`
@@ -456,7 +482,7 @@ impl Session {
             forked_from: None,
             spawned_by: None,
             spawn_cut_worktree: false,
-            outside_ok: false,
+            outside_grants: Vec::new(),
             outside_ask: None,
             pending_prompt: None,
             fix_pr_on_exit: false,
@@ -474,6 +500,16 @@ impl Session {
     /// a title you no longer use is the same bug as a rail row doing it.
     pub fn label(&self) -> Option<&str> {
         self.name.as_deref().or(self.title.as_deref())
+    }
+
+    /// May this session run git in `path`, because you said so?
+    ///
+    /// A grant covers the folder it names and everything under it, which is what
+    /// makes one yes enough for the command that raised the question: an agent
+    /// refused at `/repo` is usually aimed at `/repo` and then at something inside
+    /// it. Prefix matching, textual, like [`crate::guard`]'s own rule.
+    pub fn outside_granted(&self, path: &std::path::Path) -> bool {
+        self.outside_grants.iter().any(|g| path.starts_with(g))
     }
 
     /// Whether resuming this session would find a conversation to continue.
@@ -759,6 +795,32 @@ mod tests {
         s.set_state(State::Working);
         s.set_state(your_turn(TurnReason::TurnComplete));
         assert!(!s.interrupted);
+    }
+
+    /// A yes about one folder is a yes about that folder, and the sibling next to
+    /// it is a different question.
+    ///
+    /// Pinned because the field was a `bool`: the first grant let the session reach
+    /// every checkout for the rest of the conversation, and the question that named
+    /// a folder had answered about all of them.
+    #[test]
+    fn a_grant_covers_one_folder_and_what_is_under_it() {
+        let mut s = Session::new(
+            uuid::Uuid::new_v4(),
+            "wt".into(),
+            std::path::Path::new("/repo/.worktrees/invoice").to_path_buf(),
+            None,
+        );
+        assert!(!s.outside_granted(std::path::Path::new("/repo")), "nothing is granted yet");
+
+        s.outside_grants.push(PathBuf::from("/repo"));
+        assert!(s.outside_granted(std::path::Path::new("/repo")));
+        // Under it, which is where an agent refused at a checkout aims next.
+        assert!(s.outside_granted(std::path::Path::new("/repo/apps/web")));
+        // A sibling is not under it, and neither is a name that merely starts the
+        // same way — `starts_with` compares components, not characters.
+        assert!(!s.outside_granted(std::path::Path::new("/other")));
+        assert!(!s.outside_granted(std::path::Path::new("/repo-two")));
     }
 
     #[test]

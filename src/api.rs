@@ -1129,9 +1129,18 @@ pub async fn answer(
         open.answer_text = text.map(str::to_string);
         /* A yes to the daemon's own worktree question, and only to that one: the
            ask id is compared rather than the option value, because an agent writes
-           its own values in `orch ask` and could otherwise grant itself. */
-        if s.outside_ask == Some(body.ask) && body.answer == OUTSIDE_ALLOW {
-            s.outside_ok = true;
+           its own values in `orch ask` and could otherwise grant itself.
+
+           The folder comes off the ask rather than out of the answer, for the same
+           reason: the agent chose which path to ask about, but only this record
+           says which one the question the user read was about. */
+        if body.answer == OUTSIDE_ALLOW {
+            if let Some(asked) = s.outside_ask.as_ref().filter(|a| a.id == body.ask) {
+                let path = asked.path.clone();
+                if !s.outside_granted(&path) {
+                    s.outside_grants.push(path);
+                }
+            }
         }
         // Answered, so it is going again. `Stop` will correct this if the turn
         // ends for real a moment later.
@@ -1165,8 +1174,13 @@ pub struct OutsideBody {
 /// permission mechanism beside that one is how two of them come to disagree.
 ///
 /// The grant is remembered on the session and nowhere else, so it lasts exactly as
-/// long as the conversation in front of you; `Session::outside_ok` says why a
+/// long as the conversation in front of you; `Session::outside_grants` says why a
 /// restart asks again.
+///
+/// **One question per folder.** A yes covers the path it names and what is under
+/// it and nothing else, so a session already let out to one checkout is asked
+/// again about the next. That is the whole point of naming the path in the
+/// question: an answer about `/repo` was never an answer about anywhere else.
 pub async fn allow_outside(
     State(app): State<Arc<AppState>>,
     Path(id): Path<Uuid>,
@@ -1184,9 +1198,10 @@ pub async fn allow_outside(
             .sessions
             .get(&id)
             .ok_or_else(|| anyhow::anyhow!("no such session {id}"))?;
-        // Already yes: answered once, and asking again would spend attention on a
-        // decision that is still in force.
-        if s.outside_ok {
+        // Already yes for this folder: asking again would spend attention on a
+        // decision that is still in force. Covered by an outer grant counts, since
+        // that is exactly what the outer yes said.
+        if s.outside_granted(std::path::Path::new(&path)) {
             return Ok(Json(json!({ "allowed": true, "asked": false })));
         }
     }
@@ -1195,7 +1210,7 @@ pub async fn allow_outside(
         thread_id: None,
         question: format!(
             "This session works in one worktree, and it wants to run git in {path}. \
-             Allow that for the rest of this session?"
+             Allow that folder for the rest of this session?"
         ),
         // What the guard protects, in the words of the thing that could go wrong.
         detail: Some(
@@ -1207,7 +1222,9 @@ pub async fn allow_outside(
             crate::model::InteractionOption {
                 value: OUTSIDE_ALLOW.to_string(),
                 label: "Allow it".to_string(),
-                sub: "for this session, until it ends".to_string(),
+                // Both limits, because both are the reason a yes here is a small
+                // thing to say: this folder only, and this session only.
+                sub: "this folder and below, until the session ends".to_string(),
                 free: false,
             },
             crate::model::InteractionOption {
@@ -1234,9 +1251,13 @@ pub async fn allow_outside(
             }
         }
         s.interaction = Some(interaction);
-        // The ask that may grant it, so `answer` can tell this question from one
-        // the agent wrote itself — see `Session::outside_ask`.
-        s.outside_ask = Some(ask_id);
+        // The ask that may grant it, and the folder it grants: `answer` can then
+        // tell this question from one the agent wrote itself, and knows what a yes
+        // is about — see `Session::outside_ask`.
+        s.outside_ask = Some(crate::model::OutsideAsk {
+            id: ask_id,
+            path: std::path::PathBuf::from(&path),
+        });
         s.set_state(crate::model::State::YourTurn {
             since: std::time::SystemTime::now(),
             reason: crate::model::TurnReason::AskedAQuestion,
@@ -1246,10 +1267,15 @@ pub async fn allow_outside(
     Ok(Json(json!({ "allowed": false, "asked": true, "ask": ask_id })))
 }
 
-/// Whether the grant is in force, which is what the guard reads per git command.
+/// The folders this session has been let out to, which is what the guard reads
+/// per git command.
 ///
 /// A read the guard makes before it refuses anything, so it is cheap on purpose:
 /// no git, no disk, one map lookup.
+///
+/// It answers the *list* rather than a yes or no, because the rule needs to know
+/// which folders: `orch guard push` used to drop the worktree from its `Call` on a
+/// blanket yes, and that cannot express "this checkout but not that one".
 pub async fn outside_allowed(
     State(app): State<Arc<AppState>>,
     Path(id): Path<Uuid>,
@@ -1261,7 +1287,12 @@ pub async fn outside_allowed(
         .sessions
         .get(&id)
         .ok_or_else(|| anyhow::anyhow!("no such session {id}"))?;
-    Ok(Json(json!({ "allowed": s.outside_ok })))
+    let paths: Vec<String> = s
+        .outside_grants
+        .iter()
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect();
+    Ok(Json(json!({ "paths": paths })))
 }
 
 #[derive(Deserialize)]
