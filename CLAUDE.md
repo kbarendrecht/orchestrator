@@ -260,7 +260,7 @@ mean *this* repo; if you do, name it.
   `.claude-plugin/plugin.json` names the namespace, the skill lives at
   `skills/<name>/SKILL.md`, and either one in the wrong place fails silently.
   **Adding a skill is a Rust change**, `include_str!` again, like the SPA's
-  modules and `commands/story.md`.
+  modules.
   **Every vendored prompt is a skill now**, and `commands/` and `prompt.rs` are
   gone with them. The conversion has one rule worth knowing: a prompt was
   substituted per run and written to a file, a skill is static and typed as one

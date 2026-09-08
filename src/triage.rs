@@ -3,7 +3,7 @@
 //! One of the four runs [`crate::spawn::spawn_run`] starts, beside `fix-pr` and
 //! the resolve run, and shaped the same way — a `claude` session you can watch
 //! and take over, not a `-p` run that happens out of sight. Its first turn is the
-//! vendored skill, typed as `/orchd:triage <pr>` ([`FirstTurn::Skill`]). A slash
+//! vendored skill, typed as `/orchd:triage <pr>`. A slash
 //! command used to be the wrong shape here because it resolved from the agent's own
 //! command path, which depends on a repo usually not installed — the daemon now
 //! ships the skill itself and pushes `--plugin-dir` on every spawn

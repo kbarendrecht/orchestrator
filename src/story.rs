@@ -976,7 +976,7 @@ mod tests {
         );
     }
 
-    /// The tracker's host, as `TrackerFacts::host` reports it.
+    /// A tracker's host, as `config::Tracker::host` carries it.
     const HOST: &str = "app.shortcut.com";
 
     #[test]

@@ -29,6 +29,7 @@ curl -sS "$ORCH_URL/api/pr/$PR/triage-context" -H "x-orch-token: $ORCH_POST_TOKE
   "login": "…",                // you: a thread whose last comment is yours is answered
   "language": "…",             // what to write replies and stories in
   "tracker": true,             // false: never propose `story+reply`
+  "tracker_host": "…",         // the host a story URL you report must be on
   "upstream": "…",             // the ref this branch is measured against
   "proposals_url": "…"         // where phase 1 ends
 }
@@ -38,8 +39,8 @@ curl -sS "$ORCH_URL/api/pr/$PR/triage-context" -H "x-orch-token: $ORCH_POST_TOKE
 `$ORCH_ASK_TOKEN` are in your environment already. If they are not, you are not in a session the daemon started:
 say so and stop, because nothing here can be handed anywhere.
 
-Below, `$PR`, `$OWNER`, `$REPO`, `$LOGIN`, `$LANGUAGE`, `$TRACKER`, `$UPSTREAM` and
-`$PROPOSALS_URL` are the fields of that answer.
+Below, `$PR`, `$OWNER`, `$REPO`, `$LOGIN`, `$LANGUAGE`, `$TRACKER`, `$TRACKER_HOST`,
+`$UPSTREAM` and `$PROPOSALS_URL` are the fields of that answer.
 
 Three phases, in order: **read** (write nothing), **change** (only what they picked),
 **post** (only on their go). Do not run ahead of the human between them.
@@ -211,23 +212,26 @@ Keep each change to the thread it answers. Do not touch a thread the human skipp
 ## Out of scope: file the story, don't promise it
 
 A `story` decision gets a story **now**, before the reply — the reply carries the id.
-Search first so a retry cannot file a second one:
+Search first, with the thread's own URL as the query, so a retry cannot file a second
+one; then create with a name, a description and whatever this repo calls its backlog.
 
-```
-mcp__shortcut__stories-search   query: the thread's own URL
-mcp__shortcut__stories-create   name + description, Backlog
-```
+Which tools those are depends on the tracker, and this file deliberately does not name
+them: the repo's own tracker skill does, and tool names differ per tracker and change
+without either of us noticing. Follow it for the team, the story type, the state and
+the epic too — it holds the ids and the routing.
 
 The description ends exactly with `Source: review of #$PR — <thread url>` (the dedup
-key). Follow the repo's tracker skill for the team, story type, state and epic. One story
-per thread; a refused create is retried as the *same* create, never a second.
+key). One story per thread; a refused create is retried as the *same* create, never a
+second.
 
-Then substitute `{story}` with a **markdown link, never a bare id**:
-`[sc-12345](https://app.shortcut.com/<org>/story/12345)`. A colleague reading the thread
-has to be able to click it, and a naked id is a dead end to anyone outside the tracker.
-Both halves come from the create response — never build the URL by `format!`, since the org
-slug is your workspace's and guessing it produces a link to nothing. This is the same rule
-the daemon applies for itself in `story::StoryRef::link`.
+Then substitute `{story}` with a **markdown link, never a bare id** — `[ENG-123](<the
+URL the create returned>)`. A colleague reading the thread has to be able to click it,
+and a naked id is a dead end to anyone outside the tracker. Both halves come from the
+create response — never assemble the URL yourself, since the path shape and any
+workspace slug in it are the tracker's and guessing produces a link to nothing. The
+daemon checks that the URL is on `$TRACKER_HOST` and that a path segment in it is the
+id's number or the whole id; it is the same rule it applies for itself in
+`story::StoryRef::consistent`.
 
 If it fails twice, say so on the thread and leave it open.
 

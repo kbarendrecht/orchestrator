@@ -955,7 +955,7 @@ pub(crate) const RESOLVE_RUN_COMMAND: &str = "resolve-run";
 pub struct RunSpec {
     /// The `Kind::Automation` command the session carries.
     pub command: String,
-    /// What the `SessionStart` hook types, from [`read_and_follow`].
+    /// What the `SessionStart` hook types: one line, `/orchd:<command> <pr>`.
     pub pending: String,
     /// Whether the run takes decisions over the ask channel, and so is handed
     /// `ORCH_ASK_TOKEN`. A run with nothing to ask is given the narrower surface.

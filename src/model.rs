@@ -230,8 +230,8 @@ impl State {
 #[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
 pub enum Kind {
     Interactive,
-    /// An ordinary session whose first prompt is one of the vendored prompts in
-    /// `commands/` (§8). Nothing about it needs a separate view.
+    /// An ordinary session whose first turn is one of the vendored skills in
+    /// `skills/` (§8). Nothing about it needs a separate view.
     ///
     /// `alias = "skill"` so records written before the rename still load: these
     /// were called skills when they resolved from the agent's command path.

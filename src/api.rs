@@ -80,7 +80,7 @@ fn origin_allowed(origin: &str, port: u16) -> bool {
 ///   that can never trigger a spawn, a push or a teardown;
 /// - a GET, so a same-origin read from the address bar works;
 /// - **anything else carrying a valid token.** This is the vendored prompts'
-///   shape: `commands/triage.md` POSTs its proposals with `curl`, which sends no
+///   shape: `skills/triage/SKILL.md` POSTs its proposals with `curl`, which sends no
 ///   Origin, and this arm's absence meant the one route an agent calls answered
 ///   403 to the only caller it has. Driving it by hand *with* an Origin header
 ///   during development is what hid that.
@@ -2943,7 +2943,7 @@ mod tests {
 
     #[test]
     fn a_tokened_post_with_no_origin_is_the_agents_own_shape() {
-        // `commands/triage.md` POSTs with curl, which sends no Origin. Without
+        // `skills/triage/SKILL.md` POSTs with curl, which sends no Origin. Without
         // this arm the one route an agent calls answered 403 to its only caller.
         assert!(ok(None, false, false, true));
         // Still nothing without the token.
@@ -3898,6 +3898,11 @@ pub async fn pr_triage_context(
         // Whether `story+reply` may be offered at all: an option the daemon would
         // refuse should never reach a card.
         "tracker": app.cfg.tracker.is_some(),
+        // The host a story URL it reports has to be on. The skill needs it because
+        // it may not assemble a URL itself — `StoryRef::consistent` checks the
+        // authority — and it cannot be a constant in the file now that a tracker is
+        // config (`config::Tracker`).
+        "tracker_host": app.cfg.tracker.as_ref().map(|t| t.host.clone()),
         "proposals_url": format!("{base}/proposals"),
         "progress_url": format!("{base}/triage/progress"),
         // The ref the branch is measured against, for the review session's "CI red

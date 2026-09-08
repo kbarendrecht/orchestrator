@@ -591,7 +591,7 @@ pub struct PlannedThread {
     /// first real one stopped to ask whether it should write the change at all.
     pub solution: String,
     /// The fix triage staged, when a flow stages one. The triage skill does not:
-    /// it proposes and the run writes. `commands/review-session.md` still can.
+    /// it proposes and the run writes. `skills/review/SKILL.md` still can.
     pub patch: Option<String>,
     pub story: Option<crate::proposal::StoryDraft>,
     /// Where this thread has got to — the daemon's account of the run, not the
@@ -621,7 +621,7 @@ pub struct Plan {
 
 /// One thread as the file the agent reads describes it.
 ///
-/// The plan minus the daemon's bookkeeping. `commands/resolve-run.md` documents
+/// The plan minus the daemon's bookkeeping. `skills/resolve-run/SKILL.md` documents
 /// exactly these keys, and the session is told one thread's progress at a time —
 /// through the reply to its own `committed` call — never a table of all of them.
 #[derive(Debug, Serialize)]
@@ -2069,7 +2069,7 @@ mod tests {
     /// The plan is two files' worth of one type, and each must keep what the other
     /// drops.
     ///
-    /// `plan.json` is the agent's, and `commands/resolve-run.md` documents its keys;
+    /// `plan.json` is the agent's, and `skills/resolve-run/SKILL.md` documents its keys;
     /// the record is the daemon's, and the three fields the overview reads are the
     /// three the agent must not see. They used to be enforced by
     /// `skip_serializing`, which meant the record could not be persisted at all —

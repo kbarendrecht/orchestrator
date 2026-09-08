@@ -144,7 +144,7 @@ this file, which churned it from every build; that feature is gone.
   the commit that introduced it, and answers `Fixup(sha)` / `Head(reason)` /
   `OnTop(reason)`; the discriminator is **authorship, not publication**, so it
   refuses to rewrite somebody else's commit and shows the reason at every fallback.
-  `git::fold_in` executes. The run uses none of it: `commands/resolve-run.md` says
+  `git::fold_in` executes. The run uses none of it: `skills/resolve-run/SKILL.md` says
   "one commit per thread, nothing else in that commit", and `patch.rs`'s whole
   apply-and-fold ladder is dead on that path.
 
@@ -293,8 +293,8 @@ this file, which churned it from every build; that feature is gone.
   must derive the parent chain by inverting it — there is no `parent`/`base`
   pointer; and if it rides an agent session like `fix-pr`, the `git rebase
   --onto <new-parent-head> <old-parent-head> <child>` logic lives in the skill
-  prompt (a new `prompt::RESTACK` + `vendored_prompt_file` arm), so no new Rust
-  git primitive is strictly required. The per-PR-keyed guards
+  itself (a new `skills/restack/SKILL.md` plus its line in `skills::VENDORED`), so
+  no new Rust git primitive is strictly required. The per-PR-keyed guards
   (`authorship`/`branch_busy`) would need a chain-aware variant.
 
 - **Make it run somewhere other than this machine.** The hardcoded assumptions are
@@ -319,11 +319,11 @@ this file, which churned it from every build; that feature is gone.
     untouched: `--session-id` correlation, the transcript slug, the `ai-title`
     field, `--resume`, and the whole hook-observer plumbing. Hosting another agent
     means abstracting *that*.
-  - **Give the tracker the same seam the forge has.** Shortcut is
-    `TrackerKind::facts` in `config.rs`, four constants, but some of its specifics
-    are still spread through `story.rs`: the MCP server name in the allowlist, the
-    `SHORTCUT_API_TOKEN` the MCP entry reads, and `Story::url`'s knowledge of the
-    URL scheme. Mirror
+  - **Give the tracker the same seam the forge has.** A tracker is now three
+    config fields (`config::Tracker`) rather than four constants in an enum arm, so
+    the naming half is done; what is left is that reaching it is still spread
+    through `story.rs` — the allowlist, the MCP entry's variable, and the URL rule
+    in `StoryRef::consistent`. Mirror
     `ForgeImpl`: a `Tracker` trait plus enum-dispatch keyed on `config.tracker`,
     holding the MCP id and tool allowlist, the token env/file, the story-URL
     grammar, and a tracker-agnostic `Story` beside it. Two things to settle while
@@ -377,16 +377,21 @@ this file, which churned it from every build; that feature is gone.
   missing or renamed *server*. The interactive `/resolve` story step has the same
   dependency, spelled `mcp__shortcut__*` in prose.
 
-  The mechanism to fix it is already here and used for one case only:
-  `TrackerKind::Stub` passes `--mcp-config` plus `--strict-mcp-config`, which
-  ignores every configured server. Doing that for the live tracker too is the
-  small version — the agent and MCP shape stay, the repo dependency goes. The
-  larger version is to call the tracker's API from Rust and drop the agent from
-  filing altogether; search and create are two calls, and the agent is only in
-  that path for the routing rules the repo's tracker skill holds, which would then
-  need another home. Either way `Tracker` stops being "four facts" and starts
-  owning how it is reached, and the trait's own doc — "which MCP server in the
-  repo's `.mcp.json` speaks to it" — is the sentence that changes.
+  The mechanism to fix it is already here and used for one case only: a tracker
+  with `stub: true` passes `--mcp-config` plus `--strict-mcp-config`, which ignores
+  every configured server. Doing that for the live tracker too is the small version
+  — the agent and MCP shape stay, the repo dependency goes. The larger version is
+  to call the tracker's API from Rust and drop the agent from filing altogether;
+  search and create are two calls, and the agent is only in that path for the
+  routing rules the repo's tracker skill holds, which would then need another home.
+  Either way `Tracker` starts owning *how it is reached* rather than only naming a
+  server somebody else configured.
+
+  What has landed since this was written: `Tracker` is three config fields rather
+  than an enum arm of four constants, so another tracker is a config edit; and no
+  skill names a tracker tool any more, which was the other half this entry did not
+  mention. The dependency on the repo's `.mcp.json` is untouched, and so is the
+  failure landing mid-run rather than at startup.
 
 - **The review pane is still `[beta]`, and the label is the honest part.**
   *Two of the three steps are done:* the old non-beta `/resolve` is gone, and the
@@ -402,7 +407,7 @@ this file, which churned it from every build; that feature is gone.
 
   *The first real drive found four things and all four are fixed* — the reading
   screen, one click instead of two, a terse read asked for in
-  `commands/review-session.md` rather than folded away in the UI, and the card as
+  `skills/review/SKILL.md` rather than folded away in the UI, and the card as
   one flat list. The one worth remembering: shortening a thing at its source beats
   hiding it at the end.
 
@@ -526,15 +531,11 @@ this file, which churned it from every build; that feature is gone.
     contradicts `docs/workspace-isolation.md`, which records that orchd carries no
     container config at all and calls that the portable default. Managed-process
     health already comes from `ok_patterns`; read it from there, or draw nothing.
-  - **The vendored prompts name this repo's task runner.** `mise run
-    pre-commit:run` is in `commands/fix-pr.md`, `commands/resolve.md` and
-    `commands/review-session.md`, hedged as "where it exists", which is a prompt
-    guessing at a repo. A `checks_command` rendered like `{{UPSTREAM}}` is the fix.
-  - **They name Shortcut in prose too.** `mcp__shortcut__stories-search` and
-    `app.shortcut.com` are written into `commands/resolve.md` and
-    `commands/review-session.md`, and they render for a repo with `tracker: none`.
-    The tracker-seam entry above owns the Rust half; these two files are the half it
-    does not mention.
+  - **The vendored skills name this repo's task runner.** `mise run
+    pre-commit:run` is in `skills/fix-pr/SKILL.md` and its neighbours, hedged as
+    "where it exists", which is a file guessing at a repo. A `checks_command`
+    setting is the fix — and a skill cannot interpolate one, so it arrives the way
+    every other run value now does: the environment, or the context route.
   - **Boot warnings never reach the window.** `machine::check` finds a missing
     `gh`, `node` or `claude`, and a tracker whose MCP server the repo does not
     declare, and every one becomes a single `tracing::warn!` in `lib.rs`. `Warning`
@@ -575,14 +576,3 @@ this file, which churned it from every build; that feature is gone.
   above and is blocked on a real drive; until it closes, the beta item could sit
   behind a setting rather than in the menu everybody uses.
 
-- **The vendored prompts could be skills now, and it is not obvious they should
-  be.** `skills::flag` puts a plugin dir in front of every session, so
-  `commands/fix-pr.md` and its neighbours *could* ship as `skills/fix-pr/SKILL.md`
-  and be invoked as `/orchd:fix-pr` instead of rendered to a file the session is
-  told to read. What that would buy: one mechanism instead of two, and a human in
-  the pane able to reach a flow the daemon currently only starts for them.
-  What stands in the way is the substitution, and the first entry in this file
-  works it through for `triage`: a prompt is rendered per run and a skill file is
-  static, so the run's values have to reach it as an argument or over a route.
-  Do these two the same way if triage's works, one at a time. `prompt::render`'s
-  tests are the thing that would have to be replaced rather than deleted.

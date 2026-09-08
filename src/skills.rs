@@ -1,7 +1,7 @@
 //! The vendored skills, handed to every session as a plugin directory.
 //!
 //! `skills/*/SKILL.md` are compiled in with `include_str!` for the same reason
-//! `commands/*.md` are ([`crate::prompt`]): the daemon carries what it depends on
+//! the vendored prompts were: the daemon carries what it depends on
 //! rather than resolving it from the agent's skill path, which holds whatever the
 //! person running the daemon happens to have installed. The difference is what a
 //! skill *is*. A vendored prompt is a first turn the daemon types; a skill is a
@@ -165,9 +165,12 @@ pub fn plugin_dir() -> Result<PathBuf> {
 /// all.
 ///
 /// Reached through [`crate::config::session_flags`], which is what every spawn
-/// site calls — including the story run whose `--allowedTools` will not let it
-/// invoke a skill anyway. Uniform on purpose: a site that opts out is a site that
-/// silently differs, and the cost of carrying it is two argv words.
+/// site calls. Uniform on purpose: a site that opts out is a site that silently
+/// differs, and the cost of carrying it is two argv words.
+///
+/// It used to say the story run's `--allowedTools` would not let it invoke a skill
+/// anyway. That was never measured and is false — the module doc above has the
+/// measurement — and the story run's instructions are a skill now.
 pub fn flag() -> Vec<String> {
     match plugin_dir() {
         Ok(dir) => vec!["--plugin-dir".to_string(), dir.to_string_lossy().into_owned()],

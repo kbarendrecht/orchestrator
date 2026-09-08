@@ -1152,9 +1152,9 @@ fn start_workspace_watcher(app: Arc<AppState>) {
 /// say.
 ///
 /// **The design had no retry, and one missed hook was permanent.** A worktree the
-/// daemon delegates to `claude --worktree` reveals its path only through that
-/// hook, so a session whose event was lost keeps the placeholder workspace id for
-/// its whole life — and with it no workspace record at all: no changed-files
+/// daemon did not cut itself — the `claude --worktree` arm, which is gone — reveals
+/// its path only through that hook, so a session whose event was lost kept the
+/// placeholder workspace id for its whole life — and with it no workspace record at all: no changed-files
 /// pane, no divergence, no reconcile, no swap or move. The tree itself is fine
 /// and the agent works in it, which is what makes this so easy to live with and
 /// so confusing to look at.
