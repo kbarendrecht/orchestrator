@@ -5,26 +5,36 @@ this file, which churned it from every build; that feature is gone.
 
 ## Next
 
-- **Four gaps the v2 review pass found and left, each too deep for the change that
-  found it.**
-  - `spawn_session` takes `claim_main` before several fallible steps and never
-    releases it on the error path, so a failed spawn in main leaks the claim until
-    the next `reclaim_main`. Pre-existing, and slightly wider now that
-    `headroom::check` sits in `insert_and_spawn` rather than before the claim.
-  - `ensure_pr_worktree`'s move arm and `park_main` move main's branch without the
-    `swapping` lock, while three handlers now take it. `AppState::swapping`'s own
-    doc states the rule generally: every swap involves main, so two are never
-    independent. `park_main` fires from a detached exit watcher, so it should skip
-    rather than refuse, which is why this is a behaviour change rather than a lift.
-    Wider now: `park_main` also moves a *worktree's* branch when it reclaims the
-    base (`git::release_branch`), so a swap of that tree racing it is a second
-    unguarded pair.
+- **One gap of the four the v2 review pass found is left.** The other three are
+  done, and one of them was less than it looked.
   - `edit::read` closes the symlink race on the final component only. The parents
     are canonicalised earlier and can still be swapped between the check and the
-    open; closing it properly needs `openat2` with `RESOLVE_BENEATH`.
-  - `git::pre_commit` is an unbounded `Command::output()` on the same request chain
-    where every `gh` call is now bounded, and on a cold cache it can clone and build
-    hook environments over the network.
+    open; closing it properly needs `openat2` with `RESOLVE_BENEATH`, which is
+    Linux-only and so wants a second path for macOS. And the threat is narrower
+    than the leaf's was: a symlink *committed* on a PR branch is caught by the
+    parent check, so what is left needs a live process racing the open rather than
+    content somebody pushed.
+  - ~~`spawn_session` leaks main's claim on a failed spawn.~~ Released now, at the
+    one place that knows the spawn failed (`spawn_session` wraps
+    `spawn_session_with_id`). **It could never have been observed**, which is worth
+    recording: `claim_main` and `main_occupant` both filter the recorded occupant
+    on the session being *live*, and the SPA's rail filters on `alive`, so an
+    occupant naming a session that was never inserted reads as unoccupied
+    everywhere and the next claim overwrites it. Closed because the invariant is
+    cheap to hold and every reader currently has to defend it.
+  - ~~`ensure_pr_worktree`'s move arm and `park_main` move main's branch without
+    the `swapping` lock.~~ Both take it now. `ensure_pr_worktree` **refuses**, like
+    the three handlers, and takes the lock only once main really holds the branch —
+    then re-reads under it, so an ordinary worktree cut is not refused for the
+    length of an unrelated swap. `park_main` **skips**, because it fires from a
+    detached exit watcher: there is no request to answer, and a skip costs only
+    that main stays where it is until the next session there closes.
+  - ~~`git::pre_commit` is an unbounded `Command::output()`.~~ On
+    `proc::run_bounded` now, at 300s — generous, because a cold cache clones and
+    builds an environment per hook. `NotInstalled` still has to read as a warning
+    rather than a refused review, and `run_bounded` reports a spawn failure through
+    `anyhow::Context`, so the kernel's `NotFound` is looked for down the error
+    chain.
 
   And one thing that cannot be built, recorded so nobody tries again: a
   `debug_assert` in `git::run` cannot tell a blocking-git-on-a-tokio-worker
@@ -45,8 +55,20 @@ this file, which churned it from every build; that feature is gone.
   page's `detect` and folder dialog.
 
   What is left, in rough order of how much it matters:
-  - `hooks.rs`'s remaining reads, and `api.rs`'s remaining git *writes* — these run
-    on a click that is already slow, so the freeze is less visible.
+  - ~~`hooks.rs`'s remaining reads, and `api.rs`'s remaining git *writes*.~~ Both
+    inventoried, and what was worth moving is moved: the swap's transcript re-file
+    (`store::move_transcript`, a rename whose cross-filesystem fallback copies
+    megabytes of turns), the swap's `has_conversation` reads, `revive`'s
+    `branch_drift` (a git child process) and `/api/open*`'s opener probe (up to four
+    `which` calls plus a spawn per click). Every git *write* in `api.rs` was already
+    wrapped.
+
+    **What is deliberately left is single syscalls**, and that is the measurement
+    rather than a shrug: `hooks.rs` has four `canonicalize` calls and one `exists`,
+    `api.rs` has `revive`'s `cwd.exists()`, `forget_session`'s one `remove_file` and
+    `free_worktree_name`'s stat loop. A `spawn_blocking` hop costs more than a stat,
+    so wrapping them would trade a measured nothing for a thread handoff on the
+    hottest path in the file (`post_tool_use` runs per `Edit`).
   - ~~**B2, filesystem work under the global write lock.**~~ The half with teeth is
     done: `refresh_title` ran `pin_transcript` *and* `ai_title` under the lock on
     every `Stop` — a `read_dir` of `~/.claude/projects` with an `exists()` per entry
@@ -86,23 +108,20 @@ this file, which churned it from every build; that feature is gone.
   query. None of these prompt the way git does, so it was always the deadline that
   mattered rather than the tty.
 
-- **Shutdown cannot escalate a kill, because `was_live` is written before it.**
-  `PtyHandle::kill_gracefully` gives every other stop path a `SIGHUP` → grace →
-  `SIGKILL` escalation, and `shutdown` is the one caller that cannot use it: it
-  `persist_now()`s *before* the killing precisely because the exit watchers are
-  about to rewrite `was_live`, so **any await point after the kills lets them run
-  and re-persist**. Tried, and the restart e2e flow caught it — every session came
-  back `was_live: false` and auto-resume restored nothing.
+- ~~**Shutdown cannot escalate a kill, because `was_live` is written before it.**~~
+  Done, and it took **both** halves of what this entry proposed rather than either:
+  `shutdown` captures the resume set (`AppState::session_records`) before it kills
+  anything and writes that set verbatim at the end, *and* `AppState::persist`
+  refuses to write while `shutting_down` is set. The capture is what makes the kills
+  waitable; the freeze is what stops a watcher — or a `persist_soon` timer landing a
+  second later — having the last word on the file auto-resume reads.
 
-  So an agent that traps `SIGHUP` is not force-killed when the app closes. It is
-  not orphaned either: the process is exiting, the pty master closes, and the kernel
-  hangs up the child's terminal. The gap is a child that survives even that.
-
-  Fixing it properly means separating "the records as they were when you closed"
-  from "what the watchers think now" — either a flag that suppresses persistence for
-  the rest of the shutdown, or capturing the resume set before the kills and writing
-  that verbatim afterwards. The second is probably right, since it also stops
-  depending on watcher timing. Do not simply add the wait back.
+  With no await point left to protect, `shutdown` uses `kill_gracefully` like every
+  other stop path, and in parallel (`JoinSet`) so the grace is spent once rather
+  than once per child. Measured against a managed process spelled `trap '' HUP;
+  sleep 1000`: shutdown took 2.05s, logged "the child did not go on SIGHUP within
+  2s — killing its group", and both the shell and its `sleep` grandchild were gone.
+  The restart e2e flow — the one that caught the first attempt — passes.
 
 - **`rerequest()` has never run.** The fixture drives everything else in the review
   flow (`mise run fixture`, `docs/fixture-pr.md`), but its threads are posted by
