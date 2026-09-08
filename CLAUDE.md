@@ -10,7 +10,7 @@ is.
 
 ```
 cargo check                         # the daemon
-cargo test                          # 514 tests, all in-tree
+cargo test                          # 516 tests, all in-tree
 cargo clippy --all-targets          # what CI lints with, and it denies warnings
 mise run check-web                  # type-check the SPA + enforce its module graph
 mise run e2e                        # 16 flows against a real daemon, ~60s
@@ -326,7 +326,10 @@ mean *this* repo; if you do, name it.
   and every reader needs an arm per shape. A name that never shipped is **refused
   with the object to write**, which is one of the two reasons `Tracker` has a
   hand-written `Deserialize`; serde's own answer names the problem and not the fix.
-  **`"shortcut"` and `"stub"` are still read, permanently**, because they shipped —
+  **The file is migrated on start, and the reader is the fallback.**
+  `migrate::config_file` rewrites `"tracker": "<name>"` into the object it meant
+  before either reader parses the file — see the entry below. `"shortcut"` and
+  `"stub"` are *also* still read, permanently, because they shipped —
   and a refusal there does not cost you a key, it costs you **the whole file**:
   `Config::existing` drops a config it cannot parse, and the app then reads that as
   first run and shows a *folder picker* for a project you configured months ago.
@@ -649,6 +652,33 @@ mean *this* repo; if you do, name it.
   gave the process. `ng-watch` appears nowhere in the code — only in comments and
   test fixtures — and this must not be what changes that. 8 KB is the cap, because
   a ring buffer holds ~3600 lines and a prompt is a line somebody reads, not a log.
+- **A config this build cannot read is repaired on disk, not tolerated in
+  memory.** `src/migrate.rs` runs on start, from both readers of the file
+  (`Config::existing` for the desktop app, `Config::load_or_init` for a daemon
+  started from a terminal), and it is idempotent so the second call costs a read.
+  It exists because tolerating the old spelling in the *reader* was not enough:
+  a config the parser refuses costs the **whole file**, the app reads that as first
+  run and offers a folder picker for a project configured months ago, and the
+  first-run write then merges by key and keeps the very line being refused.
+  A colleague met that on `"tracker": "none"` — which was the **default** and which
+  the old settings pane wrote back on every save (`Settings::merge_into` wrote every
+  field), so it is on most machines that ever pressed save.
+  Four properties, each deliberate. **Shape-driven, with no schema version**: a
+  counter is state that has to be maintained and got right, while a rule that
+  recognises the shape it fixes is idempotent by construction and testable without
+  a fixture of old files. **It never fails a start**: a missing file is nothing to
+  do, a file that is not JSON is left for `Config::parse` to report with a line and
+  a column, and an unwritable dir is a warning — which is exactly why the `Tracker`
+  reader stays as the fallback for a config we cannot write. **It writes only when
+  a rule applied**, because the JSON round trip sorts the keys and reformats the
+  file, so that happens on the one start that migrates and never again. **The
+  previous file is `config.json.premigrate`**, its own name because
+  `config.json.bak` belongs to the first-run page and a boot that happened to
+  migrate would otherwise overwrite it.
+  Adding one is a `Migration { name, apply }` in the table. A rule must recognise
+  its own input and leave anything else alone: the name migration does not invent a
+  host for `"jira"`, because `Tracker`'s refusal already names the object to write
+  and a guess written to disk is worse than a message.
 - **One pty exit, one observer.** `spawn::watch_session_exit` is the only thing
   that waits on a session's handle; it dispatches onward (a fix run's verdict goes
   to `fix_pr::settle`). A second `pty.wait()` on the same handle would work and

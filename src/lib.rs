@@ -19,6 +19,7 @@ pub mod health;
 pub mod hooks;
 pub mod instance;
 pub mod machine;
+pub mod migrate;
 pub mod model;
 pub mod names;
 pub mod patch;

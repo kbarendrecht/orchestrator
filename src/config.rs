@@ -772,6 +772,11 @@ impl Config {
     /// and shows a folder picker when the answer is `None`.
     pub fn existing() -> Option<Self> {
         let path = Self::path().ok()?;
+        // Before the read, because the whole point is to fix a file this build
+        // would otherwise refuse — and a refusal here is read as *first run*, so
+        // the cost of skipping it is a folder picker for a configured project.
+        // Idempotent, so the second caller below pays only a read.
+        crate::migrate::config_file(&path);
         let raw = std::fs::read_to_string(&path).ok()?;
         let cfg = Config::parse(&raw)
             .map_err(|e| tracing::warn!("ignoring unparseable {}: {e:#}", path.display()))
@@ -790,6 +795,10 @@ impl Config {
     /// Load config, writing a default one on first run so there is something to edit.
     pub fn load_or_init(main_checkout: Option<PathBuf>) -> Result<Self> {
         let path = Self::path()?;
+        // Both readers of this file run the migrations, because either can be the
+        // first to touch it: the desktop app asks `existing` before it opens a
+        // window, and a daemon started from a terminal comes straight here.
+        crate::migrate::config_file(&path);
         if path.exists() {
             let raw = std::fs::read_to_string(&path)
                 .with_context(|| format!("reading {}", path.display()))?;
