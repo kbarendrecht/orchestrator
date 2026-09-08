@@ -1422,13 +1422,27 @@ fn apply_wip(cwd: &Path, sha: &str, what_happened: &str) -> Result<()> {
 /// and puts the branch in brackets, and a path with a space in it then cannot be
 /// told from the columns. Detached trees have no `branch` line at all and so
 /// answer nothing, which is right.
+///
+/// **Resolved before it is handed back**, because the answer is *compared* — against
+/// `main_checkout` and against a workspace's path, both canonical (`Config::parse`),
+/// and a comparison across that boundary fails by deciding no worktree holds the
+/// branch. Git resolves the path itself today (measured: a listing taken through a
+/// symlinked checkout comes back resolved), so this is belt and braces rather than
+/// a fix — it makes the invariant hold by construction instead of by a git
+/// behaviour nothing documents. Falls back to the raw path, since a worktree whose
+/// directory is gone cannot be canonicalised and is still the holder of record.
+///
+/// Worth knowing where it bites: on macOS `/tmp`, `/var` and `$TMPDIR` are symlinks
+/// into `/private`, so an unresolved path on *either* side matches nothing. Two
+/// tests handed one in and failed only on the macos-14 runner.
 pub fn holder_of_branch(main: &Path, branch: &str) -> Result<Option<PathBuf>> {
     let out = git(main, &["worktree", "list", "--porcelain"])?;
     let want = format!("refs/heads/{branch}");
     let mut at: Option<PathBuf> = None;
     for line in out.lines() {
         if let Some(path) = line.strip_prefix("worktree ") {
-            at = Some(PathBuf::from(path));
+            let raw = PathBuf::from(path);
+            at = Some(std::fs::canonicalize(&raw).unwrap_or(raw));
         } else if line.strip_prefix("branch ") == Some(want.as_str()) {
             return Ok(at);
         }
@@ -2094,7 +2108,19 @@ mod tests {
     /// all, and a branch nobody has is simply absent.
     #[test]
     fn the_holder_of_a_branch_is_the_tree_that_has_it_checked_out() {
-        let dir = crate::testutil::scratch("holder");
+        let real = crate::testutil::scratch("holder");
+        /* **Reached through a symlink on purpose.** What that pins is git's own
+           behaviour: the listing comes back *resolved* whichever way in you walked,
+           which is the fact the canonicalise above is written not to depend on. It
+           also puts the assertion in the shape a Mac gives every test under
+           `$TMPDIR`, where the resolved path is a different string from the one the
+           fixture built. */
+        let dir = real.parent().unwrap().join(format!(
+            "{}-via",
+            real.file_name().unwrap().to_string_lossy()
+        ));
+        let _ = std::fs::remove_file(&dir);
+        std::os::unix::fs::symlink(&real, &dir).unwrap();
         let main = dir.join("repo");
         git(&dir, &["init", "-q", "-b", "main", "repo"]).unwrap();
         git(&main, &["config", "user.email", "t@t"]).unwrap();
@@ -2107,8 +2133,15 @@ mod tests {
         let tree = main.join(".claude/worktrees/w");
         git(&main, &["worktree", "add", "-q", tree.to_str().unwrap(), "feature/b"]).unwrap();
 
-        assert_eq!(holder_of_branch(&main, "main").unwrap().as_deref(), Some(main.as_path()));
-        assert_eq!(holder_of_branch(&main, "feature/b").unwrap().as_deref(), Some(tree.as_path()));
+        // Resolved, so it can be compared with the daemon's own canonical paths —
+        // and `main` here is the symlinked way in, which must *not* be the answer.
+        let resolved = |p: &Path| std::fs::canonicalize(p).unwrap();
+        assert_eq!(
+            holder_of_branch(&main, "main").unwrap(),
+            Some(resolved(&main)),
+            "the answer is compared against canonical paths, so it has to be one",
+        );
+        assert_eq!(holder_of_branch(&main, "feature/b").unwrap(), Some(resolved(&tree)));
         assert_eq!(holder_of_branch(&main, "nobody/has-this").unwrap(), None);
 
         // Released: the tree keeps the commit it had, under a name of its own, and
@@ -2127,7 +2160,8 @@ mod tests {
         std::fs::write(tree.join("f.txt"), "edited\n").unwrap();
         assert!(release_branch(&tree, "worktree-w").is_err(), "dirty is refused");
 
-        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_file(&dir);
+        let _ = std::fs::remove_dir_all(&real);
     }
 
     #[test]
