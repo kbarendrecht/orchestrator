@@ -1237,12 +1237,17 @@ async fn start_with_prompt(
     pr: u64,
     command: &str,
 ) -> Result<SessionId> {
-    let prompt_file = vendored_prompt_file(app, pr, command).await?;
+    /* The slash command itself, which is what this function's docblock has always
+       said it does: "a `claude` session in the PR worktree running `/resolve <pr>`
+       in the pane". It rendered a *vendored prompt* instead, and the lookup had no
+       arm for `resolve` — so the only path into here could only ever bail. Typing
+       the command reaches the repo's own `/resolve`, and a vendored one would be
+       reached the same way now that they are skills. */
     let spec = RunSpec {
         command: command.to_string(),
-        pending: read_and_follow(&prompt_file, &format!("Those are your instructions for PR {pr}.")),
+        pending: format!("/{command} {pr}"),
         asks: true,
-        extra_env: Vec::new(),
+        extra_env: vec![(crate::skills::VAR_PR.to_string(), pr.to_string())],
     };
     // Its own id: this is the `/resolve` pane, the one run with no record of the
     // daemon's beside it, so there is nothing for a caller to write first.
@@ -1266,43 +1271,6 @@ fn rebase_target(upstream_ref: &str, upstream_remote: &str, base_ref: Option<&st
     }
 }
 
-/// Render the vendored prompt for `command` and leave it where the session can
-/// read it (`prompt::write_for_run`).
-async fn vendored_prompt_file(app: &Arc<AppState>, pr: u64, command: &str) -> Result<PathBuf> {
-    let template = match command {
-        RESOLVE_RUN_COMMAND => crate::prompt::RESOLVE_RUN,
-        other => bail!("no vendored prompt for /{other}"),
-    };
-    let (owner, repo) =
-        crate::resolve_repo(app).context("no GitHub repo configured and none on the remote")?;
-    let (login, base_ref) = {
-        let inner = app.inner.read().await;
-        let base = inner.pr(pr).map(|p| p.base_ref.clone());
-        (inner.viewer.clone(), base)
-    };
-    let login = login.context("no GitHub login yet — the PR poller has not run")?;
-    let upstream = rebase_target(
-        &app.cfg.upstream_ref,
-        &app.cfg.upstream_remote,
-        base_ref.as_deref(),
-    );
-    let body = crate::prompt::render(
-        template,
-        &crate::prompt::Vars {
-            pr,
-            owner,
-            repo,
-            login,
-            upstream,
-            upstream_remote: app.cfg.upstream_remote.clone(),
-            ask_base: format!("http://127.0.0.1:{}/api/session", app.cfg.port),
-            language: app.cfg.default_language.clone(),
-            // The review flow's template uses none of triage's or story's vars.
-            ..Default::default()
-        },
-    )?;
-    crate::prompt::write_for_run(command, pr, &body)
-}
 
 /// The worktree holding `head_ref`, if one already does.
 ///
@@ -1640,15 +1608,22 @@ pub async fn spawn_resolve_run(
     std::fs::write(&plan_file, serde_json::to_string_pretty(&plan.for_agent())?)
         .with_context(|| format!("writing {}", plan_file.display()))?;
 
-    let prompt_file = vendored_prompt_file(app, pr, RESOLVE_RUN_COMMAND).await?;
+    /* A skill and one typed line, like the fix run. The plan is the only value
+       here the daemon has to hand over — the prompt's other three were prose and
+       an ask base that is just `$ORCH_URL` — so it goes in the environment rather
+       than into a sentence typed after the command, which is what "Your plan is
+       …" used to be. */
     let spec = RunSpec {
         command: RESOLVE_RUN_COMMAND.to_string(),
-        pending: read_and_follow(
-            &prompt_file,
-            &format!("Your plan for PR {pr} is {}.", plan_file.display()),
-        ),
+        pending: format!("/orchd:{RESOLVE_RUN_COMMAND} {pr}"),
         asks: true,
-        extra_env: Vec::new(),
+        extra_env: vec![
+            (crate::skills::VAR_PR.to_string(), pr.to_string()),
+            (
+                crate::skills::VAR_PLAN.to_string(),
+                plan_file.to_string_lossy().into_owned(),
+            ),
+        ],
     };
     spawn_run(app, &workspace, pr, id, spec).await
 }

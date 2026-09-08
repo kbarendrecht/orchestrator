@@ -66,6 +66,21 @@ pub const TRIAGE: &str = include_str!("../skills/triage/SKILL.md");
 /// environment it is already building for that run.
 pub const FIX_PR: &str = include_str!("../skills/fix-pr/SKILL.md");
 
+/// Carrying out a triaged review: apply, commit per thread, tell the daemon.
+///
+/// Converted from `commands/resolve-run.md`, and the conversion cost nothing that
+/// prompt was doing: three of its four substitutions were prose (`{{PR}}`,
+/// `{{OWNER}}/{{REPO}}` in the opening sentence) and the fourth was `{{ASK_BASE}}`,
+/// which is `$ORCH_URL/api/session` — a variable the run already has. Only the
+/// plan's path is genuinely per-run, and that rides in the environment beside the
+/// fix run's values.
+///
+/// One thing the conversion settled rather than carried over: the prompt told a
+/// `mode: "manual"` thread to "ask the question below", two sections above saying
+/// there is no question channel. The question below was `/stuck`, so the skill says
+/// `/stuck` — the ask token here is for `committed` and `stuck`, never for asking.
+pub const RESOLVE_RUN: &str = include_str!("../skills/resolve-run/SKILL.md");
+
 /// The four values a fix run finds in its environment.
 ///
 /// Named here because **the two halves must agree**: `spawn::spawn_fix_pr_session`
@@ -77,14 +92,22 @@ pub const VAR_PR: &str = "ORCH_PR";
 pub const VAR_UPSTREAM: &str = "ORCH_UPSTREAM";
 pub const VAR_UPSTREAM_REMOTE: &str = "ORCH_UPSTREAM_REMOTE";
 pub const VAR_LOGIN: &str = "ORCH_LOGIN";
+/// Where a resolve run finds the plan it is carrying out. Same rule as the four
+/// above: the daemon writes the file and names it here, the skill reads it here.
+pub const VAR_PLAN: &str = "ORCH_PLAN";
 
 /// Every vendored skill, as `(directory name, body)`.
 ///
 /// A table rather than a write per skill, because the writer and the frontmatter
 /// test both walk it: adding a skill is then a line here, and it cannot be
 /// written out without also being checked.
-const VENDORED: &[(&str, &str)] =
-    &[("orch", ORCH), ("green", GREEN), ("triage", TRIAGE), ("fix-pr", FIX_PR)];
+const VENDORED: &[(&str, &str)] = &[
+    ("orch", ORCH),
+    ("green", GREEN),
+    ("triage", TRIAGE),
+    ("fix-pr", FIX_PR),
+    ("resolve-run", RESOLVE_RUN),
+];
 
 /// The plugin manifest.
 ///
@@ -182,12 +205,17 @@ mod tests {
     /// it had been given, and the run would rebase onto whatever it worked out for
     /// itself. That is the failure this test exists for.
     #[test]
-    fn the_fix_skill_reads_the_variables_the_run_is_given() {
-        for v in [VAR_PR, VAR_UPSTREAM, VAR_UPSTREAM_REMOTE, VAR_LOGIN] {
-            assert!(
-                FIX_PR.contains(&format!("${v}")),
-                "skills/fix-pr/SKILL.md never reads ${v}, which the run sets"
-            );
+    fn a_skill_reads_the_variables_its_run_is_given() {
+        for (name, body, vars) in [
+            ("fix-pr", FIX_PR, &[VAR_PR, VAR_UPSTREAM, VAR_UPSTREAM_REMOTE, VAR_LOGIN][..]),
+            ("resolve-run", RESOLVE_RUN, &[VAR_PLAN][..]),
+        ] {
+            for v in vars {
+                assert!(
+                    body.contains(&format!("${v}")),
+                    "skills/{name}/SKILL.md never reads ${v}, which its run sets"
+                );
+            }
         }
     }
 

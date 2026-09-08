@@ -20,10 +20,6 @@ use anyhow::{bail, Result};
 pub const STORY: &str = include_str!("../commands/story.md");
 
 
-/// The session that carries out a triaged review: applies the fixes, commits, and
-/// stops to ask. It writes code and nothing outward.
-pub const RESOLVE_RUN: &str = include_str!("../commands/resolve-run.md");
-
 /// One session for the whole overlay-driven review: read-only triage, then the
 /// change and the post, with the human's decisions arriving over the ask channel
 /// between the phases. The single-session replacement for triage + the batch.
@@ -174,7 +170,6 @@ mod tests {
             // The newest and most interpolated of them, and the one this guard
             // was missing: `resolve-run.md` carries three built URLs, so it is
             // the likeliest to gain a placeholder nobody substitutes.
-            ("resolve-run", RESOLVE_RUN),
             // The overlay session, most interpolated of all: proposals URL, ask
             // base, tracker, language and upstream in one file.
             ("review-session", REVIEW_SESSION),
@@ -255,9 +250,8 @@ mod tests {
         // Whole words, not substrings: "een" is inside "between".
         const DUTCH: [&str; 9] =
             ["naar", "niet", "wordt", "werd", "voor", "het", "een", "bron", "losgetrokken"];
-        const PROMPTS: [(&str, &str); 3] = [
+        const PROMPTS: [(&str, &str); 2] = [
             ("story", STORY),
-            ("resolve-run", RESOLVE_RUN),
             ("review-session", REVIEW_SESSION),
         ];
         for (name, body) in PROMPTS {
