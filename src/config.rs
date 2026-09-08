@@ -567,12 +567,16 @@ pub struct Tracker {
 }
 
 impl<'de> Deserialize<'de> for Tracker {
-    /// Hand-written for one reason: a config that still says `"tracker":
-    /// "shortcut"` has to be told what to write instead.
+    /// Hand-written for one reason: serde's own answer to a name is `invalid type:
+    /// string "shortcut", expected struct Tracker`, which names the problem and
+    /// not the fix.
     ///
-    /// serde's own answer is `invalid type: string "shortcut", expected struct
-    /// Tracker`, which names the problem and not the fix, and this is the one
-    /// setting whose spelling changed under anybody who had it working.
+    /// **Not a migration, and nothing here expires.** A name is a shape this will
+    /// never accept, so the message is as right for somebody writing a config from
+    /// scratch and guessing as it is for a file that predates the change. The
+    /// alternative was rewriting the user's file on start, which would have been
+    /// code with a deletion date and would have had to carry one tracker's
+    /// constants as *behaviour* rather than as advice.
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
         #[derive(Deserialize)]
         #[serde(untagged)]
@@ -598,18 +602,21 @@ impl<'de> Deserialize<'de> for Tracker {
                 stub: s.stub,
             }),
             Shape::Name(name) => Err(serde::de::Error::custom(match name.as_str() {
-                "none" => "`tracker` is no longer a name: drop the key entirely for no \
-                           tracker"
+                "none" => "`tracker` is not a name: drop the key entirely for no tracker"
                     .to_string(),
+                // The two this was developed against, spelled out as a courtesy.
+                // Advice, never a value the daemon reads — which is why keeping it
+                // does not put a tracker's constants back into the code.
                 "shortcut" | "stub" => format!(
-                    "`tracker: \"{name}\"` is no longer a name. Write it out: \
+                    "`tracker: \"{name}\"` is not a name — it takes `mcp_server`, `host` \
+                     and an optional `token_env`. For Shortcut that is: \
                      {{\"mcp_server\": \"shortcut\", \"host\": \"app.shortcut.com\", \
                      \"token_env\": \"SHORTCUT_API_TOKEN\"{}}}",
                     if name == "stub" { ", \"stub\": true" } else { "" }
                 ),
                 _ => format!(
-                    "`tracker: \"{name}\"` is not a shape this reads. It takes \
-                     `mcp_server`, `host` and an optional `token_env`"
+                    "`tracker: \"{name}\"` is not a name — it takes `mcp_server`, `host` \
+                     and an optional `token_env`"
                 ),
             })),
         }
@@ -1122,13 +1129,12 @@ mod tests {
         assert!(Config::default_for(PathBuf::from("/tmp/x")).main_processes.is_empty());
     }
 
-    /// One shape, and the refusal that tells a config which said `"shortcut"` what
-    /// to write instead.
+    /// One shape, and the refusal that says what to write instead.
     ///
     /// The message is the whole reason `Tracker` has a hand-written `Deserialize`:
     /// serde's own answer names the problem (`invalid type: string`) and not the
-    /// fix, and this is the one setting whose spelling changed under anybody who
-    /// already had it working.
+    /// fix. It is not a migration notice — a name is a shape this never accepts,
+    /// so the same message serves a config written from scratch today.
     #[test]
     fn a_tracker_is_three_fields_and_a_name_says_what_to_write() {
         let linear = Config::parse(
