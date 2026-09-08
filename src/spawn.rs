@@ -438,6 +438,36 @@ pub async fn spawn_session(
     pass: Option<Pass>,
     resume: Option<Source>,
 ) -> Result<SessionId> {
+    let id = match resume {
+        Some(Source::Resume(prev)) => prev,
+        // A fork is a second conversation, so it needs an id of its own.
+        Some(Source::Fork(_)) | None => Uuid::new_v4(),
+    };
+    // Main is exclusive, and the claim is taken before anything is created so a
+    // refusal costs no worktree and no pty. The claim is *given back* here rather
+    // than in the body, because everything below this line is fallible — the env
+    // source, the transcript read, `claude` itself — and a claim left behind by a
+    // spawn that never happened names a session that does not exist. Every reader
+    // live-filters the occupant and so recovers, which is why this was invisible;
+    // it is closed at the one place that knows the spawn failed.
+    if workspace == MAIN {
+        app.claim_main(id).await?;
+    }
+    let out = spawn_session_with_id(app, workspace, pass, resume, id).await;
+    if out.is_err() && workspace == MAIN {
+        app.release_main(id).await;
+    }
+    out
+}
+
+/// [`spawn_session`], with main's claim already taken and given back for it.
+async fn spawn_session_with_id(
+    app: &Arc<AppState>,
+    workspace: &str,
+    pass: Option<Pass>,
+    resume: Option<Source>,
+    id: SessionId,
+) -> Result<SessionId> {
     // The centre pane is empty until this returns, so this is the number people
     // mean by "the terminal takes ages to appear". Three of the phases below are
     // somebody else's program: the env source, the transcript on disk, and
@@ -448,17 +478,6 @@ pub async fn spawn_session(
         .workspace_path(workspace)
         .await
         .with_context(|| format!("unknown workspace {workspace}"))?;
-
-    // Main is exclusive, and the claim is taken before the process starts so a
-    // failed spawn cannot leave the lease held.
-    let id = match resume {
-        Some(Source::Resume(prev)) => prev,
-        // A fork is a second conversation, so it needs an id of its own.
-        Some(Source::Fork(_)) | None => Uuid::new_v4(),
-    };
-    if workspace == MAIN {
-        app.claim_main(id).await?;
-    }
 
     let mut cmd = vec!["claude".to_string()];
     // Assigning the id keeps the daemon's session id and Claude's own the same
@@ -1391,6 +1410,22 @@ async fn park_main(app: &Arc<AppState>) {
     if !app.live_sessions_in(MAIN).await.is_empty() {
         return;
     }
+    /* **This moves main's branch, and possibly a worktree's, so it is a swap.**
+       `AppState::swapping`'s own doc has the rule: every swap involves main, so two
+       are never independent — and this one reclaims the base from a worktree
+       (`git::release_branch`) as well, which is a second pair a swap of that tree
+       would race.
+
+       **Skipped, not refused, and that is not a style choice.** This runs from a
+       detached exit watcher: there is no request to answer and nobody to read a
+       refusal, so waiting would park main long after the session that prompted it,
+       against state the swap has since changed. A skip costs nothing that is not
+       already recoverable — the branch stays in main until the next session there
+       closes, and the swap holding the lock is itself moving main. */
+    let Ok(_swap) = app.swapping.try_lock() else {
+        tracing::info!("main stays where it is: a swap is moving it");
+        return;
+    };
     let path = app.cfg.main_checkout.clone();
     let base_ref = app.cfg.upstream_ref.clone();
     let exclude = app.cfg.worktrees_subdir_str();
@@ -1557,38 +1592,62 @@ pub async fn ensure_pr_worktree(app: &Arc<AppState>, pr: u64, head_ref: &str) ->
            uncommitted work land in the tree this flow was about to create anyway,
            and main goes back to base. Untracked files stay in main, which
            `move_branch_out` documents and this cannot help. */
+        /* **And it moves main, so it is a swap.** `AppState::swapping` exists
+           because every move of main's branch decides who travels from state read
+           before anything moves, and a second one taken in that window moves a
+           branch without its conversation. Three handlers took the lock and this
+           arm did not, so a swap and an `open PR` could each move main at once.
+
+           The lock is taken only once main really holds the branch, and the read is
+           then repeated under it: taking it up front would refuse an ordinary
+           worktree cut — which touches main not at all — for the length of any swap.
+           Refused rather than queued, like the swap: the second one would run on the
+           strength of what you saw before the first. */
+        let mut moved_out = false;
         if main_is_on(app, head_ref).await? {
-            refuse_if_main_is_busy(app, pr, head_ref).await?;
-            let moved = {
-                let (main, path) = (app.cfg.main_checkout.clone(), path.clone());
-                let base_ref = app.cfg.upstream_ref.clone();
-                let head_ref = head_ref.to_string();
-                tokio::task::spawn_blocking(move || -> Result<crate::git::MovedOut> {
-                    let base = crate::git::base_checkout_branch(&main, &base_ref).ok_or_else(
-                        || anyhow::anyhow!("no base branch to put main back on — {base_ref} has not been fetched"),
-                    )?;
-                    crate::git::move_branch_out(&main, &path, &base, &head_ref)
-                })
-                .await
-                .map_err(|e| anyhow::anyhow!("moving main's branch out panicked: {e}"))??
-            };
-            // Main gave the branch away, and `reconcile` only adds.
-            app.forget_branch(MAIN, head_ref).await;
-            let _ = app.reconcile(MAIN).await;
-            /* A log line rather than something in the response, for `park_main`'s
-               reason: the checkout under every worktree just changed and that is
-               worth recording, but there are five callers of this and threading a
-               warning up through all of them buys little. `wip_error` is close to
-               impossible here anyway — the work is re-applied onto a fresh checkout
-               of the branch it came from, so the apply lands on the tree it was
-               taken from, which is the same argument `swap_branches` makes. */
-            tracing::info!(
-                %head_ref, wip_error = ?moved.wip_error,
-                "main was on #{pr}'s branch, so it moved into {name} and main went back to {}",
-                moved.base
-            );
-            run_worktree_hooks(app, &path).await;
-        } else {
+            let _swap = app.swapping.try_lock().map_err(|_| {
+                anyhow::anyhow!(
+                    "the main checkout is on #{pr}'s branch and a swap is already moving it; \
+                     give it a moment and look at the rail before asking again"
+                )
+            })?;
+            // Re-read under the lock: the swap this refuses may have just finished,
+            // and then main is no longer the tree that holds the branch.
+            if main_is_on(app, head_ref).await? {
+                refuse_if_main_is_busy(app, pr, head_ref).await?;
+                let moved = {
+                    let (main, path) = (app.cfg.main_checkout.clone(), path.clone());
+                    let base_ref = app.cfg.upstream_ref.clone();
+                    let head_ref = head_ref.to_string();
+                    tokio::task::spawn_blocking(move || -> Result<crate::git::MovedOut> {
+                        let base = crate::git::base_checkout_branch(&main, &base_ref).ok_or_else(
+                            || anyhow::anyhow!("no base branch to put main back on — {base_ref} has not been fetched"),
+                        )?;
+                        crate::git::move_branch_out(&main, &path, &base, &head_ref)
+                    })
+                    .await
+                    .map_err(|e| anyhow::anyhow!("moving main's branch out panicked: {e}"))??
+                };
+                // Main gave the branch away, and `reconcile` only adds.
+                app.forget_branch(MAIN, head_ref).await;
+                let _ = app.reconcile(MAIN).await;
+                /* A log line rather than something in the response, for `park_main`'s
+                   reason: the checkout under every worktree just changed and that is
+                   worth recording, but there are five callers of this and threading a
+                   warning up through all of them buys little. `wip_error` is close to
+                   impossible here anyway — the work is re-applied onto a fresh checkout
+                   of the branch it came from, so the apply lands on the tree it was
+                   taken from, which is the same argument `swap_branches` makes. */
+                tracing::info!(
+                    %head_ref, wip_error = ?moved.wip_error,
+                    "main was on #{pr}'s branch, so it moved into {name} and main went back to {}",
+                    moved.base
+                );
+                run_worktree_hooks(app, &path).await;
+                moved_out = true;
+            }
+        }
+        if !moved_out {
             // The repo's own `WorktreeCreate` if it has one, ours if not. It cuts
             // from a base of its own, so the tree is then put on the PR's head ref.
             path = create_worktree(app, &name, &path, Want::Existing { branch: head_ref }).await?;
