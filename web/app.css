@@ -1255,7 +1255,6 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
 .pract:hover:not(:disabled){background:var(--raised);border-color:var(--attn)}
 .pract:disabled{color:var(--ghost);cursor:default}
 .pract.running{color:var(--auto);border-color:var(--line);cursor:pointer}
-.why.gaveup{color:var(--bad);white-space:nowrap;flex:0 0 auto}
 
 /* The default /resolve action and its quieter `cards` alternative, kept together
    so the pair reads as one control with a primary and a secondary. */

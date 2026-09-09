@@ -314,10 +314,14 @@ function prGroup() {
       b.onclick = (ev) => { ev.preventDefault(); ev.stopPropagation(); setSelected(auto.session); };
       row.appendChild(b);
     } else {
-      if (auto && auto.state === 'exhausted') {
-        // The skill stopped without turning it green: it wants you.
-        row.appendChild(el('span', 'why gaveup', 'gave up'));
-      }
+      /* **An exhausted record draws nothing.** It drew a `gave up` chip, and a
+         restart made that chip lie about every run at once: `load_automation`
+         demotes each live `Running` to `Exhausted` while `auto_resume` brings the
+         same runs back, so three fix runs came back working and all three rows
+         said they had given up. The rail's own row reads the session instead of a
+         record written at the last shutdown, so that is where a run's state
+         belongs. What is left here is the `fix` button, which is the thing to
+         press either way. */
       /* **Neither button while a session holds the branch**, because a button whose
          only outcome is an error toast is worse than no button, and the `session`
          chip beside them is the thing to press.
