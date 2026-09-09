@@ -109,6 +109,9 @@ export async function until(what, predicate, { timeout = 10_000, every = 50, con
  *   the token ladder before it reaches `gh`, which would be a real account.
  * @param {boolean} [opts.autoResume] Bring live sessions back on a restart. Off
  *   elsewhere, since nothing else restarts the daemon.
+ * @param {object[]} [opts.processes] `main_processes`. Empty everywhere else, so a
+ *   flow that does not ask for one has no drawer process to reason about and the
+ *   daemon shells out for nothing.
  * @param {number} [opts.pollSeconds] The poll period. The daemon floors it at 30,
  *   and a flow drives `/api/prs/refresh` rather than waiting for it either way.
  */
@@ -119,6 +122,7 @@ export async function sandbox({
   githubToken = '',
   pollSeconds = 3600,
   autoResume = false,
+  processes = [],
 } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'orchd-e2e-'))
   const dirs = {
@@ -177,7 +181,7 @@ export async function sandbox({
     // flow under test.
     poll_seconds: pollSeconds,
     reviews_command: ['true'],
-    main_processes: [],
+    main_processes: processes,
     worktree_processes: [],
     // Off unless a flow asks, because it relaunches an agent per restored session
     // and every other flow restarts nothing.

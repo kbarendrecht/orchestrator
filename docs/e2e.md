@@ -1,8 +1,8 @@
 # The end-to-end flows
 
 `mise run e2e` drives the flows a person actually presses buttons for, against a
-real daemon, offline and deterministically. Fourteen of them, one file each under
-`tools/e2e/flows/`, about 45 seconds for the lot.
+real daemon, offline and deterministically. Twenty-three of them, one file each
+under `tools/e2e/flows/`, about a minute for the lot.
 
 It exists because of what unit tests kept missing. Two bugs found by hand-driving
 a daemon in one afternoon — a resume that skipped its branch check because the
@@ -72,7 +72,9 @@ export async function run(t) {
 other now — so what it changes is the path; `turns` is how many turns the agent
 takes unprompted, and `0` is the session that was never typed into — the one fork
 and resume refuse. `repo` turns GitHub on and installs the curl shim. `autoResume`
-brings live sessions back across `t.restart()`.
+brings live sessions back across `t.restart()`. `processes` declares
+`main_processes`, which is empty everywhere else so that a flow with no interest in
+the drawer has no process to reason about.
 
 `t.restart()` stops the daemon and brings it back on the same state. It is the only
 way to reach the durable half — `restore`, `prune_ghosts`, `auto_resume`,
