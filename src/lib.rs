@@ -475,6 +475,7 @@ pub async fn start(opts: StartOptions) -> Result<Server> {
         async move { reconcile_all(&app).await }
     });
     phases.mark("reconcile-spawn");
+    adopt_banked_work(&app).await;
     autostart_processes(&app).await;
     if app.cfg.auto_resume {
         auto_resume(app.clone(), records);
@@ -627,6 +628,9 @@ fn router(app: Arc<AppState>) -> Router {
         .route("/api/workspace/:id/reconcile", post(api::reconcile))
         .route("/api/workspace/:id/rebase", post(api::rebase))
         .route("/api/workspace/:id/rebase/abort", post(api::rebase_abort))
+        .route("/api/workspace/:id/wip/restore", post(api::wip_restore))
+        .route("/api/workspace/:id/wip/discard", post(api::wip_discard))
+        .route("/api/workspace/:id/wip/resolve", post(api::wip_resolve))
         .route("/api/workspace/:id/preflight", get(api::preflight))
         .route("/api/workspace/:id/teardown", post(api::teardown))
         .route("/api/workspace/:id/swap-main", post(api::swap_with_main))
@@ -856,6 +860,38 @@ async fn reconcile_all(app: &Arc<AppState>) {
         tracing::info!("reconciled {measured} workspace(s) in {ms}ms");
     } else {
         tracing::info!("reconciled {measured} workspace(s) in {ms}ms, skipped {skipped} whose tree is gone");
+    }
+}
+
+/// Find the work a previous run of the daemon parked out of a rebase's way.
+///
+/// **One exec for every workspace**, which is what keeps this off the sweep: refs
+/// live in the repository, not in a worktree, so `git for-each-ref` on main lists
+/// every bank there is. The alternative was a field on `Tree` and an eighth git
+/// child per tree per sweep, on a walk whose entire cost is child processes.
+///
+/// A bank whose workspace the daemon no longer knows is left alone rather than
+/// cleaned up: the ref is the only record of that work, and a tree that comes back
+/// (a `revive`, a PR flow rebuilding it) finds its strip still there.
+async fn adopt_banked_work(app: &Arc<AppState>) {
+    let main = app.cfg.main_checkout.clone();
+    let Ok(found) = crate::proc::run_blocking("looking for banked work", move || {
+        crate::git::all_banked(&main)
+    })
+    .await
+    else {
+        return;
+    };
+    for (workspace, bank) in found {
+        if app.workspace_path(&workspace).await.is_none() {
+            tracing::info!(
+                "{} holds banked work and no workspace of that name is registered",
+                crate::git::wip_ref(&workspace)
+            );
+            continue;
+        }
+        tracing::info!(%workspace, files = bank.files, "adopted banked work at {}", bank.sha);
+        app.set_banked(&workspace, Some(bank)).await;
     }
 }
 

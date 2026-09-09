@@ -518,6 +518,7 @@ impl AppState {
                 processes: Vec::new(),
                 occupant: None,
                 tree: Default::default(),
+                banked: None,
             },
         );
         let repos = Repos {
@@ -788,6 +789,10 @@ impl AppState {
                     .filter(|spec| !w.processes.iter().any(|p| p.name == spec.name))
                 .map(|spec| spec.name.clone())
                 .collect(),
+                banked: w.banked.as_ref().map(|b| BankedView {
+                    files: b.files,
+                    at: crate::git::wip_ref(&w.id),
+                }),
                 branch: w.tree.branch.clone(),
                 changed: w.tree.changed.clone(),
                 changed_total: w.tree.changed_total,
@@ -1094,6 +1099,9 @@ impl AppState {
                 // whole point of the tree living here: the old incarnation's
                 // numbers went with it.
                 tree: Default::default(),
+                // Adopted from the refs at boot, not guessed here: a tree this
+                // daemon has never seen may still have work banked in it.
+                banked: None,
             });
     }
 
@@ -1152,6 +1160,24 @@ impl AppState {
                     .map(str::to_owned)
                     .unwrap_or_else(|| crate::model::short_id(&s.id))
             })
+    }
+
+    /// Record what a workspace has banked, or that it has nothing.
+    ///
+    /// The daemon's copy of a fact that lives in a git ref. Written by whoever
+    /// moved the ref, in the same breath, so the strip in the pane and the object
+    /// in the repository cannot disagree for longer than one request.
+    pub async fn set_banked(&self, workspace: &str, banked: Option<crate::git::Bank>) {
+        let mut inner = self.inner.write().await;
+        if let Some(w) = inner.workspaces.get_mut(workspace) {
+            w.banked = banked;
+        }
+    }
+
+    /// What this workspace has banked, as the daemon last knew it.
+    pub async fn workspace_banked(&self, workspace: &str) -> Option<crate::git::Bank> {
+        let inner = self.inner.read().await;
+        inner.workspaces.get(workspace).and_then(|w| w.banked.clone())
     }
 
     /// Sessions in a workspace that are neither `Exited` nor `Archived`, checked
@@ -1480,6 +1506,19 @@ pub struct PrView {
     pub session: Option<Uuid>,
 }
 
+/// Work banked out of a rebase's way, as the pane needs it.
+///
+/// The ref is sent rather than derived in the SPA, because it is the recovery a
+/// person runs by hand (`git stash apply <at>`) and a second spelling of the name
+/// is a second thing to keep in step.
+#[derive(Debug, Clone, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
+pub struct BankedView {
+    #[cfg_attr(test, ts(type = "number"))]
+    pub files: u32,
+    pub at: String,
+}
+
 #[derive(Debug, Serialize)]
 #[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
 pub struct WorkspaceView {
@@ -1505,6 +1544,8 @@ pub struct WorkspaceView {
     /// `docker compose up` you deliberately do not autostart still has to be
     /// startable.
     pub stopped_processes: Vec<String>,
+    /// Uncommitted work the rebase button parked, if any is parked.
+    pub banked: Option<BankedView>,
     /// Every file this workspace changed since it branched, committed work
     /// included, plus anything untracked. What the changed-files pane lists.
     ///

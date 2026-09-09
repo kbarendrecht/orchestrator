@@ -934,6 +934,23 @@ pub fn rebase_onto(cwd: &Path, upstream: &str) -> Result<()> {
             files.iter().take(4).cloned().collect::<Vec<_>>().join(", ")
         );
     }
+    /* **An untracked file in the way is the one dirty-tree case a bank cannot
+       clear**, since `stash create` carries tracked changes only, so it is worth
+       its own sentence. Git's own is a header with the paths on the lines below
+       it, and the generic arm underneath prints only that header — "would be
+       overwritten by checkout" with nothing said about what. */
+    let both = format!("{stderr}{stdout}");
+    let blocked = untracked_in_the_way(&both);
+    if !blocked.is_empty() {
+        bail!(
+            "not rebased: the base adds {}, and this tree has {} that git has never seen. \
+             Move {} aside, or commit {}.",
+            blocked.join(", "),
+            if blocked.len() == 1 { "one" } else { "files" },
+            if blocked.len() == 1 { "it" } else { "them" },
+            if blocked.len() == 1 { "it" } else { "them" },
+        );
+    }
     bail!(
         "rebase failed: {}",
         stderr
@@ -944,9 +961,44 @@ pub fn rebase_onto(cwd: &Path, upstream: &str) -> Result<()> {
     );
 }
 
+/// The paths git listed under its untracked-would-be-overwritten header.
+///
+/// Matched on the header rather than on a whole-message shape, because the same
+/// list follows it for `checkout`, `merge` and `rebase` alike, and the advice
+/// paragraph after the paths always starts unindented.
+fn untracked_in_the_way(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut collecting = false;
+    for line in text.lines() {
+        if line.contains("untracked working tree files would be overwritten") {
+            collecting = true;
+            continue;
+        }
+        if !collecting {
+            continue;
+        }
+        // Git indents each path and then leaves the margin for its advice.
+        match line.strip_prefix('\t').or_else(|| line.strip_prefix("  ")) {
+            Some(path) if !path.trim().is_empty() => out.push(path.trim().to_string()),
+            _ => break,
+        }
+    }
+    out
+}
+
 pub fn rebase_abort(cwd: &Path) -> Result<()> {
     git(cwd, &["rebase", "--abort"])?;
     Ok(())
+}
+
+/// Paths git has left unmerged, whatever put them there.
+///
+/// [`conflicted_files`]'s public twin. Kept as one call rather than folded into
+/// `status`, because the callers want the *paths* and `FileSet` deliberately
+/// files both sides of a conflict under `unstaged` — the pane's question, not
+/// this one.
+pub fn unmerged(cwd: &Path) -> Result<Vec<String>> {
+    conflicted_files(cwd)
 }
 
 fn conflicted_files(cwd: &Path) -> Result<Vec<String>> {
@@ -1362,16 +1414,27 @@ pub fn untracked_in(cwd: &Path, exclude: Option<&str>) -> Result<Vec<String>> {
 /// `--include-untracked`, so untracked files stay where they are; the caller says
 /// so rather than pretending they moved.
 fn capture_wip(cwd: &Path) -> Result<Option<String>> {
+    let Some(sha) = create_wip(cwd)? else {
+        return Ok(None);
+    };
+    git(cwd, &["reset", "--hard", "-q"])?;
+    Ok(Some(sha))
+}
+
+/// The banking half on its own: write the WIP commit and prove it resolves.
+///
+/// Split out because [`bank_wip`] has to put a **ref** on that object before the
+/// reset, and the verify is the line that must not be skipped either way: a
+/// `reset --hard` against a sha that does not resolve is the one way any of this
+/// destroys the work it exists to carry.
+fn create_wip(cwd: &Path) -> Result<Option<String>> {
     let sha = git(cwd, &["stash", "create"])?.trim().to_string();
     if sha.is_empty() {
         return Ok(None);
     }
-    // Only reset once the object is real. A `reset --hard` against a sha that does
-    // not resolve is the one way this could destroy the work it exists to carry.
     if !git_ok(cwd, &["cat-file", "-e", &format!("{sha}^{{commit}}")]) {
         bail!("git stash create returned {sha}, which does not resolve — refusing to reset");
     }
-    git(cwd, &["reset", "--hard", "-q"])?;
     Ok(Some(sha))
 }
 
@@ -1425,6 +1488,136 @@ fn apply_wip(cwd: &Path, sha: &str, what_happened: &str) -> Result<()> {
             )
         })
         .map(|_| ())
+}
+
+// ---------------------------------------------------------------------------
+// Banked work
+// ---------------------------------------------------------------------------
+
+/// Work parked out of the way of a rebase, and how much of it there is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Bank {
+    /// The WIP commit. Named in every message about it, because
+    /// `git stash apply <sha>` is the recovery a person can run without us.
+    pub sha: String,
+    /// Tracked files in it, for a strip that says "3 changed files are banked".
+    pub files: u32,
+}
+
+/// Where a workspace's banked work is kept.
+///
+/// **Not `refs/stash`.** That stack is shared by every worktree of the repo —
+/// measured: a `git stash` in a worktree is `stash@{0}` in the main checkout — so
+/// a bank left there could be popped into the wrong tree by somebody who never
+/// pressed rebase. A ref of our own is per-workspace by name, invisible to
+/// `git stash list`, and enough to keep the object alive: it survives
+/// `git gc --prune=now`, which a bare `stash create` object does not promise to.
+pub fn wip_ref(workspace: &str) -> String {
+    // Ref names may not end in a dot or in `.lock`, and `validate_worktree_name`
+    // allows both. Everything else it allows is already ref-safe.
+    let safe = if workspace.ends_with('.') || workspace.ends_with(".lock") {
+        format!("{workspace}-")
+    } else {
+        workspace.to_string()
+    };
+    format!("refs/orchd/wip/{safe}")
+}
+
+/// Bank this tree's uncommitted work under the workspace's ref, then clean the
+/// tree. `None` means it was already clean and nothing was touched.
+///
+/// The ref goes on **before** the reset, so there is no window in which the work
+/// exists only as a sha in the daemon's memory. Tracked changes only, as ever —
+/// `stash create` has no `--include-untracked`, and an untracked file is not in
+/// the rebase's way unless the base adds one at the same path, which git refuses
+/// on its own.
+pub fn bank_wip(cwd: &Path, workspace: &str) -> Result<Option<Bank>> {
+    let Some(sha) = create_wip(cwd)? else {
+        return Ok(None);
+    };
+    let at = wip_ref(workspace);
+    git(cwd, &["update-ref", &at, &sha])
+        .with_context(|| format!("banking this tree's work at {at}"))?;
+    git(cwd, &["reset", "--hard", "-q"])?;
+    Ok(Some(Bank {
+        files: wip_files(cwd, &sha),
+        sha,
+    }))
+}
+
+/// Put banked work back and drop the ref.
+///
+/// The ref is dropped **only** on a clean apply. An apply that conflicts leaves
+/// both sides in the working tree as `UU` *and* the bank standing, which is the
+/// state worth being in: the conflict is where it can be resolved, and the work
+/// as it was is still one object away.
+pub fn restore_wip(cwd: &Path, workspace: &str) -> Result<()> {
+    let at = wip_ref(workspace);
+    let bank = banked_wip(cwd, workspace)
+        .with_context(|| format!("{at} holds nothing to put back"))?;
+    // By sha rather than by the ref, so the failure names the object the way
+    // `apply_wip`'s sentence promises — the ref is added beside it, because that is
+    // the name that survives and the one a person types.
+    apply_wip(cwd, &bank.sha, "the rebase finished")
+        .with_context(|| format!("the work is banked at {at}"))?;
+    discard_wip(cwd, workspace)
+}
+
+/// Forget banked work. The object stays until git collects it; the name does not.
+pub fn discard_wip(cwd: &Path, workspace: &str) -> Result<()> {
+    let at = wip_ref(workspace);
+    git(cwd, &["update-ref", "-d", &at])
+        .with_context(|| format!("dropping {at}"))
+        .map(|_| ())
+}
+
+/// What this workspace has banked, if anything.
+pub fn banked_wip(cwd: &Path, workspace: &str) -> Option<Bank> {
+    let at = wip_ref(workspace);
+    let sha = git(cwd, &["rev-parse", "--verify", "--quiet", &at]).ok()?;
+    let sha = sha.trim().to_string();
+    if sha.is_empty() {
+        return None;
+    }
+    Some(Bank {
+        files: wip_files(cwd, &sha),
+        sha,
+    })
+}
+
+/// Every bank in the repository, as `(workspace, bank)`.
+///
+/// One exec for the whole repo, which is what keeps this out of the sweep: refs
+/// are per-repository, so the daemon can re-derive at boot what it knew before it
+/// was restarted rather than asking each worktree.
+pub fn all_banked(main: &Path) -> Vec<(String, Bank)> {
+    let Ok(out) = git(
+        main,
+        &["for-each-ref", "--format=%(refname) %(objectname)", "refs/orchd/wip"],
+    ) else {
+        return Vec::new();
+    };
+    out.lines()
+        .filter_map(|line| {
+            let (name, sha) = line.trim().split_once(' ')?;
+            let ws = name.rsplit('/').next()?.to_string();
+            Some((
+                ws,
+                Bank {
+                    files: wip_files(main, sha),
+                    sha: sha.to_string(),
+                },
+            ))
+        })
+        .collect()
+}
+
+/// How many tracked files a WIP commit carries. Zero when git will not say,
+/// because a count is a label on a strip and never a decision.
+fn wip_files(cwd: &Path, sha: &str) -> u32 {
+    git(cwd, &["stash", "show", "--name-only", sha])
+        .map(|out| out.lines().filter(|l| !l.trim().is_empty()).count() as u32)
+        .unwrap_or(0)
 }
 
 /// Stage one path, unstage it, or throw its working-tree changes away.
@@ -2176,6 +2369,118 @@ mod tests {
 
     /// The three file verbs, and the asymmetry that decides which is confirmed.
     ///
+    /// The bank is a round trip, and both halves are exact: staged stays staged,
+    /// unstaged stays unstaged, and the tree in between is clean enough to rebase.
+    #[test]
+    fn banking_cleans_the_tree_and_the_ref_carries_the_work_back() {
+        let main = bank_fixture("bank-round-trip");
+        std::fs::write(main.join("f.txt"), "edited\n").unwrap();
+        std::fs::write(main.join("g.txt"), "staged\n").unwrap();
+        git(&main, &["add", "g.txt"]).unwrap();
+        std::fs::write(main.join("new.txt"), "untracked\n").unwrap();
+
+        let bank = bank_wip(&main, "invoice").unwrap().expect("a dirty tree banks");
+        assert_eq!(bank.files, 2, "tracked changes only, both of them");
+        assert_eq!(
+            status(&main, None, Untracked::Collapsed).unwrap().unstaged.len(),
+            0,
+            "the tree has to be clean or the rebase cannot start"
+        );
+        // The one thing a bank never carries, and it never needed to: an untracked
+        // file is not in a rebase's way unless the base adds the same path, which
+        // git refuses on its own.
+        assert!(main.join("new.txt").exists(), "untracked files stay where they are");
+        assert_eq!(banked_wip(&main, "invoice").map(|b| b.sha), Some(bank.sha));
+
+        restore_wip(&main, "invoice").unwrap();
+        let set = status(&main, None, Untracked::Each).unwrap();
+        assert!(set.staged.iter().any(|f| f.path == "g.txt"), "the index came back too");
+        assert!(set.unstaged.iter().any(|f| f.path == "f.txt"));
+        assert!(banked_wip(&main, "invoice").is_none(), "a clean apply drops the ref");
+    }
+
+    /// The failure the whole shape is for: the work does not go back, and it is
+    /// still there afterwards. `git rebase --autostash` answers this case by
+    /// pushing onto `refs/stash`, which every worktree of the repo shares.
+    #[test]
+    fn a_restore_that_conflicts_keeps_the_bank() {
+        let main = bank_fixture("bank-conflict");
+        std::fs::write(main.join("f.txt"), "mine\n").unwrap();
+        let bank = bank_wip(&main, "invoice").unwrap().expect("banked");
+
+        // The base moves under it, onto the same line.
+        std::fs::write(main.join("f.txt"), "theirs\n").unwrap();
+        git(&main, &["commit", "-qam", "somebody else"]).unwrap();
+
+        let err = restore_wip(&main, "invoice").expect_err("it cannot apply cleanly");
+        assert!(
+            format!("{err:#}").contains(&bank.sha),
+            "the failure has to name the object, or the work is unreachable: {err:#}"
+        );
+        assert_eq!(
+            banked_wip(&main, "invoice").map(|b| b.sha),
+            Some(bank.sha),
+            "the bank stands until somebody says otherwise"
+        );
+        assert!(
+            !unmerged(&main).unwrap().is_empty(),
+            "both sides are in the tree, which is where they can be resolved"
+        );
+        // And the shared stack is untouched, which is the property the ref exists for.
+        assert_eq!(git(&main, &["stash", "list"]).unwrap().trim(), "");
+    }
+
+    /// A restart has to find these, and one exec finds all of them: refs are
+    /// per-repository, so nothing here walks the worktrees.
+    #[test]
+    fn every_bank_in_the_repo_is_listed_at_once() {
+        let main = bank_fixture("bank-list");
+        std::fs::write(main.join("f.txt"), "one\n").unwrap();
+        bank_wip(&main, "invoice").unwrap().expect("banked");
+        std::fs::write(main.join("f.txt"), "two\n").unwrap();
+        bank_wip(&main, "billing").unwrap().expect("banked");
+
+        let mut found: Vec<String> = all_banked(&main).into_iter().map(|(ws, _)| ws).collect();
+        found.sort();
+        assert_eq!(found, vec!["billing".to_string(), "invoice".to_string()]);
+
+        discard_wip(&main, "invoice").unwrap();
+        assert_eq!(all_banked(&main).len(), 1, "a dropped bank is gone from the list");
+        assert!(banked_wip(&main, "invoice").is_none());
+    }
+
+    /// Git names the paths under its header and then leaves the margin for advice,
+    /// and the generic arm above this printed the header alone — "would be
+    /// overwritten by checkout" with no word about what.
+    #[test]
+    fn the_untracked_collision_is_read_off_gits_own_list() {
+        let msg = "error: The following untracked working tree files would be overwritten by \
+                   checkout:\n\tsrc/timing.rs\n\tdocs/new.md\nPlease move or remove them.\n";
+        assert_eq!(untracked_in_the_way(msg), vec!["src/timing.rs", "docs/new.md"]);
+        assert!(untracked_in_the_way("rebase failed: something else").is_empty());
+    }
+
+    /// A ref may not end in a dot or in `.lock`, and a worktree name may be both.
+    #[test]
+    fn a_bank_ref_is_a_legal_ref_for_any_legal_worktree_name() {
+        assert_eq!(wip_ref("invoice"), "refs/orchd/wip/invoice");
+        assert_eq!(wip_ref("pr-101"), "refs/orchd/wip/pr-101");
+        assert_eq!(wip_ref("thing.lock"), "refs/orchd/wip/thing.lock-");
+        assert_eq!(wip_ref("trailing."), "refs/orchd/wip/trailing.-");
+    }
+
+    fn bank_fixture(name: &str) -> std::path::PathBuf {
+        let main = crate::testutil::scratch(name).join("repo");
+        git(main.parent().unwrap(), &["init", "-q", "-b", "main", "repo"]).unwrap();
+        git(&main, &["config", "user.email", "t@t"]).unwrap();
+        git(&main, &["config", "user.name", "t"]).unwrap();
+        std::fs::write(main.join("f.txt"), "committed\n").unwrap();
+        std::fs::write(main.join("g.txt"), "committed\n").unwrap();
+        git(&main, &["add", "-A"]).unwrap();
+        git(&main, &["commit", "-qm", "base"]).unwrap();
+        main
+    }
+
     /// Stage and unstage are each other's undo. Discard is not undoable by git at
     /// all — `restore` overwrites the working tree from the index and there is no
     /// reflog for content that was never committed — which is the whole reason the

@@ -16,6 +16,15 @@ tool: string, current: string, latest: string, };
  */
 export type ArchiveState = { "recovery": "recoverable", name: string, branch: string, head_sha: string, } | { "recovery": "transcript_only" };
 
+/**
+ * Work banked out of a rebase's way, as the pane needs it.
+ *
+ * The ref is sent rather than derived in the SPA, because it is the recovery a
+ * person runs by hand (`git stash apply <at>`) and a second spelling of the name
+ * is a second thing to keep in step.
+ */
+export type BankedView = { files: number, at: string, };
+
 export type Checks = "passing" | "failing" | "pending" | "unknown";
 
 export type DiffFile = { path: string, 
@@ -653,6 +662,10 @@ branch: string | null, processes: Array<ProcessView>,
  * startable.
  */
 stopped_processes: Array<string>, 
+/**
+ * Uncommitted work the rebase button parked, if any is parked.
+ */
+banked: BankedView | null, 
 /**
  * Every file this workspace changed since it branched, committed work
  * included, plus anything untracked. What the changed-files pane lists.

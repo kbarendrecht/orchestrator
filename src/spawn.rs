@@ -3258,6 +3258,7 @@ mod tests {
                     processes: Vec::new(),
                     occupant: None,
                     tree: Default::default(),
+                    banked: None,
                 },
             );
             let mut s = Session::new(id, "pr-4".into(), dir.join("pr-4"), None);

@@ -1,7 +1,7 @@
 # The end-to-end flows
 
 `mise run e2e` drives the flows a person actually presses buttons for, against a
-real daemon, offline and deterministically. Twenty-three of them, one file each
+real daemon, offline and deterministically. Twenty-four of them, one file each
 under `tools/e2e/flows/`, about a minute for the lot.
 
 It exists because of what unit tests kept missing. Two bugs found by hand-driving

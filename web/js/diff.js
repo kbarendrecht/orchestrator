@@ -32,12 +32,54 @@ function renderDivergence(w) {
   box.className = 'diverge';
   if (!w) return;
 
+  /* **Banked work outranks everything else this bar says.** A bank only exists
+     while the work is *not* in the tree — a clean re-apply drops the ref in the
+     same breath — so its presence is the whole condition, and how far behind the
+     branch is stops being the interesting number until it is back. */
+  const bank = w.banked;
   if (w.rebasing) {
     box.className = 'diverge on bad';
-    box.appendChild(el('span', 'dvtext', 'rebase stopped on conflicts'));
+    box.appendChild(el('span', 'dvtext', bank
+      ? `rebase stopped on conflicts · ${files(bank)} banked`
+      : 'rebase stopped on conflicts'));
     const a = el('button', 'dvbtn', 'Abort');
+    // Which also puts the banked work back, because an abort is the undo of the
+    // press that took it.
     a.onclick = () => act(`/api/workspace/${encodeURIComponent(w.id)}/rebase/abort`, 'aborted');
     box.appendChild(a);
+    return;
+  }
+  if (bank) {
+    box.className = 'diverge on bad';
+    const t = el('span', 'dvtext', `${files(bank)} did not go back after the rebase`);
+    // The ref is the recovery that needs nothing of ours, so it is one hover away
+    // rather than in a bar that has to stay short.
+    t.title = `git stash apply ${bank.at}`;
+    box.appendChild(t);
+
+    const ws = encodeURIComponent(w.id);
+    const r = el('button', 'dvbtn', 'Resolve in session');
+    r.title = 'Hand the conflict to the session in this workspace';
+    r.onclick = () => act(`/api/workspace/${ws}/wip/resolve`, 'handed it over');
+    box.appendChild(r);
+
+    const back = el('button', 'dvbtn', 'Put back');
+    back.title = 'Try the re-apply again';
+    back.onclick = () => act(`/api/workspace/${ws}/wip/restore`, 'put back');
+    box.appendChild(back);
+
+    // The one thing here git cannot undo: nothing else points at that object, so
+    // once it is collected the content is gone. Same asymmetry as `discard changes`
+    // on a row.
+    const d = el('button', 'dvbtn', 'Discard');
+    d.title = 'Forget the banked copy of your work';
+    d.onclick = async () => {
+      if (!await confirmBox(
+        `Forget the banked work?\n\n${files(bank)} from before the rebase, and git keeps no `
+        + 'copy once it is collected.', { ok: 'Discard' })) return;
+      await act(`/api/workspace/${ws}/wip/discard`, 'discarded');
+    };
+    box.appendChild(d);
     return;
   }
   if (!w.behind) {
@@ -59,6 +101,11 @@ function renderDivergence(w) {
     b.disabled = false;
   };
   box.appendChild(b);
+}
+
+/** `3 changed files`, or `1 changed file`. */
+function files(bank) {
+  return `${bank.files} changed file${bank.files === 1 ? '' : 's'}`;
 }
 
 async function act(path, verb) {

@@ -1286,6 +1286,20 @@ pub async fn tell_session(
         );
     }
 
+    type_user_turn(&app, id, &text).await?;
+    Ok(Json(json!({ "told": true })))
+}
+
+/// Type text at a session as an ordinary user turn, or say why a keystroke there
+/// would mean something else.
+///
+/// The three refusals are the states where the pty is listening for an answer
+/// rather than for a prompt: mid-turn (Claude Code submits whatever is half
+/// typed), a permission prompt (consent) and an open question (the highlighted
+/// choice). `nudge_sessions` learned them first, the drawer's hand-off second, and
+/// the rebase button's is the third caller — which is what made this one function
+/// instead of three copies of the table.
+async fn type_user_turn(app: &Arc<AppState>, id: SessionId, text: &str) -> anyhow::Result<()> {
     let pty = {
         let inner = app.inner.read().await;
         let s = inner
@@ -1294,26 +1308,26 @@ pub async fn tell_session(
             .ok_or_else(|| anyhow::anyhow!("no such session {id}"))?;
         let name = s.label().unwrap_or(&s.workspace).to_string();
         let Some(pty) = s.pty.clone().filter(|p| p.is_alive()) else {
-            refuse!("{name} is not running — resume it first");
+            anyhow::bail!("{name} is not running — resume it first");
         };
         match &s.state {
             crate::model::State::Starting => {
-                refuse!("{name} is still starting")
+                anyhow::bail!("{name} is still starting")
             }
             crate::model::State::YourTurn { reason, .. } => match reason {
                 // Both take a keystroke as an answer rather than as a prompt.
                 crate::model::TurnReason::NeedsPermission => {
-                    refuse!("{name} is waiting on a permission prompt; answer that first")
+                    anyhow::bail!("{name} is waiting on a permission prompt; answer that first")
                 }
                 crate::model::TurnReason::AskedAQuestion => {
-                    refuse!("{name} is asking you something; answer that first")
+                    anyhow::bail!("{name} is asking you something; answer that first")
                 }
                 _ => {}
             },
             // Working, and everything else that is not a prompt: mid-turn.
             other => {
                 if other.is_busy() {
-                    refuse!("{name} is mid-turn; wait for it to finish")
+                    anyhow::bail!("{name} is mid-turn; wait for it to finish")
                 }
             }
         }
@@ -1323,7 +1337,7 @@ pub async fn tell_session(
     // The same two-step every typed line uses: write, wait, then send. Claude
     // Code's prompt box drops a `\r` that arrives in the same breath as the text.
     pty.type_and_send(text.as_bytes(), std::time::Duration::from_millis(500));
-    Ok(Json(json!({ "told": true })))
+    Ok(())
 }
 
 /// The two option values [`allow_outside`] offers, and the one a yes carries.
@@ -5242,22 +5256,56 @@ pub async fn rebase(
 
     // `is_clean` is a full `git status` scan on a worktree without fsmonitor, so
     // both checks go off the runtime with the rest of this handler.
-    let (mid_rebase, clean) = {
+    let (mid_rebase, clean, conflicted) = {
         let p = path.clone();
         crate::proc::run_blocking("checking the tree before a rebase", move || {
-            (crate::git::rebase_in_progress(&p), crate::git::is_clean(&p).unwrap_or(false))
+            (
+                crate::git::rebase_in_progress(&p),
+                crate::git::is_clean(&p).unwrap_or(false),
+                crate::git::unmerged(&p).unwrap_or_default(),
+            )
         })
         .await?
     };
     if mid_rebase {
         refuse!("a rebase is already stopped part-way here; finish or abort it first");
     }
-    if !clean {
-        refuse!("uncommitted changes — commit or stash before rebasing");
+    /* **Unmerged paths are the one dirty tree this cannot bank.** `git stash
+       create` refuses them outright ("Cannot save the current index state"), so
+       without this the press would fail three lines down with git's sentence about
+       the index rather than with the reason: there is a conflict here that somebody
+       has to settle before anything else happens to this tree. */
+    if !conflicted.is_empty() {
+        refuse!(
+            "{} still has conflicts ({}) — settle them first",
+            workspace,
+            conflicted.iter().take(3).cloned().collect::<Vec<_>>().join(", ")
+        );
     }
     if let Some(who) = app.busy_session_in(&workspace).await {
         refuse!("{who} is working here; rebasing under it would fight it");
     }
+
+    /* **A dirty tree is banked rather than refused, and that is the whole change.**
+       It used to say "commit or stash before rebasing", which is a refusal you
+       answer by doing the same thing by hand — and by hand it lands on
+       `refs/stash`, which every worktree of this repo shares. The bank is a ref of
+       our own, written before the tree is reset and dropped only once the work is
+       back, so no exit from here leaves the work anywhere but in one piece. */
+    let banked = if clean {
+        None
+    } else {
+        let (at, ws) = (path.clone(), workspace.clone());
+        let bank = crate::proc::run_blocking("banking this tree's work", move || {
+            crate::git::bank_wip(&at, &ws)
+        })
+        .await??;
+        if let Some(b) = &bank {
+            tracing::info!(%workspace, files = b.files, "banked the tree's work at {}", b.sha);
+        }
+        bank
+    };
+    app.set_banked(&workspace, banked.clone()).await;
 
     // Refresh the base first, or "behind" is answered from a stale ref. A failed
     // fetch is not fatal — rebasing onto a known-old base is sometimes what you
@@ -5287,14 +5335,84 @@ pub async fn rebase(
     let upstream = app.cfg.upstream_ref.clone();
     let p = path.clone();
     let result = tokio::task::spawn_blocking(move || crate::git::rebase_onto(&p, &upstream)).await;
+    let result = match result {
+        Ok(r) => r,
+        Err(e) => {
+            let _ = app.reconcile(&workspace).await;
+            return Err(ApiError(anyhow::anyhow!("rebase task failed: {e}")));
+        }
+    };
 
+    let wip = settle_bank(&app, &workspace, &path, banked.as_ref(), &result).await;
     let _ = app.reconcile(&workspace).await;
     app.notify().await;
 
     match result {
-        Ok(Ok(())) => Ok(Json(json!({ "rebased": workspace, "warning": warning }))),
-        Ok(Err(e)) => Err(ApiError(e)),
-        Err(e) => Err(ApiError(anyhow::anyhow!("rebase task failed: {e}"))),
+        Ok(()) => Ok(Json(json!({
+            "rebased": workspace,
+            "warning": warning,
+            "wip": wip,
+            "banked_files": banked.as_ref().map(|b| b.files),
+        }))),
+        // The refusal still carries git's own account of what stopped it. What the
+        // bank did is in the snapshot the pane is about to redraw from, and in the
+        // sentence appended here when the work is not where the caller left it.
+        Err(e) => Err(ApiError(match wip.as_deref() {
+            Some("banked") => anyhow::anyhow!(
+                "{e:#} — your uncommitted work is banked at {}, and goes back when this ends",
+                crate::git::wip_ref(&workspace)
+            ),
+            Some("conflicted") => anyhow::anyhow!(
+                "{e:#} — and your uncommitted work conflicts with the tree it came back to; \
+                 it is banked at {}",
+                crate::git::wip_ref(&workspace)
+            ),
+            _ => e,
+        })),
+    }
+}
+
+/// What became of the banked work once the rebase answered, as one word for the
+/// response and the log.
+///
+/// Three outcomes and a rule for each, and the rule that matters is the middle
+/// one: a rebase left **stopped part-way** owns the tree, so the bank waits for it
+/// to be finished or aborted. A rebase that failed without starting does not own
+/// anything, and the work goes straight back rather than being left parked behind
+/// an error the caller has already read.
+async fn settle_bank(
+    app: &Arc<AppState>,
+    workspace: &str,
+    path: &std::path::Path,
+    banked: Option<&crate::git::Bank>,
+    result: &anyhow::Result<()>,
+) -> Option<String> {
+    banked?;
+    let (at, ws) = (path.to_path_buf(), workspace.to_string());
+    let mid_rebase = {
+        let p = at.clone();
+        crate::proc::run_blocking("looking for a stopped rebase", move || {
+            crate::git::rebase_in_progress(&p)
+        })
+        .await
+        .unwrap_or(false)
+    };
+    if result.is_err() && mid_rebase {
+        return Some("banked".to_string());
+    }
+    let put_back = crate::proc::run_blocking("putting the banked work back", move || {
+        crate::git::restore_wip(&at, &ws)
+    })
+    .await;
+    match put_back {
+        Ok(Ok(())) => {
+            app.set_banked(workspace, None).await;
+            Some("reapplied".to_string())
+        }
+        Ok(Err(e)) | Err(e) => {
+            tracing::warn!(%workspace, "the banked work did not go back: {e:#}");
+            Some("conflicted".to_string())
+        }
     }
 }
 
@@ -5308,7 +5426,156 @@ pub async fn rebase_abort(
         .ok_or_else(|| anyhow::anyhow!("unknown workspace {workspace}"))?;
     crate::proc::run_blocking("aborting the rebase", move || crate::git::rebase_abort(&path))
         .await??;
+    /* **An abort means undo, so the banked work comes home with it.** The press
+       that banked it is the press being undone, and leaving the strip up after the
+       tree has gone back to where it started would be the pane insisting on a state
+       nobody is in. A conflict here keeps the bank, like every other apply. */
+    let restored = match (
+        app.workspace_banked(&workspace).await,
+        app.workspace_path(&workspace).await,
+    ) {
+        (Some(_), Some(at)) => {
+            let ws = workspace.clone();
+            let put_back = crate::proc::run_blocking("putting the banked work back", move || {
+                crate::git::restore_wip(&at, &ws)
+            })
+            .await;
+            match put_back {
+                Ok(Ok(())) => {
+                    app.set_banked(&workspace, None).await;
+                    Some("reapplied")
+                }
+                Ok(Err(e)) | Err(e) => {
+                    tracing::warn!(%workspace, "the banked work did not go back: {e:#}");
+                    Some("conflicted")
+                }
+            }
+        }
+        _ => None,
+    };
     let _ = app.reconcile(&workspace).await;
     app.notify().await;
-    Ok(Json(json!({ "aborted": workspace })))
+    Ok(Json(json!({ "aborted": workspace, "wip": restored })))
+}
+
+/// Put banked work back by hand — the strip's own button.
+///
+/// The retry after you have cleared whatever the apply hit the first time, and the
+/// reason the bank is not thrown away on a conflict. Refused under a working agent
+/// for `file_verb`'s reason: the tree changing beneath a turn is the one thing that
+/// makes an agent's next command read a file nobody wrote.
+pub async fn wip_restore(
+    State(app): State<Arc<AppState>>,
+    Path(workspace): Path<String>,
+) -> ApiResult<serde_json::Value> {
+    let path = app
+        .workspace_path(&workspace)
+        .await
+        .ok_or_else(|| anyhow::anyhow!("unknown workspace {workspace}"))?;
+    if app.workspace_banked(&workspace).await.is_none() {
+        refuse!("{workspace} has nothing banked");
+    }
+    if let Some(who) = app.busy_session_in(&workspace).await {
+        refuse!("{who} is working here; wait for the turn to finish");
+    }
+    /* Git cannot apply anything onto unmerged paths, and its own refusal is about
+       the index rather than about the conflict sitting in front of you. Which is
+       usually *this* bank's conflict: the press that put the strip there is what
+       left those markers. */
+    let p = path.clone();
+    let conflicted = crate::proc::run_blocking("looking for conflicts", move || {
+        crate::git::unmerged(&p).unwrap_or_default()
+    })
+    .await?;
+    if !conflicted.is_empty() {
+        refuse!(
+            "settle the conflict in {} first — git cannot apply anything over unmerged paths",
+            conflicted.iter().take(3).cloned().collect::<Vec<_>>().join(", ")
+        );
+    }
+
+    let (at, ws) = (path.clone(), workspace.clone());
+    let put_back = crate::proc::run_blocking("putting the banked work back", move || {
+        crate::git::restore_wip(&at, &ws)
+    })
+    .await?;
+    let _ = app.reconcile(&workspace).await;
+    match put_back {
+        Ok(()) => {
+            app.set_banked(&workspace, None).await;
+            app.notify().await;
+            Ok(Json(json!({ "restored": workspace })))
+        }
+        // The bank stands, so the pane keeps its strip and the sentence says where
+        // the work is rather than only that this did not work.
+        Err(e) => {
+            app.notify().await;
+            Err(ApiError(anyhow::anyhow!(
+                "{e:#} — it is still banked at {}",
+                crate::git::wip_ref(&workspace)
+            )))
+        }
+    }
+}
+
+/// Forget banked work.
+///
+/// The one destructive verb here, and the SPA confirms it by name: git keeps no
+/// reflog for a ref nobody else points at, so once the object is collected the
+/// content is gone. Deliberately allowed while a session is working — this touches
+/// a ref and never the tree.
+pub async fn wip_discard(
+    State(app): State<Arc<AppState>>,
+    Path(workspace): Path<String>,
+) -> ApiResult<serde_json::Value> {
+    let path = app
+        .workspace_path(&workspace)
+        .await
+        .ok_or_else(|| anyhow::anyhow!("unknown workspace {workspace}"))?;
+    let Some(bank) = app.workspace_banked(&workspace).await else {
+        refuse!("{workspace} has nothing banked");
+    };
+    let ws = workspace.clone();
+    crate::proc::run_blocking("dropping the bank", move || {
+        crate::git::discard_wip(&path, &ws)
+    })
+    .await??;
+    app.set_banked(&workspace, None).await;
+    // Said out loud with the sha, because for a little while longer this is still
+    // recoverable by hand and nothing else will ever name it again.
+    tracing::info!(%workspace, "dropped the bank; it was {}", bank.sha);
+    app.notify().await;
+    Ok(Json(json!({ "discarded": workspace })))
+}
+
+/// Hand the conflict to the session that is already in this workspace.
+///
+/// **It tells, it does not spawn.** The changed-files pane belongs to a selected
+/// session, so by the time this button is on screen there is one; a workspace with
+/// no live session is told to open one rather than having an agent started for it,
+/// because a press that says "resolve" should not also be the press that starts an
+/// agent you did not ask for.
+///
+/// It lands as an ordinary user turn, which is what it is: you pointed at a
+/// conflict and asked for it to be sorted out.
+pub async fn wip_resolve(
+    State(app): State<Arc<AppState>>,
+    Path(workspace): Path<String>,
+) -> ApiResult<serde_json::Value> {
+    let Some(bank) = app.workspace_banked(&workspace).await else {
+        refuse!("{workspace} has nothing banked");
+    };
+    let Some(id) = app.live_sessions_in(&workspace).await.first().copied() else {
+        refuse!("no live session in {workspace} — open one here and press again");
+    };
+    let text = format!(
+        "The rebase left my uncommitted work conflicting with the new base. Both sides are in \
+         the working tree as conflict markers, and my work as it was is banked at {} \
+         (`git stash show -p {}` to read it). Please resolve the conflicts, keep both intents \
+         where they can both stand, leave the result uncommitted, and tell me what you kept.",
+        crate::git::wip_ref(&workspace),
+        bank.sha
+    );
+    type_user_turn(&app, id, &text).await?;
+    Ok(Json(json!({ "told": id })))
 }

@@ -100,6 +100,14 @@ pub struct Workspace {
     /// Last reconcile's measurements. See [`Tree`] for why this is not a set of
     /// side maps.
     pub tree: Tree,
+    /// Uncommitted work parked out of a rebase's way, if any is.
+    ///
+    /// **Not on [`Tree`], deliberately.** Everything there is measured by the
+    /// sweep, and this is not: the daemon knows because it did the banking, and
+    /// asking git per workspace per sweep would be an eighth exec on a walk whose
+    /// whole cost is execs. A restart re-derives every one of these with a single
+    /// `git for-each-ref` on main, since refs are per-repository.
+    pub banked: Option<crate::git::Bank>,
 }
 
 impl Workspace {

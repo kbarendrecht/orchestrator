@@ -13,7 +13,7 @@ cargo check                         # the daemon
 cargo test                          # 519 tests, all in-tree
 cargo clippy --all-targets          # what CI lints with, and it denies warnings
 mise run check-web                  # type-check the SPA + enforce its module graph
-mise run e2e                        # 16 flows against a real daemon, ~60s
+mise run e2e                        # 24 flows against a real daemon, ~60s
 cargo run -p orchestrator-desktop   # the app, daemon embedded in-process
 mise run shot                       # screenshot the running SPA (drives Chrome)
 mise run release                    # bump, wait for CI, tag and push
@@ -731,6 +731,31 @@ mean *this* repo; if you do, name it.
   asymmetry that matters: stage and unstage are each other's undo, while `git
   restore` overwrites the working tree and git keeps no copy of content that was
   never committed.
+- **The rebase button banks a dirty tree, and never on `refs/stash`.**
+  `git rebase --autostash` is the obvious implementation and it is wrong here, for
+  two measured reasons. A failing autostash apply **exits 0** — git says "Applying
+  autostash resulted in conflicts" and then "Successfully rebased", so
+  `rebase_onto` reads a lost re-apply as success — and it parks the work on
+  `refs/stash`, which **every worktree of a repo shares**: a `git stash` in a
+  worktree is `stash@{0}` in the main checkout, so another tree could pop work it
+  never took.
+  So `api::rebase` banks with `git::bank_wip`: `stash create`, a ref of the
+  daemon's own at `refs/orchd/wip/<workspace>`, then `reset --hard`. Three
+  properties are deliberate. The **ref goes on before the reset**, so there is no
+  window in which the work exists only as a sha in memory, and it survives
+  `git gc --prune=now`, which a bare `stash create` object does not promise. It
+  **comes off only after a clean re-apply** — `git stash apply` exits 1 on a
+  conflict and leaves both sides in the tree as `UU`, which is where they can be
+  resolved, with the bank still standing behind them. And a rebase left **stopped
+  part-way owns the tree**, so the bank waits for the abort, which puts it back
+  because an abort is the undo of the press that took it.
+  `Workspace::banked` is **not** on `Tree`, because nothing measures it in the
+  sweep: the daemon knows because it did the banking, and a restart re-derives
+  every bank in the repo with a single `git for-each-ref` on main. Unmerged paths
+  refuse the whole flow — `stash create` answers "Cannot save the current index
+  state" — and untracked files never travel, so a base that adds a path you have
+  untracked is refused by name rather than by git's own header.
+
 - **One pty exit, one observer.** `spawn::watch_session_exit` is the only thing
   that waits on a session's handle; it dispatches onward (a fix run's verdict goes
   to `fix_pr::settle`). A second `pty.wait()` on the same handle would work and
