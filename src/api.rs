@@ -1208,24 +1208,16 @@ pub async fn file_verb(
         .to_string_lossy()
         .into_owned();
 
-    let busy = {
-        let inner = app.inner.read().await;
-        inner
-            .sessions
-            .values()
-            .any(|s| s.workspace == body.workspace && s.state.is_busy())
-    };
-    if busy {
-        refuse!("an agent is mid-turn in {} — wait for it", body.workspace);
+    if let Some(who) = app.busy_session_in(&body.workspace).await {
+        refuse!("{who} is mid-turn in {} — wait for it", body.workspace);
     }
 
     let (at, want) = (root.clone(), rel.clone());
-    let has = tokio::task::spawn_blocking(move || {
-        crate::git::status(&at, None, crate::git::Untracked::Each)
+    let has = crate::proc::run_blocking("reading the status", move || {
+        crate::git::status_of(&at, &want)
     })
-    .await
-    .context("reading the status panicked")??;
-    let in_set = |set: &[crate::model::ChangedFile]| set.iter().any(|f| f.path == want);
+    .await??;
+    let in_set = |set: &[crate::model::ChangedFile]| set.iter().any(|f| f.path == rel);
     let ok = match verb {
         V::Stage => in_set(&has.unstaged) || in_set(&has.untracked),
         V::Unstage => in_set(&has.staged),
@@ -1235,10 +1227,9 @@ pub async fn file_verb(
         refuse!("{rel} has nothing to {}", body.verb);
     }
 
-    let (at, p) = (root.clone(), rel.clone());
-    tokio::task::spawn_blocking(move || crate::git::file_verb(&at, verb, &p))
-        .await
-        .context("the git call panicked")??;
+    let (at, p) = (root, rel.clone());
+    crate::proc::run_blocking("the file verb", move || crate::git::file_verb(&at, verb, &p))
+        .await??;
     // The pane is drawn from the reconcile, so it has to be the fresh one.
     let _ = app.reconcile(&body.workspace).await;
     Ok(Json(json!({ "done": body.verb, "path": rel })))
@@ -2222,22 +2213,12 @@ async fn swap_with_main_inner(
 
     // Sessions first: the cheapest refusal. Only the ones actually working — an
     // idle session at its prompt is the normal place to swap from.
-    {
-        let inner = app.inner.read().await;
-        let busy = |ws: &str| -> Option<String> {
-            inner
-                .sessions
-                .values()
-                .find(|s| s.workspace == ws && s.state.is_busy())
-                .map(|s| s.label().map(str::to_owned).unwrap_or_else(|| crate::model::short_id(&s.id)))
-        };
-        for (label, ws) in [("main", MAIN), ("this worktree", workspace.as_str())] {
-            if let Some(who) = busy(ws) {
-                refuse!(
-                    "{label} has an agent mid-turn ({who}); the swap replaces every file \
-                     under it, so let that turn finish first"
-                );
-            }
+    for (label, ws) in [("main", MAIN), ("this worktree", workspace.as_str())] {
+        if let Some(who) = app.busy_session_in(ws).await {
+            refuse!(
+                "{label} has an agent mid-turn ({who}); the swap replaces every file \
+                 under it, so let that turn finish first"
+            );
         }
     }
 
@@ -3886,7 +3867,17 @@ pub async fn diff_summary(
     // Off the runtime: a `git diff` over the changeset, per click.
     Ok(Json(
         crate::proc::run_blocking("the diff summary", move || {
-            crate::diff::summary(&path, &base)
+            let mut sum = crate::diff::summary(&path, &base)?;
+            /* The pane's git verbs are drawn from these two, and this route serves
+               the very same rows the rail's list does — so leaving them unset made
+               one file offer `stage` in one pane and nothing in the other. One more
+               git child per click, on a request that has already run two diffs.
+               Degraded rather than fatal: the diff is what was asked for. */
+            match crate::git::status(&path, None, crate::git::Untracked::Collapsed) {
+                Ok(set) => crate::diff::mark_worktree_state(&mut sum.files, &set),
+                Err(e) => tracing::warn!("no git verbs on this diff: {e:#}"),
+            }
+            Ok::<_, anyhow::Error>(sum)
         })
         .await??,
     ))
@@ -4405,8 +4396,9 @@ pub async fn pr_triage(
 /// this agent amends is work somebody else left there.
 ///
 /// It takes you to a live session already on the branch when there is one rather
-/// than refusing (`spawn_command_session`), which is why the gate is asked *after*
-/// that: landing on the pane that is already doing this is not a refusal case.
+/// than refusing, which is why the gate is asked *after* that. Both live in
+/// `spawn_command_session`: the route asked the same two questions over again to
+/// decide what that function decides three lines later.
 pub async fn pr_handle_review(
     State(app): State<Arc<AppState>>,
     Path(number): Path<u64>,
@@ -4415,16 +4407,6 @@ pub async fn pr_handle_review(
         let inner = app.inner.read().await;
         pr_from_poll(&inner.prs, number)?
     };
-    // Only when a tree already exists: gating a PR whose worktree has not been cut
-    // yet would read a workspace that is not there and refuse nothing, and the cut
-    // itself is `ensure_pr_worktree`'s to make.
-    if let Some(ws) = crate::spawn::worktree_holding(&app, &pr.head_ref).await {
-        if app.live_sessions_in(&ws).await.is_empty() {
-            if let Some(g) = crate::triage::gate(&app, number, &ws).await? {
-                refuse!("{}", g.say());
-            }
-        }
-    }
     let session = crate::spawn::spawn_command_session(
         &app,
         number,
@@ -5273,15 +5255,8 @@ pub async fn rebase(
     if !clean {
         refuse!("uncommitted changes — commit or stash before rebasing");
     }
-    {
-        let inner = app.inner.read().await;
-        if inner
-            .sessions
-            .values()
-            .any(|s| s.workspace == workspace && s.state.is_busy())
-        {
-            refuse!("a session is working here; rebasing under it would fight it");
-        }
+    if let Some(who) = app.busy_session_in(&workspace).await {
+        refuse!("{who} is working here; rebasing under it would fight it");
     }
 
     // Refresh the base first, or "behind" is answered from a stale ref. A failed

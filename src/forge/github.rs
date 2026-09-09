@@ -70,7 +70,7 @@ pub fn resolve_token(token_file: Option<&Path>) -> Result<Token> {
     let argv = ["gh", "auth", "token"].map(String::from);
     let out = match crate::proc::run_bounded(Path::new("/"), 15, &argv, "gh auth token") {
         Ok(out) => out,
-        Err(e) if not_installed(&e) => bail!(
+        Err(e) if crate::proc::not_installed(&e) => bail!(
             "no GitHub credential: install `gh` and run `gh auth login`, or point \
              github_token_file at a token"
         ),
@@ -91,15 +91,6 @@ pub fn resolve_token(token_file: Option<&Path>) -> Result<Token> {
     Ok(Token {
         value: v,
         source: TokenSource::GhCli,
-    })
-}
-
-/// Was the spawn refused because the binary is not there? `run_bounded` wraps the
-/// io error in context, so the kind is read off the chain rather than the top.
-fn not_installed(e: &anyhow::Error) -> bool {
-    e.chain().any(|c| {
-        c.downcast_ref::<std::io::Error>()
-            .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound)
     })
 }
 

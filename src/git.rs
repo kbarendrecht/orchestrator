@@ -233,6 +233,21 @@ pub fn status(cwd: &Path, exclude: Option<&str>, untracked: Untracked) -> Result
     Ok(parse_status(&raw, exclude))
 }
 
+/// The same answer for **one path**, for a caller holding a path rather than
+/// drawing a tree.
+///
+/// A pathspec because the unscoped call walks the whole worktree, and a worktree
+/// is the one place that walk is never cheap: `configure_repo` sets fsmonitor on
+/// main only, so every other tree pays a full scan (§2). `file_verb` asks about a
+/// single file per click and used to pay that.
+pub fn status_of(cwd: &Path, rel: &str) -> Result<FileSet> {
+    let raw = git_raw(
+        cwd,
+        &["status", "--porcelain=v2", "--untracked-files=all", "-z", "--", rel],
+    )?;
+    Ok(parse_status(&raw, None))
+}
+
 fn parse_status(raw: &[u8], exclude: Option<&str>) -> FileSet {
     let mut set = FileSet::default();
     let mut records = raw
@@ -1867,14 +1882,6 @@ pub fn stash(cwd: &Path) -> Result<()> {
 /// linter over the files it was given. This is a backstop against hanging.
 const PRE_COMMIT_TIMEOUT_SECS: u64 = 300;
 
-/// Does this error chain end in the kernel saying the binary is not there?
-fn is_not_found(e: &anyhow::Error) -> bool {
-    e.chain().any(|c| {
-        c.downcast_ref::<std::io::Error>()
-            .map(|io| io.kind() == std::io::ErrorKind::NotFound)
-            .unwrap_or(false)
-    })
-}
 
 /// What running the repo's pre-commit hooks concluded.
 #[derive(Debug, PartialEq, Eq)]
@@ -1931,7 +1938,7 @@ pub fn pre_commit(cwd: &Path, files: &[String]) -> Result<PreCommit> {
         // through `anyhow::Context`, so the kernel's own answer is a source rather
         // than the top of the chain — and "not installed" has to keep reading as a
         // warning, not as a refused review.
-        Err(e) if is_not_found(&e) => return Ok(PreCommit::NotInstalled),
+        Err(e) if crate::proc::not_installed(&e) => return Ok(PreCommit::NotInstalled),
         Err(e) => return Err(e).context("running pre-commit"),
     };
 

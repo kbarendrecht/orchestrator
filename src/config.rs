@@ -592,10 +592,10 @@ fn tracker_or_warn<'de, D: serde::Deserializer<'de>>(
     d: D,
 ) -> std::result::Result<Option<Tracker>, D::Error> {
     let raw = Option::<serde_json::Value>::deserialize(d)?;
+    // `null` arrives here as `None`, not as `Some(Value::Null)`: serde_json visits
+    // none for it before `Value` is ever built. So the key being absent and the key
+    // being null are one case, and there is no second one to test for.
     let Some(raw) = raw else { return Ok(None) };
-    if raw.is_null() {
-        return Ok(None);
-    }
     match serde_json::from_value::<Tracker>(raw) {
         Ok(t) => Ok(Some(t)),
         Err(e) => {

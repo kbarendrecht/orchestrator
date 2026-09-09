@@ -39,6 +39,20 @@ where
         .with_context(|| format!("{what} panicked"))
 }
 
+/// Was the spawn refused because the binary is not there?
+///
+/// Read off the chain rather than the top, because [`run_bounded`] wraps the io
+/// error in context. It lives here rather than beside either caller: it is a
+/// property of how a bounded spawn reports a missing binary, so the next
+/// `run_bounded` caller that wants "not installed" rather than "failed" finds it
+/// instead of writing a third copy. `git` and `gh` each had one.
+pub fn not_installed(e: &anyhow::Error) -> bool {
+    e.chain().any(|c| {
+        c.downcast_ref::<std::io::Error>()
+            .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound)
+    })
+}
+
 /// Run `argv` in `cwd`, killed if it outlives `timeout_secs`.
 ///
 /// The child leads **its own process group**, and the *group* is what gets

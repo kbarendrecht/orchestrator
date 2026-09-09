@@ -1235,6 +1235,19 @@ pub async fn spawn_command_session(
         if let Some(id) = live.first() {
             return Ok(*id);
         }
+        /* **The same worktree gates as the other review verb**, because the pass
+           writes into that tree: a rebase stopped part-way cannot take a commit, a
+           running `fix-pr` is rewriting the same history, and a dirty tree means
+           the first thing this agent amends is work somebody else left there.
+
+           Here rather than at the route, and after the live-session branch above
+           for the reason that branch exists: landing on the pane already doing this
+           is not a refusal case. The route used to re-derive both reads to decide
+           the same thing, which is two spellings of "is anyone on this branch" —
+           the pair `branch_busy` was written to be the only definition of. */
+        if let Some(g) = crate::triage::gate(app, pr, &ws).await? {
+            bail!("{}", g.say());
+        }
         return start_with_prompt(app, &ws, pr, command).await;
     }
 
@@ -1314,7 +1327,7 @@ pub(crate) fn rebase_target(
 /// ref: main's branches accumulate and are never removed (§2), so a PR whose head
 /// main once visited would otherwise send a fix or a review run into the main
 /// checkout — rebasing and force-pushing the one tree every worktree is cut from.
-pub(crate) async fn worktree_holding(app: &Arc<AppState>, head_ref: &str) -> Option<String> {
+async fn worktree_holding(app: &Arc<AppState>, head_ref: &str) -> Option<String> {
     let inner = app.inner.read().await;
     inner
         .workspaces

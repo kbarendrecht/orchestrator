@@ -83,9 +83,7 @@ pub struct DiffFile {
     ///
     /// Both `false` is the ordinary case (changed in a commit, clean on disk) and
     /// gets no verbs at all.
-    #[serde(default)]
     pub staged: bool,
-    #[serde(default)]
     pub unstaged: bool,
 }
 
@@ -181,8 +179,8 @@ pub fn summary(cwd: &Path, base: &str) -> Result<DiffSummary> {
             // Binary and generated content is collapsed rather than rendered.
             eager: !binary && (row.added + row.deleted) as usize <= EAGER_LINE_CAP,
             old_path,
-            // Filled by the caller, which has the `git status` sets already: this
-            // is a diff against a ref and knows nothing about the index.
+            // A diff against a ref knows nothing about the index, so both are
+            // answered by [`mark_worktree_state`] rather than here.
             staged: false,
             unstaged: false,
         });
@@ -195,6 +193,28 @@ pub fn summary(cwd: &Path, base: &str) -> Result<DiffSummary> {
         added: total_add,
         deleted: total_del,
     })
+}
+
+/// Join `git status`'s two answers onto a diff's rows, by path.
+///
+/// **One function because a fill-it-yourself contract fails silently.** Both
+/// fields default to `false`, which is indistinguishable from a real answer, and
+/// only one of `summary`'s two callers filled them: the pane drew the same file
+/// with `stage` and `discard changes` from the rail's list and with no git verbs
+/// at all from `/api/diff`, depending on which one had produced the row.
+///
+/// Untracked rows are not touched. `DiffFile::untracked` sets them itself, since a
+/// file git has never seen is unstaged by definition.
+pub fn mark_worktree_state(files: &mut [DiffFile], set: &crate::model::FileSet) {
+    let by_path = |rows: &[crate::model::ChangedFile]| -> std::collections::HashSet<String> {
+        rows.iter().map(|f| f.path.clone()).collect()
+    };
+    let staged = by_path(&set.staged);
+    let unstaged = by_path(&set.unstaged);
+    for f in files {
+        f.staged = staged.contains(&f.path);
+        f.unstaged = unstaged.contains(&f.path);
+    }
 }
 
 // ---------------------------------------------------------------------------

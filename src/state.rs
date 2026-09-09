@@ -594,13 +594,6 @@ impl AppState {
         }
     }
 
-    /// Write the session records without pushing a snapshot, right now.
-    ///
-    /// Immediate rather than coalesced, for a caller that knows there is no later.
-    pub async fn persist_now(&self) {
-        self.persist().await;
-    }
-
     /// The resume set as it stands: one record per session, live state included.
     ///
     /// Shutdown takes this **before** it kills anything, because `was_live` is read
@@ -647,10 +640,12 @@ impl AppState {
     /// session board has been used for a while, on a tokio worker thread, several
     /// times a second while an agent is working.
     ///
-    /// Coalescing costs at most a second of records on a *crash* — an ordinary exit
-    /// goes through [`Self::persist_now`], and the flush below always writes the
-    /// state as it is when it runs, not as it was when the flag was set. What it
-    /// buys is that a burst of hooks writes the file once rather than ten times.
+    /// Coalescing costs at most a second of records on a *crash*. An ordinary exit
+    /// loses nothing: [`crate::Server::shutdown`] captures the resume set before it
+    /// kills anything and writes that set itself, and the flush below always writes
+    /// the state as it is when it runs rather than as it was when the flag was set.
+    /// What it buys is that a burst of hooks writes the file once rather than ten
+    /// times.
     fn persist_soon(self: &Arc<Self>) {
         // Already scheduled: the pending flush will see whatever this change made,
         // because it reads the records when it runs.
@@ -1136,6 +1131,29 @@ impl AppState {
         }
     }
 
+    /// Who is mid-turn in this workspace, named the way the rail names them.
+    ///
+    /// The refusal every route that writes into a tree owes: staging under a
+    /// working agent, swapping the checkout beneath it or rebasing while it works
+    /// all change what its next command sees. Three routes each spelled this
+    /// filter out by hand, and the distinction it turns on — `is_busy`, not
+    /// `is_live` — has been got wrong here before.
+    ///
+    /// A name rather than a bool because two of the three say who, and a refusal
+    /// that names the session is the one you can act on.
+    pub async fn busy_session_in(&self, workspace: &str) -> Option<String> {
+        let inner = self.inner.read().await;
+        inner
+            .sessions
+            .values()
+            .find(|s| s.workspace == workspace && s.state.is_busy())
+            .map(|s| {
+                s.label()
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| crate::model::short_id(&s.id))
+            })
+    }
+
     /// Sessions in a workspace that are neither `Exited` nor `Archived`, checked
     /// against the process (`pid_alive`) rather than in-memory state (§8b).
     pub async fn live_sessions_in(&self, workspace: &str) -> Vec<SessionId> {
@@ -1269,20 +1287,12 @@ impl AppState {
                     let mut files = crate::diff::summary(&path, b)
                         .map(|s| s.files)
                         .unwrap_or_default();
-                    /* Which of these rows is *also* uncommitted, from the status
-                       already read above. The pane's git verbs turn on this: the
-                       list is a diff against the merge base, so most rows on a PR
-                       branch differ because of a commit and have nothing to stage
-                       or discard. Joined by path, which is what `FileSet` is keyed
-                       on. */
-                    let staged: std::collections::HashSet<&str> =
-                        set.staged.iter().map(|f| f.path.as_str()).collect();
-                    let unstaged: std::collections::HashSet<&str> =
-                        set.unstaged.iter().map(|f| f.path.as_str()).collect();
-                    for f in &mut files {
-                        f.staged = staged.contains(f.path.as_str());
-                        f.unstaged = unstaged.contains(f.path.as_str());
-                    }
+                    // Which of these rows is *also* uncommitted, from the status
+                    // already read above. The pane's git verbs turn on this: the
+                    // list is a diff against the merge base, so most rows on a PR
+                    // branch differ because of a commit and have nothing to stage
+                    // or discard.
+                    crate::diff::mark_worktree_state(&mut files, &set);
                     files.extend(set.untracked.iter().map(crate::diff::DiffFile::untracked));
                     files.sort_by(|a, b| a.path.cmp(&b.path));
                     let total = files.len() as u32;
