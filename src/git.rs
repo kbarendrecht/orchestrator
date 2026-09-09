@@ -1585,11 +1585,17 @@ pub fn banked_wip(cwd: &Path, workspace: &str) -> Option<Bank> {
     })
 }
 
-/// Every bank in the repository, as `(workspace, bank)`.
+/// Every bank in the repository, as `(ref, bank)`.
 ///
 /// One exec for the whole repo, which is what keeps this out of the sweep: refs
 /// are per-repository, so the daemon can re-derive at boot what it knew before it
 /// was restarted rather than asking each worktree.
+///
+/// **The ref, not the workspace it belongs to.** [`wip_ref`] mangles the two names
+/// git will not take (`x.lock`, `trailing.`), and reading a workspace back out of
+/// a ref would have to undo that — which it cannot do without guessing. The caller
+/// matches the other way instead: it knows its workspaces, and `wip_ref` is a
+/// function it can run on each of them.
 pub fn all_banked(main: &Path) -> Vec<(String, Bank)> {
     let Ok(out) = git(
         main,
@@ -1600,9 +1606,8 @@ pub fn all_banked(main: &Path) -> Vec<(String, Bank)> {
     out.lines()
         .filter_map(|line| {
             let (name, sha) = line.trim().split_once(' ')?;
-            let ws = name.rsplit('/').next()?.to_string();
             Some((
-                ws,
+                name.to_string(),
                 Bank {
                     files: wip_files(main, sha),
                     sha: sha.to_string(),
@@ -2367,8 +2372,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// The three file verbs, and the asymmetry that decides which is confirmed.
-    ///
     /// The bank is a round trip, and both halves are exact: staged stays staged,
     /// unstaged stays unstaged, and the tree in between is clean enough to rebase.
     #[test]
@@ -2440,13 +2443,24 @@ mod tests {
         std::fs::write(main.join("f.txt"), "two\n").unwrap();
         bank_wip(&main, "billing").unwrap().expect("banked");
 
-        let mut found: Vec<String> = all_banked(&main).into_iter().map(|(ws, _)| ws).collect();
+        let mut found: Vec<String> = all_banked(&main).into_iter().map(|(at, _)| at).collect();
         found.sort();
-        assert_eq!(found, vec!["billing".to_string(), "invoice".to_string()]);
+        assert_eq!(
+            found,
+            vec![wip_ref("billing"), wip_ref("invoice")],
+            "the ref is the answer, because a mangled one cannot be read backwards"
+        );
+
+        // The name that made the mangling necessary, listed by the ref a caller can
+        // compute rather than by a workspace nobody could recover from it.
+        std::fs::write(main.join("f.txt"), "three\n").unwrap();
+        bank_wip(&main, "thing.lock").unwrap().expect("banked");
+        assert!(all_banked(&main).iter().any(|(at, _)| *at == wip_ref("thing.lock")));
 
         discard_wip(&main, "invoice").unwrap();
-        assert_eq!(all_banked(&main).len(), 1, "a dropped bank is gone from the list");
+        assert_eq!(all_banked(&main).len(), 2, "a dropped bank is gone from the list");
         assert!(banked_wip(&main, "invoice").is_none());
+        assert!(banked_wip(&main, "thing.lock").is_some(), "and only that one went");
     }
 
     /// Git names the paths under its header and then leaves the margin for advice,
@@ -2481,6 +2495,8 @@ mod tests {
         main
     }
 
+    /// The three file verbs, and the asymmetry that decides which is confirmed.
+    ///
     /// Stage and unstage are each other's undo. Discard is not undoable by git at
     /// all — `restore` overwrites the working tree from the index and there is no
     /// reflog for content that was never committed — which is the whole reason the

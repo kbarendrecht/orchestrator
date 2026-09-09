@@ -870,9 +870,16 @@ async fn reconcile_all(app: &Arc<AppState>) {
 /// every bank there is. The alternative was a field on `Tree` and an eighth git
 /// child per tree per sweep, on a walk whose entire cost is child processes.
 ///
-/// A bank whose workspace the daemon no longer knows is left alone rather than
-/// cleaned up: the ref is the only record of that work, and a tree that comes back
-/// (a `revive`, a PR flow rebuilding it) finds its strip still there.
+/// **A bank is matched to a workspace by computing its ref, never by reading a
+/// workspace out of one.** `git::wip_ref` mangles the two names git will not take,
+/// so the reverse is a guess — and the two names it exists for would have been the
+/// two it got wrong.
+///
+/// A bank with no workspace to attach to is logged and left where it is. The ref is
+/// the only record of that work, and this runs once per start: a tree registered
+/// later in this process (a `revive`, a PR flow rebuilding one) gets its strip back
+/// on the next start rather than the moment it appears. Worth knowing before
+/// trusting the strip to be the whole truth; `git for-each-ref refs/orchd/wip` is.
 async fn adopt_banked_work(app: &Arc<AppState>) {
     let main = app.cfg.main_checkout.clone();
     let Ok(found) = crate::proc::run_blocking("looking for banked work", move || {
@@ -882,16 +889,21 @@ async fn adopt_banked_work(app: &Arc<AppState>) {
     else {
         return;
     };
-    for (workspace, bank) in found {
-        if app.workspace_path(&workspace).await.is_none() {
-            tracing::info!(
-                "{} holds banked work and no workspace of that name is registered",
-                crate::git::wip_ref(&workspace)
-            );
-            continue;
+    if found.is_empty() {
+        return;
+    }
+    let known: Vec<String> = {
+        let inner = app.inner.read().await;
+        inner.workspaces.keys().cloned().collect()
+    };
+    for (at, bank) in found {
+        match known.iter().find(|ws| crate::git::wip_ref(ws) == at) {
+            Some(workspace) => {
+                tracing::info!(%workspace, files = bank.files, "adopted banked work at {}", bank.sha);
+                app.set_banked(workspace, Some(bank)).await;
+            }
+            None => tracing::info!("{at} holds banked work and names no workspace we know"),
         }
-        tracing::info!(%workspace, files = bank.files, "adopted banked work at {}", bank.sha);
-        app.set_banked(&workspace, Some(bank)).await;
     }
 }
 

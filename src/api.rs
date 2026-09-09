@@ -5285,6 +5285,20 @@ pub async fn rebase(
     if let Some(who) = app.busy_session_in(&workspace).await {
         refuse!("{who} is working here; rebasing under it would fight it");
     }
+    /* **One bank at a time, or the second press loses the first.** `update-ref`
+       overwrites, which would leave the earlier WIP commit unreferenced with
+       nothing naming it; and on a *clean* tree there is nothing to bank, so the
+       record would be cleared below while the ref stayed on disk — the strip gone
+       and the work reachable only after a restart. The pane hides the button while
+       a strip is up, and this route is one curl away from anybody. */
+    if let Some(b) = app.workspace_banked(&workspace).await {
+        refuse!(
+            "{} file(s) from an earlier rebase are still banked at {} — put them back or \
+             discard them first",
+            b.files,
+            crate::git::wip_ref(&workspace)
+        );
+    }
 
     /* **A dirty tree is banked rather than refused, and that is the whole change.**
        It used to say "commit or stash before rebasing", which is a refusal you
@@ -5350,7 +5364,19 @@ pub async fn rebase(
     match result {
         Ok(()) => Ok(Json(json!({
             "rebased": workspace,
-            "warning": warning,
+            /* **A rebase that could not put the work back is not a plain success.**
+               The pane toasts the verb on a 200 and reads `warning` for anything
+               else the call has to say, so a bank left standing rides that channel
+               too: the strip alone is a signal in a different part of the screen
+               from the one you just pressed. Joined rather than replaced, because a
+               stale base is worth knowing about at the same time. */
+            "warning": match (&warning, wip.as_deref()) {
+                (w, Some("conflicted")) => Some(match w {
+                    Some(w) => format!("{w} · your uncommitted work did not go back; it is banked"),
+                    None => "your uncommitted work did not go back; it is banked".to_string(),
+                }),
+                (w, _) => w.clone(),
+            },
             "wip": wip,
             "banked_files": banked.as_ref().map(|b| b.files),
         }))),

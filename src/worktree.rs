@@ -126,7 +126,30 @@ pub async fn preflight(app: &Arc<AppState>, workspace: &str) -> Result<Preflight
         },
     });
 
-    // 4. Transcript copied. The original in ~ survives teardown, but the copy
+    /* 4. Nothing banked. **A banked tree is clean on disk**, which is the whole
+          point of the bank and exactly what makes check 2 useless here: `bank_wip`
+          resets the tree, so `git status --porcelain` is empty while the work lives
+          in `refs/orchd/wip/<ws>`. Teardown drops the *record*, and the record is
+          how the strip and every button on it find that ref again — `reap_old` runs
+          this unattended after `worktree_retention_days`, so without this a
+          conflicted re-apply nobody came back to is collected along with the tree
+          that would have offered it back. The ref survives, and nothing points at
+          it. */
+    let banked = app.workspace_banked(workspace).await;
+    checks.push(Check {
+        name: "nothing banked",
+        passed: banked.is_none(),
+        detail: match &banked {
+            None => "no work parked out of a rebase's way".into(),
+            Some(b) => format!(
+                "{} file(s) banked at {} — put them back or discard them first",
+                b.files,
+                git::wip_ref(workspace)
+            ),
+        },
+    });
+
+    // 5. Transcript copied. The original in ~ survives teardown, but the copy
     //    protects against Claude Code pruning and against a later name
     //    collision (§2).
     let copied = transcripts_archived(app, workspace).await;
@@ -136,7 +159,7 @@ pub async fn preflight(app: &Arc<AppState>, workspace: &str) -> Result<Preflight
         detail: copied.1,
     });
 
-    // 5. Recovery record written.
+    // 6. Recovery record written.
     let recovery = recovery_recorded(app, workspace).await;
     checks.push(Check {
         name: CHECK_RECOVERY,
@@ -144,7 +167,7 @@ pub async fn preflight(app: &Arc<AppState>, workspace: &str) -> Result<Preflight
         detail: recovery.1,
     });
 
-    // 6. Processes stopped.
+    // 7. Processes stopped.
     let attached = {
         let inner = app.inner.read().await;
         inner
@@ -796,6 +819,65 @@ mod tests {
             "and keeps what a resume rebuilds the tree from"
         );
         drop(inner);
+        let _ = std::fs::remove_dir_all(main.parent().unwrap());
+    }
+
+    /// **Banked work makes a tree look clean, and the reaper is unattended.**
+    ///
+    /// `bank_wip` resets the tree, so `git status --porcelain` is empty while the
+    /// work lives in a ref the *record* is how anything finds again — and teardown
+    /// drops the record. Without the check this test names, a conflicted re-apply
+    /// nobody came back to went out with the tree after the retention window, and
+    /// the ref was left with nothing pointing at it.
+    #[tokio::test]
+    async fn an_old_tree_with_banked_work_is_not_reaped() {
+        use crate::model::{ArchiveState, Session};
+
+        let (main, wt, sha) = repo_with_a_worktree("banked");
+        let app = crate::testutil::app_at(
+            &main,
+            r#""worktree_retention_days":60,"upstream_ref":"develop","upstream_remote":"origin""#,
+        );
+        app.register_worktree("banked", wt.clone(), Some("worktree-old".into())).await;
+
+        let id = uuid::Uuid::new_v4();
+        {
+            let mut inner = app.inner.write().await;
+            let mut s = Session::new(id, "banked".to_string(), wt.clone(), None);
+            s.created_at = std::time::SystemTime::now() - std::time::Duration::from_secs(90 * 86_400);
+            s.transcript_archived = true;
+            s.recovery = Some(ArchiveState::Recoverable {
+                name: "banked".into(),
+                branch: "worktree-old".into(),
+                head_sha: sha,
+            });
+            s.set_state(State::Archived { resumable: true });
+            inner.sessions.insert(id, s);
+        }
+
+        // Real work, banked the way the rebase button banks it: the ref holds it and
+        // the tree is spotless.
+        std::fs::write(wt.join("f"), "uncommitted, and only here").unwrap();
+        let bank = git::bank_wip(&wt, "banked").unwrap().expect("banked");
+        app.set_banked("banked", Some(bank)).await;
+        assert_eq!(
+            git::status(&wt, None, git::Untracked::Each).unwrap().unstaged.len(),
+            0,
+            "the premise: a banked tree passes a clean-tree check"
+        );
+
+        let pf = preflight(&app, "banked").await.unwrap();
+        let blocked: Vec<&str> = pf.checks.iter().filter(|c| !c.passed).map(|c| c.name).collect();
+        assert!(blocked.contains(&"nothing banked"), "preflight let it through: {blocked:?}");
+
+        assert_eq!(reap_old(&app).await, 0, "the reaper took a tree with work in it");
+        assert!(wt.exists(), "the tree is gone and the ref points at nothing");
+
+        // And it goes once the work is back where a person can see it.
+        git::restore_wip(&wt, "banked").unwrap();
+        app.set_banked("banked", None).await;
+        std::fs::write(wt.join("f"), "x").unwrap();
+        assert_eq!(reap_old(&app).await, 1, "a settled tree is still reaped");
         let _ = std::fs::remove_dir_all(main.parent().unwrap());
     }
 

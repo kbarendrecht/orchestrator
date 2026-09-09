@@ -10,7 +10,7 @@ is.
 
 ```
 cargo check                         # the daemon
-cargo test                          # 519 tests, all in-tree
+cargo test                          # 522 tests, all in-tree
 cargo clippy --all-targets          # what CI lints with, and it denies warnings
 mise run check-web                  # type-check the SPA + enforce its module graph
 mise run e2e                        # 24 flows against a real daemon, ~60s

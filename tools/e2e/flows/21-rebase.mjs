@@ -131,6 +131,10 @@ export async function run(t) {
   assert.equal(handed.told, session)
   await until('the session to be told about the conflict', async () =>
     t.agentLog().includes('refs/orchd/wip/invoice'))
+  // It lands as a user turn, so the agent is now working — and everything below
+  // this line is refused while it is. Which is the right refusal: a rebase under a
+  // live turn is the one thing that guard exists for.
+  await t.settled(session)
 
   // Discard is the only verb here git cannot undo, and it is the one that clears
   // the strip when you have taken what you wanted out of the conflict.

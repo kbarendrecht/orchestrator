@@ -51,7 +51,11 @@ function renderDivergence(w) {
   }
   if (bank) {
     box.className = 'diverge on bad';
-    const t = el('span', 'dvtext', `${files(bank)} did not go back after the rebase`);
+    /* Worded for both states this reaches, which is why it does not say the apply
+       failed: a rebase stopped part-way and then finished *in a session* leaves the
+       bank standing and never tried, and `rebasing` is false by then. What is
+       always true is that the work is in the ref and not in the tree. */
+    const t = el('span', 'dvtext', `${files(bank)} banked, not in this tree`);
     // The ref is the recovery that needs nothing of ours, so it is one hover away
     // rather than in a bar that has to stay short.
     t.title = `git stash apply ${bank.at}`;
@@ -60,12 +64,15 @@ function renderDivergence(w) {
     const ws = encodeURIComponent(w.id);
     const r = el('button', 'dvbtn', 'Resolve in session');
     r.title = 'Hand the conflict to the session in this workspace';
-    r.onclick = () => act(`/api/workspace/${ws}/wip/resolve`, 'handed it over');
+    // Held down until the answer, like Rebase below. A second press here types the
+    // whole message into the agent again as a second user turn, and a second press
+    // of `Put back` fires a second apply.
+    r.onclick = () => press(r, `/api/workspace/${ws}/wip/resolve`, 'handed it over');
     box.appendChild(r);
 
     const back = el('button', 'dvbtn', 'Put back');
     back.title = 'Try the re-apply again';
-    back.onclick = () => act(`/api/workspace/${ws}/wip/restore`, 'put back');
+    back.onclick = () => press(back, `/api/workspace/${ws}/wip/restore`, 'put back');
     box.appendChild(back);
 
     // The one thing here git cannot undo: nothing else points at that object, so
@@ -77,7 +84,7 @@ function renderDivergence(w) {
       if (!await confirmBox(
         `Forget the banked work?\n\n${files(bank)} from before the rebase, and git keeps no `
         + 'copy once it is collected.', { ok: 'Discard' })) return;
-      await act(`/api/workspace/${ws}/wip/discard`, 'discarded');
+      await press(d, `/api/workspace/${ws}/wip/discard`, 'discarded');
     };
     box.appendChild(d);
     return;
@@ -106,6 +113,21 @@ function renderDivergence(w) {
 /** `3 changed files`, or `1 changed file`. */
 function files(bank) {
   return `${bank.files} changed file${bank.files === 1 ? '' : 's'}`;
+}
+
+/** `act`, with the button held down until the answer comes back.
+ *
+ *  Every button on the bank strip does something a second press would do twice —
+ *  type the conflict at the agent again, run a second apply — and the snapshot that
+ *  redraws the strip arrives after the response, not with the click.
+ */
+async function press(btn, path, verb) {
+  btn.disabled = true;
+  try {
+    await act(path, verb);
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 async function act(path, verb) {
