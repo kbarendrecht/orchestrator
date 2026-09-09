@@ -1,6 +1,6 @@
 ---
 name: fix-pr
-description: Get a pull request green — rebase it on its base, fix the red checks, amend, force-push with a lease, and watch until the checks settle. Mechanical only: never comments, never resolves a thread, never merges. Use when somebody asks you to fix, rebase or unbreak a PR's CI, or when the orchestrator hands you a fix run.
+description: Get a pull request green. Take its base branch in, fix the red checks, amend, push, and watch until the checks settle. Mechanical only: never comments, never resolves a thread, never merges the PR itself. Use when somebody asks you to fix, rebase or unbreak a PR's CI, or when the orchestrator hands you a fix run.
 ---
 
 # Get a PR green
@@ -8,7 +8,8 @@ description: Get a pull request green — rebase it on its base, fix the red che
 `/orchd:fix-pr <pr>`. Mechanical only. **Never** post a comment, re-request a
 review, open or merge a PR, or resolve a thread. Review threads are `/orchd:triage`
 and `/resolve`'s job, and a run that starts answering people is doing something
-nobody asked for.
+nobody asked for. Merging the PR is what you never do; taking its base *into* the
+branch is step 3, and on some repos that is a merge.
 
 ## What you are working on
 
@@ -20,7 +21,7 @@ daemon for nothing and can therefore reach nothing.
 | variable | what it is | when it is not set |
 | --- | --- | --- |
 | `$ORCH_PR` | the PR number | the argument you were invoked with |
-| `$ORCH_UPSTREAM` | the ref to rebase onto (`upstream/develop`) | `gh pr view <pr> --json baseRefName`, then that branch on the remote below |
+| `$ORCH_UPSTREAM` | the PR's base, as a ref (`upstream/develop`) | `gh pr view <pr> --json baseRefName`, then that branch on the remote below |
 | `$ORCH_UPSTREAM_REMOTE` | the remote to fetch (`upstream`) | `git remote` — one remote means it is that one; several means ask |
 | `$ORCH_LOGIN` | you, on the forge | `gh api user --jq .login` |
 
@@ -39,31 +40,82 @@ from step 1. A mismatch is a stop, not something to correct by switching.
 
 ## Steps
 
-1. `gh pr view $ORCH_PR --json headRefName,headRefOid,headRepositoryOwner,url,title,mergeable,statusCheckRollup`.
+1. `gh pr view $ORCH_PR --json headRefName,baseRefName,headRefOid,headRepositoryOwner,url,title,mergeable,statusCheckRollup`.
    Head owner is not `$ORCH_LOGIN` → stop, it is someone else's branch to
    force-push.
 2. Dirty tree → stop and show it. You are already on the right branch (above).
-3. `git fetch $ORCH_UPSTREAM_REMOTE && git rebase $ORCH_UPSTREAM`. Conflicts:
-   resolve them, never `git merge`. A conflict whose resolution is a judgement call
-   about behaviour → stop and ask, with both sides shown.
-4. Fix what is red:
-   - Failed checks from step 1 → fetch each log. If the repo has its own skills or
+3. **Take the base in before you read a single log.** A check the base has already
+   fixed is the commonest thing a run burns itself on, and its log looks exactly
+   like a real failure. `git fetch $ORCH_UPSTREAM_REMOTE`, then take
+   `$ORCH_UPSTREAM` into the branch the way this repo takes it. See
+   [How this repo takes the base in](#how-this-repo-takes-the-base-in) for which of
+   the two, and read that section before choosing. Conflicts: resolve them either
+   way. A conflict whose resolution is a judgement call about behaviour → stop and
+   ask, with both sides shown.
+   **The PR's own base wins.** `$ORCH_UPSTREAM` is it whenever the daemon knew the
+   PR, and the repo's default base only where it did not, so where the two disagree
+   take `$ORCH_UPSTREAM_REMOTE/<baseRefName>` from step 1. A stacked PR sits on
+   another PR's branch rather than on the default base, and taking the default base
+   in would bury its parent.
+4. **Push the sync and let the checks answer it.** Nothing came in (already up to
+   date) → straight to step 5. Otherwise push, per
+   [Pushing](#pushing), and re-read the checks with the Monitor tool over
+   `gh pr checks $ORCH_PR --watch --interval 60`.
+   - Green → the base was the whole of it. Report that and stop, having fixed
+     nothing, which is the cheapest way this run can end.
+   - Still red → carry on with *this* rollup. Step 1's described a head that no
+     longer exists, and half its failures may be gone.
+5. Fix what is red:
+   - Failed checks from step 4 → fetch each log. If the repo has its own skills or
      docs for reading CI, follow them; watch for a CI that tests your branch merged
      with the base rather than as-is.
    - A failure naming a test absent from the working tree came from the base.
      Still yours to fix; say so in the report.
    - Run the repo's pre-commit (`mise run pre-commit:run` where it exists) before
      pushing.
-5. Amend into the commit that owns the change; never a "fix review" or "fix CI"
+6. Amend into the commit that owns the change; never a "fix review" or "fix CI"
    commit. The subject still describes the change after amending; if it no longer
    does, rewrite it. Splitting or reordering commits: only when asked.
-6. `git push --force-with-lease`. The daemon's push guard denies plain `--force`
-   and any push to the base branch — those denials are correct, do not work around
-   them.
-7. Watch with the Monitor tool over `gh pr checks $ORCH_PR --watch --interval 60`,
-   event on each failure and on completion. A failure lands → back to step 4,
+   **Unless step 3 merged.** Amending under a merge commit is the same rewrite the
+   merge shape exists to avoid, so there add one commit that names what it fixes
+   and leave the history below it alone.
+7. Push, per [Pushing](#pushing).
+8. Watch with the Monitor tool over `gh pr checks $ORCH_PR --watch --interval 60`,
+   event on each failure and on completion. A failure lands → back to step 5,
    amend, push, keep watching.
-8. Report: what was rebased onto, what was fixed, final check state.
+9. Report: which base you took in and how, what was fixed, final check state.
+
+## How this repo takes the base in
+
+Both shapes are ordinary, and which one is right is the repo's convention rather
+than yours. Read its `CLAUDE.md` or `CONTRIBUTING` first; where neither says,
+`git log --merges $ORCH_UPSTREAM..HEAD` answers it, because a branch that already
+carries merges from the base is a branch somebody merges.
+
+- **Rebase**, the default: `git rebase $ORCH_UPSTREAM`. The branch is yours (step 1
+  proved it) and this run force-pushes anyway.
+- **Merge**, where the PR branch may not be rewritten: a repo that asks for merge
+  commits, a branch already carrying them, or a forge that refuses the force-push.
+  `git merge $ORCH_UPSTREAM`, and keep that commit out of step 6.
+
+Rebasing a branch a repo merges throws away every reviewer's place in it; merging
+into a repo that rebases puts a commit in the history its policy refuses. Neither
+is undone by pushing again, so spend the one command that tells you.
+
+## Pushing
+
+`--force-with-lease` follows the rewrite, not the step: a rebase or an amend moved
+commits that are already pushed, so `git push --force-with-lease`. A merge and a
+commit on top of it moved nothing, so plain `git push`.
+
+**The push goes to the head branch's own remote, which is not always
+`$ORCH_UPSTREAM_REMOTE`.** On a fork layout the head is on your fork and the base
+is on upstream, so the two differ; on a single-repo layout they are one remote and
+the distinction costs nothing. Follow the branch's own tracking, and where it has
+none: `git push --force-with-lease <head remote> HEAD:<headRefName>`.
+
+The daemon's push guard denies plain `--force` and any push to the base branch.
+Those denials are correct, do not work around them.
 
 ## Stop instead of pushing again
 

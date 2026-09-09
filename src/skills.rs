@@ -55,8 +55,8 @@ pub const GREEN: &str = include_str!("../skills/green/SKILL.md");
 /// never did.
 pub const TRIAGE: &str = include_str!("../skills/triage/SKILL.md");
 
-/// Getting a PR green, mechanically: rebase, fix the red, amend, force-push with a
-/// lease, watch.
+/// Getting a PR green, mechanically: take the base in, fix the red, amend, push,
+/// watch.
 ///
 /// Converted from `commands/fix-pr.md`, and the six values that prompt substituted
 /// reach it through the *environment* rather than a context call. That is not
