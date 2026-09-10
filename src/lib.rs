@@ -1743,4 +1743,112 @@ mod tests {
         assert_eq!(by_ws.get("wt-b"), Some(&b.id));
         assert_eq!(by_ws.get(MAIN), Some(&main.id));
     }
+
+    // --- the page, and the window it may not have --------------------------
+
+    use axum::body::{to_bytes, Body};
+    use axum::http::Request;
+    use tower::ServiceExt; // for `oneshot`
+
+    /// A same-origin request, spelled the way a browser on this port spells it.
+    fn req(app: &Arc<AppState>, method: &str, uri: &str, token: bool) -> Request<Body> {
+        let port = app.cfg.port;
+        let mut b = Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("host", format!("127.0.0.1:{port}"))
+            .header("origin", format!("http://127.0.0.1:{port}"));
+        if token {
+            b = b.header("x-orch-token", app.token.clone());
+        }
+        b.body(Body::empty()).unwrap()
+    }
+
+    async fn body_of(res: axum::response::Response) -> String {
+        String::from_utf8(to_bytes(res.into_body(), 1 << 22).await.unwrap().to_vec()).unwrap()
+    }
+
+    /// `GET /` hands the page a complete token, and is deliberately not gated.
+    ///
+    /// Pinned because the whole authentication story rests on it: the token is
+    /// *embedded* rather than fetched, so it never exists as a value another
+    /// origin could ask for — and the page cannot carry a token it does not have
+    /// yet, which is why this one route is exempt. The contrast is the second
+    /// half of the test: the same origin without a token cannot mutate anything.
+    ///
+    /// The placeholder assertion is the one that catches a rename. A substitution
+    /// that stops matching leaves `__ORCH_TOKEN__` in the page, the SPA reads
+    /// that string as its token, and every call fails on a token that looks
+    /// perfectly well-formed.
+    #[tokio::test]
+    async fn the_page_carries_its_token_and_needs_none_to_ask_for_it() {
+        let (app, _dir) = crate::testutil::app("index-token");
+        let res = router(app.clone()).oneshot(req(&app, "GET", "/", false)).await.unwrap();
+        assert_eq!(res.status(), 200, "GET / must not be token-gated");
+        let page = body_of(res).await;
+        assert!(page.contains(&app.token), "the page went out without its token");
+        assert!(!page.contains("__ORCH_TOKEN__"), "a placeholder survived substitution");
+        assert!(!page.contains("__ORCH_CHROME__"));
+        assert!(!page.contains("__ORCH_PLATFORM__"));
+
+        let refused = router(app.clone())
+            .oneshot(req(&app, "POST", "/api/prs/refresh", false))
+            .await
+            .unwrap();
+        assert_eq!(refused.status(), 401, "an untokened POST from the same origin was allowed");
+    }
+
+    /// The review preview substitutes the same three, and is reached the same way.
+    ///
+    /// Its own assertion rather than a loop over both, because it is a separate
+    /// handler with its own copy of the substitution — which is exactly the shape
+    /// that drifts.
+    #[tokio::test]
+    async fn the_review_preview_is_substituted_too() {
+        let (app, _dir) = crate::testutil::app("preview-token");
+        let res =
+            router(app.clone()).oneshot(req(&app, "GET", "/review-preview", false)).await.unwrap();
+        assert_eq!(res.status(), 200);
+        let page = body_of(res).await;
+        assert!(page.contains(&app.token));
+        assert!(!page.contains("__ORCH_TOKEN__"));
+        assert!(!page.contains("__ORCH_PLATFORM__"));
+    }
+
+    /// A window command with no window degrades, and says so.
+    ///
+    /// This is the browser-tab case: `cargo run -p orchd` plus a tab has no Tauri
+    /// handle, the tab draws its own chrome, and a titlebar press must be a
+    /// refusal with a sentence rather than a panic or a silent `ok: true`. Pinned
+    /// because the daemon is about to stop being the process that holds the
+    /// handle, and this is the behaviour that has to survive the move.
+    #[tokio::test]
+    async fn a_titlebar_press_with_no_native_window_refuses_by_name() {
+        let (app, _dir) = crate::testutil::app("no-window");
+        assert!(app.window.read().await.is_none(), "the fixture attached a window");
+
+        let res = router(app.clone())
+            .oneshot(req(&app, "POST", "/api/window/minimize", true))
+            .await
+            .unwrap();
+        // 400 with a sentence, which is what every refusal in this API is — not a
+        // 404 (the route exists) and not `ok: true` (nothing happened). The rail
+        // shows the sentence verbatim.
+        assert_eq!(res.status(), 400);
+        let answer: serde_json::Value = serde_json::from_str(&body_of(res).await).unwrap();
+        assert_eq!(
+            answer["error"], "no native window attached",
+            "the refusal stopped naming what is missing"
+        );
+
+        // An unknown command is a different refusal, and the two must not merge:
+        // one is "this daemon has no window", the other is "no such button".
+        let bogus = router(app.clone())
+            .oneshot(req(&app, "POST", "/api/window/explode", true))
+            .await
+            .unwrap();
+        assert_eq!(bogus.status(), 400);
+        let answer: serde_json::Value = serde_json::from_str(&body_of(bogus).await).unwrap();
+        assert_eq!(answer["error"], "no such window command: explode");
+    }
 }

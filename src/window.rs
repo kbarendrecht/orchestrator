@@ -9,8 +9,11 @@
 //! Rather than fight that, the SPA asks the daemon — same origin, same token,
 //! same code path as every other button in the UI — and the daemon asks the
 //! window through this trait. The desktop crate implements it against Tauri's
-//! Rust window API; headless orchd leaves it unset and the routes 404, which is
-//! exactly right for a browser tab that has no window to control.
+//! Rust window API; headless orchd leaves it unset and the routes then refuse
+//! with `no native window attached` — a 400 and a sentence, like every other
+//! refusal here, which is exactly right for a browser tab that has no window to
+//! control. (This said "404" for a long time and never did: the route exists, so
+//! the answer is a refusal rather than a missing path.)
 
 use serde::Deserialize;
 
