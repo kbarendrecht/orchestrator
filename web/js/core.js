@@ -51,8 +51,37 @@ export function setSelected(id, auto = false) {
   for (const fn of selectionListeners) fn(id, auto);
 }
 
-export const TOKEN = window.__ORCH__.token;
-export const WS_BASE = `ws://${location.host}`;
+/** One checkout's daemon: where to reach it, and the token it wants.
+ *
+ *  A named shape rather than three loose globals, because there is about to be one
+ *  of these per checkout. Today there is exactly one and it is the page's own
+ *  origin, so nothing behaves differently — but every call already goes through it,
+ *  which is the point: the seam has all of its subscribers from the first commit,
+ *  rather than being added empty and wired up later.
+ *
+ *  @typedef {{ base: string, wsBase: string, token: string }} Checkout
+ */
+
+/** The daemon that served this page.
+ *
+ *  `base` is empty, not `location.origin`, so the fetches stay relative and a
+ *  request cannot be sent to a spelling of this origin the guard would refuse:
+ *  `api::guard` matches the `Host` header against `127.0.0.1:<port>` or
+ *  `localhost:<port>` exactly, and those two are not interchangeable.
+ *
+ *  @type {Checkout}
+ */
+export const LOCAL = {
+  base: '',
+  wsBase: `ws://${location.host}`,
+  token: window.__ORCH__.token,
+};
+
+/* Kept as their own exports because five modules read them, and a token is what
+   most of them want rather than a checkout. They are [`LOCAL`]'s, which is the
+   only checkout there is until the host serves the page. */
+export const TOKEN = LOCAL.token;
+export const WS_BASE = LOCAL.wsBase;
 
 /* ---------------------------------------------------------------------------
  * Boot timing
@@ -408,10 +437,16 @@ export function promptBox(message, { value = '', placeholder = '', ok = 'OK' } =
   }).then((a) => (a === null ? null : String(a)));
 }
 
-export async function call(path, body) {
-  const res = await fetch(path, {
+/** POST to one checkout's daemon.
+ *
+ *  @param {Checkout} c
+ *  @param {string} path
+ *  @param {unknown} [body]
+ */
+export async function callOn(c, path, body) {
+  const res = await fetch(c.base + path, {
     method: 'POST',
-    headers: { 'content-type': 'application/json', 'x-orch-token': TOKEN },
+    headers: { 'content-type': 'application/json', 'x-orch-token': c.token },
     body: JSON.stringify(body ?? {}),
   });
   const json = await res.json().catch(() => ({}));
@@ -419,12 +454,24 @@ export async function call(path, body) {
   return json;
 }
 
-export async function get(path) {
-  const res = await fetch(path, { headers: { 'x-orch-token': TOKEN } });
+/** GET from one checkout's daemon.
+ *
+ *  @param {Checkout} c
+ *  @param {string} path
+ */
+export async function getOn(c, path) {
+  const res = await fetch(c.base + path, { headers: { 'x-orch-token': c.token } });
   const json = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(json.error || res.statusText);
   return json;
 }
+
+/* The two every caller uses, aimed at the checkout this page came from.
+   `callOn`/`getOn` exist for the one that is aimed somewhere else, and keeping the
+   short pair means ~90 call sites do not have to say which checkout they meant when
+   there is only ever one answer. */
+export const call = (path, body) => callOn(LOCAL, path, body);
+export const get = (path) => getOn(LOCAL, path);
 
 export function duration(ms) {
   if (ms == null) return '';

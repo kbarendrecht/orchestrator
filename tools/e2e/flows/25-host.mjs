@@ -42,8 +42,13 @@ export async function run(t) {
     return checkouts.length === 2 && checkouts.every((c) => c.port && c.token) ? checkouts : null
   })
   for (const c of listed) {
+    // The snapshot carries no checkout path of its own — the `main` workspace's
+    // does, which is the daemon saying which tree it manages. Checked rather than
+    // assumed, because two daemons answering one list is the whole point of this
+    // step and a mixed-up port would otherwise pass.
     const state = await t.apiOn(c, 'GET', '/api/state')
-    assert.equal(state.main_checkout, c.path, 'a daemon answered for another checkout')
+    const main = state.workspaces.find((w) => w.id === 'main')
+    assert.equal(main.path, c.path, 'a daemon answered for another checkout')
   }
 
   // 2 — a death is reported, restarted once, and then final.
