@@ -818,13 +818,22 @@ impl Config {
     /// and further from the cause. The desktop app asks this before starting
     /// and shows a folder picker when the answer is `None`.
     pub fn existing() -> Option<Self> {
-        let path = Self::path().ok()?;
+        Self::existing_at(&Self::path().ok()?)
+    }
+
+    /// The real work, with the path injected — the same split as
+    /// [`crate::instance::acquire_at`] and for the same reason: the caller above
+    /// reads `ORCHD_CONFIG_DIR`, which is process-global, and a test that set it
+    /// would be setting it for every other test in the binary. What is worth
+    /// pinning here is the *decision* (first run, or a checkout that moved), not
+    /// the lookup.
+    pub(crate) fn existing_at(path: &Path) -> Option<Self> {
         // Before the read, because the whole point is to fix a file this build
         // would otherwise refuse — and a refusal here is read as *first run*, so
         // the cost of skipping it is a folder picker for a configured project.
         // Idempotent, so the second caller below pays only a read.
-        crate::migrate::config_file(&path);
-        let raw = std::fs::read_to_string(&path).ok()?;
+        crate::migrate::config_file(path);
+        let raw = std::fs::read_to_string(path).ok()?;
         let cfg = Config::parse(&raw)
             .map_err(|e| tracing::warn!("ignoring unparseable {}: {e:#}", path.display()))
             .ok()?;
@@ -1632,5 +1641,48 @@ mod tests {
         } else {
             assert_eq!(dir, Path::new("/home/someone/.config/orchd"));
         }
+    }
+
+    /// First run, a configured project, and a project that moved.
+    ///
+    /// Three answers from one function, and the app reads them very differently:
+    /// `Some` starts the daemon, `None` shows the **folder picker**. So a config
+    /// that is merely inconvenient must never come back `None` — that is the
+    /// failure this repo has already paid for twice, once on a tracker name and
+    /// once on a config the parser refused, and both times it looked like a
+    /// project nobody had ever opened.
+    ///
+    /// The moved-checkout arm is the one that has to keep returning `None`: the
+    /// path in the file is gone, so there is nothing to serve and the picker is
+    /// the right answer.
+    #[test]
+    fn a_config_answers_first_run_a_project_or_a_project_that_moved() {
+        let dir = crate::testutil::scratch("existing");
+        let file = dir.join("config.json");
+
+        assert!(Config::existing_at(&file).is_none(), "no file at all is first run");
+
+        let repo = crate::testutil::scratch_repo("existing-repo");
+        std::fs::write(
+            &file,
+            format!(r#"{{"main_checkout":{:?}}}"#, repo.to_string_lossy()),
+        )
+        .unwrap();
+        let cfg = Config::existing_at(&file).expect("a real checkout is a configured project");
+        assert_eq!(cfg.main_checkout, repo.canonicalize().unwrap());
+
+        // The checkout moves. The file still parses, and the answer is still the
+        // picker rather than a daemon serving a directory that is not there.
+        std::fs::remove_dir_all(&repo).unwrap();
+        assert!(
+            Config::existing_at(&file).is_none(),
+            "a config naming a checkout that moved must not start a daemon"
+        );
+
+        // And a file this build cannot parse is *not* silently dropped as first
+        // run before `migrate` has had its go: the migration runs first, which is
+        // what stops one unreadable key costing every hand-tuned setting.
+        std::fs::write(&file, "{ not json").unwrap();
+        assert!(Config::existing_at(&file).is_none(), "unparseable is first run, with a warning");
     }
 }
