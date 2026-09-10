@@ -29,6 +29,9 @@ async fn main() -> Result<()> {
         fallback_port: false,
         // A browser tab draws its own chrome.
         chrome: orchd::window::Chrome::None,
+        // Headless: nobody else's page is showing this, so the Origin check stays
+        // exactly as tight as it was.
+        sibling_origin: None,
     })
     .await?;
 

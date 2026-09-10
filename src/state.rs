@@ -195,6 +195,27 @@ pub struct AppState {
     /// Set by the desktop shell once it has a window; `None` when orchd is
     /// running headless and the UI is a browser tab that owns its own chrome.
     pub window: RwLock<Option<Arc<dyn crate::window::WindowControl>>>,
+    /// Every checkout this window is showing, **this one first**, or empty.
+    ///
+    /// `checkouts` and not `repos`, which on this struct is already the GitHub
+    /// pair a checkout pushes to and opens PRs against ([`Repos`]). Two things
+    /// called `repos` one field apart is the kind of near-miss that reads fine and
+    /// is wrong.
+    ///
+    /// Beside `window` and for the same reason: both are things the *shell* knows
+    /// and a daemon cannot discover, handed over once the shell has them. Empty on
+    /// every other path — a headless daemon, a browser tab, a single repository —
+    /// and a daemon never reads it to learn about *itself*, so nothing here makes
+    /// one repo-aware.
+    ///
+    /// Its own entry is in the list because a colour is only meaningful beside the
+    /// others ([`crate::peers::colours_for`]): a daemon that handed out only its
+    /// siblings would leave the rail unable to say which rows are the local
+    /// checkout's, or would give it a ninth colour that clashes with one of them.
+    pub checkouts: RwLock<Vec<crate::peers::Peer>>,
+    /// How to add and remove repositories, when a shell is there to do it.
+    /// `None` headless and in a browser tab; see [`crate::peers::CheckoutControl`].
+    pub checkout_control: RwLock<Option<Arc<dyn crate::peers::CheckoutControl>>>,
     /// Pulsed whenever an interaction is answered. Every waiting long poll wakes
     /// and re-checks its own question; there are only ever a handful of waiters,
     /// and one notify beats a channel per question.
@@ -571,6 +592,8 @@ impl AppState {
             events,
             chrome,
             window: RwLock::new(None),
+            checkouts: RwLock::new(Vec::new()),
+            checkout_control: RwLock::new(None),
             answered: Arc::new(Notify::new()),
             review_refresh: Arc::new(Notify::new()),
             pr_refresh: Arc::new(Notify::new()),
@@ -583,6 +606,26 @@ impl AppState {
     /// exists. Until then `/api/window/*` has nothing to talk to and says so.
     pub async fn attach_window(&self, control: Arc<dyn crate::window::WindowControl>) {
         *self.window.write().await = Some(control);
+    }
+
+    /// Tell the daemon every repository the page should connect to, this one
+    /// included and first.
+    ///
+    /// Called by the desktop shell once the secondary daemons are up, because
+    /// their ports and tokens do not exist before that. Replaces rather than
+    /// appends: the shell owns the list, and a repository that has gone must stop
+    /// being offered to the next page load.
+    pub async fn attach_checkouts(&self, checkouts: Vec<crate::peers::Peer>) {
+        *self.checkouts.write().await = checkouts;
+    }
+
+    /// Hand the daemon the shell's repository controls. Called once, like
+    /// [`Self::attach_window`], as soon as there is a shell to call.
+    pub async fn attach_checkout_control(
+        &self,
+        control: Arc<dyn crate::peers::CheckoutControl>,
+    ) {
+        *self.checkout_control.write().await = Some(control);
     }
 
     /// Push a fresh snapshot to every connected SPA. State is small enough that

@@ -13,7 +13,7 @@
 
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
-import { branchOf, git, until } from '../harness.mjs'
+import { branchOf, deadPid, git, until } from '../harness.mjs'
 
 export const name = 'open a worktree (Claude Code layout)'
 export const options = { delegated: true }
@@ -41,10 +41,10 @@ export async function run(t) {
   /* Stand in for a repo that locks its own trees, so teardown still has to clear a
      lock whose owner is dead. The reason has to carry a pid: `stale_lock_pid` only
      clears a lock it can prove is orphaned, and a lock with no pid in it is left to
-     refuse on purpose. Pid 1 is init and alive, so this uses a pid that cannot be —
-     one past the maximum. */
-  const deadPid = Number(fs.readFileSync('/proc/sys/kernel/pid_max', 'utf8').trim()) + 1
-  git(t.repo, ['worktree', 'lock', '--reason', `claude code session (pid ${deadPid})`, dir])
+     refuse on purpose. Pid 1 is init and alive, so this needs one that is not —
+     see `deadPid`, which used to be a Linux-only read of `/proc` right here. */
+  const orphan = deadPid()
+  git(t.repo, ['worktree', 'lock', '--reason', `claude code session (pid ${orphan})`, dir])
 
   await t.api('POST', `/api/session/${session}/kill`)
   await until('the session to stop being live', async () =>

@@ -10,6 +10,46 @@ use std::path::{Component, Path, PathBuf};
 pub struct Config {
     /// The privileged checkout. Worktrees live inside it at [`Config::worktrees_dir`].
     pub main_checkout: PathBuf,
+    /// Let the desktop window be see-through, so the theme's own alpha shows what
+    /// is behind it.
+    ///
+    /// **A config key rather than part of the theme**, which is otherwise all
+    /// `localStorage`: transparency is fixed when the window is *created*, before
+    /// any page has run, so the shell has to know it before there is anywhere to
+    /// ask. That is also why changing it needs a restart — and why the *level* is
+    /// a theme value instead, which the page can change live once the window lets
+    /// light through at all.
+    ///
+    /// Off by default. It compiles in tauri's `macos-private-api` (see
+    /// `desktop/Cargo.toml`) and gives up the opaque `background_color` that stops
+    /// a white flash on load, so it is not something to have without asking.
+    #[serde(default)]
+    pub window_transparent: bool,
+    /// The one foreign origin this daemon will answer, if any.
+    ///
+    /// `#[serde(skip)]`, so it is neither read from `config.json` nor written
+    /// back: it is not a preference, it is what the shell tells a *secondary*
+    /// daemon about the board that is showing it ([`crate::peers`]). `None` — the
+    /// default, and every primary and headless daemon — is the unwidened Origin
+    /// check exactly as it was, which is why `Option` is the right shape here and
+    /// an empty string would not have been.
+    #[serde(skip)]
+    pub sibling_origin: Option<String>,
+    /// Further checkouts to open beside `main_checkout`, one whole daemon each.
+    ///
+    /// **Not a second checkout for *this* daemon.** Each entry gets its own
+    /// `orchd` process, its own config dir, its own port and its own
+    /// `config.json`, and this daemon never reads one of them — see
+    /// [`crate::peers`] for why that shape rather than one daemon holding
+    /// several. So a per-repository `upstream_ref`, port or process list is a
+    /// setting in *that* repository's own config file, not something spelled here.
+    ///
+    /// The list lives in this file because the app has no other config, and it is
+    /// read by the shell rather than by the daemon: nothing below `desktop` ever
+    /// looks at it. Empty by default, which is every install that has not asked
+    /// for a second repository.
+    #[serde(default)]
+    pub extra_checkouts: Vec<PathBuf>,
     /// Where worktrees live, relative to `main_checkout`. Defaults to
     /// `.claude/worktrees`, which is both Claude Code's own `--worktree` default
     /// and where a repo's own `worktree-create` hook is most likely to put them,
@@ -389,6 +429,7 @@ pub struct Settings {
     pub worktree_setup: Vec<String>,
     pub worktree_retention_days: u32,
     pub allow_several_in_main: bool,
+    pub window_transparent: bool,
 }
 
 impl Settings {
@@ -402,6 +443,7 @@ impl Settings {
             worktree_setup: cfg.worktree_setup.clone(),
             worktree_retention_days: cfg.worktree_retention_days,
             allow_several_in_main: cfg.allow_several_in_main,
+            window_transparent: cfg.window_transparent,
         }
     }
 
@@ -811,6 +853,53 @@ impl Config {
         Ok(Self::config_dir()?.join("config.json"))
     }
 
+    /// Rewrite `extra_checkouts` and leave every other key alone.
+    ///
+    /// **Merged by key, never a whole-file write.** The lesson `firstrun` learned
+    /// the hard way and `migrate` exists because of: a config rebuilt from what one
+    /// caller happens to know drops every hand-tuned setting in it, and the app
+    /// then reads the result as a first run. So this reads the object, sets one
+    /// key, and writes it back.
+    ///
+    /// A file that is not a JSON object is refused rather than replaced. `firstrun`
+    /// can start over there because it has just taken a backup and is defining the
+    /// project; this is one key on a live config, and losing the rest of it to add
+    /// a repository is not a trade anybody asked for.
+    pub fn set_extra_checkouts(paths: &[PathBuf]) -> Result<()> {
+        set_extra_checkouts_in(&Self::path()?, paths)
+    }
+}
+
+/// The real work, with the path injected — the same split `firstrun`'s
+/// `write_config_to` has, and for the same reason: the merge is the part worth a
+/// test, and a test must not write over the machine's own `config.json`.
+fn set_extra_checkouts_in(file: &Path, paths: &[PathBuf]) -> Result<()> {
+        let raw = std::fs::read_to_string(file)
+            .with_context(|| format!("reading {}", file.display()))?;
+        let mut obj = match serde_json::from_str::<serde_json::Value>(&raw) {
+            Ok(serde_json::Value::Object(m)) => m,
+            _ => anyhow::bail!(
+                "{} is not a JSON object, so it cannot be edited by key",
+                file.display()
+            ),
+        };
+        obj.insert(
+            "extra_checkouts".into(),
+            serde_json::Value::Array(
+                paths
+                    .iter()
+                    .map(|p| serde_json::Value::String(p.to_string_lossy().into_owned()))
+                    .collect(),
+            ),
+        );
+        let body = serde_json::to_string_pretty(&serde_json::Value::Object(obj))?;
+        std::fs::write(file, body + "\n")
+            .with_context(|| format!("writing {}", file.display()))?;
+        Ok(())
+}
+
+impl Config {
+
     /// The config, if there is a usable one already.
     ///
     /// Usable means more than present: a config naming a checkout that has been
@@ -948,6 +1037,36 @@ impl Config {
            actually names, not something this silently rewrites. */
         cfg.main_checkout =
             std::fs::canonicalize(&cfg.main_checkout).unwrap_or(cfg.main_checkout);
+        /* Same boundary, same reason, and one more of its own: an extra checkout
+           becomes another daemon's `main_checkout` *and* the identity its colour
+           and its remembered rail position key on ([`crate::peers::id_for`]). Two
+           spellings of one checkout would therefore be two rows in the rail, in
+           two colours, for one repository. Resolved here so the shell cannot hand
+           one spelling to the page and the daemon canonicalise itself into
+           another.
+
+           A duplicate is dropped rather than refused: it is a hand-edited list, a
+           path can reach the same checkout two ways, and the honest reading of
+           naming a repository twice is that you want it open — which it is. */
+        cfg.extra_checkouts = {
+            let mut seen: Vec<PathBuf> = Vec::new();
+            for path in std::mem::take(&mut cfg.extra_checkouts) {
+                let path = std::fs::canonicalize(&path).unwrap_or(path);
+                if path == cfg.main_checkout {
+                    tracing::warn!(
+                        "extra_checkouts names the main checkout {}; ignoring it",
+                        path.display()
+                    );
+                    continue;
+                }
+                if seen.contains(&path) {
+                    tracing::warn!("extra_checkouts names {} twice; ignoring the repeat", path.display());
+                    continue;
+                }
+                seen.push(path);
+            }
+            seen
+        };
         Ok(cfg)
     }
 
@@ -1442,6 +1561,7 @@ mod tests {
             worktree_setup: vec![".claude/hooks/worktree-setup".into()],
             worktree_retention_days: 60,
             allow_several_in_main: false,
+            window_transparent: true,
         };
         let out = s.merge_into(r#"{"main_checkout":"/tmp/x","port":8080}"#).expect("merge");
         let cfg = Config::parse(&out).expect("re-parse");
@@ -1453,6 +1573,11 @@ mod tests {
         assert_eq!(cfg.reviews_command, vec!["gh", "pr"]);
         assert!(cfg.main_processes.is_empty());
         assert_eq!(cfg.worktree_setup, vec![".claude/hooks/worktree-setup"]);
+        // The window key round-trips like the rest. It reaches the *shell* rather
+        // than the daemon — `build_window` reads it before there is an `AppState`
+        // — so a write that did not land would surface as a setting that silently
+        // does nothing after the restart it asked for.
+        assert!(cfg.window_transparent);
     }
 
     #[test]
@@ -1614,6 +1739,101 @@ mod tests {
         // name the path the user wrote rather than something rewritten here.
         let cfg = Config::parse(r#"{"main_checkout":"/nope/not/here"}"#).expect("parse");
         assert_eq!(cfg.main_checkout, Path::new("/nope/not/here"));
+    }
+
+    /// An extra checkout is another daemon's `main_checkout` *and* the identity
+    /// its rail colour and remembered position key on, so two spellings of one
+    /// repository would be two rows in two colours for one checkout.
+    #[test]
+    fn extra_checkouts_resolve_and_collapse_onto_one_identity() {
+        let base = std::env::temp_dir().join(format!(
+            "orchd-extras-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&base);
+        let main = base.join("main-repo");
+        let other = base.join("other-repo");
+        std::fs::create_dir_all(&main).expect("mkdir");
+        std::fs::create_dir_all(&other).expect("mkdir");
+        let link = base.join("other-via-link");
+        std::os::unix::fs::symlink(&other, &link).expect("symlink");
+
+        let cfg = Config::parse(&format!(
+            r#"{{"main_checkout":"{}","extra_checkouts":["{}","{}","{}"]}}"#,
+            main.to_string_lossy(),
+            other.to_string_lossy(),
+            // The same checkout by another spelling, and the main checkout again.
+            link.to_string_lossy(),
+            main.to_string_lossy(),
+        ))
+        .expect("parse");
+
+        let resolved = std::fs::canonicalize(&other).expect("canonicalize");
+        assert_eq!(
+            cfg.extra_checkouts,
+            vec![resolved],
+            "one repository, once, resolved — and never the main checkout twice"
+        );
+    }
+
+    /// **The one thing this write must never do is lose a key.** That is the
+    /// mistake `firstrun` made and `migrate` exists to repair: a config rebuilt
+    /// from what one caller knows drops every hand-tuned setting, and the app then
+    /// reads the result as a first run and offers a folder picker for a project
+    /// configured months ago. Adding a repository must not be able to cost that.
+    #[test]
+    fn setting_extra_checkouts_keeps_every_other_key() {
+        let dir = crate::testutil::scratch("cfg-extras");
+        let file = dir.join("config.json");
+        std::fs::write(
+            &file,
+            r#"{"main_checkout":"/x","port":9999,"upstream_ref":"upstream/develop",
+                "worktrees_subdir":".wt","extra_checkouts":["/gone"]}"#,
+        )
+        .expect("write");
+
+        set_extra_checkouts_in(&file, &[PathBuf::from("/a"), PathBuf::from("/b")]).expect("set");
+
+        let back: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        assert_eq!(back["extra_checkouts"], serde_json::json!(["/a", "/b"]));
+        assert_eq!(back["main_checkout"], "/x", "the checkout survived");
+        assert_eq!(back["port"], 9999, "a hand-tuned port survived");
+        assert_eq!(back["upstream_ref"], "upstream/develop");
+        assert_eq!(back["worktrees_subdir"], ".wt");
+
+        // And emptying it is a real state, not a missing key: closing the last
+        // extra repository has to be writable.
+        set_extra_checkouts_in(&file, &[]).expect("empty");
+        let back: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        assert_eq!(back["extra_checkouts"], serde_json::json!([]));
+        assert_eq!(back["port"], 9999);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A file that is not a JSON object is **refused**, not replaced. `firstrun`
+    /// may start over there because it has just taken a backup and is defining the
+    /// project; this is one key on a live config, and losing the rest of it to add
+    /// a repository is not a trade anybody asked for.
+    #[test]
+    fn setting_extra_checkouts_refuses_a_file_it_cannot_edit_by_key() {
+        let dir = crate::testutil::scratch("cfg-extras-bad");
+        let file = dir.join("config.json");
+        std::fs::write(&file, "not json at all").expect("write");
+        assert!(set_extra_checkouts_in(&file, &[PathBuf::from("/a")]).is_err());
+        // Untouched, which is the point.
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "not json at all");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Empty is the shape every install that never asked for a second repository
+    /// has, so it must be the default rather than something to configure away.
+    #[test]
+    fn a_config_without_extra_checkouts_opens_one_repository() {
+        let cfg = Config::parse(r#"{"main_checkout":"/tmp/x"}"#).expect("parse");
+        assert!(cfg.extra_checkouts.is_empty());
     }
 
     #[test]

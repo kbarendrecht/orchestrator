@@ -184,6 +184,7 @@ repos leave them at the default:
 | Setting | Default | What it is |
 | --- | --- | --- |
 | `main_checkout` | *(required)* | the privileged checkout the daemon manages. The one key with no default; the folder picker writes it on first run. |
+| `extra_checkouts` | `[]` | further checkouts to open **beside** `main_checkout`, so several repositories show at once in one rail. Each entry gets a whole `orchd` of its own — its own process, port, `config.json` and instance lock — and a colour in the rail. So per-repository settings go in *that* repository's own config file, under `<config dir>/repos/<name>-<hash>/`. Read by the app, not by the daemon. Written by `+ repository` at the foot of the rail, so it is not a key you have to know about; right-click a repository's header to fold it away or close it. |
 | `worktrees_subdir` | `.claude/worktrees` | where worktrees live, relative to `main_checkout`. Point it at the same place a repo's own `WorktreeCreate` hook puts them, so the daemon recognises its own worktrees. Kept relative and inside main on purpose. |
 | `port` | `7777` | the loopback port the daemon serves the SPA and API on. Never bound to anything but `127.0.0.1`. |
 | `repo` | *(derived)* | `owner/name` override, when it cannot be read off the upstream remote. |

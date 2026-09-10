@@ -59,12 +59,12 @@ pub(crate) fn host_allowed(host: &str, port: u16) -> bool {
     expected.iter().any(|e| e == host)
 }
 
-fn origin_allowed(origin: &str, port: u16) -> bool {
+fn origin_allowed(origin: &str, port: u16, sibling: Option<&str>) -> bool {
     let expected = [
         format!("http://127.0.0.1:{port}"),
         format!("http://localhost:{port}"),
     ];
-    expected.iter().any(|e| e == origin)
+    expected.iter().any(|e| e == origin) || sibling == Some(origin)
 }
 
 /// Whether a request gets past the Origin check.
@@ -89,9 +89,16 @@ fn origin_allowed(origin: &str, port: u16) -> bool {
 ///   cannot omit the header on a cross-origin fetch or form POST, and it cannot
 ///   read the token to forge this. Absence is positive evidence of a non-browser
 ///   caller; the token is what authenticates it.
-pub(crate) fn origin_ok(origin: Option<&str>, port: u16, is_hook: bool, is_get: bool, token_ok: bool) -> bool {
+pub(crate) fn origin_ok(
+    origin: Option<&str>,
+    port: u16,
+    is_hook: bool,
+    is_get: bool,
+    token_ok: bool,
+    sibling: Option<&str>,
+) -> bool {
     match origin {
-        Some(o) => origin_allowed(o, port),
+        Some(o) => origin_allowed(o, port, sibling),
         None => is_hook || is_get || token_ok,
     }
 }
@@ -222,10 +229,57 @@ pub async fn guard(
        given. Found by driving a real run, invisible to every unit test. */
     let is_ask = is_agent_route(&path);
 
+    /* **The one foreign origin a daemon will answer: the board that is showing
+       it.** A secondary daemon serves no page of its own — the board comes from
+       the primary, on the primary's port, and every call it makes to this one is
+       therefore cross-origin ([`crate::peers`]). Without this the peer refuses
+       them all as "bad origin", which is what the design costs if the page is not
+       allowed to speak to it directly.
+
+       **This is a narrow widening, not a hole.** An `Origin` cannot be forged by
+       a page: the browser sets it, and only one server on this machine serves
+       that origin — our own primary daemon, which serves exactly one page, on a
+       loopback port, behind its own token. So what this admits is "the board this
+       repository is being shown in", and nothing else. It is `None` for a primary
+       daemon and for every headless one, so the single-repository install is
+       unchanged.
+
+       The alternative was proxying every call and both websockets through the
+       primary, which buys nothing here and gives up the failure isolation that
+       made separate processes worth choosing. */
+    let sibling = app.cfg.sibling_origin.as_deref();
+
+    /* A cross-origin POST carrying `content-type: application/json` is not a
+       simple request, so the browser asks first — and an unanswered preflight
+       means the real call is never sent at all. Answered here rather than as a
+       route because it must pass *before* the token check: a preflight carries no
+       headers of ours, by definition. Only ever for the sibling, so nothing about
+       a single-repository daemon changes. */
+    if req.method() == axum::http::Method::OPTIONS {
+        return match origin.filter(|o| Some(*o) == sibling) {
+            Some(o) => (
+                StatusCode::NO_CONTENT,
+                [
+                    ("access-control-allow-origin", o),
+                    ("access-control-allow-methods", "GET, POST, OPTIONS"),
+                    ("access-control-allow-headers", "content-type, x-orch-token"),
+                    // A day, because the SPA makes a lot of these calls and a
+                    // preflight per call would double every one of them.
+                    ("access-control-max-age", "86400"),
+                    ("vary", "origin"),
+                ],
+            )
+                .into_response(),
+            None => (StatusCode::FORBIDDEN, "bad origin").into_response(),
+        };
+    }
+
     let is_get = req.method() == axum::http::Method::GET;
-    if !origin_ok(origin, port, is_hook || is_ask, is_get, token_ok) {
+    if !origin_ok(origin, port, is_hook || is_ask, is_get, token_ok, sibling) {
         return (StatusCode::FORBIDDEN, "bad origin").into_response();
     }
+    // Kept for the response, since `req` is consumed below.
+    let answering_sibling = origin.filter(|o| Some(*o) == sibling).map(str::to_string);
 
     /* Every GET that reaches GitHub on our credential, not just the first one.
        A GET is otherwise exempt from the token because it hands back state the
@@ -247,7 +301,20 @@ pub async fn guard(
         return (StatusCode::UNAUTHORIZED, "bad token").into_response();
     }
 
-    next.run(req).await
+    let mut res = next.run(req).await;
+    /* The browser hides a cross-origin response the server did not mark, however
+       well it answered — so a peer's snapshot would arrive and be dropped, with
+       nothing in either log to say why. `Vary` because the same route answers
+       both same-origin (unmarked) and sibling (marked) callers, and a cache that
+       missed that would serve one the other's answer. */
+    if let Some(origin) = answering_sibling {
+        let h = res.headers_mut();
+        if let Ok(v) = origin.parse() {
+            h.insert("access-control-allow-origin", v);
+        }
+        h.insert("vary", axum::http::HeaderValue::from_static("origin"));
+    }
+    res
 }
 
 // ---------------------------------------------------------------------------
@@ -3290,18 +3357,37 @@ mod tests {
 
     #[test]
     fn only_the_spas_own_origin_is_accepted() {
-        assert!(origin_allowed("http://127.0.0.1:7777", 7777));
-        assert!(origin_allowed("http://localhost:7777", 7777));
-        assert!(!origin_allowed("http://evil.example", 7777));
+        assert!(origin_allowed("http://127.0.0.1:7777", 7777, None));
+        assert!(origin_allowed("http://localhost:7777", 7777, None));
+        assert!(!origin_allowed("http://evil.example", 7777, None));
         // A page on another port is still another origin.
-        assert!(!origin_allowed("http://127.0.0.1:7778", 7777));
+        assert!(!origin_allowed("http://127.0.0.1:7778", 7777, None));
         // Guards against a DNS-rebinding host that merely contains the address.
-        assert!(!origin_allowed("http://127.0.0.1.evil.example:7777", 7777));
+        assert!(!origin_allowed("http://127.0.0.1.evil.example:7777", 7777, None));
     }
 
-    /// `(origin, is_hook, is_get, token_ok)` at port 7777.
+    /// A *secondary* daemon serves no page, so the board showing it is always a
+    /// foreign origin — and refusing it is refusing every call the rail makes on
+    /// that repository. The widening is one exact string, and nothing else moves.
+    #[test]
+    fn a_secondary_answers_the_board_showing_it_and_nothing_more() {
+        let board = Some("http://127.0.0.1:7801");
+        assert!(origin_allowed("http://127.0.0.1:7801", 7777, board));
+        // Its own origins keep working — that is how a browser tab opened
+        // straight at a secondary would talk to it.
+        assert!(origin_allowed("http://127.0.0.1:7777", 7777, board));
+        // And the widening is exactly one origin: neither a neighbouring port nor
+        // anything off-machine comes along with it.
+        assert!(!origin_allowed("http://127.0.0.1:7802", 7777, board));
+        assert!(!origin_allowed("http://localhost:7801", 7777, board), "not the spelling given");
+        assert!(!origin_allowed("http://evil.example", 7777, board));
+        // A primary has no sibling, so it is the check exactly as it was.
+        assert!(!origin_allowed("http://127.0.0.1:7801", 7777, None));
+    }
+
+    /// `(origin, is_hook, is_get, token_ok)` at port 7777, with no sibling.
     fn ok(origin: Option<&str>, is_hook: bool, is_get: bool, token_ok: bool) -> bool {
-        origin_ok(origin, 7777, is_hook, is_get, token_ok)
+        origin_ok(origin, 7777, is_hook, is_get, token_ok, None)
     }
 
     #[test]
@@ -4029,6 +4115,99 @@ pub struct OpenUrl {
 /// here instead, and the daemon (which is a local process) hands the URL to the
 /// platform opener. Only `http(s)` is accepted, so this can never be coaxed into
 /// launching a local file or a `mailto:`/`file:` handler.
+/// The repositories this window shows, and the two ways to change the set.
+///
+/// **Every one of these needs the shell** ([`crate::peers::CheckoutControl`]): a
+/// daemon cannot raise a folder dialog and cannot start a sibling process. A
+/// browser tab and a headless daemon have no shell, and these refuse there rather
+/// than half-working — the same shape `dispatch_window` already has.
+async fn shell_of(
+    app: &Arc<AppState>,
+) -> Result<Arc<dyn crate::peers::CheckoutControl>, ApiError> {
+    match app.checkout_control.read().await.clone() {
+        Some(c) => Ok(c),
+        // Worth naming rather than a bare 400: in a browser tab this is the honest
+        // answer, and "adding a repository needs the app" is actionable.
+        None => refuse!("adding a repository needs the desktop app, not a browser tab"),
+    }
+}
+
+/// Raise the native folder dialog and say what was chosen.
+///
+/// Separate from `add_checkout` so a cancelled dialog is not an error and so the
+/// page can show what it is about to open before committing to it. Validated here
+/// rather than in the page, because "is this a git checkout" is not a question a
+/// page can ask.
+pub async fn pick_checkout(State(app): State<Arc<AppState>>) -> ApiResult<serde_json::Value> {
+    let shell = shell_of(&app).await?;
+    // Blocking: it waits on a human. Off the runtime's worker threads, which is
+    // the rule `proc::run_blocking` exists for.
+    let picked = tokio::task::spawn_blocking(move || shell.pick())
+        .await
+        .context("the folder dialog")?;
+    let Some(path) = picked else {
+        return Ok(Json(json!({ "picked": false })));
+    };
+    match crate::firstrun::validate(&path) {
+        Ok(info) => Ok(Json(json!({ "picked": true, "path": info.path, "name": info.name }))),
+        Err(why) => Ok(Json(json!({ "picked": true, "ok": false, "error": why }))),
+    }
+}
+
+/// Open a repository beside the ones already showing.
+///
+/// The shell does the work; this validates first, because the refusals are the
+/// daemon's own knowledge: a folder that is not a checkout, the one this daemon
+/// already manages, and one already open. The last two are what `Config::parse`
+/// drops silently on load, and silently is wrong for a button press — you pressed
+/// it, so you are owed the reason nothing happened.
+pub async fn add_checkout(
+    State(app): State<Arc<AppState>>,
+    Json(body): Json<CheckoutPath>,
+) -> ApiResult<serde_json::Value> {
+    let shell = shell_of(&app).await?;
+    let path = match crate::firstrun::validate(std::path::Path::new(&body.path)) {
+        Ok(info) => std::path::PathBuf::from(info.path),
+        Err(why) => refuse!("{why}"),
+    };
+    if path == app.cfg.main_checkout {
+        refuse!("that is the checkout this window already opened");
+    }
+    if app.checkouts.read().await.iter().any(|c| c.path == path) {
+        refuse!("{} is already open", crate::peers::name_for(&path));
+    }
+    let opened = path.clone();
+    tokio::task::spawn_blocking(move || shell.add(opened))
+        .await
+        .context("opening the repository")??;
+    Ok(Json(json!({ "opened": path.to_string_lossy() })))
+}
+
+/// Stop showing a repository, taking its daemon and its sessions with it.
+///
+/// The main checkout is refused: it is what this daemon *is*, and closing it is a
+/// switch, which the first-run page owns.
+pub async fn remove_checkout(
+    State(app): State<Arc<AppState>>,
+    Json(body): Json<CheckoutPath>,
+) -> ApiResult<serde_json::Value> {
+    let shell = shell_of(&app).await?;
+    let path = std::path::PathBuf::from(&body.path);
+    if path == app.cfg.main_checkout {
+        refuse!("this window is open on that checkout; switching projects is the other button");
+    }
+    let closing = path.clone();
+    tokio::task::spawn_blocking(move || shell.remove(closing))
+        .await
+        .context("closing the repository")??;
+    Ok(Json(json!({ "closed": path.to_string_lossy() })))
+}
+
+#[derive(Deserialize)]
+pub struct CheckoutPath {
+    pub path: String,
+}
+
 pub async fn open_url(
     State(_app): State<Arc<AppState>>,
     Json(body): Json<OpenUrl>,

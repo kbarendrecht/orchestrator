@@ -5,6 +5,7 @@
   "identifier": "dev.orchd.orchestrator",
   "build": {},
   "app": {
+    "macOSPrivateApi": true,
     "windows": [],
     "security": {
       "csp": null

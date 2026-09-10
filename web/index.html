@@ -240,12 +240,117 @@
   </div>
   <div class="settings-card">
     <div class="settings-group">Appearance</div>
-    <div class="settings-row">
+
+    <!-- A theme is three colours and a font; every other token in the sheet is
+         mixed from them (`core.js`, `tokens`). The semantic colours — amber for
+         "needs you", red for a failed build — are deliberately not offered: they
+         are a legend three panes read, not decoration. -->
+    <!-- **Two fixed slots per row: the control, then the reset.** Every control in
+         this group has to end at the same x or the column reads as ragged, and it
+         did: a `.settings-step` sized to its contents put the selects, the colour
+         wells and the steppers on four different left edges, and the rows carrying
+         a Reset ended 44px short of the rows without one. `.settings-ctl` is a
+         fixed-width right-aligned box and `.settings-reset` is a reserved slot —
+         empty where there is nothing to reset, so it still holds the column. -->
+    <div class="settings-row arow">
+      <span class="settings-k">Theme</span>
+      <span class="settings-step">
+        <span class="settings-ctl">
+          <select class="settings-in" id="thpreset" title="A starting point to adjust from"></select>
+        </span>
+        <!-- **One per row, and each resets only its own row.** Not tidiness: a
+             reserved-but-empty slot left the three rows that *do* carry a Reset
+             sticking 54px further right than the five that do not, which is the
+             ragged right edge this group had. The word repeats; the column does
+             not wander. -->
+        <button class="settings-reset" id="threset" type="button">Reset</button>
+      </span>
+    </div>
+    <div class="settings-row arow">
+      <span class="settings-k">Font</span>
+      <span class="settings-step">
+        <span class="settings-ctl">
+          <select class="settings-in" id="thfont"
+                title="The vendored faces, the system one, and the monospace families found on this machine"></select>
+        </span>
+        <button class="settings-reset" id="thfontreset" type="button">Reset</button>
+      </span>
+    </div>
+    <!-- Only for `custom`: the vendored faces ship with the app, and a family the
+         machine happens to have can only be named. -->
+    <div class="settings-row arow" id="thcustomrow" hidden>
+      <span class="settings-k">Font name
+        <span class="settings-hint">as installed</span>
+      </span>
+      <span class="settings-step">
+        <span class="settings-ctl">
+          <input class="settings-in" id="thcustom" type="text" spellcheck="false"
+                 placeholder="SF Mono" autocomplete="off">
+        </span>
+        <button class="settings-reset" id="thcustomreset" type="button">Clear</button>
+      </span>
+    </div>
+    <div class="settings-row arow">
+      <span class="settings-k">Background</span>
+      <span class="settings-step">
+        <span class="settings-ctl">
+          <input class="settings-col" id="thbg" type="color" aria-label="Background colour">
+          <input class="settings-in settings-in-hex" id="thbghex" type="text"
+                 spellcheck="false" autocomplete="off" maxlength="7" aria-label="Background hex">
+        </span>
+        <button class="settings-reset" id="thbgreset" type="button">Reset</button>
+      </span>
+    </div>
+    <div class="settings-row arow">
+      <span class="settings-k">Panels
+        <span class="settings-hint">rail, headers</span>
+      </span>
+      <span class="settings-step">
+        <span class="settings-ctl">
+          <input class="settings-col" id="thpanel" type="color" aria-label="Panel colour">
+          <input class="settings-in settings-in-hex" id="thpanelhex" type="text"
+                 spellcheck="false" autocomplete="off" maxlength="7" aria-label="Panel hex">
+        </span>
+        <button class="settings-reset" id="thpanelreset" type="button">Reset</button>
+      </span>
+    </div>
+    <div class="settings-row arow">
+      <span class="settings-k">Text</span>
+      <span class="settings-step">
+        <span class="settings-ctl">
+          <input class="settings-col" id="thtext" type="color" aria-label="Text colour">
+          <input class="settings-in settings-in-hex" id="thtexthex" type="text"
+                 spellcheck="false" autocomplete="off" maxlength="7" aria-label="Text hex">
+        </span>
+        <button class="settings-reset" id="thtextreset" type="button">Reset</button>
+      </span>
+    </div>
+
+    <!-- The level, live. Whether the window lets light through at all is a
+         config key and a restart (`window_transparent`, under Window below),
+         because transparency is fixed when the window is created. -->
+    <div class="settings-row arow" id="throw">
+      <span class="settings-k">Opacity
+        <span class="settings-hint" id="thopachint">needs a transparent window</span>
+      </span>
+      <span class="settings-step">
+        <span class="settings-ctl">
+          <button class="stepbtn" id="thopdown" title="More see-through">&#8722;</button>
+          <span class="stepval" id="thopval">100%</span>
+          <button class="stepbtn" id="thopup" title="More solid">+</button>
+        </span>
+        <button class="settings-reset" id="thopreset" type="button">Reset</button>
+      </span>
+    </div>
+
+    <div class="settings-row arow">
       <span class="settings-k">Font size</span>
       <span class="settings-step">
-        <button class="stepbtn" id="fsdown" title="Smaller">&#8722;</button>
-        <span class="stepval" id="fsval">100%</span>
-        <button class="stepbtn" id="fsup" title="Bigger">+</button>
+        <span class="settings-ctl">
+          <button class="stepbtn" id="fsdown" title="Smaller">&#8722;</button>
+          <span class="stepval" id="fsval">100%</span>
+          <button class="stepbtn" id="fsup" title="Bigger">+</button>
+        </span>
         <button class="settings-reset" id="fsreset" type="button">Reset</button>
       </span>
     </div>
@@ -254,14 +359,16 @@
          reads its `scrollSensitivity`. 100% is what the pane has always done, so
          this changes nothing until asked — see `WHEEL` in core.js for why a
          discrete wheel and a trackpad cannot share one number. -->
-    <div class="settings-row">
+    <div class="settings-row arow">
       <span class="settings-k">Wheel speed
         <span class="settings-hint">agent panes</span>
       </span>
       <span class="settings-step">
-        <button class="stepbtn" id="wsdown" title="Slower">&#8722;</button>
-        <span class="stepval" id="wsval">100%</span>
-        <button class="stepbtn" id="wsup" title="Faster">+</button>
+        <span class="settings-ctl">
+          <button class="stepbtn" id="wsdown" title="Slower">&#8722;</button>
+          <span class="stepval" id="wsval">100%</span>
+          <button class="stepbtn" id="wsup" title="Faster">+</button>
+        </span>
         <button class="settings-reset" id="wsreset" type="button">Reset</button>
       </span>
     </div>
@@ -337,6 +444,21 @@
       running in it. The conversation stays in the rail and a resume rebuilds the
       tree, so this frees disk rather than losing work. <code>0</code> never removes
       anything.</p>
+
+    <div class="settings-group">Window</div>
+
+    <label class="settings-field">
+      <span class="settings-k">Transparent window</span>
+      <input class="settings-check" id="settransparent" type="checkbox">
+    </label>
+    <p class="settings-help">Let the desktop show through the board, at the level the
+      <em>Opacity</em> setting above chooses. Needs a restart, and it is the one
+      appearance setting that does: transparency is fixed when the window is created,
+      before any page has run, so it cannot be a live choice the way the colours are.
+      Two costs worth knowing. It gives up the opaque window background that stops a
+      white flash while the page loads, so a launch shows one frame of nothing. And
+      on macOS it needs Tauri's <code>macos-private-api</code>, which uses private
+      Apple frameworks and makes a build ineligible for the App Store.</p>
 
     <div class="settings-group">Sessions</div>
 
@@ -458,7 +580,7 @@
      pause. Visually hidden; app.js writes the transition into it. -->
 <div id="live" class="sr-only" aria-live="polite" aria-atomic="true"></div>
 
-<script>window.__ORCH__ = { token: "__ORCH_TOKEN__", chrome: "__ORCH_CHROME__", platform: "__ORCH_PLATFORM__" };</script>
+<script>window.__ORCH__ = { token: "__ORCH_TOKEN__", chrome: "__ORCH_CHROME__", platform: "__ORCH_PLATFORM__", checkouts: __ORCH_CHECKOUTS__, transparent: "__ORCH_TRANSPARENT__" };</script>
 <script src="/vendor/xterm.js"></script>
 <script src="/vendor/addon-fit.js"></script>
 <script src="/vendor/addon-webgl.js"></script>

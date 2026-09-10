@@ -53,6 +53,31 @@ pub fn not_installed(e: &anyhow::Error) -> bool {
     })
 }
 
+/// Ask a child of ours to shut down rather than killing it.
+///
+/// [`std::process::Child::kill`] sends **SIGKILL**, and a daemon killed rather
+/// than asked never runs its own shutdown — so a repository's managed processes
+/// and its live `claude` sessions are orphaned into worktrees the next launch
+/// adopts. SIGTERM is what `orchd`'s own main waits for.
+///
+/// **Takes the `Child` rather than a pid, and that is the safety argument.** A
+/// pid may be recycled the moment its process is reaped, which is why
+/// `pty::kill` refuses an exited child; holding an unreaped `Child` is proof the
+/// kernel is still keeping this pid for us, even if the process is already a
+/// zombie. The caller cannot express the unsafe version of this call.
+///
+/// Here rather than beside its caller because this file already owns process
+/// signalling and already argues for `unsafe` at the top; a fourth module opting
+/// in would be a fourth place to audit.
+pub fn ask_to_stop(child: &std::process::Child) {
+    #[cfg(unix)]
+    unsafe {
+        libc::kill(child.id() as libc::pid_t, libc::SIGTERM);
+    }
+    #[cfg(not(unix))]
+    let _ = child;
+}
+
 /// Run `argv` in `cwd`, killed if it outlives `timeout_secs`.
 ///
 /// The child leads **its own process group**, and the *group* is what gets

@@ -255,6 +255,24 @@ fn info_plist() -> String {
   <key>CFBundleVersion</key><string>{version}</string>
   <key>LSApplicationCategoryType</key><string>public.app-category.developer-tools</string>
   <key>LSMinimumSystemVersion</key><string>10.15</string>
+  <!-- **Without this the whole app runs under Rosetta on Apple Silicon**, and
+       everything it spawns with it. The bundle's executable is a shell script (so
+       it can point at a binary that moves), and LaunchServices cannot read an
+       architecture out of a script — so it picks x86_64 and translates. Measured
+       with a throwaway bundle: `uname -m` came back `x86_64` and
+       `sysctl.proc_translated` `1`.
+       The damage is not the translation, it is what the children inherit: `git`
+       is a universal binary, so it ran its x86_64 slice, called `xcrun` as
+       x86_64, and failed to load an arm64-only `libxcrun.dylib`. Every git call
+       in the daemon failed, so a checkout read as "not a git work tree" and the
+       start aborted — from a Spotlight launch only, while the same binary run
+       from a terminal was fine.
+       `LSRequiresNativeExecution` looks like the key for this and does nothing
+       here: measured, still x86_64. A *priority list* is what LaunchServices
+       reads, and it is a list rather than `arm64` alone so an Intel Mac falls
+       through to the slice it can run. -->
+  <key>LSArchitecturePriority</key>
+  <array><string>arm64</string><string>x86_64</string></array>
   <key>NSHighResolutionCapable</key><true/>
 </dict>
 </plist>
@@ -327,6 +345,25 @@ mod tests {
             let mode = std::fs::metadata(&launcher).unwrap().permissions().mode();
             assert_eq!(mode & 0o777, 0o755, "a bundle that cannot be executed will not launch");
         }
+    }
+
+    /// **The executable is a script, so LaunchServices has to be told the
+    /// architecture.** Without it, a Spotlight launch on Apple Silicon runs the
+    /// whole app under Rosetta and every process it spawns inherits x86_64 — which
+    /// broke `git` outright, because it then ran its x86_64 slice and called an
+    /// `xcrun` that cannot load an arm64-only `libxcrun.dylib`. Every git call
+    /// failed, the checkout read as "not a git work tree", and the start aborted.
+    /// Only from the launcher: the same binary run from a terminal was fine.
+    ///
+    /// A list, and `arm64` first: an Intel Mac has to fall through to the slice it
+    /// can actually run.
+    #[test]
+    fn the_bundle_asks_for_a_native_architecture() {
+        let plist = info_plist();
+        assert!(plist.contains("LSArchitecturePriority"), "{plist}");
+        let arm = plist.find("<string>arm64</string>").expect("arm64 is offered");
+        let intel = plist.find("<string>x86_64</string>").expect("x86_64 is a fallback");
+        assert!(arm < intel, "arm64 has to be preferred, not merely present");
     }
 
     /// The refresh runs on every launch, so "nothing changed" has to be free and

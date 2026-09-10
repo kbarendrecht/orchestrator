@@ -73,6 +73,32 @@ export const isDirty = (cwd) => git(cwd, ['status', '--porcelain']) !== ''
  *  driven by hooks arriving over HTTP, so "the POST returned" is never the same
  *  as "the state changed". A fixed sleep would trade flakiness for slowness and
  *  get both. */
+/** A pid that is provably not alive, for a test that needs an orphaned owner.
+ *
+ *  **Not `/proc/sys/kernel/pid_max`**, which is what this was: Linux-only, so the
+ *  read *threw* on macOS and took five flows down with it — the suite's macOS half
+ *  had been failing at one line that has nothing to do with what those flows test.
+ *  The same trap `CLAUDE.md` names for the daemon ("a /proc read is a portability
+ *  bug that compiles"), except a `readFileSync` does not even get that far.
+ *
+ *  Spawn something that exits and reuse its pid: `spawnSync` returns only after the
+ *  child has been reaped, so the pid is free. Proven with `kill(pid, 0)` rather than
+ *  assumed, because a pid can be recycled — and retried rather than thrown on, since
+ *  losing that race is not a reason to fail a flow.
+ */
+export function deadPid() {
+  for (let tries = 0; tries < 10; tries++) {
+    const { pid } = spawnSync('true')
+    if (pid === undefined) continue
+    try {
+      process.kill(pid, 0)
+    } catch {
+      return pid // ESRCH: gone, which is the whole requirement
+    }
+  }
+  throw new Error('could not find a pid that is not in use')
+}
+
 export async function until(what, predicate, { timeout = 10_000, every = 50, context } = {}) {
   const deadline = Date.now() + timeout
   for (;;) {

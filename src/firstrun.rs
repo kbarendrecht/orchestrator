@@ -618,7 +618,9 @@ async fn guard(
     }
     let origin = req.headers().get("origin").and_then(|v| v.to_str().ok());
     let is_get = req.method() == axum::http::Method::GET;
-    if !crate::api::origin_ok(origin, port, false, is_get, false) {
+    // No sibling: this is the bootstrap server, which only ever serves the page
+    // that picks a checkout — before any daemon, and so before any peer exists.
+    if !crate::api::origin_ok(origin, port, false, is_get, false, None) {
         return (StatusCode::FORBIDDEN, "bad origin").into_response();
     }
     next.run(req).await

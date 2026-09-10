@@ -3,9 +3,9 @@
 // The SPA is a module now, so what it reaches for is written down. `core.js` holds
 // the primitives every part needs; `queue.js` is the first seam extracted whole.
 import {
-  TOKEN, WS_BASE, $, el, toast, call, get, duration,
+  TOKEN, WS_BASE, checkouts, activeRepo, $, el, toast, call, callShell, get, duration,
   snap, receive, keyActivate,
-  setZoom, saveZoom, onScaleChange, ZOOM, zoomScale,
+  setZoom, saveZoom, onScaleChange, ZOOM, zoomScale, onThemeChange, initTheme,
   selected, setSelected, onSelection, prForWorkspace,
   terms, CHROME, stateLabel, dotClass, isWaiting, isArchived,
   pending, byNewest, currentSession,
@@ -49,6 +49,9 @@ import * as Term from './js/term.js';
 
 // The terminals are the scalable thing zoom used to reach into; now they ask.
 onScaleChange(() => Term.applyScale());
+// Same shape, same reason: the board sets the tokens, the terminals repaint
+// themselves. A font change also refits, because it moves the cell metrics.
+onThemeChange(() => Term.applyTheme());
 
 // Collapsing the drawer redraws it and gives the terminal above its height back;
 // xterm only refits on an explicit nudge, not on a sibling's size change.
@@ -394,7 +397,7 @@ function renderUpdate() {
     // A restart takes the window down, so there is nothing to report back into:
     // the answer is the app coming back on the new version.
     try {
-      await call(succeeded ? '/api/window/restart' : '/api/update/upgrade');
+      await callShell(succeeded ? '/api/window/restart' : '/api/update/upgrade');
     } catch (e) {
       toast(e.message, true);
     }
@@ -483,7 +486,7 @@ function renderAgentUpdate() {
     // on the next snapshot, which is why neither points at a result.
     if (succeeded) {
       try {
-        await call('/api/window/restart');
+        await callShell('/api/window/restart');
       } catch (e) {
         toast(e.message, true);
       }
@@ -1036,7 +1039,7 @@ $('ovsave').onclick = Diff.saveEditor;
 // restarts onto it. In a browser tab there is no window to navigate, so the daemon
 // answers "no native window" — say so rather than looking broken.
 $('reposwitch').onclick = () =>
-  call('/api/window/switcher').catch((e) => toast(e.message, true));
+  callShell('/api/window/switcher').catch((e) => toast(e.message, true));
 $('addshell').onclick = newShell;
 $('keyhelpx').onclick = () => { $('keyhelp').hidden = true; };
 // The visible way in, beside the gear. Its tooltip names the chord — the whole
@@ -1447,14 +1450,41 @@ function announceWaiting() {
   waitingKnown = now;
 }
 
-function connect() {
-  const sock = new WebSocket(`${WS_BASE}/ws/events?token=${encodeURIComponent(TOKEN)}`);
+/* Which repositories' sockets are currently down. The status bar is shown while
+ * any of them is: a peer that has dropped means its rail rows are frozen, which
+ * is the same kind of lie the bar exists to announce for the local one. */
+const dropped = new Set();
+
+function connState() {
+  $('connbar').hidden = dropped.size === 0;
+}
+
+/** One socket per repository, each reconnecting on its own.
+ *
+ *  Separate rather than multiplexed, because that is the whole point of a daemon
+ *  per repository (`src/peers.rs`): one going away must leave the others alone,
+ *  and it does — this reconnects that one and nothing else notices. */
+function connect(repo) {
+  const sock = new WebSocket(`${repo.ws}/ws/events?token=${encodeURIComponent(repo.token)}`);
   // Connected (or reconnected): clear the dropped-connection status.
-  sock.onopen = () => { $('connbar').hidden = true; };
+  sock.onopen = () => { dropped.delete(repo.id); connState(); };
   sock.onmessage = (ev) => {
     // Through `receive` so the snapshot and the clock it is measured against move
-    // together; `snap` is a live binding, so every reader sees this.
-    receive(JSON.parse(ev.data));
+    // together; `snap` is a live binding, so every reader sees this — for the
+    // active repository. Every repository's snapshot is kept, because the rail
+    // draws them all.
+    receive(JSON.parse(ev.data), repo.id);
+
+    /* **Everything below is about the session you are in, so it is the active
+       repository's business only.** A peer's snapshot must not tear down the
+       centre pane's terminal, re-pick your selection or re-answer "what most
+       needs you" — those would all be answered from another checkout's sessions.
+       The rail is redrawn either way, at the bottom. */
+    if (repo !== activeRepo) {
+      scheduleRender();
+      announceWaiting();
+      return;
+    }
     // The first snapshot has landed, so drop the "connecting" hold and let the
     // real board — empty or not — show. Idempotent after that.
     document.body.classList.add('ready');
@@ -1518,9 +1548,15 @@ function connect() {
     // A dropped socket is a condition, not an error: a quiet status that clears
     // itself on reconnect (see onopen), rather than a toast that — now that
     // errors persist — would linger after the daemon came back.
-    $('connbar').hidden = false;
-    setTimeout(connect, 1500);
+    dropped.add(repo.id);
+    connState();
+    setTimeout(() => connect(repo), 1500);
   };
+}
+
+/** Open a socket to every repository this window is showing. */
+function connectAll() {
+  for (const repo of checkouts) connect(repo);
 }
 
 // ---------------------------------------------------------------------------
@@ -1563,10 +1599,10 @@ function setupChrome() {
     const a = /** @type {HTMLAnchorElement} */ (t.closest && t.closest('a[target="_blank"]'));
     if (!a || !/^https?:/i.test(a.href || '')) return;
     e.preventDefault();
-    call('/api/open', { url: a.href }).catch((err) => toast(err.message, true));
+    callShell('/api/open', { url: a.href }).catch((err) => toast(err.message, true));
   });
 
-  const wcmd = (cmd) => call(`/api/window/${cmd}`).catch((e) => toast(e.message, true));
+  const wcmd = (cmd) => callShell(`/api/window/${cmd}`).catch((e) => toast(e.message, true));
 
   for (const b of /** @type {NodeListOf<HTMLElement>} */ (
     document.querySelectorAll('.wctl-btn'))) {
@@ -1774,10 +1810,15 @@ function setupColumns() {
 
 import * as Settings from './js/settings.js';
 
+/* **Before anything paints.** The tokens are written onto the root element, so a
+   theme applied after the first render means one frame of the default palette —
+   which on a light theme is a near-black flash. Ahead of `Settings.setup`, since
+   the controls there read the theme to show what is selected. */
+initTheme();
 Settings.setup();
 setupColumns();
 setupChrome();
-connect();
+connectAll();
 /* The waiting clock has to tick even when nothing else changes — and ticking is
    all it does. This used to call `Rail.render()`, which opens with
    `replaceChildren`: the row under your pointer was destroyed and rebuilt every

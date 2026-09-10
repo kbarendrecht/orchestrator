@@ -1,9 +1,20 @@
 // The settings panel. The zoom control it offers lives in core, because the
 // terminals read the scale too.
 
-import { ctl, $, WHEEL, ZOOM, call, caret, closeLegend, el, get, MOD_LABEL, saveWheel, saveZoom, setWheel, setZoom, snap, wheelScale, zoomScale } from './core.js';
+import { ctl, $, FONTS, OPACITY, PRESETS, TRANSPARENT, WHEEL, ZOOM, call, callShell, caret, clampOpacity, closeLegend, el, get, MOD_LABEL, saveWheel, saveZoom, setTheme, setWheel, setZoom, snap, theme, wheelScale, zoomScale } from './core.js';
 
 const settingsOpen = () => !$('settings').hidden;
+
+/** An argv as one line somebody can edit, and `argv` can read back.
+ *
+ *  **Quotes anything with whitespace in it**, which is the half that was missing:
+ *  the box joined an argv with spaces and the save split it on them, so the one
+ *  path that always has a space on macOS — `~/Library/Application Support/orchd/
+ *  reviews.js` — came apart into two arguments on the first save. */
+const showArgv = (list) =>
+  (list || [])
+    .map((a) => (/[\s"']/.test(a) ? `"${String(a).replace(/"/g, '')}"` : a))
+    .join(' ');
 
 function closeSettings() {
   $('settings').hidden = true;
@@ -14,6 +25,117 @@ function closeSettings() {
 // as the string the input shows (command joined by spaces, patterns by commas);
 // `saveSettings` parses them back to arrays. Mutated in place by the row inputs.
 let procDraft = [];
+
+/* ---------------------------------------------------------------------------
+ * Theme
+ * ------------------------------------------------------------------------- */
+
+/** Which preset the three colours currently match, or `''` for none.
+ *
+ *  Derived rather than stored, which is what makes the dropdown honest: adjust
+ *  one colour off a preset and it stops claiming to be that preset, without
+ *  anything having to remember that you did. */
+function currentPreset() {
+  for (const [k, v] of Object.entries(PRESETS)) {
+    if (v.bg === theme.bg && v.panel === theme.panel && v.text === theme.text) return k;
+  }
+  return '';
+}
+
+/** Put the controls where the theme is. Called on setup and after every change,
+ *  because a preset moves three fields and a colour moves the preset. */
+function showTheme() {
+  const preset = currentPreset();
+  ctl('thpreset').value = preset;
+  ctl('thfont').value = theme.font;
+  $('thcustomrow').hidden = theme.font !== 'custom';
+  ctl('thcustom').value = theme.custom || '';
+  for (const [id, value] of [['thbg', theme.bg], ['thpanel', theme.panel], ['thtext', theme.text]]) {
+    ctl(id).value = value;
+    ctl(`${id}hex`).value = value;
+  }
+
+  /* **Shown but disabled when the window is opaque, rather than hidden.** An
+     absent control reads as a missing feature; a dead one with the reason beside
+     it reads as a thing to switch on, which is what it is. The hint names where. */
+  $('thopval').textContent = `${Math.round(theme.opacity * 100)}%`;
+  ctl('thopdown').disabled = !TRANSPARENT || theme.opacity <= OPACITY.min;
+  ctl('thopup').disabled = !TRANSPARENT || theme.opacity >= OPACITY.max;
+  $('thopachint').hidden = TRANSPARENT;
+}
+
+function setupTheme() {
+  const presets = ctl('thpreset');
+  /* An empty option for "none of them", selected whenever the colours have been
+     adjusted. Without it the dropdown would keep naming the preset you started
+     from, which is a control lying about the state it is showing. */
+  presets.appendChild(el('option', null, 'Custom')).value = '';
+  for (const [k, v] of Object.entries(PRESETS)) {
+    presets.appendChild(el('option', null, v.label)).value = k;
+  }
+  presets.onchange = () => {
+    const p = PRESETS[presets.value];
+    // Only the three colours: a preset is a palette, and taking the font with it
+    // would undo a choice you made about something else.
+    if (p) applyAndShow({ bg: p.bg, panel: p.panel, text: p.text });
+  };
+
+  const fonts = ctl('thfont');
+  for (const [k, v] of Object.entries(FONTS)) {
+    fonts.appendChild(el('option', null, v.label)).value = k;
+  }
+  /* Last, and only a fallback now that the list is detected rather than guessed:
+     a family this machine has under a name `MONO_CANDIDATES` does not carry. */
+  fonts.appendChild(el('option', null, 'Other…')).value = 'custom';
+  fonts.onchange = () => applyAndShow({ font: fonts.value });
+
+  /* `change`, not `input`: a font name is typed a character at a time, and
+     re-measuring every terminal's cell metrics on each keystroke — which is what
+     `applyTheme`'s refit does — would fight the person typing. */
+  ctl('thcustom').onchange = () => applyAndShow({ custom: ctl('thcustom').value });
+
+  for (const [id, field] of [['thbg', 'bg'], ['thpanel', 'panel'], ['thtext', 'text']]) {
+    /* `input` here, because a colour well is dragged and watching the board
+       follow is the whole point of having one. Cheap: this writes tokens and
+       repaints, and xterm's refit is the only real cost. */
+    ctl(id).oninput = () => applyAndShow({ [field]: ctl(id).value });
+    /* And the hex field on `change`, so a half-typed `#1` is not read as a
+       colour. Refused rather than corrected when it is not six digits: silently
+       rewriting what somebody pasted is worse than leaving it for them to see. */
+    ctl(`${id}hex`).onchange = () => {
+      const v = ctl(`${id}hex`).value.trim();
+      if (/^#?[0-9a-f]{6}$/i.test(v)) applyAndShow({ [field]: v.startsWith('#') ? v : `#${v}` });
+      else showTheme();
+    };
+  }
+
+  /* **Each row resets its own row and nothing else.** The Theme reset used to put
+     the font back too, on the grounds that it was "the theme" — a Reset on one row
+     silently changing another, which a tooltip papered over rather than fixed.
+     Now the row you press is the row that changes. */
+  $('threset').title = 'The three colours, back to Orchd dark';
+  $('threset').onclick = () => applyAndShow({
+    bg: PRESETS.orchd.bg, panel: PRESETS.orchd.panel, text: PRESETS.orchd.text,
+  });
+  $('thfontreset').onclick = () => applyAndShow({ font: 'plex', custom: null });
+  /* "Clear", not "Reset": there is no default name to go back to — the field is
+     either empty or it holds one you typed. */
+  $('thcustomreset').onclick = () => applyAndShow({ custom: null });
+  for (const [id, field] of [['thbg', 'bg'], ['thpanel', 'panel'], ['thtext', 'text']]) {
+    $(`${id}reset`).onclick = () => applyAndShow({ [field]: PRESETS.orchd[field] });
+  }
+
+  const opacity = (v) => applyAndShow({ opacity: clampOpacity(v) });
+  $('thopdown').onclick = () => opacity(theme.opacity - OPACITY.step);
+  $('thopup').onclick = () => opacity(theme.opacity + OPACITY.step);
+  $('thopreset').onclick = () => opacity(OPACITY.def);
+  showTheme();
+}
+
+function applyAndShow(patch) {
+  setTheme(patch);
+  showTheme();
+}
 
 function openSettings() {
   // Two panes over the same pane is one too many, and the legend is the one you
@@ -46,12 +168,15 @@ async function loadConfigInto() {
     : 'none';
   ctl('setupref').value = cfg.upstream_ref || '';
   ctl('setupremote').value = cfg.upstream_remote || '';
-  ctl('setreviews').value = (cfg.reviews_command || []).join(' ');
-  ctl('setwtsetup').value = (cfg.worktree_setup || []).join(' ');
+  ctl('setreviews').value = showArgv(cfg.reviews_command);
+  // Same round trip, same reason: a repo whose setup script lives under a path
+  // with a space would come apart on the first save too.
+  ctl('setwtsetup').value = showArgv(cfg.worktree_setup);
   // Numbers go in as numbers: `value = 0` on a number input renders "0", which is
   // the setting being off said out loud, where '' would read as unset.
   ctl('setretain').value = String(cfg.worktree_retention_days ?? 0);
   ctl('setseveral').checked = !!cfg.allow_several_in_main;
+  ctl('settransparent').checked = !!cfg.window_transparent;
   procDraft = (cfg.main_processes || []).map((p) => ({
     name: p.name || '',
     command: (p.command || []).join(' '),
@@ -150,7 +275,41 @@ function renderProcs() {
 }
 
 async function saveSettings() {
-  const argv = (s) => (s.trim() ? s.trim().split(/\s+/) : []);
+  /* **Quote-aware, because the default value contains a space on every Mac.**
+     `reviews_command` defaults to `<config dir>/reviews.js`, and the config dir is
+     `~/Library/Application Support/orchd` there — so a plain `split(/\s+/)` turned
+     one path into `["…/Library/Application", "Support/orchd/reviews.js"]` and the
+     review queue read as unavailable from then on. Pressing Save without editing
+     anything was enough, so it broke on the *first* save on any Mac. Found in a
+     real config after a save; `showSettings`'s `join` is the other half.
+
+     Deliberately small: single and double quotes, no escapes, no variables. This
+     is a command line a person types into a box, and `orchd` runs it through
+     `proc::run_bounded` with an argv rather than a shell — so anything a shell
+     would do beyond grouping would be a promise this cannot keep. */
+  const argv = (s) => {
+    const out = [];
+    let cur = '';
+    let quote = '';
+    let has = false;
+    for (const ch of s.trim()) {
+      if (quote) {
+        if (ch === quote) quote = '';
+        else cur += ch;
+      } else if (ch === '"' || ch === "'") {
+        quote = ch;
+        has = true;            // `""` is a real, empty argument
+      } else if (/\s/.test(ch)) {
+        if (cur || has) out.push(cur);
+        cur = '';
+        has = false;
+      } else {
+        cur += ch;
+      }
+    }
+    if (cur || has) out.push(cur);
+    return out;
+  };
   const list = (s) => s.split(',').map((x) => x.trim()).filter(Boolean);
   const body = {
     default_language: ctl('setlang').value.trim(),
@@ -162,6 +321,7 @@ async function saveSettings() {
     // not a shorter retention.
     worktree_retention_days: Math.max(0, Math.trunc(Number(ctl('setretain').value) || 0)),
     allow_several_in_main: !!ctl('setseveral').checked,
+    window_transparent: !!ctl('settransparent').checked,
     main_processes: procDraft.map((p) => ({
       name: p.name.trim(),
       command: argv(p.command),
@@ -188,7 +348,7 @@ async function saveSettings() {
      live ones back with `--resume`. */
   $('setnote').textContent = 'saved, restarting\u2026';
   try {
-    await call('/api/window/restart');
+    await callShell('/api/window/restart');
   } catch (e) {
     // A browser tab has no window to restart, and the daemon says so. Then the
     // old sentence is the right one: it is saved, and it applies when you restart
@@ -219,6 +379,7 @@ function setupSettings() {
   $('wsdown').onclick = () => saveWheel(setWheel(wheelScale - WHEEL.step));
   $('wsup').onclick = () => saveWheel(setWheel(wheelScale + WHEEL.step));
   $('wsreset').onclick = () => saveWheel(setWheel(WHEEL.def));
+  setupTheme();
   $('setclose').onclick = () => closeSettings();
 
   $('setprocadd').onclick = () => {

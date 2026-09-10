@@ -20,7 +20,13 @@ anyhow = { workspace = true }
 # `webview-data-url` because the splash is a `data:` URL rather than a file
 # (`splash_url`). Without the feature tauri refuses the URL and the window never
 # opens at all: "invalid window url: data URLs are not supported".
-tauri = { version = "2.11", features = ["webview-data-url"] }
+# `macos-private-api` is what `transparent(true)` needs on macOS, and it is worth
+# naming rather than leaving as a feature flag somebody finds later: it opts the
+# app into private Apple APIs, which Apple's own guidance says makes a build
+# ineligible for the App Store. Nothing else here depends on it, and
+# `window_transparent` defaults to false — so an install that never asks for a
+# see-through window is unaffected by it being compiled in.
+tauri = { version = "2.11", features = ["webview-data-url", "macos-private-api"] }
 # The native folder picker for first run, when there is no config to read a
 # checkout out of.
 tauri-plugin-dialog = "2.7"
