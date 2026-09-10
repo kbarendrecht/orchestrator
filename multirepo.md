@@ -465,16 +465,13 @@ unchanged.
 
 Each its own commit. Nothing here depends on the host existing.
 
-1. **The header switcher** and `WindowCmd::Switcher`, `start_switcher`. The
-   first-run page keeps its two real jobs.
-   **`BootstrapHost::switching` and `cancel` stay**, and an earlier draft deleted
-   them. `switching` is a *defaulted* trait method, so dropping the impl compiles
-   silently — and it is the only branch of `TauriBootstrap::open` that reaches
-   `request_restart`. Everything else falls to `BOOTING`, which its own comment says
-   is "set by the first open that boots the daemon, **and never cleared**". So after
-   the app's first boot every `POST /api/open` would take the latched branch, undo
-   its config write and toast "Could not switch to that project" — and Stage 3's
-   empty-host page is that exact path. `cancel` has a page-side consumer too.
+1. **The header switcher is not deleted here.** It moved to Stage 3, and the reason
+   is this plan's own two sentences: "stages 0 to 2 change nothing a single-checkout
+   user can see", and "with symmetric `close`, switch is `add` then `close`" — where
+   `close` arrives in Stage 3. Verified while doing the work: that button is the
+   **only** way to change project, because `Config::existing` returns `None` only for
+   a checkout that has moved, so nothing else raises the first-run page. Delete it
+   here and there is no way to open another project for two stages.
 2. From the branch, **do not take**: `peers.rs`,
    `CheckoutControl`, `AppState::checkouts`, `checkout_control`, the
    `__ORCH_CHECKOUTS__` substitution, the `--secondary` flag, the second FNV-1a, and
@@ -663,18 +660,30 @@ Now the acceptance flow can go green.
    - **The same path twice.**
    - **A checkout of a repository already open** — the widest of the three, see the
      decision below.
-2. **`close` is symmetric, down to the last one.** Any checkout, including the one
+2. **The header switcher goes, and `WindowCmd::Switcher` and `start_switcher` with
+   it.** Last, not first: by now `add` and `close` mean "switch" between them, so
+   nothing is taken away before its replacement exists.
+   **`BootstrapHost::switching` and `cancel` stay**, and an earlier draft deleted
+   them in Stage 1. `switching` is a *defaulted* trait method, so dropping the impl
+   compiles silently — and it is the only branch of `TauriBootstrap::open` that
+   reaches `request_restart`. Everything else falls to `BOOTING`, which its own
+   comment says is "set by the first open that boots the daemon, **and never
+   cleared**". So after the app's first boot every `POST /api/open` would take the
+   latched branch, undo its config write and toast "Could not switch to that
+   project" — and this stage's empty-host page is that exact path. `cancel` has a
+   page-side consumer too.
+3. **`close` is symmetric, down to the last one.** Any checkout, including the one
    you are looking at, and including the only one — an empty host is the first-run
    page, which `firstrun::serve` already is. A refusal at N=1 would be the one place
    symmetry broke, and the switcher's deletion rests on `close` being symmetric.
    Session records are **left alone** — closing a checkout is not a decision about
    its conversations — and the resurrection is stopped at `add` instead: see the
    decision below.
-3. **`add` offers recents and browse.** `recent.json` moves to the host.
-4. **Publish each checkout as it answers.** The host never waits for the slowest
+4. **`add` offers recents and browse.** `recent.json` moves to the host.
+5. **Publish each checkout as it answers.** The host never waits for the slowest
    daemon; a checkout still starting draws its wait state. The 90 s hold on the
    splash cannot recur.
-5. **`checkouts/` cleanup, and it must not reap a conversation.** A host sweep over
+6. **`checkouts/` cleanup, and it must not reap a conversation.** A host sweep over
    the directory Stage 2 item 6 creates — an earlier draft said `repos/`, which is
    the branch's name and would have swept a directory that no longer exists while the
    one that grows was never touched. It removes checkout dirs not in the list and
@@ -703,7 +712,7 @@ Now the acceptance flow can go green.
    number to learn, not two — and the reaper it mirrors is the model for the rest:
    count from the last write rather than from creation, and never take a directory
    with work in it.
-6. **The `pending` line comes off flow 25 and it goes green.** That removal is the
+7. **The `pending` line comes off flow 25 and it goes green.** That removal is the
    definition of done for this stage.
 
 ### Stage 4 — the page
@@ -918,7 +927,7 @@ The SPA work, on top of a host that already reports the truth.
 | Step | Commits on `main` | Buys |
 | --- | --- | --- |
 | Stage 0 | tests + red flow 25 + CI clippy | A boundary you can move safely |
-| Stage 1 | deletions | Less to move; the switcher question gone |
+| Stage 1 | the portability fix, the stale TODO | Less to move |
 | Stage 2 | host + one child | One hosting model; the lock keyed right |
 | Stage 3 | N children | Flow 25 green; the last three safety findings closed |
 | Stage 4 | the page | The product |
