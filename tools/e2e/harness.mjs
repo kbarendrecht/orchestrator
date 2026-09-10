@@ -89,6 +89,37 @@ export async function until(what, predicate, { timeout = 10_000, every = 50, con
   }
 }
 
+/** A pid that is provably not alive, for a test that needs an orphaned owner.
+ *
+ *  **Not `/proc/sys/kernel/pid_max`**, which is what this was, inline in flow 02:
+ *  Linux-only, so the read *threw* on macOS and took the flow down at a line it is
+ *  not about. The same trap `CLAUDE.md` names for the daemon ("a /proc read is a
+ *  portability bug that compiles"), except a `readFileSync` does not even get that
+ *  far — and CI cannot catch it, because it compiles everywhere.
+ *
+ *  Spawn something that exits and reuse its pid: `spawnSync` returns only after the
+ *  child has been reaped, so the pid is free. Proven with `kill(pid, 0)` rather than
+ *  assumed, because a pid can be recycled — and retried rather than thrown on, since
+ *  losing that race is not a reason to fail a flow.
+ *
+ *  Taken from `vdkolk/multi-repo` (`45a76f8`), which found it. Placed after `until`
+ *  rather than above it: the original landed between `until`'s docblock and `until`,
+ *  which left that function undocumented and this one carrying somebody else's
+ *  prose — the same anchoring mistake `CLAUDE.md` records for `#[test]`.
+ */
+export function deadPid() {
+  for (let tries = 0; tries < 10; tries++) {
+    const { pid } = spawnSync('true')
+    if (pid === undefined) continue
+    try {
+      process.kill(pid, 0)
+    } catch {
+      return pid // ESRCH: gone, which is the whole requirement
+    }
+  }
+  throw new Error('could not find a pid that is not in use')
+}
+
 /**
  * Build a sandbox and start a daemon in it.
  *

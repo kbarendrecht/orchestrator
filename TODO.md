@@ -95,11 +95,20 @@ this file, which churned it from every build; that feature is gone.
   the ancestry check needs a single exemption rather than continuous forgiveness, and
   every card still shows a real standalone diff while you are approving it.
 
-- **One window, several daemons: make the repository switcher switch.** The header
-  button exists and its only behaviour is a toast reading "not implemented yet".
-  The shape that fits: keep **one checkout per daemon** and run several daemons
-  *inside the one Tauri process*, each on its own port and its own config dir, with
-  the webview navigating between them when you pick a repo.
+- **One window, several checkouts. The design now lives in `multirepo.md`, and it
+  reverses the shape below.** The header button works — it raises the open-project
+  modal and restarts onto your choice (`b9d30f0`); the sentence here said it "toasts
+  *not implemented yet*" long after that stopped being true.
+  What is kept below is the reasoning, because the reversal is only readable against
+  it. The two arguments that did not survive: a child process was ruled out for
+  having "no Tauri handle", which is true only of the daemon *serving the page* — and
+  the cost the in-process shape was meant to avoid, a `Config::config_dir()` sweep
+  across 21 call sites, does not exist at all when each daemon is its own process.
+  Measured since: a child daemon costs 2.7 ms and 9.3 MB over the embedded one.
+  So the plan is a **host** — the Tauri process serves the page and supervises one
+  identical child daemon per checkout — and the switcher is deleted at the end of it,
+  once `add` and `close` make "switch" mean `add` then `close`. Until then it is the
+  only way to change project and it stays.
 
   **Why not a sidecar, decided by the window rather than by taste.** The frameless
   titlebar sends its commands over HTTP to the daemon, which drives Tauri through
