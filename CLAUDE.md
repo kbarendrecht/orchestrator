@@ -99,6 +99,31 @@ mean *this* repo; if you do, name it.
 
 ## Things that will bite you
 
+- **A checkout's daemon is a child process, and `src/child.rs` is the protocol.**
+  `child::launch` runs `orchd --main <checkout> --host-origin <origin> --announce`,
+  reads one line — `ready <port> <token>` — and arms **one** observer thread that
+  owns `wait()`. Four things about it are load-bearing.
+  **The child mints its own token and reports it.** Handing one down through the
+  environment would put it in the environment of every session that child spawns,
+  which is the invariant `triage.rs` asserts.
+  **The observer has to know *why* the child exited.** A close, a quit and a crash
+  produce the same EOF, so an observer that restarts on exit restarts the daemon a
+  close just stopped — and a restart runs `auto_resume`, which spawns an agent per
+  live record. So a deliberate stop sets `stopping` **before** it signals, and the
+  observer reads it after `wait` returns. Ownership follows from `std::process`:
+  `wait` needs `&mut self`, so the handle lives in the observer and every stop path
+  signals **by pid**, through `pty::signal_group_of` (which refuses pid 0 and our
+  own group — `killpg(0, …)` would take the host).
+  **Stdin EOF is the second kill switch**, so a `SIGKILL`ed host still takes its
+  children down, and `--announce` turns the child's *stdout* subscriber off: that
+  pipe is the parent's protocol channel, and every line is in the file log anyway.
+  **The binary is `orchd`, beside the running executable — never a re-exec of the
+  app.** `ldd` says why: `orchd` links 5 shared objects and
+  `orchestrator-desktop` links 133, twenty of them WebKit and GTK, and a child would
+  pay that loader cost to serve a page it never serves.
+  One test-only wrinkle worth knowing: those tests write a stub and exec it, and
+  `ETXTBSY` there is a **fork race** (a sibling thread's `fork` copies the write fd
+  until its own `exec`), not a defect — `launch_stub` retries it and says so.
 - **The page is served by `host.rs`, not by the daemon.** `src/host.rs` owns
   `GET /`, every asset route, the window commands and `/api/host/checkouts`; the
   daemon keeps `/api/*`, `/ws/*` and `/hooks/*`. One process still serves both and

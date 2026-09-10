@@ -131,7 +131,7 @@ fn main() {
 
     // Both from the library, so a checkout's own child daemon logs the same lines
     // to the same kind of file rather than into a pipe nobody drains.
-    orchd::logging::init("orchd=info,orchestrator_desktop=info");
+    orchd::logging::init("orchd=info,orchestrator_desktop=info", true);
     // Right after the logger exists, since the hook writes through it.
     orchd::logging::install_panic_hook();
 
@@ -511,6 +511,10 @@ fn boot_daemon(app_handle: AppHandle, rt: tokio::runtime::Handle, main: Option<s
             // does not.
             fallback_port: true,
             chrome: CHROME,
+            // The daemon is in this process and serves its own page for now, so
+            // there is no other origin to accept. It gains one when the app hosts
+            // the page and spawns the daemon as a child.
+            host_origin: None,
         })) {
             Ok(s) => s,
             Err(e) => {

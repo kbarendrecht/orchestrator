@@ -41,11 +41,17 @@ impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogFile {
     }
 }
 
-/// Start logging to stdout and to `<config dir>/orchd.log`.
+/// Start logging to `<config dir>/orchd.log`, and optionally to stdout.
 ///
 /// `default_filter` is what to use when `RUST_LOG` says nothing — the caller's,
 /// because a host knows its own crate name and the library does not.
-pub fn init(default_filter: &'static str) {
+///
+/// **`to_stdout` is false for a host-spawned child**, and that is not tidiness: a
+/// child's stdout is a pipe its parent reads one protocol line from
+/// (`child::ready_line`), so a subscriber writing there mixes prose and ANSI colour
+/// into the channel the parent parses, and every line of it is already in the file.
+/// A terminal daemon and the app keep stdout, where somebody is reading.
+pub fn init(default_filter: &'static str, to_stdout: bool) {
     use tracing_subscriber::layer::{Layer, SubscriberExt};
     use tracing_subscriber::util::SubscriberInitExt;
 
@@ -53,7 +59,7 @@ pub fn init(default_filter: &'static str) {
         tracing_subscriber::EnvFilter::try_from_default_env()
             .unwrap_or_else(|_| default_filter.into())
     };
-    let stdout = tracing_subscriber::fmt::layer().with_filter(filter());
+    let stdout = to_stdout.then(|| tracing_subscriber::fmt::layer().with_filter(filter()));
 
     // `ORCHD_CONFIG_DIR` moves this with everything else durable, which is what
     // keeps a fixture daemon from writing over the real log.

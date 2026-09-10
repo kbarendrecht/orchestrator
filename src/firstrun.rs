@@ -618,7 +618,7 @@ async fn guard(
     }
     let origin = req.headers().get("origin").and_then(|v| v.to_str().ok());
     let is_get = req.method() == axum::http::Method::GET;
-    if !crate::api::origin_ok(origin, port, false, is_get, false) {
+    if !crate::api::origin_ok(origin, port, None, false, is_get, false) {
         return (StatusCode::FORBIDDEN, "bad origin").into_response();
     }
     next.run(req).await

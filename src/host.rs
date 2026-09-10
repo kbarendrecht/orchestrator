@@ -139,7 +139,7 @@ async fn guard(State(host): State<Arc<Host>>, req: Request<axum::body::Body>, ne
         .and_then(|v| v.to_str().ok())
         .is_some_and(|t| t == host.token);
     let is_get = req.method() == axum::http::Method::GET;
-    if !crate::api::origin_ok(origin, host.port, false, is_get, token_ok) {
+    if !crate::api::origin_ok(origin, host.port, None, false, is_get, token_ok) {
         return (StatusCode::FORBIDDEN, "bad origin").into_response();
     }
     // The page itself is deliberately not token-gated: it is where the token comes

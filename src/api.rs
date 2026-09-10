@@ -59,12 +59,17 @@ pub(crate) fn host_allowed(host: &str, port: u16) -> bool {
     expected.iter().any(|e| e == host)
 }
 
-fn origin_allowed(origin: &str, port: u16) -> bool {
+fn origin_allowed(origin: &str, port: u16, host_origin: Option<&str>) -> bool {
     let expected = [
         format!("http://127.0.0.1:{port}"),
         format!("http://localhost:{port}"),
     ];
-    expected.iter().any(|e| e == origin)
+    // The page is served by the host, on the host's port, so every call a child
+    // daemon receives is cross-origin. **One exact string**, handed in on the
+    // child's argv by the process that spawned it and never read from the config
+    // file — a widening a config could spell is a widening somebody else can spell.
+    // Absent for a daemon nobody hosts, which is a browser tab on this port.
+    expected.iter().any(|e| e == origin) || host_origin == Some(origin)
 }
 
 /// Whether a request gets past the Origin check.
@@ -89,9 +94,16 @@ fn origin_allowed(origin: &str, port: u16) -> bool {
 ///   cannot omit the header on a cross-origin fetch or form POST, and it cannot
 ///   read the token to forge this. Absence is positive evidence of a non-browser
 ///   caller; the token is what authenticates it.
-pub(crate) fn origin_ok(origin: Option<&str>, port: u16, is_hook: bool, is_get: bool, token_ok: bool) -> bool {
+pub(crate) fn origin_ok(
+    origin: Option<&str>,
+    port: u16,
+    host_origin: Option<&str>,
+    is_hook: bool,
+    is_get: bool,
+    token_ok: bool,
+) -> bool {
     match origin {
-        Some(o) => origin_allowed(o, port),
+        Some(o) => origin_allowed(o, port, host_origin),
         None => is_hook || is_get || token_ok,
     }
 }
@@ -223,7 +235,7 @@ pub async fn guard(
     let is_ask = is_agent_route(&path);
 
     let is_get = req.method() == axum::http::Method::GET;
-    if !origin_ok(origin, port, is_hook || is_ask, is_get, token_ok) {
+    if !origin_ok(origin, port, app.cfg.host_origin.as_deref(), is_hook || is_ask, is_get, token_ok) {
         return (StatusCode::FORBIDDEN, "bad origin").into_response();
     }
 
@@ -3249,18 +3261,18 @@ mod tests {
 
     #[test]
     fn only_the_spas_own_origin_is_accepted() {
-        assert!(origin_allowed("http://127.0.0.1:7777", 7777));
-        assert!(origin_allowed("http://localhost:7777", 7777));
-        assert!(!origin_allowed("http://evil.example", 7777));
+        assert!(origin_allowed("http://127.0.0.1:7777", 7777, None));
+        assert!(origin_allowed("http://localhost:7777", 7777, None));
+        assert!(!origin_allowed("http://evil.example", 7777, None));
         // A page on another port is still another origin.
-        assert!(!origin_allowed("http://127.0.0.1:7778", 7777));
+        assert!(!origin_allowed("http://127.0.0.1:7778", 7777, None));
         // Guards against a DNS-rebinding host that merely contains the address.
-        assert!(!origin_allowed("http://127.0.0.1.evil.example:7777", 7777));
+        assert!(!origin_allowed("http://127.0.0.1.evil.example:7777", 7777, None));
     }
 
     /// `(origin, is_hook, is_get, token_ok)` at port 7777.
     fn ok(origin: Option<&str>, is_hook: bool, is_get: bool, token_ok: bool) -> bool {
-        origin_ok(origin, 7777, is_hook, is_get, token_ok)
+        origin_ok(origin, 7777, None, is_hook, is_get, token_ok)
     }
 
     #[test]

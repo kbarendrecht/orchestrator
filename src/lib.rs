@@ -17,6 +17,7 @@ pub mod fix_pr;
 pub mod headroom;
 pub mod health;
 pub mod hooks;
+pub mod child;
 pub mod host;
 pub mod instance;
 pub mod logging;
@@ -73,6 +74,9 @@ pub struct StartOptions {
     pub fallback_port: bool,
     /// How the SPA should draw its top bar. Headless leaves this `None`.
     pub chrome: window::Chrome,
+    /// The origin of the host that spawned this daemon, if one did. Reaches
+    /// [`config::Config::host_origin`], which is where the reasoning lives.
+    pub host_origin: Option<String>,
 }
 
 impl Default for StartOptions {
@@ -81,6 +85,7 @@ impl Default for StartOptions {
             main_checkout: None,
             fallback_port: false,
             chrome: window::Chrome::None,
+            host_origin: None,
         }
     }
 }
@@ -259,6 +264,8 @@ pub async fn start(opts: StartOptions) -> Result<Server> {
     let lock = instance::acquire()?;
 
     let mut cfg = Config::load_or_init(opts.main_checkout)?;
+    // From the argv of whoever spawned us, never from the file this just read.
+    cfg.host_origin = opts.host_origin.clone();
     check_config(&cfg)?;
     // Read before `cfg` is moved into the state, and used by the phase line at the
     // end of this function.

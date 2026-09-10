@@ -483,16 +483,10 @@ impl PtyHandle {
     /// gone, which is why [`Self::kill`] and [`Self::kill_hard`] check the exit
     /// first and only [`Self::kill_gracefully`] sweeps.
     fn signal_group(&self, sig: libc::c_int) -> bool {
-        let Some(pid) = self.pid.filter(|p| *p != 0) else {
-            return false;
-        };
-        let pgid = pid as libc::pid_t;
-        // SAFETY: read-only, and cannot fail.
-        if pgid == unsafe { libc::getpgrp() } {
-            return false;
+        match self.pid {
+            Some(pid) => signal_group_of(pid, sig),
+            None => false,
         }
-        // SAFETY: a group `setsid()` gave this child, proven above not to be ours.
-        unsafe { libc::killpg(pgid, sig) == 0 }
     }
 
     /// `SIGKILL` the child's group, without waiting.
@@ -584,6 +578,29 @@ impl PtyHandle {
             }
         }
     }
+}
+
+/// `killpg` a group by its leader's pid, with the guard the method above needs.
+///
+/// A free function because a child daemon is not a pty child and has no
+/// [`PtyHandle`], while the guard is the same and must not be written twice: the
+/// docblock on [`PtyHandle::signal_group`] is the reasoning, and both callers are in
+/// the same position — a leader that `setsid` or `process_group(0)` made a group
+/// leader of, and which may already have been reaped while its group lives on.
+///
+/// Refuses a pid of 0 and our own group, because `killpg(0, …)` means *this*
+/// process group: it would take the host and every other child with it.
+pub fn signal_group_of(pid: u32, sig: libc::c_int) -> bool {
+    if pid == 0 {
+        return false;
+    }
+    let pgid = pid as libc::pid_t;
+    // SAFETY: read-only, and cannot fail.
+    if pgid == unsafe { libc::getpgrp() } {
+        return false;
+    }
+    // SAFETY: a group its leader was made of, proven above not to be ours.
+    unsafe { libc::killpg(pgid, sig) == 0 }
 }
 
 /// Whether a pid is still in the process table.

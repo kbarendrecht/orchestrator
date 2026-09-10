@@ -8,6 +8,15 @@ use std::path::{Component, Path, PathBuf};
 /// stack is a set of values rather than a special case baked into the daemon.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
+    /// The origin of the host that spawned this daemon, if one did.
+    ///
+    /// **Never from the file** (`#[serde(skip)]`): the page is served by the host,
+    /// so every call a child receives is cross-origin, and the one exact string
+    /// that widens `api::guard` arrives on the argv of the process that spawned
+    /// this one. A widening the config file could spell is a widening anything
+    /// that can write that file could spell.
+    #[serde(skip)]
+    pub host_origin: Option<String>,
     /// The privileged checkout. Worktrees live inside it at [`Config::worktrees_dir`].
     pub main_checkout: PathBuf,
     /// Where worktrees live, relative to `main_checkout`. Defaults to
