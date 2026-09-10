@@ -517,8 +517,7 @@ pub async fn start(opts: StartOptions) -> Result<Server> {
         port: app.cfg.port,
         token: app.token.clone(),
         live: true,
-    })
-    .await;
+    });
     let router = router(app.clone(), host.clone());
     let serve = tokio::spawn(async move {
         // **`TCP_NODELAY`, because a keystroke is one small frame.** axum defaults

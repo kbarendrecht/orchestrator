@@ -32,8 +32,9 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Serialize;
 use serde_json::json;
-use std::sync::Arc;
-use tokio::sync::RwLock;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use crate::window::WindowControl;
 
@@ -77,9 +78,30 @@ pub struct Host {
     /// page is the one that can hold a Tauri handle. A checkout's daemon is about
     /// to stop being that process, and a handle it could never use is a field that
     /// reads as "this daemon might have a window".
-    window: RwLock<Option<Arc<dyn WindowControl>>>,
-    /// Every open checkout. One entry today.
-    checkouts: RwLock<Vec<Checkout>>,
+    /// **A `std::sync::Mutex`, not tokio's**, and that is a decision rather than
+    /// habit: the observer thread in [`crate::child`] is a plain `std::thread` —
+    /// it has to be, because it owns a blocking `wait()` — and it is the thing
+    /// that reports a checkout down. An async lock would need a runtime handle
+    /// smuggled onto that thread. Every critical section here is a map or vector
+    /// update with no `await` in it, so a blocking lock is both correct and
+    /// cheaper.
+    window: Mutex<Option<Arc<dyn WindowControl>>>,
+    /// Every open checkout, in the order they were opened.
+    checkouts: Mutex<Vec<Checkout>>,
+    /// The child processes behind them, keyed on the checkout path.
+    ///
+    /// Separate from [`Self::checkouts`] because they have different lifetimes: a
+    /// row survives its daemon dying (that is what `live: false` is for, and what
+    /// `reopen` acts on), while the handle does not.
+    children: Mutex<HashMap<PathBuf, Arc<crate::child::Child>>>,
+    /// Which checkouts have already spent their one restart.
+    ///
+    /// Bounded to one retry: a first death is worth a free recovery, and a
+    /// checkout that kills its daemon twice is a checkout to look at rather than
+    /// to keep restarting — every restart runs `auto_resume`, so a crash loop
+    /// respawns agents nobody asked for. Cleared when a start succeeds, so a
+    /// daemon that ran for an hour and then died gets its retry again.
+    retried: Mutex<HashMap<PathBuf, bool>>,
     /// Which key the app's own chords wear, and whether the page draws its own
     /// titlebar. Told to the page, never sniffed.
     chrome: crate::window::Chrome,
@@ -90,15 +112,17 @@ impl Host {
         Arc::new(Host {
             token,
             port,
-            window: RwLock::new(None),
-            checkouts: RwLock::new(Vec::new()),
+            window: Mutex::new(None),
+            checkouts: Mutex::new(Vec::new()),
+            children: Mutex::new(HashMap::new()),
+            retried: Mutex::new(HashMap::new()),
             chrome,
         })
     }
 
     /// Give the host its native window. Called once, by whichever process has one.
-    pub async fn attach_window(&self, control: Arc<dyn WindowControl>) {
-        *self.window.write().await = Some(control);
+    pub fn attach_window(&self, control: Arc<dyn WindowControl>) {
+        *self.window.lock().unwrap() = Some(control);
     }
 
     /// Add or replace a checkout's entry, keyed on the path.
@@ -106,16 +130,125 @@ impl Host {
     /// Replace rather than push, because a restarted daemon is the same checkout
     /// on a new port with a new token, and two rows for one path is the shape
     /// where the page picks whichever it happened to render.
-    pub async fn record(&self, checkout: Checkout) {
-        let mut open = self.checkouts.write().await;
+    pub fn record(&self, checkout: Checkout) {
+        let mut open = self.checkouts.lock().unwrap();
         match open.iter_mut().find(|c| c.path == checkout.path) {
             Some(existing) => *existing = checkout,
             None => open.push(checkout),
         }
     }
 
-    pub async fn checkouts(&self) -> Vec<Checkout> {
-        self.checkouts.read().await.clone()
+    pub fn checkouts(&self) -> Vec<Checkout> {
+        self.checkouts.lock().unwrap().clone()
+    }
+
+    /// Mark a checkout's row down, keeping the row.
+    ///
+    /// The row is where `reopen` lives, so dropping it would leave a checkout you
+    /// opened with nothing to press. `live: false` is the difference between "this
+    /// checkout is gone" and "this checkout's daemon is gone".
+    fn mark_down(&self, checkout: &Path) {
+        let path = checkout.to_string_lossy();
+        if let Some(row) = self.checkouts.lock().unwrap().iter_mut().find(|c| c.path == path) {
+            row.live = false;
+        }
+        self.children.lock().unwrap().remove(checkout);
+    }
+
+    /// Start a checkout's daemon and record it.
+    ///
+    /// The observer this arms is what makes a death visible, and it is armed by
+    /// `child::launch` before it returns — the same rule
+    /// `spawn::watch_session_exit` follows for a pty.
+    ///
+    /// **A death that was not asked for is restarted once.** A death that *was*
+    /// asked for is not, which is the whole reason [`crate::child::Child::stop`]
+    /// sets its flag before it signals: without that a `close` would restart the
+    /// daemon it just stopped, and a restart runs `auto_resume`.
+    pub fn open_checkout(self: &Arc<Self>, checkout: &Path) -> anyhow::Result<()> {
+        self.open_checkout_with(&crate::child::daemon_binary(), checkout)
+    }
+
+    /// The same, with the daemon binary named — see [`crate::child::launch_at`]
+    /// for why that split exists.
+    pub fn open_checkout_with(
+        self: &Arc<Self>,
+        exe: &Path,
+        checkout: &Path,
+    ) -> anyhow::Result<()> {
+        let origin = format!("http://127.0.0.1:{}", self.port);
+        let host = self.clone();
+        let exe_again = exe.to_path_buf();
+        let child = crate::child::launch_at(exe, checkout, &origin, move |path, asked, code| {
+            host.mark_down(path);
+            if asked {
+                return;
+            }
+            let spent = host.retried.lock().unwrap().insert(path.to_path_buf(), true);
+            if spent == Some(true) {
+                tracing::error!(
+                    checkout = %path.display(),
+                    code = code.unwrap_or(-1),
+                    "the checkout's daemon died twice; leaving it down"
+                );
+                return;
+            }
+            tracing::warn!(
+                checkout = %path.display(),
+                code = code.unwrap_or(-1),
+                "the checkout's daemon died; restarting it once"
+            );
+            if let Err(e) = host.open_checkout_with(&exe_again, path) {
+                tracing::error!(checkout = %path.display(), "the restart failed: {e:#}");
+            }
+        })?;
+
+        // A start that reached its ready line clears the retry, so a daemon that
+        // runs for an hour and then dies is not held to a crash an hour ago.
+        self.retried.lock().unwrap().remove(checkout);
+        self.record(Checkout {
+            path: checkout.to_string_lossy().into_owned(),
+            name: checkout
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| checkout.to_string_lossy().into_owned()),
+            port: child.ready.port,
+            token: child.ready.token.clone(),
+            live: true,
+        });
+        self.children.lock().unwrap().insert(checkout.to_path_buf(), Arc::new(child));
+        Ok(())
+    }
+
+    /// Stop a checkout's daemon, keeping its row.
+    ///
+    /// Every stop path goes through here so the flag is always set before the
+    /// signal. Returns whether there was a daemon to stop.
+    pub fn stop_checkout(&self, checkout: &Path) -> bool {
+        let child = self.children.lock().unwrap().get(checkout).cloned();
+        match child {
+            Some(child) => {
+                child.stop();
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Stop every checkout's daemon, concurrently, on one deadline.
+    ///
+    /// Concurrent because quit must not be N × the grace: each child's own
+    /// `shutdown` is the only thing that reaches its sessions, and those run in
+    /// parallel with each other already.
+    pub fn stop_all(&self) {
+        let children: Vec<_> = self.children.lock().unwrap().values().cloned().collect();
+        let mut waiting = Vec::new();
+        for child in children {
+            waiting.push(std::thread::spawn(move || child.stop()));
+        }
+        for handle in waiting {
+            let _ = handle.join();
+        }
     }
 }
 
@@ -150,6 +283,50 @@ async fn guard(State(host): State<Arc<Host>>, req: Request<axum::body::Body>, ne
     next.run(req).await
 }
 
+/// A host serving on its own port.
+///
+/// Held by the caller for as long as the page should be reachable; dropping it
+/// aborts the server task. The children are **not** in here — they are the host's,
+/// because a restart replaces the child and not the server.
+pub struct Serving {
+    pub host: Arc<Host>,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for Serving {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+/// Bind a loopback port and serve the page on it.
+///
+/// `port` of 0 takes an ephemeral one, which is what a test wants and what the app
+/// will want too: the page's own URL is handed to the webview, so nothing needs to
+/// predict it. The `Host` is rebuilt with the port it actually got, because the
+/// Host and Origin rules compare against it — a guard checking a port nothing is
+/// listening on refuses everything, and says `bad host` while doing it.
+pub async fn serve(
+    token: String,
+    port: u16,
+    chrome: crate::window::Chrome,
+) -> anyhow::Result<Serving> {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", port)).await?;
+    let bound = listener.local_addr()?.port();
+    let host = Host::new(token, bound, chrome);
+    let router = router(host.clone());
+    let task = tokio::spawn(async move {
+        // `TCP_NODELAY` for the same reason the daemon sets it: a keystroke is one
+        // small frame, and Nagle plus a delayed ACK is ~40 ms per round trip. The
+        // host serves no pty, but it serves the page that opens them.
+        if let Err(e) = axum::serve(listener, router).tcp_nodelay(true).await {
+            tracing::error!("the host stopped serving: {e:#}");
+        }
+    });
+    tracing::info!(port = bound, "the host is serving the page");
+    Ok(Serving { host, task })
+}
+
 pub fn router(host: Arc<Host>) -> Router {
     Router::new()
         .route("/", get(index))
@@ -179,8 +356,8 @@ const REVIEW_PREVIEW: &str = include_str!("../web/review-preview.html");
 /// another origin could ask for. The checkout list rides along for the same
 /// reason: the page's first call already has to name a checkout, and a fetch to
 /// find out which would need a credential the page does not have yet.
-async fn page(host: &Arc<Host>, template: &str) -> String {
-    let checkouts = serde_json::to_string(&host.checkouts().await).unwrap_or_else(|_| "[]".into());
+fn page(host: &Arc<Host>, template: &str) -> String {
+    let checkouts = serde_json::to_string(&host.checkouts()).unwrap_or_else(|_| "[]".into());
     template
         .replace("__ORCH_TOKEN__", &host.token)
         .replace("__ORCH_CHROME__", host.chrome.as_str())
@@ -194,7 +371,7 @@ async fn page(host: &Arc<Host>, template: &str) -> String {
 async fn index(State(host): State<Arc<Host>>) -> Response {
     (
         [(header::CACHE_CONTROL, "no-store, must-revalidate")],
-        Html(page(&host, INDEX).await),
+        Html(page(&host, INDEX)),
     )
         .into_response()
 }
@@ -204,7 +381,7 @@ async fn index(State(host): State<Arc<Host>>) -> Response {
 async fn review_preview(State(host): State<Arc<Host>>) -> Response {
     (
         [(header::CACHE_CONTROL, "no-store, must-revalidate")],
-        Html(page(&host, REVIEW_PREVIEW).await),
+        Html(page(&host, REVIEW_PREVIEW)),
     )
         .into_response()
 }
@@ -323,7 +500,7 @@ async fn font(UrlPath(file): UrlPath<String>) -> Response {
 // --- the checkout list ------------------------------------------------------
 
 async fn checkouts(State(host): State<Arc<Host>>) -> Json<serde_json::Value> {
-    Json(json!({ "checkouts": host.checkouts().await }))
+    Json(json!({ "checkouts": host.checkouts() }))
 }
 
 // --- the window -------------------------------------------------------------
@@ -358,7 +535,7 @@ fn refusal(message: &str) -> Response {
 }
 
 async fn dispatch(host: &Arc<Host>, cmd: crate::window::WindowCmd) -> Response {
-    let control = host.window.read().await.clone();
+    let control = host.window.lock().unwrap().clone();
     let Some(control) = control else {
         // Running in a browser tab. The tab has its own chrome; this is not an
         // error worth a toast, but it is not a success either.

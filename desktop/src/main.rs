@@ -533,7 +533,7 @@ fn boot_daemon(app_handle: AppHandle, rt: tokio::runtime::Handle, main: Option<s
         // The host, not the daemon: the process that serves the page is the one
         // that can hold a Tauri handle, and a checkout's daemon is about to stop
         // being that process.
-        rt.block_on(server.host.attach_window(control));
+        server.host.attach_window(control);
         *SERVER.get_or_init(|| Mutex::new(None)).lock().unwrap() = Some(server);
 
         /* Grow from the splash to the board, then hand the window over. GTK calls
