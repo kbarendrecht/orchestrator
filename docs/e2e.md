@@ -4,6 +4,15 @@
 real daemon, offline and deterministically. Twenty-four of them, one file each
 under `tools/e2e/flows/`, about a minute for the lot.
 
+A twenty-fifth is **pending**: `25-host.mjs` exports `pending`, a string saying
+what it waits for, so the runner lists it and does not run it. That is for a flow
+written before the thing it tests — the cheapest specification there is — and it is
+held out rather than left red because the pre-commit hook runs this suite every
+fifth qualifying commit and a failure does not reset the counter, so one red flow
+blocks every fifth commit and teaches everybody `--no-verify`. The string is
+required rather than a bare `true`, because a flow nobody can explain is a flow to
+delete.
+
 It exists because of what unit tests kept missing. Two bugs found by hand-driving
 a daemon in one afternoon — a resume that skipped its branch check because the
 path happened to exist, and a swap that reported total failure after the branches
