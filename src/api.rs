@@ -2039,33 +2039,6 @@ pub async fn restart_process(
     Ok(Json(json!({ "process": id })))
 }
 
-/// Drive the window the daemon is displayed in.
-///
-/// A mutating route, so it carries the token like every other one — which is
-/// the point of doing this over HTTP instead of Tauri's IPC: the SPA's origin
-/// is a localhost URL on a port chosen at bind time, and granting IPC to
-/// `http://127.0.0.1:*` would hand window control to anything else that
-/// managed to get itself loaded there.
-pub async fn window_cmd(
-    State(app): State<Arc<AppState>>,
-    Path(cmd): Path<String>,
-) -> ApiResult<serde_json::Value> {
-    let parsed = parse_window_cmd(&cmd)
-        .ok_or_else(|| ApiError(anyhow::anyhow!("no such window command: {cmd}")))?;
-    dispatch_window(&app, parsed).await
-}
-
-/// Resize takes an edge, so it gets its own route rather than bending the
-/// command enum into something that serialises from a single word.
-pub async fn window_resize(
-    State(app): State<Arc<AppState>>,
-    Path(edge): Path<String>,
-) -> ApiResult<serde_json::Value> {
-    let parsed = parse_resize_edge(&edge)
-        .ok_or_else(|| ApiError(anyhow::anyhow!("no such window edge: {edge}")))?;
-    dispatch_window(&app, crate::window::WindowCmd::StartResize(parsed)).await
-}
-
 /// The path segment the titlebar sends, as a command. Shared with the bootstrap
 /// server, which serves the same chrome before a daemon exists: the two dispatch
 /// differently (it has no `WindowControl` to refuse) but must accept exactly the
@@ -2077,20 +2050,6 @@ pub(crate) fn parse_window_cmd(cmd: &str) -> Option<crate::window::WindowCmd> {
 /// The same for a resize edge.
 pub(crate) fn parse_resize_edge(edge: &str) -> Option<crate::window::ResizeEdge> {
     serde_json::from_value(json!(edge)).ok()
-}
-
-async fn dispatch_window(
-    app: &Arc<AppState>,
-    cmd: crate::window::WindowCmd,
-) -> ApiResult<serde_json::Value> {
-    let control = app.window.read().await.clone();
-    let Some(control) = control else {
-        // Running in a browser tab. The tab has its own chrome; this is not an
-        // error worth a toast, but it is not a success either.
-        refuse!("no native window attached");
-    };
-    control.dispatch(cmd)?;
-    Ok(Json(json!({ "ok": true })))
 }
 
 pub async fn close_process(

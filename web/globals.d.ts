@@ -16,7 +16,15 @@ interface Window {
    * whether the app's chords wear ⌘ or Ctrl. Told rather than sniffed, because
    * the daemon knows at compile time.
    */
-  __ORCH__: { token: string; chrome: string; platform: string };
+  __ORCH__: {
+    token: string;
+    chrome: string;
+    platform: string;
+    /** Every open checkout, substituted by the host. Optional because the
+     *  review-preview page is served with one entry and older hosts substituted
+     *  none — `core.LOCAL` falls back to `token` when it is absent. */
+    checkouts?: import('./snapshot').Checkout[];
+  };
   /** Prism is driven manually; this switches its auto-highlight off. */
   Prism: any;
   WebglAddon: any;

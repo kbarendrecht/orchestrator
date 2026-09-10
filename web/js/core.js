@@ -62,19 +62,35 @@ export function setSelected(id, auto = false) {
  *  @typedef {{ base: string, wsBase: string, token: string }} Checkout
  */
 
-/** The daemon that served this page.
+/** Every open checkout, as the host substituted them into the page.
  *
- *  `base` is empty, not `location.origin`, so the fetches stay relative and a
- *  request cannot be sent to a spelling of this origin the guard would refuse:
- *  `api::guard` matches the `Host` header against `127.0.0.1:<port>` or
- *  `localhost:<port>` exactly, and those two are not interchangeable.
+ *  Substituted rather than fetched, because a page cannot ask for a token it has
+ *  not been given — the same reason `GET /` has never been token-gated. There is
+ *  one entry while one process serves the page and manages the checkout.
+ *
+ *  @type {{ path: string, name: string, port: number, token: string, live: boolean }[]}
+ */
+export const CHECKOUTS = window.__ORCH__.checkouts ?? [];
+
+/** The checkout this page is for.
+ *
+ *  `base` is empty for the one on this origin, not `location.origin`, so its
+ *  fetches stay relative and a request cannot be sent to a spelling of this origin
+ *  the guard would refuse: `api::guard` matches the `Host` header against
+ *  `127.0.0.1:<port>` or `localhost:<port>` exactly, and those two are not
+ *  interchangeable.
+ *
+ *  The token comes from the checkout list when the host provided one, and from
+ *  `__ORCH__.token` otherwise — which is the review-preview page and any host too
+ *  old to substitute a list. A page that fell back holds the *host's* token, which
+ *  is the same value while one process serves both.
  *
  *  @type {Checkout}
  */
 export const LOCAL = {
   base: '',
   wsBase: `ws://${location.host}`,
-  token: window.__ORCH__.token,
+  token: CHECKOUTS[0]?.token ?? window.__ORCH__.token,
 };
 
 /* Kept as their own exports because five modules read them, and a token is what

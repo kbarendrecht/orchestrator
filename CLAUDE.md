@@ -99,6 +99,20 @@ mean *this* repo; if you do, name it.
 
 ## Things that will bite you
 
+- **The page is served by `host.rs`, not by the daemon.** `src/host.rs` owns
+  `GET /`, every asset route, the window commands and `/api/host/checkouts`; the
+  daemon keeps `/api/*`, `/ws/*` and `/hooks/*`. One process still serves both and
+  they share a port and a token, so nothing behaves differently yet — but the two
+  routers have their own guards and their own state, because they answer to
+  different owners: a daemon manages one checkout, and there is one page over all
+  of them. `multirepo.md` has the argument and the measurements.
+  Three consequences worth knowing. The window handle is on `host::Host`, not
+  `AppState`, so `server.host.attach_window` is what the shell calls. The page's
+  token now comes from the substituted checkout list (`core.CHECKOUTS[0].token`),
+  falling back to `__ORCH__.token` for the review-preview page. And `/hooks/*`
+  **cannot** move: `hooks.rs` writes that daemon's own port into its own settings
+  file, so an agent's hook URL is the port of the daemon that spawned it.
+
 - **The SPA is compiled in.** Everything under `web/` is `include_str!`d, so a
   CSS or JS change is invisible until the daemon is rebuilt *and* restarted. No
   amount of reloading the page helps — and a stale process holding the port makes
@@ -201,9 +215,10 @@ mean *this* repo; if you do, name it.
     *inside* `diff` — two modules that call each other are one module with a line
     drawn through it.
   Adding a cycle back would work (ESM allows it) and would quietly undo this.
-- **Each module needs a line in `module()` in `lib.rs` and a rebuild.**
+- **Each module needs a line in `module()` in `host.rs` and a rebuild.**
   `include_str!` again: adding a JS file is a Rust change. That cost is why the
-  modules track features rather than being cut finer.
+  modules track features rather than being cut finer. It was `lib.rs` until the
+  page moved to the host — see below.
 - **`snap` is a live binding, and only `receive()` may replace it.** It is
   `export let` in `core.js`, so a hundred readers keep saying `snap.x` and see the
   new snapshot without re-importing. `receive` sets the snapshot and the clock it

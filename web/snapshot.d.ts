@@ -25,6 +25,39 @@ export type ArchiveState = { "recovery": "recoverable", name: string, branch: st
  */
 export type BankedView = { files: number, at: string, };
 
+/**
+ * One open checkout, as the page needs to see it.
+ *
+ * `token` is in here because the page holds one per checkout: every call names
+ * the daemon it is for, and each daemon compares the token against its own. It is
+ * the same value as the host's while one process serves both.
+ */
+export type Checkout = { 
+/**
+ * Canonical path, which is also the identity: `main_checkout` is resolved in
+ * [`crate::config::Config::parse`], and comparing an unresolved path against
+ * a resolved one silently matches nothing.
+ */
+path: string, 
+/**
+ * The last path component, for a row and a log line. Not a key — two
+ * checkouts can share a leaf.
+ */
+name: string, 
+/**
+ * Where its daemon answers.
+ */
+port: number, 
+/**
+ * What that daemon wants in `x-orch-token`.
+ */
+token: string, 
+/**
+ * False for a checkout whose daemon is down. Always true while the only
+ * daemon is the process serving this page: a host cannot outlive itself.
+ */
+live: boolean, };
+
 export type Checks = "passing" | "failing" | "pending" | "unknown";
 
 export type DiffFile = { path: string, 

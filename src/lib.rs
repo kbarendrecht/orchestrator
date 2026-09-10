@@ -17,6 +17,7 @@ pub mod fix_pr;
 pub mod headroom;
 pub mod health;
 pub mod hooks;
+pub mod host;
 pub mod instance;
 pub mod logging;
 pub mod machine;
@@ -46,9 +47,6 @@ pub mod ws;
 
 use anyhow::{Context, Result};
 use axum::{
-    extract::State,
-    http::{header, StatusCode},
-    response::{Html, IntoResponse, Response},
     routing::{get, post},
     Router,
 };
@@ -95,6 +93,9 @@ pub struct Server {
     pub port: u16,
     pub token: String,
     pub app: Arc<AppState>,
+    /// The page, the window and the checkout list. Shares this process while the
+    /// app embeds its daemon; [`crate::host`] says what changes when it does not.
+    pub host: Arc<crate::host::Host>,
     serve: tokio::task::JoinHandle<()>,
     /// Dropped last, releasing the single-instance lock when the daemon goes.
     _lock: instance::Lock,
@@ -499,7 +500,19 @@ pub async fn start(opts: StartOptions) -> Result<Server> {
         update::start_agent_poller(app.clone());
     }
 
-    let router = router(app.clone());
+    // The host, for this one checkout. It carries the daemon's token and port
+    // because one process serves both; a child daemon mints its own and reports
+    // them, which is why `Checkout` carries both rather than the page assuming.
+    let host = crate::host::Host::new(app.token.clone(), app.cfg.port, opts.chrome);
+    host.record(crate::host::Checkout {
+        path: app.cfg.main_checkout.to_string_lossy().into_owned(),
+        name: cfg_name.clone(),
+        port: app.cfg.port,
+        token: app.token.clone(),
+        live: true,
+    })
+    .await;
+    let router = router(app.clone(), host.clone());
     let serve = tokio::spawn(async move {
         // **`TCP_NODELAY`, because a keystroke is one small frame.** axum defaults
         // it to `None` (`serve.rs`: it only calls `set_nodelay` when told to), so
@@ -526,6 +539,7 @@ pub async fn start(opts: StartOptions) -> Result<Server> {
         port,
         token,
         app,
+        host,
         serve,
         _lock: lock,
     })
@@ -574,15 +588,20 @@ async fn bind(port: u16, fallback: bool) -> Result<(tokio::net::TcpListener, u16
 ///
 /// Adding a route is otherwise a one-liner; adding one that touches either of
 /// those two properties is not.
-fn router(app: Arc<AppState>) -> Router {
+/// The daemon's routes, with the host's merged in.
+///
+/// **Two routers rather than one list**, because they answer to different owners:
+/// `/api/*`, `/ws/*` and `/hooks/*` belong to the daemon that manages one
+/// checkout, and the page, the window and the checkout list belong to the host.
+/// They share a port while one process serves both — see [`crate::host`] — and
+/// each keeps its own guard, so the daemon's arms for hooks and agent routes stay
+/// where they are and the host's stay narrow.
+fn router(app: Arc<AppState>, host: Arc<crate::host::Host>) -> Router {
+    crate::host::router(host).merge(daemon_router(app))
+}
+
+fn daemon_router(app: Arc<AppState>) -> Router {
     Router::new()
-        .route("/", get(index))
-        .route("/app.js", get(asset_js))
-        .route("/app.css", get(asset_css))
-        .route("/review-preview", get(review_preview))
-        .route("/js/:file", get(module))
-        .route("/vendor/:file", get(vendor))
-        .route("/vendor/fonts/:file", get(font))
         .route("/api/state", get(api::get_state))
         .route("/api/config", get(api::get_config).post(api::set_config))
         .route("/api/diff", get(api::diff_summary))
@@ -646,8 +665,6 @@ fn router(app: Arc<AppState>) -> Router {
             post(api::restart_process),
         )
         .route("/api/process/:id/close", post(api::close_process))
-        .route("/api/window/resize/:edge", post(api::window_resize))
-        .route("/api/window/:cmd", post(api::window_cmd))
         .route("/api/reviews/refresh", post(api::refresh_reviews))
         .route("/api/prs/refresh", post(api::refresh_prs))
         // The agent's own version: check it now, and install it in the drawer.
@@ -1491,161 +1508,14 @@ pub(crate) fn resolve_repo(app: &Arc<AppState>) -> Option<(String, String)> {
 }
 
 // ---------------------------------------------------------------------------
-// SPA
+// The SPA is served by the host, not from here.
+//
+// `index`, the asset routes and the window commands moved to [`crate::host`]
+// when the page stopped being a daemon's business: a daemon manages one checkout,
+// and there is one page over all of them. The `include_str!` tables went with
+// them, so adding a JS module is still a Rust change — the line to add is now in
+// `host::module`.
 // ---------------------------------------------------------------------------
-
-const INDEX: &str = include_str!("../web/index.html");
-const APP_JS: &str = include_str!("../web/app.js");
-const APP_CSS: &str = include_str!("../web/app.css");
-// A dev-only page that drives the real review overlay against canned data, so the
-// flattened UI can be clicked without GitHub, CI or an agent. Reachable only if you
-// know the path; it holds no secret beyond the app token every asset already carries.
-const REVIEW_PREVIEW: &str = include_str!("../web/review-preview.html");
-
-/// The token is embedded in the served page rather than fetched, so it never
-/// exists as a value any other origin could ask for (§12).
-async fn index(State(app): State<Arc<AppState>>) -> Response {
-    (
-        [(header::CACHE_CONTROL, "no-store, must-revalidate")],
-        Html(
-            INDEX
-                .replace("__ORCH_TOKEN__", &app.token)
-                .replace("__ORCH_CHROME__", app.chrome.as_str())
-                // Which key the app's own chords wear: ⌘ on a Mac, Ctrl
-                // elsewhere. Told rather than sniffed — the daemon knows at
-                // compile time, and `navigator.platform` is both deprecated and
-                // a lie under a webview.
-                .replace("__ORCH_PLATFORM__", if cfg!(target_os = "macos") { "mac" } else { "other" }),
-        ),
-    )
-        .into_response()
-}
-
-/// Serve a static asset with its real type and no caching.
-///
-/// `no-store` matters more than it looks: the SPA is baked into the binary with
-/// `include_str!`, so a cached bundle silently shadows a rebuilt daemon and you
-/// debug code that is not running. Found exactly that way.
-fn asset(content_type: &'static str, body: &'static str) -> Response {
-    (
-        [
-            (header::CONTENT_TYPE, content_type),
-            (header::CACHE_CONTROL, "no-store, must-revalidate"),
-        ],
-        body,
-    )
-        .into_response()
-}
-
-async fn asset_js() -> Response {
-    asset("text/javascript; charset=utf-8", APP_JS)
-}
-
-/// The review-overlay preview page. Same token/platform substitution as `index`,
-/// because the module graph reads `window.__ORCH__` at import time.
-async fn review_preview(State(app): State<Arc<AppState>>) -> Response {
-    (
-        [(header::CACHE_CONTROL, "no-store, must-revalidate")],
-        Html(
-            REVIEW_PREVIEW
-                .replace("__ORCH_TOKEN__", &app.token)
-                .replace("__ORCH_PLATFORM__", if cfg!(target_os = "macos") { "mac" } else { "other" }),
-        ),
-    )
-        .into_response()
-}
-
-async fn asset_css() -> Response {
-    asset("text/css; charset=utf-8", APP_CSS)
-}
-
-/// The SPA's own ES modules.
-///
-/// A flat, known set exactly like `vendor`: no traversal, and the compiled-in
-/// file is the only thing servable. The content type must be a JavaScript one or
-/// a `type="module"` script fetches it and then refuses to run it.
-///
-/// Every module needs a line here — `include_str!` means adding one is a Rust
-/// change and a rebuild, not a JS-only change. That cost is why the modules track
-/// the seams rather than being cut finer.
-async fn module(axum::extract::Path(file): axum::extract::Path<String>) -> Response {
-    if file.contains('/') || file.contains("..") {
-        return (StatusCode::BAD_REQUEST, "bad asset").into_response();
-    }
-    let body = match file.as_str() {
-        "core.js" => include_str!("../web/js/core.js"),
-        "term.js" => include_str!("../web/js/term.js"),
-        "rail.js" => include_str!("../web/js/rail.js"),
-        "diff.js" => include_str!("../web/js/diff.js"),
-        "review.js" => include_str!("../web/js/review.js"),
-        "review-diff.js" => include_str!("../web/js/review-diff.js"),
-        "queue.js" => include_str!("../web/js/queue.js"),
-        "settings.js" => include_str!("../web/js/settings.js"),
-        _ => return (StatusCode::NOT_FOUND, "no such module").into_response(),
-    };
-    asset("text/javascript; charset=utf-8", body)
-}
-
-/// xterm's own dist files, copied in at build time.
-async fn vendor(axum::extract::Path(file): axum::extract::Path<String>) -> Response {
-    // No path traversal: only a flat, known set of filenames is served.
-    if file.contains('/') || file.contains("..") {
-        return (StatusCode::BAD_REQUEST, "bad asset").into_response();
-    }
-    let body = match file.as_str() {
-        "xterm.js" => include_str!("../web/vendor/xterm.js"),
-        "xterm.css" => include_str!("../web/vendor/xterm.css"),
-        "addon-fit.js" => include_str!("../web/vendor/addon-fit.js"),
-        "addon-webgl.js" => include_str!("../web/vendor/addon-webgl.js"),
-        // All Prism grammars, dependency-ordered, for diff/open-question
-        // highlighting. Vendored whole rather than fetched: the daemon owns its
-        // assets and must work offline, wherever the repo lives.
-        "prism.min.js" => include_str!("../web/vendor/prism.min.js"),
-        _ => return (StatusCode::NOT_FOUND, "no such asset").into_response(),
-    };
-    let ct = if file.ends_with(".css") {
-        "text/css; charset=utf-8"
-    } else {
-        "text/javascript; charset=utf-8"
-    };
-    asset(ct, body)
-}
-
-/// Webfonts, baked in like everything else.
-///
-/// A desktop app that reaches out to fonts.googleapis.com on every launch is
-/// one flaky DNS lookup away from rendering in Times New Roman, and it tells a
-/// third party when you start work. These are bytes, not text, so they cannot
-/// go through `asset`.
-async fn font(axum::extract::Path(file): axum::extract::Path<String>) -> Response {
-    if file.contains('/') || file.contains("..") {
-        return (StatusCode::BAD_REQUEST, "bad asset").into_response();
-    }
-    // Plex Sans and Martian Mono ship as variable fonts, so one file covers
-    // every weight the UI asks for. Plex Mono is still static per weight.
-    let body: &'static [u8] = match file.as_str() {
-        "plex-sans.woff2" => include_bytes!("../web/vendor/fonts/plex-sans.woff2"),
-        "plex-mono-400.woff2" => include_bytes!("../web/vendor/fonts/plex-mono-400.woff2"),
-        "plex-mono-500.woff2" => include_bytes!("../web/vendor/fonts/plex-mono-500.woff2"),
-        "plex-mono-600.woff2" => include_bytes!("../web/vendor/fonts/plex-mono-600.woff2"),
-        "martian-mono.woff2" => include_bytes!("../web/vendor/fonts/martian-mono.woff2"),
-        // Diffs only, and only the one weight they use.
-        "jetbrains-mono-400.woff2" => {
-            include_bytes!("../web/vendor/fonts/jetbrains-mono-400.woff2")
-        }
-        _ => return (StatusCode::NOT_FOUND, "no such asset").into_response(),
-    };
-    (
-        [
-            (header::CONTENT_TYPE, "font/woff2"),
-            // Immutable, unlike the SPA: these never change without a rebuild
-            // that also changes the filename set.
-            (header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
-        ],
-        body,
-    )
-        .into_response()
-}
 
 #[cfg(test)]
 mod tests {
@@ -1757,6 +1627,16 @@ mod tests {
     use axum::http::Request;
     use tower::ServiceExt; // for `oneshot`
 
+    /// The app and the host that serves its page, as `start` pairs them.
+    ///
+    /// One token and one port, because one process serves both — see
+    /// [`crate::host`] for why `Checkout` carries its own copies anyway.
+    fn app_and_host(tag: &str) -> (Arc<AppState>, Arc<crate::host::Host>, std::path::PathBuf) {
+        let (app, dir) = crate::testutil::app(tag);
+        let host = crate::host::Host::new(app.token.clone(), app.cfg.port, app.chrome);
+        (app, host, dir)
+    }
+
     /// A same-origin request, spelled the way a browser on this port spells it.
     fn req(app: &Arc<AppState>, method: &str, uri: &str, token: bool) -> Request<Body> {
         let port = app.cfg.port;
@@ -1789,8 +1669,9 @@ mod tests {
     /// perfectly well-formed.
     #[tokio::test]
     async fn the_page_carries_its_token_and_needs_none_to_ask_for_it() {
-        let (app, _dir) = crate::testutil::app("index-token");
-        let res = router(app.clone()).oneshot(req(&app, "GET", "/", false)).await.unwrap();
+        let (app, host, _dir) = app_and_host("index-token");
+        let res =
+            router(app.clone(), host.clone()).oneshot(req(&app, "GET", "/", false)).await.unwrap();
         assert_eq!(res.status(), 200, "GET / must not be token-gated");
         let page = body_of(res).await;
         assert!(page.contains(&app.token), "the page went out without its token");
@@ -1798,7 +1679,7 @@ mod tests {
         assert!(!page.contains("__ORCH_CHROME__"));
         assert!(!page.contains("__ORCH_PLATFORM__"));
 
-        let refused = router(app.clone())
+        let refused = router(app.clone(), host)
             .oneshot(req(&app, "POST", "/api/prs/refresh", false))
             .await
             .unwrap();
@@ -1812,9 +1693,11 @@ mod tests {
     /// that drifts.
     #[tokio::test]
     async fn the_review_preview_is_substituted_too() {
-        let (app, _dir) = crate::testutil::app("preview-token");
-        let res =
-            router(app.clone()).oneshot(req(&app, "GET", "/review-preview", false)).await.unwrap();
+        let (app, host, _dir) = app_and_host("preview-token");
+        let res = router(app.clone(), host)
+            .oneshot(req(&app, "GET", "/review-preview", false))
+            .await
+            .unwrap();
         assert_eq!(res.status(), 200);
         let page = body_of(res).await;
         assert!(page.contains(&app.token));
@@ -1831,10 +1714,9 @@ mod tests {
     /// handle, and this is the behaviour that has to survive the move.
     #[tokio::test]
     async fn a_titlebar_press_with_no_native_window_refuses_by_name() {
-        let (app, _dir) = crate::testutil::app("no-window");
-        assert!(app.window.read().await.is_none(), "the fixture attached a window");
+        let (app, host, _dir) = app_and_host("no-window");
 
-        let res = router(app.clone())
+        let res = router(app.clone(), host.clone())
             .oneshot(req(&app, "POST", "/api/window/minimize", true))
             .await
             .unwrap();
@@ -1850,7 +1732,7 @@ mod tests {
 
         // An unknown command is a different refusal, and the two must not merge:
         // one is "this daemon has no window", the other is "no such button".
-        let bogus = router(app.clone())
+        let bogus = router(app.clone(), host)
             .oneshot(req(&app, "POST", "/api/window/explode", true))
             .await
             .unwrap();

@@ -192,9 +192,6 @@ pub struct AppState {
     /// begins loading the instant it is built, so a chrome decided afterwards
     /// would race the very first paint and lose, intermittently.
     pub chrome: crate::window::Chrome,
-    /// Set by the desktop shell once it has a window; `None` when orchd is
-    /// running headless and the UI is a browser tab that owns its own chrome.
-    pub window: RwLock<Option<Arc<dyn crate::window::WindowControl>>>,
     /// Pulsed whenever an interaction is answered. Every waiting long poll wakes
     /// and re-checks its own question; there are only ever a handful of waiters,
     /// and one notify beats a channel per question.
@@ -570,19 +567,10 @@ impl AppState {
             shutting_down: std::sync::atomic::AtomicBool::new(false),
             events,
             chrome,
-            window: RwLock::new(None),
             answered: Arc::new(Notify::new()),
             review_refresh: Arc::new(Notify::new()),
             pr_refresh: Arc::new(Notify::new()),
         })
-    }
-
-    /// Hand the daemon a window to drive.
-    ///
-    /// Called once, from the desktop shell's `setup`, as soon as the webview
-    /// exists. Until then `/api/window/*` has nothing to talk to and says so.
-    pub async fn attach_window(&self, control: Arc<dyn crate::window::WindowControl>) {
-        *self.window.write().await = Some(control);
     }
 
     /// Push a fresh snapshot to every connected SPA. State is small enough that
