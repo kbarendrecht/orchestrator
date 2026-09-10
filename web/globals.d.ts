@@ -16,7 +16,29 @@ interface Window {
    * whether the app's chords wear ⌘ or Ctrl. Told rather than sniffed, because
    * the daemon knows at compile time.
    */
-  __ORCH__: { token: string; chrome: string; platform: string };
+  __ORCH__: {
+    token: string;
+    chrome: string;
+    platform: string;
+    /**
+     * Every checkout this window is showing, **this one first**, each a whole
+     * separate daemon on its own port (`src/peers.rs`).
+     *
+     * Not `repos`: the snapshot's own `repos` is the GitHub pair a checkout
+     * pushes to, and two names one letter apart for two different things is how a
+     * reader ends up drawing the wrong one.
+     *
+     * **Empty is the single-repository shape**, not a degraded one: no shell
+     * attached a list, so `core.js` builds the one local entry itself. That is
+     * every install that existed before this feature, so a reader must treat it
+     * as normal.
+     *
+     * Hand-written rather than generated: `snapshot.d.ts` comes from the structs
+     * a *snapshot* is built of, and this is deliberately not in the snapshot —
+     * a daemon must stay unaware that it has siblings.
+     */
+    checkouts: { id: string; name: string; path: string; port: number; token: string; colour: string }[];
+  };
   /** Prism is driven manually; this switches its auto-highlight off. */
   Prism: any;
   WebglAddon: any;

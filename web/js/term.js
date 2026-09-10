@@ -2,7 +2,7 @@
 // over a websocket. The DOM renderer is deliberate under WebKitGTK, and only
 // there — see the renderer comment below, and CLAUDE.md.
 
-import { $, CHROME, IS_MAC, TOKEN, WS_BASE, copyText, el, mark, note, reportBoot, selected, terms, toast, typingElsewhere, uiScale, wheelScale } from './core.js';
+import { $, CHROME, IS_MAC, activeRepo, copyText, el, mark, note, reportBoot, selected, terms, toast, typingElsewhere, uiScale, wheelScale } from './core.js';
 
 
 const THEME = {
@@ -317,8 +317,15 @@ function openTerm(target, parent) {
  *  a reconnect a closed socket stayed closed, and every keystroke took the false
  *  branch and vanished while the cursor kept blinking on xterm's own buffer (#7). */
 function connect(entry, target) {
+  /* **The pty lives on the daemon that owns the session, which is not always the
+     one that served this page.** Read off `activeRepo` rather than passed in,
+     because a terminal is only ever opened for the session the panes are
+     describing — the rail sets the active repository as part of selecting a row,
+     so by the time this runs it is the right one. Getting it wrong would not
+     error: the other daemon would simply not know the target. */
+  const repo = activeRepo;
   const sock = new WebSocket(
-    `${WS_BASE}/ws/pty?token=${encodeURIComponent(TOKEN)}&target=${encodeURIComponent(target)}`
+    `${repo.ws}/ws/pty?token=${encodeURIComponent(repo.token)}&target=${encodeURIComponent(target)}`
   );
   sock.binaryType = 'arraybuffer';
   entry.sock = sock;

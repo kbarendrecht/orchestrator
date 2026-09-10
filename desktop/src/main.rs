@@ -23,12 +23,18 @@ use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
 
 mod launcher;
 mod login_path;
+mod secondary;
 
 use launcher::{install_desktop_entry, launcher_target, refresh_launcher_entry};
 use login_path::adopt_login_path;
 
 /// The daemon, once started. Held so the exit hook can tear it down.
 static SERVER: OnceLock<Mutex<Option<orchd::Server>>> = OnceLock::new();
+
+/// One whole `orchd` per extra repository ([`secondary`]), held for the same
+/// reason `SERVER` is: each owns live `claude` sessions in real worktrees, and
+/// they have to be asked to stop before this process goes.
+static SECONDARIES: OnceLock<Mutex<Vec<secondary::Secondary>>> = OnceLock::new();
 
 /// Whether the window is showing the board yet.
 ///
@@ -219,6 +225,21 @@ fn main() {
     init_logging();
     // Right after the logger exists, since the hook writes through it.
     install_panic_hook();
+
+    /* **This binary is also the daemon for a second repository.** Before the
+       window, the launcher entry and the handoff wait, because none of them are
+       this process's business in that mode: it opens nothing, replaces nothing and
+       belongs to the parent that spawned it. After the logger, so it has one — its
+       own, since `ORCHD_CONFIG_DIR` is what the parent set. The PATH is inherited
+       from a parent that already adopted the login shell's, so `adopt_login_path`
+       is skipped rather than run a second whole zsh config per repository. */
+    if let Some((checkout, board_origin)) = secondary::requested() {
+        if let Err(e) = secondary::run(checkout, board_origin) {
+            tracing::error!("the secondary daemon stopped: {e:#}");
+            std::process::exit(1);
+        }
+        return;
+    }
 
     // Held from the first thing `main` does that can be slow, because the phases
     // before the daemon are the ones a person launching from Finder pays for and
@@ -596,6 +617,9 @@ fn boot_daemon(app_handle: AppHandle, rt: tokio::runtime::Handle, main: Option<s
             // does not.
             fallback_port: true,
             chrome: CHROME,
+            // This one *serves* the board, so its own origin is already allowed
+            // and there is no sibling to widen for.
+            sibling_origin: None,
         })) {
             Ok(s) => s,
             Err(e) => {
@@ -612,7 +636,92 @@ fn boot_daemon(app_handle: AppHandle, rt: tokio::runtime::Handle, main: Option<s
         // alive for the life of the process.
         let control: Arc<dyn WindowControl> = Arc::new(TauriWindow { app: app_handle.clone() });
         rt.block_on(server.app.attach_window(control));
+        let app_state = server.app.clone();
+        let extras = server.app.cfg.extra_checkouts.clone();
+        /* What a secondary has to answer, since the board is served from here and
+           every call it makes to a peer is therefore cross-origin. `127.0.0.1`
+           rather than `localhost`, because that is the spelling the page's own
+           origin will have: the window is navigated to `Server::url`, which is
+           built with the address. */
+        let board_origin = format!("http://127.0.0.1:{}", server.port);
+        // Its own entry in the checkout list needs both, and `server` is moved
+        // into `SERVER` below.
+        let primary_port = server.port;
+        let primary_token = server.token.clone();
         *SERVER.get_or_init(|| Mutex::new(None)).lock().unwrap() = Some(server);
+
+        /* **The shell's repository controls, attached whether or not any extra
+           repository was configured.** The `+` in the rail is how the first one
+           gets added, so a window that opened on a single checkout needs this as
+           much as one that opened on three. */
+        let checkouts = Arc::new(TauriCheckouts {
+            app: app_handle.clone(),
+            main: app_state.cfg.main_checkout.clone(),
+            port: primary_port,
+            token: primary_token.clone(),
+            state: app_state.clone(),
+            rt: rt.clone(),
+        });
+        rt.block_on(app_state.attach_checkout_control(checkouts.clone()));
+
+        /* **Every extra repository is up before the page loads, and that is a
+           deliberate cost.** The peer list is substituted into the page
+           ([`orchd::peers`]), so a repository that finishes after the navigate
+           would need a reload to appear. Paying for it here instead keeps the
+           snapshot free of sibling awareness and the page free of a flash.
+
+           Concurrently, because a daemon start is child processes rather than CPU
+           — the cost is per exec — so three repositories take about as long as the
+           slowest one rather than the sum. Read off the primary's *parsed* config
+           rather than the file: that is where `extra_checkouts` has been migrated,
+           canonicalised and de-duplicated, and two readers of one list is how the
+           page and the lock would come to disagree about which checkout is which.
+
+           A repository that will not start is a **warning and a missing row**,
+           never a refused launch: the one you were working in is up, and losing it
+           because a second checkout has moved would be the app refusing to open
+           over a repository you did not ask about. */
+        if !extras.is_empty() {
+            let dir = match orchd::config::Config::config_dir() {
+                Ok(d) => Some(d),
+                Err(e) => {
+                    tracing::warn!("no state directory for the extra repositories: {e:#}");
+                    None
+                }
+            };
+            if let Some(dir) = dir {
+                let mut launching = Vec::new();
+                for checkout in extras {
+                    let dir = dir.clone();
+                    let origin = board_origin.clone();
+                    launching.push(std::thread::spawn(move || {
+                        let r = secondary::launch(&dir, &checkout, &origin);
+                        (checkout, r)
+                    }));
+                }
+                let mut up = Vec::new();  // filled below, then handed to `publish`
+                for handle in launching {
+                    match handle.join() {
+                        Ok((_, Ok(sec))) => up.push(sec),
+                        Ok((checkout, Err(e))) => {
+                            tracing::warn!("{} is not open: {e:#}", checkout.display());
+                        }
+                        // A panicked launch thread has already logged through the
+                        // panic hook; there is no checkout name left to name here.
+                        Err(_) => tracing::warn!("a repository's launch thread panicked"),
+                    }
+                }
+
+                SECONDARIES
+                    .get_or_init(|| Mutex::new(Vec::new()))
+                    .lock()
+                    .unwrap()
+                    .extend(up);
+                // One place assigns the colours and publishes the list, so boot and
+                // a later `+` cannot come to different answers about either.
+                checkouts.publish();
+            }
+        }
 
         /* Grow from the splash to the board, then hand the window over. GTK calls
            only on the main thread.
@@ -665,6 +774,131 @@ fn boot_daemon(app_handle: AppHandle, rt: tokio::runtime::Handle, main: Option<s
         stop_bootstrap();
         phases.log("daemon ready");
     });
+}
+
+/// The shell's half of adding and removing repositories.
+///
+/// Attached to the daemon as [`orchd::peers::CheckoutControl`]; the daemon's
+/// routes validate and this does the three things it cannot — a dialog, a child
+/// process, and the bookkeeping that has to agree with both.
+struct TauriCheckouts {
+    app: AppHandle,
+    /// The primary's own checkout, port and token, so its entry can be rebuilt
+    /// whenever the list is republished. Held rather than read back off `SERVER`,
+    /// which a shutdown empties.
+    main: std::path::PathBuf,
+    port: u16,
+    token: String,
+    state: Arc<orchd::state::AppState>,
+    rt: tokio::runtime::Handle,
+}
+
+impl TauriCheckouts {
+    /// Reassign every colour and republish the list.
+    ///
+    /// **Called on every change, over the whole set.** Colours are only distinct
+    /// beside each other ([`orchd::peers::colours_for`]), so adding a repository
+    /// can move another one's — and a colour that stayed put would eventually
+    /// collide with the new arrival's. The page reads this at load, so a caller
+    /// reloads it afterwards.
+    fn publish(&self) {
+        let mut held = SECONDARIES.get_or_init(|| Mutex::new(Vec::new())).lock().unwrap();
+        let paths: Vec<std::path::PathBuf> = std::iter::once(self.main.clone())
+            .chain(held.iter().map(|s| s.peer.path.clone()))
+            .collect();
+        let colours = orchd::peers::colours_for(&paths);
+
+        let mut checkouts = vec![orchd::peers::Peer::new(
+            self.main.clone(),
+            self.port,
+            self.token.clone(),
+            colours[0],
+        )];
+        for (sec, colour) in held.iter_mut().zip(colours[1..].iter()) {
+            sec.peer.colour = colour;
+            checkouts.push(sec.peer.clone());
+        }
+        // A single repository publishes an empty list, which is what the SPA reads
+        // as "no shell attached one" and draws exactly as it did before any of this
+        // existed: no header, no band, no fold.
+        let publish = if checkouts.len() > 1 { checkouts } else { Vec::new() };
+        self.rt.block_on(self.state.attach_checkouts(publish));
+    }
+
+    /// `extra_checkouts` as it now stands, from what is actually running.
+    ///
+    /// Derived rather than tracked: the file and the live set would otherwise be
+    /// two answers to one question, and a launch that failed would leave a
+    /// repository in the config that is not open.
+    fn persist(&self) -> anyhow::Result<()> {
+        let held = SECONDARIES.get_or_init(|| Mutex::new(Vec::new())).lock().unwrap();
+        let paths: Vec<std::path::PathBuf> = held.iter().map(|s| s.peer.path.clone()).collect();
+        orchd::config::Config::set_extra_checkouts(&paths)
+    }
+}
+
+impl orchd::peers::CheckoutControl for TauriCheckouts {
+    fn pick(&self) -> Option<std::path::PathBuf> {
+        use tauri_plugin_dialog::DialogExt;
+        // The same shape `firstrun`'s picker uses, and for the same reason: this
+        // runs on a request thread, and the plugin marshals the dialog to the main
+        // thread and calls back here, so blocking on the answer is safe.
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.app
+            .dialog()
+            .file()
+            .set_title("Open another repository")
+            .pick_folder(move |picked| {
+                let _ = tx.send(picked);
+            });
+        match rx.recv() {
+            Ok(Some(fp)) => fp.simplified().into_path().ok(),
+            _ => None,
+        }
+    }
+
+    fn add(&self, path: std::path::PathBuf) -> anyhow::Result<()> {
+        let dir = orchd::config::Config::config_dir()?;
+        let origin = format!("http://127.0.0.1:{}", self.port);
+        // Before the config is touched: a repository that will not start must not
+        // be left in the file, or the next launch fails on it every time.
+        let sec = secondary::launch(&dir, &path, &origin)?;
+        tracing::info!("opened {} on port {}", sec.peer.name, sec.peer.port);
+        SECONDARIES
+            .get_or_init(|| Mutex::new(Vec::new()))
+            .lock()
+            .unwrap()
+            .push(sec);
+        self.publish();
+        /* **A config that cannot be written is a warning, not a failure.** The
+           repository *is* open — the daemon is up and the page is about to show it
+           — and refusing now would mean tearing down something that works because
+           a file is read-only. It costs the next launch, which is what the warning
+           says. */
+        if let Err(e) = self.persist() {
+            tracing::warn!("{} is open but not remembered: {e:#}", path.display());
+        }
+        Ok(())
+    }
+
+    fn remove(&self, path: std::path::PathBuf) -> anyhow::Result<()> {
+        let taken = {
+            let mut held = SECONDARIES.get_or_init(|| Mutex::new(Vec::new())).lock().unwrap();
+            match held.iter().position(|s| s.peer.path == path) {
+                Some(i) => held.remove(i),
+                None => anyhow::bail!("{} is not open", path.display()),
+            }
+        };
+        // Out of the list first, then stopped: `stop` waits for its sessions, and
+        // holding the lock across that would block every other repository's
+        // bookkeeping for the whole shutdown.
+        taken.stop();
+        self.publish();
+        if let Err(e) = self.persist() {
+            tracing::warn!("{} is closed but still in the config: {e:#}", path.display());
+        }
+        Ok(())
+    }
 }
 
 /// Whether this platform lets a window know where it is and choose where to be.
@@ -1193,6 +1427,19 @@ fn await_handoff() {
 }
 
 fn shutdown() {
+    /* **The extra repositories first, and not concurrently with our own.** Each
+       is a separate process that kills its own sessions, so this is mostly
+       waiting; doing it before our own shutdown means the whole window's worth of
+       agents is going down while the primary is still up to log about it. Taken
+       out of the cell, so a second call (the exit hook after an explicit quit)
+       finds nothing rather than signalling a reaped pid. */
+    if let Some(cell) = SECONDARIES.get() {
+        let mut held = cell.lock().unwrap();
+        for s in std::mem::take(&mut *held) {
+            s.stop();
+        }
+    }
+
     let Some(server) = SERVER.get().and_then(|s| s.lock().unwrap().take()) else {
         return;
     };

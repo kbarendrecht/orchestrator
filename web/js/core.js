@@ -16,20 +16,32 @@ export let snap = /** @type {any} */ ({ workspaces: [], sessions: [] });
  * every second; this is what makes those seconds mean anything. */
 let snapAt = Date.now();
 
-/** Take a new snapshot: the two have to move together, so they move here.
+/** Take a new snapshot for one repository: the two have to move together, so
+ *  they move here.
  *
  *  `snap` is a live binding — importers see this assignment without re-importing,
- *  which is what lets a hundred readers keep saying `snap.x`. */
-export function receive(next) {
-  snap = next;
-  snapAt = Date.now();
+ *  which is what lets a hundred readers keep saying `snap.x`.
+ *
+ *  Every repository's snapshot is kept, because the rail draws all of them; only
+ *  the **active** one moves `snap`, because that is what every other pane means
+ *  by it. A snapshot for a repository you are not looking at must not silently
+ *  re-point the centre pane at another checkout's sessions. */
+export function receive(next, repoId = activeRepo.id) {
+  const repo = repoById(repoId);
+  repo.snap = next;
+  repo.snapAt = Date.now();
+  repo.live = true;
+  if (repo === activeRepo) {
+    snap = next;
+    snapAt = repo.snapAt;
+  }
 }
 
 export const sinceSnap = (ms) => (ms == null ? null : ms + (Date.now() - snapAt));
 
 /** The PR whose head ref this workspace holds, if any. */
-export function prForWorkspace(wsId) {
-  return (snap.prs || []).find((p) => p.workspace === wsId) || null;
+export function prForWorkspace(wsId, s = snap) {
+  return (s.prs || []).find((p) => p.workspace === wsId) || null;
 }
 
 /* Which session the centre pane is showing. Owned here because the rail picks it
@@ -53,6 +65,110 @@ export function setSelected(id, auto = false) {
 
 export const TOKEN = window.__ORCH__.token;
 export const WS_BASE = `ws://${location.host}`;
+
+/* ---------------------------------------------------------------------------
+ * Repositories
+ * ------------------------------------------------------------------------- */
+
+/* **One daemon per repository, one connection per daemon.** Working two
+ * checkouts at once is two whole daemons (`src/peers.rs`) — the way two terminal
+ * tabs are two whole shells — so this holds one entry per repository and the
+ * board composes them. The one serving this page is first and is the only one
+ * addressed relatively; a peer is addressed absolutely, on its own loopback port
+ * with its own token.
+ *
+ * **The rail is the only pane that shows more than one.** Everything else —
+ * the centre pane, the changed files, the diff, the review overlay, the queue,
+ * the settings — describes *the session you are in*, so it follows the repository
+ * that session belongs to. That is what makes `snap` still mean something, and
+ * why the 58 places that say `call('/api/…')` did not have to learn about this:
+ * they act on the active repository, which is the one you are looking at.
+ *
+ * `checkouts` is `[]` on the review-preview page, which builds its own
+ * `__ORCH__`, and on any single-repository daemon — see `lone`.
+ *
+ * Named `checkouts` because `snap.repos` is already the GitHub pair this checkout
+ * pushes to; `repo` as a local variable still reads as one of these.
+ */
+/** A blank snapshot: what a repository looks like before its first arrives.
+ *
+ *  The two lists every reader indexes, so the rail draws an empty repository
+ *  rather than throwing on the first frame. Deliberately not a shared object —
+ *  each repository gets its own, or `receive` on one would appear on all. */
+const empty = () => /** @type {any} */ ({ workspaces: [], sessions: [] });
+
+/** The page's own daemon, when no shell attached a list.
+ *
+ *  This is the single-repository install — every one that existed before this
+ *  feature — so it must not be a special case downstream: one entry, same shape,
+ *  and `multiRepo()` is false. The name is null because the daemon serving this
+ *  page has no reason to tell it which folder it is; nothing draws a repository
+ *  label when there is only one. */
+const lone = () => [{
+  id: 'local',
+  name: null,
+  colour: null,
+  origin: '',
+  ws: WS_BASE,
+  token: TOKEN,
+  snap: empty(),
+  snapAt: Date.now(),
+  live: false,
+}];
+
+export const checkouts = (window.__ORCH__.checkouts || []).length
+  ? window.__ORCH__.checkouts.map((r) => {
+      /* **The local one is the one on this page's own port.** Marked by port
+         rather than by being first, because "first" is a property of how the
+         shell happened to build the list and this has to stay true if that ever
+         changes. Same-origin matters: an empty origin keeps every existing
+         relative path working and keeps the calls out of CORS entirely. */
+      const local = String(r.port) === (location.port || '80');
+      return {
+        id: r.id,
+        name: r.name,
+        colour: r.colour,
+        origin: local ? '' : `http://127.0.0.1:${r.port}`,
+        /* `127.0.0.1` and not `localhost`, matching the origin the daemon was
+           told to expect: a websocket upgrade goes through the same Origin check
+           as a POST, and the two spellings are two origins. */
+        ws: local ? WS_BASE : `ws://127.0.0.1:${r.port}`,
+        token: local ? TOKEN : r.token,
+        snap: empty(),
+        snapAt: Date.now(),
+        live: false,
+      };
+    })
+  : lone();
+
+export const repoById = (id) => checkouts.find((r) => r.id === id) || checkouts[0];
+
+/** Whether this window is showing more than one repository at all.
+ *
+ *  Read wherever the single-repository shape has to keep looking exactly as it
+ *  did: no colour strips, no repository headers, no drag handles. Every install
+ *  before this feature is this case, so it is the normal one. */
+export const multiRepo = () => checkouts.length > 1;
+
+/** The repository whose session the panes are describing. */
+export let activeRepo = checkouts[0];
+
+const repoListeners = [];
+export function onActiveRepo(fn) { repoListeners.push(fn); }
+
+/** Point the panes at another repository.
+ *
+ *  Re-points `snap` with it, which is the whole trick: a hundred readers keep
+ *  saying `snap.x` and get the repository they are looking at, because `snap` is
+ *  a live binding and this is the only other thing allowed to move it. */
+export function setActiveRepo(id) {
+  const next = repoById(id);
+  if (next === activeRepo) return;
+  activeRepo = next;
+  snap = next.snap;
+  snapAt = next.snapAt;
+  for (const fn of repoListeners) fn(next);
+}
 
 /* ---------------------------------------------------------------------------
  * Boot timing
@@ -408,10 +524,29 @@ export function promptBox(message, { value = '', placeholder = '', ok = 'OK' } =
   }).then((a) => (a === null ? null : String(a)));
 }
 
-export async function call(path, body) {
-  const res = await fetch(path, {
+/* **Which daemon a call goes to is a parameter with a default, not a rewrite.**
+ * Defaulting to the active repository is what let this become multi-repository
+ * without touching the 58 places that name a path and nothing else: they act on
+ * the session you are looking at, which is the one whose daemon owns it.
+ *
+ * The rail is the exception and has to be explicit, because it is the one pane
+ * showing rows from repositories you are *not* in — a kill sent to the active
+ * daemon for a row belonging to another would either 404 or, far worse, name a
+ * session id that daemon also has. Hence [`callOn`] and [`getOn`].
+ *
+ * `x-orch-token` per repository because each daemon minted its own. A peer is a
+ * different origin, so these are cross-origin requests: the peer is started
+ * knowing this board's origin and answers it (`Config::sibling_origin`), which is
+ * what makes talking to it directly possible at all — the alternative was proxying
+ * every call and both websockets through the primary. */
+export async function callOn(repoId, path, body) {
+  const repo = repoById(repoId);
+  const res = await fetch(`${repo.origin}${path}`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json', 'x-orch-token': TOKEN },
+    headers: {
+      'content-type': 'application/json',
+      'x-orch-token': repo.token,
+    },
     body: JSON.stringify(body ?? {}),
   });
   const json = await res.json().catch(() => ({}));
@@ -419,12 +554,18 @@ export async function call(path, body) {
   return json;
 }
 
-export async function get(path) {
-  const res = await fetch(path, { headers: { 'x-orch-token': TOKEN } });
+export async function getOn(repoId, path) {
+  const repo = repoById(repoId);
+  const res = await fetch(`${repo.origin}${path}`, {
+    headers: { 'x-orch-token': repo.token },
+  });
   const json = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(json.error || res.statusText);
   return json;
 }
+
+export const call = (path, body) => callOn(activeRepo.id, path, body);
+export const get = (path) => getOn(activeRepo.id, path);
 
 export function duration(ms) {
   if (ms == null) return '';
@@ -775,8 +916,13 @@ export function closeMenu() {
  *  belongs to moved" from "a terminal three panes away printed a line". */
 let menuAnchor = null;
 
-export function sessionsOf(wsId) {
-  return snap.sessions.filter((s) => s.workspace === wsId);
+/* `s = snap` on each of these is what keeps this change small: every existing
+   caller means "the repository I am looking at" and says nothing, while the rail
+   — the one pane that draws all of them — passes the repository's own snapshot
+   in. Adding a required parameter instead would have been forty edits in seven
+   modules to say what the default already says. */
+export function sessionsOf(wsId, s = snap) {
+  return s.sessions.filter((x) => x.workspace === wsId);
 }
 
 /* A session is one of two things: active, or a past conversation you can come
@@ -817,8 +963,8 @@ export function activeWorkspaceId() {
 }
 
 /** The two questions every pane asks the workspace list. */
-export const mainWorkspace = () => snap.workspaces.find((w) => w.is_main);
-export const workspaceById = (id) => snap.workspaces.find((w) => w.id === id);
+export const mainWorkspace = (s = snap) => s.workspaces.find((w) => w.is_main);
+export const workspaceById = (id, s = snap) => s.workspaces.find((w) => w.id === id);
 
 export function currentWorkspaceId() {
   const s = currentSession();

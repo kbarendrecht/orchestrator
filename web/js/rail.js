@@ -1,19 +1,99 @@
 // The rail: what is running, what is waiting on you, and the PRs beside it.
 // Twenty-four names, three out; the rest is how a row decides what it says.
 
-import { $, byNewest, call, caret, clock, confirmBox, copyText, creating, dotClass, duration, el, isArchived, isConversation, isWaiting, mainWorkspace, MOD_LABEL, newSession, newWorktree, openMenu, pending, refreshButton, selected, sessionsOf, setSelected, sinceSnap, snap, stateClass, stateLabel, toast, unchanged, setPendingSelect } from './core.js';
+import { $, activeRepo, byNewest, call, callOn, caret, checkouts, clock, confirmBox, copyText, creating, dotClass, duration, el, isArchived, isConversation, isWaiting, mainWorkspace, MOD_LABEL, multiRepo, newSession, newWorktree, openMenu, pending, refreshButton, selected, sessionsOf, setActiveRepo, setSelected, sinceSnap, snap, stateClass, stateLabel, toast, unchanged, setPendingSelect } from './core.js';
 import * as Review from './review.js';
 import * as Term from './term.js';
 
 /* Expanded per group and kept across renders. Main's two conversations and the
- * worktrees' twenty are not the same question. */
-const showArchived = { main: false, worktrees: false };
+ * worktrees' twenty are not the same question — and neither are one
+ * repository's and another's, so the key carries the repository too
+ * (`main:<id>`). Grown on demand rather than declared, since which repositories
+ * exist is not known here. */
+const showArchived = /** @type {Record<string, boolean>} */ ({});
 
 /* The session whose name is being edited in place, or null. A snapshot lands
  * every second and rebuilds the rail, which would blow the input away mid-type —
  * so the rebuild is held off while it is open, the same way `tabDrag` holds off
  * `renderDrawer`. `renameSession` sets it and clears it. */
 let editingName = null;
+
+/* ---------------------------------------------------------------------------
+ * Repository order
+ * ------------------------------------------------------------------------- */
+
+/** Which repository block is being dragged, or null.
+ *
+ *  Holds the rebuild off for exactly the reason `editingName` does: a snapshot
+ *  lands every second, and a drag whose source node was replaced mid-gesture
+ *  drops onto nothing. */
+let repoDrag = null;
+
+const ORDER_KEY = 'orch.repoOrder';
+const COLLAPSED_KEY = 'orch.repoCollapsed';
+
+/* **The order is this browser's preference, not state the daemon owns.** Same
+ * reasoning as the column widths and the rail's collapsed sections: nothing about
+ * which order you like reading your repositories in belongs in `config.json`,
+ * where it would also have to be reconciled against a list the shell owns.
+ *
+ * Read through try/catch because a private window, cleared site data or a browser
+ * set to refuse storage all throw on access rather than answering empty — and the
+ * right answer to every one of them is the configured order. */
+function savedOrder() {
+  try {
+    const raw = localStorage.getItem(ORDER_KEY);
+    const ids = raw ? JSON.parse(raw) : null;
+    return Array.isArray(ids) ? ids.filter((x) => typeof x === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveOrder(ids) {
+  try {
+    localStorage.setItem(ORDER_KEY, JSON.stringify(ids));
+  } catch {
+    // A remembered order is a convenience; failing to keep it is not worth a toast.
+  }
+}
+
+/* Which repositories are folded shut. Same storage, same try/catch, same
+ * reasoning as the order: a preference of this browser, and every way of reading
+ * it can throw rather than answer empty. */
+function collapsedSet() {
+  try {
+    const raw = localStorage.getItem(COLLAPSED_KEY);
+    const ids = raw ? JSON.parse(raw) : null;
+    return new Set(Array.isArray(ids) ? ids.filter((x) => typeof x === 'string') : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function setCollapsed(id, folded) {
+  const set = collapsedSet();
+  if (folded) set.add(id); else set.delete(id);
+  try {
+    localStorage.setItem(COLLAPSED_KEY, JSON.stringify([...set]));
+  } catch {
+    // As above: losing the fold is not worth a toast.
+  }
+  renderRail();
+}
+
+/** The repositories in the order to draw them.
+ *
+ *  Anything the remembered order does not mention goes **last, in configured
+ *  order** — which is what happens to a repository you have just added to
+ *  `extra_checkouts`. Dropping it instead, or putting it first, would both be a
+ *  new repository silently changing where the ones you had sit. */
+function ordered() {
+  const want = savedOrder();
+  const known = checkouts.filter((r) => want.includes(r.id));
+  known.sort((a, b) => want.indexOf(a.id) - want.indexOf(b.id));
+  return [...known, ...checkouts.filter((r) => !want.includes(r.id))];
+}
 
 
 /* **What a tree measures is the changed-files pane's business, not the rail's.**
@@ -37,7 +117,7 @@ const NOT_DRAWN = [
 const drawn = { sig: null };
 
 function renderRail() {
-  if (editingName !== null) return;
+  if (editingName !== null || repoDrag !== null) return;
   // Before the guard: the bar has its own inputs and its own guard, and being
   // skipped by the rail's would leave it saying "2 need you" after they stopped.
   renderWaitbar();
@@ -48,22 +128,239 @@ function renderRail() {
      anything the daemon changes rebuilds it, and a push carrying nothing but new
      durations does not. `showArchived` and the rest are the view state the
      snapshot cannot see. */
-  if (unchanged(drawn, [snap, showArchived, showPrs, picked, selected, swapInFlight], NOT_DRAWN)) {
+  const order = ordered();
+  if (unchanged(
+    drawn,
+    [order.map((r) => [r.id, r.snap]), activeRepo.id, [...collapsedSet()],
+      showArchived, showPrs, picked, selected, swapInFlight],
+    NOT_DRAWN,
+  )) {
     return;
   }
 
   const rail = $('rail');
   rail.replaceChildren();
 
-  const main = mainWorkspace();
-  const worktrees = snap.workspaces.filter((w) => !w.is_main);
-
-  // Main is pinned first (§9).
-  if (main) rail.appendChild(mainGroup(main));
-  rail.appendChild(worktreeGroup(main?.id));
+  /* One block per repository, each a whole daemon of its own (`src/peers.rs`).
+     With one repository this is the rail exactly as it was: `repoBlock` draws no
+     header and no colour, and `.repo` is a bare wrapper. */
+  for (const repo of order) rail.appendChild(repoBlock(repo));
+  rail.appendChild(addRepoRow());
 
   // Its own pane below the scroller, so it stays put while sessions scroll.
-  $('prpane').replaceChildren(prGroup());
+  $('prpane').replaceChildren(prGroup(activeRepo));
+}
+
+/** One repository: its header, its main group and its worktrees.
+ *
+ *  The colour rides on the block as a custom property, so the header swatch and
+ *  every session row's left edge read the same value and cannot drift. */
+function repoBlock(repo) {
+  const block = el('div', 'repo');
+  block.dataset.repo = repo.id;
+  if (multiRepo()) {
+    // Same two handlers as the header, so the body of a block accepts a drop too.
+    block.ondragover = (ev) => { if (repoDrag) ev.preventDefault(); };
+    block.ondrop = (ev) => {
+      ev.preventDefault();
+      const moved = ev.dataTransfer?.getData('text/plain') || repoDrag;
+      repoDrag = null;
+      if (moved) reorder(moved, repo.id);
+      renderRail();
+    };
+  }
+  if (repo.colour) block.style.setProperty('--repo-colour', repo.colour);
+  if (repo === activeRepo) block.classList.add('on');
+  if (multiRepo()) {
+    block.classList.add('titled');
+    block.appendChild(repoHead(repo));
+  }
+
+  /* **Folded shut shows the header and nothing else** — but the header then has
+     to say what it is hiding, or a collapsed repository with an agent waiting on
+     you looks identical to an idle one. `repoHead` counts for exactly that
+     reason. Only reachable when there is more than one repository, since a single
+     one draws no header to fold from. */
+  if (multiRepo() && collapsedSet().has(repo.id)) {
+    block.classList.add('folded');
+    return block;
+  }
+
+  const main = mainWorkspace(repo.snap);
+  // Main is pinned first (§9).
+  if (main) block.appendChild(mainGroup(main, repo));
+  block.appendChild(worktreeGroup(main?.id, repo));
+  return block;
+}
+
+/** The repository's name, its colour, and the handle that reorders it.
+ *
+ *  Drawn only when there is more than one — a single repository needs no label
+ *  saying which, and no order to change. */
+function repoHead(repo) {
+  const head = el('div', 'repo-head');
+  const folded = collapsedSet().has(repo.id);
+
+  /* **Its own button, not the header.** The header already means "work here", and
+     one element cannot mean both without one of them being a surprise — the same
+     reason the archive toggle is a button of its own rather than a click on the
+     group. `aria-expanded` on the caret is what the CSS rotates, and what a
+     screen reader reads. */
+  const fold = el('button', 'repofold');
+  fold.setAttribute('aria-expanded', String(!folded));
+  fold.title = folded ? 'Show this repository' : 'Fold this repository away';
+  fold.appendChild(caret());
+  fold.onclick = (ev) => { ev.stopPropagation(); setCollapsed(repo.id, !folded); };
+  head.appendChild(fold);
+
+  head.appendChild(el('span', 'repo-swatch'));
+  head.appendChild(el('span', 'repo-name', repo.name || repo.id, repo.path || repo.id));
+
+  if (!repo.live) {
+    // Distinct from "no sessions": a repository whose socket has not landed yet
+    // knows nothing, and an empty block would read as an empty checkout.
+    head.appendChild(el('span', 'repo-wait', '…'));
+  } else if (folded) {
+    /* **A fold must not hide that something needs you.** Collapsed, this header is
+       the only thing left of the repository, so it carries the two counts worth
+       interrupting for: how many sessions are live, and how many of those are
+       waiting. Without the second one, folding a repository away is a way to stop
+       noticing an agent blocked on a permission prompt. */
+    const live = repo.snap.sessions.filter((x) => !isArchived(x));
+    const waiting = live.filter(isWaiting).length;
+    const note = el('span', 'repo-count', live.length
+      ? `${live.length}${waiting ? ` · ${waiting} need you` : ''}`
+      : 'idle');
+    if (waiting) note.classList.add('attn');
+    head.appendChild(note);
+  }
+
+  /* Clicking the header is how you say "I am working here" without picking a
+     session — which matters because every pane below follows the active
+     repository, and a repository whose sessions have all finished would otherwise
+     be unreachable. */
+  head.onclick = () => { setActiveRepo(repo.id); renderRail(); };
+  /* Right-click, not a visible ✕: closing a repository is rare and destructive,
+     and the rail already puts every action of that shape behind this button. The
+     local checkout has no item — the daemon refuses it, because closing the
+     checkout this window opened is a *switch*, which is the header's own button. */
+  head.oncontextmenu = (ev) => openMenu(ev, [
+    [folded ? 'show' : 'fold away', null, () => setCollapsed(repo.id, !folded)],
+    ['close repository', 'bad', repo.origin ? () => closeRepo(repo) : null],
+  ]);
+
+  /* Dragged by the header rather than the whole block, or a press anywhere in a
+     repository's sessions would start a drag instead of selecting a row.
+     HTML5 drag-and-drop rather than pointer maths: the rail is a single column,
+     so the only thing to compute is which block the pointer is over, and the
+     browser already answers that with `dragover`. */
+  head.draggable = true;
+  head.ondragstart = (ev) => {
+    repoDrag = repo.id;
+    if (ev.dataTransfer) {
+      ev.dataTransfer.effectAllowed = 'move';
+      // Firefox starts no drag at all without payload; the id is also what the
+      // drop handler reads back, rather than trusting module state alone.
+      ev.dataTransfer.setData('text/plain', repo.id);
+    }
+  };
+  head.ondragend = () => { repoDrag = null; renderRail(); };
+
+  /* The whole block is the drop target, not just its header: a two-pixel header
+     is a hard thing to hit, and "drop it on that repository" is what the gesture
+     means whatever part of it the pointer is over. Registered here because the
+     header is the only node that exists for both roles.
+
+     `preventDefault` on `dragover` is what marks a node droppable at all — HTML5
+     drag-and-drop refuses the drop otherwise, silently, which is exactly how this
+     looks broken the first time. */
+  head.ondragover = (ev) => { if (repoDrag) ev.preventDefault(); };
+  head.ondrop = (ev) => {
+    ev.preventDefault();
+    const moved = ev.dataTransfer?.getData('text/plain') || repoDrag;
+    repoDrag = null;
+    if (moved) reorder(moved, repo.id);
+    renderRail();
+  };
+  return head;
+}
+
+/** The way in to a second repository.
+ *
+ *  **Shown even with one**, which is the whole point: this is how the first extra
+ *  one gets added, and until now `extra_checkouts` was a key you had to know about
+ *  and hand-edit. Quiet, at the end of the list, because it is a thing you press
+ *  once a month.
+ */
+function addRepoRow() {
+  const row = el('button', 'addrepo');
+  row.appendChild(el('span', 'addrepo-plus', '+'));
+  row.appendChild(el('span', null, 'repository'));
+  row.title = 'Open another repository beside this one';
+  row.onclick = () => addRepo(row);
+  return row;
+}
+
+/** Pick a checkout, open it, and show it.
+ *
+ *  Two calls rather than one, because a cancelled dialog is not an error and the
+ *  daemon's validation ("not a git checkout", "already open") belongs on the
+ *  second — the page cannot answer either.
+ */
+async function addRepo(btn) {
+  btn.disabled = true;
+  try {
+    const picked = await call('/api/checkouts/pick');
+    if (!picked.picked) return;                    // dialog cancelled
+    if (picked.ok === false) return toast(picked.error, true);
+    await call('/api/checkouts/add', { path: picked.path });
+    /* **A reload, not a re-render.** The repository list is substituted into the
+       page at load (`__ORCH_CHECKOUTS__`), which is what keeps a peer's token out
+       of every route and the snapshot free of sibling awareness — so a new
+       repository arrives by loading the page again. Cheap: the daemon replays each
+       terminal's scrollback on reattach, and nothing else in the window is state
+       the page owns. */
+    toast(`opened ${picked.name} — reloading`);
+    location.reload();
+  } catch (e) {
+    toast(e.message, true);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+/** Stop showing a repository, taking its daemon and its sessions with it. */
+async function closeRepo(repo) {
+  const live = repo.snap.sessions.filter((x) => !isArchived(x)).length;
+  /* Confirmed, and the count is why: closing a repository stops a whole daemon,
+     and its sessions are that daemon's children. Nothing here is recoverable by
+     pressing it again — reopening starts fresh conversations. */
+  if (!await confirmBox(
+    `Close ${repo.name || repo.id}?\n\n`
+    + (live
+      ? `${live} live session${live === 1 ? '' : 's'} in it will be stopped. `
+      : '')
+    + `Its worktrees and branches stay on disk; only the daemon showing it goes. `
+    + `Add it again from the + at the bottom of the rail.`,
+  )) return;
+  try {
+    await call('/api/checkouts/remove', { path: repo.path });
+    toast(`closed ${repo.name || repo.id} — reloading`);
+    location.reload();
+  } catch (e) {
+    toast(e.message, true);
+  }
+}
+
+/** Move `id` to where `before` sits, and remember it. */
+function reorder(id, before) {
+  const ids = ordered().map((r) => r.id);
+  const from = ids.indexOf(id);
+  if (from < 0 || id === before) return;
+  ids.splice(from, 1);
+  const to = ids.indexOf(before);
+  ids.splice(to < 0 ? ids.length : to, 0, id);
+  saveOrder(ids);
 }
 
 
@@ -218,11 +515,19 @@ function actionButton(p, action, label) {
   return b;
 }
 
-function prGroup() {
-  const prs = snap.prs || [];
+function prGroup(repo) {
+  const prs = repo.snap.prs || [];
   // Just `ws`: the pinned pane it lives in owns the sizing, and carrying
   // `prblock` here too applied max-height twice, nested.
   const group = el('div', 'ws');
+  /* **The active repository's PRs, not everyone's.** The rail above shows every
+     repository, because sessions are what you are choosing between; this pane
+     answers "what is open *here*", and stacking three checkouts' lists into one
+     pinned pane at the bottom of the rail turns one readable list into three
+     crowded ones. So it follows the active repository like every other pane, and
+     wears its colour so it is never a question which one it is answering for. */
+  if (repo.colour) group.style.setProperty('--repo-colour', repo.colour);
+  if (multiRepo()) group.classList.add('pr-of-repo');
 
   const head = el('button', 'prgroup-head');
   head.setAttribute('aria-expanded', String(showPrs));
@@ -232,9 +537,9 @@ function prGroup() {
   // The summary sits where the detail already is, rather than duplicated at
   // the top of the rail (§9).
   const count = el('span', 'prcount');
-  if (snap.pr_error) {
+  if (repo.snap.pr_error) {
     count.appendChild(el('b', 'f', 'unavailable'));
-    head.title = snap.pr_error;
+    head.title = repo.snap.pr_error;
   } else {
     const needs = prs.filter((p) => p.needs_you).length;
     const failing = prs.filter(
@@ -247,8 +552,8 @@ function prGroup() {
     // How long since a poll actually landed. Live-ticked off the snapshot clock
     // like the rail's other ages, so a poller that is stuck without erroring
     // reads as stale rather than current. Hidden while a fetch is in flight.
-    if (snap.pr_age_ms != null && !snap.pr_polling) {
-      count.appendChild(clock('prage', snap.pr_age_ms, ' ago', ' · '));
+    if (repo.snap.pr_age_ms != null && !repo.snap.pr_polling) {
+      count.appendChild(clock('prage', repo.snap.pr_age_ms, ' ago', ' · '));
     }
   }
   head.appendChild(count);
@@ -258,14 +563,14 @@ function prGroup() {
      be acted on without setting up a PAT, and sat next to the PR count as if
      something were wrong. `token_source` is still in the snapshot for anyone
      diagnosing over the API; it is just not a thing to look at every day. */
-  head.appendChild(refreshButton('pr', snap.pr_poll ?? 0, '/api/prs/refresh', snap.pr_polling));
+  head.appendChild(refreshButton('pr', repo.snap.pr_poll ?? 0, '/api/prs/refresh', repo.snap.pr_polling));
   head.onclick = () => { showPrs = !showPrs; renderRail(); };
   group.appendChild(head);
 
   if (!showPrs) return group;
 
-  if (snap.pr_error) {
-    const e = el('div', 'railbtn', snap.pr_error.slice(0, 120));
+  if (repo.snap.pr_error) {
+    const e = el('div', 'railbtn', repo.snap.pr_error.slice(0, 120));
     e.style.color = 'var(--bad)';
     group.appendChild(e);
     return group;
@@ -289,7 +594,7 @@ function prGroup() {
     row.appendChild(el('span', 'num', `#${p.number}`));
     row.appendChild(el('span', 'ttl', p.title, p.title));
 
-    const auto = (snap.automation || {})[p.number];
+    const auto = (repo.snap.automation || {})[p.number];
     const needsResolve = p.needs_you;
     const needsFix = p.checks === 'failing' || p.mergeable === 'CONFLICTING';
 
@@ -390,12 +695,12 @@ function groupHead(label, add) {
  *  daemon reports in the snapshot. Then `+` stays live and the holder's name is
  *  still worth saying, because a second session in one checkout is a thing to do
  *  on purpose rather than by accident. */
-function mainGroup(w) {
+function mainGroup(w, repo) {
   const group = el('div', 'ws');
-  const sessions = sessionsOf(w.id);
+  const sessions = sessionsOf(w.id, repo.snap);
   const active = sessions.filter((s) => !isArchived(s));
   const occupant = active.find((s) => s.id === w.occupant && s.alive);
-  const several = !!snap.several_in_main;
+  const several = !!repo.snap.several_in_main;
 
   const add = el('button', 'plus', '+');
   // Occupied, or already making something: the second reason is the one that used
@@ -410,12 +715,19 @@ function mainGroup(w) {
     : occupant
       ? `main is held by ${occupant.title || occupant.id.slice(0, 8)}${several ? ' · another is allowed' : ''}`
       : `New session in main · ${MOD_LABEL} Shift N`;
-  add.onclick = () => newSession(w.id);
+  /* **Activate, then act.** Every control in the rail belongs to one repository,
+     and `newSession` — like the other 58 places that name only a path — posts to
+     the *active* daemon. Pressing `+` under a repository is saying you are working
+     there, so making it active first is both what you meant and what makes the
+     call land on the daemon that owns that checkout. The alternative was giving
+     every core helper a repository argument, which says the same thing in forty
+     more places. */
+  add.onclick = () => { setActiveRepo(repo.id); newSession(w.id); };
   group.appendChild(groupHead('Main checkout', add));
 
-  for (const s of active.sort(byNewest)) group.appendChild(sessionRow(s, w));
+  for (const s of active.sort(byNewest)) group.appendChild(sessionRow(s, w, repo));
   if (!active.length) group.appendChild(el('div', 'railbtn', 'no sessions'));
-  appendArchived(group, 'main', sessions.filter(isConversation));
+  appendArchived(group, `main:${repo.id}`, sessions.filter(isConversation), repo);
   return group;
 }
 
@@ -426,7 +738,7 @@ function mainGroup(w) {
  *  is a session whose worktree has no name yet, which shows as `…creating`
  *  rather than nothing at all — an invisible session is how you end up
  *  starting a second one. */
-function worktreeGroup(mainId) {
+function worktreeGroup(mainId, repo) {
   const group = el('div', 'ws');
   const add = el('button', 'plus', '+');
   /* Dead while one is being cut, and it says which one in the tooltip.
@@ -441,25 +753,26 @@ function worktreeGroup(mainId) {
      the placeholder workspace for good, and counting that would leave the `+`
      dead until a restart. */
   const cutting = creating()
-    || (snap.sessions.some((s) => pending(s) && !isArchived(s)) ? 'creating a worktree' : null);
+    || (repo.snap.sessions.some((s) => pending(s) && !isArchived(s)) ? 'creating a worktree' : null);
   add.disabled = !!cutting;
   add.title = cutting || `New worktree session · ${MOD_LABEL} N (shift-click to name it)`;
-  add.onclick = (ev) => newWorktree(ev.shiftKey);
+  // Activate, then act — see the note on main's `+`.
+  add.onclick = (ev) => { setActiveRepo(repo.id); newWorktree(ev.shiftKey); };
   group.appendChild(groupHead('Worktrees', add));
 
   /* Anything that is not main's belongs here — by session, not by workspace.
    * A worktree Claude Code has not named yet has no workspace record at all,
    * only a session pointing at the placeholder, so filtering on the known
    * workspaces dropped exactly the row that says something is happening. */
-  const sessions = snap.sessions.filter((s) => s.workspace !== mainId);
+  const sessions = repo.snap.sessions.filter((s) => s.workspace !== mainId);
   const active = sessions.filter((s) => !isArchived(s));
 
   for (const s of active.sort(byNewest)) {
     // The workspace is only needed for the name it lends the row.
-    group.appendChild(sessionRow(s, { id: s.workspace }));
+    group.appendChild(sessionRow(s, { id: s.workspace }, repo));
   }
   if (!active.length) group.appendChild(el('div', 'railbtn', 'no sessions'));
-  appendArchived(group, 'worktrees', sessions.filter(isConversation));
+  appendArchived(group, `worktrees:${repo.id}`, sessions.filter(isConversation), repo);
   return group;
 }
 
@@ -469,7 +782,7 @@ function worktreeGroup(mainId) {
  *  opened whenever the conversation you are looking at is in here, so the rail
  *  never goes silent about what the centre pane is showing.
  */
-function appendArchived(group, key, sessions) {
+function appendArchived(group, key, sessions, repo) {
   if (!sessions.length) return;
   const open = showArchived[key] || sessions.some((s) => s.id === selected);
 
@@ -482,14 +795,14 @@ function appendArchived(group, key, sessions) {
   group.appendChild(toggle);
 
   if (!open) return;
-  for (const s of sessions.sort(byNewest)) group.appendChild(archivedRow(s));
+  for (const s of sessions.sort(byNewest)) group.appendChild(archivedRow(s, repo));
 }
 
 /** A past conversation: which worktree it was in, and how long ago.
  *
  *  No state word — `archived` is the state, and the section it sits in already
  *  says it. Clicking rebuilds what it needs and resumes it. */
-function archivedRow(s) {
+function archivedRow(s, repo) {
   const btn = el('button', 'sess arc');
   btn.setAttribute('aria-current', String(s.id === selected));
   // So a rename can find this row's name span again after any re-render.
@@ -497,7 +810,7 @@ function archivedRow(s) {
 
   const row = el('div', 'sess-row');
   row.appendChild(el('span', 'dot archived'));
-  const arcName = railName(s, { id: s.workspace });
+  const arcName = railName(s, { id: s.workspace }, repo.snap);
   row.appendChild(el('span', 'sess-name', arcName, arcName));
   const forked = forkBadge(s);
   if (forked) row.appendChild(forked);
@@ -507,7 +820,7 @@ function archivedRow(s) {
   if (!s.resumable) {
     // The transcript is readable, the conversation cannot be continued (§2).
     btn.appendChild(el('div', 'sess-sub', 'transcript only'));
-  } else if (!snap.workspaces.some((w) => w.id === s.workspace)) {
+  } else if (!repo.snap.workspaces.some((w) => w.id === s.workspace)) {
     /* Its worktree is gone, which the snapshot says by omission: only teardown
        drops a workspace record, and the retention timer is what usually calls it.
        Worth a line, because "archived" alone would leave you to discover on the
@@ -516,8 +829,14 @@ function archivedRow(s) {
        missing, so this can only read on a worktree. */
     btn.appendChild(el('div', 'sess-sub', 'tree removed · rebuilds on resume'));
   }
-  btn.onclick = () => openArchived(s);
-  btn.oncontextmenu = (ev) => openMenu(ev, [
+  /* **Activate, then act.** `openArchived` POSTs a resume and every menu item
+     below POSTs too, and all of them go to the *active* daemon — which is what
+     let the 58 call sites that name only a path stay as they were. Pressing a row
+     under a repository is saying you are working there, so making it active first
+     is both what you meant and what puts the call on the daemon that owns the
+     conversation. */
+  btn.onclick = () => { setActiveRepo(repo.id); openArchived(s); };
+  btn.oncontextmenu = (ev) => { setActiveRepo(repo.id); openMenu(ev, [
     // Worth more here than on a live row: the archive is the list you scan weeks
     // later, and two conversations Claude Code named the same thing are what you
     // are scanning past.
@@ -527,7 +846,7 @@ function archivedRow(s) {
     ['fork', null, s.has_transcript ? () => forkSession(s) : null],
     ['copy id', null, () => copyId(s)],
     ['delete', 'bad', () => deleteSession(s)],
-  ]);
+  ]); };
   return btn;
 }
 
@@ -565,13 +884,13 @@ async function openArchived(s) {
  *
  *  The placeholder workspace id is the daemon's own bookkeeping, so a worktree
  *  still being cut says what is happening instead. */
-function railName(s, w) {
+function railName(s, w, from = snap) {
   if (pending(s)) return 'creating worktree';
   // A pass's workspace is `pr-10006`, which repeats the number it is about to
   // print and says nothing else. The PR's own title is already in the snapshot,
   // put there for the pane at the bottom of this rail.
   if (s.pass) {
-    const pr = (snap.prs || []).find((p) => p.number === s.pass.pr);
+    const pr = (from.prs || []).find((p) => p.number === s.pass.pr);
     return pr ? `#${s.pass.pr} ${pr.title}` : `#${s.pass.pr}`;
   }
   return s.title || w.id;
@@ -590,7 +909,7 @@ function forkBadge(s) {
   return s.forked_from ? el('span', 'forked', 'fork') : null;
 }
 
-function sessionRow(s, w) {
+function sessionRow(s, w, repo) {
   const btn = el('button', 'sess');
   btn.setAttribute('aria-current', String(s.id === selected));
   // So a rename can find this row's name span again after any re-render.
@@ -598,7 +917,7 @@ function sessionRow(s, w) {
 
   const row = el('div', 'sess-row');
   row.appendChild(el('span', 'dot ' + dotClass(s)));
-  const liveName = railName(s, w);
+  const liveName = railName(s, w, repo.snap);
   row.appendChild(el('span', 'sess-name' + (pending(s) ? ' pending' : ''), liveName, liveName));
   const forked = forkBadge(s);
   if (forked) row.appendChild(forked);
@@ -651,14 +970,22 @@ function sessionRow(s, w) {
    * it survives the row being rebuilt between the two events; without that the
    * pair would select twice and the second one would re-announce the selection,
    * stealing focus back into a terminal you had just left. */
+  /* **The repository moves with the selection, and before it.** Every pane below
+     the rail describes the session you are in, so picking a row in another
+     repository is what makes that repository the one they describe — and
+     `setActiveRepo` re-points `snap`, so it has to happen *first*, or the
+     selection listeners would run against the outgoing checkout's snapshot. This
+     is also the click that makes `term.js`'s `activeRepo` the daemon to open a
+     pty on. */
+  const pick = () => { setActiveRepo(repo.id); setSelected(s.id); };
   btn.onpointerdown = (ev) => {
     if (ev.button !== 0) return;      // the secondary button opens the menu
     picked = s.id;
-    setSelected(s.id);
+    pick();
   };
   btn.onclick = () => {
     if (picked === s.id) { picked = null; return; }
-    setSelected(s.id);
+    pick();
   };
   /* Which way the branch moves, as one item with three answers. Asked of the
      snapshot's own main row rather than of `w`, which is a `{ id }` stub on a
@@ -673,18 +1000,20 @@ function sessionRow(s, w) {
      ever be dead, and a greyed "move out of main" on a worktree row reads as the
      app thinking that row is in main — the opposite of what the rail says two
      lines above it. */
-  const mainWs = mainWorkspace();
+  const mainWs = mainWorkspace(repo.snap);
   const inMain = s.workspace === mainWs?.id;
   const moveLabel = inMain
     ? 'move out of main'
-    : mainHoldsWork(mainWs) ? 'swap with main' : 'move to main';
+    : mainHoldsWork(mainWs, repo.snap) ? 'swap with main' : 'move to main';
   // A worktree Claude Code has not named yet has no path to swap.
   const moveDo = inMain
     ? () => moveOutOfMain(s)
     : pending(s) ? null : () => swapWithMain(s.workspace);
   // The header's ✕ only ever closes the selected session, so closing any other
   // one meant switching to it first.
-  btn.oncontextmenu = (ev) => openMenu(ev, [
+  // Activate first, for the reason `pick` gives: the secondary button never goes
+  // through it, and every item here POSTs.
+  btn.oncontextmenu = (ev) => { setActiveRepo(repo.id); openMenu(ev, [
     ['rename', null, () => renameSession(s)],
     // Nothing to branch off until the conversation has had a turn.
     ['fork', null, s.has_transcript ? () => forkSession(s) : null],
@@ -698,7 +1027,7 @@ function sessionRow(s, w) {
     [moveLabel, null, moveDo],
     ['close', 'bad', s.alive ? () => closeSession(s.id) : null],
     ['delete', 'bad', () => deleteSession(s)],
-  ]);
+  ]); };
   return btn;
 }
 
@@ -759,7 +1088,7 @@ async function rewindSession(s) {
  *  Read off the whole branch *set*, not `branches[0]`: that set is built from a
  *  `HashSet`, so its order says nothing, and "the only thing main has is base" is
  *  a question about the set rather than about its first element. */
-function mainHoldsWork(main) {
+function mainHoldsWork(main, from = snap) {
   /* A conversation in main is work, whatever branch main is on. Without this the
      item read the git side only: main sitting on its base with somebody working in
      it answered "nothing of its own", so the menu offered `move to main` and the
@@ -770,10 +1099,10 @@ function mainHoldsWork(main) {
      The same rule the daemon uses for "is anyone in main" since it learned to
      allow more than one: any live session whose workspace is main, rather than the
      recorded claim, which can name none of them. */
-  const busy = snap.sessions.some(
+  const busy = from.sessions.some(
     (x) => x.workspace === main?.id && x.alive && !isArchived(x));
   if (busy) return true;
-  const leaf = (snap.upstream_ref || '').split('/').pop();
+  const leaf = (from.upstream_ref || '').split('/').pop();
   if (!leaf || leaf === 'HEAD') return true;
   // What main has checked out *now*. This used to ask `branches`, which accumulates
   // every branch a tree has ever held and is never pruned — so one visit from any
@@ -1027,15 +1356,23 @@ const isNudgeable = (s) =>
 const barDrawn = { sig: null };
 
 function renderWaitbar() {
-  const waiting = snap.sessions.filter(isWaiting);
-  const ready = snap.sessions.filter(isNudgeable);
+  /* **Across every repository, which is the one place in the rail that is not
+     per-block.** The bar answers "is anything anywhere waiting on me" — the
+     question you scan the window for — and one that counted only the repository
+     you happen to be looking at would go quiet while another checkout's agent sat
+     blocked. Each session is kept beside the repository that owns it, because
+     going to it means activating that repository first and nudging means posting
+     to its daemon. */
+  const everywhere = checkouts.flatMap((r) => r.snap.sessions.map((x) => ({ s: x, repo: r })));
+  const waiting = everywhere.filter((e) => isWaiting(e.s));
+  const ready = everywhere.filter((e) => isNudgeable(e.s));
   const bar = $('waitbar');
   /* Which sessions, not how long they have waited: the duration is a
      `data-clock` node that `tick` rewrites in place, and the longest of a fixed
      set cannot change while the set does not. Without this the `continue` button
      was rebuilt under the pointer several times a second and its border strobed
      as `:hover` was re-targeted on each one. */
-  if (unchanged(barDrawn, [waiting.map((s) => s.id), ready.map((s) => s.id)])) return;
+  if (unchanged(barDrawn, [waiting.map((e) => e.s.id), ready.map((e) => e.s.id)])) return;
   if (!waiting.length && ready.length < 2) {
     bar.className = 'waitbar';
     bar.replaceChildren();
@@ -1045,7 +1382,7 @@ function renderWaitbar() {
 
   if (waiting.length) {
     const longest = waiting.reduce(
-      (a, b) => ((a.waiting_ms ?? 0) >= (b.waiting_ms ?? 0) ? a : b));
+      (a, b) => ((a.s.waiting_ms ?? 0) >= (b.s.waiting_ms ?? 0) ? a : b));
     bar.className = 'waitbar on';
     /* "need you", not "waiting". The count is `wants_attention` — any `your_turn`
        but `ready`, plus a red build — so it covers a finished turn as well as a
@@ -1056,9 +1393,11 @@ function renderWaitbar() {
        Two nodes, because only the second half moves: the count changes with a
        snapshot, the duration changes every second. */
     bar.appendChild(el('span', null, `${waiting.length} need you · longest `));
-    bar.appendChild(clock(null, longest.waiting_ms ?? 0));
+    bar.appendChild(clock(null, longest.s.waiting_ms ?? 0));
     bar.title = `Go to the one that has needed you longest · ${MOD_LABEL} Space`;
-    bar.onclick = () => setSelected(longest.id);
+    // Its repository first, then the session: the panes follow the active
+    // repository, so the order is the same as a rail row's `pick`.
+    bar.onclick = () => { setActiveRepo(longest.repo.id); setSelected(longest.s.id); };
   } else {
     /* Nobody is asking for you; a restart has just put several agents back at an
        empty prompt. Quieter than the waiting bar, because this is an offer rather
@@ -1066,7 +1405,7 @@ function renderWaitbar() {
     bar.className = 'waitbar on calm';
     bar.appendChild(el('span', null,
       `${ready.length} session${ready.length === 1 ? '' : 's'} paused mid-work`));
-    bar.onclick = () => setSelected(ready[0].id);
+    bar.onclick = () => { setActiveRepo(ready[0].repo.id); setSelected(ready[0].s.id); };
   }
 
   /* One poke for the lot. Typing the same word into each of them is the tax on
@@ -1074,15 +1413,31 @@ function renderWaitbar() {
   if (ready.length > 1) {
     const all = el('button', 'waitall', 'continue');
     all.title = 'Type "continue" into every session paused mid-work';
-    all.onclick = (ev) => { ev.stopPropagation(); nudgeAll(); };
+    all.onclick = (ev) => {
+      ev.stopPropagation();
+      nudgeAll([...new Set(ready.map((e) => e.repo.id))]);
+    };
     bar.appendChild(all);
   }
 }
 
-/** Send them all on. */
-async function nudgeAll() {
+/** Send them all on, in every repository that has one.
+ *
+ *  **The one place `callOn` earns its keep.** Every other rail action activates
+ *  its repository and then posts, because a press belongs to one of them; this
+ *  press belongs to all of them at once, and no amount of activating can make
+ *  three daemons the active one. So it names each explicitly.
+ *
+ *  Sequential rather than concurrent: this is a handful of local POSTs, and the
+ *  toast has to report one number over the lot rather than three. */
+async function nudgeAll(repoIds) {
   try {
-    const r = await call('/api/sessions/nudge');
+    const answers = [];
+    for (const id of repoIds) answers.push(await callOn(id, '/api/sessions/nudge'));
+    const r = {
+      nudged: answers.flatMap((a) => a.nudged || []),
+      held: answers.flatMap((a) => a.held || []),
+    };
     const n = (r.nudged || []).length;
     toast(n ? `nudged ${n}` : 'nothing to nudge');
     // Named, not silently skipped: a permission prompt or a question takes a

@@ -95,7 +95,49 @@ this file, which churned it from every build; that feature is gone.
   the ancestry check needs a single exemption rather than continuous forgiveness, and
   every card still shows a real standalone diff while you are approving it.
 
-- **One window, several daemons: make the repository switcher switch.** The header
+- **Built, and not the way this said.** Several repositories now show *at once* in
+  one rail rather than being switched between, and the daemons are **child
+  processes** rather than in-process. `src/peers.rs` and `desktop/src/secondary.rs`
+  carry the design; what follows is kept because the reasoning is still what made
+  the choice, and one of its two objections turned out to be narrower than written.
+
+  **The sidecar objection was about the page, not the process.** This item ruled a
+  child process out because it "has no Tauri handle, so minimise, maximise, close
+  and the eight resize edges all stop working". True of the daemon *serving the
+  page*, and only that one: `AppState.window` is read in exactly one place
+  (`api::dispatch_window`) and already degrades with "no native window attached". A
+  secondary daemon serves no page, so the titlebar keeps talking to the primary,
+  which has the handle. That flipped the trade: the `config_dir` sweep below is not
+  needed at all — a process global is *correct* when each daemon is its own process
+  — and the failure isolation this item lists as an accepted cost is kept instead of
+  paid.
+
+  **The "one daemon, many repos" objection held, and got stronger.** The counts here
+  were measured over the whole tree including tests; production is nearer 38 `MAIN`
+  and the semantics are the real cost, not the count. Either way it is untouched:
+  every daemon still owns exactly one checkout, so `claim_main`, the swap and both
+  PR flows never learned a repo qualifier.
+
+  **What the page needed instead.** A peer is a different origin, so it is told the
+  board's origin and answers it (`Config::sibling_origin`, one exact string, plus a
+  CORS preflight arm in `api::guard`). The alternative was proxying every call and
+  both websockets through the primary, which is more code and gives up the isolation.
+
+  **Still open from this item:** the header's repo-switch button still toasts "not
+  implemented yet" — *switching* the main checkout is a restart and remains the
+  first-run page's job, which is now the only thing that button could mean.
+  Adding and closing repositories beside it is built (`+ repository` at the foot of
+  the rail, `api::add_checkout` / `remove_checkout` through
+  `peers::CheckoutControl`), and both **reload the page** rather than updating it
+  live, because the list is substituted into the page at load — which is what keeps
+  a peer's token off every route and the snapshot free of sibling awareness. Moving
+  it to a live channel is the upgrade if a reload ever becomes annoying.
+  There is also **no e2e flow** for any of it; `docs/e2e.md`'s harness runs one
+  daemon.
+
+  The original reasoning, for the record:
+
+  The header
   button exists and its only behaviour is a toast reading "not implemented yet".
   The shape that fits: keep **one checkout per daemon** and run several daemons
   *inside the one Tauri process*, each on its own port and its own config dir, with

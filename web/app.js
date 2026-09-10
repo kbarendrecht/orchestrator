@@ -3,7 +3,7 @@
 // The SPA is a module now, so what it reaches for is written down. `core.js` holds
 // the primitives every part needs; `queue.js` is the first seam extracted whole.
 import {
-  TOKEN, WS_BASE, $, el, toast, call, get, duration,
+  TOKEN, WS_BASE, checkouts, activeRepo, $, el, toast, call, get, duration,
   snap, receive, keyActivate,
   setZoom, saveZoom, onScaleChange, ZOOM, zoomScale,
   selected, setSelected, onSelection, prForWorkspace,
@@ -1447,14 +1447,41 @@ function announceWaiting() {
   waitingKnown = now;
 }
 
-function connect() {
-  const sock = new WebSocket(`${WS_BASE}/ws/events?token=${encodeURIComponent(TOKEN)}`);
+/* Which repositories' sockets are currently down. The status bar is shown while
+ * any of them is: a peer that has dropped means its rail rows are frozen, which
+ * is the same kind of lie the bar exists to announce for the local one. */
+const dropped = new Set();
+
+function connState() {
+  $('connbar').hidden = dropped.size === 0;
+}
+
+/** One socket per repository, each reconnecting on its own.
+ *
+ *  Separate rather than multiplexed, because that is the whole point of a daemon
+ *  per repository (`src/peers.rs`): one going away must leave the others alone,
+ *  and it does — this reconnects that one and nothing else notices. */
+function connect(repo) {
+  const sock = new WebSocket(`${repo.ws}/ws/events?token=${encodeURIComponent(repo.token)}`);
   // Connected (or reconnected): clear the dropped-connection status.
-  sock.onopen = () => { $('connbar').hidden = true; };
+  sock.onopen = () => { dropped.delete(repo.id); connState(); };
   sock.onmessage = (ev) => {
     // Through `receive` so the snapshot and the clock it is measured against move
-    // together; `snap` is a live binding, so every reader sees this.
-    receive(JSON.parse(ev.data));
+    // together; `snap` is a live binding, so every reader sees this — for the
+    // active repository. Every repository's snapshot is kept, because the rail
+    // draws them all.
+    receive(JSON.parse(ev.data), repo.id);
+
+    /* **Everything below is about the session you are in, so it is the active
+       repository's business only.** A peer's snapshot must not tear down the
+       centre pane's terminal, re-pick your selection or re-answer "what most
+       needs you" — those would all be answered from another checkout's sessions.
+       The rail is redrawn either way, at the bottom. */
+    if (repo !== activeRepo) {
+      scheduleRender();
+      announceWaiting();
+      return;
+    }
     // The first snapshot has landed, so drop the "connecting" hold and let the
     // real board — empty or not — show. Idempotent after that.
     document.body.classList.add('ready');
@@ -1518,9 +1545,15 @@ function connect() {
     // A dropped socket is a condition, not an error: a quiet status that clears
     // itself on reconnect (see onopen), rather than a toast that — now that
     // errors persist — would linger after the daemon came back.
-    $('connbar').hidden = false;
-    setTimeout(connect, 1500);
+    dropped.add(repo.id);
+    connState();
+    setTimeout(() => connect(repo), 1500);
   };
+}
+
+/** Open a socket to every repository this window is showing. */
+function connectAll() {
+  for (const repo of checkouts) connect(repo);
 }
 
 // ---------------------------------------------------------------------------
@@ -1777,7 +1810,7 @@ import * as Settings from './js/settings.js';
 Settings.setup();
 setupColumns();
 setupChrome();
-connect();
+connectAll();
 /* The waiting clock has to tick even when nothing else changes — and ticking is
    all it does. This used to call `Rail.render()`, which opens with
    `replaceChildren`: the row under your pointer was destroyed and rebuilt every

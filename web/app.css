@@ -235,7 +235,81 @@ button.ctx-btn:hover{color:var(--text)}
 /* ---------- rail ---------- */
 .rail{border-right:1px solid var(--line);background:var(--surface);display:flex;flex-direction:column;overflow:hidden}
 .rail-scroll{flex:1;overflow-y:auto;min-height:0}
+/* ---------- repositories ---------- */
+/* One block per repository, each a whole daemon of its own (`src/peers.rs`).
+   Untitled and unbanded when there is only one, which is every install before
+   this existed — so `.repo` on its own must change nothing about the rail. */
+.repo{min-width:0}
+/* **The colour goes on the block, not on the row.** `.sess` already spends its
+   left border on the selection marker, and a repository colour that fought it
+   would either hide which session you are in or be hidden by it. A band down the
+   block puts the colour to the left of every session in it — which is what it is
+   for — and leaves the marker to sit inside it. Visible the whole way down a long
+   list, which is also why the header is not sticky: the band answers "which
+   repository is this" without one. */
+.repo.titled{
+  border-left:3px solid var(--repo-colour, transparent);
+  border-bottom:1px solid var(--line);
+}
+/* The one you are working in. Every pane but the rail follows it, so it is worth
+   saying which — quietly, since the band already identifies the repository and
+   this is only about focus. */
+.repo.titled.on{background:var(--hover)}
+.repo-head{
+  display:flex;align-items:center;gap:8px;padding:10px 15px 4px;
+  cursor:grab;-webkit-user-select:none;user-select:none;
+}
+.repo-head:active{cursor:grabbing}
+/* Its own hit area, so folding and activating cannot be the same press. Same
+   caret and the same rotation as the archive toggle, which is the other thing in
+   this rail that opens and shuts. */
+.repofold{
+  display:flex;align-items:center;color:var(--ghost);
+  font-size:calc(12px * var(--fs));line-height:1;padding:0;flex:0 0 auto;
+}
+.repofold:hover{color:var(--text)}
+.repofold .caretr{display:inline-block;transition:transform .13s}
+.repofold[aria-expanded="true"] .caretr{transform:rotate(90deg)}
+/* Folded, the header is all that is left of the repository — so it keeps its
+   bottom rule, which the block's own would otherwise be providing. */
+.repo.titled.folded{border-bottom:1px solid var(--line)}
+.repo.titled.folded .repo-head{padding-bottom:10px}
+/* What is hidden behind the fold. `attn` only when something is actually waiting:
+   a count that is always amber is a count nobody reads. */
+.repo-count{
+  font-family:var(--mono);font-size:calc(9.5px * var(--fs));color:var(--faint-solid);
+  margin-left:auto;white-space:nowrap;
+}
+.repo-count.attn{color:var(--attn)}
+/* The way in to another repository. Deliberately quiet — pressed once a month,
+   and it sits under a list you read constantly. */
+.addrepo{
+  display:flex;align-items:center;gap:8px;width:100%;text-align:left;
+  padding:11px 16px 13px;font-family:var(--mono);font-size:calc(10.5px * var(--fs));
+  color:var(--ghost);
+}
+.addrepo:hover{color:var(--text);background:var(--hover)}
+.addrepo:disabled{color:#2E2E2E;cursor:not-allowed}
+.addrepo-plus{font-size:calc(13px * var(--fs));line-height:1}
+.repo-swatch{
+  width:7px;height:7px;border-radius:2px;flex:0 0 auto;
+  background:var(--repo-colour, var(--faint-solid));
+}
+.repo-name{
+  font-family:var(--mono);font-size:calc(10.5px * var(--fs));letter-spacing:.04em;
+  color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;
+}
+.repo.on .repo-name{color:var(--text)}
+/* A repository whose socket has not landed yet knows nothing. Distinct from "no
+   sessions", which is a checkout that answered and is empty. */
+.repo-wait{font-family:var(--mono);font-size:calc(10px * var(--fs));color:var(--ghost);margin-left:auto}
+/* Which list of PRs this is, when there is more than one repository to be
+   showing. Wears the band for the same reason the block does. */
+.pr-of-repo{border-left:3px solid var(--repo-colour, transparent)}
+
 .ws{border-bottom:1px solid var(--line-soft)}
+/* A repository's last group already has the block's own bottom rule under it. */
+.repo.titled>.ws:last-child{border-bottom:0}
 .ws-head{
   display:flex;align-items:center;justify-content:space-between;
   padding:13px 15px 7px;position:sticky;top:0;background:var(--surface);z-index:2;

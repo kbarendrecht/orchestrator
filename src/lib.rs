@@ -23,6 +23,7 @@ pub mod migrate;
 pub mod model;
 pub mod names;
 pub mod patch;
+pub mod peers;
 pub mod post;
 pub mod proc;
 pub mod proposal;
@@ -74,6 +75,9 @@ pub struct StartOptions {
     pub fallback_port: bool,
     /// How the SPA should draw its top bar. Headless leaves this `None`.
     pub chrome: window::Chrome,
+    /// The board's origin, when this daemon is a *secondary* one being shown in
+    /// somebody else's page. See [`config::Config::sibling_origin`].
+    pub sibling_origin: Option<String>,
 }
 
 impl Default for StartOptions {
@@ -82,6 +86,7 @@ impl Default for StartOptions {
             main_checkout: None,
             fallback_port: false,
             chrome: window::Chrome::None,
+            sibling_origin: None,
         }
     }
 }
@@ -257,6 +262,8 @@ pub async fn start(opts: StartOptions) -> Result<Server> {
     let lock = instance::acquire()?;
 
     let mut cfg = Config::load_or_init(opts.main_checkout)?;
+    // From the caller, never the file: see `Config::sibling_origin`.
+    cfg.sibling_origin = opts.sibling_origin;
     check_config(&cfg)?;
     /* **Every open counts as recent, not only the ones picked in the picker.**
        `firstrun` recorded the list from its own switch route alone, so a daemon
@@ -643,6 +650,14 @@ fn router(app: Arc<AppState>) -> Router {
         .route("/api/window/:cmd", post(api::window_cmd))
         .route("/api/reviews/refresh", post(api::refresh_reviews))
         .route("/api/prs/refresh", post(api::refresh_prs))
+        /* Adding and removing a repository. POSTs, so already token-gated and
+           Origin-checked; none of them is an agent route, so none belongs in
+           `is_ask_route`. `pick` is a POST despite reading nothing, because it
+           raises a dialog in front of you — a GET that opens a window is not a
+           read. */
+        .route("/api/checkouts/pick", post(api::pick_checkout))
+        .route("/api/checkouts/add", post(api::add_checkout))
+        .route("/api/checkouts/remove", post(api::remove_checkout))
         // The agent's own version: check it now, and install it in the drawer.
         .route("/api/agent/upgrade/dismiss", post(api::dismiss_agent_upgrade))
         .route("/api/agent/upgrade", post(api::upgrade_agent))
@@ -1498,12 +1513,29 @@ const REVIEW_PREVIEW: &str = include_str!("../web/review-preview.html");
 /// The token is embedded in the served page rather than fetched, so it never
 /// exists as a value any other origin could ask for (§12).
 async fn index(State(app): State<Arc<AppState>>) -> Response {
+    /* Every repository this window shows, if the shell attached them
+       ([`crate::peers`]), this one first. Substituted like the token rather than
+       fetched, for the same reason: a repository's token is a credential, and a
+       page handed one at load never exposes a route another origin could ask for
+       it on.
+
+       `[]` is the single-repository shape — no shell attached a list, so the SPA
+       builds the one local entry itself and behaves exactly as it did before any
+       of this existed. Which is also the honest answer if serialising fails. */
+    let checkouts = {
+        let checkouts = app.checkouts.read().await;
+        serde_json::to_string(&*checkouts).unwrap_or_else(|e| {
+            tracing::warn!("could not serialise the repository list, serving this one alone: {e}");
+            "[]".into()
+        })
+    };
     (
         [(header::CACHE_CONTROL, "no-store, must-revalidate")],
         Html(
             INDEX
                 .replace("__ORCH_TOKEN__", &app.token)
                 .replace("__ORCH_CHROME__", app.chrome.as_str())
+                .replace("__ORCH_CHECKOUTS__", &checkouts)
                 // Which key the app's own chords wear: ⌘ on a Mac, Ctrl
                 // elsewhere. Told rather than sniffed — the daemon knows at
                 // compile time, and `navigator.platform` is both deprecated and
