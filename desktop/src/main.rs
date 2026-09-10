@@ -28,7 +28,7 @@ use launcher::{install_desktop_entry, launcher_target, refresh_launcher_entry};
 use login_path::adopt_login_path;
 
 /// The daemon, once started. Held so the exit hook can tear it down.
-static SERVER: OnceLock<Mutex<Option<orchd::Server>>> = OnceLock::new();
+static SERVER: OnceLock<Mutex<Option<orchd::host::Serving>>> = OnceLock::new();
 
 /// Whether the window is showing the board yet.
 ///
@@ -493,29 +493,54 @@ fn build_window(
     Ok(())
 }
 
-/// Start the daemon off the main thread, navigate the window to it, and stop the
+/// Start the host off the main thread, navigate the window to it, and stop the
 /// first-run server if one was up.
 ///
-/// A `std::thread` rather than `rt.spawn` because `orchd::start` is not required to
-/// be `Send` and `block_on` does not ask it to be — the same reason the resize nudge
-/// is a thread. An error has no terminal to reach, so it lands in the OS dialog
-/// `fail` draws, back on the main thread. Reached from a configured boot and from
-/// the first-run commit, so it must not assume the window is on any particular page.
+/// **The app is the host, and every checkout is a child process.** It used to run
+/// `orchd::start` in this process and point the webview at the daemon; now it
+/// serves the page itself and spawns one `orchd` per checkout, which is what makes
+/// several checkouts possible at all — `multirepo.md` has the argument and the
+/// measured cost (2.7 ms and 9.3 MB for the extra process).
+///
+/// Two things follow from that and are easy to miss. The **instance lock is the
+/// child's**, taken inside its own `orchd::start`, so a second app on the same
+/// checkout now surfaces as a child that never reported ready rather than as this
+/// process refusing to start. And the checkout comes from the child's own config:
+/// this function passes a path when it has one (a first-run commit or a switch) and
+/// otherwise lets the daemon read `main_checkout` for itself, which is why the row
+/// the host records is read back from the child rather than assumed.
+///
+/// A `std::thread` rather than `rt.spawn` because this blocks on a child's ready
+/// line — the same reason the resize nudge is a thread. An error has no terminal to
+/// reach, so it lands in the OS dialog `fail` draws, back on the main thread.
+/// Reached from a configured boot and from the first-run commit, so it must not
+/// assume the window is on any particular page.
 fn boot_daemon(app_handle: AppHandle, rt: tokio::runtime::Handle, main: Option<std::path::PathBuf>) {
     std::thread::spawn(move || {
         let mut phases = orchd::timing::Phases::start();
-        let server = match rt.block_on(orchd::start(orchd::StartOptions {
-            main_checkout: main,
-            // No terminal to complain in, and a stale daemon on the configured port
-            // should not be the difference between an app that opens and one that
-            // does not.
-            fallback_port: true,
-            chrome: CHROME,
-            // The daemon is in this process and serves its own page for now, so
-            // there is no other origin to accept. It gains one when the app hosts
-            // the page and spawns the daemon as a child.
-            host_origin: None,
-        })) {
+        // The checkout to open. `main` when the caller picked one, else whatever
+        // the config names — read here rather than in the child, because the host
+        // needs it to key the row it is about to record.
+        let checkout = match main.or_else(|| {
+            orchd::config::Config::existing().map(|cfg| cfg.main_checkout)
+        }) {
+            Some(p) => p,
+            None => {
+                let ah = app_handle.clone();
+                let _ = app_handle.run_on_main_thread(move || {
+                    fail(&ah, "no checkout is configured, and none was picked")
+                });
+                return;
+            }
+        };
+        // A port of 0: the page's URL is handed to the webview, so nothing has to
+        // predict it, and a stale process on a configured port cannot be the
+        // difference between an app that opens and one that does not.
+        let serving = match rt.block_on(orchd::host::serve(
+            orchd::host::mint_token(),
+            0,
+            CHROME,
+        )) {
             Ok(s) => s,
             Err(e) => {
                 let ah = app_handle.clone();
@@ -523,18 +548,24 @@ fn boot_daemon(app_handle: AppHandle, rt: tokio::runtime::Handle, main: Option<s
                 return;
             }
         };
-        phases.mark("daemon");
-        tracing::info!("serving {} on port {}", server.app.cfg.main_checkout.display(), server.port);
-        let url = server.url();
+        phases.mark("host");
 
-        // Attach the window control before the SPA can call it, and keep the server
-        // alive for the life of the process.
+        // Attach the window before the page can call it: the process that serves
+        // the page is the one that can hold a Tauri handle, and a child daemon
+        // never can.
         let control: Arc<dyn WindowControl> = Arc::new(TauriWindow { app: app_handle.clone() });
-        // The host, not the daemon: the process that serves the page is the one
-        // that can hold a Tauri handle, and a checkout's daemon is about to stop
-        // being that process.
-        server.host.attach_window(control);
-        *SERVER.get_or_init(|| Mutex::new(None)).lock().unwrap() = Some(server);
+        serving.host.attach_window(control);
+
+        if let Err(e) = serving.host.open_checkout(&checkout) {
+            let ah = app_handle.clone();
+            let message = format!("{e:#}");
+            let _ = app_handle.run_on_main_thread(move || fail(&ah, &message));
+            return;
+        }
+        phases.mark("daemon");
+        tracing::info!("serving {} on port {}", checkout.display(), serving.host.port);
+        let url = serving.url();
+        *SERVER.get_or_init(|| Mutex::new(None)).lock().unwrap() = Some(serving);
 
         /* Grow from the splash to the board, then hand the window over. GTK calls
            only on the main thread.
@@ -760,7 +791,7 @@ fn stop_bootstrap() {
 fn daemon_url() -> Option<String> {
     SERVER
         .get()
-        .and_then(|s| s.lock().unwrap().as_ref().map(|srv| srv.url()))
+        .and_then(|s| s.lock().unwrap().as_ref().map(|serving| serving.url()))
 }
 
 /// Ask for a restart: verify there is a binary to come back as, then close the
@@ -1153,16 +1184,22 @@ fn await_handoff() {
     tracing::info!(pid, "the process being replaced is gone");
 }
 
+/// Stop every checkout's daemon before the process goes.
+///
+/// **Each child takes its own sessions down**, in its own `Server::shutdown`, and
+/// that is the only thing that can: `portable-pty` calls `setsid`, so every agent
+/// is its own process group and no sweep from here would find them. So this asks,
+/// concurrently and on one deadline, and a child that will not go is reported
+/// rather than pretended about.
+///
+/// No runtime needed any more, which is the quiet simplification of the child
+/// model: stopping a process is a signal and a wait, not an async teardown of state
+/// this process holds.
 fn shutdown() {
-    let Some(server) = SERVER.get().and_then(|s| s.lock().unwrap().take()) else {
+    let Some(serving) = SERVER.get().and_then(|s| s.lock().unwrap().take()) else {
         return;
     };
-    // A fresh runtime: the exit hook runs on the main thread and must not
-    // depend on the state of the one the daemon has been living on.
-    match tokio::runtime::Builder::new_current_thread().enable_all().build() {
-        Ok(rt) => rt.block_on(server.shutdown()),
-        Err(e) => tracing::error!("could not tear down cleanly: {e}"),
-    }
+    serving.host.stop_all();
 }
 
 /// Nothing to show and no page to show it on, so the OS dialog is the only

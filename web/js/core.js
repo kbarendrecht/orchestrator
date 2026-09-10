@@ -87,11 +87,26 @@ export const CHECKOUTS = window.__ORCH__.checkouts ?? [];
  *
  *  @type {Checkout}
  */
-export const LOCAL = {
-  base: '',
-  wsBase: `ws://${location.host}`,
-  token: CHECKOUTS[0]?.token ?? window.__ORCH__.token,
-};
+export const LOCAL = (() => {
+  const c = CHECKOUTS[0];
+  // Same port as the page: keep the fetches relative, so a request cannot be sent
+  // to a spelling of this origin the guard would refuse — `api::guard` matches the
+  // `Host` header against `127.0.0.1:<port>` or `localhost:<port>` exactly, and
+  // those two are not interchangeable.
+  //
+  // A different port is the host-and-child shape: the page comes from the host and
+  // every call has to be aimed at the daemon that manages the checkout. The Host
+  // header then names the child's port, which is what the child's guard wants, and
+  // the Origin is the host's — the one extra string the child accepts, handed to it
+  // on its argv.
+  const sameOrigin = !c || String(c.port) === location.port;
+  const authority = sameOrigin ? location.host : `127.0.0.1:${c.port}`;
+  return {
+    base: sameOrigin ? '' : `http://${authority}`,
+    wsBase: `ws://${authority}`,
+    token: c?.token ?? window.__ORCH__.token,
+  };
+})();
 
 /* Kept as their own exports because five modules read them, and a token is what
    most of them want rather than a checkout. They are [`LOCAL`]'s, which is the

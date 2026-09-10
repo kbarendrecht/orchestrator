@@ -124,6 +124,30 @@ mean *this* repo; if you do, name it.
   One test-only wrinkle worth knowing: those tests write a stub and exec it, and
   `ETXTBSY` there is a **fork race** (a sibling thread's `fork` copies the write fd
   until its own `exec`), not a defect — `launch_stub` retries it and says so.
+- **The app is the host, and every checkout is a child `orchd`.** `boot_daemon` in
+  `desktop/src/main.rs` runs `host::serve` on an ephemeral port, calls
+  `Host::open_checkout` for the configured checkout, points the webview at the
+  host's URL and calls `host.stop_all()` at quit. `cargo run -p orchestrator-desktop`
+  therefore starts **two** processes, and `cargo run -p orchd` still starts one that
+  serves its own page.
+  Four consequences, each of which has already bitten or nearly did.
+  **The page's calls do not go to the page's own port.** `core.LOCAL` reads the
+  substituted checkout list and aims `base`/`wsBase` at *that checkout's* daemon —
+  relative when they share a port (a solo `orchd`), absolute when they do not (the
+  app). A relative fetch under the app would reach the host, which answers `{}` to
+  an unknown route, so the failure would look like an empty daemon rather than a
+  misrouted call.
+  **A hosted child does not serve the page.** `orchd::start` mounts the host router
+  only when `host_origin` is absent, which is exactly the question "did somebody
+  host me". Its `/` then falls through to the catch-all and answers `200 {}` — so a
+  test for this must assert on the *body*, not the status.
+  **The instance lock is the child's**, taken inside its own `orchd::start`. A
+  second app on one checkout now surfaces as a child that never reported ready,
+  which is a worse message than the old refusal and is why the lock re-key is still
+  on the list.
+  **`--announce` needs a live stdin pipe.** Run that flag by hand from a shell and
+  the daemon exits at once, because stdin is `/dev/null` and EOF is the second kill
+  switch. `tests/host_and_child.rs` is the way to drive this pair; a terminal is not.
 - **The page is served by `host.rs`, not by the daemon.** `src/host.rs` owns
   `GET /`, every asset route, the window commands and `/api/host/checkouts`; the
   daemon keeps `/api/*`, `/ws/*` and `/hooks/*`. One process still serves both and

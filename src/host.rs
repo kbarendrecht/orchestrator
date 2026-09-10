@@ -293,6 +293,24 @@ pub struct Serving {
     task: tokio::task::JoinHandle<()>,
 }
 
+impl Serving {
+    /// The URL that authenticates: the token is a query parameter exactly once, on
+    /// the initial navigation, so it never has to be typed and never appears in a
+    /// link anybody else could follow.
+    pub fn url(&self) -> String {
+        format!("http://127.0.0.1:{}/?token={}", self.host.port, self.host.token)
+    }
+}
+
+/// A fresh page token.
+///
+/// Here rather than at the call site so both hosts mint it the same way, and
+/// because a host that let its caller choose could be handed a value from a config
+/// file — the one place a token must never come from.
+pub fn mint_token() -> String {
+    uuid::Uuid::new_v4().simple().to_string()
+}
+
 impl Drop for Serving {
     fn drop(&mut self) {
         self.task.abort();

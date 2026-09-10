@@ -136,6 +136,18 @@ async fn a_host_serves_the_page_for_a_checkout_its_child_manages() {
     assert_eq!(code, 200);
     assert!(listed.contains(&row.token), "the host's own list disagreed with the page");
 
+    // 1b — the child does **not** serve the page. Its own host would be a second
+    // page server nobody visits, and the app's is the one with the window.
+    // Asserted on the *body*, not the status: an unknown route on a daemon answers
+    // `200 {}` — the trap `CLAUDE.md` names, since that reads exactly like an empty
+    // daemon — so a status check here would pass whether the page moved or not.
+    let (_, body) = get(&format!("http://127.0.0.1:{}/", row.port), None);
+    assert!(
+        !body.contains("__ORCH__") && !body.contains(&row.token),
+        "a hosted child is still serving a page of its own: {}",
+        body.chars().take(120).collect::<String>()
+    );
+
     // 2 — the child accepts the host's origin and refuses a foreign one.
     let child_api = format!("http://127.0.0.1:{}/api/prs/refresh", row.port);
     assert_eq!(post(&child_api, &base, &row.token), 202, "the child refused its host's origin");
@@ -175,6 +187,18 @@ async fn a_host_serves_the_page_for_a_checkout_its_child_manages() {
     assert!(
         refusal.contains("no native window attached"),
         "the refusal stopped naming what is missing: {refusal}"
+    );
+
+    // 3b — the path the page will actually take: a relative call would reach the
+    // host, so `core.LOCAL` aims at the child's port with the host's origin. That
+    // pairing is the whole wiring, and it is the one thing a green type-check
+    // cannot see.
+    let as_the_page_would = post(&child_api, &base, &row.token);
+    assert_eq!(as_the_page_would, 202, "the page's own call shape was refused");
+    assert_eq!(
+        post(&format!("{base}/api/prs/refresh"), &base, &host.token),
+        404,
+        "the host answered a daemon route, so a relative call would silently work"
     );
 
     // 4 — a stop is not a crash.

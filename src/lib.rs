@@ -266,6 +266,7 @@ pub async fn start(opts: StartOptions) -> Result<Server> {
     let mut cfg = Config::load_or_init(opts.main_checkout)?;
     // From the argv of whoever spawned us, never from the file this just read.
     cfg.host_origin = opts.host_origin.clone();
+    let cfg_host_origin = cfg.host_origin.clone();
     check_config(&cfg)?;
     // Read before `cfg` is moved into the state, and used by the phase line at the
     // end of this function.
@@ -518,7 +519,17 @@ pub async fn start(opts: StartOptions) -> Result<Server> {
         token: app.token.clone(),
         live: true,
     });
-    let router = router(app.clone(), host.clone());
+    // **A daemon a host spawned does not serve the page.** Its own host would be a
+    // second page server nobody visits, on a port whose only caller is the parent,
+    // and two owners for one page is the conflation this split exists to remove.
+    // `host_origin` is exactly the question "did somebody host me": it arrives on
+    // the argv of the process that spawned this one and cannot come from a file.
+    let hosted_elsewhere = cfg_host_origin.is_some();
+    let router = if hosted_elsewhere {
+        daemon_router(app.clone())
+    } else {
+        router(app.clone(), host.clone())
+    };
     let serve = tokio::spawn(async move {
         // **`TCP_NODELAY`, because a keystroke is one small frame.** axum defaults
         // it to `None` (`serve.rs`: it only calls `set_nodelay` when told to), so
