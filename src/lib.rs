@@ -18,6 +18,7 @@ pub mod headroom;
 pub mod health;
 pub mod hooks;
 pub mod instance;
+pub mod logging;
 pub mod machine;
 pub mod migrate;
 pub mod model;

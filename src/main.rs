@@ -9,12 +9,12 @@ use std::path::PathBuf;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "orchd=info".into()),
-        )
-        .init();
+    // The same subscriber the app installs, so a daemon in a terminal and a daemon
+    // the app spawned leave the same lines in the same place. It used to be a
+    // stdout-only `fmt()` here, which is fine at a prompt and invisible to a child
+    // process whose stdout the parent reads one line of.
+    orchd::logging::init("orchd=info");
+    orchd::logging::install_panic_hook();
 
     let main_checkout = std::env::args()
         .skip_while(|a| a != "--main")

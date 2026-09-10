@@ -927,10 +927,16 @@ mean *this* repo; if you do, name it.
   is why deferring the sweep costs no safety.
 - **A launcher-started app has no stdout, so it used to leave no log at all.** That
   is why a colleague's slow start could not be looked at: `tracing` went to a
-  terminal nobody had. `init_logging` in `desktop/src/main.rs` now writes the same
-  lines to `<config_dir>/orchd.log`, one generation kept as `orchd.log.1`, and says
-  the path in its first line. It follows `ORCHD_CONFIG_DIR`, so a fixture daemon
-  does not write over the real one.
+  terminal nobody had. `logging::init` writes the same lines to
+  `<config_dir>/orchd.log`, one generation kept as `orchd.log.1`, and says the path
+  in its first line. It follows `ORCHD_CONFIG_DIR`, so a fixture daemon does not
+  write over the real one.
+  **It lives in `orchd`, not in the desktop shell where it was written**, and both
+  hosts call it — so `cargo run -p orchd` leaves a file too, which it did not. The
+  reason is the multi-checkout work: a checkout's daemon is a child process whose
+  stdout the parent reads one line of and then drains, so a stdout-only subscriber
+  in a child logs nowhere anybody looks. `install_panic_hook` moved with it, for the
+  same reason and because it writes through that subscriber.
 - **The page's own boot timing is not visible from Rust.** The daemon can time up
   to serving the page and sending the first snapshot; the vendored script parse, the
   first render, and the centre pane's terminal attaching and painting only exist in
