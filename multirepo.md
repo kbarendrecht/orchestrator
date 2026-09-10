@@ -623,6 +623,12 @@ The refactor. No second checkout yet; the app runs the host and exactly one chil
    the root copy is the right answer there rather than a re-fire. `migrate.rs`'s table
    keeps in-file rules only, which is what its docblock is about.
 7. **The instance lock keys on the checkout**, so it holds under any config dir.
+   **Deferred within this stage, deliberately, to after the host exists.** The
+   hazard it closes needs two hosts on one checkout — a fixture daemon beside the
+   real app — and re-keying it means choosing a permanent file location to guard
+   something nothing can reach yet, while the host is about to refuse duplicates at
+   `add` anyway. Do it once the host can be driven, so the test is a real refusal
+   rather than a constructed one.
    Two details the plan has to name, because both are load-bearing.
    **Where the file lives.** The lock is taken *on* a file, and removing or moving it
    is how a second daemon locks a fresh inode while the first holds the old one. So
