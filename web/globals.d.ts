@@ -38,6 +38,15 @@ interface Window {
      * a daemon must stay unaware that it has siblings.
      */
     checkouts: { id: string; name: string; path: string; port: number; token: string; colour: string }[];
+    /**
+     * `"1"` when the window was created see-through (`window_transparent`).
+     *
+     * A string because it is substituted into the page as one. Needed at boot
+     * rather than looked up: xterm's `allowTransparency` is fixed at
+     * construction, so a page that learned this later would have terminals that
+     * cannot show anything behind them.
+     */
+    transparent: string;
   };
   /** Prism is driven manually; this switches its auto-highlight off. */
   Prism: any;

@@ -79,7 +79,12 @@
 *{box-sizing:border-box;margin:0;padding:0}
 html,body{height:100%}
 body{
-  background:var(--bg);
+  /* **`--ground`, not `--bg`.** The window's own surface is the one thing that
+     carries the theme's alpha when `window_transparent` is on; `--bg` stays solid
+     because eighteen other rules use it for input grounds and hover fills, and a
+     text field you read the desktop through is not a feature. Falls back to
+     `--bg`, which is what it is on every opaque window. */
+  background:var(--ground,var(--bg));
   color:var(--text);font-family:var(--sans);font-size:calc(13px * var(--fs));line-height:1.5;
   -webkit-font-smoothing:antialiased;overflow:hidden;
 }
@@ -110,7 +115,7 @@ a{cursor:pointer}
 }
 .top{
   display:flex;align-items:center;gap:12px;padding:0 16px;flex-wrap:nowrap;
-  border-bottom:1px solid var(--line);background:var(--bg);min-width:0;
+  border-bottom:1px solid var(--line);background:var(--ground,var(--bg));min-width:0;
 }
 .top-l{border-right:1px solid var(--line);background:var(--surface)}
 .top-r{border-left:1px solid var(--line);background:var(--surface)}
@@ -441,8 +446,23 @@ button.ctx-btn:hover{color:var(--text)}
 }
 
 /* ---------- center ---------- */
-.center{display:flex;flex-direction:column;min-width:0;background:var(--bg);position:relative}
+/* **`--ground`, and this is the one that matters most.** The centre pane is the
+   largest surface in the window, so an opaque fill here made a transparent window
+   see-through everywhere except the part you look at. The rail, the changed-files
+   pane and the drawer already ride on `--surface`, which carries the alpha too;
+   `.settings` and `.overlay` deliberately do not — see their own rules. */
+.center{display:flex;flex-direction:column;min-width:0;background:var(--ground,var(--bg));position:relative}
 .termwrap{flex:1;min-height:0;position:relative;padding:8px 6px 8px 12px}
+/* **xterm's own viewport is opaque, and it has to stop being.** `xterm.css` sets
+   `.xterm .xterm-viewport { background-color: #000 }`, which the DOM renderer
+   leaves in place even with `allowTransparency` on — measured: the screen came
+   back `rgba(0,0,0,0)` and the viewport `rgb(0,0,0)`. So a see-through window had
+   a black rectangle where the terminal is.
+   Transparent rather than a colour of ours, so what shows through is `.center`'s
+   `--ground` — one surface deciding the pane's ground instead of two agreeing
+   about it. On an opaque window that is the theme's solid background, exactly as
+   before. The selector has to out-specify xterm's `.xterm .xterm-viewport`. */
+.xterm .xterm-viewport{background-color:transparent}
 .termhost{position:absolute;inset:8px 6px 8px 12px;transition:opacity .35s ease}
 .termhost[hidden]{display:none}
 /* A pane whose pty is not yet carrying live output: starting up before the first
@@ -788,6 +808,11 @@ body.row-resizing{cursor:row-resize;user-select:none}
 /* The centre column, the way the diff overlay takes it: settings is a place you
    go, not a dialog floating over the whole window, and covering the context bar
    keeps its close button from sitting next to the session's own. */
+/* **Opaque on purpose, even with a transparent window.** `--bg` rather than
+   `--ground`: this covers the board so a form can be read, and a form you read the
+   desktop through is the readability problem transparency causes rather than the
+   effect it is for. The line is the same for `.overlay`: the board is
+   see-through, the things that cover it to be read are not. */
 .settings{
   position:fixed;top:0;bottom:0;left:var(--rail);right:var(--files);z-index:20;
   display:flex;flex-direction:column;background:var(--bg);
@@ -886,7 +911,34 @@ body.row-resizing{cursor:row-resize;user-select:none}
 /* Which panes a setting reaches, where that is not obvious from its name. Dimmer
    and smaller than the key it qualifies, so the row still reads as one label. */
 .settings-hint{color:var(--faint-solid);font-size:calc(9.5px * var(--fs))}
-.settings-step{margin-left:auto;display:flex;align-items:center;gap:2px}
+/* **A grid, because two engines disagreed about the flexbox.** These rows want
+   three columns — label, control, reset — with the last two the same width on
+   every row, and the first version said so with `margin-left:auto` and
+   `flex:0 0 152px`. Chrome laid that out exactly as intended and measured
+   identical on all nine rows; WKWebView did not, and the reported symptom was the
+   Reset words ending at five different x positions.
+   Rather than find out which intrinsic-size rule the two read differently, this
+   states the tracks and lets neither of them choose: `1fr 152px 46px` is not a
+   negotiation. `min-width:0` on the middle track's box because a `select` and an
+   `input` both carry an intrinsic minimum that would otherwise push a track wider
+   than it was given — which is the family of rule the flex version tripped on. */
+.settings-row.arow{
+  display:grid;grid-template-columns:1fr 152px 46px;
+  align-items:center;column-gap:8px;
+}
+/* The step wrapper stops being a layout in its own right: the grid places its two
+   children, so it is `display:contents` and adds nothing. Kept in the markup
+   because the two other sections' rows still use it as a flex group. */
+.settings-row.arow>.settings-step{display:contents}
+/* Right-aligned inside its track, whatever it holds. */
+.settings-ctl{
+  display:flex;align-items:center;justify-content:flex-end;gap:2px;min-width:0;
+}
+/* The last track. Right-aligned so the word sits against the card's edge rather
+   than floating in its column. */
+.settings-reset{text-align:right;min-width:0}
+/* The two rows outside the appearance grid keep the flex group they had. */
+.settings-step{margin-left:auto;display:flex;align-items:center;gap:8px}
 .stepbtn{
   width:24px;height:24px;border-radius:2px;border:1px solid var(--line);
   font-family:var(--mono);font-size:calc(11.5px * var(--fs));line-height:1;color:var(--dim);
@@ -902,9 +954,10 @@ body.row-resizing{cursor:row-resize;user-select:none}
    read as the *name* of the setting below it: "Reset to 100%" sat directly above
    "Wheel speed" and looked like its label. */
 .settings-reset{
-  margin-left:6px;
   font-family:var(--mono);font-size:calc(10.5px * var(--fs));color:var(--faint-solid);
 }
+/* An empty slot is not something to hover or tab to. */
+.settings-reset:empty{pointer-events:none}
 .settings-reset:hover{color:var(--text)}
 /* Quieter than the controls beside it: it is information, not something to press. */
 .settings-ver{
@@ -918,9 +971,13 @@ body.row-resizing{cursor:row-resize;user-select:none}
 .settings-field{display:flex;align-items:center;gap:12px;margin-top:18px}
 .settings-in{
   margin-left:auto;flex:0 1 62%;min-width:0;padding:4px 8px;
+  /* Inside the appearance column the box owns the width; `62%` of the row is for
+     the wide fields further down (Upstream ref, Output language), which have no
+     control column to line up with. */
   background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:2px;
   font-family:var(--mono);font-size:calc(11.5px * var(--fs));
 }
+.settings-ctl > .settings-in{margin-left:0;flex:1}
 .settings-in:focus{outline:none;border-color:var(--focus)}
 /* A checkbox in a settings row: pushed right like `.settings-in`, but never
    stretched to its 62% width. */
@@ -929,7 +986,10 @@ body.row-resizing{cursor:row-resize;user-select:none}
    on a dark card WebKitGTK renders black-on-black. The option list is drawn by
    the OS and needs telling separately. */
 select.settings-in{
-  flex:0 0 auto;color:var(--text);background-color:var(--bg);
+  /* `flex:1` inside `.settings-ctl`, not `0 0 auto`: sized to its own longest
+     option, the Theme and Font dropdowns came out two different widths one under
+     the other. The box decides now, so they agree. */
+  flex:1;min-width:0;color:var(--text);background-color:var(--bg);
   /* The value shown when the list is closed is painted by the platform unless
      the native appearance is gone entirely, which is why setting `color` alone
      left it black on black under WebKitGTK. */
@@ -940,6 +1000,21 @@ select.settings-in{
 }
 /* The open list is an OS menu, so it needs telling separately. */
 select.settings-in option{color:var(--text);background-color:var(--bg)}
+
+/* A colour well beside its hex field. Two ways into one value on purpose: the
+   swatch is how you *find* a colour and the hex is how you paste one you already
+   have — a terminal theme you like is a list of hex codes, not something you
+   rediscover by dragging a picker. */
+.settings-col{
+  flex:0 0 auto;width:30px;height:22px;padding:0;border:1px solid var(--line);
+  border-radius:2px;background:var(--bg);cursor:pointer;
+}
+.settings-col::-webkit-color-swatch-wrapper{padding:2px}
+.settings-col::-webkit-color-swatch{border:0;border-radius:1px}
+/* Fills what the swatch leaves rather than claiming a width of its own: `#101010`
+   is seven characters and the box is already the right size, so a fixed `8ch` here
+   only moved the pair off the column's edge. */
+.settings-in-hex{flex:1;min-width:0;margin-left:6px;text-align:center}
 /* What a field is for, under the field rather than in a tooltip nobody hovers. */
 .settings-help{
   margin:4px 0 0;padding-left:2px;max-width:62ch;
@@ -1122,6 +1197,7 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
    above the overlay's Close: two buttons, a few pixels apart, one of which
    throws away a conversation. Held below the column splitters (60), which stay
    draggable with a file open. */
+/* Opaque, for the reason `.settings` gives: a diff is for reading. */
 .overlay{
   position:fixed;top:0;bottom:0;left:var(--rail);right:var(--files);
   background:var(--bg);z-index:20;

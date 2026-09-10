@@ -2,18 +2,15 @@
 // over a websocket. The DOM renderer is deliberate under WebKitGTK, and only
 // there — see the renderer comment below, and CLAUDE.md.
 
-import { $, CHROME, IS_MAC, activeRepo, copyText, el, mark, note, reportBoot, selected, terms, toast, typingElsewhere, uiScale, wheelScale } from './core.js';
+import { $, CHROME, IS_MAC, TRANSPARENT, activeRepo, copyText, el, fontStack, mark, note, onThemeChange, reportBoot, selected, termColours, terms, toast, typingElsewhere, uiScale, wheelScale } from './core.js';
 
 
-const THEME = {
-  background: '#101010', foreground: '#D2D2D2', cursor: '#D2D2D2',
-  black: '#101010', red: '#C9615A', green: '#5FA97C', yellow: '#E0A244',
-  blue: '#4C9AAF', magenta: '#9A7AA0', cyan: '#3E9AAF', white: '#D2D2D2',
-  brightBlack: '#5B5B5B', brightRed: '#D6756E', brightGreen: '#74BB90',
-  brightYellow: '#EDB55C', brightBlue: '#63AEC2', brightMagenta: '#B08FB6',
-  brightCyan: '#57AEC2', brightWhite: '#F0F0F0',
-  selectionBackground: '#2C2C2C',
-};
+/* **Derived, not written out.** This used to be a literal palette that repeated
+   `--bg` and `--text` from `app.css` in a second place — two copies of one set of
+   colours, which is how the pane and the board come to disagree. `termColours`
+   mixes it from the three the theme actually has, so a colour set in Settings
+   reaches the terminal for free and there is nothing here to keep in step. */
+const THEME = () => termColours();
 
 /** A client that watches without reshaping what it watches.
  *
@@ -44,8 +41,15 @@ function openTerm(target, parent) {
   const agentPane = target.startsWith('session:');
 
   const term = new Terminal({
-    theme: THEME,
-    fontFamily: "'IBM Plex Mono', ui-monospace, monospace",
+    theme: THEME(),
+    /* Fixed at construction, which is why the daemon tells the page at boot
+       rather than the page asking later: a terminal built without this paints an
+       opaque ground however much alpha its theme carries. Harmless when the
+       window is opaque — there is simply nothing behind it to show. */
+    allowTransparency: TRANSPARENT,
+    // The theme's font, not a literal: the terminal is the pane you read most, so
+    // a font choice that skipped it would be a choice about labels.
+    fontFamily: fontStack(),
     fontSize: termFontSize(),
     lineHeight: 1.25,
     cursorBlink: true,
@@ -189,7 +193,21 @@ function openTerm(target, parent) {
    * Not the *scrolling* complaint, which was the other suspect this was held
    * against: that turned out to be xterm damping sub-50px wheel deltas, measured
    * separately, and no renderer would have changed it. */
-  const webglWanted = CHROME === 'none' || (IS_MAC && agentPane);
+  /* **A see-through window costs the canvas, and that is a real trade.** xterm's
+     WebGL renderer paints an opaque ground: `allowTransparency` reaches the DOM
+     renderer and not that one, so on macOS — where the rule above keeps WebGL for
+     the agent pane — the largest surface in a transparent window stayed solid
+     while everything around it let light through. Which is the whole effect,
+     missing from the pane you look at.
+     So asking for transparency gives up what the macOS rule was buying: the
+     typing-lag mitigation a Retina panel needs while Claude Code repaints its
+     whole TUI per keystroke. That is the cost of the setting, and it is the
+     honest way round — a transparency setting that visibly does not apply to the
+     terminal is worse than one that says what it costs.
+     A **browser tab keeps the canvas** whatever this says: there is nothing behind
+     a tab to show through, so giving up WebGL there would be a cost with no
+     effect at all. */
+  const webglWanted = CHROME === 'none' || (IS_MAC && agentPane && !TRANSPARENT);
   // Named for the log line below: a bug report could not say which renderer it was
   // on, and on a packaged app there is no console to ask.
   const engine = CHROME === 'none' ? 'browser' : IS_MAC ? 'wkwebview' : 'webkitgtk';
@@ -210,7 +228,7 @@ function openTerm(target, parent) {
       note(`${target}: webgl refused (${e}), using the dom renderer`);
     }
   }
-  note(`${target} renderer=${renderer} engine=${engine}`);
+  note(`${target} renderer=${renderer} engine=${engine}${TRANSPARENT ? ' transparent' : ''}`);
 
   /* **A slow trackpad drag scrolls an agent pane in jerks, and xterm's own wheel
    * maths is why.** With mouse reporting on — Claude Code sets `?1000h`,
@@ -425,7 +443,8 @@ function setBadge(entry, state) {
      it is. Hidden through the theme rather than a CSS rule, because the DOM and
      the WebGL renderer draw the cursor in different places and the option is the
      one lever that reaches both. */
-  entry.term.options.theme = state ? { ...THEME, cursor: THEME.background } : THEME;
+  const base = THEME();
+  entry.term.options.theme = state ? { ...base, cursor: base.background } : base;
   if (!state) { b.hidden = true; return; }
   b.querySelector('.term-badge-t').textContent = BADGE[state] || BADGE.connecting;
   b.hidden = false;
@@ -642,6 +661,28 @@ function applyScale() {
   refit();
 }
 
+/** Repaint every open terminal in the current theme.
+ *
+ *  Announced from `core.setTheme` rather than reached for, the same shape
+ *  `applyScale` has: the board owns the tokens, xterm owns its own canvas, and a
+ *  setting that wrote into xterm directly is what made zoom and the terminals
+ *  depend on each other.
+ *
+ *  **Refits afterwards**, because a font change moves the cell metrics — a new
+ *  family at the same px is a different character width, so the grid xterm
+ *  computed for the old one is wrong and the pty is told a column count that does
+ *  not match what is drawn. A colour-only change does not need it, and paying for
+ *  it anyway is cheaper than deciding which kind of change this was. */
+function applyTheme() {
+  const colours = termColours();
+  const font = fontStack();
+  for (const entry of terms.values()) {
+    entry.term.options.theme = colours;
+    if (entry.term.options.fontFamily !== font) entry.term.options.fontFamily = font;
+  }
+  refit();
+}
+
 /** What a pane is showing, as text somebody could read: the selection if there is
  *  one, else the last `lines` non-empty rows.
  *
@@ -681,4 +722,4 @@ function hasSelection(target) {
   return !!entry && !!entry.term.getSelection().trim();
 }
 
-export { showTerm as show, closeTerm as close, refit, applyScale, readTerm, hasSelection };
+export { showTerm as show, closeTerm as close, refit, applyScale, applyTheme, readTerm, hasSelection };

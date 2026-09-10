@@ -485,6 +485,8 @@ fn build_window(
     center: bool,
 ) -> Result<()> {
     let mut phases = orchd::timing::Phases::start();
+    let transparent = orchd::config::Config::existing()
+        .is_some_and(|cfg| cfg.window_transparent);
     let mut builder = WebviewWindowBuilder::new(app_handle, "main", url)
         .title("Orchestrator")
         /* **The ground is the app's, not the toolkit's white.** A webview paints
@@ -493,8 +495,19 @@ fn build_window(
            navigate to the daemon. Both showed as the page in the top-left corner
            with white filling the rest of the window, because the surface is already
            board-sized while the document is not. `background_color` on this builder
-           sets the window *and* the webview, so there is no white to flash. */
-        .background_color(tauri::window::Color(0x10, 0x10, 0x10, 0xFF))
+           sets the window *and* the webview, so there is no white to flash.
+
+           **Alpha 0 when the window is see-through, which gives that guard up.**
+           There is no third option: a ground opaque enough to hide the flash is
+           opaque enough to hide the desktop. So the flash comes back for anybody
+           who asks for transparency, and it is one frame of nothing rather than one
+           frame of white — the page paints its own `rgba` ground as soon as it
+           runs. That trade is why this is a setting and not the default. */
+        .background_color(if transparent {
+            tauri::window::Color(0, 0, 0, 0)
+        } else {
+            tauri::window::Color(0x10, 0x10, 0x10, 0xFF)
+        })
         .inner_size(size.0, size.1)
         .min_inner_size(min.0, min.1);
     /* **Where it was, or centred — never left to the window manager.** Only the
@@ -511,6 +524,17 @@ fn build_window(
     let restore_to = rec.pos().filter(|_| can_place_windows());
     if restore_to.is_none() && center && can_place_windows() {
         builder = builder.center();
+    }
+
+    /* **Read from the config, because the window predates the daemon.** This runs
+       for the splash, before `orchd::start` has parsed anything, so there is no
+       `AppState` to ask — and it cannot be a theme value in `localStorage` either,
+       since transparency is fixed at creation. `Config::existing` is the same
+       reader the first-run decision already uses here; `None` (no config yet, or
+       one that will not parse) means opaque, which is the answer that cannot
+       surprise anybody. */
+    if transparent {
+        builder = builder.transparent(true);
     }
 
     #[cfg(target_os = "macos")]

@@ -3,9 +3,9 @@
 // The SPA is a module now, so what it reaches for is written down. `core.js` holds
 // the primitives every part needs; `queue.js` is the first seam extracted whole.
 import {
-  TOKEN, WS_BASE, checkouts, activeRepo, $, el, toast, call, get, duration,
+  TOKEN, WS_BASE, checkouts, activeRepo, $, el, toast, call, callShell, get, duration,
   snap, receive, keyActivate,
-  setZoom, saveZoom, onScaleChange, ZOOM, zoomScale,
+  setZoom, saveZoom, onScaleChange, ZOOM, zoomScale, onThemeChange, initTheme,
   selected, setSelected, onSelection, prForWorkspace,
   terms, CHROME, stateLabel, dotClass, isWaiting, isArchived,
   pending, byNewest, currentSession,
@@ -49,6 +49,9 @@ import * as Term from './js/term.js';
 
 // The terminals are the scalable thing zoom used to reach into; now they ask.
 onScaleChange(() => Term.applyScale());
+// Same shape, same reason: the board sets the tokens, the terminals repaint
+// themselves. A font change also refits, because it moves the cell metrics.
+onThemeChange(() => Term.applyTheme());
 
 // Collapsing the drawer redraws it and gives the terminal above its height back;
 // xterm only refits on an explicit nudge, not on a sibling's size change.
@@ -394,7 +397,7 @@ function renderUpdate() {
     // A restart takes the window down, so there is nothing to report back into:
     // the answer is the app coming back on the new version.
     try {
-      await call(succeeded ? '/api/window/restart' : '/api/update/upgrade');
+      await callShell(succeeded ? '/api/window/restart' : '/api/update/upgrade');
     } catch (e) {
       toast(e.message, true);
     }
@@ -483,7 +486,7 @@ function renderAgentUpdate() {
     // on the next snapshot, which is why neither points at a result.
     if (succeeded) {
       try {
-        await call('/api/window/restart');
+        await callShell('/api/window/restart');
       } catch (e) {
         toast(e.message, true);
       }
@@ -1036,7 +1039,7 @@ $('ovsave').onclick = Diff.saveEditor;
 // restarts onto it. In a browser tab there is no window to navigate, so the daemon
 // answers "no native window" — say so rather than looking broken.
 $('reposwitch').onclick = () =>
-  call('/api/window/switcher').catch((e) => toast(e.message, true));
+  callShell('/api/window/switcher').catch((e) => toast(e.message, true));
 $('addshell').onclick = newShell;
 $('keyhelpx').onclick = () => { $('keyhelp').hidden = true; };
 // The visible way in, beside the gear. Its tooltip names the chord — the whole
@@ -1596,10 +1599,10 @@ function setupChrome() {
     const a = /** @type {HTMLAnchorElement} */ (t.closest && t.closest('a[target="_blank"]'));
     if (!a || !/^https?:/i.test(a.href || '')) return;
     e.preventDefault();
-    call('/api/open', { url: a.href }).catch((err) => toast(err.message, true));
+    callShell('/api/open', { url: a.href }).catch((err) => toast(err.message, true));
   });
 
-  const wcmd = (cmd) => call(`/api/window/${cmd}`).catch((e) => toast(e.message, true));
+  const wcmd = (cmd) => callShell(`/api/window/${cmd}`).catch((e) => toast(e.message, true));
 
   for (const b of /** @type {NodeListOf<HTMLElement>} */ (
     document.querySelectorAll('.wctl-btn'))) {
@@ -1807,6 +1810,11 @@ function setupColumns() {
 
 import * as Settings from './js/settings.js';
 
+/* **Before anything paints.** The tokens are written onto the root element, so a
+   theme applied after the first render means one frame of the default palette —
+   which on a light theme is a near-black flash. Ahead of `Settings.setup`, since
+   the controls there read the theme to show what is selected. */
+initTheme();
 Settings.setup();
 setupColumns();
 setupChrome();

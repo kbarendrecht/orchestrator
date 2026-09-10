@@ -10,6 +10,21 @@ use std::path::{Component, Path, PathBuf};
 pub struct Config {
     /// The privileged checkout. Worktrees live inside it at [`Config::worktrees_dir`].
     pub main_checkout: PathBuf,
+    /// Let the desktop window be see-through, so the theme's own alpha shows what
+    /// is behind it.
+    ///
+    /// **A config key rather than part of the theme**, which is otherwise all
+    /// `localStorage`: transparency is fixed when the window is *created*, before
+    /// any page has run, so the shell has to know it before there is anywhere to
+    /// ask. That is also why changing it needs a restart — and why the *level* is
+    /// a theme value instead, which the page can change live once the window lets
+    /// light through at all.
+    ///
+    /// Off by default. It compiles in tauri's `macos-private-api` (see
+    /// `desktop/Cargo.toml`) and gives up the opaque `background_color` that stops
+    /// a white flash on load, so it is not something to have without asking.
+    #[serde(default)]
+    pub window_transparent: bool,
     /// The one foreign origin this daemon will answer, if any.
     ///
     /// `#[serde(skip)]`, so it is neither read from `config.json` nor written
@@ -414,6 +429,7 @@ pub struct Settings {
     pub worktree_setup: Vec<String>,
     pub worktree_retention_days: u32,
     pub allow_several_in_main: bool,
+    pub window_transparent: bool,
 }
 
 impl Settings {
@@ -427,6 +443,7 @@ impl Settings {
             worktree_setup: cfg.worktree_setup.clone(),
             worktree_retention_days: cfg.worktree_retention_days,
             allow_several_in_main: cfg.allow_several_in_main,
+            window_transparent: cfg.window_transparent,
         }
     }
 
@@ -1544,6 +1561,7 @@ mod tests {
             worktree_setup: vec![".claude/hooks/worktree-setup".into()],
             worktree_retention_days: 60,
             allow_several_in_main: false,
+            window_transparent: true,
         };
         let out = s.merge_into(r#"{"main_checkout":"/tmp/x","port":8080}"#).expect("merge");
         let cfg = Config::parse(&out).expect("re-parse");
@@ -1555,6 +1573,11 @@ mod tests {
         assert_eq!(cfg.reviews_command, vec!["gh", "pr"]);
         assert!(cfg.main_processes.is_empty());
         assert_eq!(cfg.worktree_setup, vec![".claude/hooks/worktree-setup"]);
+        // The window key round-trips like the rest. It reaches the *shell* rather
+        // than the daemon — `build_window` reads it before there is an `AppState`
+        // — so a write that did not land would surface as a setting that silently
+        // does nothing after the restart it asked for.
+        assert!(cfg.window_transparent);
     }
 
     #[test]

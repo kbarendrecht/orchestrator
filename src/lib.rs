@@ -1536,6 +1536,15 @@ async fn index(State(app): State<Arc<AppState>>) -> Response {
                 .replace("__ORCH_TOKEN__", &app.token)
                 .replace("__ORCH_CHROME__", app.chrome.as_str())
                 .replace("__ORCH_CHECKOUTS__", &checkouts)
+                /* Whether the window lets light through, which the page cannot
+                   find out for itself and has to know at *boot*: it decides
+                   whether the ground is painted `rgba` and whether xterm is
+                   constructed with `allowTransparency`, and the second of those is
+                   not a runtime option. Told, like the chrome and the platform. */
+                .replace(
+                    "__ORCH_TRANSPARENT__",
+                    if app.cfg.window_transparent { "1" } else { "0" },
+                )
                 // Which key the app's own chords wear: ⌘ on a Mac, Ctrl
                 // elsewhere. Told rather than sniffed — the daemon knows at
                 // compile time, and `navigator.platform` is both deprecated and

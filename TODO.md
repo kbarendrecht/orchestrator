@@ -5,6 +5,29 @@ this file, which churned it from every build; that feature is gone.
 
 ## Next
 
+- **Built: a transparent window, and the one frame it still gets wrong.**
+  `window_transparent` is a config key with a restart, the level is a live theme
+  value, and the board's surfaces carry the alpha while `.settings` and `.overlay`
+  deliberately stay opaque — a form you read the desktop through is the
+  readability problem transparency causes rather than the effect it is for.
+
+  **What it cost, so nobody has to rediscover it.** It compiles in tauri's
+  `macos-private-api`, which uses private Apple frameworks and makes a build
+  ineligible for the App Store; the setting is off by default and the pane says
+  so. And it gives up the opaque `background_color` that stopped a white flash on
+  load, because there is no third option: a ground opaque enough to hide the flash
+  is opaque enough to hide the desktop.
+
+  **Still open: the first frame.** `index.html` carries an inline
+  `html,body{background:#101010}` and that colour is compiled in, so a light theme
+  or a transparent window still shows one frame of near-black before any script
+  runs. The page repaints `html` immediately after. Fixing the frame means the
+  daemon substituting the theme's own ground into the page — which needs the
+  colour where the *daemon* can read it, and the theme lives in `localStorage`. So
+  it is the same question as making the theme portable between machines, and worth
+  doing as that rather than as a flash fix.
+
+
 - **`edit::read` closes the symlink race on the final component only.** The parents
   are canonicalised earlier and can still be swapped between the check and the open;
   closing it properly needs `openat2` with `RESOLVE_BENEATH`, which is Linux-only
