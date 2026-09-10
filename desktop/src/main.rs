@@ -70,6 +70,10 @@ static RESTART: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::n
 /// waiting in silence.
 const HANDOFF_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
+/// Spelled once, because the writer and the reader are one protocol and drifted
+/// apart in a subtler way than a rename: see [`handoff_args`].
+const WAIT_FOR_PID: &str = "--wait-for-pid";
+
 /// macOS keeps its real traffic lights over a transparent titlebar; everywhere
 /// else the window is frameless and the SPA draws its own controls.
 const CHROME: Chrome = if cfg!(target_os = "macos") {
@@ -1155,15 +1159,59 @@ fn relaunch() {
         Ok(p) => p,
         Err(e) => return tracing::error!("cannot restart, no path to this binary: {e}"),
     };
-    // Our own arguments minus argv[0], so a restart keeps whatever it was started
-    // with, plus the handoff.
-    let mut args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
-    args.push("--wait-for-pid".into());
-    args.push(std::process::id().to_string().into());
+    let args = handoff_args(std::env::args_os().skip(1), std::process::id());
     match std::process::Command::new(&exe).args(&args).spawn() {
         Ok(child) => tracing::info!(pid = child.id(), "restarting"),
         Err(e) => tracing::error!("could not restart: {e}"),
     }
+}
+
+/// The successor's argv: our own, minus argv[0], with **one** handoff pair.
+///
+/// The stripping is the whole point. This used to be
+/// `args_os().skip(1).collect()` plus a push, which **keeps** the pair a previous
+/// restart handed us — and [`await_handoff`] reads the *first* occurrence. So the
+/// second restart in one app lifetime waited on the already-dead grandparent,
+/// returned at once, and then died on the live `flock`: no app left at all, from a
+/// path that works perfectly the first time.
+///
+/// Reading the last occurrence would fix the wait and leave argv growing by a pair
+/// per restart, so the old one goes instead. Only the two-token form is handled,
+/// because that is the only form this function produces and the only one the reader
+/// parses.
+fn handoff_args(
+    argv: impl IntoIterator<Item = std::ffi::OsString>,
+    pid: u32,
+) -> Vec<std::ffi::OsString> {
+    let mut args: Vec<std::ffi::OsString> = Vec::new();
+    let mut skip_value = false;
+    for a in argv {
+        if skip_value {
+            skip_value = false;
+            continue;
+        }
+        if a == std::ffi::OsStr::new(WAIT_FOR_PID) {
+            skip_value = true;
+            continue;
+        }
+        args.push(a);
+    }
+    args.push(WAIT_FOR_PID.into());
+    args.push(pid.to_string().into());
+    args
+}
+
+/// The pid in a successor's argv, if it is one.
+///
+/// Split out of [`await_handoff`] so the pairing with [`handoff_args`] is testable:
+/// these two are one protocol, and it was wrong in exactly the place where only one
+/// half was ever read.
+fn handoff_pid<'a>(args: impl IntoIterator<Item = &'a String>) -> Option<u32> {
+    let args: Vec<&String> = args.into_iter().collect();
+    args.iter()
+        .position(|a| *a == WAIT_FOR_PID)
+        .and_then(|i| args.get(i + 1))
+        .and_then(|p| p.parse::<u32>().ok())
 }
 
 /// Wait for the process we are replacing to go, if we are a replacement.
@@ -1173,12 +1221,7 @@ fn relaunch() {
 /// would mean two daemons and, worse, two agents in one worktree.
 fn await_handoff() {
     let args: Vec<String> = std::env::args().collect();
-    let Some(pid) = args
-        .iter()
-        .position(|a| a == "--wait-for-pid")
-        .and_then(|i| args.get(i + 1))
-        .and_then(|p| p.parse::<u32>().ok())
-    else {
+    let Some(pid) = handoff_pid(&args) else {
         return;
     };
     let deadline = std::time::Instant::now() + HANDOFF_TIMEOUT;
@@ -1279,3 +1322,56 @@ impl WindowControl for TauriWindow {
     }
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::ffi::OsString;
+
+    fn os(v: &[&str]) -> Vec<OsString> {
+        v.iter().map(OsString::from).collect()
+    }
+
+    /// The pair a previous restart left behind is replaced, not appended to.
+    ///
+    /// The bug this pins: the successor reads the **first** `--wait-for-pid`, so a
+    /// kept pair means the second restart waits on the grandparent, which is
+    /// already dead — it starts at once and dies on the lock the parent still
+    /// holds.
+    #[test]
+    fn a_second_restart_waits_for_the_parent_and_not_the_grandparent() {
+        let first = handoff_args(os(&["--main", "/repo"]), 111);
+        assert_eq!(first, os(&["--main", "/repo", "--wait-for-pid", "111"]));
+
+        let second = handoff_args(first, 222);
+        assert_eq!(second, os(&["--main", "/repo", "--wait-for-pid", "222"]));
+        assert_eq!(
+            second.iter().filter(|a| *a == "--wait-for-pid").count(),
+            1,
+            "argv grew a pair per restart"
+        );
+
+        let read: Vec<String> =
+            second.iter().map(|a| a.to_string_lossy().into_owned()).collect();
+        assert_eq!(handoff_pid(&read), Some(222), "the reader took the stale pid");
+    }
+
+    /// Everything else the app was started with survives a restart, which is why
+    /// the argv is rebuilt rather than replaced.
+    #[test]
+    fn a_restart_keeps_the_arguments_it_was_started_with() {
+        let args = handoff_args(os(&["--main", "/repo", "--wait-for-pid", "9", "--flag"]), 42);
+        assert_eq!(args, os(&["--main", "/repo", "--flag", "--wait-for-pid", "42"]));
+    }
+
+    /// A plain launch is not a handoff, and must not wait for anything.
+    #[test]
+    fn an_ordinary_launch_has_no_pid_to_wait_for() {
+        let plain: Vec<String> =
+            ["orchestrator-desktop", "--main", "/repo"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(handoff_pid(&plain), None);
+        // A flag with nothing after it is a malformed argv, not a pid of 0.
+        let truncated: Vec<String> = ["x", "--wait-for-pid"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(handoff_pid(&truncated), None);
+    }
+}
