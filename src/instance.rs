@@ -10,6 +10,24 @@
 //! The lock is a pid file rather than a port, because the port is the wrong
 //! question: a foreign process on 7777 is not another instance, and an instance
 //! on a fallback port still is one.
+//!
+//! **It guards the checkout, and now it really does.** The invariant above is
+//! stated about worktrees and a `sessions.json` — the *checkout's* — while the file
+//! was `<config dir>/instance.pid`, one per app. That was the same thing while an
+//! app managed one checkout. It stopped being the same thing the moment a host
+//! could hold several, and the fix was not here: a child daemon's config dir is
+//! `checkouts/<leaf>-<hash>` (see [`crate::host::checkout_dir`]), derived from the
+//! checkout, so this path is now derived from the checkout too. Two daemons for one
+//! checkout meet on one file; two daemons for two checkouts do not meet at all,
+//! which is what makes several checkouts possible.
+//! `tests/host_and_child.rs` asserts it against two real children, because the test
+//! below drives `acquire_at` with a path it chose and so cannot see which path a
+//! daemon computes.
+//!
+//! What it still does not cover: two hosts with different `ORCHD_CONFIG_DIR` values
+//! pointed at one checkout. `mise run fixture` and `mise run e2e` are that shape and
+//! are safe for another reason — each uses a throwaway clone, so the checkout
+//! differs anyway.
 
 // One libc call: `flock`, plus the `getpgid`/`getpgrp` guard around it. The
 // workspace denies `unsafe_code`; this is one of three modules that opt out.

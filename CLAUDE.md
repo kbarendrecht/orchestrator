@@ -51,10 +51,16 @@ without it `desktop/` is never linted at all — the crate with the window, the
 launcher and the restart handoff in it. Green tests, `check-web` and e2e are
 not enough on their own.
 
-**One daemon at a time.** The lock is an `flock` on
-`~/.config/orchd/instance.pid`, not the port, so a second instance refuses to
+**One daemon per checkout.** The lock is an `flock` on
+`<config dir>/instance.pid`, not the port, so a second instance refuses to
 start rather than fighting over `sessions.json` and the hook settings file. Close
-the running app before `cargo run`. The file is deliberately **left behind** — it
+the running app before `cargo run`.
+**`<config dir>` is per checkout for a hosted child** — `checkouts/<leaf>-<hash>`,
+derived from the checkout — so the lock guards the noun it always claimed to. Two
+daemons for one checkout are refused; two for two checkouts never meet, which is
+what makes several checkouts possible. A refused start still rotates that
+checkout's `orchd.log` before it is refused, because logging is installed before the
+lock is taken: a failed launch costs you one log generation. The file is deliberately **left behind** — it
 is what the lock is taken *on*, and removing it would let a second daemon lock a
 fresh file while this one holds the old inode — so waiting for it to disappear is
 waiting for something that never happens.

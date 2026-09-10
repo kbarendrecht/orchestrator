@@ -23,6 +23,9 @@
 //!  4. A stop is not a crash: the row goes `live: false` and nothing restarts it.
 //!  5. The checkout's state is under `checkouts/<leaf>-<hash>`, and the settings
 //!     that were in the old single `config.json` came across.
+//!  6. The instance lock now guards the **checkout**: a second daemon for one
+//!     checkout is refused, which is the invariant `instance.rs` always claimed
+//!     and could not keep while the lock lived one level up.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -181,6 +184,30 @@ async fn a_host_serves_the_page_for_a_checkout_its_child_manages() {
         state.contains(&repo.to_string_lossy().replace('\\', "\\\\")),
         "the child answered for a different checkout"
     );
+
+    // 6 — one daemon per checkout, enforced.
+    //
+    // **This is the lock re-key, and it came for free with the state split.** The
+    // lock is `<config dir>/instance.pid`, and `<config dir>` for a child is now
+    // `checkouts/<leaf>-<hash>` — derived from the checkout — so two daemons for one
+    // checkout meet on one file where before they only met if their *hosts* shared
+    // a config dir. Asserted here rather than in `instance.rs`, because the unit
+    // test there drives `acquire_at` with a path it chose; what needed proving is
+    // that the path a real child computes is the checkout's.
+    let second = orchd::child::launch_at(
+        exe,
+        &repo,
+        &base,
+        &orchd::host::checkout_dir(&repo).unwrap(),
+        |_, _, _| {},
+    );
+    let refusal = format!("{:#}", second.expect_err("a second daemon for one checkout started"));
+    assert!(
+        refusal.contains("never said it was ready"),
+        "the second daemon failed for some other reason: {refusal}"
+    );
+    // And the first one is untouched by the attempt.
+    assert!(host.checkouts().first().is_some_and(|c| c.live), "the refused start took the live one");
 
     // 3 — no window, so the titlebar refuses by name rather than panicking. This
     // is the browser-tab case, and it is the behaviour that had to survive the

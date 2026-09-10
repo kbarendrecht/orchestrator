@@ -622,13 +622,15 @@ The refactor. No second checkout yet; the app runs the host and exactly one chil
    deletes that directory has deleted every per-checkout config, so re-deriving from
    the root copy is the right answer there rather than a re-fire. `migrate.rs`'s table
    keeps in-file rules only, which is what its docblock is about.
-7. **The instance lock keys on the checkout**, so it holds under any config dir.
-   **Deferred within this stage, deliberately, to after the host exists.** The
-   hazard it closes needs two hosts on one checkout — a fixture daemon beside the
-   real app — and re-keying it means choosing a permanent file location to guard
-   something nothing can reach yet, while the host is about to refuse duplicates at
-   `add` anyway. Do it once the host can be driven, so the test is a real refusal
-   rather than a constructed one.
+7. **The instance lock keys on the checkout.** ✅ **Done, and it cost nothing**:
+   item 6 did it. The lock is `<config dir>/instance.pid`, and a child's config dir
+   is now `checkouts/<leaf>-<hash>`, derived from the checkout — so the file is too.
+   No new location, no second mechanism, and no machine-wide lock root: the answer
+   was to move the *state*, and the lock followed.
+   What it now guards: two daemons for one checkout are refused, by name, with the
+   holder's pid. What it still does not: two hosts with different `ORCHD_CONFIG_DIR`
+   values on one checkout — and `mise run fixture` and `mise run e2e` are that shape
+   and safe anyway, because each uses a throwaway clone.
    Two details the plan has to name, because both are load-bearing.
    **Where the file lives.** The lock is taken *on* a file, and removing or moving it
    is how a second daemon locks a fresh inode while the first holds the old one. So
@@ -930,14 +932,87 @@ The SPA work, on top of a host that already reports the truth.
 
 ## Order of work, and what each step buys
 
-| Step | Commits on `main` | Buys |
-| --- | --- | --- |
-| Stage 0 | tests + red flow 25 + CI clippy | A boundary you can move safely |
-| Stage 1 | the portability fix, the stale TODO | Less to move |
-| Stage 2 | host + one child | One hosting model; the lock keyed right |
-| Stage 3 | N children | Flow 25 green; the last three safety findings closed |
-| Stage 4 | the page | The product |
+| Step | Commits on `main` | Buys | State |
+| --- | --- | --- | --- |
+| Stage 0 | tests + pending flow 25 + CI clippy | A boundary you can move safely | **done** |
+| Stage 1 | the portability fix, the stale TODO | Less to move | **done** |
+| Stage 2 | host + one child | One hosting model; the lock keyed right | **done** |
+| Stage 3 | N children | Flow 25 green; the last three safety findings closed | next |
+| Stage 4 | the page | The product | |
 
 Stages 0 to 2 change nothing a single-checkout user can see. That is deliberate:
 the refactor is justified as required for planned work, and it is paid for before
 the feature exists so the feature arrives small.
+
+## Where the work stands, for a session picking this up
+
+Stages 0 to 2 are **on `main`**, in 18 commits from `ace60b9` to the tip. Every gate
+is green: 526 lib tests, 8 desktop, 1 integration, `cargo clippy --workspace
+--all-targets` clean, `mise run check-web` green, `mise run e2e` 24 passed with flow
+25 pending.
+
+**One thing is unverified and needs a person at a screen**: the Tauri window. The app
+now serves the page itself and spawns a child daemon, and everything in that
+arrangement *except the window and the webview* is driven headlessly by
+`tests/host_and_child.rs`. Run `cargo run -p orchestrator-desktop` once before
+building on Stage 2, and expect two processes.
+
+### What exists now, and where
+
+- **`src/host.rs`** — the page, the assets, the window commands,
+  `/api/host/checkouts`, its own guard, and the checkout list. `Host::open_checkout`
+  launches a child and records it; `stop_checkout` and `stop_all` stop them;
+  `checkout_dir` is `<config dir>/checkouts/<leaf>-<hash>`. `host::serve` binds a
+  port and serves it, and `Serving::url` is what the webview is pointed at.
+  State is behind `std::sync::Mutex`, deliberately: the observer that reports a
+  death is a plain thread, because it owns a blocking `wait()`.
+- **`src/child.rs`** — `launch`/`launch_at`, the `ready <port> <token>` line, the
+  one observer, the `stopping` flag, `Child::stop`. The child is the `orchd` binary
+  beside the running executable, never a re-exec of the app.
+- **`src/logging.rs`** — moved out of the desktop crate, so a child logs to a file.
+- **`orchd::start`** — mounts the host router **only when `host_origin` is absent**,
+  which is the question "did somebody host me". A hosted child serves no page.
+- **`web/js/core.js`** — `CHECKOUTS` (substituted by the host), `LOCAL` (aimed at
+  the checkout's own daemon, relative only when they share a port), `callOn`/`getOn`
+  beside `call`/`get`.
+- **`desktop/src/main.rs`** — `boot_daemon` is now a host boot; `SERVER` holds a
+  `host::Serving`; `shutdown` is `host.stop_all()`.
+
+### What Stage 3 has to build, in the order the flow asserts it
+
+`tools/e2e/flows/25-host.mjs` is the specification and is written; removing its
+`pending` line is the definition of done. It needs harness support that does not
+exist yet — `t.host(...)`, `t.apiOn(...)`, `t.checkout(name)`, `t.dead(pid)` — and a
+way to run a host headlessly, which today only the app and the integration test do.
+**Decide that first**: either the e2e harness grows a host (a small binary or an
+`orchd --host` mode), or flow 25 stays a Rust integration test and the `pending`
+mechanism was for a flow that never runs. The integration test is already two thirds
+of what flow 25 asserts, which is an argument for the second.
+
+Then, in this order:
+
+1. **`POST /api/host/checkout`** — add, with the three refusals: containment in
+   either direction, the same path twice, and one repository twice keyed on the
+   repository the daemon would poll. The host reads the candidate's remotes itself
+   through `proc::run_blocking`, and the child re-derives on its ready line.
+2. **`close` and `reopen`** — symmetric, down to the last checkout, and `add` asks
+   before resuming a path whose `sessions.json` still holds live records.
+3. **The host file** — `host.json` with the checkout list, so the app opens what was
+   open. Deliberately *not* built in Stage 2: nothing read it, and a seam with no
+   subscriber is the shape this plan condemns.
+4. **`add` offers recents and browse**, and `recent.json` moves to the host.
+5. **Publish each checkout as it answers**, so a slow one never holds the page.
+6. **The `checkouts/` sweep**, with `checkout_retention_days` — and it may not reap
+   a conversation: see that item for what it may delete.
+
+### Three things learned while building Stage 2, that the plan did not know
+
+- **The daemon answers `200 {}` to an unknown route.** So a test asserting "the child
+  no longer serves the page" must check the *body*, not the status. That catch-all
+  makes any misrouting look like an empty daemon.
+- **`--announce` needs a live stdin pipe.** Run it by hand from a shell and the
+  daemon exits at once: stdin is `/dev/null`, and EOF is the second kill switch.
+  `tests/host_and_child.rs` is how this pair gets driven; a terminal cannot.
+- **The tests that write a stub and exec it hit `ETXTBSY`**, intermittently. It is a
+  fork race — a sibling thread's `fork` copies the write fd until its own `exec` —
+  not a defect, and `launch_stub` retries it.
