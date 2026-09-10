@@ -177,9 +177,14 @@ impl Host {
         checkout: &Path,
     ) -> anyhow::Result<()> {
         let origin = format!("http://127.0.0.1:{}", self.port);
+        // Its own state directory, handed over as `ORCHD_CONFIG_DIR` — the one
+        // variable that relocates *every* durable thing at once, which is why two
+        // checkouts cannot end up sharing a `sessions.json` or a hook settings
+        // file by somebody forgetting one of them.
+        let state = ensure_checkout_dir(checkout)?;
         let host = self.clone();
         let exe_again = exe.to_path_buf();
-        let child = crate::child::launch_at(exe, checkout, &origin, move |path, asked, code| {
+        let child = crate::child::launch_at(exe, checkout, &origin, &state, move |path, asked, code| {
             host.mark_down(path);
             if asked {
                 return;
@@ -281,6 +286,75 @@ async fn guard(State(host): State<Arc<Host>>, req: Request<axum::body::Body>, ne
         return (StatusCode::UNAUTHORIZED, "bad token").into_response();
     }
     next.run(req).await
+}
+
+/// Where one checkout's durable state lives.
+///
+/// `<config dir>/checkouts/<leaf>-<hash>`. **The hash is over the checkout path
+/// alone**, so the directory is a function of the checkout and nothing else: two
+/// hosts pointed at one checkout agree on where its `sessions.json` is, which is
+/// the property the instance lock will need when it is re-keyed. The leaf is there
+/// for the person reading a bug report by eye; it is not the key, because two
+/// checkouts can share a leaf (a fork beside its parent, `web/app` beside
+/// `mobile/app`).
+///
+/// FNV-1a rather than anything stronger: this is a filename, not a signature.
+pub fn checkout_dir(checkout: &Path) -> anyhow::Result<PathBuf> {
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for b in checkout.to_string_lossy().as_bytes() {
+        hash ^= u64::from(*b);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    let leaf = checkout.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    // Anything not obviously safe in a path component becomes `-`: this ends up
+    // inside a shell-quoted hook command and inside a transcript slug.
+    let safe: String = leaf
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' { c } else { '-' })
+        .collect();
+    Ok(crate::config::Config::config_dir()?.join("checkouts").join(format!("{safe}-{hash:x}")))
+}
+
+/// Make a checkout's state directory, seeding it from the old single config once.
+///
+/// **The layout move is a one-shot here rather than a `migrate.rs` rule**, and the
+/// reason is worth keeping: that table's `apply` is
+/// `fn(&mut Map<String, Value>) -> bool` and `config_file` ends in one `fs::write`,
+/// so a rule there can rewrite keys inside one file and cannot create a directory
+/// or write a sibling. Its shape would have been wrong too — `main_checkout` stays
+/// at the root of every per-checkout file, so a rule keyed on that key would
+/// re-fire on every start of every daemon, forever.
+///
+/// The shape recognised here is a **location**: this checkout has no directory yet.
+/// It then **copies** the old `<config dir>/config.json` rather than moving it, and
+/// only when that file names *this* checkout — a copy carries `main_checkout`, so
+/// seeding a second checkout from it would hand that daemon the wrong tree. The
+/// root file is left where it is, so an older build still finds its config and a
+/// downgrade keeps working; that is the same trade `store::OnDiskKind` and the
+/// tracker names already make.
+fn ensure_checkout_dir(checkout: &Path) -> anyhow::Result<PathBuf> {
+    let dir = checkout_dir(checkout)?;
+    if dir.exists() {
+        return Ok(dir);
+    }
+    std::fs::create_dir_all(&dir)?;
+    let root = crate::config::Config::config_dir()?.join("config.json");
+    let names_this_checkout = crate::config::Config::existing_at(&root)
+        .is_some_and(|cfg| cfg.main_checkout == checkout);
+    if names_this_checkout {
+        match std::fs::copy(&root, dir.join("config.json")) {
+            Ok(_) => tracing::info!(
+                checkout = %checkout.display(),
+                "copied the existing config into {}",
+                dir.display()
+            ),
+            // Not fatal: the daemon writes a default and the user has lost their
+            // settings, which is bad — but refusing to start a checkout at all is
+            // worse, and the root file is still there to copy by hand.
+            Err(e) => tracing::error!("could not seed {}: {e}", dir.display()),
+        }
+    }
+    Ok(dir)
 }
 
 /// A host serving on its own port.

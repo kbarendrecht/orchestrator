@@ -21,6 +21,8 @@
 //!     one. That widening is one exact string on the child's argv.
 //!  3. A window command with no window refuses by name rather than panicking.
 //!  4. A stop is not a crash: the row goes `live: false` and nothing restarts it.
+//!  5. The checkout's state is under `checkouts/<leaf>-<hash>`, and the settings
+//!     that were in the old single `config.json` came across.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -113,6 +115,19 @@ async fn a_host_serves_the_page_for_a_checkout_its_child_manages() {
     let (code, page) = get(&base, None);
     assert_eq!(code, 200, "GET / must not be token-gated");
     assert!(page.contains("checkouts: []"), "the page claimed a checkout it did not have");
+
+    // The config as it stood before the split: one file at the root of the config
+    // dir, with a hand-tuned key in it. The point of assertion 5 is that this key
+    // survives, because the failure mode of getting the move wrong is not a crash —
+    // it is a daemon that quietly writes a default config and loses every setting.
+    std::fs::write(
+        cfg.join("config.json"),
+        format!(
+            r#"{{"main_checkout":{:?},"worktree_retention_days":21}}"#,
+            repo.to_string_lossy()
+        ),
+    )
+    .unwrap();
 
     let exe = Path::new(env!("CARGO_BIN_EXE_orchd"));
     host.open_checkout_with(exe, &repo).expect("the child started and reported ready");
@@ -220,6 +235,40 @@ async fn a_host_serves_the_page_for_a_checkout_its_child_manages() {
     );
     let (code, _) = get(&format!("http://127.0.0.1:{pid}/api/state"), Some(&row.token));
     assert_eq!(code, 0, "the child is still serving after a stop");
+
+    // 5 — the checkout's state is its own, and it inherited the old config.
+    let state = orchd::host::checkout_dir(&repo).expect("a state directory");
+    assert!(state.starts_with(cfg.join("checkouts")), "the state dir is somewhere else: {state:?}");
+    assert!(
+        state.file_name().unwrap().to_string_lossy().starts_with(&format!(
+            "{}-",
+            repo.file_name().unwrap().to_string_lossy()
+        )),
+        "the directory is not named for its checkout: {state:?}"
+    );
+    let carried: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(state.join("config.json")).unwrap()).unwrap();
+    assert_eq!(
+        carried["worktree_retention_days"], 21,
+        "the hand-tuned key did not come across, so the split loses settings"
+    );
+    // And the old file is still there, so an older build has something to read.
+    assert!(cfg.join("config.json").exists(), "the move deleted the config a downgrade needs");
+    // The daemon really wrote into its own directory rather than the root. The hook
+    // settings file is the one to check: it is written on every start (unlike
+    // `sessions.json`, which a daemon with no sessions never writes at all), and it
+    // is the file that carries *this daemon's port* into every agent's hook URL —
+    // so two checkouts sharing it is the failure that makes one rail go quiet.
+    let hooks = state.join("hooks.json");
+    assert!(hooks.exists(), "the child wrote its hook settings somewhere else");
+    assert!(
+        std::fs::read_to_string(&hooks).unwrap().contains(&format!("127.0.0.1:{}", row.port)),
+        "the hook settings do not carry this daemon's own port"
+    );
+    assert!(
+        !cfg.join("hooks.json").exists(),
+        "the child wrote its hook settings into the shared config dir"
+    );
 
     let _ = std::fs::remove_dir_all(&repo);
     let _ = std::fs::remove_dir_all(&cfg);

@@ -124,6 +124,31 @@ mean *this* repo; if you do, name it.
   One test-only wrinkle worth knowing: those tests write a stub and exec it, and
   `ETXTBSY` there is a **fork race** (a sibling thread's `fork` copies the write fd
   until its own `exec`), not a defect — `launch_stub` retries it and says so.
+- **A checkout's durable state lives in its own directory, and `ORCHD_CONFIG_DIR`
+  is how it gets there.** `host::checkout_dir` is
+  `<config dir>/checkouts/<leaf>-<hash>`, hashed over the **checkout path alone** so
+  the directory is a function of the checkout and nothing else; the leaf is for
+  reading a bug report by eye and is not the key, because two checkouts can share
+  one. The host hands that path to the child as `ORCHD_CONFIG_DIR`, which relocates
+  every durable thing at once — config, `sessions.json`, `automation.json`,
+  `hooks.json`, the skills plugin dir, transcripts, the log and the instance lock.
+  One variable rather than a flag per store, because a flag per store is one
+  somebody forgets and two checkouts then share a file.
+  **The move from the old single `config.json` is a one-shot in `host.rs`, not a
+  `migrate.rs` rule**, for two reasons that are easy to get wrong. That table's
+  `apply` is `fn(&mut Map<String, Value>) -> bool` and `config_file` ends in one
+  `fs::write`, so a rule there cannot create a directory or write a sibling file.
+  And its shape would have been wrong anyway: `main_checkout` **stays** at the root
+  of every per-checkout file, so a rule keyed on that key re-fires on every start of
+  every daemon, forever. The shape recognised instead is a *location* — this
+  checkout has no directory yet — and the old file is **copied, not moved**, so an
+  older build still finds its config. The copy happens only when the root config
+  names *this* checkout, because a copy carries `main_checkout` and seeding a second
+  checkout from it would point that daemon at the wrong tree.
+  **Window geometry did not move**, and that is worth knowing rather than checking:
+  `store::save_window` / `load_window` are called only from the desktop crate, which
+  is the host process, so the geometry already lives in the host's own config dir
+  and one window still has one geometry.
 - **The app is the host, and every checkout is a child `orchd`.** `boot_daemon` in
   `desktop/src/main.rs` runs `host::serve` on an ephemeral port, calls
   `Host::open_checkout` for the configured checkout, points the webview at the

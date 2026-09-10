@@ -139,9 +139,10 @@ pub fn daemon_binary() -> PathBuf {
 pub fn launch(
     checkout: &Path,
     host_origin: &str,
+    state: &Path,
     on_exit: impl FnOnce(&Path, bool, Option<i32>) + Send + 'static,
 ) -> Result<Child> {
-    launch_at(&daemon_binary(), checkout, host_origin, on_exit)
+    launch_at(&daemon_binary(), checkout, host_origin, state, on_exit)
 }
 
 /// The real work, with the binary injected — the same split as
@@ -153,6 +154,7 @@ pub fn launch_at(
     exe: &Path,
     checkout: &Path,
     host_origin: &str,
+    state: &Path,
     on_exit: impl FnOnce(&Path, bool, Option<i32>) + Send + 'static,
 ) -> Result<Child> {
     let mut command = std::process::Command::new(exe);
@@ -161,6 +163,12 @@ pub fn launch_at(
         .arg(checkout)
         .arg("--host-origin")
         .arg(host_origin)
+        // **Every durable thing this daemon writes goes here**: its config, its
+        // `sessions.json`, its `automation.json`, its hook settings file, its
+        // skills plugin dir, its transcripts archive, its log and its instance
+        // lock. One variable rather than a flag per store, because a flag per
+        // store is a flag somebody forgets and two checkouts then share a file.
+        .env("ORCHD_CONFIG_DIR", state)
         // Without this the child prints prose for a person; with it, one line for a
         // parent. A token on stdout is only ever for the process that spawned this.
         .arg("--announce")
@@ -332,14 +340,14 @@ mod tests {
         on_exit: impl FnOnce(&Path, bool, Option<i32>) + Send + 'static + Clone,
     ) -> Result<Child> {
         for _ in 0..50 {
-            match launch_at(exe, checkout, "http://127.0.0.1:1234", on_exit.clone()) {
+            match launch_at(exe, checkout, "http://127.0.0.1:1234", checkout, on_exit.clone()) {
                 Err(e) if format!("{e:#}").contains("Text file busy") => {
                     std::thread::sleep(Duration::from_millis(20));
                 }
                 other => return other,
             }
         }
-        launch_at(exe, checkout, "http://127.0.0.1:1234", on_exit)
+        launch_at(exe, checkout, "http://127.0.0.1:1234", checkout, on_exit)
     }
 
     /// A stand-in daemon: whatever the test needs said on stdout, then a wait.
