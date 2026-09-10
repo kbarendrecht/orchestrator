@@ -112,15 +112,19 @@ fi
 # because the two have to agree: CI denies warnings, so a lint that is only a
 # warning locally is a red build there.
 #
-# `--all-targets` is the load-bearing half. The eight that got through on
+# `--all-targets` is one load-bearing half. The eight that got through on
 # 2026-09-08 were every one of them in test code, which a plain `cargo clippy`
 # never compiles — green `cargo test`, `check-web` and e2e said nothing, and the
 # push went red on a `.into()` that did nothing.
 #
+# `--workspace` is the other. The root manifest is the `orchd` package as well as
+# the workspace root, so without it `desktop/` is never linted — the crate with the
+# window, the launcher and the restart handoff in it.
+#
 # ~7s warm, which is more than the rest of this hook and a fifth of the e2e flows.
 # Cold after a toolchain bump it is a minute or two, once.
 if [ "$rust" = 1 ]; then
-  if ! cargo clippy --all-targets --quiet -- -D warnings; then
+  if ! cargo clippy --workspace --all-targets --quiet -- -D warnings; then
     echo "pre-commit: clippy denies the warning above, and so does CI." >&2
     echo "            Fix it, or commit with --no-verify if you know why." >&2
     exit 1

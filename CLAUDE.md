@@ -11,7 +11,7 @@ is.
 ```
 cargo check                         # the daemon
 cargo test                          # 522 tests, all in-tree
-cargo clippy --all-targets          # what CI lints with, and it denies warnings
+cargo clippy --workspace --all-targets   # what CI lints with, and it denies warnings
 mise run check-web                  # type-check the SPA + enforce its module graph
 mise run e2e                        # 24 flows against a real daemon, ~60s
 cargo run -p orchestrator-desktop   # the app, daemon embedded in-process
@@ -42,10 +42,13 @@ POSIX `sh` on whatever machine cuts the release, so no `sed -i` (that flag takes
 argument on a Mac and not on Linux) and no other GNU-only flag — write to a temp
 file and `mv`, which is what `release` does.
 
-**`cargo clippy --all-targets` is a gate and was not in this list.** CI runs it
-with warnings denied, so a lint that is a warning here is a red build there — and
-`--all-targets` matters, because the eight that caught this were all in test code
-that a plain `cargo clippy` never compiles. Green tests, `check-web` and e2e are
+**`cargo clippy --workspace --all-targets` is a gate and was not in this list.** CI
+runs it with warnings denied, so a lint that is a warning here is a red build there.
+Both flags matter. `--all-targets` matters because the eight that caught this were
+all in test code that a plain `cargo clippy` never compiles. `--workspace` matters
+because the root manifest is the `orchd` package as well as the workspace root, so
+without it `desktop/` is never linted at all — the crate with the window, the
+launcher and the restart handoff in it. Green tests, `check-web` and e2e are
 not enough on their own.
 
 **One daemon at a time.** The lock is an `flock` on

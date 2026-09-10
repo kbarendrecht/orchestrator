@@ -64,7 +64,7 @@ jobs:
       # what this prevents.
       #
       # Bumping it is deliberate: raise the version, run
-      # `cargo clippy --all-targets -- -D warnings`, and fix what the new release
+      # `cargo clippy --workspace --all-targets -- -D warnings`, and fix what the new release
       # found in the same commit. To collapse this to one source of truth, CI would
       # have to provision Rust through mise as well (`jdx/mise-action`).
       - uses: dtolnay/rust-toolchain@1.97.1
@@ -92,8 +92,16 @@ jobs:
       # On both platforms on purpose: a `#[cfg(target_os = "macos")]` arm is
       # invisible to a Linux clippy, and this repo has several.
       #
+      # **`--workspace` is the other load-bearing half.** The root `Cargo.toml` is
+      # the `orchd` package *and* the workspace root, so a bare `cargo clippy` lints
+      # the current package alone — `desktop/` was never linted here, and it is the
+      # crate holding the window, the launcher and the restart handoff. Measured
+      # rather than assumed: the same command without the flag prints one
+      # `Checking orchd` line and no `orchestrator-desktop`. The crate is clean as of
+      # this commit, so widening the gate costs nothing today and stops it drifting
+      # the way clippy itself drifted to 33 warnings before it was in CI at all.
       - name: Lint
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings
 
       # The SPA's own gate, which until now ran *only* in a per-clone pre-commit
       # hook — so a clone that never ran `git config core.hooksPath .githooks` (a
