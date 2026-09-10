@@ -821,6 +821,20 @@ impl Config {
         Self::existing_at(&Self::path().ok()?)
     }
 
+    /// The checkout's own name: the last component of its path.
+    ///
+    /// For a log line and a window label, not for a key — two checkouts can share
+    /// a leaf (a fork beside its parent, `web/app` beside `mobile/app`), which is
+    /// why anything durable hashes the whole path instead. Falls back to the whole
+    /// path rather than to an empty string, because a line that names nothing is
+    /// worse than a long one.
+    pub fn checkout_name(&self) -> String {
+        self.main_checkout
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| self.main_checkout.to_string_lossy().into_owned())
+    }
+
     /// The real work, with the path injected — the same split as
     /// [`crate::instance::acquire_at`] and for the same reason: the caller above
     /// reads `ORCHD_CONFIG_DIR`, which is process-global, and a test that set it

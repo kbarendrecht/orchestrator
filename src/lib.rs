@@ -259,6 +259,9 @@ pub async fn start(opts: StartOptions) -> Result<Server> {
 
     let mut cfg = Config::load_or_init(opts.main_checkout)?;
     check_config(&cfg)?;
+    // Read before `cfg` is moved into the state, and used by the phase line at the
+    // end of this function.
+    let cfg_name = cfg.checkout_name();
     /* **Every open counts as recent, not only the ones picked in the picker.**
        `firstrun` recorded the list from its own switch route alone, so a daemon
        that started on the checkout already in `config.json` — which is every
@@ -514,7 +517,10 @@ pub async fn start(opts: StartOptions) -> Result<Server> {
         }
     });
     phases.mark("serve");
-    phases.log("daemon start");
+    // Named, because with a daemon per checkout two of these lines are otherwise
+    // indistinguishable — and this line exists so a number survives being pasted
+    // into a chat message, where it arrives without the file it came from.
+    phases.log(&format!("daemon start [{}]", cfg_name));
 
     Ok(Server {
         port,
