@@ -115,15 +115,27 @@ const FROM_TEXT = {
  *  Returns CSS custom property names so the caller can hand them straight to
  *  `setProperty` — and so this file never touches the DOM itself.
  *
- *  `--ground` is separate from `--bg` deliberately: it is the window's own
- *  surface, the one thing that carries alpha when the board is see-through, while
- *  `--bg` stays solid because eighteen rules use it for input grounds and hover
- *  fills. A text field you can read the desktop through is not a feature.
+ *  **`--ground` and `--panel-ground` are the two see-through fills, and `--bg` and
+ *  `--surface` are their solid twins.** The split is deliberate: eighteen rules use
+ *  `--bg` for input grounds and hover fills and twenty-four use `--surface` for
+ *  buttons, overlays and menus, and a text field you can read the desktop through
+ *  is not a feature. Only the six panes that tile the window take the alpha.
+ *
+ *  **`--base` is the body's fill, and it is `transparent` the moment anything is
+ *  see-through.** That is not an optimisation — it is what stops the alpha
+ *  compounding. A translucent rail over a translucent body is two layers, so a
+ *  board at 70% reads as 91% under the rail and 70% two pixels away. Exactly one
+ *  element may paint each pixel, so when the panes take over the painting the body
+ *  has to stop. It keeps painting while the board is solid, where there is no alpha
+ *  to stack and a canvas with no fill is a white flash.
  */
 export function tokens({ bg, panel, text }, { opacity = 1 } = {}) {
+  const see = opacity < 1;
   const out = {
     '--bg': bg,
-    '--ground': opacity < 1 ? alpha(bg, opacity) : bg,
+    '--ground': see ? alpha(bg, opacity) : bg,
+    '--panel-ground': see ? alpha(panel, opacity) : panel,
+    '--base': see ? 'transparent' : bg,
     '--surface': panel,
     '--text': text,
   };

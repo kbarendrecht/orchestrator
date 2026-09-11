@@ -88,15 +88,25 @@
 
 *{box-sizing:border-box;margin:0;padding:0}
 html,body{height:100%}
+/* **The anti-flash rule in `index.html` paints `html` too, and this is where the
+   sheet takes it back.** That rule is an opaque `#101010` literal — it has to be,
+   since it runs before any stylesheet — and left alone it would sit under every
+   see-through pane for the life of the page, which is the second layer the whole
+   scheme exists to avoid. Same token as the body, so the two agree in both states,
+   and the same literal as the fallback, so the flash stays covered until the theme
+   has set a property. */
+html{background:var(--base,#101010)}
 body{
-  /* **The one element that paints the translucent ground, and the reason nothing
-     else may.** `--ground` is `--bg` with the theme's opacity; every other surface
-     stays solid. Two elements painting it would stack two alphas, so a board at
-     70% would read as 91% wherever the top bar sits over the body and as 70% two
-     pixels away — a setting whose effect depends on where you look. Falls back to
-     `--bg`, which is what an opaque window is and what the first paint uses, before
-     the theme has set a single custom property. */
-  background:var(--ground,var(--bg));
+  /* **Nothing paints a pixel twice, and this is the rule that holds it.** Six panes
+     tile the window — three top segments, the rail, the centre and the changes
+     panel — and each carries its own see-through fill. The body would be a seventh
+     layer under all of them, so a board at 70% would read as 91% under the rail and
+     70% two pixels away: a setting whose effect depends on where you look.
+     `--base` is `transparent` the moment the board is see-through and `--bg` while
+     it is solid, where there is no alpha to stack and an unpainted canvas is a
+     white flash. The fallback is what the first paint uses, before the theme has
+     set a single custom property. */
+  background:var(--base,var(--bg));
   color:var(--text);font-family:var(--sans);font-size:calc(13px * var(--fs));line-height:1.5;
   -webkit-font-smoothing:antialiased;overflow:hidden;
 }
@@ -127,13 +137,14 @@ a{cursor:pointer}
 }
 .top{
   display:flex;align-items:center;gap:12px;padding:0 16px;flex-wrap:nowrap;
-  /* No fill. It painted `--bg`, which is the body's own colour, so this changed
-     nothing while the window was opaque — and would have put a second alpha over
-     the first the moment it was not. The ground below shows through instead. */
   border-bottom:1px solid var(--line);min-width:0;
 }
-.top-l{border-right:1px solid var(--line);background:var(--surface)}
-.top-r{border-left:1px solid var(--line);background:var(--surface)}
+/* The centre segment is ground, the two outer ones are panel — each sits directly
+   above the pane it describes, and now wears that pane's fill as well as its
+   width. */
+.top-c{background:var(--ground,var(--bg))}
+.top-l{border-right:1px solid var(--line);background:var(--panel-ground,var(--surface))}
+.top-r{border-left:1px solid var(--line);background:var(--panel-ground,var(--surface))}
 .rail,.center,.files{min-height:0}
 
 /* ---------- native window chrome ---------- */
@@ -251,12 +262,18 @@ button.ctx-btn:hover{color:var(--text)}
 }
 
 /* ---------- rail ---------- */
-.rail{border-right:1px solid var(--line);background:var(--surface);display:flex;flex-direction:column;overflow:hidden}
+.rail{border-right:1px solid var(--line);background:var(--panel-ground,var(--surface));display:flex;flex-direction:column;overflow:hidden}
 .rail-scroll{flex:1;overflow-y:auto;min-height:0}
 .ws{border-bottom:1px solid var(--line-soft)}
+/* **The one place a second layer is deliberate.** A sticky head has to mask the
+   rows passing under it, so it keeps a fill where `.waitbar` and `.prblock` gave
+   theirs up — and a fill over the panel's own is two alphas, which reads a little
+   more solid than the rail behind it. That is what a sticky head is for. Every
+   other band inside a panel painted the panel's own colour and now paints nothing.
+   See `.termwrap` and `body` for the rule this is the exception to. */
 .ws-head{
   display:flex;align-items:center;justify-content:space-between;
-  padding:13px 15px 7px;position:sticky;top:0;background:var(--surface);z-index:2;
+  padding:13px 15px 7px;position:sticky;top:0;background:var(--panel-ground,var(--surface));z-index:2;
 }
 .ws-name{display:flex;align-items:center;gap:8px;min-width:0}
 .ws-note{font-family:var(--mono);font-size:calc(9px * var(--fs));color:var(--faint-solid);margin-left:auto;white-space:nowrap}
@@ -272,7 +289,7 @@ button.ctx-btn:hover{color:var(--text)}
 .co-head{
   display:flex;align-items:center;gap:6px;width:100%;
   padding:8px 15px 5px 9px;position:sticky;top:0;z-index:3;
-  background:var(--surface);border-bottom:1px solid var(--line-soft);
+  background:var(--panel-ground,var(--surface));border-bottom:1px solid var(--line-soft);
 }
 /* Grabbable, because the whole strip is the drag handle. `:active` is the only
    feedback a drag gets before the browser takes over. */
@@ -336,7 +353,7 @@ button.ctx-btn:hover{color:var(--text)}
 /* The one row that says how much you are losing to idle agents. */
 .waitbar{
   z-index:3;display:none;align-items:center;gap:8px;
-  padding:4px 16px;background:var(--surface);border-bottom:1px solid var(--line-soft);
+  padding:4px 16px;border-bottom:1px solid var(--line-soft);
   font-family:var(--mono);font-size:calc(10.5px * var(--fs));color:var(--attn);width:100%;text-align:left;
 }
 /* Sits at the right of the bar it lives in, so the count stays the thing you
@@ -457,11 +474,12 @@ button.ctx-btn:hover{color:var(--text)}
 }
 
 /* ---------- center ---------- */
-/* Also unfilled, for the reason on `.top`. What you see through it is the window,
-   never the terminal: xterm paints its own solid ground, so a see-through board
-   leaves the pane you read opaque. */
+/* The column itself paints nothing: `.termwrap` and `.drawer` tile it, and one of
+   the two is a panel. What you see through the terminal half is the window, never
+   the terminal — xterm paints its own solid ground, so a see-through board leaves
+   the pane you read opaque. */
 .center{display:flex;flex-direction:column;min-width:0;position:relative}
-.termwrap{flex:1;min-height:0;position:relative;padding:8px 6px 8px 12px}
+.termwrap{flex:1;min-height:0;position:relative;padding:8px 6px 8px 12px;background:var(--ground,var(--bg))}
 .termhost{position:absolute;inset:8px 6px 8px 12px;transition:opacity .35s ease}
 .termhost[hidden]{display:none}
 /* A pane whose pty is not yet carrying live output: starting up before the first
@@ -608,7 +626,7 @@ button.ctx-btn:hover{color:var(--text)}
 .oqback:hover{color:var(--text)}
 
 /* ---------- process drawer ---------- */
-.drawer{border-top:1px solid var(--line);background:var(--surface);display:flex;flex-direction:column;height:var(--drawer);flex:0 0 auto;position:relative}
+.drawer{border-top:1px solid var(--line);background:var(--panel-ground,var(--surface));display:flex;flex-direction:column;height:var(--drawer);flex:0 0 auto;position:relative}
 /* `empty` is the no-process bar; `collapsed` is the same shape chosen on purpose,
    with processes still running behind the header. Both drop to just the head. */
 .drawer.empty,.drawer.collapsed{height:auto}
@@ -631,7 +649,7 @@ button.ctx-btn:hover{color:var(--text)}
 .drawer-head{
   display:flex;align-items:center;gap:8px;padding:8px 16px;flex:0 0 auto;
   border-bottom:1px solid var(--line-soft);
-  background:var(--surface);position:relative;z-index:2;
+  background:var(--panel-ground,var(--surface));position:relative;z-index:2;
 }
 .dcollapse{
   display:flex;align-items:center;gap:8px;color:var(--faint-solid);
@@ -712,7 +730,7 @@ button.ctx-btn:hover{color:var(--text)}
 .drawer-body .termhost{inset:6px 10px}
 
 /* ---------- files ---------- */
-.files{border-left:1px solid var(--line);background:var(--surface);display:flex;flex-direction:column;overflow:hidden}
+.files{border-left:1px solid var(--line);background:var(--panel-ground,var(--surface));display:flex;flex-direction:column;overflow:hidden}
 .fgroup{padding:9px 13px 3px}
 /* One line per file. Three columns, because a row is status, path and counts —
    with two, the counts wrapped onto a second grid row and every file took two
@@ -1289,7 +1307,7 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
    session list never pushes your PRs off the bottom. */
 .prblock{
   flex:0 0 auto;max-height:46%;overflow-y:auto;
-  border-top:1px solid var(--line);background:var(--surface);
+  border-top:1px solid var(--line);
   /* The review queue ends on its `arctoggle`, whose 12px bottom padding lifts the
      last row off the window edge. This list ends on a `prrow` with 4px, so it
      needs the same space stated rather than inherited from what happens to be
@@ -1299,7 +1317,7 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
 .prblock .ws{border-bottom:0}
 .prgroup-head{
   display:flex;align-items:center;gap:8px;padding:12px 16px 8px;
-  width:100%;position:sticky;top:0;background:var(--surface);z-index:2;
+  width:100%;position:sticky;top:0;background:var(--panel-ground,var(--surface));z-index:2;
 }
 .prgroup-head .caretr,.rvhead .caretr{
   color:var(--faint-solid);font-size:calc(13px * var(--fs));line-height:1;transition:transform .13s;
@@ -1354,7 +1372,7 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
 .rvblock{flex:0 0 auto;max-height:46%;overflow-y:auto;border-top:1px solid var(--line)}
 .rvblock.closed .rvlist{display:none}
 .rvhead{display:flex;align-items:center;gap:8px;padding:12px 16px 8px;width:100%;
-  position:sticky;top:0;background:var(--surface);z-index:2}
+  position:sticky;top:0;background:var(--panel-ground,var(--surface));z-index:2}
 /* margin-left:auto claims the free space, so the count and the refresh after it
    both sit hard right. */
 .rvcount{font-family:var(--mono);font-size:calc(9px * var(--fs));color:var(--faint-solid);margin-left:auto}

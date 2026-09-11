@@ -42,10 +42,10 @@ const derived = tokens(DEFAULT);
 const problems = [];
 
 for (const [name, want] of Object.entries(derived)) {
-  // `--ground` is the window's own surface and has no `:root` declaration: the
-  // sheet falls back to `--bg` where it is unset, which is what an opaque window
-  // is. Nothing to compare.
-  if (name === '--ground') continue;
+  // The three see-through fills have no `:root` declaration, because there is
+  // nothing for them to say while the board is solid: each falls back in the sheet
+  // to the colour it equals at opacity 1. Nothing to compare.
+  if (name === '--ground' || name === '--panel-ground' || name === '--base') continue;
   if (!(name in root)) {
     problems.push(`${name} is derived but missing from :root`);
   } else if (root[name] !== want.toLowerCase()) {
