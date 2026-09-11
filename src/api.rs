@@ -2949,6 +2949,49 @@ pub async fn teardown_from_session(
 mod tests {
     use super::*;
 
+    /// A conversation travels with its branch, and the *record's* branch is what
+    /// decides that.
+    ///
+    /// **The reason every spawner has to record one.** `spawn_worktree_session`
+    /// did not, so a worktree session's record said `branch: None` until a
+    /// reconcile of its workspace happened to run — and a swap pressed before that
+    /// left the conversation behind while its branch moved into main, with no
+    /// error anywhere. It surfaced as the swap e2e flows failing about one run in
+    /// three, which reads as a slow resume and is not.
+    #[tokio::test]
+    async fn a_session_with_no_recorded_branch_is_not_carried() {
+        use crate::model::{Session, State as S};
+
+        let (app, dir) = crate::testutil::app("carry");
+        /* Archived rather than live, and that is what makes this test able to
+           fail: a live session only becomes a carry once `has_conversation` finds
+           a turn on disk, and neither of these has a file — so both would answer
+           `None` whatever the filter did. The *records* half asks the same
+           question about the branch and nothing else. */
+        let with = |branch: Option<&str>| {
+            let id = Uuid::new_v4();
+            let mut s = Session::new(id, "invoice".to_string(), dir.clone(), None);
+            s.branch = branch.map(str::to_string);
+            s.had_a_turn = true;
+            s.set_state(S::Archived { resumable: true });
+            (id, s)
+        };
+        let (unknown, blank) = with(None);
+        let (known, stamped) = with(Some("worktree-invoice"));
+        {
+            let mut inner = app.inner.write().await;
+            inner.sessions.insert(unknown, blank);
+            inner.sessions.insert(known, stamped);
+        }
+
+        let (_, records) = to_carry(&app, "invoice", "worktree-invoice").await;
+        assert!(records.contains(&known), "the session on that branch was not carried");
+        assert!(
+            !records.contains(&unknown),
+            "a session whose record names no branch was carried anyway"
+        );
+    }
+
     /// The button is offered on `tool`, so the refusal has to be on `tool` too: a
     /// `.deb` or an AppImage has nothing to name in `mise upgrade`, and running it
     /// anyway would upgrade some *other* copy of the app and report success.

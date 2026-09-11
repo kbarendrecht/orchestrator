@@ -919,8 +919,33 @@ pub async fn spawn_worktree_session(
         None => (PENDING_WORKTREE.to_string(), app.cfg.main_checkout.clone()),
     };
 
+    /* **The branch the conversation is about, recorded now rather than at the next
+       sweep.** `spawn_session` reads this for every other kind of session; this
+       spawner did not, so a worktree session's record said `branch: None` until a
+       reconcile of its workspace happened to run.
+
+       That is not cosmetic. `api::to_carry` matches on it to decide which
+       conversation travels with a branch, so a swap pressed before that sweep
+       silently left the conversation behind — the tree's branch moved into main
+       and the agent that had been working on it stayed put, with no error anywhere.
+       Caught by the swap e2e flows failing about one run in three; invisible to
+       every unit test, and easy to read as a slow resume.
+
+       Read from the tree rather than assumed to be `worktree-<name>`, because
+       `create_worktree` may have adopted a tree the repo's own `WorktreeCreate`
+       hook put somewhere else, on a branch of its choosing. */
+    let branch = {
+        let at = cwd.clone();
+        crate::proc::run_blocking("reading the worktree's branch", move || {
+            crate::git::current_branch(&at).ok()
+        })
+        .await
+        .unwrap_or(None)
+    };
+
     // `cwd` is cloned because the arrival notice below names it.
     let mut session = Session::new(id, workspace, cwd.clone(), None);
+    session.branch = branch;
     // The one the pty already holds. `Session::new` always mints a fresh token, so
     // leaving this out is not a missing credential but a *mismatched* one, and the
     // agent's asks would be refused rather than failing to be attempted.

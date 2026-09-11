@@ -1058,6 +1058,19 @@ mean *this* repo; if you do, name it.
   not watch, and a session with a stale environment is a worse bug than a slow one.
   The 50ms floor `proc::run_bounded` used to add is gone (it backs off from 2ms),
   and the cost is now in the log per spawn. Revisit it with a number, not a guess.
+- **Every spawner records the session's branch, and the swap depends on it.**
+  `Session::branch` is what `api::to_carry` matches on to decide which
+  conversation travels when a branch moves, so a record with `branch: None` is a
+  conversation the swap silently leaves behind — the branch goes into main and the
+  agent that was working on it stays put, with no error anywhere.
+  `spawn_worktree_session` built its own `Session` and never set it, so a worktree
+  session had no branch until a `reconcile` of its workspace happened to run.
+  Pressing swap before that sweep lost the conversation.
+  It surfaced as the swap e2e flows failing about one run in three, which reads as
+  a slow resume and is not: `E2E_TIME=1 mise run e2e` prints how long each wait
+  took, and every wait that *succeeds* lands in 3–7ms against a 10s deadline. A
+  flaky wait here is a condition that never becomes true, not one that is slow —
+  check the numbers before reaching for a longer timeout.
 - **Nothing may read `Tree` without asking whether it has been measured.** Every
   field on it defaults to a value indistinguishable from a real answer: no changed
   files is a clean tree, `changed_total` 0 is zero files, `(0,0)` divergence is up

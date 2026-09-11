@@ -75,9 +75,20 @@ export const isDirty = (cwd) => git(cwd, ['status', '--porcelain']) !== ''
  *  get both. */
 export async function until(what, predicate, { timeout = 10_000, every = 50, context } = {}) {
   const deadline = Date.now() + timeout
+  const began = Date.now()
   for (;;) {
     const last = await predicate()
-    if (last) return last
+    if (last) {
+      /* `E2E_TIME=1` prints how long each wait took. It is here because the
+         obvious reading of a flaky suite is "the timeout is too short", and the
+         numbers said otherwise: every wait that *succeeds* lands in 3–7ms against
+         a 10s deadline, so a failure is a condition that never becomes true rather
+         than one that is slow. That reframed a swap flake from a timing problem
+         into `spawn_worktree_session` never recording its session's branch. Cheap
+         enough to leave in, and the next person to blame a timeout can check. */
+      if (process.env.E2E_TIME) console.log(`      WAIT ${Date.now() - began}ms ${what}`)
+      return last
+    }
     if (Date.now() > deadline) {
       // A timeout that only says what it wanted is the least useful failure in a
       // suite like this: the daemon is gone by the time you read it. `context`
