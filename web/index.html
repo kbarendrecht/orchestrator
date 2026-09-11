@@ -283,6 +283,20 @@
                aria-label="Text colour, as hex">
       </span>
     </div>
+    <!-- A slider rather than a stepper: you are matching the board against whatever
+         is behind it, so the control wants to be dragged while you watch. The hint
+         changes to a refusal when the window was not built see-through, because a
+         control that silently does nothing is the defect this row exists to avoid. -->
+    <div class="settings-row">
+      <span class="settings-k">Board opacity
+        <span class="settings-hint" id="thopacityhint">the terminal stays solid</span>
+      </span>
+      <span class="settings-step">
+        <input class="thslider" type="range" id="thopacity" min="35" max="100" step="1"
+               aria-label="Board opacity, as a percentage">
+        <span class="stepval" id="thopacityval">100%</span>
+      </span>
+    </div>
     <!-- Said rather than snapped back: a pair under the floor is refused, and a
          control that reverts with no sentence is the worst of the three answers. -->
     <div class="settings-row thnote" id="thnoterow" hidden>
@@ -580,7 +594,7 @@
      pause. Visually hidden; app.js writes the transition into it. -->
 <div id="live" class="sr-only" aria-live="polite" aria-atomic="true"></div>
 
-<script>window.__ORCH__ = { token: "__ORCH_TOKEN__", chrome: "__ORCH_CHROME__", platform: "__ORCH_PLATFORM__", checkouts: __ORCH_CHECKOUTS__ };</script>
+<script>window.__ORCH__ = { token: "__ORCH_TOKEN__", chrome: "__ORCH_CHROME__", platform: "__ORCH_PLATFORM__", seeThrough: "__ORCH_SEE_THROUGH__" === "yes", checkouts: __ORCH_CHECKOUTS__ };</script>
 <script src="/vendor/xterm.js"></script>
 <script src="/vendor/addon-fit.js"></script>
 <script src="/vendor/addon-webgl.js"></script>

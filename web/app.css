@@ -89,7 +89,14 @@
 *{box-sizing:border-box;margin:0;padding:0}
 html,body{height:100%}
 body{
-  background:var(--bg);
+  /* **The one element that paints the translucent ground, and the reason nothing
+     else may.** `--ground` is `--bg` with the theme's opacity; every other surface
+     stays solid. Two elements painting it would stack two alphas, so a board at
+     70% would read as 91% wherever the top bar sits over the body and as 70% two
+     pixels away — a setting whose effect depends on where you look. Falls back to
+     `--bg`, which is what an opaque window is and what the first paint uses, before
+     the theme has set a single custom property. */
+  background:var(--ground,var(--bg));
   color:var(--text);font-family:var(--sans);font-size:calc(13px * var(--fs));line-height:1.5;
   -webkit-font-smoothing:antialiased;overflow:hidden;
 }
@@ -120,7 +127,10 @@ a{cursor:pointer}
 }
 .top{
   display:flex;align-items:center;gap:12px;padding:0 16px;flex-wrap:nowrap;
-  border-bottom:1px solid var(--line);background:var(--bg);min-width:0;
+  /* No fill. It painted `--bg`, which is the body's own colour, so this changed
+     nothing while the window was opaque — and would have put a second alpha over
+     the first the moment it was not. The ground below shows through instead. */
+  border-bottom:1px solid var(--line);min-width:0;
 }
 .top-l{border-right:1px solid var(--line);background:var(--surface)}
 .top-r{border-left:1px solid var(--line);background:var(--surface)}
@@ -447,7 +457,10 @@ button.ctx-btn:hover{color:var(--text)}
 }
 
 /* ---------- center ---------- */
-.center{display:flex;flex-direction:column;min-width:0;background:var(--bg);position:relative}
+/* Also unfilled, for the reason on `.top`. What you see through it is the window,
+   never the terminal: xterm paints its own solid ground, so a see-through board
+   leaves the pane you read opaque. */
+.center{display:flex;flex-direction:column;min-width:0;position:relative}
 .termwrap{flex:1;min-height:0;position:relative;padding:8px 6px 8px 12px}
 .termhost{position:absolute;inset:8px 6px 8px 12px;transition:opacity .35s ease}
 .termhost[hidden]{display:none}
@@ -948,6 +961,9 @@ body.row-resizing{cursor:row-resize;user-select:none}
    same, so the later width is the one that wins, and the earlier spelling of this
    rule lost silently — a 64-character control 80px wide. */
 .thname{width:150px}
+/* Narrow enough to leave the readout beside it on the row, and `accent-color` so
+   the track wears the board's own focus colour rather than the engine's blue. */
+.thslider{width:120px;accent-color:var(--focus)}
 /* A refusal is a sentence under the rows it is about, not a control snapping
    back. Amber rather than `--bad`: nothing failed, an answer was declined. */
 .thnote{padding-top:0}

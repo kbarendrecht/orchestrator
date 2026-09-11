@@ -20,7 +20,9 @@ anyhow = { workspace = true }
 # `webview-data-url` because the splash is a `data:` URL rather than a file
 # (`splash_url`). Without the feature tauri refuses the URL and the window never
 # opens at all: "invalid window url: data URLs are not supported".
-tauri = { version = "2.11", features = ["webview-data-url"] }
+# `macos-private-api` is the allowlist half of `macOSPrivateApi` in tauri.conf.json,
+# and the build script refuses when the two disagree. See `build_window`.
+tauri = { version = "2.11", features = ["webview-data-url", "macos-private-api"] }
 # The native folder picker for first run, when there is no config to read a
 # checkout out of.
 tauri-plugin-dialog = "2.7"

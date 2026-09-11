@@ -1,7 +1,7 @@
 // The settings panel. The zoom control it offers lives in core, because the
 // terminals read the scale too.
 
-import { ctl, $, WHEEL, ZOOM, call, callHost, caret, currentPreset, detectedFonts, FONTS, fontStack, PRESETS, resetTheme,
+import { ctl, $, WHEEL, ZOOM, call, callHost, caret, currentPreset, detectedFonts, FONTS, fontStack, PRESETS, resetTheme, SEE_THROUGH,
   setTheme, theme, validFontName, closeLegend, el, get, MOD_LABEL, saveWheel, saveZoom, setWheel, setZoom, snap, wheelScale, zoomScale } from './core.js';
 import { parseHex, toHex } from './palette.js';
 
@@ -204,12 +204,20 @@ async function saveSettings() {
  *  Rendered from the theme rather than remembered, so a refusal leaves the
  *  controls showing what is actually applied rather than what was attempted.
  */
+/** The slider, its readout and its hint, from the theme. */
+function showOpacity() {
+  const pct = Math.round(theme.opacity * 100);
+  ctl('thopacity').value = String(pct);
+  $('thopacityval').textContent = `${pct}%`;
+}
+
 function showTheme(note = '') {
   ctl('thpreset').value = currentPreset() ?? 'custom';
   for (const role of ['bg', 'panel', 'text']) {
     ctl(`th${role}`).value = theme[role];
     ctl(`th${role}hex`).value = theme[role];
   }
+  showOpacity();
   $('thnote').textContent = note;
   $('thnoterow').hidden = !note;
 }
@@ -382,6 +390,19 @@ function setupSettings() {
     ctl(`th${role}`).oninput = (ev) => pickColour(role, ev.target.value);
     ctl(`th${role}hex`).onchange = (ev) => pickColour(role, ev.target.value);
   }
+  /* `input`, not `change`: the point of a slider here is watching the board move
+     under it. Cheap enough — one `setProperty` of `--ground` per frame. */
+  ctl('thopacity').oninput = (ev) => {
+    setTheme({ opacity: Number(ev.target.value) / 100 });
+    showOpacity();
+  };
+  /* Said once, at boot, because the window cannot become see-through while it is
+     open — `transparent` is fixed when the window is built. The control still
+     works: the value is stored and applies at the next launch. */
+  if (!SEE_THROUGH) {
+    $('thopacityhint').textContent = 'the window is solid — set see_through_window in host.json';
+  }
+
   $('threset').title = 'Back to the palette orchd ships with';
   $('threset').onclick = () => showTheme(resetTheme() || '');
 

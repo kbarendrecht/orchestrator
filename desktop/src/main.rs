@@ -379,16 +379,35 @@ fn build_window(
     center: bool,
 ) -> Result<()> {
     let mut phases = orchd::timing::Phases::start();
+    /* Read once, here, because `transparent` is a property of the window at the
+       moment it is built and no runtime call takes it back. The theme's opacity is
+       what moves day to day; this only decides whether there is anything behind the
+       board to show. Off unless `host.json` says otherwise — see
+       [`orchd::host::HostFile::see_through_window`] for why that is the safe way
+       round.
+
+       macOS needs one more thing, and it is in `tauri.conf.json` rather than here:
+       `macOSPrivateApi`, without which `transparent` is accepted and does nothing.
+       It is on unconditionally because the config cannot read a runtime setting,
+       and its one real cost — the Mac App Store refuses an app that uses it — is
+       not a cost this app pays: it ships as a dmg. */
+    let see_through = orchd::host::see_through_window();
     let mut builder = WebviewWindowBuilder::new(app_handle, "main", url)
         .title("Orchestrator")
+        .transparent(see_through)
         /* **The ground is the app's, not the toolkit's white.** A webview paints
            white until a document says otherwise, and there are two moments here
            when nothing has: while the splash is still being fetched, and across the
            navigate to the daemon. Both showed as the page in the top-left corner
            with white filling the rest of the window, because the surface is already
            board-sized while the document is not. `background_color` on this builder
-           sets the window *and* the webview, so there is no white to flash. */
-        .background_color(tauri::window::Color(0x10, 0x10, 0x10, 0xFF))
+           sets the window *and* the webview, so there is no white to flash.
+
+           A see-through window gives that job up: an opaque ground would be the one
+           thing the alpha in `--ground` could never see past. The flash it guards
+           against becomes a flash of desktop rather than of white, which is the
+           trade the setting asks for. */
+        .background_color(tauri::window::Color(0x10, 0x10, 0x10, if see_through { 0x00 } else { 0xFF }))
         .inner_size(size.0, size.1)
         .min_inner_size(min.0, min.1);
     /* **Where it was, or centred — never left to the window manager.** Only the

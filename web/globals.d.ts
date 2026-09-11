@@ -19,6 +19,7 @@ interface Window {
   __ORCH__: {
     token: string;
     chrome: string;
+    seeThrough?: boolean;
     platform: string;
     /** Every open checkout, substituted by the host. Optional because the
      *  review-preview page is served with one entry and older hosts substituted

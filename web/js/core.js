@@ -1596,6 +1596,15 @@ export async function newShell() {
 // API in Rust. No IPC bridge, so nothing here depends on which port we bound.
 export const CHROME = window.__ORCH__.chrome || 'none';
 
+/** Whether the window behind this page is see-through.
+ *
+ *  Told by the host, which read it out of `host.json` when it built the window —
+ *  so the page never has to guess whether lowering the opacity will show the
+ *  desktop or nothing at all. False in a browser tab, where the tab's own ground
+ *  is behind the page.
+ */
+export const SEE_THROUGH = window.__ORCH__.seeThrough === true;
+
 /** Whether the daemon is running on macOS. Told, not sniffed. */
 export const IS_MAC = window.__ORCH__.platform === 'mac';
 

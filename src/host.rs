@@ -148,6 +148,10 @@ pub struct Host {
     /// Which key the app's own chords wear, and whether the page draws its own
     /// titlebar. Told to the page, never sniffed.
     chrome: crate::window::Chrome,
+    /// Whether the window behind the page is see-through, so the pane can say what
+    /// lowering the opacity will do. Read once, with the port — the flag is a
+    /// property of the window that was built, and that window outlives the page.
+    see_through: bool,
     /// Announces the checkout list whenever it changes.
     ///
     /// **Because the page's substituted copy goes stale the moment anything
@@ -173,6 +177,7 @@ impl Host {
             retried: Mutex::new(HashMap::new()),
             started: Mutex::new(HashMap::new()),
             chrome,
+            see_through: see_through_window(),
             // Small: a subscriber that falls this far behind is a page that has
             // stopped reading, and the list it eventually gets is the current one.
             changes: tokio::sync::broadcast::channel(16).0,
@@ -728,6 +733,22 @@ pub struct HostFile {
     /// so there is one number to learn rather than two.
     #[serde(default = "default_checkout_retention_days")]
     pub checkout_retention_days: u32,
+    /// Whether the window is built see-through, so the theme's opacity can show
+    /// the desktop behind the board.
+    ///
+    /// **Here rather than in `config.json`, and off by default, for two separate
+    /// reasons.** The window belongs to the host — one window over every checkout —
+    /// so a per-checkout file would have as many answers as you have checkouts open
+    /// and no rule for which one wins. And a see-through window is a *compositor*
+    /// feature: without one the surface behind the board is undefined rather than
+    /// the desktop, so a machine that cannot do it would show a board you may not
+    /// be able to read, and the pane that turns it off is in that board.
+    ///
+    /// It is read once, when the window is built, so changing it needs a restart.
+    /// The theme's opacity is live and does the moment-to-moment work; this only
+    /// decides whether anything is there to see.
+    #[serde(default)]
+    pub see_through_window: bool,
 }
 
 fn default_checkout_retention_days() -> u32 {
@@ -844,6 +865,11 @@ pub fn remember_checkouts(checkouts: &[PathBuf]) {
 }
 
 /// The retention the host file names, in days.
+/// Whether the window should be built see-through. See [`HostFile::see_through_window`].
+pub fn see_through_window() -> bool {
+    read_host_file().is_some_and(|f| f.see_through_window)
+}
+
 fn checkout_retention_days() -> u32 {
     read_host_file().map_or_else(default_checkout_retention_days, |f| f.checkout_retention_days)
 }
@@ -1134,6 +1160,9 @@ fn page(host: &Arc<Host>, template: &str) -> String {
     template
         .replace("__ORCH_TOKEN__", &host.token)
         .replace("__ORCH_CHROME__", host.chrome.as_str())
+        // Whether the opacity control has anything behind it. A slider that
+        // silently does nothing is worse than one that says why it cannot.
+        .replace("__ORCH_SEE_THROUGH__", if host.see_through { "yes" } else { "no" })
         .replace("__ORCH_CHECKOUTS__", &checkouts)
         // ⌘ on a Mac, Ctrl elsewhere. Told rather than sniffed — the host knows at
         // compile time, and `navigator.platform` is both deprecated and a lie

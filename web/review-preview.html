@@ -7,7 +7,7 @@
   <link rel="stylesheet" href="/app.css">
   <!-- The module graph reads these at import time (token/platform). No websocket,
        no daemon calls: the page seeds reviewState directly through Review.preview. -->
-  <script>window.__ORCH__ = { token: "__ORCH_TOKEN__", chrome: "none", platform: "__ORCH_PLATFORM__", checkouts: __ORCH_CHECKOUTS__ };</script>
+  <script>window.__ORCH__ = { token: "__ORCH_TOKEN__", chrome: "none", platform: "__ORCH_PLATFORM__", seeThrough: false, checkouts: __ORCH_CHECKOUTS__ };</script>
   <!-- The hunks colour through Prism, which the SPA vendors as a classic script.
        Without it `langFor` answers null and the diff renders plain — the same
        fallback as an unknown language, so its absence is invisible rather than
