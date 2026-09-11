@@ -207,12 +207,17 @@ converged on three statements, which is the strongest signal in this document.
    colour to be identity-keyed, which is why `colours_for` is set-wide with a
    collision probe and four tests. Delete the drag and colour becomes
    `PALETTE[i % len]`. Together: 205 lines, no user-facing capability.
-   **Decided the other way: both are kept.** The lenses are right that the two are
-   one decision, and the decision taken is the pair, not neither — order is worth
-   owning, and a colour that moves when you close an unrelated checkout is worse than
-   the machinery that stops it. So `colours_for`, `slot_for`, the collision probe and
-   the four tests come across from the branch, and the Stage 1 deletion list drops
-   them.
+   **Decided the other way: both are kept**, and both shipped. The lenses are right
+   that the two are one decision, and the decision taken is the pair, not neither —
+   order is worth owning, and a colour that moves when you close an unrelated
+   checkout is worse than the machinery that stops it.
+   **What shipped is simpler than the branch's, and for a reason the branch could
+   not see.** Colour is assigned on first sight and held per path, which makes
+   collisions impossible up to the palette length without a probe: the branch needed
+   `slot_for`'s hash and a forward probe because it computed the set from scratch on
+   every change. And the *order* lives in `host.json` rather than `localStorage` —
+   the host owns the set, so it owns the order, and the app and a browser tab cannot
+   disagree about a rail they both draw.
 
 ## Safety, found by the domain and failure-mode lenses
 
@@ -988,6 +993,13 @@ plus the app.
 
 ### What is left
 
+- ~~**The four affordances PR #12 had and this did not.**~~ **Done.** Drag to
+  reorder (order in `host.json`), fold a checkout away, a live-session count in its
+  header that turns amber when one wants you, and a parent segment on two checkouts
+  sharing a leaf. The count is what makes the fold safe: folded, a checkout that
+  needs you otherwise looks idle. Found by enumerating #12's diff against what
+  shipped, which also turned up the connection bar being a flag where N sockets
+  need a set.
 - ~~**Per-checkout identity outside the rail.**~~ **Done, and narrower than the
   item said.** The diff header and the drawer were the named suspects and neither
   needed anything: every pane sits on one row beside the identity chip, and the
