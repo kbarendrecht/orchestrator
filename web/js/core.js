@@ -626,6 +626,26 @@ export async function getOn(c, path) {
    `callOn`/`getOn` exist for the one that is aimed somewhere else, and keeping the
    short pair means ~90 call sites do not have to say which checkout they meant when
    there is only ever one answer. */
+/** POST to the checkout a session belongs to.
+ *
+ *  **Derived from the session, not from what you are looking at.** A rail listing
+ *  several checkouts can act on a row in any of them — a kill, a rename, a fork —
+ *  and `call` would send every one of those to whichever daemon happens to hold
+ *  the selection. Falls back to the active checkout for a session no snapshot has
+ *  yet, which is the moment between a create and the snapshot that carries it.
+ *
+ *  @param {string} id a session id
+ *  @param {string} path
+ *  @param {unknown} [body]
+ */
+export const callFor = (id, path, body) => callOn(checkoutOf(id) ?? activeCheckout(), path, body);
+
+/** The snapshot a session lives in. See [`callFor`] for why it is derived.
+ *
+ *  @param {string} id a session id
+ */
+export const snapshotFor = (id) => snapshotOf((checkoutOf(id) ?? activeCheckout()).path) ?? snap;
+
 /* The shorthand for the checkout you are in. Every other call names its target,
    because "the active one" is only ever right for the panes that follow the
    selection — the rail does not. */
@@ -995,8 +1015,8 @@ export function closeMenu() {
  *  belongs to moved" from "a terminal three panes away printed a line". */
 let menuAnchor = null;
 
-export function sessionsOf(wsId) {
-  return snap.sessions.filter((s) => s.workspace === wsId);
+export function sessionsOf(wsId, state = snap) {
+  return state.sessions.filter((s) => s.workspace === wsId);
 }
 
 /* A session is one of two things: active, or a past conversation you can come
@@ -1037,8 +1057,13 @@ export function activeWorkspaceId() {
 }
 
 /** The two questions every pane asks the workspace list. */
-export const mainWorkspace = () => snap.workspaces.find((w) => w.is_main);
-export const workspaceById = (id) => snap.workspaces.find((w) => w.id === id);
+/* The two questions every pane asks the workspace list.
+   `state` defaults to the active checkout's snapshot, which is what every pane
+   that follows the selection wants. The rail passes the checkout's own, because
+   it draws all of them. One spelling either way: a second pair of functions for
+   "but in that checkout" is how the two answers drift apart. */
+export const mainWorkspace = (state = snap) => state.workspaces.find((w) => w.is_main);
+export const workspaceById = (id, state = snap) => state.workspaces.find((w) => w.id === id);
 
 export function currentWorkspaceId() {
   const s = currentSession();
@@ -1086,10 +1111,12 @@ async function asTheOnlyCreate(what, go) {
   }
 }
 
-export async function newSession(workspace) {
+/** @param {string} workspace
+ *  @param {Target} [where] the checkout to create in; the active one by default */
+export async function newSession(workspace, where) {
   await asTheOnlyCreate('starting a session', async () => {
     try {
-      const r = await call('/api/session', { workspace });
+      const r = await callOn(where ?? activeCheckout(), '/api/session', { workspace });
       pendingSelect = r.session;
     } catch (e) {
       toast(e.message, true);
@@ -1100,7 +1127,9 @@ export async function newSession(workspace) {
 /** Claude Code names the worktree unless you shift-click and name it yourself.
  *  Naming one every time is friction for something you rarely refer to by
  *  name, and an unnamed one cannot collide with an archived worktree either. */
-export async function newWorktree(named) {
+/** @param {boolean} [named]
+ *  @param {Target} [where] the checkout to cut the worktree in */
+export async function newWorktree(named, where) {
   let name = null;
   if (named) {
     name = await promptBox('Worktree name', {
@@ -1116,7 +1145,7 @@ export async function newWorktree(named) {
   // dialog you might cancel.
   await asTheOnlyCreate(name ? `creating worktree ${name}` : 'creating a worktree', async () => {
     try {
-      const r = await call('/api/worktree', name ? { name } : {});
+      const r = await callOn(where ?? activeCheckout(), '/api/worktree', name ? { name } : {});
       pendingSelect = r.session;
       toast(name ? `creating worktree ${name}` : 'creating worktree');
     } catch (e) {

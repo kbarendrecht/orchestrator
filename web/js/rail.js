@@ -1,7 +1,7 @@
 // The rail: what is running, what is waiting on you, and the PRs beside it.
 // Twenty-four names, three out; the rest is how a row decides what it says.
 
-import { $, activeCheckout, byNewest, call, caret, clock, confirmBox, copyText, creating, dotClass, duration, el, isArchived, isConversation, isWaiting, mainWorkspace, MOD_LABEL, newSession, newWorktree, openMenu, pending, refreshButton, selected, sessionsOf, setSelected, sinceSnap, snap, stateClass, stateLabel, toast, unchanged, setPendingSelect } from './core.js';
+import { $, activeCheckout, byNewest, call, callFor, checkoutOf, CHECKOUTS, snapshotOf, snapshotFor, caret, clock, confirmBox, copyText, creating, dotClass, duration, el, isArchived, isConversation, isWaiting, mainWorkspace, MOD_LABEL, newSession, newWorktree, openMenu, pending, refreshButton, selected, sessionsOf, setSelected, sinceSnap, snap, stateClass, stateLabel, toast, unchanged, setPendingSelect } from './core.js';
 import * as Review from './review.js';
 import * as Term from './term.js';
 
@@ -48,22 +48,67 @@ function renderRail() {
      anything the daemon changes rebuilds it, and a push carrying nothing but new
      durations does not. `showArchived` and the rest are the view state the
      snapshot cannot see. */
-  if (unchanged(drawn, [snap, showArchived, showPrs, picked, selected, swapInFlight], NOT_DRAWN)) {
+  const states = CHECKOUTS.map((c) => snapshotOf(c.path));
+  if (unchanged(drawn, [states, CHECKOUTS, showArchived, showPrs, picked, selected, swapInFlight],
+    NOT_DRAWN)) {
     return;
   }
 
   const rail = $('rail');
   rail.replaceChildren();
 
-  const main = mainWorkspace();
-  const worktrees = snap.workspaces.filter((w) => !w.is_main);
+  /* One block per checkout, in the order the host opened them. A checkout is a
+     daemon and a daemon describes only itself, so each block is built from that
+     checkout's own snapshot — there is no combined one to build from. */
+  const several = CHECKOUTS.length > 1;
+  for (const [i, c] of CHECKOUTS.entries()) {
+    // No header at all on a single-checkout install: the rail is what it always
+    // was, and a header naming the only checkout there is is noise.
+    if (several) rail.appendChild(checkoutHead(c));
+    const state = states[i];
+    if (!state) {
+      // A checkout whose daemon has not reported yet, or is down. The row stays
+      // either way, because the row is what `reopen` acts on.
+      rail.appendChild(el('div', 'railbtn', c.live ? 'starting\u2026' : 'not running'));
+      continue;
+    }
+    const main = mainWorkspace(state);
+    // Main is pinned first (§9).
+    if (main) rail.appendChild(mainGroup(c, state, main));
+    rail.appendChild(worktreeGroup(c, state, main?.id));
+  }
 
-  // Main is pinned first (§9).
-  if (main) rail.appendChild(mainGroup(main));
-  rail.appendChild(worktreeGroup(main?.id));
-
-  // Its own pane below the scroller, so it stays put while sessions scroll.
+  // Its own pane below the scroller, so it stays put while sessions scroll. It
+  // describes one repository, so it follows the checkout you are in.
   $('prpane').replaceChildren(prGroup());
+}
+
+/** The strip naming one checkout, above its groups.
+ *
+ *  Drawn only when there is more than one, so a single-checkout install is
+ *  untouched. `aria-current` rather than a class alone, because "the one you are
+ *  in" is the fact a screen reader needs and the colour is what a sighted reader
+ *  gets instead.
+ *
+ *  @param {import('./core.js').Target} c
+ */
+function checkoutHead(c) {
+  const head = el('div', 'co-head');
+  if (c.path === activeCheckout().path) head.setAttribute('aria-current', 'true');
+  if (!c.live) head.classList.add('down');
+  const name = el('span', 'co-name', c.name);
+  name.title = c.path;
+  head.appendChild(name);
+  if (c.clash) {
+    /* Two daemons polling one repository cannot see each other's fix runs, and
+       nothing else in the product would ever say so — the host finds this out
+       only when the second daemon reports what it will poll. */
+    const warn = el('span', 'co-clash', 'same repo');
+    warn.title = `also open as ${c.clash} — their fix runs cannot see each other`;
+    head.appendChild(warn);
+  }
+  if (!c.live) head.appendChild(el('span', 'co-clash', 'down'));
+  return head;
 }
 
 
@@ -390,12 +435,12 @@ function groupHead(label, add) {
  *  daemon reports in the snapshot. Then `+` stays live and the holder's name is
  *  still worth saying, because a second session in one checkout is a thing to do
  *  on purpose rather than by accident. */
-function mainGroup(w) {
+function mainGroup(c, state, w) {
   const group = el('div', 'ws');
-  const sessions = sessionsOf(w.id);
+  const sessions = sessionsOf(w.id, state);
   const active = sessions.filter((s) => !isArchived(s));
   const occupant = active.find((s) => s.id === w.occupant && s.alive);
-  const several = !!snap.several_in_main;
+  const several = !!state.several_in_main;
 
   const add = el('button', 'plus', '+');
   // Occupied, or already making something: the second reason is the one that used
@@ -410,12 +455,12 @@ function mainGroup(w) {
     : occupant
       ? `main is held by ${occupant.title || occupant.id.slice(0, 8)}${several ? ' · another is allowed' : ''}`
       : `New session in main · ${MOD_LABEL} Shift N`;
-  add.onclick = () => newSession(w.id);
+  add.onclick = () => newSession(w.id, c);
   group.appendChild(groupHead('Main checkout', add));
 
   for (const s of active.sort(byNewest)) group.appendChild(sessionRow(s, w));
   if (!active.length) group.appendChild(el('div', 'railbtn', 'no sessions'));
-  appendArchived(group, 'main', sessions.filter(isConversation));
+  appendArchived(c, group, 'main', sessions.filter(isConversation));
   return group;
 }
 
@@ -426,7 +471,7 @@ function mainGroup(w) {
  *  is a session whose worktree has no name yet, which shows as `…creating`
  *  rather than nothing at all — an invisible session is how you end up
  *  starting a second one. */
-function worktreeGroup(mainId) {
+function worktreeGroup(c, state, mainId) {
   const group = el('div', 'ws');
   const add = el('button', 'plus', '+');
   /* Dead while one is being cut, and it says which one in the tooltip.
@@ -441,17 +486,17 @@ function worktreeGroup(mainId) {
      the placeholder workspace for good, and counting that would leave the `+`
      dead until a restart. */
   const cutting = creating()
-    || (snap.sessions.some((s) => pending(s) && !isArchived(s)) ? 'creating a worktree' : null);
+    || (state.sessions.some((s) => pending(s) && !isArchived(s)) ? 'creating a worktree' : null);
   add.disabled = !!cutting;
   add.title = cutting || `New worktree session · ${MOD_LABEL} N (shift-click to name it)`;
-  add.onclick = (ev) => newWorktree(ev.shiftKey);
+  add.onclick = (ev) => newWorktree(ev.shiftKey, c);
   group.appendChild(groupHead('Worktrees', add));
 
   /* Anything that is not main's belongs here — by session, not by workspace.
    * A worktree Claude Code has not named yet has no workspace record at all,
    * only a session pointing at the placeholder, so filtering on the known
    * workspaces dropped exactly the row that says something is happening. */
-  const sessions = snap.sessions.filter((s) => s.workspace !== mainId);
+  const sessions = state.sessions.filter((s) => s.workspace !== mainId);
   const active = sessions.filter((s) => !isArchived(s));
 
   for (const s of active.sort(byNewest)) {
@@ -459,7 +504,7 @@ function worktreeGroup(mainId) {
     group.appendChild(sessionRow(s, { id: s.workspace }));
   }
   if (!active.length) group.appendChild(el('div', 'railbtn', 'no sessions'));
-  appendArchived(group, 'worktrees', sessions.filter(isConversation));
+  appendArchived(c, group, 'worktrees', sessions.filter(isConversation));
   return group;
 }
 
@@ -469,16 +514,19 @@ function worktreeGroup(mainId) {
  *  opened whenever the conversation you are looking at is in here, so the rail
  *  never goes silent about what the centre pane is showing.
  */
-function appendArchived(group, key, sessions) {
+function appendArchived(c, group, key, sessions) {
   if (!sessions.length) return;
-  const open = showArchived[key] || sessions.some((s) => s.id === selected);
+  // Qualified, because `main` and `worktrees` name a group in every checkout and
+  // one open archive would open all of them.
+  const held = `${c.path}\u0000${key}`;
+  const open = showArchived[held] || sessions.some((s) => s.id === selected);
 
   const toggle = el('button', 'arctoggle');
   toggle.setAttribute('aria-expanded', String(open));
   toggle.appendChild(caret());
   toggle.appendChild(el('span', null, 'archived'));
   toggle.appendChild(el('span', 'arccount', String(sessions.length)));
-  toggle.onclick = () => { showArchived[key] = !open; renderRail(); };
+  toggle.onclick = () => { showArchived[held] = !open; renderRail(); };
   group.appendChild(toggle);
 
   if (!open) return;
@@ -507,7 +555,7 @@ function archivedRow(s) {
   if (!s.resumable) {
     // The transcript is readable, the conversation cannot be continued (§2).
     btn.appendChild(el('div', 'sess-sub', 'transcript only'));
-  } else if (!snap.workspaces.some((w) => w.id === s.workspace)) {
+  } else if (!snapshotFor(s.id).workspaces.some((w) => w.id === s.workspace)) {
     /* Its worktree is gone, which the snapshot says by omission: only teardown
        drops a workspace record, and the retention timer is what usually calls it.
        Worth a line, because "archived" alone would leave you to discover on the
@@ -538,12 +586,12 @@ async function openArchived(s) {
     return;
   }
   try {
-    const r = await call(`/api/session/${s.id}/resume`);
+    const r = await callFor(s.id, `/api/session/${s.id}/resume`);
     // A resumed session keeps its id, because `claude --resume <id>` continues
     // that same conversation. So the dead terminal is still in `terms` under the
     // key the new pty wants, and `openTerm` would hand back the corpse — you
     // resume and stare at the old scrollback with a closed socket.
-    Term.close(activeCheckout(), `session:${r.session}`);
+    Term.close(checkoutOf(s.id) ?? activeCheckout(), `session:${r.session}`);
     setPendingSelect(r.session);
     // The branch moved since the conversation happened, so the files it talks
     // about are not the files on disk. Worth saying, not worth refusing over.
@@ -571,7 +619,7 @@ function railName(s, w) {
   // print and says nothing else. The PR's own title is already in the snapshot,
   // put there for the pane at the bottom of this rail.
   if (s.pass) {
-    const pr = (snap.prs || []).find((p) => p.number === s.pass.pr);
+    const pr = (snapshotFor(s.id).prs || []).find((p) => p.number === s.pass.pr);
     return pr ? `#${s.pass.pr} ${pr.title}` : `#${s.pass.pr}`;
   }
   return s.title || w.id;
@@ -673,15 +721,18 @@ function sessionRow(s, w) {
      ever be dead, and a greyed "move out of main" on a worktree row reads as the
      app thinking that row is in main — the opposite of what the rail says two
      lines above it. */
-  const mainWs = mainWorkspace();
+  const state = snapshotFor(s.id);
+  const mainWs = mainWorkspace(state);
   const inMain = s.workspace === mainWs?.id;
   const moveLabel = inMain
     ? 'move out of main'
-    : mainHoldsWork(mainWs) ? 'swap with main' : 'move to main';
-  // A worktree Claude Code has not named yet has no path to swap.
+    : mainHoldsWork(mainWs, state) ? 'swap with main' : 'move to main';
+  // A worktree Claude Code has not named yet has no path to swap. The session
+  // carries which checkout it is in, so a row in a checkout you are not looking
+  // at still acts on its own daemon.
   const moveDo = inMain
     ? () => moveOutOfMain(s)
-    : pending(s) ? null : () => swapWithMain(s.workspace);
+    : pending(s) ? null : () => swapWithMain(s.workspace, s);
   // The header's ✕ only ever closes the selected session, so closing any other
   // one meant switching to it first.
   btn.oncontextmenu = (ev) => openMenu(ev, [
@@ -734,7 +785,7 @@ const isRewindable = (s) =>
 async function rewindSession(s) {
   setSelected(s.id);
   try {
-    await call(`/api/session/${s.id}/rewind`);
+    await callFor(s.id, `/api/session/${s.id}/rewind`);
     toast('opened the rewind picker — pick a point in the pane');
   } catch (e) {
     toast(e.message, true);
@@ -759,7 +810,7 @@ async function rewindSession(s) {
  *  Read off the whole branch *set*, not `branches[0]`: that set is built from a
  *  `HashSet`, so its order says nothing, and "the only thing main has is base" is
  *  a question about the set rather than about its first element. */
-function mainHoldsWork(main) {
+function mainHoldsWork(main, state = snap) {
   /* A conversation in main is work, whatever branch main is on. Without this the
      item read the git side only: main sitting on its base with somebody working in
      it answered "nothing of its own", so the menu offered `move to main` and the
@@ -770,10 +821,10 @@ function mainHoldsWork(main) {
      The same rule the daemon uses for "is anyone in main" since it learned to
      allow more than one: any live session whose workspace is main, rather than the
      recorded claim, which can name none of them. */
-  const busy = snap.sessions.some(
+  const busy = state.sessions.some(
     (x) => x.workspace === main?.id && x.alive && !isArchived(x));
   if (busy) return true;
-  const leaf = (snap.upstream_ref || '').split('/').pop();
+  const leaf = (state.upstream_ref || '').split('/').pop();
   if (!leaf || leaf === 'HEAD') return true;
   // What main has checked out *now*. This used to ask `branches`, which accumulates
   // every branch a tree has ever held and is never pruned — so one visit from any
@@ -806,11 +857,11 @@ async function moveOutOfMain(s) {
     + 'The conversation moves too, keeping its history.'
   )) return;
   try {
-    const r = await call(`/api/session/${s.id}/out-of-main`);
+    const r = await callFor(s.id, `/api/session/${s.id}/out-of-main`);
     // A relocated session keeps its id, so the dead terminal is still in `terms`
     // under the key the new pty wants — the same reason the swap and resume close it.
     if (r.session && r.session.session) {
-      Term.close(activeCheckout(), `session:${r.session.session}`);
+      Term.close(checkoutOf(s.id) ?? activeCheckout(), `session:${r.session.session}`);
       setPendingSelect(r.session.session);
     }
     toast(r.created
@@ -846,9 +897,13 @@ async function moveOutOfMain(s) {
    is running rather than leaving you to guess. */
 let swapInFlight = false;
 
-async function swapWithMain(wsId) {
+/** @param {string} wsId
+ *  @param {any} s the session whose row this was pressed from, which says which
+ *                 checkout the workspace is in */
+async function swapWithMain(wsId, s) {
   if (swapInFlight) return toast('a swap is already running — watch the rail', true);
-  const holds = mainHoldsWork(mainWorkspace());
+  const state = snapshotFor(s.id);
+  const holds = mainHoldsWork(mainWorkspace(state), state);
   if (!await confirmBox(holds
     ? `Swap branches between main and ${wsId}?\n\n`
       + `main takes this worktree's branch, and this worktree takes main's. `
@@ -864,12 +919,12 @@ async function swapWithMain(wsId) {
   swapInFlight = true;
   toast(`swapping ${wsId} with main…`);
   try {
-    const r = await call(`/api/workspace/${encodeURIComponent(wsId)}/swap-main`);
+    const r = await callFor(s.id, `/api/workspace/${encodeURIComponent(wsId)}/swap-main`);
     // A relocated session keeps its id, so the dead terminal is still in `terms`
     // under the key the new pty wants and `openTerm` would hand back the corpse —
     // the same reason resume closes it. Both directions, since both were respawned.
     for (const dir of [r.into_main, r.into_worktree]) {
-      if (dir && dir.session) Term.close(activeCheckout(), `session:${dir.session}`);
+      if (dir && dir.session) Term.close(checkoutOf(s.id) ?? activeCheckout(), `session:${dir.session}`);
     }
     // Land in main, where the branch now is — the whole point of pressing this.
     if (r.select) setPendingSelect(r.select);
@@ -913,7 +968,7 @@ async function swapWithMain(wsId) {
  *  with. */
 async function forkSession(s) {
   try {
-    const r = await call(`/api/session/${s.id}/fork`);
+    const r = await callFor(s.id, `/api/session/${s.id}/fork`);
     setPendingSelect(r.session);
     toast('forked');
     // The branch moved on since the conversation, same as resume: worth saying,
@@ -958,7 +1013,7 @@ function renameSession(s) {
     editingName = null;           // let the rail rebuild again before the await.
     if (commit && given !== (s.name || '')) {
       try {
-        await call(`/api/session/${s.id}/rename`, { name: given });
+        await callFor(s.id, `/api/session/${s.id}/rename`, { name: given });
       } catch (e) {
         toast(e.message, true);
       }
@@ -989,7 +1044,7 @@ async function deleteSession(s) {
   if (!await confirmBox(`Delete "${name}"?\n\n${ending}The row and orchd's copy of the `
     + "transcript go for good. Claude Code's own transcript is left where it is.",
   { ok: 'Delete' })) return;
-  call(`/api/session/${s.id}/delete`)
+  callFor(s.id, `/api/session/${s.id}/delete`)
     .then(() => toast('deleted'))
     .catch((e) => toast(e.message, true));
 }
@@ -998,7 +1053,7 @@ async function deleteSession(s) {
 function closeSession(id) {
   // Claude takes several seconds to shut down and the row only turns `exited`
   // once the daemon sees it go, so without this the click reads as a no-op.
-  call(`/api/session/${id}/kill`)
+  callFor(id, `/api/session/${id}/kill`)
     .then(() => toast('closing session'))
     .catch((e) => toast(e.message, true));
 }

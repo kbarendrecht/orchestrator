@@ -20,6 +20,17 @@ async fn main() -> Result<()> {
     orchd::logging::install_panic_hook();
 
     let arg = |name: &str| std::env::args().skip_while(|a| a != name).nth(1);
+
+    // A host in a terminal, with a child daemon per checkout named after the flag.
+    //
+    // **The one way to drive the multi-checkout page without a screen.** The app
+    // is the other host and it needs a window; `mise run shot` is this repo's
+    // answer to "check a UI change when you cannot see the screen", and it needs
+    // something serving the page. Everything here is the same library the app
+    // calls, so what this serves is what the app serves, minus the window.
+    if std::env::args().any(|a| a == "--host") {
+        return run_host(std::env::args().skip_while(|a| a != "--host").skip(1).collect()).await;
+    }
     let main_checkout = arg("--main")
         .map(PathBuf::from)
         .map(|p| std::fs::canonicalize(&p).unwrap_or(p));
@@ -98,5 +109,45 @@ async fn main() -> Result<()> {
     stopped.await?;
     println!();
     server.shutdown().await;
+    Ok(())
+}
+
+/// Serve the page for N checkouts, each with its own child daemon.
+///
+/// Every path after `--host` is a checkout. The children are real `orchd`
+/// processes found the same way the app finds them, so this exercises the child
+/// protocol rather than standing in for it.
+async fn run_host(checkouts: Vec<String>) -> Result<()> {
+    if checkouts.is_empty() {
+        anyhow::bail!("--host takes one or more checkout paths");
+    }
+    let paths: Vec<PathBuf> = checkouts
+        .iter()
+        .map(|p| {
+            let p = PathBuf::from(p);
+            std::fs::canonicalize(&p).unwrap_or(p)
+        })
+        .collect();
+
+    let serving = orchd::host::serve(
+        orchd::host::mint_token(),
+        // Ephemeral, like the app's: the URL is printed, so nothing has to predict
+        // it, and a stale process on a fixed port cannot stop this starting.
+        0,
+        orchd::window::Chrome::None,
+    )
+    .await?;
+    // Blocking: a launch waits for each child's ready line.
+    let host = serving.host.clone();
+    let opened = paths.clone();
+    tokio::task::spawn_blocking(move || host.open_remembered(&opened)).await?;
+
+    println!("orchd  {}", serving.url());
+    for c in serving.host.checkouts() {
+        println!("       {} on {} ({})", c.name, c.port, if c.live { "up" } else { "down" });
+    }
+    tokio::signal::ctrl_c().await?;
+    println!();
+    serving.host.stop_all();
     Ok(())
 }
