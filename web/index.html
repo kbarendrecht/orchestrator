@@ -297,6 +297,70 @@
       </span>
     </div>
 
+    <!-- Three roles, split because they are read differently: the UI is prose and
+         labels, the terminal is the pane you stare at, and a diff is columns. Each
+         carries a preview in its own face — a page cannot tell an installed family
+         from a fontconfig alias, so seeing what you will get is the answer rather
+         than a cleverer probe. -->
+    <div class="settings-row">
+      <span class="settings-k">UI font
+        <span class="settings-hint">body text and labels</span>
+      </span>
+      <span class="settings-step">
+        <span class="thsample" id="thuisample">Handgloves 0123</span>
+        <select class="settings-select" id="thui" aria-label="UI font"></select>
+      </span>
+    </div>
+    <div class="settings-row thcustom" id="thuicustomrow" hidden>
+      <span class="settings-k">UI font name</span>
+      <span class="settings-step">
+        <input class="thhex thname" type="text" id="thuicustom" maxlength="64"
+               spellcheck="false" aria-label="UI font family name">
+      </span>
+    </div>
+
+    <div class="settings-row">
+      <span class="settings-k">Terminal font</span>
+      <span class="settings-step">
+        <span class="thsample" id="thmonosample">Handgloves 0123</span>
+        <select class="settings-select" id="thmono" aria-label="Terminal font"></select>
+      </span>
+    </div>
+    <div class="settings-row thcustom" id="thmonocustomrow" hidden>
+      <span class="settings-k">Terminal font name</span>
+      <span class="settings-step">
+        <input class="thhex thname" type="text" id="thmonocustom" maxlength="64"
+               spellcheck="false" aria-label="Terminal font family name">
+      </span>
+    </div>
+
+    <div class="settings-row">
+      <span class="settings-k">Terminal size
+        <span class="settings-hint">before the UI scale</span>
+      </span>
+      <span class="settings-step">
+        <button class="stepbtn" id="tsdown" title="Smaller">&#8722;</button>
+        <span class="stepval" id="tsval">12px</span>
+        <button class="stepbtn" id="tsup" title="Bigger">+</button>
+        <button class="settings-reset" id="tsreset" type="button">Reset</button>
+      </span>
+    </div>
+
+    <div class="settings-row">
+      <span class="settings-k">Diff font</span>
+      <span class="settings-step">
+        <span class="thsample" id="thcodesample">Handgloves 0123</span>
+        <select class="settings-select" id="thcode" aria-label="Diff font"></select>
+      </span>
+    </div>
+    <div class="settings-row thcustom" id="thcodecustomrow" hidden>
+      <span class="settings-k">Diff font name</span>
+      <span class="settings-step">
+        <input class="thhex thname" type="text" id="thcodecustom" maxlength="64"
+               spellcheck="false" aria-label="Diff font family name">
+      </span>
+    </div>
+
     <div class="settings-row">
       <span class="settings-k">Font size</span>
       <span class="settings-step">

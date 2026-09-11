@@ -984,6 +984,72 @@ export function currentPreset() {
     .every((role) => same(PRESETS[k][role], theme[role]))) ?? null;
 }
 
+/* Monospace and sans families worth *asking* about.
+ *
+ * **A list, because a page cannot enumerate installed fonts here.**
+ * `queryLocalFonts()` is the API for that, and it is Chromium-only behind a
+ * permission prompt — absent from WebKit, so absent from WKWebView on macOS and
+ * from WebKitGTK on Linux, which is every window this app opens. Asking whether
+ * one named family resolves does work everywhere.
+ *
+ * Notably **not** `SF Mono`: macOS does not expose its system faces by name, and
+ * the generic answers where the name does not — which is why `system` is in
+ * [`FONTS`] as `ui-monospace` rather than as a name that comes back absent. */
+const MONO_CANDIDATES = [
+  'Berkeley Mono', 'Cascadia Code', 'Cascadia Mono', 'Comic Mono', 'Consolas',
+  'Courier New', 'DejaVu Sans Mono', 'Fira Code', 'Fira Mono', 'Geist Mono',
+  'Hack', 'Iosevka', 'Inconsolata', 'Liberation Mono', 'Menlo', 'Monaco',
+  'MonoLisa', 'Noto Sans Mono', 'Roboto Mono', 'Source Code Pro',
+  'SF Mono Powerline', 'Ubuntu Mono', 'Victor Mono', 'Zed Mono',
+];
+const SANS_CANDIDATES = [
+  'Arial', 'Avenir Next', 'DejaVu Sans', 'Helvetica Neue', 'Inter', 'Lato',
+  'Noto Sans', 'Open Sans', 'Roboto', 'Segoe UI', 'Source Sans 3', 'Ubuntu',
+];
+
+/** Whether asking for `name` gets you anything other than the default face.
+ *
+ *  **It cannot tell an installed family from an aliased one, and that is a real
+ *  limit rather than a bug to fix.** fontconfig — WebKitGTK, the Linux target —
+ *  substitutes by design: `Courier New` resolves to Liberation Mono on a machine
+ *  that has never had it, and nothing the page can measure sees the difference.
+ *  The branch this comes from probed against three generics and called agreement
+ *  proof, which is a Chrome-shaped assumption: under fontconfig all three agree
+ *  *because* the alias resolves the same way regardless of what follows it.
+ *
+ *  So this asks the narrower question it can actually answer — does this name
+ *  resolve to something other than the fallback — against a family that certainly
+ *  does not exist. One comparison rather than three, and immune to the agreement
+ *  trap. **The preview beside each control is what makes the remaining error
+ *  harmless**: you see the face you will get before you keep it.
+ */
+function resolves(name, ctx) {
+  const NOTHING = '__orchd_no_such_family__';
+  const sample = 'MWil10O—mmmiii';
+  const width = (family) => {
+    ctx.font = `48px ${family}`;
+    return ctx.measureText(sample).width;
+  };
+  return width(`'${NOTHING}'`) !== width(`'${name}','${NOTHING}'`);
+}
+
+/** The candidate families that resolve here, by role. Measured once, lazily.
+ *
+ *  **Not at module scope.** Two lists of measurements on the boot path lengthens
+ *  the near-black window before the first paint, for a list nothing reads until
+ *  somebody opens the settings pane. The branch this comes from did it at import.
+ */
+let detected = null;
+export function detectedFonts() {
+  if (detected) return detected;
+  const ctx = document.createElement('canvas').getContext('2d');
+  if (!ctx) return { mono: [], sans: [] };
+  const shipped = new Set(Object.values(FONTS).map((f) => f.label));
+  const find = (names) => names.filter((n) => !shipped.has(n) && resolves(n, ctx));
+  detected = { mono: find(MONO_CANDIDATES), sans: find(SANS_CANDIDATES) };
+  return detected;
+}
+
 /** The theme as it stands. Replaced whole by [`setTheme`], never mutated. */
 export let theme = loadTheme();
 
@@ -1047,17 +1113,25 @@ function clampOpacity(v) {
   return Math.min(1, Math.max(0.35, Math.round(n * 100) / 100));
 }
 
+/** Whether a family name is one this app will put in a declaration.
+ *
+ *  **Refused rather than mangled**, and one spelling so the pane and the stack
+ *  cannot disagree about what is allowed. Deleting the characters that could break
+ *  a declaration corrupts legitimate names, and what survives can still inject a
+ *  second family — `Comic, monospace` is two. Letters, digits, spaces, dots and
+ *  hyphens cover every real family name and nothing that can end a declaration.
+ */
+export const validFontName = (name) => /^[\w .-]{1,64}$/.test(String(name ?? ''));
+
 /** The CSS stack for one role, or the vendored default if the key is unknown. */
 export function fontStack(role) {
   const key = theme[role];
   if (typeof key === 'string' && key.startsWith('custom:')) {
-    /* **Refused rather than mangled.** Deleting the characters that could break a
-       declaration corrupts legitimate family names, and what survives can still
-       inject a second family — `Comic, monospace` is two. A name that does not
-       match falls back to the vendored stack, which is visible in the preview
-       rather than silent. */
+    /* A name that does not pass falls back to the vendored stack rather than
+       being cleaned up — see `validFontName`. The pane refuses it before it gets
+       here; this is the second line of defence for a hand-edited store. */
     const name = key.slice('custom:'.length);
-    if (/^[\w .-]{1,64}$/.test(name)) {
+    if (validFontName(name)) {
       const generic = role === 'ui' ? 'system-ui,sans-serif' : 'ui-monospace,monospace';
       return `'${name}',${generic}`;
     }

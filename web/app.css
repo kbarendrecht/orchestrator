@@ -917,6 +917,14 @@ body.row-resizing{cursor:row-resize;user-select:none}
    keyboard- and screen-reader-reachable without building one, and the OS panel it
    opens is the one people already know. It needs its own chrome removed: browsers
    draw a padded swatch with a border that ignores the pane's own line colour. */
+/* The face you will actually get, beside the control that chooses it. A page
+   cannot tell an installed family from a fontconfig alias, so this is the answer
+   rather than a cleverer probe: `Courier New` previewing as Liberation Mono is
+   visible, where a dropdown claiming it is installed is not. */
+.thsample{
+  color:var(--faint-solid);font-size:calc(11.5px * var(--fs));
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:150px;
+}
 .settings-select{
   padding:3px 6px;border:1px solid var(--line);border-radius:2px;
   background:var(--bg);color:var(--dim);
@@ -935,6 +943,11 @@ body.row-resizing{cursor:row-resize;user-select:none}
   font-family:var(--mono);font-size:calc(10.5px * var(--fs));
 }
 .thhex:focus{outline:2px solid var(--focus);outline-offset:1px}
+/* A font name is a name, not a hex triple, so it borrows `.thhex`'s box and needs
+   a wider one. Below `.thhex` rather than above it: the two selectors weigh the
+   same, so the later width is the one that wins, and the earlier spelling of this
+   rule lost silently — a 64-character control 80px wide. */
+.thname{width:150px}
 /* A refusal is a sentence under the rows it is about, not a control snapping
    back. Amber rather than `--bad`: nothing failed, an answer was declined. */
 .thnote{padding-top:0}

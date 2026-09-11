@@ -1,7 +1,8 @@
 // The settings panel. The zoom control it offers lives in core, because the
 // terminals read the scale too.
 
-import { ctl, $, WHEEL, ZOOM, call, callHost, caret, currentPreset, PRESETS, resetTheme, setTheme, theme, closeLegend, el, get, MOD_LABEL, saveWheel, saveZoom, setWheel, setZoom, snap, wheelScale, zoomScale } from './core.js';
+import { ctl, $, WHEEL, ZOOM, call, callHost, caret, currentPreset, detectedFonts, FONTS, fontStack, PRESETS, resetTheme,
+  setTheme, theme, validFontName, closeLegend, el, get, MOD_LABEL, saveWheel, saveZoom, setWheel, setZoom, snap, wheelScale, zoomScale } from './core.js';
 import { parseHex, toHex } from './palette.js';
 
 const settingsOpen = () => !$('settings').hidden;
@@ -213,6 +214,69 @@ function showTheme(note = '') {
   $('thnoterow').hidden = !note;
 }
 
+/** The bundled face each role falls back to when a custom name is cleared. */
+const THEME_DEF_KEY = { ui: 'plexsans', mono: 'plex', code: 'jetbrains' };
+
+/** Nudge the terminal's base size and redraw the readout. */
+function stepTermSize(by) {
+  setTheme({ termSize: theme.termSize + by });
+  showTermSize();
+}
+
+function showTermSize() {
+  $('tsval').textContent = `${theme.termSize}px`;
+  ctl('tsdown').disabled = theme.termSize <= 8;
+  ctl('tsup').disabled = theme.termSize >= 24;
+}
+
+/** Fill one role's dropdown: the vendored faces, whatever resolves here, and
+ *  "Other…".
+ *
+ *  The vendored ones come first and are labelled plainly, because they are the
+ *  only families certain to be there — everything under `detected` is a name this
+ *  machine answered to, which is not the same as a name it has.
+ */
+function fillFonts(role) {
+  const sel = ctl(`th${role}`);
+  if (sel.options.length) return;
+  const want = role === 'ui' ? false : true;
+  const group = (label, names, value) => {
+    if (!names.length) return;
+    const g = el('optgroup');
+    g.label = label;
+    for (const n of names) {
+      const o = el('option', null, typeof n === 'string' ? n : n.label);
+      o.value = value(n);
+      g.appendChild(o);
+    }
+    sel.appendChild(g);
+  };
+  group('Bundled', Object.entries(FONTS).filter(([, f]) => f.mono === want).map(([k, f]) => ({ key: k, label: f.label })),
+    (n) => n.key);
+  group('On this machine', detectedFonts()[want ? 'mono' : 'sans'], (n) => `custom:${n}`);
+  const other = el('option', null, 'Other\u2026');
+  other.value = 'other';
+  sel.appendChild(other);
+}
+
+/** Show a role's current font, its preview, and its name box when it has one. */
+function showFont(role) {
+  const key = theme[role];
+  const custom = typeof key === 'string' && key.startsWith('custom:');
+  const sel = ctl(`th${role}`);
+  // A `custom:` face the machine offered is in the list; one typed by hand is not,
+  // and lands on "Other…" with its name in the box below.
+  sel.value = [...sel.options].some((o) => o.value === key) ? key : (custom ? 'other' : key);
+  // The *row* hides, never the input: hiding both leaves a control that is
+  // display:none inside a visible row the moment the row is shown again.
+  $(`th${role}customrow`).hidden = sel.value !== 'other';
+  // From the theme, so a refused name is replaced by what is actually applied.
+  ctl(`th${role}custom`).value = custom ? key.slice('custom:'.length) : '';
+  // The preview wears the stack it is previewing, which is the only honest way to
+  // show a family the page cannot verify it really has.
+  $(`th${role}sample`).style.fontFamily = fontStack(role);
+}
+
 /** Apply one colour, or show why it was refused.
  *
  *  **`#fff` is accepted**, because it is the single most likely thing typed into a
@@ -270,6 +334,44 @@ function setupSettings() {
     const p = PRESETS[ev.target.value];
     if (p) showTheme(setTheme({ bg: p.bg, panel: p.panel, text: p.text }) || '');
   };
+
+  for (const role of ['ui', 'mono', 'code']) {
+    fillFonts(role);
+    ctl(`th${role}`).onchange = (ev) => {
+      const v = ev.target.value;
+      // "Other…" is a request to type a name, not a font: keep the face until one
+      // arrives, and open the box.
+      if (v === 'other') {
+        $(`th${role}customrow`).hidden = false;
+        ctl(`th${role}custom`).focus();
+        return;
+      }
+      setTheme({ [role]: v });
+      showFont(role);
+    };
+    ctl(`th${role}custom`).onchange = (ev) => {
+      const name = String(ev.target.value).trim();
+      // Said, not swallowed: a box still holding a name the board is not using is
+      // the same silence a colour control reverting with no sentence would be.
+      if (name && !validFontName(name)) {
+        /* The note, and nothing else: re-rendering here would put the select back
+           on the applied font and fold the row away — taking the box you are
+           typing in with it, mid-correction. What you typed stays, the board keeps
+           the font it has, and the sentence says which is which. */
+        showTheme(`"${name}" is not a font name. Letters, digits, spaces, dots and hyphens.`);
+        return;
+      }
+      setTheme({ [role]: name ? `custom:${name}` : THEME_DEF_KEY[role] });
+      showTheme();
+      showFont(role);
+    };
+    showFont(role);
+  }
+
+  $('tsdown').onclick = () => stepTermSize(-1);
+  $('tsup').onclick = () => stepTermSize(1);
+  $('tsreset').onclick = () => { setTheme({ termSize: 12 }); showTermSize(); };
+  showTermSize();
 
   showTheme();
   for (const role of ['bg', 'panel', 'text']) {
