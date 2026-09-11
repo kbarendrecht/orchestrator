@@ -28,6 +28,21 @@ export async function run(t) {
   await t.api('POST', `/api/session/${tree}/rename`, { name: 'the invoice one' })
   assert.equal((await t.session(tree)).name, 'the invoice one')
 
+  /* A session one agent spawned for another, which is a link the *record* holds
+     rather than anything git or the transcript could re-derive. Everything else
+     here either persists and is restored, or heals itself from disk; this is the
+     one fact with no other home.
+
+     Before the turnless block below, not after: that block sets the agent's turn
+     count around one spawn, and anything between `setTurns(1)` and the restart
+     changes when the ghost's own agent reads that file. */
+  const helper = await t.api('POST', `/api/session/${tree}/spawn`, {
+    worktree: true,
+    name: 'helper',
+    prompt: 'a hand with the invoice',
+  })
+  await t.settled(helper.session)
+
   // And a pane nobody typed into, in a worktree of its own. It is the case the
   // whole `had_a_turn` distinction exists for: a headers-only transcript that
   // `--resume` opens and exits.
@@ -61,6 +76,16 @@ export async function run(t) {
   await t.settled(tree)
   await t.settled(main)
   assert.equal((await t.session(main)).alive, true)
+
+  /* **The delegation link survived the respawn, not just the restore.** A resume
+     rebuilds the record under the same id from a fixed set of carried fields, so
+     anything `restore` put back and `Carried` does not name is discarded a moment
+     later — the trap `Carried::created_at`'s own docblock describes. For this
+     field that means a parent that can no longer undo the child it spawned, and
+     the only sign is a refusal saying the opposite of what happened. */
+  await t.settled(helper.session)
+  const undone = await t.api('POST', `/api/session/${tree}/spawned/${helper.session}/discard`)
+  assert.equal(undone.removed, 'helper', 'the parent lost the child it spawned across a restart')
 
   // Main's claim is re-taken by the restored session, not left empty. A live
   // agent in main with no occupant recorded is what `switch_main_to_pr` reads

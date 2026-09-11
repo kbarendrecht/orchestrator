@@ -394,6 +394,29 @@ struct Carried {
     /// conversation and earns its own name (the degraded-relocate fork is the one
     /// exception, and it gets the name back through `restore_after_relocate`).
     name: Option<String>,
+    /// Who spawned this session, and whether that spawn cut the worktree.
+    ///
+    /// **The one fact on the record with no other home.** Everything else a resume
+    /// rebuilds either persists and is restored, or heals itself from disk — a
+    /// title from the transcript, a branch from the tree. This pair is a *link*
+    /// between two conversations, and nothing outside the record knows it.
+    ///
+    /// `api::discard_spawned` is the reader: it refuses to let a session discard
+    /// one it did not spawn. Lost, an agent that restarts can no longer undo the
+    /// child it created, and the refusal says the opposite of what happened.
+    /// `SessionRecord` persists both and `restore` puts them back at boot;
+    /// auto-resume discarded them a moment later, exactly as it did
+    /// [`Self::created_at`]. Carried on a fork too: a fork of a spawned session is
+    /// still that parent's to undo.
+    spawned_by: Option<SessionId>,
+    spawn_cut_worktree: bool,
+    /// That this conversation began as a fork of another.
+    ///
+    /// The rail draws a badge from it and `store` persists it, so a restart kept
+    /// it and the respawn right after threw it away — a forked row quietly stopped
+    /// reading as forked. Set directly for a *new* fork; carried here for a resume
+    /// of one that already was.
+    forked_from: Option<SessionId>,
     /// When this conversation actually began, which a resume otherwise loses.
     ///
     /// `Session::new` stamps it with *now*, and a resume rebuilds the record under
@@ -420,6 +443,12 @@ impl Carried {
             branch: prev.branch.clone(),
             notice: prev.arrival_notice.clone(),
             name: if fork { None } else { prev.name.clone() },
+            spawned_by: prev.spawned_by,
+            spawn_cut_worktree: prev.spawn_cut_worktree,
+            // A *new* fork is not itself forked from anything the parent records —
+            // `spawn_session` sets that from the `Source`. This carries the fact
+            // for a resume of a session that was already a fork.
+            forked_from: if fork { None } else { prev.forked_from },
             // Resume only. A fork is a new conversation and started when it was
             // forked, so the files you rewrote before it existed are news to it.
             created_at: (!fork).then_some(prev.created_at),
@@ -516,6 +545,9 @@ async fn spawn_session_with_id(
         notice: carried_notice,
         name: carried_name,
         created_at: carried_created_at,
+        spawned_by: carried_spawned_by,
+        spawn_cut_worktree: carried_cut,
+        forked_from: carried_fork,
     } = match resume {
         Some(Source::Resume(prev)) | Some(Source::Fork(prev)) => {
             let fork = matches!(resume, Some(Source::Fork(_)));
@@ -606,6 +638,9 @@ async fn spawn_session_with_id(
     if let Some(began) = carried_created_at {
         session.created_at = began;
     }
+    session.spawned_by = carried_spawned_by;
+    session.spawn_cut_worktree = carried_cut;
+    session.forked_from = carried_fork;
     if let Some(Source::Fork(prev)) = resume {
         session.forked_from = Some(prev);
     }

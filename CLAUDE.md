@@ -1058,6 +1058,26 @@ mean *this* repo; if you do, name it.
   not watch, and a session with a stale environment is a worse bug than a slow one.
   The 50ms floor `proc::run_bounded` used to add is gone (it backs off from 2ms),
   and the cost is now in the log per spawn. Revisit it with a number, not a guess.
+- **A resume rebuilds the record from `spawn::Carried`, and anything not named
+  there is thrown away.** `SessionRecord` persists twenty fields and `restore`
+  puts them all back at boot — then `auto_resume` respawns through
+  `spawn_session`, which rebuilds the record under the same id from `Carried`
+  alone. So a field that persists but is not carried is restored and discarded a
+  moment later, and the only sign is a behaviour that quietly stops working after
+  a restart. `created_at` was the first (a resumed session claimed to have started
+  this second, which silenced `claim_stale_warning` for the one session that
+  needed it); `spawned_by`, `spawn_cut_worktree` and `forked_from` were the rest.
+  The first pair is the sharpest, because it is the one fact on the record with
+  **no other home**: everything else either persists or heals itself from disk — a
+  title from the transcript, a branch from the tree — while "which session spawned
+  which" exists nowhere else. Lost, an agent that restarts can no longer undo the
+  child it created, and `api::discard_spawned` refuses with the opposite of what
+  happened.
+  Deliberately *not* carried, each for a reason: `recovery` (the tree is rebuilt,
+  so the session is no longer archived), `ask_token` (re-minted per spawn by
+  design), `outside_grants` (a restart asks again rather than assuming), and
+  `state`/`pty`/`pid` (a new process). Before adding a field to `SessionRecord`,
+  decide which side of that line it is on.
 - **Every spawner records the session's branch, and the swap depends on it.**
   `Session::branch` is what `api::to_carry` matches on to decide which
   conversation travels when a branch moves, so a record with `branch: None` is a
