@@ -117,6 +117,14 @@ async fn main() -> Result<()> {
 /// Every path after `--host` is a checkout. The children are real `orchd`
 /// processes found the same way the app finds them, so this exercises the child
 /// protocol rather than standing in for it.
+///
+/// **A real host, writing real state**: each checkout gets its state directory
+/// under `ORCHD_CONFIG_DIR` and lands in `recent.json`, the same as under the app.
+/// Point that variable somewhere else for a throwaway one.
+///
+/// The argv names the *starting* set and is not written to `host.json` — this is a
+/// one-off, the way `--main` is. An `add` or a `close` during the session does
+/// write, because that is a decision rather than an argument.
 async fn run_host(checkouts: Vec<String>) -> Result<()> {
     if checkouts.is_empty() {
         anyhow::bail!("--host takes one or more checkout paths");

@@ -402,6 +402,34 @@ async fn a_host_adds_closes_and_reopens_checkouts_and_refuses_the_three() {
         "a refused add was written to the host file",
     );
 
+    // 3c — the host's own socket carries the list, because the page's substituted
+    // copy is a snapshot of the moment it was served and a restarted daemon mints
+    // a new token. Asserted as a connect-and-read: the first frame is the list.
+    let ws = std::process::Command::new("curl")
+        .args([
+            "-s",
+            "--max-time",
+            "5",
+            "--include",
+            "--no-buffer",
+            "-H",
+            "Connection: Upgrade",
+            "-H",
+            "Upgrade: websocket",
+            "-H",
+            "Sec-WebSocket-Version: 13",
+            "-H",
+            "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==",
+            &format!("{base}/ws/host?token={token}"),
+        ])
+        .output()
+        .expect("curl ran");
+    let handshake = String::from_utf8_lossy(&ws.stdout);
+    assert!(
+        handshake.contains("101"),
+        "the host socket refused the page's own token: {handshake}"
+    );
+
     // The folder dialog refuses without a window, which is this test and a browser
     // tab. The same sentence every other window route refuses with.
     let (code, body) = post(&format!("{base}/api/host/pick"), &base, &token, "{}");

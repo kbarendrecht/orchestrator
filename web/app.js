@@ -3,7 +3,8 @@
 // The SPA is a module now, so what it reaches for is written down. `core.js` holds
 // the primitives every part needs; `queue.js` is the first seam extracted whole.
 import {
-  $, el, toast, call, callHost, get, duration, activeCheckout, CHECKOUTS, snapshotOf, wsKey,
+  $, el, toast, call, callHost, get, duration, activeCheckout, CHECKOUTS, setCheckouts,
+  HOST, snapshotOf, wsKey,
   snap, receive, keyActivate,
   setZoom, saveZoom, onScaleChange, ZOOM, zoomScale,
   selected, setSelected, onSelection, prForWorkspace,
@@ -1555,9 +1556,55 @@ function connect(checkout) {
   };
 }
 
-/** One events socket per open checkout. */
+/** Which checkouts already have an events socket, by path.
+ *
+ *  A set rather than a count, because the list changes by add and close and a
+ *  second socket on one checkout would double every snapshot. */
+const socketed = new Set();
+
+/** One events socket per open checkout, for any that does not have one yet. */
 function connectAll() {
-  for (const c of CHECKOUTS) connect(c);
+  for (const c of CHECKOUTS) {
+    if (socketed.has(c.path)) continue;
+    socketed.add(c.path);
+    connect(c);
+  }
+}
+
+/** The host's own socket: the checkout list, whenever it changes.
+ *
+ *  **The page's substituted list goes stale the moment anything happens** — a
+ *  checkout added, closed, or restarted on a new port with a new token. A page
+ *  holding the old token would be refused by the very checkout it is drawing, and
+ *  reloading to find out would take every terminal in every checkout down with it.
+ *
+ *  So the list is reconciled in place: new checkouts get a socket, closed ones
+ *  lose their terminals, and the rail redraws. Nothing else moves.
+ */
+function connectHost() {
+  const sock = new WebSocket(
+    `${HOST.wsBase}/ws/host?token=${encodeURIComponent(HOST.token)}`
+  );
+  sock.onmessage = (ev) => {
+    const { checkouts } = JSON.parse(ev.data);
+    const open = new Set(checkouts.map((c) => c.path));
+    // A checkout that is gone takes its terminals with it: they are attached to a
+    // daemon that has stopped, and nothing will ever close their sockets for them.
+    for (const [key, entry] of [...terms]) {
+      if (!open.has(entry.checkout.path)) {
+        Term.close(entry.checkout, key.slice(key.indexOf('\u0000') + 1));
+      }
+    }
+    for (const path of [...socketed]) if (!open.has(path)) socketed.delete(path);
+    setCheckouts(checkouts);
+    // A selection in a checkout that is gone points at nothing.
+    if (selected && !currentSession()) setSelected(null);
+    connectAll();
+    scheduleRender();
+  };
+  // The host is the process serving this page: if its socket drops, the page is
+  // talking to something that is going away. Retry anyway — a reload is worse.
+  sock.onclose = () => setTimeout(connectHost, 1500);
 }
 
 // ---------------------------------------------------------------------------
@@ -1818,6 +1865,7 @@ Settings.setup();
 setupColumns();
 setupChrome();
 connectAll();
+connectHost();
 /* The waiting clock has to tick even when nothing else changes — and ticking is
    all it does. This used to call `Rail.render()`, which opens with
    `replaceChildren`: the row under your pointer was destroyed and rebuilt every

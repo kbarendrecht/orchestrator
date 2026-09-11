@@ -270,6 +270,12 @@ button.ctx-btn:hover{color:var(--text)}
 }
 .co-head ~ .ws .ws-head{top:26px;z-index:2}
 
+/* The way a second checkout is ever opened, at the foot of the list where "and
+   another one" belongs. `.railbtn` gives it the rail's own row shape; this only
+   makes it read as an action rather than as an empty state. */
+.addco{width:100%;text-align:left;color:var(--faint-solid);cursor:pointer;background:none;border:0}
+.addco:hover{color:var(--fg)}
+
 /* The one row that says how much you are losing to idle agents. */
 .waitbar{
   z-index:3;display:none;align-items:center;gap:8px;

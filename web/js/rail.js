@@ -1,7 +1,7 @@
 // The rail: what is running, what is waiting on you, and the PRs beside it.
 // Twenty-four names, three out; the rest is how a row decides what it says.
 
-import { $, activeCheckout, byNewest, call, callFor, checkoutOf, CHECKOUTS, snapshotOf, snapshotFor, caret, clock, confirmBox, copyText, creating, dotClass, duration, el, isArchived, isConversation, isWaiting, mainWorkspace, MOD_LABEL, newSession, newWorktree, openMenu, pending, refreshButton, selected, sessionsOf, setSelected, sinceSnap, snap, stateClass, stateLabel, toast, unchanged, setPendingSelect } from './core.js';
+import { $, activeCheckout, byNewest, call, callFor, callHost, checkoutOf, CHECKOUTS, chooseBox, getHost, snapshotOf, snapshotFor, terms, caret, clock, confirmBox, copyText, creating, dotClass, duration, el, isArchived, isConversation, isWaiting, mainWorkspace, MOD_LABEL, newSession, newWorktree, openMenu, pending, refreshButton, selected, sessionsOf, setSelected, sinceSnap, snap, stateClass, stateLabel, toast, unchanged, setPendingSelect } from './core.js';
 import * as Review from './review.js';
 import * as Term from './term.js';
 
@@ -78,9 +78,110 @@ function renderRail() {
     rail.appendChild(worktreeGroup(c, state, main?.id));
   }
 
+  // The one added piece of chrome, at the foot of the list where "and another
+  // one" belongs. Always drawn, including on a single-checkout install: it is how
+  // a second checkout is ever opened, and it replaces the header's switcher.
+  rail.appendChild(addCheckoutButton());
+
   // Its own pane below the scroller, so it stays put while sessions scroll. It
   // describes one repository, so it follows the checkout you are in.
   $('prpane').replaceChildren(prGroup());
+}
+
+/** `+ checkout`, and the menu of ways to name one.
+ *
+ *  A menu rather than a screen, because the answer is nearly always one of the
+ *  checkouts you had open before — the host keeps that list, and the folder dialog
+ *  is the way in for the one it has never seen.
+ */
+function addCheckoutButton() {
+  const btn = el('button', 'railbtn addco', '+ checkout');
+  btn.title = 'Open another checkout beside this one';
+  btn.onclick = async (ev) => {
+    let recent = [];
+    try {
+      ({ recent } = await getHost('/api/host/recent'));
+    } catch (e) {
+      // The list is a convenience; the dialog still works without it.
+      toast(e.message, true);
+    }
+    const items = recent.slice(0, 8).map((r) =>
+      [r.name, null, () => addCheckout(r.path)]);
+    items.push(['browse\u2026', null, browseForCheckout]);
+    openMenu(ev, items);
+  };
+  return btn;
+}
+
+/** Raise the native folder dialog, then open what came back.
+ *
+ *  A cancelled dialog answers with no path, which is an answer rather than an
+ *  error. In a browser tab there is no window to raise one from, and the host
+ *  says so in the sentence every other window route uses.
+ */
+async function browseForCheckout() {
+  try {
+    const { path } = await callHost('/api/host/pick');
+    if (path) await addCheckout(path);
+  } catch (e) {
+    toast(e.message, true);
+  }
+}
+
+/** Ask the host to open a checkout, answering its one question if it asks.
+ *
+ *  **The question is whether to resume.** Closing a checkout keeps its session
+ *  records — closing is a statement about the window, not a decision about
+ *  conversations — so a path coming back is exactly when "resume those, or start
+ *  empty" has to be asked rather than assumed.
+ *
+ *  @param {string} path
+ *  @param {boolean} [resume]
+ */
+async function addCheckout(path, resume) {
+  try {
+    const { result } = await callHost('/api/host/checkout',
+      resume === undefined ? { path } : { path, resume });
+    if (result.added === 'ask') {
+      const n = result.sessions;
+      const yes = await chooseBox(
+        `Resume ${n} conversation${n === 1 ? '' : 's'} in ${result.path}?\n\n`
+        + 'They were live when this checkout was last closed. Resuming reopens each '
+        + 'one at its prompt; it re-runs nothing.',
+        { ok: 'Resume', other: 'Start empty' });
+      // `Esc` is neither answer: the checkout stays closed rather than opening
+      // one of the two ways nobody chose.
+      return yes === null ? undefined : addCheckout(path, yes);
+    }
+    toast(`opened ${result.checkout.name}`);
+  } catch (e) {
+    toast(e.message, true);
+  }
+}
+
+/** Close a checkout, or start its daemon again when it is down.
+ *
+ *  Symmetric down to the last one, which is the host's rule and not the page's to
+ *  soften: an empty host is the first-run page. Confirmed, because the terminals
+ *  of every session in it go.
+ *
+ *  @param {import('./core.js').Target} c
+ */
+async function closeCheckout(c) {
+  if (!await confirmBox(
+    `Close ${c.name}?\n\n`
+    + 'Its daemon stops and its sessions go with it. The conversations are kept — '
+    + 'opening this checkout again offers to resume them.',
+    { ok: 'Close', danger: true })) return;
+  try {
+    await callHost('/api/host/checkout/close', { path: c.path });
+    // Every terminal in that checkout is pointed at a daemon that has stopped.
+    for (const [key, entry] of [...terms]) {
+      if (entry.checkout.path === c.path) Term.close(c, key.slice(key.indexOf('\u0000') + 1));
+    }
+  } catch (e) {
+    toast(e.message, true);
+  }
 }
 
 /** The strip naming one checkout, above its groups.
@@ -108,7 +209,23 @@ function checkoutHead(c) {
     head.appendChild(warn);
   }
   if (!c.live) head.appendChild(el('span', 'co-clash', 'down'));
+  head.oncontextmenu = (ev) => openMenu(ev, [
+    // A dead checkout's row exists so this can be pressed; a live one has nothing
+    // to reopen.
+    ['reopen', null, c.live ? null : () => reopenCheckout(c)],
+    ['close', 'bad', () => closeCheckout(c)],
+  ]);
   return head;
+}
+
+/** @param {import('./core.js').Target} c */
+async function reopenCheckout(c) {
+  try {
+    await callHost('/api/host/checkout/reopen', { path: c.path });
+    toast(`reopening ${c.name}`);
+  } catch (e) {
+    toast(e.message, true);
+  }
 }
 
 

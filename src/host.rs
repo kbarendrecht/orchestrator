@@ -138,6 +138,18 @@ pub struct Host {
     /// Which key the app's own chords wear, and whether the page draws its own
     /// titlebar. Told to the page, never sniffed.
     chrome: crate::window::Chrome,
+    /// Announces the checkout list whenever it changes.
+    ///
+    /// **Because the page's substituted copy goes stale the moment anything
+    /// happens.** A checkout added, closed, restarted on a new port with a new
+    /// token, or gone down — none of those can be in a page that was already
+    /// served, and the alternative to a socket is reloading the page, which takes
+    /// every terminal in every checkout down with it.
+    ///
+    /// A `broadcast` of the whole list rather than a delta, for the reason the
+    /// snapshot socket gives: the list is small, whole state cannot half-apply,
+    /// and a dropped message costs freshness rather than correctness.
+    changes: tokio::sync::broadcast::Sender<Vec<Checkout>>,
 }
 
 impl Host {
@@ -151,6 +163,9 @@ impl Host {
             retried: Mutex::new(HashMap::new()),
             started: Mutex::new(HashMap::new()),
             chrome,
+            // Small: a subscriber that falls this far behind is a page that has
+            // stopped reading, and the list it eventually gets is the current one.
+            changes: tokio::sync::broadcast::channel(16).0,
         })
     }
 
@@ -170,10 +185,20 @@ impl Host {
             Some(existing) => *existing = checkout,
             None => open.push(checkout),
         }
+        drop(open);
+        self.announce();
     }
 
     pub fn checkouts(&self) -> Vec<Checkout> {
         self.checkouts.lock().unwrap().clone()
+    }
+
+    /// Tell every open page what the list is now.
+    ///
+    /// Called from every path that changes it. A send with no subscribers is not
+    /// an error — the app's own window may not have loaded the page yet.
+    fn announce(&self) {
+        let _ = self.changes.send(self.checkouts());
     }
 
     /// Open every remembered checkout, each on its own thread.
@@ -201,9 +226,23 @@ impl Host {
         for handle in opening {
             let _ = handle.join();
         }
+        // **Back into the order they were asked for.** They start concurrently, so
+        // the rows land in the order the daemons happened to answer — and the rail
+        // draws them in list order, so an install would re-shuffle its own rail on
+        // every launch for no reason a person could see.
+        self.reorder(checkouts);
         // After, not before: the sweep skips what is open, and reading that from
         // the rows means it cannot race a start that has not recorded itself yet.
         sweep_checkout_dirs(checkouts);
+    }
+
+    /// Put the rows in the given order, keeping any the caller did not name.
+    fn reorder(&self, order: &[PathBuf]) {
+        let wanted: Vec<String> = order.iter().map(|p| p.to_string_lossy().into_owned()).collect();
+        self.checkouts.lock().unwrap().sort_by_key(|c| {
+            wanted.iter().position(|w| *w == c.path).unwrap_or(usize::MAX)
+        });
+        self.announce();
     }
 
     /// Write the open list to the host file.
@@ -242,6 +281,7 @@ impl Host {
             row.live = false;
         }
         self.children.lock().unwrap().remove(checkout);
+        self.announce();
     }
 
     /// Start a checkout's daemon and record it.
@@ -476,6 +516,7 @@ impl Host {
         self.retried.lock().unwrap().remove(checkout);
         self.started.lock().unwrap().remove(checkout);
         self.remember();
+        self.announce();
         stopped
     }
 
@@ -531,6 +572,8 @@ impl Host {
                 row.clash = Some(path.clone());
             }
         }
+        drop(open);
+        self.announce();
     }
 
     /// Stop a checkout's daemon, keeping its row.
@@ -998,6 +1041,7 @@ pub fn router(host: Arc<Host>) -> Router {
         .route("/api/host/checkout", post(add_checkout))
         .route("/api/host/checkout/close", post(close_checkout))
         .route("/api/host/checkout/reopen", post(reopen_checkout))
+        .route("/ws/host", get(host_socket))
         .route("/api/host/recent", get(recent))
         .route("/api/host/pick", post(pick))
         .route("/api/window/resize/:edge", post(window_resize))
@@ -1164,6 +1208,67 @@ async fn font(UrlPath(file): UrlPath<String>) -> Response {
 
 async fn checkouts(State(host): State<Arc<Host>>) -> Json<serde_json::Value> {
     Json(json!({ "checkouts": host.checkouts() }))
+}
+
+/// The checkout list, pushed whenever it changes.
+///
+/// **The page cannot learn this any other way.** Its substituted copy is a
+/// snapshot of the moment it was served, and a restarted daemon mints a new token
+/// — so a page that kept the old one would be refused by the very checkout it is
+/// drawing. Reloading would work and would take every terminal down with it.
+///
+/// Token in the query rather than a header, because a browser cannot set headers
+/// on a websocket. Same rule as the daemon's own sockets.
+async fn host_socket(
+    State(host): State<Arc<Host>>,
+    axum::extract::Query(q): axum::extract::Query<WsQuery>,
+    ws: axum::extract::WebSocketUpgrade,
+) -> Response {
+    if q.token != host.token {
+        return (StatusCode::UNAUTHORIZED, "bad token").into_response();
+    }
+    ws.on_upgrade(move |socket| host_socket_loop(host, socket))
+}
+
+#[derive(serde::Deserialize)]
+struct WsQuery {
+    token: String,
+}
+
+async fn host_socket_loop(host: Arc<Host>, mut socket: axum::extract::ws::WebSocket) {
+    use axum::extract::ws::Message;
+    let mut sub = host.changes.subscribe();
+    async fn send(socket: &mut axum::extract::ws::WebSocket, list: Vec<Checkout>) -> bool {
+        let Ok(text) = serde_json::to_string(&json!({ "checkouts": list })) else {
+            // Unserialisable is not the socket's fault; keep it open.
+            return true;
+        };
+        socket.send(Message::Text(text)).await.is_ok()
+    }
+    // The current list first, so a page that connected after a change is correct
+    // without waiting for the next one.
+    if !send(&mut socket, host.checkouts()).await {
+        return;
+    }
+    loop {
+        tokio::select! {
+            msg = sub.recv() => match msg {
+                Ok(list) => if !send(&mut socket, list).await { break },
+                // The list is whole state, so a dropped message costs freshness
+                // and the current one repairs it.
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                    if !send(&mut socket, host.checkouts()).await {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            },
+            incoming = socket.recv() => match incoming {
+                None | Some(Err(_)) | Some(Ok(Message::Close(_))) => break,
+                _ => {}
+            },
+        }
+    }
 }
 
 /// The checkouts opened before, newest first, minus the ones already open.

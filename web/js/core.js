@@ -522,7 +522,9 @@ export function dismissDialog() {
  *  guards on a gesture and two on screen means one of the gestures is lost. */
 // `body` and `focus` default rather than being left off, so `checkJs` reads them
 // as optional: a destructured parameter with no default is a required field.
-function dlgOpen(message, { ok, danger, answer, body = null, focus = null }) {
+function dlgOpen(message, {
+  ok, danger, answer, body = null, focus = null, cancel = 'Cancel', cancelValue = null,
+}) {
   if (dlgSettle && dlgAsking === message) return dlgPending;
   if (dlgSettle) dlgClose(null);
   const host = $('dlg');
@@ -538,13 +540,13 @@ function dlgOpen(message, { ok, danger, answer, body = null, focus = null }) {
   if (body) card.appendChild(body);
 
   const foot = el('div', 'dlgfoot');
-  const cancel = el('button', 'dlgbtn', 'Cancel');
-  cancel.onclick = () => dlgClose(null);
+  const no = el('button', 'dlgbtn', cancel);
+  no.onclick = () => dlgClose(cancelValue);
   const go = el('button', 'dlgbtn go' + (danger ? ' danger' : ''), ok || 'OK');
   go.onclick = () => dlgClose(answer());
   // Cancel first, so Tab reaches the safe one before the destructive one and the
   // row still reads left to right in the order everything else puts them.
-  foot.appendChild(cancel);
+  foot.appendChild(no);
   foot.appendChild(go);
   card.appendChild(foot);
   host.appendChild(card);
@@ -569,6 +571,26 @@ function dlgOpen(message, { ok, danger, answer, body = null, focus = null }) {
 export function confirmBox(message, { ok = 'Yes', danger = true } = {}) {
   return dlgOpen(message, { ok, danger, answer: () => true })
     .then((a) => a === true);
+}
+
+/** A question with two *actions* rather than a yes and a refusal.
+ *
+ *  Three outcomes, and the third is why this is not [`confirmBox`]: `true` for the
+ *  primary button, `false` for the other one, and `null` for `Esc` — which means
+ *  "I did not mean to be asked this", not either answer. A two-outcome box would
+ *  make dismissing the dialog silently pick one of the two actions.
+ *
+ *  @param {string} message
+ *  @param {{ ok: string, other: string }} labels
+ */
+export function chooseBox(message, { ok, other }) {
+  return dlgOpen(message, {
+    ok,
+    danger: false,
+    cancel: other,
+    cancelValue: false,
+    answer: () => true,
+  }).then((a) => (a === null ? null : a === true));
 }
 
 /** `window.prompt`, drawn by the app. Resolves the text, or null if cancelled.
