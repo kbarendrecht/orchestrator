@@ -518,21 +518,20 @@ fn build_window(
 fn boot_daemon(app_handle: AppHandle, rt: tokio::runtime::Handle, main: Option<std::path::PathBuf>) {
     std::thread::spawn(move || {
         let mut phases = orchd::timing::Phases::start();
-        // The checkout to open. `main` when the caller picked one, else whatever
-        // the config names — read here rather than in the child, because the host
-        // needs it to key the row it is about to record.
-        let checkout = match main.or_else(|| {
-            orchd::config::Config::existing().map(|cfg| cfg.main_checkout)
-        }) {
-            Some(p) => p,
-            None => {
-                let ah = app_handle.clone();
-                let _ = app_handle.run_on_main_thread(move || {
-                    fail(&ah, "no checkout is configured, and none was picked")
-                });
-                return;
-            }
+        // The checkouts to open. The one the caller just picked, else everything
+        // the host file remembers — read here rather than in a child, because the
+        // host needs them to key the rows it is about to record.
+        let checkouts: Vec<std::path::PathBuf> = match main {
+            Some(p) => vec![p],
+            None => orchd::host::remembered_checkouts(),
         };
+        if checkouts.is_empty() {
+            let ah = app_handle.clone();
+            let _ = app_handle.run_on_main_thread(move || {
+                fail(&ah, "no checkout is configured, and none was picked")
+            });
+            return;
+        }
         // A port of 0: the page's URL is handed to the webview, so nothing has to
         // predict it, and a stale process on a configured port cannot be the
         // difference between an app that opens and one that does not.
@@ -556,14 +555,30 @@ fn boot_daemon(app_handle: AppHandle, rt: tokio::runtime::Handle, main: Option<s
         let control: Arc<dyn WindowControl> = Arc::new(TauriWindow { app: app_handle.clone() });
         serving.host.attach_window(control);
 
-        if let Err(e) = serving.host.open_checkout(&checkout) {
+        // **A checkout that will not start is not a failed boot.** Every one is
+        // tried, each on its own thread, and one bad path leaves the window open
+        // on the rest — with N checkouts, refusing to open at all because of one
+        // is how a single stale row costs you the app.
+        // A first-run pick is a set the file has never seen, so record it before
+        // anything can fail: what to open next launch is the decision the person
+        // just made, not the subset that happened to start.
+        orchd::host::remember_checkouts(&checkouts);
+        serving.host.open_remembered(&checkouts);
+        if serving.host.checkouts().is_empty() {
             let ah = app_handle.clone();
-            let message = format!("{e:#}");
+            let message = format!(
+                "none of the {} remembered checkouts would start; see the log",
+                checkouts.len()
+            );
             let _ = app_handle.run_on_main_thread(move || fail(&ah, &message));
             return;
         }
         phases.mark("daemon");
-        tracing::info!("serving {} on port {}", checkout.display(), serving.host.port);
+        tracing::info!(
+            "serving {} checkout(s) on port {}",
+            serving.host.checkouts().len(),
+            serving.host.port
+        );
         let url = serving.url();
         *SERVER.get_or_init(|| Mutex::new(None)).lock().unwrap() = Some(serving);
 

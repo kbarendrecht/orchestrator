@@ -176,6 +176,44 @@ impl Host {
         self.checkouts.lock().unwrap().clone()
     }
 
+    /// Open every remembered checkout, each on its own thread.
+    ///
+    /// **Nothing waits for the slowest one.** A start is a network `git fetch`
+    /// away from slow, and opened in series N checkouts hold the window at the
+    /// splash for N × that — the 90 s hold the branch this replaces could produce.
+    /// Each row appears the moment its daemon answers, and a checkout still
+    /// starting is simply not in the list yet.
+    ///
+    /// A checkout that will not start is logged and skipped, never fatal: one bad
+    /// path must not cost the window. Returns when every attempt has finished, so
+    /// the caller can hand the window over knowing the list is settled.
+    pub fn open_remembered(self: &Arc<Self>, checkouts: &[PathBuf]) {
+        let mut opening = Vec::new();
+        for checkout in checkouts {
+            let host = self.clone();
+            let checkout = checkout.clone();
+            opening.push(std::thread::spawn(move || {
+                if let Err(e) = host.open_checkout(&checkout) {
+                    tracing::error!(checkout = %checkout.display(), "could not open: {e:#}");
+                }
+            }));
+        }
+        for handle in opening {
+            let _ = handle.join();
+        }
+    }
+
+    /// Write the open list to the host file.
+    ///
+    /// Best effort and logged: a list that cannot be written costs the *next*
+    /// launch its checkouts, and refusing the `add` that could not be recorded
+    /// would cost this one. Called from `add` and `close`, which are the only two
+    /// things that change the set — a restart replaces a daemon, not a row.
+    fn remember(&self) {
+        let open: Vec<PathBuf> = self.checkouts().into_iter().map(|c| PathBuf::from(c.path)).collect();
+        remember_checkouts(&open);
+    }
+
     /// The pid of a checkout's daemon, while there is one.
     ///
     /// **Not on [`Checkout`]**, which is what the page sees and has no use for a
@@ -347,11 +385,13 @@ impl Host {
 
         self.open_checkout_with(&crate::child::daemon_binary(), &path, !resume)
             .map_err(|e| format!("{e:#}"))?;
-        self.checkouts()
+        let opened = self
+            .checkouts()
             .into_iter()
             .find(|c| c.path == info.path)
-            .map(Added::Opened)
-            .ok_or_else(|| "the checkout started and then vanished from the list".to_string())
+            .ok_or_else(|| "the checkout started and then vanished from the list".to_string())?;
+        self.remember();
+        Ok(Added::Opened(opened))
     }
 
     /// The path half of [`add_checkout`]'s refusals: same path, and containment
@@ -420,6 +460,7 @@ impl Host {
         // path you once closed.
         self.retried.lock().unwrap().remove(checkout);
         self.started.lock().unwrap().remove(checkout);
+        self.remember();
         stopped
     }
 
@@ -571,6 +612,75 @@ fn resumable_sessions(checkout: &Path) -> usize {
         .iter()
         .filter(|r| r["was_live"] == true && r["had_a_turn"] == true)
         .count()
+}
+
+// --- the host's own file ----------------------------------------------------
+
+/// What the host remembers between launches.
+///
+/// **Its own file, beside the checkouts rather than inside one.** Each checkout's
+/// `config.json` belongs to its daemon and follows `ORCHD_CONFIG_DIR`; this is the
+/// one thing that is the *host's*, and a host that kept its list in a checkout
+/// would lose the list with the checkout.
+///
+/// Deliberately not built in Stage 2, because nothing read it then and a seam with
+/// no subscriber is what this refactor exists to remove.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct HostFile {
+    /// Every checkout that was open, in the order they were opened. The app opens
+    /// these again at launch.
+    #[serde(default)]
+    pub checkouts: Vec<String>,
+}
+
+fn host_file() -> anyhow::Result<PathBuf> {
+    Ok(crate::config::Config::config_dir()?.join("host.json"))
+}
+
+/// The checkouts to open at launch.
+///
+/// **Falls back to `config.json`'s `main_checkout` when there is no file**, which
+/// is every install that predates this: the app has always opened exactly one
+/// checkout, and reading that as an empty list would show a first-run page to
+/// somebody who configured a project months ago. The first `add` or `close`
+/// writes the file, and from then on it is the answer.
+pub fn remembered_checkouts() -> Vec<PathBuf> {
+    let listed = host_file()
+        .ok()
+        .and_then(|f| std::fs::read_to_string(f).ok())
+        .and_then(|raw| serde_json::from_str::<HostFile>(&raw).ok());
+    match listed {
+        Some(file) => file.checkouts.into_iter().map(PathBuf::from).collect(),
+        None => crate::config::Config::existing()
+            .map(|cfg| vec![cfg.main_checkout])
+            .unwrap_or_default(),
+    }
+}
+
+/// Write the checkouts to open next launch.
+///
+/// **The rows, not what started.** A checkout whose daemon refused to start keeps
+/// its row and stays in the file, because dropping it would mean one bad boot
+/// silently forgets a checkout you opened on purpose. Only `close` takes one out.
+///
+/// Best effort and logged: a list that cannot be written costs the *next* launch
+/// its checkouts, and refusing the `add` that could not be recorded would cost
+/// this one.
+pub fn remember_checkouts(checkouts: &[PathBuf]) {
+    let file = HostFile {
+        checkouts: checkouts.iter().map(|p| p.to_string_lossy().into_owned()).collect(),
+    };
+    let write = || -> anyhow::Result<()> {
+        let path = host_file()?;
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        std::fs::write(&path, serde_json::to_string_pretty(&file)? + "\n")?;
+        Ok(())
+    };
+    if let Err(e) = write() {
+        tracing::error!("could not record the open checkouts: {e:#}");
+    }
 }
 
 /// The repository a checkout's daemon would poll, `owner/name`.

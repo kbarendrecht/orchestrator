@@ -371,6 +371,15 @@ async fn a_host_adds_closes_and_reopens_checkouts_and_refuses_the_three() {
     assert_eq!(code, 200, "the answered add was refused: {body}");
     assert_eq!(body["result"]["added"], "opened");
 
+    // 7 — the host file remembers what is open, so the app opens it again.
+    let remembered = orchd::host::remembered_checkouts();
+    assert!(remembered.contains(&first), "the host file lost an open checkout");
+    assert!(remembered.contains(&second), "the re-added checkout was not recorded");
+    assert!(
+        !remembered.iter().any(|p| p == &sibling),
+        "a refused add was written to the host file",
+    );
+
     host.stop_all();
     let _ = std::fs::remove_dir_all(&root);
 }
