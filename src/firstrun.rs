@@ -67,7 +67,7 @@ fn now_ms() -> u64 {
 /// The recent-projects list, newest first. Missing or corrupt file reads as empty
 /// rather than failing — a first run has no list, and a garbled one should not keep
 /// the window shut.
-fn recent_projects() -> Vec<RecentProject> {
+pub fn recent_projects() -> Vec<RecentProject> {
     match Config::config_dir() {
         Ok(dir) => recent_projects_in(&dir),
         Err(_) => Vec::new(),

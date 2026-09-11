@@ -214,6 +214,11 @@ impl Host {
         remember_checkouts(&open);
     }
 
+    /// The native window, when one is attached.
+    fn window(&self) -> Option<Arc<dyn WindowControl>> {
+        self.window.lock().unwrap().clone()
+    }
+
     /// The pid of a checkout's daemon, while there is one.
     ///
     /// **Not on [`Checkout`]**, which is what the page sees and has no use for a
@@ -306,6 +311,13 @@ impl Host {
         )?;
 
         self.started.lock().unwrap().insert(checkout.to_path_buf(), Instant::now());
+        // **The host owns `recent.json`.** A hosted child's config dir is its own
+        // checkout directory, so a child writing this would leave one single-entry
+        // list per checkout — see the matching arm in `crate::start`. Best effort:
+        // a list that cannot be written is not a reason to fail an open.
+        if let Err(e) = crate::firstrun::record_recent(checkout) {
+            tracing::warn!("could not record the recent checkout: {e:#}");
+        }
         self.record(Checkout {
             path: checkout.to_string_lossy().into_owned(),
             name: checkout
@@ -859,6 +871,8 @@ pub fn router(host: Arc<Host>) -> Router {
         .route("/api/host/checkout", post(add_checkout))
         .route("/api/host/checkout/close", post(close_checkout))
         .route("/api/host/checkout/reopen", post(reopen_checkout))
+        .route("/api/host/recent", get(recent))
+        .route("/api/host/pick", post(pick))
         .route("/api/window/resize/:edge", post(window_resize))
         .route("/api/window/:cmd", post(window_cmd))
         .layer(axum::middleware::from_fn_with_state(host.clone(), guard))
@@ -1025,6 +1039,42 @@ async fn checkouts(State(host): State<Arc<Host>>) -> Json<serde_json::Value> {
     Json(json!({ "checkouts": host.checkouts() }))
 }
 
+/// The checkouts opened before, newest first, minus the ones already open.
+///
+/// **The same list the first-run page offers**, because it is the same question —
+/// which checkout do you want — asked from the other side of having one. Filtered
+/// here rather than in the page: a row you cannot act on is a row that reads as
+/// broken when it refuses.
+async fn recent(State(host): State<Arc<Host>>) -> Json<serde_json::Value> {
+    let open: Vec<String> = host.checkouts().into_iter().map(|c| c.path).collect();
+    let recent: Vec<_> = crate::firstrun::recent_projects()
+        .into_iter()
+        .filter(|r| !open.contains(&r.path))
+        .collect();
+    Json(json!({ "recent": recent }))
+}
+
+/// Raise the native folder dialog, for the checkout the recents do not list.
+///
+/// A `POST` because it opens a window, not because it changes anything — and it
+/// carries the token like every other mutating route for the same reason.
+/// Blocking, on its own thread: the dialog answers when a person answers it.
+async fn pick(State(host): State<Arc<Host>>) -> Response {
+    let control = host.window();
+    let Some(control) = control else {
+        // A browser tab, where the page's own text box is the way in. Not an
+        // error, and the same sentence every other window route refuses with.
+        return refusal("no native window attached");
+    };
+    let picked = crate::proc::run_blocking("the folder dialog", move || control.pick_folder()).await;
+    match picked {
+        Ok(Some(path)) => Json(json!({ "path": path.to_string_lossy() })).into_response(),
+        // A cancelled dialog is an answer, not a failure.
+        Ok(None) => Json(json!({ "path": serde_json::Value::Null })).into_response(),
+        Err(e) => refusal(&format!("{e:#}")),
+    }
+}
+
 /// The one body every checkout command takes: which checkout.
 #[derive(serde::Deserialize)]
 struct CheckoutPath {
@@ -1110,7 +1160,7 @@ fn refusal(message: &str) -> Response {
 }
 
 async fn dispatch(host: &Arc<Host>, cmd: crate::window::WindowCmd) -> Response {
-    let control = host.window.lock().unwrap().clone();
+    let control = host.window();
     let Some(control) = control else {
         // Running in a browser tab. The tab has its own chrome; this is not an
         // error worth a toast, but it is not a success either.

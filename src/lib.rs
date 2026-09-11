@@ -292,9 +292,18 @@ pub async fn start(opts: StartOptions) -> Result<Server> {
        screen offers was therefore empty for anyone who had never switched, and
        the one project they actually use was the one entry it could not show.
        Best effort: a list that cannot be written is not a reason to refuse a
-       start. */
-    if let Err(e) = firstrun::record_recent(&cfg.main_checkout) {
-        tracing::warn!("could not record the recent project: {e:#}");
+       start.
+
+       **Only when nothing else hosts this daemon.** `recent.json` is the host's
+       list, and a hosted child's `ORCHD_CONFIG_DIR` is its own checkout directory
+       — so a child writing it would leave one single-entry list per checkout and
+       none of them the one the "add a checkout" screen reads. A solo `orchd` is
+       its own host, which is exactly what this arm says. `host::Host::open_checkout`
+       is the other writer. */
+    if cfg.host_origin.is_none() {
+        if let Err(e) = firstrun::record_recent(&cfg.main_checkout) {
+            tracing::warn!("could not record the recent project: {e:#}");
+        }
     }
     phases.mark("config");
 

@@ -291,6 +291,28 @@ async fn a_host_adds_closes_and_reopens_checkouts_and_refuses_the_three() {
     // And the other checkout never noticed.
     assert_eq!(row_for(&rows(&base, &token), &first).unwrap()["live"], true);
 
+    // 3b — the recents the add screen offers: every checkout the host has opened,
+    // minus the ones already open, so no row refuses when pressed. Asked here,
+    // with one checkout closed, because a list filtered down to nothing would
+    // satisfy the filter without proving it.
+    let (code, body) = get(&format!("{base}/api/host/recent"), &token);
+    assert_eq!(code, 200);
+    let listed: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let paths: Vec<String> = listed["recent"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["path"].as_str().unwrap().to_string())
+        .collect();
+    assert!(
+        paths.contains(&second.to_string_lossy().into_owned()),
+        "the checkout just closed was not offered back: {paths:?}"
+    );
+    assert!(
+        !paths.contains(&first.to_string_lossy().into_owned()),
+        "an open checkout was offered as a recent: {paths:?}"
+    );
+
     // 4 — containment, both ways. A worktree's `.git` is a file, which
     // `firstrun::validate` accepts, so the inner case is reachable by hand.
     let inner = first.join("nested");
@@ -379,6 +401,12 @@ async fn a_host_adds_closes_and_reopens_checkouts_and_refuses_the_three() {
         !remembered.iter().any(|p| p == &sibling),
         "a refused add was written to the host file",
     );
+
+    // The folder dialog refuses without a window, which is this test and a browser
+    // tab. The same sentence every other window route refuses with.
+    let (code, body) = post(&format!("{base}/api/host/pick"), &base, &token, "{}");
+    assert_eq!(code, 400);
+    assert!(body["error"].as_str().unwrap().contains("no native window attached"));
 
     host.stop_all();
     let _ = std::fs::remove_dir_all(&root);

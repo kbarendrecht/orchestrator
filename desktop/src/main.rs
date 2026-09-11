@@ -874,22 +874,7 @@ struct TauriBootstrap {
 
 impl orchd::firstrun::BootstrapHost for TauriBootstrap {
     fn pick(&self) -> Option<std::path::PathBuf> {
-        use tauri_plugin_dialog::DialogExt;
-        // Runs on a bootstrap request thread, not the GTK main thread, so blocking
-        // on the dialog's answer is safe — the plugin marshals the dialog to the
-        // main thread and calls back here.
-        let (tx, rx) = std::sync::mpsc::channel();
-        self.app
-            .dialog()
-            .file()
-            .set_title("Choose the main checkout")
-            .pick_folder(move |picked| {
-                let _ = tx.send(picked);
-            });
-        match rx.recv() {
-            Ok(Some(fp)) => fp.simplified().into_path().ok(),
-            _ => None,
-        }
+        pick_folder(&self.app)
     }
 
     fn open(&self, path: std::path::PathBuf) -> bool {
@@ -1237,7 +1222,38 @@ struct TauriWindow {
     app: AppHandle,
 }
 
+/// Raise the native folder dialog and wait for the answer.
+///
+/// One spelling for the two seams that need it — the first-run page's `pick` and
+/// the host's `add a checkout` — because they ask the same question and a second
+/// copy is where the title and the path handling drift apart.
+///
+/// Called from a request thread, never the GTK main thread: the plugin marshals
+/// the dialog to the main thread and calls back here, so blocking on the answer is
+/// safe and blocking on the main thread would deadlock.
+fn pick_folder(app: &AppHandle) -> Option<std::path::PathBuf> {
+    use tauri_plugin_dialog::DialogExt;
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.dialog()
+        .file()
+        .set_title("Choose the main checkout")
+        .pick_folder(move |picked| {
+            let _ = tx.send(picked);
+        });
+    match rx.recv() {
+        Ok(Some(fp)) => fp.simplified().into_path().ok(),
+        _ => None,
+    }
+}
+
 impl WindowControl for TauriWindow {
+    /// The same dialog the first-run page raises, on the same terms: this runs on
+    /// an axum blocking thread, and the plugin marshals the dialog to the main
+    /// thread and calls back here.
+    fn pick_folder(&self) -> Option<std::path::PathBuf> {
+        pick_folder(&self.app)
+    }
+
     fn dispatch(&self, cmd: WindowCmd) -> Result<()> {
         let w = self
             .app

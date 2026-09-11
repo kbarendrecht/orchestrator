@@ -70,6 +70,23 @@ pub enum ResizeEdge {
 /// back to the main thread if their toolkit demands it.
 pub trait WindowControl: Send + Sync {
     fn dispatch(&self, cmd: WindowCmd) -> anyhow::Result<()>;
+
+    /// Raise the native folder dialog and wait for an answer.
+    ///
+    /// **Here rather than on [`WindowCmd`]**, which is fire-and-forget: adding a
+    /// checkout needs the folder back, and a command that cannot answer would need
+    /// a second channel to say what was picked. A dialog belongs to a window
+    /// anyway — it is the same seam, not a new one.
+    ///
+    /// `None` for a cancelled dialog and for a host with no native window, which
+    /// is a browser tab. The caller's own text box is the way in there, so this
+    /// refusing is not an error.
+    ///
+    /// Blocking, and called from a blocking context: the implementation marshals
+    /// the dialog to its own UI thread and waits for the callback.
+    fn pick_folder(&self) -> Option<std::path::PathBuf> {
+        None
+    }
 }
 
 /// How the window wants its chrome drawn, handed to the SPA at page load.
