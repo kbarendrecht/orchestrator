@@ -947,8 +947,13 @@ const THEME_DEF = {
   ui: 'plexsans',
   mono: 'plex',
   code: 'jetbrains',
-  /** Terminal font size before the UI scale multiplies it — `term.js`'s old constant. */
+  /** Terminal font size before the interface scale multiplies it — `term.js`'s old
+   *  constant. */
   termSize: 12,
+  /** Diff and code font size, the same way. 12 rather than the 11.5 the stylesheet
+   *  used to hard-code: a size control has to show a whole number, and half a pixel
+   *  is not a size anyone chose. */
+  diffSize: 12,
   /** 1 is opaque. Floored well above zero: a board you cannot read is the problem
    *  transparency causes rather than the effect it is for. */
   opacity: 1,
@@ -1090,7 +1095,8 @@ function loadTheme() {
     ui: family(got.ui, THEME_DEF.ui),
     mono: family(got.mono, THEME_DEF.mono),
     code: family(got.code, THEME_DEF.code),
-    termSize: clampTermSize(got.termSize),
+    termSize: clampSize(got.termSize, THEME_DEF.termSize),
+    diffSize: clampSize(got.diffSize, THEME_DEF.diffSize),
     opacity: clampOpacity(got.opacity),
   };
   /* A pair that cannot be read never reaches the page, however it got into the
@@ -1101,9 +1107,11 @@ function loadTheme() {
 }
 
 /** 8 to 24 px, and not `NaN`. The floor is where a terminal stops being one. */
-function clampTermSize(v) {
+export const SIZE_MIN = 8;
+export const SIZE_MAX = 24;
+function clampSize(v, def) {
   const n = Number(v);
-  return Number.isFinite(n) ? Math.min(24, Math.max(8, Math.round(n))) : THEME_DEF.termSize;
+  return Number.isFinite(n) ? Math.min(SIZE_MAX, Math.max(SIZE_MIN, Math.round(n))) : def;
 }
 
 /** 0.35 to 1. Floored well above zero for the reason `THEME_DEF.opacity` gives. */
@@ -1158,6 +1166,9 @@ export function applyTheme() {
   root.style.setProperty('--label', fontStack('ui'));
   root.style.setProperty('--mono', fontStack('mono'));
   root.style.setProperty('--code', fontStack('code'));
+  /* The diff's own size, before `--fs` multiplies it — the stylesheet does that
+     multiplication, so the three code blocks that share this size keep sharing it. */
+  root.style.setProperty('--code-px', `${theme.diffSize}px`);
   for (const fn of themeListeners) fn(theme);
 }
 
@@ -1195,7 +1206,8 @@ export function setTheme(patch) {
   }
   theme = {
     ...next,
-    termSize: clampTermSize(next.termSize),
+    termSize: clampSize(next.termSize, THEME_DEF.termSize),
+    diffSize: clampSize(next.diffSize, THEME_DEF.diffSize),
     opacity: clampOpacity(next.opacity),
   };
   try {

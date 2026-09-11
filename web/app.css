@@ -588,7 +588,7 @@ button.ctx-btn:hover{color:var(--text)}
 .oqfold:hover{color:var(--text)}
 .oqq{font-size:calc(13px * var(--fs));color:var(--text);line-height:1.5}
 .oqd{
-  font-family:var(--code);font-size:calc(11.5px * var(--fs));line-height:1.55;
+  font-family:var(--code);font-size:calc(var(--code-px,11.5px) * var(--fs));line-height:1.55;
   color:var(--dim);background:var(--bg);border:1px solid var(--line);border-radius:2px;
   padding:8px 12px;margin:0;white-space:pre;overflow-x:auto;max-height:220px;
 }
@@ -860,7 +860,18 @@ body.row-resizing{cursor:row-resize;user-select:none}
   background:var(--surface);
 }
 /* One group of settings: a heading, then its fields. */
-.settings-group{
+/* **Each section is its own containing block, and that is what makes the headings
+   stick.** The card is 1850px in a 763px window, so scrolled into Sessions you could
+   see neither which section you were in nor how much was left. Sticky headings alone
+   do not give you that: siblings in one scroll container all stop at `top:0` and pile
+   on top of each other, so by the Processes group four headings were drawn in the
+   same place. A section per group bounds each one to its own rows.
+
+   Scoped to `.settings-sec` rather than to `.settings-group`, because the keyboard
+   legend reuses that class inside a grid and has no sections to bound anything. */
+.settings-sec{position:relative}
+.settings-sec>.settings-group{
+  position:sticky;top:0;z-index:2;background:var(--bg);
   font-family:var(--label);font-size:calc(9px * var(--fs));font-weight:700;
   letter-spacing:.16em;text-transform:uppercase;color:var(--dim);
   /* Clear of the block above it: at 20px a new group was only 2px further away
@@ -962,23 +973,22 @@ body.row-resizing{cursor:row-resize;user-select:none}
   font-family:var(--mono);font-size:calc(10.5px * var(--fs));
 }
 .settings-select:focus{outline:2px solid var(--focus);outline-offset:1px}
-.thwell{
-  width:34px;height:24px;padding:0;border:1px solid var(--line);border-radius:2px;
-  background:none;cursor:pointer;
-}
-.thwell::-webkit-color-swatch-wrapper{padding:2px}
-.thwell::-webkit-color-swatch{border:0;border-radius:1px}
-.thhex{
-  width:80px;padding:3px 6px;border:1px solid var(--line);border-radius:2px;
+/* The box a font family is typed into. It used to borrow the hex field's rule and
+   then fight it for a width; the wells and their hex boxes are gone with the colour
+   controls, so it has the rule to itself. */
+.thname{
+  width:190px;padding:3px 6px;border:1px solid var(--line);border-radius:2px;
   background:var(--bg);color:var(--dim);
   font-family:var(--mono);font-size:calc(10.5px * var(--fs));
 }
-.thhex:focus{outline:2px solid var(--focus);outline-offset:1px}
-/* A font name is a name, not a hex triple, so it borrows `.thhex`'s box and needs
-   a wider one. Below `.thhex` rather than above it: the two selectors weigh the
-   same, so the later width is the one that wins, and the earlier spelling of this
-   rule lost silently — a 64-character control 80px wide. */
-.thname{width:150px}
+/* The box a font family is typed into. It used to borrow the hex field's rule and
+   then fight it for a width; the wells and their hex boxes are gone with the colour
+   controls, so it has the rule to itself. */
+.thname{
+  width:190px;padding:3px 6px;border:1px solid var(--line);border-radius:2px;
+  background:var(--bg);color:var(--dim);
+  font-family:var(--mono);font-size:calc(10.5px * var(--fs));
+}
 /* Narrow enough to leave the readout beside it on the row, and `accent-color` so
    the track wears the board's own focus colour rather than the engine's blue. */
 .thslider{width:120px;accent-color:var(--focus)}
@@ -1228,7 +1238,7 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
 }
 .head-btn:hover{color:var(--text);border-color:var(--faint-solid)}
 
-.diff{flex:1;overflow:auto;font-family:var(--code);font-size:calc(11.5px * var(--fs));line-height:1.65}
+.diff{flex:1;overflow:auto;font-family:var(--code);font-size:calc(var(--code-px,11.5px) * var(--fs));line-height:1.65}
 /* align-content:start matters: the grid is taller than its rows, and the
    default `stretch` hands the leftover height to every auto-sized row, so a
    one-line diff row renders four lines tall. */
@@ -1424,7 +1434,7 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
 /* ---------- editable right pane (§5) ---------- */
 .diff.editing{grid-template-rows:1fr;align-content:stretch;overflow:hidden}
 .editbase,.editarea{
-  font-family:var(--code);font-size:calc(11.5px * var(--fs));line-height:1.65;
+  font-family:var(--code);font-size:calc(var(--code-px,11.5px) * var(--fs));line-height:1.65;
   padding:8px 12px;margin:0;overflow:auto;min-height:0;height:100%;
   white-space:pre;tab-size:4;
 }

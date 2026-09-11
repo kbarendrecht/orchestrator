@@ -243,265 +243,287 @@
             title="Close · Esc" aria-label="Close settings">&#10005;</button>
   </div>
   <div class="settings-card">
-    <div class="settings-group">Appearance</div>
-    <!-- Three colours, because twenty pickers reliably produce an unreadable
-         board and the interesting failure is not an ugly pair — it is a border
-         the same value as the surface it separates, which care at the picker
-         cannot prevent. Everything else is mixed from these; `palette.js` has the
-         ratios and why they are not round numbers. -->
-    <div class="settings-row">
-      <span class="settings-k">Theme</span>
-      <span class="settings-step">
-        <select class="settings-select" id="thpreset" aria-label="Theme"></select>
-      </span>
-    </div>
-    <div class="settings-row">
-      <span class="settings-k">Ground
-        <span class="settings-hint">the window behind everything</span>
-      </span>
-      <span class="settings-step">
-        <input class="thwell" type="color" id="thbg" aria-label="Ground colour">
-        <input class="thhex" type="text" id="thbghex" maxlength="7" spellcheck="false"
-               aria-label="Ground colour, as hex">
-      </span>
-    </div>
-    <div class="settings-row">
-      <span class="settings-k">Panel
-        <span class="settings-hint">rail, drawer, headers</span>
-      </span>
-      <span class="settings-step">
-        <input class="thwell" type="color" id="thpanel" aria-label="Panel colour">
-        <input class="thhex" type="text" id="thpanelhex" maxlength="7" spellcheck="false"
-               aria-label="Panel colour, as hex">
-      </span>
-    </div>
-    <div class="settings-row">
-      <span class="settings-k">Text</span>
-      <span class="settings-step">
-        <input class="thwell" type="color" id="thtext" aria-label="Text colour">
-        <input class="thhex" type="text" id="thtexthex" maxlength="7" spellcheck="false"
-               aria-label="Text colour, as hex">
-      </span>
-    </div>
-    <!-- A slider rather than a stepper: you are matching the board against whatever
-         is behind it, so the control wants to be dragged while you watch. The hint
-         changes to a refusal when the window was not built see-through, because a
-         control that silently does nothing is the defect this row exists to avoid. -->
-    <div class="settings-row">
-      <span class="settings-k">Board opacity
-        <span class="settings-hint" id="thopacityhint">the terminal stays solid</span>
-      </span>
-      <span class="settings-step">
-        <input class="thslider" type="range" id="thopacity" min="35" max="100" step="1"
-               aria-label="Board opacity, as a percentage">
-        <span class="stepval" id="thopacityval">100%</span>
-      </span>
-    </div>
-    <!-- Said rather than snapped back: a pair under the floor is refused, and a
-         control that reverts with no sentence is the worst of the three answers. -->
-    <div class="settings-row thnote" id="thnoterow" hidden>
-      <span class="settings-note" id="thnote"></span>
-    </div>
-    <div class="settings-row">
-      <span class="settings-k">Reset appearance
-        <span class="settings-hint">back to the palette orchd ships with</span>
-      </span>
-      <span class="settings-step">
-        <button class="settings-reset" id="threset" type="button">Reset</button>
-      </span>
-    </div>
+    <section class="settings-sec">
+      <div class="settings-group">Theme</div>
+      <!-- The colours are the theme now. Three wells and their hex boxes used to sit
+           here, and they are gone: a palette is a set of decisions judged against each
+           other — a border has to stay clear of the surface it separates, a signal has
+           to stay clear of the ground — and one well at a time cannot walk you from a
+           dark board to a light one without passing through a board you cannot read.
+           `palette.js` still mixes every token from three colours; a preset is how you
+           choose them. -->
+      <p class="settings-help">Everything down to Wheel speed applies the moment you
+        touch it and is kept in this browser. Everything from Tracker down is a draft
+        until <b>Save &amp; restart</b>.</p>
+      <div class="settings-row">
+        <span class="settings-k">Theme
+          <span class="settings-hint">ground, panel and text together</span>
+        </span>
+        <span class="settings-step">
+          <select class="settings-select" id="thpreset" aria-label="Theme"></select>
+        </span>
+      </div>
+      <!-- A slider rather than a stepper: you are matching the board against whatever
+           is behind it, so the control wants to be dragged while you watch. The hint
+           changes to a refusal when the window was not built see-through, because a
+           control that silently does nothing is the defect this row exists to avoid. -->
+      <div class="settings-row">
+        <span class="settings-k">Board opacity
+          <span class="settings-hint" id="thopacityhint">the terminal stays solid</span>
+        </span>
+        <span class="settings-step">
+          <input class="thslider" type="range" id="thopacity" min="35" max="100" step="1"
+                 aria-label="Board opacity, as a percentage">
+          <span class="stepval" id="thopacityval">100%</span>
+        </span>
+      </div>
+      <!-- One Reset for one scope, and under the first appearance heading rather than
+           the last: there used to be four, identical to look at, each covering
+           something different, with the widest of them hinting at about a third of
+           what it did. Sitting under Diff it read as a diff reset. -->
+      <div class="settings-row">
+        <span class="settings-k">Reset appearance
+          <span class="settings-hint">theme, the three fonts and sizes, and the opacity</span>
+        </span>
+        <span class="settings-step">
+          <button class="settings-reset" id="threset" type="button">Reset</button>
+        </span>
+      </div>
 
-    <!-- Three roles, split because they are read differently: the UI is prose and
-         labels, the terminal is the pane you stare at, and a diff is columns. Each
-         carries a preview in its own face — a page cannot tell an installed family
-         from a fontconfig alias, so seeing what you will get is the answer rather
-         than a cleverer probe. -->
-    <div class="settings-row">
-      <span class="settings-k">UI font
-        <span class="settings-hint">body text and labels</span>
-      </span>
-      <span class="settings-step">
-        <span class="thsample" id="thuisample">Handgloves 0123</span>
-        <select class="settings-select" id="thui" aria-label="UI font"></select>
-      </span>
-    </div>
-    <div class="settings-row thcustom" id="thuicustomrow" hidden>
-      <span class="settings-k">UI font name</span>
-      <span class="settings-step">
-        <input class="thhex thname" type="text" id="thuicustom" maxlength="64"
-               spellcheck="false" aria-label="UI font family name">
-      </span>
-    </div>
+      <!-- Three places text is read, and the same two questions about each: which face,
+           and how big. They are separate groups rather than six rows in one, because
+           the pairing is the point — the UI is prose and labels, the terminal is the
+           pane you stare at, and a diff is columns, and nobody tunes all three at once.
+           Each font carries a preview in its own face: a page cannot tell an installed
+           family from a fontconfig alias, so seeing what you will get is the answer
+           rather than a cleverer probe. -->
+    </section>
 
-    <div class="settings-row">
-      <span class="settings-k">Terminal font</span>
-      <span class="settings-step">
-        <span class="thsample" id="thmonosample">Handgloves 0123</span>
-        <select class="settings-select" id="thmono" aria-label="Terminal font"></select>
-      </span>
-    </div>
-    <div class="settings-row thcustom" id="thmonocustomrow" hidden>
-      <span class="settings-k">Terminal font name</span>
-      <span class="settings-step">
-        <input class="thhex thname" type="text" id="thmonocustom" maxlength="64"
-               spellcheck="false" aria-label="Terminal font family name">
-      </span>
-    </div>
+    <section class="settings-sec">
+      <div class="settings-group">Interface</div>
+      <div class="settings-row">
+        <span class="settings-k">Font
+          <span class="settings-hint">body text and labels</span>
+        </span>
+        <span class="settings-step">
+          <span class="thsample" id="thuisample">Handgloves 0123</span>
+          <select class="settings-select" id="thui" aria-label="Interface font"></select>
+        </span>
+      </div>
+      <div class="settings-row thcustom" id="thuicustomrow" hidden>
+        <span class="settings-k">Font name</span>
+        <span class="settings-step">
+          <input class="thname" type="text" id="thuicustom" maxlength="64"
+                 spellcheck="false" aria-label="Interface font family name">
+        </span>
+      </div>
+      <!-- Under the rows it is about, one per group: a single shared slot put the
+           sentence up to 245px from the box that raised it, and could only ever show
+           one refusal at a time. -->
+      <div class="settings-row thnote" id="thuinoterow" hidden>
+        <span class="settings-note" id="thuinote"></span>
+      </div>
+      <div class="settings-row">
+        <span class="settings-k">Size
+          <span class="settings-hint">scales the whole board, including the two below</span>
+        </span>
+        <span class="settings-step">
+          <button class="stepbtn" id="fsdown" title="Smaller">&#8722;</button>
+          <span class="stepval" id="fsval">100%</span>
+          <button class="stepbtn" id="fsup" title="Bigger">+</button>
+        </span>
+      </div>
+    </section>
 
-    <div class="settings-row">
-      <span class="settings-k">Terminal size
-        <span class="settings-hint">before the UI scale</span>
-      </span>
-      <span class="settings-step">
-        <button class="stepbtn" id="tsdown" title="Smaller">&#8722;</button>
-        <span class="stepval" id="tsval">12px</span>
-        <button class="stepbtn" id="tsup" title="Bigger">+</button>
-        <button class="settings-reset" id="tsreset" type="button">Reset</button>
-      </span>
-    </div>
+    <section class="settings-sec">
+      <div class="settings-group">Terminal</div>
+      <div class="settings-row">
+        <span class="settings-k">Font</span>
+        <span class="settings-step">
+          <span class="thsample" id="thmonosample">Handgloves 0123</span>
+          <select class="settings-select" id="thmono" aria-label="Terminal font"></select>
+        </span>
+      </div>
+      <div class="settings-row thcustom" id="thmonocustomrow" hidden>
+        <span class="settings-k">Font name</span>
+        <span class="settings-step">
+          <input class="thname" type="text" id="thmonocustom" maxlength="64"
+                 spellcheck="false" aria-label="Terminal font family name">
+        </span>
+      </div>
+      <div class="settings-row thnote" id="thmononoterow" hidden>
+        <span class="settings-note" id="thmononote"></span>
+      </div>
+      <div class="settings-row">
+        <span class="settings-k">Size
+          <span class="settings-hint">before the interface scale</span>
+        </span>
+        <span class="settings-step">
+          <button class="stepbtn" id="tsdown" title="Smaller">&#8722;</button>
+          <span class="stepval" id="tsval">12px</span>
+          <button class="stepbtn" id="tsup" title="Bigger">+</button>
+        </span>
+      </div>
+    </section>
 
-    <div class="settings-row">
-      <span class="settings-k">Diff font</span>
-      <span class="settings-step">
-        <span class="thsample" id="thcodesample">Handgloves 0123</span>
-        <select class="settings-select" id="thcode" aria-label="Diff font"></select>
-      </span>
-    </div>
-    <div class="settings-row thcustom" id="thcodecustomrow" hidden>
-      <span class="settings-k">Diff font name</span>
-      <span class="settings-step">
-        <input class="thhex thname" type="text" id="thcodecustom" maxlength="64"
-               spellcheck="false" aria-label="Diff font family name">
-      </span>
-    </div>
+    <section class="settings-sec">
+      <div class="settings-group">Diff</div>
+      <div class="settings-row">
+        <span class="settings-k">Font</span>
+        <span class="settings-step">
+          <span class="thsample" id="thcodesample">Handgloves 0123</span>
+          <select class="settings-select" id="thcode" aria-label="Diff font"></select>
+        </span>
+      </div>
+      <div class="settings-row thcustom" id="thcodecustomrow" hidden>
+        <span class="settings-k">Font name</span>
+        <span class="settings-step">
+          <input class="thname" type="text" id="thcodecustom" maxlength="64"
+                 spellcheck="false" aria-label="Diff font family name">
+        </span>
+      </div>
+      <div class="settings-row thnote" id="thcodenoterow" hidden>
+        <span class="settings-note" id="thcodenote"></span>
+      </div>
+      <div class="settings-row">
+        <span class="settings-k">Size
+          <span class="settings-hint">before the interface scale</span>
+        </span>
+        <span class="settings-step">
+          <button class="stepbtn" id="dsdown" title="Smaller">&#8722;</button>
+          <span class="stepval" id="dsval">12px</span>
+          <button class="stepbtn" id="dsup" title="Bigger">+</button>
+        </span>
+      </div>
 
-    <div class="settings-row">
-      <span class="settings-k">Font size</span>
-      <span class="settings-step">
-        <button class="stepbtn" id="fsdown" title="Smaller">&#8722;</button>
-        <span class="stepval" id="fsval">100%</span>
-        <button class="stepbtn" id="fsup" title="Bigger">+</button>
-        <button class="settings-reset" id="fsreset" type="button">Reset</button>
-      </span>
-    </div>
+      <!-- Not appearance: how far a gesture scrolls. It sat under Appearance because it
+           is a stepper and the steppers were there. -->
+    </section>
 
-    <!-- Agent panes only: a drawer shell keeps xterm's own wheel maths, which
-         reads its `scrollSensitivity`. 100% is what the pane has always done, so
-         this changes nothing until asked — see `WHEEL` in core.js for why a
-         discrete wheel and a trackpad cannot share one number. -->
-    <div class="settings-row">
-      <span class="settings-k">Wheel speed
-        <span class="settings-hint">agent panes</span>
-      </span>
-      <span class="settings-step">
-        <button class="stepbtn" id="wsdown" title="Slower">&#8722;</button>
-        <span class="stepval" id="wsval">100%</span>
-        <button class="stepbtn" id="wsup" title="Faster">+</button>
-        <button class="settings-reset" id="wsreset" type="button">Reset</button>
-      </span>
-    </div>
+    <section class="settings-sec">
+      <div class="settings-group">Input</div>
+      <div class="settings-row">
+        <span class="settings-k">Wheel speed
+          <span class="settings-hint">agent panes</span>
+        </span>
+        <span class="settings-step">
+          <button class="stepbtn" id="wsdown" title="Slower">&#8722;</button>
+          <span class="stepval" id="wsval">100%</span>
+          <button class="stepbtn" id="wsup" title="Faster">+</button>
+          <button class="settings-reset" id="wsreset" type="button">Reset</button>
+        </span>
+      </div>
+    </section>
 
-    <div class="settings-group">Tracker</div>
+    <section class="settings-sec">
+      <div class="settings-group">Tracker</div>
 
-    <!-- Shown, not offered. A tracker is three fields including a host that is
-         per-site for Jira, so a control here would either be a dropdown of names
-         the config format no longer has, or three inputs whose write could replace
-         a hand-edited one. `config::Settings` leaves `tracker` out for the same
-         reason. -->
-    <div class="settings-field">
-      <span class="settings-k">Tracker</span>
-      <span class="settings-in settings-ro" id="settracker">none</span>
-    </div>
-    <p class="settings-help">Where a "file a story" answer goes, and the only
-      setting here that is read-only: set <code>tracker</code> in
-      <code>config.json</code> as <code>mcp_server</code>, <code>host</code> and an
-      optional <code>token_env</code>. With none, that option is never offered
-      rather than offered and refused.</p>
+      <!-- Shown, not offered. A tracker is three fields including a host that is
+           per-site for Jira, so a control here would either be a dropdown of names
+           the config format no longer has, or three inputs whose write could replace
+           a hand-edited one. `config::Settings` leaves `tracker` out for the same
+           reason. -->
+      <div class="settings-field">
+        <span class="settings-k">Tracker</span>
+        <span class="settings-in settings-ro" id="settracker">none</span>
+      </div>
+      <p class="settings-help">Where a "file a story" answer goes, and the only
+        setting here that is read-only: set <code>tracker</code> in
+        <code>config.json</code> as <code>mcp_server</code>, <code>host</code> and an
+        optional <code>token_env</code>. With none, that option is never offered
+        rather than offered and refused.</p>
 
-    <label class="settings-field">
-      <span class="settings-k">Output language</span>
-      <input class="settings-in" id="setlang" type="text" spellcheck="false">
-    </label>
-    <p class="settings-help">What the agents write replies and stories in. Blank
-      leaves it to the repo's own convention.</p>
+      <label class="settings-field">
+        <span class="settings-k">Output language</span>
+        <input class="settings-in" id="setlang" type="text" spellcheck="false">
+      </label>
+      <p class="settings-help">What the agents write replies and stories in. Blank
+        leaves it to the repo's own convention.</p>
+    </section>
 
-    <div class="settings-group">Git</div>
+    <section class="settings-sec">
+      <div class="settings-group">Git</div>
 
-    <label class="settings-field">
-      <span class="settings-k">Upstream ref</span>
-      <input class="settings-in" id="setupref" type="text" spellcheck="false">
-    </label>
-    <p class="settings-help">The branch your work is measured against: the
-      merge-base for every diff, and what a rebase lands on. Usually
-      <code>origin/HEAD</code>.</p>
+      <label class="settings-field">
+        <span class="settings-k">Upstream ref</span>
+        <input class="settings-in" id="setupref" type="text" spellcheck="false">
+      </label>
+      <p class="settings-help">The branch your work is measured against: the
+        merge-base for every diff, and what a rebase lands on. Usually
+        <code>origin/HEAD</code>.</p>
 
-    <label class="settings-field">
-      <span class="settings-k">Upstream remote</span>
-      <input class="settings-in" id="setupremote" type="text" spellcheck="false"
-             placeholder="blank = taken from the ref above">
-    </label>
-    <p class="settings-help">Only for a ref that names no remote. Left blank it is
-      the part of the ref before the slash, which is what you want unless you
-      fetch from one remote and diff against another.</p>
+      <label class="settings-field">
+        <span class="settings-k">Upstream remote</span>
+        <input class="settings-in" id="setupremote" type="text" spellcheck="false"
+               placeholder="blank = taken from the ref above">
+      </label>
+      <p class="settings-help">Only for a ref that names no remote. Left blank it is
+        the part of the ref before the slash, which is what you want unless you
+        fetch from one remote and diff against another.</p>
 
-    <label class="settings-field">
-      <span class="settings-k">Review command</span>
-      <input class="settings-in" id="setreviews" type="text" spellcheck="false"
-             placeholder="empty = built-in queue">
-    </label>
-    <p class="settings-help">Run instead of the built-in review queue, printing
-      the same JSON. For a repo that already ranks its own reviews.</p>
+      <label class="settings-field">
+        <span class="settings-k">Review command</span>
+        <input class="settings-in" id="setreviews" type="text" spellcheck="false"
+               placeholder="empty = built-in queue">
+      </label>
+      <p class="settings-help">Run instead of the built-in review queue, printing
+        the same JSON. For a repo that already ranks its own reviews.</p>
 
-    <label class="settings-field">
-      <span class="settings-k">Worktree setup</span>
-      <input class="settings-in" id="setwtsetup" type="text" spellcheck="false"
-             placeholder="empty = nothing">
-    </label>
-    <p class="settings-help">Run in every worktree the daemon cuts itself (PR,
-      resumed, relocated), just after creation. The seam for setup that Claude's
-      own WorktreeCreate hook would do — it only fires for interactive worktrees,
-      so PR ones would otherwise miss it. cwd is the new worktree.</p>
+      <label class="settings-field">
+        <span class="settings-k">Worktree setup</span>
+        <input class="settings-in" id="setwtsetup" type="text" spellcheck="false"
+               placeholder="empty = nothing">
+      </label>
+      <p class="settings-help">Run in every worktree the daemon cuts itself (PR,
+        resumed, relocated), just after creation. The seam for setup that Claude's
+        own WorktreeCreate hook would do — it only fires for interactive worktrees,
+        so PR ones would otherwise miss it. cwd is the new worktree.</p>
 
-    <label class="settings-field">
-      <span class="settings-k">Keep worktrees for</span>
-      <input class="settings-in" id="setretain" type="number" min="0" step="1"
-             inputmode="numeric" placeholder="0 = keep forever">
-    </label>
-    <p class="settings-help">Days since a conversation was last worked in. Its
-      worktree is then removed, but only once it is clean, pushed and nothing is
-      running in it. The conversation stays in the rail and a resume rebuilds the
-      tree, so this frees disk rather than losing work. <code>0</code> never removes
-      anything.</p>
+      <label class="settings-field">
+        <span class="settings-k">Keep worktrees for</span>
+        <input class="settings-in" id="setretain" type="number" min="0" step="1"
+               inputmode="numeric" placeholder="0 = keep forever">
+      </label>
+      <p class="settings-help">Days since a conversation was last worked in. Its
+        worktree is then removed, but only once it is clean, pushed and nothing is
+        running in it. The conversation stays in the rail and a resume rebuilds the
+        tree, so this frees disk rather than losing work. <code>0</code> never removes
+        anything.</p>
+    </section>
 
-    <div class="settings-group">Sessions</div>
+    <section class="settings-sec">
+      <div class="settings-group">Sessions</div>
 
-    <label class="settings-field">
-      <span class="settings-k">Several sessions in main</span>
-      <input class="settings-check" id="setseveral" type="checkbox">
-    </label>
-    <p class="settings-help">Let the main checkout hold more than one live session at
-      a time. Off, because one checkout is one working tree and one git index: two
-      agents there share both, the changed-files pane merges their edits without
-      saying who wrote what, and one agent's <code>git add</code> stages the other's
-      work. A worktree is the answer that carries none of those costs. Worktrees are
-      always one at a time, whatever this says.</p>
+      <label class="settings-field">
+        <span class="settings-k">Several sessions in main</span>
+        <input class="settings-check" id="setseveral" type="checkbox">
+      </label>
+      <p class="settings-help">Let the main checkout hold more than one live session at
+        a time. Off, because one checkout is one working tree and one git index: two
+        agents there share both, the changed-files pane merges their edits without
+        saying who wrote what, and one agent's <code>git add</code> stages the other's
+        work. A worktree is the answer that carries none of those costs. Worktrees are
+        always one at a time, whatever this says.</p>
+    </section>
 
-    <div class="settings-group">Processes</div>
+    <section class="settings-sec">
+      <div class="settings-group">Processes</div>
 
-    <div class="settings-field settings-procs-head">
-      <span class="settings-k">Configured</span>
-      <span class="settings-count" id="setproccount"></span>
-      <button class="settings-add" id="setprocadd" type="button">+ add</button>
-    </div>
-    <p class="settings-help">Long-running commands this checkout owns, shown in
-      the drawer under the terminal. Health is read from their output.</p>
-    <div id="setprocs"></div>
-
+      <div class="settings-field settings-procs-head">
+        <span class="settings-k">Configured</span>
+        <span class="settings-count" id="setproccount"></span>
+        <button class="settings-add" id="setprocadd" type="button">+ add</button>
+      </div>
+      <p class="settings-help">Long-running commands this checkout owns, shown in
+        the drawer under the terminal. Health is read from their output.</p>
+      <div id="setprocs"></div>
+    </section>
   </div>
   <div class="settings-foot">
     <!-- Not a setting: the answer to "am I on the build with the fix in it". -->
     <span class="settings-ver" id="settingsver"></span>
     <span class="settings-note" id="setnote"></span>
+    <button class="settings-reset" id="setdiscard" type="button" hidden>Discard</button>
     <button class="settings-save" id="setsave" type="button">Save &amp; restart</button>
   </div>
 </div>

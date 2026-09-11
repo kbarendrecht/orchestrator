@@ -1,11 +1,41 @@
 // The settings panel. The zoom control it offers lives in core, because the
 // terminals read the scale too.
 
-import { ctl, $, WHEEL, ZOOM, call, callHost, caret, currentPreset, detectedFonts, FONTS, fontStack, PRESETS, resetTheme, SEE_THROUGH,
+import { ctl, $, WHEEL, ZOOM, call, callHost, caret, currentPreset, detectedFonts, FONTS, fontStack, PRESETS, resetTheme, SEE_THROUGH, SIZE_MAX, SIZE_MIN,
   setTheme, theme, validFontName, closeLegend, el, get, MOD_LABEL, saveWheel, saveZoom, setWheel, setZoom, snap, wheelScale, zoomScale } from './core.js';
-import { parseHex, toHex } from './palette.js';
 
 const settingsOpen = () => !$('settings').hidden;
+
+/** The config fields this pane edits — every one of them a draft until Save. */
+const CONFIG_FIELDS = ['setlang', 'setupref', 'setupremote', 'setreviews', 'setwtsetup',
+  'setretain', 'setseveral'];
+
+/** Whether the config half holds edits that have not been saved.
+ *
+ *  **Because closing this pane used to throw them away in silence.** Typing an
+ *  upstream ref and a worktree-setup command and then pressing Esc — the documented
+ *  way out — left no trace of either, and reopening showed the old values as though
+ *  nothing had been typed. The comment by the close handler argued only about clicks
+ *  landing outside the pane; Esc and the gear were never in its scope.
+ *
+ *  So the draft outlives the pane instead: `loadConfigInto` refuses to overwrite it,
+ *  the foot says it is there, and Discard is the way to let it go. Nothing asks a
+ *  question on the way out, because a dialog on close is a toll paid by everyone who
+ *  only came to read a setting.
+ */
+let dirty = false;
+
+function markDirty() {
+  if (dirty) return;
+  dirty = true;
+  showDirty();
+}
+
+function showDirty() {
+  $('setdiscard').hidden = !dirty;
+  if (dirty) $('setnote').textContent = 'unsaved changes';
+  else if ($('setnote').textContent === 'unsaved changes') $('setnote').textContent = '';
+}
 
 function closeSettings() {
   $('settings').hidden = true;
@@ -22,14 +52,19 @@ function openSettings() {
   // were done with the moment you reached for this.
   closeLegend();
   $('settingsver').textContent = snap.version ? `orchd ${snap.version}` : '';
-  $('setnote').textContent = '';
+  if (!dirty) $('setnote').textContent = '';
   $('settings').hidden = false;
   $('gearbtn').setAttribute('aria-expanded', 'true');
+  showDirty();
   // The panel edits the daemon's config, not the snapshot, so read it fresh.
   loadConfigInto();
 }
 
-async function loadConfigInto() {
+async function loadConfigInto(force = false) {
+  // A draft is worth more than a fresh read: the values on disk have not changed
+  // since the read that produced the draft, and overwriting it here is exactly the
+  // silent loss `dirty` exists to stop.
+  if (dirty && !force) return;
   let cfg;
   try {
     cfg = await get('/api/config');
@@ -54,6 +89,8 @@ async function loadConfigInto() {
   // the setting being off said out loud, where '' would read as unset.
   ctl('setretain').value = String(cfg.worktree_retention_days ?? 0);
   ctl('setseveral').checked = !!cfg.allow_several_in_main;
+  dirty = false;
+  showDirty();
   procDraft = (cfg.main_processes || []).map((p) => ({
     name: p.name || '',
     command: (p.command || []).join(' '),
@@ -111,7 +148,7 @@ function renderProcs() {
     top.appendChild(auto);
     const del = el('button', 'settings-proc-del', 'remove');
     del.type = 'button';
-    del.onclick = () => { procDraft.splice(i, 1); renderProcs(); };
+    del.onclick = () => { procDraft.splice(i, 1); markDirty(); renderProcs(); };
     top.appendChild(del);
     box.appendChild(top);
 
@@ -199,42 +236,55 @@ async function saveSettings() {
   }
 }
 
-/** The three wells, their hex boxes, and the sentence that explains a refusal.
- *
- *  Rendered from the theme rather than remembered, so a refusal leaves the
- *  controls showing what is actually applied rather than what was attempted.
- */
-/** The slider, its readout and its hint, from the theme. */
-function showOpacity() {
-  const pct = Math.round(theme.opacity * 100);
-  ctl('thopacity').value = String(pct);
-  $('thopacityval').textContent = `${pct}%`;
-}
-
-function showTheme(note = '') {
-  ctl('thpreset').value = currentPreset() ?? 'custom';
-  for (const role of ['bg', 'panel', 'text']) {
-    ctl(`th${role}`).value = theme[role];
-    ctl(`th${role}hex`).value = theme[role];
-  }
-  showOpacity();
-  $('thnote').textContent = note;
-  $('thnoterow').hidden = !note;
-}
-
 /** The bundled face each role falls back to when a custom name is cleared. */
 const THEME_DEF_KEY = { ui: 'plexsans', mono: 'plex', code: 'jetbrains' };
 
-/** Nudge the terminal's base size and redraw the readout. */
-function stepTermSize(by) {
-  setTheme({ termSize: theme.termSize + by });
-  showTermSize();
+/** What each font role is called in the pane, and which size rides with it. */
+const ROLES = [
+  { role: 'ui', size: null },        // the interface size is the board zoom
+  { role: 'mono', size: 'termSize', step: 'ts' },
+  { role: 'code', size: 'diffSize', step: 'ds' },
+];
+
+/** Say why something was refused, under the rows it is about — and out loud.
+ *
+ *  **Two places, because a sentence nobody hears is not a refusal.** The pane already
+ *  had the note; what it never had was `#live`, the polite region the waitbar
+ *  announces through, so a screen reader was told nothing when a font name was
+ *  declined. Passing `''` clears both.
+ */
+function noteFor(role, text = '') {
+  $(`th${role}note`).textContent = text;
+  $(`th${role}noterow`).hidden = !text;
+  if (text) $('live').textContent = text;
 }
 
-function showTermSize() {
-  $('tsval').textContent = `${theme.termSize}px`;
-  ctl('tsdown').disabled = theme.termSize <= 8;
-  ctl('tsup').disabled = theme.termSize >= 24;
+/** The whole appearance half, rendered from the theme.
+ *
+ *  **Everything, every time, and that is the fix for a real defect.** This used to
+ *  redraw the preset and the three colour rows alone, so pressing Reset left the
+ *  font select naming a face the board was no longer using and the size readouts
+ *  showing numbers nobody had — and picking that same entry again fired no `change`,
+ *  so the control could not be made true. A renderer that covers part of a pane is
+ *  a renderer that will disagree with it.
+ */
+function showTheme() {
+  ctl('thpreset').value = currentPreset() ?? 'custom';
+  const pct = Math.round(theme.opacity * 100);
+  ctl('thopacity').value = String(pct);
+  $('thopacityval').textContent = `${pct}%`;
+  for (const { role, size, step } of ROLES) {
+    showFont(role);
+    if (size) showSize(step, theme[size]);
+  }
+  $('fsval').textContent = `${Math.round(zoomScale * 100)}%`;
+}
+
+/** One size readout, and its two buttons at the ends of the range. */
+function showSize(step, px) {
+  $(`${step}val`).textContent = `${px}px`;
+  ctl(`${step}down`).disabled = px <= SIZE_MIN;
+  ctl(`${step}up`).disabled = px >= SIZE_MAX;
 }
 
 /** Fill one role's dropdown: the vendored faces, whatever resolves here, and
@@ -247,7 +297,7 @@ function showTermSize() {
 function fillFonts(role) {
   const sel = ctl(`th${role}`);
   if (sel.options.length) return;
-  const want = role === 'ui' ? false : true;
+  const want = role !== 'ui';
   const group = (label, names, value) => {
     if (!names.length) return;
     const g = el('optgroup');
@@ -285,28 +335,6 @@ function showFont(role) {
   $(`th${role}sample`).style.fontFamily = fontStack(role);
 }
 
-/** Apply one colour, or show why it was refused.
- *
- *  **`#fff` is accepted**, because it is the single most likely thing typed into a
- *  hex box. Anything else the parser cannot read snaps the field back — with the
- *  same note, so nothing reverts in silence.
- */
-function pickColour(role, raw) {
-  const rgb = parseHex(expandHex(raw));
-  if (!rgb) {
-    showTheme(`"${raw}" is not a colour. Six hex digits, or three.`);
-    return;
-  }
-  showTheme(setTheme({ [role]: toHex(rgb) }) || '');
-}
-
-/** `#abc` to `#aabbcc`. Anything else is handed back untouched for the parser to
- *  refuse, so this widens what is accepted without widening what is believed. */
-function expandHex(raw) {
-  const m = /^#?([0-9a-f])([0-9a-f])([0-9a-f])$/i.exec(String(raw ?? '').trim());
-  return m ? `#${m[1]}${m[1]}${m[2]}${m[2]}${m[3]}${m[3]}` : raw;
-}
-
 function setupSettings() {
   setZoom(Number(localStorage.getItem(ZOOM.key)) || ZOOM.def);
   setWheel(Number(localStorage.getItem(WHEEL.key)) || WHEEL.def);
@@ -320,10 +348,8 @@ function setupSettings() {
   // it. `MOD_LABEL` because the modifier differs by platform.
   $('fsdown').title = `Smaller · ${MOD_LABEL} \u2212`;
   $('fsup').title = `Larger · ${MOD_LABEL} =`;
-  $('fsreset').title = `Reset · ${MOD_LABEL} 0`;
-  $('fsdown').onclick = () => saveZoom(setZoom(zoomScale - ZOOM.step));
-  $('fsup').onclick = () => saveZoom(setZoom(zoomScale + ZOOM.step));
-  $('fsreset').onclick = () => saveZoom(setZoom(ZOOM.def));
+  $('fsdown').onclick = () => { saveZoom(setZoom(zoomScale - ZOOM.step)); showTheme(); };
+  $('fsup').onclick = () => { saveZoom(setZoom(zoomScale + ZOOM.step)); showTheme(); };
   // No chord for these: the keyboard map's own contract says a plain letter is
   // taken only where the idiom earns it, and nobody expects one for a wheel.
   $('wsdown').onclick = () => saveWheel(setWheel(wheelScale - WHEEL.step));
@@ -332,6 +358,9 @@ function setupSettings() {
   /* `custom` is an option rather than a blank, so a hand-tuned set has something
      to show — and it is `disabled`, because picking it would mean nothing: there
      is no palette called custom to apply. */
+  /* The presets are the only way to set a colour now, so a picked one has to land
+     whole: `setTheme` refuses a pair under the contrast floor, and every preset
+     clears it, so the refusal is unreachable from here by construction. */
   const presets = ctl('thpreset');
   for (const [key, p] of Object.entries(PRESETS)) presets.appendChild(el('option', null, p.label)).value = key;
   const custom = el('option', null, 'Custom');
@@ -340,7 +369,8 @@ function setupSettings() {
   presets.appendChild(custom);
   presets.onchange = (ev) => {
     const p = PRESETS[ev.target.value];
-    if (p) showTheme(setTheme({ bg: p.bg, panel: p.panel, text: p.text }) || '');
+    if (p) setTheme({ bg: p.bg, panel: p.panel, text: p.text });
+    showTheme();
   };
 
   for (const role of ['ui', 'mono', 'code']) {
@@ -354,47 +384,41 @@ function setupSettings() {
         ctl(`th${role}custom`).focus();
         return;
       }
+      noteFor(role);
       setTheme({ [role]: v });
       showFont(role);
     };
     ctl(`th${role}custom`).onchange = (ev) => {
       const name = String(ev.target.value).trim();
       // Said, not swallowed: a box still holding a name the board is not using is
-      // the same silence a colour control reverting with no sentence would be.
+      // a control disagreeing with the board and saying nothing about it.
       if (name && !validFontName(name)) {
         /* The note, and nothing else: re-rendering here would put the select back
            on the applied font and fold the row away — taking the box you are
            typing in with it, mid-correction. What you typed stays, the board keeps
            the font it has, and the sentence says which is which. */
-        showTheme(`"${name}" is not a font name. Letters, digits, spaces, dots and hyphens.`);
+        noteFor(role, `"${name}" is not a font name. Letters, digits, spaces, dots and hyphens.`);
         return;
       }
+      noteFor(role);
       setTheme({ [role]: name ? `custom:${name}` : THEME_DEF_KEY[role] });
-      showTheme();
       showFont(role);
     };
-    showFont(role);
   }
 
-  $('tsdown').onclick = () => stepTermSize(-1);
-  $('tsup').onclick = () => stepTermSize(1);
-  $('tsreset').onclick = () => { setTheme({ termSize: 12 }); showTermSize(); };
-  showTermSize();
-
-  showTheme();
-  for (const role of ['bg', 'panel', 'text']) {
-    /* `input` rather than `change` on the well: the native picker streams while
-       you drag, and a board that only catches up when the dialog closes makes
-       choosing a colour a guess. The hex box is the opposite — `change`, so it is
-       not refused character by character while you type one. */
-    ctl(`th${role}`).oninput = (ev) => pickColour(role, ev.target.value);
-    ctl(`th${role}hex`).onchange = (ev) => pickColour(role, ev.target.value);
+  /* One handler for the two px sizes, because they are the same control twice and
+     the pane has already paid once for two spellings of one idea. */
+  for (const { size, step } of ROLES.filter((r) => r.size)) {
+    const nudge = (by) => { setTheme({ [size]: theme[size] + by }); showTheme(); };
+    ctl(`${step}down`).onclick = () => nudge(-1);
+    ctl(`${step}up`).onclick = () => nudge(1);
   }
+
   /* `input`, not `change`: the point of a slider here is watching the board move
      under it. Cheap enough — one `setProperty` of `--ground` per frame. */
   ctl('thopacity').oninput = (ev) => {
     setTheme({ opacity: Number(ev.target.value) / 100 });
-    showOpacity();
+    showTheme();
   };
   /* Said once, at boot, because the window cannot become see-through while it is
      open — `transparent` is fixed when the window is built. The control still
@@ -403,8 +427,27 @@ function setupSettings() {
     $('thopacityhint').textContent = 'the window is solid — set see_through_window in host.json';
   }
 
-  $('threset').title = 'Back to the palette orchd ships with';
-  $('threset').onclick = () => showTheme(resetTheme() || '');
+  /* **The board zoom goes back too.** It is the interface size now — one of the six
+     controls this button's hint promises — and it lives in its own store, so
+     resetting the theme alone would have left the one appearance setting the pane
+     still showed as changed. */
+  $('threset').title = 'Theme, the three fonts and sizes, and the opacity';
+  $('threset').onclick = () => {
+    resetTheme();
+    saveZoom(setZoom(ZOOM.def));
+    for (const { role } of ROLES) noteFor(role);
+    showTheme();
+  };
+  showTheme();
+
+  for (const id of CONFIG_FIELDS) ctl(id).addEventListener('input', markDirty);
+  /* Delegated, because the process rows are rebuilt on every render and binding
+     `markDirty` to each of their seven controls is seven places to forget it.
+     Folding a row open is a click on a button and raises neither event, which is
+     right: looking at a process is not editing it. */
+  for (const ev of ['input', 'change']) $('setprocs').addEventListener(ev, markDirty);
+  $('setdiscard').onclick = () => { dirty = false; loadConfigInto(true); };
+  $('setdiscard').title = 'Throw the unsaved edits away and read the config again';
 
   $('setclose').onclick = () => closeSettings();
 
@@ -413,6 +456,7 @@ function setupSettings() {
       name: '', command: '', ok_patterns: '', failure_patterns: '',
       restart: 'never', autostart: false, stop_command: '', open: true,
     });
+    markDirty();
     renderProcs();
   };
   $('setsave').onclick = saveSettings;
@@ -427,10 +471,12 @@ function setupSettings() {
      deleted once for the same reason ("missing an input closed the panel").
 
      It fills the centre column now, so a click on the rail, the terminal, the
-     drawer, a toast or a splitter is not a gesture at this panel at all. And every
-     one of them discarded the draft: `procDraft` and each form field live only in
-     the DOM until Save, so a stray click lost a half-typed process command with
-     nothing said. */
+     drawer, a toast or a splitter is not a gesture at this panel at all.
+
+     **And the three ways out no longer cost the draft.** They used to: `procDraft`
+     and every form field lived in the DOM until Save, so Esc — the documented way
+     out — threw away a half-typed worktree command with nothing said. `dirty` is
+     what changed that; see it for the rest. */
 }
 
 export { settingsOpen as isOpen, openSettings as open, closeSettings as close, setupSettings as setup };
