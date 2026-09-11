@@ -47,6 +47,16 @@
   --work:#4C9AAF;
   --ok:#5FA97C;
   --bad:#D4726B;
+  /* The checkout bands: one per open checkout, as reinforcement for the name
+     beside them rather than as information of their own — nothing is ever *only*
+     a colour here. Chosen to sit clear of `--attn` and `--bad`, which mean
+     "needs you" and "failing" everywhere else in this UI; a band the same amber
+     as the waitbar would read as a state. Four, because past that a palette stops
+     being distinguishable at a glance and the rail draws no band at all instead. */
+  --co-1:#7E9CC4;
+  --co-2:#8FAE8A;
+  --co-3:#B294BB;
+  --co-4:#C9A87C;
   --auto:#5B8FC9;        /* a pass's command — azure, parted from --work's teal so
                             the two no longer collide. Still NOT purple: purple
                             reads as merged on GitHub. */
@@ -254,6 +264,10 @@ button.ctx-btn:hover{color:var(--text)}
   padding:9px 15px 5px;position:sticky;top:0;z-index:3;cursor:pointer;
   background:var(--surface);border:0;border-bottom:1px solid var(--line-soft);
 }
+/* The band, as a left edge rather than a swatch: it runs the height of the strip,
+   so it reads as "this block" rather than as a bullet. `aria-hidden` is not needed
+   on a border — there is nothing for a screen reader to read. */
+.co-head[data-band]{border-left:3px solid var(--band);padding-left:12px}
 .co-name{
   font-family:var(--label);font-size:calc(10px * var(--fs));font-weight:700;
   letter-spacing:.08em;color:var(--faint-solid);
@@ -266,6 +280,10 @@ button.ctx-btn:hover{color:var(--text)}
   font-family:var(--mono);font-size:calc(9px * var(--fs));color:var(--bad);
   margin-left:auto;white-space:nowrap;
 }
+/* The group headers sit under their checkout's strip rather than over it. 26px is
+   that strip's height; scoped to a sibling of one, so a single-checkout rail — with
+   no strip at all — is untouched. Each block is its own sticky context, so a
+   header sticks while its own checkout scrolls and leaves with it. */
 .co-head ~ .ws .ws-head{top:26px;z-index:2}
 
 /* The way a second checkout is ever opened, at the foot of the list where "and

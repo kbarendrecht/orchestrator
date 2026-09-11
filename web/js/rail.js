@@ -1,7 +1,7 @@
 // The rail: what is running, what is waiting on you, and the PRs beside it.
 // Twenty-four names, three out; the rest is how a row decides what it says.
 
-import { $, activeCheckout, byNewest, call, callFor, callHost, callOn, checkoutOf, CHECKOUTS, chooseBox, enterCheckout, everySession, getHost, snapshotOf, snapshotFor, terms, caret, clock, confirmBox, copyText, creating, dotClass, duration, el, isArchived, isConversation, isWaiting, mainWorkspace, MOD_LABEL, newSession, newWorktree, openMenu, pending, refreshButton, selected, sessionsOf, setSelected, sinceSnap, snap, stateClass, stateLabel, toast, unchanged, setPendingSelect } from './core.js';
+import { $, activeCheckout, byNewest, call, callFor, bandOf, callHost, callOn, checkoutOf, CHECKOUTS, chooseBox, enterCheckout, everySession, getHost, snapshotOf, snapshotFor, terms, caret, clock, confirmBox, copyText, creating, dotClass, duration, el, isArchived, isConversation, isWaiting, mainWorkspace, MOD_LABEL, newSession, newWorktree, openMenu, pending, refreshButton, selected, sessionsOf, setSelected, sinceSnap, snap, stateClass, stateLabel, toast, unchanged, setPendingSelect } from './core.js';
 import * as Review from './review.js';
 import * as Term from './term.js';
 
@@ -66,20 +66,31 @@ function renderRail() {
      checkout's own snapshot — there is no combined one to build from. */
   const several = CHECKOUTS.length > 1;
   for (const [i, c] of CHECKOUTS.entries()) {
-    // No header at all on a single-checkout install: the rail is what it always
-    // was, and a header naming the only checkout there is is noise.
-    if (several) rail.appendChild(checkoutHead(c));
+    /* One block per checkout, marked as a group so a screen reader can skip it
+       whole — the header is its name, and the rail is otherwise a flat list of
+       rows from several places.
+
+       **No block and no header at all on a single-checkout install**, which is
+       every install today: the rail is then exactly what it always was, and a
+       header naming the only checkout there is is noise. */
+    const block = several ? el('div', 'co-block') : rail;
+    if (several) {
+      block.setAttribute('role', 'group');
+      block.setAttribute('aria-label', c.name);
+      rail.appendChild(block);
+      block.appendChild(checkoutHead(c));
+    }
     const state = states[i];
     if (!state) {
       // A checkout whose daemon has not reported yet, or is down. The row stays
       // either way, because the row is what `reopen` acts on.
-      rail.appendChild(el('div', 'railbtn', c.live ? 'starting\u2026' : 'not running'));
+      block.appendChild(el('div', 'railbtn', c.live ? 'starting\u2026' : 'not running'));
       continue;
     }
     const main = mainWorkspace(state);
     // Main is pinned first (§9).
-    if (main) rail.appendChild(mainGroup(c, state, main));
-    rail.appendChild(worktreeGroup(c, state, main?.id));
+    if (main) block.appendChild(mainGroup(c, state, main));
+    block.appendChild(worktreeGroup(c, state, main?.id));
   }
 
   // The one added piece of chrome, at the foot of the list where "and another
@@ -204,6 +215,11 @@ function checkoutHead(c) {
      reader gets where a sighted reader gets the brighter text. */
   const head = el('button', 'co-head');
   head.type = 'button';
+  const band = bandOf(c.path);
+  if (band) {
+    head.dataset.band = String(band);
+    head.style.setProperty('--band', `var(--co-${band})`);
+  }
   head.setAttribute('aria-current', String(c.path === activeCheckout().path));
   head.onclick = () => { enterCheckout(c); };
   if (!c.live) head.classList.add('down');

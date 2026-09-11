@@ -237,6 +237,29 @@ export function activeCheckout() {
  * back in the first one, because the derivation has nothing to derive from. */
 let lastCheckout = null;
 
+/* Which band each checkout wears, by path.
+ *
+ * **Assigned on first sight and kept**, rather than computed from the position in
+ * the list. Closing a checkout would otherwise re-colour every one after it, which
+ * is the colour changing to mean something that did not happen. Assigning in order
+ * also makes collisions impossible up to the palette length, where a hash would
+ * need a probe to say the same thing.
+ *
+ * There are four; past that a checkout gets no band rather than a repeat, because
+ * two blocks sharing a colour is worse than one having none. */
+const bands = new Map();
+const BANDS = 4;
+
+/** The band number for a checkout, or `null` past the palette.
+ *
+ *  @param {string} path
+ */
+export function bandOf(path) {
+  if (!bands.has(path)) bands.set(path, bands.size);
+  const n = bands.get(path);
+  return n < BANDS ? n + 1 : null;
+}
+
 /** Go to a checkout, carrying a selection with you.
  *
  *  **"Activate that checkout" has to mean "select something in it"**, because the

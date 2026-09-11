@@ -5,16 +5,19 @@ this file, which churned it from every build; that feature is gone.
 
 ## Next
 
-- **`park reclaims the base a worktree holds` is flaky, and was before this was
-  written.** It times out on `until('the conversation to arrive in main')` in
-  roughly one run in three, on a tree where the full suite is green: measured at
-  `733c4cc` and at three commits after it, passing alone and failing paired with
-  its neighbour in the same minute. The step it dies on is a swap killing and
-  resuming two conversations, so the suspect is the wait being shorter than a
-  resume under load rather than anything the flow asserts. `mise run e2e` as a
-  whole has passed every time it has been run; only a filtered run has failed.
-  Not chased because the gate that matters is the suite, and a timeout that moves
-  with load is a number to measure rather than a bug to reason about.
+- **The swap flows time out about one run in three, and always on the same
+  step.** `swap a worktree into empty main`, `swap a worktree with an occupied
+  main` and `park reclaims the base a worktree holds` all die waiting for a
+  conversation to *arrive* in its new workspace — never on what they assert
+  afterwards. Measured at `7f2f881`, which is before the multi-checkout work
+  started: three runs of `mise run e2e -- swap`, one of them 0 passed 2 failed and
+  the other two green. So it is not new, and the whole suite still passes most
+  runs.
+  A swap kills two conversations and resumes both, and a resume is a `claude`
+  boot; the suspect is that wait being shorter than a boot under load rather than
+  anything the flows check. It wants a measurement — how long that step actually
+  takes across runs — not a longer number guessed at, which is why it is written
+  down rather than fixed.
 
 - **`edit::read` closes the symlink race on the final component only.** The parents
   are canonicalised earlier and can still be swapped between the check and the open;
