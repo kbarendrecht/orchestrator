@@ -37,7 +37,9 @@ const NOT_DRAWN = [
 const drawn = { sig: null };
 
 function renderRail() {
-  if (editingName !== null) return;
+  // A drag is a gesture on a node this function replaces: rebuilding mid-drag
+  // drops the header out from under the pointer and the drop never lands.
+  if (editingName !== null || dragging !== null) return;
   // Before the guard: the bar has its own inputs and its own guard, and being
   // skipped by the rail's would leave it saying "2 need you" after they stopped.
   renderWaitbar();
@@ -53,8 +55,11 @@ function renderRail() {
      `selected`: activating a checkout with no sessions moves nothing else, so the
      rail would keep its old `aria-current` and the header you pressed would stay
      dim. Found by pressing one. */
-  if (unchanged(drawn, [states, CHECKOUTS, activeCheckout().path, showArchived, showPrs,
-    picked, selected, swapInFlight], NOT_DRAWN)) {
+  /* `folded` is a `Set`, which `unchanged` cannot compare by value — so it goes in
+     as its contents. Without it a fold wrote the key and redrew nothing, and the
+     rail only caught up on the next reload. */
+  if (unchanged(drawn, [states, CHECKOUTS, activeCheckout().path, [...folded], showArchived,
+    showPrs, picked, selected, swapInFlight], NOT_DRAWN)) {
     return;
   }
 
@@ -81,6 +86,9 @@ function renderRail() {
       block.appendChild(checkoutHead(c));
     }
     const state = states[i];
+    // Folded: the header and nothing else. It still says what it is hiding — see
+    // `checkoutHead`.
+    if (several && folded.has(c.path)) continue;
     if (!state) {
       // A checkout whose daemon has not reported yet, or is down. The row stays
       // either way, because the row is what `reopen` acts on.
@@ -183,9 +191,15 @@ async function addCheckout(path, resume) {
  *  @param {import('./core.js').Target} c
  */
 async function closeCheckout(c) {
+  // What it costs, counted rather than described: "its sessions go with it" is
+  // one agent or six, and only the number makes that a decision.
+  const live = (snapshotOf(c.path)?.sessions ?? []).filter((s) => !isArchived(s)).length;
   if (!await confirmBox(
     `Close ${c.name}?\n\n`
-    + 'Its daemon stops and its sessions go with it. The conversations are kept — '
+    + (live
+      ? `Its daemon stops and ${live} live session${live === 1 ? '' : 's'} go with it. `
+      : 'Its daemon stops. ')
+    + 'The worktrees and branches stay on disk, and the conversations are kept — '
     + 'opening this checkout again offers to resume them.',
     { ok: 'Close', danger: true })) return;
   try {
@@ -198,6 +212,37 @@ async function closeCheckout(c) {
     toast(e.message, true);
   }
 }
+
+/* Which checkouts are folded away, by path.
+ *
+ * **In the browser, unlike the order.** Folding is a view preference — which part
+ * of the rail you are looking at right now — and it sits beside the drawer's
+ * collapsed state and the column widths, which live here for the same reason. The
+ * *order* is the host's, because the set and its order are one thing and the app
+ * and a browser tab have to agree about a rail they both draw. */
+const FOLDED_KEY = 'orch.checkoutFolded';
+const folded = (() => {
+  try {
+    return new Set(JSON.parse(localStorage.getItem(FOLDED_KEY) || '[]'));
+  } catch (e) {
+    return new Set();
+  }
+})();
+
+function setFolded(path, on) {
+  if (on) folded.add(path);
+  else folded.delete(path);
+  try {
+    localStorage.setItem(FOLDED_KEY, JSON.stringify([...folded]));
+  } catch (e) { /* private mode: the fold still holds for this session */ }
+  renderRail();
+}
+
+/** Which checkout is being dragged, while one is.
+ *
+ *  The rail rebuilds every second, and rebuilding the node under the pointer ends
+ *  the gesture — so `renderRail` stands still while this is set. */
+let dragging = null;
 
 /** ` in alpha`, for a message read away from the rail — or nothing at all when
  *  there is only one checkout.
@@ -234,23 +279,40 @@ function inCheckout(s) {
  *  @param {import('./core.js').Target} c
  */
 function checkoutHead(c) {
-  /* A real button, not a `div` with a click. It is the only way to reach a
-     checkout whose sessions have all finished, so keyboard and screen-reader
-     users need it as much as anyone — and `aria-current` is the fact a screen
-     reader gets where a sighted reader gets the brighter text. */
-  const head = el('button', 'co-head');
-  head.type = 'button';
+  /* A row, not a button, because it holds three controls: the fold, the name and
+     the drag. The *name* is the button — it is the only way to reach a checkout
+     whose sessions have all finished, so keyboard and screen-reader users need it
+     as much as anyone, and `aria-current` is the fact a screen reader gets where a
+     sighted reader gets the brighter text. */
+  const head = el('div', 'co-head');
   const band = bandOf(c.path);
   if (band) {
     head.dataset.band = String(band);
     head.style.setProperty('--band', `var(--co-${band})`);
   }
-  head.setAttribute('aria-current', String(c.path === activeCheckout().path));
-  head.onclick = () => { enterCheckout(c); };
+  const shut = folded.has(c.path);
+  if (shut) head.classList.add('folded');
   if (!c.live) head.classList.add('down');
-  const name = el('span', 'co-name', c.name);
+
+  /* Fold a checkout away. With three or four open the rail is longer than the
+     window, and this is how you park the one you are not working in. Its own
+     control rather than a click on the name, because the name already means "go
+     there" and one gesture cannot mean both. */
+  const fold = el('button', 'cofold');
+  fold.type = 'button';
+  fold.setAttribute('aria-expanded', String(!shut));
+  fold.title = shut ? 'Show this checkout' : 'Fold this checkout away';
+  fold.appendChild(caret());
+  fold.onclick = (ev) => { ev.stopPropagation(); setFolded(c.path, !shut); };
+  head.appendChild(fold);
+
+  const name = el('button', 'co-name', c.name);
+  name.type = 'button';
   name.title = c.path;
+  name.setAttribute('aria-current', String(c.path === activeCheckout().path));
+  name.onclick = () => { enterCheckout(c); };
   head.appendChild(name);
+
   if (c.clash) {
     /* Two daemons polling one repository cannot see each other's fix runs, and
        nothing else in the product would ever say so — the host finds this out
@@ -260,13 +322,81 @@ function checkoutHead(c) {
     head.appendChild(warn);
   }
   if (!c.live) head.appendChild(el('span', 'co-clash', 'down'));
+  else head.appendChild(checkoutCount(c));
+
   head.oncontextmenu = (ev) => openMenu(ev, [
+    [shut ? 'show' : 'fold away', null, () => setFolded(c.path, !shut)],
     // A dead checkout's row exists so this can be pressed; a live one has nothing
     // to reopen.
     ['reopen', null, c.live ? null : () => reopenCheckout(c)],
     ['close', 'bad', () => closeCheckout(c)],
   ]);
+
+  /* Drag the header to reorder the rail. HTML5 drag-and-drop rather than pointer
+     maths: the rail is one column, so the only question is "above or below this
+     one", and `dragover` answers it. The order is the host's — see
+     `Host::order_checkouts` — so a drop posts it rather than writing a local key. */
+  head.draggable = true;
+  head.ondragstart = (ev) => {
+    dragging = c.path;
+    ev.dataTransfer.effectAllowed = 'move';
+    // Firefox starts no drag at all without a payload, even one nothing reads.
+    ev.dataTransfer.setData('text/plain', c.path);
+  };
+  head.ondragend = () => { dragging = null; renderRail(); };
+  head.ondragover = (ev) => { if (dragging) ev.preventDefault(); };
+  head.ondrop = (ev) => {
+    ev.preventDefault();
+    const moved = dragging;
+    dragging = null;
+    if (moved && moved !== c.path) reorderCheckouts(moved, c.path);
+    else renderRail();
+  };
   return head;
+}
+
+/** How many live sessions a checkout holds, and whether any of them want you.
+ *
+ *  **The reason a fold is safe.** Folded, a checkout with an agent waiting on you
+ *  looks exactly like an idle one, and the rail is where you would have seen it.
+ *  Amber only when something is actually waiting, so the colour keeps meaning what
+ *  it means everywhere else in this UI.
+ *
+ *  @param {import('./core.js').Target} c
+ */
+function checkoutCount(c) {
+  const mine = (snapshotOf(c.path)?.sessions ?? []).filter((s) => !isArchived(s));
+  const waiting = mine.filter(isWaiting).length;
+  const label = waiting
+    ? `${mine.length} · ${waiting} need${waiting === 1 ? 's' : ''} you`
+    : `${mine.length}`;
+  const count = el('span', 'co-count' + (waiting ? ' attn' : ''), mine.length ? label : 'idle');
+  count.title = waiting
+    ? `${waiting} of ${mine.length} session(s) here need you`
+    : `${mine.length} live session(s)`;
+  return count;
+}
+
+/** Move one checkout to where another sits, and tell the host.
+ *
+ *  The whole order goes up, not a pair: the host stores a list, and sending it the
+ *  list it should end with is one round trip that cannot half-apply.
+ *
+ *  @param {string} moved
+ *  @param {string} onto
+ */
+async function reorderCheckouts(moved, onto) {
+  const paths = CHECKOUTS.map((c) => c.path).filter((p) => p !== moved);
+  const at = paths.indexOf(onto);
+  paths.splice(at < 0 ? paths.length : at, 0, moved);
+  try {
+    await callHost('/api/host/checkout/order', { paths });
+    // The host answers on `/ws/host`, which is what actually moves the rail — so
+    // nothing is drawn from here and the two cannot disagree.
+  } catch (e) {
+    toast(e.message, true);
+    renderRail();
+  }
 }
 
 /** @param {import('./core.js').Target} c */
@@ -436,6 +566,15 @@ function prGroup() {
   // Just `ws`: the pinned pane it lives in owns the sizing, and carrying
   // `prblock` here too applied max-height twice, nested.
   const group = el('div', 'ws');
+  /* It lists one checkout's PRs — the one you are in — and it sits below the
+     scroller, so the block whose colour would have said which has scrolled away.
+     The band says it instead. Only with several checkouts open, like every other
+     piece of this chrome. */
+  const band = CHECKOUTS.length > 1 ? bandOf(activeCheckout().path) : null;
+  if (band) {
+    group.classList.add('pr-of-checkout');
+    group.style.setProperty('--band', `var(--co-${band})`);
+  }
 
   const head = el('button', 'prgroup-head');
   head.setAttribute('aria-expanded', String(showPrs));

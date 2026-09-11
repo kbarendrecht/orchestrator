@@ -60,8 +60,18 @@ pub struct Checkout {
     /// [`crate::config::Config::parse`], and comparing an unresolved path against
     /// a resolved one silently matches nothing.
     pub path: String,
-    /// The last path component, for a row and a log line. Not a key — two
-    /// checkouts can share a leaf.
+    /// What to call this checkout on screen. Not a key — see [`Checkout::path`].
+    ///
+    /// Usually the last path component. **The parent segment is prefixed when two
+    /// open checkouts share a leaf** (`work/app` beside `play/app`), because the
+    /// leaf alone is the name in the rail header, the identity chip and every
+    /// message that says which checkout an action lands in — and two rows reading
+    /// `app` make all three useless. Only on a collision: a longer name in a 290px
+    /// rail is a cost most installs should not pay.
+    ///
+    /// Computed over the whole set by [`name_the_set`], so it changes when the set
+    /// does: closing the checkout that collided gives the other its short name
+    /// back.
     pub name: String,
     /// Where its daemon answers.
     pub port: u16,
@@ -185,6 +195,7 @@ impl Host {
             Some(existing) => *existing = checkout,
             None => open.push(checkout),
         }
+        name_the_set(&mut open);
         drop(open);
         self.announce();
     }
@@ -234,6 +245,21 @@ impl Host {
         // After, not before: the sweep skips what is open, and reading that from
         // the rows means it cannot race a start that has not recorded itself yet.
         sweep_checkout_dirs(checkouts);
+    }
+
+    /// Put the rows in the order a person dragged them into, and remember it.
+    ///
+    /// **Server-side, not in the browser.** The host already owns the set and the
+    /// order it opens them in, so keeping the order anywhere else would be a
+    /// second answer to one question — and the app and a browser tab would
+    /// disagree about a rail they are both looking at. `host.json` is the same
+    /// file that decides what opens at all.
+    ///
+    /// Paths it does not name keep their relative order, at the end: a reorder
+    /// racing an `add` must not drop the checkout that just arrived.
+    pub fn order_checkouts(&self, order: &[PathBuf]) {
+        self.reorder(order);
+        self.remember();
     }
 
     /// Put the rows in the given order, keeping any the caller did not name.
@@ -504,6 +530,9 @@ impl Host {
         {
             let mut open = self.checkouts.lock().unwrap();
             open.retain(|c| c.path != path);
+            // The set shrank, so a name that was only long because of a collision
+            // gets its short form back.
+            name_the_set(&mut open);
             // The other half of a clash goes with it: a warning naming a checkout
             // that is no longer open is a warning nobody can act on.
             for row in open.iter_mut().filter(|c| c.clash.as_deref() == Some(&path)) {
@@ -747,6 +776,42 @@ pub fn remembered_checkouts() -> Vec<PathBuf> {
         None => crate::config::Config::existing()
             .map(|cfg| vec![cfg.main_checkout])
             .unwrap_or_default(),
+    }
+}
+
+/// Give every checkout a display name, disambiguating any that collide.
+///
+/// The leaf, or `<parent>/<leaf>` for a leaf two or more open checkouts share.
+/// Over the whole set rather than per row, because "is this name ambiguous" is a
+/// question about the set — the same reason the colour band is assigned that way.
+///
+/// One level of parent only. A pair that collides at two levels
+/// (`a/x/app`, `b/x/app`) is rarer than the cost of a name that grows without
+/// bound, and the full path is on the row's tooltip either way.
+fn name_the_set(checkouts: &mut [Checkout]) {
+    let leaf = |p: &str| {
+        Path::new(p)
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| p.to_string())
+    };
+    let mut seen: HashMap<String, usize> = HashMap::new();
+    for c in checkouts.iter() {
+        *seen.entry(leaf(&c.path)).or_default() += 1;
+    }
+    for c in checkouts.iter_mut() {
+        let short = leaf(&c.path);
+        let shared = seen.get(&short).is_some_and(|n| *n > 1);
+        let parent = Path::new(&c.path)
+            .parent()
+            .and_then(|p| p.file_name())
+            .map(|n| n.to_string_lossy().into_owned());
+        c.name = match (shared, parent) {
+            (true, Some(parent)) => format!("{parent}/{short}"),
+            // Nothing to prefix — a checkout at the filesystem root, which no real
+            // one is. The short name is still better than nothing.
+            _ => short,
+        };
     }
 }
 
@@ -1041,6 +1106,7 @@ pub fn router(host: Arc<Host>) -> Router {
         .route("/api/host/checkout", post(add_checkout))
         .route("/api/host/checkout/close", post(close_checkout))
         .route("/api/host/checkout/reopen", post(reopen_checkout))
+        .route("/api/host/checkout/order", post(order_checkouts))
         .route("/ws/host", get(host_socket))
         .route("/api/host/recent", get(recent))
         .route("/api/host/pick", post(pick))
@@ -1269,6 +1335,21 @@ async fn host_socket_loop(host: Arc<Host>, mut socket: axum::extract::ws::WebSoc
             },
         }
     }
+}
+
+/// The order the rail was dragged into.
+#[derive(serde::Deserialize)]
+struct CheckoutOrder {
+    paths: Vec<String>,
+}
+
+async fn order_checkouts(
+    State(host): State<Arc<Host>>,
+    Json(body): Json<CheckoutOrder>,
+) -> Response {
+    let order: Vec<PathBuf> = body.paths.into_iter().map(PathBuf::from).collect();
+    host.order_checkouts(&order);
+    Json(json!({ "ok": true })).into_response()
 }
 
 /// The checkouts opened before, newest first, minus the ones already open.

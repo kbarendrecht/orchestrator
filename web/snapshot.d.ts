@@ -40,8 +40,18 @@ export type Checkout = {
  */
 path: string, 
 /**
- * The last path component, for a row and a log line. Not a key — two
- * checkouts can share a leaf.
+ * What to call this checkout on screen. Not a key — see [`Checkout::path`].
+ *
+ * Usually the last path component. **The parent segment is prefixed when two
+ * open checkouts share a leaf** (`work/app` beside `play/app`), because the
+ * leaf alone is the name in the rail header, the identity chip and every
+ * message that says which checkout an action lands in — and two rows reading
+ * `app` make all three useless. Only on a collision: a longer name in a 290px
+ * rail is a cost most installs should not pay.
+ *
+ * Computed over the whole set by [`name_the_set`], so it changes when the set
+ * does: closing the checkout that collided gives the other its short name
+ * back.
  */
 name: string, 
 /**

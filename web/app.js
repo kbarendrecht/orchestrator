@@ -1514,8 +1514,9 @@ function connect(checkout) {
   const sock = new WebSocket(
     `${checkout.wsBase}/ws/events?token=${encodeURIComponent(checkout.token)}`
   );
-  // Connected (or reconnected): clear the dropped-connection status.
-  sock.onopen = () => { $('connbar').hidden = true; };
+  // Connected (or reconnected): clear this checkout's drop, and the bar with it
+  // once every checkout is back.
+  sock.onopen = () => { dropped.delete(checkout.path); showConnBar(); };
   sock.onmessage = (ev) => {
     // Through `receive` so the snapshot and the clock it is measured against move
     // together; `snap` is a live binding, so every reader sees this.
@@ -1599,9 +1600,32 @@ function connect(checkout) {
     // A dropped socket is a condition, not an error: a quiet status that clears
     // itself on reconnect (see onopen), rather than a toast that — now that
     // errors persist — would linger after the daemon came back.
-    $('connbar').hidden = false;
+    dropped.add(checkout.path);
+    showConnBar();
     setTimeout(() => connect(checkout), 1500);
   };
+}
+
+/** Which checkouts' sockets are down right now.
+ *
+ *  **A set, not a flag.** With one socket "connected" and "dropped" were the same
+ *  question; with one per checkout they are not, and a single flag meant the first
+ *  checkout to reconnect cleared a bar that another checkout was still down
+ *  behind. The rail's rows for that checkout would then be silently stale with
+ *  nothing saying so — which is the one thing the bar exists to prevent.
+ *
+ *  @type {Set<string>}
+ */
+const dropped = new Set();
+
+/** Show the dropped-connection bar while any checkout is down. */
+function showConnBar() {
+  // Only checkouts that are still open: one that was closed while its socket was
+  // retrying must not hold the bar up forever.
+  for (const path of [...dropped]) {
+    if (!CHECKOUTS.some((c) => c.path === path)) dropped.delete(path);
+  }
+  $('connbar').hidden = dropped.size === 0;
 }
 
 /** Which checkouts already have an events socket, by path.
@@ -1645,6 +1669,8 @@ function connectHost() {
     }
     for (const path of [...socketed]) if (!open.has(path)) socketed.delete(path);
     setCheckouts(checkouts);
+    // A checkout that closed takes its drop with it.
+    showConnBar();
     // A selection in a checkout that is gone points at nothing.
     if (selected && !currentSession()) setSelected(null);
     connectAll();

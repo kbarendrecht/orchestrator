@@ -430,6 +430,75 @@ async fn a_host_adds_closes_and_reopens_checkouts_and_refuses_the_three() {
         "the host socket refused the page's own token: {handshake}"
     );
 
+    // 3d — two checkouts sharing a leaf are told apart by their parent segment,
+    // and only then: the leaf is the name in the rail, the chip and every message
+    // saying which checkout an action lands in, so two rows reading `app` make all
+    // three useless. `first` and `second` do not collide, so both stay short.
+    for row in rows(&base, &token) {
+        let leaf = Path::new(row["path"].as_str().unwrap()).file_name().unwrap();
+        assert_eq!(
+            row["name"].as_str().unwrap(),
+            leaf.to_string_lossy(),
+            "a checkout with no collision was given a long name"
+        );
+    }
+
+    // 3e — the order is the host's, and it is remembered. Dragged, in the page;
+    // here it is the route the drag posts.
+    let (code, _) = post(
+        &format!("{base}/api/host/checkout/order"),
+        &base,
+        &token,
+        &format!(r#"{{"paths":[{:?}]}}"#, first.to_string_lossy()),
+    );
+    assert_eq!(code, 200);
+    // One path named, and it goes first; anything unnamed keeps its place after
+    // it, so a reorder racing an add cannot drop the checkout that just arrived.
+    assert_eq!(
+        rows(&base, &token)[0]["path"].as_str().unwrap(),
+        first.to_string_lossy(),
+        "the order was not applied"
+    );
+    assert_eq!(
+        orchd::host::remembered_checkouts().first(),
+        Some(&first),
+        "the order was applied but not remembered"
+    );
+
+    // And a checkout that *does* collide takes its parent segment — both of them,
+    // because the ambiguity belongs to the pair rather than to the newcomer.
+    std::fs::create_dir_all(root.join("nest")).unwrap();
+    let twin = scratch_repo(&root.join("nest"), "first", Some("acme/twin"));
+    let (code, body) = post(
+        &format!("{base}/api/host/checkout"),
+        &base,
+        &token,
+        &format!(r#"{{"path":{:?}}}"#, twin.to_string_lossy()),
+    );
+    assert_eq!(code, 200, "the twin was refused: {body}");
+    let named = rows(&base, &token);
+    let name_of = |p: &Path| {
+        row_for(&named, p).unwrap()["name"].as_str().unwrap().to_string()
+    };
+    assert_eq!(name_of(&twin), "nest/first");
+    assert!(
+        name_of(&first).ends_with("/first") && name_of(&first) != "nest/first",
+        "the checkout already open kept its short name, so the pair still reads the same"
+    );
+
+    // Closing one gives the other its short name back: the ambiguity was the set's.
+    post(
+        &format!("{base}/api/host/checkout/close"),
+        &base,
+        &token,
+        &format!(r#"{{"path":{:?}}}"#, twin.to_string_lossy()),
+    );
+    assert_eq!(
+        row_for(&rows(&base, &token), &first).unwrap()["name"].as_str().unwrap(),
+        "first",
+        "a name stayed long after the checkout it collided with closed"
+    );
+
     // The folder dialog refuses without a window, which is this test and a browser
     // tab. The same sentence every other window route refuses with.
     let (code, body) = post(&format!("{base}/api/host/pick"), &base, &token, "{}");

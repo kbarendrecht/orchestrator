@@ -260,10 +260,31 @@ button.ctx-btn:hover{color:var(--text)}
    height — offset in `.co-head ~ .ws .ws-head` rather than on every `.ws-head`,
    because a single-checkout rail has no strip to sit under. */
 .co-head{
-  display:flex;align-items:baseline;gap:8px;width:100%;text-align:left;
-  padding:9px 15px 5px;position:sticky;top:0;z-index:3;cursor:pointer;
-  background:var(--surface);border:0;border-bottom:1px solid var(--line-soft);
+  display:flex;align-items:center;gap:6px;width:100%;
+  padding:8px 15px 5px 9px;position:sticky;top:0;z-index:3;
+  background:var(--surface);border-bottom:1px solid var(--line-soft);
 }
+/* Grabbable, because the whole strip is the drag handle. `:active` is the only
+   feedback a drag gets before the browser takes over. */
+.co-head[draggable="true"]{cursor:grab}
+.co-head[draggable="true"]:active{cursor:grabbing}
+/* Folded: the strip is all there is, so it gets the room the block's top padding
+   was giving it. */
+.co-head.folded{padding-bottom:8px}
+.cofold{
+  flex:0 0 auto;display:flex;align-items:center;justify-content:center;
+  width:16px;height:16px;color:var(--ghost);background:none;border:0;cursor:pointer;
+}
+.cofold:hover{color:var(--text)}
+.cofold .caretr{display:inline-block;transition:transform .13s;line-height:0}
+.cofold[aria-expanded="true"] .caretr{transform:rotate(90deg)}
+.co-count{
+  font-family:var(--mono);font-size:calc(9px * var(--fs));color:var(--faint-solid);
+  margin-left:auto;white-space:nowrap;
+}
+/* Only when something is actually waiting, so amber keeps meaning "needs you"
+   here as it does everywhere else. */
+.co-count.attn{color:var(--attn)}
 /* The band, as a left edge rather than a swatch: it runs the height of the strip,
    so it reads as "this block" rather than as a bullet. `aria-hidden` is not needed
    on a border — there is nothing for a screen reader to read. */
@@ -272,14 +293,18 @@ button.ctx-btn:hover{color:var(--text)}
   font-family:var(--label);font-size:calc(10px * var(--fs));font-weight:700;
   letter-spacing:.08em;color:var(--faint-solid);
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  background:none;border:0;padding:0;cursor:pointer;text-align:left;min-width:0;
 }
 /* The checkout you are in, which is the one every other pane is describing. */
-.co-head[aria-current="true"] .co-name{color:var(--fg)}
+.co-name[aria-current="true"]{color:var(--text)}
+.co-name:hover{color:var(--text)}
 .co-head.down .co-name{color:var(--faint-solid);text-decoration:line-through}
 .co-clash{
   font-family:var(--mono);font-size:calc(9px * var(--fs));color:var(--bad);
   margin-left:auto;white-space:nowrap;
 }
+/* The count follows a clash rather than fighting it for the same margin. */
+.co-clash ~ .co-count{margin-left:8px}
 /* The group headers sit under their checkout's strip rather than over it. 26px is
    that strip's height; scoped to a sibling of one, so a single-checkout rail — with
    no strip at all — is untouched. Each block is its own sticky context, so a
@@ -289,6 +314,9 @@ button.ctx-btn:hover{color:var(--text)}
 /* The way a second checkout is ever opened, at the foot of the list where "and
    another one" belongs. `.railbtn` gives it the rail's own row shape; this only
    makes it read as an action rather than as an empty state. */
+/* The PR pane answers for one checkout, and it sits below the scroller where that
+   checkout's own band has gone. Same edge, same colour. */
+.pr-of-checkout{border-left:3px solid var(--band)}
 /* Where the waitbar will take you, when that is another checkout. Dimmer than the
    count beside it: it is the qualifier, not the news. */
 .waitwhere{color:var(--faint-solid)}
