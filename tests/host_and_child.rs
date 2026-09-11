@@ -243,6 +243,19 @@ async fn a_host_serves_the_page_for_a_checkout_its_child_manages() {
         404,
         "the host answered a daemon route, so a relative call would silently work"
     );
+    // And the other direction, which is the one that shipped broken: a window
+    // command aimed at the child is **accepted** — the daemon's catch-all answers
+    // `200 {}` — so it fails as nothing happening rather than as an error. That is
+    // why `core.HOST` exists and why every `/api/window/*` call goes through it.
+    assert_eq!(
+        post(
+            &format!("http://127.0.0.1:{}/api/window/minimize", row.port),
+            &base,
+            &row.token
+        ),
+        200,
+        "the daemon stopped swallowing window commands; core.HOST can be revisited"
+    );
 
     // 4 — a stop is not a crash.
     let pid = {

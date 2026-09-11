@@ -3,7 +3,7 @@
 // The SPA is a module now, so what it reaches for is written down. `core.js` holds
 // the primitives every part needs; `queue.js` is the first seam extracted whole.
 import {
-  TOKEN, WS_BASE, $, el, toast, call, get, duration,
+  TOKEN, WS_BASE, $, el, toast, call, callHost, get, duration,
   snap, receive, keyActivate,
   setZoom, saveZoom, onScaleChange, ZOOM, zoomScale,
   selected, setSelected, onSelection, prForWorkspace,
@@ -394,7 +394,7 @@ function renderUpdate() {
     // A restart takes the window down, so there is nothing to report back into:
     // the answer is the app coming back on the new version.
     try {
-      await call(succeeded ? '/api/window/restart' : '/api/update/upgrade');
+      await (succeeded ? callHost('/api/window/restart') : call('/api/update/upgrade'));
     } catch (e) {
       toast(e.message, true);
     }
@@ -483,7 +483,7 @@ function renderAgentUpdate() {
     // on the next snapshot, which is why neither points at a result.
     if (succeeded) {
       try {
-        await call('/api/window/restart');
+        await callHost('/api/window/restart');
       } catch (e) {
         toast(e.message, true);
       }
@@ -1036,7 +1036,7 @@ $('ovsave').onclick = Diff.saveEditor;
 // restarts onto it. In a browser tab there is no window to navigate, so the daemon
 // answers "no native window" — say so rather than looking broken.
 $('reposwitch').onclick = () =>
-  call('/api/window/switcher').catch((e) => toast(e.message, true));
+  callHost('/api/window/switcher').catch((e) => toast(e.message, true));
 $('addshell').onclick = newShell;
 $('keyhelpx').onclick = () => { $('keyhelp').hidden = true; };
 // The visible way in, beside the gear. Its tooltip names the chord — the whole
@@ -1566,7 +1566,10 @@ function setupChrome() {
     call('/api/open', { url: a.href }).catch((err) => toast(err.message, true));
   });
 
-  const wcmd = (cmd) => call(`/api/window/${cmd}`).catch((e) => toast(e.message, true));
+  // **To the host, not to a checkout.** The window belongs to whatever serves
+  // the page; a daemon has no window and answers `200 {}` to the route, so these
+  // aimed at `LOCAL` were six buttons that silently did nothing under the app.
+  const wcmd = (cmd) => callHost(`/api/window/${cmd}`).catch((e) => toast(e.message, true));
 
   for (const b of /** @type {NodeListOf<HTMLElement>} */ (
     document.querySelectorAll('.wctl-btn'))) {

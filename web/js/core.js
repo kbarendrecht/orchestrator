@@ -108,6 +108,35 @@ export const LOCAL = (() => {
   };
 })();
 
+/** The host, which is whatever served this page.
+ *
+ * **Not a checkout, and that is the distinction.** A daemon manages one checkout;
+ * the host owns the window and knows which checkouts are open. So `/api/window/*`
+ * and `/api/host/*` belong here and everything else belongs to a checkout.
+ *
+ * Always relative, because the page came from here. The token is the page's own —
+ * `CHECKOUTS[0].token` is a *child's*, and a child's guard would refuse it.
+ *
+ * This existing is a bug fix, not a tidy-up: `call` aims at [`LOCAL`], so under the
+ * app every titlebar button reached the child daemon, whose catch-all answers
+ * `200 {}`. Minimise, maximise, close, drag, resize and restart all silently did
+ * nothing, and nothing failed. That is the exact trap `CLAUDE.md` names — a
+ * misrouted call reads as an empty daemon.
+ *
+ *  @type {Checkout}
+ */
+export const HOST = {
+  base: '',
+  wsBase: `ws://${location.host}`,
+  token: window.__ORCH__.token,
+};
+
+/** POST to the host. */
+export const callHost = (path, body) => callOn(HOST, path, body);
+
+/** GET from the host. */
+export const getHost = (path) => getOn(HOST, path);
+
 /* Kept as their own exports because five modules read them, and a token is what
    most of them want rather than a checkout. They are [`LOCAL`]'s, which is the
    only checkout there is until the host serves the page. */
