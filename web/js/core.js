@@ -937,15 +937,11 @@ export const FONTS = {
   sans: { label: 'System sans', stack: 'system-ui,sans-serif', mono: false },
 };
 
-/** The theme as it stands. Replaced whole by [`setTheme`], never mutated. */
-export let theme = loadTheme();
-
-const themeListeners = [];
-/** Register for theme changes. The terminals are the one consumer that cannot
- *  read a CSS custom property — xterm takes hex strings — so they are told. */
-export function onThemeChange(fn) { themeListeners.push(fn); }
-
 /** What a fresh install gets: the palette in `app.css`, and the fonts it names. */
+/* Declared above `theme` on purpose: `loadTheme` reads it, and a `const` is in its
+   temporal dead zone until the line that defines it runs. With this below, the
+   whole module threw on import — so the page loaded its markup and no behaviour at
+   all, which looks like a dead board rather than an error. */
 const THEME_DEF = {
   ...Palette.DEFAULT,
   ui: 'plexsans',
@@ -957,6 +953,44 @@ const THEME_DEF = {
    *  transparency causes rather than the effect it is for. */
   opacity: 1,
 };
+
+/** Whole palettes, because one colour at a time cannot get you from dark to light.
+ *
+ *  **This is not a convenience.** Each change is judged against the other two, so
+ *  walking a dark theme toward a light one is refused at every step: a white ground
+ *  under light text is unreadable, and so is dark text on a dark ground. A preset
+ *  moves all three at once, which is the only path between them — and it is how
+ *  anybody switches anyway.
+ *
+ *  `orchd` is the palette the app ships with, so "Reset" is a real answer rather
+ *  than something that resembles it; `check-palette.mjs` asserts that.
+ */
+export const PRESETS = {
+  orchd: { label: 'orchd', ...Palette.DEFAULT },
+  paper: { label: 'Paper', bg: '#F4F2ED', panel: '#EAE7E0', text: '#26231E' },
+  contrast: { label: 'High contrast', bg: '#000000', panel: '#0C0C0C', text: '#FFFFFF' },
+};
+
+/** Which preset the current colours are, or `null` for a hand-tuned set.
+ *
+ *  Derived rather than stored, so a theme edited back to a preset's exact colours
+ *  reads as that preset again. Compared lowercase: an `input[type=color]` always
+ *  reports lowercase, and the constants above are written the way a person writes
+ *  them.
+ */
+export function currentPreset() {
+  const same = (a, b) => a.toLowerCase() === b.toLowerCase();
+  return Object.keys(PRESETS).find((k) => ['bg', 'panel', 'text']
+    .every((role) => same(PRESETS[k][role], theme[role]))) ?? null;
+}
+
+/** The theme as it stands. Replaced whole by [`setTheme`], never mutated. */
+export let theme = loadTheme();
+
+const themeListeners = [];
+/** Register for theme changes. The terminals are the one consumer that cannot
+ *  read a CSS custom property — xterm takes hex strings — so they are told. */
+export function onThemeChange(fn) { themeListeners.push(fn); }
 
 /** Read the stored theme, keeping only what is valid.
  *
@@ -1104,6 +1138,13 @@ export function resetTheme() {
   return setTheme(THEME_DEF);
 }
 
+
+/* Applied at module scope, which is the earliest the page can be themed: modules
+   are deferred, so `documentElement` is there, and this runs before `app.js` has
+   rendered anything. Any later and the board paints `:root`'s palette first and
+   then visibly changes colour — which is the defect the ratio solving removes for
+   the *default* theme and cannot remove for anybody else's. */
+applyTheme();
 
 /* **How far one wheel event travels in an agent pane.** A multiplier on the pixel
  * delta, defaulting to 1 — which is exactly today's behaviour, so a trackpad keeps

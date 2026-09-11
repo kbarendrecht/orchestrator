@@ -4,7 +4,7 @@
 // the primitives every part needs; `queue.js` is the first seam extracted whole.
 import {
   $, el, toast, call, callHost, get, duration, activeCheckout, CHECKOUTS, setCheckouts,
-  HOST, snapshotOf, wsKey, everySession, enterCheckout,
+  HOST, snapshotOf, wsKey, everySession, enterCheckout, onThemeChange,
   snap, receive, keyActivate,
   setZoom, saveZoom, onScaleChange, ZOOM, zoomScale,
   selected, setSelected, onSelection, prForWorkspace,
@@ -50,6 +50,10 @@ import * as Term from './js/term.js';
 
 // The terminals are the scalable thing zoom used to reach into; now they ask.
 onScaleChange(() => Term.applyScale());
+/* The terminals are the one consumer that cannot read a CSS custom property —
+   xterm takes hex strings — so the theme is announced and they register, the
+   same inversion the UI scale already uses. */
+onThemeChange(() => Term.applyTermTheme());
 
 // Collapsing the drawer redraws it and gives the terminal above its height back;
 // xterm only refits on an explicit nudge, not on a sibling's size change.

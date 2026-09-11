@@ -2,7 +2,8 @@
 // over a websocket. The DOM renderer is deliberate under WebKitGTK, and only
 // there — see the renderer comment below, and CLAUDE.md.
 
-import { $, CHROME, IS_MAC, copyText, el, mark, note, reportBoot, selected, terms, termKey, toast, typingElsewhere, uiScale, wheelScale } from './core.js';
+import { $, CHROME, IS_MAC, copyText, fontStack, onThemeChange, theme, el, mark, note, reportBoot, selected, terms, termKey, toast, typingElsewhere, uiScale, wheelScale } from './core.js';
+import { termColours } from './palette.js';
 
 
 const THEME = {
@@ -27,9 +28,14 @@ const OBSERVE = new URLSearchParams(location.search).has('observe');
 
 /** The terminal's font in px. xterm draws its own text, so the stylesheet's
  *  multiplier cannot reach it; this applies the same factor natively, which is
- *  also why it stays crisp. */
-const TERM_FONT = 12;
-const termFontSize = () => Math.round(TERM_FONT * uiScale());
+ *  also why it stays crisp.
+ *
+ *  **A base of its own, still multiplied by the UI scale.** The base is the
+ *  theme's, so the pane you stare at can be bigger than the chrome around it; the
+ *  multiplier stays so `MOD +` keeps zooming the whole board together rather than
+ *  everything except the terminal. 12 was the constant this replaces, and it is
+ *  still the default. */
+const termFontSize = () => Math.round(theme.termSize * uiScale());
 
 /** Attach to a pty, replaying the daemon's buffer first.
  *
@@ -50,8 +56,10 @@ function openTerm(checkout, target, parent) {
   const agentPane = target.startsWith('session:');
 
   const term = new Terminal({
-    theme: THEME,
-    fontFamily: "'IBM Plex Mono', ui-monospace, monospace",
+    theme: termColours(theme),
+    // The theme's, not a literal: the terminal is the pane you read most, so a
+    // font choice that skipped it would be a choice about labels.
+    fontFamily: fontStack('mono'),
     fontSize: termFontSize(),
     lineHeight: 1.25,
     cursorBlink: true,
@@ -656,6 +664,27 @@ function applyScale() {
   refit();
 }
 
+/** Repaint every terminal in the theme's colours, font and size.
+ *
+ *  **`refit(true)`, and the `true` is the whole point.** `resize` returns early
+ *  when the host's box has not moved, and a font change does not move it — the
+ *  host is `position:absolute;inset:0`. So an unforced refit is a no-op, the cell
+ *  metrics change, and the pty is told a column count that no longer matches what
+ *  is drawn. The branch this comes from called the unforced one under a comment
+ *  describing exactly that bug.
+ */
+function applyTermTheme() {
+  const px = termFontSize();
+  const colours = termColours(theme);
+  const family = fontStack('mono');
+  for (const entry of terms.values()) {
+    entry.term.options.theme = colours;
+    entry.term.options.fontFamily = family;
+    entry.term.options.fontSize = px;
+  }
+  refit(true);
+}
+
 /** What a pane is showing, as text somebody could read: the selection if there is
  *  one, else the last `lines` non-empty rows.
  *
@@ -695,4 +724,7 @@ function hasSelection(checkout, target) {
   return !!entry && !!entry.term.getSelection().trim();
 }
 
-export { showTerm as show, closeTerm as close, refit, applyScale, readTerm, hasSelection };
+export {
+  showTerm as show, closeTerm as close, refit, applyScale, applyTermTheme, readTerm,
+  hasSelection,
+};

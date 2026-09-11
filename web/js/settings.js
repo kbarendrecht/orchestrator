@@ -1,7 +1,8 @@
 // The settings panel. The zoom control it offers lives in core, because the
 // terminals read the scale too.
 
-import { ctl, $, WHEEL, ZOOM, call, callHost, caret, closeLegend, el, get, MOD_LABEL, saveWheel, saveZoom, setWheel, setZoom, snap, wheelScale, zoomScale } from './core.js';
+import { ctl, $, WHEEL, ZOOM, call, callHost, caret, currentPreset, PRESETS, resetTheme, setTheme, theme, closeLegend, el, get, MOD_LABEL, saveWheel, saveZoom, setWheel, setZoom, snap, wheelScale, zoomScale } from './core.js';
+import { parseHex, toHex } from './palette.js';
 
 const settingsOpen = () => !$('settings').hidden;
 
@@ -197,6 +198,43 @@ async function saveSettings() {
   }
 }
 
+/** The three wells, their hex boxes, and the sentence that explains a refusal.
+ *
+ *  Rendered from the theme rather than remembered, so a refusal leaves the
+ *  controls showing what is actually applied rather than what was attempted.
+ */
+function showTheme(note = '') {
+  ctl('thpreset').value = currentPreset() ?? 'custom';
+  for (const role of ['bg', 'panel', 'text']) {
+    ctl(`th${role}`).value = theme[role];
+    ctl(`th${role}hex`).value = theme[role];
+  }
+  $('thnote').textContent = note;
+  $('thnoterow').hidden = !note;
+}
+
+/** Apply one colour, or show why it was refused.
+ *
+ *  **`#fff` is accepted**, because it is the single most likely thing typed into a
+ *  hex box. Anything else the parser cannot read snaps the field back — with the
+ *  same note, so nothing reverts in silence.
+ */
+function pickColour(role, raw) {
+  const rgb = parseHex(expandHex(raw));
+  if (!rgb) {
+    showTheme(`"${raw}" is not a colour. Six hex digits, or three.`);
+    return;
+  }
+  showTheme(setTheme({ [role]: toHex(rgb) }) || '');
+}
+
+/** `#abc` to `#aabbcc`. Anything else is handed back untouched for the parser to
+ *  refuse, so this widens what is accepted without widening what is believed. */
+function expandHex(raw) {
+  const m = /^#?([0-9a-f])([0-9a-f])([0-9a-f])$/i.exec(String(raw ?? '').trim());
+  return m ? `#${m[1]}${m[1]}${m[2]}${m[2]}${m[3]}${m[3]}` : raw;
+}
+
 function setupSettings() {
   setZoom(Number(localStorage.getItem(ZOOM.key)) || ZOOM.def);
   setWheel(Number(localStorage.getItem(WHEEL.key)) || WHEEL.def);
@@ -219,6 +257,32 @@ function setupSettings() {
   $('wsdown').onclick = () => saveWheel(setWheel(wheelScale - WHEEL.step));
   $('wsup').onclick = () => saveWheel(setWheel(wheelScale + WHEEL.step));
   $('wsreset').onclick = () => saveWheel(setWheel(WHEEL.def));
+  /* `custom` is an option rather than a blank, so a hand-tuned set has something
+     to show — and it is `disabled`, because picking it would mean nothing: there
+     is no palette called custom to apply. */
+  const presets = ctl('thpreset');
+  for (const [key, p] of Object.entries(PRESETS)) presets.appendChild(el('option', null, p.label)).value = key;
+  const custom = el('option', null, 'Custom');
+  custom.value = 'custom';
+  custom.disabled = true;
+  presets.appendChild(custom);
+  presets.onchange = (ev) => {
+    const p = PRESETS[ev.target.value];
+    if (p) showTheme(setTheme({ bg: p.bg, panel: p.panel, text: p.text }) || '');
+  };
+
+  showTheme();
+  for (const role of ['bg', 'panel', 'text']) {
+    /* `input` rather than `change` on the well: the native picker streams while
+       you drag, and a board that only catches up when the dialog closes makes
+       choosing a colour a guess. The hex box is the opposite — `change`, so it is
+       not refused character by character while you type one. */
+    ctl(`th${role}`).oninput = (ev) => pickColour(role, ev.target.value);
+    ctl(`th${role}hex`).onchange = (ev) => pickColour(role, ev.target.value);
+  }
+  $('threset').title = 'Back to the palette orchd ships with';
+  $('threset').onclick = () => showTheme(resetTheme() || '');
+
   $('setclose').onclick = () => closeSettings();
 
   $('setprocadd').onclick = () => {

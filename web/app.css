@@ -886,6 +886,12 @@ body.row-resizing{cursor:row-resize;user-select:none}
   border-color:transparent;background:none;color:var(--dim);padding-left:0;cursor:default;
 }
 .settings-row{display:flex;align-items:center;gap:12px;margin-top:18px}
+/* **An author `display` beats `[hidden]`**, and this file has now been bitten by
+   that four times — see `.forked[hidden]` below for the third. The refusal note is
+   a row that spends most of its life hidden, so without this it is a row that
+   never hides: `el.hidden = true` sets the attribute and `display:flex` ignores
+   it. */
+.settings-row[hidden]{display:none}
 .settings-info{margin-top:9px}
 .settings-v{margin-left:auto;font-family:var(--mono);font-size:calc(11.5px * var(--fs));color:var(--dim)}
 .settings-k{font-family:var(--mono);font-size:calc(11.5px * var(--fs));color:var(--text)}
@@ -907,6 +913,33 @@ body.row-resizing{cursor:row-resize;user-select:none}
    aligned it took the same column, size and left edge as a `.settings-k`, so it
    read as the *name* of the setting below it: "Reset to 100%" sat directly above
    "Wheel speed" and looked like its label. */
+/* The colour wells. A native `input[type=color]` is the only picker that is
+   keyboard- and screen-reader-reachable without building one, and the OS panel it
+   opens is the one people already know. It needs its own chrome removed: browsers
+   draw a padded swatch with a border that ignores the pane's own line colour. */
+.settings-select{
+  padding:3px 6px;border:1px solid var(--line);border-radius:2px;
+  background:var(--bg);color:var(--dim);
+  font-family:var(--mono);font-size:calc(10.5px * var(--fs));
+}
+.settings-select:focus{outline:2px solid var(--focus);outline-offset:1px}
+.thwell{
+  width:34px;height:24px;padding:0;border:1px solid var(--line);border-radius:2px;
+  background:none;cursor:pointer;
+}
+.thwell::-webkit-color-swatch-wrapper{padding:2px}
+.thwell::-webkit-color-swatch{border:0;border-radius:1px}
+.thhex{
+  width:80px;padding:3px 6px;border:1px solid var(--line);border-radius:2px;
+  background:var(--bg);color:var(--dim);
+  font-family:var(--mono);font-size:calc(10.5px * var(--fs));
+}
+.thhex:focus{outline:2px solid var(--focus);outline-offset:1px}
+/* A refusal is a sentence under the rows it is about, not a control snapping
+   back. Amber rather than `--bad`: nothing failed, an answer was declined. */
+.thnote{padding-top:0}
+.settings-note{color:var(--attn);font-size:calc(10.5px * var(--fs));line-height:1.45}
+
 .settings-reset{
   margin-left:6px;
   font-family:var(--mono);font-size:calc(10.5px * var(--fs));color:var(--faint-solid);

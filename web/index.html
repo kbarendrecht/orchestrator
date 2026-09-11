@@ -244,6 +244,59 @@
   </div>
   <div class="settings-card">
     <div class="settings-group">Appearance</div>
+    <!-- Three colours, because twenty pickers reliably produce an unreadable
+         board and the interesting failure is not an ugly pair — it is a border
+         the same value as the surface it separates, which care at the picker
+         cannot prevent. Everything else is mixed from these; `palette.js` has the
+         ratios and why they are not round numbers. -->
+    <div class="settings-row">
+      <span class="settings-k">Theme</span>
+      <span class="settings-step">
+        <select class="settings-select" id="thpreset" aria-label="Theme"></select>
+      </span>
+    </div>
+    <div class="settings-row">
+      <span class="settings-k">Ground
+        <span class="settings-hint">the window behind everything</span>
+      </span>
+      <span class="settings-step">
+        <input class="thwell" type="color" id="thbg" aria-label="Ground colour">
+        <input class="thhex" type="text" id="thbghex" maxlength="7" spellcheck="false"
+               aria-label="Ground colour, as hex">
+      </span>
+    </div>
+    <div class="settings-row">
+      <span class="settings-k">Panel
+        <span class="settings-hint">rail, drawer, headers</span>
+      </span>
+      <span class="settings-step">
+        <input class="thwell" type="color" id="thpanel" aria-label="Panel colour">
+        <input class="thhex" type="text" id="thpanelhex" maxlength="7" spellcheck="false"
+               aria-label="Panel colour, as hex">
+      </span>
+    </div>
+    <div class="settings-row">
+      <span class="settings-k">Text</span>
+      <span class="settings-step">
+        <input class="thwell" type="color" id="thtext" aria-label="Text colour">
+        <input class="thhex" type="text" id="thtexthex" maxlength="7" spellcheck="false"
+               aria-label="Text colour, as hex">
+      </span>
+    </div>
+    <!-- Said rather than snapped back: a pair under the floor is refused, and a
+         control that reverts with no sentence is the worst of the three answers. -->
+    <div class="settings-row thnote" id="thnoterow" hidden>
+      <span class="settings-note" id="thnote"></span>
+    </div>
+    <div class="settings-row">
+      <span class="settings-k">Reset appearance
+        <span class="settings-hint">back to the palette orchd ships with</span>
+      </span>
+      <span class="settings-step">
+        <button class="settings-reset" id="threset" type="button">Reset</button>
+      </span>
+    </div>
+
     <div class="settings-row">
       <span class="settings-k">Font size</span>
       <span class="settings-step">
