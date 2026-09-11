@@ -1197,6 +1197,7 @@ async fn module(UrlPath(file): UrlPath<String>) -> Response {
     }
     let body = match file.as_str() {
         "core.js" => include_str!("../web/js/core.js"),
+        "palette.js" => include_str!("../web/js/palette.js"),
         "term.js" => include_str!("../web/js/term.js"),
         "rail.js" => include_str!("../web/js/rail.js"),
         "diff.js" => include_str!("../web/js/diff.js"),

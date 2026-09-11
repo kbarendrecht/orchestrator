@@ -57,6 +57,7 @@ git diff --exit-code --stat web/snapshot.d.ts \
   || { echo 'web/snapshot.d.ts was stale — the regenerated copy is in your tree; commit it.'; exit 1; }
 npx --prefix tools tsc -p tools/tsconfig.json
 npx --prefix tools depcruise --config tools/.dependency-cruiser.cjs web/app.js
+node tools/check-palette.mjs
 """
 
 [tasks.shot]

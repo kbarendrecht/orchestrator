@@ -6,6 +6,8 @@
 // importable. Everything here was already shared; the difference is that reaching
 // for it now has to be written down.
 
+import * as Palette from './palette.js';
+
 /** @type {import("../snapshot").Snapshot} */
 export let snap = /** @type {any} */ ({ workspaces: [], sessions: [] });
 
@@ -902,6 +904,206 @@ export function setZoom(z) {
   for (const fn of scaleListeners) fn(next);
   return next;
 }
+
+/* ---------------------------------------------------------------------------
+ * Theme
+ * ------------------------------------------------------------------------- */
+
+/* Three colours, three fonts and two numbers, in `localStorage` beside the zoom
+ * and the column widths. Nothing about which colours you like belongs in
+ * `config.json`, where a daemon that never reads it would have to carry it.
+ *
+ * The *arithmetic* is in `palette.js`, which is pure so `mise run check-web` can
+ * import it in node and assert the default reproduces `app.css`'s `:root`. What
+ * lives here is everything that touches the page: reading the store, refusing a
+ * pair that cannot be read, writing the custom properties, and telling the
+ * terminals. */
+
+export const THEME = { key: 'orch.theme' };
+
+/** The vendored families, which are the only ones certain to be there.
+ *
+ *  `label` is what the dropdown shows and `stack` is what the token becomes. The
+ *  `system` entry is the generic rather than a name: macOS does not expose its
+ *  system faces by name — `ui-monospace` answers where `SF Mono` does not — so
+ *  asking for the name would come back absent on the one platform that has it.
+ */
+export const FONTS = {
+  plex: { label: 'IBM Plex Mono', stack: "'IBM Plex Mono',ui-monospace,monospace", mono: true },
+  jetbrains: { label: 'JetBrains Mono', stack: "'JetBrains Mono',ui-monospace,monospace", mono: true },
+  martian: { label: 'Martian Mono', stack: "'Martian Mono',ui-monospace,monospace", mono: true },
+  system: { label: 'System monospace', stack: 'ui-monospace,monospace', mono: true },
+  plexsans: { label: 'IBM Plex Sans', stack: "'IBM Plex Sans',system-ui,sans-serif", mono: false },
+  sans: { label: 'System sans', stack: 'system-ui,sans-serif', mono: false },
+};
+
+/** The theme as it stands. Replaced whole by [`setTheme`], never mutated. */
+export let theme = loadTheme();
+
+const themeListeners = [];
+/** Register for theme changes. The terminals are the one consumer that cannot
+ *  read a CSS custom property — xterm takes hex strings — so they are told. */
+export function onThemeChange(fn) { themeListeners.push(fn); }
+
+/** What a fresh install gets: the palette in `app.css`, and the fonts it names. */
+const THEME_DEF = {
+  ...Palette.DEFAULT,
+  ui: 'plexsans',
+  mono: 'plex',
+  code: 'jetbrains',
+  /** Terminal font size before the UI scale multiplies it — `term.js`'s old constant. */
+  termSize: 12,
+  /** 1 is opaque. Floored well above zero: a board you cannot read is the problem
+   *  transparency causes rather than the effect it is for. */
+  opacity: 1,
+};
+
+/** Read the stored theme, keeping only what is valid.
+ *
+ *  **Field by field, and normalised on the way in.** A stored `"D2D2D2"` passes a
+ *  tolerant hex test and is then not a colour: written to a custom property it
+ *  kills every rule that reads it, and the colour well shows `#000000` while the
+ *  board says otherwise. So what comes back is what `parseHex` accepted, spelled
+ *  `#rrggbb`.
+ *
+ *  A font key is checked with `Object.hasOwn`, not `FONTS[key]` — `"constructor"`
+ *  and `"toString"` pass the latter, and the token then becomes the literal string
+ *  `undefined`.
+ */
+function loadTheme() {
+  let got = {};
+  try {
+    got = JSON.parse(localStorage.getItem(THEME.key) || '{}') || {};
+  } catch (e) {
+    got = {};
+  }
+  const hex = (v, fallback) => {
+    const rgb = Palette.parseHex(v);
+    return rgb ? Palette.toHex(rgb) : fallback;
+  };
+  const family = (v, fallback) =>
+    (typeof v === 'string' && (v.startsWith('custom:') || Object.hasOwn(FONTS, v)) ? v : fallback);
+  const next = {
+    bg: hex(got.bg, THEME_DEF.bg),
+    panel: hex(got.panel, THEME_DEF.panel),
+    text: hex(got.text, THEME_DEF.text),
+    ui: family(got.ui, THEME_DEF.ui),
+    mono: family(got.mono, THEME_DEF.mono),
+    code: family(got.code, THEME_DEF.code),
+    termSize: clampTermSize(got.termSize),
+    opacity: clampOpacity(got.opacity),
+  };
+  /* A pair that cannot be read never reaches the page, however it got into the
+     store — a hand edit, or a build that once allowed it. Falling back to the
+     default is the only recovery that does not need a readable settings pane to
+     reach. */
+  return Palette.legible(next) ? next : { ...next, ...Palette.DEFAULT };
+}
+
+/** 8 to 24 px, and not `NaN`. The floor is where a terminal stops being one. */
+function clampTermSize(v) {
+  const n = Number(v);
+  return Number.isFinite(n) ? Math.min(24, Math.max(8, Math.round(n))) : THEME_DEF.termSize;
+}
+
+/** 0.35 to 1. Floored well above zero for the reason `THEME_DEF.opacity` gives. */
+function clampOpacity(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return 1;
+  return Math.min(1, Math.max(0.35, Math.round(n * 100) / 100));
+}
+
+/** The CSS stack for one role, or the vendored default if the key is unknown. */
+export function fontStack(role) {
+  const key = theme[role];
+  if (typeof key === 'string' && key.startsWith('custom:')) {
+    /* **Refused rather than mangled.** Deleting the characters that could break a
+       declaration corrupts legitimate family names, and what survives can still
+       inject a second family — `Comic, monospace` is two. A name that does not
+       match falls back to the vendored stack, which is visible in the preview
+       rather than silent. */
+    const name = key.slice('custom:'.length);
+    if (/^[\w .-]{1,64}$/.test(name)) {
+      const generic = role === 'ui' ? 'system-ui,sans-serif' : 'ui-monospace,monospace';
+      return `'${name}',${generic}`;
+    }
+  }
+  return (FONTS[key] || FONTS[THEME_DEF[role]]).stack;
+}
+
+/** Write the theme to the page.
+ *
+ *  Everything derived goes on `documentElement` as a custom property, so the
+ *  stylesheet keeps saying `var(--line)` and knows nothing about themes. The
+ *  semantic colours are set here too — with their hue kept and their luminance
+ *  lifted only where the ground would swallow them; `Palette.readable` has why.
+ */
+export function applyTheme() {
+  const root = document.documentElement;
+  for (const [name, value] of Object.entries(Palette.tokens(theme, { opacity: theme.opacity }))) {
+    root.style.setProperty(name, value);
+  }
+  for (const [name, hue] of Object.entries(SIGNALS)) {
+    root.style.setProperty(name, Palette.readable(hue, theme));
+  }
+  root.style.setProperty('--sans', fontStack('ui'));
+  root.style.setProperty('--label', fontStack('ui'));
+  root.style.setProperty('--mono', fontStack('mono'));
+  root.style.setProperty('--code', fontStack('code'));
+  for (const fn of themeListeners) fn(theme);
+}
+
+/* The colours that mean something, with their shipped hues.
+ *
+ * Out of `tokens()` on purpose: these are the legend three panes read, and a
+ * theme that could set amber to grey would be turning a signal off rather than
+ * restyling it. Their *luminance* still follows the theme — see `Palette.readable`
+ * for the light-ground failure that forced it. */
+const SIGNALS = {
+  '--attn': '#E0A244',
+  '--work': '#4C9AAF',
+  '--ok': '#5FA97C',
+  '--bad': '#D4726B',
+  '--auto': '#5B8FC9',
+  '--focus': '#C9C9C9',
+};
+
+/** Change part of the theme, or refuse.
+ *
+ *  Returns `null` on success and a sentence on refusal, so the pane can say why
+ *  rather than snapping a control back with no explanation.
+ *
+ *  **A pair below the floor is refused, not corrected.** A board is the colours
+ *  you picked, and quietly moving them is the worse answer — and the refusal is
+ *  what keeps the way back reachable, since a theme that made the settings pane
+ *  invisible could only be undone by clearing browser storage.
+ */
+export function setTheme(patch) {
+  const next = { ...theme, ...patch };
+  if (!Palette.legible(next)) {
+    const got = Palette.contrast(next.bg, next.text).toFixed(1);
+    return `Text on that ground is ${got}:1 — under ${Palette.MIN_CONTRAST}:1 the board `
+      + 'stops being readable, so this is not applied.';
+  }
+  theme = {
+    ...next,
+    termSize: clampTermSize(next.termSize),
+    opacity: clampOpacity(next.opacity),
+  };
+  try {
+    localStorage.setItem(THEME.key, JSON.stringify(theme));
+  } catch (e) { /* private mode: the theme still holds for this session */ }
+  applyTheme();
+  return null;
+}
+
+/** Back to the palette the app shipped with — which `check-palette.mjs` asserts is
+ *  exactly what `:root` declares, so this is a real answer rather than one that
+ *  resembles it. */
+export function resetTheme() {
+  return setTheme(THEME_DEF);
+}
+
 
 /* **How far one wheel event travels in an agent pane.** A multiplier on the pixel
  * delta, defaulting to 1 — which is exactly today's behaviour, so a trackpad keeps
