@@ -815,6 +815,33 @@ mod tests {
     /// Asserted on the substitution rather than on the rendering, which is all a
     /// test here can reach — but it is the half that was missing: the page had no
     /// way to know.
+    /// **A window drag is asked for on movement, never on the press.**
+    ///
+    /// `start_dragging` posts a message the event loop drains later, and tao then
+    /// hands AppKit's *current* event to `performWindowDragWithEvent:` — which
+    /// accepts nothing but a mouse event. Press the titlebar, press a key, and the
+    /// queued request is handed a keyDown: the Objective-C exception takes the
+    /// whole process, sessions and all.
+    ///
+    /// The board learned this in `2990237`; this page fired on `mousedown` for
+    /// another four days, because it draws its own chrome rather than sharing
+    /// `app.js` — the same split that put two sets of window buttons on macOS.
+    /// Asserted on the shape rather than on behaviour, which is all a test here can
+    /// reach: no `post` of a drag may sit in a `mousedown` handler.
+    #[test]
+    fn a_drag_is_asked_for_on_movement_not_on_the_press() {
+        let html = page();
+        let press = html
+            .find("$('drag').addEventListener('mousedown'")
+            .expect("the titlebar still starts a drag");
+        let guard = html[press..].find("DRAG_SLOP").or_else(|| html[..press].find("DRAG_SLOP"));
+        assert!(guard.is_some(), "the drag has no movement threshold");
+        // And the request itself is inside the movement handler, not the press.
+        let moved = html.find("const moved = (m) =>").expect("a movement handler");
+        let asks = html.find("post('/api/window/start-drag')").expect("it still asks");
+        assert!(asks > moved, "the drag is asked for before the pointer has moved");
+    }
+
     #[test]
     fn the_first_run_page_is_told_how_its_window_is_decorated() {
         let html = page();

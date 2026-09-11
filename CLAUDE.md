@@ -386,6 +386,26 @@ mean *this* repo; if you do, name it.
   is a dead end (it multiplies before the threshold test, which reads the raw
   delta, so fixing a trackpad breaks a mouse), and **Shift+wheel** bypasses the
   whole path into xterm's own scrollback, which is in the legend now.
+- **A window drag is asked for on movement, never on the press — and asking early
+  aborts the process on macOS.** `start_dragging` posts a message the event loop
+  drains later, and tao's `drag_window` then hands AppKit's *current* event to
+  `performWindowDragWithEvent:`, substituting a synthetic mouse-down for one event
+  type only (`0x15`, the wake-up the post itself causes). A keyDown is type 10 and
+  is passed straight through to a call that accepts nothing but a mouse event; the
+  Objective-C exception takes the whole process, sessions and all. Press a
+  titlebar, then press a key, and the queued request is handed that keyDown.
+  So any page drawing a titlebar **arms on mousedown and asks on mousemove**. Both
+  that do have paid for it separately — the board in `2990237`, `firstrun.html`
+  four days later, because it draws its own chrome rather than sharing `app.js`.
+  That split is the same one that put two sets of window buttons on macOS; when
+  fixing something in the board's chrome, check whether the first-run page needs it
+  too.
+  **The window is narrowed, not closed**: the request crosses HTTP, so it can still
+  be drained after the gesture ended. Closing it properly means refusing the call in
+  the shell when AppKit's current event is not a mouse event.
+  The resize strips fire on mousedown and are *not* guarded — they are
+  `display:none` on macOS, so the AppKit call is unreachable there. That is safety
+  by platform rather than by design: showing them on a Mac would reopen this.
 - **`window.confirm`, `window.prompt` and `window.alert` do nothing in this app on
   macOS.** WKWebView shows a script dialog only if the host implements the
   matching `WKUIDelegate` method, and wry implements exactly three — the file-open

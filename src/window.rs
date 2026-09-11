@@ -32,8 +32,28 @@ pub enum WindowCmd {
     /// what wants it — mise repoints the install, but a `claude` already running is
     /// still the old build, and the only way onto the new one is a fresh spawn.
     Restart,
-    /// Hand the drag to the compositor. Sent on mousedown in the top bar, which
-    /// is the one command that must arrive while a mouse button is still held.
+    /// Hand the drag to the compositor. Sent once the pointer has **moved** with
+    /// the button down — never on the press itself.
+    ///
+    /// **On macOS asking too early aborts the process.** `start_dragging` posts a
+    /// message the event loop drains later, and tao's `drag_window` then hands
+    /// AppKit's *current* event to `performWindowDragWithEvent:`, substituting a
+    /// synthetic mouse-down for one event type only (`0x15`, the wake-up the post
+    /// itself causes). Every other type is passed straight through, and a keyDown
+    /// is type 10 — a call that accepts nothing but a mouse event. The Objective-C
+    /// exception takes the whole process, which here is the app and every session
+    /// with it.
+    ///
+    /// So the rule for any page that draws a titlebar: **arm on mousedown, ask on
+    /// mousemove**. Both pages that do have paid for it separately — the board in
+    /// `2990237`, `firstrun.html` four days later, because it draws its own chrome
+    /// rather than sharing `app.js`. If a third ever appears, it needs the same
+    /// threshold.
+    ///
+    /// The window is narrowed rather than closed: the request crosses HTTP, so it
+    /// can still be drained after the gesture ended. Closing it properly means
+    /// refusing the call in the shell when AppKit's current event is not a mouse
+    /// event, which needs objc in the desktop crate.
     StartDrag,
     /// Same, for the invisible strips along the window edges.
     ///

@@ -281,7 +281,40 @@
   for (const b of document.querySelectorAll('.wctl button')) {
     b.addEventListener('click', () => post('/api/window/' + b.dataset.cmd));
   }
-  $('drag').addEventListener('mousedown', (e) => { if (e.button === 0) post('/api/window/start-drag'); });
+  /* **A press is not a drag until the pointer moves, and on macOS asking too early
+     aborts the process.** `start_dragging` posts a message the event loop drains
+     later, and tao's `drag_window` then hands AppKit's *current* event to
+     `performWindowDragWithEvent:` — substituting a synthetic mouse-down for one
+     event type only (`0x15`, the wake-up the post itself causes). So a request
+     still queued when the next real event arrives is handed that one instead:
+     press the titlebar, press a key, and a keyDown reaches a call that accepts
+     nothing but a mouse event. The Objective-C exception takes the process, which
+     here is the app and every session with it.
+     The board learned this in `2990237` and this page did not, because it draws
+     its own chrome rather than sharing `app.js` — the same split that put two sets
+     of window buttons on macOS (#11). Waiting for movement means the request only
+     ever goes mid-gesture, with the button down and AppKit dispatching mouse
+     events. */
+  const DRAG_SLOP = 3;
+  $('drag').addEventListener('mousedown', (e) => {
+    if (e.button !== 0) return;
+    const from = { x: e.clientX, y: e.clientY };
+    const stop = () => {
+      window.removeEventListener('mousemove', moved);
+      window.removeEventListener('mouseup', stop);
+      // The native drag takes the mouse, so no mouseup is coming once it starts;
+      // losing focus is what says the gesture left the page.
+      window.removeEventListener('blur', stop);
+    };
+    const moved = (m) => {
+      if (Math.abs(m.clientX - from.x) + Math.abs(m.clientY - from.y) < DRAG_SLOP) return;
+      stop();
+      post('/api/window/start-drag');
+    };
+    window.addEventListener('mousemove', moved);
+    window.addEventListener('mouseup', stop);
+    window.addEventListener('blur', stop);
+  });
   $('drag').addEventListener('dblclick', () => post('/api/window/toggle-maximize'));
   for (const rz of document.querySelectorAll('.rz')) {
     rz.addEventListener('mousedown', (e) => { if (e.button === 0) post('/api/window/resize/' + rz.dataset.edge); });
