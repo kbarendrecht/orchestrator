@@ -16,11 +16,53 @@ export let snap = /** @type {any} */ ({ workspaces: [], sessions: [] });
  * every second; this is what makes those seconds mean anything. */
 let snapAt = Date.now();
 
-/** Take a new snapshot: the two have to move together, so they move here.
+/** Every checkout's latest snapshot, keyed on its path.
+ *
+ *  The rail reads all of them; every other pane reads [`snap`], which is whichever
+ *  one belongs to the checkout you are in. Private, because a reader that reached
+ *  in here by path would be the second way of asking "which checkout" — and
+ *  [`active`] is the first.
+ *
+ *  @type {Map<string, import("../snapshot").Snapshot>}
+ */
+const snaps = new Map();
+
+/** One checkout's snapshot, for the rail, which composes all of them.
+ *
+ *  @param {string} path
+ */
+export function snapshotOf(path) {
+  return snaps.get(path) ?? null;
+}
+
+/** Take a new snapshot for one checkout.
+ *
+ *  **The only writer of `snap`**, together with [`adopt`] which it calls: `snap`
+ *  and the clock it is measured against have to move together or every duration
+ *  freezes, and a second writer is how they come apart.
  *
  *  `snap` is a live binding — importers see this assignment without re-importing,
- *  which is what lets a hundred readers keep saying `snap.x`. */
-export function receive(next) {
+ *  which is what lets a hundred readers keep saying `snap.x`.
+ *
+ *  @param {Target} checkout
+ *  @param {import("../snapshot").Snapshot} next
+ */
+export function receive(checkout, next) {
+  snaps.set(checkout.path, next);
+  adopt();
+}
+
+/** Point `snap` at the active checkout's snapshot.
+ *
+ *  Called whenever either half could have moved: a snapshot landed, or the
+ *  selection moved to another checkout. Private, because every caller is in here:
+ *  an exported one would be a second way to move `snap`, which is the thing this
+ *  function exists to prevent. Idempotent, and cheap — a map read and two
+ *  assignments.
+ */
+function adopt() {
+  const next = snaps.get(activeCheckout().path);
+  if (!next) return;
   snap = next;
   snapAt = Date.now();
 }
@@ -48,65 +90,93 @@ export function onSelection(fn) { selectionListeners.push(fn); }
  *  somewhere else" has to be able to tell the two apart. */
 export function setSelected(id, auto = false) {
   selected = id;
+  // The checkout is derived from this, so `snap` moves with it — before the
+  // listeners run, since every one of them reads the snapshot to decide what the
+  // new selection means.
+  adopt();
   for (const fn of selectionListeners) fn(id, auto);
 }
 
-/** One checkout's daemon: where to reach it, and the token it wants.
+/** One checkout: what the host said about it, and how to reach its daemon.
  *
- *  A named shape rather than three loose globals, because there is about to be one
- *  of these per checkout. Today there is exactly one and it is the page's own
- *  origin, so nothing behaves differently — but every call already goes through it,
- *  which is the point: the seam has all of its subscribers from the first commit,
- *  rather than being added empty and wired up later.
+ *  The host's own `Checkout` plus the two strings a fetch needs. Named rather
+ *  than three loose globals because there is one of these per checkout, and every
+ *  call has to say which one it is for — `call` and `get` are the shorthand for
+ *  "the active one" and nothing else may assume there is only one.
  *
- *  @typedef {{ base: string, wsBase: string, token: string }} Checkout
+ *  @typedef {import("../snapshot").Checkout & { base: string, wsBase: string }} Target
  */
+
+/** Anything a fetch can be aimed at: a checkout's daemon, or the host.
+ *
+ *  Narrower than [`Target`] on purpose. The host is not a checkout — it has no
+ *  path, no repository and no daemon — so typing it as one would be a lie the
+ *  checker then enforces everywhere.
+ *
+ *  @typedef {{ base: string, token: string }} Endpoint
+ */
+
+/** Where a checkout's daemon answers.
+ *
+ *  `base` is empty for a daemon on the page's own origin, not `location.origin`,
+ *  so its fetches stay relative and a request cannot be sent to a spelling of this
+ *  origin the guard would refuse: `api::guard` matches the `Host` header against
+ *  `127.0.0.1:<port>` or `localhost:<port>` exactly, and those two are not
+ *  interchangeable. That is the solo `orchd` case, where one process serves the
+ *  page and manages the checkout.
+ *
+ *  A different port is the host-and-child shape: the page comes from the host and
+ *  every call is aimed at the daemon that manages *that* checkout. The Host header
+ *  then names the child's port, which is what the child's guard wants, and the
+ *  Origin is the host's — the one extra string the child accepts, handed to it on
+ *  its argv.
+ *
+ *  @param {import("../snapshot").Checkout} c
+ *  @returns {Target}
+ */
+function reachable(c) {
+  const sameOrigin = String(c.port) === location.port;
+  const authority = sameOrigin ? location.host : `127.0.0.1:${c.port}`;
+  return { ...c, base: sameOrigin ? '' : `http://${authority}`, wsBase: `ws://${authority}` };
+}
 
 /** Every open checkout, as the host substituted them into the page.
  *
  *  Substituted rather than fetched, because a page cannot ask for a token it has
- *  not been given — the same reason `GET /` has never been token-gated. There is
- *  one entry while one process serves the page and manages the checkout.
+ *  not been given — the same reason `GET /` has never been token-gated.
  *
- *  @type {{ path: string, name: string, port: number, token: string, live: boolean }[]}
+ *  **A `let`, because the set changes while the page is open.** An add, a close
+ *  and a daemon that died are all the host telling the page something the
+ *  substitution could not know, and a page that reloaded to learn it would take
+ *  every terminal down with it.
+ *
+ *  @type {Target[]}
  */
-export const CHECKOUTS = window.__ORCH__.checkouts ?? [];
+export let CHECKOUTS = (window.__ORCH__.checkouts ?? []).map(reachable);
 
-/** The checkout this page is for.
+/** Replace the checkout list with what the host now says.
  *
- *  `base` is empty for the one on this origin, not `location.origin`, so its
- *  fetches stay relative and a request cannot be sent to a spelling of this origin
- *  the guard would refuse: `api::guard` matches the `Host` header against
- *  `127.0.0.1:<port>` or `localhost:<port>` exactly, and those two are not
- *  interchangeable.
+ *  One writer, so a row and the socket aimed at it cannot disagree. The caller
+ *  reconciles the sockets; this only moves the list.
  *
- *  The token comes from the checkout list when the host provided one, and from
- *  `__ORCH__.token` otherwise — which is the review-preview page and any host too
- *  old to substitute a list. A page that fell back holds the *host's* token, which
- *  is the same value while one process serves both.
- *
- *  @type {Checkout}
+ *  @param {import("../snapshot").Checkout[]} next
  */
-export const LOCAL = (() => {
-  const c = CHECKOUTS[0];
-  // Same port as the page: keep the fetches relative, so a request cannot be sent
-  // to a spelling of this origin the guard would refuse — `api::guard` matches the
-  // `Host` header against `127.0.0.1:<port>` or `localhost:<port>` exactly, and
-  // those two are not interchangeable.
-  //
-  // A different port is the host-and-child shape: the page comes from the host and
-  // every call has to be aimed at the daemon that manages the checkout. The Host
-  // header then names the child's port, which is what the child's guard wants, and
-  // the Origin is the host's — the one extra string the child accepts, handed to it
-  // on its argv.
-  const sameOrigin = !c || String(c.port) === location.port;
-  const authority = sameOrigin ? location.host : `127.0.0.1:${c.port}`;
-  return {
-    base: sameOrigin ? '' : `http://${authority}`,
-    wsBase: `ws://${authority}`,
-    token: c?.token ?? window.__ORCH__.token,
-  };
-})();
+export function setCheckouts(next) {
+  CHECKOUTS = next.map(reachable);
+}
+
+/** The review-preview page's fallback target.
+ *
+ *  That page is served by the host with no checkout list, and it reaches the
+ *  daemon for a diff. One entry on this origin with the page's own token, which is
+ *  the host's — the same value a solo `orchd` gives both.
+ *
+ *  @type {Target}
+ */
+const PAGE_ONLY = {
+  path: '', name: '', port: Number(location.port) || 0, live: true, repo: null, clash: null,
+  base: '', wsBase: `ws://${location.host}`, token: window.__ORCH__.token,
+};
 
 /** The host, which is whatever served this page.
  *
@@ -123,7 +193,7 @@ export const LOCAL = (() => {
  * nothing, and nothing failed. That is the exact trap `CLAUDE.md` names — a
  * misrouted call reads as an empty daemon.
  *
- *  @type {Checkout}
+ *  @type {Endpoint & { wsBase: string }}
  */
 export const HOST = {
   base: '',
@@ -137,11 +207,37 @@ export const callHost = (path, body) => callOn(HOST, path, body);
 /** GET from the host. */
 export const getHost = (path) => getOn(HOST, path);
 
-/* Kept as their own exports because five modules read them, and a token is what
-   most of them want rather than a checkout. They are [`LOCAL`]'s, which is the
-   only checkout there is until the host serves the page. */
-export const TOKEN = LOCAL.token;
-export const WS_BASE = LOCAL.wsBase;
+/** The checkout everything that is not the rail follows.
+ *
+ *  **Derived from the selection, never written.** A session belongs to a workspace
+ *  belongs to a checkout, so which checkout you are in is a *fact about what you
+ *  have selected* — a second variable saying so is a second source of truth, and
+ *  the one that goes stale is whichever the next reader forgets to update. With
+ *  nothing selected it is the first checkout, which is the only checkout on a
+ *  single-checkout install.
+ *
+ *  @returns {Target}
+ */
+export function activeCheckout() {
+  return (selected && checkoutOf(selected)) || CHECKOUTS[0] || PAGE_ONLY;
+}
+
+/** Which checkout holds a session, by searching every snapshot.
+ *
+ *  By search rather than by a map kept beside the sessions, because the snapshots
+ *  are the only record of what exists and a second index is a second thing to
+ *  invalidate. There are at most a handful of checkouts and the rail already walks
+ *  all of them every second.
+ *
+ *  @param {string} id
+ *  @returns {Target | null}
+ */
+export function checkoutOf(id) {
+  for (const c of CHECKOUTS) {
+    if ((snaps.get(c.path)?.sessions ?? []).some((s) => s.id === id)) return c;
+  }
+  return null;
+}
 
 /* ---------------------------------------------------------------------------
  * Boot timing
@@ -499,7 +595,7 @@ export function promptBox(message, { value = '', placeholder = '', ok = 'OK' } =
 
 /** POST to one checkout's daemon.
  *
- *  @param {Checkout} c
+ *  @param {Endpoint} c
  *  @param {string} path
  *  @param {unknown} [body]
  */
@@ -516,7 +612,7 @@ export async function callOn(c, path, body) {
 
 /** GET from one checkout's daemon.
  *
- *  @param {Checkout} c
+ *  @param {Endpoint} c
  *  @param {string} path
  */
 export async function getOn(c, path) {
@@ -530,8 +626,11 @@ export async function getOn(c, path) {
    `callOn`/`getOn` exist for the one that is aimed somewhere else, and keeping the
    short pair means ~90 call sites do not have to say which checkout they meant when
    there is only ever one answer. */
-export const call = (path, body) => callOn(LOCAL, path, body);
-export const get = (path) => getOn(LOCAL, path);
+/* The shorthand for the checkout you are in. Every other call names its target,
+   because "the active one" is only ever right for the panes that follow the
+   selection — the rail does not. */
+export const call = (path, body) => callOn(activeCheckout(), path, body);
+export const get = (path) => getOn(activeCheckout(), path);
 
 export function duration(ms) {
   if (ms == null) return '';
@@ -743,7 +842,21 @@ export function saveZoom(z) {
 // in `app.js` because that was the only file; the seams all reached for it, which
 // is what made them seams rather than modules.
 
-export const terms = new Map();      // target -> { term, fit, sock, host }
+export const terms = new Map();      // termKey -> { term, fit, sock, host, checkout }
+
+/** The key a terminal is held under: its checkout and its wire target.
+ *
+ *  **Qualified, because a target is only unique within one daemon.** `MAIN` is
+ *  `"main"` in every checkout and a managed process id is `<workspace>:<name>`, so
+ *  `proc:main:ng-watch` names a different pty in each one — and an unqualified map
+ *  would hand you the other checkout's live terminal under this checkout's tab.
+ *
+ *  NUL as the separator, because it is the one byte a path cannot contain.
+ *
+ *  @param {{ path: string }} checkout
+ *  @param {string} target
+ */
+export const termKey = (checkout, target) => `${checkout.path}\u0000${target}`;
 
 export function stateLabel(s) {
   const handed = handedToPr(s);
@@ -1021,7 +1134,7 @@ export async function newShell() {
   if (drawerCollapsed) setDrawerCollapsed(false);
   try {
     const r = await call(`/api/workspace/${encodeURIComponent(wsId)}/shell`);
-    selectedProc[wsId] = r.process;
+    selectedProc[wsKey(wsId)] = r.process;
     // You pressed + to type in it. The pty does not exist until the daemon says
     // so, so this is claimed here and spent when the terminal appears.
     pendingProcFocus = r.process;
@@ -1086,7 +1199,22 @@ window.addEventListener('blur', closeMenu);
 // Shared UI state
 // ---------------------------------------------------------------------------
 
-export let selectedProc = {};        // workspace id -> process id
+export let selectedProc = {};        // wsKey -> process id
+
+/** The key per-workspace UI state is held under: its checkout and its id.
+ *
+ *  **Qualified, for the same reason [`termKey`] is.** `MAIN` is `"main"` in every
+ *  daemon, so a bare workspace id names a different workspace in each checkout —
+ *  and `orch.procOrder` is *persisted* under it, so dragging one checkout's drawer
+ *  tabs silently reordered another's, permanently and across reloads. No amount of
+ *  disposing terminals undoes a wrong key in `localStorage`.
+ *
+ *  Always the checkout you are in: every reader of these three is a pane that
+ *  follows the selection.
+ *
+ *  @param {string} wsId
+ */
+export const wsKey = (wsId) => `${activeCheckout().path}\u0000${wsId}`;
 
 /** What a PR is doing, in the two or three words a row has space for. */
 export function prState(p) {
@@ -1161,7 +1289,12 @@ function redrawDrawer() {
    yours, not the machine's, and the processes it describes do not outlive the
    daemon anyway. Keys are the caller's to choose — `app.js` uses a managed
    process's name, so `docker` keeps its place across a restart, and a shell's id,
-   which is the only thing telling two of them apart. */
+   which is the only thing telling two of them apart.
+
+   **Keyed by [`wsKey`], which carries the checkout.** This is the one piece of
+   per-workspace state that *persists*, so a bare workspace id here was the worst
+   of the collisions: `main` names a workspace in every checkout, and the order was
+   written and applied with no membership check. */
 export let procOrder = (() => {
   try {
     return JSON.parse(localStorage.getItem('orch.procOrder') || '{}') || {};
@@ -1171,7 +1304,7 @@ export let procOrder = (() => {
 })();
 
 export function setProcOrder(wsId, keys) {
-  procOrder = { ...procOrder, [wsId]: keys };
+  procOrder = { ...procOrder, [wsKey(wsId)]: keys };
   try {
     localStorage.setItem('orch.procOrder', JSON.stringify(procOrder));
   } catch (e) { /* private mode: the order still holds for this session */ }
@@ -1211,4 +1344,4 @@ export let pendingSelect = null;
 export function setPendingSelect(id) { pendingSelect = id; }
 export function setPendingProcFocus(id) { pendingProcFocus = id; }
 export function setDrawerTouched(v) { drawerTouched = v; }
-export function setSelectedProc(wsId, procId) { selectedProc[wsId] = procId; }
+export function setSelectedProc(wsId, procId) { selectedProc[wsKey(wsId)] = procId; }

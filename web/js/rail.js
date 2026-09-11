@@ -1,7 +1,7 @@
 // The rail: what is running, what is waiting on you, and the PRs beside it.
 // Twenty-four names, three out; the rest is how a row decides what it says.
 
-import { $, byNewest, call, caret, clock, confirmBox, copyText, creating, dotClass, duration, el, isArchived, isConversation, isWaiting, mainWorkspace, MOD_LABEL, newSession, newWorktree, openMenu, pending, refreshButton, selected, sessionsOf, setSelected, sinceSnap, snap, stateClass, stateLabel, toast, unchanged, setPendingSelect } from './core.js';
+import { $, activeCheckout, byNewest, call, caret, clock, confirmBox, copyText, creating, dotClass, duration, el, isArchived, isConversation, isWaiting, mainWorkspace, MOD_LABEL, newSession, newWorktree, openMenu, pending, refreshButton, selected, sessionsOf, setSelected, sinceSnap, snap, stateClass, stateLabel, toast, unchanged, setPendingSelect } from './core.js';
 import * as Review from './review.js';
 import * as Term from './term.js';
 
@@ -543,7 +543,7 @@ async function openArchived(s) {
     // that same conversation. So the dead terminal is still in `terms` under the
     // key the new pty wants, and `openTerm` would hand back the corpse — you
     // resume and stare at the old scrollback with a closed socket.
-    Term.close(`session:${r.session}`);
+    Term.close(activeCheckout(), `session:${r.session}`);
     setPendingSelect(r.session);
     // The branch moved since the conversation happened, so the files it talks
     // about are not the files on disk. Worth saying, not worth refusing over.
@@ -810,7 +810,7 @@ async function moveOutOfMain(s) {
     // A relocated session keeps its id, so the dead terminal is still in `terms`
     // under the key the new pty wants — the same reason the swap and resume close it.
     if (r.session && r.session.session) {
-      Term.close(`session:${r.session.session}`);
+      Term.close(activeCheckout(), `session:${r.session.session}`);
       setPendingSelect(r.session.session);
     }
     toast(r.created
@@ -869,7 +869,7 @@ async function swapWithMain(wsId) {
     // under the key the new pty wants and `openTerm` would hand back the corpse —
     // the same reason resume closes it. Both directions, since both were respawned.
     for (const dir of [r.into_main, r.into_worktree]) {
-      if (dir && dir.session) Term.close(`session:${dir.session}`);
+      if (dir && dir.session) Term.close(activeCheckout(), `session:${dir.session}`);
     }
     // Land in main, where the branch now is — the whole point of pressing this.
     if (r.select) setPendingSelect(r.select);

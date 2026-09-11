@@ -2,7 +2,7 @@
 // over a websocket. The DOM renderer is deliberate under WebKitGTK, and only
 // there — see the renderer comment below, and CLAUDE.md.
 
-import { $, CHROME, IS_MAC, TOKEN, WS_BASE, copyText, el, mark, note, reportBoot, selected, terms, toast, typingElsewhere, uiScale, wheelScale } from './core.js';
+import { $, CHROME, IS_MAC, copyText, el, mark, note, reportBoot, selected, terms, termKey, toast, typingElsewhere, uiScale, wheelScale } from './core.js';
 
 
 const THEME = {
@@ -31,9 +31,15 @@ const OBSERVE = new URLSearchParams(location.search).has('observe');
 const TERM_FONT = 12;
 const termFontSize = () => Math.round(TERM_FONT * uiScale());
 
-/** Attach to a pty, replaying the daemon's buffer first. */
-function openTerm(target, parent) {
-  if (terms.has(target)) return terms.get(target);
+/** Attach to a pty, replaying the daemon's buffer first.
+ *
+ *  @param {import('./core.js').Target} checkout which daemon holds the pty
+ *  @param {string} target the wire target, as that daemon names it
+ *  @param {HTMLElement} parent
+ */
+function openTerm(checkout, target, parent) {
+  const key = termKey(checkout, target);
+  if (terms.has(key)) return terms.get(key);
 
   const host = el('div', 'termhost');
   parent.appendChild(host);
@@ -304,7 +310,14 @@ function openTerm(target, parent) {
 
   term.onData((d) => sendInput(entry, new TextEncoder().encode(d)));
 
-  terms.set(target, entry);
+  /* **The checkout is taken here, at open, and never read from a global again.**
+     `connect` is also the reconnect path, so a socket that read "the checkout you
+     are in now" would re-aim itself at whichever checkout you happened to be
+     looking at when the network blipped — and never heal, because nothing
+     re-opens a terminal that is working. */
+  entry.checkout = checkout;
+  entry.key = key;
+  terms.set(key, entry);
   connect(entry, target);
   return entry;
 }
@@ -317,8 +330,9 @@ function openTerm(target, parent) {
  *  a reconnect a closed socket stayed closed, and every keystroke took the false
  *  branch and vanished while the cursor kept blinking on xterm's own buffer (#7). */
 function connect(entry, target) {
+  const { wsBase, token } = entry.checkout;
   const sock = new WebSocket(
-    `${WS_BASE}/ws/pty?token=${encodeURIComponent(TOKEN)}&target=${encodeURIComponent(target)}`
+    `${wsBase}/ws/pty?token=${encodeURIComponent(token)}&target=${encodeURIComponent(target)}`
   );
   sock.binaryType = 'arraybuffer';
   entry.sock = sock;
@@ -352,7 +366,8 @@ function connect(entry, target) {
     // in, or a slow one would steal the keyboard back later — and never out of a
     // box you are typing in, which is how a rename in the rail lost the keyboard
     // mid-word and committed what had been typed so far.
-    if (terms.get(`session:${selected}`) === entry && !typingElsewhere()) {
+    if (selected && terms.get(termKey(entry.checkout, `session:${selected}`)) === entry
+        && !typingElsewhere()) {
       try {
         entry.term.focus();
       } catch (e) { /* disposed while the socket was opening */ }
@@ -378,7 +393,7 @@ function connect(entry, target) {
     // A deliberate teardown, or a session that has left the snapshot: `closeTerm`
     // disposes the entry, so reconnecting here would race it into reattaching a pty
     // that is gone — `resolve` would 404 and this would just flap.
-    if (entry.closed || terms.get(target) !== entry) return;
+    if (entry.closed || terms.get(entry.key) !== entry) return;
     // Mark the pane so a deaf terminal is not silent, then reconnect with backoff
     // the way the events socket does. The replay makes a reattach indistinguishable
     // from a first attach, so the pane heals itself on wake from sleep or a blip.
@@ -386,7 +401,7 @@ function connect(entry, target) {
     const wait = Math.min(600 * 2 ** (entry.backoff || 0), 10000);
     entry.backoff = (entry.backoff || 0) + 1;
     entry.reconnectTimer = setTimeout(() => {
-      if (!entry.closed && terms.get(target) === entry) connect(entry, target);
+      if (!entry.closed && terms.get(entry.key) === entry) connect(entry, target);
     }, wait);
   };
 }
@@ -577,8 +592,8 @@ function repaint(entry) {
   });
 }
 
-function closeTerm(target) {
-  const entry = terms.get(target);
+function closeTerm(checkout, target) {
+  const entry = terms.get(termKey(checkout, target));
   if (!entry) return;
   // Mark it torn down before closing, so the socket's `onclose` does not read a
   // deliberate close as a drop and schedule a reconnect against a gone pty.
@@ -587,15 +602,21 @@ function closeTerm(target) {
   try { entry.sock?.close(); } catch (e) { /* already gone */ }
   entry.term.dispose();
   entry.host.remove();
-  terms.delete(target);
+  terms.delete(entry.key);
 }
 
-/** Tab switch replays the daemon buffer; it never respawns (§9). */
-function showTerm(target, parent) {
-  const entry = target ? openTerm(target, parent) : null;
-  for (const [key, e] of terms) {
+/** Tab switch replays the daemon buffer; it never respawns (§9).
+ *
+ *  @param {import('./core.js').Target | null} checkout
+ *  @param {string | null} target
+ *  @param {HTMLElement} parent
+ */
+function showTerm(checkout, target, parent) {
+  const key = checkout && target ? termKey(checkout, target) : null;
+  const entry = key ? openTerm(checkout, target, parent) : null;
+  for (const [held, e] of terms) {
     if (e.host.parentElement !== parent) continue;
-    e.host.hidden = key !== target;
+    e.host.hidden = held !== key;
     // Everything that arrived while it was away, before the repaint below asks
     // xterm what it holds.
     if (!e.host.hidden) flushQueued(e);
@@ -603,7 +624,7 @@ function showTerm(target, parent) {
   // Only the centre pane owns the empty state. Without this guard, every
   // drawer render un-hides it and "No session selected" sits on top of a
   // perfectly working terminal.
-  if (parent === $('termwrap')) $('termempty').hidden = !!target;
+  if (parent === $('termwrap')) $('termempty').hidden = !!key;
   if (entry) {
     requestAnimationFrame(() => {
       // Forced: switching to a pane is one of the two moments this client takes
@@ -648,8 +669,8 @@ function applyScale() {
  *  from the tail because a watcher that has been idle leaves the screen padded,
  *  and 50 rows of nothing is not what you meant to send.
  */
-function readTerm(target, lines = 50) {
-  const entry = terms.get(target);
+function readTerm(checkout, target, lines = 50) {
+  const entry = terms.get(termKey(checkout, target));
   if (!entry) return null;
   const picked = entry.term.getSelection();
   if (picked && picked.trim()) return picked.replace(/\s+$/, '');
@@ -669,8 +690,8 @@ function readTerm(target, lines = 50) {
 }
 
 /** Whether this pane has a selection, which is what the menu's wording turns on. */
-function hasSelection(target) {
-  const entry = terms.get(target);
+function hasSelection(checkout, target) {
+  const entry = terms.get(termKey(checkout, target));
   return !!entry && !!entry.term.getSelection().trim();
 }
 

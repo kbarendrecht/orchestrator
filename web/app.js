@@ -3,7 +3,7 @@
 // The SPA is a module now, so what it reaches for is written down. `core.js` holds
 // the primitives every part needs; `queue.js` is the first seam extracted whole.
 import {
-  TOKEN, WS_BASE, $, el, toast, call, callHost, get, duration,
+  $, el, toast, call, callHost, get, duration, activeCheckout, CHECKOUTS, snapshotOf, wsKey,
   snap, receive, keyActivate,
   setZoom, saveZoom, onScaleChange, ZOOM, zoomScale,
   selected, setSelected, onSelection, prForWorkspace,
@@ -679,7 +679,7 @@ const drawerDrawn = { sig: null };
 async function sendPaneToSession(target, label) {
   const s = currentSession();
   if (!s) return toast('no session in this workspace to send to', true);
-  const text = Term.readTerm(target);
+  const text = Term.readTerm(activeCheckout(), target);
   if (!text) return toast('that pane has nothing to send', true);
   // Named, so the turn does not open with a wall of output nobody attributed.
   // The name is the config's, which is what keeps this free of any one workflow.
@@ -698,7 +698,7 @@ async function sendPaneToSession(target, label) {
  *  selection this sends *that*, and without one it sends the tail. A single item
  *  saying "send output" would leave you guessing which. */
 function paneMenu(target, label) {
-  const picked = Term.hasSelection(target);
+  const picked = Term.hasSelection(activeCheckout(), target);
   const to = currentSession();
   const named = to ? (to.title || 'the session') : null;
   return [
@@ -720,7 +720,8 @@ function renderDrawer() {
      and drag; rebuilding the strip on every snapshot took the drag target out
      from under the pointer several times a second while an agent worked. */
   if (unchanged(drawerDrawn, [wsId, w ? w.processes : null, snap.stack_up, drawerCollapsed,
-    selectedProc[wsId], procOrder[wsId], drawerTouched, pendingProcFocus, shownTab[wsId]])) {
+    selectedProc[wsKey(wsId)], procOrder[wsKey(wsId)], drawerTouched, pendingProcFocus,
+    shownTab[wsKey(wsId)]])) {
     return;
   }
   const tabs = $('dtabs');
@@ -756,7 +757,7 @@ function renderDrawer() {
   const alive = (p) =>
     p.kind.kind === 'shell' ? p.kind.exit_code == null : p.health.health !== 'dead';
 
-  let active = selectedProc[wsId];
+  let active = selectedProc[wsKey(wsId)];
   if (!procs.some((p) => p.id === active)) {
     // Prefer something still running; a dead shell is only shown when it is
     // all there is, or when you picked it yourself.
@@ -764,7 +765,7 @@ function renderDrawer() {
     /* Unless it is a shell you just asked for that the snapshot has not caught up
        with: writing the fallback back would spend the claim, and the process then
        arrives to find something else selected and never takes the cursor. */
-    if (active !== pendingProcFocus) selectedProc[wsId] = fallback;
+    if (active !== pendingProcFocus) selectedProc[wsKey(wsId)] = fallback;
     active = fallback;
   }
 
@@ -817,7 +818,7 @@ function renderDrawer() {
     x.title = dead ? 'Dismiss' : 'Close';
     x.onclick = (ev) => {
       ev.stopPropagation();
-      Term.close(`proc:${p.id}`);
+      Term.close(activeCheckout(), `proc:${p.id}`);
       call(`/api/process/${encodeURIComponent(p.id)}/close`).catch((e) => toast(e.message, true));
     };
     tab.appendChild(x);
@@ -827,7 +828,7 @@ function renderDrawer() {
       r.title = 'Restart';
       r.onclick = (ev) => {
         ev.stopPropagation();
-        Term.close(`proc:${p.id}`);
+        Term.close(activeCheckout(), `proc:${p.id}`);
         call(`/api/workspace/${encodeURIComponent(wsId)}/process/${encodeURIComponent(p.name)}/restart`)
           .catch((e) => toast(e.message, true));
       };
@@ -869,7 +870,7 @@ function renderDrawer() {
 
   /* Your order. Stable, and a key the order has never seen sorts last — which is
      where a process you have just started belongs. */
-  const order = procOrder[wsId] || [];
+  const order = procOrder[wsKey(wsId)] || [];
   const place = (k) => (order.indexOf(k) < 0 ? order.length : order.indexOf(k));
   made.sort((a, b) => place(a[0]) - place(b[0]));
   for (const [k, tab] of made) {
@@ -880,13 +881,13 @@ function renderDrawer() {
 
   // Only when the selection actually moved: doing it every snapshot would drag
   // the strip back while you are reading the far end of it.
-  if (active && shownTab[wsId] !== active) {
-    shownTab[wsId] = active;
+  if (active && shownTab[wsKey(wsId)] !== active) {
+    shownTab[wsKey(wsId)] = active;
     tabs.querySelector('.dtab[aria-selected="true"]')
       ?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
   }
 
-  const shown = Term.show(active ? `proc:${active}` : null, $('drawerbody'));
+  const shown = Term.show(activeCheckout(), active ? `proc:${active}` : null, $('drawerbody'));
   /* The pane's own menu, which is where this feature is really used: you select
      the lines that matter and send *those*. Registered on the wrapper rather than
      on the host xterm builds, because `Term.show` replaces hosts and a listener on
@@ -913,9 +914,9 @@ function renderDrawer() {
 
   // Auto-expand when a managed process goes red.
   const failing = procs.find((p) => p.health.health === 'failing');
-  if (failing && selectedProc[wsId] !== failing.id && !drawerTouched) {
-    selectedProc[wsId] = failing.id;
-    Term.show(`proc:${failing.id}`, $('drawerbody'));
+  if (failing && selectedProc[wsKey(wsId)] !== failing.id && !drawerTouched) {
+    selectedProc[wsKey(wsId)] = failing.id;
+    Term.show(activeCheckout(), `proc:${failing.id}`, $('drawerbody'));
   }
 }
 
@@ -979,7 +980,7 @@ onSelection((id, auto) => {
   // A session created a moment ago is not in the snapshot yet. Blanking the
   // terminal here would strand it: the next snapshot sees `selected` already
   // set and never opens one.
-  const shown = s ? Term.show(`session:${s.id}`, $('termwrap')) : null;
+  const shown = s ? Term.show(activeCheckout(), `session:${s.id}`, $('termwrap')) : null;
   render();
   // Picking a session is picking where you are about to type. After the frame
   // that un-hides it, for the same reason the drawer waits: xterm refuses focus
@@ -1447,14 +1448,30 @@ function announceWaiting() {
   waitingKnown = now;
 }
 
-function connect() {
-  const sock = new WebSocket(`${WS_BASE}/ws/events?token=${encodeURIComponent(TOKEN)}`);
+/** Open the events socket for one checkout, and keep it open.
+ *
+ *  **One per checkout, each carrying that daemon's own token.** A checkout is a
+ *  daemon, and a daemon only ever describes itself — there is no socket that could
+ *  report on all of them, and the page composing N snapshots is what makes one
+ *  rail over several checkouts possible.
+ *
+ *  The checkout is taken here and closed over, never read from a global: this is
+ *  also the reconnect path, and a socket that re-read "the checkout you are in"
+ *  would re-aim itself after a network blip and never heal.
+ *
+ *  @param {import('./js/core.js').Target} checkout
+ */
+function connect(checkout) {
+  const sock = new WebSocket(
+    `${checkout.wsBase}/ws/events?token=${encodeURIComponent(checkout.token)}`
+  );
   // Connected (or reconnected): clear the dropped-connection status.
   sock.onopen = () => { $('connbar').hidden = true; };
   sock.onmessage = (ev) => {
     // Through `receive` so the snapshot and the clock it is measured against move
     // together; `snap` is a live binding, so every reader sees this.
-    receive(JSON.parse(ev.data));
+    const state = JSON.parse(ev.data);
+    receive(checkout, state);
     // The first snapshot has landed, so drop the "connecting" hold and let the
     // real board — empty or not — show. Idempotent after that.
     document.body.classList.add('ready');
@@ -1462,19 +1479,28 @@ function connect() {
     // broken. Everything after it is the centre pane filling in.
     mark('snapshot');
     reportBoot();
-    // A session whose pty is gone keeps its scrollback until it is dismissed,
-    // so terminals are only torn down when the session disappears entirely.
+    /* A session whose pty is gone keeps its scrollback until it is dismissed, so
+       terminals are only torn down when the session disappears entirely.
+
+       **Against the snapshot that just landed, and only this checkout's
+       terminals.** A snapshot describes one daemon, so asking it about another
+       checkout's terminal gets the wrong answer in both directions: it would tear
+       down a live pane whose checkout simply did not report, and — because
+       `proc:main:ng-watch` exists in every checkout — it would *keep* a pane that
+       is gone because a different daemon still has one by that name. */
     const liveProcs = new Set(
-      snap.workspaces.flatMap((w) => w.processes.map((p) => `proc:${p.id}`))
+      state.workspaces.flatMap((w) => w.processes.map((p) => `proc:${p.id}`))
     );
-    for (const target of [...terms.keys()]) {
+    for (const [key, entry] of [...terms]) {
+      if (entry.checkout.path !== checkout.path) continue;
+      const target = key.slice(key.indexOf('\u0000') + 1);
       if (target.startsWith('session:')) {
         const id = target.slice('session:'.length);
-        if (!snap.sessions.some((s) => s.id === id)) Term.close(target);
+        if (!state.sessions.some((x) => x.id === id)) Term.close(checkout, target);
       } else if (!liveProcs.has(target)) {
         // A shell that closed cleanly is gone from the snapshot; drop its
         // terminal rather than leaving a hidden host behind forever.
-        Term.close(target);
+        Term.close(checkout, target);
       }
     }
     // The three panes describe one thing: the session you are in. The rail says
@@ -1500,14 +1526,20 @@ function connect() {
     }
 
     if (!selected) {
-      // Default to whatever most needs you, among what is actually running.
-      const first = snap.sessions.filter((x) => !isArchived(x));
-      const pick = first.find(isWaiting) || first[0];
-      if (pick) {
-        setSelected(pick.id, true);
-        Term.show(`session:${pick.id}`, $('termwrap'));
+      /* Default to whatever most needs you, among what is actually running —
+         **across every checkout**, not only the first. A rail that lists several
+         checkouts and lands you on an empty pane because checkout one happens to
+         be idle is the blank pane this stage exists to remove. */
+      const running = CHECKOUTS.flatMap((c) =>
+        (snapshotOf(c.path)?.sessions ?? [])
+          .filter((x) => !isArchived(x))
+          .map((x) => ({ checkout: c, session: x })));
+      const landing = running.find((r) => isWaiting(r.session)) || running[0];
+      if (landing) {
+        setSelected(landing.session.id, true);
+        Term.show(landing.checkout, `session:${landing.session.id}`, $('termwrap'));
       } else {
-        Term.show(null, $('termwrap'));
+        Term.show(null, null, $('termwrap'));
       }
     }
     scheduleRender();
@@ -1519,8 +1551,13 @@ function connect() {
     // itself on reconnect (see onopen), rather than a toast that — now that
     // errors persist — would linger after the daemon came back.
     $('connbar').hidden = false;
-    setTimeout(connect, 1500);
+    setTimeout(() => connect(checkout), 1500);
   };
+}
+
+/** One events socket per open checkout. */
+function connectAll() {
+  for (const c of CHECKOUTS) connect(c);
 }
 
 // ---------------------------------------------------------------------------
@@ -1780,7 +1817,7 @@ import * as Settings from './js/settings.js';
 Settings.setup();
 setupColumns();
 setupChrome();
-connect();
+connectAll();
 /* The waiting clock has to tick even when nothing else changes — and ticking is
    all it does. This used to call `Rail.render()`, which opens with
    `replaceChildren`: the row under your pointer was destroyed and rebuilt every
