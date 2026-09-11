@@ -1751,13 +1751,18 @@ function setupChrome() {
       /* **A press is not a drag until the pointer moves, and on macOS asking too
          early crashes the app.** `start_dragging` posts a message the event loop
          drains later, and tao's `drag_window` then hands AppKit's *current* event
-         to `performWindowDragWithEvent:` — substituting a synthetic mouse-down for
-         one event type only (`0x15`, application-defined, which is the wake-up the
-         post itself causes). So a request that is still queued when the next real
-         event arrives is handed that one instead: press the header, press a key,
-         and a keyDown reaches a call that accepts nothing but a mouse event. The
+         to `performWindowDragWithEvent:`, which accepts nothing but a mouse event.
+         So a request still queued when the next real event arrives is handed that
+         one instead: press the header, press a key, and a keyDown reaches it. The
          Objective-C exception aborts the process, which on this app is the daemon
          and every session with it.
+         tao does try to substitute a synthetic mouse-down, and **its guard does not
+         fire**: `tao-0.35.3` compares the event type against `0x15`, which is 21,
+         while `NSEventTypeApplicationDefined` is 15. Read from the vendored source.
+         The shell refuses the call outright when AppKit is not on a mouse event
+         (`desktop/src/main.rs`), which is the half that closes this; waiting for
+         movement here is what keeps the request inside a gesture in the first
+         place.
          Waiting for movement means the request is only ever sent mid-gesture, with
          the button down and AppKit dispatching mouse events. A plain click on a bar
          now asks for nothing at all, which is also what a click should do. */

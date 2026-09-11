@@ -386,23 +386,28 @@ mean *this* repo; if you do, name it.
   is a dead end (it multiplies before the threshold test, which reads the raw
   delta, so fixing a trackpad breaks a mouse), and **Shift+wheel** bypasses the
   whole path into xterm's own scrollback, which is in the legend now.
-- **A window drag is asked for on movement, never on the press — and asking early
-  aborts the process on macOS.** `start_dragging` posts a message the event loop
-  drains later, and tao's `drag_window` then hands AppKit's *current* event to
-  `performWindowDragWithEvent:`, substituting a synthetic mouse-down for one event
-  type only (`0x15`, the wake-up the post itself causes). A keyDown is type 10 and
-  is passed straight through to a call that accepts nothing but a mouse event; the
-  Objective-C exception takes the whole process, sessions and all. Press a
-  titlebar, then press a key, and the queued request is handed that keyDown.
-  So any page drawing a titlebar **arms on mousedown and asks on mousemove**. Both
-  that do have paid for it separately — the board in `2990237`, `firstrun.html`
-  four days later, because it draws its own chrome rather than sharing `app.js`.
-  That split is the same one that put two sets of window buttons on macOS; when
-  fixing something in the board's chrome, check whether the first-run page needs it
-  too.
-  **The window is narrowed, not closed**: the request crosses HTTP, so it can still
-  be drained after the gesture ended. Closing it properly means refusing the call in
-  the shell when AppKit's current event is not a mouse event.
+- **A window drag is the one call in this app that can abort the process, and it
+  is guarded in two places.** tao's `drag_window` hands AppKit's *current* event to
+  `performWindowDragWithEvent:`, which accepts nothing but a mouse event — a keyDown
+  is type 10, and the Objective-C exception takes the process, the daemon and every
+  session with it. Press a titlebar, then press a key, and the queued request is
+  handed that keyDown.
+  **tao's own guard does not fire.** `tao-0.35.3` substitutes a synthetic mouse-down
+  when the event type is `0x15` — which is 21, while `NSEventTypeApplicationDefined`
+  is 15. So nearly every call reaches AppKit with whatever event is current. Read
+  from the vendored source; do not conclude from tao's code that ours is redundant.
+  **The shell refuses the call** when AppKit is not on a mouse event
+  (`desktop/src/main.rs`'s `start_dragging` → `on_a_mouse_event`), on the main
+  thread, with no queue between the check and the call — `[NSApp currentEvent]` is
+  meaningless anywhere else, and `dispatch` runs on an axum worker. No `unsafe`:
+  `sharedApplication`, `currentEvent` and `type` are all safe in `objc2-app-kit`, so
+  the crate keeps `unsafe_code = deny`.
+  **And any page drawing a titlebar arms on mousedown and asks on mousemove**, which
+  keeps the request inside a gesture in the first place. Both pages that draw one
+  paid for it separately — the board in `2990237`, `firstrun.html` four days later,
+  because it draws its own chrome rather than sharing `app.js`. That split is the
+  same one that put two sets of window buttons on macOS; when fixing something in
+  the board's chrome, check whether the first-run page needs it too.
   The resize strips fire on mousedown and are *not* guarded — they are
   `display:none` on macOS, so the AppKit call is unreachable there. That is safety
   by platform rather than by design: showing them on a Mac would reopen this.

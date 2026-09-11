@@ -1199,6 +1199,89 @@ struct TauriWindow {
     app: AppHandle,
 }
 
+/// Hand the drag to the compositor, refusing it when AppKit is not on a mouse
+/// event.
+///
+/// **This is the one call in the app that can abort the process.** tao's
+/// `drag_window` reads `[NSApp currentEvent]` and passes it to
+/// `performWindowDragWithEvent:`, which accepts nothing but a mouse event —
+/// anything else raises an Objective-C exception, and an uncaught one takes the
+/// process, the daemon and every session with it.
+///
+/// tao does try to substitute a synthetic mouse-down, and **its guard does not
+/// fire**: `tao-0.35.3` compares the event type against `0x15`, which is 21, while
+/// `NSEventTypeApplicationDefined` is 15. So the substitution is dead code and
+/// essentially every call reaches AppKit with whatever event is current. Read from
+/// the vendored source, not inferred — and worth knowing before anyone concludes
+/// the page-side guard is redundant.
+///
+/// The page only asks once the pointer has moved, which keeps the request inside a
+/// gesture; but the request crosses HTTP, so it can still arrive after the gesture
+/// ended. This is the half that closes it: the check and the call happen together,
+/// on the main thread, with no queue between them.
+///
+/// **On the main thread because both halves need it.** `[NSApp currentEvent]` is
+/// only meaningful there, and `dispatch` runs on an axum worker — so a check made
+/// here and a call made there would be answering about two different moments.
+#[cfg(target_os = "macos")]
+fn start_dragging(app: &AppHandle, _window: &tauri::WebviewWindow) -> Result<()> {
+    let app = app.clone();
+    app.clone()
+        .run_on_main_thread(move || {
+            if !on_a_mouse_event() {
+                // Not an error worth a toast: the gesture is simply over, and the
+                // press that started it is not owed a window drag any more.
+                tracing::debug!("ignoring a window drag: AppKit is not on a mouse event");
+                return;
+            }
+            let Some(w) = app.get_webview_window("main") else { return };
+            if let Err(e) = w.start_dragging() {
+                tracing::warn!("the window drag was refused: {e}");
+            }
+        })
+        .context("asking the main thread for a window drag")
+}
+
+#[cfg(not(target_os = "macos"))]
+fn start_dragging(_app: &AppHandle, window: &tauri::WebviewWindow) -> Result<()> {
+    // No AppKit, no exception: GTK takes the drag from whichever thread asks.
+    window.start_dragging().map_err(Into::into)
+}
+
+/// Whether the event AppKit is dispatching right now is a mouse event.
+///
+/// The full list rather than "left button only": a drag can legitimately begin on
+/// a dragged or moved event, and `performWindowDragWithEvent:` accepts any of
+/// them. What it must never see is a key, a gesture, or one of AppKit's own
+/// synthetic types — [`start_dragging`] has what that costs.
+///
+/// No `unsafe`: `sharedApplication`, `currentEvent` and `type` are all safe in
+/// `objc2-app-kit`, so this crate keeps the workspace's `unsafe_code = deny`.
+/// `MainThreadMarker::new` answering `None` means we are not on the main thread,
+/// where the question has no meaningful answer — so the drag is refused.
+#[cfg(target_os = "macos")]
+fn on_a_mouse_event() -> bool {
+    use objc2_app_kit::{NSApplication, NSEventType};
+
+    let Some(mtm) = objc2::MainThreadMarker::new() else {
+        return false;
+    };
+    let Some(event) = NSApplication::sharedApplication(mtm).currentEvent() else {
+        return false;
+    };
+    let kind = event.r#type();
+    kind == NSEventType::LeftMouseDown
+        || kind == NSEventType::LeftMouseUp
+        || kind == NSEventType::LeftMouseDragged
+        || kind == NSEventType::RightMouseDown
+        || kind == NSEventType::RightMouseUp
+        || kind == NSEventType::RightMouseDragged
+        || kind == NSEventType::OtherMouseDown
+        || kind == NSEventType::OtherMouseUp
+        || kind == NSEventType::OtherMouseDragged
+        || kind == NSEventType::MouseMoved
+}
+
 /// Raise the native folder dialog and wait for the answer.
 ///
 /// One spelling for the two seams that need it — the first-run page's `pick` and
@@ -1260,9 +1343,7 @@ impl WindowControl for TauriWindow {
             WindowCmd::Restart => {
                 request_restart(&self.app);
             }
-            // Raise the open-project modal to switch projects. Off the current
-            // thread on purpose — it starts a server and navigates.
-            WindowCmd::StartDrag => w.start_dragging()?,
+            WindowCmd::StartDrag => start_dragging(&self.app, &w)?,
             // Only `Window` has this, not `WebviewWindow`, so go through the
             // webview to reach it. macOS never asks: it keeps its decorations,
             // and the underlying call is a no-op there anyway.

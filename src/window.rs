@@ -37,12 +37,14 @@ pub enum WindowCmd {
     ///
     /// **On macOS asking too early aborts the process.** `start_dragging` posts a
     /// message the event loop drains later, and tao's `drag_window` then hands
-    /// AppKit's *current* event to `performWindowDragWithEvent:`, substituting a
-    /// synthetic mouse-down for one event type only (`0x15`, the wake-up the post
-    /// itself causes). Every other type is passed straight through, and a keyDown
-    /// is type 10 — a call that accepts nothing but a mouse event. The Objective-C
-    /// exception takes the whole process, which here is the app and every session
-    /// with it.
+    /// AppKit's *current* event to `performWindowDragWithEvent:`, which accepts
+    /// nothing but a mouse event. A keyDown is type 10, and the Objective-C
+    /// exception takes the whole process — the app and every session with it.
+    ///
+    /// tao tries to substitute a synthetic mouse-down and **its guard does not
+    /// fire**: `tao-0.35.3` compares the event type against `0x15`, which is 21,
+    /// while `NSEventTypeApplicationDefined` is 15. Read from the vendored source,
+    /// and worth knowing before anyone concludes the guards below are redundant.
     ///
     /// So the rule for any page that draws a titlebar: **arm on mousedown, ask on
     /// mousemove**. Both pages that do have paid for it separately — the board in
@@ -50,10 +52,10 @@ pub enum WindowCmd {
     /// rather than sharing `app.js`. If a third ever appears, it needs the same
     /// threshold.
     ///
-    /// The window is narrowed rather than closed: the request crosses HTTP, so it
-    /// can still be drained after the gesture ended. Closing it properly means
-    /// refusing the call in the shell when AppKit's current event is not a mouse
-    /// event, which needs objc in the desktop crate.
+    /// **The shell refuses it outright** when AppKit is not on a mouse event, which
+    /// is what actually closes this — the page-side threshold keeps the request
+    /// inside a gesture, but it crosses HTTP and can still arrive after the gesture
+    /// ended. `desktop/src/main.rs`'s `start_dragging` has that half.
     StartDrag,
     /// Same, for the invisible strips along the window edges.
     ///

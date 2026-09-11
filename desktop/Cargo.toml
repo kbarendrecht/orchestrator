@@ -35,6 +35,22 @@ tokio = { workspace = true, features = ["rt-multi-thread", "time", "net"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
+# macOS only. **One question, asked of AppKit directly**: is the event the window
+# server is currently dispatching a mouse event? `WindowCmd::StartDrag` has the
+# whole account — tao hands that event to `performWindowDragWithEvent:`, which
+# raises an Objective-C exception on anything but a mouse event and takes the
+# process with it.
+#
+# Already in the tree via tauri and wry, so this adds an edge rather than a
+# version. Three features because the class hierarchy needs them: `NSApplication`
+# is an `NSResponder`, and `currentEvent` is gated on `NSEvent`. Nothing here needs
+# `unsafe` — `sharedApplication`, `currentEvent` and `type` are all safe in
+# `objc2-app-kit`, which is what keeps the workspace's `unsafe_code = deny` intact
+# for this crate.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSResponder", "NSEvent"] }
+
 # Linux only, and pinned to whatever the WebKitGTK stack already resolves to:
 # `Ctrl+Shift+Tab` is a GTK focus-chain accelerator that GTK consumes before the
 # page can see it, so the previous-session chord needs intercepting at the gtk

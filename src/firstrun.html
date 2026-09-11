@@ -284,9 +284,10 @@
   /* **A press is not a drag until the pointer moves, and on macOS asking too early
      aborts the process.** `start_dragging` posts a message the event loop drains
      later, and tao's `drag_window` then hands AppKit's *current* event to
-     `performWindowDragWithEvent:` — substituting a synthetic mouse-down for one
-     event type only (`0x15`, the wake-up the post itself causes). So a request
-     still queued when the next real event arrives is handed that one instead:
+     `performWindowDragWithEvent:`, which accepts nothing but a mouse event — and
+     tao's own substitution never fires, because it compares against `0x15` (21)
+     while `NSEventTypeApplicationDefined` is 15. So a request still queued when
+     the next real event arrives is handed that one instead:
      press the titlebar, press a key, and a keyDown reaches a call that accepts
      nothing but a mouse event. The Objective-C exception takes the process, which
      here is the app and every session with it.
