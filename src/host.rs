@@ -201,6 +201,9 @@ impl Host {
         for handle in opening {
             let _ = handle.join();
         }
+        // After, not before: the sweep skips what is open, and reading that from
+        // the rows means it cannot race a start that has not recorded itself yet.
+        sweep_checkout_dirs(checkouts);
     }
 
     /// Write the open list to the host file.
@@ -643,10 +646,49 @@ pub struct HostFile {
     /// these again at launch.
     #[serde(default)]
     pub checkouts: Vec<String>,
+    /// How long a closed checkout's derived state is kept, in days. `0` turns the
+    /// sweep off, the way it already does for worktrees.
+    ///
+    /// A setting rather than a constant because the number is a judgement about
+    /// your own habits, and this repo has written that judgement down once
+    /// already: `worktree_retention_days` defaults to 60 with a docblock arguing
+    /// why — "clearly longer than anyone's memory of a branch". This follows it,
+    /// so there is one number to learn rather than two.
+    #[serde(default = "default_checkout_retention_days")]
+    pub checkout_retention_days: u32,
 }
+
+fn default_checkout_retention_days() -> u32 {
+    60
+}
+
+/// What a checkout's state directory holds that the daemon can rebuild.
+///
+/// **The sweep may delete only these.** `transcripts/` is the *only* remaining
+/// copy of a conversation once a worktree is gone, and a session record survives
+/// precisely because its archived transcript does — so deleting the directory
+/// would drop both, which contradicts `close` leaving records alone and
+/// `worktree::reap_old`'s stated intent ("the tree, never the conversation").
+/// `sessions.json` stays for the same reason.
+///
+/// Nor can the safety be borrowed from that reaper: it is safe because it routes
+/// through `teardown`, whose checks refuse a live session, a dirty tree, unpushed
+/// work or an attached process. A directory of JSON has no such gate, so the rule
+/// here is the narrow one — delete what is regenerated on the next start, and
+/// nothing else.
+const DERIVED: [&str; 3] = ["plugin", "hooks.json", "window.json"];
 
 fn host_file() -> anyhow::Result<PathBuf> {
     Ok(crate::config::Config::config_dir()?.join("host.json"))
+}
+
+/// The host file as it stands, or `None` when there is none to read.
+///
+/// A file that will not parse reads as absent, deliberately: the cost is one
+/// forgotten list, and refusing to start over it would cost the window.
+fn read_host_file() -> Option<HostFile> {
+    let raw = std::fs::read_to_string(host_file().ok()?).ok()?;
+    serde_json::from_str(&raw).ok()
 }
 
 /// The checkouts to open at launch.
@@ -657,11 +699,7 @@ fn host_file() -> anyhow::Result<PathBuf> {
 /// somebody who configured a project months ago. The first `add` or `close`
 /// writes the file, and from then on it is the answer.
 pub fn remembered_checkouts() -> Vec<PathBuf> {
-    let listed = host_file()
-        .ok()
-        .and_then(|f| std::fs::read_to_string(f).ok())
-        .and_then(|raw| serde_json::from_str::<HostFile>(&raw).ok());
-    match listed {
+    match read_host_file() {
         Some(file) => file.checkouts.into_iter().map(PathBuf::from).collect(),
         None => crate::config::Config::existing()
             .map(|cfg| vec![cfg.main_checkout])
@@ -679,9 +717,11 @@ pub fn remembered_checkouts() -> Vec<PathBuf> {
 /// its checkouts, and refusing the `add` that could not be recorded would cost
 /// this one.
 pub fn remember_checkouts(checkouts: &[PathBuf]) {
-    let file = HostFile {
-        checkouts: checkouts.iter().map(|p| p.to_string_lossy().into_owned()).collect(),
-    };
+    // Read first, so a hand-set `checkout_retention_days` survives every add and
+    // close. A writer that rebuilds the file from what it knows is how one setting
+    // nobody touched disappears.
+    let mut file = read_host_file().unwrap_or_default();
+    file.checkouts = checkouts.iter().map(|p| p.to_string_lossy().into_owned()).collect();
     let write = || -> anyhow::Result<()> {
         let path = host_file()?;
         if let Some(dir) = path.parent() {
@@ -693,6 +733,93 @@ pub fn remember_checkouts(checkouts: &[PathBuf]) {
     if let Err(e) = write() {
         tracing::error!("could not record the open checkouts: {e:#}");
     }
+}
+
+/// The retention the host file names, in days.
+fn checkout_retention_days() -> u32 {
+    read_host_file().map_or_else(default_checkout_retention_days, |f| f.checkout_retention_days)
+}
+
+/// Drop the regenerable state of checkouts nobody has opened in a long time.
+///
+/// `<config dir>/checkouts/` is append-only otherwise: a full skills-plugin copy
+/// and a hook settings file per checkout ever tried, and every one of those is
+/// rewritten on the next start of the daemon that owns it.
+///
+/// **It never touches a conversation** — see [`DERIVED`] for what that rules out
+/// and why. A directory left holding only `transcripts/` and `sessions.json` is
+/// the expected outcome, and the log says how much was left and where.
+///
+/// Age is the directory's most recent write, not its creation: a checkout you
+/// worked in last week is recent however long ago it was first opened.
+pub fn sweep_checkout_dirs(open: &[PathBuf]) {
+    let days = checkout_retention_days();
+    if days == 0 {
+        return;
+    }
+    let Ok(root) = crate::config::Config::config_dir().map(|d| d.join("checkouts")) else {
+        return;
+    };
+    let Ok(entries) = std::fs::read_dir(&root) else {
+        return;
+    };
+    let keep: Vec<PathBuf> = open.iter().filter_map(|p| checkout_dir(p).ok()).collect();
+    let cutoff = std::time::Duration::from_secs(u64::from(days) * 24 * 60 * 60);
+    let mut swept = 0usize;
+    let mut kept = 0usize;
+    for entry in entries.flatten() {
+        let dir = entry.path();
+        if !dir.is_dir() || keep.contains(&dir) {
+            continue;
+        }
+        if last_write(&dir).is_none_or(|age| age < cutoff) {
+            continue;
+        }
+        let mut removed_any = false;
+        for name in DERIVED {
+            let target = dir.join(name);
+            let gone = if target.is_dir() {
+                std::fs::remove_dir_all(&target)
+            } else if target.exists() {
+                std::fs::remove_file(&target)
+            } else {
+                continue;
+            };
+            match gone {
+                Ok(()) => removed_any = true,
+                Err(e) => tracing::warn!("could not remove {}: {e}", target.display()),
+            }
+        }
+        if removed_any {
+            swept += 1;
+        }
+        // What is left is the half that is nobody's to delete automatically.
+        if dir.join("transcripts").exists() || dir.join("sessions.json").exists() {
+            kept += 1;
+        }
+    }
+    if swept > 0 {
+        tracing::info!(
+            "swept the regenerable state of {swept} checkout(s) unopened for {days} days; \
+             {kept} still hold conversations, in {}",
+            root.display()
+        );
+    }
+}
+
+/// How long ago anything under `dir` was last written.
+///
+/// One level deep, which is where every file the daemon writes lives; a
+/// transcripts archive underneath it does not change the answer, because a
+/// checkout whose daemon has not run has not written one either.
+fn last_write(dir: &Path) -> Option<std::time::Duration> {
+    let newest = std::fs::read_dir(dir)
+        .ok()?
+        .flatten()
+        .filter_map(|e| e.metadata().ok()?.modified().ok())
+        .chain(std::fs::metadata(dir).ok().and_then(|m| m.modified().ok()))
+        .max()?;
+    newest.elapsed().ok()
 }
 
 /// The repository a checkout's daemon would poll, `owner/name`.
