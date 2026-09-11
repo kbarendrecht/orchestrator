@@ -73,6 +73,16 @@ fn post(url: &str, origin: &str, token: &str) -> u32 {
     code
 }
 
+/// The response headers of a `GET`, as text.
+fn headers_of(url: &str, origin: &str, token: &str) -> String {
+    let out = std::process::Command::new("curl")
+        .args(["-s", "-o", "/dev/null", "-D", "-", "-H", &format!("Origin: {origin}"), "-H",
+            &format!("x-orch-token: {token}"), url])
+        .output()
+        .expect("curl ran");
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
 fn curl(args: &[&str], token: Option<&str>) -> (u32, String) {
     let mut command = std::process::Command::new("curl");
     command.args(args);
@@ -230,6 +240,52 @@ async fn a_host_serves_the_page_for_a_checkout_its_child_manages() {
     assert!(
         refusal.contains("no native window attached"),
         "the refusal stopped naming what is missing: {refusal}"
+    );
+
+    // 2b — **the browser asks before it sends.** Every call the page makes is
+    // cross-origin to the child (the page comes from the host's port) and carries
+    // `x-orch-token`, which makes it a non-simple request — so the browser sends
+    // `OPTIONS` first and refuses to send the real one unless the answer names its
+    // origin. Nothing answered that for a long time, and the symptom was a board
+    // that drew from its websockets and could not do anything: only curl, which
+    // has no CORS, worked.
+    let (code, _) = curl(
+        &[
+            "-s",
+            "-o",
+            "/dev/null",
+            "-w",
+            "\n%{http_code}",
+            "-X",
+            "OPTIONS",
+            "-H",
+            &format!("Origin: {base}"),
+            "-H",
+            "Access-Control-Request-Method: POST",
+            "-H",
+            "Access-Control-Request-Headers: content-type,x-orch-token",
+            &format!("http://127.0.0.1:{}/api/state", row.port),
+        ],
+        None,
+    );
+    assert_eq!(code, 204, "the child refused its host's preflight");
+    // The header rides the real answer too, not only the preflight: the browser
+    // drops a cross-origin response that does not name it, whatever the status.
+    let allow = headers_of(&format!("http://127.0.0.1:{}/api/state", row.port), &base, &row.token);
+    assert!(
+        allow.to_lowercase().contains(&format!("access-control-allow-origin: {base}")),
+        "the answer did not name the page's origin, so the browser drops it: {allow}"
+    );
+    // And only that origin: a `*` would let any page in the browser drive this
+    // daemon, with the token the only thing in the way.
+    let other = headers_of(
+        &format!("http://127.0.0.1:{}/api/state", row.port),
+        "http://evil.example",
+        &row.token,
+    );
+    assert!(
+        !other.to_lowercase().contains("access-control-allow-origin"),
+        "the child allowed an origin it was never told about: {other}"
     );
 
     // 3b — the path the page will actually take: a relative call would reach the

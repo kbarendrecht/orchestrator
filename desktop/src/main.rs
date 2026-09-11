@@ -50,8 +50,8 @@ static BOOTING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::n
 /// committed and the window has moved to the daemon.
 static BOOTSTRAP: OnceLock<Mutex<Option<tokio::task::AbortHandle>>> = OnceLock::new();
 
-/// The async runtime handle, so the repo switcher can start a bootstrap server long
-/// after `setup` has returned — it is raised from a window command, not from boot.
+/// The async runtime handle, so the first-run page can boot a daemon long after
+/// `setup` has returned — the checkout is picked by a person, at their own pace.
 static RT: OnceLock<tokio::runtime::Handle> = OnceLock::new();
 
 /// Set by `WindowCmd::Restart`, read once the window is down.
@@ -833,38 +833,6 @@ fn request_restart(app: &AppHandle) -> bool {
     }
 }
 
-/// Raise the open-project modal over the running board, to switch projects.
-///
-/// Serves the first-run page again and navigates the window to it. The same
-/// `TauriBootstrap` host — so it knows a daemon is already up (`switching`) and a
-/// committed project restarts onto it rather than booting a second daemon. Cancel
-/// navigates back to the board. Starts the server off `setup`, hence [`RT`].
-fn start_switcher(app: &AppHandle) {
-    let Some(rt) = RT.get() else {
-        return tracing::error!("no runtime to raise the switcher");
-    };
-    let host: Arc<dyn orchd::firstrun::BootstrapHost> = Arc::new(TauriBootstrap {
-        app: app.clone(),
-    });
-    let app = app.clone();
-    rt.spawn(async move {
-        let serving = match orchd::firstrun::serve(host).await {
-            Ok(s) => s,
-            Err(e) => return tracing::error!("could not start the switcher: {e:#}"),
-        };
-        // The previous switcher, if the button was pressed twice: without the abort
-        // its server lived on, unreachable and listening, for the rest of the
-        // process.
-        let mut slot = BOOTSTRAP.get_or_init(|| Mutex::new(None)).lock().unwrap();
-        if let Some(previous) = slot.take() {
-            previous.abort();
-        }
-        *slot = Some(serving.task.abort_handle());
-        drop(slot);
-        navigate_main(&app, serving.url());
-    });
-}
-
 /// The window-side of the first-run flow, handed to [`orchd::firstrun`]'s HTTP
 /// server: the native folder dialog, the daemon boot, and the frameless window
 /// commands the page's own titlebar needs.
@@ -904,12 +872,21 @@ impl orchd::firstrun::BootstrapHost for TauriBootstrap {
         }
     }
 
+    /// **Always false now that the header switcher is gone**, and kept anyway.
+    ///
+    /// The first-run page is reached only at boot with nothing configured, so no
+    /// daemon is ever up while it is on screen. It stays because it is a
+    /// *defaulted* trait method: dropping the impl compiles silently, and this is
+    /// the only branch of [`Self::open`] that reaches `request_restart` — so if a
+    /// flow ever puts this page over a running board again, losing it would mean
+    /// every open taking the `BOOTING` branch, which is set by the first boot and
+    /// never cleared.
     fn switching(&self) -> bool {
         daemon_url().is_some()
     }
 
+    /// The page's own way back, for the same reason [`Self::switching`] stays.
     fn cancel(&self) {
-        // Back to the running board, and drop the switcher server.
         let Some(url) = daemon_url() else { return };
         navigate_main(&self.app, url);
         stop_bootstrap();
@@ -1285,7 +1262,6 @@ impl WindowControl for TauriWindow {
             }
             // Raise the open-project modal to switch projects. Off the current
             // thread on purpose — it starts a server and navigates.
-            WindowCmd::Switcher => start_switcher(&self.app),
             WindowCmd::StartDrag => w.start_dragging()?,
             // Only `Window` has this, not `WebviewWindow`, so go through the
             // webview to reach it. macOS never asks: it keeps its decorations,

@@ -4,7 +4,7 @@
 // the primitives every part needs; `queue.js` is the first seam extracted whole.
 import {
   $, el, toast, call, callHost, get, duration, activeCheckout, CHECKOUTS, setCheckouts,
-  HOST, snapshotOf, wsKey,
+  HOST, snapshotOf, wsKey, everySession, enterCheckout,
   snap, receive, keyActivate,
   setZoom, saveZoom, onScaleChange, ZOOM, zoomScale,
   selected, setSelected, onSelection, prForWorkspace,
@@ -523,11 +523,20 @@ function renderContext() {
   const wsId = currentWorkspaceId();
   const w = workspaceById(wsId);
 
-  // PRs are opened against upstream while branches live on the fork (§6), so
-  // the header names both rather than collapsing them into one path.
+  /* PRs are opened against upstream while branches live on the fork (§6), so
+     the header names both rather than collapsing them into one path.
+
+     **It names the checkout too, once there is more than one.** Everything to the
+     right of this strip describes one checkout, and with several in the rail the
+     header is the only place that says which — the leaf alone, since two checkouts
+     of one repository share the repository name and differ exactly there. */
   const repos = snap.repos || { upstream: null, fork: null };
-  $('repoupstream').textContent = repos.upstream
-    || (w ? w.path.split('/').slice(-2).join('/') : '—');
+  const where = activeCheckout();
+  const repoName = repos.upstream || (w ? w.path.split('/').slice(-2).join('/') : '—');
+  $('repoupstream').textContent = CHECKOUTS.length > 1 && where.name
+    ? `${where.name} · ${repoName}`
+    : repoName;
+  $('repoid').title = where.path || '';
   $('repofork').textContent = repos.fork || '';
   $('ctxdot').className = 'dot ' + (s ? dotClass(s) : 'idle');
   $('ctxname').textContent = s ? Rail.rowName(s, { id: wsId }) : (wsId || 'no session');
@@ -1033,12 +1042,6 @@ $('ovmode').onclick = () => {
 };
 $('ovedit').onclick = () => (Diff.edit.on ? Diff.closeEditor() : Diff.openEditor());
 $('ovsave').onclick = Diff.saveEditor;
-// Raise the open-project modal over the board to switch checkouts. The desktop
-// shell serves the first-run page again and navigates to it; picking a project
-// restarts onto it. In a browser tab there is no window to navigate, so the daemon
-// answers "no native window" — say so rather than looking broken.
-$('reposwitch').onclick = () =>
-  callHost('/api/window/switcher').catch((e) => toast(e.message, true));
 $('addshell').onclick = newShell;
 $('keyhelpx').onclick = () => { $('keyhelp').hidden = true; };
 // The visible way in, beside the gear. Its tooltip names the chord — the whole
@@ -1155,13 +1158,39 @@ $('killbtn').onclick = () => {
  * Every live session has a row, so the original bug cannot come back through here.
  */
 function switchSession(step) {
-  const ordered = snap.sessions.filter((s) => !isArchived(s)).sort(byNewest);
+  /* Across every checkout, in rail order: the chord steps through what the rail
+     shows, and the rail shows all of them. Stepping only within the checkout you
+     are in would make the last row of one block the first row of the same block
+     again, with three other blocks visible underneath. */
+  const ordered = everySession()
+    .filter((r) => !isArchived(r.session))
+    .map((r) => r.session)
+    .sort(byNewest);
   if (!ordered.length) return;
   const idx = ordered.findIndex((s) => s.id === selected);
   // Nothing selected yet (or the selection is off-rail): step in from the end so
   // `next` lands on the first row rather than the second.
   const from = idx === -1 ? (step > 0 ? -1 : 0) : idx;
   setSelected(ordered[(from + step + ordered.length) % ordered.length].id);
+}
+
+/** Move the selection into the previous or next checkout.
+ *
+ *  **Carrying a selection, never leaving one behind.** The checkout is derived
+ *  from what is selected, so "go to that checkout" has to mean "select something
+ *  in it" — the newest live session, or the newest conversation if none is
+ *  running. A checkout with neither is still worth landing in: the selection
+ *  clears and the rail's own `+` is what you came for.
+ *
+ *  @param {number} step
+ */
+function stepCheckout(step) {
+  if (CHECKOUTS.length < 2) return;
+  const here = CHECKOUTS.findIndex((c) => c.path === activeCheckout().path);
+  const next = CHECKOUTS[(here + step + CHECKOUTS.length) % CHECKOUTS.length];
+  // Say where you landed when there is nothing to land on: the rail's highlight
+  // is otherwise the only sign that the chord did anything.
+  if (!enterCheckout(next)) toast(`${next.name} has no sessions`);
 }
 
 /* **A key the app claims must not also reach the pty.**
@@ -1331,11 +1360,26 @@ function keymap(e) {
       }
       return;
     }
-    if (e.code === 'Space') {
-      // The first session waiting on you — the one costing you the most.
+    /* Step between checkouts, in rail order. `[` and `]` because they are the
+       "previous / next of the same kind" pair every editor uses, and because the
+       letters were spent — `Ctrl+Tab` steps sessions and stepping checkouts is the
+       coarser move over the same list. Shift, like the rest of this layer.
+
+       It moves the *selection*, because that is what the checkout is derived from:
+       there is no "active checkout" to set. Landing on the newest live session in
+       that checkout rather than on nothing, so the centre pane never blanks. */
+    if (e.shiftKey && (e.key === '[' || e.key === ']' || e.key === '{' || e.key === '}')) {
       e.preventDefault();
-      const first = snap.sessions.find(isWaiting);
-      if (first) setSelected(first.id);
+      stepCheckout(e.key === '[' || e.key === '{' ? -1 : 1);
+      return;
+    }
+    if (e.code === 'Space') {
+      // The first session waiting on you — the one costing you the most, in any
+      // checkout. The waitbar counts across all of them and this is the chord it
+      // advertises, so the two have to answer the same question.
+      e.preventDefault();
+      const first = everySession().find((r) => isWaiting(r.session));
+      if (first) setSelected(first.session.id);
       else toast('nothing waiting on you');
       return;
     }
@@ -1433,12 +1477,16 @@ document.addEventListener('visibilitychange', refreshOnReturn);
  *  in, so it never nags; the first snapshot seeds the set without speaking. */
 let waitingKnown = null;
 function announceWaiting() {
-  const now = new Set(snap.sessions.filter(isWaiting).map((s) => s.id));
+  /* Every checkout, for the reason the waitbar gives — and the transition is
+     measured against one set covering all of them, so a checkout being added
+     does not make every session in it look newly waiting. */
+  const all = everySession().map((r) => r.session);
+  const now = new Set(all.filter(isWaiting).map((s) => s.id));
   if (waitingKnown) {
     const fresh = [...now].filter((id) => !waitingKnown.has(id));
     if (fresh.length) {
       const names = fresh.map((id) => {
-        const s = snap.sessions.find((x) => x.id === id);
+        const s = all.find((x) => x.id === id);
         return s ? Rail.rowName(s, { id: s.workspace }) : id;
       });
       $('live').textContent = names.length === 1

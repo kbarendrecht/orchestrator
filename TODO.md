@@ -5,6 +5,17 @@ this file, which churned it from every build; that feature is gone.
 
 ## Next
 
+- **`park reclaims the base a worktree holds` is flaky, and was before this was
+  written.** It times out on `until('the conversation to arrive in main')` in
+  roughly one run in three, on a tree where the full suite is green: measured at
+  `733c4cc` and at three commits after it, passing alone and failing paired with
+  its neighbour in the same minute. The step it dies on is a swap killing and
+  resuming two conversations, so the suspect is the wait being shorter than a
+  resume under load rather than anything the flow asserts. `mise run e2e` as a
+  whole has passed every time it has been run; only a filtered run has failed.
+  Not chased because the gate that matters is the suite, and a timeout that moves
+  with load is a number to measure rather than a bug to reason about.
+
 - **`edit::read` closes the symlink race on the final component only.** The parents
   are canonicalised earlier and can still be swapped between the check and the open;
   closing it properly needs `openat2` with `RESOLVE_BENEATH`, which is Linux-only

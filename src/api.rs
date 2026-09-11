@@ -205,6 +205,29 @@ pub async fn guard(
     }
 
     let origin = headers.get("origin").and_then(|v| v.to_str().ok());
+
+    /* **A page served by a host is cross-origin to this daemon, so the browser
+       asks first.** Every call the page makes carries `x-orch-token` and most
+       carry a JSON content type, which makes them non-simple requests: the browser
+       sends `OPTIONS` and refuses to send the real one unless the answer names its
+       origin. Nothing here answered that, so under the app every fetch to a child
+       daemon failed and only the websockets — which CORS does not cover — worked.
+       The symptom was a board that drew and then could not do anything.
+
+       Scoped to the one origin `host_origin` already names: the same exact string,
+       from the argv of whoever spawned this daemon, never from a file. A `*` here
+       would let any page in the browser drive this daemon, and the token is the
+       only thing that would stop it. */
+    let allowed_origin = app.cfg.host_origin.as_deref().filter(|h| Some(*h) == origin);
+    if req.method() == axum::http::Method::OPTIONS {
+        return match allowed_origin {
+            Some(origin) => cors_preflight(origin),
+            // Not a preflight we recognise. `405` rather than `403`, because the
+            // route may genuinely not take `OPTIONS`.
+            None => (StatusCode::METHOD_NOT_ALLOWED, "no such method").into_response(),
+        };
+    }
+
     let is_hook = path.starts_with("/hooks/");
     if is_hook {
         tracing::debug!(
@@ -259,7 +282,44 @@ pub async fn guard(
         return (StatusCode::UNAUTHORIZED, "bad token").into_response();
     }
 
-    next.run(req).await
+    let mut response = next.run(req).await;
+    // The browser drops a cross-origin answer the response does not name it in,
+    // whatever the status — so this rides every answer, including refusals, or a
+    // refusal reads to the page as a network failure with no message.
+    if let Some(origin) = allowed_origin {
+        if let Ok(value) = origin.parse() {
+            response.headers_mut().insert(axum::http::header::ACCESS_CONTROL_ALLOW_ORIGIN, value);
+        }
+    }
+    response
+}
+
+/// The answer to a preflight from the host's page.
+///
+/// `x-orch-token` because every call carries it, `content-type` because a JSON
+/// body makes the request non-simple. No credentials header: the daemon
+/// authenticates on that token and never on a cookie, so the browser must not be
+/// told to send one.
+fn cors_preflight(origin: &str) -> Response {
+    let mut response = StatusCode::NO_CONTENT.into_response();
+    let headers = response.headers_mut();
+    if let Ok(value) = origin.parse() {
+        headers.insert(axum::http::header::ACCESS_CONTROL_ALLOW_ORIGIN, value);
+    }
+    headers.insert(
+        axum::http::header::ACCESS_CONTROL_ALLOW_METHODS,
+        axum::http::HeaderValue::from_static("GET, POST, OPTIONS"),
+    );
+    headers.insert(
+        axum::http::header::ACCESS_CONTROL_ALLOW_HEADERS,
+        axum::http::HeaderValue::from_static("content-type, x-orch-token"),
+    );
+    // A browser that caches this asks once per page rather than once per call.
+    headers.insert(
+        axum::http::header::ACCESS_CONTROL_MAX_AGE,
+        axum::http::HeaderValue::from_static("600"),
+    );
+    response
 }
 
 // ---------------------------------------------------------------------------

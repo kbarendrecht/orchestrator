@@ -90,6 +90,9 @@ export function onSelection(fn) { selectionListeners.push(fn); }
  *  somewhere else" has to be able to tell the two apart. */
 export function setSelected(id, auto = false) {
   selected = id;
+  // Picking a session is also saying which checkout you are in, which is what
+  // holds the pane still when that session ends.
+  if (id) lastCheckout = checkoutOf(id)?.path ?? lastCheckout;
   // The checkout is derived from this, so `snap` moves with it — before the
   // listeners run, since every one of them reads the snapshot to decide what the
   // new selection means.
@@ -219,7 +222,55 @@ export const getHost = (path) => getOn(HOST, path);
  *  @returns {Target}
  */
 export function activeCheckout() {
-  return (selected && checkoutOf(selected)) || CHECKOUTS[0] || PAGE_ONLY;
+  return (selected && checkoutOf(selected))
+    || CHECKOUTS.find((c) => c.path === lastCheckout)
+    || CHECKOUTS[0]
+    || PAGE_ONLY;
+}
+
+/* Where you were, for when nothing is selected.
+ *
+ * **A fallback, not a second answer.** A selection always outranks it, and it is
+ * only ever written to the checkout of the session you just selected — so it is
+ * "the checkout you were last in" rather than a variable anyone sets to mean
+ * something else. Without it, stepping into a checkout with no sessions puts you
+ * back in the first one, because the derivation has nothing to derive from. */
+let lastCheckout = null;
+
+/** Go to a checkout, carrying a selection with you.
+ *
+ *  **"Activate that checkout" has to mean "select something in it"**, because the
+ *  checkout is derived from the selection and nothing else. Landing on the newest
+ *  live session, then the newest conversation, then nothing — and the remembered
+ *  path is what holds you there in the last case, where there is nothing to
+ *  derive from.
+ *
+ *  @param {Target} c
+ *  @returns {boolean} whether anything was selected
+ */
+export function enterCheckout(c) {
+  // Before the selection moves, so a checkout with nothing in it still becomes
+  // the one you are in.
+  lastCheckout = c.path;
+  const sessions = (snaps.get(c.path)?.sessions ?? []).slice().sort(byNewest);
+  const landing = sessions.find((s) => !isArchived(s)) || sessions[0];
+  setSelected(landing ? landing.id : null);
+  return !!landing;
+}
+
+/** Every checkout's sessions, as `{ checkout, session }` pairs.
+ *
+ *  **What "everything running" means once there is more than one checkout.** The
+ *  waitbar, `MOD+Space` and `Ctrl+Tab` all answer questions about attention, and
+ *  attention does not stop at the checkout you happen to be looking at — a bar
+ *  reading "2 need you" while the chord it advertises answers "nothing waiting on
+ *  you" is the two disagreeing about the same fact.
+ *
+ *  @returns {{ checkout: Target, session: any }[]}
+ */
+export function everySession() {
+  return CHECKOUTS.flatMap((c) =>
+    (snaps.get(c.path)?.sessions ?? []).map((session) => ({ checkout: c, session })));
 }
 
 /** Which checkout holds a session, by searching every snapshot.

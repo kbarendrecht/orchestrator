@@ -19,12 +19,16 @@
   <!-- ============ CONTEXT BAR ============ -->
   <!-- Replaces the centre pane's own header, so it costs no net vertical space. -->
   <div class="top top-l">
-    <!-- Switching between repos is not built; the shape is here so the header
-         stops pretending the fork and the upstream are the same thing. -->
-    <button class="repo-switch" id="reposwitch" title="Switch repository">
+    <!-- Which checkout everything to the right of this describes, and which
+         repository that checkout works on. Not a button any more: the rail lists
+         every open checkout and its `+ checkout` opens another, so there is
+         nothing left for a switcher to do. PRs are opened against upstream while
+         branches live on the fork (§6), so this names both rather than collapsing
+         them into one path. -->
+    <div class="repo-id" id="repoid">
       <span class="repo-main" id="repoupstream">—</span>
       <span class="repo-fork" id="repofork"></span>
-    </button>
+    </div>
     <!-- Sliders rather than a gear glyph: the font stack has no dependable one at
          this size, which is why the window controls are drawn too. -->
     <button class="gear" id="gearbtn" title="Settings" aria-expanded="false">
@@ -386,6 +390,7 @@
       <div class="settings-group">Navigate</div>
       <dt>Ctrl&nbsp;Tab</dt><dd>next session (Shift: previous)</dd>
       <dt data-mod>MOD&nbsp;Space</dt><dd>go to the first session that needs you</dd>
+      <dt data-mod>MOD&nbsp;Shift&nbsp;[&nbsp;/&nbsp;]</dt><dd>previous / next checkout</dd>
 
       <div class="settings-group">Create</div>
       <dt data-mod>MOD&nbsp;N</dt><dd>new worktree</dd>

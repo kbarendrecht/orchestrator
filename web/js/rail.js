@@ -1,7 +1,7 @@
 // The rail: what is running, what is waiting on you, and the PRs beside it.
 // Twenty-four names, three out; the rest is how a row decides what it says.
 
-import { $, activeCheckout, byNewest, call, callFor, callHost, checkoutOf, CHECKOUTS, chooseBox, getHost, snapshotOf, snapshotFor, terms, caret, clock, confirmBox, copyText, creating, dotClass, duration, el, isArchived, isConversation, isWaiting, mainWorkspace, MOD_LABEL, newSession, newWorktree, openMenu, pending, refreshButton, selected, sessionsOf, setSelected, sinceSnap, snap, stateClass, stateLabel, toast, unchanged, setPendingSelect } from './core.js';
+import { $, activeCheckout, byNewest, call, callFor, callHost, callOn, checkoutOf, CHECKOUTS, chooseBox, enterCheckout, everySession, getHost, snapshotOf, snapshotFor, terms, caret, clock, confirmBox, copyText, creating, dotClass, duration, el, isArchived, isConversation, isWaiting, mainWorkspace, MOD_LABEL, newSession, newWorktree, openMenu, pending, refreshButton, selected, sessionsOf, setSelected, sinceSnap, snap, stateClass, stateLabel, toast, unchanged, setPendingSelect } from './core.js';
 import * as Review from './review.js';
 import * as Term from './term.js';
 
@@ -49,8 +49,12 @@ function renderRail() {
      durations does not. `showArchived` and the rest are the view state the
      snapshot cannot see. */
   const states = CHECKOUTS.map((c) => snapshotOf(c.path));
-  if (unchanged(drawn, [states, CHECKOUTS, showArchived, showPrs, picked, selected, swapInFlight],
-    NOT_DRAWN)) {
+  /* The active checkout is in the signature in its own right, not only through
+     `selected`: activating a checkout with no sessions moves nothing else, so the
+     rail would keep its old `aria-current` and the header you pressed would stay
+     dim. Found by pressing one. */
+  if (unchanged(drawn, [states, CHECKOUTS, activeCheckout().path, showArchived, showPrs,
+    picked, selected, swapInFlight], NOT_DRAWN)) {
     return;
   }
 
@@ -194,8 +198,14 @@ async function closeCheckout(c) {
  *  @param {import('./core.js').Target} c
  */
 function checkoutHead(c) {
-  const head = el('div', 'co-head');
-  if (c.path === activeCheckout().path) head.setAttribute('aria-current', 'true');
+  /* A real button, not a `div` with a click. It is the only way to reach a
+     checkout whose sessions have all finished, so keyboard and screen-reader
+     users need it as much as anyone — and `aria-current` is the fact a screen
+     reader gets where a sighted reader gets the brighter text. */
+  const head = el('button', 'co-head');
+  head.type = 'button';
+  head.setAttribute('aria-current', String(c.path === activeCheckout().path));
+  head.onclick = () => { enterCheckout(c); };
   if (!c.live) head.classList.add('down');
   const name = el('span', 'co-name', c.name);
   name.title = c.path;
@@ -1199,8 +1209,11 @@ const isNudgeable = (s) =>
 const barDrawn = { sig: null };
 
 function renderWaitbar() {
-  const waiting = snap.sessions.filter(isWaiting);
-  const ready = snap.sessions.filter(isNudgeable);
+  // Across every checkout, which is what makes the bar and the chord it
+  // advertises answer the same question.
+  const all = everySession().map((r) => r.session);
+  const waiting = all.filter(isWaiting);
+  const ready = all.filter(isNudgeable);
   const bar = $('waitbar');
   /* Which sessions, not how long they have waited: the duration is a
      `data-clock` node that `tick` rewrites in place, and the longest of a fixed
@@ -1251,10 +1264,22 @@ function renderWaitbar() {
   }
 }
 
-/** Send them all on. */
+/** Send them all on, in every checkout the bar counted.
+ *
+ *  One call per daemon, because `/api/sessions/nudge` is a daemon route and a
+ *  daemon only knows its own sessions. The bar counts across all of them, so
+ *  nudging only the one you are in would leave the count where it was.
+ */
 async function nudgeAll() {
+  const holding = new Set(everySession().filter((r) => isNudgeable(r.session))
+    .map((r) => r.checkout.path));
   try {
-    const r = await call('/api/sessions/nudge');
+    const answers = await Promise.all(
+      CHECKOUTS.filter((c) => holding.has(c.path)).map((c) => callOn(c, '/api/sessions/nudge')));
+    const r = {
+      nudged: answers.flatMap((a) => a.nudged || []),
+      held: answers.flatMap((a) => a.held || []),
+    };
     const n = (r.nudged || []).length;
     toast(n ? `nudged ${n}` : 'nothing to nudge');
     // Named, not silently skipped: a permission prompt or a question takes a

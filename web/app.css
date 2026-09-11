@@ -192,10 +192,9 @@ body[data-chrome="custom"] .resizers{display:block}
 .ctx-close:hover,.dtab .x:hover{color:var(--bad);background:var(--raised)}
 .settings-x:hover,.updatebar-x:hover{color:var(--text);background:var(--raised)}
 button.ctx-btn:hover{color:var(--text)}
-.repo-switch{
+.repo-id{
   display:flex;flex-direction:column;align-items:flex-start;gap:2px;
   min-width:0;flex:1 1 auto;text-align:left;padding:2px 4px;
-  border-radius:2px;border:1px solid transparent;
 }
 .gear{
   flex:0 0 auto;display:flex;align-items:center;justify-content:center;
@@ -222,7 +221,6 @@ button.ctx-btn:hover{color:var(--text)}
   width:24px;height:24px;
 }
 .helpbtn:hover,.helpbtn[aria-expanded="true"]{color:var(--text);background:var(--raised);opacity:1}
-.repo-switch:hover{background:var(--raised);border-color:var(--line)}
 .repo-main{
   font-family:var(--mono);font-size:calc(11.5px * var(--fs));color:var(--text);
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%;
@@ -252,9 +250,9 @@ button.ctx-btn:hover{color:var(--text)}
    height — offset in `.co-head ~ .ws .ws-head` rather than on every `.ws-head`,
    because a single-checkout rail has no strip to sit under. */
 .co-head{
-  display:flex;align-items:baseline;gap:8px;
-  padding:9px 15px 5px;position:sticky;top:0;z-index:3;
-  background:var(--surface);border-bottom:1px solid var(--line-soft);
+  display:flex;align-items:baseline;gap:8px;width:100%;text-align:left;
+  padding:9px 15px 5px;position:sticky;top:0;z-index:3;cursor:pointer;
+  background:var(--surface);border:0;border-bottom:1px solid var(--line-soft);
 }
 .co-name{
   font-family:var(--label);font-size:calc(10px * var(--fs));font-weight:700;
