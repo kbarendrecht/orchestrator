@@ -133,7 +133,7 @@ async fn a_host_serves_the_page_for_a_checkout_its_child_manages() {
     .unwrap();
 
     let exe = Path::new(env!("CARGO_BIN_EXE_orchd"));
-    host.open_checkout_with(exe, &repo).expect("the child started and reported ready");
+    host.open_checkout_with(exe, &repo, false).expect("the child started and reported ready");
 
     // 1 — the page carries the child's port and token, not the host's.
     let rows = host.checkouts();
@@ -199,6 +199,7 @@ async fn a_host_serves_the_page_for_a_checkout_its_child_manages() {
         &repo,
         &base,
         &orchd::host::checkout_dir(&repo).unwrap(),
+        false,
         |_, _, _| {},
     );
     let refusal = format!("{:#}", second.expect_err("a second daemon for one checkout started"));

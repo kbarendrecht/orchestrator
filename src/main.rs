@@ -38,13 +38,24 @@ async fn main() -> Result<()> {
         // A browser tab draws its own chrome.
         chrome: orchd::window::Chrome::None,
         host_origin,
+        // The host says so when a person chose "start empty" while adding this
+        // checkout back. Nothing else passes it; an ordinary restart resumes.
+        no_resume: std::env::args().any(|a| a == "--no-resume"),
     })
     .await?;
 
     if announce {
         // The one line the parent reads, and the only reason a token is ever
         // printed. Flushed, because a parent is blocking on it.
-        println!("{}", orchd::child::ready_line(server.port, &server.token));
+        // The repository this daemon will poll, so the host can refuse a second
+        // checkout of it. Derived here rather than by the host because it needs
+        // this checkout's own `upstream_remote` and `repo`, which only the daemon
+        // that just read that config knows.
+        let repo = orchd::resolve_repo(&server.app).map(|(o, n)| format!("{o}/{n}"));
+        println!(
+            "{}",
+            orchd::child::ready_line(server.port, &server.token, repo.as_deref())
+        );
         use std::io::Write;
         let _ = std::io::stdout().flush();
         // The second kill switch: a host that was SIGKILLed leaves no signal to

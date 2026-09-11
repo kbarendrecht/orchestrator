@@ -35,8 +35,17 @@ use serde_json::json;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use crate::window::WindowControl;
+
+/// How long a daemon has to stay up for its next death to count as a new problem.
+///
+/// A start is ~1.3 s on a real repo, including a network fetch, so anything that
+/// dies inside this window died *of starting* — a config this build refuses, an
+/// untrusted `mise.toml`, a checkout whose directory went away. Past it, the
+/// daemon plainly could start, and whatever killed it is worth one more try.
+const HEALTHY_UPTIME: Duration = Duration::from_secs(60);
 
 /// One open checkout, as the page needs to see it.
 ///
@@ -61,6 +70,21 @@ pub struct Checkout {
     /// False for a checkout whose daemon is down. Always true while the only
     /// daemon is the process serving this page: a host cannot outlive itself.
     pub live: bool,
+    /// The repository this checkout's daemon polls, `owner/name`, when it has one.
+    ///
+    /// The key [`Host::add_checkout`] refuses a second checkout on — see
+    /// [`polled_repo`] for why it is this value and not the `Repos` pair. `None`
+    /// for a checkout with no matching remote, and two of those are allowed:
+    /// refusing them would refuse every local-only checkout after the first.
+    pub repo: Option<String>,
+    /// The other open checkout polling the same repository, when there is one.
+    ///
+    /// **A clash `add` could not see.** `add` derives the identity from whatever
+    /// config exists; the daemon derives it from the real `upstream_remote` and
+    /// reports it, which is the only authoritative answer. A disagreement between
+    /// the two is named here rather than tolerated in silence — the two daemons
+    /// cannot see each other's fix runs, and nothing else would ever say so.
+    pub clash: Option<String>,
 }
 
 /// What the host owns.
@@ -99,9 +123,18 @@ pub struct Host {
     /// Bounded to one retry: a first death is worth a free recovery, and a
     /// checkout that kills its daemon twice is a checkout to look at rather than
     /// to keep restarting — every restart runs `auto_resume`, so a crash loop
-    /// respawns agents nobody asked for. Cleared when a start succeeds, so a
-    /// daemon that ran for an hour and then died gets its retry again.
+    /// respawns agents nobody asked for.
+    ///
+    /// **Cleared by a long life, not by a successful start.** It used to be
+    /// cleared whenever a start reached its ready line, which is every start — so
+    /// the bound could never bite and a daemon that died on boot was restarted
+    /// forever. A daemon that ran for [`HEALTHY_UPTIME`] and then died is a
+    /// different event from one that died at once, and that is the distinction
+    /// worth keeping: the first gets its retry back, the second does not.
     retried: Mutex<HashMap<PathBuf, bool>>,
+    /// When each checkout's current daemon started, so a death can be told from a
+    /// failure to start.
+    started: Mutex<HashMap<PathBuf, Instant>>,
     /// Which key the app's own chords wear, and whether the page draws its own
     /// titlebar. Told to the page, never sniffed.
     chrome: crate::window::Chrome,
@@ -116,6 +149,7 @@ impl Host {
             checkouts: Mutex::new(Vec::new()),
             children: Mutex::new(HashMap::new()),
             retried: Mutex::new(HashMap::new()),
+            started: Mutex::new(HashMap::new()),
             chrome,
         })
     }
@@ -142,6 +176,15 @@ impl Host {
         self.checkouts.lock().unwrap().clone()
     }
 
+    /// The pid of a checkout's daemon, while there is one.
+    ///
+    /// **Not on [`Checkout`]**, which is what the page sees and has no use for a
+    /// pid. This is for a log line and for a test that needs to kill a daemon the
+    /// way a crash would.
+    pub fn pid_of(&self, checkout: &Path) -> Option<u32> {
+        self.children.lock().unwrap().get(checkout).map(|c| c.pid)
+    }
+
     /// Mark a checkout's row down, keeping the row.
     ///
     /// The row is where `reopen` lives, so dropping it would leave a checkout you
@@ -166,7 +209,7 @@ impl Host {
     /// sets its flag before it signals: without that a `close` would restart the
     /// daemon it just stopped, and a restart runs `auto_resume`.
     pub fn open_checkout(self: &Arc<Self>, checkout: &Path) -> anyhow::Result<()> {
-        self.open_checkout_with(&crate::child::daemon_binary(), checkout)
+        self.open_checkout_with(&crate::child::daemon_binary(), checkout, false)
     }
 
     /// The same, with the daemon binary named — see [`crate::child::launch_at`]
@@ -175,6 +218,7 @@ impl Host {
         self: &Arc<Self>,
         exe: &Path,
         checkout: &Path,
+        no_resume: bool,
     ) -> anyhow::Result<()> {
         let origin = format!("http://127.0.0.1:{}", self.port);
         // Its own state directory, handed over as `ORCHD_CONFIG_DIR` — the one
@@ -184,10 +228,22 @@ impl Host {
         let state = ensure_checkout_dir(checkout)?;
         let host = self.clone();
         let exe_again = exe.to_path_buf();
-        let child = crate::child::launch_at(exe, checkout, &origin, &state, move |path, asked, code| {
+        let child = crate::child::launch_at(
+            exe,
+            checkout,
+            &origin,
+            &state,
+            no_resume,
+            move |path, asked, code| {
             host.mark_down(path);
             if asked {
                 return;
+            }
+            // A daemon that ran a while and then died is not a daemon that will
+            // not start. It has earned the free recovery back.
+            let lived = host.started.lock().unwrap().remove(path).map(|at| at.elapsed());
+            if lived.is_some_and(|d| d >= HEALTHY_UPTIME) {
+                host.retried.lock().unwrap().remove(path);
             }
             let spent = host.retried.lock().unwrap().insert(path.to_path_buf(), true);
             if spent == Some(true) {
@@ -203,14 +259,15 @@ impl Host {
                 code = code.unwrap_or(-1),
                 "the checkout's daemon died; restarting it once"
             );
-            if let Err(e) = host.open_checkout_with(&exe_again, path) {
+            // A restart resumes: the person asked for an empty start once, when
+            // they added the checkout, and a crash is not them asking again.
+            if let Err(e) = host.open_checkout_with(&exe_again, path, false) {
                 tracing::error!(checkout = %path.display(), "the restart failed: {e:#}");
             }
-        })?;
+            },
+        )?;
 
-        // A start that reached its ready line clears the retry, so a daemon that
-        // runs for an hour and then dies is not held to a crash an hour ago.
-        self.retried.lock().unwrap().remove(checkout);
+        self.started.lock().unwrap().insert(checkout.to_path_buf(), Instant::now());
         self.record(Checkout {
             path: checkout.to_string_lossy().into_owned(),
             name: checkout
@@ -220,9 +277,204 @@ impl Host {
             port: child.ready.port,
             token: child.ready.token.clone(),
             live: true,
+            // **The child's answer, not the host's guess.** [`add_checkout`]
+            // derives the identity from whatever config exists to refuse the
+            // ordinary case before a process is spawned; the daemon knows its real
+            // `upstream_remote` and reports what it will actually poll. This is the
+            // only place the authoritative answer exists, so the row carries it.
+            repo: child.ready.repo.clone(),
+            clash: None,
         });
+        self.note_repo_clash(checkout);
         self.children.lock().unwrap().insert(checkout.to_path_buf(), Arc::new(child));
         Ok(())
+    }
+
+    /// Open a checkout the person just chose, or say why not.
+    ///
+    /// **Three refusals, and each names itself**, because the page shows the
+    /// sentence and a refusal nobody can act on is worse than none:
+    ///
+    ///  - **The same path twice.** One checkout is one row; a second row for one
+    ///    path is the shape where the page renders whichever it happened to reach.
+    ///  - **Containment, in either direction.** A candidate under an open checkout,
+    ///    and an open checkout under the candidate. Both give one object store two
+    ///    daemons — and the reversed case is real rather than theoretical, since
+    ///    [`crate::firstrun::validate`] accepts any directory where `.git` exists
+    ///    and a worktree's `.git` is a file.
+    ///  - **A repository already open**, keyed on [`polled_repo`] — see there for
+    ///    why that value and not the `Repos` pair.
+    ///
+    /// The candidate is validated first, which is what resolves it: comparing an
+    /// unresolved path against the resolved ones already in the list matches
+    /// nothing, and on macOS `/tmp` is a symlink so that is the normal case.
+    ///
+    /// `resume` is the person's answer to the question [`Added::Ask`] poses, and
+    /// `None` means they have not been asked yet.
+    pub fn add_checkout(
+        self: &Arc<Self>,
+        candidate: &Path,
+        resume: Option<bool>,
+    ) -> std::result::Result<Added, String> {
+        let info = crate::firstrun::validate(candidate)?;
+        let path = PathBuf::from(&info.path);
+        self.vacancy_for(&path)?;
+
+        // Derived before the spawn so an ordinary clash costs no process. The
+        // child's own answer replaces this one on the row — it knows its real
+        // `upstream_remote` and this does not.
+        let wanted = polled_repo(&path);
+        if let Some(clash) = self.holder_of_repo(wanted.as_deref(), &path) {
+            return Err(format!(
+                "{} is already open, and it is a checkout of the same repository ({}).                  Two daemons polling one repository cannot see each other's fix runs.",
+                clash.path,
+                wanted.unwrap_or_default()
+            ));
+        }
+
+        // **A close keeps a checkout's records, so a re-add has to ask.** Closing a
+        // checkout is a statement about the window; resuming months-old
+        // conversations because a path came back is the resurrection this design
+        // spent a flag on avoiding. An ordinary app restart still resumes silently
+        // — the ask is on this path only, deliberately: a restart is the same
+        // window coming back, while an add is a decision you just made.
+        let waiting = resumable_sessions(&path);
+        let resume = match resume {
+            Some(chosen) => chosen,
+            None if waiting > 0 => return Ok(Added::Ask { path: info.path, sessions: waiting }),
+            None => true,
+        };
+
+        self.open_checkout_with(&crate::child::daemon_binary(), &path, !resume)
+            .map_err(|e| format!("{e:#}"))?;
+        self.checkouts()
+            .into_iter()
+            .find(|c| c.path == info.path)
+            .map(Added::Opened)
+            .ok_or_else(|| "the checkout started and then vanished from the list".to_string())
+    }
+
+    /// The path half of [`add_checkout`]'s refusals: same path, and containment
+    /// either way. Split out because `reopen` needs the same answer for a row that
+    /// is already in the list, minus its own entry.
+    fn vacancy_for(&self, path: &Path) -> std::result::Result<(), String> {
+        for open in self.checkouts() {
+            let other = PathBuf::from(&open.path);
+            if other == path {
+                return Err(format!("{} is already open.", open.path));
+            }
+            if path.starts_with(&other) {
+                return Err(format!(
+                    "That folder is inside {}, which is already open. One git object                      store cannot have two daemons.",
+                    open.path
+                ));
+            }
+            if other.starts_with(path) {
+                return Err(format!(
+                    "That folder contains {}, which is already open. One git object                      store cannot have two daemons.",
+                    open.path
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// The open checkout that already polls `repo`, ignoring `except`.
+    ///
+    /// `None` for `repo` never clashes: a checkout with no matching remote has no
+    /// repository identity, and refusing two of those would refuse every
+    /// local-only checkout after the first.
+    fn holder_of_repo(&self, repo: Option<&str>, except: &Path) -> Option<Checkout> {
+        let repo = repo?;
+        self.checkouts()
+            .into_iter()
+            .find(|c| c.repo.as_deref() == Some(repo) && Path::new(&c.path) != except)
+    }
+
+    /// Close a checkout: stop its daemon and drop its row.
+    ///
+    /// **Symmetric, down to the last one.** Any checkout, including the one you are
+    /// looking at and including the only one — an empty host is the first-run page,
+    /// which `firstrun::serve` already is. A refusal at N=1 would be the one place
+    /// symmetry broke, and the switcher's deletion rests on close being symmetric.
+    ///
+    /// **Session records are left alone.** Closing a checkout is a statement about
+    /// the window, not a decision about its conversations, and the transcripts a
+    /// record points at are the only remaining copy once a worktree is gone. The
+    /// resurrection that worries about is stopped at `add` instead, where a re-add
+    /// of a path whose `sessions.json` still holds live records asks first.
+    pub fn close_checkout(&self, checkout: &Path) -> bool {
+        let stopped = self.stop_checkout(checkout);
+        let path = checkout.to_string_lossy();
+        {
+            let mut open = self.checkouts.lock().unwrap();
+            open.retain(|c| c.path != path);
+            // The other half of a clash goes with it: a warning naming a checkout
+            // that is no longer open is a warning nobody can act on.
+            for row in open.iter_mut().filter(|c| c.clash.as_deref() == Some(&path)) {
+                row.clash = None;
+            }
+        }
+        // A closed checkout that is opened again deserves its free recovery back:
+        // the retry count is about a daemon that will not stay up, not about a
+        // path you once closed.
+        self.retried.lock().unwrap().remove(checkout);
+        self.started.lock().unwrap().remove(checkout);
+        stopped
+    }
+
+    /// Start the daemon for a checkout whose row is down.
+    ///
+    /// The row is what `reopen` acts on, which is why [`Self::mark_down`] keeps it.
+    /// Refuses a row that is already live rather than starting a second daemon for
+    /// one checkout — the instance lock would refuse that anyway, but it would
+    /// refuse it as a failed launch a minute later.
+    pub fn reopen_checkout(self: &Arc<Self>, checkout: &Path) -> std::result::Result<(), String> {
+        let path = checkout.to_string_lossy().into_owned();
+        let row = self.checkouts().into_iter().find(|c| c.path == path);
+        match row {
+            Some(row) if row.live => Err(format!("{} is already running.", row.path)),
+            Some(_) => {
+                // The retry the last two deaths spent. A reopen is a person saying
+                // to try again, so it is worth the same free recovery a first
+                // start gets.
+                self.retried.lock().unwrap().remove(checkout);
+                self.open_checkout(checkout).map_err(|e| format!("{e:#}"))
+            }
+            None => Err(format!("{path} is not open.")),
+        }
+    }
+
+    /// Name the other checkout polling this one's repository, if the daemon's own
+    /// answer turned out to clash with a row already open.
+    ///
+    /// Both rows are marked, because neither is more at fault than the other and a
+    /// warning on one of two is a warning you can dismiss by looking at the wrong
+    /// one.
+    fn note_repo_clash(&self, checkout: &Path) {
+        let path = checkout.to_string_lossy().into_owned();
+        let mut open = self.checkouts.lock().unwrap();
+        let Some(mine) = open.iter().find(|c| c.path == path).and_then(|c| c.repo.clone()) else {
+            return;
+        };
+        let other = open
+            .iter()
+            .find(|c| c.path != path && c.repo.as_deref() == Some(mine.as_str()))
+            .map(|c| c.path.clone());
+        let Some(other) = other else { return };
+        tracing::warn!(
+            checkout = %path,
+            other = %other,
+            repo = %mine,
+            "two open checkouts poll one repository; their fix runs cannot see each other"
+        );
+        for row in open.iter_mut() {
+            if row.path == path {
+                row.clash = Some(other.clone());
+            } else if row.path == other {
+                row.clash = Some(path.clone());
+            }
+        }
     }
 
     /// Stop a checkout's daemon, keeping its row.
@@ -286,6 +538,71 @@ async fn guard(State(host): State<Arc<Host>>, req: Request<axum::body::Body>, ne
         return (StatusCode::UNAUTHORIZED, "bad token").into_response();
     }
     next.run(req).await
+}
+
+/// What an `add` did, or what it needs answered first.
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "added", rename_all = "snake_case")]
+pub enum Added {
+    /// The checkout is open and its daemon reported ready.
+    Opened(Checkout),
+    /// This path's `sessions.json` still holds conversations that were live when
+    /// it was last closed. Ask, then call again with the answer.
+    Ask { path: String, sessions: usize },
+}
+
+/// How many of a closed checkout's sessions would come back if it were resumed.
+///
+/// **Read as JSON rather than through `store::load`**, which resolves its own path
+/// from the process-global config dir — this is a *different* checkout's store, and
+/// the host has no business relocating a process-wide variable to read one file.
+/// The same two conditions `auto_resume` applies, because a number that disagrees
+/// with what resuming would actually do is worse than no number: live at the last
+/// write, and a conversation behind it.
+fn resumable_sessions(checkout: &Path) -> usize {
+    let Ok(dir) = checkout_dir(checkout) else { return 0 };
+    let Ok(raw) = std::fs::read_to_string(dir.join("sessions.json")) else {
+        return 0;
+    };
+    let Ok(records) = serde_json::from_str::<Vec<serde_json::Value>>(&raw) else {
+        return 0;
+    };
+    records
+        .iter()
+        .filter(|r| r["was_live"] == true && r["had_a_turn"] == true)
+        .count()
+}
+
+/// The repository a checkout's daemon would poll, `owner/name`.
+///
+/// **The key [`Host::add_checkout`] refuses a second checkout on, and it is the
+/// polled repository rather than the `Repos` pair.** `Repos` is
+/// `{ upstream, fork }`, and `upstream_remote` defaults to `origin` — so a parent
+/// clone on defaults derives `{acme/mono, acme/mono}` while a fork checkout
+/// derives `{acme/mono, you/mono}`. Unequal pairs, so a rule keyed on the pair
+/// would allow both, and both would then poll `acme/mono`. That is the hazard
+/// itself: "one live fix run per PR" reads *this* daemon's `automation.json` and
+/// `branch_busy` reads *this* daemon's workspaces, so two force-pushing runs
+/// against one head ref is reachable and neither guard can see the other.
+///
+/// **A guess, deliberately.** The authoritative answer needs that checkout's own
+/// `upstream_remote`, which lives in the `config.json` the host may be about to
+/// create — so this reads whatever config already exists (a re-add has one) and
+/// falls back to the default remote. The daemon re-derives with the real value and
+/// reports it on its ready line. This one refuses the ordinary case before a
+/// process is spawned; that one is the answer the row carries.
+///
+/// `None` when no remote gives it one, which is an ordinary local-only checkout.
+pub fn polled_repo(checkout: &Path) -> Option<String> {
+    let cfg = checkout_dir(checkout)
+        .ok()
+        .and_then(|dir| crate::config::Config::existing_at(&dir.join("config.json")));
+    if let Some(repo) = cfg.as_ref().and_then(|c| c.repo.clone()) {
+        return Some(repo);
+    }
+    let remote = cfg.as_ref().map_or("origin", |c| c.upstream_remote.as_str());
+    let url = crate::forge::remote_url(checkout, remote)?;
+    crate::forge::repo_from_remote(&url).map(|(o, n)| format!("{o}/{n}"))
 }
 
 /// Where one checkout's durable state lives.
@@ -429,6 +746,9 @@ pub fn router(host: Arc<Host>) -> Router {
         .route("/vendor/:file", get(vendor))
         .route("/vendor/fonts/:file", get(font))
         .route("/api/host/checkouts", get(checkouts))
+        .route("/api/host/checkout", post(add_checkout))
+        .route("/api/host/checkout/close", post(close_checkout))
+        .route("/api/host/checkout/reopen", post(reopen_checkout))
         .route("/api/window/resize/:edge", post(window_resize))
         .route("/api/window/:cmd", post(window_cmd))
         .layer(axum::middleware::from_fn_with_state(host.clone(), guard))
@@ -593,6 +913,59 @@ async fn font(UrlPath(file): UrlPath<String>) -> Response {
 
 async fn checkouts(State(host): State<Arc<Host>>) -> Json<serde_json::Value> {
     Json(json!({ "checkouts": host.checkouts() }))
+}
+
+/// The one body every checkout command takes: which checkout.
+#[derive(serde::Deserialize)]
+struct CheckoutPath {
+    path: String,
+    /// `add` only: the answer to the resume question, absent until it is asked.
+    #[serde(default)]
+    resume: Option<bool>,
+}
+
+/// Open a checkout, on a blocking thread.
+///
+/// **`spawn_blocking`, because a launch waits for a `ready` line** and that wait is
+/// a network `git fetch` away from slow — 1.3 s measured on a real repo. Blocking a
+/// tokio worker for that long is what makes every *other* checkout's page go quiet
+/// while one of them starts.
+async fn add_checkout(
+    State(host): State<Arc<Host>>,
+    Json(body): Json<CheckoutPath>,
+) -> Response {
+    let path = PathBuf::from(&body.path);
+    let resume = body.resume;
+    let added = crate::proc::run_blocking("adding a checkout", move || {
+        host.add_checkout(&path, resume)
+    })
+    .await;
+    match added {
+        Ok(Ok(added)) => Json(json!({ "ok": true, "result": added })).into_response(),
+        Ok(Err(message)) => refusal(&message),
+        Err(e) => refusal(&format!("{e:#}")),
+    }
+}
+
+async fn close_checkout(State(host): State<Arc<Host>>, Json(body): Json<CheckoutPath>) -> Response {
+    let path = PathBuf::from(&body.path);
+    // Blocking too: a stop waits out the child's own graceful shutdown, which is
+    // the only thing that reaches its sessions.
+    match crate::proc::run_blocking("closing a checkout", move || host.close_checkout(&path)).await {
+        Ok(stopped) => Json(json!({ "ok": true, "stopped": stopped })).into_response(),
+        Err(e) => refusal(&format!("{e:#}")),
+    }
+}
+
+async fn reopen_checkout(State(host): State<Arc<Host>>, Json(body): Json<CheckoutPath>) -> Response {
+    let path = PathBuf::from(&body.path);
+    let opened =
+        crate::proc::run_blocking("reopening a checkout", move || host.reopen_checkout(&path)).await;
+    match opened {
+        Ok(Ok(())) => Json(json!({ "ok": true })).into_response(),
+        Ok(Err(message)) => refusal(&message),
+        Err(e) => refusal(&format!("{e:#}")),
+    }
 }
 
 // --- the window -------------------------------------------------------------

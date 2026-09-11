@@ -7,7 +7,7 @@
 //! **The child mints its own token and reports it.** Handing one down through the
 //! environment would put it in the environment of every session that child spawns,
 //! and `triage.rs` asserts the opposite invariant for exactly that reason. So the
-//! child prints one line — `ready <port> <token>` — and the parent reads it.
+//! child prints one line — `ready <port> <token> <repo>` — and the parent reads it.
 //!
 //! **Two independent ways to die**, because one is never enough for a process that
 //! holds ptys. [`Child::stop`] signals the process group and waits; and the child
@@ -57,6 +57,14 @@ const STOP_GRACE: Duration = Duration::from_secs(10);
 pub struct Ready {
     pub port: u16,
     pub token: String,
+    /// The repository it will poll, `owner/name`, or `None` when no remote gives
+    /// it one. **Reported rather than derived by the host**, because the identity
+    /// needs `upstream_remote` and `repo`, and both live in that checkout's own
+    /// `config.json` — the file the host may only just have created. The host's own
+    /// guess at `add` time refuses the ordinary case cheaply; this is the
+    /// authoritative answer, and a clash the guess could not see is named on the
+    /// row.
+    pub repo: Option<String>,
 }
 
 /// A live child daemon.
@@ -140,9 +148,10 @@ pub fn launch(
     checkout: &Path,
     host_origin: &str,
     state: &Path,
+    no_resume: bool,
     on_exit: impl FnOnce(&Path, bool, Option<i32>) + Send + 'static,
 ) -> Result<Child> {
-    launch_at(&daemon_binary(), checkout, host_origin, state, on_exit)
+    launch_at(&daemon_binary(), checkout, host_origin, state, no_resume, on_exit)
 }
 
 /// The real work, with the binary injected — the same split as
@@ -155,6 +164,7 @@ pub fn launch_at(
     checkout: &Path,
     host_origin: &str,
     state: &Path,
+    no_resume: bool,
     on_exit: impl FnOnce(&Path, bool, Option<i32>) + Send + 'static,
 ) -> Result<Child> {
     let mut command = std::process::Command::new(exe);
@@ -177,6 +187,11 @@ pub fn launch_at(
         .stderr(std::process::Stdio::inherit());
     // Its own process group, so a signal aimed at the child cannot reach the host,
     // and so the group is there to sweep when the leader has been reaped.
+    // The person's answer to "resume what was live here?", travelling to the one
+    // process that knows what a session is. Only ever set by an `add`.
+    if no_resume {
+        command.arg("--no-resume");
+    }
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -274,7 +289,11 @@ fn read_ready(
                 .next()
                 .with_context(|| format!("a ready line with no token: {line}"))?
                 .to_string();
-            return Ok(Ready { port, token });
+            // Optional, and the one field that may be absent: a checkout with no
+            // matching remote has no repository identity, and that is an ordinary
+            // local-only checkout rather than a malformed line.
+            let repo = parts.next().filter(|r| *r != NO_REPO).map(str::to_string);
+            return Ok(Ready { port, token, repo });
         }
         if !line.is_empty() {
             tracing::info!(pid, "checkout daemon: {line}");
@@ -286,12 +305,18 @@ fn read_ready(
     bail!("the daemon never said it was ready")
 }
 
+/// What the fourth field says when the checkout has no repository identity.
+///
+/// A placeholder rather than a short line, because the line is positional and a
+/// reader that accepts both lengths is two protocols.
+const NO_REPO: &str = "-";
+
 /// The line [`read_ready`] parses, written by the child.
 ///
 /// One spelling, because the writer and the reader are one protocol and this repo
 /// has already paid for a pair that drifted (`--wait-for-pid`).
-pub fn ready_line(port: u16, token: &str) -> String {
-    format!("ready {port} {token}")
+pub fn ready_line(port: u16, token: &str, repo: Option<&str>) -> String {
+    format!("ready {port} {token} {}", repo.unwrap_or(NO_REPO))
 }
 
 /// Exit when the parent closes our stdin.
@@ -340,14 +365,15 @@ mod tests {
         on_exit: impl FnOnce(&Path, bool, Option<i32>) + Send + 'static + Clone,
     ) -> Result<Child> {
         for _ in 0..50 {
-            match launch_at(exe, checkout, "http://127.0.0.1:1234", checkout, on_exit.clone()) {
+            match launch_at(exe, checkout, "http://127.0.0.1:1234", checkout, false, on_exit.clone())
+            {
                 Err(e) if format!("{e:#}").contains("Text file busy") => {
                     std::thread::sleep(Duration::from_millis(20));
                 }
                 other => return other,
             }
         }
-        launch_at(exe, checkout, "http://127.0.0.1:1234", checkout, on_exit)
+        launch_at(exe, checkout, "http://127.0.0.1:1234", checkout, false, on_exit)
     }
 
     /// A stand-in daemon: whatever the test needs said on stdout, then a wait.
@@ -368,11 +394,12 @@ mod tests {
     /// The ready line is parsed, and prose before it does not break the read.
     #[test]
     fn a_child_reports_its_port_and_token_past_whatever_else_it_printed() {
-        let exe = stub("echo 'logging to somewhere'\necho 'ready 7799 abc123'\nsleep 30");
+        let exe = stub("echo 'logging to somewhere'\necho 'ready 7799 abc123 acme/mono'\nsleep 30");
         let repo = crate::testutil::scratch("child-ready");
         let child = launch_stub(&exe, &repo, |_, _, _| {}).expect("the child reported ready");
         assert_eq!(child.ready.port, 7799);
         assert_eq!(child.ready.token, "abc123");
+        assert_eq!(child.ready.repo.as_deref(), Some("acme/mono"));
         child.stop();
         assert!(!crate::pty::pid_alive(child.pid), "the child outlived its stop");
     }
@@ -385,7 +412,7 @@ mod tests {
     #[test]
     fn a_stop_is_reported_as_asked_for_and_a_crash_is_not() {
         for (script, expect_asked) in
-            [("echo 'ready 1 t'\nsleep 30", true), ("echo 'ready 1 t'\nexit 3", false)]
+            [("echo 'ready 1 t -'\nsleep 30", true), ("echo 'ready 1 t -'\nexit 3", false)]
         {
             let exe = stub(script);
             let repo = crate::testutil::scratch("child-why");
@@ -418,7 +445,7 @@ mod tests {
     /// the path that still works when the host was `SIGKILL`ed.
     #[test]
     fn a_child_dies_when_its_stdin_closes() {
-        let exe = stub("echo 'ready 2 t'\ncat > /dev/null\nexit 0");
+        let exe = stub("echo 'ready 2 t -'\ncat > /dev/null\nexit 0");
         let repo = crate::testutil::scratch("child-eof");
         let child = launch_stub(&exe, &repo, |_, _, _| {}).expect("launched");
         let pid = child.pid;

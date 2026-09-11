@@ -77,6 +77,19 @@ pub struct StartOptions {
     /// The origin of the host that spawned this daemon, if one did. Reaches
     /// [`config::Config::host_origin`], which is where the reasoning lives.
     pub host_origin: Option<String>,
+    /// Start without resuming the sessions that were live, whatever the config
+    /// says.
+    ///
+    /// **For one path only: a checkout being added back to the host.** A host that
+    /// closed a checkout leaves its records alone, because closing a checkout is a
+    /// statement about the window and not a decision about its conversations — so
+    /// a re-add asks, and this is the answer "start empty" travelling to the
+    /// daemon. An ordinary restart still resumes silently, which is why this is an
+    /// option on one start rather than a change to `auto_resume`.
+    ///
+    /// The host stays out of the store: it says what the person chose, and the
+    /// daemon is the only thing that knows what a session is.
+    pub no_resume: bool,
 }
 
 impl Default for StartOptions {
@@ -86,6 +99,7 @@ impl Default for StartOptions {
             fallback_port: false,
             chrome: window::Chrome::None,
             host_origin: None,
+            no_resume: false,
         }
     }
 }
@@ -490,7 +504,7 @@ pub async fn start(opts: StartOptions) -> Result<Server> {
     phases.mark("reconcile-spawn");
     adopt_banked_work(&app).await;
     autostart_processes(&app).await;
-    if app.cfg.auto_resume {
+    if app.cfg.auto_resume && !opts.no_resume {
         auto_resume(app.clone(), records);
     }
     start_pr_poller(app.clone());
@@ -518,6 +532,9 @@ pub async fn start(opts: StartOptions) -> Result<Server> {
         port: app.cfg.port,
         token: app.token.clone(),
         live: true,
+        repo: resolve_repo(&app).map(|(o, n)| format!("{o}/{n}")),
+        // One checkout, so nothing to clash with.
+        clash: None,
     });
     // **A daemon a host spawned does not serve the page.** Its own host would be a
     // second page server nobody visits, on a port whose only caller is the parent,
@@ -1515,7 +1532,12 @@ pub fn sibling_bin_dir() -> Option<String> {
         .then(|| dir.to_string_lossy().into_owned())
 }
 
-pub(crate) fn resolve_repo(app: &Arc<AppState>) -> Option<(String, String)> {
+/// The repository this daemon polls, `owner/name`.
+///
+/// `pub` because the host refuses a second checkout on exactly this value, and the
+/// child reports it on its ready line — the daemon is the only thing that knows it,
+/// since it needs this checkout's own `upstream_remote` and `repo`.
+pub fn resolve_repo(app: &Arc<AppState>) -> Option<(String, String)> {
     if let Some(r) = &app.cfg.repo {
         let (o, n) = r.split_once('/')?;
         return Some((o.to_string(), n.to_string()));

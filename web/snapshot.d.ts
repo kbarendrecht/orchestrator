@@ -56,7 +56,26 @@ token: string,
  * False for a checkout whose daemon is down. Always true while the only
  * daemon is the process serving this page: a host cannot outlive itself.
  */
-live: boolean, };
+live: boolean, 
+/**
+ * The repository this checkout's daemon polls, `owner/name`, when it has one.
+ *
+ * The key [`Host::add_checkout`] refuses a second checkout on — see
+ * [`polled_repo`] for why it is this value and not the `Repos` pair. `None`
+ * for a checkout with no matching remote, and two of those are allowed:
+ * refusing them would refuse every local-only checkout after the first.
+ */
+repo: string | null, 
+/**
+ * The other open checkout polling the same repository, when there is one.
+ *
+ * **A clash `add` could not see.** `add` derives the identity from whatever
+ * config exists; the daemon derives it from the real `upstream_remote` and
+ * reports it, which is the only authoritative answer. A disagreement between
+ * the two is named here rather than tolerated in silence — the two daemons
+ * cannot see each other's fix runs, and nothing else would ever say so.
+ */
+clash: string | null, };
 
 export type Checks = "passing" | "failing" | "pending" | "unknown";
 

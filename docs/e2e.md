@@ -4,14 +4,13 @@
 real daemon, offline and deterministically. Twenty-four of them, one file each
 under `tools/e2e/flows/`, about a minute for the lot.
 
-A twenty-fifth is **pending**: `25-host.mjs` exports `pending`, a string saying
-what it waits for, so the runner lists it and does not run it. That is for a flow
-written before the thing it tests — the cheapest specification there is — and it is
-held out rather than left red because the pre-commit hook runs this suite every
-fifth qualifying commit and a failure does not reset the counter, so one red flow
-blocks every fifth commit and teaches everybody `--no-verify`. The string is
-required rather than a bare `true`, because a flow nobody can explain is a flow to
-delete.
+**The host is not one of them, deliberately.** `25-host.mjs` was written here as
+the specification for multi-checkout hosting and held `pending` until the host
+existed; it now lives as `tests/host_checkouts.rs`. The reason it moved rather than
+grew a harness: this suite exists to put a fake `claude` on PATH, and **the host
+owns no sessions**. Everything it asserts is one process pair speaking HTTP, which
+an integration test already drives — so a headless host here would have been
+machinery with nothing of its own to test.
 
 It exists because of what unit tests kept missing. Two bugs found by hand-driving
 a daemon in one afternoon — a resume that skipped its branch check because the

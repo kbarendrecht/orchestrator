@@ -12,15 +12,6 @@
 // A flow is a module exporting `run(sandbox)`, and optionally `options` for the
 // sandbox it wants. The runner owns creating and stopping it, so a flow that
 // throws still leaves no daemon behind.
-//
-// A flow may also export `pending`, a string saying what it is waiting for. It is
-// then listed and not run, and counts in neither total. That exists because a flow
-// written before the thing it tests is the cheapest specification there is, and the
-// alternative was leaving it red: the pre-commit hook runs this suite every fifth
-// qualifying commit and a failure does not reset the counter, so one permanently
-// red flow blocks every fifth commit and teaches everybody `--no-verify`. The
-// string is required rather than a bare `true` so the listing says *why*, and a
-// flow nobody can explain is a flow to delete.
 
 import fs from 'node:fs'
 import path from 'node:path'
@@ -53,20 +44,11 @@ const files = fs.readdirSync(path.join(here, 'flows'))
 
 let pass = 0
 const failures = []
-const pending = []
 
 for (const file of files) {
   const mod = await import(path.join(here, 'flows', file))
   const name = mod.name ?? file.replace(/\.mjs$/, '')
   if (filters.length && !filters.some((f) => name.includes(f))) continue
-
-  // Named explicitly rather than filtered out silently, so a flow cannot sit
-  // pending for a year without anybody reading the reason.
-  if (mod.pending) {
-    pending.push(name)
-    console.log(`  ${name} … pending (${mod.pending})`)
-    continue
-  }
 
   const started = Date.now()
   process.stdout.write(`  ${name} … `)
@@ -93,6 +75,5 @@ for (const file of files) {
   }
 }
 
-const held = pending.length ? `, ${pending.length} pending` : ''
-console.log(`\n${pass} passed, ${failures.length} failed${held}`)
+console.log(`\n${pass} passed, ${failures.length} failed`)
 if (failures.length) process.exit(1)
