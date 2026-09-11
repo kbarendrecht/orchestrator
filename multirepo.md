@@ -668,18 +668,10 @@ Now the acceptance flow can go green.
    - **The same path twice.**
    - **A checkout of a repository already open** — the widest of the three, see the
      decision below.
-2. **The header switcher goes, and `WindowCmd::Switcher` and `start_switcher` with
-   it.** Last, not first: by now `add` and `close` mean "switch" between them, so
-   nothing is taken away before its replacement exists.
-   **`BootstrapHost::switching` and `cancel` stay**, and an earlier draft deleted
-   them in Stage 1. `switching` is a *defaulted* trait method, so dropping the impl
-   compiles silently — and it is the only branch of `TauriBootstrap::open` that
-   reaches `request_restart`. Everything else falls to `BOOTING`, which its own
-   comment says is "set by the first open that boots the daemon, **and never
-   cleared**". So after the app's first boot every `POST /api/open` would take the
-   latched branch, undo its config write and toast "Could not switch to that
-   project" — and this stage's empty-host page is that exact path. `cancel` has a
-   page-side consumer too.
+2. ~~**The header switcher goes.**~~ **Moved to Stage 4**, as its item 9. "Last,
+   not first" was right and the stage boundary was wrong: `add` and `close` mean
+   "switch" between them only once the *page* has them, and `reposwitch` is until
+   then the one way to change checkout.
 3. **`close` is symmetric, down to the last one.** Any checkout, including the one
    you are looking at, and including the only one — an empty host is the first-run
    page, which `firstrun::serve` already is. A refusal at N=1 would be the one place
@@ -720,8 +712,11 @@ Now the acceptance flow can go green.
    number to learn, not two — and the reaper it mirrors is the model for the rest:
    count from the last write rather than from creation, and never take a directory
    with work in it.
-7. **The `pending` line comes off flow 25 and it goes green.** That removal is the
-   definition of done for this stage.
+7. **Flow 25's assertions go green.** They moved to `tests/host_checkouts.rs`
+   rather than growing the e2e harness a host, which is the decision this stage
+   opened with: that harness exists to put a fake `claude` on PATH, and the host
+   owns no sessions. The `pending` mechanism went with the flow, having had exactly
+   one user.
 
 ### Stage 4 — the page
 
@@ -762,7 +757,19 @@ The SPA work, on top of a host that already reports the truth.
 8. **Colour is reinforcement.** Drop the two hues nearest `--attn` and `--bad`; past
    the palette length, no band rather than a repeated one. Colour is keyed on the
    checkout, not on its position, so closing one does not re-colour the rest.
-9. **Rename `repo` to `checkout` in the SPA — its own commit, before the rest of
+9. **Delete the header switcher**, and `WindowCmd::Switcher` and `start_switcher`
+   with it — carried over from Stage 3, and deliberately after item 1. `add` and
+   `close` mean "switch" between them only once the *page* has them; until then
+   `reposwitch` is the one way to change checkout, and taking it away first is a
+   capability removed with nothing in its place.
+   **`BootstrapHost::switching` and `cancel` stay.** `switching` is a *defaulted*
+   trait method, so dropping the impl compiles silently — and it is the only branch
+   of `TauriBootstrap::open` that reaches `request_restart`. Everything else falls
+   to `BOOTING`, which its own comment says is "set by the first open that boots the
+   daemon, **and never cleared**". So after the app's first boot every
+   `POST /api/open` would take the latched branch, undo its config write and toast
+   "Could not switch to that project". `cancel` has a page-side consumer too.
+10. **Rename `repo` to `checkout` in the SPA — its own commit, before the rest of
    Stage 4.** A pure rename first, so every later diff in this stage is behaviour
    only. By hand, by line, never a sweep: CLAUDE.md records why, and `check-web`
    cannot catch a string whose meaning changed.
@@ -937,8 +944,8 @@ The SPA work, on top of a host that already reports the truth.
 | Stage 0 | tests + pending flow 25 + CI clippy | A boundary you can move safely | **done** |
 | Stage 1 | the portability fix, the stale TODO | Less to move | **done** |
 | Stage 2 | host + one child | One hosting model; the lock keyed right | **done** |
-| Stage 3 | N children | Flow 25 green; the last three safety findings closed | next |
-| Stage 4 | the page | The product | |
+| Stage 3 | N children | The host API; the last three safety findings closed | **done**, less the switcher |
+| Stage 4 | the page | The product | next |
 
 Stages 0 to 2 change nothing a single-checkout user can see. That is deliberate:
 the refactor is justified as required for planned work, and it is paid for before
@@ -946,64 +953,62 @@ the feature exists so the feature arrives small.
 
 ## Where the work stands, for a session picking this up
 
-Stages 0 to 2 are **on `main`**, in 18 commits from `ace60b9` to the tip. Every gate
-is green: 526 lib tests, 8 desktop, 1 integration, `cargo clippy --workspace
---all-targets` clean, `mise run check-web` green, `mise run e2e` 24 passed with flow
-25 pending.
+Stages 0 to 3 are **on `main`**. Every gate is green: 526 lib tests, 8 desktop, 4
+integration binaries, `cargo clippy --workspace --all-targets` clean,
+`mise run check-web` green, `mise run e2e` 24 passed, 0 failed.
 
-**One thing is unverified and needs a person at a screen**: the Tauri window. The app
-now serves the page itself and spawns a child daemon, and everything in that
-arrangement *except the window and the webview* is driven headlessly by
-`tests/host_and_child.rs`. Run `cargo run -p orchestrator-desktop` once before
-building on Stage 2, and expect two processes.
+**One thing is unverified and needs a person at a screen**: the Tauri window. The
+app serves the page itself and spawns a child daemon per checkout, and everything
+in that arrangement *except the window and the webview* is driven headlessly by
+the integration tests. Run `cargo run -p orchestrator-desktop` once before
+building on Stage 4, and expect one process per checkout plus the app.
 
 ### What exists now, and where
 
-- **`src/host.rs`** — the page, the assets, the window commands,
-  `/api/host/checkouts`, its own guard, and the checkout list. `Host::open_checkout`
-  launches a child and records it; `stop_checkout` and `stop_all` stop them;
-  `checkout_dir` is `<config dir>/checkouts/<leaf>-<hash>`. `host::serve` binds a
-  port and serves it, and `Serving::url` is what the webview is pointed at.
-  State is behind `std::sync::Mutex`, deliberately: the observer that reports a
-  death is a plain thread, because it owns a blocking `wait()`.
-- **`src/child.rs`** — `launch`/`launch_at`, the `ready <port> <token>` line, the
-  one observer, the `stopping` flag, `Child::stop`. The child is the `orchd` binary
-  beside the running executable, never a re-exec of the app.
-- **`src/logging.rs`** — moved out of the desktop crate, so a child logs to a file.
-- **`orchd::start`** — mounts the host router **only when `host_origin` is absent**,
-  which is the question "did somebody host me". A hosted child serves no page.
-- **`web/js/core.js`** — `CHECKOUTS` (substituted by the host), `LOCAL` (aimed at
-  the checkout's own daemon, relative only when they share a port), `callOn`/`getOn`
-  beside `call`/`get`.
-- **`desktop/src/main.rs`** — `boot_daemon` is now a host boot; `SERVER` holds a
-  `host::Serving`; `shutdown` is `host.stop_all()`.
+- **`src/host.rs`** — the page, the assets, the window commands, the checkout list
+  and the checkout commands. `add_checkout` refuses the three; `close_checkout` and
+  `reopen_checkout` are symmetric down to the last one; `open_remembered` opens
+  them concurrently; `sweep_checkout_dirs` reaps derived state only.
+  `GET /api/host/recent` and `POST /api/host/pick` are the two ways in for an add.
+- **`host.json`** — `checkouts` and `checkout_retention_days`, in the *host's*
+  config dir. No file falls back to `config.json`'s `main_checkout`, which is every
+  install that predates it.
+- **`src/child.rs`** — the `ready <port> <token> <repo>` line, the one observer, the
+  `stopping` flag, `--no-resume`.
+- **`web/js/core.js`** — `LOCAL` (a checkout's daemon) and `HOST` (whatever served
+  the page). `/api/window/*` and `/api/host/*` go through `callHost`.
+- **`tests/host_and_child.rs`**, **`host_checkouts.rs`**, **`host_file.rs`**,
+  **`host_sweep.rs`** — one binary per fixture, because `ORCHD_CONFIG_DIR` is
+  process-global and cargo runs a binary's tests in parallel.
 
-### What Stage 3 has to build, in the order the flow asserts it
+### What Stage 3 left for Stage 4, and why
 
-`tools/e2e/flows/25-host.mjs` is the specification and is written; removing its
-`pending` line is the definition of done. It needs harness support that does not
-exist yet — `t.host(...)`, `t.apiOn(...)`, `t.checkout(name)`, `t.dead(pid)` — and a
-way to run a host headlessly, which today only the app and the integration test do.
-**Decide that first**: either the e2e harness grows a host (a small binary or an
-`orchd --host` mode), or flow 25 stays a Rust integration test and the `pending`
-mechanism was for a flow that never runs. The integration test is already two thirds
-of what flow 25 asserts, which is an argument for the second.
+**The header switcher is still there.** The plan put its deletion in Stage 3 on the
+reasoning that `add` and `close` mean "switch" between them — which is true of the
+*API* and not yet of the page. `web/app.js`'s `reposwitch` is today the only way to
+change checkout, and deleting it before the rail can add and close would take a
+working capability away with nothing in its place. It goes in Stage 4, after item 1
+gives the page its own `+ checkout` and `close`. `WindowCmd::Switcher` and
+`start_switcher` go with it then.
 
-Then, in this order:
+### Three things learned while building Stage 3, that the plan did not know
 
-1. **`POST /api/host/checkout`** — add, with the three refusals: containment in
-   either direction, the same path twice, and one repository twice keyed on the
-   repository the daemon would poll. The host reads the candidate's remotes itself
-   through `proc::run_blocking`, and the child re-derives on its ready line.
-2. **`close` and `reopen`** — symmetric, down to the last checkout, and `add` asks
-   before resuming a path whose `sessions.json` still holds live records.
-3. **The host file** — `host.json` with the checkout list, so the app opens what was
-   open. Deliberately *not* built in Stage 2: nothing read it, and a seam with no
-   subscriber is the shape this plan condemns.
-4. **`add` offers recents and browse**, and `recent.json` moves to the host.
-5. **Publish each checkout as it answers**, so a slow one never holds the page.
-6. **The `checkouts/` sweep**, with `checkout_retention_days` — and it may not reap
-   a conversation: see that item for what it may delete.
+- **The restart bound could never bite.** `open_checkout` cleared the retry on every
+  successful start, and every start reaches a ready line — so a daemon that died on
+  boot was restarted forever, and each restart runs `auto_resume`. It is cleared by
+  a long life instead (`HEALTHY_UPTIME`), which is what the plan's two sentences
+  about it actually mean together.
+- **Every titlebar button was silently dead under the app**, and had been since
+  Stage 2. `call` aims at `LOCAL`, the page's window commands went to the child
+  daemon, and a daemon answers `200 {}` to an unknown route — so minimise, close,
+  drag, resize and restart all succeeded at nothing. This is exactly the trap
+  `CLAUDE.md` names, landed. `core.HOST` is the fix, and
+  `tests/host_and_child.rs` now asserts the swallow so the seam cannot be tidied
+  away.
+- **A hosted child must not write `recent.json`.** Its `ORCHD_CONFIG_DIR` is its own
+  checkout directory, so the daemon's own `record_recent` left one single-entry list
+  per checkout and none of them the list the add screen reads. Whoever is the host
+  writes it — `Host::open_checkout`, and `crate::start` only when nothing hosts it.
 
 ### Three things learned while building Stage 2, that the plan did not know
 
