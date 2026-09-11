@@ -615,6 +615,13 @@ mean *this* repo; if you do, name it.
   network git call. Every other
   command the daemon spawns is POSIX (`git`, `curl`, `gh`, `ps`, `which`, `kill`) —
   keep it that way, and check `command -v` before reaching for a GNU flag.
+  **The tests are not exempt, and that is where it got in.** A sweep test backdated
+  a directory with `touch -d @<epoch>`, which BSD `touch` has no `-d` for at all —
+  its `-t` takes `[[CC]YY]MMDDhhmm[.SS]` — so it passed on every Linux run and went
+  red on macos-14 alone, with `out of range or illegal time specification`. Two
+  spellings are fine: `touch -t 202001010000` (POSIX, and what `worktree.rs`'s
+  reaper tests already used) or `std::fs::File::set_times`, which is `futimens` and
+  needs no process.
 - **`WorktreeCreate` is not a setup hook. It *is* the creation, and a daemon-cut
   worktree therefore never fires one.** Claude Code's own error text says what the
   event is for: worktree isolation "with other VCS systems". The hook reads the

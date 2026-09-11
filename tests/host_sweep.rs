@@ -108,16 +108,19 @@ fn the_sweep_takes_derived_state_and_leaves_conversations() {
 }
 
 /// Backdate a directory and everything one level inside it.
+///
+/// **`std::fs`, not `touch -d`.** BSD `touch` has no `-d`: its `-t` takes
+/// `[[CC]YY]MMDDhhmm[.SS]`, so the GNU spelling exits with "out of range or
+/// illegal time specification" and this test failed on the macos-14 runner alone —
+/// the coreutils trap `CLAUDE.md` names, in a test rather than in the daemon.
+/// `File::set_times` is `futimens`, which is POSIX and works on a directory fd.
 fn set_mtimes(dir: &Path, when: std::time::SystemTime) {
-    let secs = when.duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
-    let stamp = format!("@{secs}");
+    let stamp = std::fs::FileTimes::new().set_accessed(when).set_modified(when);
     let touch = |path: &Path| {
-        let ok = std::process::Command::new("touch")
-            .args(["-d", &stamp])
-            .arg(path)
-            .status()
-            .expect("touch ran");
-        assert!(ok.success(), "could not backdate {}", path.display());
+        let f = std::fs::File::open(path)
+            .unwrap_or_else(|e| panic!("opening {} to backdate it: {e}", path.display()));
+        f.set_times(stamp)
+            .unwrap_or_else(|e| panic!("backdating {}: {e}", path.display()));
     };
     for entry in std::fs::read_dir(dir).unwrap().flatten() {
         touch(&entry.path());
