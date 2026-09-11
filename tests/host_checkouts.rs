@@ -121,13 +121,35 @@ fn curl(args: &[&str], token: &str, _unused: Option<()>) -> (u32, String) {
     (code.trim().parse().unwrap_or(0), body.to_string())
 }
 
+/// Wait for a condition, or say what was there on the last look.
+///
+/// **The deadline is the child's own, not a round number.** `child::READY_TIMEOUT`
+/// is 60s, so anything waiting on a daemon *starting* — which a restart is — cannot
+/// honestly give up sooner than the launch it is waiting for. 30s was shorter than
+/// the thing it waited for, and a cold CI runner is exactly where that shows.
 fn until<T>(what: &str, mut ready: impl FnMut() -> Option<T>) -> T {
-    let deadline = Instant::now() + Duration::from_secs(30);
+    until_seeing(what, ready_nothing, &mut ready)
+}
+
+fn ready_nothing() -> String {
+    String::new()
+}
+
+/// The same, with a closure that renders what the condition could see — the
+/// difference between "timed out" and a failure that names its own cause.
+fn until_seeing<T>(
+    what: &str,
+    mut seen: impl FnMut() -> String,
+    ready: &mut impl FnMut() -> Option<T>,
+) -> T {
+    let deadline = Instant::now() + Duration::from_secs(60);
     loop {
         if let Some(value) = ready() {
             return value;
         }
-        assert!(Instant::now() < deadline, "timed out waiting for {what}");
+        if Instant::now() >= deadline {
+            panic!("timed out waiting for {what}\nlast saw: {}", seen());
+        }
         std::thread::sleep(Duration::from_millis(50));
     }
 }
@@ -230,12 +252,23 @@ async fn a_host_adds_closes_and_reopens_checkouts_and_refuses_the_three() {
     let victim = host.pid_of(&second).expect("the second checkout has a daemon");
     let victim_token = row_for(&listed, &second).unwrap()["token"].as_str().unwrap().to_string();
     orchd::pty::signal_group_of(victim, libc::SIGKILL);
-    let restarted = until("the host to restart the checkout once", || {
-        let rows = rows(&base, &token);
-        let row = row_for(&rows, &second)?.clone();
-        let pid = host.pid_of(&second)?;
-        (row["live"] == true && pid != victim).then_some((row, pid))
-    });
+    let restarted = until_seeing(
+        "the host to restart the checkout once",
+        || {
+            let rows = rows(&base, &token);
+            format!(
+                "row={:?} pid={:?} (killed {victim})",
+                row_for(&rows, &second),
+                host.pid_of(&second)
+            )
+        },
+        &mut || {
+            let rows = rows(&base, &token);
+            let row = row_for(&rows, &second)?.clone();
+            let pid = host.pid_of(&second)?;
+            (row["live"] == true && pid != victim).then_some((row, pid))
+        },
+    );
     // A new process mints a new token, so the row's old one is dead — which is why
     // the page cannot rely on the substitution it was served with.
     assert_ne!(

@@ -90,6 +90,12 @@ impl Child {
     ///
     /// Sets [`Self::stopping`] first, so the observer that is about to be woken by
     /// the exit does not read it as a crash and restart what this just stopped.
+    /// One consequence worth knowing: the wait below ends when the pid is
+    /// *reaped*, not when it dies. `pid_alive` is `kill(pid, 0)` and a zombie
+    /// answers yes, so this sits until the observer thread has drained stdout and
+    /// called `wait`. That is the right thing to wait for — the child is only
+    /// really gone once somebody has collected it — but it means a slow drain
+    /// shows up here as a slow stop rather than as a missed signal.
     pub fn stop(&self) {
         self.stopping.store(true, Ordering::SeqCst);
         // The EOF, which is what the child is actually listening for. A stop that
@@ -400,8 +406,18 @@ mod tests {
         assert_eq!(child.ready.port, 7799);
         assert_eq!(child.ready.token, "abc123");
         assert_eq!(child.ready.repo.as_deref(), Some("acme/mono"));
+        /* **Waited for, not read once.** `pid_alive` is `kill(pid, 0)`, which
+           succeeds for a *zombie* — and the thing that reaps this child is the
+           observer thread, which only gets there after it has drained the child's
+           stdout. So a stop that worked perfectly can still read as alive for as
+           long as that takes, which is why the neighbouring tests all wait. This
+           one asserted instantly and went red on the macos-14 runner alone. */
         child.stop();
-        assert!(!crate::pty::pid_alive(child.pid), "the child outlived its stop");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while crate::pty::pid_alive(child.pid) {
+            assert!(Instant::now() < deadline, "the child outlived its stop");
+            std::thread::sleep(Duration::from_millis(20));
+        }
     }
 
     /// A stop is not a crash, and the observer must be able to tell.
