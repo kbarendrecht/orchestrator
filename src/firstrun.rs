@@ -476,6 +476,23 @@ fn write_config_to(file: &Path, path: &Path, ov: &Overrides) -> Result<Written> 
 // need the window — the native folder dialog and starting the daemon — are behind
 // `BootstrapHost`, which the desktop crate implements and a test stubs.
 
+/// The first-run page, told how its window is decorated.
+///
+/// **Substituted rather than fetched**, unlike the `switching` flag the page asks
+/// for after it loads: this decides whether a titlebar is drawn at all, and a page
+/// that painted one and then removed it would flash a set of buttons that should
+/// never have been there.
+///
+/// From `cfg!` rather than from [`BootstrapHost`], because it is a compile-time
+/// fact and this server runs in the same process as the window — the same way the
+/// board's `__ORCH_PLATFORM__` is decided. The board's own value comes from
+/// `host::Host`, which has a third state (`none`, a browser tab) that this page
+/// never has: it is only ever served into the app's own window.
+fn page() -> String {
+    let chrome = if cfg!(target_os = "macos") { "overlay" } else { "custom" };
+    include_str!("firstrun.html").replace("__ORCH_CHROME__", chrome)
+}
+
 /// The window-side actions the bootstrap page cannot do over HTTP. Implemented by
 /// the desktop crate (Tauri) and stubbed in tests.
 pub trait BootstrapHost: Send + Sync + 'static {
@@ -575,7 +592,7 @@ impl Outcome {
 /// one it is served on, for the Host and Origin checks in [`guard`].
 pub fn router(host: Arc<dyn BootstrapHost>, port: u16) -> Router {
     Router::new()
-        .route("/", get(|| async { Html(include_str!("firstrun.html")) }))
+        .route("/", get(|| async { Html(page()) }))
         .route("/api/context", get(context_route))
         .route("/api/recent", get(|| async { Json(recent_projects()) }))
         .route("/api/validate", post(validate_route))
@@ -785,6 +802,36 @@ pub async fn serve(host: Arc<dyn BootstrapHost>) -> Result<Serving> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **One set of window buttons, not two.**
+    ///
+    /// macOS keeps its decorations (`TitleBarStyle::Overlay`), so the real traffic
+    /// lights are already there — and this page drew its own minimise, maximise
+    /// and close on top of them, both sets working. Reported as "what is this
+    /// toolbar on mac?!" (#11). The board's stylesheet has gated its controls
+    /// since the window existed; this page never did, because it draws its own
+    /// titlebar rather than sharing `app.css`.
+    ///
+    /// Asserted on the substitution rather than on the rendering, which is all a
+    /// test here can reach — but it is the half that was missing: the page had no
+    /// way to know.
+    #[test]
+    fn the_first_run_page_is_told_how_its_window_is_decorated() {
+        let html = page();
+        assert!(!html.contains("__ORCH_CHROME__"), "the placeholder survived");
+        let want = if cfg!(target_os = "macos") { "overlay" } else { "custom" };
+        assert!(
+            html.contains(&format!(r#"data-chrome="{want}""#)),
+            "the page was not told it is {want}"
+        );
+        // And the rule that spends it: the controls are off unless the window is
+        // frameless.
+        assert!(html.contains(".wctl{display:none}"), "the controls are not gated");
+        assert!(
+            html.contains(r#"body[data-chrome="custom"] .wctl{display:flex}"#),
+            "nothing turns them back on where they are needed"
+        );
+    }
 
     /// A unique dir per test, so the recents functions can be exercised through
     /// their dir-taking half with no global `ORCHD_CONFIG_DIR` — the tests run in

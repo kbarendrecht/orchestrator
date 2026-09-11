@@ -23,16 +23,29 @@
   [hidden]{display:none !important}
 
   /* frameless chrome */
+  /* The real traffic lights float over the top-left on macOS, so the title moves
+     out from under them. 86px matches the board's `.top-l`. */
+  body[data-chrome="overlay"] .titlebar{padding-left:86px}
   .titlebar{height:38px;display:flex;align-items:center;padding:0 6px 0 14px;
     background:var(--surface);border-bottom:1px solid var(--line-soft);
     position:fixed;top:0;left:0;right:0;z-index:5}
   .tb-title{font-family:var(--mono);font-size:11.5px;color:var(--faint);letter-spacing:.04em}
   .tb-drag{flex:1;align-self:stretch}
-  .wctl{display:flex}
+  /* **macOS draws its own**, and the window keeps its decorations there
+     (`TitleBarStyle::Overlay`), so drawing these too gives two sets of window
+     buttons — the native traffic lights at the left and ours at the right, both
+     working. Reported as "what is this toolbar on mac?!" (#11). The board's
+     stylesheet has gated this since the window existed; this page never did,
+     because it draws its titlebar itself rather than sharing `app.css`. */
+  .wctl{display:none}
+  body[data-chrome="custom"] .wctl{display:flex}
   .wctl button{width:38px;height:38px;display:flex;align-items:center;justify-content:center;color:var(--ghost)}
   .wctl button:hover{background:var(--raised);color:var(--text)}
   .wctl button.close:hover{background:#C9615A;color:#fff}
-  .rz{position:fixed;z-index:6}
+  /* Frameless only. macOS keeps its own resize border, and an invisible strip on
+     top of it fights the one the WM already draws. */
+  .rz{display:none;position:fixed;z-index:6}
+  body[data-chrome="custom"] .rz{display:block}
   .rz.n{top:0;left:8px;right:8px;height:5px;cursor:ns-resize}
   .rz.s{bottom:0;left:8px;right:8px;height:5px;cursor:ns-resize}
   .rz.e{top:8px;bottom:8px;right:0;width:5px;cursor:ew-resize}
@@ -155,7 +168,7 @@
   .starting .st{font-family:var(--mono);font-size:11.5px;color:var(--ghost)}
 </style>
 </head>
-<body>
+<body data-chrome="__ORCH_CHROME__">
   <div class="titlebar">
     <span class="tb-title">Orchestrator</span>
     <div class="tb-drag" id="drag"></div>
