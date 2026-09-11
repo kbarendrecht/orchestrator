@@ -180,8 +180,16 @@ mean *this* repo; if you do, name it.
   the daemon exits at once, because stdin is `/dev/null` and EOF is the second kill
   switch. `tests/host_and_child.rs` is the way to drive this pair; a terminal is not.
 - **The page is served by `host.rs`, not by the daemon.** `src/host.rs` owns
-  `GET /`, every asset route, the window commands and `/api/host/checkouts`; the
-  daemon keeps `/api/*`, `/ws/*` and `/hooks/*`. One process still serves both and
+  `GET /`, every asset route, the window commands, the checkout list and the four
+  commands that change it (`add`, `close`, `reopen`, `pick`); the daemon keeps
+  `/api/*`, `/ws/*` and `/hooks/*`.
+  **So a window command must go to the host**, and the page's `call` does not —
+  it aims at `core.LOCAL`, the checkout's own daemon, which answers `200 {}` to a
+  route it does not have. Every titlebar button shipped silently dead under the
+  app that way: minimise, close, drag, resize and restart all succeeded at
+  nothing. `core.HOST` and `callHost` are the seam, and
+  `tests/host_and_child.rs` asserts the swallow so the reason cannot be tidied
+  away. One process still serves both and
   they share a port and a token, so nothing behaves differently yet — but the two
   routers have their own guards and their own state, because they answer to
   different owners: a daemon manages one checkout, and there is one page over all
@@ -882,6 +890,20 @@ mean *this* repo; if you do, name it.
   `rerequest()` — a bot cannot be a requested reviewer. The resolve run itself is
   still unit-tested only and has never made a real round trip, so do not read a
   green suite as more than that.
+- **The host's own file is `host.json`, and a hosted child must not write the
+  host's files.** It carries the open checkout list — so the app opens what was
+  open — and `checkout_retention_days`. A child's `ORCHD_CONFIG_DIR` is its *own*
+  checkout directory, which is the trap: `recent.json` written by a child leaves
+  one single-entry list per checkout and none of them the list the add screen
+  reads, so `crate::start` writes it only when `host_origin` is absent and
+  `Host::open_checkout` is the other writer.
+  The sweep over `checkouts/` may delete **only what a daemon rebuilds** — the
+  skills plugin copy, `hooks.json`, `window.json`. `transcripts/` is the only
+  remaining copy of a conversation once a worktree is gone and a session record
+  survives because that copy does, so taking the directory would undo what `close`
+  does on purpose. Its safety cannot be borrowed from `worktree::reap_old`, which
+  is safe because it routes through `teardown`'s six checks; a directory of JSON
+  has no such gate.
 - **`ORCHD_CONFIG_DIR` relocates every piece of durable state**, which is what
   makes a fixture daemon safe: config, `sessions.json`, `automation.json`,
   `hooks.json`, `window.json` and the instance lock all follow it. Overriding

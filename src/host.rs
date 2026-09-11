@@ -10,12 +10,12 @@
 //! Nothing here knows what a session is, and that is the boundary to keep. A host
 //! that learned the session model would be the conflation coming back.
 //!
-//! **What this module is today**: the routes, the window handle and a checkout
-//! list with one entry, mounted into the daemon's own router by [`crate::start`].
-//! One process, one port, one token — so nothing behaves differently yet, and the
-//! routes now have one owner instead of sitting among the session API. What comes
-//! next is the same module served by the app for N child daemons, at which point
-//! each child gets its own port and mints its own token and this list grows.
+//! **What this module owns**: the page and its assets, the window handle, the set
+//! of open checkouts, and the four commands that change that set — add, close,
+//! reopen and the folder dialog. Each open checkout is a child `orchd` on its own
+//! port with its own token, and [`HostFile`] is what makes the set survive a
+//! launch. A solo `orchd` mounts this into its own router and is its own host,
+//! which is why nothing here assumes an app.
 //!
 //! Two things the eventual shape needs that are visible here already. The page
 //! carries the checkout list rather than fetching it, because a page cannot ask
