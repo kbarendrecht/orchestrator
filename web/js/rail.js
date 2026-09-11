@@ -199,6 +199,31 @@ async function closeCheckout(c) {
   }
 }
 
+/** ` in alpha`, for a message read away from the rail — or nothing at all when
+ *  there is only one checkout.
+ *
+ *  **Where identity is actually missing.** Every pane sits on one row beside the
+ *  identity chip, which names the checkout you are in; a modal does not, and a
+ *  toast outlives the glance that raised it. `main` and `invoice` name a workspace
+ *  in *every* checkout, and a session name is no more unique — so a confirmation
+ *  that says "Swap branches between main and invoice?" says nothing about which
+ *  pair.
+ *
+ *  It became reachable with the rail: a row in a checkout you are not looking at
+ *  is actionable now, and `callFor` sends the action to that row's daemon. Before
+ *  that there was one checkout and nothing to confuse.
+ *
+ *  Empty on a single-checkout install, which is every install today — naming the
+ *  only checkout there is would be noise on every dialog.
+ *
+ *  @param {any} s a session, whose checkout is derived the way everything else is
+ */
+function inCheckout(s) {
+  if (CHECKOUTS.length < 2) return '';
+  const c = checkoutOf(s.id);
+  return c ? ` in ${c.name}` : '';
+}
+
 /** The strip naming one checkout, above its groups.
  *
  *  Drawn only when there is more than one, so a single-checkout install is
@@ -993,7 +1018,7 @@ function mainHoldsWork(main, state = snap) {
  *  it. */
 async function moveOutOfMain(s) {
   if (!await confirmBox(
-    'Move this session out of main?\n\n'
+    `Move this session out of main${inCheckout(s)}?\n\n`
     + 'Its branch gets a worktree of its own and main goes back to its base branch \u2014 '
     + 'or, if main is already on base, the work gets a branch cut for it and main stays put. '
     + 'Uncommitted changes travel; untracked files stay in main. '
@@ -1048,19 +1073,19 @@ async function swapWithMain(wsId, s) {
   const state = snapshotFor(s.id);
   const holds = mainHoldsWork(mainWorkspace(state), state);
   if (!await confirmBox(holds
-    ? `Swap branches between main and ${wsId}?\n\n`
+    ? `Swap branches between main and ${wsId}${inCheckout(s)}?\n\n`
       + `main takes this worktree's branch, and this worktree takes main's. `
       + `Uncommitted changes travel with their branch. Each conversation follows `
       + `its branch — this one moves into main, and main's moves here — keeping its `
       + `history and its place in the rail.`
-    : `Move this worktree's branch to main?\n\n`
+    : `Move this worktree's branch to main${inCheckout(s)}?\n\n`
       + `main has nothing of its own checked out, so its base branch comes back `
       + `here in exchange. Uncommitted changes travel with the branch, and this `
       + `conversation follows it into main, keeping its history and its place in `
       + `the rail.`
   )) return;
   swapInFlight = true;
-  toast(`swapping ${wsId} with main…`);
+  toast(`swapping ${wsId} with main${inCheckout(s)}…`);
   try {
     const r = await callFor(s.id, `/api/workspace/${encodeURIComponent(wsId)}/swap-main`);
     // A relocated session keeps its id, so the dead terminal is still in `terms`
@@ -1071,7 +1096,7 @@ async function swapWithMain(wsId, s) {
     }
     // Land in main, where the branch now is — the whole point of pressing this.
     if (r.select) setPendingSelect(r.select);
-    toast(`main is on ${r.main}; ${wsId} is on ${r.worktree}`);
+    toast(`main is on ${r.main}; ${wsId} is on ${r.worktree}${inCheckout(s)}`);
     // The branches moved even if a conversation could not follow, so these are
     // second lines rather than errors over the top of a success.
     for (const [dir, where] of [[r.into_main, 'into main'], [r.into_worktree, `into ${wsId}`]]) {
@@ -1184,7 +1209,7 @@ function renameSession(s) {
 async function deleteSession(s) {
   const name = railName(s, { id: s.workspace });
   const ending = s.alive ? 'It is still running, so this ends it first. ' : '';
-  if (!await confirmBox(`Delete "${name}"?\n\n${ending}The row and orchd's copy of the `
+  if (!await confirmBox(`Delete "${name}"${inCheckout(s)}?\n\n${ending}The row and orchd's copy of the `
     + "transcript go for good. Claude Code's own transcript is left where it is.",
   { ok: 'Delete' })) return;
   callFor(s.id, `/api/session/${s.id}/delete`)
@@ -1236,7 +1261,11 @@ function renderWaitbar() {
      set cannot change while the set does not. Without this the `continue` button
      was rebuilt under the pointer several times a second and its border strobed
      as `:hover` was re-targeted on each one. */
-  if (unchanged(barDrawn, [waiting.map((s) => s.id), ready.map((s) => s.id)])) return;
+  /* The active checkout is an input in its own right: the destination below is
+     named only when it is *not* where you are, so walking into that checkout has
+     to redraw the bar even though the waiting set did not move. */
+  if (unchanged(barDrawn, [waiting.map((s) => s.id), ready.map((s) => s.id),
+    activeCheckout().path])) return;
   if (!waiting.length && ready.length < 2) {
     bar.className = 'waitbar';
     bar.replaceChildren();
@@ -1258,7 +1287,18 @@ function renderWaitbar() {
        snapshot, the duration changes every second. */
     bar.appendChild(el('span', null, `${waiting.length} need you · longest `));
     bar.appendChild(clock(null, longest.waiting_ms ?? 0));
-    bar.title = `Go to the one that has needed you longest · ${MOD_LABEL} Space`;
+    /* **Where it will take you, when that is not where you are.** The bar counts
+       across every checkout, so pressing it can move you out of the one you are
+       looking at — and the rail scrolling to a row under a different header is the
+       only other sign. Named only when it is somewhere else, because the usual
+       case is the checkout in front of you and saying so every time is noise. */
+    const away = CHECKOUTS.length > 1 && checkoutOf(longest.id)?.path !== activeCheckout().path
+      ? checkoutOf(longest.id)?.name
+      : null;
+    if (away) bar.appendChild(el('span', 'waitwhere', ` in ${away}`));
+    bar.title = away
+      ? `Go to the one that has needed you longest, in ${away} · ${MOD_LABEL} Space`
+      : `Go to the one that has needed you longest · ${MOD_LABEL} Space`;
     bar.onclick = () => setSelected(longest.id);
   } else {
     /* Nobody is asking for you; a restart has just put several agents back at an

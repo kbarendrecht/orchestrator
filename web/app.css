@@ -289,6 +289,9 @@ button.ctx-btn:hover{color:var(--text)}
 /* The way a second checkout is ever opened, at the foot of the list where "and
    another one" belongs. `.railbtn` gives it the rail's own row shape; this only
    makes it read as an action rather than as an empty state. */
+/* Where the waitbar will take you, when that is another checkout. Dimmer than the
+   count beside it: it is the qualifier, not the news. */
+.waitwhere{color:var(--faint-solid)}
 .addco{width:100%;text-align:left;color:var(--faint-solid);cursor:pointer;background:none;border:0}
 .addco:hover{color:var(--fg)}
 

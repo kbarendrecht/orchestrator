@@ -988,9 +988,15 @@ plus the app.
 
 ### What is left
 
-- **Per-checkout identity outside the rail.** The context bar names the checkout
-  and the repository; the diff header and the drawer still do not. Worth doing when
-  two checkouts sharing a workspace name actually confuses somebody.
+- ~~**Per-checkout identity outside the rail.**~~ **Done, and narrower than the
+  item said.** The diff header and the drawer were the named suspects and neither
+  needed anything: every pane sits on one row beside the identity chip, and the
+  diff overlay spans rail-to-files, so the chip stays visible with it open. What
+  genuinely lacked identity was everything read *away* from that row — the three
+  destructive confirmations (swap, move out of main, delete), the toasts that
+  outlive the glance that raised them, and the waitbar, which counts across
+  checkouts and can move you out of the one you are in. All say which checkout now,
+  and only when there is more than one.
 - **The rename in Stage 4 item 10 was a no-op.** The SPA never used `repo` to mean
   a checkout — only `state::Repos`, the GitHub owner/name pair, which keeps the
   word. Checked before writing anything.
