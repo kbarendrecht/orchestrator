@@ -90,17 +90,87 @@ fn declares_mcp_server(main: &Path, name: &str) -> Option<bool> {
 ///
 /// Failure to run answers `true`. A preflight that cries wolf on a machine it cannot
 /// inspect is worse than one that says nothing — the same rule [`on_path`] follows.
-fn is_work_tree(dir: &Path) -> bool {
-    let Ok(out) = std::process::Command::new("git")
+/// What asking git about a directory answered.
+///
+/// **"git said no" and "git could not run" are different questions**, and this
+/// used to return `bool` for both. A failing `git` therefore read as "that
+/// directory is not a work tree", which is a wrong conclusion drawn from a true
+/// observation — the shape this whole module exists to remove. It is not
+/// hypothetical: a Mac running the app under Rosetta has a `git` that cannot load
+/// `libxcrun`, and every call fails with an architecture error the user then does
+/// not see, because the daemon has already translated it into a sentence about
+/// their checkout.
+enum WorkTree {
+    Yes,
+    No,
+    /// git ran and failed, or could not be run at all. Carries what it said,
+    /// because that text is the only thing that names the real cause.
+    Unusable(String),
+}
+
+fn is_work_tree(dir: &Path) -> WorkTree {
+    let out = std::process::Command::new("git")
         .args(["-C", &dir.to_string_lossy(), "rev-parse", "--is-inside-work-tree"])
-        .output()
-    else {
-        return true;
+        .output();
+    let out = match out {
+        Ok(out) => out,
+        Err(e) => return WorkTree::Unusable(format!("git could not be run: {e}")),
     };
     if !out.status.success() {
-        return false;
+        let said = String::from_utf8_lossy(&out.stderr);
+        let said = said.trim();
+        /* git's own refusal, which really is about the directory. Anything else —
+           a loader error, a missing library, a translated architecture — is about
+           the *machine*, and saying "not a work tree" about it sends somebody to
+           look at their repository. */
+        return if said.contains("not a git repository") {
+            WorkTree::No
+        } else {
+            WorkTree::Unusable(said.lines().next().unwrap_or("git failed").to_string())
+        };
     }
-    String::from_utf8_lossy(&out.stdout).trim() != "false"
+    if String::from_utf8_lossy(&out.stdout).trim() == "false" {
+        WorkTree::No
+    } else {
+        WorkTree::Yes
+    }
+}
+
+/// Whether this process is being translated — Rosetta, on Apple Silicon.
+///
+/// **The cause of a whole class of failures that name something else.** Every
+/// child inherits the preference, so a translated app runs a translated `git`,
+/// which calls `xcrun`, which cannot load an arm64-only `libxcrun.dylib`. The
+/// report that brought this in read `unable to load libxcrun … missing compatible
+/// architecture (have 'arm64,arm64e', need 'x86_64')`, and the app's own
+/// conclusion was that the checkout was not a git work tree.
+///
+/// **`sysctl` the command, not `sysctlbyname` the call**, which is the one
+/// decision here worth writing down. The FFI version is one call and needs
+/// `unsafe`; this module is a growing list of *checks*, and opting it out of the
+/// workspace's `unsafe_code` deny would hand that allowance to every check added
+/// after this one. Three modules opt out today and each names the calls it makes.
+/// One exec on a start that already makes eleven, on macOS only, is the cheaper
+/// trade.
+///
+/// `sysctl.proc_translated` does not exist on an Intel Mac, where `sysctl` exits
+/// non-zero — read as "not translated", which is correct there.
+///
+/// **A warning, not a refusal**, like everything else here: the app itself runs,
+/// and somebody whose git works anyway should not be stopped.
+#[cfg(target_os = "macos")]
+fn translated() -> bool {
+    std::process::Command::new("sysctl")
+        .args(["-n", "sysctl.proc_translated"])
+        .output()
+        .is_ok_and(|out| {
+            out.status.success() && String::from_utf8_lossy(&out.stdout).trim() == "1"
+        })
+}
+
+#[cfg(not(target_os = "macos"))]
+fn translated() -> bool {
+    false
 }
 
 /// Whether Claude Code has been trusted in this directory.
@@ -174,11 +244,33 @@ pub fn check(cfg: &Config, tracker_server: Option<&str>) -> Vec<Warning> {
     // A checkout that is not a work tree measures nothing, and says so only in a
     // reconcile warning per poll. Seen for real: a `git filter-repo` run left
     // `core.bare = true` behind, and the panes went stale with no error in the app.
-    if !is_work_tree(&cfg.main_checkout) {
-        out.push(Warning {
+    match is_work_tree(&cfg.main_checkout) {
+        WorkTree::Yes => {}
+        WorkTree::No => out.push(Warning {
             what: format!("{} is not a git work tree", cfg.main_checkout.display()),
             cost: "the changed-file pane and the divergence strip stay empty, and every \
                    poll fails"
+                .into(),
+        }),
+        // Not about the checkout at all. Say what git said, because that sentence
+        // names the real cause and nothing else here can.
+        WorkTree::Unusable(said) => out.push(Warning {
+            what: format!("git cannot run here: {said}"),
+            cost: "nothing that reads the repository works — every pane stays empty and \
+                   every poll fails"
+                .into(),
+        }),
+    }
+
+    /* Named before the git warning above would be read, because it *explains* it.
+       A translated process runs a translated `git`, and on Apple Silicon that git
+       cannot load `libxcrun`. */
+    if translated() {
+        out.push(Warning {
+            what: "this app is running under Rosetta on an Apple Silicon Mac".into(),
+            cost: "every process it starts inherits x86_64, so `git` fails to load \
+                   `libxcrun` and nothing that reads the repository works; open it \
+                   natively (Finder ▸ Get Info ▸ uncheck \"Open using Rosetta\")"
                 .into(),
         });
     }
@@ -235,6 +327,7 @@ mod tests {
         crate::testutil::scratch(&format!("pre-{name}"))
     }
 
+
     /// The three shapes a checkout can be in, told apart.
     ///
     /// `core.bare` is the one worth a test: the repository is real, `.git` is there
@@ -256,14 +349,23 @@ mod tests {
                 .expect("git");
         };
         git(&["init", "-q"]);
-        assert!(is_work_tree(&repo), "a fresh checkout is a work tree");
+        assert!(matches!(is_work_tree(&repo), WorkTree::Yes), "a fresh checkout is a work tree");
 
         // Real repository, real `.git`, and no work tree.
         git(&["config", "core.bare", "true"]);
-        assert!(!is_work_tree(&repo), "core.bare is not a work tree");
+        assert!(matches!(is_work_tree(&repo), WorkTree::No), "core.bare is not a work tree");
 
-        // Not a repository at all, which is what picking the wrong folder gives you.
-        assert!(!is_work_tree(&plain));
+        /* Not a repository at all, which is what picking the wrong folder gives
+           you — and it must stay `No` rather than joining the arm below, because
+           only *this* is a fact about the checkout.
+
+           **The third answer is the point.** This returned `bool`, so a `git` that
+           could not run at all read as "that is not a work tree": a wrong
+           conclusion drawn from a true observation, which is the failure this
+           module exists to prevent. Reported from a Mac running under Rosetta,
+           where every git call died loading `libxcrun` and the app answered with a
+           sentence about the user's repository. */
+        assert!(matches!(is_work_tree(&plain), WorkTree::No));
 
         let _ = std::fs::remove_dir_all(&root);
     }
