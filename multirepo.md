@@ -944,8 +944,8 @@ The SPA work, on top of a host that already reports the truth.
 | Stage 0 | tests + pending flow 25 + CI clippy | A boundary you can move safely | **done** |
 | Stage 1 | the portability fix, the stale TODO | Less to move | **done** |
 | Stage 2 | host + one child | One hosting model; the lock keyed right | **done** |
-| Stage 3 | N children | The host API; the last three safety findings closed | **done**, less the switcher |
-| Stage 4 | the page | The product | next |
+| Stage 3 | N children | The host API; the last three safety findings closed | **done** |
+| Stage 4 | the page | The product | **done** |
 
 Stages 0 to 2 change nothing a single-checkout user can see. That is deliberate:
 the refactor is justified as required for planned work, and it is paid for before
@@ -953,62 +953,74 @@ the feature exists so the feature arrives small.
 
 ## Where the work stands, for a session picking this up
 
-Stages 0 to 3 are **on `main`**. Every gate is green: 526 lib tests, 8 desktop, 4
-integration binaries, `cargo clippy --workspace --all-targets` clean,
-`mise run check-web` green, `mise run e2e` 24 passed, 0 failed.
+**Stages 0 to 4 are on `main`, and the feature is in the product.** Several
+checkouts show at once in one rail, each with its own daemon; `+ checkout` opens
+another and a checkout header's menu closes it. Every gate is green: 526 lib
+tests, 8 desktop, 4 integration binaries, `cargo clippy --workspace
+--all-targets` clean, `mise run check-web` green, `mise run e2e` 24 passed (see
+`TODO.md` for the swap flows' pre-existing flakiness).
 
-**One thing is unverified and needs a person at a screen**: the Tauri window. The
-app serves the page itself and spawns a child daemon per checkout, and everything
-in that arrangement *except the window and the webview* is driven headlessly by
-the integration tests. Run `cargo run -p orchestrator-desktop` once before
-building on Stage 4, and expect one process per checkout plus the app.
+**One thing is unverified and needs a person at a screen**: the Tauri window.
+Everything else was driven headlessly — the integration tests for the host and
+child, and a real Chrome against `orchd --host` for the page. Run
+`cargo run -p orchestrator-desktop` once, and expect one process per checkout
+plus the app.
 
 ### What exists now, and where
 
 - **`src/host.rs`** — the page, the assets, the window commands, the checkout list
-  and the checkout commands. `add_checkout` refuses the three; `close_checkout` and
-  `reopen_checkout` are symmetric down to the last one; `open_remembered` opens
-  them concurrently; `sweep_checkout_dirs` reaps derived state only.
-  `GET /api/host/recent` and `POST /api/host/pick` are the two ways in for an add.
-- **`host.json`** — `checkouts` and `checkout_retention_days`, in the *host's*
-  config dir. No file falls back to `config.json`'s `main_checkout`, which is every
-  install that predates it.
-- **`src/child.rs`** — the `ready <port> <token> <repo>` line, the one observer, the
+  and the four commands that change it (`add`, `close`, `reopen`, `pick`), plus
+  `/ws/host` which pushes the list. `sweep_checkout_dirs` reaps derived state only.
+- **`host.json`** — `checkouts` and `checkout_retention_days`, in the host's own
+  config dir. No file falls back to `config.json`'s `main_checkout`.
+- **`src/child.rs`** — `ready <port> <token> <repo>`, the one observer, the
   `stopping` flag, `--no-resume`.
-- **`web/js/core.js`** — `LOCAL` (a checkout's daemon) and `HOST` (whatever served
-  the page). `/api/window/*` and `/api/host/*` go through `callHost`.
+- **`orchd --host <checkout>…`** — a host in a terminal. The app is the only other
+  host and it needs a window, so this is the one way to drive the multi-checkout
+  page without a screen, which is what `mise run shot` exists for.
+- **`web/js/core.js`** — `CHECKOUTS` (a `let`, reconciled by `setCheckouts`),
+  `activeCheckout()` derived from the selection, `snapshotOf`/`snapshotFor`,
+  `callFor`, `everySession`, `enterCheckout`, `termKey`, `wsKey`, `bandOf`.
+- **`web/js/rail.js`** — one block per checkout, each from its own snapshot.
 - **`tests/host_and_child.rs`**, **`host_checkouts.rs`**, **`host_file.rs`**,
   **`host_sweep.rs`** — one binary per fixture, because `ORCHD_CONFIG_DIR` is
   process-global and cargo runs a binary's tests in parallel.
 
-### What Stage 3 left for Stage 4, and why
+### What is left
 
-**The header switcher is still there.** The plan put its deletion in Stage 3 on the
-reasoning that `add` and `close` mean "switch" between them — which is true of the
-*API* and not yet of the page. `web/app.js`'s `reposwitch` is today the only way to
-change checkout, and deleting it before the rail can add and close would take a
-working capability away with nothing in its place. It goes in Stage 4, after item 1
-gives the page its own `+ checkout` and `close`. `WindowCmd::Switcher` and
-`start_switcher` go with it then.
+- **Per-checkout identity outside the rail.** The context bar names the checkout
+  and the repository; the diff header and the drawer still do not. Worth doing when
+  two checkouts sharing a workspace name actually confuses somebody.
+- **The rename in Stage 4 item 10 was a no-op.** The SPA never used `repo` to mean
+  a checkout — only `state::Repos`, the GitHub owner/name pair, which keeps the
+  word. Checked before writing anything.
 
-### Three things learned while building Stage 3, that the plan did not know
+### Five things learned building stages 3 and 4, that the plan did not know
 
-- **The restart bound could never bite.** `open_checkout` cleared the retry on every
-  successful start, and every start reaches a ready line — so a daemon that died on
-  boot was restarted forever, and each restart runs `auto_resume`. It is cleared by
-  a long life instead (`HEALTHY_UPTIME`), which is what the plan's two sentences
-  about it actually mean together.
-- **Every titlebar button was silently dead under the app**, and had been since
-  Stage 2. `call` aims at `LOCAL`, the page's window commands went to the child
-  daemon, and a daemon answers `200 {}` to an unknown route — so minimise, close,
-  drag, resize and restart all succeeded at nothing. This is exactly the trap
-  `CLAUDE.md` names, landed. `core.HOST` is the fix, and
-  `tests/host_and_child.rs` now asserts the swallow so the seam cannot be tidied
-  away.
-- **A hosted child must not write `recent.json`.** Its `ORCHD_CONFIG_DIR` is its own
-  checkout directory, so the daemon's own `record_recent` left one single-entry list
-  per checkout and none of them the list the add screen reads. Whoever is the host
-  writes it — `Host::open_checkout`, and `crate::start` only when nothing hosts it.
+- **Every titlebar button was silently dead under the app**, since Stage 2. `call`
+  aims at the checkout's daemon, and a daemon answers `200 {}` to a route it does
+  not have — so minimise, close, drag, resize and restart all succeeded at nothing.
+  `core.HOST` is the fix, and `tests/host_and_child.rs` asserts the swallow so the
+  seam cannot be tidied away.
+- **A page served by a host is cross-origin to every child daemon, and nothing
+  answered the preflight.** Every call carries `x-orch-token`, which makes it a
+  non-simple request; the browser asks with `OPTIONS` and refuses to send the real
+  one unless the answer names its origin. The board drew from its websockets, which
+  CORS does not cover, and could then do nothing. This is the half of the
+  "one extra accepted origin" decision that only the guard had.
+- **The restart bound could never bite.** `open_checkout` cleared the retry on
+  every successful start, and every start reaches a ready line — so a daemon that
+  died on boot was restarted forever, each restart running `auto_resume`. A long
+  life clears it now (`HEALTHY_UPTIME`), which is what the plan's two sentences
+  about it mean together.
+- **A hosted child must not write the host's files.** Its `ORCHD_CONFIG_DIR` is its
+  own checkout directory, so `recent.json` written by a child leaves one
+  single-entry list per checkout and none of them the one the add screen reads.
+- **"Activate a checkout" has to mean "select something in it"**, because the
+  checkout is derived from the selection — and a checkout with *nothing* in it
+  needs one remembered path to hold you there, or the derivation puts you back in
+  the first one. That fallback is the only state beside the selection, and a
+  selection always outranks it.
 
 ### Three things learned while building Stage 2, that the plan did not know
 

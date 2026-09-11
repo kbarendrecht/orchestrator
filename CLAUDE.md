@@ -282,6 +282,36 @@ mean *this* repo; if you do, name it.
   then refuses to execute), and modules come from `include_str!` like everything
   else, so **each new module needs an entry in the route's match and a rebuild** —
   adding a JS file stops being a JS-only change.
+- **The page holds one snapshot and one socket per checkout, and `snap` is the
+  active one.** `core.snapshotOf(path)` is any checkout's; `snap` is whichever
+  checkout you are in, and **the checkout is derived from the selection** —
+  `activeCheckout()`, never written. A second variable saying which checkout you
+  are in is a second source of truth, and the one that goes stale is whichever the
+  next reader forgets. The one exception is a remembered path used *only* when
+  nothing is selected, so activating an empty checkout does not put you back in the
+  first one.
+  Three consequences. **`call` and `get` aim at the active checkout**, so anything
+  acting on a row in another one uses `callFor(sessionId, …)`, which derives the
+  target the same way. **Every per-target key carries its checkout** (`termKey`,
+  `wsKey`): `main` names a workspace in every daemon and `proc:main:ng-watch` a
+  process, so an unqualified map hands you the other checkout's live terminal — and
+  `orch.procOrder` is *persisted* under that key, which no amount of disposing
+  terminals undoes. And **attention is global**: the waitbar, `MOD+Space`,
+  `Ctrl+Tab` and the screen-reader announcement read every checkout, because a bar
+  saying "2 need you" while its own chord answers "nothing waiting on you" is the
+  two disagreeing about one fact.
+- **A page served by a host is cross-origin to every child daemon.** Every call
+  carries `x-orch-token`, which makes it a non-simple request, so the browser sends
+  `OPTIONS` first and drops any answer that does not name its origin.
+  `api::guard` answers that for the one origin `host_origin` names — never `*`,
+  which would let any page in the browser drive the daemon. This shipped missing
+  and the symptom was a board that drew from its websockets (CORS does not cover
+  those) and could then do nothing at all.
+- **`orchd --host <checkout>…` is how the multi-checkout page gets driven without a
+  screen.** The app is the only other host and it needs a window. It is a *real*
+  host: each checkout gets its state directory under `ORCHD_CONFIG_DIR` and lands in
+  `recent.json`, so point that variable at a scratch dir or it writes into your own
+  config. `mise run shot` then works against it.
 - **The SPA is a module graph, not a file.** `web/js/core.js` is the shared layer
   — the fetch wrappers, the DOM shorthands, the snapshot, the selection, the UI
   scale, and the vocabulary every pane needs to describe a session (`stateLabel`,
