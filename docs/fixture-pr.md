@@ -11,7 +11,7 @@ mise run fixture -- --destroy
 
 ## Why it has to exist
 
-Two rules in `src/forge/github.rs` pull in opposite directions, and one account
+Two rules in `crates/orchd-repo/src/forge/github.rs` pull in opposite directions, and one account
 cannot satisfy both:
 
 - `query_for` polls `author:@me`, so the PR has to be **yours**.

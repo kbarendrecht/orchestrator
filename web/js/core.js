@@ -95,7 +95,7 @@ function adopt() {
   snapAt = Date.now();
 }
 
-export const sinceSnap = (/** @type {number | null | undefined} */ ms) => (ms == null ? null : ms + (Date.now() - snapAt));
+const sinceSnap = (/** @type {number | null | undefined} */ ms) => (ms == null ? null : ms + (Date.now() - snapAt));
 
 /** The PR whose head ref this workspace holds, if any. */
 export function prForWorkspace(/** @type {string | null} */ wsId) {
@@ -836,7 +836,7 @@ export const snapshotFor = (id) => snapshotOf((checkoutOf(id) ?? activeCheckout(
 export const call = (/** @type {string} */ path, /** @type {any} */ body) => callOn(activeCheckout(), path, body);
 export const get = (/** @type {string} */ path) => getOn(activeCheckout(), path);
 
-export function duration(/** @type {number | null | undefined} */ ms) {
+function duration(/** @type {number | null | undefined} */ ms) {
   if (ms == null) return '';
   const s = Math.floor(ms / 1000);
   if (s < 60) return `${s}s`;
@@ -1028,7 +1028,7 @@ export function setZoom(/** @type {number} */ z) {
  * pair that cannot be read, writing the custom properties, and telling the
  * terminals. */
 
-export const THEME = { key: 'orch.theme' };
+const THEME = { key: 'orch.theme' };
 
 /** The vendored families, which are the only ones certain to be there.
  *
@@ -1281,7 +1281,7 @@ export function fontStack(/** @type {Role} */ role) {
  *  semantic colours are set here too — with their hue kept and their luminance
  *  lifted only where the ground would swallow them; `Palette.readable` has why.
  */
-export function applyTheme() {
+function applyTheme() {
   const root = document.documentElement;
   for (const [name, value] of Object.entries(Palette.tokens(theme, { opacity: theme.opacity }))) {
     root.style.setProperty(name, value);
@@ -1855,7 +1855,7 @@ export function prState(/** @type {import('../snapshot').PrView} */ p) {
  *  A question or a permission prompt is still about this session, so those keep
  *  the amber and their own words. */
 /** The PR a session's work belongs to, whether by branch or by its pass. */
-export function prOf(/** @type {import('../snapshot').SessionView} */ s) {
+function prOf(/** @type {import('../snapshot').SessionView} */ s) {
   if (!s) return null;
   if (s.pass) {
     return (snap.prs || []).find((p) => p.number === s.pass?.pr) || null;

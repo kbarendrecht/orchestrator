@@ -52,7 +52,14 @@ use crate::config::Config;
 /// file and lock *that* while this one still holds the old inode.
 #[derive(Debug)]
 pub struct Lock {
-    #[allow(dead_code)] // Kept for the message and for tests; the fd is the lock.
+    /// Never read, and kept anyway: it is what a `Debug` of this guard has to say
+    /// to be worth printing, since the descriptor beside it prints as a number.
+    ///
+    /// `expect` rather than `allow`, per the rule the workspace lints follow — it
+    /// fails the build the day something does read it, which is the day this
+    /// attribute should go. The comment here used to claim the refusal message and
+    /// the tests read it; both build their own path and neither ever did.
+    #[expect(dead_code, reason = "carried for Debug; see above")]
     path: PathBuf,
     /// Held open for the life of the daemon. Closing it releases the lock, so
     /// this field is load-bearing even though nothing reads it.

@@ -31,18 +31,16 @@ function patchStats(/** @type {string | null} */ diff) {
   return out;
 }
 
-/** `will write renovate.json5 +3 -1`, every path, derived rather than
- *  hand-written — there is no deny-list, so showing what will be written is
- *  what stands in for one. */
-function willWriteLabel(/** @type {string | null} */ diff, /** @type {string | undefined} */ verb) {
-  return fileListLabel(patchStats(diff), verb || 'will write');
-}
-
 /** `<verb> renovate.json5 +3 −1`, every path.
  *
  *  Shared by the card (from a proposed patch) and the manual phase (from
  *  `git diff`), because in both places the point is the same: the list is derived,
- *  so it cannot be wrong about what is being written. */
+ *  so it cannot be wrong about what is being written. **There is no deny-list**,
+ *  so showing what will be written is what stands in for one — which is why this
+ *  is built from the patch rather than written by hand beside it.
+ *
+ *  A `willWriteLabel(diff, verb)` wrapper sat here defaulting the verb to
+ *  `will write`. Nothing ever called it, so the default was never a default. */
 function fileListLabel(/** @type {{ path: string, added: number, deleted: number }[]} */ files, /** @type {string} */ verb) {
   const row = el('div', 'willwrite');
   row.appendChild(document.createTextNode(verb));
@@ -142,4 +140,4 @@ function hunkEl(/** @type {string} */ text, /** @type {boolean} */ hitLast, /** 
   return box;
 }
 
-export { patchStats, hunkEl, fileListLabel, willWriteLabel };
+export { patchStats, hunkEl, fileListLabel };

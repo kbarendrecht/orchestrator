@@ -78,7 +78,7 @@ this file, which churned it from every build; that feature is gone.
   handles worst: two comments on one function usually want *one* coherent change,
   and splitting it leaves the first commit incoherent on its own.
 
-  Force-with-lease needs no new decision — `src/guard.rs` already permits no other
+  Force-with-lease needs no new decision — `crates/orchd-base/src/guard.rs` already permits no other
   form, and refuses a push to the base branch.
 
   **Three consequences to settle before building it.**
@@ -148,7 +148,7 @@ this file, which churned it from every build; that feature is gone.
   `worktree-create`/`worktree-link` hooks), and an interactive session. This is
   the `/resolve` spawn machinery pointed at a *new* branch off a PR head rather
   than the PR's own branch. The stack is then detected for free: `link_stacks`
-  (`src/forge/github.rs`) already matches `child.base_ref == parent.head_ref`. Second,
+  (`crates/orchd-repo/src/forge/github.rs`) already matches `child.base_ref == parent.head_ref`. Second,
   a semi-automation in the spirit of `fix-pr` — a `/restack` (or `sync`) skill
   that keeps a stack in sync: when a base PR's head moves (amend/rebase), rebase
   the children onto it bottom-up and re-push, within the existing push guards

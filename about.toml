@@ -9,10 +9,12 @@
 # The generated file is `THIRD-PARTY-RUST.md`, regenerated and diffed in CI the
 # way `web/snapshot.d.ts` is.
 #
-# Generated with `--workspace`, which matters since the split: the crate in the
-# current directory is `orchd`, which produces no binary any more, so without the
-# flag the notices would miss everything `orchd-serve` and the desktop shell pull
-# in — and those are the binaries the obligation is about.
+# Generated with `--workspace`, which matters since the split: the current
+# directory is the workspace root and holds no crate at all, so without the flag
+# there is nothing for cargo-about to root at — and rooting at any one member
+# would miss everything `orchd-serve` and the desktop shell pull in, which are
+# the binaries the obligation is about. It rooted at `orchd` before the split,
+# and that is how ~130 desktop dependencies went unlisted.
 accepted = [
     "Apache-2.0",
     "Apache-2.0 WITH LLVM-exception",

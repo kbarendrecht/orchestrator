@@ -74,7 +74,7 @@ re-litigates them from the doctrine alone:
 - **Pixel screenshots** — see `mise run page-check`: the churn lands on the
   commits that are *supposed* to change the page, and the baselines would be
   Chrome's while the app ships WebKitGTK and WKWebView.
-- **`localStorage` only in `core.js`** — 26 uses across four modules, and each is
+- **`localStorage` only in `core.js`** — 28 uses across five modules, and each is
   that pane's own remembered preference. Centralising them buys one file to read
   and costs a layer of indirection on every setting. The hazard CLAUDE.md
   actually names — a key that does not carry its checkout — is not something a
@@ -97,7 +97,7 @@ what it costs.
 
 ```
 cargo check --workspace             # the daemon and orchd-base
-cargo test --workspace              # 575 tests, all in-tree
+cargo test --workspace              # 579 tests, all in-tree
 cargo fmt --all                     # the formatter, gated in CI and the hook
 cargo clippy --workspace --all-targets   # what CI lints with, and it denies warnings
 mise run check-web                  # type-check and lint the SPA + enforce its module graph
@@ -209,7 +209,7 @@ mean *this* repo; if you do, name it.
 
 ## Things that will bite you
 
-- **A checkout's daemon is a child process, and `src/child.rs` is the protocol.**
+- **A checkout's daemon is a child process, and `crates/orchd-base/src/child.rs` is the protocol.**
   `child::launch` runs `orchd --main <checkout> --host-origin <origin> --announce`,
   reads one line — `ready <port> <token>` — and arms **one** observer thread that
   owns `wait()`. Four things about it are load-bearing.
@@ -292,7 +292,7 @@ mean *this* repo; if you do, name it.
   **`--announce` needs a live stdin pipe.** Run that flag by hand from a shell and
   the daemon exits at once, because stdin is `/dev/null` and EOF is the second kill
   switch. `tests/host_and_child.rs` is the way to drive this pair; a terminal is not.
-- **The page is served by `host.rs`, not by the daemon.** `src/host.rs` owns
+- **The page is served by `host.rs`, not by the daemon.** `crates/orchd-serve/src/host.rs` owns
   `GET /`, every asset route, the window commands, the checkout list and the four
   commands that change it (`add`, `close`, `reopen`, `pick`); the daemon keeps
   `/api/*`, `/ws/*` and `/hooks/*`.
@@ -585,7 +585,7 @@ mean *this* repo; if you do, name it.
     all four were *behaviour* living in the module that holds the settings.
     `session_env` and `session_flags` built a session's process from inside
     `config`, reaching into the three features `config` configures; they are
-    `src/launch.rs` now, a layer that sits above both and that nothing below may
+    `crates/orchd-repo/src/launch.rs` now, a layer that sits above both and that nothing below may
     import. `story::token_env_pair` and `resolve_token` went the other way, into
     `config` beside the `Tracker` field they read, and `reviews`'s ejected-script
     path became `Config::reviews_script_path` beside `hooks_settings_path` —
@@ -875,7 +875,7 @@ mean *this* repo; if you do, name it.
   server answered 401 — while the same session started by typing `claude` in that
   checkout worked, because `mise activate` exports at a shell prompt and an app has
   no prompt. That is why the terminal is the worst place to reproduce this.
-  `config::session_env` now asks the tool itself (`src/env_source.rs`, `mise` by
+  `config::session_env` now asks the tool itself (`crates/orchd-repo/src/env_source.rs`, `mise` by
   default, `direnv` beside it, `none` to turn it off), per spawn, in the session's
   own cwd. Two things it will not do: it never fails a spawn (a missing variable is
   degraded, a refused spawn is lost), and it cannot trust a config for you — mise
@@ -1156,7 +1156,7 @@ mean *this* repo; if you do, name it.
   test fixtures — and this must not be what changes that. 8 KB is the cap, because
   a ring buffer holds ~3600 lines and a prompt is a line somebody reads, not a log.
 - **A config this build cannot read is repaired on disk, not tolerated in
-  memory.** `src/migrate.rs` runs on start, from both readers of the file
+  memory.** `crates/orchd-repo/src/migrate.rs` runs on start, from both readers of the file
   (`Config::existing` for the desktop app, `Config::load_or_init` for a daemon
   started from a terminal), and it is idempotent so the second call costs a read.
   It exists because tolerating the old spelling in the *reader* was not enough:
@@ -1357,7 +1357,7 @@ mean *this* repo; if you do, name it.
   one plus whatever endpoint-security software a managed laptop carries. Measured
   on the real monorepo, release, **64 worktrees: 7836 ms and 447 child processes**,
   of which `reconcile_all` was 6294 ms and the upstream fetch 1479 ms. Everything
-  else in `start` came to 59 ms. `src/timing.rs` is what says so — a phase line per
+  else in `start` came to 59 ms. `crates/orchd-base/src/timing.rs` is what says so — a phase line per
   start (`daemon start`, `session … start`, `shell start`, `window open`), each
   carrying its own exec count and its own share of the time in them, plus `slow
   git` for a single call over 300 ms and a `page start` line from the SPA.
@@ -1384,7 +1384,7 @@ mean *this* repo; if you do, name it.
   round trip. The pty websocket is nothing but small frames in both directions.
   Loopback made it look like it could not matter, and on Linux it mostly does not.
 - **A slow start is measured, not argued about, and the log is the one place both
-  halves meet.** `src/timing.rs` prints a phase line per start with its own exec
+  halves meet.** `crates/orchd-base/src/timing.rs` prints a phase line per start with its own exec
   count and time (`shell start`, `daemon start`, `window open`, `session … start`),
   `slow git` names a single call over 300ms, and the SPA posts its own boot marks
   to `/api/client/timing` as `page start`. On the real monorepo that read: 447
@@ -1512,7 +1512,7 @@ mean *this* repo; if you do, name it.
   a busy branch and the concurrency cap, and *nothing else*. "The PR looks fine" is not a refusal,
   because a run is also how a PR that has fallen behind gets rebased. Easy to fire
   by accident while poking at the API.
-- **Pushes are guarded, by two halves that must agree.** `src/guard.rs` holds the
+- **Pushes are guarded, by two halves that must agree.** `crates/orchd-base/src/guard.rs` holds the
   rules; `orch guard push` runs them as a `PreToolUse` hook on the agent's Bash,
   and `git::push_with_lease` re-states the base-branch rule because a *daemon*
   push never passes through a hook. Three rules: no lease-less `--force`, no push
@@ -1559,7 +1559,7 @@ mean *this* repo; if you do, name it.
   agent writes goes around it. Do not write docs that claim otherwise; the README
   did, and that is the kind of sentence that earns misplaced trust.
   It replaced a Python script that failed open and matched refspecs by spelling;
-  `src/guard.rs`'s module doc has the three defects.
+  `crates/orchd-base/src/guard.rs`'s module doc has the three defects.
 - **A `rust-toolchain.toml` is a no-op here, and silently.** `mise env` exports
   `RUSTUP_TOOLCHAIN=stable`, and that variable **outranks** the file in rustup's
   precedence — so a pin written there is ignored on any machine with mise active
