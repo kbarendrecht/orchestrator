@@ -1,0 +1,10 @@
+# Commits that changed formatting and nothing else, so `git blame` walks past
+# them to the reasoning underneath.
+#
+# Turn it on once per clone, beside the hooks line:
+#     git config blame.ignoreRevsFile .git-blame-ignore-revs
+#
+# GitHub reads this file by name and needs no setting.
+
+# Format the tree with rustfmt
+0a06ac8517a5ab4ac84f9ffd36cffefae75e0f5b
