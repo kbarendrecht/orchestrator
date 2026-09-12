@@ -23,16 +23,26 @@
   <!-- ============ CONTEXT BAR ============ -->
   <!-- Replaces the centre pane's own header, so it costs no net vertical space. -->
   <div class="top top-l">
-    <!-- Which checkout everything to the right of this describes, and which
-         repository that checkout works on. Not a button any more: the rail lists
-         every open checkout and its `+ open project` opens another, so there is
-         nothing left for a switcher to do. PRs are opened against upstream while
-         branches live on the fork (§6), so this names both rather than collapsing
-         them into one path. -->
-    <div class="repo-id" id="repoid">
-      <span class="repo-main" id="repoupstream">—</span>
-      <span class="repo-fork" id="repofork"></span>
-    </div>
+    <!-- The mark, where the repository line used to be. The rail names every open
+         project and each fold header carries its repository on hover, so this strip
+         had nothing left to say — a switcher first, then a label repeating what the
+         rail already shows.
+
+         Drawn rather than fetched, for the reason the gear beside it is drawn: an
+         `<img>` is a route, a `include_bytes!` and a second copy of the icon to keep
+         in step, and this one has to change colour with the theme. It is the app
+         icon's own mark — the rail itself, a state bar against each row — in the
+         board's own signal colours, so amber still means needs-you here. -->
+    <span class="brand" id="brand">
+      <svg viewBox="0 0 16 16" width="16" height="16" role="img" aria-label="orchd">
+        <rect x="1" y="2" width="2" height="4" rx="1" fill="var(--attn)"/>
+        <rect x="5.5" y="3.2" width="9.5" height="1.6" rx=".8" fill="var(--attn)"/>
+        <rect x="1" y="7.5" width="2" height="3.5" rx="1" fill="var(--work)"/>
+        <rect x="5.5" y="8.5" width="7.5" height="1.4" rx=".7" fill="var(--faint-solid)"/>
+        <rect x="1" y="12.5" width="2" height="2.5" rx="1" fill="var(--ghost)"/>
+        <rect x="5.5" y="13.1" width="5.5" height="1.2" rx=".6" fill="var(--ghost)"/>
+      </svg>
+    </span>
     <!-- Sliders rather than a gear glyph: the font stack has no dependable one at
          this size, which is why the window controls are drawn too. -->
     <button class="gear" id="gearbtn" title="Settings" aria-expanded="false">

@@ -37,6 +37,32 @@ export function snapshotOf(path) {
   return snaps.get(path) ?? null;
 }
 
+/** What a checkout works on, as the lines a tooltip shows.
+ *
+ *  **The repository moved out of the top bar and onto the rail**, where the thing it
+ *  describes already has a row. The strip used to carry it because it used to be a
+ *  switcher; once the rail listed every open project, the line was a second copy of
+ *  a name the rail was already showing, sitting where the app's own mark belongs.
+ *
+ *  Upstream and fork are both named rather than collapsed: PRs are opened against
+ *  upstream while branches live on the fork, so one path cannot stand for the pair.
+ *  The checkout's own path is last, because it is the answer to a different question
+ *  — which folder — and that is the one this used to answer alone.
+ *
+ *  @param {Target} c
+ */
+export function repoSummary(c) {
+  const repos = snapshotOf(c.path)?.repos;
+  const lines = [];
+  if (repos?.upstream) lines.push(repos.upstream);
+  // Only when it is a different repository. A checkout with no fork layout reports
+  // the same name twice, and "example/app / fork example/app" reads as a fork of
+  // itself rather than as the ordinary case it is.
+  if (repos?.fork && repos.fork !== repos.upstream) lines.push(`fork ${repos.fork}`);
+  if (c.path) lines.push(c.path);
+  return lines.join('\n');
+}
+
 /** Take a new snapshot for one checkout.
  *
  *  **The only writer of `snap`**, together with [`adopt`] which it calls: `snap`

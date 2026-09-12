@@ -223,10 +223,13 @@ body[data-chrome="custom"] .resizers{display:block}
 .ctx-close:hover,.dtab .x:hover{color:var(--bad);background:var(--raised)}
 .settings-x:hover,.updatebar-x:hover{color:var(--text);background:var(--raised)}
 button.ctx-btn:hover{color:var(--text)}
-.repo-id{
-  display:flex;flex-direction:column;align-items:flex-start;gap:2px;
-  min-width:0;flex:1 1 auto;text-align:left;padding:2px 4px;
+/* `flex:1` so it takes the space the repository line used to, which is what keeps
+   the gear and the legend button against the right edge of this segment. */
+.brand{
+  display:flex;align-items:center;min-width:0;flex:1 1 auto;padding:2px 4px;
+  color:var(--faint-solid);
 }
+.brand svg{flex:0 0 auto}
 .gear{
   flex:0 0 auto;display:flex;align-items:center;justify-content:center;
   width:26px;height:26px;border-radius:2px;color:var(--faint-solid);
@@ -252,14 +255,6 @@ button.ctx-btn:hover{color:var(--text)}
   width:24px;height:24px;
 }
 .helpbtn:hover,.helpbtn[aria-expanded="true"]{color:var(--text);background:var(--raised);opacity:1}
-.repo-main{
-  font-family:var(--mono);font-size:calc(11.5px * var(--fs));color:var(--text);
-  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%;
-}
-.repo-fork{
-  font-family:var(--mono);font-size:calc(9px * var(--fs));color:var(--faint-solid);
-  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%;
-}
 
 /* ---------- rail ---------- */
 .rail{border-right:1px solid var(--line);background:var(--panel-ground,var(--surface));display:flex;flex-direction:column;overflow:hidden}

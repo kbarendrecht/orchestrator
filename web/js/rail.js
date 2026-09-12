@@ -1,7 +1,7 @@
 // The rail: what is running, what is waiting on you, and the PRs beside it.
 // Twenty-four names, three out; the rest is how a row decides what it says.
 
-import { $, activeCheckout, byNewest, call, callFor, bandOf, callHost, callOn, checkoutOf, CHECKOUTS, chooseBox, enterCheckout, everySession, getHost, snapshotOf, snapshotFor, terms, caret, clock, confirmBox, copyText, creating, dotClass, duration, el, isArchived, isConversation, isWaiting, mainWorkspace, MOD_LABEL, newSession, newWorktree, openMenu, pending, refreshButton, selected, sessionsOf, setSelected, sinceSnap, snap, stateClass, stateLabel, toast, unchanged, setPendingSelect } from './core.js';
+import { $, activeCheckout, byNewest, call, callFor, bandOf, callHost, callOn, checkoutOf, CHECKOUTS, chooseBox, enterCheckout, everySession, getHost, snapshotOf, snapshotFor, repoSummary, terms, caret, clock, confirmBox, copyText, creating, dotClass, duration, el, isArchived, isConversation, isWaiting, mainWorkspace, MOD_LABEL, newSession, newWorktree, openMenu, pending, refreshButton, selected, sessionsOf, setSelected, sinceSnap, snap, stateClass, stateLabel, toast, unchanged, setPendingSelect } from './core.js';
 import * as Review from './review.js';
 import * as Term from './term.js';
 
@@ -293,6 +293,7 @@ function checkoutHead(c) {
      as much as anyone, and `aria-current` is the fact a screen reader gets where a
      sighted reader gets the brighter text. */
   const head = el('div', 'co-head');
+  head.title = repoSummary(c);
   const band = bandOf(c.path);
   if (band) {
     head.dataset.band = String(band);
@@ -316,7 +317,10 @@ function checkoutHead(c) {
 
   const name = el('button', 'co-name', c.name);
   name.type = 'button';
-  name.title = c.path;
+  /* Both the row and the name, because a title on the row is shown only where no
+     child has one of its own, and the name fills most of the row. What it says is
+     what the top strip used to: this is where the repository lives now. */
+  name.title = repoSummary(c);
   name.setAttribute('aria-current', String(c.path === activeCheckout().path));
   name.onclick = () => { enterCheckout(c); };
   head.appendChild(name);

@@ -4,7 +4,7 @@
 // the primitives every part needs; `queue.js` is the first seam extracted whole.
 import {
   $, el, toast, call, callHost, get, duration, activeCheckout, CHECKOUTS, setCheckouts,
-  HOST, snapshotOf, wsKey, everySession, enterCheckout, onThemeChange,
+  HOST, snapshotOf, repoSummary, wsKey, everySession, enterCheckout, onThemeChange,
   snap, receive, keyActivate,
   setZoom, setUiPx, uiPx, saveZoom, onScaleChange, ZOOM,
   selected, setSelected, onSelection, prForWorkspace,
@@ -534,14 +534,14 @@ function renderContext() {
      right of this strip describes one checkout, and with several in the rail the
      header is the only place that says which — the leaf alone, since two checkouts
      of one repository share the repository name and differ exactly there. */
-  const repos = snap.repos || { upstream: null, fork: null };
-  const where = activeCheckout();
-  const repoName = repos.upstream || (w ? w.path.split('/').slice(-2).join('/') : '—');
-  $('repoupstream').textContent = CHECKOUTS.length > 1 && where.name
-    ? `${where.name} · ${repoName}`
-    : repoName;
-  $('repoid').title = where.path || '';
-  $('repofork').textContent = repos.fork || '';
+  /* **The mark's tooltip is the one place the repository survives a single-project
+     rail.** Every fold header carries `repoSummary` on hover, but a rail with one
+     project draws no header at all — deliberately, since a heading naming the only
+     project there is is noise — so with one open this says what the strip used to.
+     With several, each says its own and this names the app instead. */
+  $('brand').title = CHECKOUTS.length === 1
+    ? `orchd ${snap.version || ''}\n\n${repoSummary(activeCheckout())}`.trim()
+    : `orchd ${snap.version || ''}`.trim();
   $('ctxdot').className = 'dot ' + (s ? dotClass(s) : 'idle');
   $('ctxname').textContent = s ? Rail.rowName(s, { id: wsId }) : (wsId || 'no session');
   $('ctxforked').hidden = !(s && s.forked_from);
