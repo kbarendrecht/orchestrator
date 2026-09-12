@@ -14,6 +14,10 @@
 //! failing PR or a repo on `develop` still says so where it is read.
 //!
 //! `#[cfg(test)]` in `lib.rs`, so none of this reaches a binary.
+// Fixtures, so a panic is the report — the same reason `orchd-base`'s copy says
+// it, and the same cause: this module is compiled as a library under a feature,
+// which is what `clippy.toml`'s `allow-*-in-tests` cannot see.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 /// The filesystem and git fixtures live in `orchd-base` now, and are re-exported
 /// here so every `testutil::scratch` in the workspace is the same function. The

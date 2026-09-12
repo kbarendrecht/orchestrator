@@ -66,7 +66,7 @@ fn the_sweep_takes_derived_state_and_leaves_conversations() {
     let dirs: Vec<PathBuf> = [&open, &recent, &old]
         .iter()
         .map(|c| {
-            let dir = orchd::host::checkout_dir(c).unwrap();
+            let dir = orchd_serve::host::checkout_dir(c).unwrap();
             std::fs::create_dir_all(dir.join("plugin/skills")).unwrap();
             std::fs::write(dir.join("plugin/skills/SKILL.md"), "x").unwrap();
             std::fs::write(dir.join("hooks.json"), "{}").unwrap();
@@ -81,14 +81,14 @@ fn the_sweep_takes_derived_state_and_leaves_conversations() {
     // Age the third one past the retention. `filetime` is not a dependency here,
     // so the retention is moved instead — one day, and the files are newer than
     // that, so only a backdated directory can qualify.
-    orchd::host::remember_checkouts(std::slice::from_ref(&open));
+    orchd_serve::host::remember_checkouts(std::slice::from_ref(&open));
     let file = cfg.join("host.json");
     let mut host_file: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
     host_file["checkout_retention_days"] = serde_json::json!(0);
     std::fs::write(&file, host_file.to_string()).unwrap();
     // Zero is off, so nothing goes at all — the same escape hatch worktrees have.
-    orchd::host::sweep_checkout_dirs(std::slice::from_ref(&open));
+    orchd_serve::host::sweep_checkout_dirs(std::slice::from_ref(&open));
     for dir in &dirs {
         assert!(
             dir.join("hooks.json").exists(),
@@ -100,7 +100,7 @@ fn the_sweep_takes_derived_state_and_leaves_conversations() {
     // ago, so the sweep must take nothing.
     host_file["checkout_retention_days"] = serde_json::json!(60);
     std::fs::write(&file, host_file.to_string()).unwrap();
-    orchd::host::sweep_checkout_dirs(std::slice::from_ref(&open));
+    orchd_serve::host::sweep_checkout_dirs(std::slice::from_ref(&open));
     for dir in &dirs {
         assert!(
             dir.join("hooks.json").exists(),
@@ -111,7 +111,7 @@ fn the_sweep_takes_derived_state_and_leaves_conversations() {
     // Backdate the third, and only the third goes — and only its derived half.
     let stale = std::time::SystemTime::now() - std::time::Duration::from_secs(90 * 24 * 60 * 60);
     set_mtimes(&dirs[2], stale);
-    orchd::host::sweep_checkout_dirs(std::slice::from_ref(&open));
+    orchd_serve::host::sweep_checkout_dirs(std::slice::from_ref(&open));
     assert!(
         dirs[0].join("hooks.json").exists(),
         "an open checkout was swept"

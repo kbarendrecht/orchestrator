@@ -24,7 +24,7 @@ interface Window {
     /** Every open checkout, substituted by the host. Optional because the
      *  review-preview page is served with one entry and older hosts substituted
      *  none — `core.LOCAL` falls back to `token` when it is absent. */
-    checkouts?: import('./snapshot').Checkout[];
+    checkouts?: import('./serve').Checkout[];
   };
   /** Prism is driven manually; this switches its auto-highlight off. */
   Prism: any;

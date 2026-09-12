@@ -152,7 +152,7 @@ async fn a_host_serves_the_page_for_a_checkout_its_child_manages() {
     // real one. `ORCHD_CONFIG_DIR` is what makes that true for all of them at once.
     std::env::set_var("ORCHD_CONFIG_DIR", &cfg);
 
-    let serving = orchd::host::serve("host-token".into(), 0, orchd::window::Chrome::None)
+    let serving = orchd_serve::host::serve("host-token".into(), 0, orchd::window::Chrome::None)
         .await
         .expect("the host bound a port");
     let host = serving.host.clone();
@@ -259,7 +259,7 @@ async fn a_host_serves_the_page_for_a_checkout_its_child_manages() {
         exe,
         &repo,
         &base,
-        &orchd::host::checkout_dir(&repo).unwrap(),
+        &orchd_serve::host::checkout_dir(&repo).unwrap(),
         false,
         |_, _, _| {},
     );
@@ -403,7 +403,7 @@ async fn a_host_serves_the_page_for_a_checkout_its_child_manages() {
     assert_eq!(code, 0, "the child is still serving after a stop");
 
     // 5 — the checkout's state is its own, and it inherited the old config.
-    let state = orchd::host::checkout_dir(&repo).expect("a state directory");
+    let state = orchd_serve::host::checkout_dir(&repo).expect("a state directory");
     assert!(
         state.starts_with(cfg.join("checkouts")),
         "the state dir is somewhere else: {state:?}"

@@ -1525,6 +1525,19 @@ mean *this* repo; if you do, name it.
   developer on a newer rustc meets a new clippy lint *before* CI does, rather than
   CI failing on a commit that touched no Rust. Collapsing it to one source of truth
   means provisioning Rust through mise in CI too.
+- **`orchd` is a library only. `crates/orchd-serve` is the daemon**, and it holds
+  both binaries. The router, `start`, `StartOptions`, `Server` and every
+  `start_*_poller` are there with `host`, `hooks`, `firstrun` and `ws` — because
+  `lib.rs` reached all four, and `lib.rs` is not a module so the graph never saw
+  it. The line to remember: **`orchd` is what the daemon knows; `orchd-serve` is
+  the daemon.**
+  Two consequences bite immediately. **`cargo build --bin orchd` no longer works
+  from the root** — it is `cargo build -p orchd-serve --bin orchd`, and every
+  mise task, workflow and e2e runner says so. And **`cargo about` and
+  `cargo deny` needed `--workspace`**: both were rooting at the `orchd` package,
+  which now produces no binary, and turning that on showed that the desktop
+  shell's ~130 dependencies had never been checked or listed at all. The notices
+  went from 111 crates to 355. That hole predates the split.
 - **This is a workspace, and `crates/orchd-base` is the first crate out.**
   Thirteen modules — `child edit git guard headroom model proc proposal pty
   review_commit secret timing window` — and `cargo` now refuses an import from any
@@ -1542,9 +1555,9 @@ mean *this* repo; if you do, name it.
   in the workspace. `ts-rs` is an **optional dependency** gated by that same
   feature, because as a dev-dependency the `TS` derives vanish exactly when
   `orchd`'s tests need them.
-  And **there are two generated type files now**: ts-rs truncates `export_to` per
-  crate, so `orchd-base` writes `web/base.d.ts`, `orchd` writes
-  `web/snapshot.d.ts`, and the `import type … from "./base.d"` between them is
+  And **there are three generated type files now**: ts-rs truncates `export_to`
+  per crate, so `orchd-base` writes `web/base.d.ts`, `orchd-serve` writes
+  `web/serve.d.ts`, `orchd` writes `web/snapshot.d.ts`, and the `import type … from "./base.d"` between them is
   only right because `.cargo/config.toml` points both at one `TS_RS_EXPORT_DIR`.
   Set there rather than in the gates, so a bare `cargo test` does not leave a
   stray `bindings/`. A type that moves between the crates moves between the files,

@@ -37,7 +37,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use crate::window::WindowControl;
+use orchd::window::WindowControl;
 
 /// How long a daemon has to stay up for its next death to count as a new problem.
 ///
@@ -53,11 +53,14 @@ const HEALTHY_UPTIME: Duration = Duration::from_secs(60);
 /// the daemon it is for, and each daemon compares the token against its own. It is
 /// the same value as the host's while one process serves both.
 #[derive(Debug, Clone, Serialize)]
-#[cfg_attr(test, derive(ts_rs::TS))]
-#[cfg_attr(test, ts(export, export_to = "snapshot.d.ts"))]
+#[cfg_attr(
+    any(test, feature = "test-util"),
+    derive(ts_rs::TS),
+    ts(export, export_to = "serve.d.ts")
+)]
 pub struct Checkout {
     /// Canonical path, which is also the identity: `main_checkout` is resolved in
-    /// [`crate::config::Config::parse`], and comparing an unresolved path against
+    /// [`orchd::config::Config::parse`], and comparing an unresolved path against
     /// a resolved one silently matches nothing.
     pub path: String,
     /// What to call this checkout on screen. Not a key — see [`Checkout::path`].
@@ -113,7 +116,7 @@ pub struct Host {
     /// to stop being that process, and a handle it could never use is a field that
     /// reads as "this daemon might have a window".
     /// **A `std::sync::Mutex`, not tokio's**, and that is a decision rather than
-    /// habit: the observer thread in [`crate::child`] is a plain `std::thread` —
+    /// habit: the observer thread in [`orchd::child`] is a plain `std::thread` —
     /// it has to be, because it owns a blocking `wait()` — and it is the thing
     /// that reports a checkout down. An async lock would need a runtime handle
     /// smuggled onto that thread. Every critical section here is a map or vector
@@ -127,7 +130,7 @@ pub struct Host {
     /// Separate from [`Self::checkouts`] because they have different lifetimes: a
     /// row survives its daemon dying (that is what `live: false` is for, and what
     /// `reopen` acts on), while the handle does not.
-    children: Mutex<HashMap<PathBuf, Arc<crate::child::Child>>>,
+    children: Mutex<HashMap<PathBuf, Arc<orchd::child::Child>>>,
     /// Which checkouts have already spent their one restart.
     ///
     /// Bounded to one retry: a first death is worth a free recovery, and a
@@ -147,7 +150,7 @@ pub struct Host {
     started: Mutex<HashMap<PathBuf, Instant>>,
     /// Which key the app's own chords wear, and whether the page draws its own
     /// titlebar. Told to the page, never sniffed.
-    chrome: crate::window::Chrome,
+    chrome: orchd::window::Chrome,
     /// Whether the window behind the page is see-through, so the pane can say what
     /// lowering the opacity will do. Read once, with the port — the flag is a
     /// property of the window that was built, and that window outlives the page.
@@ -190,7 +193,7 @@ fn locked<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 }
 
 impl Host {
-    pub fn new(token: String, port: u16, chrome: crate::window::Chrome) -> Arc<Self> {
+    pub fn new(token: String, port: u16, chrome: orchd::window::Chrome) -> Arc<Self> {
         Arc::new(Host {
             token,
             port,
@@ -355,14 +358,14 @@ impl Host {
     /// `spawn::watch_session_exit` follows for a pty.
     ///
     /// **A death that was not asked for is restarted once.** A death that *was*
-    /// asked for is not, which is the whole reason [`crate::child::Child::stop`]
+    /// asked for is not, which is the whole reason [`orchd::child::Child::stop`]
     /// sets its flag before it signals: without that a `close` would restart the
     /// daemon it just stopped, and a restart runs `auto_resume`.
     pub fn open_checkout(self: &Arc<Self>, checkout: &Path) -> anyhow::Result<()> {
-        self.open_checkout_with(&crate::child::daemon_binary(), checkout, false)
+        self.open_checkout_with(&orchd::child::daemon_binary(), checkout, false)
     }
 
-    /// The same, with the daemon binary named — see [`crate::child::launch_at`]
+    /// The same, with the daemon binary named — see [`orchd::child::launch_at`]
     /// for why that split exists.
     pub fn open_checkout_with(
         self: &Arc<Self>,
@@ -378,7 +381,7 @@ impl Host {
         let state = ensure_checkout_dir(checkout)?;
         let host = self.clone();
         let exe_again = exe.to_path_buf();
-        let child = crate::child::launch_at(
+        let child = orchd::child::launch_at(
             exe,
             checkout,
             &origin,
@@ -420,7 +423,7 @@ impl Host {
         locked(&self.started).insert(checkout.to_path_buf(), Instant::now());
         // **The host owns `recent.json`.** A hosted child's config dir is its own
         // checkout directory, so a child writing this would leave one single-entry
-        // list per checkout — see the matching arm in `crate::start`. Best effort:
+        // list per checkout — see the matching arm in `orchd::start`. Best effort:
         // a list that cannot be written is not a reason to fail an open.
         if let Err(e) = crate::firstrun::record_recent(checkout) {
             tracing::warn!("could not record the recent checkout: {e:#}");
@@ -507,7 +510,7 @@ impl Host {
             None => true,
         };
 
-        self.open_checkout_with(&crate::child::daemon_binary(), &path, !resume)
+        self.open_checkout_with(&orchd::child::daemon_binary(), &path, !resume)
             .map_err(|e| format!("{e:#}"))?;
         let opened = self
             .checkouts()
@@ -689,7 +692,7 @@ impl Host {
 
 /// The Host, Origin and token rules, on the host's own port.
 ///
-/// The policy comes from [`crate::api`] rather than being restated: `host_allowed`
+/// The policy comes from [`orchd::api`] rather than being restated: `host_allowed`
 /// and `origin_ok` are the two functions with the tests around them, and a second
 /// spelling of one rule is how the two halves of a guard drift apart. What differs
 /// is only which arms can apply — nothing here is a hook, and no agent calls the
@@ -705,7 +708,7 @@ async fn guard(
         .get("host")
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
-    if !crate::api::host_allowed(host_header, host.port) {
+    if !orchd::api::host_allowed(host_header, host.port) {
         return (StatusCode::FORBIDDEN, "bad host").into_response();
     }
     let origin = headers.get("origin").and_then(|v| v.to_str().ok());
@@ -714,7 +717,7 @@ async fn guard(
         .and_then(|v| v.to_str().ok())
         .is_some_and(|t| t == host.token);
     let is_get = req.method() == axum::http::Method::GET;
-    if !crate::api::origin_ok(origin, host.port, None, false, is_get, token_ok) {
+    if !orchd::api::origin_ok(origin, host.port, None, false, is_get, token_ok) {
         return (StatusCode::FORBIDDEN, "bad origin").into_response();
     }
     // The page itself is deliberately not token-gated: it is where the token comes
@@ -834,7 +837,7 @@ fn default_checkout_retention_days() -> u32 {
 const DERIVED: [&str; 3] = ["plugin", "hooks.json", "window.json"];
 
 fn host_file() -> anyhow::Result<PathBuf> {
-    Ok(crate::config::Config::config_dir()?.join("host.json"))
+    Ok(orchd::config::Config::config_dir()?.join("host.json"))
 }
 
 /// The host file as it stands, or `None` when there is none to read.
@@ -856,7 +859,7 @@ fn read_host_file() -> Option<HostFile> {
 pub fn remembered_checkouts() -> Vec<PathBuf> {
     match read_host_file() {
         Some(file) => file.checkouts.into_iter().map(PathBuf::from).collect(),
-        None => crate::config::Config::existing()
+        None => orchd::config::Config::existing()
             .map(|cfg| vec![cfg.main_checkout])
             .unwrap_or_default(),
     }
@@ -958,7 +961,7 @@ pub fn sweep_checkout_dirs(open: &[PathBuf]) {
     if days == 0 {
         return;
     }
-    let Ok(root) = crate::config::Config::config_dir().map(|d| d.join("checkouts")) else {
+    let Ok(root) = orchd::config::Config::config_dir().map(|d| d.join("checkouts")) else {
         return;
     };
     let Ok(entries) = std::fs::read_dir(&root) else {
@@ -1046,15 +1049,15 @@ fn last_write(dir: &Path) -> Option<std::time::Duration> {
 pub fn polled_repo(checkout: &Path) -> Option<String> {
     let cfg = checkout_dir(checkout)
         .ok()
-        .and_then(|dir| crate::config::Config::existing_at(&dir.join("config.json")));
+        .and_then(|dir| orchd::config::Config::existing_at(&dir.join("config.json")));
     if let Some(repo) = cfg.as_ref().and_then(|c| c.repo.clone()) {
         return Some(repo);
     }
     let remote = cfg
         .as_ref()
         .map_or("origin", |c| c.upstream_remote.as_str());
-    let url = crate::forge::remote_url(checkout, remote)?;
-    crate::forge::repo_from_remote(&url).map(|(o, n)| format!("{o}/{n}"))
+    let url = orchd::forge::remote_url(checkout, remote)?;
+    orchd::forge::repo_from_remote(&url).map(|(o, n)| format!("{o}/{n}"))
 }
 
 /// Where one checkout's durable state lives.
@@ -1090,7 +1093,7 @@ pub fn checkout_dir(checkout: &Path) -> anyhow::Result<PathBuf> {
             }
         })
         .collect();
-    Ok(crate::config::Config::config_dir()?
+    Ok(orchd::config::Config::config_dir()?
         .join("checkouts")
         .join(format!("{safe}-{hash:x}")))
 }
@@ -1118,9 +1121,9 @@ fn ensure_checkout_dir(checkout: &Path) -> anyhow::Result<PathBuf> {
         return Ok(dir);
     }
     std::fs::create_dir_all(&dir)?;
-    let root = crate::config::Config::config_dir()?.join("config.json");
+    let root = orchd::config::Config::config_dir()?.join("config.json");
     let names_this_checkout =
-        crate::config::Config::existing_at(&root).is_some_and(|cfg| cfg.main_checkout == checkout);
+        orchd::config::Config::existing_at(&root).is_some_and(|cfg| cfg.main_checkout == checkout);
     if names_this_checkout {
         match std::fs::copy(&root, dir.join("config.json")) {
             Ok(_) => tracing::info!(
@@ -1184,7 +1187,7 @@ impl Drop for Serving {
 pub async fn serve(
     token: String,
     port: u16,
-    chrome: crate::window::Chrome,
+    chrome: orchd::window::Chrome,
 ) -> anyhow::Result<Serving> {
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", port)).await?;
     let bound = listener.local_addr()?.port();
@@ -1227,10 +1230,10 @@ pub fn router(host: Arc<Host>) -> Router {
 
 // --- the page ---------------------------------------------------------------
 
-const INDEX: &str = include_str!("../web/index.html");
-const APP_JS: &str = include_str!("../web/app.js");
-const APP_CSS: &str = include_str!("../web/app.css");
-const REVIEW_PREVIEW: &str = include_str!("../web/review-preview.html");
+const INDEX: &str = include_str!("../../../web/index.html");
+const APP_JS: &str = include_str!("../../../web/app.js");
+const APP_CSS: &str = include_str!("../../../web/app.css");
+const REVIEW_PREVIEW: &str = include_str!("../../../web/review-preview.html");
 
 /// The substitutions every served page gets.
 ///
@@ -1318,15 +1321,15 @@ async fn module(UrlPath(file): UrlPath<String>) -> Response {
         return (StatusCode::BAD_REQUEST, "bad asset").into_response();
     }
     let body = match file.as_str() {
-        "core.js" => include_str!("../web/js/core.js"),
-        "palette.js" => include_str!("../web/js/palette.js"),
-        "term.js" => include_str!("../web/js/term.js"),
-        "rail.js" => include_str!("../web/js/rail.js"),
-        "diff.js" => include_str!("../web/js/diff.js"),
-        "review.js" => include_str!("../web/js/review.js"),
-        "review-diff.js" => include_str!("../web/js/review-diff.js"),
-        "queue.js" => include_str!("../web/js/queue.js"),
-        "settings.js" => include_str!("../web/js/settings.js"),
+        "core.js" => include_str!("../../../web/js/core.js"),
+        "palette.js" => include_str!("../../../web/js/palette.js"),
+        "term.js" => include_str!("../../../web/js/term.js"),
+        "rail.js" => include_str!("../../../web/js/rail.js"),
+        "diff.js" => include_str!("../../../web/js/diff.js"),
+        "review.js" => include_str!("../../../web/js/review.js"),
+        "review-diff.js" => include_str!("../../../web/js/review-diff.js"),
+        "queue.js" => include_str!("../../../web/js/queue.js"),
+        "settings.js" => include_str!("../../../web/js/settings.js"),
         _ => return (StatusCode::NOT_FOUND, "no such module").into_response(),
     };
     asset("text/javascript; charset=utf-8", body)
@@ -1339,14 +1342,14 @@ async fn vendor(UrlPath(file): UrlPath<String>) -> Response {
         return (StatusCode::BAD_REQUEST, "bad asset").into_response();
     }
     let body = match file.as_str() {
-        "xterm.js" => include_str!("../web/vendor/xterm.js"),
-        "xterm.css" => include_str!("../web/vendor/xterm.css"),
-        "addon-fit.js" => include_str!("../web/vendor/addon-fit.js"),
-        "addon-webgl.js" => include_str!("../web/vendor/addon-webgl.js"),
+        "xterm.js" => include_str!("../../../web/vendor/xterm.js"),
+        "xterm.css" => include_str!("../../../web/vendor/xterm.css"),
+        "addon-fit.js" => include_str!("../../../web/vendor/addon-fit.js"),
+        "addon-webgl.js" => include_str!("../../../web/vendor/addon-webgl.js"),
         // All Prism grammars, dependency-ordered, for diff/open-question
         // highlighting. Vendored whole rather than fetched: the host owns its
         // assets and must work offline, wherever the repo lives.
-        "prism.min.js" => include_str!("../web/vendor/prism.min.js"),
+        "prism.min.js" => include_str!("../../../web/vendor/prism.min.js"),
         _ => return (StatusCode::NOT_FOUND, "no such asset").into_response(),
     };
     let ct = if file.ends_with(".css") {
@@ -1370,14 +1373,14 @@ async fn font(UrlPath(file): UrlPath<String>) -> Response {
     // Plex Sans and Martian Mono ship as variable fonts, so one file covers every
     // weight the UI asks for. Plex Mono is still static per weight.
     let body: &'static [u8] = match file.as_str() {
-        "plex-sans.woff2" => include_bytes!("../web/vendor/fonts/plex-sans.woff2"),
-        "plex-mono-400.woff2" => include_bytes!("../web/vendor/fonts/plex-mono-400.woff2"),
-        "plex-mono-500.woff2" => include_bytes!("../web/vendor/fonts/plex-mono-500.woff2"),
-        "plex-mono-600.woff2" => include_bytes!("../web/vendor/fonts/plex-mono-600.woff2"),
-        "martian-mono.woff2" => include_bytes!("../web/vendor/fonts/martian-mono.woff2"),
+        "plex-sans.woff2" => include_bytes!("../../../web/vendor/fonts/plex-sans.woff2"),
+        "plex-mono-400.woff2" => include_bytes!("../../../web/vendor/fonts/plex-mono-400.woff2"),
+        "plex-mono-500.woff2" => include_bytes!("../../../web/vendor/fonts/plex-mono-500.woff2"),
+        "plex-mono-600.woff2" => include_bytes!("../../../web/vendor/fonts/plex-mono-600.woff2"),
+        "martian-mono.woff2" => include_bytes!("../../../web/vendor/fonts/martian-mono.woff2"),
         // Diffs only, and only the one weight they use.
         "jetbrains-mono-400.woff2" => {
-            include_bytes!("../web/vendor/fonts/jetbrains-mono-400.woff2")
+            include_bytes!("../../../web/vendor/fonts/jetbrains-mono-400.woff2")
         }
         _ => return (StatusCode::NOT_FOUND, "no such asset").into_response(),
     };
@@ -1503,7 +1506,7 @@ async fn pick(State(host): State<Arc<Host>>) -> Response {
         return refusal("no native window attached");
     };
     let picked =
-        crate::proc::run_blocking("the folder dialog", move || control.pick_folder()).await;
+        orchd::proc::run_blocking("the folder dialog", move || control.pick_folder()).await;
     match picked {
         Ok(Some(path)) => Json(json!({ "path": path.to_string_lossy() })).into_response(),
         // A cancelled dialog is an answer, not a failure.
@@ -1530,7 +1533,7 @@ struct CheckoutPath {
 async fn add_checkout(State(host): State<Arc<Host>>, Json(body): Json<CheckoutPath>) -> Response {
     let path = PathBuf::from(&body.path);
     let resume = body.resume;
-    let added = crate::proc::run_blocking("adding a checkout", move || {
+    let added = orchd::proc::run_blocking("adding a checkout", move || {
         host.add_checkout(&path, resume)
     })
     .await;
@@ -1545,7 +1548,7 @@ async fn close_checkout(State(host): State<Arc<Host>>, Json(body): Json<Checkout
     let path = PathBuf::from(&body.path);
     // Blocking too: a stop waits out the child's own graceful shutdown, which is
     // the only thing that reaches its sessions.
-    match crate::proc::run_blocking("closing a checkout", move || host.close_checkout(&path)).await
+    match orchd::proc::run_blocking("closing a checkout", move || host.close_checkout(&path)).await
     {
         Ok(stopped) => Json(json!({ "ok": true, "stopped": stopped })).into_response(),
         Err(e) => refusal(&format!("{e:#}")),
@@ -1558,7 +1561,7 @@ async fn reopen_checkout(
 ) -> Response {
     let path = PathBuf::from(&body.path);
     let opened =
-        crate::proc::run_blocking("reopening a checkout", move || host.reopen_checkout(&path))
+        orchd::proc::run_blocking("reopening a checkout", move || host.reopen_checkout(&path))
             .await;
     match opened {
         Ok(Ok(())) => Json(json!({ "ok": true })).into_response(),
@@ -1577,7 +1580,7 @@ async fn reopen_checkout(
 /// `http://127.0.0.1:*` would hand window control to anything else that managed to
 /// get itself loaded there.
 async fn window_cmd(State(host): State<Arc<Host>>, UrlPath(cmd): UrlPath<String>) -> Response {
-    match crate::api::parse_window_cmd(&cmd) {
+    match orchd::api::parse_window_cmd(&cmd) {
         Some(parsed) => dispatch(&host, parsed).await,
         None => refusal(&format!("no such window command: {cmd}")),
     }
@@ -1586,8 +1589,8 @@ async fn window_cmd(State(host): State<Arc<Host>>, UrlPath(cmd): UrlPath<String>
 /// Resize takes an edge, so it gets its own route rather than bending the command
 /// enum into something that serialises from a single word.
 async fn window_resize(State(host): State<Arc<Host>>, UrlPath(edge): UrlPath<String>) -> Response {
-    match crate::api::parse_resize_edge(&edge) {
-        Some(parsed) => dispatch(&host, crate::window::WindowCmd::StartResize(parsed)).await,
+    match orchd::api::parse_resize_edge(&edge) {
+        Some(parsed) => dispatch(&host, orchd::window::WindowCmd::StartResize(parsed)).await,
         None => refusal(&format!("no such resize edge: {edge}")),
     }
 }
@@ -1598,7 +1601,7 @@ fn refusal(message: &str) -> Response {
     (StatusCode::BAD_REQUEST, Json(json!({ "error": message }))).into_response()
 }
 
-async fn dispatch(host: &Arc<Host>, cmd: crate::window::WindowCmd) -> Response {
+async fn dispatch(host: &Arc<Host>, cmd: orchd::window::WindowCmd) -> Response {
     let control = host.window();
     let Some(control) = control else {
         // Running in a browser tab. The tab has its own chrome; this is not an

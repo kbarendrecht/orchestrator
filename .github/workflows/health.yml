@@ -61,7 +61,7 @@ jobs:
       # the argument for each, including the one advisory that is recorded rather
       # than fixed.
       - name: Dependencies
-        run: cargo deny check
+        run: cargo deny --workspace check
 
       # An unused dependency is a crate compiled into nothing, and it found one
       # the day it was first run.
@@ -76,7 +76,7 @@ jobs:
       # whose MIT and Apache terms ask for the same notice to travel along.
       - name: Third-party notices
         run: |
-          cargo about generate --fail about.hbs > THIRD-PARTY-RUST.md
+          cargo about generate --fail --workspace about.hbs > THIRD-PARTY-RUST.md
           git diff --exit-code --stat THIRD-PARTY-RUST.md \
             || { echo 'THIRD-PARTY-RUST.md is stale: run `mise run notices` and commit it.'; exit 1; }
 

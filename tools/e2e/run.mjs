@@ -32,7 +32,7 @@ const filters = args.filter((a) => !a.startsWith('--'))
 // so a change to the guard's own half was tested against whatever `orch` happened
 // to be on disk: the grant flow passed while refusing every command, because a
 // stale `orch` read a reply shape the daemon no longer sends.
-const build = spawnSync('cargo', ['build', '--bin', 'orchd', '--bin', 'orch'], {
+const build = spawnSync('cargo', ['build', '-p', 'orchd-serve', '--bin', 'orchd', '--bin', 'orch'], {
   cwd: repoRoot,
   stdio: 'inherit',
 })

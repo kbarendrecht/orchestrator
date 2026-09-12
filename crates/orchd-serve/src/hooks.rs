@@ -14,9 +14,9 @@ use std::sync::Arc;
 use std::time::SystemTime;
 use uuid::Uuid;
 
-use crate::config::Config;
-use crate::model::*;
-use crate::state::AppState;
+use orchd::config::Config;
+use orchd::model::*;
+use orchd::state::AppState;
 
 /// Observers, not gatekeepers. A slow or dead daemon must cost a turn as little
 /// as possible (§3).
@@ -201,20 +201,20 @@ pub async fn session_start(
     the log line is the only thing that can point at it. */
     let cwd = payload.resolved_cwd();
     let pending =
-        app.session_workspace(id).await.as_deref() == Some(crate::spawn::PENDING_WORKTREE);
+        app.session_workspace(id).await.as_deref() == Some(orchd::spawn::PENDING_WORKTREE);
     // The workspace this session turns out to be in, applied with the rest of the
     // record below rather than in a write of its own.
     let mut adopted: Option<String> = None;
     match &cwd {
-        Some(path) => match crate::spawn::worktree_name_of(path, &app.cfg.worktrees_dir()) {
+        Some(path) => match orchd::spawn::worktree_name_of(path, &app.cfg.worktrees_dir()) {
             Some(name) => {
                 // Off the runtime. A hook has about a second to answer and this is
                 // a child process — a worker parked here is one fewer serving the
                 // board, on a path every session start goes through.
                 let at = path.clone();
                 let branch =
-                    crate::proc::run_blocking("reading the worktree's branch", move || {
-                        crate::git::current_branch(&at).ok()
+                    orchd::proc::run_blocking("reading the worktree's branch", move || {
+                        orchd::git::current_branch(&at).ok()
                     })
                     .await
                     .unwrap_or(None);
@@ -224,7 +224,7 @@ pub async fn session_start(
             // Not a warning unless it matters: every session in main reports a
             // cwd outside the worktrees dir, and that is the ordinary case.
             None if pending => tracing::warn!(
-                session = %crate::model::short_id(&id),
+                session = %orchd::model::short_id(&id),
                 "reported cwd {} is not under {}, so this worktree cannot be adopted — \
                  check `worktrees_subdir` against where this repo's own hook cuts them",
                 path.display(),
@@ -233,7 +233,7 @@ pub async fn session_start(
             None => {}
         },
         None if pending => tracing::warn!(
-            session = %crate::model::short_id(&id),
+            session = %orchd::model::short_id(&id),
             "SessionStart carried no cwd, so the worktree it cut is unknown; \
              the pending-worktree sweep will try to find it"
         ),
@@ -469,11 +469,11 @@ pub async fn stop(
     // the other direction.
     let build_failure = {
         let inner = app.inner.read().await;
-        crate::health::build_failure_in(&inner, &workspace)
+        orchd::health::build_failure_in(&inner, &workspace)
     };
 
     app.with_session(id, |s| {
-        let want = crate::health::at_rest(build_failure.as_deref());
+        let want = orchd::health::at_rest(build_failure.as_deref());
         // Re-stamping `YourTurn` would restart the waiting clock on a session
         // that was already waiting, and that clock is what the rail sorts on.
         let already_waiting =
@@ -523,10 +523,10 @@ async fn refresh_title(app: &Arc<AppState>, id: Uuid) {
     // applied below in one short critical section with no I/O in it.
     let measured_at = cwd.clone();
     let Ok((pinned, title)) =
-        crate::proc::run_blocking("reading the session's transcript and title", move || {
+        orchd::proc::run_blocking("reading the session's transcript and title", move || {
             let mut pinned = recorded;
-            crate::store::pin_transcript(id, &cwd, &mut pinned);
-            let title = crate::store::ai_title(id, &cwd, pinned.as_deref());
+            orchd::store::pin_transcript(id, &cwd, &mut pinned);
+            let title = orchd::store::ai_title(id, &cwd, pinned.as_deref());
             (pinned, title)
         })
         .await
@@ -650,7 +650,7 @@ pub async fn session_end(
         needing the record to still exist. */
         let moved = match (said.as_ref(), inner.sessions.get(&id)) {
             (Some(c), Some(s))
-                if crate::spawn::worktree_name_of(c, &app.cfg.worktrees_dir())
+                if orchd::spawn::worktree_name_of(c, &app.cfg.worktrees_dir())
                     .or_else(|| inner.workspace_for_path(c))
                     .as_ref()
                     != Some(&s.workspace) =>
@@ -796,7 +796,7 @@ pub async fn boundary_block(
 fn orch_binary() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
     let name = if cfg!(windows) { "orch.exe" } else { "orch" };
-    let stable = crate::update::stable_exe(&exe);
+    let stable = orchd::update::stable_exe(&exe);
     // The stable path first, the running one as the fallback: a layout without a
     // `latest` beside it gets exactly what it got before.
     let candidates = [
@@ -996,9 +996,9 @@ mod tests {
     /// and main's claim is what the old ending would have handed back.
     #[tokio::test]
     async fn a_session_end_from_the_tree_the_conversation_left_settles_nothing() {
-        use crate::model::{Session, MAIN};
+        use orchd::model::{Session, MAIN};
 
-        let dir = crate::testutil::scratch("endhook");
+        let dir = orchd::testutil::scratch("endhook");
         let (here, gone) = (dir.join("main"), dir.join("old-worktree"));
         std::fs::create_dir_all(&here).unwrap();
         std::fs::create_dir_all(&gone).unwrap();
@@ -1009,7 +1009,7 @@ mod tests {
         string; on macOS `$TMPDIR` is a symlink into `/private`, so the workspace
         would match nothing and even the real ending would read as moved. */
         let (here, gone) = (resolved(&here), resolved(&gone));
-        let app = crate::testutil::app_at(&here, "");
+        let app = orchd::testutil::app_at(&here, "");
 
         // The session as a relocation leaves it: same id, now living in main.
         let id = Uuid::new_v4();
@@ -1068,15 +1068,15 @@ mod tests {
     /// `<main>/web`, which no `s.cwd` will ever equal.
     #[tokio::test]
     async fn an_ending_from_a_subdirectory_of_the_workspace_still_ends_it() {
-        use crate::model::{Session, MAIN};
+        use orchd::model::{Session, MAIN};
 
-        let dir = crate::testutil::scratch("endsub");
+        let dir = orchd::testutil::scratch("endsub");
         let here = resolved(&{
             let p = dir.join("main");
             std::fs::create_dir_all(p.join("web")).unwrap();
             p
         });
-        let app = crate::testutil::app_at(&here, "");
+        let app = orchd::testutil::app_at(&here, "");
 
         let id = Uuid::new_v4();
         {
@@ -1115,9 +1115,9 @@ mod tests {
     /// waiting for the macos-14 runner.
     #[tokio::test]
     async fn a_cwd_reported_through_a_symlink_is_not_a_conversation_that_moved() {
-        use crate::model::{Session, MAIN};
+        use orchd::model::{Session, MAIN};
 
-        let dir = crate::testutil::scratch("endlink");
+        let dir = orchd::testutil::scratch("endlink");
         let real = dir.join("real");
         std::fs::create_dir_all(&real).unwrap();
         let link = dir.join("link");
@@ -1125,7 +1125,7 @@ mod tests {
         std::os::unix::fs::symlink(&real, &link).unwrap();
 
         // The daemon's side is resolved, the way `Config::parse` resolves it.
-        let app = crate::testutil::app_at(&resolved(&real), "");
+        let app = orchd::testutil::app_at(&resolved(&real), "");
 
         let id = Uuid::new_v4();
         {
@@ -1166,13 +1166,13 @@ mod tests {
     /// so settling on one hands main's claim back out from under a live agent.
     #[tokio::test]
     async fn a_session_end_that_ends_no_process_keeps_the_session_and_its_claim() {
-        use crate::model::{Session, MAIN};
+        use orchd::model::{Session, MAIN};
 
-        let dir = crate::testutil::scratch("endclear");
+        let dir = orchd::testutil::scratch("endclear");
         let here = dir.join("main");
         std::fs::create_dir_all(&here).unwrap();
         let here = resolved(&here);
-        let app = crate::testutil::app_at(&here, "");
+        let app = orchd::testutil::app_at(&here, "");
 
         let id = Uuid::new_v4();
         {
@@ -1258,13 +1258,13 @@ mod tests {
     /// process is involved.
     #[tokio::test]
     async fn session_start_types_the_pending_prompt_into_the_pty() {
-        use crate::pty::PtyHandle;
+        use orchd::pty::PtyHandle;
         use std::path::Path;
 
-        let dir = crate::testutil::scratch("hook");
+        let dir = orchd::testutil::scratch("hook");
         std::env::set_var("HOME", &dir);
 
-        let app = crate::testutil::app_at(&dir, "");
+        let app = orchd::testutil::app_at(&dir, "");
 
         let spawned =
             PtyHandle::spawn(&["cat".to_string()], Path::new("/tmp"), &[], &[], (24, 80)).unwrap();
@@ -1303,9 +1303,9 @@ mod tests {
     /// A session that resumed on its own must stop claiming it wants you.
     #[tokio::test]
     async fn a_tool_call_clears_a_finished_turn() {
-        let dir = crate::testutil::scratch("tool");
+        let dir = orchd::testutil::scratch("tool");
         std::env::set_var("HOME", &dir);
-        let app = crate::testutil::app_at(&dir, "");
+        let app = orchd::testutil::app_at(&dir, "");
 
         let id = Uuid::new_v4();
         {
@@ -1344,7 +1344,7 @@ mod tests {
     async fn a_late_tool_result_does_not_undo_an_interrupt() {
         let dir = std::env::temp_dir().join(format!("orchd-hooks-int-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
-        let app = crate::testutil::app_at(&dir, "");
+        let app = orchd::testutil::app_at(&dir, "");
 
         let id = uuid::Uuid::new_v4();
         {
@@ -1388,7 +1388,7 @@ mod tests {
 
     #[test]
     fn hooks_carry_the_correlation_header_and_a_short_timeout() {
-        let dir = crate::testutil::scratch("test");
+        let dir = orchd::testutil::scratch("test");
         std::env::set_var("HOME", &dir);
         let path = write_settings(
             7777,

@@ -16,6 +16,8 @@ tauri-build = "2.6"
 
 [dependencies]
 orchd = { path = ".." }
+# The daemon itself: `start`, the window commands and the first-run server.
+orchd-serve = { path = "../crates/orchd-serve" }
 anyhow = { workspace = true }
 # `webview-data-url` because the splash is a `data:` URL rather than a file
 # (`splash_url`). Without the feature tauri refuses the URL and the window never

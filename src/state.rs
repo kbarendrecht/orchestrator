@@ -14,7 +14,11 @@ use crate::pty::pid_alive;
 
 /// What the overview shows about a run: one row per thread, in plan order.
 #[derive(Debug, Clone, Serialize)]
-#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "snapshot.d.ts"))]
+#[cfg_attr(
+    any(test, feature = "test-util"),
+    derive(ts_rs::TS),
+    ts(export, export_to = "snapshot.d.ts")
+)]
 pub struct RunView {
     pub session: Uuid,
     pub threads: Vec<RunThreadView>,
@@ -31,7 +35,11 @@ pub struct RunView {
 }
 
 #[derive(Debug, Clone, Serialize)]
-#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "snapshot.d.ts"))]
+#[cfg_attr(
+    any(test, feature = "test-util"),
+    derive(ts_rs::TS),
+    ts(export, export_to = "snapshot.d.ts")
+)]
 pub struct RunThreadView {
     pub thread_id: String,
     pub location: String,
@@ -77,7 +85,11 @@ impl RunView {
 /// with its session. The proposals themselves are stored, so a restart loses the
 /// caption and not the work.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "snapshot.d.ts"))]
+#[cfg_attr(
+    any(test, feature = "test-util"),
+    derive(ts_rs::TS),
+    ts(export, export_to = "snapshot.d.ts")
+)]
 pub struct TriageProgress {
     /// Threads read so far.
     pub done: u32,
@@ -87,7 +99,7 @@ pub struct TriageProgress {
     pub posted: bool,
     /// The session doing the reading, so the bar can refuse to caption another
     /// session's pane.
-    #[cfg_attr(test, ts(as = "String"))]
+    #[cfg_attr(any(test, feature = "test-util"), ts(as = "String"))]
     pub session: SessionId,
 }
 
@@ -106,7 +118,11 @@ pub struct ResolveRun {
 }
 
 #[derive(Debug, Clone, Serialize, Default)]
-#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "snapshot.d.ts"))]
+#[cfg_attr(
+    any(test, feature = "test-util"),
+    derive(ts_rs::TS),
+    ts(export, export_to = "snapshot.d.ts")
+)]
 pub struct Repos {
     /// Where PRs are opened, e.g. `acme/monorepo`.
     pub upstream: Option<String>,
@@ -592,7 +608,7 @@ impl AppState {
     /// Shutdown takes this **before** it kills anything, because `was_live` is read
     /// off session state and the exit watchers are about to rewrite it. Writing this
     /// verbatim afterwards is what lets the kills be awaited at all — see
-    /// [`crate::Server::shutdown`], which is the only caller.
+    /// `orchd_serve::Server::shutdown`, which is the only caller.
     pub async fn session_records(&self) -> Vec<crate::store::SessionRecord> {
         let inner = self.inner.read().await;
         inner
@@ -634,7 +650,7 @@ impl AppState {
     /// times a second while an agent is working.
     ///
     /// Coalescing costs at most a second of records on a *crash*. An ordinary exit
-    /// loses nothing: [`crate::Server::shutdown`] captures the resume set before it
+    /// loses nothing: `orchd_serve::Server::shutdown` captures the resume set before it
     /// kills anything and writes that set itself, and the flush below always writes
     /// the state as it is when it runs rather than as it was when the flag was set.
     /// What it buys is that a burst of hooks writes the file once rather than ten
@@ -1427,7 +1443,11 @@ impl AppState {
 /// old name there, the way `pr_age_ms` sat unread and the divergence strip named
 /// a ref it had not measured.
 #[derive(Debug, Serialize)]
-#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "snapshot.d.ts"))]
+#[cfg_attr(
+    any(test, feature = "test-util"),
+    derive(ts_rs::TS),
+    ts(export, export_to = "snapshot.d.ts")
+)]
 pub struct Snapshot {
     /// The configured tracker's MCP server name, or `None` for no tracker.
     ///
@@ -1442,10 +1462,10 @@ pub struct Snapshot {
     /// Set when the last poll failed; the pane says so rather than showing an
     /// empty list.
     pub pr_error: Option<String>,
-    #[cfg_attr(test, ts(type = "number"))]
+    #[cfg_attr(any(test, feature = "test-util"), ts(type = "number"))]
     pub pr_age_ms: Option<u64>,
     /// Monotonic counter of completed PR polls; see `Inner::pr_poll`.
-    #[cfg_attr(test, ts(type = "number"))]
+    #[cfg_attr(any(test, feature = "test-util"), ts(type = "number"))]
     pub pr_poll: u64,
     /// A PR fetch is running. The pane spins its refresh icon while it is,
     /// however the fetch was started.
@@ -1454,14 +1474,14 @@ pub struct Snapshot {
     pub reviews: crate::reviews::ReviewState,
     /// Age of the last completed review poll, in ms. `None` before the first.
     /// Mirrors `pr_age_ms`.
-    #[cfg_attr(test, ts(type = "number"))]
+    #[cfg_attr(any(test, feature = "test-util"), ts(type = "number"))]
     pub reviews_age_ms: Option<u64>,
     /// Monotonic counter of completed review polls; see `Inner::reviews_poll`.
-    #[cfg_attr(test, ts(type = "number"))]
+    #[cfg_attr(any(test, feature = "test-util"), ts(type = "number"))]
     pub reviews_poll: u64,
     pub reviews_polling: bool,
     #[cfg_attr(
-        test,
+        any(test, feature = "test-util"),
         ts(as = "std::collections::HashMap<String, crate::fix_pr::PrAutomation>")
     )]
     pub automation: HashMap<u64, crate::fix_pr::PrAutomation>,
@@ -1493,10 +1513,16 @@ pub struct Snapshot {
     /// Resolve runs in flight, by PR: what each thread's outcome was so far. The
     /// overview reads this rather than the report of a batch that has finished,
     /// because a run is watchable while it happens.
-    #[cfg_attr(test, ts(as = "std::collections::HashMap<String, RunView>"))]
+    #[cfg_attr(
+        any(test, feature = "test-util"),
+        ts(as = "std::collections::HashMap<String, RunView>")
+    )]
     pub resolve_runs: HashMap<u64, RunView>,
     /// How far each triage pass has read, by PR. The review bar counts with it.
-    #[cfg_attr(test, ts(as = "std::collections::HashMap<String, TriageProgress>"))]
+    #[cfg_attr(
+        any(test, feature = "test-util"),
+        ts(as = "std::collections::HashMap<String, TriageProgress>")
+    )]
     pub triage: HashMap<u64, TriageProgress>,
     /// The running build's own version, for the settings panel. Always here,
     /// unlike `update`, which only appears when there is something newer: "which
@@ -1506,7 +1532,11 @@ pub struct Snapshot {
 }
 
 #[derive(Debug, Serialize)]
-#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "snapshot.d.ts"))]
+#[cfg_attr(
+    any(test, feature = "test-util"),
+    derive(ts_rs::TS),
+    ts(export, export_to = "snapshot.d.ts")
+)]
 pub struct PrView {
     #[serde(flatten)]
     pub pr: crate::forge::Pr,
@@ -1523,15 +1553,23 @@ pub struct PrView {
 /// person runs by hand (`git stash apply <at>`) and a second spelling of the name
 /// is a second thing to keep in step.
 #[derive(Debug, Clone, Serialize)]
-#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "snapshot.d.ts"))]
+#[cfg_attr(
+    any(test, feature = "test-util"),
+    derive(ts_rs::TS),
+    ts(export, export_to = "snapshot.d.ts")
+)]
 pub struct BankedView {
-    #[cfg_attr(test, ts(type = "number"))]
+    #[cfg_attr(any(test, feature = "test-util"), ts(type = "number"))]
     pub files: u32,
     pub at: String,
 }
 
 #[derive(Debug, Serialize)]
-#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "snapshot.d.ts"))]
+#[cfg_attr(
+    any(test, feature = "test-util"),
+    derive(ts_rs::TS),
+    ts(export, export_to = "snapshot.d.ts")
+)]
 pub struct WorkspaceView {
     pub id: String,
     pub path: String,
@@ -1568,7 +1606,7 @@ pub struct WorkspaceView {
     /// Sent rather than inferred from the length, so the pane can say "500 of
     /// 5,214" instead of quietly presenting a truncation as the whole answer —
     /// the same honesty `unresolved_capped` buys the PR pane (§6).
-    #[cfg_attr(test, ts(type = "number"))]
+    #[cfg_attr(any(test, feature = "test-util"), ts(type = "number"))]
     pub changed_total: u32,
     /// The commit the above is measured from: `merge-base(upstream, HEAD)`.
     pub changed_since: Option<String>,
@@ -1588,7 +1626,11 @@ pub struct WorkspaceView {
 }
 
 #[derive(Debug, Serialize)]
-#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "snapshot.d.ts"))]
+#[cfg_attr(
+    any(test, feature = "test-util"),
+    derive(ts_rs::TS),
+    ts(export, export_to = "snapshot.d.ts")
+)]
 pub struct ProcessView {
     pub id: String,
     pub name: String,
@@ -1600,7 +1642,11 @@ pub struct ProcessView {
 }
 
 #[derive(Debug, Serialize)]
-#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "snapshot.d.ts"))]
+#[cfg_attr(
+    any(test, feature = "test-util"),
+    derive(ts_rs::TS),
+    ts(export, export_to = "snapshot.d.ts")
+)]
 pub struct SessionView {
     pub id: Uuid,
     pub workspace: String,
@@ -1626,9 +1672,9 @@ pub struct SessionView {
     pub wants_attention: bool,
     /// How long this session has been waiting on you. With 4-6 sessions the
     /// cost of the whole tool is measured in agent-minutes spent idle (§2).
-    #[cfg_attr(test, ts(type = "number"))]
+    #[cfg_attr(any(test, feature = "test-util"), ts(type = "number"))]
     pub waiting_ms: Option<u64>,
-    #[cfg_attr(test, ts(type = "number"))]
+    #[cfg_attr(any(test, feature = "test-util"), ts(type = "number"))]
     pub created_ms: u64,
     pub alive: bool,
     pub dirty_count: usize,

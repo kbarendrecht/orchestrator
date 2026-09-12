@@ -53,7 +53,7 @@ description = "Type-check the SPA and enforce its module graph"
 depends = ["deps"]
 run = """
 cargo test --workspace --lib export_bindings >/dev/null
-git diff --exit-code --stat web/snapshot.d.ts web/base.d.ts \
+git diff --exit-code --stat web/snapshot.d.ts web/base.d.ts web/serve.d.ts \
   || { echo 'the generated types were stale — the regenerated copies are in your tree; commit them.'; exit 1; }
 npx --prefix tools tsc -p tools/tsconfig.json
 npx --prefix tools depcruise --config tools/.dependency-cruiser.cjs web/app.js
@@ -78,7 +78,7 @@ node tools/check-module-routes.mjs
 description = "Advisories, licences, unused dependencies and spelling"
 dir = "{{config_root}}"
 run = """
-cargo deny check
+cargo deny --workspace check
 cargo machete
 typos
 """
@@ -86,11 +86,16 @@ typos
 # Regenerate the Rust third-party notices. `THIRD-PARTY.md` explains the
 # obligation for the vendored JavaScript; this is the same one for ~490 crates,
 # which had no notice at all. CI regenerates and diffs, like `snapshot.d.ts`.
+#
+# **`--workspace`, since the split.** Without it `cargo about` reads the crate in
+# the current directory — `orchd`, which no longer produces a binary — and the
+# notices then miss whatever `orchd-serve` and the desktop shell pull in. The
+# shipped binaries are what the obligation is about.
 #   cargo install cargo-about@0.9.2 --features cli
 [tasks.notices]
 description = "Regenerate THIRD-PARTY-RUST.md from Cargo.lock"
 dir = "{{config_root}}"
-run = "cargo about generate --fail about.hbs > THIRD-PARTY-RUST.md"
+run = "cargo about generate --fail --workspace about.hbs > THIRD-PARTY-RUST.md"
 
 # The doc comments are the design record here, so they are the one prose in this
 # repo a compiler can check. Nine links were dangling the first time this ran,
@@ -165,7 +170,7 @@ run = "node tools/e2e/run.mjs"
 description = "Drive the terminal pane in a real browser"
 depends = ["deps"]
 dir = "{{config_root}}"
-run = "cargo build --bin orchd && node tools/e2e/term.mjs"
+run = "cargo build -p orchd-serve --bin orchd && node tools/e2e/term.mjs"
 
 # What the rendered page must never show: an unresolved `MOD` placeholder, the
 # word `undefined` where a person reads, two sets of window buttons, or anything
@@ -183,7 +188,7 @@ run = "cargo build --bin orchd && node tools/e2e/term.mjs"
 description = "Assert what the rendered page must never show"
 depends = ["deps"]
 dir = "{{config_root}}"
-run = "cargo build --bin orchd && node tools/e2e/page.mjs"
+run = "cargo build -p orchd-serve --bin orchd && node tools/e2e/page.mjs"
 
 # Which renderer each terminal opens with, asserted instead of eyeballed. Proves
 # the *decision* — one live WebGL context per window on macOS (#8) — not that the
@@ -195,7 +200,7 @@ run = "cargo build --bin orchd && node tools/e2e/page.mjs"
 description = "Assert which renderer each terminal opens with"
 depends = ["deps"]
 dir = "{{config_root}}"
-run = "cargo build --bin orchd && E2E_LOG=${E2E_LOG:-info} node tools/e2e/renderer.mjs"
+run = "cargo build -p orchd-serve --bin orchd && E2E_LOG=${E2E_LOG:-info} node tools/e2e/renderer.mjs"
 
 # Cut a release, refusing while CI has not answered for the commit you are on.
 #

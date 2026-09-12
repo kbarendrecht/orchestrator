@@ -10,9 +10,13 @@ use std::path::Path;
 /// request, re-review detection, reviewer-count tiebreak. The daemon consumes
 /// that shape rather than imposing the one §6b invented.
 #[derive(Debug, Clone, Serialize)]
-#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "snapshot.d.ts"))]
+#[cfg_attr(
+    any(test, feature = "test-util"),
+    derive(ts_rs::TS),
+    ts(export, export_to = "snapshot.d.ts")
+)]
 pub struct Review {
-    #[cfg_attr(test, ts(type = "number"))]
+    #[cfg_attr(any(test, feature = "test-util"), ts(type = "number"))]
     pub number: u64,
     pub title: String,
     pub url: String,
@@ -35,7 +39,11 @@ pub struct Review {
 }
 
 #[derive(Debug, Clone, Serialize, Default)]
-#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "snapshot.d.ts"))]
+#[cfg_attr(
+    any(test, feature = "test-util"),
+    derive(ts_rs::TS),
+    ts(export, export_to = "snapshot.d.ts")
+)]
 pub struct ReviewQueue {
     pub login: String,
     pub actionable: Vec<Review>,
@@ -51,7 +59,11 @@ pub struct ReviewQueue {
 /// unparseable output or an unknown `version` all land here instead.
 #[derive(Debug, Clone, Default, Serialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
-#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "snapshot.d.ts"))]
+#[cfg_attr(
+    any(test, feature = "test-util"),
+    derive(ts_rs::TS),
+    ts(export, export_to = "snapshot.d.ts")
+)]
 pub enum ReviewState {
     Ok(ReviewQueue),
     Degraded {

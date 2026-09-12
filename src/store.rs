@@ -45,7 +45,7 @@ impl OnDiskKind {
         }
     }
 
-    pub(crate) fn pass(self) -> Option<Pass> {
+    pub fn pass(self) -> Option<Pass> {
         match self {
             OnDiskKind::Interactive => None,
             OnDiskKind::Automation { pr, command } => Some(Pass { pr, command }),

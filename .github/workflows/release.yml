@@ -125,7 +125,7 @@ jobs:
       # Placed before the build, so a failure here happens before this job has
       # uploaded anything.
       - name: Test
-        run: cargo test -p orchd -p orchestrator-desktop
+        run: cargo test --workspace
 
       - name: Build
         run: |
@@ -133,7 +133,7 @@ jobs:
           # beside the app (the per-bundle `files` maps in tauri.conf.json), so it
           # has to exist before the bundler runs. A binary that has to be installed
           # separately is one that is not there when an agent reaches for it.
-          cargo build --release --bin orch
+          cargo build --release -p orchd-serve --bin orch
           # The npm CLI ships a prebuilt binary; `cargo install tauri-cli` would
           # spend minutes compiling one on every release. This also builds
           # `orchestrator-desktop --release`, which is why that step is gone.

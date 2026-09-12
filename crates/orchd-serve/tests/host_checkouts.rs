@@ -81,7 +81,7 @@ fn scratch_repo(root: &Path, name: &str, repo: Option<&str>) -> PathBuf {
     git(&["commit", "-qm", "base"]);
 
     if let Some(repo) = repo {
-        let state = orchd::host::checkout_dir(&dir).unwrap();
+        let state = orchd_serve::host::checkout_dir(&dir).unwrap();
         std::fs::create_dir_all(&state).unwrap();
         std::fs::write(
             state.join("config.json"),
@@ -221,10 +221,10 @@ async fn a_host_adds_closes_and_reopens_checkouts_and_refuses_the_three() {
     let first = scratch_repo(&root, "first", Some("acme/mono"));
     let second = scratch_repo(&root, "second", Some("acme/other"));
 
-    let serving = orchd::host::serve("host-token".into(), 0, orchd::window::Chrome::None)
+    let serving = orchd_serve::host::serve("host-token".into(), 0, orchd::window::Chrome::None)
         .await
         .expect("the host bound a port");
-    let host: Arc<orchd::host::Host> = serving.host.clone();
+    let host: Arc<orchd_serve::host::Host> = serving.host.clone();
     let base = format!("http://127.0.0.1:{}", host.port);
     let token = host.token.clone();
 
@@ -446,7 +446,7 @@ async fn a_host_adds_closes_and_reopens_checkouts_and_refuses_the_three() {
     // 6 — a re-add asks before resuming what was live. Closing a checkout keeps
     // its records, deliberately, so this is the guard that stops a path coming
     // back and resurrecting months-old conversations.
-    let state = orchd::host::checkout_dir(&second).unwrap();
+    let state = orchd_serve::host::checkout_dir(&second).unwrap();
     std::fs::write(
         state.join("sessions.json"),
         r#"[{"id":"s1","was_live":true,"had_a_turn":true}]"#,
@@ -483,7 +483,7 @@ async fn a_host_adds_closes_and_reopens_checkouts_and_refuses_the_three() {
     assert_eq!(body["result"]["added"], "opened");
 
     // 7 — the host file remembers what is open, so the app opens it again.
-    let remembered = orchd::host::remembered_checkouts();
+    let remembered = orchd_serve::host::remembered_checkouts();
     assert!(
         remembered.contains(&first),
         "the host file lost an open checkout"
@@ -557,7 +557,7 @@ async fn a_host_adds_closes_and_reopens_checkouts_and_refuses_the_three() {
         "the order was not applied"
     );
     assert_eq!(
-        orchd::host::remembered_checkouts().first(),
+        orchd_serve::host::remembered_checkouts().first(),
         Some(&first),
         "the order was applied but not remembered"
     );

@@ -217,7 +217,7 @@ fn write_app_bundle(
          # Written by `orchestrator-desktop --install-desktop-entry`, and rewritten\n\
          # whenever the binary it points at moves.\n\
          exec {} \"$@\"\n",
-        orchd::hooks::sh_quote(&exec.to_string_lossy())
+        orchd_serve::hooks::sh_quote(&exec.to_string_lossy())
     );
     wrote |= write_if_changed(&launcher, script.as_bytes())?;
     // Set every time, not only on a write: a bundle restored from a backup that

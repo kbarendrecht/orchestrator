@@ -49,7 +49,7 @@ async fn main() -> Result<()> {
     // says why.
     let host_origin = arg("--host-origin");
 
-    let server = orchd::start(orchd::StartOptions {
+    let server = orchd_serve::start(orchd_serve::StartOptions {
         main_checkout,
         // A busy port here means another orchd is already running, and saying
         // so beats quietly starting a second one somewhere else. A host-spawned
@@ -147,8 +147,8 @@ async fn run_host(checkouts: Vec<String>) -> Result<()> {
         })
         .collect();
 
-    let serving = orchd::host::serve(
-        orchd::host::mint_token(),
+    let serving = orchd_serve::host::serve(
+        orchd_serve::host::mint_token(),
         // Ephemeral, like the app's: the URL is printed, so nothing has to predict
         // it, and a stale process on a fixed port cannot stop this starting.
         0,

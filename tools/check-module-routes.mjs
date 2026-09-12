@@ -1,15 +1,16 @@
 // Every SPA module must be served, and everything served must exist.
 //
 // The page is compiled in, so adding a file to `web/js/` is a *Rust* change: it
-// needs an arm in `module()` in `src/host.rs` or the browser gets a 404 for an
-// import that resolves perfectly on disk. Nothing said so until now.
+// needs an arm in `module()` in `crates/orchd-serve/src/host.rs` or the browser
+// gets a 404 for an import that resolves perfectly on disk. Nothing said so until
+// this file.
 // `dependency-cruiser` answers "is this module imported"; it cannot answer "is
 // this module reachable", and the two failures look nothing alike — an
 // unimported module is dead, an unserved one is a page that stops booting.
 //
 // The other direction is the cheaper half: an arm naming a file that was
 // renamed does not compile, so `include_str!` already guards it. The arm *key*
-// is what can drift, because `"trem.js" => include_str!("../web/js/term.js")`
+// is what can drift, because `"trem.js" => include_str!(".../web/js/term.js")`
 // is a valid program.
 
 import { readdirSync, readFileSync } from 'node:fs';
@@ -22,24 +23,24 @@ const onDisk = readdirSync(`${root}/web/js`).filter((f) => f.endsWith('.js')).so
 
 // The arms of `module()` alone: `vendor()` below it has the same shape, and its
 // files are not ours.
-const host = readFileSync(`${root}/src/host.rs`, 'utf8');
+const host = readFileSync(`${root}/crates/orchd-serve/src/host.rs`, 'utf8');
 const body = host.match(/async fn module\([\s\S]*?\n}/);
 if (!body) {
-  console.error('check-module-routes: no `async fn module(` in src/host.rs — has it moved?');
+  console.error('check-module-routes: no `async fn module(` in crates/orchd-serve/src/host.rs — has it moved?');
   process.exit(1);
 }
-const served = [...body[0].matchAll(/"([\w.-]+\.js)" => include_str!\("\.\.\/web\/js\/([\w.-]+\.js)"\)/g)];
+const served = [...body[0].matchAll(/"([\w.-]+\.js)" => include_str!\("\.\.\/\.\.\/\.\.\/web\/js\/([\w.-]+\.js)"\)/g)];
 
 const problems = [];
 for (const [, key, file] of served) {
-  if (key !== file) problems.push(`src/host.rs serves "${key}" from web/js/${file} — the names disagree`);
+  if (key !== file) problems.push(`crates/orchd-serve/src/host.rs serves "${key}" from web/js/${file} — the names disagree`);
 }
 const keys = new Set(served.map(([, key]) => key));
 for (const f of onDisk) {
-  if (!keys.has(f)) problems.push(`web/js/${f} has no arm in module() in src/host.rs — it would 404`);
+  if (!keys.has(f)) problems.push(`web/js/${f} has no arm in module() in host.rs — it would 404`);
 }
 for (const key of keys) {
-  if (!onDisk.includes(key)) problems.push(`src/host.rs serves "${key}", which is not in web/js/`);
+  if (!onDisk.includes(key)) problems.push(`host.rs serves "${key}", which is not in web/js/`);
 }
 
 if (problems.length) {

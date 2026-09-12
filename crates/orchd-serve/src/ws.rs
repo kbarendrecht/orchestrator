@@ -10,9 +10,9 @@ use serde::Deserialize;
 use std::sync::Arc;
 use uuid::Uuid;
 
-use crate::model::{State as SessionState, TurnReason};
-use crate::pty::PtyHandle;
-use crate::state::AppState;
+use orchd::model::{State as SessionState, TurnReason};
+use orchd::pty::PtyHandle;
+use orchd::state::AppState;
 
 #[derive(Deserialize)]
 pub struct WsQuery {

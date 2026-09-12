@@ -34,7 +34,11 @@ pub struct Patch {
 /// A path the batch will touch, with its line counts — the data behind the
 /// card's `will write renovate.json5 +2 −1` label.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "snapshot.d.ts"))]
+#[cfg_attr(
+    any(test, feature = "test-util"),
+    derive(ts_rs::TS),
+    ts(export, export_to = "snapshot.d.ts")
+)]
 pub struct FileStat {
     pub path: String,
     pub added: u32,

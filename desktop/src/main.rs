@@ -28,7 +28,7 @@ use launcher::{install_desktop_entry, launcher_target, refresh_launcher_entry};
 use login_path::adopt_login_path;
 
 /// The daemon, once started. Held so the exit hook can tear it down.
-static SERVER: OnceLock<Mutex<Option<orchd::host::Serving>>> = OnceLock::new();
+static SERVER: OnceLock<Mutex<Option<orchd_serve::host::Serving>>> = OnceLock::new();
 
 /// Whether the window is showing the board yet.
 ///
@@ -327,16 +327,16 @@ fn with_settings_item(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tau
 /// First run: no config, so bring up the open-project window instead of a native
 /// dialog fired at nothing.
 ///
-/// A small HTTP bootstrap server ([`orchd::firstrun`]) serves the page and the JSON
+/// A small HTTP bootstrap server ([`orchd_serve::firstrun`]) serves the page and the JSON
 /// it calls; the window loads it, and choosing a project comes back through
 /// [`TauriBootstrap`], which hands off to [`boot_daemon`]. HTTP rather than Tauri
 /// IPC so the flow is the same shape as the daemon SPA and can be tested headlessly.
 fn first_run(app_handle: &AppHandle, rt: &tokio::runtime::Handle) -> Result<()> {
-    let host: Arc<dyn orchd::firstrun::BootstrapHost> = Arc::new(TauriBootstrap {
+    let host: Arc<dyn orchd_serve::firstrun::BootstrapHost> = Arc::new(TauriBootstrap {
         app: app_handle.clone(),
     });
     let serving = rt
-        .block_on(orchd::firstrun::serve(host))
+        .block_on(orchd_serve::firstrun::serve(host))
         .context("starting the first-run server")?;
     let url = serving.url().parse().context("the bootstrap URL")?;
     // Kept so the daemon boot can stop it once a project is committed.
@@ -434,7 +434,7 @@ fn build_window(
     moment it is built and no runtime call takes it back. The theme's opacity is
     what moves day to day; this only decides whether there is anything behind the
     board to show. Off unless `host.json` says otherwise — see
-    [`orchd::host::HostFile::see_through_window`] for why that is the safe way
+    [`orchd_serve::host::HostFile::see_through_window`] for why that is the safe way
     round.
 
     macOS needs one more thing, and it is in `tauri.conf.json` rather than here:
@@ -442,7 +442,7 @@ fn build_window(
     It is on unconditionally because the config cannot read a runtime setting,
     and its one real cost — the Mac App Store refuses an app that uses it — is
     not a cost this app pays: it ships as a dmg. */
-    let see_through = orchd::host::see_through_window();
+    let see_through = orchd_serve::host::see_through_window();
     let mut builder = WebviewWindowBuilder::new(app_handle, "main", url)
         .title("Orchestrator")
         .transparent(see_through)
@@ -601,7 +601,7 @@ fn boot_daemon(
         // host needs them to key the rows it is about to record.
         let checkouts: Vec<std::path::PathBuf> = match main {
             Some(p) => vec![p],
-            None => orchd::host::remembered_checkouts(),
+            None => orchd_serve::host::remembered_checkouts(),
         };
         if checkouts.is_empty() {
             let ah = app_handle.clone();
@@ -613,7 +613,11 @@ fn boot_daemon(
         // A port of 0: the page's URL is handed to the webview, so nothing has to
         // predict it, and a stale process on a configured port cannot be the
         // difference between an app that opens and one that does not.
-        let serving = match rt.block_on(orchd::host::serve(orchd::host::mint_token(), 0, CHROME)) {
+        let serving = match rt.block_on(orchd_serve::host::serve(
+            orchd_serve::host::mint_token(),
+            0,
+            CHROME,
+        )) {
             Ok(s) => s,
             Err(e) => {
                 let ah = app_handle.clone();
@@ -638,7 +642,7 @@ fn boot_daemon(
         // A first-run pick is a set the file has never seen, so record it before
         // anything can fail: what to open next launch is the decision the person
         // just made, not the subset that happened to start.
-        orchd::host::remember_checkouts(&checkouts);
+        orchd_serve::host::remember_checkouts(&checkouts);
         serving.host.open_remembered(&checkouts);
         if serving.host.checkouts().is_empty() {
             let ah = app_handle.clone();
@@ -932,14 +936,14 @@ fn request_restart(app: &AppHandle) -> bool {
     }
 }
 
-/// The window-side of the first-run flow, handed to [`orchd::firstrun`]'s HTTP
+/// The window-side of the first-run flow, handed to [`orchd_serve::firstrun`]'s HTTP
 /// server: the native folder dialog, the daemon boot, and the frameless window
 /// commands the page's own titlebar needs.
 struct TauriBootstrap {
     app: AppHandle,
 }
 
-impl orchd::firstrun::BootstrapHost for TauriBootstrap {
+impl orchd_serve::firstrun::BootstrapHost for TauriBootstrap {
     fn pick(&self) -> Option<std::path::PathBuf> {
         pick_folder(&self.app)
     }
@@ -980,7 +984,7 @@ impl orchd::firstrun::BootstrapHost for TauriBootstrap {
     /// The first-run page is reached only at boot with nothing configured, so no
     /// daemon is ever up while it is on screen. It stays because it is a
     /// *defaulted* trait method: dropping the impl compiles silently, and this is
-    /// the only branch of [`BootstrapHost::open`](orchd::firstrun::BootstrapHost::open) that reaches `request_restart` — so if a
+    /// the only branch of [`BootstrapHost::open`](orchd_serve::firstrun::BootstrapHost::open) that reaches `request_restart` — so if a
     /// flow ever puts this page over a running board again, losing it would mean
     /// every open taking the `BOOTING` branch, which is set by the first boot and
     /// never cleared.
@@ -988,7 +992,7 @@ impl orchd::firstrun::BootstrapHost for TauriBootstrap {
         daemon_url().is_some()
     }
 
-    /// The page's own way back, for the same reason [`BootstrapHost::switching`](orchd::firstrun::BootstrapHost::switching) stays.
+    /// The page's own way back, for the same reason [`BootstrapHost::switching`](orchd_serve::firstrun::BootstrapHost::switching) stays.
     fn cancel(&self) {
         let Some(url) = daemon_url() else { return };
         navigate_main(&self.app, url);

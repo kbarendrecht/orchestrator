@@ -99,7 +99,7 @@ jobs:
       # for one reason: it writes the macOS `.app` bundle, and this is the only
       # machine that can check that layout against a real Finder's rules.
       - name: Test the daemon
-        run: cargo test -p orchd -p orchestrator-desktop
+        run: cargo test --workspace
 
       # Clippy was local-only, so the warnings drifted: 33 of them had
       # accumulated, including two `items_after_test_module` and a
@@ -169,7 +169,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           cargo test --workspace --lib export_bindings >/dev/null
-          git diff --exit-code --stat web/snapshot.d.ts web/base.d.ts \
+          git diff --exit-code --stat web/snapshot.d.ts web/base.d.ts web/serve.d.ts \
             || { echo 'the generated types are stale: run `mise run check-web` and commit them.'; exit 1; }
           npx --prefix tools tsc -p tools/tsconfig.json
           npx --prefix tools depcruise --config tools/.dependency-cruiser.cjs web/app.js
@@ -191,7 +191,7 @@ jobs:
       - name: Check the page
         if: runner.os == 'Linux'
         run: |
-          cargo build --bin orchd
+          cargo build -p orchd-serve --bin orchd
           node tools/e2e/page.mjs
 
       # The part no Linux box can answer, so it runs even when the tests above

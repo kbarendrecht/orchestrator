@@ -16,7 +16,7 @@
 //! was `<config dir>/instance.pid`, one per app. That was the same thing while an
 //! app managed one checkout. It stopped being the same thing the moment a host
 //! could hold several, and the fix was not here: a child daemon's config dir is
-//! `checkouts/<leaf>-<hash>` (see [`crate::host::checkout_dir`]), derived from the
+//! `checkouts/<leaf>-<hash>` (see `orchd_serve::host::checkout_dir`), derived from the
 //! checkout, so this path is now derived from the checkout too. Two daemons for one
 //! checkout meet on one file; two daemons for two checkouts do not meet at all,
 //! which is what makes several checkouts possible.

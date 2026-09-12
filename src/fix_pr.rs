@@ -13,12 +13,16 @@ use crate::model::SessionId;
 /// and to be honest about a run that gave up.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "state", rename_all = "snake_case")]
-#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "snapshot.d.ts"))]
+#[cfg_attr(
+    any(test, feature = "test-util"),
+    derive(ts_rs::TS),
+    ts(export, export_to = "snapshot.d.ts")
+)]
 pub enum PrAutomation {
     Running {
         session: SessionId,
         #[cfg_attr(
-            test,
+            any(test, feature = "test-util"),
             ts(type = "{ secs_since_epoch: number, nanos_since_epoch: number }")
         )]
         started: SystemTime,
@@ -37,7 +41,7 @@ pub enum PrAutomation {
         #[serde(default)]
         at_head: Option<String>,
         #[cfg_attr(
-            test,
+            any(test, feature = "test-util"),
             ts(type = "{ secs_since_epoch: number, nanos_since_epoch: number }")
         )]
         at: SystemTime,

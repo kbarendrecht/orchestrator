@@ -858,7 +858,7 @@ impl Config {
     /// would be setting it for every other test in the binary. What is worth
     /// pinning here is the *decision* (first run, or a checkout that moved), not
     /// the lookup.
-    pub(crate) fn existing_at(path: &Path) -> Option<Self> {
+    pub fn existing_at(path: &Path) -> Option<Self> {
         // Before the read, because the whole point is to fix a file this build
         // would otherwise refuse — and a refusal here is read as *first run*, so
         // the cost of skipping it is a folder picker for a configured project.

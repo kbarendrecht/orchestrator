@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/orchd-base", "desktop"]
+members = ["crates/orchd-base", "crates/orchd-serve", "desktop"]
 
 # The four crates both this daemon and the desktop shell depend on. One version
 # each, in one place: they were declared twice and could drift, and a version skew
@@ -106,15 +106,11 @@ authors = ["Kars Barendrecht <18546657+kbarendrecht@users.noreply.github.com>"]
 # thing people install. Set so a stray `cargo publish` cannot go through.
 publish = false
 
-# The daemon is a library so the desktop shell can embed it in-process, and a
-# binary so it still runs headless in a terminal.
+# A library only. The binaries moved to `orchd-serve` with the server they start;
+# this crate is what that one assembles.
 [lib]
 name = "orchd"
 path = "src/lib.rs"
-
-[[bin]]
-name = "orchd"
-path = "src/main.rs"
 
 [dependencies]
 anyhow = { workspace = true }
@@ -123,6 +119,10 @@ anyhow = { workspace = true }
 # re-exported from `lib.rs` at the path it always had, so `crate::git::…` still
 # reads the same everywhere.
 orchd-base = { path = "crates/orchd-base" }
+# Generates `web/snapshot.d.ts`. Optional rather than a dev-dependency, for the
+# reason `orchd-base` gives: as a dev-dependency the derives exist only while this
+# crate's own tests build.
+ts-rs = { version = "12.0.1", features = ["uuid-impl"], optional = true }
 axum = { version = "0.7", features = ["ws", "macros"] }
 bytes = "1"
 # `kill(pid, 0)` for the pid-liveness guards. The /proc stat it replaced was
@@ -135,6 +135,12 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 
+[features]
+# The `AppState` fixtures, and the `TS` derives that go with them. The same shape
+# `orchd-base` needed and for the same reason: a `#[cfg(test)]` item is invisible
+# to a *dependent* crate's tests, and `orchd-serve`'s tests are exactly that.
+test-util = ["dep:ts-rs", "orchd-base/test-util"]
+
 [lints]
 workspace = true
 
@@ -145,7 +151,6 @@ opt-level = 2
 # The scratch and git fixtures. `orchd-base` keeps them behind a feature because a
 # `#[cfg(test)]` module does not reach a dependent crate's tests.
 orchd-base = { path = "crates/orchd-base", features = ["test-util"] }
-ts-rs = { version = "12.0.1", features = ["uuid-impl"] }
 # Driving the bootstrap router in-process (`oneshot`) so its contract is tested
 # without binding a port or a browser.
 tower = { version = "0.5", features = ["util"] }

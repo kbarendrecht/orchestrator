@@ -2349,6 +2349,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "orchd-serve"
+version = "2026.9.12"
+dependencies = [
+ "anyhow",
+ "axum",
+ "libc",
+ "orchd",
+ "orchd-base",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tower",
+ "tracing",
+ "ts-rs",
+ "uuid",
+]
+
+[[package]]
 name = "orchestrator-desktop"
 version = "2026.9.12"
 dependencies = [
@@ -2357,6 +2375,7 @@ dependencies = [
  "objc2",
  "objc2-app-kit",
  "orchd",
+ "orchd-serve",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",

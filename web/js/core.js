@@ -137,7 +137,7 @@ export function setSelected(/** @type {string | null} */ id, auto = false) {
  *  call has to say which one it is for — `call` and `get` are the shorthand for
  *  "the active one" and nothing else may assume there is only one.
  *
- *  @typedef {import("../snapshot").Checkout & { base: string, wsBase: string }} Target
+ *  @typedef {import("../serve").Checkout & { base: string, wsBase: string }} Target
  */
 
 /** Anything a fetch can be aimed at: a checkout's daemon, or the host.
@@ -164,7 +164,7 @@ export function setSelected(/** @type {string | null} */ id, auto = false) {
  *  Origin is the host's — the one extra string the child accepts, handed to it on
  *  its argv.
  *
- *  @param {import("../snapshot").Checkout} c
+ *  @param {import("../serve").Checkout} c
  *  @returns {Target}
  */
 function reachable(c) {
@@ -192,7 +192,7 @@ export let CHECKOUTS = (window.__ORCH__.checkouts ?? []).map(reachable);
  *  One writer, so a row and the socket aimed at it cannot disagree. The caller
  *  reconciles the sockets; this only moves the list.
  *
- *  @param {import("../snapshot").Checkout[]} next
+ *  @param {import("../serve").Checkout[]} next
  */
 export function setCheckouts(next) {
   CHECKOUTS = next.map(reachable);

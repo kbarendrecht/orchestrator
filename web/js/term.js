@@ -602,7 +602,7 @@ function repaint(/** @type {import('./core.js').TermEntry} */ entry) {
   });
 }
 
-function closeTerm(/** @type {import('../snapshot').Checkout} */ checkout, /** @type {string} */ target) {
+function closeTerm(/** @type {import('../serve').Checkout} */ checkout, /** @type {string} */ target) {
   const entry = terms.get(termKey(checkout, target));
   if (!entry) return;
   // Mark it torn down before closing, so the socket's `onclose` does not read a
@@ -700,7 +700,7 @@ function applyTermTheme() {
  *  from the tail because a watcher that has been idle leaves the screen padded,
  *  and 50 rows of nothing is not what you meant to send.
  */
-function readTerm(/** @type {import('../snapshot').Checkout} */ checkout, /** @type {string} */ target, lines = 50) {
+function readTerm(/** @type {import('../serve').Checkout} */ checkout, /** @type {string} */ target, lines = 50) {
   const entry = terms.get(termKey(checkout, target));
   if (!entry) return null;
   const picked = entry.term.getSelection();
@@ -721,7 +721,7 @@ function readTerm(/** @type {import('../snapshot').Checkout} */ checkout, /** @t
 }
 
 /** Whether this pane has a selection, which is what the menu's wording turns on. */
-function hasSelection(/** @type {import('../snapshot').Checkout} */ checkout, /** @type {string} */ target) {
+function hasSelection(/** @type {import('../serve').Checkout} */ checkout, /** @type {string} */ target) {
   const entry = terms.get(termKey(checkout, target));
   return !!entry && !!entry.term.getSelection().trim();
 }

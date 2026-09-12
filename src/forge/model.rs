@@ -17,7 +17,11 @@ use serde::Serialize;
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "snapshot.d.ts"))]
+#[cfg_attr(
+    any(test, feature = "test-util"),
+    derive(ts_rs::TS),
+    ts(export, export_to = "snapshot.d.ts")
+)]
 pub enum Checks {
     Passing,
     Failing,
@@ -26,9 +30,13 @@ pub enum Checks {
 }
 
 #[derive(Debug, Clone, Serialize)]
-#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "snapshot.d.ts"))]
+#[cfg_attr(
+    any(test, feature = "test-util"),
+    derive(ts_rs::TS),
+    ts(export, export_to = "snapshot.d.ts")
+)]
 pub struct Pr {
-    #[cfg_attr(test, ts(type = "number"))]
+    #[cfg_attr(any(test, feature = "test-util"), ts(type = "number"))]
     pub number: u64,
     pub title: String,
     pub url: String,
@@ -82,7 +90,7 @@ pub struct Pr {
     /// that as your turn is what made an answered PR sit there amber.
     pub needs_you: bool,
     /// PRs stacked directly on this one.
-    #[cfg_attr(test, ts(type = "Array<number>"))]
+    #[cfg_attr(any(test, feature = "test-util"), ts(type = "Array<number>"))]
     pub children: Vec<u64>,
 }
 
@@ -128,7 +136,11 @@ pub fn answered(last_author: &str, viewer_thumbed: bool, viewer: &str) -> bool {
 
 /// One comment in a review thread.
 #[derive(Debug, Clone, Serialize)]
-#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "snapshot.d.ts"))]
+#[cfg_attr(
+    any(test, feature = "test-util"),
+    derive(ts_rs::TS),
+    ts(export, export_to = "snapshot.d.ts")
+)]
 pub struct Comment {
     /// REST id. The reply endpoint is keyed on this, not on the GraphQL node id.
     pub database_id: u64,
@@ -150,7 +162,11 @@ pub struct Comment {
 
 /// An unresolved conversation on a PR.
 #[derive(Debug, Clone, Serialize)]
-#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "snapshot.d.ts"))]
+#[cfg_attr(
+    any(test, feature = "test-util"),
+    derive(ts_rs::TS),
+    ts(export, export_to = "snapshot.d.ts")
+)]
 pub struct Thread {
     /// `PRRT_…`. **Not** a resolve target — closing a thread is the comment
     /// author's button, never ours — but the join key between a thread and the

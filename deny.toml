@@ -15,11 +15,30 @@
 # do without — and the advisory is "unmaintained", not a vulnerability: last
 # release 2017, no safe upgrade, no exploit. Recorded rather than silenced so the
 # next reader sees the decision instead of an empty file.
-ignore = [{ id = "RUSTSEC-2017-0008", reason = "unmaintained `serial`, via portable-pty; no vulnerability and no upgrade path" }]
+#
+# Everything below the first is reached only through `tauri`, and surfaced the day
+# this started scanning the **workspace** rather than the `orchd` crate alone —
+# which is to say the desktop shell's ~130 dependencies had never been checked at
+# all. Every one is "unmaintained", none is a vulnerability, and none has a fix
+# that is ours to apply: they arrive with the toolkit and leave when it bumps.
+ignore = [
+    { id = "RUSTSEC-2017-0008", reason = "unmaintained `serial`, via portable-pty; no vulnerability and no upgrade path" },
+    { id = "RUSTSEC-2024-0370", reason = "unmaintained `proc-macro-error`, via tauri's macros" },
+    { id = "RUSTSEC-2025-0075", reason = "unmaintained `unic-char-property`, via tauri" },
+    { id = "RUSTSEC-2025-0080", reason = "unmaintained `unic-char-range`, via tauri" },
+    { id = "RUSTSEC-2025-0081", reason = "unmaintained `unic-common`, via tauri" },
+    { id = "RUSTSEC-2025-0098", reason = "unmaintained `unic-ucd-ident`, via tauri" },
+    { id = "RUSTSEC-2025-0100", reason = "unmaintained `unic-ucd-version`, via tauri" },
+]
 
 [licenses]
 # Permissive plus our own AGPL. Nothing copyleft-by-linking is on this list, and
 # that is the point: adding one is a decision, made here, in writing.
+#
+# The last three arrive with the desktop shell and appeared when this started
+# scanning the whole workspace. `MPL-2.0` is file-level copyleft and compatible
+# with this project's AGPL — and it is a dependency's licence, not ours. The LLVM
+# exception is the usual `Apache-2.0` plus a linking grant.
 allow = [
     "AGPL-3.0-only",
     "Apache-2.0",
@@ -29,6 +48,9 @@ allow = [
     "MIT",
     "Unicode-3.0",
     "Unlicense",
+    "MPL-2.0",
+    "Zlib",
+    "Apache-2.0 WITH LLVM-exception",
 ]
 
 [bans]

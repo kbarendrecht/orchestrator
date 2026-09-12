@@ -1,0 +1,65 @@
+# The daemon assembled: the HTTP server, the boot sequence, the background
+# pollers, and the two binaries people run.
+#
+# **Step two of `docs/crate-split.md`, and it is bigger than that sketch said.**
+# The sketch counted four modules — `host`, `hooks`, `firstrun`, `ws` — because it
+# read the module graph, and `lib.rs` is not a module. `lib.rs` was the router
+# *and* the pollers, and it reached all four, so it came too: `start`,
+# `StartOptions`, `Server`, `router` and every `start_*_poller` are here now.
+#
+# The boundary that leaves is a good one to say out loud: **`orchd` is what the
+# daemon knows, and this crate is the daemon.** Nothing in `orchd` may name
+# anything in here, and `cargo` is what says so.
+[package]
+name = "orchd-serve"
+version = "2026.9.12"
+edition = "2021"
+description = "The orchd daemon: its HTTP server, its boot sequence and its binaries"
+repository = "https://github.com/kbarendrecht/orchestrator"
+license = "AGPL-3.0-only"
+authors = ["Kars Barendrecht <18546657+kbarendrecht@users.noreply.github.com>"]
+publish = false
+
+# The two binaries keep their names, which are the product's: `child::launch`
+# execs an `orchd` beside the running executable, and a session finds `orch` on
+# its PATH.
+[[bin]]
+name = "orchd"
+path = "src/main.rs"
+
+[[bin]]
+name = "orch"
+path = "src/bin/orch.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+orchd = { path = "../.." }
+# `host::Checkout` is generated into `web/serve.d.ts`. Optional for the reason the
+# other two crates give: as a dev-dependency the derive is invisible to anything
+# that builds this crate as a dependency.
+ts-rs = { version = "12.0.1", features = ["uuid-impl"], optional = true }
+axum = { version = "0.7", features = ["ws", "macros"] }
+libc = "0.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "net", "sync", "signal", "process", "io-util", "fs"] }
+tracing = { workspace = true }
+uuid = { version = "1", features = ["v4", "serde"] }
+
+[dev-dependencies]
+orchd = { path = "../..", features = ["test-util"] }
+orchd-base = { path = "../orchd-base", features = ["test-util"] }
+# Also a dev-dependency: `cfg(test)` is true for this crate's own tests while the
+# feature is not, so the optional copy above is not linked then.
+ts-rs = { version = "12.0.1", features = ["uuid-impl"] }
+# Driving the bootstrap router in-process (`oneshot`) so its contract is tested
+# without binding a port or a browser.
+tower = { version = "0.5", features = ["util"] }
+
+[features]
+# One type of this crate's own reaches the SPA, and the derive that generates it
+# follows the same feature the other two crates use.
+test-util = ["dep:ts-rs", "orchd/test-util", "orchd-base/test-util"]
+
+[lints]
+workspace = true

@@ -23,7 +23,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::config::Config;
+use orchd::config::Config;
 
 /// A project opened before, newest first. The path is absolute; the name is its
 /// last component, which is what a person recognises the checkout by.
@@ -266,12 +266,12 @@ fn detect_processes(path: &Path) -> Vec<DetectedProcess> {
 /// it cannot read falls back to the daemon's own default rather than failing, so
 /// the review always has something to show.
 pub fn detect(path: &Path) -> Detected {
-    let base_branches = crate::git::remote_branches(path);
+    let base_branches = orchd::git::remote_branches(path);
     // A fork layout first — an `upstream` remote beside `origin` — because on one
     // every other guess below is the fork, and the review then pre-filled the
     // fork's default branch and the fork's repo. The daemon's own first write asks
     // the same question (`git::detect_base`), so the review shows what it would do.
-    let fork = crate::git::detect_base(path);
+    let fork = orchd::git::detect_base(path);
     let remote = fork.as_ref().map(|(_, r)| r.as_str()).unwrap_or("origin");
     let prefix = format!("{remote}/");
     // Prefer the remote's recorded default; then a conventional main/master; then
@@ -287,7 +287,7 @@ pub fn detect(path: &Path) -> Detected {
         .map(|(b, _)| b.clone())
         .filter(|b| base_branches.contains(b))
         .or_else(|| {
-            crate::git::base_checkout_branch(path, &format!("{prefix}HEAD"))
+            orchd::git::base_checkout_branch(path, &format!("{prefix}HEAD"))
                 .map(|b| format!("{prefix}{b}"))
                 .filter(|b| base_branches.contains(b))
         })
@@ -304,7 +304,7 @@ pub fn detect(path: &Path) -> Detected {
             None => "origin/HEAD".to_string(),
         });
 
-    let repo = crate::forge::github::GitHubForge::detect(path, remote)
+    let repo = orchd::forge::github::GitHubForge::detect(path, remote)
         .map(|(owner, name)| format!("{owner}/{name}"));
 
     let env_source = if path.join("mise.toml").exists() || path.join(".mise.toml").exists() {
@@ -413,7 +413,7 @@ fn write_config_to(file: &Path, path: &Path, ov: &Overrides) -> Result<Written> 
         // checkout can answer for itself. `Config::default_for` asked it on a fresh
         // file, but this write comes first and so that path is never reached from
         // the app — without this a fork layout was measured against `origin/HEAD`.
-        if let Some((base, remote)) = crate::git::detect_base(path) {
+        if let Some((base, remote)) = orchd::git::detect_base(path) {
             tracing::info!(%base, %remote, "detected a fork layout");
             obj.insert("upstream_ref".into(), json!(base));
             obj.insert("upstream_remote".into(), json!(remote));
@@ -430,7 +430,7 @@ fn write_config_to(file: &Path, path: &Path, ov: &Overrides) -> Result<Written> 
             .unwrap_or("origin");
         // Through `detect`, which is that pair of calls, and is what filled the
         // field the review is handing back — so the two answers cannot disagree.
-        let derived = crate::forge::github::GitHubForge::detect(path, remote)
+        let derived = orchd::forge::github::GitHubForge::detect(path, remote)
             .map(|(o, n)| format!("{o}/{n}"));
         if derived.as_deref() == Some(repo) {
             obj.remove("repo");
@@ -525,7 +525,7 @@ pub trait BootstrapHost: Send + Sync + 'static {
     /// Drive the frameless window — drag, resize edges, minimise, close. The
     /// first-run window has no decorations (the SPA that follows draws its own), so
     /// the page draws a titlebar and calls this, the same way the daemon's SPA does.
-    fn window_cmd(&self, cmd: crate::window::WindowCmd);
+    fn window_cmd(&self, cmd: orchd::window::WindowCmd);
 
     /// True when a daemon is already running and this is a **switch**, not first
     /// run. The page shows a way back to the current project when so, and the copy
@@ -558,7 +558,7 @@ pub struct Overrides {
     /// have loaded — the page sends the enum's own spelling, and a mismatch is a
     /// 422 naming the field instead of a config written and then rejected.
     #[serde(default)]
-    pub env_source: Option<crate::config::EnvSourceKind>,
+    pub env_source: Option<orchd::config::EnvSourceKind>,
     /// The processes the user ticked in the review, to manage from the start.
     #[serde(default)]
     pub processes: Vec<SelectedProcess>,
@@ -648,12 +648,12 @@ async fn guard(
         .get("host")
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
-    if !crate::api::host_allowed(host, port) {
+    if !orchd::api::host_allowed(host, port) {
         return (StatusCode::FORBIDDEN, "bad host").into_response();
     }
     let origin = req.headers().get("origin").and_then(|v| v.to_str().ok());
     let is_get = req.method() == axum::http::Method::GET;
-    if !crate::api::origin_ok(origin, port, None, false, is_get, false) {
+    if !orchd::api::origin_ok(origin, port, None, false, is_get, false) {
         return (StatusCode::FORBIDDEN, "bad origin").into_response();
     }
     next.run(req).await
@@ -663,7 +663,7 @@ async fn window_route(
     State(host): State<Arc<dyn BootstrapHost>>,
     AxPath(cmd): AxPath<String>,
 ) -> StatusCode {
-    match crate::api::parse_window_cmd(&cmd) {
+    match orchd::api::parse_window_cmd(&cmd) {
         Some(cmd) => {
             host.window_cmd(cmd);
             StatusCode::OK
@@ -676,9 +676,9 @@ async fn resize_route(
     State(host): State<Arc<dyn BootstrapHost>>,
     AxPath(edge): AxPath<String>,
 ) -> StatusCode {
-    match crate::api::parse_resize_edge(&edge) {
+    match orchd::api::parse_resize_edge(&edge) {
         Some(edge) => {
-            host.window_cmd(crate::window::WindowCmd::StartResize(edge));
+            host.window_cmd(orchd::window::WindowCmd::StartResize(edge));
             StatusCode::OK
         }
         None => StatusCode::BAD_REQUEST,
@@ -693,7 +693,7 @@ async fn detect_route(Json(req): Json<PathReq>) -> Result<Json<Detected>, Status
     let path = PathBuf::from(req.path);
     // Several git runs, so off the runtime worker like every other git call: on a
     // switch this runtime is also serving the live daemon.
-    crate::proc::run_blocking("detecting a checkout", move || detect(&path))
+    orchd::proc::run_blocking("detecting a checkout", move || detect(&path))
         .await
         .map(Json)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
@@ -713,7 +713,7 @@ async fn pick_route(State(host): State<Arc<dyn BootstrapHost>>) -> Json<Outcome>
     // The dialog blocks until you answer it, and the trait promises "a request
     // thread" for exactly that — so give it one, rather than parking a runtime
     // worker for as long as the dialog is open.
-    let picked = crate::proc::run_blocking("the folder dialog", move || host.pick())
+    let picked = orchd::proc::run_blocking("the folder dialog", move || host.pick())
         .await
         .unwrap_or_else(|e| {
             tracing::warn!("{e:#}");
@@ -740,7 +740,7 @@ async fn open_route(
     // Off the runtime, like `detect_route` beside it: `validate` canonicalises and
     // `write_config` spawns git twice (the fork probe and the repo derivation), and
     // on a switch this runtime is also serving the live daemon.
-    let prepared = crate::proc::run_blocking("preparing the chosen project", move || {
+    let prepared = orchd::proc::run_blocking("preparing the chosen project", move || {
         // Validate again server-side: the page validated to enable the button, but
         // the tree could have moved since, and this is the last gate before the
         // daemon.
@@ -901,14 +901,14 @@ mod tests {
     /// their dir-taking half with no global `ORCHD_CONFIG_DIR` — the tests run in
     /// parallel, and one process-wide env var would race between them.
     fn tmp(tag: &str) -> PathBuf {
-        crate::testutil::scratch(&format!("firstrun-{tag}"))
+        orchd::testutil::scratch(&format!("firstrun-{tag}"))
     }
 
     fn git_repo(at: &Path) {
         std::fs::create_dir_all(at.join(".git")).unwrap();
     }
 
-    use crate::testutil::git as run_git;
+    use orchd::testutil::git as run_git;
 
     #[test]
     fn validate_wants_a_folder_that_is_a_git_repo() {
@@ -1127,7 +1127,7 @@ mod tests {
             &Overrides {
                 base_branch: Some("upstream/develop".into()),
                 repo: Some("acme/thing".into()),
-                env_source: Some(crate::config::EnvSourceKind::Direnv),
+                env_source: Some(orchd::config::EnvSourceKind::Direnv),
                 ..Default::default()
             },
         )
@@ -1156,7 +1156,7 @@ mod tests {
         // here rather than on somebody's first run.
         let ok: Overrides = serde_json::from_str(r#"{"path":"/x","env_source":"mise"}"#)
             .expect("the page's own values");
-        assert_eq!(ok.env_source, Some(crate::config::EnvSourceKind::Mise));
+        assert_eq!(ok.env_source, Some(orchd::config::EnvSourceKind::Mise));
 
         let _ = std::fs::remove_dir_all(&base);
     }
@@ -1379,7 +1379,7 @@ mod tests {
             self.opened.lock().unwrap().push(path);
             true
         }
-        fn window_cmd(&self, _cmd: crate::window::WindowCmd) {}
+        fn window_cmd(&self, _cmd: orchd::window::WindowCmd) {}
         fn switching(&self) -> bool {
             self.switching
         }

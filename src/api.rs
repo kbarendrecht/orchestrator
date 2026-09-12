@@ -54,7 +54,7 @@ macro_rules! refuse {
 // Guards (§12)
 // ---------------------------------------------------------------------------
 
-pub(crate) fn host_allowed(host: &str, port: u16) -> bool {
+pub fn host_allowed(host: &str, port: u16) -> bool {
     let expected = [format!("127.0.0.1:{port}"), format!("localhost:{port}")];
     expected.iter().any(|e| e == host)
 }
@@ -94,7 +94,7 @@ fn origin_allowed(origin: &str, port: u16, host_origin: Option<&str>) -> bool {
 ///   cannot omit the header on a cross-origin fetch or form POST, and it cannot
 ///   read the token to forge this. Absence is positive evidence of a non-browser
 ///   caller; the token is what authenticates it.
-pub(crate) fn origin_ok(
+pub fn origin_ok(
     origin: Option<&str>,
     port: u16,
     host_origin: Option<&str>,
@@ -2162,12 +2162,12 @@ pub async fn restart_process(
 /// server, which serves the same chrome before a daemon exists: the two dispatch
 /// differently (it has no `WindowControl` to refuse) but must accept exactly the
 /// same words, or a button works on one page and 400s on the other.
-pub(crate) fn parse_window_cmd(cmd: &str) -> Option<crate::window::WindowCmd> {
+pub fn parse_window_cmd(cmd: &str) -> Option<crate::window::WindowCmd> {
     serde_json::from_value(json!(cmd)).ok()
 }
 
 /// The same for a resize edge.
-pub(crate) fn parse_resize_edge(edge: &str) -> Option<crate::window::ResizeEdge> {
+pub fn parse_resize_edge(edge: &str) -> Option<crate::window::ResizeEdge> {
     serde_json::from_value(json!(edge)).ok()
 }
 

@@ -65,12 +65,15 @@ fn a_missing_host_file_falls_back_to_the_configured_checkout() {
         format!(r#"{{"main_checkout":{:?}}}"#, repo.to_string_lossy()),
     )
     .unwrap();
-    assert_eq!(orchd::host::remembered_checkouts(), vec![repo.clone()]);
+    assert_eq!(
+        orchd_serve::host::remembered_checkouts(),
+        vec![repo.clone()]
+    );
 
     // And once the file exists it is the answer, config or no config.
-    orchd::host::remember_checkouts(&[]);
+    orchd_serve::host::remember_checkouts(&[]);
     assert!(
-        orchd::host::remembered_checkouts().is_empty(),
+        orchd_serve::host::remembered_checkouts().is_empty(),
         "the fallback outlived the file"
     );
 
@@ -82,19 +85,19 @@ fn a_missing_host_file_falls_back_to_the_configured_checkout() {
     let file = cfg.join("host.json");
     std::fs::write(&file, r#"{"checkouts":[],"see_through_window":true}"#).unwrap();
     assert!(
-        orchd::host::see_through_window(),
+        orchd_serve::host::see_through_window(),
         "the key did not read back"
     );
-    orchd::host::remember_checkouts(std::slice::from_ref(&repo));
+    orchd_serve::host::remember_checkouts(std::slice::from_ref(&repo));
     assert!(
-        orchd::host::see_through_window(),
+        orchd_serve::host::see_through_window(),
         "recording the checkouts dropped the key"
     );
 
     // And absent is off: a see-through window is a compositor feature, so nothing
     // may turn it on for a machine that never asked.
     std::fs::write(&file, r#"{"checkouts":[]}"#).unwrap();
-    assert!(!orchd::host::see_through_window());
+    assert!(!orchd_serve::host::see_through_window());
 
     let _ = std::fs::remove_dir_all(&root);
 }

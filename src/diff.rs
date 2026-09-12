@@ -65,7 +65,11 @@ pub fn resolve_base(
 }
 
 #[derive(Debug, Clone, Serialize)]
-#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "snapshot.d.ts"))]
+#[cfg_attr(
+    any(test, feature = "test-util"),
+    derive(ts_rs::TS),
+    ts(export, export_to = "snapshot.d.ts")
+)]
 pub struct DiffSummary {
     pub base: String,
     pub files: Vec<DiffFile>,
@@ -175,7 +179,11 @@ pub fn mark_worktree_state(files: &mut [DiffFile], set: &crate::model::FileSet) 
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "snapshot.d.ts"))]
+#[cfg_attr(
+    any(test, feature = "test-util"),
+    derive(ts_rs::TS),
+    ts(export, export_to = "snapshot.d.ts")
+)]
 #[serde(rename_all = "snake_case")]
 pub enum RowKind {
     Context,
@@ -184,7 +192,11 @@ pub enum RowKind {
 }
 
 #[derive(Debug, Clone, Serialize)]
-#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "snapshot.d.ts"))]
+#[cfg_attr(
+    any(test, feature = "test-util"),
+    derive(ts_rs::TS),
+    ts(export, export_to = "snapshot.d.ts")
+)]
 pub struct Row {
     pub kind: RowKind,
     pub old: Option<u32>,
@@ -196,12 +208,19 @@ pub struct Row {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     // The skip above means the field is *absent* on an unchanged row, and the
     // generated type has to say so or the SPA reads a guarantee that is not there.
-    #[cfg_attr(test, ts(type = "[number, number][] | undefined"))]
+    #[cfg_attr(
+        any(test, feature = "test-util"),
+        ts(type = "[number, number][] | undefined")
+    )]
     pub words: Vec<(usize, usize)>,
 }
 
 #[derive(Debug, Clone, Serialize)]
-#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "snapshot.d.ts"))]
+#[cfg_attr(
+    any(test, feature = "test-util"),
+    derive(ts_rs::TS),
+    ts(export, export_to = "snapshot.d.ts")
+)]
 pub struct Hunk {
     pub old_start: u32,
     pub new_start: u32,
@@ -213,7 +232,11 @@ pub struct Hunk {
 }
 
 #[derive(Debug, Clone, Serialize)]
-#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "snapshot.d.ts"))]
+#[cfg_attr(
+    any(test, feature = "test-util"),
+    derive(ts_rs::TS),
+    ts(export, export_to = "snapshot.d.ts")
+)]
 pub struct FileDiff {
     pub path: String,
     pub hunks: Vec<Hunk>,
