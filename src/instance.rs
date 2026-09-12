@@ -112,10 +112,7 @@ fn acquire_at(path: PathBuf) -> Result<Lock> {
             Some(libc::EINTR) => continue,
             // The only errno that means somebody else has it.
             Some(libc::EWOULDBLOCK) => break false,
-            _ => {
-                return Err(err)
-                    .with_context(|| format!("locking {}", path.display()))
-            }
+            _ => return Err(err).with_context(|| format!("locking {}", path.display())),
         }
     };
     if !taken {
@@ -148,7 +145,6 @@ fn acquire_at(path: PathBuf) -> Result<Lock> {
 // No `Drop`: closing `_file` is what releases the lock, and the kernel does that
 // for us however the process ends. Removing the file here would be actively wrong —
 // see [`Lock`].
-
 
 #[cfg(test)]
 mod tests {
@@ -213,17 +209,17 @@ mod tests {
         );
 
         /* **Retried, and the reason is worth knowing.** `fork` duplicates every
-           descriptor, so any *other* thread in this process spawning a child while
-           our lock fd is open hands that child a copy — and the copy holds the
-           flock until its `exec` closes it (`CLOEXEC`, which Rust sets). The window
-           is microseconds, but a 460-test suite forks constantly, and asserting
-           "free immediately" failed about two runs in five. Measured, not guessed:
-           the refusal came back `EWOULDBLOCK`, not `EINTR`.
+        descriptor, so any *other* thread in this process spawning a child while
+        our lock fd is open hands that child a copy — and the copy holds the
+        flock until its `exec` closes it (`CLOEXEC`, which Rust sets). The window
+        is microseconds, but a 460-test suite forks constantly, and asserting
+        "free immediately" failed about two runs in five. Measured, not guessed:
+        the refusal came back `EWOULDBLOCK`, not `EINTR`.
 
-           Nothing to fix in the daemon — it takes this lock once at startup and
-           does not release and immediately retake it — so the test's assumption was
-           the wrong half. What is actually being asserted is that the lock is
-           released at all, which a bounded retry says just as well. */
+        Nothing to fix in the daemon — it takes this lock once at startup and
+        does not release and immediately retake it — so the test's assumption was
+        the wrong half. What is actually being asserted is that the lock is
+        released at all, which a bounded retry says just as well. */
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         loop {
             match acquire_at(path.clone()) {
@@ -239,4 +235,3 @@ mod tests {
         }
     }
 }
-

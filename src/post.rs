@@ -23,8 +23,8 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::sync::Arc;
 
-use crate::forge::{Pr, ThreadRoot, Threads};
 use crate::forge::{self, Forge, ForgeImpl};
+use crate::forge::{Pr, ThreadRoot, Threads};
 use crate::patch::{FileStat, Patch, Written};
 use crate::proposal::{Mode, Position, Stance};
 use crate::state::AppState;
@@ -77,7 +77,11 @@ pub struct Batch {
 
 /// A single outward write, named the way the report renders it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
+#[cfg_attr(
+    test,
+    derive(ts_rs::TS),
+    ts(export, export_to = "../web/snapshot.d.ts")
+)]
 #[serde(rename_all = "snake_case")]
 pub enum What {
     /// Filed in the tracker. First in the enum because it is first in the
@@ -90,7 +94,11 @@ pub enum What {
 
 /// Something that is now true on GitHub.
 #[derive(Debug, Clone, Serialize)]
-#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
+#[cfg_attr(
+    test,
+    derive(ts_rs::TS),
+    ts(export, export_to = "../web/snapshot.d.ts")
+)]
 pub struct Landed {
     pub thread_id: String,
     /// `renovate.json5:161 · bob`, for the report's left column.
@@ -109,7 +117,11 @@ pub struct Landed {
 
 /// A write that was attempted and refused. `error` is `gh`'s own words.
 #[derive(Debug, Clone, Serialize)]
-#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
+#[cfg_attr(
+    test,
+    derive(ts_rs::TS),
+    ts(export, export_to = "../web/snapshot.d.ts")
+)]
 pub struct Failed {
     pub thread_id: String,
     pub label: String,
@@ -119,7 +131,11 @@ pub struct Failed {
 
 /// A write that was never tried, and what it is waiting on.
 #[derive(Debug, Clone, Serialize)]
-#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
+#[cfg_attr(
+    test,
+    derive(ts_rs::TS),
+    ts(export, export_to = "../web/snapshot.d.ts")
+)]
 pub struct Skipped {
     pub label: String,
     pub what: What,
@@ -128,7 +144,11 @@ pub struct Skipped {
 
 /// A thread the human said they would handle themselves.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
+#[cfg_attr(
+    test,
+    derive(ts_rs::TS),
+    ts(export, export_to = "../web/snapshot.d.ts")
+)]
 pub struct ManualThread {
     pub thread_id: String,
     pub label: String,
@@ -147,7 +167,11 @@ pub struct ManualThread {
 /// decision — often *why* this thread needed hands. **Nothing has been pushed and
 /// nothing posted**, so backing out costs only the local commit.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
+#[cfg_attr(
+    test,
+    derive(ts_rs::TS),
+    ts(export, export_to = "../web/snapshot.d.ts")
+)]
 pub struct ManualPhase {
     /// The commit the accepted patches landed in. `/manual/done` checks `HEAD`
     /// against it, which is what keeps the phase from resuming onto a branch that
@@ -249,7 +273,11 @@ fn digest_of(batch: &Batch) -> String {
 /// pushed, so every other field is empty and the screen is panel 7 rather than
 /// panel 8.
 #[derive(Debug, Clone, Default, Serialize)]
-#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
+#[cfg_attr(
+    test,
+    derive(ts_rs::TS),
+    ts(export, export_to = "../web/snapshot.d.ts")
+)]
 pub struct PostReport {
     pub refused: Option<String>,
     /// Whether pressing the same button again could succeed once you have acted on
@@ -390,7 +418,8 @@ pub(crate) fn resolve(
         // same fetch — a `root` on this struct was a second copy of the answer.
         // The check stays because refusing here costs nothing: a thread with no
         // comment to answer should stop the batch before it commits anything.
-        fresh.root_for(&d.thread_id)
+        fresh
+            .root_for(&d.thread_id)
             .with_context(|| format!("thread {} has no comment to answer", d.thread_id))?;
 
         let touched = if d.mode == Mode::Manual {
@@ -552,7 +581,11 @@ fn label_for(t: &crate::forge::Thread) -> String {
 /// is hiding the only rows worth reading.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
+#[cfg_attr(
+    test,
+    derive(ts_rs::TS),
+    ts(export, export_to = "../web/snapshot.d.ts")
+)]
 pub enum ThreadStatus {
     /// Not reached yet.
     #[default]
@@ -696,16 +729,16 @@ pub fn plan(
             .map(|h| PlannedThread {
                 location: h.label.clone(),
                 /* What it starts as, rather than a blanket `Pending`: a thread the
-                   session will never touch should not sit in the overview looking
-                   like one it has not got to yet.
+                session will never touch should not sit in the overview looking
+                like one it has not got to yet.
 
-                   **Keyed on the stance, not on a patch.** It asked
-                   `patch.is_some()`, which was true while triage staged fixes and
-                   is false for every decision now — so every thread opened as
-                   `WordsOnly`, the daemon posted the reply at once, and the change
-                   that reply promised was nobody's job. A `reply` is work until the
-                   run says otherwise; an `agree` is a thumbs up and a `story` is
-                   the daemon's to file. */
+                **Keyed on the stance, not on a patch.** It asked
+                `patch.is_some()`, which was true while triage staged fixes and
+                is false for every decision now — so every thread opened as
+                `WordsOnly`, the daemon posted the reply at once, and the change
+                that reply promised was nobody's job. A `reply` is work until the
+                run says otherwise; an `agree` is a thumbs up and a `story` is
+                the daemon's to file. */
                 status: match (h.mode, h.stance) {
                     (crate::proposal::Mode::Manual, _) => ThreadStatus::Manual,
                     (_, crate::proposal::Stance::Agree | crate::proposal::Stance::Story) => {
@@ -812,7 +845,12 @@ async fn run_inner(
     // (manual), with the code public and the replies unsent either way.
     let landed_before = {
         let inner = app.inner.read().await;
-        pushed_by_us(inner.manual.get(&pr.number), &batch, &local_head, fresh.head_sha.as_deref())
+        pushed_by_us(
+            inner.manual.get(&pr.number),
+            &batch,
+            &local_head,
+            fresh.head_sha.as_deref(),
+        )
     };
     if !level_with_origin(&local_head, fresh.head_sha.as_deref(), resume.is_some()) {
         return Ok(PostReport::refused(format!(
@@ -850,7 +888,13 @@ async fn run_inner(
         .cloned()
         .with_context(|| format!("PR #{} has no triage proposals to post", pr.number))?;
     let comments = resume.as_ref().map(|r| &r.comments);
-    let handled = resolve(&proposals, fresh, &batch, app.cfg.tracker.is_some(), comments)?;
+    let handled = resolve(
+        &proposals,
+        fresh,
+        &batch,
+        app.cfg.tracker.is_some(),
+        comments,
+    )?;
 
     // Hoisted above the local write: the recovery path below needs it to carry the
     // phase forward, and a phase whose `threads` is empty renders a list with no rows
@@ -1015,7 +1059,16 @@ async fn run_inner(
 
     // Writes shell `gh`, so no read token; `path` is the worktree it runs in.
     let forge = ForgeImpl::for_kind(app.cfg.forge, owner, name, String::new());
-    post_outward(&forge, &path, pr.number, fresh, &handled, &filed, &mut report).await;
+    post_outward(
+        &forge,
+        &path,
+        pr.number,
+        fresh,
+        &handled,
+        &filed,
+        &mut report,
+    )
+    .await;
 
     // The batch is over. Keeping the phase would offer to finish something that
     // already finished — and a later batch on this PR would inherit its digest.
@@ -1590,7 +1643,11 @@ pub(crate) async fn rerequest_all(
     done: &[&str],
 ) -> Rerequested {
     let Split { all, open, holding } = split_reviewers(fresh, done);
-    let mut out = Rerequested { asked: Vec::new(), failed: Vec::new(), held: Vec::new() };
+    let mut out = Rerequested {
+        asked: Vec::new(),
+        failed: Vec::new(),
+        held: Vec::new(),
+    };
 
     for login in forge::ready_to_rerequest(&all, &open) {
         match blocking_rerequest(forge, at, pr, login).await {
@@ -1810,7 +1867,12 @@ mod tests {
     #[test]
     fn a_patch_position_resolves_to_its_diff_and_a_blame_target() {
         let set = proposed("PRRT_1", vec![with_patch(Stance::Agree, true)]);
-        let fresh = fetched(vec![thread("PRRT_1", Some("src/Foo.php"), Some(42), "alice")]);
+        let fresh = fetched(vec![thread(
+            "PRRT_1",
+            Some("src/Foo.php"),
+            Some(42),
+            "alice",
+        )]);
         let got = resolve(&set, &fresh, &batch("PRRT_1", 0, None), TRACKER, FIRST_HALF).unwrap();
 
         assert_eq!(got.len(), 1);
@@ -1823,8 +1885,14 @@ mod tests {
         // same fetch — but `resolve` still refuses a thread it cannot answer, which
         // is what that assertion was really standing in for.
         assert_eq!(fresh.root_for("PRRT_1").unwrap().comment_id(), 100);
-        assert!(resolve(&set, &fetched(vec![]), &batch("PRRT_1", 0, None), TRACKER, FIRST_HALF)
-            .is_err());
+        assert!(resolve(
+            &set,
+            &fetched(vec![]),
+            &batch("PRRT_1", 0, None),
+            TRACKER,
+            FIRST_HALF
+        )
+        .is_err());
     }
 
     #[test]
@@ -1913,12 +1981,27 @@ mod tests {
             open: false,
         };
         assert!(pushed_by_us(Some(&phase), &b, "abc", Some("abc")));
-        assert!(!pushed_by_us(None, &b, "abc", Some("abc")), "no record: not ours");
-        assert!(!pushed_by_us(Some(&phase), &b, "abc", Some("def")), "origin is elsewhere");
-        assert!(!pushed_by_us(Some(&phase), &b, "abc", None), "no remote head to agree with");
-        assert!(!pushed_by_us(Some(&phase), &b, "def", Some("def")), "the record names another commit");
+        assert!(
+            !pushed_by_us(None, &b, "abc", Some("abc")),
+            "no record: not ours"
+        );
+        assert!(
+            !pushed_by_us(Some(&phase), &b, "abc", Some("def")),
+            "origin is elsewhere"
+        );
+        assert!(
+            !pushed_by_us(Some(&phase), &b, "abc", None),
+            "no remote head to agree with"
+        );
+        assert!(
+            !pushed_by_us(Some(&phase), &b, "def", Some("def")),
+            "the record names another commit"
+        );
         let other = batch("PRRT_1", 1, None);
-        assert!(!pushed_by_us(Some(&phase), &other, "abc", Some("abc")), "other decisions");
+        assert!(
+            !pushed_by_us(Some(&phase), &other, "abc", Some("abc")),
+            "other decisions"
+        );
     }
 
     /// An agent-only batch has no phase, so its push used to leave no record, and a
@@ -1930,9 +2013,19 @@ mod tests {
         let pr = 424_242;
         let b = batch("PRRT_1", 0, None);
         remember_push(&app, pr, "abc".into(), &b).await;
-        let stored = app.inner.read().await.manual.get(&pr).cloned().expect("a record of the push");
+        let stored = app
+            .inner
+            .read()
+            .await
+            .manual
+            .get(&pr)
+            .cloned()
+            .expect("a record of the push");
         assert!(stored.threads.is_empty(), "nothing is waiting on a human");
-        assert!(pushed_by_us(Some(&stored), &b, "abc", Some("abc")), "and it reads back as ours");
+        assert!(
+            pushed_by_us(Some(&stored), &b, "abc", Some("abc")),
+            "and it reads back as ours"
+        );
         // And it is not a phase. Emptiness used to be the only thing saying so, and
         // every reader took it for one: the boot log announced it, the payload
         // served it, and the SPA opened a phase screen with no rows whose
@@ -1942,7 +2035,10 @@ mod tests {
 
         remember_push(&app, pr, "def".into(), &b).await;
         assert_eq!(app.inner.read().await.manual[&pr].committed, "def");
-        app.inner.write().await.with_manual("test cleanup", |m| m.remove(&pr).is_some());
+        app.inner
+            .write()
+            .await
+            .with_manual("test cleanup", |m| m.remove(&pr).is_some());
     }
 
     #[test]
@@ -2039,16 +2135,36 @@ mod tests {
             base_sha: "abc123".into(),
             decisions: vec![
                 // a fix for the agent
-                Decision { thread_id: "PRRT_1".into(), position: 0, reply: None, mode: Mode::Agent },
+                Decision {
+                    thread_id: "PRRT_1".into(),
+                    position: 0,
+                    reply: None,
+                    mode: Mode::Agent,
+                },
                 // the same, but you are writing it
-                Decision { thread_id: "PRRT_2".into(), position: 0, reply: None, mode: Mode::Manual },
+                Decision {
+                    thread_id: "PRRT_2".into(),
+                    position: 0,
+                    reply: None,
+                    mode: Mode::Manual,
+                },
                 /* A reply with nothing staged, which is every triage decision:
-                   the run works the change out from the solution. This read
-                   `WordsOnly` while a missing patch meant nothing to build, and
-                   that is what left the change nobody wrote. */
-                Decision { thread_id: "PRRT_3".into(), position: 0, reply: None, mode: Mode::Agent },
+                the run works the change out from the solution. This read
+                `WordsOnly` while a missing patch meant nothing to build, and
+                that is what left the change nobody wrote. */
+                Decision {
+                    thread_id: "PRRT_3".into(),
+                    position: 0,
+                    reply: None,
+                    mode: Mode::Agent,
+                },
                 // A thumbs up. This is what words-only means now.
-                Decision { thread_id: "PRRT_4".into(), position: 0, reply: None, mode: Mode::Agent },
+                Decision {
+                    thread_id: "PRRT_4".into(),
+                    position: 0,
+                    reply: None,
+                    mode: Mode::Agent,
+                },
             ],
         };
         let plan = plan(4812, &set, &fresh, &batch, TRACKER).expect("planned");
@@ -2101,7 +2217,14 @@ mod tests {
         plan.threads[0].note = Some("the surrounding code is gone".into());
 
         let for_agent = serde_json::to_string(&plan.for_agent()).unwrap();
-        for key in ["thread_id", "location", "reviewer_said", "stance", "mode", "patch"] {
+        for key in [
+            "thread_id",
+            "location",
+            "reviewer_said",
+            "stance",
+            "mode",
+            "patch",
+        ] {
             assert!(for_agent.contains(key), "the prompt documents {key}");
         }
         for key in ["status", "commit", "note", "needs_you", "deadbee"] {
@@ -2116,7 +2239,10 @@ mod tests {
         let back: Plan = serde_json::from_str(&serde_json::to_string(&plan).unwrap()).unwrap();
         assert_eq!(back.threads[0].status, ThreadStatus::NeedsYou);
         assert_eq!(back.threads[0].commit.as_deref(), Some("deadbee"));
-        assert_eq!(back.threads[0].note.as_deref(), Some("the surrounding code is gone"));
+        assert_eq!(
+            back.threads[0].note.as_deref(),
+            Some("the surrounding code is gone")
+        );
         assert_eq!(back.threads[0].reply, plan.threads[0].reply);
     }
 
@@ -2191,11 +2317,8 @@ mod tests {
         .to_string();
         assert!(err.contains("needs a comment"), "{err}");
 
-        let written: std::collections::HashMap<String, String> = [(
-            "PRRT_1".to_string(),
-            "Moved to the repository.".to_string(),
-        )]
-        .into();
+        let written: std::collections::HashMap<String, String> =
+            [("PRRT_1".to_string(), "Moved to the repository.".to_string())].into();
         let got = resolve(
             &manual_set(""),
             &fresh,
@@ -2204,10 +2327,7 @@ mod tests {
             Some(&written),
         )
         .unwrap();
-        assert_eq!(
-            got[0].reply.as_deref(),
-            Some("Moved to the repository.")
-        );
+        assert_eq!(got[0].reply.as_deref(), Some("Moved to the repository."));
     }
 
     #[test]
@@ -2352,11 +2472,8 @@ mod tests {
         // This is the whole of retry: derive what is missing from a fresh fetch
         // rather than remember what was sent.
         let mut t = thread("PRRT_1", Some("a.ts"), Some(1), "alice");
-        t.comments.push(comment(
-            101,
-            "viewer",
-            &forge::with_footer("Fixed."),
-        ));
+        t.comments
+            .push(comment(101, "viewer", &forge::with_footer("Fixed.")));
         let fresh = fetched(vec![t]);
 
         assert!(already_replied(&fresh, "PRRT_1", "Fixed."));
@@ -2411,7 +2528,11 @@ mod tests {
         // The state a run always leaves: answered, and still open on GitHub.
         assert!(fresh.items.iter().all(|t| !t.is_resolved));
         let split = split_reviewers(&fresh, &["PRRT_1", "PRRT_2"]);
-        assert_eq!(split.all.len(), 2, "both reviewed, whatever their threads say now");
+        assert_eq!(
+            split.all.len(),
+            2,
+            "both reviewed, whatever their threads say now"
+        );
         assert_eq!(
             forge::ready_to_rerequest(&split.all, &split.open),
             vec!["bob", "carol"],
@@ -2483,12 +2604,7 @@ mod tests {
     /// A forge is needed to call `post_one`, but these cases all return before any
     /// write, so it is never used — an empty repo is enough and nothing goes out.
     fn no_write_forge() -> ForgeImpl {
-        ForgeImpl::for_kind(
-            crate::config::ForgeKind::GitHub,
-            "o",
-            "n",
-            String::new(),
-        )
+        ForgeImpl::for_kind(crate::config::ForgeKind::GitHub, "o", "n", String::new())
     }
 
     /// The resolve run reaches GitHub one thread at a time, so idempotency cannot

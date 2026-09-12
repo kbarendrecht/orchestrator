@@ -24,7 +24,11 @@ pub const MAIN: &str = "main";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
+#[cfg_attr(
+    test,
+    derive(ts_rs::TS),
+    ts(export, export_to = "../web/snapshot.d.ts")
+)]
 pub enum WorkspaceKind {
     /// Docker stack, dev URL, `ng build --watch`.
     Main,
@@ -127,7 +131,11 @@ impl Workspace {
 /// not a quiet success, it is an idle agent.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
+#[cfg_attr(
+    test,
+    derive(ts_rs::TS),
+    ts(export, export_to = "../web/snapshot.d.ts")
+)]
 pub enum TurnReason {
     /// `Stop` — the common case under auto-accept.
     TurnComplete,
@@ -153,12 +161,19 @@ pub enum TurnReason {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "state", rename_all = "snake_case")]
-#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
+#[cfg_attr(
+    test,
+    derive(ts_rs::TS),
+    ts(export, export_to = "../web/snapshot.d.ts")
+)]
 pub enum State {
     Starting,
     Working,
     YourTurn {
-        #[cfg_attr(test, ts(type = "{ secs_since_epoch: number, nanos_since_epoch: number }"))]
+        #[cfg_attr(
+            test,
+            ts(type = "{ secs_since_epoch: number, nanos_since_epoch: number }")
+        )]
         since: SystemTime,
         reason: TurnReason,
     },
@@ -257,7 +272,11 @@ impl State {
 /// went wrong the moment a pass meant "a pane you are watching" as well as "a run
 /// nobody is". A session is a session; its state says whether it wants you.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
+#[cfg_attr(
+    test,
+    derive(ts_rs::TS),
+    ts(export, export_to = "../web/snapshot.d.ts")
+)]
 pub struct Pass {
     #[cfg_attr(test, ts(type = "number"))]
     pub pr: u64,
@@ -278,7 +297,11 @@ pub struct OutsideAsk {
 /// How to rebuild a torn-down worktree so an archived session can be resumed (§2).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "recovery", rename_all = "snake_case")]
-#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
+#[cfg_attr(
+    test,
+    derive(ts_rs::TS),
+    ts(export, export_to = "../web/snapshot.d.ts")
+)]
 pub enum ArchiveState {
     Recoverable {
         name: String,
@@ -582,7 +605,11 @@ impl Session {
 /// returns. Deliberately structured rather than free text, so the overlay renders
 /// buttons instead of asking you to type into a terminal you cannot see.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
+#[cfg_attr(
+    test,
+    derive(ts_rs::TS),
+    ts(export, export_to = "../web/snapshot.d.ts")
+)]
 pub struct Interaction {
     pub id: Uuid,
     /// What the agent is working on, so the card can say which thread this is
@@ -596,7 +623,10 @@ pub struct Interaction {
     /// What you may answer. Never empty: an open question with no options is a
     /// prompt for prose the overlay has no box for.
     pub options: Vec<InteractionOption>,
-    #[cfg_attr(test, ts(type = "{ secs_since_epoch: number, nanos_since_epoch: number }"))]
+    #[cfg_attr(
+        test,
+        ts(type = "{ secs_since_epoch: number, nanos_since_epoch: number }")
+    )]
     pub asked_at: SystemTime,
     /// Set when you answer, which is what releases the agent's poll.
     #[serde(default)]
@@ -607,7 +637,11 @@ pub struct Interaction {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
+#[cfg_attr(
+    test,
+    derive(ts_rs::TS),
+    ts(export, export_to = "../web/snapshot.d.ts")
+)]
 pub struct InteractionOption {
     /// What comes back to the agent. Its own vocabulary, not the label, so the
     /// prompt can branch on a stable word while the card stays readable.
@@ -628,7 +662,11 @@ pub struct InteractionOption {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "health", rename_all = "snake_case")]
-#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
+#[cfg_attr(
+    test,
+    derive(ts_rs::TS),
+    ts(export, export_to = "../web/snapshot.d.ts")
+)]
 pub enum Health {
     Starting,
     Ok,
@@ -638,7 +676,11 @@ pub enum Health {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
+#[cfg_attr(
+    test,
+    derive(ts_rs::TS),
+    ts(export, export_to = "../web/snapshot.d.ts")
+)]
 pub enum ProcKind {
     /// Declared per workspace in config. Health is parsed from output.
     Managed { command: Vec<String> },
@@ -699,7 +741,6 @@ pub struct FileSet {
     pub untracked: Vec<ChangedFile>,
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -721,7 +762,10 @@ mod tests {
             std::path::Path::new("/tmp").to_path_buf(),
             None,
         );
-        assert!(!s.interrupted, "a session that has done nothing owes no turn");
+        assert!(
+            !s.interrupted,
+            "a session that has done nothing owes no turn"
+        );
 
         s.set_state(State::Working);
         assert!(s.interrupted);
@@ -819,7 +863,10 @@ mod tests {
             std::path::Path::new("/repo/.worktrees/invoice").to_path_buf(),
             None,
         );
-        assert!(!s.outside_granted(std::path::Path::new("/repo")), "nothing is granted yet");
+        assert!(
+            !s.outside_granted(std::path::Path::new("/repo")),
+            "nothing is granted yet"
+        );
 
         s.outside_grants.push(PathBuf::from("/repo"));
         assert!(s.outside_granted(std::path::Path::new("/repo")));

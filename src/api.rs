@@ -207,18 +207,22 @@ pub async fn guard(
     let origin = headers.get("origin").and_then(|v| v.to_str().ok());
 
     /* **A page served by a host is cross-origin to this daemon, so the browser
-       asks first.** Every call the page makes carries `x-orch-token` and most
-       carry a JSON content type, which makes them non-simple requests: the browser
-       sends `OPTIONS` and refuses to send the real one unless the answer names its
-       origin. Nothing here answered that, so under the app every fetch to a child
-       daemon failed and only the websockets — which CORS does not cover — worked.
-       The symptom was a board that drew and then could not do anything.
+    asks first.** Every call the page makes carries `x-orch-token` and most
+    carry a JSON content type, which makes them non-simple requests: the browser
+    sends `OPTIONS` and refuses to send the real one unless the answer names its
+    origin. Nothing here answered that, so under the app every fetch to a child
+    daemon failed and only the websockets — which CORS does not cover — worked.
+    The symptom was a board that drew and then could not do anything.
 
-       Scoped to the one origin `host_origin` already names: the same exact string,
-       from the argv of whoever spawned this daemon, never from a file. A `*` here
-       would let any page in the browser drive this daemon, and the token is the
-       only thing that would stop it. */
-    let allowed_origin = app.cfg.host_origin.as_deref().filter(|h| Some(*h) == origin);
+    Scoped to the one origin `host_origin` already names: the same exact string,
+    from the argv of whoever spawned this daemon, never from a file. A `*` here
+    would let any page in the browser drive this daemon, and the token is the
+    only thing that would stop it. */
+    let allowed_origin = app
+        .cfg
+        .host_origin
+        .as_deref()
+        .filter(|h| Some(*h) == origin);
     if req.method() == axum::http::Method::OPTIONS {
         return match allowed_origin {
             Some(origin) => cors_preflight(origin),
@@ -244,35 +248,42 @@ pub async fn guard(
         .is_some_and(|t| t == app.token);
 
     /* The agent's own routes authenticate differently: they carry the session's
-       `ask_token` rather than the app token, and the handlers do that check
-       because only they know which session the path names. Exempted here the way
-       hooks are, and for the same reason — the caller is a local process with no
-       Origin and no business holding the key to everything else.
+    `ask_token` rather than the app token, and the handlers do that check
+    because only they know which session the path names. Exempted here the way
+    hooks are, and for the same reason — the caller is a local process with no
+    Origin and no business holding the key to everything else.
 
-       Named as a list because the suffix form has already been outgrown once:
-       `/committed` arrived with the resolve run and this predicate was not
-       extended, so the seam the whole two-phase flow turns on answered 403 to
-       its only caller — twice over, since a curl that added an Origin would then
-       have failed `needs_token` for want of an app token it is deliberately not
-       given. Found by driving a real run, invisible to every unit test. */
+    Named as a list because the suffix form has already been outgrown once:
+    `/committed` arrived with the resolve run and this predicate was not
+    extended, so the seam the whole two-phase flow turns on answered 403 to
+    its only caller — twice over, since a curl that added an Origin would then
+    have failed `needs_token` for want of an app token it is deliberately not
+    given. Found by driving a real run, invisible to every unit test. */
     let is_ask = is_agent_route(&path);
 
     let is_get = req.method() == axum::http::Method::GET;
-    if !origin_ok(origin, port, app.cfg.host_origin.as_deref(), is_hook || is_ask, is_get, token_ok) {
+    if !origin_ok(
+        origin,
+        port,
+        app.cfg.host_origin.as_deref(),
+        is_hook || is_ask,
+        is_get,
+        token_ok,
+    ) {
         return (StatusCode::FORBIDDEN, "bad origin").into_response();
     }
 
     /* Every GET that reaches GitHub on our credential, not just the first one.
-       A GET is otherwise exempt from the token because it hands back state the
-       daemon already had; one that *spends the GitHub token* is a different
-       proposition, because any local process could then drive authenticated
-       GitHub traffic through the daemon and burn its rate limit. These carry the
-       token like a mutating route does, which costs the UI nothing — the SPA's
-       `get()` already sends it on every request.
+    A GET is otherwise exempt from the token because it hands back state the
+    daemon already had; one that *spends the GitHub token* is a different
+    proposition, because any local process could then drive authenticated
+    GitHub traffic through the daemon and burn its rate limit. These carry the
+    token like a mutating route does, which costs the UI nothing — the SPA's
+    `get()` already sends it on every request.
 
-       A named list rather than a suffix match: this started as `/threads` alone
-       and `/review` was added later without it. `/threads` itself is gone now
-       (nothing called it); a dead entry here would read as a route that exists. */
+    A named list rather than a suffix match: this started as `/threads` alone
+    and `/review` was added later without it. `/threads` itself is gone now
+    (nothing called it); a dead entry here would read as a route that exists. */
     const SPENDS_GITHUB_TOKEN: [&str; 1] = ["/review"];
     let spends_github_token =
         path.starts_with("/api/pr/") && SPENDS_GITHUB_TOKEN.iter().any(|s| path.ends_with(s));
@@ -288,7 +299,9 @@ pub async fn guard(
     // refusal reads to the page as a network failure with no message.
     if let Some(origin) = allowed_origin {
         if let Ok(value) = origin.parse() {
-            response.headers_mut().insert(axum::http::header::ACCESS_CONTROL_ALLOW_ORIGIN, value);
+            response
+                .headers_mut()
+                .insert(axum::http::header::ACCESS_CONTROL_ALLOW_ORIGIN, value);
         }
     }
     response
@@ -540,9 +553,7 @@ pub async fn rewind_session(
                     )
                 }
                 crate::model::TurnReason::NeedsPermission => {
-                    refuse!(
-                        "it is waiting for permission — an escape would decline it, not rewind"
-                    )
+                    refuse!("it is waiting for permission — an escape would decline it, not rewind")
                 }
                 _ => {}
             },
@@ -732,17 +743,19 @@ pub async fn ask(
 ) -> ApiResult<serde_json::Value> {
     ask_token_ok(&app, id, &headers).await?;
     /* **A resolve run has nothing to ask.** Its plan is the answer to the only
-       question it could have: which solution per thread, and what the reviewer is
-       told about it, both decided by the person who pressed the button. An ask here
-       spends their attention on a decision they already took and holds the run
-       until somebody looks at the pane. `skills/resolve-run/SKILL.md` says so, and this
-       is the same rule where it cannot be argued with: a thread it truly cannot act
-       on goes to `/stuck`, which posts nothing and blocks nothing, and everything
-       else belongs in the report. */
+    question it could have: which solution per thread, and what the reviewer is
+    told about it, both decided by the person who pressed the button. An ask here
+    spends their attention on a decision they already took and holds the run
+    until somebody looks at the pane. `skills/resolve-run/SKILL.md` says so, and this
+    is the same rule where it cannot be argued with: a thread it truly cannot act
+    on goes to `/stuck`, which posts nothing and blocks nothing, and everything
+    else belongs in the report. */
     {
         let inner = app.inner.read().await;
         let is_run = inner.sessions.get(&id).is_some_and(|s| {
-            s.pass.as_ref().is_some_and(|p| p.command == crate::spawn::RESOLVE_RUN_COMMAND)
+            s.pass
+                .as_ref()
+                .is_some_and(|p| p.command == crate::spawn::RESOLVE_RUN_COMMAND)
         });
         if is_run {
             refuse!(
@@ -801,8 +814,7 @@ pub async fn ask_wait(
     headers: axum::http::HeaderMap,
 ) -> ApiResult<serde_json::Value> {
     ask_token_ok(&app, id, &headers).await?;
-    let deadline =
-        tokio::time::Instant::now() + std::time::Duration::from_secs(WAIT_SECS);
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(WAIT_SECS);
     loop {
         // **Register for the wake before reading the answer.** `notify_waiters`
         // wakes only the futures that already exist, and `Notified` does not join
@@ -850,7 +862,11 @@ pub async fn ask_wait(
 /// deliberately narrow: it authenticates *this* session, for *these* routes, and
 /// unlocks nothing else. The app token is taken as well, so the SPA and a test
 /// can drive the same endpoints.
-async fn ask_token_ok(app: &Arc<AppState>, id: Uuid, headers: &axum::http::HeaderMap) -> Result<(), ApiError> {
+async fn ask_token_ok(
+    app: &Arc<AppState>,
+    id: Uuid,
+    headers: &axum::http::HeaderMap,
+) -> Result<(), ApiError> {
     let given = headers
         .get("x-orch-ask")
         .and_then(|v| v.to_str().ok())
@@ -1069,25 +1085,27 @@ pub async fn thread_committed(
         })
         .await;
         app.notify().await;
-        return Ok(Json(json!({ "posted": false, "reacted": planned.stance.gives_thumbs_up() })));
+        return Ok(Json(
+            json!({ "posted": false, "reacted": planned.stance.gives_thumbs_up() }),
+        ));
     };
 
     /* **Posted on the strength of the button you already pressed.**
-       This used to raise an ask per commit — the diff beside the drafted reply,
-       `Post it` / `Hold it back` — and block the run on it. That was the shape when
-       the decisions were a plan the daemon applied; the button that sends them is
-       called `apply, push and post`, so asking again per thread is asking twice for
-       one answer, and it stops a run that has nothing left to decide.
+    This used to raise an ask per commit — the diff beside the drafted reply,
+    `Post it` / `Hold it back` — and block the run on it. That was the shape when
+    the decisions were a plan the daemon applied; the button that sends them is
+    called `apply, push and post`, so asking again per thread is asking twice for
+    one answer, and it stops a run that has nothing left to decide.
 
-       What went with it: `hold`, the one-thread "say nothing, I will answer this
-       one myself". Nothing else here is weakened — the ancestry refusal above is a
-       safety check rather than a preference, and it still holds the reply and says
-       why. The ask channel is untouched for what it is for: a run that hits a
-       question only you can answer still asks it (`orch ask`, `/stuck`).
+    What went with it: `hold`, the one-thread "say nothing, I will answer this
+    one myself". Nothing else here is weakened — the ancestry refusal above is a
+    safety check rather than a preference, and it still holds the reply and says
+    why. The ask channel is untouched for what it is for: a run that hits a
+    question only you can answer still asks it (`orch ask`, `/stuck`).
 
-       What you inspect instead is the commit itself: its sha is on the record, the
-       run screen and the report name it, and the reply that went out is beside it
-       there. */
+    What you inspect instead is the commit itself: its sha is on the record, the
+    run screen and the report name it, and the reply that went out is beside it
+    there. */
     // Fetched now: the thread must still be there, and the ids the write needs are
     // this fetch's, not the ones triage saw.
     let fresh = fetch_threads(&app, number).await?;
@@ -1149,7 +1167,12 @@ async fn mark_thread(
         let Some(run) = runs.get_mut(&pr) else {
             return false;
         };
-        match run.plan.threads.iter_mut().find(|t| t.thread_id == thread_id) {
+        match run
+            .plan
+            .threads
+            .iter_mut()
+            .find(|t| t.thread_id == thread_id)
+        {
             Some(t) => {
                 f(t);
                 true
@@ -1184,7 +1207,11 @@ pub async fn answer(
             .iter()
             .find(|o| o.value == body.answer)
             .ok_or_else(|| anyhow::anyhow!("{} is not one of the options", body.answer))?;
-        let text = body.text.as_deref().map(str::trim).filter(|t| !t.is_empty());
+        let text = body
+            .text
+            .as_deref()
+            .map(str::trim)
+            .filter(|t| !t.is_empty());
         if picked.free && text.is_none() {
             refuse!(
                 "\"{}\" is the option that asks for words, and none were written",
@@ -1192,20 +1219,17 @@ pub async fn answer(
             );
         }
         if !picked.free && text.is_some() {
-            refuse!(
-                "\"{}\" takes no words",
-                picked.label
-            );
+            refuse!("\"{}\" takes no words", picked.label);
         }
         open.answer = Some(body.answer.clone());
         open.answer_text = text.map(str::to_string);
         /* A yes to the daemon's own worktree question, and only to that one: the
-           ask id is compared rather than the option value, because an agent writes
-           its own values in `orch ask` and could otherwise grant itself.
+        ask id is compared rather than the option value, because an agent writes
+        its own values in `orch ask` and could otherwise grant itself.
 
-           The folder comes off the ask rather than out of the answer, for the same
-           reason: the agent chose which path to ask about, but only this record
-           says which one the question the user read was about. */
+        The folder comes off the ask rather than out of the answer, for the same
+        reason: the agent chose which path to ask about, but only this record
+        says which one the question the user read was about. */
         if body.answer == OUTSIDE_ALLOW {
             if let Some(asked) = s.outside_ask.as_ref().filter(|a| a.id == body.ask) {
                 let path = asked.path.clone();
@@ -1300,8 +1324,10 @@ pub async fn file_verb(
     }
 
     let (at, p) = (root, rel.clone());
-    crate::proc::run_blocking("the file verb", move || crate::git::file_verb(&at, verb, &p))
-        .await??;
+    crate::proc::run_blocking("the file verb", move || {
+        crate::git::file_verb(&at, verb, &p)
+    })
+    .await??;
     // The pane is drawn from the reconcile, so it has to be the fresh one.
     let _ = app.reconcile(&body.workspace).await;
     Ok(Json(json!({ "done": body.verb, "path": rel })))
@@ -1454,20 +1480,18 @@ pub async fn allow_outside(
         refuse!("name the path you were refused");
     }
     /* **Absolute, and folded, because the grant is *compared* — not stored and
-       forgotten.** `guard::isolation` judges paths it has resolved against the
-       command's own cwd, so a grant kept as the agent's literal `../other` or `.`
-       matches nothing it will ever be asked about. And the loop that leaves is
-       silent: `outside_granted` matches the same literal string, so every later
-       `orch outside ../other` short-circuits to `allowed` without a question being
-       raised, while the guard goes on refusing. The agent then retries a permission
-       it believes it holds.
-       Refused rather than resolved here, because *this* process is the daemon and
-       resolving against its cwd would invent a path in the wrong tree — and the
-       refusal the agent was handed already names an absolute one. */
+    forgotten.** `guard::isolation` judges paths it has resolved against the
+    command's own cwd, so a grant kept as the agent's literal `../other` or `.`
+    matches nothing it will ever be asked about. And the loop that leaves is
+    silent: `outside_granted` matches the same literal string, so every later
+    `orch outside ../other` short-circuits to `allowed` without a question being
+    raised, while the guard goes on refusing. The agent then retries a permission
+    it believes it holds.
+    Refused rather than resolved here, because *this* process is the daemon and
+    resolving against its cwd would invent a path in the wrong tree — and the
+    refusal the agent was handed already names an absolute one. */
     if !std::path::Path::new(&path).is_absolute() {
-        refuse!(
-            "{path} is not an absolute path — ask about the one the refusal named"
-        );
+        refuse!("{path} is not an absolute path — ask about the one the refusal named");
     }
     let path = crate::guard::fold(std::path::Path::new(&path))
         .to_string_lossy()
@@ -1544,7 +1568,9 @@ pub async fn allow_outside(
         });
     }
     app.notify().await;
-    Ok(Json(json!({ "allowed": false, "asked": true, "ask": ask_id })))
+    Ok(Json(
+        json!({ "allowed": false, "asked": true, "ask": ask_id }),
+    ))
 }
 
 /// The folders this session has been let out to, which is what the guard reads
@@ -1623,7 +1649,11 @@ pub async fn spawn_from_session(
             .ok_or_else(|| anyhow::anyhow!("no such session {id}"))?
     };
 
-    let named = body.workspace.as_deref().map(str::trim).filter(|w| !w.is_empty());
+    let named = body
+        .workspace
+        .as_deref()
+        .map(str::trim)
+        .filter(|w| !w.is_empty());
     // Two names for one place is a request nobody can honour, and guessing which
     // half was meant is how a fixer ends up in the tree you were reading.
     if named.is_some() && body.worktree {
@@ -1651,7 +1681,11 @@ pub async fn spawn_from_session(
     // run": your own tree when you are in a worktree, which is what you mean when
     // you want a hand with what you are already doing, and a fresh worktree when
     // you are in main.
-    let name = body.name.as_deref().map(str::trim).filter(|n| !n.is_empty());
+    let name = body
+        .name
+        .as_deref()
+        .map(str::trim)
+        .filter(|n| !n.is_empty());
     let cut = body.worktree || (named.is_none() && mine == MAIN);
     let child = match named {
         Some(w) => spawn::spawn_session(&app, w, None, None).await?,
@@ -1661,7 +1695,12 @@ pub async fn spawn_from_session(
     {
         let mut inner = app.inner.write().await;
         if let Some(s) = inner.sessions.get_mut(&child) {
-            if let Some(prompt) = body.prompt.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
+            if let Some(prompt) = body
+                .prompt
+                .as_deref()
+                .map(str::trim)
+                .filter(|p| !p.is_empty())
+            {
                 // The same path a vendored prompt takes: typed in at `SessionStart`,
                 // because an interactive session honours nothing else.
                 s.pending_prompt = Some(prompt.to_string());
@@ -1737,31 +1776,31 @@ pub async fn process_from_session(
             .ok_or_else(|| anyhow::anyhow!("no such session {id}"))?
     };
 
-    let spec = app.cfg.managed_spec(&workspace, &body.name).ok_or_else(|| {
-        let known = managed_names(&app, &workspace);
-        anyhow::anyhow!(
-            "{workspace} declares no process called {}; it has {}",
-            body.name,
-            if known.is_empty() {
-                "none at all".to_string()
-            } else {
-                known.join(", ")
-            }
-        )
-    })?;
+    let spec = app
+        .cfg
+        .managed_spec(&workspace, &body.name)
+        .ok_or_else(|| {
+            let known = managed_names(&app, &workspace);
+            anyhow::anyhow!(
+                "{workspace} declares no process called {}; it has {}",
+                body.name,
+                if known.is_empty() {
+                    "none at all".to_string()
+                } else {
+                    known.join(", ")
+                }
+            )
+        })?;
 
     {
         let inner = app.inner.read().await;
         let alive = inner.workspaces.get(&workspace).is_some_and(|w| {
-            w.processes
-                .iter()
-                .any(|p| p.name == spec.name && p.pty.as_ref().is_some_and(|h| h.exit_code().is_none()))
+            w.processes.iter().any(|p| {
+                p.name == spec.name && p.pty.as_ref().is_some_and(|h| h.exit_code().is_none())
+            })
         });
         if alive {
-            refuse!(
-                "{} is already running in {workspace}",
-                spec.name
-            );
+            refuse!("{} is already running in {workspace}", spec.name);
         }
     }
 
@@ -1831,9 +1870,7 @@ pub async fn nudge_sessions(
                     // And only one that was cut off mid-turn. A conversation that
                     // had finished before the restart comes back at the same empty
                     // prompt, and "continue" there invents the next piece of work.
-                    crate::model::TurnReason::Ready if s.interrupted => {
-                        targets.push((s.id, pty))
-                    }
+                    crate::model::TurnReason::Ready if s.interrupted => targets.push((s.id, pty)),
                     // Both take a keystroke as an answer: a permission prompt as
                     // consent, a question as whichever choice is highlighted.
                     // Named rather than skipped, so pressing the button does not
@@ -1925,7 +1962,9 @@ pub async fn fork_session(
         );
     }
     let new_id = spawn::spawn_worktree_session(&app, None, Some(id)).await?;
-    Ok(Json(json!({ "session": new_id, "warning": None::<String> })))
+    Ok(Json(
+        json!({ "session": new_id, "warning": None::<String> }),
+    ))
 }
 
 /// Resume: get the worktree back, then relaunch under the same id.
@@ -2076,20 +2115,28 @@ pub async fn dismiss_app_upgrade(State(app): State<Arc<AppState>>) -> ApiResult<
 /// dismissed in one window and back on the next reload is the same bar arguing
 /// with you. Refuses while the run is going — there is nothing to dismiss yet, and
 /// clearing it would leave the button enabled beside a running `mise upgrade`.
-pub async fn dismiss_agent_upgrade(State(app): State<Arc<AppState>>) -> ApiResult<serde_json::Value> {
+pub async fn dismiss_agent_upgrade(
+    State(app): State<Arc<AppState>>,
+) -> ApiResult<serde_json::Value> {
     dismiss(&app, crate::update::Subject::Agent).await
 }
 
 /// The names that workspace could start, for an error worth reading.
 fn managed_names(app: &Arc<AppState>, workspace: &str) -> Vec<String> {
-    app.cfg.processes_for(workspace).iter().map(|s| s.name.clone()).collect()
+    app.cfg
+        .processes_for(workspace)
+        .iter()
+        .map(|s| s.name.clone())
+        .collect()
 }
 
 pub async fn restart_process(
     State(app): State<Arc<AppState>>,
     Path((workspace, name)): Path<(String, String)>,
 ) -> ApiResult<serde_json::Value> {
-    let spec = app.cfg.managed_spec(&workspace, &name)
+    let spec = app
+        .cfg
+        .managed_spec(&workspace, &name)
         .ok_or_else(|| anyhow::anyhow!("no managed process {name} for {workspace}"))?;
 
     let existing = {
@@ -2268,30 +2315,32 @@ async fn swap_with_main_inner(
     }
 
     /* **Who travels is decided from state read before anything moves.**
-       `to_carry` matches a session by `Session::branch`, and `AppState::reconcile`
-       re-stamps that field for every *live* session from whatever its tree has
-       checked out now — the right rule everywhere else, and exactly wrong in the
-       window this flow opens.
-       It used to be read after the exchange, which is safe against the reconcile
-       *this* function runs and not against the background sweep, which holds
-       `AppState::sweeping` rather than `swapping` and so runs straight through a
-       swap. On the monorepo this was written against, a sweep is ~9s over 78
-       worktrees and they run back to back, so that window is open almost always:
-       observed live, a swap moved both branches and carried nothing
-       (`into_main=None into_worktree=None`), and the next swap put the branches
-       back and moved the conversation — leaving a session in main whose branch had
-       gone home, with only a WARN to say so.
-       Reading first removes the race rather than narrowing it: who was working on
-       the branch that is about to leave is knowable before it leaves, and once the
-       ids are captured a re-stamp cannot change the answer. */
+    `to_carry` matches a session by `Session::branch`, and `AppState::reconcile`
+    re-stamps that field for every *live* session from whatever its tree has
+    checked out now — the right rule everywhere else, and exactly wrong in the
+    window this flow opens.
+    It used to be read after the exchange, which is safe against the reconcile
+    *this* function runs and not against the background sweep, which holds
+    `AppState::sweeping` rather than `swapping` and so runs straight through a
+    swap. On the monorepo this was written against, a sweep is ~9s over 78
+    worktrees and they run back to back, so that window is open almost always:
+    observed live, a swap moved both branches and carried nothing
+    (`into_main=None into_worktree=None`), and the next swap put the branches
+    back and moved the conversation — leaving a session in main whose branch had
+    gone home, with only a WARN to say so.
+    Reading first removes the race rather than narrowing it: who was working on
+    the branch that is about to leave is knowable before it leaves, and once the
+    ids are captured a re-stamp cannot change the answer. */
     let (m0, t0) = (main.clone(), tree.clone());
-    let (main_was, tree_was) = tokio::task::spawn_blocking(
-        move || -> anyhow::Result<(String, String)> {
-            Ok((crate::git::current_branch(&m0)?, crate::git::current_branch(&t0)?))
-        },
-    )
-    .await
-    .map_err(|e| anyhow::anyhow!("reading the branches panicked: {e}"))??;
+    let (main_was, tree_was) =
+        tokio::task::spawn_blocking(move || -> anyhow::Result<(String, String)> {
+            Ok((
+                crate::git::current_branch(&m0)?,
+                crate::git::current_branch(&t0)?,
+            ))
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("reading the branches panicked: {e}"))??;
     // By branch, not by address: each side asks "who here is working on the branch
     // that is about to move out". Both are picked before either moves, because
     // choosing as we go would let the second choice see the session the first one
@@ -2327,12 +2376,12 @@ async fn swap_with_main_inner(
         .map_err(|e| anyhow::anyhow!("the swap task panicked: {e}"))??;
 
     /* The identity a swap is: what main holds now is what the worktree held, and
-       the other way round. If that does not hold, something moved between the read
-       above and the exchange — a hand-typed `git checkout` in either tree — and the
-       carriers were picked against a world that has since changed. Said out loud
-       rather than guarded, because the exchange has already happened and the
-       branches are where git says they are; what is uncertain is only who should
-       follow them. */
+    the other way round. If that does not hold, something moved between the read
+    above and the exchange — a hand-typed `git checkout` in either tree — and the
+    carriers were picked against a world that has since changed. Said out loud
+    rather than guarded, because the exchange has already happened and the
+    branches are where git says they are; what is uncertain is only who should
+    follow them. */
     if swapped.main_now != tree_was || swapped.worktree_now != main_was {
         tracing::warn!(
             %workspace,
@@ -2534,10 +2583,11 @@ pub async fn move_out_of_main(
         let (main, path, new_branch) = (main.clone(), path.clone(), new_branch.clone());
         let exclude = app.cfg.worktrees_subdir_str();
         move || -> anyhow::Result<crate::git::MovedOut> {
-            let base = crate::git::base_checkout_branch(&main, &base_ref)
-                .ok_or_else(|| anyhow::anyhow!(
+            let base = crate::git::base_checkout_branch(&main, &base_ref).ok_or_else(|| {
+                anyhow::anyhow!(
                     "no base branch to put main back on — {base_ref} has not been fetched"
-                ))?;
+                )
+            })?;
             // Listed before the move, because `stash create` cannot carry them and
             // afterwards they are indistinguishable from base's own untracked files.
             let left = crate::git::untracked_in(&main, Some(&exclude))?;
@@ -2616,7 +2666,13 @@ fn branch_leaf(branch: &str) -> String {
     let leaf = branch.rsplit('/').next().unwrap_or(branch);
     let cleaned: String = leaf
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '-' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
         .collect();
     let stem = cleaned.trim_matches('-');
     let stem = if stem.is_empty() { "work" } else { stem };
@@ -2629,7 +2685,11 @@ fn branch_leaf(branch: &str) -> String {
 /// still be sitting there, which is a reason to pick another name, not to stop.
 fn free_worktree_name(app: &Arc<AppState>, stem: &str) -> String {
     for n in 1..100 {
-        let name = if n == 1 { stem.to_string() } else { format!("{stem}-{n}") };
+        let name = if n == 1 {
+            stem.to_string()
+        } else {
+            format!("{stem}-{n}")
+        };
         if !app.cfg.worktree_path(&name).exists() {
             return name;
         }
@@ -2760,30 +2820,30 @@ fn arrival_notice(
         from.display(),
     );
     /* Claude Code pins worktree isolation in the transcript (a `worktree-state`
-       record, re-appended every turn), so a conversation started by `claude
-       --worktree` would go on refusing every git command aimed anywhere but that
-       original worktree — including the tree it has just been moved into.
-       `store::clear_worktree_pin` has already released it by the time this is read:
-       `spawn_session` calls it on resume whenever the pin disagrees with the cwd, and
-       a relocation is a resume.
+    record, re-appended every turn), so a conversation started by `claude
+    --worktree` would go on refusing every git command aimed anywhere but that
+    original worktree — including the tree it has just been moved into.
+    `store::clear_worktree_pin` has already released it by the time this is read:
+    `spawn_session` calls it on resume whenever the pin disagrees with the cwd, and
+    a relocation is a resume.
 
-       So this says what happened and asks for nothing. It used to tell the agent to
-       call `ExitWorktree` first, on the belief that the daemon could not clear the pin
-       from outside. That belief was wrong — see `clear_worktree_pin`, measured against
-       128 transcripts — and the instruction outlived it, with two costs. The tool
-       answers "No-op: there is no active EnterWorktree session to exit", which is the
-       truth and reads as a failure; and an agent that has just been told it is
-       isolated, and then told it is not, concludes the relocation did not happen. One
-       went looking for its work in the old worktree and started moving by hand what
-       it thought had been left. Telling it not to call the tool is the point of naming
-       the tool at all.
+    So this says what happened and asks for nothing. It used to tell the agent to
+    call `ExitWorktree` first, on the belief that the daemon could not clear the pin
+    from outside. That belief was wrong — see `clear_worktree_pin`, measured against
+    128 transcripts — and the instruction outlived it, with two costs. The tool
+    answers "No-op: there is no active EnterWorktree session to exit", which is the
+    truth and reads as a failure; and an agent that has just been told it is
+    isolated, and then told it is not, concludes the relocation did not happen. One
+    went looking for its work in the old worktree and started moving by hand what
+    it thought had been left. Telling it not to call the tool is the point of naming
+    the tool at all.
 
-       What this must *not* do is over-correct into reassurance. A first draft said the
-       files had come with it and there was nothing to move — and a real session then
-       proved that wrong: it followed the branch it was recorded on while its own edits
-       sat on another branch in the tree it left. The daemon knows which branch it
-       moved; it does not know which branch the agent was editing. So this states the
-       first and asks the agent to establish the second. */
+    What this must *not* do is over-correct into reassurance. A first draft said the
+    files had come with it and there was nothing to move — and a real session then
+    proved that wrong: it followed the branch it was recorded on while its own edits
+    sat on another branch in the tree it left. The daemon knows which branch it
+    moved; it does not know which branch the agent was editing. So this states the
+    first and asks the agent to establish the second. */
     note.push_str(
         " Claude Code's worktree isolation for this session has already been released, \
          so do not call `ExitWorktree` or `EnterWorktree`, and do not re-run the move: \
@@ -2964,10 +3024,10 @@ mod tests {
 
         let (app, dir) = crate::testutil::app("carry");
         /* Archived rather than live, and that is what makes this test able to
-           fail: a live session only becomes a carry once `has_conversation` finds
-           a turn on disk, and neither of these has a file — so both would answer
-           `None` whatever the filter did. The *records* half asks the same
-           question about the branch and nothing else. */
+        fail: a live session only becomes a carry once `has_conversation` finds
+        a turn on disk, and neither of these has a file — so both would answer
+        `None` whatever the filter did. The *records* half asks the same
+        question about the branch and nothing else. */
         let with = |branch: Option<&str>| {
             let id = Uuid::new_v4();
             let mut s = Session::new(id, "invoice".to_string(), dir.clone(), None);
@@ -2985,7 +3045,10 @@ mod tests {
         }
 
         let (_, records) = to_carry(&app, "invoice", "worktree-invoice").await;
-        assert!(records.contains(&known), "the session on that branch was not carried");
+        assert!(
+            records.contains(&known),
+            "the session on that branch was not carried"
+        );
         assert!(
             !records.contains(&unknown),
             "a session whose record names no branch was carried anyway"
@@ -3039,7 +3102,10 @@ mod tests {
             running: true,
             tail: String::new(),
         });
-        assert!(upgrade_app(State(app.clone())).await.is_err(), "one run at a time");
+        assert!(
+            upgrade_app(State(app.clone())).await.is_err(),
+            "one run at a time"
+        );
     }
 
     /// The route's own rules, which the pane cannot be trusted to keep.
@@ -3066,7 +3132,11 @@ mod tests {
             async move {
                 file_verb(
                     State(app),
-                    Json(FileVerbBody { workspace: MAIN.to_string(), path, verb }),
+                    Json(FileVerbBody {
+                        workspace: MAIN.to_string(),
+                        path,
+                        verb,
+                    }),
                 )
                 .await
             }
@@ -3096,7 +3166,11 @@ mod tests {
             s.set_state(S::Working);
             inner.sessions.insert(id, s);
         }
-        let e = said(go("f.txt", "unstage").await.expect_err("an agent is working"));
+        let e = said(
+            go("f.txt", "unstage")
+                .await
+                .expect_err("an agent is working"),
+        );
         assert!(e.contains("mid-turn"), "{e}");
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -3133,26 +3207,49 @@ mod tests {
         };
         let tell = |text: &str| {
             let (app, text) = (app.clone(), text.to_string());
-            async move {
-                tell_session(State(app), Path(id), Json(TellBody { text })).await
-            }
+            async move { tell_session(State(app), Path(id), Json(TellBody { text })).await }
         };
 
         // Mid-turn: a stray line of input, and `Enter` submits whatever is typed.
         set(S::Working).await;
         let said = |e: ApiError| format!("{:#}", e.0);
-        let e = said(tell("ng-watch said: TS2345").await.expect_err("mid-turn is refused"));
+        let e = said(
+            tell("ng-watch said: TS2345")
+                .await
+                .expect_err("mid-turn is refused"),
+        );
         assert!(e.contains("mid-turn"), "{e}");
 
         // Both of these read a keystroke as an *answer*.
-        set(S::YourTurn { since: SystemTime::now(), reason: R::NeedsPermission }).await;
-        assert!(tell("x").await.is_err(), "a permission prompt takes it as consent");
-        set(S::YourTurn { since: SystemTime::now(), reason: R::AskedAQuestion }).await;
-        assert!(tell("x").await.is_err(), "a question takes it as the highlighted choice");
+        set(S::YourTurn {
+            since: SystemTime::now(),
+            reason: R::NeedsPermission,
+        })
+        .await;
+        assert!(
+            tell("x").await.is_err(),
+            "a permission prompt takes it as consent"
+        );
+        set(S::YourTurn {
+            since: SystemTime::now(),
+            reason: R::AskedAQuestion,
+        })
+        .await;
+        assert!(
+            tell("x").await.is_err(),
+            "a question takes it as the highlighted choice"
+        );
 
         // Size, which is the other half of "a prompt is not a log".
-        set(S::YourTurn { since: SystemTime::now(), reason: R::TurnComplete }).await;
-        assert!(tell(&"x".repeat(9 * 1024)).await.is_err(), "a buffer-sized paste is refused");
+        set(S::YourTurn {
+            since: SystemTime::now(),
+            reason: R::TurnComplete,
+        })
+        .await;
+        assert!(
+            tell(&"x".repeat(9 * 1024)).await.is_err(),
+            "a buffer-sized paste is refused"
+        );
         assert!(tell("   ").await.is_err(), "and so is nothing at all");
 
         // At its prompt: it goes, and `cat` hands it back.
@@ -3291,7 +3388,11 @@ mod tests {
         let err = answer(
             State(app.clone()),
             Path(id),
-            Json(AnswerBody { ask: ask_id, answer: "mine".into(), text: None }),
+            Json(AnswerBody {
+                ask: ask_id,
+                answer: "mine".into(),
+                text: None,
+            }),
         )
         .await
         .expect_err("refused with no words");
@@ -3313,7 +3414,10 @@ mod tests {
         let inner = app.inner.read().await;
         let got = inner.sessions[&id].interaction.as_ref().unwrap();
         assert_eq!(got.answer.as_deref(), Some("mine"));
-        assert_eq!(got.answer_text.as_deref(), Some("put it under Pushing, but say why"));
+        assert_eq!(
+            got.answer_text.as_deref(),
+            Some("put it under Pushing, but say why")
+        );
         drop(inner);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -3370,7 +3474,11 @@ mod tests {
         // A page on another port is still another origin.
         assert!(!origin_allowed("http://127.0.0.1:7778", 7777, None));
         // Guards against a DNS-rebinding host that merely contains the address.
-        assert!(!origin_allowed("http://127.0.0.1.evil.example:7777", 7777, None));
+        assert!(!origin_allowed(
+            "http://127.0.0.1.evil.example:7777",
+            7777,
+            None
+        ));
     }
 
     /// `(origin, is_hook, is_get, token_ok)` at port 7777.
@@ -3409,7 +3517,10 @@ mod tests {
 
         let (app, dir) = crate::testutil::app("rewind");
 
-        let at = |reason| S::YourTurn { since: std::time::SystemTime::now(), reason };
+        let at = |reason| S::YourTurn {
+            since: std::time::SystemTime::now(),
+            reason,
+        };
         for (state, want) in [
             (at(R::AskedAQuestion), "cancel the question"),
             (at(R::NeedsPermission), "decline it"),
@@ -3427,7 +3538,10 @@ mod tests {
             match rewind_session(State(app.clone()), Path(id)).await {
                 Err(e) => {
                     let said = format!("{:#}", e.0);
-                    assert!(said.contains(want), "{state:?} said {said:?}, wanted {want:?}");
+                    assert!(
+                        said.contains(want),
+                        "{state:?} said {said:?}, wanted {want:?}"
+                    );
                 }
                 Ok(_) => panic!("{state:?} must not open the picker"),
             }
@@ -3490,16 +3604,15 @@ mod tests {
         ] {
             let said = format!(
                 "{:#}",
-                discard_spawned(
-                    State(app.clone()),
-                    Path((caller, child)),
-                    headers.clone()
-                )
-                .await
-                .expect_err("must refuse")
-                .0
+                discard_spawned(State(app.clone()), Path((caller, child)), headers.clone())
+                    .await
+                    .expect_err("must refuse")
+                    .0
             );
-            assert!(said.contains(want), "{child} said {said:?}, wanted {want:?}");
+            assert!(
+                said.contains(want),
+                "{child} said {said:?}, wanted {want:?}"
+            );
         }
 
         // And the one that is the caller's own is not refused on authorship. Not
@@ -3569,13 +3682,23 @@ mod tests {
     fn the_proposals_post_is_an_agent_route_and_reachable_without_an_origin() {
         let p = "/api/pr/10001/proposals";
         assert!(is_proposals_route(p));
-        assert!(is_agent_route(p), "{p} is curled by the triage and review skills");
+        assert!(
+            is_agent_route(p),
+            "{p} is curled by the triage and review skills"
+        );
         // Not an *ask* route: it is keyed on a PR, and has no session to check.
         assert!(!is_ask_route(p));
         // The Origin allowance the agent's curl depends on.
-        assert!(ok(None, true, false, false), "no Origin must pass for an agent route");
+        assert!(
+            ok(None, true, false, false),
+            "no Origin must pass for an agent route"
+        );
         // Neighbours that stay the SPA's, on the app token.
-        for other in ["/api/pr/10001/review", "/api/pr/10001/fix-pr", "/api/pr/10001"] {
+        for other in [
+            "/api/pr/10001/review",
+            "/api/pr/10001/fix-pr",
+            "/api/pr/10001",
+        ] {
             assert!(!is_agent_route(other), "{other} is not the agent's to call");
         }
     }
@@ -3588,7 +3711,10 @@ mod tests {
     /// refusal naming the cause.
     #[test]
     fn the_triage_skill_can_reach_its_two_routes() {
-        for p in ["/api/pr/10001/triage-context", "/api/pr/10001/triage/progress"] {
+        for p in [
+            "/api/pr/10001/triage-context",
+            "/api/pr/10001/triage/progress",
+        ] {
             assert!(is_triage_route(p));
             assert!(is_agent_route(p), "{p} is curled by skills/triage/SKILL.md");
             // Keyed on a PR, so not an ask route: there is no session in the path.
@@ -3786,13 +3912,7 @@ mod tests {
                 }),
             );
             let live_elsewhere = put("other", Some("feature/a"), archived(), None);
-            let ids = (
-                mine.id,
-                others.id,
-                unknown.id,
-                torn.id,
-                live_elsewhere.id,
-            );
+            let ids = (mine.id, others.id, unknown.id, torn.id, live_elsewhere.id);
             for s in [mine, others, unknown, torn, live_elsewhere] {
                 inner.sessions.insert(s.id, s);
             }
@@ -3801,7 +3921,11 @@ mod tests {
 
         let (live, records) = to_carry(&app, "wt", "feature/a").await;
         assert_eq!(live, None, "nothing was running, so nothing is relocated");
-        assert_eq!(records, vec![mine], "only the conversation whose branch left");
+        assert_eq!(
+            records,
+            vec![mine],
+            "only the conversation whose branch left"
+        );
         for stranded in [others, unknown, torn, live_elsewhere] {
             assert!(!records.contains(&stranded));
         }
@@ -3818,14 +3942,12 @@ mod tests {
         let (app, dir) = crate::testutil::app("carry-newest");
         let (wanted, newer) = {
             let mut inner = app.inner.write().await;
-            let mut wanted =
-                Session::new(Uuid::new_v4(), "wt".into(), dir.clone(), None);
+            let mut wanted = Session::new(Uuid::new_v4(), "wt".into(), dir.clone(), None);
             wanted.branch = Some("feature/a".into());
             wanted.had_a_turn = true;
             wanted.state = State::Archived { resumable: true };
 
-            let mut newer =
-                Session::new(Uuid::new_v4(), "wt".into(), dir.clone(), None);
+            let mut newer = Session::new(Uuid::new_v4(), "wt".into(), dir.clone(), None);
             newer.branch = Some("feature/b".into());
             newer.had_a_turn = true;
             newer.state = State::Archived { resumable: true };
@@ -3909,7 +4031,10 @@ mod tests {
         };
         assert_eq!(notes.for_main(true), Some("the stack runs here"));
         assert_eq!(notes.for_main(false), None);
-        assert_eq!(crate::config::WorkspaceNotes::default().for_main(true), None);
+        assert_eq!(
+            crate::config::WorkspaceNotes::default().for_main(true),
+            None
+        );
     }
 }
 
@@ -3957,10 +4082,10 @@ pub async fn diff_summary(
         crate::proc::run_blocking("the diff summary", move || {
             let mut sum = crate::diff::summary(&path, &base)?;
             /* The pane's git verbs are drawn from these two, and this route serves
-               the very same rows the rail's list does — so leaving them unset made
-               one file offer `stage` in one pane and nothing in the other. One more
-               git child per click, on a request that has already run two diffs.
-               Degraded rather than fatal: the diff is what was asked for. */
+            the very same rows the rail's list does — so leaving them unset made
+            one file offer `stage` in one pane and nothing in the other. One more
+            git child per click, on a request that has already run two diffs.
+            Degraded rather than fatal: the diff is what was asked for. */
             match crate::git::status(&path, None, crate::git::Untracked::Collapsed) {
                 Ok(set) => crate::diff::mark_worktree_state(&mut sum.files, &set),
                 Err(e) => tracing::warn!("no git verbs on this diff: {e:#}"),
@@ -4086,7 +4211,12 @@ pub async fn client_note(
 ) -> impl IntoResponse {
     // No control characters: a newline in the body would end this line and start
     // another, in the one file this feature exists to make trustworthy.
-    let note: String = body.note.chars().filter(|c| !c.is_control()).take(300).collect();
+    let note: String = body
+        .note
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(300)
+        .collect();
     tracing::info!("page: {note}");
     (StatusCode::ACCEPTED, Json(json!({ "logged": true })))
 }
@@ -4152,16 +4282,16 @@ pub async fn open_file(
         refuse!("no path given");
     }
     /* A blob URL is a *tracked file at a ref*, and the pane lists two things that
-       are neither: an untracked file (`DiffFile::untracked`, which git has never
-       seen, so no ref has a blob for it) and a whole untracked directory, which
-       `--untracked-files=normal` collapses to a trailing `/`. Both used to open a
-       404 in the browser, which reads as the forge being broken rather than as the
-       file not being there.
+    are neither: an untracked file (`DiffFile::untracked`, which git has never
+    seen, so no ref has a blob for it) and a whole untracked directory, which
+    `--untracked-files=normal` collapses to a trailing `/`. Both used to open a
+    404 in the browser, which reads as the forge being broken rather than as the
+    file not being there.
 
-       Asked of git rather than of the `?` status the client happens to hold: the
-       route is reachable without the pane, and "does this ref have this path" is
-       the question the URL is about. The directory case is refused before the git
-       call, since `ls-tree` on `x/` answers nothing useful either way. */
+    Asked of git rather than of the `?` status the client happens to hold: the
+    route is reachable without the pane, and "does this ref have this path" is
+    the question the URL is about. The directory case is refused before the git
+    call, since `ls-tree` on `x/` answers nothing useful either way. */
     if path.ends_with('/') {
         refuse!("{path} is a directory, and a blob URL is for a file");
     }
@@ -4283,15 +4413,24 @@ fn read_forge(app: &Arc<AppState>) -> Result<crate::forge::ForgeImpl, ApiError> 
     let (owner, name) = repo_of(app)
         .ok_or_else(|| anyhow::anyhow!("no GitHub repo configured and none on the remote"))?;
     let token = crate::forge::resolve_token(app.cfg.github_token_file.as_deref())?;
-    Ok(crate::forge::ForgeImpl::for_kind(app.cfg.forge, owner, name, token.value))
+    Ok(crate::forge::ForgeImpl::for_kind(
+        app.cfg.forge,
+        owner,
+        name,
+        token.value,
+    ))
 }
 
 /// The same, for writes. Writes shell their own tool, so no read token is
 /// needed — the forge carries only the repo it writes to.
 fn write_forge(app: &Arc<AppState>) -> Result<crate::forge::ForgeImpl, ApiError> {
-    let (owner, name) =
-        repo_of(app).context("no GitHub repo configured and none on the remote")?;
-    Ok(crate::forge::ForgeImpl::for_kind(app.cfg.forge, owner, name, String::new()))
+    let (owner, name) = repo_of(app).context("no GitHub repo configured and none on the remote")?;
+    Ok(crate::forge::ForgeImpl::for_kind(
+        app.cfg.forge,
+        owner,
+        name,
+        String::new(),
+    ))
 }
 
 /// The repo the forge talks to, without a child process.
@@ -4442,12 +4581,15 @@ pub async fn pr_triage_progress(
     };
     {
         let mut inner = app.inner.write().await;
-        let at = inner.triage_progress.entry(number).or_insert(TriageProgress {
-            done: 0,
-            total: body.total,
-            posted: false,
-            session,
-        });
+        let at = inner
+            .triage_progress
+            .entry(number)
+            .or_insert(TriageProgress {
+                done: 0,
+                total: body.total,
+                posted: false,
+                session,
+            });
         at.done = body.done;
         at.total = body.total;
         at.session = session;
@@ -4545,12 +4687,8 @@ async fn start_posting_run(
         refuse!("PR #{number} has no threads awaiting an answer");
     }
     let session = match which {
-        PostingRun::Triage => {
-            crate::triage::spawn(&app, number, &pr.head_ref).await?
-        }
-        PostingRun::Review => {
-            crate::triage::spawn_review(&app, number, &pr.head_ref).await?
-        }
+        PostingRun::Triage => crate::triage::spawn(&app, number, &pr.head_ref).await?,
+        PostingRun::Review => crate::triage::spawn_review(&app, number, &pr.head_ref).await?,
     };
     Ok(Json(json!({ "session": session })))
 }
@@ -4677,8 +4815,10 @@ pub async fn pr_commit(
 ) -> ApiResult<serde_json::Value> {
     let path = gate_worktree(&app, number).await?;
     let message = body.message.clone();
-    crate::proc::run_blocking("the gate's commit", move || crate::git::commit_all(&path, &message))
-        .await??;
+    crate::proc::run_blocking("the gate's commit", move || {
+        crate::git::commit_all(&path, &message)
+    })
+    .await??;
     app.notify().await;
     Ok(Json(json!({ "committed": true })))
 }
@@ -4719,12 +4859,15 @@ pub async fn pr_post(
     // be undone.
     // Held for the whole batch and released however it ends, including a panic in
     // the middle: a leaked lock would make the PR unpostable until a restart.
-    let released = app.try_claim(format!("post:{number}")).await.ok_or_else(|| {
-        anyhow::anyhow!(
-            "a batch for PR #{number} is already running; wait for it rather than \
+    let released = app
+        .try_claim(format!("post:{number}"))
+        .await
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "a batch for PR #{number} is already running; wait for it rather than \
              sending a second one"
-        )
-    })?;
+            )
+        })?;
 
     let pr = {
         let inner = app.inner.read().await;
@@ -4777,7 +4920,13 @@ pub async fn pr_resolve_run(
     // Fetched now, not from the cache: it is what makes the thread ids real and
     // the drift check mean anything.
     let fresh = fetch_threads(&app, number).await?;
-    let plan = crate::post::plan(number, &proposals, &fresh, &batch, app.cfg.tracker.is_some())?;
+    let plan = crate::post::plan(
+        number,
+        &proposals,
+        &fresh,
+        &batch,
+        app.cfg.tracker.is_some(),
+    )?;
     // Kept so the daemon can answer "what does this thread say" when the session
     // reports a commit. The agent is never told the reply is its to send.
     //
@@ -5044,12 +5193,15 @@ pub async fn pr_manual_done(
     Path(number): Path<u64>,
     Json(done): Json<crate::post::Finish>,
 ) -> ApiResult<crate::post::PostReport> {
-    let released = app.try_claim(format!("post:{number}")).await.ok_or_else(|| {
-        anyhow::anyhow!(
-            "a batch for PR #{number} is already running; wait for it rather than \
+    let released = app
+        .try_claim(format!("post:{number}"))
+        .await
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "a batch for PR #{number} is already running; wait for it rather than \
              sending a second one"
-        )
-    })?;
+            )
+        })?;
 
     let pr = {
         let inner = app.inner.read().await;
@@ -5109,7 +5261,6 @@ pub async fn open_pr(
     let id = spawn::spawn_session(&app, &workspace, None, None).await?;
     Ok(Json(json!({ "session": id, "workspace": workspace })))
 }
-
 
 /// The worktree the gate buttons act on, refusing when there is not one.
 async fn gate_worktree(app: &Arc<AppState>, number: u64) -> Result<std::path::PathBuf, ApiError> {
@@ -5207,7 +5358,8 @@ pub async fn write_file(
         // Agents working in this workspace hold a stale copy now, and will
         // overwrite it unless they are told (§5's invalidation, in the
         // direction that actually loses work).
-        let resolved = crate::edit::resolve_in_workspace(&root, &body.path, &app.cfg.shared_worktree_paths)?;
+        let resolved =
+            crate::edit::resolve_in_workspace(&root, &body.path, &app.cfg.shared_worktree_paths)?;
         app.record_human_edit(resolved).await;
         // The changed-file pane and the diff must both reflect the write.
         let _ = app.reconcile(&body.workspace).await;
@@ -5258,10 +5410,7 @@ pub async fn session_handoff(
         // No poll to read is not a reason to start a force-pushing run. Same
         // direction as `Checks::Unknown`: when the daemon cannot see, it does
         // nothing.
-        (
-            pr,
-            inner.pr(pr).is_some_and(crate::fix_pr::wants_watching),
-        )
+        (pr, inner.pr(pr).is_some_and(crate::fix_pr::wants_watching))
     };
     let (pr, hand_on) = hand_on;
 
@@ -5352,26 +5501,31 @@ pub async fn rebase(
         refuse!("a rebase is already stopped part-way here; finish or abort it first");
     }
     /* **Unmerged paths are the one dirty tree this cannot bank.** `git stash
-       create` refuses them outright ("Cannot save the current index state"), so
-       without this the press would fail three lines down with git's sentence about
-       the index rather than with the reason: there is a conflict here that somebody
-       has to settle before anything else happens to this tree. */
+    create` refuses them outright ("Cannot save the current index state"), so
+    without this the press would fail three lines down with git's sentence about
+    the index rather than with the reason: there is a conflict here that somebody
+    has to settle before anything else happens to this tree. */
     if !conflicted.is_empty() {
         refuse!(
             "{} still has conflicts ({}) — settle them first",
             workspace,
-            conflicted.iter().take(3).cloned().collect::<Vec<_>>().join(", ")
+            conflicted
+                .iter()
+                .take(3)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", ")
         );
     }
     if let Some(who) = app.busy_session_in(&workspace).await {
         refuse!("{who} is working here; rebasing under it would fight it");
     }
     /* **One bank at a time, or the second press loses the first.** `update-ref`
-       overwrites, which would leave the earlier WIP commit unreferenced with
-       nothing naming it; and on a *clean* tree there is nothing to bank, so the
-       record would be cleared below while the ref stayed on disk — the strip gone
-       and the work reachable only after a restart. The pane hides the button while
-       a strip is up, and this route is one curl away from anybody. */
+    overwrites, which would leave the earlier WIP commit unreferenced with
+    nothing naming it; and on a *clean* tree there is nothing to bank, so the
+    record would be cleared below while the ref stayed on disk — the strip gone
+    and the work reachable only after a restart. The pane hides the button while
+    a strip is up, and this route is one curl away from anybody. */
     if let Some(b) = app.workspace_banked(&workspace).await {
         refuse!(
             "{} file(s) from an earlier rebase are still banked at {} — put them back or \
@@ -5382,11 +5536,11 @@ pub async fn rebase(
     }
 
     /* **A dirty tree is banked rather than refused, and that is the whole change.**
-       It used to say "commit or stash before rebasing", which is a refusal you
-       answer by doing the same thing by hand — and by hand it lands on
-       `refs/stash`, which every worktree of this repo shares. The bank is a ref of
-       our own, written before the tree is reset and dropped only once the work is
-       back, so no exit from here leaves the work anywhere but in one piece. */
+    It used to say "commit or stash before rebasing", which is a refusal you
+    answer by doing the same thing by hand — and by hand it lands on
+    `refs/stash`, which every worktree of this repo shares. The bank is a ref of
+    our own, written before the tree is reset and dropped only once the work is
+    back, so no exit from here leaves the work anywhere but in one piece. */
     let banked = if clean {
         None
     } else {
@@ -5421,8 +5575,12 @@ pub async fn rebase(
             // A panic in the fetch reads the same way here as a failed fetch: the
             // base may be stale and the caller is told so.
             Ok(Err(e)) | Err(e) => {
-                tracing::warn!("rebase {workspace}: upstream fetch failed, base may be stale: {e:#}");
-                Some(format!("upstream fetch failed — rebased onto the last-known base ({e})"))
+                tracing::warn!(
+                    "rebase {workspace}: upstream fetch failed, base may be stale: {e:#}"
+                );
+                Some(format!(
+                    "upstream fetch failed — rebased onto the last-known base ({e})"
+                ))
             }
         }
     };
@@ -5531,12 +5689,14 @@ pub async fn rebase_abort(
         .workspace_path(&workspace)
         .await
         .ok_or_else(|| anyhow::anyhow!("unknown workspace {workspace}"))?;
-    crate::proc::run_blocking("aborting the rebase", move || crate::git::rebase_abort(&path))
-        .await??;
+    crate::proc::run_blocking("aborting the rebase", move || {
+        crate::git::rebase_abort(&path)
+    })
+    .await??;
     /* **An abort means undo, so the banked work comes home with it.** The press
-       that banked it is the press being undone, and leaving the strip up after the
-       tree has gone back to where it started would be the pane insisting on a state
-       nobody is in. A conflict here keeps the bank, like every other apply. */
+    that banked it is the press being undone, and leaving the strip up after the
+    tree has gone back to where it started would be the pane insisting on a state
+    nobody is in. A conflict here keeps the bank, like every other apply. */
     let restored = match (
         app.workspace_banked(&workspace).await,
         app.workspace_path(&workspace).await,
@@ -5586,9 +5746,9 @@ pub async fn wip_restore(
         refuse!("{who} is working here; wait for the turn to finish");
     }
     /* Git cannot apply anything onto unmerged paths, and its own refusal is about
-       the index rather than about the conflict sitting in front of you. Which is
-       usually *this* bank's conflict: the press that put the strip there is what
-       left those markers. */
+    the index rather than about the conflict sitting in front of you. Which is
+    usually *this* bank's conflict: the press that put the strip there is what
+    left those markers. */
     let p = path.clone();
     let conflicted = crate::proc::run_blocking("looking for conflicts", move || {
         crate::git::unmerged(&p).unwrap_or_default()
@@ -5597,7 +5757,12 @@ pub async fn wip_restore(
     if !conflicted.is_empty() {
         refuse!(
             "settle the conflict in {} first — git cannot apply anything over unmerged paths",
-            conflicted.iter().take(3).cloned().collect::<Vec<_>>().join(", ")
+            conflicted
+                .iter()
+                .take(3)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", ")
         );
     }
 

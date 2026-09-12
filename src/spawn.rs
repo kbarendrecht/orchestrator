@@ -140,10 +140,16 @@ async fn spawn_session_confirmed(
         inner.sessions.get(&id).and_then(|s| s.pty.clone())
     };
     let Some(handle) = handle else {
-        bail!("session {} was gone before it could be confirmed", crate::model::short_id(&id));
+        bail!(
+            "session {} was gone before it could be confirmed",
+            crate::model::short_id(&id)
+        );
     };
     if let Ok(code) = tokio::time::timeout(grace, handle.wait()).await {
-        bail!("session {} exited immediately, code {code}", crate::model::short_id(&id));
+        bail!(
+            "session {} exited immediately, code {code}",
+            crate::model::short_id(&id)
+        );
     }
     Ok(id)
 }
@@ -242,34 +248,40 @@ pub async fn relocate_session(
 
     // Its recorded pass, not `None`: relocating must not quietly turn a run into a
     // session the guard table counts differently.
-    let resumed =
-        spawn_session_confirmed(app, dest_workspace, pass.clone(), Some(Source::Resume(id)), grace)
-            .await;
+    let resumed = spawn_session_confirmed(
+        app,
+        dest_workspace,
+        pass.clone(),
+        Some(Source::Resume(id)),
+        grace,
+    )
+    .await;
 
     match resumed {
         Ok(id) => {
             restore_after_relocate(app, id, title, name, created_at).await;
-            Ok(Relocated { id, degraded: false })
+            Ok(Relocated {
+                id,
+                degraded: false,
+            })
         }
         Err(e) => {
             tracing::warn!(session = %id, "the resume in {dest_workspace} did not stay up, forking instead: {e:#}");
-            let forked = spawn_session_confirmed(
-                app,
-                dest_workspace,
-                pass,
-                Some(Source::Fork(id)),
-                grace,
-            )
-            .await
-            .with_context(|| {
-                format!(
-                    "neither resuming nor forking {} into {dest_workspace} stayed up; \
+            let forked =
+                spawn_session_confirmed(app, dest_workspace, pass, Some(Source::Fork(id)), grace)
+                    .await
+                    .with_context(|| {
+                        format!(
+                            "neither resuming nor forking {} into {dest_workspace} stayed up; \
                      it is closed but its conversation is intact and resumable",
-                    crate::model::short_id(&id)
-                )
-            })?;
+                            crate::model::short_id(&id)
+                        )
+                    })?;
             restore_after_relocate(app, forked, title, name, created_at).await;
-            Ok(Relocated { id: forked, degraded: true })
+            Ok(Relocated {
+                id: forked,
+                degraded: true,
+            })
         }
     }
 }
@@ -305,7 +317,6 @@ async fn restore_after_relocate(
         crate::store::pin_transcript(s.id, &s.cwd, &mut s.transcript_path);
     }
 }
-
 
 /// Put the record in, start the pty, and hang the handle on the record.
 ///
@@ -679,7 +690,10 @@ async fn spawn_session_with_id(
     watch_session_exit(app.clone(), id, spawned.handle);
     crate::update::refresh_detached(app);
     app.notify().await;
-    phases.log(&format!("session {} start in {workspace}", crate::model::short_id(&id)));
+    phases.log(&format!(
+        "session {} start in {workspace}",
+        crate::model::short_id(&id)
+    ));
     Ok(id)
 }
 
@@ -703,7 +717,9 @@ fn carry_into(parent: &std::path::Path, fork: &std::path::Path, exclude: &str) -
         Ok(None) => {}
         Err(e) => {
             tracing::warn!("fork could not carry the uncommitted work: {e:#}");
-            said.push(format!("its uncommitted changes could NOT be carried in ({e})"));
+            said.push(format!(
+                "its uncommitted changes could NOT be carried in ({e})"
+            ));
         }
     }
     // Excluding the worktrees dir, because a fork of a session in main would
@@ -719,7 +735,11 @@ fn carry_into(parent: &std::path::Path, fork: &std::path::Path, exclude: &str) -
                 if f.len() == 1 { "" } else { "s" },
                 if f.len() == 1 { "is" } else { "are" },
                 shown.join(", "),
-                if more > 0 { format!(", and {more} more") } else { String::new() },
+                if more > 0 {
+                    format!(", and {more} more")
+                } else {
+                    String::new()
+                },
             ));
         }
         Ok(_) => {}
@@ -781,22 +801,22 @@ pub async fn spawn_worktree_session(
         validate_worktree_name(name)?;
 
         /* Two refusals, and both are about the present: a name a live workspace
-           already holds, and a directory already sitting on disk.
+        already holds, and a directory already sitting on disk.
 
-           §2's "worktree names must be unique over time" is deliberately **not**
-           enforced. Its reason was that the projects directory is keyed by path, so
-           reusing an archived name would interleave two conversations' transcripts,
-           and that reason is false: a transcript is keyed by session uuid, so
-           sharing a directory slug gets you two files rather than one interleaved
-           one. This is the third place that same belief had been written down, and
-           `ensure_pr_worktree` had already outvoted it in practice — it reuses
-           `pr-<n>` for every run on a PR, which is how one of them came to hold
-           five conversations.
+        §2's "worktree names must be unique over time" is deliberately **not**
+        enforced. Its reason was that the projects directory is keyed by path, so
+        reusing an archived name would interleave two conversations' transcripts,
+        and that reason is false: a transcript is keyed by session uuid, so
+        sharing a directory slug gets you two files rather than one interleaved
+        one. This is the third place that same belief had been written down, and
+        `ensure_pr_worktree` had already outvoted it in practice — it reuses
+        `pr-<n>` for every run on a PR, which is how one of them came to hold
+        five conversations.
 
-           The real hazard of reusing a name is a resume landing in a tree that was
-           cut again for something else. `worktree::branch_drift` says so on the
-           resume, where the answer is known, instead of refusing a creation that is
-           usually fine. */
+        The real hazard of reusing a name is a resume landing in a tree that was
+        cut again for something else. `worktree::branch_drift` says so on the
+        resume, where the answer is known, instead of refusing a creation that is
+        usually fine. */
         let inner = app.inner.read().await;
         if inner.workspaces.contains_key(name) {
             bail!("a workspace named {name} already exists");
@@ -831,7 +851,13 @@ pub async fn spawn_worktree_session(
     // back on the base branch with nothing carried, exactly as it did before.
     let parent_tree = match fork {
         Some(prev) => {
-            let cwd = app.inner.read().await.sessions.get(&prev).map(|s| s.cwd.clone());
+            let cwd = app
+                .inner
+                .read()
+                .await
+                .sessions
+                .get(&prev)
+                .map(|s| s.cwd.clone());
             cwd.filter(|p| p.exists())
         }
         None => None,
@@ -840,20 +866,24 @@ pub async fn spawn_worktree_session(
     let mut carried: Option<String> = None;
 
     /* A name is always required now: the daemon cuts the tree, so it has to know
-       the path up front. An unnamed request gets one in Claude Code's own shape
-       (`crate::names`), which is what that arm was pleasant for — `wt-ca12db78`
-       is a row you find by position, `federated-seeking-quasar` is one you can say.
-       Checked against the two things the *named* path refuses above, because a
-       generated name never reaches those checks: a live workspace holding the id,
-       and a directory a torn-down one left behind. `wt-<8 hex>` stays as the
-       fallback for the case that cannot happen, since a spawn that fails to invent
-       a name is worse than an ugly one. */
+    the path up front. An unnamed request gets one in Claude Code's own shape
+    (`crate::names`), which is what that arm was pleasant for — `wt-ca12db78`
+    is a row you find by position, `federated-seeking-quasar` is one you can say.
+    Checked against the two things the *named* path refuses above, because a
+    generated name never reaches those checks: a live workspace holding the id,
+    and a directory a torn-down one left behind. `wt-<8 hex>` stays as the
+    fallback for the case that cannot happen, since a spawn that fails to invent
+    a name is worse than an ugly one. */
     let owned_name = match name {
         Some(_) => None,
         None => {
             let held = {
                 let inner = app.inner.read().await;
-                inner.workspaces.keys().cloned().collect::<std::collections::HashSet<_>>()
+                inner
+                    .workspaces
+                    .keys()
+                    .cloned()
+                    .collect::<std::collections::HashSet<_>>()
             };
             Some(
                 crate::names::candidates()
@@ -938,10 +968,10 @@ pub async fn spawn_worktree_session(
     };
 
     /* The path is always known here now, because the daemon cut the tree. The
-       `None` arm is kept rather than made unreachable-by-construction: nothing in
-       this spawner reaches it any more, and `hooks::session_start`'s adoption of a
-       `PENDING_WORKTREE` row with it — that pair existed for `claude --worktree`,
-       which reported its path only at `SessionStart`. */
+    `None` arm is kept rather than made unreachable-by-construction: nothing in
+    this spawner reaches it any more, and `hooks::session_start`'s adoption of a
+    `PENDING_WORKTREE` row with it — that pair existed for `claude --worktree`,
+    which reported its path only at `SessionStart`. */
     let (workspace, cwd) = match name {
         Some(name) => {
             // Where the tree actually is, which is the repo hook's answer when it
@@ -955,20 +985,20 @@ pub async fn spawn_worktree_session(
     };
 
     /* **The branch the conversation is about, recorded now rather than at the next
-       sweep.** `spawn_session` reads this for every other kind of session; this
-       spawner did not, so a worktree session's record said `branch: None` until a
-       reconcile of its workspace happened to run.
+    sweep.** `spawn_session` reads this for every other kind of session; this
+    spawner did not, so a worktree session's record said `branch: None` until a
+    reconcile of its workspace happened to run.
 
-       That is not cosmetic. `api::to_carry` matches on it to decide which
-       conversation travels with a branch, so a swap pressed before that sweep
-       silently left the conversation behind — the tree's branch moved into main
-       and the agent that had been working on it stayed put, with no error anywhere.
-       Caught by the swap e2e flows failing about one run in three; invisible to
-       every unit test, and easy to read as a slow resume.
+    That is not cosmetic. `api::to_carry` matches on it to decide which
+    conversation travels with a branch, so a swap pressed before that sweep
+    silently left the conversation behind — the tree's branch moved into main
+    and the agent that had been working on it stayed put, with no error anywhere.
+    Caught by the swap e2e flows failing about one run in three; invisible to
+    every unit test, and easy to read as a slow resume.
 
-       Read from the tree rather than assumed to be `worktree-<name>`, because
-       `create_worktree` may have adopted a tree the repo's own `WorktreeCreate`
-       hook put somewhere else, on a branch of its choosing. */
+    Read from the tree rather than assumed to be `worktree-<name>`, because
+    `create_worktree` may have adopted a tree the repo's own `WorktreeCreate`
+    hook put somewhere else, on a branch of its choosing. */
     let branch = {
         let at = cwd.clone();
         crate::proc::run_blocking("reading the worktree's branch", move || {
@@ -1206,20 +1236,23 @@ pub async fn spawn_fix_pr_session(
     let workspace = ensure_pr_worktree(app, pr, head_ref).await?;
 
     /* **The instructions are a skill, and what the prompt substituted the
-       environment carries.** `/orchd:fix-pr` is one typed line, so the six values
-       `commands/fix-pr.md` had rendered into it need another way in — and for this
-       run that way is not a context route. A fix run force-pushes unattended and
-       is deliberately given no ask token, so a route would have meant handing it a
-       credential to read four values the daemon is already building an environment
-       for. `triage` went the other way for the opposite reason: it has a post token
-       already and its context is a fetch the daemon would otherwise repeat.
+    environment carries.** `/orchd:fix-pr` is one typed line, so the six values
+    `commands/fix-pr.md` had rendered into it need another way in — and for this
+    run that way is not a context route. A fix run force-pushes unattended and
+    is deliberately given no ask token, so a route would have meant handing it a
+    credential to read four values the daemon is already building an environment
+    for. `triage` went the other way for the opposite reason: it has a post token
+    already and its context is a fetch the daemon would otherwise repeat.
 
-       Being a skill is also what makes it work when *you* type `/orchd:fix-pr 42`
-       in a checkout the daemon never started: the file names a fallback for each
-       variable, which a prompt file rendered per run could not have. */
+    Being a skill is also what makes it work when *you* type `/orchd:fix-pr 42`
+    in a checkout the daemon never started: the file names a fallback for each
+    variable, which a prompt file rendered per run could not have. */
     let (login, base_ref) = {
         let inner = app.inner.read().await;
-        (inner.viewer.clone(), inner.pr(pr).map(|p| p.base_ref.clone()))
+        (
+            inner.viewer.clone(),
+            inner.pr(pr).map(|p| p.base_ref.clone()),
+        )
     };
     let mut extra_env = vec![
         // Parallel runs collide on ports and docker resource names, so each gets
@@ -1246,8 +1279,8 @@ pub async fn spawn_fix_pr_session(
         ),
     ];
     /* Omitted rather than empty when the poller has not run yet, and that turns a
-       refusal into a degradation: rendering the prompt *failed* the spawn here
-       ("no GitHub login yet"), where the skill asks `gh api user` for it. */
+    refusal into a degradation: rendering the prompt *failed* the spawn here
+    ("no GitHub login yet"), where the skill asks `gh api user` for it. */
     if let Some(login) = login {
         extra_env.push((crate::skills::VAR_LOGIN.to_string(), login));
     }
@@ -1296,15 +1329,15 @@ pub async fn spawn_command_session(
             return Ok(*id);
         }
         /* **The same worktree gates as the other review verb**, because the pass
-           writes into that tree: a rebase stopped part-way cannot take a commit, a
-           running `fix-pr` is rewriting the same history, and a dirty tree means
-           the first thing this agent amends is work somebody else left there.
+        writes into that tree: a rebase stopped part-way cannot take a commit, a
+        running `fix-pr` is rewriting the same history, and a dirty tree means
+        the first thing this agent amends is work somebody else left there.
 
-           Here rather than at the route, and after the live-session branch above
-           for the reason that branch exists: landing on the pane already doing this
-           is not a refusal case. The route used to re-derive both reads to decide
-           the same thing, which is two spellings of "is anyone on this branch" —
-           the pair `branch_busy` was written to be the only definition of. */
+        Here rather than at the route, and after the live-session branch above
+        for the reason that branch exists: landing on the pane already doing this
+        is not a refusal case. The route used to re-derive both reads to decide
+        the same thing, which is two spellings of "is anyone on this branch" —
+        the pair `branch_busy` was written to be the only definition of. */
         if let Some(g) = crate::triage::gate(app, pr, &ws).await? {
             bail!("{}", g.say());
         }
@@ -1336,10 +1369,10 @@ async fn start_with_prompt(
     command: &str,
 ) -> Result<SessionId> {
     /* A vendored skill, typed. This rendered a *prompt* until the conversion, and
-       the lookup had no arm for the command it was called with — so the only path
-       into here could only ever bail, which is why it had no caller but a test.
-       Namespaced (`/orchd:<command>`), because what it types now is one of this
-       daemon's own skills rather than whatever the repo happens to define. */
+    the lookup had no arm for the command it was called with — so the only path
+    into here could only ever bail, which is why it had no caller but a test.
+    Namespaced (`/orchd:<command>`), because what it types now is one of this
+    daemon's own skills rather than whatever the repo happens to define. */
     let spec = RunSpec {
         command: command.to_string(),
         pending: format!("/orchd:{command} {pr}"),
@@ -1379,7 +1412,6 @@ pub(crate) fn rebase_target(
         _ => upstream_ref.to_string(),
     }
 }
-
 
 /// The worktree holding `head_ref`, if one already does.
 ///
@@ -1484,17 +1516,17 @@ async fn park_main(app: &Arc<AppState>) {
         return;
     }
     /* **This moves main's branch, and possibly a worktree's, so it is a swap.**
-       `AppState::swapping`'s own doc has the rule: every swap involves main, so two
-       are never independent — and this one reclaims the base from a worktree
-       (`git::release_branch`) as well, which is a second pair a swap of that tree
-       would race.
+    `AppState::swapping`'s own doc has the rule: every swap involves main, so two
+    are never independent — and this one reclaims the base from a worktree
+    (`git::release_branch`) as well, which is a second pair a swap of that tree
+    would race.
 
-       **Skipped, not refused, and that is not a style choice.** This runs from a
-       detached exit watcher: there is no request to answer and nobody to read a
-       refusal, so waiting would park main long after the session that prompted it,
-       against state the swap has since changed. A skip costs nothing that is not
-       already recoverable — the branch stays in main until the next session there
-       closes, and the swap holding the lock is itself moving main. */
+    **Skipped, not refused, and that is not a style choice.** This runs from a
+    detached exit watcher: there is no request to answer and nobody to read a
+    refusal, so waiting would park main long after the session that prompted it,
+    against state the swap has since changed. A skip costs nothing that is not
+    already recoverable — the branch stays in main until the next session there
+    closes, and the swap holding the lock is itself moving main. */
     let Ok(_swap) = app.swapping.try_lock() else {
         tracing::info!("main stays where it is: a swap is moving it");
         return;
@@ -1504,27 +1536,27 @@ async fn park_main(app: &Arc<AppState>) {
     let exclude = app.cfg.worktrees_subdir_str();
 
     /* **The base has to be free, and main is the only checkout that may hold it.**
-       Git allows one checkout per branch, so a worktree sitting on `develop` makes
-       "main goes back to base" impossible — not refused, *impossible* — and every
-       flow that needs main on base is blocked until somebody notices. A swap is how
-       it happens: main resting on base, a worktree swapped in, and base goes out as
-       the exchange. Reported as `fatal: 'develop' is already used by worktree at …`
-       from four calls deep, days later.
+    Git allows one checkout per branch, so a worktree sitting on `develop` makes
+    "main goes back to base" impossible — not refused, *impossible* — and every
+    flow that needs main on base is blocked until somebody notices. A swap is how
+    it happens: main resting on base, a worktree swapped in, and base goes out as
+    the exchange. Reported as `fatal: 'develop' is already used by worktree at …`
+    from four calls deep, days later.
 
-       Reclaimed rather than prevented at the swap, because pressing swap twice has
-       to stay the undo — the exchange is the feature. So the branch comes home at
-       the moment it is needed, and only from a tree **nobody is working in**: the
-       content does not move (`release_branch` cuts at the same commit), but a name
-       changing under a live agent is a surprise the log cannot undo. A tree that is
-       busy leaves main where it is, and says so.
+    Reclaimed rather than prevented at the swap, because pressing swap twice has
+    to stay the undo — the exchange is the feature. So the branch comes home at
+    the moment it is needed, and only from a tree **nobody is working in**: the
+    content does not move (`release_branch` cuts at the same commit), but a name
+    changing under a live agent is a surprise the log cannot undo. A tree that is
+    busy leaves main where it is, and says so.
 
-       **Asked in the same breath as "can main park at all", and that order is the
-       whole of it.** Releasing first and finding out afterwards renames a
-       worktree's branch for a park that then does not happen — `park_on_base`
-       returns `Ok(None)` on a dirty main, silently and by design, so a session
-       closed after editing files in main would have undone the swap for nothing
-       and said only that the tree "is on worktree-w now". Nothing moves unless
-       everything can. */
+    **Asked in the same breath as "can main park at all", and that order is the
+    whole of it.** Releasing first and finding out afterwards renames a
+    worktree's branch for a park that then does not happen — `park_on_base`
+    returns `Ok(None)` on a dirty main, silently and by design, so a session
+    closed after editing files in main would have undone the swap for nothing
+    and said only that the tree "is on worktree-w now". Nothing moves unless
+    everything can. */
     let plan = {
         let (at, base_ref, exclude) = (path.clone(), base_ref.clone(), exclude.clone());
         tokio::task::spawn_blocking(move || {
@@ -1573,16 +1605,18 @@ async fn park_main(app: &Arc<AppState>) {
         }
         let stem = format!(
             "worktree-{}",
-            tree.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+            tree.file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default()
         );
         let at = tree.clone();
         match tokio::task::spawn_blocking(move || crate::git::release_branch(&at, &stem)).await {
             Ok(Ok(fresh)) => {
                 /* The record follows the branch, because `reconcile` only ever
-                   *adds* to a workspace's set: left in, that tree would go on
-                   claiming the base for good, and two workspaces claiming it is
-                   what `worktree_holding` and the snapshot's PR lookup both read.
-                   `move_out_of_main` does the same for the same reason. */
+                *adds* to a workspace's set: left in, that tree would go on
+                claiming the base for good, and two workspaces claiming it is
+                what `worktree_holding` and the snapshot's PR lookup both read.
+                `move_out_of_main` does the same for the same reason. */
                 if let Some(id) = &ws {
                     app.forget_branch(id, &base).await;
                 }
@@ -1592,7 +1626,10 @@ async fn park_main(app: &Arc<AppState>) {
                 );
             }
             Ok(Err(e)) => {
-                tracing::warn!("main stays off {base}: {} could not let go of it: {e:#}", tree.display());
+                tracing::warn!(
+                    "main stays off {base}: {} could not let go of it: {e:#}",
+                    tree.display()
+                );
                 return;
             }
             Err(e) => {
@@ -1603,17 +1640,17 @@ async fn park_main(app: &Arc<AppState>) {
     }
 
     /* Whatever main holds, not only a branch `open_pr(main)` put there. It used to
-       park on provenance — a mark set by that one flow — so a swapped-in branch or
-       a hand-checkout stayed in main for good, on the reasoning that parking it
-       would undo the swap. But nobody is working it: the last session just left, and
-       a branch parked in main with no session on it blocks every PR flow that needs
-       main on base, which is the thing that goes wrong far away from here. The
-       branch is not lost either — it is still a branch, and `move_branch_out` is how
-       it gets a tree if you want one.
+    park on provenance — a mark set by that one flow — so a swapped-in branch or
+    a hand-checkout stayed in main for good, on the reasoning that parking it
+    would undo the swap. But nobody is working it: the last session just left, and
+    a branch parked in main with no session on it blocks every PR flow that needs
+    main on base, which is the thing that goes wrong far away from here. The
+    branch is not lost either — it is still a branch, and `move_branch_out` is how
+    it gets a tree if you want one.
 
-       `park_on_base` re-checks the dirty tree itself, which is not a duplicate
-       worth removing: the plan above was read before the base was reclaimed, and
-       this is the check that runs against the tree as it stands now. */
+    `park_on_base` re-checks the dirty tree itself, which is not a duplicate
+    worth removing: the plan above was read before the base was reclaimed, and
+    this is the check that runs against the tree as it stands now. */
     let moved = tokio::task::spawn_blocking(move || {
         match crate::git::park_on_base(&path, &base, Some(&exclude)) {
             Ok(was) => was,
@@ -1656,26 +1693,26 @@ pub async fn ensure_pr_worktree(app: &Arc<AppState>, pr: u64, head_ref: &str) ->
     validate_worktree_name(&name)?;
     if !path.exists() {
         /* Main holding this very branch is the one case where cutting the tree and
-           freeing main are the same act, so it is done rather than refused.
-           `park_main` leaves a dirty main exactly where it is — correctly, it will
-           not carry your work to another branch — and the branch then sits there
-           for days making every PR flow for it impossible, which is the state this
-           used to bail out of and send you off to stash.
-           `move_branch_out` is the way out that loses nothing: the branch *and* its
-           uncommitted work land in the tree this flow was about to create anyway,
-           and main goes back to base. Untracked files stay in main, which
-           `move_branch_out` documents and this cannot help. */
+        freeing main are the same act, so it is done rather than refused.
+        `park_main` leaves a dirty main exactly where it is — correctly, it will
+        not carry your work to another branch — and the branch then sits there
+        for days making every PR flow for it impossible, which is the state this
+        used to bail out of and send you off to stash.
+        `move_branch_out` is the way out that loses nothing: the branch *and* its
+        uncommitted work land in the tree this flow was about to create anyway,
+        and main goes back to base. Untracked files stay in main, which
+        `move_branch_out` documents and this cannot help. */
         /* **And it moves main, so it is a swap.** `AppState::swapping` exists
-           because every move of main's branch decides who travels from state read
-           before anything moves, and a second one taken in that window moves a
-           branch without its conversation. Three handlers took the lock and this
-           arm did not, so a swap and an `open PR` could each move main at once.
+        because every move of main's branch decides who travels from state read
+        before anything moves, and a second one taken in that window moves a
+        branch without its conversation. Three handlers took the lock and this
+        arm did not, so a swap and an `open PR` could each move main at once.
 
-           The lock is taken only once main really holds the branch, and the read is
-           then repeated under it: taking it up front would refuse an ordinary
-           worktree cut — which touches main not at all — for the length of any swap.
-           Refused rather than queued, like the swap: the second one would run on the
-           strength of what you saw before the first. */
+        The lock is taken only once main really holds the branch, and the read is
+        then repeated under it: taking it up front would refuse an ordinary
+        worktree cut — which touches main not at all — for the length of any swap.
+        Refused rather than queued, like the swap: the second one would run on the
+        strength of what you saw before the first. */
         let mut moved_out = false;
         if main_is_on(app, head_ref).await? {
             let _swap = app.swapping.try_lock().map_err(|_| {
@@ -1705,12 +1742,12 @@ pub async fn ensure_pr_worktree(app: &Arc<AppState>, pr: u64, head_ref: &str) ->
                 app.forget_branch(MAIN, head_ref).await;
                 let _ = app.reconcile(MAIN).await;
                 /* A log line rather than something in the response, for `park_main`'s
-                   reason: the checkout under every worktree just changed and that is
-                   worth recording, but there are five callers of this and threading a
-                   warning up through all of them buys little. `wip_error` is close to
-                   impossible here anyway — the work is re-applied onto a fresh checkout
-                   of the branch it came from, so the apply lands on the tree it was
-                   taken from, which is the same argument `swap_branches` makes. */
+                reason: the checkout under every worktree just changed and that is
+                worth recording, but there are five callers of this and threading a
+                warning up through all of them buys little. `wip_error` is close to
+                impossible here anyway — the work is re-applied onto a fresh checkout
+                of the branch it came from, so the apply lands on the tree it was
+                taken from, which is the same argument `swap_branches` makes. */
                 tracing::info!(
                     %head_ref, wip_error = ?moved.wip_error,
                     "main was on #{pr}'s branch, so it moved into {name} and main went back to {}",
@@ -1795,16 +1832,16 @@ pub async fn spawn_resolve_run(
 ) -> Result<SessionId> {
     let workspace = ensure_pr_worktree(app, pr, head_ref).await?;
     /* **The read pass is over, and it is the thing standing in the way.**
-       A triage run posts its proposals and then sits at its prompt like any other
-       Claude Code session: it does not exit, so it still holds the branch, and this
-       guard refused the very run its own proposals asked for. Those proposals are
-       what the human just approved, so the pass has no work left by definition.
-       End it here rather than at the POST: this is the moment somebody decided,
-       and a pane that closes when you press the button reads as one pass handing
-       over to the next.
-       Only a triage run for *this* PR, and only one at rest. Anything else in that
-       worktree — an interactive session, a pass still reading — is somebody's work
-       and still refuses. */
+    A triage run posts its proposals and then sits at its prompt like any other
+    Claude Code session: it does not exit, so it still holds the branch, and this
+    guard refused the very run its own proposals asked for. Those proposals are
+    what the human just approved, so the pass has no work left by definition.
+    End it here rather than at the POST: this is the moment somebody decided,
+    and a pane that closes when you press the button reads as one pass handing
+    over to the next.
+    Only a triage run for *this* PR, and only one at rest. Anything else in that
+    worktree — an interactive session, a pass still reading — is somebody's work
+    and still refuses. */
     for id in app.live_sessions_in(&workspace).await {
         let finished_read = {
             let inner = app.inner.read().await;
@@ -1813,10 +1850,10 @@ pub async fn spawn_resolve_run(
                 .get(&id)
                 .is_some_and(|s| crate::triage::is_triage_of(&s.pass, pr));
             /* **Posted, not idle.** `is_busy` was the first test and it read the
-               wrong thing: a pass that has handed over its proposals goes on
-               printing for a few seconds, so a click that came straight off the
-               cards met "already has a live session" from the pass those cards came
-               from. What it is still saying is a farewell. */
+            wrong thing: a pass that has handed over its proposals goes on
+            printing for a few seconds, so a click that came straight off the
+            cards met "already has a live session" from the pass those cards came
+            from. What it is still saying is a farewell. */
             is_the_pass && inner.triage_progress.get(&pr).is_some_and(|t| t.posted)
         };
         if !finished_read {
@@ -1844,10 +1881,10 @@ pub async fn spawn_resolve_run(
         .with_context(|| format!("writing {}", plan_file.display()))?;
 
     /* A skill and one typed line, like the fix run. The plan is the only value
-       here the daemon has to hand over — the prompt's other three were prose and
-       an ask base that is just `$ORCH_URL` — so it goes in the environment rather
-       than into a sentence typed after the command, which is what "Your plan is
-       …" used to be. */
+    here the daemon has to hand over — the prompt's other three were prose and
+    an ask base that is just `$ORCH_URL` — so it goes in the environment rather
+    than into a sentence typed after the command, which is what "Your plan is
+    …" used to be. */
     let spec = RunSpec {
         command: RESOLVE_RUN_COMMAND.to_string(),
         pending: format!("/orchd:{RESOLVE_RUN_COMMAND} {pr}"),
@@ -1977,22 +2014,22 @@ pub(crate) fn watch_session_exit(app: Arc<AppState>, id: SessionId, handle: Arc<
             crate::store::delete_transcript(id, &cwd, recorded.as_deref());
             tracing::info!(session = %id, "closed before its first turn; forgotten");
             /* And the tree it opened in, which is the half that leaked. Forgetting
-               the row left a worktree on disk with nothing pointing at it: 32 of the
-               61 trees on the machine this was written for, and the retention timer
-               could not date any of them because the record that dates a tree is
-               the one just deleted. A session and the worktree cut for it are one
-               thing, so they end together.
+            the row left a worktree on disk with nothing pointing at it: 32 of the
+            61 trees on the machine this was written for, and the retention timer
+            could not date any of them because the record that dates a tree is
+            the one just deleted. A session and the worktree cut for it are one
+            thing, so they end together.
 
-               Through the ordinary preflight, which is what makes it safe without a
-               second set of rules: a tree holding uncommitted or unpushed work
-               refuses, and so does one a *second* session is still live in — the
-               case that matters, since two conversations can share a worktree.
+            Through the ordinary preflight, which is what makes it safe without a
+            second set of rules: a tree holding uncommitted or unpushed work
+            refuses, and so does one a *second* session is still live in — the
+            case that matters, since two conversations can share a worktree.
 
-               Not gated on `spawn_cut_worktree`: that flag is only ever set on the
-               agent-spawn path, so every worktree session you start from the rail
-               has it false, which is exactly the population this is for. The
-               preflight is the authorisation instead. Same switch as the timer:
-               `0` means the daemon never removes a worktree by itself. */
+            Not gated on `spawn_cut_worktree`: that flag is only ever set on the
+            agent-spawn path, so every worktree session you start from the rail
+            has it false, which is exactly the population this is for. The
+            preflight is the authorisation instead. Same switch as the timer:
+            `0` means the daemon never removes a worktree by itself. */
             if app.cfg.worktree_retention_days > 0 {
                 if let Some(ws) = workspace.as_deref() {
                     if ws != MAIN && ws != PENDING_WORKTREE {
@@ -2292,15 +2329,15 @@ fn watch_health(
         scan(&app, &workspace, &proc_id, &spec, &mut pending).await;
         loop {
             /* The child exiting, not merely the end of its output. The `Process`
-               record holds the pty handle, so the broadcast sender outlives the
-               child and `rx.recv()` never errors — which meant this loop never
-               reached the `Dead` below it, and a managed process that had exited
-               sat at `Starting` with a live-looking dot in the drawer. Measured:
-               a spec that exits immediately still read `starting, alive: false,
-               exit 1` a minute later.
+            record holds the pty handle, so the broadcast sender outlives the
+            child and `rx.recv()` never errors — which meant this loop never
+            reached the `Dead` below it, and a managed process that had exited
+            sat at `Starting` with a live-looking dot in the drawer. Measured:
+            a spec that exits immediately still read `starting, alive: false,
+            exit 1` a minute later.
 
-               `wait()` clones its own receiver off a watch channel, so it is safe
-               to poll here and there is still one observer of this pty. */
+            `wait()` clones its own receiver off a watch channel, so it is safe
+            to poll here and there is still one observer of this pty. */
             let chunk = tokio::select! {
                 r = rx.recv() => match r {
                     Ok(c) => c,
@@ -2335,7 +2372,9 @@ async fn scan(
     spec: &ManagedSpec,
     pending: &mut String,
 ) {
-    let Some(health) = crate::health::scan_lines(spec, pending) else { return };
+    let Some(health) = crate::health::scan_lines(spec, pending) else {
+        return;
+    };
     let mut dirty = false;
     {
         let mut inner = app.inner.write().await;
@@ -2466,7 +2505,8 @@ pub(crate) async fn create_worktree(
                 // Out of the way before the fallback asks for the same path, and very
                 // likely the same branch name.
                 let (m, t) = (main.clone(), made.clone());
-                let _ = tokio::task::spawn_blocking(move || crate::git::worktree_remove(&m, &t)).await;
+                let _ =
+                    tokio::task::spawn_blocking(move || crate::git::worktree_remove(&m, &t)).await;
             }
         }
     }
@@ -2499,7 +2539,11 @@ async fn hook_cut_worktree(app: &Arc<AppState>, name: &str) -> Option<std::path:
         let said = String::from_utf8_lossy(&out.stdout);
         match usable_hook_path(&said) {
             Some(made) => {
-                tracing::info!(name, "the repo's WorktreeCreate hook made {}", made.display());
+                tracing::info!(
+                    name,
+                    "the repo's WorktreeCreate hook made {}",
+                    made.display()
+                );
                 return Some(made);
             }
             None => tracing::warn!(
@@ -2567,7 +2611,10 @@ mod tests {
         );
         // Not in the poll, or GitHub named no base: fall back to the configured ref.
         assert_eq!(rebase_target("origin/main", "origin", None), "origin/main");
-        assert_eq!(rebase_target("origin/main", "origin", Some("")), "origin/main");
+        assert_eq!(
+            rebase_target("origin/main", "origin", Some("")),
+            "origin/main"
+        );
     }
 
     /// All three variables or none, and this is the seam that decides it.
@@ -2685,7 +2732,10 @@ mod tests {
             "the uncommitted work did not travel with its branch"
         );
         // And the daemon agrees about who holds it, or the next flow looks in main.
-        assert_eq!(worktree_holding(&app, "feature/theirs").await.as_deref(), Some("pr-4242"));
+        assert_eq!(
+            worktree_holding(&app, "feature/theirs").await.as_deref(),
+            Some("pr-4242")
+        );
     }
 
     /// The race a relocation would otherwise lose.
@@ -2737,7 +2787,6 @@ mod tests {
     /// early return, and the spawn was aimed at a path that was not there.
     #[tokio::test]
     async fn a_worktree_whose_directory_is_gone_does_not_hold_a_branch() {
-
         let (app, dir) = crate::testutil::app("holding");
 
         let here = dir.join("here");
@@ -2745,19 +2794,29 @@ mod tests {
         let gone = dir.join("gone");
         let _ = std::fs::remove_dir_all(&gone);
 
-        app.register_worktree("here", here, Some("feature/here".into())).await;
-        app.register_worktree("gone", gone, Some("feature/gone".into())).await;
+        app.register_worktree("here", here, Some("feature/here".into()))
+            .await;
+        app.register_worktree("gone", gone, Some("feature/gone".into()))
+            .await;
 
-        let (name, path) = recorded_worktree_for(&app, "feature/here").await.expect("standing");
+        let (name, path) = recorded_worktree_for(&app, "feature/here")
+            .await
+            .expect("standing");
         assert_eq!((name.as_str(), path.is_dir()), ("here", true));
 
         // The one that matters: the record survives its directory, and it comes back
         // with the path so the flow rebuilds the tree where it stood rather than
         // cutting a second one for the same branch.
-        let (name, path) = recorded_worktree_for(&app, "feature/gone").await.expect("recorded");
+        let (name, path) = recorded_worktree_for(&app, "feature/gone")
+            .await
+            .expect("recorded");
         assert_eq!(name, "gone");
         assert!(!path.is_dir(), "the tree is gone; the record is not");
-        assert!(path.ends_with("gone"), "and it names where it stood: {}", path.display());
+        assert!(
+            path.ends_with("gone"),
+            "and it names where it stood: {}",
+            path.display()
+        );
 
         // And it is still where that branch is being worked on, which is a different
         // question and the one the busy guard asks.
@@ -2783,9 +2842,11 @@ mod tests {
         // Built by hand rather than through `testutil::app`, because the managed
         // process below is a `ManagedSpec` value rather than something spellable
         // in the config JSON.
-        let mut cfg: Config =
-            serde_json::from_str(&format!(r#"{{"main_checkout":{:?}}}"#, dir.to_string_lossy()))
-                .unwrap();
+        let mut cfg: Config = serde_json::from_str(&format!(
+            r#"{{"main_checkout":{:?}}}"#,
+            dir.to_string_lossy()
+        ))
+        .unwrap();
         cfg.main_processes = vec![ManagedSpec {
             name: "watcher".into(),
             // Stands in for the exec client: writes its own pid, then waits to be
@@ -2816,7 +2877,10 @@ mod tests {
         start_managed(&app, MAIN, &spec).await.expect("started");
         let pty = {
             let inner = app.inner.read().await;
-            inner.workspaces[MAIN].processes[0].pty.clone().expect("a pty")
+            inner.workspaces[MAIN].processes[0]
+                .pty
+                .clone()
+                .expect("a pty")
         };
         assert!(pty.is_alive(), "the stand-in client is running");
         // Its pid file, which the stop command reads.
@@ -2829,9 +2893,13 @@ mod tests {
 
         stop_managed(&app, MAIN, "watcher", &pty).await;
 
-        let recorded = std::fs::read_to_string(dir.join("stopped"))
-            .expect("the stop command ran at all");
-        assert_eq!(recorded.trim(), "alive", "it must run before the kill, not after");
+        let recorded =
+            std::fs::read_to_string(dir.join("stopped")).expect("the stop command ran at all");
+        assert_eq!(
+            recorded.trim(),
+            "alive",
+            "it must run before the kill, not after"
+        );
         // And the client is gone afterwards, stop command or not.
         for _ in 0..40 {
             if !pty.is_alive() {
@@ -2848,7 +2916,6 @@ mod tests {
     /// exactly what a test cannot reproduce.
     #[tokio::test]
     async fn the_record_is_in_the_map_before_the_process_starts() {
-
         let (app, dir) = crate::testutil::app("insert");
 
         let id = Uuid::new_v4();
@@ -2860,7 +2927,10 @@ mod tests {
 
         let inner = app.inner.read().await;
         let s = inner.sessions.get(&id).expect("the record is there");
-        assert!(s.pty.is_some(), "the handle is hung on the record afterwards");
+        assert!(
+            s.pty.is_some(),
+            "the handle is hung on the record afterwards"
+        );
         assert_eq!(s.pid, spawned.pid);
         drop(inner);
         let _ = spawned.handle.kill();
@@ -2871,7 +2941,6 @@ mod tests {
     /// workspace against the next attempt.
     #[tokio::test]
     async fn a_refused_spawn_takes_its_record_back_out() {
-
         let (app, dir) = crate::testutil::app("refused");
 
         let id = Uuid::new_v4();
@@ -2893,8 +2962,14 @@ mod tests {
         let (app, dir) = crate::testutil::app("stale");
 
         let pty = |()| {
-            PtyHandle::spawn(&["cat".to_string()], std::path::Path::new("/tmp"), &[], &[], (24, 80))
-                .unwrap()
+            PtyHandle::spawn(
+                &["cat".to_string()],
+                std::path::Path::new("/tmp"),
+                &[],
+                &[],
+                (24, 80),
+            )
+            .unwrap()
         };
         let (old, new) = (pty(()), pty(()));
 
@@ -2919,7 +2994,11 @@ mod tests {
 
         let inner = app.inner.read().await;
         let s = inner.sessions.get(&id).expect("the session is still there");
-        assert!(s.state.is_live(), "a stale watcher exited the live session: {:?}", s.state);
+        assert!(
+            s.state.is_live(),
+            "a stale watcher exited the live session: {:?}",
+            s.state
+        );
         assert_eq!(
             inner.workspaces.get(MAIN).and_then(|w| w.occupant),
             Some(id),
@@ -2964,8 +3043,14 @@ mod tests {
 
         let (app, dir) = crate::testutil::app("handoff-exit");
 
-        let pty = PtyHandle::spawn(&["cat".to_string()], std::path::Path::new("/tmp"), &[], &[], (24, 80))
-            .unwrap();
+        let pty = PtyHandle::spawn(
+            &["cat".to_string()],
+            std::path::Path::new("/tmp"),
+            &[],
+            &[],
+            (24, 80),
+        )
+        .unwrap();
         let id = Uuid::new_v4();
         {
             let mut inner = app.inner.write().await;
@@ -2997,7 +3082,10 @@ mod tests {
                 break;
             }
         }
-        assert!(settled, "the exit neither settled the session nor acted on the hand-off flag");
+        assert!(
+            settled,
+            "the exit neither settled the session nor acted on the hand-off flag"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -3038,22 +3126,24 @@ mod tests {
             });
 
         // `true` exits immediately, which is the case that used to be lost.
-        let pty =
-            PtyHandle::spawn(
-                &[crate::pty::tests::TRUE_BIN.to_string()],
-                std::path::Path::new("/tmp"),
-                &[],
-                &[],
-                (24, 80),
-            )
-                .unwrap();
+        let pty = PtyHandle::spawn(
+            &[crate::pty::tests::TRUE_BIN.to_string()],
+            std::path::Path::new("/tmp"),
+            &[],
+            &[],
+            (24, 80),
+        )
+        .unwrap();
         {
             let mut inner = app.inner.write().await;
             let mut s = Session::new(
                 id,
                 "wt".to_string(),
                 dir.clone(),
-                Some(Pass { pr, command: RESOLVE_RUN_COMMAND.to_string() }),
+                Some(Pass {
+                    pr,
+                    command: RESOLVE_RUN_COMMAND.to_string(),
+                }),
             );
             s.pty = Some(pty.handle.clone());
             s.set_state(State::Working);
@@ -3113,7 +3203,11 @@ mod tests {
         // branch nobody is working blocks every flow that needs main on base.
         on("feature/x");
         park_main(&app).await;
-        assert_eq!(branch(), "main", "the last session left; main goes back to base");
+        assert_eq!(
+            branch(),
+            "main",
+            "the last session left; main goes back to base"
+        );
 
         // Already there: nothing to do and nothing said.
         park_main(&app).await;
@@ -3124,13 +3218,17 @@ mod tests {
         // A worktree holding base is what a swap leaves behind when main was resting
         // on base, and `git switch main` in main then fails outright.
         let tree = repo.join(".claude/worktrees/w");
-        git(&["worktree", "add", "-q", tree.to_str().unwrap(), "feature/x"], &repo);
+        git(
+            &["worktree", "add", "-q", tree.to_str().unwrap(), "feature/x"],
+            &repo,
+        );
         git(&["switch", "-q", "-c", "feature/x-2"], &repo);
         git(&["switch", "-q", "main"], &tree);
         assert_eq!(crate::git::current_branch(&tree).unwrap(), "main");
         // Registered, because "is anybody working in there" is asked of the
         // workspace, and an unmanaged directory is deliberately left alone.
-        app.register_worktree("w", tree.clone(), Some("main".into())).await;
+        app.register_worktree("w", tree.clone(), Some("main".into()))
+            .await;
 
         assert!(
             crate::git::switch_branch(&repo, "main").is_err(),
@@ -3138,10 +3236,10 @@ mod tests {
         );
 
         /* **Nothing moves unless everything can.** A dirty main cannot park —
-           `park_on_base` says so by doing nothing — so taking the base off the
-           worktree first would undo a swap for a park that never happens, and say
-           only that the tree "is on worktree-w now". Asserted before the happy
-           path, because the happy path would hide it. */
+        `park_on_base` says so by doing nothing — so taking the base off the
+        worktree first would undo a swap for a park that never happens, and say
+        only that the tree "is on worktree-w now". Asserted before the happy
+        path, because the happy path would hide it. */
         std::fs::write(repo.join("f.txt"), "editing in main\n").unwrap();
         park_main(&app).await;
         assert_eq!(branch(), "feature/x-2", "a dirty main does not park");
@@ -3160,11 +3258,14 @@ mod tests {
             "the tree keeps its content and gets a name of its own",
         );
         /* And the *record* followed the branch. `reconcile` only ever adds to a
-           workspace's set, so a base left in there is claimed by two workspaces
-           for good — which `worktree_holding` and the snapshot's PR lookup both
-           read. Asserted here because the git side passing says nothing about it. */
+        workspace's set, so a base left in there is claimed by two workspaces
+        for good — which `worktree_holding` and the snapshot's PR lookup both
+        read. Asserted here because the git side passing says nothing about it. */
         assert!(
-            !app.inner.read().await.workspaces["w"].branches.iter().any(|b| b == "main"),
+            !app.inner.read().await.workspaces["w"]
+                .branches
+                .iter()
+                .any(|b| b == "main"),
             "the worktree still claims the base it gave up",
         );
 
@@ -3238,11 +3339,17 @@ mod tests {
             resolve_setup_exe(main, ".claude/hooks/wt-setup"),
             "/home/me/repo/.claude/hooks/wt-setup"
         );
-        assert_eq!(resolve_setup_exe(main, "scripts/setup.sh"), "/home/me/repo/scripts/setup.sh");
+        assert_eq!(
+            resolve_setup_exe(main, "scripts/setup.sh"),
+            "/home/me/repo/scripts/setup.sh"
+        );
         // A bare command is a PATH lookup — untouched.
         assert_eq!(resolve_setup_exe(main, "just"), "just");
         // An absolute path is already unambiguous.
-        assert_eq!(resolve_setup_exe(main, "/usr/local/bin/setup"), "/usr/local/bin/setup");
+        assert_eq!(
+            resolve_setup_exe(main, "/usr/local/bin/setup"),
+            "/usr/local/bin/setup"
+        );
     }
 
     /// Reviewing a PR whose worktree you tore down must not be refused on the name.
@@ -3313,7 +3420,9 @@ mod tests {
                 crate::model::Workspace {
                     id: "pr-4".into(),
                     path: dir.join("pr-4"),
-                    kind: crate::model::WorkspaceKind::Worktree { name: "pr-4".into() },
+                    kind: crate::model::WorkspaceKind::Worktree {
+                        name: "pr-4".into(),
+                    },
                     branches: ["feature".to_string()].into_iter().collect(),
                     processes: Vec::new(),
                     occupant: None,
@@ -3368,4 +3477,3 @@ mod tests {
         assert_eq!(worktree_name_of(&PathBuf::from("/repo/src"), &dir), None);
     }
 }
-

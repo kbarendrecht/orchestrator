@@ -5,19 +5,19 @@
 //! pollers — lives here so neither can drift from the other.
 
 pub mod api;
+pub mod child;
 pub mod config;
 pub mod diff;
 pub mod edit;
 pub mod env_source;
 pub mod firstrun;
+pub mod fix_pr;
+pub mod forge;
 pub mod git;
 pub mod guard;
-pub mod forge;
-pub mod fix_pr;
 pub mod headroom;
 pub mod health;
 pub mod hooks;
-pub mod child;
 pub mod host;
 pub mod instance;
 pub mod logging;
@@ -180,15 +180,15 @@ impl Server {
             .store(true, std::sync::atomic::Ordering::SeqCst);
 
         /* **The resume set is captured here and written at the very end.** It is
-           read off session state, which the exit watchers are about to rewrite, so
-           it has to be taken before anything is killed. It used to be *written*
-           here instead, and that is what stopped shutdown escalating a kill: any
-           await point after the kills let the watchers run and re-persist, and
-           auto-resume then found every session `was_live: false` and restored
-           nothing (caught by the restart e2e flow).
-           `AppState::persist` now refuses to write while `shutting_down` is set, so
-           the last word on disk is this set rather than whichever watcher ran last
-           — and the kills below can be waited on. */
+        read off session state, which the exit watchers are about to rewrite, so
+        it has to be taken before anything is killed. It used to be *written*
+        here instead, and that is what stopped shutdown escalating a kill: any
+        await point after the kills let the watchers run and re-persist, and
+        auto-resume then found every session `was_live: false` and restored
+        nothing (caught by the restart e2e flow).
+        `AppState::persist` now refuses to write while `shutting_down` is set, so
+        the last word on disk is this set rather than whichever watcher ran last
+        — and the kills below can be waited on. */
         let resume_set = self.app.session_records().await;
 
         // And before the lock is taken, because each of these is a bounded child
@@ -225,21 +225,21 @@ impl Server {
         let killed = handles.len();
 
         /* **`SIGHUP`, a grace, then `SIGKILL` — the same escalation every other stop
-           path gets.** One `SIGHUP` is a request a child is entitled to decline, and
-           this used to be the one caller that could only ask: an agent that traps it
-           was left to the pty master closing as the process exited, and a child that
-           survives even that was never reached at all.
+        path gets.** One `SIGHUP` is a request a child is entitled to decline, and
+        this used to be the one caller that could only ask: an agent that traps it
+        was left to the pty master closing as the process exited, and a child that
+        survives even that was never reached at all.
 
-           **In parallel, so the grace is spent once rather than once per child.**
-           `kill_gracefully` is bounded by construction (two `KILL_GRACE` waits at
-           worst), so a board of thirty sessions still closes in seconds — and the
-           ordinary case is unchanged, since a child that goes on `SIGHUP` resolves
-           the first wait in under a millisecond.
+        **In parallel, so the grace is spent once rather than once per child.**
+        `kill_gracefully` is bounded by construction (two `KILL_GRACE` waits at
+        worst), so a board of thirty sessions still closes in seconds — and the
+        ordinary case is unchanged, since a child that goes on `SIGHUP` resolves
+        the first wait in under a millisecond.
 
-           Measured against a managed process spelled `trap '' HUP; sleep 1000`:
-           shutdown took 2.05s, said so in the log, and both that shell and its
-           `sleep` grandchild were gone. Before this it exited at once and left
-           them. */
+        Measured against a managed process spelled `trap '' HUP; sleep 1000`:
+        shutdown took 2.05s, said so in the log, and both that shell and its
+        `sleep` grandchild were gone. Before this it exited at once and left
+        them. */
         let mut going = tokio::task::JoinSet::new();
         for h in handles {
             going.spawn(async move { h.kill_gracefully().await });
@@ -248,12 +248,13 @@ impl Server {
         tracing::info!("shutdown: killed {killed} child process(es)");
 
         /* And now the set captured before any of that, verbatim. Every watcher woken
-           by those kills has had its say and `persist` has been refusing them all
-           along, so this is the only thing that writes the file after the killing —
-           which is what auto-resume reads next launch. */
-        let written =
-            crate::proc::run_blocking("persisting the resume set", move || store::save(&resume_set))
-                .await;
+        by those kills has had its say and `persist` has been refusing them all
+        along, so this is the only thing that writes the file after the killing —
+        which is what auto-resume reads next launch. */
+        let written = crate::proc::run_blocking("persisting the resume set", move || {
+            store::save(&resume_set)
+        })
+        .await;
         if let Ok(Err(e)) | Err(e) = written {
             tracing::warn!("could not persist the resume set: {e:#}");
         }
@@ -286,20 +287,20 @@ pub async fn start(opts: StartOptions) -> Result<Server> {
     // end of this function.
     let cfg_name = cfg.checkout_name();
     /* **Every open counts as recent, not only the ones picked in the picker.**
-       `firstrun` recorded the list from its own switch route alone, so a daemon
-       that started on the checkout already in `config.json` — which is every
-       launch after the first — wrote nothing. The list the "open a project"
-       screen offers was therefore empty for anyone who had never switched, and
-       the one project they actually use was the one entry it could not show.
-       Best effort: a list that cannot be written is not a reason to refuse a
-       start.
+    `firstrun` recorded the list from its own switch route alone, so a daemon
+    that started on the checkout already in `config.json` — which is every
+    launch after the first — wrote nothing. The list the "open a project"
+    screen offers was therefore empty for anyone who had never switched, and
+    the one project they actually use was the one entry it could not show.
+    Best effort: a list that cannot be written is not a reason to refuse a
+    start.
 
-       **Only when nothing else hosts this daemon.** `recent.json` is the host's
-       list, and a hosted child's `ORCHD_CONFIG_DIR` is its own checkout directory
-       — so a child writing it would leave one single-entry list per checkout and
-       none of them the one the "add a checkout" screen reads. A solo `orchd` is
-       its own host, which is exactly what this arm says. `host::Host::open_checkout`
-       is the other writer. */
+    **Only when nothing else hosts this daemon.** `recent.json` is the host's
+    list, and a hosted child's `ORCHD_CONFIG_DIR` is its own checkout directory
+    — so a child writing it would leave one single-entry list per checkout and
+    none of them the one the "add a checkout" screen reads. A solo `orchd` is
+    its own host, which is exactly what this arm says. `host::Host::open_checkout`
+    is the other writer. */
     if cfg.host_origin.is_none() {
         if let Err(e) = firstrun::record_recent(&cfg.main_checkout) {
             tracing::warn!("could not record the recent project: {e:#}");
@@ -395,7 +396,14 @@ pub async fn start(opts: StartOptions) -> Result<Server> {
         // rather than left for a later id-scan to resurrect.
         let was: Vec<(model::SessionId, String, PathBuf, Option<PathBuf>)> = records
             .iter()
-            .map(|r| (r.id, r.workspace.clone(), r.cwd.clone(), r.transcript_path.clone()))
+            .map(|r| {
+                (
+                    r.id,
+                    r.workspace.clone(),
+                    r.cwd.clone(),
+                    r.transcript_path.clone(),
+                )
+            })
             .collect();
         let (kept, _) = store::prune_ghosts(records);
         let ids: std::collections::HashSet<_> = kept.iter().map(|r| r.id).collect();
@@ -454,11 +462,7 @@ pub async fn start(opts: StartOptions) -> Result<Server> {
         // marks every one ended, because no pty survives a restart.
         inner.resolve_runs = store::load_resolve_runs();
         if !inner.resolve_runs.is_empty() {
-            let prs: Vec<String> = inner
-                .resolve_runs
-                .keys()
-                .map(|p| format!("#{p}"))
-                .collect();
+            let prs: Vec<String> = inner.resolve_runs.keys().map(|p| format!("#{p}")).collect();
             tracing::info!("resolve runs recovered for {}", prs.join(", "));
         }
         // Said out loud at boot, because `tracker` decides whether a whole option
@@ -467,10 +471,15 @@ pub async fn start(opts: StartOptions) -> Result<Server> {
         match app.cfg.tracker.as_ref().map(|t| t.mcp_server.as_str()) {
             None => tracing::info!("tracker: none — `story+reply` is off"),
             /* A tracker that names no token variable authenticates itself — both
-               official Linear and Atlassian servers are OAuth-first — so there is
-               nothing to resolve, and a warning here would be about a credential
-               the daemon was never meant to hold. */
-            Some(server) => match app.cfg.tracker.as_ref().and_then(|t| t.token_env.as_deref()) {
+            official Linear and Atlassian servers are OAuth-first — so there is
+            nothing to resolve, and a warning here would be about a credential
+            the daemon was never meant to hold. */
+            Some(server) => match app
+                .cfg
+                .tracker
+                .as_ref()
+                .and_then(|t| t.token_env.as_deref())
+            {
                 None => tracing::info!(
                     "tracker: {server}, authenticating itself, {} story/ies cached",
                     inner.stories.len()
@@ -495,17 +504,17 @@ pub async fn start(opts: StartOptions) -> Result<Server> {
     // is a bounded child process of somebody else's tool.
     phases.mark("stores");
     /* **The sweep is spawned, not awaited, and that is the whole of the startup
-       fix.** It was seven git runs per workspace, one workspace after another,
-       with the window shut for all of it: 6294ms of a 7836ms start over 64
-       worktrees, 447 child processes. None of it is needed to serve the page —
-       the rail, the terminals and the session records are all already in hand —
-       so the only thing awaiting it bought was a first snapshot with the
-       changed-file lists already filled.
+    fix.** It was seven git runs per workspace, one workspace after another,
+    with the window shut for all of it: 6294ms of a 7836ms start over 64
+    worktrees, 447 child processes. None of it is needed to serve the page —
+    the rail, the terminals and the session records are all already in hand —
+    so the only thing awaiting it bought was a first snapshot with the
+    changed-file lists already filled.
 
-       That is a real thing to give up, which is why `Tree::measured` exists: the
-       pane can now say "still counting" instead of showing an unmeasured tree as
-       a clean one. Every snapshot after each workspace lands carries the answer
-       through, so the panes fill in as the sweep walks. */
+    That is a real thing to give up, which is why `Tree::measured` exists: the
+    pane can now say "still counting" instead of showing an unmeasured tree as
+    a clean one. Every snapshot after each workspace lands carries the answer
+    through, so the panes fill in as the sweep walks. */
     tokio::spawn({
         let app = app.clone();
         async move { reconcile_all(&app).await }
@@ -677,7 +686,10 @@ fn daemon_router(app: Arc<AppState>) -> Router {
         // The workspace travels in the body, not the path, for the same suffix
         // reason: `/api/session/:id/teardown/:workspace` would end in a name the
         // matcher cannot know.
-        .route("/api/session/:id/teardown", post(api::teardown_from_session))
+        .route(
+            "/api/session/:id/teardown",
+            post(api::teardown_from_session),
+        )
         .route("/api/session/:id/handoff", post(api::session_handoff))
         .route("/api/session/:id/tell", post(api::tell_session))
         .route("/api/session/:id/ask", post(api::ask))
@@ -711,9 +723,15 @@ fn daemon_router(app: Arc<AppState>) -> Router {
         .route("/api/reviews/refresh", post(api::refresh_reviews))
         .route("/api/prs/refresh", post(api::refresh_prs))
         // The agent's own version: check it now, and install it in the drawer.
-        .route("/api/agent/upgrade/dismiss", post(api::dismiss_agent_upgrade))
+        .route(
+            "/api/agent/upgrade/dismiss",
+            post(api::dismiss_agent_upgrade),
+        )
         .route("/api/agent/upgrade", post(api::upgrade_agent))
-        .route("/api/update/upgrade/dismiss", post(api::dismiss_app_upgrade))
+        .route(
+            "/api/update/upgrade/dismiss",
+            post(api::dismiss_app_upgrade),
+        )
         .route("/api/update/upgrade", post(api::upgrade_app))
         // The page's own boot timing, so a slow start reads as one story rather
         // than a daemon log with a hole where the webview should be.
@@ -728,9 +746,18 @@ fn daemon_router(app: Arc<AppState>) -> Router {
         // overlay is not good enough to replace yet.
         .route("/api/pr/:number/handle-review", post(api::pr_handle_review))
         // The two the vendored `triage` skill calls. Both are in `is_agent_route`.
-        .route("/api/pr/:number/triage-context", get(api::pr_triage_context))
-        .route("/api/pr/:number/triage/progress", post(api::pr_triage_progress))
-        .route("/api/pr/:number/review-session", post(api::pr_review_session))
+        .route(
+            "/api/pr/:number/triage-context",
+            get(api::pr_triage_context),
+        )
+        .route(
+            "/api/pr/:number/triage/progress",
+            post(api::pr_triage_progress),
+        )
+        .route(
+            "/api/pr/:number/review-session",
+            post(api::pr_review_session),
+        )
         // The one route a subprocess calls. Hostile input; see `pr_proposals`.
         .route("/api/pr/:number/proposals", post(api::pr_proposals))
         .route("/api/pr/:number/commit", post(api::pr_commit))
@@ -787,7 +814,8 @@ fn observer_hooks() -> Router<Arc<AppState>> {
 /// the ones a previous run (or a hand-run `claude -w`) left behind.
 async fn adopt_existing_worktrees(app: &Arc<AppState>) -> Result<()> {
     let main = app.cfg.main_checkout.clone();
-    let entries = proc::run_blocking("listing worktrees", move || git::worktree_list(&main)).await??;
+    let entries =
+        proc::run_blocking("listing worktrees", move || git::worktree_list(&main)).await??;
     let dir = app.cfg.worktrees_dir();
     for e in entries {
         let path = PathBuf::from(&e.path);
@@ -821,8 +849,11 @@ fn sweep_order(inner: &state::Inner) -> Vec<String> {
     // Archived counts. At boot every restored session is `Archived` until
     // auto-resume spawns it, so ranking on *live* would rank nothing at all —
     // which is the case this ordering exists for.
-    let occupied: std::collections::HashSet<&str> =
-        inner.sessions.values().map(|s| s.workspace.as_str()).collect();
+    let occupied: std::collections::HashSet<&str> = inner
+        .sessions
+        .values()
+        .map(|s| s.workspace.as_str())
+        .collect();
     ids.sort_by_key(|id| {
         let rank = if occupied.contains(id.as_str()) {
             0
@@ -926,7 +957,9 @@ async fn reconcile_all(app: &Arc<AppState>) {
     if skipped == 0 {
         tracing::info!("reconciled {measured} workspace(s) in {ms}ms");
     } else {
-        tracing::info!("reconciled {measured} workspace(s) in {ms}ms, skipped {skipped} whose tree is gone");
+        tracing::info!(
+            "reconciled {measured} workspace(s) in {ms}ms, skipped {skipped} whose tree is gone"
+        );
     }
 }
 
@@ -1008,21 +1041,21 @@ fn start_pr_poller(app: Arc<AppState>) {
 
         let interval = std::time::Duration::from_secs(app.cfg.poll_seconds.max(30));
         /* **`start` has already done this pass**, so the first tick skips it: it
-           fetches the base ref and spawns the first sweep before this task exists,
-           and repeating them is a network round trip and a walk of every worktree
-           for an answer just given. (CLAUDE.md carries what the two cost.)
+        fetches the base ref and spawns the first sweep before this task exists,
+        and repeating them is a network round trip and a walk of every worktree
+        for an answer just given. (CLAUDE.md carries what the two cost.)
 
-           Skipping is safe because boot's fetch is *unconditional* and awaited: by
-           now it has either refreshed the ref or logged that it could not, and the
-           second case is the offline one `start` already treats as "the last-known
-           ref still resolves". The worst this costs is a base one poll interval
-           staler, in the case where fetching does not work anyway.
+        Skipping is safe because boot's fetch is *unconditional* and awaited: by
+        now it has either refreshed the ref or logged that it could not, and the
+        second case is the offline one `start` already treats as "the last-known
+        ref still resolves". The worst this costs is a base one poll interval
+        staler, in the case where fetching does not work anyway.
 
-           The sweep half was already *usually* skipped by `AppState::sweeping`,
-           which made the behaviour depend on which of the two finished first. Not
-           doing it at all is the same outcome without the race; the lock stays for
-           the genuinely concurrent cases (a manual reconcile, the workspace
-           watcher, a later tick that overruns). */
+        The sweep half was already *usually* skipped by `AppState::sweeping`,
+        which made the behaviour depend on which of the two finished first. Not
+        doing it at all is the same outcome without the race; the lock stays for
+        the genuinely concurrent cases (a manual reconcile, the workspace
+        watcher, a later tick that overruns). */
         let mut boot_already_did_this = true;
         loop {
             if boot_already_did_this {
@@ -1058,8 +1091,12 @@ fn start_pr_poller(app: Arc<AppState>) {
                     // still reaches you where it is useful: `token_source` is in
                     // the snapshot and the PR pane marks it with a `⚠`.
                     let source = t.source;
-                    let forge =
-                        forge::ForgeImpl::for_kind(app.cfg.forge, repo.0.clone(), repo.1.clone(), t.value);
+                    let forge = forge::ForgeImpl::for_kind(
+                        app.cfg.forge,
+                        repo.0.clone(),
+                        repo.1.clone(),
+                        t.value,
+                    );
                     let result = tokio::task::spawn_blocking(move || forge.poll_prs()).await;
                     let mut inner = app.inner.write().await;
                     inner.token_source = Some(source);
@@ -1185,8 +1222,13 @@ fn auto_resume(app: Arc<AppState>, records: Vec<store::SessionRecord>) {
             // Its recorded pass, not `None`: a resumed fix run is still the run
             // the guard table counts, and the one `posts_proposals` mints a post
             // token for.
-            match spawn::spawn_session(&app, &r.workspace, r.kind.clone().pass(), Some(spawn::Source::Resume(r.id)))
-                .await
+            match spawn::spawn_session(
+                &app,
+                &r.workspace,
+                r.kind.clone().pass(),
+                Some(spawn::Source::Resume(r.id)),
+            )
+            .await
             {
                 Ok(id) => {
                     tracing::info!(session = %id, workspace = %r.workspace, "auto-resumed");
@@ -1227,10 +1269,10 @@ fn start_review_poller(app: Arc<AppState>) {
             let state = tokio::task::spawn_blocking(move || {
                 reviews::fetch(&main, timeout, &command, repo.as_deref())
             })
-                .await
-                .unwrap_or_else(|e| reviews::ReviewState::Degraded {
-                    reason: format!("review poll task failed: {e}"),
-                });
+            .await
+            .unwrap_or_else(|e| reviews::ReviewState::Degraded {
+                reason: format!("review poll task failed: {e}"),
+            });
             if let reviews::ReviewState::Degraded { reason } = &state {
                 tracing::warn!("review queue degraded: {reason}");
             }
@@ -1326,7 +1368,8 @@ async fn adopt_pending_worktrees(app: &Arc<AppState>) {
 
     let dir = app.cfg.worktrees_dir();
     let main = app.cfg.main_checkout.clone();
-    let Ok(Ok(entries)) = proc::run_blocking("listing worktrees", move || git::worktree_list(&main)).await
+    let Ok(Ok(entries)) =
+        proc::run_blocking("listing worktrees", move || git::worktree_list(&main)).await
     else {
         return;
     };
@@ -1350,7 +1393,10 @@ async fn adopt_pending_worktrees(app: &Arc<AppState>) {
         );
         return;
     }
-    #[expect(clippy::expect_used, reason = "the guard above returned unless there is exactly one")]
+    #[expect(
+        clippy::expect_used,
+        reason = "the guard above returned unless there is exactly one"
+    )]
     let (name, path, branch) = orphans.into_iter().next().expect("one");
     let id = pending[0];
     app.register_worktree(&name, path.clone(), branch).await;
@@ -1421,7 +1467,9 @@ fn start_head_poller(app: Arc<AppState>) {
                         let (head, last) = e.get_mut();
                         // A read can miss mid-rename; keep the old value and retry
                         // next tick rather than treat a blip as a change.
-                        let Ok(contents) = std::fs::read_to_string(&*head) else { continue };
+                        let Ok(contents) = std::fs::read_to_string(&*head) else {
+                            continue;
+                        };
                         if contents != *last {
                             *last = contents;
                             if let Err(e) = app.reconcile(&id).await {
@@ -1615,8 +1663,12 @@ mod tests {
     #[tokio::test]
     async fn a_sweep_skips_a_workspace_whose_tree_is_gone_and_keeps_its_row() {
         let (app, dir) = crate::testutil::app("sweep-gone");
-        app.register_worktree("gone", dir.join("no-such-tree"), Some("worktree-gone".into()))
-            .await;
+        app.register_worktree(
+            "gone",
+            dir.join("no-such-tree"),
+            Some("worktree-gone".into()),
+        )
+        .await;
         app.register_worktree("here", dir.clone(), None).await;
 
         assert_eq!(sweep_one(&app, "gone").await, Swept::Skipped);
@@ -1627,8 +1679,14 @@ mod tests {
         assert_eq!(sweep_one(&app, MAIN).await, Swept::Measured);
 
         let inner = app.inner.read().await;
-        assert!(inner.workspaces.contains_key("gone"), "the row is the rebuild point");
-        assert!(!inner.workspaces["gone"].tree.measured, "nothing was measured in it");
+        assert!(
+            inner.workspaces.contains_key("gone"),
+            "the row is the rebuild point"
+        );
+        assert!(
+            !inner.workspaces["gone"].tree.measured,
+            "nothing was measured in it"
+        );
     }
 
     /// One record per workspace comes back, and it is the oldest — the rule that,
@@ -1665,7 +1723,11 @@ mod tests {
         let by_ws: std::collections::HashMap<_, _> =
             kept.iter().map(|r| (r.workspace.clone(), r.id)).collect();
         assert_eq!(kept.len(), 3, "one per workspace: wt-a, wt-b, main");
-        assert_eq!(by_ws.get("wt-a"), Some(&older_a.id), "the older of the two in wt-a wins");
+        assert_eq!(
+            by_ws.get("wt-a"),
+            Some(&older_a.id),
+            "the older of the two in wt-a wins"
+        );
         assert_eq!(by_ws.get("wt-b"), Some(&b.id));
         assert_eq!(by_ws.get(MAIN), Some(&main.id));
     }
@@ -1719,12 +1781,20 @@ mod tests {
     #[tokio::test]
     async fn the_page_carries_its_token_and_needs_none_to_ask_for_it() {
         let (app, host, _dir) = app_and_host("index-token");
-        let res =
-            router(app.clone(), host.clone()).oneshot(req(&app, "GET", "/", false)).await.unwrap();
+        let res = router(app.clone(), host.clone())
+            .oneshot(req(&app, "GET", "/", false))
+            .await
+            .unwrap();
         assert_eq!(res.status(), 200, "GET / must not be token-gated");
         let page = body_of(res).await;
-        assert!(page.contains(&app.token), "the page went out without its token");
-        assert!(!page.contains("__ORCH_TOKEN__"), "a placeholder survived substitution");
+        assert!(
+            page.contains(&app.token),
+            "the page went out without its token"
+        );
+        assert!(
+            !page.contains("__ORCH_TOKEN__"),
+            "a placeholder survived substitution"
+        );
         assert!(!page.contains("__ORCH_CHROME__"));
         assert!(!page.contains("__ORCH_PLATFORM__"));
 
@@ -1732,7 +1802,11 @@ mod tests {
             .oneshot(req(&app, "POST", "/api/prs/refresh", false))
             .await
             .unwrap();
-        assert_eq!(refused.status(), 401, "an untokened POST from the same origin was allowed");
+        assert_eq!(
+            refused.status(),
+            401,
+            "an untokened POST from the same origin was allowed"
+        );
     }
 
     /// The review preview substitutes the same three, and is reached the same way.

@@ -127,14 +127,14 @@ pub async fn preflight(app: &Arc<AppState>, workspace: &str) -> Result<Preflight
     });
 
     /* 4. Nothing banked. **A banked tree is clean on disk**, which is the whole
-          point of the bank and exactly what makes check 2 useless here: `bank_wip`
-          resets the tree, so `git status --porcelain` is empty while the work lives
-          in `refs/orchd/wip/<ws>`. Teardown drops the *record*, and the record is
-          how the strip and every button on it find that ref again — `reap_old` runs
-          this unattended after `worktree_retention_days`, so without this a
-          conflicted re-apply nobody came back to is collected along with the tree
-          that would have offered it back. The ref survives, and nothing points at
-          it. */
+    point of the bank and exactly what makes check 2 useless here: `bank_wip`
+    resets the tree, so `git status --porcelain` is empty while the work lives
+    in `refs/orchd/wip/<ws>`. Teardown drops the *record*, and the record is
+    how the strip and every button on it find that ref again — `reap_old` runs
+    this unattended after `worktree_retention_days`, so without this a
+    conflicted re-apply nobody came back to is collected along with the tree
+    that would have offered it back. The ref survives, and nothing points at
+    it. */
     let banked = app.workspace_banked(workspace).await;
     checks.push(Check {
         name: "nothing banked",
@@ -217,7 +217,10 @@ async fn transcripts_archived(app: &Arc<AppState>, workspace: &str) -> (bool, St
     if pending == 0 {
         (
             true,
-            format!("{copied} of {} transcript(s) copied, rest had none", sessions.len()),
+            format!(
+                "{copied} of {} transcript(s) copied, rest had none",
+                sessions.len()
+            ),
         )
     } else {
         (false, format!("{pending} transcript(s) not yet archived"))
@@ -238,7 +241,10 @@ async fn recovery_recorded(app: &Arc<AppState>, workspace: &str) -> (bool, Strin
     if missing == 0 {
         (true, "(name, branch, head_sha) persisted".into())
     } else {
-        (false, format!("{missing} session(s) without a recovery record"))
+        (
+            false,
+            format!("{missing} session(s) without a recovery record"),
+        )
     }
 }
 
@@ -285,10 +291,9 @@ pub async fn revive(
 
     let main = app.cfg.main_checkout.clone();
     let (path, b, sha) = (cwd.to_path_buf(), branch.clone(), head_sha.clone());
-    let moved =
-        tokio::task::spawn_blocking(move || git::worktree_rebuild(&main, &path, &b, &sha))
-            .await
-            .map_err(|e| anyhow::anyhow!("rebuild task failed: {e}"))??;
+    let moved = tokio::task::spawn_blocking(move || git::worktree_rebuild(&main, &path, &b, &sha))
+        .await
+        .map_err(|e| anyhow::anyhow!("rebuild task failed: {e}"))??;
 
     // A rebuilt worktree is a fresh checkout at the old path — its symlinks and
     // creation-time files are gone with the tree that was torn down, so the setup
@@ -416,7 +421,11 @@ pub async fn archive(app: &Arc<AppState>, workspace: &str) -> Result<()> {
                 .sessions
                 .get(&id)
                 .and_then(|s| s.transcript_path.clone())
-                .or_else(|| transcript_dir_for(&path).ok().map(|d| d.join(format!("{id}.jsonl"))))
+                .or_else(|| {
+                    transcript_dir_for(&path)
+                        .ok()
+                        .map(|d| d.join(format!("{id}.jsonl")))
+                })
         };
         let src = src.unwrap_or_else(|| PathBuf::from("/nonexistent"));
         let dest = store.join(format!("{id}.jsonl"));
@@ -426,8 +435,9 @@ pub async fn archive(app: &Arc<AppState>, workspace: &str) -> Result<()> {
             let (from, to) = (src.clone(), dest.clone());
             crate::proc::run_blocking("archiving the transcript", move || {
                 if from.exists() {
-                    std::fs::copy(&from, &to)
-                        .with_context(|| format!("copying {} to {}", from.display(), to.display()))?;
+                    std::fs::copy(&from, &to).with_context(|| {
+                        format!("copying {} to {}", from.display(), to.display())
+                    })?;
                 }
                 Ok::<(), anyhow::Error>(())
             })
@@ -577,24 +587,24 @@ pub async fn reap_old(app: &Arc<AppState>) -> usize {
                     newest = newest.max(Some(crate::store::last_used(s)));
                 }
                 /* A tree with no conversation pointing at it at all, which is the
-                   commonest shape of silt and the one nothing else can reach: 32 of
-                   61 trees on the machine this was written for. They are made, not
-                   found — `spawn::watch_session_exit` forgets a turnless session's
-                   record and used to leave its tree standing, and `store` drops the
-                   same class of record again at load.
+                commonest shape of silt and the one nothing else can reach: 32 of
+                61 trees on the machine this was written for. They are made, not
+                found — `spawn::watch_session_exit` forgets a turnless session's
+                record and used to leave its tree standing, and `store` drops the
+                same class of record again at load.
 
-                   The safest population rather than the riskiest: nothing can
-                   resume it, and `git worktree remove` never deletes the branch, so
-                   the commits stay reachable from main whatever happens here.
+                The safest population rather than the riskiest: nothing can
+                resume it, and `git worktree remove` never deletes the branch, so
+                the commits stay reachable from main whatever happens here.
 
-                   Dated by the directory, because the record that would have dated
-                   it is precisely what is missing. Deliberately *not* the
-                   per-worktree index, which looks like the better signal and is
-                   worthless: the daemon's own reconcile runs `git status` in every
-                   tree and refreshes it, measured at 0.0 days for all 32 while the
-                   directories themselves read 8 to 19 days. A directory that is
-                   gone answers `None` and is left alone — a record outliving its
-                   tree is a real state here, and teardown would fail on it anyway. */
+                Dated by the directory, because the record that would have dated
+                it is precisely what is missing. Deliberately *not* the
+                per-worktree index, which looks like the better signal and is
+                worthless: the daemon's own reconcile runs `git status` in every
+                tree and refreshes it, measured at 0.0 days for all 32 while the
+                directories themselves read 8 to 19 days. A directory that is
+                gone answers `None` and is left alone — a record outliving its
+                tree is a real state here, and teardown would fail on it anyway. */
                 newest
                     .or_else(|| std::fs::metadata(&w.path).ok()?.modified().ok())
                     .is_some_and(|at| at < cutoff)
@@ -647,7 +657,10 @@ pub(crate) fn repo_worktree_hooks(main: &std::path::Path, event: &str) -> Vec<St
         let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) else {
             continue;
         };
-        let Some(entries) = v.pointer(&format!("/hooks/{event}")).and_then(|h| h.as_array()) else {
+        let Some(entries) = v
+            .pointer(&format!("/hooks/{event}"))
+            .and_then(|h| h.as_array())
+        else {
             continue;
         };
         for entry in entries {
@@ -734,7 +747,11 @@ pub(crate) async fn run_repo_hooks(
 /// carries. That is the strongest evidence available: the monorepo declares no
 /// `WorktreeRemove`, so this has never made a real round trip, and a repo whose hook
 /// reads some other key gets a no-op rather than a wrong action.
-fn remove_payload(main: &std::path::Path, workspace: &str, path: &std::path::Path) -> serde_json::Value {
+fn remove_payload(
+    main: &std::path::Path,
+    workspace: &str,
+    path: &std::path::Path,
+) -> serde_json::Value {
     serde_json::json!({
         "hook_event_name": "WorktreeRemove",
         "cwd": main.to_string_lossy(),
@@ -760,7 +777,11 @@ mod tests {
                 .current_dir(at)
                 .output()
                 .expect("git");
-            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+            assert!(
+                out.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
             String::from_utf8_lossy(&out.stdout).trim().to_string()
         };
         let dir = std::env::temp_dir().join(format!("orchd-reap-{tag}-{}", uuid::Uuid::new_v4()));
@@ -774,7 +795,17 @@ mod tests {
         g(&main, &["commit", "-qm", "init"]);
         let sha = g(&main, &["rev-parse", "HEAD"]);
         let wt = dir.join("wt");
-        g(&main, &["worktree", "add", "-q", "-b", "worktree-old", wt.to_str().unwrap()]);
+        g(
+            &main,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "worktree-old",
+                wt.to_str().unwrap(),
+            ],
+        );
         (main, wt, sha)
     }
 
@@ -788,7 +819,8 @@ mod tests {
             &main,
             r#""worktree_retention_days":60,"upstream_ref":"develop","upstream_remote":"origin""#,
         );
-        app.register_worktree("old", wt.clone(), Some("worktree-old".into())).await;
+        app.register_worktree("old", wt.clone(), Some("worktree-old".into()))
+            .await;
 
         let id = uuid::Uuid::new_v4();
         {
@@ -796,7 +828,8 @@ mod tests {
             let mut s = Session::new(id, "old".to_string(), wt.clone(), None);
             // Ninety days back, and everything the preflight wants already settled:
             // the interesting question is the timer, not the archive.
-            s.created_at = std::time::SystemTime::now() - std::time::Duration::from_secs(90 * 86_400);
+            s.created_at =
+                std::time::SystemTime::now() - std::time::Duration::from_secs(90 * 86_400);
             s.transcript_archived = true;
             s.recovery = Some(ArchiveState::Recoverable {
                 name: "old".into(),
@@ -838,13 +871,15 @@ mod tests {
             &main,
             r#""worktree_retention_days":60,"upstream_ref":"develop","upstream_remote":"origin""#,
         );
-        app.register_worktree("banked", wt.clone(), Some("worktree-old".into())).await;
+        app.register_worktree("banked", wt.clone(), Some("worktree-old".into()))
+            .await;
 
         let id = uuid::Uuid::new_v4();
         {
             let mut inner = app.inner.write().await;
             let mut s = Session::new(id, "banked".to_string(), wt.clone(), None);
-            s.created_at = std::time::SystemTime::now() - std::time::Duration::from_secs(90 * 86_400);
+            s.created_at =
+                std::time::SystemTime::now() - std::time::Duration::from_secs(90 * 86_400);
             s.transcript_archived = true;
             s.recovery = Some(ArchiveState::Recoverable {
                 name: "banked".into(),
@@ -861,17 +896,35 @@ mod tests {
         let bank = git::bank_wip(&wt, "banked").unwrap().expect("banked");
         app.set_banked("banked", Some(bank)).await;
         assert_eq!(
-            git::status(&wt, None, git::Untracked::Each).unwrap().unstaged.len(),
+            git::status(&wt, None, git::Untracked::Each)
+                .unwrap()
+                .unstaged
+                .len(),
             0,
             "the premise: a banked tree passes a clean-tree check"
         );
 
         let pf = preflight(&app, "banked").await.unwrap();
-        let blocked: Vec<&str> = pf.checks.iter().filter(|c| !c.passed).map(|c| c.name).collect();
-        assert!(blocked.contains(&"nothing banked"), "preflight let it through: {blocked:?}");
+        let blocked: Vec<&str> = pf
+            .checks
+            .iter()
+            .filter(|c| !c.passed)
+            .map(|c| c.name)
+            .collect();
+        assert!(
+            blocked.contains(&"nothing banked"),
+            "preflight let it through: {blocked:?}"
+        );
 
-        assert_eq!(reap_old(&app).await, 0, "the reaper took a tree with work in it");
-        assert!(wt.exists(), "the tree is gone and the ref points at nothing");
+        assert_eq!(
+            reap_old(&app).await,
+            0,
+            "the reaper took a tree with work in it"
+        );
+        assert!(
+            wt.exists(),
+            "the tree is gone and the ref points at nothing"
+        );
 
         // And it goes once the work is back where a person can see it.
         git::restore_wip(&wt, "banked").unwrap();
@@ -897,7 +950,8 @@ mod tests {
             &main,
             r#""worktree_retention_days":60,"upstream_ref":"develop","upstream_remote":"origin""#,
         );
-        app.register_worktree("lastused", wt.clone(), Some("worktree-old".into())).await;
+        app.register_worktree("lastused", wt.clone(), Some("worktree-old".into()))
+            .await;
 
         // Started 90 days ago, and its transcript was written to a moment ago.
         let transcript = main.parent().unwrap().join("live.jsonl");
@@ -906,7 +960,8 @@ mod tests {
         {
             let mut inner = app.inner.write().await;
             let mut s = Session::new(id, "lastused".to_string(), wt.clone(), None);
-            s.created_at = std::time::SystemTime::now() - std::time::Duration::from_secs(90 * 86_400);
+            s.created_at =
+                std::time::SystemTime::now() - std::time::Duration::from_secs(90 * 86_400);
             s.transcript_path = Some(transcript.clone());
             s.transcript_archived = true;
             s.recovery = Some(ArchiveState::Recoverable {
@@ -932,7 +987,11 @@ mod tests {
             .expect("touch");
         assert!(out.status.success());
 
-        assert_eq!(reap_old(&app).await, 1, "cold for long enough, and the tree goes");
+        assert_eq!(
+            reap_old(&app).await,
+            1,
+            "cold for long enough, and the tree goes"
+        );
         assert!(!wt.exists());
         let _ = std::fs::remove_dir_all(main.parent().unwrap());
     }
@@ -944,7 +1003,6 @@ mod tests {
     /// record is what dates a tree. 32 of 61 trees were in this state.
     #[tokio::test]
     async fn a_worktree_no_conversation_points_at_is_dated_by_its_directory() {
-
         let (main, wt, _) = repo_with_a_worktree("orphan");
         let app = crate::testutil::app_at(
             &main,
@@ -952,7 +1010,8 @@ mod tests {
         );
         // Registered the way `adopt_existing_worktrees` registers every tree on
         // disk at boot, and with no session record at all.
-        app.register_worktree("orphan", wt.clone(), Some("worktree-old".into())).await;
+        app.register_worktree("orphan", wt.clone(), Some("worktree-old".into()))
+            .await;
 
         // Young by its own mtime: nothing yet, however orphaned. This is what keeps
         // a tree the agent has just cut, and not yet reported, out of reach.
@@ -965,7 +1024,11 @@ mod tests {
             .args(["-t", "202001010000", wt.to_str().unwrap()])
             .output()
             .expect("touch");
-        assert!(out.status.success(), "touch: {}", String::from_utf8_lossy(&out.stderr));
+        assert!(
+            out.status.success(),
+            "touch: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
 
         assert_eq!(reap_old(&app).await, 1, "an old orphan is reaped");
         assert!(!wt.exists(), "the tree is gone");
@@ -986,7 +1049,7 @@ mod tests {
     /// Three ways it must decline, none of which reach the preflight.
     #[tokio::test]
     async fn reaping_declines_young_trees_live_sessions_and_a_zero_setting() {
-        use crate::model::{Session};
+        use crate::model::Session;
 
         let (main, wt, _) = repo_with_a_worktree("keep");
         let fresh = |days: u32| {
@@ -998,7 +1061,8 @@ mod tests {
                         r#""worktree_retention_days":{days},"upstream_ref":"develop","upstream_remote":"origin""#
                     ),
                 );
-                app.register_worktree("keep", wt, Some("worktree-old".into())).await;
+                app.register_worktree("keep", wt, Some("worktree-old".into()))
+                    .await;
                 app
             }
         };
@@ -1036,7 +1100,13 @@ mod tests {
 
         // 3. Archived, clean, and simply not old enough.
         let app = fresh(60).await;
-        add(&app, &wt, State::Archived { resumable: true }, std::time::SystemTime::now()).await;
+        add(
+            &app,
+            &wt,
+            State::Archived { resumable: true },
+            std::time::SystemTime::now(),
+        )
+        .await;
         assert_eq!(reap_old(&app).await, 0, "a young tree is left alone");
         assert!(wt.exists());
 
@@ -1052,7 +1122,10 @@ mod tests {
     fn the_repos_worktree_hooks_are_read_from_both_settings_files() {
         let dir = std::env::temp_dir().join(format!("orch-wrhooks-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(dir.join(".claude")).unwrap();
-        assert!(repo_worktree_hooks(&dir, "WorktreeRemove").is_empty(), "no settings, no hooks");
+        assert!(
+            repo_worktree_hooks(&dir, "WorktreeRemove").is_empty(),
+            "no settings, no hooks"
+        );
 
         std::fs::write(
             dir.join(".claude/settings.json"),
@@ -1061,7 +1134,10 @@ mod tests {
                  {"type":"http","url":"http://x/y"}]}]}}"#,
         )
         .unwrap();
-        assert_eq!(repo_worktree_hooks(&dir, "WorktreeRemove"), vec!["tidy-up".to_string()]);
+        assert_eq!(
+            repo_worktree_hooks(&dir, "WorktreeRemove"),
+            vec!["tidy-up".to_string()]
+        );
         // Keyed by event, so the create side reads its own and never the other's.
         assert!(repo_worktree_hooks(&dir, "WorktreeCreate").is_empty());
 
@@ -1078,13 +1154,16 @@ mod tests {
 
         // A repo that declares other hooks but not this one, and a settings file
         // that is not valid JSON, both answer "none" rather than failing teardown.
-        std::fs::write(dir.join(".claude/settings.json"), r#"{"hooks":{"SessionStart":[]}}"#).unwrap();
+        std::fs::write(
+            dir.join(".claude/settings.json"),
+            r#"{"hooks":{"SessionStart":[]}}"#,
+        )
+        .unwrap();
         std::fs::write(dir.join(".claude/settings.local.json"), "{ not json").unwrap();
         assert!(repo_worktree_hooks(&dir, "WorktreeRemove").is_empty());
 
         let _ = std::fs::remove_dir_all(&dir);
     }
-    
 
     /// Resuming into a standing worktree skips the rebuild, so the branch was
     /// never looked at. Driven against a fixture: an archived `pr-4` recorded on

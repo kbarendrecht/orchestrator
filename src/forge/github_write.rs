@@ -93,7 +93,15 @@ impl Target {
     /// re-requested even while another's are still open.
     pub fn rerequest(&self, pr: u64, login: &str) -> Result<()> {
         let out = self.gh(
-            &["pr", "edit", &pr.to_string(), "--repo", &self.slug(), "--add-reviewer", login],
+            &[
+                "pr",
+                "edit",
+                &pr.to_string(),
+                "--repo",
+                &self.slug(),
+                "--add-reviewer",
+                login,
+            ],
             None,
             "gh pr edit",
         )?;
@@ -295,9 +303,6 @@ mod tests {
             vec!["alice"]
         );
         assert!(ready_to_rerequest(&["bob"], &["bob"]).is_empty());
-        assert_eq!(
-            ready_to_rerequest(&["alice", "alice"], &[]),
-            vec!["alice"]
-        );
+        assert_eq!(ready_to_rerequest(&["alice", "alice"], &[]), vec!["alice"]);
     }
 }

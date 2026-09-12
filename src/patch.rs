@@ -34,7 +34,11 @@ pub struct Patch {
 /// A path the batch will touch, with its line counts — the data behind the
 /// card's `will write renovate.json5 +2 −1` label.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
+#[cfg_attr(
+    test,
+    derive(ts_rs::TS),
+    ts(export, export_to = "../web/snapshot.d.ts")
+)]
 pub struct FileStat {
     pub path: String,
     pub added: u32,
@@ -392,23 +396,23 @@ pub fn write_batch(
     };
 
     /* **Put the tree back.** The patch is on disk by now, and returning `Refused`
-       used to leave it there — so the report said nothing was committed while the
-       worktree held changes nobody had asked for, and the next attempt was refused
-       by `triage::gate` as `Dirty`, naming files the user never touched. It used to
-       run only on the hooks' refusal, so an `Err` from the hooks or the fold left
-       the same mess by the other door.
+    used to leave it there — so the report said nothing was committed while the
+    worktree held changes nobody had asked for, and the next attempt was refused
+    by `triage::gate` as `Dirty`, naming files the user never touched. It used to
+    run only on the hooks' refusal, so an `Err` from the hooks or the fold left
+    the same mess by the other door.
 
-       Everything that has gone dirty *since we started*, not only the patch's own
-       paths: whatever is dirty beyond `before` is the patch or what the hooks did
-       to the tree on its account. Scoping to the patch's paths is what left a
-       rename half-reverted, since numstat names it by the new path alone; scoping
-       to the whole tree, which this did at first, would revert a caller's own
-       uncommitted work on the strength of a gate taken in another module.
+    Everything that has gone dirty *since we started*, not only the patch's own
+    paths: whatever is dirty beyond `before` is the patch or what the hooks did
+    to the tree on its account. Scoping to the patch's paths is what left a
+    rename half-reverted, since numstat names it by the new path alone; scoping
+    to the whole tree, which this did at first, would revert a caller's own
+    uncommitted work on the strength of a gate taken in another module.
 
-       This is the arm that applied its own patch. `write_manual` reaches
-       `hooks_refusal` with `own_edits: true` and must **not** do this: those
-       changes are the user's, typed by hand, and reverting them would destroy
-       exactly what the manual phase exists to collect. */
+    This is the arm that applied its own patch. `write_manual` reaches
+    `hooks_refusal` with `own_edits: true` and must **not** do this: those
+    changes are the user's, typed by hand, and reverting them would destroy
+    exactly what the manual phase exists to collect. */
     const UNREVERTED: &str =
         "the applied patch could not be reverted, so it is still in the working tree";
     let restored = added_since(cwd, &before).and_then(|ours| crate::git::restore_paths(cwd, &ours));
@@ -513,9 +517,9 @@ fn hooks_refusal(cwd: &Path, paths: &[String], own_edits: bool) -> Result<Option
         crate::git::PreCommit::Failed(detail) if own_edits => Some(format!(
             "pre-commit failed on your edits, so nothing was committed:\n{detail}"
         )),
-        crate::git::PreCommit::Failed(detail) => {
-            Some(format!("pre-commit failed, so nothing was committed:\n{detail}"))
-        }
+        crate::git::PreCommit::Failed(detail) => Some(format!(
+            "pre-commit failed, so nothing was committed:\n{detail}"
+        )),
         crate::git::PreCommit::Reformatted(rewritten) if own_edits => {
             tracing::info!("the hooks reformatted {}", rewritten.join(", "));
             None
@@ -966,7 +970,11 @@ mod tests {
         run(&dir, &["add", "-A"]);
         run(&dir, &["commit", "-qm", "link"]);
 
-        for path in ["../escape.txt", ".git/hooks/pre-commit", "out/through-the-link.txt"] {
+        for path in [
+            "../escape.txt",
+            ".git/hooks/pre-commit",
+            "out/through-the-link.txt",
+        ] {
             let (ok, _, err) = git_apply(&dir, &["--check"], &new_file_diff(path)).unwrap();
             assert!(!ok, "{path} was accepted");
             assert!(!err.is_empty(), "{path}: refused without a reason");
@@ -1531,7 +1539,10 @@ mod tests {
             other => panic!("expected Refused, got {other:?}"),
         }
         assert_eq!(commit_count(&d), before, "must not have committed");
-        assert!(crate::git::is_clean(&d).unwrap(), "the patch and the rewrite must both be gone");
+        assert!(
+            crate::git::is_clean(&d).unwrap(),
+            "the patch and the rewrite must both be gone"
+        );
     }
 
     #[test]
@@ -1562,16 +1573,19 @@ mod tests {
             other => panic!("expected Refused, got {other:?}"),
         }
         /* **And the patch is out of the tree again.** The refusal happens *after*
-           it is on disk, and this used to leave it there: the report said nothing
-           was committed while the worktree held changes nobody asked for, and the
-           next attempt was refused as `Dirty` naming files the user never touched.
-           The old assertion only counted commits, which stayed right throughout. */
+        it is on disk, and this used to leave it there: the report said nothing
+        was committed while the worktree held changes nobody asked for, and the
+        next attempt was refused as `Dirty` naming files the user never touched.
+        The old assertion only counted commits, which stayed right throughout. */
         let after = std::fs::read_to_string(d.join("f.txt")).unwrap();
         assert!(
             after.contains("mine5") && !after.contains("FIVE"),
             "the refused patch was left in f.txt:\n{after}"
         );
-        assert!(crate::git::is_clean(&d).unwrap(), "the tree must be back to HEAD");
+        assert!(
+            crate::git::is_clean(&d).unwrap(),
+            "the tree must be back to HEAD"
+        );
 
         // Same repo, same config, no `pre-commit` on PATH: an environment problem
         // must not block the review.
@@ -1711,7 +1725,10 @@ mod tests {
             other => panic!("expected Refused, got {other:?}"),
         }
         assert_eq!(commit_count(&d), before);
-        assert!(crate::git::is_clean(&d).unwrap(), "the hook's file and the patch must both be gone");
+        assert!(
+            crate::git::is_clean(&d).unwrap(),
+            "the hook's file and the patch must both be gone"
+        );
     }
 
     /// The manual phase's half of the same hole, and the one with the worse blast
@@ -1742,7 +1759,9 @@ mod tests {
 
         // The human's own edit, which the phase showed them and approved.
         let f = d.join("f.txt");
-        let edited = std::fs::read_to_string(&f).unwrap().replace("mine5", "by hand");
+        let edited = std::fs::read_to_string(&f)
+            .unwrap()
+            .replace("mine5", "by hand");
         std::fs::write(&f, edited).unwrap();
 
         let touched = vec![("f.txt".to_string(), 5)];
@@ -1776,7 +1795,10 @@ mod tests {
         .unwrap();
         let bin = d.join("fake-bin");
         std::fs::create_dir_all(&bin).unwrap();
-        write_exec(&bin.join("pre-commit"), "#!/bin/sh\necho 'lint.....Failed'\nexit 1\n");
+        write_exec(
+            &bin.join("pre-commit"),
+            "#!/bin/sh\necho 'lint.....Failed'\nexit 1\n",
+        );
         run(&d, &["add", "-A"]);
         run(&d, &["commit", "-qm", "hook fixture"]);
 
@@ -1796,7 +1818,9 @@ mod tests {
             "the caller's own uncommitted file must survive the revert"
         );
         // And the patch itself is gone.
-        assert!(!std::fs::read_to_string(d.join("f.txt")).unwrap().contains("FIVE"));
+        assert!(!std::fs::read_to_string(d.join("f.txt"))
+            .unwrap()
+            .contains("FIVE"));
     }
 
     /// A refused rename has two halves to put back. Numstat names it by the new path
@@ -1812,7 +1836,10 @@ mod tests {
         .unwrap();
         let bin = d.join("fake-bin");
         std::fs::create_dir_all(&bin).unwrap();
-        write_exec(&bin.join("pre-commit"), "#!/bin/sh\necho 'lint.....Failed'\nexit 1\n");
+        write_exec(
+            &bin.join("pre-commit"),
+            "#!/bin/sh\necho 'lint.....Failed'\nexit 1\n",
+        );
         run(&d, &["add", "-A"]);
         run(&d, &["commit", "-qm", "hook fixture"]);
 
@@ -1831,8 +1858,14 @@ mod tests {
         })
         .unwrap();
         assert!(matches!(got, Written::Refused(_)), "{got:?}");
-        assert!(d.join("f.txt").exists(), "the old half of the rename was not restored");
-        assert!(!d.join("g.txt").exists(), "the new half of the rename was left behind");
+        assert!(
+            d.join("f.txt").exists(),
+            "the old half of the rename was not restored"
+        );
+        assert!(
+            !d.join("g.txt").exists(),
+            "the new half of the rename was left behind"
+        );
         assert!(crate::git::is_clean(&d).unwrap());
     }
 }

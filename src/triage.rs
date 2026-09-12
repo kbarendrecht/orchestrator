@@ -34,7 +34,11 @@ use crate::state::AppState;
 /// a merge conflict deliberately do **not** appear here; they are signals about a
 /// future merge and never touch the branch-local machinery.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
-#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
+#[cfg_attr(
+    test,
+    derive(ts_rs::TS),
+    ts(export, export_to = "../web/snapshot.d.ts")
+)]
 #[serde(tag = "gate", rename_all = "snake_case")]
 pub enum Gate {
     /// Uncommitted work of your own would be swept into the batch's commit.
@@ -202,11 +206,7 @@ pub async fn mint_post_token(app: &Arc<AppState>, pr: u64) -> String {
 /// itself. So unlike [`spawn`] it needs `ORCH_ASK_TOKEN` in its environment, the
 /// key the `/ask` and `/wait` routes check, and it is marked [`COMMAND`] so the
 /// rail colours, the guards and the handoff tell it from a triage run.
-pub async fn spawn_review(
-    app: &Arc<AppState>,
-    pr: u64,
-    head_ref: &str,
-) -> Result<SessionId> {
+pub async fn spawn_review(app: &Arc<AppState>, pr: u64, head_ref: &str) -> Result<SessionId> {
     let kind = RunKind {
         command: COMMAND,
         asks: true,
@@ -240,10 +240,10 @@ async fn spawn_posting_run(
     }
 
     /* Both posting runs are skills now, so the first turn is one typed line and
-       `FirstTurn` went with the last rendered prompt: what a template substituted,
-       `/api/pr/:n/triage-context` answers. The command string is the skill's
-       directory name — `skills::a_skill_is_named_after_the_command_that_types_it`
-       is what keeps those two spellings together. */
+    `FirstTurn` went with the last rendered prompt: what a template substituted,
+    `/api/pr/:n/triage-context` answers. The command string is the skill's
+    directory name — `skills::a_skill_is_named_after_the_command_that_types_it`
+    is what keeps those two spellings together. */
     let pending = format!("/orchd:{} {pr}", kind.command);
 
     // The post token is minted by `spawn_run`, because both posting runs spawn
@@ -270,10 +270,10 @@ async fn spawn_posting_run(
         let mut inner = app.inner.write().await;
         inner.proposals.remove(&pr);
         /* And the last pass's progress, for the same reason and one of its own: the
-           map is keyed by PR, so a fresh run inherited `posted: true` from the run
-           before it. The bar then opened amber on `3 threads need your call` before
-           the new pass had read a line, and the overlay loaded the proposals that
-           were about to be superseded. */
+        map is keyed by PR, so a fresh run inherited `posted: true` from the run
+        before it. The bar then opened amber on `3 threads need your call` before
+        the new pass had read a line, and the overlay loaded the proposals that
+        were about to be superseded. */
         inner.triage_progress.remove(&pr);
         // And with them any batch that stopped for the manual phase: its decisions
         // point at positions that no longer exist, so finishing it is impossible and
@@ -287,23 +287,32 @@ async fn spawn_posting_run(
         let why = format!("re-{} abandoned a phase", kind.command);
         let was_open = inner.manual.get(&pr).is_some_and(|p| p.open);
         if inner.with_manual(&why, |m| m.remove(&pr).is_some()) && was_open {
-            tracing::warn!(pr, "a manual phase was open; a new {} run abandons it", kind.command);
+            tracing::warn!(
+                pr,
+                "a manual phase was open; a new {} run abandons it",
+                kind.command
+            );
         }
     }
 
     let id = crate::spawn::spawn_run(app, &workspace, pr, uuid::Uuid::new_v4(), spec).await?;
     /* **A read pass is "reading" from the spawn, not from its first report.**
-       The skill posts after each thread it finishes, so the first ping is a minute
-       of reading away — and until it landed the map held nothing, which every
-       reader takes to mean no pass is running. The bar offered `open` and the
-       overlay would have shown a full screen saying the session is reading.
-       Zero of zero is the honest opening state: a pass exists, and it has not said
-       how many threads it means to read. */
+    The skill posts after each thread it finishes, so the first ping is a minute
+    of reading away — and until it landed the map held nothing, which every
+    reader takes to mean no pass is running. The bar offered `open` and the
+    overlay would have shown a full screen saying the session is reading.
+    Zero of zero is the honest opening state: a pass exists, and it has not said
+    how many threads it means to read. */
     if kind.command == TRIAGE_COMMAND {
         let mut inner = app.inner.write().await;
         inner.triage_progress.insert(
             pr,
-            crate::state::TriageProgress { done: 0, total: 0, posted: false, session: id },
+            crate::state::TriageProgress {
+                done: 0,
+                total: 0,
+                posted: false,
+                session: id,
+            },
         );
     }
     app.notify().await;
@@ -333,15 +342,14 @@ mod tests {
             crate::spawn::run_env(&cfg, &dir, id, ask, post, &[])
         };
         let (env, _) = run_env(Some("post-tok"), Some("ask-tok"));
-        let get = |k: &str| {
-            env.iter()
-                .find(|(n, _)| n == k)
-                .map(|(_, v)| v.clone())
-        };
+        let get = |k: &str| env.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone());
 
         assert_eq!(get("ORCH_POST_TOKEN").as_deref(), Some("post-tok"));
         assert_eq!(get("ORCH_ASK_TOKEN").as_deref(), Some("ask-tok"));
-        assert_eq!(get("ORCH_SESSION_ID").as_deref(), Some(id.to_string().as_str()));
+        assert_eq!(
+            get("ORCH_SESSION_ID").as_deref(),
+            Some(id.to_string().as_str())
+        );
 
         // The regression this exists for. `ORCHD_TOKEN` here means the run holds
         // the whole API again — teardown, spawn, file writes — to do a job that is

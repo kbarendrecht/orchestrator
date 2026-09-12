@@ -92,7 +92,9 @@ impl HookPayload {
     /// every adoption miss. Falls back to what was reported: a cwd that does not
     /// resolve is not a reason to drop the hook.
     fn resolved_cwd(&self) -> Option<PathBuf> {
-        self.cwd.as_deref().map(|c| resolved(std::path::Path::new(c)))
+        self.cwd
+            .as_deref()
+            .map(|c| resolved(std::path::Path::new(c)))
     }
 }
 
@@ -135,16 +137,16 @@ fn ok() -> HookResult {
 pub async fn detach(req: Request, next: Next) -> Response {
     let (parts, body) = req.into_parts();
     /* **The cap has to clear the largest real payload, and 256 KB did not.**
-       `PostToolUse` carries `tool_input` *and* `tool_response`, so a `Write` of a
-       generated file or a `Read` of a long one exceeds it — on exactly the tool
-       calls that change the most. And the failure was silent twice over: an
-       oversized body became an *empty* one (`unwrap_or_default`), the `Json`
-       extractor then rejected it inside the detached task, and the response was
-       dropped unread. So the `Working` flip, `dirty_paths` and the reconcile tick
-       were skipped for those calls with nothing logged anywhere.
+    `PostToolUse` carries `tool_input` *and* `tool_response`, so a `Write` of a
+    generated file or a `Read` of a long one exceeds it — on exactly the tool
+    calls that change the most. And the failure was silent twice over: an
+    oversized body became an *empty* one (`unwrap_or_default`), the `Json`
+    extractor then rejected it inside the detached task, and the response was
+    dropped unread. So the `Working` flip, `dirty_paths` and the reconcile tick
+    were skipped for those calls with nothing logged anywhere.
 
-       This is loopback traffic the daemon asked for, from a child it spawned, so
-       the cap is only a guard against something pathological. */
+    This is loopback traffic the daemon asked for, from a child it spawned, so
+    the cap is only a guard against something pathological. */
     const MAX_HOOK_BODY: usize = 32 * 1024 * 1024;
     let bytes = match axum::body::to_bytes(body, MAX_HOOK_BODY).await {
         Ok(b) => b,
@@ -159,7 +161,9 @@ pub async fn detach(req: Request, next: Next) -> Response {
         }
     };
     tokio::spawn(async move {
-        let response = next.run(Request::from_parts(parts, Body::from(bytes))).await;
+        let response = next
+            .run(Request::from_parts(parts, Body::from(bytes)))
+            .await;
         // The real answer goes nowhere — the caller already had its `ok()` — so a
         // rejected body or a failing handler would otherwise vanish entirely.
         if !response.status().is_success() {
@@ -185,18 +189,19 @@ pub async fn session_start(
         return ok();
     };
     /* A worktree the daemon did not name only reveals its path here, so this is
-       where it gets adopted.
+    where it gets adopted.
 
-       **Both ways of missing used to be silent, and the symptom is the same
-       either way**: the row keeps the `…creating` placeholder for the life of the
-       session, and with it no workspace record — so no changed-files pane, no
-       divergence strip, no reconcile, and no swap or move. Nothing else ever
-       adopts it, so one missed event was permanent. Said out loud now, with the
-       path that was reported and the prefix it was measured against, because the
-       second case below is a *configuration* mismatch that no retry can fix and
-       the log line is the only thing that can point at it. */
+    **Both ways of missing used to be silent, and the symptom is the same
+    either way**: the row keeps the `…creating` placeholder for the life of the
+    session, and with it no workspace record — so no changed-files pane, no
+    divergence strip, no reconcile, and no swap or move. Nothing else ever
+    adopts it, so one missed event was permanent. Said out loud now, with the
+    path that was reported and the prefix it was measured against, because the
+    second case below is a *configuration* mismatch that no retry can fix and
+    the log line is the only thing that can point at it. */
     let cwd = payload.resolved_cwd();
-    let pending = app.session_workspace(id).await.as_deref() == Some(crate::spawn::PENDING_WORKTREE);
+    let pending =
+        app.session_workspace(id).await.as_deref() == Some(crate::spawn::PENDING_WORKTREE);
     // The workspace this session turns out to be in, applied with the rest of the
     // record below rather than in a write of its own.
     let mut adopted: Option<String> = None;
@@ -207,11 +212,12 @@ pub async fn session_start(
                 // a child process — a worker parked here is one fewer serving the
                 // board, on a path every session start goes through.
                 let at = path.clone();
-                let branch = crate::proc::run_blocking("reading the worktree's branch", move || {
-                    crate::git::current_branch(&at).ok()
-                })
-                .await
-                .unwrap_or(None);
+                let branch =
+                    crate::proc::run_blocking("reading the worktree's branch", move || {
+                        crate::git::current_branch(&at).ok()
+                    })
+                    .await
+                    .unwrap_or(None);
                 app.register_worktree(&name, path.clone(), branch).await;
                 adopted = Some(name);
             }
@@ -576,7 +582,8 @@ pub async fn stop_failure(
             .map(|e| e.to_string())
             .or(payload.message.clone())
             .unwrap_or_else(|| "stop failure".to_string());
-        app.with_session(id, |s| s.set_state(State::Error { message })).await;
+        app.with_session(id, |s| s.set_state(State::Error { message }))
+            .await;
     }
     app.notify().await;
     ok()
@@ -629,18 +636,18 @@ pub async fn session_end(
     let workspace = {
         let mut inner = app.inner.write().await;
         /* `Some(path)` when this hook came from a tree the session is not in.
-           Judged by *workspace* rather than by comparing the path to the record.
-           A hook's `cwd` is the live process cwd, so it follows a Bash `cd` and an
-           `EnterWorktree` while only `session_start` ever writes `s.cwd`: path
-           equality called a session that merely ended in a subdirectory of its own
-           workspace "moved", and skipped the reconcile that goes with an ending.
+        Judged by *workspace* rather than by comparing the path to the record.
+        A hook's `cwd` is the live process cwd, so it follows a Bash `cd` and an
+        `EnterWorktree` while only `session_start` ever writes `s.cwd`: path
+        equality called a session that merely ended in a subdirectory of its own
+        workspace "moved", and skipped the reconcile that goes with an ending.
 
-           The worktree name is derived from the path *before* the registry is
-           asked, and that ordering is the point. A tree removed after the
-           conversation left it has no record any more, so the registry would fall
-           back to main, which is exactly where the conversation now is, and the
-           stale hook would be accepted after all. The layout answers that without
-           needing the record to still exist. */
+        The worktree name is derived from the path *before* the registry is
+        asked, and that ordering is the point. A tree removed after the
+        conversation left it has no record any more, so the registry would fall
+        back to main, which is exactly where the conversation now is, and the
+        stale hook would be accepted after all. The layout answers that without
+        needing the record to still exist. */
         let moved = match (said.as_ref(), inner.sessions.get(&id)) {
             (Some(c), Some(s))
                 if crate::spawn::worktree_name_of(c, &app.cfg.worktrees_dir())
@@ -754,7 +761,8 @@ pub async fn boundary_block(
             .clone()
             .or_else(|| payload.tool_name.clone())
             .unwrap_or_else(|| "blocked edit".to_string());
-        app.with_session(id, |s| s.boundary_violations.push(what)).await;
+        app.with_session(id, |s| s.boundary_violations.push(what))
+            .await;
     }
     app.notify().await;
     ok()
@@ -951,7 +959,10 @@ pub fn write_settings(
     // both sets of rules apply (§11).
     match push_guard_hook(base_branch, main) {
         Some(hook) => {
-            #[expect(clippy::expect_used, reason = "PreToolUse is the array written a few lines above")]
+            #[expect(
+                clippy::expect_used,
+                reason = "PreToolUse is the array written a few lines above"
+            )]
             settings["hooks"]["PreToolUse"]
                 .as_array_mut()
                 .expect("PreToolUse is the array written just above")
@@ -992,11 +1003,11 @@ mod tests {
         std::fs::create_dir_all(&here).unwrap();
         std::fs::create_dir_all(&gone).unwrap();
         /* Resolved, and only after the directories exist. `Config::parse` does this
-           to `main_checkout` for the same reason, and this test bypasses it by going
-           through `serde_json`, so the record would hold an unresolved path while
-           the handler resolves the one it is handed. On Linux that is the same
-           string; on macOS `$TMPDIR` is a symlink into `/private`, so the workspace
-           would match nothing and even the real ending would read as moved. */
+        to `main_checkout` for the same reason, and this test bypasses it by going
+        through `serde_json`, so the record would hold an unresolved path while
+        the handler resolves the one it is handed. On Linux that is the same
+        string; on macOS `$TMPDIR` is a symlink into `/private`, so the workspace
+        would match nothing and even the real ending would read as moved. */
         let (here, gone) = (resolved(&here), resolved(&gone));
         let app = crate::testutil::app_at(&here, "");
 
@@ -1028,7 +1039,11 @@ mod tests {
                 "a hook from the tree it left must not end it"
             );
         }
-        assert_eq!(app.main_occupant().await, Some(id), "nor hand main's claim back");
+        assert_eq!(
+            app.main_occupant().await,
+            Some(id),
+            "nor hand main's claim back"
+        );
 
         // And the real one, from where the conversation actually is, still settles.
         let real = HookPayload {
@@ -1038,7 +1053,10 @@ mod tests {
         let _ = session_end(AxState(app.clone()), headers, Json(real)).await;
         {
             let inner = app.inner.read().await;
-            assert!(!inner.sessions[&id].state.is_live(), "its own ending still ends it");
+            assert!(
+                !inner.sessions[&id].state.is_live(),
+                "its own ending still ends it"
+            );
         }
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1119,10 +1137,10 @@ mod tests {
         headers.insert("x-orch-session", id.to_string().parse().unwrap());
 
         /* Through `session_start`, which is the half that used to break this: the
-           agent reports the path it was started with, and that line recorded it
-           raw while this handler resolves what it compares. Driving both hooks is
-           what makes this a regression test rather than a restatement of the
-           fixture. */
+        agent reports the path it was started with, and that line recorded it
+        raw while this handler resolves what it compares. Driving both hooks is
+        what makes this a regression test rather than a restatement of the
+        fixture. */
         let through_link = || HookPayload {
             cwd: Some(link.to_string_lossy().into_owned()),
             ..HookPayload::default()
@@ -1197,7 +1215,10 @@ mod tests {
         assert!(ends_the_process(Some("logout")));
         assert!(ends_the_process(Some("other")));
         assert!(ends_the_process(Some("something_new")));
-        assert!(ends_the_process(None), "no reason at all must not start refusing");
+        assert!(
+            ends_the_process(None),
+            "no reason at all must not start refusing"
+        );
 
         let real = HookPayload {
             cwd: Some(here.to_string_lossy().into_owned()),
@@ -1207,7 +1228,10 @@ mod tests {
         let _ = session_end(AxState(app.clone()), headers, Json(real)).await;
         {
             let inner = app.inner.read().await;
-            assert!(!inner.sessions[&id].state.is_live(), "a real ending still ends it");
+            assert!(
+                !inner.sessions[&id].state.is_live(),
+                "a real ending still ends it"
+            );
         }
         assert_eq!(app.main_occupant().await, None, "and releases main");
         let _ = std::fs::remove_dir_all(&dir);
@@ -1279,7 +1303,6 @@ mod tests {
     /// A session that resumed on its own must stop claiming it wants you.
     #[tokio::test]
     async fn a_tool_call_clears_a_finished_turn() {
-
         let dir = crate::testutil::scratch("tool");
         std::env::set_var("HOME", &dir);
         let app = crate::testutil::app_at(&dir, "");
@@ -1341,7 +1364,10 @@ mod tests {
         assert!(
             matches!(
                 inner.sessions.get(&id).unwrap().state,
-                State::YourTurn { reason: TurnReason::Interrupted, .. }
+                State::YourTurn {
+                    reason: TurnReason::Interrupted,
+                    ..
+                }
             ),
             "a tool finishing after the escape restarted the turn"
         );
@@ -1364,8 +1390,13 @@ mod tests {
     fn hooks_carry_the_correlation_header_and_a_short_timeout() {
         let dir = crate::testutil::scratch("test");
         std::env::set_var("HOME", &dir);
-        let path = write_settings(7777, Some("shortcut"), Some("main"), std::path::Path::new("/repo"))
-            .expect("write settings");
+        let path = write_settings(
+            7777,
+            Some("shortcut"),
+            Some("main"),
+            std::path::Path::new("/repo"),
+        )
+        .expect("write settings");
         let raw = std::fs::read_to_string(&path).expect("read back");
         let v: serde_json::Value = serde_json::from_str(&raw).unwrap();
         let stop = &v["hooks"]["Stop"][0]["hooks"][0];
@@ -1440,7 +1471,10 @@ mod tests {
     fn an_unresolvable_base_still_registers_the_force_rule() {
         if let Some(hook) = push_guard_hook(None, std::path::Path::new("/repo")) {
             let cmd = hook["hooks"][0]["command"].as_str().expect("a command");
-            assert!(cmd.ends_with("guard push"), "no --base should be passed: {cmd}");
+            assert!(
+                cmd.ends_with("guard push"),
+                "no --base should be passed: {cmd}"
+            );
         }
     }
 
@@ -1481,7 +1515,9 @@ mod tests {
             .success();
         assert!(!broken, "unquoted should fail, or this test proves nothing");
 
-        let _ = std::fs::remove_dir_all(std::env::temp_dir().join(format!("orchd quote {}", std::process::id())));
+        let _ = std::fs::remove_dir_all(
+            std::env::temp_dir().join(format!("orchd quote {}", std::process::id())),
+        );
     }
 
     #[test]

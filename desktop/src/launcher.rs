@@ -325,7 +325,11 @@ mod tests {
         {
             use std::os::unix::fs::PermissionsExt;
             let mode = std::fs::metadata(&launcher).unwrap().permissions().mode();
-            assert_eq!(mode & 0o777, 0o755, "a bundle that cannot be executed will not launch");
+            assert_eq!(
+                mode & 0o777,
+                0o755,
+                "a bundle that cannot be executed will not launch"
+            );
         }
     }
 
@@ -340,12 +344,18 @@ mod tests {
         std::fs::write(&exe, "x").unwrap();
 
         assert!(write_app_bundle(&apps, &exe).unwrap().1);
-        assert!(!write_app_bundle(&apps, &exe).unwrap().1, "second call changes nothing");
+        assert!(
+            !write_app_bundle(&apps, &exe).unwrap().1,
+            "second call changes nothing"
+        );
 
         let moved = d.join("bin2/orchestrator-desktop");
         std::fs::create_dir_all(moved.parent().unwrap()).unwrap();
         std::fs::write(&moved, "x").unwrap();
-        assert!(write_app_bundle(&apps, &moved).unwrap().1, "a moved binary is a rewrite");
+        assert!(
+            write_app_bundle(&apps, &moved).unwrap().1,
+            "a moved binary is a rewrite"
+        );
     }
 
     /// Not a format test for its own sake: Finder shows nothing at all for an icns
@@ -354,7 +364,10 @@ mod tests {
     fn the_icns_declares_the_length_it_actually_has() {
         let icns = icns();
         assert_eq!(&icns[..4], b"icns");
-        assert_eq!(u32::from_be_bytes(icns[4..8].try_into().unwrap()) as usize, icns.len());
+        assert_eq!(
+            u32::from_be_bytes(icns[4..8].try_into().unwrap()) as usize,
+            icns.len()
+        );
 
         // Walk the chunks the way the loader does, and land exactly on the end.
         let mut at = 8;
@@ -362,8 +375,15 @@ mod tests {
         while at < icns.len() {
             let len = u32::from_be_bytes(icns[at + 4..at + 8].try_into().unwrap()) as usize;
             kinds.push(String::from_utf8_lossy(&icns[at..at + 4]).to_string());
-            assert!(len >= 8 && at + len <= icns.len(), "chunk at {at} runs past the end");
-            assert_eq!(&icns[at + 8..at + 12], b"\x89PNG", "every type here takes a PNG");
+            assert!(
+                len >= 8 && at + len <= icns.len(),
+                "chunk at {at} runs past the end"
+            );
+            assert_eq!(
+                &icns[at + 8..at + 12],
+                b"\x89PNG",
+                "every type here takes a PNG"
+            );
             at += len;
         }
         assert_eq!(at, icns.len());
@@ -372,12 +392,18 @@ mod tests {
 
     #[test]
     fn a_binary_in_a_build_tree_writes_no_entry_of_its_own() {
-        assert!(in_build_tree(std::path::Path::new("/home/me/src/orchestrator/target/debug/orchestrator-desktop")));
-        assert!(in_build_tree(std::path::Path::new("/home/me/src/orchestrator/target/release/orchestrator-desktop")));
+        assert!(in_build_tree(std::path::Path::new(
+            "/home/me/src/orchestrator/target/debug/orchestrator-desktop"
+        )));
+        assert!(in_build_tree(std::path::Path::new(
+            "/home/me/src/orchestrator/target/release/orchestrator-desktop"
+        )));
         assert!(!in_build_tree(std::path::Path::new(
             "/home/me/.local/share/mise/installs/orchestrator/latest/orchestrator-desktop"
         )));
-        assert!(!in_build_tree(std::path::Path::new("/usr/bin/orchestrator-desktop")));
+        assert!(!in_build_tree(std::path::Path::new(
+            "/usr/bin/orchestrator-desktop"
+        )));
     }
 
     /// A bundle id that drifts from the `.dmg`'s is two Orchestrators in the

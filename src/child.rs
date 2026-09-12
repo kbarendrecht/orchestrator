@@ -165,7 +165,14 @@ pub fn launch(
     no_resume: bool,
     on_exit: impl FnOnce(&Path, bool, Option<i32>) + Send + 'static,
 ) -> Result<Child> {
-    launch_at(&daemon_binary(), checkout, host_origin, state, no_resume, on_exit)
+    launch_at(
+        &daemon_binary(),
+        checkout,
+        host_origin,
+        state,
+        no_resume,
+        on_exit,
+    )
 }
 
 /// The real work, with the binary injected — the same split as
@@ -217,7 +224,10 @@ pub fn launch_at(
 
     let pid = child.id();
     let stdin = child.stdin.take();
-    let stdout = child.stdout.take().context("the child has no stdout to read")?;
+    let stdout = child
+        .stdout
+        .take()
+        .context("the child has no stdout to read")?;
 
     // Read the ready line here rather than on the observer thread: a launch that
     // cannot report a port has failed, and the caller is the one that can say so.
@@ -379,15 +389,28 @@ mod tests {
         on_exit: impl FnOnce(&Path, bool, Option<i32>) + Send + 'static + Clone,
     ) -> Result<Child> {
         for _ in 0..50 {
-            match launch_at(exe, checkout, "http://127.0.0.1:1234", checkout, false, on_exit.clone())
-            {
+            match launch_at(
+                exe,
+                checkout,
+                "http://127.0.0.1:1234",
+                checkout,
+                false,
+                on_exit.clone(),
+            ) {
                 Err(e) if format!("{e:#}").contains("Text file busy") => {
                     std::thread::sleep(Duration::from_millis(20));
                 }
                 other => return other,
             }
         }
-        launch_at(exe, checkout, "http://127.0.0.1:1234", checkout, false, on_exit)
+        launch_at(
+            exe,
+            checkout,
+            "http://127.0.0.1:1234",
+            checkout,
+            false,
+            on_exit,
+        )
     }
 
     /// A stand-in daemon: whatever the test needs said on stdout, then a wait.
@@ -415,11 +438,11 @@ mod tests {
         assert_eq!(child.ready.token, "abc123");
         assert_eq!(child.ready.repo.as_deref(), Some("acme/mono"));
         /* **Waited for, not read once.** `pid_alive` is `kill(pid, 0)`, which
-           succeeds for a *zombie* — and the thing that reaps this child is the
-           observer thread, which only gets there after it has drained the child's
-           stdout. So a stop that worked perfectly can still read as alive for as
-           long as that takes, which is why the neighbouring tests all wait. This
-           one asserted instantly and went red on the macos-14 runner alone. */
+        succeeds for a *zombie* — and the thing that reaps this child is the
+        observer thread, which only gets there after it has drained the child's
+        stdout. So a stop that worked perfectly can still read as alive for as
+        long as that takes, which is why the neighbouring tests all wait. This
+        one asserted instantly and went red on the macos-14 runner alone. */
         child.stop();
         let deadline = Instant::now() + Duration::from_secs(10);
         while crate::pty::pid_alive(child.pid) {
@@ -435,9 +458,10 @@ mod tests {
     /// `auto_resume`.
     #[test]
     fn a_stop_is_reported_as_asked_for_and_a_crash_is_not() {
-        for (script, expect_asked) in
-            [("echo 'ready 1 t -'\nsleep 30", true), ("echo 'ready 1 t -'\nexit 3", false)]
-        {
+        for (script, expect_asked) in [
+            ("echo 'ready 1 t -'\nsleep 30", true),
+            ("echo 'ready 1 t -'\nexit 3", false),
+        ] {
             let exe = stub(script);
             let repo = crate::testutil::scratch("child-why");
             let seen = Arc::new(Mutex::new(None));
@@ -477,7 +501,10 @@ mod tests {
         drop(child.stdin.lock().unwrap().take());
         let deadline = Instant::now() + Duration::from_secs(10);
         while crate::pty::pid_alive(pid) {
-            assert!(Instant::now() < deadline, "the child ignored its stdin closing");
+            assert!(
+                Instant::now() < deadline,
+                "the child ignored its stdin closing"
+            );
             std::thread::sleep(Duration::from_millis(20));
         }
     }

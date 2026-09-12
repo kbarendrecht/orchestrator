@@ -33,7 +33,13 @@ async fn main() -> Result<()> {
     // something serving the page. Everything here is the same library the app
     // calls, so what this serves is what the app serves, minus the window.
     if std::env::args().any(|a| a == "--host") {
-        return run_host(std::env::args().skip_while(|a| a != "--host").skip(1).collect()).await;
+        return run_host(
+            std::env::args()
+                .skip_while(|a| a != "--host")
+                .skip(1)
+                .collect(),
+        )
+        .await;
     }
     let main_checkout = arg("--main")
         .map(PathBuf::from)
@@ -156,7 +162,12 @@ async fn run_host(checkouts: Vec<String>) -> Result<()> {
 
     println!("orchd  {}", serving.url());
     for c in serving.host.checkouts() {
-        println!("       {} on {} ({})", c.name, c.port, if c.live { "up" } else { "down" });
+        println!(
+            "       {} on {} ({})",
+            c.name,
+            c.port,
+            if c.live { "up" } else { "down" }
+        );
     }
     tokio::signal::ctrl_c().await?;
     println!();

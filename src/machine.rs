@@ -110,7 +110,12 @@ enum WorkTree {
 
 fn is_work_tree(dir: &Path) -> WorkTree {
     let out = std::process::Command::new("git")
-        .args(["-C", &dir.to_string_lossy(), "rev-parse", "--is-inside-work-tree"])
+        .args([
+            "-C",
+            &dir.to_string_lossy(),
+            "rev-parse",
+            "--is-inside-work-tree",
+        ])
         .output();
     let out = match out {
         Ok(out) => out,
@@ -120,9 +125,9 @@ fn is_work_tree(dir: &Path) -> WorkTree {
         let said = String::from_utf8_lossy(&out.stderr);
         let said = said.trim();
         /* git's own refusal, which really is about the directory. Anything else —
-           a loader error, a missing library, a translated architecture — is about
-           the *machine*, and saying "not a work tree" about it sends somebody to
-           look at their repository. */
+        a loader error, a missing library, a translated architecture — is about
+        the *machine*, and saying "not a work tree" about it sends somebody to
+        look at their repository. */
         return if said.contains("not a git repository") {
             WorkTree::No
         } else {
@@ -163,9 +168,7 @@ fn translated() -> bool {
     std::process::Command::new("sysctl")
         .args(["-n", "sysctl.proc_translated"])
         .output()
-        .is_ok_and(|out| {
-            out.status.success() && String::from_utf8_lossy(&out.stdout).trim() == "1"
-        })
+        .is_ok_and(|out| out.status.success() && String::from_utf8_lossy(&out.stdout).trim() == "1")
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -263,8 +266,8 @@ pub fn check(cfg: &Config, tracker_server: Option<&str>) -> Vec<Warning> {
     }
 
     /* Named before the git warning above would be read, because it *explains* it.
-       A translated process runs a translated `git`, and on Apple Silicon that git
-       cannot load `libxcrun`. */
+    A translated process runs a translated `git`, and on Apple Silicon that git
+    cannot load `libxcrun`. */
     if translated() {
         out.push(Warning {
             what: "this app is running under Rosetta on an Apple Silicon Mac".into(),
@@ -327,7 +330,6 @@ mod tests {
         crate::testutil::scratch(&format!("pre-{name}"))
     }
 
-
     /// The three shapes a checkout can be in, told apart.
     ///
     /// `core.bare` is the one worth a test: the repository is real, `.git` is there
@@ -349,22 +351,28 @@ mod tests {
                 .expect("git");
         };
         git(&["init", "-q"]);
-        assert!(matches!(is_work_tree(&repo), WorkTree::Yes), "a fresh checkout is a work tree");
+        assert!(
+            matches!(is_work_tree(&repo), WorkTree::Yes),
+            "a fresh checkout is a work tree"
+        );
 
         // Real repository, real `.git`, and no work tree.
         git(&["config", "core.bare", "true"]);
-        assert!(matches!(is_work_tree(&repo), WorkTree::No), "core.bare is not a work tree");
+        assert!(
+            matches!(is_work_tree(&repo), WorkTree::No),
+            "core.bare is not a work tree"
+        );
 
         /* Not a repository at all, which is what picking the wrong folder gives
-           you — and it must stay `No` rather than joining the arm below, because
-           only *this* is a fact about the checkout.
+        you — and it must stay `No` rather than joining the arm below, because
+        only *this* is a fact about the checkout.
 
-           **The third answer is the point.** This returned `bool`, so a `git` that
-           could not run at all read as "that is not a work tree": a wrong
-           conclusion drawn from a true observation, which is the failure this
-           module exists to prevent. Reported from a Mac running under Rosetta,
-           where every git call died loading `libxcrun` and the app answered with a
-           sentence about the user's repository. */
+        **The third answer is the point.** This returned `bool`, so a `git` that
+        could not run at all read as "that is not a work tree": a wrong
+        conclusion drawn from a true observation, which is the failure this
+        module exists to prevent. Reported from a Mac running under Rosetta,
+        where every git call died loading `libxcrun` and the app answered with a
+        sentence about the user's repository. */
         assert!(matches!(is_work_tree(&plain), WorkTree::No));
 
         let _ = std::fs::remove_dir_all(&root);

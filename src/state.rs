@@ -14,7 +14,11 @@ use crate::pty::pid_alive;
 
 /// What the overview shows about a run: one row per thread, in plan order.
 #[derive(Debug, Clone, Serialize)]
-#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
+#[cfg_attr(
+    test,
+    derive(ts_rs::TS),
+    ts(export, export_to = "../web/snapshot.d.ts")
+)]
 pub struct RunView {
     pub session: Uuid,
     pub threads: Vec<RunThreadView>,
@@ -31,7 +35,11 @@ pub struct RunView {
 }
 
 #[derive(Debug, Clone, Serialize)]
-#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
+#[cfg_attr(
+    test,
+    derive(ts_rs::TS),
+    ts(export, export_to = "../web/snapshot.d.ts")
+)]
 pub struct RunThreadView {
     pub thread_id: String,
     pub location: String,
@@ -77,7 +85,11 @@ impl RunView {
 /// with its session. The proposals themselves are stored, so a restart loses the
 /// caption and not the work.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
+#[cfg_attr(
+    test,
+    derive(ts_rs::TS),
+    ts(export, export_to = "../web/snapshot.d.ts")
+)]
 pub struct TriageProgress {
     /// Threads read so far.
     pub done: u32,
@@ -106,7 +118,11 @@ pub struct ResolveRun {
 }
 
 #[derive(Debug, Clone, Serialize, Default)]
-#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
+#[cfg_attr(
+    test,
+    derive(ts_rs::TS),
+    ts(export, export_to = "../web/snapshot.d.ts")
+)]
 pub struct Repos {
     /// Where PRs are opened, e.g. `acme/monorepo`.
     pub upstream: Option<String>,
@@ -452,7 +468,11 @@ impl Inner {
         changed
     }
 
-    pub fn with_stories(&mut self, why: &str, f: impl FnOnce(&mut crate::story::Cache) -> bool) -> bool {
+    pub fn with_stories(
+        &mut self,
+        why: &str,
+        f: impl FnOnce(&mut crate::story::Cache) -> bool,
+    ) -> bool {
         let changed = f(&mut self.stories);
         if changed {
             // A cache that failed to persist costs a search next time, nothing more.
@@ -638,13 +658,17 @@ impl AppState {
     fn persist_soon(self: &Arc<Self>) {
         // Already scheduled: the pending flush will see whatever this change made,
         // because it reads the records when it runs.
-        if self.persist_pending.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        if self
+            .persist_pending
+            .swap(true, std::sync::atomic::Ordering::SeqCst)
+        {
             return;
         }
         let app = self.clone();
         tokio::spawn(async move {
             tokio::time::sleep(PERSIST_COALESCE).await;
-            app.persist_pending.store(false, std::sync::atomic::Ordering::SeqCst);
+            app.persist_pending
+                .store(false, std::sync::atomic::Ordering::SeqCst);
             app.persist().await;
         });
     }
@@ -653,27 +677,27 @@ impl AppState {
     /// unexpectedly still leaves something to resume from (§2).
     async fn persist(&self) {
         /* **Nothing writes live state once shutdown has begun.** Shutdown captures
-           the resume set before it kills anything and writes that set verbatim at
-           the end, precisely because every dying pty wakes an exit watcher that
-           flips `was_live` to false. Without this the last word on disk belonged to
-           whichever watcher ran last, or to a `persist_soon` timer landing a second
-           later — and auto-resume then restored nothing.
+        the resume set before it kills anything and writes that set verbatim at
+        the end, precisely because every dying pty wakes an exit watcher that
+        flips `was_live` to false. Without this the last word on disk belonged to
+        whichever watcher ran last, or to a `persist_soon` timer landing a second
+        later — and auto-resume then restored nothing.
 
-           This is what replaced "no await point after the kills". The rule cost
-           shutdown its `SIGHUP` → `SIGKILL` escalation, since escalating means
-           waiting. */
+        This is what replaced "no await point after the kills". The rule cost
+        shutdown its `SIGHUP` → `SIGKILL` escalation, since escalating means
+        waiting. */
         if self.shutting_down.load(std::sync::atomic::Ordering::SeqCst) {
             return;
         }
         // Serialised, so two overlapping flushes cannot write this file at once.
         let _writing = self.persist_writing.lock().await;
         /* **The records and the id hash come from one guard.** They used to be two
-           reads: the records under one, then `session_ids()` taking the lock again.
-           A session inserted between them was hashed into "already persisted"
-           while its record was not in the set just written — so
-           `persist_when_due` read the set as unchanged and *deferred* the write
-           that had to be immediate, which is the one thing its contract promises
-           (the e2e agent waits to see itself in `sessions.json` before speaking). */
+        reads: the records under one, then `session_ids()` taking the lock again.
+        A session inserted between them was hashed into "already persisted"
+        while its record was not in the set just written — so
+        `persist_when_due` read the set as unchanged and *deferred* the write
+        that had to be immediate, which is the one thing its contract promises
+        (the e2e agent waits to see itself in `sessions.json` before speaking). */
         let (records, ids) = {
             let inner = self.inner.read().await;
             let records: Vec<crate::store::SessionRecord> = inner
@@ -775,8 +799,8 @@ impl AppState {
                     .processes_for(&w.id)
                     .iter()
                     .filter(|spec| !w.processes.iter().any(|p| p.name == spec.name))
-                .map(|spec| spec.name.clone())
-                .collect(),
+                    .map(|spec| spec.name.clone())
+                    .collect(),
                 banked: w.banked.as_ref().map(|b| BankedView {
                     files: b.files,
                     at: crate::git::wip_ref(&w.id),
@@ -955,7 +979,13 @@ impl AppState {
             .workspaces
             .get(MAIN)
             .and_then(|w| w.occupant)
-            .filter(|id| inner.sessions.get(id).map(|s| s.state.is_live()).unwrap_or(false));
+            .filter(|id| {
+                inner
+                    .sessions
+                    .get(id)
+                    .map(|s| s.state.is_live())
+                    .unwrap_or(false)
+            });
         // With `allow_several_in_main` there can be a live session in main that the
         // single `occupant` field does not name, and every caller here is asking
         // "may I move this checkout" rather than "who is the holder". Answering
@@ -1165,7 +1195,10 @@ impl AppState {
     /// What this workspace has banked, as the daemon last knew it.
     pub async fn workspace_banked(&self, workspace: &str) -> Option<crate::git::Bank> {
         let inner = self.inner.read().await;
-        inner.workspaces.get(workspace).and_then(|w| w.banked.clone())
+        inner
+            .workspaces
+            .get(workspace)
+            .and_then(|w| w.banked.clone())
     }
 
     /// Sessions in a workspace that are neither `Exited` nor `Archived`, checked
@@ -1196,7 +1229,10 @@ impl AppState {
     /// process running with nothing pointing at it. Containers are still not
     /// reached, the same as at shutdown: `docker compose up` has already detached
     /// by the time its pty dies.
-    pub async fn processes_to_stop(&self, workspace: &str) -> Vec<(String, Arc<crate::pty::PtyHandle>)> {
+    pub async fn processes_to_stop(
+        &self,
+        workspace: &str,
+    ) -> Vec<(String, Arc<crate::pty::PtyHandle>)> {
         let inner = self.inner.read().await;
         inner
             .workspaces
@@ -1249,23 +1285,23 @@ impl AppState {
         let upstream = self.cfg.upstream_ref.clone();
 
         /* **Seven git processes, and they belong on a blocking thread.** They ran
-           straight on the async runtime, which the rest of the codebase does not
-           do — `spawn.rs` and the pollers in `lib.rs` all wrap their git calls —
-           so this was an oversight rather than a decision. What it costs is not
-           the pty write path, which never comes through here; it is the API and
-           the snapshot push, so it read as the whole board freezing. The workspace
-           watcher calls this every 15 seconds, for every workspace.
+        straight on the async runtime, which the rest of the codebase does not
+        do — `spawn.rs` and the pollers in `lib.rs` all wrap their git calls —
+        so this was an oversight rather than a decision. What it costs is not
+        the pty write path, which never comes through here; it is the API and
+        the snapshot push, so it read as the whole board freezing. The workspace
+        watcher calls this every 15 seconds, for every workspace.
 
-           It got worse, not better, when the boot sweep stopped being awaited:
-           the sweep used to finish before `axum::serve` was even spawned, so its
-           blocking was invisible. Now it runs *while* the server answers, so a
-           worker held for the length of a `diff::summary` against the merge-base
-           is a worker not answering requests.
+        It got worse, not better, when the boot sweep stopped being awaited:
+        the sweep used to finish before `axum::serve` was even spawned, so its
+        blocking was invisible. Now it runs *while* the server answers, so a
+        worker held for the length of a `diff::summary` against the merge-base
+        is a worker not answering requests.
 
-           One `spawn_blocking` for the lot rather than seven, because they
-           describe one moment: the file list and the divergence are meant to
-           agree, and interleaving them with other work is what would let them
-           disagree. */
+        One `spawn_blocking` for the lot rather than seven, because they
+        describe one moment: the file list and the divergence are meant to
+        agree, and interleaving them with other work is what would let them
+        disagree. */
         let measure = {
             let path = path.clone();
             let exclude = exclude.clone();
@@ -1407,7 +1443,11 @@ impl AppState {
 /// old name there, the way `pr_age_ms` sat unread and the divergence strip named
 /// a ref it had not measured.
 #[derive(Debug, Serialize)]
-#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
+#[cfg_attr(
+    test,
+    derive(ts_rs::TS),
+    ts(export, export_to = "../web/snapshot.d.ts")
+)]
 pub struct Snapshot {
     /// The configured tracker's MCP server name, or `None` for no tracker.
     ///
@@ -1440,7 +1480,10 @@ pub struct Snapshot {
     #[cfg_attr(test, ts(type = "number"))]
     pub reviews_poll: u64,
     pub reviews_polling: bool,
-    #[cfg_attr(test, ts(as = "std::collections::HashMap<String, crate::fix_pr::PrAutomation>"))]
+    #[cfg_attr(
+        test,
+        ts(as = "std::collections::HashMap<String, crate::fix_pr::PrAutomation>")
+    )]
     pub automation: HashMap<u64, crate::fix_pr::PrAutomation>,
     pub repos: Repos,
     /// Main may hold more than one live session (`allow_several_in_main`).
@@ -1483,7 +1526,11 @@ pub struct Snapshot {
 }
 
 #[derive(Debug, Serialize)]
-#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
+#[cfg_attr(
+    test,
+    derive(ts_rs::TS),
+    ts(export, export_to = "../web/snapshot.d.ts")
+)]
 pub struct PrView {
     #[serde(flatten)]
     pub pr: crate::forge::Pr,
@@ -1500,7 +1547,11 @@ pub struct PrView {
 /// person runs by hand (`git stash apply <at>`) and a second spelling of the name
 /// is a second thing to keep in step.
 #[derive(Debug, Clone, Serialize)]
-#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
+#[cfg_attr(
+    test,
+    derive(ts_rs::TS),
+    ts(export, export_to = "../web/snapshot.d.ts")
+)]
 pub struct BankedView {
     #[cfg_attr(test, ts(type = "number"))]
     pub files: u32,
@@ -1508,7 +1559,11 @@ pub struct BankedView {
 }
 
 #[derive(Debug, Serialize)]
-#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
+#[cfg_attr(
+    test,
+    derive(ts_rs::TS),
+    ts(export, export_to = "../web/snapshot.d.ts")
+)]
 pub struct WorkspaceView {
     pub id: String,
     pub path: String,
@@ -1565,7 +1620,11 @@ pub struct WorkspaceView {
 }
 
 #[derive(Debug, Serialize)]
-#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
+#[cfg_attr(
+    test,
+    derive(ts_rs::TS),
+    ts(export, export_to = "../web/snapshot.d.ts")
+)]
 pub struct ProcessView {
     pub id: String,
     pub name: String,
@@ -1577,7 +1636,11 @@ pub struct ProcessView {
 }
 
 #[derive(Debug, Serialize)]
-#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
+#[cfg_attr(
+    test,
+    derive(ts_rs::TS),
+    ts(export, export_to = "../web/snapshot.d.ts")
+)]
 pub struct SessionView {
     pub id: Uuid,
     pub workspace: String,
@@ -1810,7 +1873,11 @@ mod tests {
                 w.occupant = Some(id);
             }
         }
-        assert_eq!(app.main_occupant().await, None, "a dead occupant does not hold main");
+        assert_eq!(
+            app.main_occupant().await,
+            None,
+            "a dead occupant does not hold main"
+        );
         // And a claim succeeds, proving the two readers agree main is free.
         assert!(app.claim_main(Uuid::new_v4()).await.is_ok());
     }
@@ -1890,12 +1957,19 @@ mod tests {
         // Old entries are pruned when a new one is recorded.
         {
             let mut inner = app.inner.write().await;
-            let e = inner.human_edits.get_mut(&std::fs::canonicalize(&f).unwrap()).unwrap();
+            let e = inner
+                .human_edits
+                .get_mut(&std::fs::canonicalize(&f).unwrap())
+                .unwrap();
             e.at = SystemTime::now() - HUMAN_EDIT_TTL - std::time::Duration::from_secs(1);
         }
         app.record_human_edit(dir.join("b.txt")).await;
         assert!(
-            !app.inner.read().await.human_edits.contains_key(&std::fs::canonicalize(&f).unwrap()),
+            !app.inner
+                .read()
+                .await
+                .human_edits
+                .contains_key(&std::fs::canonicalize(&f).unwrap()),
             "an edit past its TTL is forgotten"
         );
         let _ = std::fs::remove_dir_all(&dir);
@@ -1907,19 +1981,34 @@ mod tests {
     async fn a_claim_is_exclusive_and_released_by_its_guard() {
         let app = app().await;
         let held = app.try_claim("post:1").await.expect("first claim");
-        assert!(app.try_claim("post:1").await.is_none(), "refused while held");
-        assert!(app.try_claim("post:2").await.is_some(), "another name is independent");
+        assert!(
+            app.try_claim("post:1").await.is_none(),
+            "refused while held"
+        );
+        assert!(
+            app.try_claim("post:2").await.is_some(),
+            "another name is independent"
+        );
         drop(held);
         // Synchronous release: no scheduler hop between the drop and this claim.
-        assert!(app.try_claim("post:1").await.is_some(), "free once the guard is dropped");
+        assert!(
+            app.try_claim("post:1").await.is_some(),
+            "free once the guard is dropped"
+        );
 
         async fn bails_early(app: &Arc<AppState>) -> anyhow::Result<()> {
-            let _claim = app.try_claim("post:3").await.ok_or_else(|| anyhow::anyhow!("held"))?;
+            let _claim = app
+                .try_claim("post:3")
+                .await
+                .ok_or_else(|| anyhow::anyhow!("held"))?;
             Err::<(), _>(anyhow::anyhow!("something went wrong"))?;
             Ok(())
         }
         assert!(bails_early(&app).await.is_err());
-        assert!(app.try_claim("post:3").await.is_some(), "the early return let go of it");
+        assert!(
+            app.try_claim("post:3").await.is_some(),
+            "the early return let go of it"
+        );
     }
 
     /// A changeset larger than the pane can usefully list is cut down, and says so.
@@ -1954,7 +2043,10 @@ mod tests {
         let inner = app.inner.read().await;
         let tree = &inner.workspaces.get(MAIN).unwrap().tree;
         assert_eq!(tree.changed.len(), CHANGED_CAP, "the list is bounded");
-        assert_eq!(tree.changed_total, n as u32, "and the real number survives it");
+        assert_eq!(
+            tree.changed_total, n as u32,
+            "and the real number survives it"
+        );
         // Sorted before truncation, so the prefix is stable across reconciles
         // rather than whatever order git answered in.
         assert_eq!(tree.changed[0].path, "f00000.ts");
@@ -1981,13 +2073,27 @@ mod tests {
 
         let app = crate::testutil::app_at(&dir, "");
         assert!(
-            !app.inner.read().await.workspaces.get(MAIN).unwrap().tree.measured,
+            !app.inner
+                .read()
+                .await
+                .workspaces
+                .get(MAIN)
+                .unwrap()
+                .tree
+                .measured,
             "a workspace starts having measured nothing"
         );
 
         app.reconcile(MAIN).await.expect("reconcile");
         assert!(
-            app.inner.read().await.workspaces.get(MAIN).unwrap().tree.measured,
+            app.inner
+                .read()
+                .await
+                .workspaces
+                .get(MAIN)
+                .unwrap()
+                .tree
+                .measured,
             "and says so once it has"
         );
         // It reaches the SPA, which is the only place it is read.
@@ -2031,7 +2137,11 @@ mod tests {
 
         let inner = app.inner.read().await;
         let w = inner.workspaces.get(MAIN).unwrap();
-        assert_eq!(w.tree.branch.as_deref(), Some("main"), "it is back on its base");
+        assert_eq!(
+            w.tree.branch.as_deref(),
+            Some("main"),
+            "it is back on its base"
+        );
         assert!(
             w.branches.contains("feature/x") && w.branches.contains("main"),
             "and it still remembers having held the other one"

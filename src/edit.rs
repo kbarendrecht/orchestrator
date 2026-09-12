@@ -25,7 +25,11 @@ pub struct FileContents {
 /// in `shared_worktree_paths`, and only those are allowed through — an exception
 /// that is configured rather than accidentally permitted. `shared` empty is the
 /// tight case and the default.
-pub fn resolve_in_workspace(workspace_root: &Path, rel: &str, shared: &[String]) -> Result<PathBuf> {
+pub fn resolve_in_workspace(
+    workspace_root: &Path,
+    rel: &str,
+    shared: &[String],
+) -> Result<PathBuf> {
     if rel.is_empty() {
         bail!("no path given");
     }
@@ -45,10 +49,7 @@ pub fn resolve_in_workspace(workspace_root: &Path, rel: &str, shared: &[String])
     let joined = root.join(candidate);
 
     // The file itself may not exist yet, so canonicalize its parent.
-    let parent = joined
-        .parent()
-        .context("path has no parent")?
-        .to_path_buf();
+    let parent = joined.parent().context("path has no parent")?.to_path_buf();
     let real_parent = std::fs::canonicalize(&parent)
         .with_context(|| format!("resolving {}", parent.display()))?;
 
@@ -58,18 +59,18 @@ pub fn resolve_in_workspace(workspace_root: &Path, rel: &str, shared: &[String])
     let resolved = real_parent.join(joined.file_name().context("path has no file name")?);
 
     /* **The leaf may be a symlink too, and canonicalising the parent says nothing
-       about it.** `read` follows it, so a link committed on a PR branch —
-       `notes.md -> /home/you/.ssh/id_rsa` — turned the editor into a read
-       primitive for any file the daemon can open, with the containment check
-       passing because the *parent* was innocent.
+    about it.** `read` follows it, so a link committed on a PR branch —
+    `notes.md -> /home/you/.ssh/id_rsa` — turned the editor into a read
+    primitive for any file the daemon can open, with the containment check
+    passing because the *parent* was innocent.
 
-       `write` never had the hole: it writes a sibling temp file and renames over
-       the path, which replaces a link rather than following it. The check still
-       belongs here, where both callers meet, so the next caller inherits it.
+    `write` never had the hole: it writes a sibling temp file and renames over
+    the path, which replaces a link rather than following it. The check still
+    belongs here, where both callers meet, so the next caller inherits it.
 
-       A symlink is not refused outright — a repo that shares a directory between
-       worktrees does it with links, which is what `shared_worktree_paths` is for.
-       Where it *points* is what decides. */
+    A symlink is not refused outright — a repo that shares a directory between
+    worktrees does it with links, which is what `shared_worktree_paths` is for.
+    Where it *points* is what decides. */
     let is_link = std::fs::symlink_metadata(&resolved)
         .map(|md| md.file_type().is_symlink())
         .unwrap_or(false);
@@ -147,7 +148,9 @@ pub fn read(workspace_root: &Path, rel: &str, shared: &[String]) -> Result<FileC
         }
         Err(e) => return Err(e).with_context(|| format!("opening {}", path.display())),
     };
-    let md = file.metadata().with_context(|| format!("stat {}", path.display()))?;
+    let md = file
+        .metadata()
+        .with_context(|| format!("stat {}", path.display()))?;
     if md.len() > MAX_EDIT_BYTES {
         bail!(
             "{rel} is {} bytes, past the {MAX_EDIT_BYTES} byte edit limit",
@@ -155,7 +158,8 @@ pub fn read(workspace_root: &Path, rel: &str, shared: &[String]) -> Result<FileC
         );
     }
     let mut bytes = Vec::with_capacity(md.len() as usize);
-    file.read_to_end(&mut bytes).with_context(|| format!("reading {}", path.display()))?;
+    file.read_to_end(&mut bytes)
+        .with_context(|| format!("reading {}", path.display()))?;
     let content = String::from_utf8(bytes)
         .map_err(|_| anyhow::anyhow!("{rel} is not UTF-8, so it is not editable here"))?;
     Ok(FileContents {
@@ -169,11 +173,16 @@ pub fn read(workspace_root: &Path, rel: &str, shared: &[String]) -> Result<FileC
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum WriteOutcome {
-    Written { version: String },
+    Written {
+        version: String,
+    },
     /// Someone else changed the file since it was loaded. Almost always an
     /// agent editing underneath you (§5), so the write is refused rather than
     /// silently clobbering their work.
-    Conflict { on_disk: String, expected: String },
+    Conflict {
+        on_disk: String,
+        expected: String,
+    },
 }
 
 pub fn write(
@@ -249,10 +258,10 @@ mod tests {
         // another test makes both flaky under a parallel run.
         let d = scratch("leaf-symlink");
         // The secret lives outside the workspace, as `~/.ssh/id_rsa` would.
-        let outside = d.parent().unwrap().join(format!(
-            "orchd-edit-secret-{}",
-            std::process::id()
-        ));
+        let outside = d
+            .parent()
+            .unwrap()
+            .join(format!("orchd-edit-secret-{}", std::process::id()));
         std::fs::write(&outside, "PRIVATE KEY\n").unwrap();
         std::os::unix::fs::symlink(&outside, d.join("src/leak.txt")).unwrap();
 
@@ -267,11 +276,17 @@ mod tests {
         // check is about where it points, not that it is a link.
         std::fs::write(d.join("src/real.txt"), "in tree\n").unwrap();
         std::os::unix::fs::symlink(d.join("src/real.txt"), d.join("src/alias.txt")).unwrap();
-        assert_eq!(read(&d, "src/alias.txt", NONE).unwrap().content, "in tree\n");
+        assert_eq!(
+            read(&d, "src/alias.txt", NONE).unwrap().content,
+            "in tree\n"
+        );
 
         // A declared shared directory is the configured exception, and a link into
         // it resolves.
-        let shared_dir = d.parent().unwrap().join(format!("orchd-edit-shared-{}", std::process::id()));
+        let shared_dir = d
+            .parent()
+            .unwrap()
+            .join(format!("orchd-edit-shared-{}", std::process::id()));
         std::fs::create_dir_all(&shared_dir).unwrap();
         std::fs::write(shared_dir.join("vendored.txt"), "shared\n").unwrap();
         std::os::unix::fs::symlink(&shared_dir, d.join("vendor")).unwrap();
@@ -298,7 +313,10 @@ mod tests {
             WriteOutcome::Written { version } => assert_ne!(version, f.version),
             other => panic!("expected Written, got {other:?}"),
         }
-        assert_eq!(std::fs::read_to_string(d.join("src/a.txt")).unwrap(), "two\n");
+        assert_eq!(
+            std::fs::read_to_string(d.join("src/a.txt")).unwrap(),
+            "two\n"
+        );
         let _ = std::fs::remove_dir_all(&d);
     }
 
@@ -362,10 +380,16 @@ mod tests {
             .to_string();
         assert!(err.contains("symlink"), "{err}");
         assert!(
-            std::fs::symlink_metadata(d.join("src/alias.txt")).unwrap().file_type().is_symlink(),
+            std::fs::symlink_metadata(d.join("src/alias.txt"))
+                .unwrap()
+                .file_type()
+                .is_symlink(),
             "the link was replaced"
         );
-        assert_eq!(std::fs::read_to_string(d.join("src/real.txt")).unwrap(), "real\n");
+        assert_eq!(
+            std::fs::read_to_string(d.join("src/real.txt")).unwrap(),
+            "real\n"
+        );
         let _ = std::fs::remove_dir_all(&d);
     }
 

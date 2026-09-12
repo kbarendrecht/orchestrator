@@ -298,7 +298,10 @@ impl Config {
 
     /// The named process this workspace declares, if it declares one.
     pub fn managed_spec(&self, workspace: &str, name: &str) -> Option<ManagedSpec> {
-        self.processes_for(workspace).iter().find(|s| s.name == name).cloned()
+        self.processes_for(workspace)
+            .iter()
+            .find(|s| s.name == name)
+            .cloned()
     }
 }
 
@@ -373,7 +376,11 @@ pub struct WorkspaceNotes {
 impl WorkspaceNotes {
     /// The note for a destination, or `None` when the project said nothing about it.
     pub fn for_main(&self, is_main: bool) -> Option<&str> {
-        if is_main { self.main.as_deref() } else { self.worktree.as_deref() }
+        if is_main {
+            self.main.as_deref()
+        } else {
+            self.worktree.as_deref()
+        }
     }
 }
 
@@ -664,11 +671,11 @@ impl<'de> Deserialize<'de> for Tracker {
             stub: bool,
         }
         /* **Dispatched on the value, not with `untagged`.** That attribute reports
-           `data did not match any variant` and throws the *field* error away, so an
-           object missing `host` — or with a typo'd key — got a message worse than
-           serde's own, on a config whose whole file is then dropped
-           (`Config::existing`). The shape is known from one look: a string is a
-           name, anything else is the object and gets to fail on its own terms. */
+        `data did not match any variant` and throws the *field* error away, so an
+        object missing `host` — or with a typo'd key — got a message worse than
+        serde's own, on a config whose whole file is then dropped
+        (`Config::existing`). The shape is known from one look: a string is a
+        name, anything else is the object and gets to fail on its own terms. */
         let v = serde_json::Value::deserialize(d).map_err(serde::de::Error::custom)?;
         let shape = match v {
             serde_json::Value::String(name) => Shape::Name(name),
@@ -692,8 +699,9 @@ impl<'de> Deserialize<'de> for Tracker {
             Shape::Name(name) if name == "shortcut" => Ok(shipped_name(false)),
             Shape::Name(name) if name == "stub" => Ok(shipped_name(true)),
             Shape::Name(name) => Err(serde::de::Error::custom(match name.as_str() {
-                "none" => "`tracker` is not a name: drop the key entirely for no tracker"
-                    .to_string(),
+                "none" => {
+                    "`tracker` is not a name: drop the key entirely for no tracker".to_string()
+                }
                 _ => format!(
                     "`tracker: \"{name}\"` is not a name — it takes `mcp_server`, `host` \
                      and an optional `token_env`. For Shortcut that is: \
@@ -795,14 +803,14 @@ impl Config {
             return Ok(PathBuf::from(dir));
         }
         /* Never the real one from a test binary. `AppState::persist` writes the
-           whole session set on every state change, so any test that built an
-           `AppState` and touched a session **overwrote the developer's own
-           `sessions.json`** with the one record it had invented — silently, and on
-           every `cargo test`. Found by watching five real records become one.
+        whole session set on every state change, so any test that built an
+        `AppState` and touched a session **overwrote the developer's own
+        `sessions.json`** with the one record it had invented — silently, and on
+        every `cargo test`. Found by watching five real records become one.
 
-           A temp dir keyed to the process rather than a no-op, so `save`/`load`
-           still round-trip honestly; and after the `ORCHD_CONFIG_DIR` check, so a
-           test that wants a specific dir can still say so. */
+        A temp dir keyed to the process rather than a no-op, so `save`/`load`
+        still round-trip honestly; and after the `ORCHD_CONFIG_DIR` check, so a
+        test that wants a specific dir can still say so. */
         #[cfg(test)]
         {
             let dir = std::env::temp_dir().join(format!("orchd-test-cfg-{}", std::process::id()));
@@ -881,8 +889,8 @@ impl Config {
         if path.exists() {
             let raw = std::fs::read_to_string(&path)
                 .with_context(|| format!("reading {}", path.display()))?;
-            let mut cfg = Config::parse(&raw)
-                .with_context(|| format!("parsing {}", path.display()))?;
+            let mut cfg =
+                Config::parse(&raw).with_context(|| format!("parsing {}", path.display()))?;
             if let Some(main) = main_checkout {
                 // Remember it. The desktop app reaches here when the recorded
                 // checkout has moved and you have just pointed at the new one
@@ -894,7 +902,10 @@ impl Config {
                     // parsed Config — re-serializing the whole thing would expand
                     // a slim `{ main_checkout }` file back to every field.
                     if let Err(e) = rewrite_main_checkout(&path, &raw, &main) {
-                        tracing::warn!("could not record the new checkout in {}: {e:#}", path.display());
+                        tracing::warn!(
+                            "could not record the new checkout in {}: {e:#}",
+                            path.display()
+                        );
                     }
                 }
             }
@@ -920,8 +931,7 @@ impl Config {
         // make sense of as readily as malformed syntax, and `tracker` does exactly
         // that with a message naming the fix. Claiming the file is not JSON sent the
         // reader looking for a missing brace.
-        let mut cfg: Config =
-            serde_json::from_str(raw).context("config.json could not be read")?;
+        let mut cfg: Config = serde_json::from_str(raw).context("config.json could not be read")?;
         // Sanitise once, here, so every accessor can trust the field and the
         // warning fires at load rather than on every hook event.
         cfg.worktrees_subdir = match normalize_worktrees_subdir(&cfg.worktrees_subdir) {
@@ -960,26 +970,25 @@ impl Config {
             }
         }
         /* Resolved once, here, so every path derived from it is resolved too —
-           `worktrees_dir`, `worktree_path`, and so the workspace paths that
-           `workspace_for_path` matches hook paths against.
+        `worktrees_dir`, `worktree_path`, and so the workspace paths that
+        `workspace_for_path` matches hook paths against.
 
-           That match is the reason. A `PostToolUse` path goes through
-           `canonicalize` before it is attributed (`hooks.rs`, so a shared
-           symlink lands in the right pane), and comparing a resolved path against
-           an unresolved workspace root simply fails: the edit is attributed to no
-           workspace and quietly never reaches the changed-files pane. Only the
-           `--main` argument was resolved before this, so a checkout named in
-           `config.json` was not.
+        That match is the reason. A `PostToolUse` path goes through
+        `canonicalize` before it is attributed (`hooks.rs`, so a shared
+        symlink lands in the right pane), and comparing a resolved path against
+        an unresolved workspace root simply fails: the edit is attributed to no
+        workspace and quietly never reaches the changed-files pane. Only the
+        `--main` argument was resolved before this, so a checkout named in
+        `config.json` was not.
 
-           Latent on Linux, where `$HOME` rarely contains a symlink, and much less
-           so on macOS: `/tmp`, `/var` and therefore `$TMPDIR` are all symlinks
-           into `/private`.
+        Latent on Linux, where `$HOME` rarely contains a symlink, and much less
+        so on macOS: `/tmp`, `/var` and therefore `$TMPDIR` are all symlinks
+        into `/private`.
 
-           Falling back to the value as written is deliberate — a path that does
-           not resolve yet is `validate`'s complaint to make, with the checkout it
-           actually names, not something this silently rewrites. */
-        cfg.main_checkout =
-            std::fs::canonicalize(&cfg.main_checkout).unwrap_or(cfg.main_checkout);
+        Falling back to the value as written is deliberate — a path that does
+        not resolve yet is `validate`'s complaint to make, with the checkout it
+        actually names, not something this silently rewrites. */
+        cfg.main_checkout = std::fs::canonicalize(&cfg.main_checkout).unwrap_or(cfg.main_checkout);
         Ok(cfg)
     }
 
@@ -996,10 +1005,16 @@ impl Config {
     /// can answer for itself: an `upstream` remote beside `origin` is a fork
     /// layout, unmistakably, and guessing wrong there means every diff is measured
     /// against nothing.
-    #[expect(clippy::expect_used, reason = "every key written here is known-valid, so a parse failure is this function being wrong")]
+    #[expect(
+        clippy::expect_used,
+        reason = "every key written here is known-valid, so a parse failure is this function being wrong"
+    )]
     fn default_for(main_checkout: PathBuf) -> Self {
         let mut obj = serde_json::Map::new();
-        #[expect(clippy::expect_used, reason = "a PathBuf serialises unless it is not UTF-8, and a checkout path that is not is a first run that cannot proceed")]
+        #[expect(
+            clippy::expect_used,
+            reason = "a PathBuf serialises unless it is not UTF-8, and a checkout path that is not is a first run that cannot proceed"
+        )]
         obj.insert(
             "main_checkout".into(),
             serde_json::to_value(&main_checkout).expect("a path is JSON"),
@@ -1242,7 +1257,9 @@ mod tests {
         assert_eq!(cfg.default_language, "English");
         // `default_for` (the first-run write) goes through the same path, so a
         // fresh install writes the same nothing.
-        assert!(Config::default_for(PathBuf::from("/tmp/x")).main_processes.is_empty());
+        assert!(Config::default_for(PathBuf::from("/tmp/x"))
+            .main_processes
+            .is_empty());
     }
 
     /// One shape to write, the two names that shipped still read, and a refusal
@@ -1269,23 +1286,31 @@ mod tests {
                  "host":"acme.atlassian.net","token_env":"JIRA_API_TOKEN"}}"#,
         )
         .expect("a bearer-header tracker");
-        assert_eq!(jira.tracker.unwrap().token_env.as_deref(), Some("JIRA_API_TOKEN"));
+        assert_eq!(
+            jira.tracker.unwrap().token_env.as_deref(),
+            Some("JIRA_API_TOKEN")
+        );
 
         // Absent, which is a supported setup rather than a gap.
-        assert!(Config::parse(r#"{"main_checkout":"/tmp/x"}"#).unwrap().tracker.is_none());
+        assert!(Config::parse(r#"{"main_checkout":"/tmp/x"}"#)
+            .unwrap()
+            .tracker
+            .is_none());
 
         // The spelling every released config has, read as what it meant — and the
         // rest of the file with it, which is the part that was lost.
-        let shipped = Config::parse(
-            r#"{"main_checkout":"/tmp/x","tracker":"shortcut","port":9001}"#,
-        )
-        .expect("a name that shipped must load, not cost the whole file");
+        let shipped =
+            Config::parse(r#"{"main_checkout":"/tmp/x","tracker":"shortcut","port":9001}"#)
+                .expect("a name that shipped must load, not cost the whole file");
         let t = shipped.tracker.expect("read as the object it meant");
         assert_eq!(t.mcp_server, "shortcut");
         assert_eq!(t.host, "app.shortcut.com");
         assert_eq!(t.token_env.as_deref(), Some("SHORTCUT_API_TOKEN"));
         assert!(!t.stub);
-        assert_eq!(shipped.port, 9001, "the rest of the file has to survive with it");
+        assert_eq!(
+            shipped.port, 9001,
+            "the rest of the file has to survive with it"
+        );
 
         // `"stub"` differed in exactly one field, and the fixture's config says it.
         let stub = Config::parse(r#"{"main_checkout":"/tmp/x","tracker":"stub"}"#)
@@ -1308,11 +1333,11 @@ mod tests {
         );
 
         /* **The value is refused; the file is not.** `Tracker` itself still
-           produces the sentence — asserted directly, since that is where it lives —
-           while the field's own `tracker_or_warn` decides who pays for it: a
-           tracker is one optional flow, and refusing the whole config over it costs
-           the checkout, the port and every hand-tuned key, then reads as first run.
-           Measured before this: a daemon on `tracker: "jira"` exited 1. */
+        produces the sentence — asserted directly, since that is where it lives —
+        while the field's own `tracker_or_warn` decides who pays for it: a
+        tracker is one optional flow, and refusing the whole config over it costs
+        the checkout, the port and every hand-tuned key, then reads as first run.
+        Measured before this: a daemon on `tracker: "jira"` exited 1. */
         let refused = |raw: &str| {
             format!(
                 "{:#}",
@@ -1320,14 +1345,20 @@ mod tests {
             )
         };
         let guessed = refused(r#""jira""#);
-        assert!(guessed.contains("mcp_server"), "the refusal must name the fix: {guessed}");
+        assert!(
+            guessed.contains("mcp_server"),
+            "the refusal must name the fix: {guessed}"
+        );
         assert!(guessed.contains("app.shortcut.com"), "{guessed}");
 
         /* And an *object* fails on its own terms, which `#[serde(untagged)]` cost:
-           it answered `data did not match any variant` for a missing field. The key
-           that is wrong is the only useful thing to say. */
+        it answered `data did not match any variant` for a missing field. The key
+        that is wrong is the only useful thing to say. */
         let missing = refused(r#"{"mcp_server":"linear"}"#);
-        assert!(missing.contains("host"), "the field is what to name: {missing}");
+        assert!(
+            missing.contains("host"),
+            "the field is what to name: {missing}"
+        );
         assert!(!missing.contains("did not match any variant"), "{missing}");
 
         // Both of those, in a config: the tracker is dropped and everything else
@@ -1338,7 +1369,10 @@ mod tests {
             r#"{"main_checkout":"/tmp/x","port":9001,"tracker":42}"#,
         ] {
             let cfg = Config::parse(bad).expect("a bad tracker must not cost the file");
-            assert!(cfg.tracker.is_none(), "and it must not be guessed at either");
+            assert!(
+                cfg.tracker.is_none(),
+                "and it must not be guessed at either"
+            );
             assert_eq!(cfg.port, 9001, "the rest of the file has to survive: {bad}");
         }
 
@@ -1368,7 +1402,10 @@ mod tests {
         )
         .expect("parse");
         let ng = &cfg.main_processes[0];
-        assert!(ng.ok_patterns.iter().any(|p| p == "bundle generation complete"));
+        assert!(ng
+            .ok_patterns
+            .iter()
+            .any(|p| p == "bundle generation complete"));
         assert!(!ng.autostart);
     }
 
@@ -1394,11 +1431,14 @@ mod tests {
     fn a_ref_naming_its_own_remote_wins_over_the_defaulted_one() {
         let cfg = Config::parse(r#"{"main_checkout":"/tmp/x","upstream_ref":"upstream/develop"}"#)
             .expect("parse");
-        assert_eq!(cfg.upstream_remote, "upstream", "taken from the ref, not the default");
+        assert_eq!(
+            cfg.upstream_remote, "upstream",
+            "taken from the ref, not the default"
+        );
 
         // A bare branch name says nothing about a remote, so the default stands.
-        let bare = Config::parse(r#"{"main_checkout":"/tmp/x","upstream_ref":"main"}"#)
-            .expect("parse");
+        let bare =
+            Config::parse(r#"{"main_checkout":"/tmp/x","upstream_ref":"main"}"#).expect("parse");
         assert_eq!(bare.upstream_remote, "origin");
 
         // And an explicit pair that agrees is left exactly alone.
@@ -1435,7 +1475,12 @@ mod tests {
         assert_eq!(plain.upstream_ref, "origin/HEAD");
         assert_eq!(plain.upstream_remote, "origin");
 
-        run(&["remote", "add", "upstream", "git@github.com:acme/monorepo.git"]);
+        run(&[
+            "remote",
+            "add",
+            "upstream",
+            "git@github.com:acme/monorepo.git",
+        ]);
         let fork = Config::default_for(dir.clone());
         assert_eq!(fork.upstream_ref, "upstream/HEAD");
         assert_eq!(fork.upstream_remote, "upstream");
@@ -1448,19 +1493,14 @@ mod tests {
         // `rename_all = "snake_case"` would make this `git_hub`, so `"github"`
         // was an unknown variant — and a deserialize error here reads as "no
         // config", sending the desktop app back to the folder picker.
-        let cfg = Config::parse(
-            r#"{"main_checkout":"/tmp/x","forge":"github"}"#,
-        )
-        .expect("`github` must parse");
+        let cfg = Config::parse(r#"{"main_checkout":"/tmp/x","forge":"github"}"#)
+            .expect("`github` must parse");
         assert_eq!(cfg.forge, ForgeKind::GitHub);
         // What `default_for` writes into a first-run config.json.
         let written = serde_json::to_value(ForgeKind::GitHub).unwrap();
         assert_eq!(written, serde_json::json!("github"));
         // A config written with the old generated spelling still loads.
-        assert!(Config::parse(
-            r#"{"main_checkout":"/tmp/x","forge":"git_hub"}"#
-        )
-        .is_ok());
+        assert!(Config::parse(r#"{"main_checkout":"/tmp/x","forge":"git_hub"}"#).is_ok());
     }
 
     #[test]
@@ -1477,9 +1517,15 @@ mod tests {
             worktree_retention_days: 60,
             allow_several_in_main: false,
         };
-        let out = s.merge_into(r#"{"main_checkout":"/tmp/x","port":8080}"#).expect("merge");
+        let out = s
+            .merge_into(r#"{"main_checkout":"/tmp/x","port":8080}"#)
+            .expect("merge");
         let cfg = Config::parse(&out).expect("re-parse");
-        assert_eq!(cfg.main_checkout, PathBuf::from("/tmp/x"), "untouched key kept");
+        assert_eq!(
+            cfg.main_checkout,
+            PathBuf::from("/tmp/x"),
+            "untouched key kept"
+        );
         assert_eq!(cfg.port, 8080, "untouched key kept");
         assert_eq!(cfg.default_language, "English");
         assert!(cfg.tracker.is_none());
@@ -1511,24 +1557,31 @@ mod tests {
                 "review_timeout_seconds":120}"#,
         )
         .expect("parse");
-        assert_eq!(cfg.reviews_command, vec!["mise", "run", "reviews", "--json"]);
+        assert_eq!(
+            cfg.reviews_command,
+            vec!["mise", "run", "reviews", "--json"]
+        );
         assert_eq!(cfg.review_timeout_seconds, 120);
     }
 
     #[test]
     fn the_default_worktrees_dir_is_claude_worktrees_under_main() {
         let cfg = Config::default_for(PathBuf::from("/repo"));
-        assert_eq!(cfg.worktrees_dir(), PathBuf::from("/repo/.claude/worktrees"));
-        assert_eq!(cfg.worktree_path("inv"), PathBuf::from("/repo/.claude/worktrees/inv"));
+        assert_eq!(
+            cfg.worktrees_dir(),
+            PathBuf::from("/repo/.claude/worktrees")
+        );
+        assert_eq!(
+            cfg.worktree_path("inv"),
+            PathBuf::from("/repo/.claude/worktrees/inv")
+        );
         assert_eq!(cfg.worktrees_subdir_str(), ".claude/worktrees/");
     }
 
     #[test]
     fn a_custom_subdir_moves_the_dir_and_the_exclude_prefix() {
-        let cfg = Config::parse(
-            r#"{"main_checkout":"/repo","worktrees_subdir":".worktrees"}"#,
-        )
-        .unwrap();
+        let cfg =
+            Config::parse(r#"{"main_checkout":"/repo","worktrees_subdir":".worktrees"}"#).unwrap();
         assert_eq!(cfg.worktrees_dir(), PathBuf::from("/repo/.worktrees"));
         assert_eq!(cfg.worktrees_subdir_str(), ".worktrees/");
     }
@@ -1540,10 +1593,16 @@ mod tests {
         // `""`, `"."` and `"./"` all normalise to nothing → the default, so the
         // worktrees dir never collapses onto main and the exclude prefix is never
         // `/` (which matches no porcelain path — the §2 sibling leak).
-        for empty in [r#"{"main_checkout":"/repo","worktrees_subdir":""}"#,
-                      r#"{"main_checkout":"/repo","worktrees_subdir":"."}"#,
-                      r#"{"main_checkout":"/repo","worktrees_subdir":"./"}"#] {
-            assert_eq!(dir(empty), PathBuf::from("/repo/.claude/worktrees"), "{empty}");
+        for empty in [
+            r#"{"main_checkout":"/repo","worktrees_subdir":""}"#,
+            r#"{"main_checkout":"/repo","worktrees_subdir":"."}"#,
+            r#"{"main_checkout":"/repo","worktrees_subdir":"./"}"#,
+        ] {
+            assert_eq!(
+                dir(empty),
+                PathBuf::from("/repo/.claude/worktrees"),
+                "{empty}"
+            );
             assert_eq!(prefix(empty), ".claude/worktrees/", "{empty}");
         }
         // A leading `./` is dropped, so `./wt` and `wt` mean the same thing and
@@ -1581,9 +1640,15 @@ mod tests {
             .unwrap()
             .worktrees_dir()
         };
-        assert_eq!(dir("/tmp/elsewhere"), PathBuf::from("/repo/.claude/worktrees"));
+        assert_eq!(
+            dir("/tmp/elsewhere"),
+            PathBuf::from("/repo/.claude/worktrees")
+        );
         assert_eq!(dir("../escape"), PathBuf::from("/repo/.claude/worktrees"));
-        assert_eq!(dir("wt/../../escape"), PathBuf::from("/repo/.claude/worktrees"));
+        assert_eq!(
+            dir("wt/../../escape"),
+            PathBuf::from("/repo/.claude/worktrees")
+        );
     }
 
     #[test]
@@ -1685,7 +1750,10 @@ mod tests {
         let dir = crate::testutil::scratch("existing");
         let file = dir.join("config.json");
 
-        assert!(Config::existing_at(&file).is_none(), "no file at all is first run");
+        assert!(
+            Config::existing_at(&file).is_none(),
+            "no file at all is first run"
+        );
 
         let repo = crate::testutil::scratch_repo("existing-repo");
         std::fs::write(
@@ -1708,6 +1776,9 @@ mod tests {
         // run before `migrate` has had its go: the migration runs first, which is
         // what stops one unreadable key costing every hand-tuned setting.
         std::fs::write(&file, "{ not json").unwrap();
-        assert!(Config::existing_at(&file).is_none(), "unparseable is first run, with a warning");
+        assert!(
+            Config::existing_at(&file).is_none(),
+            "unparseable is first run, with a warning"
+        );
     }
 }

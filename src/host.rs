@@ -285,9 +285,15 @@ impl Host {
 
     /// Put the rows in the given order, keeping any the caller did not name.
     fn reorder(&self, order: &[PathBuf]) {
-        let wanted: Vec<String> = order.iter().map(|p| p.to_string_lossy().into_owned()).collect();
+        let wanted: Vec<String> = order
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect();
         locked(&self.checkouts).sort_by_key(|c| {
-            wanted.iter().position(|w| *w == c.path).unwrap_or(usize::MAX)
+            wanted
+                .iter()
+                .position(|w| *w == c.path)
+                .unwrap_or(usize::MAX)
         });
         self.announce();
     }
@@ -299,7 +305,11 @@ impl Host {
     /// would cost this one. Called from `add` and `close`, which are the only two
     /// things that change the set — a restart replaces a daemon, not a row.
     fn remember(&self) {
-        let open: Vec<PathBuf> = self.checkouts().into_iter().map(|c| PathBuf::from(c.path)).collect();
+        let open: Vec<PathBuf> = self
+            .checkouts()
+            .into_iter()
+            .map(|c| PathBuf::from(c.path))
+            .collect();
         remember_checkouts(&open);
     }
 
@@ -368,35 +378,35 @@ impl Host {
             &state,
             no_resume,
             move |path, asked, code| {
-            host.mark_down(path);
-            if asked {
-                return;
-            }
-            // A daemon that ran a while and then died is not a daemon that will
-            // not start. It has earned the free recovery back.
-            let lived = locked(&host.started).remove(path).map(|at| at.elapsed());
-            if lived.is_some_and(|d| d >= HEALTHY_UPTIME) {
-                locked(&host.retried).remove(path);
-            }
-            let spent = locked(&host.retried).insert(path.to_path_buf(), true);
-            if spent == Some(true) {
-                tracing::error!(
+                host.mark_down(path);
+                if asked {
+                    return;
+                }
+                // A daemon that ran a while and then died is not a daemon that will
+                // not start. It has earned the free recovery back.
+                let lived = locked(&host.started).remove(path).map(|at| at.elapsed());
+                if lived.is_some_and(|d| d >= HEALTHY_UPTIME) {
+                    locked(&host.retried).remove(path);
+                }
+                let spent = locked(&host.retried).insert(path.to_path_buf(), true);
+                if spent == Some(true) {
+                    tracing::error!(
+                        checkout = %path.display(),
+                        code = code.unwrap_or(-1),
+                        "the checkout's daemon died twice; leaving it down"
+                    );
+                    return;
+                }
+                tracing::warn!(
                     checkout = %path.display(),
                     code = code.unwrap_or(-1),
-                    "the checkout's daemon died twice; leaving it down"
+                    "the checkout's daemon died; restarting it once"
                 );
-                return;
-            }
-            tracing::warn!(
-                checkout = %path.display(),
-                code = code.unwrap_or(-1),
-                "the checkout's daemon died; restarting it once"
-            );
-            // A restart resumes: the person asked for an empty start once, when
-            // they added the checkout, and a crash is not them asking again.
-            if let Err(e) = host.open_checkout_with(&exe_again, path, false) {
-                tracing::error!(checkout = %path.display(), "the restart failed: {e:#}");
-            }
+                // A restart resumes: the person asked for an empty start once, when
+                // they added the checkout, and a crash is not them asking again.
+                if let Err(e) = host.open_checkout_with(&exe_again, path, false) {
+                    tracing::error!(checkout = %path.display(), "the restart failed: {e:#}");
+                }
             },
         )?;
 
@@ -481,7 +491,12 @@ impl Host {
         let waiting = resumable_sessions(&path);
         let resume = match resume {
             Some(chosen) => chosen,
-            None if waiting > 0 => return Ok(Added::Ask { path: info.path, sessions: waiting }),
+            None if waiting > 0 => {
+                return Ok(Added::Ask {
+                    path: info.path,
+                    sessions: waiting,
+                })
+            }
             None => true,
         };
 
@@ -556,7 +571,10 @@ impl Host {
             name_the_set(&mut open);
             // The other half of a clash goes with it: a warning naming a checkout
             // that is no longer open is a warning nobody can act on.
-            for row in open.iter_mut().filter(|c| c.clash.as_deref() == Some(&path)) {
+            for row in open
+                .iter_mut()
+                .filter(|c| c.clash.as_deref() == Some(&path))
+            {
                 row.clash = None;
             }
         }
@@ -601,7 +619,11 @@ impl Host {
     fn note_repo_clash(&self, checkout: &Path) {
         let path = checkout.to_string_lossy().into_owned();
         let mut open = locked(&self.checkouts);
-        let Some(mine) = open.iter().find(|c| c.path == path).and_then(|c| c.repo.clone()) else {
+        let Some(mine) = open
+            .iter()
+            .find(|c| c.path == path)
+            .and_then(|c| c.repo.clone())
+        else {
             return;
         };
         let other = open
@@ -666,9 +688,16 @@ impl Host {
 /// is only which arms can apply — nothing here is a hook, and no agent calls the
 /// host, so a request with no Origin passes on the same two grounds a page has: it
 /// is a GET, or it carries the token.
-async fn guard(State(host): State<Arc<Host>>, req: Request<axum::body::Body>, next: Next) -> Response {
+async fn guard(
+    State(host): State<Arc<Host>>,
+    req: Request<axum::body::Body>,
+    next: Next,
+) -> Response {
     let headers = req.headers();
-    let host_header = headers.get("host").and_then(|v| v.to_str().ok()).unwrap_or("");
+    let host_header = headers
+        .get("host")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
     if !crate::api::host_allowed(host_header, host.port) {
         return (StatusCode::FORBIDDEN, "bad host").into_response();
     }
@@ -717,7 +746,9 @@ pub enum Added {
 /// with what resuming would actually do is worse than no number: live at the last
 /// write, and a conversation behind it.
 fn resumable_sessions(checkout: &Path) -> usize {
-    let Ok(dir) = checkout_dir(checkout) else { return 0 };
+    let Ok(dir) = checkout_dir(checkout) else {
+        return 0;
+    };
     let Ok(raw) = std::fs::read_to_string(dir.join("sessions.json")) else {
         return 0;
     };
@@ -874,7 +905,10 @@ pub fn remember_checkouts(checkouts: &[PathBuf]) {
     // close. A writer that rebuilds the file from what it knows is how one setting
     // nobody touched disappears.
     let mut file = read_host_file().unwrap_or_default();
-    file.checkouts = checkouts.iter().map(|p| p.to_string_lossy().into_owned()).collect();
+    file.checkouts = checkouts
+        .iter()
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect();
     let write = || -> anyhow::Result<()> {
         let path = host_file()?;
         if let Some(dir) = path.parent() {
@@ -895,7 +929,9 @@ pub fn see_through_window() -> bool {
 }
 
 fn checkout_retention_days() -> u32 {
-    read_host_file().map_or_else(default_checkout_retention_days, |f| f.checkout_retention_days)
+    read_host_file().map_or_else(default_checkout_retention_days, |f| {
+        f.checkout_retention_days
+    })
 }
 
 /// Drop the regenerable state of checkouts nobody has opened in a long time.
@@ -1007,7 +1043,9 @@ pub fn polled_repo(checkout: &Path) -> Option<String> {
     if let Some(repo) = cfg.as_ref().and_then(|c| c.repo.clone()) {
         return Some(repo);
     }
-    let remote = cfg.as_ref().map_or("origin", |c| c.upstream_remote.as_str());
+    let remote = cfg
+        .as_ref()
+        .map_or("origin", |c| c.upstream_remote.as_str());
     let url = crate::forge::remote_url(checkout, remote)?;
     crate::forge::repo_from_remote(&url).map(|(o, n)| format!("{o}/{n}"))
 }
@@ -1029,14 +1067,25 @@ pub fn checkout_dir(checkout: &Path) -> anyhow::Result<PathBuf> {
         hash ^= u64::from(*b);
         hash = hash.wrapping_mul(0x100000001b3);
     }
-    let leaf = checkout.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let leaf = checkout
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
     // Anything not obviously safe in a path component becomes `-`: this ends up
     // inside a shell-quoted hook command and inside a transcript slug.
     let safe: String = leaf
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' { c } else { '-' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' {
+                c
+            } else {
+                '-'
+            }
+        })
         .collect();
-    Ok(crate::config::Config::config_dir()?.join("checkouts").join(format!("{safe}-{hash:x}")))
+    Ok(crate::config::Config::config_dir()?
+        .join("checkouts")
+        .join(format!("{safe}-{hash:x}")))
 }
 
 /// Make a checkout's state directory, seeding it from the old single config once.
@@ -1063,8 +1112,8 @@ fn ensure_checkout_dir(checkout: &Path) -> anyhow::Result<PathBuf> {
     }
     std::fs::create_dir_all(&dir)?;
     let root = crate::config::Config::config_dir()?.join("config.json");
-    let names_this_checkout = crate::config::Config::existing_at(&root)
-        .is_some_and(|cfg| cfg.main_checkout == checkout);
+    let names_this_checkout =
+        crate::config::Config::existing_at(&root).is_some_and(|cfg| cfg.main_checkout == checkout);
     if names_this_checkout {
         match std::fs::copy(&root, dir.join("config.json")) {
             Ok(_) => tracing::info!(
@@ -1096,7 +1145,10 @@ impl Serving {
     /// the initial navigation, so it never has to be typed and never appears in a
     /// link anybody else could follow.
     pub fn url(&self) -> String {
-        format!("http://127.0.0.1:{}/?token={}", self.host.port, self.host.token)
+        format!(
+            "http://127.0.0.1:{}/?token={}",
+            self.host.port, self.host.token
+        )
     }
 }
 
@@ -1186,12 +1238,22 @@ fn page(host: &Arc<Host>, template: &str) -> String {
         .replace("__ORCH_CHROME__", host.chrome.as_str())
         // Whether the opacity control has anything behind it. A slider that
         // silently does nothing is worse than one that says why it cannot.
-        .replace("__ORCH_SEE_THROUGH__", if host.see_through { "yes" } else { "no" })
+        .replace(
+            "__ORCH_SEE_THROUGH__",
+            if host.see_through { "yes" } else { "no" },
+        )
         .replace("__ORCH_CHECKOUTS__", &checkouts)
         // ⌘ on a Mac, Ctrl elsewhere. Told rather than sniffed — the host knows at
         // compile time, and `navigator.platform` is both deprecated and a lie
         // under a webview.
-        .replace("__ORCH_PLATFORM__", if cfg!(target_os = "macos") { "mac" } else { "other" })
+        .replace(
+            "__ORCH_PLATFORM__",
+            if cfg!(target_os = "macos") {
+                "mac"
+            } else {
+                "other"
+            },
+        )
 }
 
 async fn index(State(host): State<Arc<Host>>) -> Response {
@@ -1433,7 +1495,8 @@ async fn pick(State(host): State<Arc<Host>>) -> Response {
         // error, and the same sentence every other window route refuses with.
         return refusal("no native window attached");
     };
-    let picked = crate::proc::run_blocking("the folder dialog", move || control.pick_folder()).await;
+    let picked =
+        crate::proc::run_blocking("the folder dialog", move || control.pick_folder()).await;
     match picked {
         Ok(Some(path)) => Json(json!({ "path": path.to_string_lossy() })).into_response(),
         // A cancelled dialog is an answer, not a failure.
@@ -1457,10 +1520,7 @@ struct CheckoutPath {
 /// a network `git fetch` away from slow — 1.3 s measured on a real repo. Blocking a
 /// tokio worker for that long is what makes every *other* checkout's page go quiet
 /// while one of them starts.
-async fn add_checkout(
-    State(host): State<Arc<Host>>,
-    Json(body): Json<CheckoutPath>,
-) -> Response {
+async fn add_checkout(State(host): State<Arc<Host>>, Json(body): Json<CheckoutPath>) -> Response {
     let path = PathBuf::from(&body.path);
     let resume = body.resume;
     let added = crate::proc::run_blocking("adding a checkout", move || {
@@ -1478,16 +1538,21 @@ async fn close_checkout(State(host): State<Arc<Host>>, Json(body): Json<Checkout
     let path = PathBuf::from(&body.path);
     // Blocking too: a stop waits out the child's own graceful shutdown, which is
     // the only thing that reaches its sessions.
-    match crate::proc::run_blocking("closing a checkout", move || host.close_checkout(&path)).await {
+    match crate::proc::run_blocking("closing a checkout", move || host.close_checkout(&path)).await
+    {
         Ok(stopped) => Json(json!({ "ok": true, "stopped": stopped })).into_response(),
         Err(e) => refusal(&format!("{e:#}")),
     }
 }
 
-async fn reopen_checkout(State(host): State<Arc<Host>>, Json(body): Json<CheckoutPath>) -> Response {
+async fn reopen_checkout(
+    State(host): State<Arc<Host>>,
+    Json(body): Json<CheckoutPath>,
+) -> Response {
     let path = PathBuf::from(&body.path);
     let opened =
-        crate::proc::run_blocking("reopening a checkout", move || host.reopen_checkout(&path)).await;
+        crate::proc::run_blocking("reopening a checkout", move || host.reopen_checkout(&path))
+            .await;
     match opened {
         Ok(Ok(())) => Json(json!({ "ok": true })).into_response(),
         Ok(Err(message)) => refusal(&message),

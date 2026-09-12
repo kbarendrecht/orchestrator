@@ -44,7 +44,6 @@ impl Amend {
     }
 }
 
-
 /// The **only** way to build an [`Amend::Head`].
 ///
 /// Amending `HEAD` rewrites it, so the "someone else authored it" guard above is
@@ -73,7 +72,6 @@ pub fn head_or_on_top(cwd: &Path, my_email: Option<&str>, why: String) -> Amend 
         None => Amend::OnTop(format!("{why}, and who wrote HEAD could not be read")),
     }
 }
-
 
 /// Decide the fixup target for a set of touched lines, degrading to `HEAD`.
 ///
@@ -124,12 +122,18 @@ pub fn amend_target(
             }
         }
     }
-    #[expect(clippy::expect_used, reason = "the loop above returns for an empty touched set")]
+    #[expect(
+        clippy::expect_used,
+        reason = "the loop above returns for an empty touched set"
+    )]
     let hit = target.expect("non-empty touched set");
 
     // An ancestor of the merge base came from the base branch, not this PR.
     if git::is_ancestor(cwd, &hit.sha, merge_base) {
-        return Ok(degrade(format!("{} predates this branch", git::short(&hit.sha))));
+        return Ok(degrade(format!(
+            "{} predates this branch",
+            git::short(&hit.sha)
+        )));
     }
 
     // **The whole range, not just the target.** `fold_in` autosquashes with
@@ -164,4 +168,3 @@ pub fn amend_target(
     }
     Ok(Amend::Fixup(hit.sha))
 }
-

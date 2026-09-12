@@ -24,14 +24,14 @@ const SLOW_GIT: std::time::Duration = std::time::Duration::from_millis(300);
 /// only mix a deliberate wait into the boot figure.
 fn run(cwd: &Path, args: &[&str]) -> std::io::Result<std::process::Output> {
     /* **"Is this on a tokio worker" cannot be asked here, and it was worth finding
-       out why.** Every git read funnels through this function, so it looks like the
-       one place a `debug_assert` could turn `proc::run_blocking`'s convention into
-       a check. It cannot: `Handle::try_current()` succeeds on a *blocking-pool*
-       thread as well as on a worker, because the runtime handle stays in scope
-       across `spawn_blocking`. Asserting on it failed 36 tests, and every one was
-       correctly wrapped code — `reconcile` and `worktree::preflight` inside their
-       own `spawn_blocking`. Tokio exposes nothing that separates the two, so the
-       rule stays a convention and the reviewer stays the enforcement. */
+    out why.** Every git read funnels through this function, so it looks like the
+    one place a `debug_assert` could turn `proc::run_blocking`'s convention into
+    a check. It cannot: `Handle::try_current()` succeeds on a *blocking-pool*
+    thread as well as on a worker, because the runtime handle stays in scope
+    across `spawn_blocking`. Asserting on it failed 36 tests, and every one was
+    correctly wrapped code — `reconcile` and `worktree::preflight` inside their
+    own `spawn_blocking`. Tokio exposes nothing that separates the two, so the
+    rule stays a convention and the reviewer stays the enforcement. */
     let began = std::time::Instant::now();
     let out = Command::new("git").args(args).current_dir(cwd).output();
     let took = began.elapsed();
@@ -106,14 +106,7 @@ fn git_net(cwd: &Path, args: &[&str], label: &str) -> Result<std::process::Outpu
         .collect();
     let envs = net_env(cwd);
     let began = std::time::Instant::now();
-    let out = crate::proc::run_bounded_with_input(
-        cwd,
-        NET_TIMEOUT_SECS,
-        &argv,
-        label,
-        None,
-        &envs,
-    );
+    let out = crate::proc::run_bounded_with_input(cwd, NET_TIMEOUT_SECS, &argv, label, None, &envs);
     let took = began.elapsed();
     crate::timing::record_exec(took);
     if took >= SLOW_GIT {
@@ -243,7 +236,14 @@ pub fn status(cwd: &Path, exclude: Option<&str>, untracked: Untracked) -> Result
 pub fn status_of(cwd: &Path, rel: &str) -> Result<FileSet> {
     let raw = git_raw(
         cwd,
-        &["status", "--porcelain=v2", "--untracked-files=all", "-z", "--", rel],
+        &[
+            "status",
+            "--porcelain=v2",
+            "--untracked-files=all",
+            "-z",
+            "--",
+            rel,
+        ],
     )?;
     Ok(parse_status(&raw, None))
 }
@@ -653,7 +653,12 @@ fn stale_lock_pid(main: &Path, path: &Path) -> Option<u32> {
 fn freshen_base(main: &Path, base: &str) -> Result<()> {
     if let Some((remote, branch)) = base.split_once('/') {
         if has_remote(main, remote)
-            && git_net_ok(main, &["fetch", "--quiet", remote, branch], "the base fetch").is_err()
+            && git_net_ok(
+                main,
+                &["fetch", "--quiet", remote, branch],
+                "the base fetch",
+            )
+            .is_err()
         {
             tracing::warn!("could not fetch {base}; using the last-known copy");
         }
@@ -676,13 +681,21 @@ fn freshen_base(main: &Path, base: &str) -> Result<()> {
 /// resolves rather than failing with "exists neither locally nor on origin". The
 /// fallback's `fetch --all` runs only on that miss, never on the common path.
 fn remote_branch(main: &Path, branch: &str) -> Option<String> {
-    let _ = git_net_ok(main, &["fetch", "origin", branch, "--no-tags"], "a branch fetch");
+    let _ = git_net_ok(
+        main,
+        &["fetch", "origin", branch, "--no-tags"],
+        "a branch fetch",
+    );
     let origin = format!("origin/{branch}");
     if git_ok(main, &["rev-parse", "--verify", "--quiet", &origin]) {
         return Some(origin);
     }
     let _ = git_net_ok(main, &["fetch", "--all", "--no-tags"], "the fallback fetch");
-    let listed = git(main, &["for-each-ref", "--format=%(refname:short)", "refs/remotes/"]).ok()?;
+    let listed = git(
+        main,
+        &["for-each-ref", "--format=%(refname:short)", "refs/remotes/"],
+    )
+    .ok()?;
     // The short ref is `<remote>/<branch>`; match the branch part exactly so a
     // slash in the branch name (`feature/x`) does not misfire against a shorter
     // one, and so branch `x` never matches `origin/feature/x`.
@@ -717,7 +730,10 @@ fn locate_branch(main: &Path, branch: &str) -> Result<Option<String>> {
 fn refuse_if_dirty(tree: &Path, branch: &str) -> Result<()> {
     let set = status(tree, None, Untracked::Collapsed)?;
     if !set.staged.is_empty() || !set.unstaged.is_empty() {
-        bail!("{} has uncommitted work; not moving it onto {branch}", tree.display());
+        bail!(
+            "{} has uncommitted work; not moving it onto {branch}",
+            tree.display()
+        );
     }
     Ok(())
 }
@@ -836,8 +852,9 @@ pub fn switch_branch(cwd: &Path, branch: &str) -> Result<()> {
     }
     // The head ref lives on the fork; `remote_branch` tries origin first and then
     // any remote, so a fork not named origin still resolves (§6).
-    let remote = remote_branch(cwd, branch)
-        .ok_or_else(|| anyhow::anyhow!("branch {branch} exists neither locally nor on any remote"))?;
+    let remote = remote_branch(cwd, branch).ok_or_else(|| {
+        anyhow::anyhow!("branch {branch} exists neither locally nor on any remote")
+    })?;
     git(cwd, &["switch", "-c", branch, "--track", &remote])?;
     Ok(())
 }
@@ -935,10 +952,10 @@ pub fn rebase_onto(cwd: &Path, upstream: &str) -> Result<()> {
         );
     }
     /* **An untracked file in the way is the one dirty-tree case a bank cannot
-       clear**, since `stash create` carries tracked changes only, so it is worth
-       its own sentence. Git's own is a header with the paths on the lines below
-       it, and the generic arm underneath prints only that header — "would be
-       overwritten by checkout" with nothing said about what. */
+    clear**, since `stash create` carries tracked changes only, so it is worth
+    its own sentence. Git's own is a header with the paths on the lines below
+    it, and the generic arm underneath prints only that header — "would be
+    overwritten by checkout" with nothing said about what. */
     let both = format!("{stderr}{stdout}");
     let blocked = untracked_in_the_way(&both);
     if !blocked.is_empty() {
@@ -1027,14 +1044,24 @@ pub fn fetch_upstream(main: &Path, upstream_ref: &str) -> Result<()> {
         // the arm a configured `upstream_ref` takes, on the boot path, and an
         // https remote without a credential helper prompted on `/dev/tty` here
         // while the window never opened.
-        git_net_ok(main, &upstream_fetch_argv(upstream_ref), "the upstream fetch")?;
+        git_net_ok(
+            main,
+            &upstream_fetch_argv(upstream_ref),
+            "the upstream fetch",
+        )?;
         return Ok(());
     }
     // Steady state: the symref is already recorded, so fetch just the branch it
     // names — no dearer than the named case. If that fetch fails the recorded
     // branch is gone (renamed or deleted upstream), so fall through and re-record.
     if let Some(b) = default_branch(main, remote) {
-        if git_net_ok(main, &["fetch", remote, &b, "--no-tags"], "the upstream fetch").is_ok() {
+        if git_net_ok(
+            main,
+            &["fetch", remote, &b, "--no-tags"],
+            "the upstream fetch",
+        )
+        .is_ok()
+        {
             return Ok(());
         }
         tracing::debug!("{remote}/HEAD named {b}, which no longer fetches; re-recording");
@@ -1054,13 +1081,23 @@ pub fn fetch_upstream(main: &Path, upstream_ref: &str) -> Result<()> {
 /// `remote/branch`, defaulting the remote to `origin` for a bare branch name.
 /// `split_once` keeps a nested branch like `origin/release/2026` intact.
 fn split_upstream(upstream_ref: &str) -> (&str, &str) {
-    upstream_ref.split_once('/').unwrap_or(("origin", upstream_ref))
+    upstream_ref
+        .split_once('/')
+        .unwrap_or(("origin", upstream_ref))
 }
 
 /// The branch `<remote>/HEAD` points at, as a plain name (`main`), or `None`
 /// when the symref does not exist.
 fn default_branch(main: &Path, remote: &str) -> Option<String> {
-    let out = git(main, &["symbolic-ref", "--short", &format!("refs/remotes/{remote}/HEAD")]).ok()?;
+    let out = git(
+        main,
+        &[
+            "symbolic-ref",
+            "--short",
+            &format!("refs/remotes/{remote}/HEAD"),
+        ],
+    )
+    .ok()?;
     let full = out.trim();
     // `origin/main` -> `main`.
     Some(full.strip_prefix(&format!("{remote}/"))?.to_string())
@@ -1123,15 +1160,18 @@ pub fn base_checkout_branch(main: &Path, upstream_ref: &str) -> Option<String> {
 /// picker. `*/HEAD` symrefs are dropped: they are pointers, not branches to build
 /// from. Empty on any error, which the picker treats as "nothing to offer".
 pub fn remote_branches(main: &Path) -> Vec<String> {
-    git(main, &["for-each-ref", "--format=%(refname:short)", "refs/remotes/"])
-        .map(|out| {
-            out.lines()
-                .map(str::trim)
-                .filter(|s| !s.is_empty() && !s.ends_with("/HEAD"))
-                .map(String::from)
-                .collect()
-        })
-        .unwrap_or_default()
+    git(
+        main,
+        &["for-each-ref", "--format=%(refname:short)", "refs/remotes/"],
+    )
+    .map(|out| {
+        out.lines()
+            .map(str::trim)
+            .filter(|s| !s.is_empty() && !s.ends_with("/HEAD"))
+            .map(String::from)
+            .collect()
+    })
+    .unwrap_or_default()
 }
 
 /// What a swap did. See [`Swap::wip_error`] for why re-applying the uncommitted
@@ -1278,12 +1318,7 @@ pub struct MovedOut {
 /// main directly and it turned into something. Then there is no branch to hand
 /// over, so the work gets one cut for it and main does not move at all. Uniquified
 /// here rather than by the caller, because deciding it needs the repo.
-pub fn move_branch_out(
-    main: &Path,
-    dest: &Path,
-    base: &str,
-    new_branch: &str,
-) -> Result<MovedOut> {
+pub fn move_branch_out(main: &Path, dest: &Path, base: &str, new_branch: &str) -> Result<MovedOut> {
     let branch = current_branch(main)?;
     if rebase_in_progress(main) {
         bail!("the main checkout has a rebase stopped part-way; finish or abort it first");
@@ -1312,7 +1347,9 @@ pub fn move_branch_out(
             return Err(err);
         }
         let wip_error = match &wip {
-            Some(sha) => apply_wip(dest, sha, "the branches swapped").err().map(|e| format!("{e:#}")),
+            Some(sha) => apply_wip(dest, sha, "the branches swapped")
+                .err()
+                .map(|e| format!("{e:#}")),
             None => None,
         };
         return Ok(MovedOut {
@@ -1352,11 +1389,15 @@ pub fn move_branch_out(
     }
 
     if let Err(e) = worktree_add_existing(main, dest, &branch) {
-        return Err(undo(e.context(format!("no worktree could be cut for {branch}"))));
+        return Err(undo(
+            e.context(format!("no worktree could be cut for {branch}")),
+        ));
     }
 
     let wip_error = match &wip {
-        Some(sha) => apply_wip(dest, sha, "the branches swapped").err().map(|e| format!("{e:#}")),
+        Some(sha) => apply_wip(dest, sha, "the branches swapped")
+            .err()
+            .map(|e| format!("{e:#}")),
         None => None,
     };
     Ok(MovedOut {
@@ -1553,8 +1594,8 @@ pub fn bank_wip(cwd: &Path, workspace: &str) -> Result<Option<Bank>> {
 /// as it was is still one object away.
 pub fn restore_wip(cwd: &Path, workspace: &str) -> Result<()> {
     let at = wip_ref(workspace);
-    let bank = banked_wip(cwd, workspace)
-        .with_context(|| format!("{at} holds nothing to put back"))?;
+    let bank =
+        banked_wip(cwd, workspace).with_context(|| format!("{at} holds nothing to put back"))?;
     // By sha rather than by the ref, so the failure names the object the way
     // `apply_wip`'s sentence promises — the ref is added beside it, because that is
     // the name that survives and the one a person types.
@@ -1599,7 +1640,11 @@ pub fn banked_wip(cwd: &Path, workspace: &str) -> Option<Bank> {
 pub fn all_banked(main: &Path) -> Vec<(String, Bank)> {
     let Ok(out) = git(
         main,
-        &["for-each-ref", "--format=%(refname) %(objectname)", "refs/orchd/wip"],
+        &[
+            "for-each-ref",
+            "--format=%(refname) %(objectname)",
+            "refs/orchd/wip",
+        ],
     ) else {
         return Vec::new();
     };
@@ -1955,8 +2000,7 @@ pub fn restore_paths(cwd: &Path, paths: &[String]) -> Result<()> {
             // than `git clean`, which would take unrelated untracked files with it.
             let at = cwd.join(p);
             if at.exists() {
-                std::fs::remove_file(&at)
-                    .with_context(|| format!("removing {}", at.display()))?;
+                std::fs::remove_file(&at).with_context(|| format!("removing {}", at.display()))?;
             }
         }
     }
@@ -2079,7 +2123,6 @@ pub fn stash(cwd: &Path) -> Result<()> {
 /// environment per hook, which clones and installs, and a hook is itself a whole
 /// linter over the files it was given. This is a backstop against hanging.
 const PRE_COMMIT_TIMEOUT_SECS: u64 = 300;
-
 
 /// What running the repo's pre-commit hooks concluded.
 #[derive(Debug, PartialEq, Eq)]
@@ -2255,17 +2298,25 @@ mod tests {
         }
         let dir = crate::testutil::scratch("sshcmd");
         assert!(run(&dir, &["init", "-q"]).unwrap().status.success());
-        assert!(run(&dir, &["config", "core.sshCommand", "ssh -i /tmp/id_work"])
-            .unwrap()
-            .status
-            .success());
+        assert!(
+            run(&dir, &["config", "core.sshCommand", "ssh -i /tmp/id_work"])
+                .unwrap()
+                .status
+                .success()
+        );
 
         // The uncached reader, because `net_env`'s is a process-wide `OnceLock` and
         // this asks about two different configs in a row.
-        assert_eq!(read_ssh_command(&dir).as_deref(), Some("ssh -i /tmp/id_work"));
+        assert_eq!(
+            read_ssh_command(&dir).as_deref(),
+            Some("ssh -i /tmp/id_work")
+        );
 
         // And a repo that says nothing gets plain `ssh`.
-        assert!(run(&dir, &["config", "--unset", "core.sshCommand"]).unwrap().status.success());
+        assert!(run(&dir, &["config", "--unset", "core.sshCommand"])
+            .unwrap()
+            .status
+            .success());
         assert_eq!(read_ssh_command(&dir), None);
         let ssh = net_env(&dir)
             .into_iter()
@@ -2290,10 +2341,12 @@ mod tests {
         let first = configured_ssh_command(&dir).clone();
         // Change the repo's answer under it. A second read would see this; the
         // cache must not.
-        assert!(run(&dir, &["config", "core.sshCommand", "ssh -i /tmp/changed"])
-            .unwrap()
-            .status
-            .success());
+        assert!(
+            run(&dir, &["config", "core.sshCommand", "ssh -i /tmp/changed"])
+                .unwrap()
+                .status
+                .success()
+        );
         assert_eq!(
             configured_ssh_command(&dir).clone(),
             first,
@@ -2382,24 +2435,38 @@ mod tests {
         git(&main, &["add", "g.txt"]).unwrap();
         std::fs::write(main.join("new.txt"), "untracked\n").unwrap();
 
-        let bank = bank_wip(&main, "invoice").unwrap().expect("a dirty tree banks");
+        let bank = bank_wip(&main, "invoice")
+            .unwrap()
+            .expect("a dirty tree banks");
         assert_eq!(bank.files, 2, "tracked changes only, both of them");
         assert_eq!(
-            status(&main, None, Untracked::Collapsed).unwrap().unstaged.len(),
+            status(&main, None, Untracked::Collapsed)
+                .unwrap()
+                .unstaged
+                .len(),
             0,
             "the tree has to be clean or the rebase cannot start"
         );
         // The one thing a bank never carries, and it never needed to: an untracked
         // file is not in a rebase's way unless the base adds the same path, which
         // git refuses on its own.
-        assert!(main.join("new.txt").exists(), "untracked files stay where they are");
+        assert!(
+            main.join("new.txt").exists(),
+            "untracked files stay where they are"
+        );
         assert_eq!(banked_wip(&main, "invoice").map(|b| b.sha), Some(bank.sha));
 
         restore_wip(&main, "invoice").unwrap();
         let set = status(&main, None, Untracked::Each).unwrap();
-        assert!(set.staged.iter().any(|f| f.path == "g.txt"), "the index came back too");
+        assert!(
+            set.staged.iter().any(|f| f.path == "g.txt"),
+            "the index came back too"
+        );
         assert!(set.unstaged.iter().any(|f| f.path == "f.txt"));
-        assert!(banked_wip(&main, "invoice").is_none(), "a clean apply drops the ref");
+        assert!(
+            banked_wip(&main, "invoice").is_none(),
+            "a clean apply drops the ref"
+        );
     }
 
     /// The failure the whole shape is for: the work does not go back, and it is
@@ -2455,12 +2522,21 @@ mod tests {
         // compute rather than by a workspace nobody could recover from it.
         std::fs::write(main.join("f.txt"), "three\n").unwrap();
         bank_wip(&main, "thing.lock").unwrap().expect("banked");
-        assert!(all_banked(&main).iter().any(|(at, _)| *at == wip_ref("thing.lock")));
+        assert!(all_banked(&main)
+            .iter()
+            .any(|(at, _)| *at == wip_ref("thing.lock")));
 
         discard_wip(&main, "invoice").unwrap();
-        assert_eq!(all_banked(&main).len(), 2, "a dropped bank is gone from the list");
+        assert_eq!(
+            all_banked(&main).len(),
+            2,
+            "a dropped bank is gone from the list"
+        );
         assert!(banked_wip(&main, "invoice").is_none());
-        assert!(banked_wip(&main, "thing.lock").is_some(), "and only that one went");
+        assert!(
+            banked_wip(&main, "thing.lock").is_some(),
+            "and only that one went"
+        );
     }
 
     /// Git names the paths under its header and then leaves the margin for advice,
@@ -2470,7 +2546,10 @@ mod tests {
     fn the_untracked_collision_is_read_off_gits_own_list() {
         let msg = "error: The following untracked working tree files would be overwritten by \
                    checkout:\n\tsrc/timing.rs\n\tdocs/new.md\nPlease move or remove them.\n";
-        assert_eq!(untracked_in_the_way(msg), vec!["src/timing.rs", "docs/new.md"]);
+        assert_eq!(
+            untracked_in_the_way(msg),
+            vec!["src/timing.rs", "docs/new.md"]
+        );
         assert!(untracked_in_the_way("rebase failed: something else").is_empty());
     }
 
@@ -2485,7 +2564,11 @@ mod tests {
 
     fn bank_fixture(name: &str) -> std::path::PathBuf {
         let main = crate::testutil::scratch(name).join("repo");
-        git(main.parent().unwrap(), &["init", "-q", "-b", "main", "repo"]).unwrap();
+        git(
+            main.parent().unwrap(),
+            &["init", "-q", "-b", "main", "repo"],
+        )
+        .unwrap();
         git(&main, &["config", "user.email", "t@t"]).unwrap();
         git(&main, &["config", "user.name", "t"]).unwrap();
         std::fs::write(main.join("f.txt"), "committed\n").unwrap();
@@ -2504,7 +2587,11 @@ mod tests {
     #[test]
     fn staging_is_reversible_and_discarding_is_not() {
         let main = crate::testutil::scratch("fileverb").join("repo");
-        git(main.parent().unwrap(), &["init", "-q", "-b", "main", "repo"]).unwrap();
+        git(
+            main.parent().unwrap(),
+            &["init", "-q", "-b", "main", "repo"],
+        )
+        .unwrap();
         git(&main, &["config", "user.email", "t@t"]).unwrap();
         git(&main, &["config", "user.name", "t"]).unwrap();
         std::fs::write(main.join("f.txt"), "committed\n").unwrap();
@@ -2524,12 +2611,21 @@ mod tests {
         // Pressing the other one is the undo, which is why neither is confirmed.
         file_verb(&main, FileVerb::Unstage, "f.txt").unwrap();
         assert!(!has(&set().staged, "f.txt"));
-        assert!(has(&set().unstaged, "f.txt"), "back where it was, content intact");
-        assert_eq!(std::fs::read_to_string(main.join("f.txt")).unwrap(), "edited\n");
+        assert!(
+            has(&set().unstaged, "f.txt"),
+            "back where it was, content intact"
+        );
+        assert_eq!(
+            std::fs::read_to_string(main.join("f.txt")).unwrap(),
+            "edited\n"
+        );
 
         // And discard is the one that takes the content with it.
         file_verb(&main, FileVerb::Discard, "f.txt").unwrap();
-        assert_eq!(std::fs::read_to_string(main.join("f.txt")).unwrap(), "committed\n");
+        assert_eq!(
+            std::fs::read_to_string(main.join("f.txt")).unwrap(),
+            "committed\n"
+        );
         assert!(!has(&set().unstaged, "f.txt"), "nothing left to discard");
 
         // Staging covers an untracked file too, which is the one row where it is
@@ -2554,7 +2650,11 @@ mod tests {
     #[test]
     fn a_ref_has_its_tracked_paths_and_not_the_untracked_ones() {
         let main = crate::testutil::scratch("haspath").join("repo");
-        git(main.parent().unwrap(), &["init", "-q", "-b", "main", "repo"]).unwrap();
+        git(
+            main.parent().unwrap(),
+            &["init", "-q", "-b", "main", "repo"],
+        )
+        .unwrap();
         git(&main, &["config", "user.email", "t@t"]).unwrap();
         git(&main, &["config", "user.name", "t"]).unwrap();
         std::fs::write(main.join("kept.txt"), "in the commit\n").unwrap();
@@ -2566,7 +2666,10 @@ mod tests {
         std::fs::write(main.join("cache/x"), "nor this\n").unwrap();
 
         assert!(has_path_at(&main, "HEAD", "kept.txt"));
-        assert!(!has_path_at(&main, "HEAD", "new.txt"), "on disk is not in the ref");
+        assert!(
+            !has_path_at(&main, "HEAD", "new.txt"),
+            "on disk is not in the ref"
+        );
         // The shape `--untracked-files=normal` collapses a directory to, which is
         // not a blob at any ref whatever it holds.
         assert!(!has_path_at(&main, "HEAD", "cache/"));
@@ -2585,11 +2688,11 @@ mod tests {
     fn the_holder_of_a_branch_is_the_tree_that_has_it_checked_out() {
         let real = crate::testutil::scratch("holder");
         /* **Reached through a symlink on purpose.** What that pins is git's own
-           behaviour: the listing comes back *resolved* whichever way in you walked,
-           which is the fact the canonicalise above is written not to depend on. It
-           also puts the assertion in the shape a Mac gives every test under
-           `$TMPDIR`, where the resolved path is a different string from the one the
-           fixture built. */
+        behaviour: the listing comes back *resolved* whichever way in you walked,
+        which is the fact the canonicalise above is written not to depend on. It
+        also puts the assertion in the shape a Mac gives every test under
+        `$TMPDIR`, where the resolved path is a different string from the one the
+        fixture built. */
         let dir = real.parent().unwrap().join(format!(
             "{}-via",
             real.file_name().unwrap().to_string_lossy()
@@ -2606,7 +2709,11 @@ mod tests {
         git(&main, &["branch", "feature/b"]).unwrap();
         git(&main, &["branch", "nobody/has-this"]).unwrap();
         let tree = main.join(".claude/worktrees/w");
-        git(&main, &["worktree", "add", "-q", tree.to_str().unwrap(), "feature/b"]).unwrap();
+        git(
+            &main,
+            &["worktree", "add", "-q", tree.to_str().unwrap(), "feature/b"],
+        )
+        .unwrap();
 
         // Resolved, so it can be compared with the daemon's own canonical paths —
         // and `main` here is the symlinked way in, which must *not* be the answer.
@@ -2616,7 +2723,10 @@ mod tests {
             Some(resolved(&main)),
             "the answer is compared against canonical paths, so it has to be one",
         );
-        assert_eq!(holder_of_branch(&main, "feature/b").unwrap(), Some(resolved(&tree)));
+        assert_eq!(
+            holder_of_branch(&main, "feature/b").unwrap(),
+            Some(resolved(&tree))
+        );
         assert_eq!(holder_of_branch(&main, "nobody/has-this").unwrap(), None);
 
         // Released: the tree keeps the commit it had, under a name of its own, and
@@ -2625,7 +2735,10 @@ mod tests {
         assert_eq!(fresh, "worktree-w");
         assert_eq!(current_branch(&tree).unwrap(), "worktree-w");
         assert_eq!(holder_of_branch(&main, "feature/b").unwrap(), None);
-        assert!(switch_branch(&main, "feature/b").is_ok(), "main can have it now");
+        assert!(
+            switch_branch(&main, "feature/b").is_ok(),
+            "main can have it now"
+        );
 
         // A detached tree answers nothing rather than answering its commit.
         switch_detach(&tree).unwrap();
@@ -2633,7 +2746,10 @@ mod tests {
 
         // And a tree carrying work is refused: a switch would take the work with it.
         std::fs::write(tree.join("f.txt"), "edited\n").unwrap();
-        assert!(release_branch(&tree, "worktree-w").is_err(), "dirty is refused");
+        assert!(
+            release_branch(&tree, "worktree-w").is_err(),
+            "dirty is refused"
+        );
 
         let _ = std::fs::remove_file(&dir);
         let _ = std::fs::remove_dir_all(&real);
@@ -2689,12 +2805,25 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let repo = dir.join("repo");
         git(&dir, &["init", "-q", "repo"]).unwrap();
-        git(&repo, &["remote", "add", "origin", "git@github.com:you/monorepo.git"]).unwrap();
+        git(
+            &repo,
+            &["remote", "add", "origin", "git@github.com:you/monorepo.git"],
+        )
+        .unwrap();
 
         // origin alone is not a fork: no opinion, so the generic default stands.
         assert_eq!(detect_base(&repo), None);
 
-        git(&repo, &["remote", "add", "upstream", "git@github.com:acme/monorepo.git"]).unwrap();
+        git(
+            &repo,
+            &[
+                "remote",
+                "add",
+                "upstream",
+                "git@github.com:acme/monorepo.git",
+            ],
+        )
+        .unwrap();
         // Never fetched, so `upstream/HEAD` does not resolve yet — the symbolic
         // form is the honest answer rather than a guessed branch name.
         assert_eq!(
@@ -2704,8 +2833,15 @@ mod tests {
 
         // Once the symref exists it is used, which is what makes a
         // develop-defaulting fork come out as `upstream/develop`.
-        git(&repo, &["symbolic-ref", "refs/remotes/upstream/HEAD", "refs/remotes/upstream/develop"])
-            .unwrap();
+        git(
+            &repo,
+            &[
+                "symbolic-ref",
+                "refs/remotes/upstream/HEAD",
+                "refs/remotes/upstream/develop",
+            ],
+        )
+        .unwrap();
         assert_eq!(
             detect_base(&repo),
             Some(("upstream/develop".to_string(), "upstream".to_string()))
@@ -2745,7 +2881,11 @@ mod tests {
         git(&main, &["commit", "-qm", "base"]).unwrap();
         git(&main, &["branch", "feature/b"]).unwrap();
         let tree = main.join(".claude/worktrees/w");
-        git(&main, &["worktree", "add", "-q", tree.to_str().unwrap(), "feature/b"]).unwrap();
+        git(
+            &main,
+            &["worktree", "add", "-q", tree.to_str().unwrap(), "feature/b"],
+        )
+        .unwrap();
 
         // Banked: a staged addition in main, which travels to the worktree.
         std::fs::write(main.join("x.txt"), "main's new file\n").unwrap();
@@ -2800,15 +2940,28 @@ mod tests {
 
         let dest = main.join(".claude/worktrees/b");
         let moved = move_branch_out(&main, &dest, "develop", "worktree-b").expect("the move");
-        assert_eq!((moved.branch.as_str(), moved.base.as_str()), ("feature/b", "develop"));
+        assert_eq!(
+            (moved.branch.as_str(), moved.base.as_str()),
+            ("feature/b", "develop")
+        );
         assert!(!moved.created, "the branch was handed over, not cut");
-        assert!(moved.wip_error.is_none(), "the carry: {:?}", moved.wip_error);
+        assert!(
+            moved.wip_error.is_none(),
+            "the carry: {:?}",
+            moved.wip_error
+        );
 
         assert_eq!(current_branch(&main).unwrap(), "develop");
         assert_eq!(current_branch(&dest).unwrap(), "feature/b");
         // The work is in the worktree, index distinction intact.
-        assert_eq!(std::fs::read_to_string(dest.join("f.txt")).unwrap(), "edited in main\n");
-        assert!(dest.join("staged.txt").exists(), "the staged file travelled");
+        assert_eq!(
+            std::fs::read_to_string(dest.join("f.txt")).unwrap(),
+            "edited in main\n"
+        );
+        assert!(
+            dest.join("staged.txt").exists(),
+            "the staged file travelled"
+        );
         assert!(
             status(&dest, None, Untracked::Each)
                 .unwrap()
@@ -2827,11 +2980,17 @@ mod tests {
             "main still holds tracked work: {left:?}"
         );
         assert_eq!(
-            left.untracked.iter().map(|f| f.path.as_str()).collect::<Vec<_>>(),
+            left.untracked
+                .iter()
+                .map(|f| f.path.as_str())
+                .collect::<Vec<_>>(),
             ["loose.txt"],
             "the untracked file stayed put, and is the only thing that did"
         );
-        assert_eq!(std::fs::read_to_string(main.join("f.txt")).unwrap(), "base\n");
+        assert_eq!(
+            std::fs::read_to_string(main.join("f.txt")).unwrap(),
+            "base\n"
+        );
 
         // --- and the other half: main on base, with work but no branch of its own ---
         //
@@ -2841,7 +3000,10 @@ mod tests {
         std::fs::write(main.join("f.txt"), "started in main on develop\n").unwrap();
         let second = main.join(".claude/worktrees/work");
         let cut = move_branch_out(&main, &second, "develop", "worktree-work").expect("the cut");
-        assert_eq!((cut.branch.as_str(), cut.base.as_str()), ("worktree-work", "develop"));
+        assert_eq!(
+            (cut.branch.as_str(), cut.base.as_str()),
+            ("worktree-work", "develop")
+        );
         assert!(cut.created, "the branch had to be created");
         assert!(cut.wip_error.is_none(), "the carry: {:?}", cut.wip_error);
         assert_eq!(current_branch(&second).unwrap(), "worktree-work");
@@ -2852,7 +3014,10 @@ mod tests {
         );
         // Main never left base and kept none of it.
         assert_eq!(current_branch(&main).unwrap(), "develop");
-        assert_eq!(std::fs::read_to_string(main.join("f.txt")).unwrap(), "base\n");
+        assert_eq!(
+            std::fs::read_to_string(main.join("f.txt")).unwrap(),
+            "base\n"
+        );
 
         // Again, with the branch name already taken: suffixed rather than refused,
         // since a tree deleted long ago can leave its branch behind.
@@ -2875,8 +3040,16 @@ mod tests {
         let repo = root.join("repo");
         std::fs::create_dir_all(&repo).unwrap();
         let sh = |cwd: &Path, args: &[&str]| {
-            let out = std::process::Command::new("git").args(args).current_dir(cwd).output().unwrap();
-            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+            let out = std::process::Command::new("git")
+                .args(args)
+                .current_dir(cwd)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
         };
         sh(&repo, &["init", "-q", "-b", "main"]);
         sh(&repo, &["config", "user.email", "t@t"]);
@@ -2890,8 +3063,12 @@ mod tests {
         // What a hook that owns removal leaves behind: no directory, and a
         // registration git still believes in.
         std::fs::remove_dir_all(&wt).unwrap();
-        assert!(git(&repo, &["worktree", "list"]).unwrap().contains("wt-gone")
-            || git(&repo, &["worktree", "list"]).unwrap().contains("wt"));
+        assert!(
+            git(&repo, &["worktree", "list"])
+                .unwrap()
+                .contains("wt-gone")
+                || git(&repo, &["worktree", "list"]).unwrap().contains("wt")
+        );
 
         worktree_remove(&repo, &wt).expect("already gone is a success");
         // And the registration is cleared, not merely tolerated.
@@ -2915,8 +3092,16 @@ mod tests {
         let repo = root.join("repo");
         std::fs::create_dir_all(&origin).unwrap();
         let sh = |cwd: &Path, args: &[&str]| {
-            let out = std::process::Command::new("git").args(args).current_dir(cwd).output().unwrap();
-            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+            let out = std::process::Command::new("git")
+                .args(args)
+                .current_dir(cwd)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
         };
         sh(&origin, &["init", "-q", "-b", "develop"]);
         sh(&origin, &["config", "user.email", "t@t"]);
@@ -2926,10 +3111,19 @@ mod tests {
         sh(&origin, &["commit", "-qm", "first"]);
 
         let out = std::process::Command::new("git")
-            .args(["clone", "-q", &origin.to_string_lossy(), &repo.to_string_lossy()])
+            .args([
+                "clone",
+                "-q",
+                &origin.to_string_lossy(),
+                &repo.to_string_lossy(),
+            ])
             .output()
             .unwrap();
-        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
         sh(&repo, &["remote", "rename", "origin", "upstream"]);
 
         // A commit the clone has never seen. Without the fetch, cutting from
@@ -2940,7 +3134,10 @@ mod tests {
 
         let wt = root.join("wt");
         worktree_add_new(&repo, &wt, "wt-fresh", "upstream/develop").unwrap();
-        assert!(wt.join("g").exists(), "the new tree has the commit that landed after the clone");
+        assert!(
+            wt.join("g").exists(),
+            "the new tree has the commit that landed after the clone"
+        );
 
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -2957,8 +3154,16 @@ mod tests {
         let repo = root.join("repo");
         std::fs::create_dir_all(&repo).unwrap();
         let sh = |cwd: &Path, args: &[&str]| {
-            let out = std::process::Command::new("git").args(args).current_dir(cwd).output().unwrap();
-            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+            let out = std::process::Command::new("git")
+                .args(args)
+                .current_dir(cwd)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
         };
         sh(&repo, &["init", "-q", "-b", "develop"]);
         sh(&repo, &["config", "user.email", "t@t"]);
@@ -3010,7 +3215,11 @@ mod tests {
                 .current_dir(cwd)
                 .output()
                 .expect("git");
-            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+            assert!(
+                out.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
         };
         sh(&parent, &["init", "-q", "-b", "main"]);
         sh(&parent, &["config", "user.email", "t@t"]);
@@ -3029,7 +3238,9 @@ mod tests {
         let fork = root.join("fork");
         worktree_add_new(&parent, &fork, "wt-fork", &head).unwrap();
 
-        let sha = copy_wip(&parent, &fork).unwrap().expect("there was work to carry");
+        let sha = copy_wip(&parent, &fork)
+            .unwrap()
+            .expect("there was work to carry");
         assert!(!sha.is_empty());
 
         // It arrived.
@@ -3044,8 +3255,14 @@ mod tests {
             "edited in the parent\n"
         );
         // Untracked files do not travel, and the caller is the one that says so.
-        assert!(!fork.join("new.txt").exists(), "stash create cannot carry untracked");
-        assert_eq!(untracked_in(&parent, None).unwrap(), vec!["new.txt".to_string()]);
+        assert!(
+            !fork.join("new.txt").exists(),
+            "stash create cannot carry untracked"
+        );
+        assert_eq!(
+            untracked_in(&parent, None).unwrap(),
+            vec!["new.txt".to_string()]
+        );
 
         // A clean parent has nothing to carry and says so rather than erroring.
         sh(&parent, &["add", "-A"]);
@@ -3078,7 +3295,11 @@ mod tests {
         git(&main, &["commit", "-qm", "base"]).unwrap();
         git(&main, &["branch", "feature/b"]).unwrap();
         let tree = main.join(".claude/worktrees/w");
-        git(&main, &["worktree", "add", "-q", tree.to_str().unwrap(), "feature/b"]).unwrap();
+        git(
+            &main,
+            &["worktree", "add", "-q", tree.to_str().unwrap(), "feature/b"],
+        )
+        .unwrap();
 
         assert_eq!(current_branch(&main).unwrap(), "main");
         assert_eq!(current_branch(&tree).unwrap(), "feature/b");
@@ -3092,8 +3313,14 @@ mod tests {
         );
 
         let s = swap_branches(&main, &tree).expect("the swap");
-        assert_eq!((s.main_now.as_str(), s.worktree_now.as_str()), ("feature/b", "main"));
-        assert!(s.wip_error.is_none(), "nothing to carry, nothing to warn about");
+        assert_eq!(
+            (s.main_now.as_str(), s.worktree_now.as_str()),
+            ("feature/b", "main")
+        );
+        assert!(
+            s.wip_error.is_none(),
+            "nothing to carry, nothing to warn about"
+        );
         assert_eq!(current_branch(&main).unwrap(), "feature/b");
         assert_eq!(current_branch(&tree).unwrap(), "main");
         // Neither tree is left detached or dirty.
@@ -3121,7 +3348,11 @@ mod tests {
         git(&tree, &["add", "staged.txt"]).unwrap();
 
         let s = swap_branches(&main, &tree).expect("swap with work in both trees");
-        assert!(s.wip_error.is_none(), "both sides re-applied: {:?}", s.wip_error);
+        assert!(
+            s.wip_error.is_none(),
+            "both sides re-applied: {:?}",
+            s.wip_error
+        );
 
         assert_eq!(current_branch(&main).unwrap(), "feature/b");
         assert_eq!(current_branch(&tree).unwrap(), "main");
@@ -3141,7 +3372,10 @@ mod tests {
         );
         // Still staged, not merely present: `--index` is the difference.
         let staged = git(&main, &["diff", "--cached", "--name-only"]).unwrap();
-        assert!(staged.contains("staged.txt"), "index preserved, got {staged:?}");
+        assert!(
+            staged.contains("staged.txt"),
+            "index preserved, got {staged:?}"
+        );
 
         // Nothing was left banked behind either: a clean tree means no reset ran.
         swap_branches(&main, &tree).expect("swap back with the work");
@@ -3153,7 +3387,11 @@ mod tests {
 
         // Same branch both sides is refused rather than silently doing nothing.
         let same = main.join(".claude/worktrees/same");
-        git(&main, &["worktree", "add", "-q", "--detach", same.to_str().unwrap()]).unwrap();
+        git(
+            &main,
+            &["worktree", "add", "-q", "--detach", same.to_str().unwrap()],
+        )
+        .unwrap();
         git(&same, &["switch", "-q", "-c", "third"]).unwrap();
         git(&same, &["switch", "-q", "--detach"]).unwrap();
         assert!(swap_branches(&main, &main).is_err(), "main against itself");
@@ -3175,16 +3413,35 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let repo = dir.join("repo");
         git(&dir, &["init", "-q", "repo"]).unwrap();
-        git(&repo, &["remote", "add", "origin", "git@github.com:acme/monorepo.git"]).unwrap();
+        git(
+            &repo,
+            &[
+                "remote",
+                "add",
+                "origin",
+                "git@github.com:acme/monorepo.git",
+            ],
+        )
+        .unwrap();
 
         // The string answer is the symref name, which is not checkout-able.
         assert_eq!(base_branch("origin/HEAD"), "HEAD");
         // And unresolvable until the symref exists, which is "cannot", not "HEAD".
         assert_eq!(base_checkout_branch(&repo, "origin/HEAD"), None);
 
-        git(&repo, &["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"])
-            .unwrap();
-        assert_eq!(base_checkout_branch(&repo, "origin/HEAD").as_deref(), Some("main"));
+        git(
+            &repo,
+            &[
+                "symbolic-ref",
+                "refs/remotes/origin/HEAD",
+                "refs/remotes/origin/main",
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            base_checkout_branch(&repo, "origin/HEAD").as_deref(),
+            Some("main")
+        );
 
         // A named base needs no repo lookup and passes straight through.
         assert_eq!(
@@ -3222,8 +3479,15 @@ mod tests {
         std::fs::write(work.join("a.txt"), "base\n").unwrap();
         git(&work, &["add", "-A"]).unwrap();
         git(&work, &["commit", "-qm", "base"]).unwrap();
-        let base_sha = git(&work, &["rev-parse", "HEAD"]).unwrap().trim().to_string();
-        git(&work, &["remote", "add", "origin", origin.to_str().unwrap()]).unwrap();
+        let base_sha = git(&work, &["rev-parse", "HEAD"])
+            .unwrap()
+            .trim()
+            .to_string();
+        git(
+            &work,
+            &["remote", "add", "origin", origin.to_str().unwrap()],
+        )
+        .unwrap();
         git(&work, &["push", "-q", "origin", "main"]).unwrap();
 
         // --- plain layout: one remote, base is its own default branch ---
@@ -3246,9 +3510,17 @@ mod tests {
         );
 
         // --- fork layout: a second remote, base is a named branch on it ---
-        git(&dir, &["init", "-q", "--bare", "-b", "develop", "upstream.git"]).unwrap();
+        git(
+            &dir,
+            &["init", "-q", "--bare", "-b", "develop", "upstream.git"],
+        )
+        .unwrap();
         let upstream = dir.join("upstream.git");
-        git(&work, &["remote", "add", "upstream", upstream.to_str().unwrap()]).unwrap();
+        git(
+            &work,
+            &["remote", "add", "upstream", upstream.to_str().unwrap()],
+        )
+        .unwrap();
         git(&work, &["push", "-q", "upstream", "main:develop"]).unwrap();
         fetch_upstream(&work, "upstream/develop").expect("fetch the named base");
 
@@ -3256,7 +3528,10 @@ mod tests {
             merge_base(&work, "upstream/develop").expect("merge-base against a branch"),
             base_sha
         );
-        assert_eq!(divergence(&work, "upstream/develop").expect("divergence"), (0, 1));
+        assert_eq!(
+            divergence(&work, "upstream/develop").expect("divergence"),
+            (0, 1)
+        );
 
         // Detection sees the fork, and answers with the symref rather than the
         // branch — because fetching a *named* base does not record
@@ -3273,7 +3548,10 @@ mod tests {
             base_checkout_branch(&work, "upstream/HEAD").as_deref(),
             Some("develop")
         );
-        assert_eq!(merge_base(&work, "upstream/HEAD").expect("merge-base"), base_sha);
+        assert_eq!(
+            merge_base(&work, "upstream/HEAD").expect("merge-base"),
+            base_sha
+        );
 
         // What the run overview needed and `divergence` cannot say. The branch is
         // one commit beyond the base and that commit is on nobody's remote, so both
@@ -3357,13 +3635,21 @@ mod tests {
         git(&work, &["add", "-A"]).unwrap();
         git(&work, &["commit", "-qm", "init"]).unwrap();
         git(&work, &["branch", "-M", "main"]).unwrap();
-        git(&work, &["remote", "add", "origin", upstream.to_str().unwrap()]).unwrap();
+        git(
+            &work,
+            &["remote", "add", "origin", upstream.to_str().unwrap()],
+        )
+        .unwrap();
         git(&work, &["push", "-q", "origin", "main"]).unwrap();
 
         // A *hand-added* remote: `git init` + `git remote add`, never cloned.
         let hand = dir.join("hand");
         git(&dir, &["init", "-q", "hand"]).unwrap();
-        git(&hand, &["remote", "add", "origin", upstream.to_str().unwrap()]).unwrap();
+        git(
+            &hand,
+            &["remote", "add", "origin", upstream.to_str().unwrap()],
+        )
+        .unwrap();
 
         fetch_upstream(&hand, "origin/HEAD").expect("the fetch");
         assert_eq!(default_branch(&hand, "origin").as_deref(), Some("main"));
@@ -3402,7 +3688,11 @@ mod tests {
         // under the common dir — `<wt>/.git/HEAD` does not exist.
         let wt = repo.join(".claude/worktrees/wt");
         std::fs::create_dir_all(wt.parent().unwrap()).unwrap();
-        git(&repo, &["worktree", "add", "-q", "-b", "wt", wt.to_str().unwrap()]).unwrap();
+        git(
+            &repo,
+            &["worktree", "add", "-q", "-b", "wt", wt.to_str().unwrap()],
+        )
+        .unwrap();
         let wt_head = head_file(&wt).unwrap();
         assert!(wt_head.exists(), "no worktree HEAD at {wt_head:?}");
         assert!(!wt.join(".git/HEAD").exists());
@@ -3577,12 +3867,18 @@ mod tests {
         let base = head_sha(&repo).expect("head");
         std::fs::write(repo.join("f.txt"), "two\n").unwrap();
         git(&repo, &["commit", "-qam", "two"]).unwrap();
-        assert!(is_ancestor(&repo, &base, "HEAD"), "committing on top keeps it");
+        assert!(
+            is_ancestor(&repo, &base, "HEAD"),
+            "committing on top keeps it"
+        );
 
         // The rewrite: a history built from the same tree but with no parents,
         // which is what a branch reset below the base and re-committed leaves.
-        let orphan = git(&repo, &["commit-tree", "-m", "orphan", &format!("{base}^{{tree}}")])
-            .expect("an orphan commit with no parents");
+        let orphan = git(
+            &repo,
+            &["commit-tree", "-m", "orphan", &format!("{base}^{{tree}}")],
+        )
+        .expect("an orphan commit with no parents");
         assert!(
             !is_ancestor(&repo, &base, orphan.trim()),
             "a history the base is not in must answer no"
@@ -3631,8 +3927,11 @@ mod tests {
         // "claude died" without racing a real one. Mirrors claude's own reason
         // string so the parser is exercised on the real shape.
         let reason = "claude session wt (pid 2147480000 start 1)";
-        git(&repo, &["worktree", "lock", "--reason", reason, wt.to_str().unwrap()])
-            .expect("lock");
+        git(
+            &repo,
+            &["worktree", "lock", "--reason", reason, wt.to_str().unwrap()],
+        )
+        .expect("lock");
         assert!(stale_lock_pid(&repo, &wt).is_some(), "the lock pid parses");
 
         worktree_remove(&repo, &wt).expect("remove clears the stale lock");
@@ -3659,8 +3958,11 @@ mod tests {
         std::fs::create_dir_all(wt.parent().unwrap()).unwrap();
         worktree_add_new(&repo, &wt, "worktree-linked", "main").expect("worktree add");
         let reason = "claude session linked (pid 2147480000 start 1)";
-        git(&repo, &["worktree", "lock", "--reason", reason, wt.to_str().unwrap()])
-            .expect("lock");
+        git(
+            &repo,
+            &["worktree", "lock", "--reason", reason, wt.to_str().unwrap()],
+        )
+        .expect("lock");
 
         // A second route to the very same worktree.
         let link = repo.parent().unwrap().join(format!(
@@ -3694,8 +3996,17 @@ mod tests {
         worktree_add_new(&repo, &wt, "worktree-live", "main").expect("worktree add");
 
         let reason = format!("claude session live (pid {} start 1)", std::process::id());
-        git(&repo, &["worktree", "lock", "--reason", &reason, wt.to_str().unwrap()])
-            .expect("lock");
+        git(
+            &repo,
+            &[
+                "worktree",
+                "lock",
+                "--reason",
+                &reason,
+                wt.to_str().unwrap(),
+            ],
+        )
+        .expect("lock");
 
         let err = worktree_remove(&repo, &wt).unwrap_err();
         assert!(
@@ -3752,8 +4063,16 @@ mod tests {
         std::fs::create_dir_all(&fork).unwrap();
         std::fs::create_dir_all(&repo).unwrap();
         let sh = |cwd: &Path, args: &[&str]| {
-            let out = std::process::Command::new("git").args(args).current_dir(cwd).output().unwrap();
-            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+            let out = std::process::Command::new("git")
+                .args(args)
+                .current_dir(cwd)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
         };
         // The fork holds a PR head branch.
         sh(&fork, &["init", "-q", "-b", "develop"]);
@@ -4043,12 +4362,16 @@ mod tests {
     fn a_push_to_the_base_branch_is_refused_before_it_runs() {
         // The agent-side guard only hooks Bash; a daemon push bypasses it.
         let d = amend_repo();
-        let err = push_with_lease(&d, "trunk", Some("trunk")).unwrap_err().to_string();
+        let err = push_with_lease(&d, "trunk", Some("trunk"))
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("refusing to push"), "{err}");
         // The list used to be four hardcoded names, so this pair was backwards:
         // `trunk` sailed through and `release` was refused for its name alone.
         // Only a real push attempt gets past the check, so the error is git's.
-        let err = push_with_lease(&d, "release", Some("trunk")).unwrap_err().to_string();
+        let err = push_with_lease(&d, "release", Some("trunk"))
+            .unwrap_err()
+            .to_string();
         assert!(!err.contains("refusing to push"), "{err}");
         // No resolvable base refuses nothing here either.
         let err = push_with_lease(&d, "trunk", None).unwrap_err().to_string();
@@ -4063,15 +4386,21 @@ mod tests {
         assert!(lease_refused(
             " ! [rejected]        feature -> feature (stale info)\nerror: failed to push some refs"
         ));
-        assert!(lease_refused(" ! [rejected]        feature -> feature (fetch first)"));
-        assert!(lease_refused(" ! [rejected]        feature -> feature (non-fast-forward)"));
+        assert!(lease_refused(
+            " ! [rejected]        feature -> feature (fetch first)"
+        ));
+        assert!(lease_refused(
+            " ! [rejected]        feature -> feature (non-fast-forward)"
+        ));
         assert!(!lease_refused(
             " ! [remote rejected] feature -> feature (pre-receive hook declined)"
         ));
         assert!(!lease_refused(
             " ! [remote rejected] main -> main (protected branch hook declined)"
         ));
-        assert!(!lease_refused("fatal: could not read from remote repository"));
+        assert!(!lease_refused(
+            "fatal: could not read from remote repository"
+        ));
     }
 
     #[test]

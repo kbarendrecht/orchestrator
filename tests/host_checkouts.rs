@@ -67,7 +67,11 @@ fn scratch_repo(root: &Path, name: &str, repo: Option<&str>) -> PathBuf {
             .current_dir(&dir)
             .output()
             .expect("git ran");
-        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
     };
     git(&["init", "-q", "-b", "main"]);
     git(&["config", "user.email", "test@test"]);
@@ -115,7 +119,10 @@ fn post(url: &str, origin: &str, token: &str, body: &str) -> (u32, serde_json::V
         token,
         None,
     );
-    (code, serde_json::from_str(&text).unwrap_or(serde_json::Value::Null))
+    (
+        code,
+        serde_json::from_str(&text).unwrap_or(serde_json::Value::Null),
+    )
 }
 
 fn curl(args: &[&str], token: &str, _unused: Option<()>) -> (u32, String) {
@@ -229,19 +236,27 @@ async fn a_host_adds_closes_and_reopens_checkouts_and_refuses_the_three() {
             &token,
             &format!(r#"{{"path":{:?}}}"#, checkout.to_string_lossy()),
         );
-        assert_eq!(code, 200, "adding {} was refused: {body}", checkout.display());
+        assert_eq!(
+            code,
+            200,
+            "adding {} was refused: {body}",
+            checkout.display()
+        );
         assert_eq!(body["result"]["added"], "opened");
         /* **The shape the page reads, not just the tag.** `rail.js` toasts
-           `result.checkout.name`, and this assertion used to stop one key short of
-           it — so an internally-tagged newtype variant flattened the row into the
-           same object, `checkout` was never a key, and picking a folder ended in a
-           TypeError instead of a toast. */
+        `result.checkout.name`, and this assertion used to stop one key short of
+        it — so an internally-tagged newtype variant flattened the row into the
+        same object, `checkout` was never a key, and picking a folder ended in a
+        TypeError instead of a toast. */
         assert_eq!(
             body["result"]["checkout"]["path"].as_str(),
             Some(checkout.to_string_lossy().as_ref()),
             "the page reads result.checkout.name; the answer was {body}"
         );
-        assert!(body["result"]["checkout"]["name"].is_string(), "no name on the row: {body}");
+        assert!(
+            body["result"]["checkout"]["name"].is_string(),
+            "no name on the row: {body}"
+        );
     }
 
     let listed = rows(&base, &token);
@@ -263,14 +278,22 @@ async fn a_host_adds_closes_and_reopens_checkouts_and_refuses_the_three() {
             .iter()
             .find(|w| w["id"] == "main")
             .expect("every daemon has a main workspace");
-        assert_eq!(main["path"], row["path"], "a daemon answered for another checkout");
+        assert_eq!(
+            main["path"], row["path"],
+            "a daemon answered for another checkout"
+        );
     }
     let tokens: Vec<_> = listed.iter().map(|r| r["token"].clone()).collect();
     assert_ne!(tokens[0], tokens[1], "two daemons shared one token");
 
     // 2 — a death is restarted once, and a second death is final.
-    let victim = host.pid_of(&second).expect("the second checkout has a daemon");
-    let victim_token = row_for(&listed, &second).unwrap()["token"].as_str().unwrap().to_string();
+    let victim = host
+        .pid_of(&second)
+        .expect("the second checkout has a daemon");
+    let victim_token = row_for(&listed, &second).unwrap()["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
     orchd::pty::signal_group_of(victim, libc::SIGKILL);
     let restarted = until_seeing(
         "the host to restart the checkout once",
@@ -305,8 +328,15 @@ async fn a_host_adds_closes_and_reopens_checkouts_and_refuses_the_three() {
     // The row stays, because the row is what `reopen` acts on.
     std::thread::sleep(Duration::from_millis(400));
     let rows_now = rows(&base, &token);
-    assert!(row_for(&rows_now, &second).is_some(), "a dead checkout lost the row reopen needs");
-    assert_eq!(row_for(&rows_now, &second).unwrap()["live"], false, "it was restarted twice");
+    assert!(
+        row_for(&rows_now, &second).is_some(),
+        "a dead checkout lost the row reopen needs"
+    );
+    assert_eq!(
+        row_for(&rows_now, &second).unwrap()["live"],
+        false,
+        "it was restarted twice"
+    );
 
     // A reopen is a person asking again, so it gets the retry back.
     let (code, body) = post(
@@ -429,7 +459,10 @@ async fn a_host_adds_closes_and_reopens_checkouts_and_refuses_the_three() {
         &format!(r#"{{"path":{:?}}}"#, second.to_string_lossy()),
     );
     assert_eq!(code, 200);
-    assert_eq!(body["result"]["added"], "ask", "a re-add resumed without asking: {body}");
+    assert_eq!(
+        body["result"]["added"], "ask",
+        "a re-add resumed without asking: {body}"
+    );
     assert_eq!(body["result"]["sessions"], 1);
     assert!(
         row_for(&rows(&base, &token), &second).is_none(),
@@ -441,15 +474,24 @@ async fn a_host_adds_closes_and_reopens_checkouts_and_refuses_the_three() {
         &format!("{base}/api/host/checkout"),
         &base,
         &token,
-        &format!(r#"{{"path":{:?},"resume":false}}"#, second.to_string_lossy()),
+        &format!(
+            r#"{{"path":{:?},"resume":false}}"#,
+            second.to_string_lossy()
+        ),
     );
     assert_eq!(code, 200, "the answered add was refused: {body}");
     assert_eq!(body["result"]["added"], "opened");
 
     // 7 — the host file remembers what is open, so the app opens it again.
     let remembered = orchd::host::remembered_checkouts();
-    assert!(remembered.contains(&first), "the host file lost an open checkout");
-    assert!(remembered.contains(&second), "the re-added checkout was not recorded");
+    assert!(
+        remembered.contains(&first),
+        "the host file lost an open checkout"
+    );
+    assert!(
+        remembered.contains(&second),
+        "the re-added checkout was not recorded"
+    );
     assert!(
         !remembered.iter().any(|p| p == &sibling),
         "a refused add was written to the host file",
@@ -488,7 +530,9 @@ async fn a_host_adds_closes_and_reopens_checkouts_and_refuses_the_three() {
     // saying which checkout an action lands in, so two rows reading `app` make all
     // three useless. `first` and `second` do not collide, so both stay short.
     for row in rows(&base, &token) {
-        let leaf = Path::new(row["path"].as_str().unwrap()).file_name().unwrap();
+        let leaf = Path::new(row["path"].as_str().unwrap())
+            .file_name()
+            .unwrap();
         assert_eq!(
             row["name"].as_str().unwrap(),
             leaf.to_string_lossy(),
@@ -531,7 +575,10 @@ async fn a_host_adds_closes_and_reopens_checkouts_and_refuses_the_three() {
     assert_eq!(code, 200, "the twin was refused: {body}");
     let named = rows(&base, &token);
     let name_of = |p: &Path| {
-        row_for(&named, p).unwrap()["name"].as_str().unwrap().to_string()
+        row_for(&named, p).unwrap()["name"]
+            .as_str()
+            .unwrap()
+            .to_string()
     };
     assert_eq!(name_of(&twin), "nest/first");
     assert!(
@@ -547,7 +594,9 @@ async fn a_host_adds_closes_and_reopens_checkouts_and_refuses_the_three() {
         &format!(r#"{{"path":{:?}}}"#, twin.to_string_lossy()),
     );
     assert_eq!(
-        row_for(&rows(&base, &token), &first).unwrap()["name"].as_str().unwrap(),
+        row_for(&rows(&base, &token), &first).unwrap()["name"]
+            .as_str()
+            .unwrap(),
         "first",
         "a name stayed long after the checkout it collided with closed"
     );
@@ -556,7 +605,10 @@ async fn a_host_adds_closes_and_reopens_checkouts_and_refuses_the_three() {
     // tab. The same sentence every other window route refuses with.
     let (code, body) = post(&format!("{base}/api/host/pick"), &base, &token, "{}");
     assert_eq!(code, 400);
-    assert!(body["error"].as_str().unwrap().contains("no native window attached"));
+    assert!(body["error"]
+        .as_str()
+        .unwrap()
+        .contains("no native window attached"));
 
     host.stop_all();
     let _ = std::fs::remove_dir_all(&root);

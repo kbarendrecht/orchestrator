@@ -101,7 +101,10 @@ fn wsl_render_workaround() {
     if !under_wsl {
         return;
     }
-    for var in ["WEBKIT_DISABLE_DMABUF_RENDERER", "WEBKIT_DISABLE_COMPOSITING_MODE"] {
+    for var in [
+        "WEBKIT_DISABLE_DMABUF_RENDERER",
+        "WEBKIT_DISABLE_COMPOSITING_MODE",
+    ] {
         if std::env::var_os(var).is_none() {
             std::env::set_var(var, "1");
         }
@@ -185,7 +188,10 @@ fn main() {
     // Tauri owns the main thread, so the async half gets its own runtime. It is
     // never dropped — `App::run` does not return — which is what keeps the
     // daemon's pollers and pty readers alive for the life of the window.
-    #[expect(clippy::expect_used, reason = "no runtime is no app; there is nothing to degrade to")]
+    #[expect(
+        clippy::expect_used,
+        reason = "no runtime is no app; there is nothing to degrade to"
+    )]
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -193,7 +199,10 @@ fn main() {
     let handle = rt.handle().clone();
     let _ = RT.set(handle.clone());
 
-    #[expect(clippy::expect_used, reason = "a window that will not build is a launch that has already failed")]
+    #[expect(
+        clippy::expect_used,
+        reason = "a window that will not build is a launch that has already failed"
+    )]
     let app = with_settings_item(tauri::Builder::default().plugin(tauri_plugin_dialog::init()))
         .setup(move |app| {
             let app_handle = app.handle().clone();
@@ -282,7 +291,8 @@ fn with_settings_item(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tau
                 tracing::warn!("no application submenu to hang Settings on");
                 return Ok(menu);
             };
-            let item = MenuItem::with_id(app, SETTINGS_ITEM, "Settings\u{2026}", true, Some("Cmd+,"))?;
+            let item =
+                MenuItem::with_id(app, SETTINGS_ITEM, "Settings\u{2026}", true, Some("Cmd+,"))?;
             app_menu.insert(&PredefinedMenuItem::separator(app)?, 2)?;
             app_menu.insert(&item, 2)?;
             Ok(menu)
@@ -291,12 +301,14 @@ fn with_settings_item(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tau
             if event.id() != SETTINGS_ITEM {
                 return;
             }
-            let Some(win) = app.get_webview_window("main") else { return };
+            let Some(win) = app.get_webview_window("main") else {
+                return;
+            };
             /* The page is a remote origin, so there is no IPC to call: this crate
-               exposes none on purpose (see the module docs). `eval` is the whole
-               channel, and the name is `web/app.js`'s. Guarded because the same
-               window shows the splash and the first-run page, neither of which
-               has an SPA in it. */
+            exposes none on purpose (see the module docs). `eval` is the whole
+            channel, and the name is `web/app.js`'s. Guarded because the same
+            window shows the splash and the first-run page, neither of which
+            has an SPA in it. */
             if let Err(e) = win.eval("window.orchSettings && window.orchSettings()") {
                 tracing::warn!("could not open settings from the menu: {e}");
             }
@@ -325,9 +337,18 @@ fn first_run(app_handle: &AppHandle, rt: &tokio::runtime::Handle) -> Result<()> 
         .context("starting the first-run server")?;
     let url = serving.url().parse().context("the bootstrap URL")?;
     // Kept so the daemon boot can stop it once a project is committed.
-    *BOOTSTRAP.get_or_init(|| Mutex::new(None)).lock().unwrap_or_else(poisoned_is_still_usable) = Some(serving.task.abort_handle());
+    *BOOTSTRAP
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .unwrap_or_else(poisoned_is_still_usable) = Some(serving.task.abort_handle());
     // The open-project page wants the full board size; it is the window you work in.
-    build_window(app_handle, WebviewUrl::External(url), board_size(), MIN_SIZE, false)
+    build_window(
+        app_handle,
+        WebviewUrl::External(url),
+        board_size(),
+        MIN_SIZE,
+        false,
+    )
 }
 
 /// A splash window smaller than the board it grows into. Just big enough for the
@@ -344,7 +365,9 @@ const MIN_SIZE: (f64, f64) = (1000.0, 600.0);
 fn navigate_main(app: &AppHandle, url: String) {
     let app = app.clone();
     let _ = app.clone().run_on_main_thread(move || {
-        let Some(w) = app.get_webview_window("main") else { return };
+        let Some(w) = app.get_webview_window("main") else {
+            return;
+        };
         match url.parse::<tauri::Url>() {
             Ok(u) => {
                 if let Err(e) = w.navigate(u) {
@@ -366,17 +389,21 @@ fn board_size() -> (f64, f64) {
 }
 
 /// Configured already: build the window on the splash and boot the daemon.
-fn open(app_handle: &AppHandle, rt: &tokio::runtime::Handle, main: Option<std::path::PathBuf>) -> Result<()> {
+fn open(
+    app_handle: &AppHandle,
+    rt: &tokio::runtime::Handle,
+    main: Option<std::path::PathBuf>,
+) -> Result<()> {
     let splash = splash_url().context("preparing the splash")?;
     /* A small, centred splash; `boot_daemon` grows it to `board_size` on hand-off.
-       **Except where the window cannot be moved afterwards.** A compositor that
-       places the window keeps its top-left corner where it put it, so growing a
-       520x340 card into a 1728x1080 board leaves the board hanging down and to
-       the right of the spot the splash was centred on, and nothing may pull it
-       back. Opening at the board's size instead means the one placement the
-       compositor makes is the one the board keeps. The splash page is a centred
-       flex column, so it is a wordmark in the middle of the window rather than a
-       card, which is what a splash looks like anyway. */
+    **Except where the window cannot be moved afterwards.** A compositor that
+    places the window keeps its top-left corner where it put it, so growing a
+    520x340 card into a 1728x1080 board leaves the board hanging down and to
+    the right of the spot the splash was centred on, and nothing may pull it
+    back. Opening at the board's size instead means the one placement the
+    compositor makes is the one the board keeps. The splash page is a centred
+    flex column, so it is a wordmark in the middle of the window rather than a
+    card, which is what a splash looks like anyway. */
     let (size, min) = if can_place_windows() {
         (SPLASH_SIZE, SPLASH_SIZE)
     } else {
@@ -401,46 +428,50 @@ fn build_window(
 ) -> Result<()> {
     let mut phases = orchd::timing::Phases::start();
     /* Read once, here, because `transparent` is a property of the window at the
-       moment it is built and no runtime call takes it back. The theme's opacity is
-       what moves day to day; this only decides whether there is anything behind the
-       board to show. Off unless `host.json` says otherwise — see
-       [`orchd::host::HostFile::see_through_window`] for why that is the safe way
-       round.
+    moment it is built and no runtime call takes it back. The theme's opacity is
+    what moves day to day; this only decides whether there is anything behind the
+    board to show. Off unless `host.json` says otherwise — see
+    [`orchd::host::HostFile::see_through_window`] for why that is the safe way
+    round.
 
-       macOS needs one more thing, and it is in `tauri.conf.json` rather than here:
-       `macOSPrivateApi`, without which `transparent` is accepted and does nothing.
-       It is on unconditionally because the config cannot read a runtime setting,
-       and its one real cost — the Mac App Store refuses an app that uses it — is
-       not a cost this app pays: it ships as a dmg. */
+    macOS needs one more thing, and it is in `tauri.conf.json` rather than here:
+    `macOSPrivateApi`, without which `transparent` is accepted and does nothing.
+    It is on unconditionally because the config cannot read a runtime setting,
+    and its one real cost — the Mac App Store refuses an app that uses it — is
+    not a cost this app pays: it ships as a dmg. */
     let see_through = orchd::host::see_through_window();
     let mut builder = WebviewWindowBuilder::new(app_handle, "main", url)
         .title("Orchestrator")
         .transparent(see_through)
         /* **The ground is the app's, not the toolkit's white.** A webview paints
-           white until a document says otherwise, and there are two moments here
-           when nothing has: while the splash is still being fetched, and across the
-           navigate to the daemon. Both showed as the page in the top-left corner
-           with white filling the rest of the window, because the surface is already
-           board-sized while the document is not. `background_color` on this builder
-           sets the window *and* the webview, so there is no white to flash.
-
-           A see-through window gives that job up: an opaque ground would be the one
-           thing the alpha in `--ground` could never see past. The flash it guards
-           against becomes a flash of desktop rather than of white, which is the
-           trade the setting asks for. */
-        .background_color(tauri::window::Color(0x10, 0x10, 0x10, if see_through { 0x00 } else { 0xFF }))
+        white until a document says otherwise, and there are two moments here
+        when nothing has: while the splash is still being fetched, and across the
+        navigate to the daemon. Both showed as the page in the top-left corner
+        with white filling the rest of the window, because the surface is already
+        board-sized while the document is not. `background_color` on this builder
+        sets the window *and* the webview, so there is no white to flash.
+        A see-through window gives that job up: an opaque ground would be the one
+        thing the alpha in `--ground` could never see past. The flash it guards
+        against becomes a flash of desktop rather than of white, which is the
+        trade the setting asks for. */
+        .background_color(tauri::window::Color(
+            0x10,
+            0x10,
+            0x10,
+            if see_through { 0x00 } else { 0xFF },
+        ))
         .inner_size(size.0, size.1)
         .min_inner_size(min.0, min.1);
     /* **Where it was, or centred — never left to the window manager.** Only the
-       size used to be remembered, so placement was the WM's guess and the window
-       turned up somewhere new on every launch. Centring alone is not the answer
-       either: on a multi-head desktop the centre of the *virtual* screen is the
-       seam between two monitors, which is how a centred splash ends up looking
-       like it landed at random. */
+    size used to be remembered, so placement was the WM's guess and the window
+    turned up somewhere new on every launch. Centring alone is not the answer
+    either: on a multi-head desktop the centre of the *virtual* screen is the
+    seam between two monitors, which is how a centred splash ends up looking
+    like it landed at random. */
     /* Applied *after* the window exists, not through the builder — see below.
-       Both halves are the compositor's business where the app cannot place a
-       window ([`can_place_windows`]), and asking anyway is not harmless: it is
-       what wrote (0,0) into the file that then suppressed the centring. */
+    Both halves are the compositor's business where the app cannot place a
+    window ([`can_place_windows`]), and asking anyway is not harmless: it is
+    what wrote (0,0) into the file that then suppressed the centring. */
     let rec = orchd::store::load_window().unwrap_or_default();
     let restore_to = rec.pos().filter(|_| can_place_windows());
     if restore_to.is_none() && center && can_place_windows() {
@@ -468,12 +499,12 @@ fn build_window(
     // the DOM event the keymap already handles.
     let _window = builder.build().context("opening the window")?;
     /* **`set_position` after the build, rather than the builder's `position`.**
-       The builder places the window before its frame exists, so what comes back
-       from `outer_position` afterwards is offset by the decoration — and since that
-       value is what gets saved, every launch subtracted the frame again and the
-       window walked up and left across the desktop until it fell off it. Measured:
-       300,150 → 262,91 → 224,32 → 186,-27. Setting and reading through the same
-       pair round-trips instead. */
+    The builder places the window before its frame exists, so what comes back
+    from `outer_position` afterwards is offset by the decoration — and since that
+    value is what gets saved, every launch subtracted the frame again and the
+    window walked up and left across the desktop until it fell off it. Measured:
+    300,150 → 262,91 → 224,32 → 186,-27. Setting and reading through the same
+    pair round-trips instead. */
     if let Some((x, y)) = restore_to {
         let _ = _window.set_position(tauri::LogicalPosition::new(x as f64, y as f64));
     }
@@ -483,12 +514,12 @@ fn build_window(
         ensure_on_screen(&_window);
     } else {
         /* **The state belongs where the size does.** This window already opened at
-           the board's size (see `open`), so there is nothing left for the hand-off
-           to do — and applying the state there instead is what put the splash in a
-           corner: maximising grew the surface under a page that had already
-           painted, and the compositor showed that old frame at the origin of the
-           new one until the document caught up. Applied before anything is drawn,
-           the first frame is the final geometry. */
+        the board's size (see `open`), so there is nothing left for the hand-off
+        to do — and applying the state there instead is what put the splash in a
+        corner: maximising grew the surface under a page that had already
+        painted, and the compositor showed that old frame at the origin of the
+        new one until the document caught up. Applied before anything is drawn,
+        the first frame is the final geometry. */
         restore_state(&_window, &rec);
     }
     #[cfg(target_os = "linux")]
@@ -555,7 +586,11 @@ fn build_window(
 /// reach, so it lands in the OS dialog `fail` draws, back on the main thread.
 /// Reached from a configured boot and from the first-run commit, so it must not
 /// assume the window is on any particular page.
-fn boot_daemon(app_handle: AppHandle, rt: tokio::runtime::Handle, main: Option<std::path::PathBuf>) {
+fn boot_daemon(
+    app_handle: AppHandle,
+    rt: tokio::runtime::Handle,
+    main: Option<std::path::PathBuf>,
+) {
     std::thread::spawn(move || {
         let mut phases = orchd::timing::Phases::start();
         // The checkouts to open. The one the caller just picked, else everything
@@ -575,11 +610,7 @@ fn boot_daemon(app_handle: AppHandle, rt: tokio::runtime::Handle, main: Option<s
         // A port of 0: the page's URL is handed to the webview, so nothing has to
         // predict it, and a stale process on a configured port cannot be the
         // difference between an app that opens and one that does not.
-        let serving = match rt.block_on(orchd::host::serve(
-            orchd::host::mint_token(),
-            0,
-            CHROME,
-        )) {
+        let serving = match rt.block_on(orchd::host::serve(orchd::host::mint_token(), 0, CHROME)) {
             Ok(s) => s,
             Err(e) => {
                 let ah = app_handle.clone();
@@ -592,7 +623,9 @@ fn boot_daemon(app_handle: AppHandle, rt: tokio::runtime::Handle, main: Option<s
         // Attach the window before the page can call it: the process that serves
         // the page is the one that can hold a Tauri handle, and a child daemon
         // never can.
-        let control: Arc<dyn WindowControl> = Arc::new(TauriWindow { app: app_handle.clone() });
+        let control: Arc<dyn WindowControl> = Arc::new(TauriWindow {
+            app: app_handle.clone(),
+        });
         serving.host.attach_window(control);
 
         // **A checkout that will not start is not a failed boot.** Every one is
@@ -620,21 +653,26 @@ fn boot_daemon(app_handle: AppHandle, rt: tokio::runtime::Handle, main: Option<s
             serving.host.port
         );
         let url = serving.url();
-        *SERVER.get_or_init(|| Mutex::new(None)).lock().unwrap_or_else(poisoned_is_still_usable) = Some(serving);
+        *SERVER
+            .get_or_init(|| Mutex::new(None))
+            .lock()
+            .unwrap_or_else(poisoned_is_still_usable) = Some(serving);
 
         /* Grow from the splash to the board, then hand the window over. GTK calls
-           only on the main thread.
+        only on the main thread.
 
-           **All of it, only where the splash opened small.** Where the app cannot
-           place a window the splash was already board-sized and already in its
-           final state (see `open` and `build_window`), so every call here would be
-           a no-op or an undo: `set_size` on a maximised window is the one that
-           bites, and applying the state this late is what put the splash in a
-           corner — the surface grew under a page that had painted, and the
-           compositor showed that old frame at the origin of the new one. */
+        **All of it, only where the splash opened small.** Where the app cannot
+        place a window the splash was already board-sized and already in its
+        final state (see `open` and `build_window`), so every call here would be
+        a no-op or an undo: `set_size` on a maximised window is the one that
+        bites, and applying the state this late is what put the splash in a
+        corner — the surface grew under a page that had painted, and the
+        compositor showed that old frame at the origin of the new one. */
         let ah = app_handle.clone();
         let _ = app_handle.run_on_main_thread(move || {
-            let Some(w) = ah.get_webview_window("main") else { return };
+            let Some(w) = ah.get_webview_window("main") else {
+                return;
+            };
             if can_place_windows() {
                 // `set_min_size` first, so the larger size is never clamped.
                 let (bw, bh) = board_size();
@@ -770,20 +808,25 @@ fn fullscreen_on_recorded_monitor(
     rec: &orchd::store::WindowRecord,
 ) -> bool {
     use gtk::prelude::{GtkWindowExt, MonitorExt};
-    let Some(want) = rec.monitor.as_ref() else { return false };
+    let Some(want) = rec.monitor.as_ref() else {
+        return false;
+    };
     let (Ok(gw), Some(display)) = (win.gtk_window(), gtk::gdk::Display::default()) else {
         return false;
     };
     let mut by_name = Vec::new();
     let mut exact = None;
     for i in 0..display.n_monitors() {
-        let Some(m) = display.monitor(i) else { continue };
+        let Some(m) = display.monitor(i) else {
+            continue;
+        };
         let g = m.geometry();
         if (g.x(), g.y(), g.width(), g.height()) == (want.x, want.y, want.width, want.height) {
             exact = Some(i);
             break;
         }
-        if !want.name.is_empty() && m.model().map(|s| s.to_string()).as_deref() == Some(&want.name) {
+        if !want.name.is_empty() && m.model().map(|s| s.to_string()).as_deref() == Some(&want.name)
+        {
             by_name.push(i);
         }
     }
@@ -806,8 +849,12 @@ fn fullscreen_on_recorded_monitor(
 /// explain, and it only ever fires in that case: a position on any attached
 /// monitor is left exactly as it is.
 fn ensure_on_screen(win: &tauri::WebviewWindow) {
-    let Ok(pos) = win.inner_position() else { return };
-    let Ok(monitors) = win.available_monitors() else { return };
+    let Ok(pos) = win.inner_position() else {
+        return;
+    };
+    let Ok(monitors) = win.available_monitors() else {
+        return;
+    };
     // **An empty list is "cannot tell", not "off-screen".** Failing the other way
     // moves the window on a desktop that simply did not answer — which is the
     // complaint this function exists to fix, caused by the fix.
@@ -836,7 +883,10 @@ fn ensure_on_screen(win: &tauri::WebviewWindow) {
 
 /// Stop the first-run server if one is still running.
 fn stop_bootstrap() {
-    if let Some(handle) = BOOTSTRAP.get().and_then(|b| b.lock().unwrap_or_else(poisoned_is_still_usable).take()) {
+    if let Some(handle) = BOOTSTRAP
+        .get()
+        .and_then(|b| b.lock().unwrap_or_else(poisoned_is_still_usable).take())
+    {
         handle.abort();
     }
 }
@@ -844,9 +894,12 @@ fn stop_bootstrap() {
 /// The URL of the running daemon, if there is one. `None` on first run, before any
 /// project has been opened.
 fn daemon_url() -> Option<String> {
-    SERVER
-        .get()
-        .and_then(|s| s.lock().unwrap_or_else(poisoned_is_still_usable).as_ref().map(|serving| serving.url()))
+    SERVER.get().and_then(|s| {
+        s.lock()
+            .unwrap_or_else(poisoned_is_still_usable)
+            .as_ref()
+            .map(|serving| serving.url())
+    })
 }
 
 /// Ask for a restart: verify there is a binary to come back as, then close the
@@ -863,7 +916,10 @@ fn request_restart(app: &AppHandle) -> bool {
             true
         }
         Ok(exe) => {
-            tracing::error!("not restarting: {} does not exist, sessions kept", exe.display());
+            tracing::error!(
+                "not restarting: {} does not exist, sessions kept",
+                exe.display()
+            );
             false
         }
         Err(e) => {
@@ -907,7 +963,11 @@ impl orchd::firstrun::BootstrapHost for TauriBootstrap {
     }
 
     fn window_cmd(&self, cmd: orchd::window::WindowCmd) {
-        if let Err(e) = (TauriWindow { app: self.app.clone() }).dispatch(cmd) {
+        if let Err(e) = (TauriWindow {
+            app: self.app.clone(),
+        })
+        .dispatch(cmd)
+        {
             tracing::warn!("first-run window command failed: {e}");
         }
     }
@@ -1055,13 +1115,13 @@ fn remember_window(app: &AppHandle) {
         return;
     };
     /* **The size of a maximised window belongs to the screen, not to the window**,
-       so it is not recorded: restoring into it opens every launch full-screen with
-       nothing to un-maximise back to. What *is* recorded is that it was maximised,
-       over whatever size was last written — otherwise a window left maximised
-       comes back at the size it had before, which is "the geometry is not
-       remembered" as reported. Fullscreen counts as maximised here: the window
-       comes back maximised rather than fullscreen, because a window that reopens
-       with no chrome and no way out is worse than one a click puts back. */
+    so it is not recorded: restoring into it opens every launch full-screen with
+    nothing to un-maximise back to. What *is* recorded is that it was maximised,
+    over whatever size was last written — otherwise a window left maximised
+    comes back at the size it had before, which is "the geometry is not
+    remembered" as reported. Fullscreen counts as maximised here: the window
+    comes back maximised rather than fullscreen, because a window that reopens
+    with no chrome and no way out is worse than one a click puts back. */
     let full = win.is_fullscreen().unwrap_or(false);
     if full || win.is_maximized().unwrap_or(false) {
         let mut rec = orchd::store::load_window().unwrap_or_default();
@@ -1078,17 +1138,17 @@ fn remember_window(app: &AppHandle) {
         // The position too, in logical pixels like the size, so a display whose
         // scale factor changes does not move the window on the next launch.
         /* **`inner_position`, to pair with `set_position`.** They must be the same
-           reference point or restoring drifts: `set_position` places the client
-           area, while `outer_position` reports the frame origin, and under this
-           window manager those differ by the decoration — a constant (38,59) here.
-           Saving the frame origin and restoring it as the client origin subtracted
-           that on every launch, and the window walked off the desktop in four
-           starts: 300,150 → 262,91 → 224,32 → 186,-27. */
+        reference point or restoring drifts: `set_position` places the client
+        area, while `outer_position` reports the frame origin, and under this
+        window manager those differ by the decoration — a constant (38,59) here.
+        Saving the frame origin and restoring it as the client origin subtracted
+        that on every launch, and the window walked off the desktop in four
+        starts: 300,150 → 262,91 → 224,32 → 186,-27. */
         /* Only where the answer means something: GTK reports (0,0) for every
-           Wayland window, and writing that down turns "the platform does not say"
-           into a coordinate the next launch would try to honour. Left out, the
-           file carries a size and no position, which `load_window_pos` already
-           reads as "no opinion". */
+        Wayland window, and writing that down turns "the platform does not say"
+        into a coordinate the next launch would try to honour. Left out, the
+        file carries a size and no position, which `load_window_pos` already
+        reads as "no opinion". */
         let at = can_place_windows()
             .then(|| win.inner_position().ok())
             .flatten()
@@ -1193,7 +1253,10 @@ fn await_handoff() {
     let deadline = std::time::Instant::now() + HANDOFF_TIMEOUT;
     while orchd::pty::pid_alive(pid) {
         if std::time::Instant::now() > deadline {
-            tracing::warn!(pid, "the process being replaced is still running; starting anyway");
+            tracing::warn!(
+                pid,
+                "the process being replaced is still running; starting anyway"
+            );
             return;
         }
         std::thread::sleep(std::time::Duration::from_millis(100));
@@ -1213,7 +1276,10 @@ fn await_handoff() {
 /// model: stopping a process is a signal and a wait, not an async teardown of state
 /// this process holds.
 fn shutdown() {
-    let Some(serving) = SERVER.get().and_then(|s| s.lock().unwrap_or_else(poisoned_is_still_usable).take()) else {
+    let Some(serving) = SERVER
+        .get()
+        .and_then(|s| s.lock().unwrap_or_else(poisoned_is_still_usable).take())
+    else {
         return;
     };
     serving.host.stop_all();
@@ -1274,7 +1340,9 @@ fn start_dragging(app: &AppHandle, _window: &tauri::WebviewWindow) -> Result<()>
                 tracing::debug!("ignoring a window drag: AppKit is not on a mouse event");
                 return;
             }
-            let Some(w) = app.get_webview_window("main") else { return };
+            let Some(w) = app.get_webview_window("main") else {
+                return;
+            };
             if let Err(e) = w.start_dragging() {
                 tracing::warn!("the window drag was refused: {e}");
             }
@@ -1405,7 +1473,6 @@ impl WindowControl for TauriWindow {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1434,27 +1501,44 @@ mod tests {
             "argv grew a pair per restart"
         );
 
-        let read: Vec<String> =
-            second.iter().map(|a| a.to_string_lossy().into_owned()).collect();
-        assert_eq!(handoff_pid(&read), Some(222), "the reader took the stale pid");
+        let read: Vec<String> = second
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            handoff_pid(&read),
+            Some(222),
+            "the reader took the stale pid"
+        );
     }
 
     /// Everything else the app was started with survives a restart, which is why
     /// the argv is rebuilt rather than replaced.
     #[test]
     fn a_restart_keeps_the_arguments_it_was_started_with() {
-        let args = handoff_args(os(&["--main", "/repo", "--wait-for-pid", "9", "--flag"]), 42);
-        assert_eq!(args, os(&["--main", "/repo", "--flag", "--wait-for-pid", "42"]));
+        let args = handoff_args(
+            os(&["--main", "/repo", "--wait-for-pid", "9", "--flag"]),
+            42,
+        );
+        assert_eq!(
+            args,
+            os(&["--main", "/repo", "--flag", "--wait-for-pid", "42"])
+        );
     }
 
     /// A plain launch is not a handoff, and must not wait for anything.
     #[test]
     fn an_ordinary_launch_has_no_pid_to_wait_for() {
-        let plain: Vec<String> =
-            ["orchestrator-desktop", "--main", "/repo"].iter().map(|s| s.to_string()).collect();
+        let plain: Vec<String> = ["orchestrator-desktop", "--main", "/repo"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
         assert_eq!(handoff_pid(&plain), None);
         // A flag with nothing after it is a malformed argv, not a pid of 0.
-        let truncated: Vec<String> = ["x", "--wait-for-pid"].iter().map(|s| s.to_string()).collect();
+        let truncated: Vec<String> = ["x", "--wait-for-pid"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
         assert_eq!(handoff_pid(&truncated), None);
     }
 }

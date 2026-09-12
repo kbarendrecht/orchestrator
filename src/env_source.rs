@@ -131,8 +131,14 @@ mod tests {
     /// gets no variables.
     #[test]
     fn each_source_asks_its_tool_for_json() {
-        assert_eq!(argv(EnvSourceKind::Mise), Some(&["mise", "env", "--json"][..]));
-        assert_eq!(argv(EnvSourceKind::Direnv), Some(&["direnv", "export", "json"][..]));
+        assert_eq!(
+            argv(EnvSourceKind::Mise),
+            Some(&["mise", "env", "--json"][..])
+        );
+        assert_eq!(
+            argv(EnvSourceKind::Direnv),
+            Some(&["direnv", "export", "json"][..])
+        );
     }
 
     #[test]

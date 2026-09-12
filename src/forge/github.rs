@@ -17,7 +17,11 @@ use super::Forge;
 /// unnecessary blast radius.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
-#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
+#[cfg_attr(
+    test,
+    derive(ts_rs::TS),
+    ts(export, export_to = "../web/snapshot.d.ts")
+)]
 pub enum TokenSource {
     /// `ORCHD_GITHUB_TOKEN`, injected at daemon start.
     Env,
@@ -58,12 +62,12 @@ pub fn resolve_token(token_file: Option<&Path>) -> Result<Token> {
         }
     }
     /* **Written for whoever reads it in the PR pane**, which is where this lands.
-       It used to say "no ORCHD_GITHUB_TOKEN, no token file, and `gh auth token`
-       could not be run: No such file or directory (os error 2)" — a walk through
-       the daemon's own ladder, ending in an errno. That is the first thing a new
-       install sees, and it names three things the reader has never heard of
-       instead of the one command that fixes it. The ladder is still worth knowing,
-       so it comes second, in the half a pane can show when it has room. */
+    It used to say "no ORCHD_GITHUB_TOKEN, no token file, and `gh auth token`
+    could not be run: No such file or directory (os error 2)" — a walk through
+    the daemon's own ladder, ending in an errno. That is the first thing a new
+    install sees, and it names three things the reader has never heard of
+    instead of the one command that fixes it. The ladder is still worth knowing,
+    so it comes second, in the half a pane can show when it has room. */
     // Bounded like every other subprocess that can reach the network: `gh` does
     // not prompt the way git does, but a keyring or a proxy can still hang it, and
     // this runs on the poll and inside review requests.
@@ -266,7 +270,11 @@ pub struct GitHubForge {
 }
 
 impl GitHubForge {
-    pub fn new(owner: impl Into<String>, name: impl Into<String>, token: impl Into<String>) -> Self {
+    pub fn new(
+        owner: impl Into<String>,
+        name: impl Into<String>,
+        token: impl Into<String>,
+    ) -> Self {
         GitHubForge {
             owner: owner.into(),
             name: name.into(),
@@ -321,8 +329,9 @@ impl Forge for GitHubForge {
                 .map(|seg| {
                     seg.bytes()
                         .map(|b| match b {
-                            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'-' | b'_' | b'.'
-                            | b'~' => (b as char).to_string(),
+                            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                                (b as char).to_string()
+                            }
                             _ => format!("%{b:02X}"),
                         })
                         .collect::<String>()
@@ -407,7 +416,9 @@ pub fn poll(token: &str, owner: &str, name: &str) -> Result<(String, Vec<Pr>)> {
 
     let mut prs: Vec<Pr> = Vec::with_capacity(nodes.len());
     for n in &nodes {
-        let Some(mut pr) = parse_pr(n, &viewer) else { continue };
+        let Some(mut pr) = parse_pr(n, &viewer) else {
+            continue;
+        };
         // The poll asks for one 50-thread page per PR to keep the fan-out cheap;
         // a PR with more than that comes back a floor (`50+`). Page out the rest
         // for just those PRs — the common case never pays for it — and recount so
@@ -789,7 +800,11 @@ fn checks_from(state: Option<&str>) -> Checks {
 /// `hasNextPage` with a null cursor would re-request the same page forever, so
 /// the cursor is what decides. Shared by both coverage walks.
 fn next_cursor(root: &Value) -> Option<String> {
-    if root.pointer("/pageInfo/hasNextPage").and_then(|b| b.as_bool()) != Some(true) {
+    if root
+        .pointer("/pageInfo/hasNextPage")
+        .and_then(|b| b.as_bool())
+        != Some(true)
+    {
         return None;
     }
     root.pointer("/pageInfo/endCursor")
@@ -1389,7 +1404,11 @@ mod tests {
 
     #[test]
     fn the_last_page_reports_no_cursor() {
-        let v = thread_page("viewer", &thread_node("PRRT_1", false, false, &["alice"]), None);
+        let v = thread_page(
+            "viewer",
+            &thread_node("PRRT_1", false, false, &["alice"]),
+            None,
+        );
         assert_eq!(parse_thread_page(v, 10001).unwrap().1, None);
     }
 
@@ -1455,7 +1474,11 @@ mod tests {
 
     #[test]
     fn a_resolved_thread_needs_no_answer() {
-        let v = thread_page("viewer", &thread_node("PRRT_1", true, false, &["alice"]), None);
+        let v = thread_page(
+            "viewer",
+            &thread_node("PRRT_1", true, false, &["alice"]),
+            None,
+        );
         let (page, _) = parse_thread_page(v, 10001).unwrap();
         assert!(!page.items[0].is_answerable("viewer"));
     }
@@ -1464,7 +1487,11 @@ mod tests {
     fn an_outdated_thread_still_needs_an_answer() {
         // The code moved, but the point may still stand — unlike the rail's
         // unresolved count, triage keeps these.
-        let v = thread_page("viewer", &thread_node("PRRT_1", false, true, &["alice"]), None);
+        let v = thread_page(
+            "viewer",
+            &thread_node("PRRT_1", false, true, &["alice"]),
+            None,
+        );
         let (page, _) = parse_thread_page(v, 10001).unwrap();
         assert!(page.items[0].is_answerable("viewer"));
     }
@@ -1557,7 +1584,11 @@ mod tests {
         // The triage agent's own input includes comments other people wrote, so an
         // id it hands back has to be looked up rather than trusted. There is no
         // other constructor: an unvalidated id cannot reach `gh`.
-        let v = thread_page("viewer", &thread_node("PRRT_1", false, false, &["alice"]), None);
+        let v = thread_page(
+            "viewer",
+            &thread_node("PRRT_1", false, false, &["alice"]),
+            None,
+        );
         let (page, _) = parse_thread_page(v, 10001).unwrap();
         assert!(page.root_for("PRRT_somebody_elses_pr").is_none());
         assert!(page.root_for("").is_none());
@@ -1635,5 +1666,4 @@ mod tests {
         let other = pr(2, "feature/never-checked-out", "develop");
         assert!(!branches.contains(&other.head_ref));
     }
-
 }

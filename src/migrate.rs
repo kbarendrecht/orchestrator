@@ -147,14 +147,21 @@ mod tests {
         let write = |s: &str| std::fs::write(&path, s).unwrap();
         let read = || std::fs::read_to_string(&path).unwrap();
         let obj = || {
-            serde_json::from_str::<Value>(&read()).unwrap().as_object().unwrap().clone()
+            serde_json::from_str::<Value>(&read())
+                .unwrap()
+                .as_object()
+                .unwrap()
+                .clone()
         };
 
         // The one that still fails today, and the one most machines have: written
         // by every save in the old settings pane, because it was the default.
         write(r#"{"main_checkout":"/repo","port":9001,"tracker":"none"}"#);
         config_file(&path);
-        assert!(!obj().contains_key("tracker"), "no tracker is the absence of the key");
+        assert!(
+            !obj().contains_key("tracker"),
+            "no tracker is the absence of the key"
+        );
         assert_eq!(obj()["port"], 9001, "the rest of the file has to survive");
         assert!(dir.join(BACKUP).exists(), "the previous file is kept");
 
@@ -162,7 +169,11 @@ mod tests {
         // *content*, since a second rewrite would be invisible in a timestamp.
         let after = read();
         config_file(&path);
-        assert_eq!(read(), after, "a start that migrates nothing rewrites nothing");
+        assert_eq!(
+            read(),
+            after,
+            "a start that migrates nothing rewrites nothing"
+        );
 
         write(r#"{"main_checkout":"/repo","tracker":"shortcut"}"#);
         config_file(&path);
@@ -215,7 +226,10 @@ mod tests {
         std::fs::write(&path, "{ not json").unwrap();
         config_file(&path);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "{ not json");
-        assert!(!dir.join(BACKUP).exists(), "nothing changed, so nothing was backed up");
+        assert!(
+            !dir.join(BACKUP).exists(),
+            "nothing changed, so nothing was backed up"
+        );
 
         // JSON, but not an object.
         std::fs::write(&path, "[1,2,3]").unwrap();

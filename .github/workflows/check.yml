@@ -107,6 +107,16 @@ jobs:
       # `Checking orchd` line and no `orchestrator-desktop`. The crate is clean as of
       # this commit, so widening the gate costs nothing today and stops it drifting
       # the way clippy itself drifted to 33 warnings before it was in CI at all.
+      # `cargo fmt` was not this repo's formatter until the tree was formatted in
+      # one commit (`.git-blame-ignore-revs` names it, so blame still lands on the
+      # reasoning). The rule it replaces was "revert everything outside your own
+      # change before committing", which nothing ran and everyone forgot.
+      #
+      # Linux only: rustfmt's output does not vary by platform.
+      - name: Format
+        if: runner.os == 'Linux'
+        run: cargo fmt --all -- --check
+
       - name: Lint
         run: cargo clippy --workspace --all-targets -- -D warnings
 

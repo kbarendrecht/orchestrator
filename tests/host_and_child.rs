@@ -57,7 +57,11 @@ fn scratch_repo(tag: &str) -> PathBuf {
             .current_dir(&dir)
             .output()
             .expect("git ran");
-        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
     };
     git(&["init", "-q", "-b", "main"]);
     git(&["config", "user.email", "test@test"]);
@@ -76,7 +80,18 @@ fn get(url: &str, token: Option<&str>) -> (u32, String) {
 /// A `POST` with an Origin, which is what a page's `fetch` sends.
 fn post(url: &str, origin: &str, token: &str) -> u32 {
     let (code, _) = curl(
-        &["-s", "-o", "/dev/null", "-w", "\n%{http_code}", "-X", "POST", "-H", &format!("Origin: {origin}"), url],
+        &[
+            "-s",
+            "-o",
+            "/dev/null",
+            "-w",
+            "\n%{http_code}",
+            "-X",
+            "POST",
+            "-H",
+            &format!("Origin: {origin}"),
+            url,
+        ],
         Some(token),
     );
     code
@@ -85,8 +100,18 @@ fn post(url: &str, origin: &str, token: &str) -> u32 {
 /// The response headers of a `GET`, as text.
 fn headers_of(url: &str, origin: &str, token: &str) -> String {
     let out = std::process::Command::new("curl")
-        .args(["-s", "-o", "/dev/null", "-D", "-", "-H", &format!("Origin: {origin}"), "-H",
-            &format!("x-orch-token: {token}"), url])
+        .args([
+            "-s",
+            "-o",
+            "/dev/null",
+            "-D",
+            "-",
+            "-H",
+            &format!("Origin: {origin}"),
+            "-H",
+            &format!("x-orch-token: {token}"),
+            url,
+        ])
         .output()
         .expect("curl ran");
     String::from_utf8_lossy(&out.stdout).into_owned()
@@ -136,7 +161,10 @@ async fn a_host_serves_the_page_for_a_checkout_its_child_manages() {
     // The page before any checkout: served, and honest about having none.
     let (code, page) = get(&base, None);
     assert_eq!(code, 200, "GET / must not be token-gated");
-    assert!(page.contains("checkouts: []"), "the page claimed a checkout it did not have");
+    assert!(
+        page.contains("checkouts: []"),
+        "the page claimed a checkout it did not have"
+    );
 
     // The config as it stood before the split: one file at the root of the config
     // dir, with a hand-tuned key in it. The point of assertion 5 is that this key
@@ -152,7 +180,8 @@ async fn a_host_serves_the_page_for_a_checkout_its_child_manages() {
     .unwrap();
 
     let exe = Path::new(env!("CARGO_BIN_EXE_orchd"));
-    host.open_checkout_with(exe, &repo, false).expect("the child started and reported ready");
+    host.open_checkout_with(exe, &repo, false)
+        .expect("the child started and reported ready");
 
     // 1 — the page carries the child's port and token, not the host's.
     let rows = host.checkouts();
@@ -161,17 +190,26 @@ async fn a_host_serves_the_page_for_a_checkout_its_child_manages() {
     assert_eq!(row.path, repo.to_string_lossy());
     assert!(row.live);
     assert_ne!(row.port, host.port, "the child took the host's port");
-    assert_ne!(row.token, host.token, "the child did not mint its own token");
+    assert_ne!(
+        row.token, host.token,
+        "the child did not mint its own token"
+    );
 
     let (_, page) = get(&base, None);
-    assert!(page.contains(&row.token), "the page went out without the child's token");
+    assert!(
+        page.contains(&row.token),
+        "the page went out without the child's token"
+    );
     assert!(
         page.contains(&format!("\"port\":{}", row.port)),
         "the page went out without the child's port"
     );
     let (code, listed) = get(&format!("{base}/api/host/checkouts"), Some(&host.token));
     assert_eq!(code, 200);
-    assert!(listed.contains(&row.token), "the host's own list disagreed with the page");
+    assert!(
+        listed.contains(&row.token),
+        "the host's own list disagreed with the page"
+    );
 
     // 1b — the child does **not** serve the page. Its own host would be a second
     // page server nobody visits, and the app's is the one with the window.
@@ -187,7 +225,11 @@ async fn a_host_serves_the_page_for_a_checkout_its_child_manages() {
 
     // 2 — the child accepts the host's origin and refuses a foreign one.
     let child_api = format!("http://127.0.0.1:{}/api/prs/refresh", row.port);
-    assert_eq!(post(&child_api, &base, &row.token), 202, "the child refused its host's origin");
+    assert_eq!(
+        post(&child_api, &base, &row.token),
+        202,
+        "the child refused its host's origin"
+    );
     assert_eq!(
         post(&child_api, "http://evil.example", &row.token),
         403,
@@ -221,13 +263,19 @@ async fn a_host_serves_the_page_for_a_checkout_its_child_manages() {
         false,
         |_, _, _| {},
     );
-    let refusal = format!("{:#}", second.expect_err("a second daemon for one checkout started"));
+    let refusal = format!(
+        "{:#}",
+        second.expect_err("a second daemon for one checkout started")
+    );
     assert!(
         refusal.contains("never said it was ready"),
         "the second daemon failed for some other reason: {refusal}"
     );
     // And the first one is untouched by the attempt.
-    assert!(host.checkouts().first().is_some_and(|c| c.live), "the refused start took the live one");
+    assert!(
+        host.checkouts().first().is_some_and(|c| c.live),
+        "the refused start took the live one"
+    );
 
     // 3 — no window, so the titlebar refuses by name rather than panicking. This
     // is the browser-tab case, and it is the behaviour that had to survive the
@@ -280,9 +328,15 @@ async fn a_host_serves_the_page_for_a_checkout_its_child_manages() {
     assert_eq!(code, 204, "the child refused its host's preflight");
     // The header rides the real answer too, not only the preflight: the browser
     // drops a cross-origin response that does not name it, whatever the status.
-    let allow = headers_of(&format!("http://127.0.0.1:{}/api/state", row.port), &base, &row.token);
+    let allow = headers_of(
+        &format!("http://127.0.0.1:{}/api/state", row.port),
+        &base,
+        &row.token,
+    );
     assert!(
-        allow.to_lowercase().contains(&format!("access-control-allow-origin: {base}")),
+        allow
+            .to_lowercase()
+            .contains(&format!("access-control-allow-origin: {base}")),
         "the answer did not name the page's origin, so the browser drops it: {allow}"
     );
     // And only that origin: a `*` would let any page in the browser drive this
@@ -302,7 +356,10 @@ async fn a_host_serves_the_page_for_a_checkout_its_child_manages() {
     // pairing is the whole wiring, and it is the one thing a green type-check
     // cannot see.
     let as_the_page_would = post(&child_api, &base, &row.token);
-    assert_eq!(as_the_page_would, 202, "the page's own call shape was refused");
+    assert_eq!(
+        as_the_page_would, 202,
+        "the page's own call shape was refused"
+    );
     assert_eq!(
         post(&format!("{base}/api/prs/refresh"), &base, &host.token),
         404,
@@ -339,17 +396,24 @@ async fn a_host_serves_the_page_for_a_checkout_its_child_manages() {
         host.checkouts().first().is_some_and(|c| !c.live),
         "a stop was read as a crash and the daemon came back"
     );
-    let (code, _) = get(&format!("http://127.0.0.1:{pid}/api/state"), Some(&row.token));
+    let (code, _) = get(
+        &format!("http://127.0.0.1:{pid}/api/state"),
+        Some(&row.token),
+    );
     assert_eq!(code, 0, "the child is still serving after a stop");
 
     // 5 — the checkout's state is its own, and it inherited the old config.
     let state = orchd::host::checkout_dir(&repo).expect("a state directory");
-    assert!(state.starts_with(cfg.join("checkouts")), "the state dir is somewhere else: {state:?}");
     assert!(
-        state.file_name().unwrap().to_string_lossy().starts_with(&format!(
-            "{}-",
-            repo.file_name().unwrap().to_string_lossy()
-        )),
+        state.starts_with(cfg.join("checkouts")),
+        "the state dir is somewhere else: {state:?}"
+    );
+    assert!(
+        state
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with(&format!("{}-", repo.file_name().unwrap().to_string_lossy())),
         "the directory is not named for its checkout: {state:?}"
     );
     let carried: serde_json::Value =
@@ -359,16 +423,24 @@ async fn a_host_serves_the_page_for_a_checkout_its_child_manages() {
         "the hand-tuned key did not come across, so the split loses settings"
     );
     // And the old file is still there, so an older build has something to read.
-    assert!(cfg.join("config.json").exists(), "the move deleted the config a downgrade needs");
+    assert!(
+        cfg.join("config.json").exists(),
+        "the move deleted the config a downgrade needs"
+    );
     // The daemon really wrote into its own directory rather than the root. The hook
     // settings file is the one to check: it is written on every start (unlike
     // `sessions.json`, which a daemon with no sessions never writes at all), and it
     // is the file that carries *this daemon's port* into every agent's hook URL —
     // so two checkouts sharing it is the failure that makes one rail go quiet.
     let hooks = state.join("hooks.json");
-    assert!(hooks.exists(), "the child wrote its hook settings somewhere else");
     assert!(
-        std::fs::read_to_string(&hooks).unwrap().contains(&format!("127.0.0.1:{}", row.port)),
+        hooks.exists(),
+        "the child wrote its hook settings somewhere else"
+    );
+    assert!(
+        std::fs::read_to_string(&hooks)
+            .unwrap()
+            .contains(&format!("127.0.0.1:{}", row.port)),
         "the hook settings do not carry this daemon's own port"
     );
     assert!(
@@ -377,26 +449,30 @@ async fn a_host_serves_the_page_for_a_checkout_its_child_manages() {
     );
 
     /* **A daemon started again is a different daemon, and the row says so.** The
-       page holds one events socket per checkout and keeps it open across a restart,
-       so what it must not do is freeze the row it dialled with: the path is the same
-       and the port may well be too — the child binds the configured one — while the
-       token is minted fresh by every process. A page reconnecting with the old token
-       is refused by the very daemon it is drawing, which shipped as "reconnecting…"
-       that never cleared on a checkout the rail showed as live, with no session
-       openable in it.
+    page holds one events socket per checkout and keeps it open across a restart,
+    so what it must not do is freeze the row it dialled with: the path is the same
+    and the port may well be too — the child binds the configured one — while the
+    token is minted fresh by every process. A page reconnecting with the old token
+    is refused by the very daemon it is drawing, which shipped as "reconnecting…"
+    that never cleared on a checkout the rail showed as live, with no session
+    openable in it.
 
-       Asserted here rather than in the page because there is no SPA test to put it
-       in; this is the fact `connect` re-reads the row *for*. */
+    Asserted here rather than in the page because there is no SPA test to put it
+    in; this is the fact `connect` re-reads the row *for*. */
     let before = host.checkouts()[0].token.clone();
     /* Closed and started again, which is the path a person takes; a crash and its
-       restart differ only in who asked. Through `open_checkout_with` rather than
-       `add_checkout` because that one resolves `orchd` beside the *running*
-       executable, and the running executable here is a test binary. */
+    restart differ only in who asked. Through `open_checkout_with` rather than
+    `add_checkout` because that one resolves `orchd` beside the *running*
+    executable, and the running executable here is a test binary. */
     host.close_checkout(&repo);
-    host.open_checkout_with(exe, &repo, false).expect("the checkout opened again");
+    host.open_checkout_with(exe, &repo, false)
+        .expect("the checkout opened again");
     let after = &host.checkouts()[0];
     assert!(after.live, "the checkout opened again is not live");
-    assert_ne!(after.token, before, "a daemon started again reused its token");
+    assert_ne!(
+        after.token, before,
+        "a daemon started again reused its token"
+    );
 
     let _ = std::fs::remove_dir_all(&repo);
     let _ = std::fs::remove_dir_all(&cfg);

@@ -31,9 +31,16 @@ pub enum Base {
 /// commits appear as your deletions (§5). This matches how `worktree-create`
 /// bases branches and how `gh pr create` resolves the PR base, so the diff view
 /// and the PR agree.
-pub fn resolve_base(cwd: &Path, base: Base, upstream: &str, pr_base: Option<&str>) -> Result<String> {
+pub fn resolve_base(
+    cwd: &Path,
+    base: Base,
+    upstream: &str,
+    pr_base: Option<&str>,
+) -> Result<String> {
     match base {
-        Base::Upstream => Ok(git(cwd, &["merge-base", upstream, "HEAD"])?.trim().to_string()),
+        Base::Upstream => Ok(git(cwd, &["merge-base", upstream, "HEAD"])?
+            .trim()
+            .to_string()),
         Base::Head => Ok("HEAD".to_string()),
         Base::PrBase => {
             let r = pr_base.unwrap_or(upstream);
@@ -41,7 +48,9 @@ pub fn resolve_base(cwd: &Path, base: Base, upstream: &str, pr_base: Option<&str
             // remote in `upstream_ref`, not a remote called `upstream`: on a repo
             // whose real remote is `origin` the hardcoded name resolved nothing and
             // the review diff failed with "could not resolve the PR base".
-            let remote = upstream.split_once('/').map_or("origin", |(remote, _)| remote);
+            let remote = upstream
+                .split_once('/')
+                .map_or("origin", |(remote, _)| remote);
             let candidates = [format!("{remote}/{r}"), r.to_string()];
             for c in &candidates {
                 if let Ok(out) = git(cwd, &["merge-base", c, "HEAD"]) {
@@ -58,7 +67,11 @@ pub fn resolve_base(cwd: &Path, base: Base, upstream: &str, pr_base: Option<&str
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize)]
-#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
+#[cfg_attr(
+    test,
+    derive(ts_rs::TS),
+    ts(export, export_to = "../web/snapshot.d.ts")
+)]
 pub struct DiffFile {
     pub path: String,
     /// Verbatim from `--name-status`: M, A, D, R…, C…
@@ -113,7 +126,11 @@ impl DiffFile {
 }
 
 #[derive(Debug, Clone, Serialize)]
-#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
+#[cfg_attr(
+    test,
+    derive(ts_rs::TS),
+    ts(export, export_to = "../web/snapshot.d.ts")
+)]
 pub struct DiffSummary {
     pub base: String,
     pub files: Vec<DiffFile>,
@@ -223,7 +240,11 @@ pub fn mark_worktree_state(files: &mut [DiffFile], set: &crate::model::FileSet) 
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
+#[cfg_attr(
+    test,
+    derive(ts_rs::TS),
+    ts(export, export_to = "../web/snapshot.d.ts")
+)]
 #[serde(rename_all = "snake_case")]
 pub enum RowKind {
     Context,
@@ -232,7 +253,11 @@ pub enum RowKind {
 }
 
 #[derive(Debug, Clone, Serialize)]
-#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
+#[cfg_attr(
+    test,
+    derive(ts_rs::TS),
+    ts(export, export_to = "../web/snapshot.d.ts")
+)]
 pub struct Row {
     pub kind: RowKind,
     pub old: Option<u32>,
@@ -249,7 +274,11 @@ pub struct Row {
 }
 
 #[derive(Debug, Clone, Serialize)]
-#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
+#[cfg_attr(
+    test,
+    derive(ts_rs::TS),
+    ts(export, export_to = "../web/snapshot.d.ts")
+)]
 pub struct Hunk {
     pub old_start: u32,
     pub new_start: u32,
@@ -261,7 +290,11 @@ pub struct Hunk {
 }
 
 #[derive(Debug, Clone, Serialize)]
-#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
+#[cfg_attr(
+    test,
+    derive(ts_rs::TS),
+    ts(export, export_to = "../web/snapshot.d.ts")
+)]
 pub struct FileDiff {
     pub path: String,
     pub hunks: Vec<Hunk>,
@@ -272,18 +305,14 @@ pub struct FileDiff {
 /// A file as it exists at `base`, for the read-only left pane in edit mode.
 pub fn show_at(cwd: &Path, base: &str, path: &str) -> Result<String> {
     // `--` so a path that looks like a rev is still treated as a path.
-    git(cwd, &["show", &format!("{base}:{path}")])
-        .or_else(|_| Ok(String::new()))
+    git(cwd, &["show", &format!("{base}:{path}")]).or_else(|_| Ok(String::new()))
 }
 
 /// Hunks for one file. `context` widens `-U`, which is how expand-on-click is
 /// served without a second diff format.
 pub fn file_diff(cwd: &Path, base: &str, path: &str, context: u32) -> Result<FileDiff> {
     let ctx = format!("-U{context}");
-    let out = git(
-        cwd,
-        &["diff", &ctx, base, "--", path],
-    )?;
+    let out = git(cwd, &["diff", &ctx, base, "--", path])?;
     Ok(parse_unified(path, &out))
 }
 
@@ -591,11 +620,25 @@ mod tests {
                 .current_dir(&dir)
                 .output()
                 .unwrap();
-            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+            assert!(
+                out.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
             String::from_utf8_lossy(&out.stdout).trim().to_string()
         };
         run(&["init", "-q", "-b", "main"]);
-        run(&["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "x"]);
+        run(&[
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "x",
+        ]);
         let head = run(&["rev-parse", "HEAD"]);
         // The PR's base branch exists only as a remote-tracking ref on `origin`.
         run(&["update-ref", "refs/remotes/origin/dev", "HEAD"]);
@@ -618,13 +661,29 @@ mod tests {
         std::fs::write(dir.join("old.txt"), "one\ntwo\n").unwrap();
         std::fs::write(dir.join("café.md"), "bonjour\n").unwrap();
         g(&["add", "-A"]);
-        g(&["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "base"]);
+        g(&[
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-qm",
+            "base",
+        ]);
         let base = crate::git::head_sha(&dir).unwrap();
 
         g(&["mv", "old.txt", "new.txt"]);
         std::fs::write(dir.join("café.md"), "bonjour\nencore\n").unwrap();
         g(&["add", "-A"]);
-        g(&["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "rename"]);
+        g(&[
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-qm",
+            "rename",
+        ]);
 
         let s = summary(&dir, &base).unwrap();
         let renamed = s
@@ -632,7 +691,11 @@ mod tests {
             .iter()
             .find(|f| f.path == "new.txt")
             .expect("the rename is named by its new path, not by a brace form");
-        assert!(renamed.status.starts_with('R'), "status was {}", renamed.status);
+        assert!(
+            renamed.status.starts_with('R'),
+            "status was {}",
+            renamed.status
+        );
         assert_eq!(renamed.old_path.as_deref(), Some("old.txt"));
 
         let accented = s

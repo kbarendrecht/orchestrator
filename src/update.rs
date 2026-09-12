@@ -43,7 +43,11 @@ use crate::state::AppState;
 
 /// A newer agent build than the one installed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
+#[cfg_attr(
+    test,
+    derive(ts_rs::TS),
+    ts(export, export_to = "../web/snapshot.d.ts")
+)]
 pub struct AgentUpdate {
     /// The mise tool name to upgrade — `claude-code` or `claude`, whichever this
     /// checkout pins. Carried rather than assumed so the button upgrades the tool
@@ -69,7 +73,11 @@ pub fn check(main: &Path) -> Option<AgentUpdate> {
     // them answering 404 and warning about it every time — and the answer is
     // thrown away but for one line. Asked about the agent alone it is a single
     // lookup off mise's cache, which is what makes polling this often affordable.
-    let out = mise(main, &["outdated", "--json", &tool], "the agent version check")?;
+    let out = mise(
+        main,
+        &["outdated", "--json", &tool],
+        "the agent version check",
+    )?;
     parse(&out.stdout, &tool)
 }
 
@@ -108,7 +116,11 @@ pub(crate) fn mise(main: &Path, args: &[&str], label: &str) -> Option<std::proce
 /// no mise, a `claude` from npm — yields `None` and no nudge, which is right: this
 /// cannot offer to upgrade something it does not know how to.
 fn agent_providing_tool(main: &Path) -> Option<String> {
-    let out = mise(main, &["which", "claude"], "resolving the agent's mise tool")?;
+    let out = mise(
+        main,
+        &["which", "claude"],
+        "resolving the agent's mise tool",
+    )?;
     tool_of_install_path(String::from_utf8_lossy(&out.stdout).trim())
 }
 
@@ -144,7 +156,11 @@ fn parse(stdout: &[u8], tool: &str) -> Option<AgentUpdate> {
     if current == latest {
         return None;
     }
-    Some(AgentUpdate { tool: tool.to_string(), current, latest })
+    Some(AgentUpdate {
+        tool: tool.to_string(),
+        current,
+        latest,
+    })
 }
 
 /// The command the upgrade button runs.
@@ -164,7 +180,11 @@ fn upgrade_argv(tool: &str) -> Vec<String> {
 /// grew a tab that was not a process of main's at all. It reports through the same
 /// bar that offered the button instead.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
+#[cfg_attr(
+    test,
+    derive(ts_rs::TS),
+    ts(export, export_to = "../web/snapshot.d.ts")
+)]
 pub struct UpgradeRun {
     /// The version being installed. Carried so the bar can say it even after the
     /// check that found it has been refreshed away.
@@ -230,7 +250,13 @@ impl Subject {
                     .agent_update
                     .clone()
                     .ok_or("no agent update to install — refresh the check first")?;
-                Ok((u.tool, Version { from: u.current, to: u.latest }))
+                Ok((
+                    u.tool,
+                    Version {
+                        from: u.current,
+                        to: u.latest,
+                    },
+                ))
             }
             Subject::App => {
                 let u = inner
@@ -241,7 +267,13 @@ impl Subject {
                     .tool
                     .clone()
                     .ok_or("this build was not installed by mise, so it cannot upgrade itself")?;
-                Ok((tool, Version { from: u.current, to: u.latest }))
+                Ok((
+                    tool,
+                    Version {
+                        from: u.current,
+                        to: u.latest,
+                    },
+                ))
             }
         }
     }
@@ -264,7 +296,11 @@ pub async fn start_upgrade(
 ) -> std::result::Result<Version, String> {
     let (tool, version) = {
         let mut inner = app.inner.write().await;
-        if subject.run_slot(&mut inner).as_ref().is_some_and(|r| r.running) {
+        if subject
+            .run_slot(&mut inner)
+            .as_ref()
+            .is_some_and(|r| r.running)
+        {
             return Err("that upgrade is already running".to_string());
         }
         let (tool, version) = subject.offer(&inner)?;
@@ -560,14 +596,17 @@ pub fn stable_exe(exe: &std::path::Path) -> std::path::PathBuf {
     }
 }
 
-
 // ---------------------------------------------------------------------------
 // Noticing a newer app release
 // ---------------------------------------------------------------------------
 
 /// A release newer than what is running.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
+#[cfg_attr(
+    test,
+    derive(ts_rs::TS),
+    ts(export, export_to = "../web/snapshot.d.ts")
+)]
 pub struct UpdateInfo {
     pub current: String,
     pub latest: String,
@@ -611,7 +650,9 @@ pub fn start_release_poller(app: Arc<AppState>) {
             // the runtime. A missing token is not an error: the nudge just waits.
             let tf = token_file.clone();
             if let Ok(Some((tag, url))) = tokio::task::spawn_blocking(move || {
-                let token = crate::forge::resolve_token(tf.as_deref()).ok().map(|t| t.value);
+                let token = crate::forge::resolve_token(tf.as_deref())
+                    .ok()
+                    .map(|t| t.value);
                 crate::forge::latest_release(RELEASE_REPO.0, RELEASE_REPO.1, token.as_deref())
             })
             .await
@@ -671,7 +712,8 @@ mod tests {
     /// the bar an empty string and the failure would read as no reason at all.
     #[test]
     fn the_reported_tail_is_the_last_lines_that_say_something() {
-        let noisy = "fetching\n\nunpacking\n\nmise ERROR no version set\nmise ERROR see --verbose\n\n";
+        let noisy =
+            "fetching\n\nunpacking\n\nmise ERROR no version set\nmise ERROR see --verbose\n\n";
         assert_eq!(
             tail(noisy, 2),
             "mise ERROR no version set\nmise ERROR see --verbose"
@@ -699,7 +741,10 @@ mod tests {
         assert_eq!(u.tool, "claude-code");
         assert_eq!(u.current, "2.1.232");
         assert_eq!(u.latest, "2.1.240");
-        assert_eq!(upgrade_argv(&u.tool), vec!["mise", "upgrade", "claude-code"]);
+        assert_eq!(
+            upgrade_argv(&u.tool),
+            vec!["mise", "upgrade", "claude-code"]
+        );
     }
 
     #[test]
@@ -739,7 +784,13 @@ mod tests {
         // produce a nudge.
         assert_eq!(parse(b"{}", "claude-code"), None);
         // Other tools behind, the agent not mentioned: also nothing to say.
-        assert_eq!(parse(br#"{"bun":{"current":"1.0","latest":"1.1"}}"#, "claude-code"), None);
+        assert_eq!(
+            parse(
+                br#"{"bun":{"current":"1.0","latest":"1.1"}}"#,
+                "claude-code"
+            ),
+            None
+        );
     }
 
     #[test]
@@ -755,7 +806,10 @@ mod tests {
         assert_eq!(parse(b"not json", "claude-code"), None);
         assert_eq!(parse(b"", "claude-code"), None);
         // Present but missing the fields the nudge needs.
-        assert_eq!(parse(br#"{"claude-code":{"requested":"latest"}}"#, "claude-code"), None);
+        assert_eq!(
+            parse(br#"{"claude-code":{"requested":"latest"}}"#, "claude-code"),
+            None
+        );
     }
 
     /// The fault this prevents costs an upgrade, not a launch: mise installs each
@@ -877,7 +931,11 @@ mod tests {
           "inner": [{"install_path":"/i/tools/orchestrator/1.0","installed":true}]
         }"#;
         assert_eq!(
-            tool_owning(ls.as_bytes(), Path::new("/i/tools/orchestrator/1.0/orchestrator-desktop")).as_deref(),
+            tool_owning(
+                ls.as_bytes(),
+                Path::new("/i/tools/orchestrator/1.0/orchestrator-desktop")
+            )
+            .as_deref(),
             Some("inner")
         );
     }

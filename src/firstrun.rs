@@ -134,7 +134,8 @@ pub fn validate(path: &Path) -> std::result::Result<ProjectInfo, String> {
     // typed into the box would be resolved against whatever the daemon's cwd
     // happened to be on the next launch, and a symlinked one would fail the
     // path comparisons `Config::parse` canonicalises everything else for.
-    let path = std::fs::canonicalize(&path).map_err(|e| format!("Cannot resolve that folder: {e}"))?;
+    let path =
+        std::fs::canonicalize(&path).map_err(|e| format!("Cannot resolve that folder: {e}"))?;
     if !path.join(".git").exists() {
         return Err("Not a git repository — orchd works on a git checkout.".into());
     }
@@ -235,7 +236,14 @@ fn detect_processes(path: &Path) -> Vec<DetectedProcess> {
             };
             // Only the conventional long-running ones — not every script, which is
             // mostly one-shot build and lint tasks nobody wants as a managed pty.
-            const WANTED: &[&str] = &["dev", "start", "watch", "serve", "build-watch", "build:watch"];
+            const WANTED: &[&str] = &[
+                "dev",
+                "start",
+                "watch",
+                "serve",
+                "build-watch",
+                "build:watch",
+            ];
             if let Some(scripts) = pkg.get("scripts").and_then(|s| s.as_object()) {
                 for name in WANTED {
                     if scripts.contains_key(*name) {
@@ -368,7 +376,10 @@ impl Written {
             None => std::fs::remove_file(&self.file),
         };
         if let Err(e) = outcome {
-            tracing::warn!("could not restore {} after a refused open: {e}", self.file.display());
+            tracing::warn!(
+                "could not restore {} after a refused open: {e}",
+                self.file.display()
+            );
         }
     }
 }
@@ -376,7 +387,10 @@ impl Written {
 fn write_config_to(file: &Path, path: &Path, ov: &Overrides) -> Result<Written> {
     use serde_json::json;
     let previous = std::fs::read_to_string(file).ok();
-    let mut obj = match previous.as_deref().map(serde_json::from_str::<serde_json::Value>) {
+    let mut obj = match previous
+        .as_deref()
+        .map(serde_json::from_str::<serde_json::Value>)
+    {
         Some(Ok(serde_json::Value::Object(m))) => m,
         None => serde_json::Map::new(),
         // Not JSON, or not an object: nothing in it can be kept by key, so start
@@ -489,7 +503,11 @@ fn write_config_to(file: &Path, path: &Path, ov: &Overrides) -> Result<Written> 
 /// `host::Host`, which has a third state (`none`, a browser tab) that this page
 /// never has: it is only ever served into the app's own window.
 fn page() -> String {
-    let chrome = if cfg!(target_os = "macos") { "overlay" } else { "custom" };
+    let chrome = if cfg!(target_os = "macos") {
+        "overlay"
+    } else {
+        "custom"
+    };
     include_str!("firstrun.html").replace("__ORCH_CHROME__", chrome)
 }
 
@@ -834,26 +852,45 @@ mod tests {
         let press = html
             .find("$('drag').addEventListener('mousedown'")
             .expect("the titlebar still starts a drag");
-        let guard = html[press..].find("DRAG_SLOP").or_else(|| html[..press].find("DRAG_SLOP"));
+        let guard = html[press..]
+            .find("DRAG_SLOP")
+            .or_else(|| html[..press].find("DRAG_SLOP"));
         assert!(guard.is_some(), "the drag has no movement threshold");
         // And the request itself is inside the movement handler, not the press.
-        let moved = html.find("const moved = (m) =>").expect("a movement handler");
-        let asks = html.find("post('/api/window/start-drag')").expect("it still asks");
-        assert!(asks > moved, "the drag is asked for before the pointer has moved");
+        let moved = html
+            .find("const moved = (m) =>")
+            .expect("a movement handler");
+        let asks = html
+            .find("post('/api/window/start-drag')")
+            .expect("it still asks");
+        assert!(
+            asks > moved,
+            "the drag is asked for before the pointer has moved"
+        );
     }
 
     #[test]
     fn the_first_run_page_is_told_how_its_window_is_decorated() {
         let html = page();
-        assert!(!html.contains("__ORCH_CHROME__"), "the placeholder survived");
-        let want = if cfg!(target_os = "macos") { "overlay" } else { "custom" };
+        assert!(
+            !html.contains("__ORCH_CHROME__"),
+            "the placeholder survived"
+        );
+        let want = if cfg!(target_os = "macos") {
+            "overlay"
+        } else {
+            "custom"
+        };
         assert!(
             html.contains(&format!(r#"data-chrome="{want}""#)),
             "the page was not told it is {want}"
         );
         // And the rule that spends it: the controls are off unless the window is
         // frameless.
-        assert!(html.contains(".wctl{display:none}"), "the controls are not gated");
+        assert!(
+            html.contains(".wctl{display:none}"),
+            "the controls are not gated"
+        );
         assert!(
             html.contains(r#"body[data-chrome="custom"] .wctl{display:flex}"#),
             "nothing turns them back on where they are needed"
@@ -894,7 +931,10 @@ mod tests {
         // resolved, since the string ends up in `config.json`.
         let roundabout = base.join("plain").join("..").join("myrepo");
         let info = validate(&roundabout).expect("a roundabout spelling still validates");
-        assert_eq!(info.path, std::fs::canonicalize(&repo).unwrap().to_string_lossy());
+        assert_eq!(
+            info.path,
+            std::fs::canonicalize(&repo).unwrap().to_string_lossy()
+        );
         assert_eq!(info.name, "myrepo");
 
         let _ = std::fs::remove_dir_all(&base);
@@ -905,17 +945,37 @@ mod tests {
     #[test]
     fn a_tilde_means_the_home_directory() {
         let home = Path::new("/home/someone");
-        assert_eq!(expand_home(Path::new("~/code/x"), Some(home)), PathBuf::from("/home/someone/code/x"));
-        assert_eq!(expand_home(Path::new("~"), Some(home)), PathBuf::from("/home/someone"));
-        assert_eq!(expand_home(Path::new("/abs/x"), Some(home)), PathBuf::from("/abs/x"));
-        assert_eq!(expand_home(Path::new("~user/x"), Some(home)), PathBuf::from("~user/x"), "not a shell");
-        assert_eq!(expand_home(Path::new("~/x"), None), PathBuf::from("~/x"), "no home, no expansion");
+        assert_eq!(
+            expand_home(Path::new("~/code/x"), Some(home)),
+            PathBuf::from("/home/someone/code/x")
+        );
+        assert_eq!(
+            expand_home(Path::new("~"), Some(home)),
+            PathBuf::from("/home/someone")
+        );
+        assert_eq!(
+            expand_home(Path::new("/abs/x"), Some(home)),
+            PathBuf::from("/abs/x")
+        );
+        assert_eq!(
+            expand_home(Path::new("~user/x"), Some(home)),
+            PathBuf::from("~user/x"),
+            "not a shell"
+        );
+        assert_eq!(
+            expand_home(Path::new("~/x"), None),
+            PathBuf::from("~/x"),
+            "no home, no expansion"
+        );
     }
 
     #[test]
     fn recents_round_trip_newest_first_without_duplicates() {
         let dir = tmp("roundtrip");
-        assert!(recent_projects_in(&dir).is_empty(), "a fresh dir has no recents");
+        assert!(
+            recent_projects_in(&dir).is_empty(),
+            "a fresh dir has no recents"
+        );
 
         record_recent_in(&dir, Path::new("/a/alpha")).unwrap();
         record_recent_in(&dir, Path::new("/b/bravo")).unwrap();
@@ -937,14 +997,21 @@ mod tests {
         for i in 0..(MAX_RECENT + 5) {
             record_recent_in(&dir, &PathBuf::from(format!("/p/repo{i}"))).unwrap();
         }
-        assert_eq!(recent_projects_in(&dir).len(), MAX_RECENT, "the list is bounded");
+        assert_eq!(
+            recent_projects_in(&dir).len(),
+            MAX_RECENT,
+            "the list is bounded"
+        );
     }
 
     #[test]
     fn a_corrupt_recent_file_reads_as_empty() {
         let dir = tmp("corrupt");
         std::fs::write(recent_file_in(&dir), "not json").unwrap();
-        assert!(recent_projects_in(&dir).is_empty(), "garbage does not keep the window shut");
+        assert!(
+            recent_projects_in(&dir).is_empty(),
+            "garbage does not keep the window shut"
+        );
     }
 
     // --- detection and config writing ---------------------------------------
@@ -960,10 +1027,16 @@ mod tests {
         assert_eq!(d.repo, None, "no remote means no repo to watch");
         assert_eq!(d.env_source, "none");
         assert_eq!(d.worktrees, ".claude/worktrees");
-        assert_eq!(d.base_branch, "origin/HEAD", "nothing fetched, so the daemon default");
+        assert_eq!(
+            d.base_branch, "origin/HEAD",
+            "nothing fetched, so the daemon default"
+        );
 
         // A GitHub origin becomes the repo to watch.
-        run_git(&dir, &["remote", "add", "origin", "git@github.com:acme/thing.git"]);
+        run_git(
+            &dir,
+            &["remote", "add", "origin", "git@github.com:acme/thing.git"],
+        );
         assert_eq!(detect(&dir).repo.as_deref(), Some("acme/thing"));
 
         // A mise.toml is read as the environment source.
@@ -984,10 +1057,19 @@ mod tests {
 
         let procs = detect_processes(&dir);
         let labels: Vec<_> = procs.iter().map(|p| p.label.as_str()).collect();
-        assert!(labels.contains(&"docker compose up"), "the compose stack is offered");
-        assert!(labels.contains(&"pnpm run dev"), "dev is a long-running script");
+        assert!(
+            labels.contains(&"docker compose up"),
+            "the compose stack is offered"
+        );
+        assert!(
+            labels.contains(&"pnpm run dev"),
+            "dev is a long-running script"
+        );
         assert!(labels.contains(&"pnpm run watch"), "watch is too");
-        assert!(!labels.iter().any(|l| l.contains("build\"")), "one-shot build is not offered");
+        assert!(
+            !labels.iter().any(|l| l.contains("build\"")),
+            "one-shot build is not offered"
+        );
         assert!(
             !labels.contains(&"pnpm run build"),
             "a plain build is one-shot, not a managed process"
@@ -1017,11 +1099,17 @@ mod tests {
         )
         .unwrap();
 
-        let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
-        let procs = v["main_processes"].as_array().expect("main_processes written");
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
+        let procs = v["main_processes"]
+            .as_array()
+            .expect("main_processes written");
         assert_eq!(procs.len(), 1);
         assert_eq!(procs[0]["name"], "docker");
-        assert_eq!(procs[0]["autostart"], true, "a ticked process starts with the daemon");
+        assert_eq!(
+            procs[0]["autostart"], true,
+            "a ticked process starts with the daemon"
+        );
         let _ = std::fs::remove_dir_all(&base);
     }
 
@@ -1048,7 +1136,10 @@ mod tests {
         let written = std::fs::read_to_string(&cfg).unwrap();
         let v: serde_json::Value = serde_json::from_str(&written).unwrap();
         assert_eq!(v["upstream_ref"], "upstream/develop");
-        assert_eq!(v["upstream_remote"], "upstream", "the remote is split off the ref");
+        assert_eq!(
+            v["upstream_remote"], "upstream",
+            "the remote is split off the ref"
+        );
         assert_eq!(v["repo"], "acme/thing");
         assert_eq!(v["env_source"], "direnv");
         // Slim: nothing that was not asked for.
@@ -1063,10 +1154,8 @@ mod tests {
         );
         // The spellings the page really sends, so a rename of either enum fails
         // here rather than on somebody's first run.
-        let ok: Overrides = serde_json::from_str(
-            r#"{"path":"/x","env_source":"mise"}"#,
-        )
-        .expect("the page's own values");
+        let ok: Overrides = serde_json::from_str(r#"{"path":"/x","env_source":"mise"}"#)
+            .expect("the page's own values");
         assert_eq!(ok.env_source, Some(crate::config::EnvSourceKind::Mise));
 
         let _ = std::fs::remove_dir_all(&base);
@@ -1086,7 +1175,10 @@ mod tests {
         let w = write_config_to(&cfg, &repo, &Overrides::default()).unwrap();
         assert!(cfg.exists());
         w.undo();
-        assert!(!cfg.exists(), "a first write is undone by removing the file");
+        assert!(
+            !cfg.exists(),
+            "a first write is undone by removing the file"
+        );
 
         // Something before: undo restores it byte for byte.
         let old = r#"{"main_checkout":"/somewhere/else"}"#;
@@ -1115,7 +1207,11 @@ mod tests {
         std::fs::create_dir_all(cfg.with_extension("json.bak")).unwrap();
 
         let w = write_config_to(&cfg, &repo, &Overrides::default()).unwrap();
-        assert_ne!(std::fs::read_to_string(&cfg).unwrap(), old, "the write still happened");
+        assert_ne!(
+            std::fs::read_to_string(&cfg).unwrap(),
+            old,
+            "the write still happened"
+        );
         w.undo();
         assert_eq!(
             std::fs::read_to_string(&cfg).unwrap(),
@@ -1139,10 +1235,14 @@ mod tests {
 
         write_config_to(&cfg, &repo, &Overrides::default()).unwrap();
 
-        let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
         assert_eq!(v["main_checkout"], repo.to_string_lossy().as_ref());
         assert_eq!(v["worktree_setup"], serde_json::json!(["mise", "trust"]));
-        assert_eq!(v["repo"], "acme/thing", "a key the review did not answer is left alone");
+        assert_eq!(
+            v["repo"], "acme/thing",
+            "a key the review did not answer is left alone"
+        );
         assert_eq!(
             std::fs::read_to_string(base.join("config.json.bak")).unwrap(),
             old,
@@ -1159,7 +1259,10 @@ mod tests {
         let repo = base.join("proj");
         std::fs::create_dir_all(&repo).unwrap();
         run_git(&repo, &["init", "-q"]);
-        run_git(&repo, &["remote", "add", "origin", "git@github.com:acme/thing.git"]);
+        run_git(
+            &repo,
+            &["remote", "add", "origin", "git@github.com:acme/thing.git"],
+        );
         let cfg = base.join("config.json");
 
         let with = |r: &str| Overrides {
@@ -1167,16 +1270,22 @@ mod tests {
             ..Default::default()
         };
         write_config_to(&cfg, &repo, &with("acme/thing")).unwrap();
-        let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
-        assert!(v.get("repo").is_none(), "the derived repo is not pinned: {v}");
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
+        assert!(
+            v.get("repo").is_none(),
+            "the derived repo is not pinned: {v}"
+        );
 
         write_config_to(&cfg, &repo, &with("other/name")).unwrap();
-        let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
         assert_eq!(v["repo"], "other/name");
 
         // Answering with the derived one again lifts the pin.
         write_config_to(&cfg, &repo, &with("acme/thing")).unwrap();
-        let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
         assert!(v.get("repo").is_none(), "{v}");
         let _ = std::fs::remove_dir_all(&base);
     }
@@ -1191,19 +1300,49 @@ mod tests {
         let repo = base.join("proj");
         std::fs::create_dir_all(&repo).unwrap();
         run_git(&repo, &["init", "-q", "-b", "main"]);
-        run_git(&repo, &["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "x"]);
-        run_git(&repo, &["remote", "add", "origin", "git@github.com:fork/thing.git"]);
-        run_git(&repo, &["remote", "add", "upstream", "git@github.com:acme/thing.git"]);
+        run_git(
+            &repo,
+            &[
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "user.name=t",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                "x",
+            ],
+        );
+        run_git(
+            &repo,
+            &["remote", "add", "origin", "git@github.com:fork/thing.git"],
+        );
+        run_git(
+            &repo,
+            &["remote", "add", "upstream", "git@github.com:acme/thing.git"],
+        );
         run_git(&repo, &["update-ref", "refs/remotes/origin/main", "HEAD"]);
-        run_git(&repo, &["update-ref", "refs/remotes/upstream/develop", "HEAD"]);
+        run_git(
+            &repo,
+            &["update-ref", "refs/remotes/upstream/develop", "HEAD"],
+        );
 
         let d = detect(&repo);
-        assert_eq!(d.base_branch, "upstream/develop", "the upstream's branch, not the fork's");
-        assert_eq!(d.repo.as_deref(), Some("acme/thing"), "the upstream's repo, not the fork's");
+        assert_eq!(
+            d.base_branch, "upstream/develop",
+            "the upstream's branch, not the fork's"
+        );
+        assert_eq!(
+            d.repo.as_deref(),
+            Some("acme/thing"),
+            "the upstream's repo, not the fork's"
+        );
 
         let cfg = base.join("config.json");
         write_config_to(&cfg, &repo, &Overrides::default()).unwrap();
-        let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
         assert_eq!(v["upstream_remote"], "upstream");
         assert!(
             v["upstream_ref"].as_str().unwrap().starts_with("upstream/"),
@@ -1336,13 +1475,21 @@ mod tests {
         std::fs::create_dir_all(&repo).unwrap();
         git_repo(&repo);
 
-        let ok = post(stub(), "/api/validate", &format!("{{\"path\":{:?}}}", repo.to_string_lossy())).await;
+        let ok = post(
+            stub(),
+            "/api/validate",
+            &format!("{{\"path\":{:?}}}", repo.to_string_lossy()),
+        )
+        .await;
         assert_eq!(ok["ok"], true);
         assert_eq!(ok["name"], "proj");
 
         let bad = post(stub(), "/api/validate", "{\"path\":\"/no/such/place\"}").await;
         assert_eq!(bad["ok"], false);
-        assert!(bad["error"].is_string(), "an invalid folder explains itself");
+        assert!(
+            bad["error"].is_string(),
+            "an invalid folder explains itself"
+        );
         let _ = std::fs::remove_dir_all(&base);
     }
 
@@ -1352,18 +1499,32 @@ mod tests {
         assert_eq!(get(stub(), "/api/context").await["switching"], false);
 
         // A switch: the page is told so, and cancel reaches the host.
-        let host = Arc::new(StubHost { switching: true, ..Default::default() });
+        let host = Arc::new(StubHost {
+            switching: true,
+            ..Default::default()
+        });
         assert_eq!(get(host.clone(), "/api/context").await["switching"], true);
         post(host.clone(), "/api/cancel", "").await;
-        assert!(*host.cancelled.lock().unwrap(), "cancel returns to the running project");
+        assert!(
+            *host.cancelled.lock().unwrap(),
+            "cancel returns to the running project"
+        );
     }
 
     #[tokio::test]
     async fn detect_route_returns_the_detected_settings() {
         let dir = tmp("route-detect");
         run_git(&dir, &["init", "-q"]);
-        run_git(&dir, &["remote", "add", "origin", "git@github.com:acme/thing.git"]);
-        let out = post(stub(), "/api/detect", &format!("{{\"path\":{:?}}}", dir.to_string_lossy())).await;
+        run_git(
+            &dir,
+            &["remote", "add", "origin", "git@github.com:acme/thing.git"],
+        );
+        let out = post(
+            stub(),
+            "/api/detect",
+            &format!("{{\"path\":{:?}}}", dir.to_string_lossy()),
+        )
+        .await;
         assert_eq!(out["repo"], "acme/thing");
         assert_eq!(out["worktrees"], ".claude/worktrees");
         assert!(out["base_branch"].is_string());
@@ -1377,15 +1538,32 @@ mod tests {
         git_repo(&repo);
 
         let host = stub();
-        let out = post(host.clone(), "/api/open", &format!("{{\"path\":{:?}}}", repo.to_string_lossy())).await;
+        let out = post(
+            host.clone(),
+            "/api/open",
+            &format!("{{\"path\":{:?}}}", repo.to_string_lossy()),
+        )
+        .await;
         assert_eq!(out["ok"], true);
         let canonical = std::fs::canonicalize(&repo).unwrap();
-        assert_eq!(host.opened.lock().unwrap().as_slice(), std::slice::from_ref(&canonical), "the host was handed the checkout");
+        assert_eq!(
+            host.opened.lock().unwrap().as_slice(),
+            std::slice::from_ref(&canonical),
+            "the host was handed the checkout"
+        );
 
         // A host that cannot take the open (a switch with no binary to restart
         // into) is reported as such, not as a success the window never follows.
-        let host = Arc::new(StubHost { refuse_open: true, ..Default::default() });
-        let out = post(host.clone(), "/api/open", &format!("{{\"path\":{:?}}}", repo.to_string_lossy())).await;
+        let host = Arc::new(StubHost {
+            refuse_open: true,
+            ..Default::default()
+        });
+        let out = post(
+            host.clone(),
+            "/api/open",
+            &format!("{{\"path\":{:?}}}", repo.to_string_lossy()),
+        )
+        .await;
         assert_eq!(out["ok"], false);
         assert!(out["error"].as_str().unwrap().contains("kept"), "{out}");
 
@@ -1393,7 +1571,10 @@ mod tests {
         let host = stub();
         let out = post(host.clone(), "/api/open", "{\"path\":\"/no/such/place\"}").await;
         assert_eq!(out["ok"], false);
-        assert!(host.opened.lock().unwrap().is_empty(), "an invalid open is refused before the daemon");
+        assert!(
+            host.opened.lock().unwrap().is_empty(),
+            "an invalid open is refused before the daemon"
+        );
         let _ = std::fs::remove_dir_all(&base);
     }
 

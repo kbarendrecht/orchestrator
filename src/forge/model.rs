@@ -17,7 +17,11 @@ use serde::Serialize;
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
+#[cfg_attr(
+    test,
+    derive(ts_rs::TS),
+    ts(export, export_to = "../web/snapshot.d.ts")
+)]
 pub enum Checks {
     Passing,
     Failing,
@@ -26,7 +30,11 @@ pub enum Checks {
 }
 
 #[derive(Debug, Clone, Serialize)]
-#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
+#[cfg_attr(
+    test,
+    derive(ts_rs::TS),
+    ts(export, export_to = "../web/snapshot.d.ts")
+)]
 pub struct Pr {
     #[cfg_attr(test, ts(type = "number"))]
     pub number: u64,
@@ -128,7 +136,11 @@ pub fn answered(last_author: &str, viewer_thumbed: bool, viewer: &str) -> bool {
 
 /// One comment in a review thread.
 #[derive(Debug, Clone, Serialize)]
-#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
+#[cfg_attr(
+    test,
+    derive(ts_rs::TS),
+    ts(export, export_to = "../web/snapshot.d.ts")
+)]
 pub struct Comment {
     /// REST id. The reply endpoint is keyed on this, not on the GraphQL node id.
     pub database_id: u64,
@@ -150,7 +162,11 @@ pub struct Comment {
 
 /// An unresolved conversation on a PR.
 #[derive(Debug, Clone, Serialize)]
-#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
+#[cfg_attr(
+    test,
+    derive(ts_rs::TS),
+    ts(export, export_to = "../web/snapshot.d.ts")
+)]
 pub struct Thread {
     /// `PRRT_…`. **Not** a resolve target — closing a thread is the comment
     /// author's button, never ours — but the join key between a thread and the
@@ -341,10 +357,16 @@ mod tests {
     fn a_thread_you_thumbed_is_not_still_asking() {
         let mut t = thread_at(Some("a.ts"), Some(1));
         t.comments = vec![said("me", false), said("them", false)];
-        assert!(t.is_answerable("me"), "they had the last word and nothing else");
+        assert!(
+            t.is_answerable("me"),
+            "they had the last word and nothing else"
+        );
 
         t.comments = vec![said("me", false), said("them", true)];
-        assert!(!t.is_answerable("me"), "a 👍 is an answer — the flow writes it as one");
+        assert!(
+            !t.is_answerable("me"),
+            "a 👍 is an answer — the flow writes it as one"
+        );
         // And the poll's rule agrees, which is the whole point of sharing it.
         assert!(answered("them", true, "me"));
         assert!(answered("me", false, "me"));
@@ -357,7 +379,10 @@ mod tests {
         t.is_outdated = true;
         assert!(t.is_answerable("me"));
         t.is_resolved = true;
-        assert!(!t.is_answerable("me"), "resolved is done, whoever spoke last");
+        assert!(
+            !t.is_answerable("me"),
+            "resolved is done, whoever spoke last"
+        );
     }
 
     fn pr(number: u64, head: &str, base: &str) -> Pr {

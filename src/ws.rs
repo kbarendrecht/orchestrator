@@ -294,11 +294,11 @@ mod tests {
         // Every one of these arrives while you are watching a turn, and none of
         // them means stop.
         for ordinary in [
-            &b"\x1b[A"[..],       // up arrow
-            b"\x1b[B",            // down
+            &b"\x1b[A"[..],          // up arrow
+            b"\x1b[B",               // down
             b"\x1b[200~hi\x1b[201~", // bracketed paste
-            b"\x1b[M   ",         // a mouse report, one per movement
-            b"\x1bb",             // alt+b
+            b"\x1b[M   ",            // a mouse report, one per movement
+            b"\x1bb",                // alt+b
             b"hello",
             b"",
         ] {

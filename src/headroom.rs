@@ -76,7 +76,9 @@ mod tests {
         let p = dir.join("meminfo");
         std::fs::write(
             &p,
-            format!("MemTotal:       32302708 kB\nMemFree:  100 kB\nMemAvailable: {available_kb} kB\n"),
+            format!(
+                "MemTotal:       32302708 kB\nMemFree:  100 kB\nMemAvailable: {available_kb} kB\n"
+            ),
         )
         .unwrap();
         p

@@ -13,11 +13,18 @@ use crate::model::SessionId;
 /// and to be honest about a run that gave up.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "state", rename_all = "snake_case")]
-#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
+#[cfg_attr(
+    test,
+    derive(ts_rs::TS),
+    ts(export, export_to = "../web/snapshot.d.ts")
+)]
 pub enum PrAutomation {
     Running {
         session: SessionId,
-        #[cfg_attr(test, ts(type = "{ secs_since_epoch: number, nanos_since_epoch: number }"))]
+        #[cfg_attr(
+            test,
+            ts(type = "{ secs_since_epoch: number, nanos_since_epoch: number }")
+        )]
         started: SystemTime,
     },
     /// The run stopped without turning the PR green. It wants you.
@@ -33,7 +40,10 @@ pub enum PrAutomation {
         /// sha. Neither could be told apart from you moving the branch.
         #[serde(default)]
         at_head: Option<String>,
-        #[cfg_attr(test, ts(type = "{ secs_since_epoch: number, nanos_since_epoch: number }"))]
+        #[cfg_attr(
+            test,
+            ts(type = "{ secs_since_epoch: number, nanos_since_epoch: number }")
+        )]
         at: SystemTime,
     },
 }
@@ -68,7 +78,9 @@ impl AutomationStore {
         // Decided before acting, because clearing takes the map mutably while the
         // record it is deciding about is still borrowed.
         let moved = match self.by_pr.get(&pr) {
-            Some(PrAutomation::Exhausted { at_head: Some(h), .. }) => h != head,
+            Some(PrAutomation::Exhausted {
+                at_head: Some(h), ..
+            }) => h != head,
             Some(PrAutomation::Exhausted { at_head: None, .. }) => false,
             _ => return false,
         };
@@ -102,15 +114,15 @@ pub struct GuardInput<'a> {
 }
 
 /* **There is no cap on concurrent runs, and 2 was the wrong number for it.**
-   `MAX_AUTOMATION` came from two worlds that no longer exist: automation that
-   fired on its own (§8's transition rules, never implemented — every run is
-   hand-triggered, so passing the cap meant pressing the button three times while
-   watching), and the capability subsystem that tracked shared resources, which was
-   deleted. At 2 it was neither serialization nor resource protection: `headroom`
-   does the latter at spawn with real numbers, `branch_busy` and the one-run-per-PR
-   rule above stop the collisions that matter, and the only thing left was a
-   runaway API caller — on a route that needs the app token, which agents
-   deliberately do not hold. */
+`MAX_AUTOMATION` came from two worlds that no longer exist: automation that
+fired on its own (§8's transition rules, never implemented — every run is
+hand-triggered, so passing the cap meant pressing the button three times while
+watching), and the capability subsystem that tracked shared resources, which was
+deleted. At 2 it was neither serialization nor resource protection: `headroom`
+does the latter at spawn with real numbers, `branch_busy` and the one-run-per-PR
+rule above stop the collisions that matter, and the only thing left was a
+runaway API caller — on a route that needs the app token, which agents
+deliberately do not hold. */
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "verdict", rename_all = "snake_case")]
@@ -118,7 +130,9 @@ pub enum Verdict {
     Go,
     /// Refused, with the reason shown verbatim. `fix-pr` is triggered by hand,
     /// so a refusal is something you read, not something swallowed.
-    No { reason: String },
+    No {
+        reason: String,
+    },
 }
 
 /// Decide whether a hand-triggered `fix-pr` may start.
@@ -237,17 +251,17 @@ pub async fn start(
     number: u64,
 ) -> anyhow::Result<SessionId> {
     /* **Claimed before anything is read, because the guard cannot close this
-       window on its own.** `Running` is only recorded *after*
-       `spawn_fix_pr_session` returns, and that is hundreds of milliseconds of git —
-       so two POSTs arriving together both saw no run, both passed the table, and
-       both spawned. Two runs then rebase and force-push the same branch, and
-       `settle` (keyed on the PR) clears the record when the first of them exits.
+    window on its own.** `Running` is only recorded *after*
+    `spawn_fix_pr_session` returns, and that is hundreds of milliseconds of git —
+    so two POSTs arriving together both saw no run, both passed the table, and
+    both spawned. Two runs then rebase and force-push the same branch, and
+    `settle` (keyed on the PR) clears the record when the first of them exits.
 
-       `branch_busy` could not cover it either: `live_sessions_in` filters on
-       `pid_alive`, and `insert_and_spawn` records with `pid: None` before the pty
-       exists, so the first run is invisible to it for exactly the window that
-       matters. Held until this function returns, by which point `Running` is
-       written and the ordinary guard takes over. */
+    `branch_busy` could not cover it either: `live_sessions_in` filters on
+    `pid_alive`, and `insert_and_spawn` records with `pid: None` before the pty
+    exists, so the first run is invisible to it for exactly the window that
+    matters. Held until this function returns, by which point `Running` is
+    written and the ordinary guard takes over. */
     let _claim = app
         .try_claim(format!("fix-pr:{number}"))
         .await
@@ -566,15 +580,24 @@ mod tests {
         let mut store = AutomationStore::default();
         store.by_pr.insert(
             7,
-            PrAutomation::Exhausted { at_head: None, at: SystemTime::now() },
+            PrAutomation::Exhausted {
+                at_head: None,
+                at: SystemTime::now(),
+            },
         );
-        assert!(store.reconcile_head(7, Some("post-push")), "the baseline is news");
+        assert!(
+            store.reconcile_head(7, Some("post-push")),
+            "the baseline is news"
+        );
         assert!(store.get(7).is_some(), "adopting must not clear the record");
         // Adopted, so it is now the thing a later move is judged against — and a
         // second poll at the same head changes nothing and writes nothing.
         assert!(!store.reconcile_head(7, Some("post-push")));
         assert!(store.get(7).is_some());
-        assert!(store.reconcile_head(7, Some("yours")), "now it really moved");
+        assert!(
+            store.reconcile_head(7, Some("yours")),
+            "now it really moved"
+        );
         assert!(store.get(7).is_none());
     }
 
@@ -597,7 +620,10 @@ mod tests {
         let mut p = pr(7);
         p.checks = Checks::Passing;
         p.mergeable = "CONFLICTING".into();
-        assert!(verdict(Some(&p)).is_some(), "green checks but unmergeable is still stuck");
+        assert!(
+            verdict(Some(&p)).is_some(),
+            "green checks but unmergeable is still stuck"
+        );
     }
 
     #[test]

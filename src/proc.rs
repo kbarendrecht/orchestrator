@@ -106,13 +106,19 @@ pub fn run_bounded_with_input(
 ) -> Result<Output> {
     use std::os::unix::process::CommandExt;
 
-    let (exe, args) = argv.split_first().with_context(|| format!("{label}: empty command"))?;
+    let (exe, args) = argv
+        .split_first()
+        .with_context(|| format!("{label}: empty command"))?;
     let mut child = Command::new(exe)
         .args(args)
         .current_dir(cwd)
         // No stdin unless the caller has something to say: a command that stops to
         // prompt would otherwise hang until the deadline rather than failing.
-        .stdin(if input.is_some() { Stdio::piped() } else { Stdio::null() })
+        .stdin(if input.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
         // On the child, never on this process. `std::env::set_var` is
         // process-global and this daemon is full of threads, so setting a variable
         // "for the hook" would set it for every other thing running at that moment.
@@ -156,7 +162,10 @@ pub fn run_bounded_with_input(
     // a wakeup every 2ms on a build that runs for a minute.
     let mut wait = Duration::from_millis(2);
     let status = loop {
-        if let Some(status) = child.try_wait().with_context(|| format!("waiting on {label}"))? {
+        if let Some(status) = child
+            .try_wait()
+            .with_context(|| format!("waiting on {label}"))?
+        {
             break status;
         }
         if Instant::now() >= deadline {
@@ -220,13 +229,22 @@ mod tests {
         let _ = std::fs::remove_file(&marker);
         // A grandchild that outlives the deadline; killing only the direct child
         // would leave it — the case `timeout` did not cover.
-        let script = format!("sleep 30 & echo $! > {}; sleep 30", marker.to_string_lossy());
+        let script = format!(
+            "sleep 30 & echo $! > {}; sleep 30",
+            marker.to_string_lossy()
+        );
         let argv = vec!["sh".to_string(), "-c".to_string(), script];
 
         let start = Instant::now();
         let err = run_bounded(&dir, 1, &argv, "test").expect_err("must time out");
-        assert!(format!("{err:#}").contains("timed out after 1s"), "got {err:#}");
-        assert!(start.elapsed() < Duration::from_secs(10), "did not stop at the deadline");
+        assert!(
+            format!("{err:#}").contains("timed out after 1s"),
+            "got {err:#}"
+        );
+        assert!(
+            start.elapsed() < Duration::from_secs(10),
+            "did not stop at the deadline"
+        );
 
         let grandchild: u32 = std::fs::read_to_string(&marker)
             .expect("recorded")
@@ -258,8 +276,14 @@ mod tests {
         let err = run_bounded(&dir, 1, &argv, "test").expect_err("must time out");
         let said = format!("{err:#}");
         assert!(said.contains("timed out after 1s"), "got {said}");
-        assert!(said.contains("cleaned-up"), "the trap's stderr is not in the error: {said}");
-        assert!(start.elapsed() < Duration::from_secs(5), "did not stop at the deadline");
+        assert!(
+            said.contains("cleaned-up"),
+            "the trap's stderr is not in the error: {said}"
+        );
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "did not stop at the deadline"
+        );
     }
 
     /// A hook is defined as reading one JSON object on stdin, so the payload has to
@@ -281,7 +305,10 @@ mod tests {
         )
         .expect("it finished rather than hitting the deadline");
         assert!(out.status.success());
-        assert_eq!(String::from_utf8_lossy(&out.stdout), r#"{"worktreePath":"/x"}"#);
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            r#"{"worktreePath":"/x"}"#
+        );
     }
 
     /// Set on the child, never on this process: `std::env::set_var` is
@@ -289,11 +316,18 @@ mod tests {
     /// everything else running at that moment.
     #[test]
     fn an_env_var_reaches_the_child_without_touching_this_process() {
-        let argv = vec!["sh".to_string(), "-c".to_string(), "printf %s \"$ORCH_T\"".to_string()];
+        let argv = vec![
+            "sh".to_string(),
+            "-c".to_string(),
+            "printf %s \"$ORCH_T\"".to_string(),
+        ];
         let envs = vec![("ORCH_T".to_string(), "child-only".to_string())];
         let out = run_bounded_with_input(Path::new("/tmp"), 5, &argv, "t", None, &envs).unwrap();
         assert_eq!(String::from_utf8_lossy(&out.stdout), "child-only");
-        assert!(std::env::var("ORCH_T").is_err(), "the daemon's own env is untouched");
+        assert!(
+            std::env::var("ORCH_T").is_err(),
+            "the daemon's own env is untouched"
+        );
     }
 
     #[test]
@@ -301,7 +335,11 @@ mod tests {
         let out = run_bounded(
             &std::env::temp_dir(),
             10,
-            &["sh".to_string(), "-c".to_string(), "echo hi; echo bad >&2".to_string()],
+            &[
+                "sh".to_string(),
+                "-c".to_string(),
+                "echo hi; echo bad >&2".to_string(),
+            ],
             "test",
         )
         .expect("ran");
@@ -324,7 +362,8 @@ mod tests {
                 // ~1MB, well past the 64K pipe buffer.
                 "i=0; while [ $i -lt 16384 ]; do printf '%s\\n' \
                  aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa; \
-                 i=$((i+1)); done".to_string(),
+                 i=$((i+1)); done"
+                    .to_string(),
             ],
             "test",
         )

@@ -29,7 +29,11 @@ fn scratch_repo(root: &Path, name: &str) -> PathBuf {
             .current_dir(&dir)
             .output()
             .expect("git ran");
-        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
     };
     git(&["init", "-q", "-b", "main"]);
     git(&["config", "user.email", "test@test"]);
@@ -65,18 +69,27 @@ fn a_missing_host_file_falls_back_to_the_configured_checkout() {
 
     // And once the file exists it is the answer, config or no config.
     orchd::host::remember_checkouts(&[]);
-    assert!(orchd::host::remembered_checkouts().is_empty(), "the fallback outlived the file");
+    assert!(
+        orchd::host::remembered_checkouts().is_empty(),
+        "the fallback outlived the file"
+    );
 
     /* **A hand-set key survives every write of the checkout list.** The writer
-       rebuilds `HostFile` and serialises the whole struct, so a field it does not
-       set would be written back as its default — which is how `see_through_window`
-       would turn itself off on the next add or close, with nothing to see but a
-       board that stopped being see-through. */
+    rebuilds `HostFile` and serialises the whole struct, so a field it does not
+    set would be written back as its default — which is how `see_through_window`
+    would turn itself off on the next add or close, with nothing to see but a
+    board that stopped being see-through. */
     let file = cfg.join("host.json");
     std::fs::write(&file, r#"{"checkouts":[],"see_through_window":true}"#).unwrap();
-    assert!(orchd::host::see_through_window(), "the key did not read back");
+    assert!(
+        orchd::host::see_through_window(),
+        "the key did not read back"
+    );
     orchd::host::remember_checkouts(std::slice::from_ref(&repo));
-    assert!(orchd::host::see_through_window(), "recording the checkouts dropped the key");
+    assert!(
+        orchd::host::see_through_window(),
+        "recording the checkouts dropped the key"
+    );
 
     // And absent is off: a see-through window is a compositor feature, so nothing
     // may turn it on for a machine that never asked.

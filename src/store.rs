@@ -192,9 +192,9 @@ pub struct WindowRecord {
     pub width: u32,
     pub height: u32,
     /* **The position is stored too, and it is the half that was missing.** Only
-       the size was remembered, so every launch handed placement to the window
-       manager and the window appeared somewhere new each time. Absent where the
-       display server will not say — a Wayland client is never told where it is. */
+    the size was remembered, so every launch handed placement to the window
+    manager and the window appeared somewhere new each time. Absent where the
+    display server will not say — a Wayland client is never told where it is. */
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub x: Option<i32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -284,11 +284,11 @@ fn save_json<T: Serialize + ?Sized>(p: &Path, value: &T) -> Result<()> {
         std::fs::create_dir_all(dir)?;
     }
     /* **A tmp name unique to this write.** Every store shared one
-       `<name>.json.tmp`, so two overlapping writers used the same scratch file:
-       both wrote it, the first rename moved it away, and the second failed
-       `ENOENT` — surfacing as "could not persist session records" for a write that
-       had nothing wrong with it. The counter is per process and the pid is in the
-       name, so neither two writers here nor two daemons can collide. */
+    `<name>.json.tmp`, so two overlapping writers used the same scratch file:
+    both wrote it, the first rename moved it away, and the second failed
+    `ENOENT` — surfacing as "could not persist session records" for a write that
+    had nothing wrong with it. The counter is per process and the pid is in the
+    name, so neither two writers here nor two daemons can collide. */
     static SEQ: AtomicU64 = AtomicU64::new(0);
     let tmp = p.with_extension(format!(
         "json.tmp.{}.{}",
@@ -297,15 +297,16 @@ fn save_json<T: Serialize + ?Sized>(p: &Path, value: &T) -> Result<()> {
     ));
 
     let write = || -> Result<()> {
-        let mut f = std::fs::File::create(&tmp)
-            .with_context(|| format!("creating {}", tmp.display()))?;
+        let mut f =
+            std::fs::File::create(&tmp).with_context(|| format!("creating {}", tmp.display()))?;
         f.write_all(serde_json::to_string_pretty(value)?.as_bytes())
             .with_context(|| format!("writing {}", tmp.display()))?;
         // The rename is atomic in the directory, but it does not promise the
         // *contents* are on disk first: without this, a power loss can leave the
         // real name pointing at a file whose blocks were never written — which is
         // the truncated-store case the write-and-rename exists to prevent.
-        f.sync_all().with_context(|| format!("flushing {}", tmp.display()))?;
+        f.sync_all()
+            .with_context(|| format!("flushing {}", tmp.display()))?;
         Ok(())
     };
     if let Err(e) = write() {
@@ -333,12 +334,12 @@ fn load_json<T: serde::de::DeserializeOwned + Default>(p: Result<PathBuf>) -> T 
         Ok(v) => v,
         Err(e) => {
             /* **Move the unparseable file aside before handing back a default.**
-               The default is what the next `save_*` writes, so defaulting in place
-               did not merely lose the reading — it *overwrote the only copy* with
-               `[]` moments later. For `sessions.json` that is every record of every
-               conversation, which is not what "a corrupt store only costs the
-               resume offers" meant. Renamed rather than copied, so there is exactly
-               one of it and the daemon still boots. */
+            The default is what the next `save_*` writes, so defaulting in place
+            did not merely lose the reading — it *overwrote the only copy* with
+            `[]` moments later. For `sessions.json` that is every record of every
+            conversation, which is not what "a corrupt store only costs the
+            resume offers" meant. Renamed rather than copied, so there is exactly
+            one of it and the daemon still boots. */
             let aside = p.with_extension("json.corrupt");
             match std::fs::rename(&p, &aside) {
                 Ok(()) => tracing::error!(
@@ -442,7 +443,9 @@ fn resolve_runs_path() -> Result<PathBuf> {
 /// `sessions.json`: the run's commits are already in git by the time anything can
 /// go wrong, and this record is the only thing that says which commit answers
 /// which reviewer. Without it a restart left a branch of commits and no map.
-pub fn save_resolve_runs(runs: &std::collections::HashMap<u64, crate::state::ResolveRun>) -> Result<()> {
+pub fn save_resolve_runs(
+    runs: &std::collections::HashMap<u64, crate::state::ResolveRun>,
+) -> Result<()> {
     save_json(&resolve_runs_path()?, runs)
 }
 
@@ -491,17 +494,17 @@ pub fn load() -> Vec<SessionRecord> {
 pub fn prune_ghosts(mut records: Vec<SessionRecord>) -> (Vec<SessionRecord>, usize) {
     let before = records.len();
     /* Pin first, exactly as `restore_sessions` does, and for the reason its own
-       comment gives: a worktree session files its transcript under the checkout it
-       started in, not the worktree, so `transcript_path` is usually `None` on disk
-       and the cwd-derived slug finds nothing either. Only `find_transcript`'s hunt
-       does.
+    comment gives: a worktree session files its transcript under the checkout it
+    started in, not the worktree, so `transcript_path` is usually `None` on disk
+    and the cwd-derived slug finds nothing either. Only `find_transcript`'s hunt
+    does.
 
-       This is not a hypothetical. The first version of this checked the narrow
-       path *before* pinning, decided all five records on a real machine had no
-       transcript, and deleted every one of them — while the unit test passed,
-       because it set `transcript_path` explicitly and so never exercised the case
-       that actually occurs. Pinning here also repairs the record, so the path is
-       written back correct rather than re-hunted on every start. */
+    This is not a hypothetical. The first version of this checked the narrow
+    path *before* pinning, decided all five records on a real machine had no
+    transcript, and deleted every one of them — while the unit test passed,
+    because it set `transcript_path` explicitly and so never exercised the case
+    that actually occurs. Pinning here also repairs the record, so the path is
+    written back correct rather than re-hunted on every start. */
     for r in &mut records {
         pin_transcript(r.id, &r.cwd, &mut r.transcript_path);
         // Repair a record written before `had_a_turn` existed: it defaults to
@@ -990,7 +993,10 @@ mod tests {
             .map(|e| e.file_name().to_string_lossy().into_owned())
             .filter(|n| n.contains(".tmp"))
             .collect();
-        assert!(leftovers.is_empty(), "scratch files left behind: {leftovers:?}");
+        assert!(
+            leftovers.is_empty(),
+            "scratch files left behind: {leftovers:?}"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1052,36 +1058,63 @@ mod tests {
             record("real-conversation", Some(real.clone()), None),
             // The bit already set, no file needed: a record written since the field
             // existed carries its own answer.
-            SessionRecord { had_a_turn: true, ..record("had-a-turn", None, None) },
+            SessionRecord {
+                had_a_turn: true,
+                ..record("had-a-turn", None, None)
+            },
             // A live session that had a turn survives — `was_live` alone is not why,
             // its conversation is.
-            SessionRecord { was_live: true, had_a_turn: true, ..record("was-live-real", None, None) },
+            SessionRecord {
+                was_live: true,
+                had_a_turn: true,
+                ..record("was-live-real", None, None)
+            },
             // The archive is the *other* place a conversation can be: teardown
             // copies it out and the original may be pruned by Claude Code.
             record("has-archived-copy", None, Some(archived_copy.clone())),
             // A file, but no turn in it — dropped now, kept before.
             record("headers-only", Some(headers.clone()), None),
             // Recorded paths that no longer resolve are the same as none.
-            record("dangling-paths", Some(dir.join("gone.jsonl")), Some(dir.join("gone2.jsonl"))),
+            record(
+                "dangling-paths",
+                Some(dir.join("gone.jsonl")),
+                Some(dir.join("gone2.jsonl")),
+            ),
             record("ghost", None, None),
             // Live at the crash but never a turn: `auto_resume` refuses it (a resume
             // would exit instantly), so keeping it only makes an `Archived,
             // has_transcript=false` row that `isConversation` hides — an invisible
             // ghost. Dropped, precisely because `was_live` no longer outranks the
             // turn check.
-            SessionRecord { was_live: true, ..record("was-live-turnless", None, None) },
+            SessionRecord {
+                was_live: true,
+                ..record("was-live-turnless", None, None)
+            },
         ];
 
         let (kept, dropped) = prune_ghosts(records);
         let names: Vec<&str> = kept.iter().map(|r| r.workspace.as_str()).collect();
         assert_eq!(
             names,
-            vec!["real-conversation", "had-a-turn", "was-live-real", "has-archived-copy"]
+            vec![
+                "real-conversation",
+                "had-a-turn",
+                "was-live-real",
+                "has-archived-copy"
+            ]
         );
-        assert_eq!(dropped, 4, "headers-only, dangling, the pure ghost, and the turnless was_live ghost");
+        assert_eq!(
+            dropped, 4,
+            "headers-only, dangling, the pure ghost, and the turnless was_live ghost"
+        );
         // The repair is written back, so the survivor stops being re-derived from
         // the file on every start.
-        assert!(kept.iter().find(|r| r.workspace == "real-conversation").unwrap().had_a_turn);
+        assert!(
+            kept.iter()
+                .find(|r| r.workspace == "real-conversation")
+                .unwrap()
+                .had_a_turn
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1143,7 +1176,10 @@ mod tests {
         .unwrap();
 
         let got = ai_title(uuid::Uuid::new_v4(), Path::new("/nonexistent"), Some(&file));
-        assert_eq!(got.as_deref(), Some("Fix Ctrl+P not showing all filled pages"));
+        assert_eq!(
+            got.as_deref(),
+            Some("Fix Ctrl+P not showing all filled pages")
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1171,7 +1207,10 @@ mod tests {
             ),
         )
         .unwrap();
-        assert!(transcript_exists(id, nowhere, Some(&headers)), "the file is there");
+        assert!(
+            transcript_exists(id, nowhere, Some(&headers)),
+            "the file is there"
+        );
         assert!(
             !has_conversation(id, nowhere, Some(&headers)),
             "but nothing has been said in it"
@@ -1214,7 +1253,10 @@ mod tests {
         .is_none());
 
         let found = find_transcript(id).expect("found by id");
-        assert!(found.ends_with(format!("-home-dev-repo/{id}.jsonl")), "{found:?}");
+        assert!(
+            found.ends_with(format!("-home-dev-repo/{id}.jsonl")),
+            "{found:?}"
+        );
 
         // And that is what `pin_transcript` records, so the session stops
         // reporting no transcript and stays in the archive. Asserted here rather
@@ -1340,7 +1382,10 @@ mod tests {
         assert_eq!(relocate_file(&src, &dest).unwrap(), dest);
         assert!(dest.exists(), "the transcript arrived");
         assert!(!src.exists(), "and did not stay behind");
-        assert_eq!(std::fs::read_to_string(&dest).unwrap(), "{\"type\":\"user\",\"message\":\"hi\"}\n");
+        assert_eq!(
+            std::fs::read_to_string(&dest).unwrap(),
+            "{\"type\":\"user\",\"message\":\"hi\"}\n"
+        );
 
         // Idempotent, because a session resumed in the tree it was already in asks
         // for a move to where it already is.
@@ -1476,7 +1521,10 @@ mod tests {
 
         s.set_state(State::Working);
         assert!(s.had_a_turn, "a turn started");
-        assert!(SessionRecord::of(&s).restore().had_a_turn, "and survives the record");
+        assert!(
+            SessionRecord::of(&s).restore().had_a_turn,
+            "and survives the record"
+        );
 
         // Finishing the turn does not un-set it: the question is whether one ever
         // happened, not whether one is happening now.
@@ -1605,7 +1653,10 @@ mod tests {
             "pid": null,
         }))
         .expect("a record written before these fields still loads");
-        assert_eq!(old.spawned_by, None, "nobody spawned it, so nobody may kill it");
+        assert_eq!(
+            old.spawned_by, None,
+            "nobody spawned it, so nobody may kill it"
+        );
         assert!(!old.spawn_cut_worktree, "and no tree of ours to remove");
     }
 

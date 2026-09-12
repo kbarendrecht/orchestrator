@@ -38,18 +38,18 @@ pub(crate) fn adopt_login_path() {
         return;
     }
     /* **The cache is here because this is on the critical path of the window.**
-       A `.zshrc` that activates a tool manager costs one to three seconds, and
-       the window cannot open until it answers. So a remembered answer is used
-       when there is one, and the shell is asked again *afterwards* only to
-       rewrite the file for next time.
+    A `.zshrc` that activates a tool manager costs one to three seconds, and
+    the window cannot open until it answers. So a remembered answer is used
+    when there is one, and the shell is asked again *afterwards* only to
+    rewrite the file for next time.
 
-       Why the refresh cannot apply itself: `set_var` is process-global and
-       unsound beside other threads, which is why this whole function runs before
-       the runtime, the daemon and every pty exist. A background refresh that
-       called it would be exactly the thing that ordering exists to prevent. So
-       the refresh writes the file and nothing else, and a changed rc file takes
-       effect on the *next* launch. One launch of lag on a file most people edit
-       once a year, against seconds off every start. */
+    Why the refresh cannot apply itself: `set_var` is process-global and
+    unsound beside other threads, which is why this whole function runs before
+    the runtime, the daemon and every pty exist. A background refresh that
+    called it would be exactly the thing that ordering exists to prevent. So
+    the refresh writes the file and nothing else, and a changed rc file takes
+    effect on the *next* launch. One launch of lag on a file most people edit
+    once a year, against seconds off every start. */
     if let Some(cached) = cached_login_path() {
         apply_login_path(&cached);
         tracing::info!("adopted the remembered login PATH; refreshing it for next time");
@@ -174,7 +174,6 @@ fn merge_paths(theirs: &str, ours: &std::ffi::OsStr) -> std::ffi::OsString {
     std::env::join_paths(merged).unwrap_or_else(|_| ours.to_os_string())
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -191,14 +190,24 @@ mod tests {
         // The shapes a half-written or hand-edited file actually takes.
         assert!(usable_path("").is_none());
         assert!(usable_path("   \n").is_none(), "whitespace is empty");
-        assert!(usable_path("no-slashes-here").is_none(), "that is not a path list");
+        assert!(
+            usable_path("no-slashes-here").is_none(),
+            "that is not a path list"
+        );
     }
 
     #[test]
     fn the_shell_path_is_read_between_the_marks_and_greetings_are_not() {
         let said = format!("Welcome back!\n{PATH_MARK}/opt/homebrew/bin:/usr/bin{PATH_MARK}");
-        assert_eq!(path_between_marks(&said), Some("/opt/homebrew/bin:/usr/bin"));
-        assert_eq!(path_between_marks("no markers here"), None, "a shell that failed says nothing");
+        assert_eq!(
+            path_between_marks(&said),
+            Some("/opt/homebrew/bin:/usr/bin")
+        );
+        assert_eq!(
+            path_between_marks("no markers here"),
+            None,
+            "a shell that failed says nothing"
+        );
         assert_eq!(
             path_between_marks(&format!("{PATH_MARK}{PATH_MARK}")),
             None,

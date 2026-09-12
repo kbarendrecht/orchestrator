@@ -28,7 +28,11 @@ fn scratch_repo(root: &Path, name: &str) -> PathBuf {
             .current_dir(&dir)
             .output()
             .expect("git ran");
-        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
     };
     git(&["init", "-q", "-b", "main"]);
     git(&["config", "user.email", "test@test"]);
@@ -86,7 +90,10 @@ fn the_sweep_takes_derived_state_and_leaves_conversations() {
     // Zero is off, so nothing goes at all — the same escape hatch worktrees have.
     orchd::host::sweep_checkout_dirs(std::slice::from_ref(&open));
     for dir in &dirs {
-        assert!(dir.join("hooks.json").exists(), "a retention of 0 swept anyway");
+        assert!(
+            dir.join("hooks.json").exists(),
+            "a retention of 0 swept anyway"
+        );
     }
 
     // A retention nothing can be older than: every directory was written a moment
@@ -95,23 +102,41 @@ fn the_sweep_takes_derived_state_and_leaves_conversations() {
     std::fs::write(&file, host_file.to_string()).unwrap();
     orchd::host::sweep_checkout_dirs(std::slice::from_ref(&open));
     for dir in &dirs {
-        assert!(dir.join("hooks.json").exists(), "the sweep took a directory written today");
+        assert!(
+            dir.join("hooks.json").exists(),
+            "the sweep took a directory written today"
+        );
     }
 
     // Backdate the third, and only the third goes — and only its derived half.
     let stale = std::time::SystemTime::now() - std::time::Duration::from_secs(90 * 24 * 60 * 60);
     set_mtimes(&dirs[2], stale);
     orchd::host::sweep_checkout_dirs(std::slice::from_ref(&open));
-    assert!(dirs[0].join("hooks.json").exists(), "an open checkout was swept");
-    assert!(dirs[1].join("hooks.json").exists(), "a recent checkout was swept");
-    assert!(!dirs[2].join("hooks.json").exists(), "the stale checkout kept its hook settings");
-    assert!(!dirs[2].join("plugin").exists(), "the stale checkout kept its skills copy");
+    assert!(
+        dirs[0].join("hooks.json").exists(),
+        "an open checkout was swept"
+    );
+    assert!(
+        dirs[1].join("hooks.json").exists(),
+        "a recent checkout was swept"
+    );
+    assert!(
+        !dirs[2].join("hooks.json").exists(),
+        "the stale checkout kept its hook settings"
+    );
+    assert!(
+        !dirs[2].join("plugin").exists(),
+        "the stale checkout kept its skills copy"
+    );
     assert!(!dirs[2].join("window.json").exists());
     assert!(
         dirs[2].join("transcripts/a.jsonl").exists(),
         "the sweep deleted the only copy of a conversation",
     );
-    assert!(dirs[2].join("sessions.json").exists(), "the sweep deleted session records");
+    assert!(
+        dirs[2].join("sessions.json").exists(),
+        "the sweep deleted session records"
+    );
 
     let _ = std::fs::remove_dir_all(&root);
 }
@@ -124,7 +149,9 @@ fn the_sweep_takes_derived_state_and_leaves_conversations() {
 /// the coreutils trap `CLAUDE.md` names, in a test rather than in the daemon.
 /// `File::set_times` is `futimens`, which is POSIX and works on a directory fd.
 fn set_mtimes(dir: &Path, when: std::time::SystemTime) {
-    let stamp = std::fs::FileTimes::new().set_accessed(when).set_modified(when);
+    let stamp = std::fs::FileTimes::new()
+        .set_accessed(when)
+        .set_modified(when);
     let touch = |path: &Path| {
         let f = std::fs::File::open(path)
             .unwrap_or_else(|e| panic!("opening {} to backdate it: {e}", path.display()));

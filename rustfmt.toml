@@ -1,0 +1,16 @@
+# Defaults, on purpose.
+#
+# Every non-default width was measured against this tree and every one is worse:
+# `max_width = 100` is 764 hunks, 110 is 998 and 120 is 1203, because rustfmt
+# then *joins* lines the author split. The default is the smallest change, so it
+# is the one taken.
+#
+# **`wrap_comments` stays off**, which is also the default and is the setting that
+# mattered most here: this codebase's value is in its prose, and a formatter that
+# reflowed 3,000 comment lines would have been refused. Measured before the run —
+# of 6,208 changed lines, 29 touched a comment, and all 29 were the indentation of
+# a continuation line inside a doc block.
+#
+# `cargo fmt --all --check` is a gate in CI and in the pre-commit hook now. The
+# rule it replaces was "revert everything outside your own change before
+# committing", which is a rule nothing ran.

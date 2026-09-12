@@ -34,7 +34,11 @@ impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogFile {
     /// quiet, and it buys a file that is complete after a crash, which is the
     /// one case the log is being read for.
     fn make_writer(&'a self) -> Self::Writer {
-        match std::fs::OpenOptions::new().create(true).append(true).open(&self.0) {
+        match std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.0)
+        {
             Ok(f) => Box::new(f),
             Err(_) => Box::new(std::io::sink()),
         }
@@ -77,7 +81,10 @@ pub fn init(default_filter: &'static str, to_stdout: bool) {
             .with_filter(filter())
     });
 
-    tracing_subscriber::registry().with(stdout).with(file).init();
+    tracing_subscriber::registry()
+        .with(stdout)
+        .with(file)
+        .init();
 
     // Said once, first, because the whole point of the file is that somebody has
     // to be able to find it without being told by hand.

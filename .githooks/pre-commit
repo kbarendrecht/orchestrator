@@ -108,6 +108,16 @@ if [ "$rust" = 1 ]; then
   fi
 fi
 
+# Formatting, which is cheap (~0.3s) and is the one check whose failure is fixed
+# by one command. `rustfmt.toml` says why the defaults are the settings.
+if [ "$rust" = 1 ]; then
+  if ! cargo fmt --all -- --check >/dev/null; then
+    echo "pre-commit: the tree is not formatted. Run:" >&2
+    echo "              cargo fmt --all" >&2
+    exit 1
+  fi
+fi
+
 # What CI lints with, spelled the same way it spells it (`check.yml`'s Lint step),
 # because the two have to agree: CI denies warnings, so a lint that is only a
 # warning locally is a red build there.

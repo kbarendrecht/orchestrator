@@ -102,7 +102,11 @@ pub fn resolve_token(checkout: &[(String, String)], var: &str) -> Result<String>
 /// `format!`: the org slug in the URL belongs to your tracker workspace and the daemon has no
 /// business knowing it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
+#[cfg_attr(
+    test,
+    derive(ts_rs::TS),
+    ts(export, export_to = "../web/snapshot.d.ts")
+)]
 pub struct StoryRef {
     /// Short form, `sc-12345`. What the report shows.
     ///
@@ -196,17 +200,17 @@ impl StoryRef {
             .map_or(path, |(before, _)| before);
         /* A segment equal to the number, **or to the whole id**.
 
-           Which of the two a tracker uses is not a detail: Shortcut's URLs carry
-           the bare number (`/story/12345` for `sc-12345`), while Linear's and
-           Jira's carry the whole key (`/issue/ENG-123`, `/browse/ABC-123`). The
-           digits-only match this replaced would have refused every story either of
-           those files — and refused it as "the agent reported an id and URL that
-           disagree", which reads like the agent's fault rather than a rule that
-           only ever fitted one tracker.
-           Still two exact comparisons against one path segment, so the decoy the
-           test names (a slug with digits of its own) is refused exactly as before.
-           Case-insensitive for the id because a key is conventionally uppercase and
-           an agent writing prose around it may not be; a number has no case. */
+        Which of the two a tracker uses is not a detail: Shortcut's URLs carry
+        the bare number (`/story/12345` for `sc-12345`), while Linear's and
+        Jira's carry the whole key (`/issue/ENG-123`, `/browse/ABC-123`). The
+        digits-only match this replaced would have refused every story either of
+        those files — and refused it as "the agent reported an id and URL that
+        disagree", which reads like the agent's fault rather than a rule that
+        only ever fitted one tracker.
+        Still two exact comparisons against one path segment, so the decoy the
+        test names (a slug with digits of its own) is refused exactly as before.
+        Case-insensitive for the id because a key is conventionally uppercase and
+        an agent writing prose around it may not be; a number has no case. */
         path.split('/')
             .any(|seg| seg == number || seg.eq_ignore_ascii_case(&self.id))
     }
@@ -216,7 +220,9 @@ impl StoryRef {
 /// optional dash, one to twelve digits. Anything else — a bracket, a newline, a
 /// second id, an unbounded string — is `None`, and the caller refuses it.
 fn well_formed_id(id: &str) -> Option<&str> {
-    let letters = id.len() - id.trim_start_matches(|c: char| c.is_ascii_alphabetic()).len();
+    let letters = id.len()
+        - id.trim_start_matches(|c: char| c.is_ascii_alphabetic())
+            .len();
     if !(1..=8).contains(&letters) {
         return None;
     }
@@ -549,12 +555,12 @@ async fn run_filer(
         .collect();
 
     /* The entries go in a file rather than into the prompt, because the prompt is
-       a skill now and a skill is static: `/orchd:story <pr>` is one line, so what
-       a template used to substitute has to be somewhere the agent can read. The
-       resolve run's plan is the same shape for the same reason.
-       Dropped with the substitution: the `git remote` call that resolved
-       `owner/repo` for a sentence. It was the only thing that could fail this
-       spawn for a reason unrelated to filing a story. */
+    a skill now and a skill is static: `/orchd:story <pr>` is one line, so what
+    a template used to substitute has to be somewhere the agent can read. The
+    resolve run's plan is the same shape for the same reason.
+    Dropped with the substitution: the `git remote` call that resolved
+    `owner/repo` for a sentence. It was the only thing that could fail this
+    spawn for a reason unrelated to filing a story. */
     let stories_file = scratch.join("stories.json");
     std::fs::write(&stories_file, serde_json::to_string_pretty(&drafts)?)
         .with_context(|| format!("writing {}", stories_file.display()))?;
@@ -624,23 +630,32 @@ async fn run_filer(
     })
     .await?;
     /* What the skill reads instead of what a template substituted. The host is in
-       here too, because the skill has to tell the agent which host a URL it hands
-       back must be on — and that is now config rather than a constant the daemon
-       could write into a prompt. */
-    env.push((crate::skills::VAR_STORIES.to_string(), stories_file.to_string_lossy().into_owned()));
-    env.push((crate::skills::VAR_DROP.to_string(), drop_file.to_string_lossy().into_owned()));
+    here too, because the skill has to tell the agent which host a URL it hands
+    back must be on — and that is now config rather than a constant the daemon
+    could write into a prompt. */
+    env.push((
+        crate::skills::VAR_STORIES.to_string(),
+        stories_file.to_string_lossy().into_owned(),
+    ));
+    env.push((
+        crate::skills::VAR_DROP.to_string(),
+        drop_file.to_string_lossy().into_owned(),
+    ));
     {
         let host = &tracker.host;
-        env.push((crate::skills::VAR_TRACKER_HOST.to_string(), host.to_string()));
+        env.push((
+            crate::skills::VAR_TRACKER_HOST.to_string(),
+            host.to_string(),
+        ));
     }
     // Still refused before the agent runs: `session_env` shrugs when there is no
     // token, which is right for every other session and not for this one. Asked of
     // the environment it just built rather than of the daemon's, because the
     // checkout's own copy is the other place a token comes from.
     /* Only when a variable is named. A tracker may authenticate itself out of an
-       OAuth login the user did earlier — both official Linear and Atlassian servers
-       are OAuth-first — and there is then nothing here to resolve and nothing to
-       refuse the run for. */
+    OAuth login the user did earlier — both official Linear and Atlassian servers
+    are OAuth-first — and there is then nothing here to resolve and nothing to
+    refuse the run for. */
     if let Some(var) = tracker.token_env.as_deref() {
         resolve_token(&env, var)?;
     }
@@ -661,7 +676,8 @@ async fn run_filer(
             command: COMMAND.to_string(),
         }),
     );
-    let spawned = crate::spawn::insert_and_spawn(app, id, session, &cmd, &path, &env, &unset).await?;
+    let spawned =
+        crate::spawn::insert_and_spawn(app, id, session, &cmd, &path, &env, &unset).await?;
     let worktree = path;
     let handle = spawned.handle.clone();
     crate::spawn::watch_session_exit(app.clone(), id, spawned.handle);
@@ -993,8 +1009,7 @@ mod tests {
         // Shortcut hands out both forms; a title slug on the end is still the
         // same story.
         let mut slugged = story();
-        slugged.url =
-            "https://app.shortcut.com/acme/story/12345/document-the-schedules".into();
+        slugged.url = "https://app.shortcut.com/acme/story/12345/document-the-schedules".into();
         assert!(slugged.consistent(HOST));
 
         // ...and a slug carrying digits of its own must not stand in for the id.
@@ -1073,13 +1088,22 @@ mod tests {
         };
         assert!(with("sc-12345"), "the ordinary shape");
         assert!(with("SC12345"), "no dash is fine");
-        assert!(!with("x](https://evil.example) [sc-12345"), "a link injected through the id");
+        assert!(
+            !with("x](https://evil.example) [sc-12345"),
+            "a link injected through the id"
+        );
         assert!(!with("sc-12345\nsee also"), "a newline");
         assert!(!with("sc-12345 sc-12345"), "two ids");
         assert!(!with("12345"), "no prefix");
         assert!(!with("sc-"), "no number");
-        assert!(!with("storyprefix-12345"), "a prefix too long to be a tracker's");
-        assert!(!with("sc-1234567890123"), "a number too long to be a story's");
+        assert!(
+            !with("storyprefix-12345"),
+            "a prefix too long to be a tracker's"
+        );
+        assert!(
+            !with("sc-1234567890123"),
+            "a number too long to be a story's"
+        );
         assert!(!with(""), "empty");
     }
 
@@ -1091,27 +1115,51 @@ mod tests {
             s.consistent(HOST)
         };
 
-        assert!(!with("http://attacker.example/12345"), "another host entirely");
-        assert!(!with("https://attacker.example/story/12345"), "https, still not ours");
+        assert!(
+            !with("http://attacker.example/12345"),
+            "another host entirely"
+        );
+        assert!(
+            !with("https://attacker.example/story/12345"),
+            "https, still not ours"
+        );
         // The shapes a substring check on the host would have let through.
-        assert!(!with("https://app.shortcut.com.evil.example/story/12345"), "suffixed host");
-        assert!(!with("https://evil.example/app.shortcut.com/story/12345"), "host in the path");
+        assert!(
+            !with("https://app.shortcut.com.evil.example/story/12345"),
+            "suffixed host"
+        );
+        assert!(
+            !with("https://evil.example/app.shortcut.com/story/12345"),
+            "host in the path"
+        );
         assert!(
             !with("https://app.shortcut.com@evil.example/story/12345"),
             "userinfo pointing elsewhere"
         );
         // Scheme matters: a link somebody clicks should not be downgradeable.
-        assert!(!with("http://app.shortcut.com/acme/story/12345"), "plain http");
+        assert!(
+            !with("http://app.shortcut.com/acme/story/12345"),
+            "plain http"
+        );
         assert!(!with("//app.shortcut.com/acme/story/12345"), "no scheme");
         // A number in the query or the fragment is not a path segment.
-        assert!(!with("https://app.shortcut.com/acme/story/999?id=12345"), "query");
-        assert!(!with("https://app.shortcut.com/acme/story/999#12345"), "fragment");
+        assert!(
+            !with("https://app.shortcut.com/acme/story/999?id=12345"),
+            "query"
+        );
+        assert!(
+            !with("https://app.shortcut.com/acme/story/999#12345"),
+            "fragment"
+        );
         // And the host on its own, with no path, names no story.
         assert!(!with("https://app.shortcut.com"), "no path at all");
 
         // The real thing still passes, including a differently-cased host.
         assert!(with("https://app.shortcut.com/acme/story/12345"));
-        assert!(with("https://APP.Shortcut.COM/acme/story/12345"), "hosts are case-insensitive");
+        assert!(
+            with("https://APP.Shortcut.COM/acme/story/12345"),
+            "hosts are case-insensitive"
+        );
     }
 
     #[test]
@@ -1139,7 +1187,11 @@ mod tests {
             url: "https://app.shortcut.com/acme/story/12345".into(),
         };
         c.put(10001, "PRRT_1", poisoned);
-        assert_eq!(c.get(10001, "PRRT_1", Some(HOST)), None, "the host is known");
+        assert_eq!(
+            c.get(10001, "PRRT_1", Some(HOST)),
+            None,
+            "the host is known"
+        );
         assert_eq!(
             c.get(10001, "PRRT_1", None),
             None,

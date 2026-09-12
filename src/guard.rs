@@ -71,18 +71,22 @@ pub fn check(call: &Call, base: Base) -> Option<String> {
         return None;
     }
     /* The directory the next segment runs in, which is not a constant: `cd
-       <somewhere> && git commit` is one tool call, and the git in it operates
-       where the `cd` left off rather than where the payload says the session is.
-       `None` means it could not be worked out, and then [`isolation`] goes quiet —
-       the same fail-open this module makes everywhere else. */
+    <somewhere> && git commit` is one tool call, and the git in it operates
+    where the `cd` left off rather than where the payload says the session is.
+    `None` means it could not be worked out, and then [`isolation`] goes quiet —
+    the same fail-open this module makes everywhere else. */
     let mut at = call.cwd.map(|c| c.to_path_buf());
     for segment in segments(call.command) {
         if let Some(reason) = check_one(&segment, base, call.current_branch) {
             return Some(reason);
         }
-        if let Some(reason) =
-            isolation(&segment, at.as_deref(), call.worktree, call.git_dir, call.granted)
-        {
+        if let Some(reason) = isolation(
+            &segment,
+            at.as_deref(),
+            call.worktree,
+            call.git_dir,
+            call.granted,
+        ) {
             return Some(reason);
         }
         if let Some(moved) = cd_target(&segment) {
@@ -257,7 +261,10 @@ fn isolation(
         };
         for flag in ["-C", "--git-dir", "--work-tree"] {
             if let Some(v) = value(flag, &mut i) {
-                aimed.push(resolve(at, Path::new(v.trim_matches(|c| c == '\'' || c == '"'))));
+                aimed.push(resolve(
+                    at,
+                    Path::new(v.trim_matches(|c| c == '\'' || c == '"')),
+                ));
             }
         }
     }
@@ -288,9 +295,9 @@ fn cd_target(segment: &str) -> Option<Option<PathBuf>> {
         return None;
     }
     match tokens.get(1) {
-        Some(to) if *to != "-" && !to.starts_with('-') => {
-            Some(Some(PathBuf::from(to.trim_matches(|c| c == '\'' || c == '"'))))
-        }
+        Some(to) if *to != "-" && !to.starts_with('-') => Some(Some(PathBuf::from(
+            to.trim_matches(|c| c == '\'' || c == '"'),
+        ))),
         _ => Some(None),
     }
 }
@@ -480,7 +487,10 @@ mod tests {
         assert!(!denied("echo git push --force"));
         assert!(!denied("git pull --force"));
         // Another tool entirely is not this guard's business.
-        let call = Call { tool_name: "Edit", ..bash("git push --force", None) };
+        let call = Call {
+            tool_name: "Edit",
+            ..bash("git push --force", None)
+        };
         assert!(check(&call, Some("main")).is_none());
     }
 
@@ -490,7 +500,9 @@ mod tests {
         // The mistake this exists for: main's branch and its recorded occupant are
         // what four flows read, and this is how an agent moves them from elsewhere.
         assert!(denied(&format!("git -C {MAIN} checkout -b topic")));
-        assert!(denied(&format!("git --git-dir={MAIN}/.git branch -f main HEAD")));
+        assert!(denied(&format!(
+            "git --git-dir={MAIN}/.git branch -f main HEAD"
+        )));
         assert!(denied(&format!("git --work-tree={MAIN} checkout .")));
         assert!(denied("git -C /repo/.claude/worktrees/other status"));
         // Relative, and `..` folded rather than compared as text.
@@ -535,9 +547,9 @@ mod tests {
     fn what_cannot_be_worked_out_is_allowed() {
         let denied = |c: &str| check(&inside(c), Some("main")).is_some();
         /* Fail open, the same trade as the rest of this module. `cd` with no
-           argument is `$HOME` and `cd -` is wherever you were; neither is knowable
-           here, so the tracked directory becomes unknown and later segments go
-           unjudged rather than being refused on a guess. */
+        argument is `$HOME` and `cd -` is wherever you were; neither is knowable
+        here, so the tracked directory becomes unknown and later segments go
+        unjudged rather than being refused on a guess. */
         assert!(!denied("cd && git status"));
         assert!(!denied("cd - && git status"));
         // Not the segment's first token, so it is not seen — `time git …` has the
@@ -552,8 +564,7 @@ mod tests {
         // The message has to say where it may work as well as what it refused, or
         // the agent's next attempt is another guess — and it has to name the ask,
         // or "not allowed" reads as "never".
-        let said = check(&inside(&format!("git -C {MAIN} status")), Some("main"))
-            .expect("refused");
+        let said = check(&inside(&format!("git -C {MAIN} status")), Some("main")).expect("refused");
         assert!(said.contains(TREE), "{said}");
         assert!(said.contains(MAIN), "{said}");
         assert!(said.contains(&format!("orch outside {MAIN}")), "{said}");
@@ -562,12 +573,12 @@ mod tests {
     #[test]
     fn a_grant_is_one_folder_and_not_the_next_one() {
         /* How `orch guard push` applies the user's yes: the folders it was told
-           about go into the `Call`, so the rule stays a pure function of the
-           command *and* still refuses the checkout nobody approved. It used to drop
-           the worktree instead, which said yes to everything at once.
+        about go into the `Call`, so the rule stays a pure function of the
+        command *and* still refuses the checkout nobody approved. It used to drop
+        the worktree instead, which said yes to everything at once.
 
-           Pinned here because the two halves live in different files and only this
-           one is testable. */
+        Pinned here because the two halves live in different files and only this
+        one is testable. */
         let elsewhere = "/other/checkout";
         let granted = [PathBuf::from(MAIN)];
         let call = |command: &'static str| Call {
@@ -587,10 +598,12 @@ mod tests {
         // Any other one is still refused, and the refusal still names the way out.
         let said = check(&call("git -C /other/checkout status"), Some("main"))
             .expect("a grant elsewhere must not cover this");
-        assert!(said.contains(&format!("orch outside {elsewhere}")), "{said}");
+        assert!(
+            said.contains(&format!("orch outside {elsewhere}")),
+            "{said}"
+        );
         // And a grant is not a licence to push: the two rules share a hook and
         // grant each other nothing.
         assert!(check(&call("git push --force"), Some("main")).is_some());
     }
-
 }

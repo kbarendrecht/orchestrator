@@ -277,7 +277,10 @@ fn spec(cmd: &str) -> Option<&'static [(&'static str, Arity)]> {
 fn words_wanted(cmd: &str) -> (usize, &'static str) {
     match cmd {
         "kill" => (1, "kill needs the id of a session you spawned"),
-        "teardown" => (1, "teardown needs the name of a worktree — `orch ls` prints them"),
+        "teardown" => (
+            1,
+            "teardown needs the name of a worktree — `orch ls` prints them",
+        ),
         "run" => (1, "run needs the name of a process"),
         "outside" => (1, "outside needs the path you were refused"),
         // `guard push`: the sub-verb is a word, and `guard` checks which one.
@@ -370,7 +373,10 @@ fn parse(cmd: &str, args: &[String]) -> Result<Parsed, String> {
         return Err(missing.to_string());
     }
     if out.words.len() > wanted {
-        return Err(format!("`orch {cmd}` does not take `{}`", out.words[wanted]));
+        return Err(format!(
+            "`orch {cmd}` does not take `{}`",
+            out.words[wanted]
+        ));
     }
     Ok(out)
 }
@@ -470,8 +476,14 @@ fn await_answer(base: &str, me: &str, token: &str, ask: &str) -> Result<(String,
             continue;
         }
         return Ok((
-            v.get("answer").and_then(Value::as_str).unwrap_or("").to_string(),
-            v.get("text").and_then(Value::as_str).unwrap_or("").to_string(),
+            v.get("answer")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string(),
+            v.get("text")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string(),
         ));
     }
 }
@@ -591,11 +603,11 @@ fn guard(a: &Parsed) -> ExitCode {
     let branch = cwd.and_then(current_branch);
 
     /* The worktree this session may reach, asked of git rather than derived from
-       the path: one `rev-parse` answers both halves, and the git dir is the
-       exemption the rule cannot do without — a worktree's real one sits under the
-       *main* checkout. Only when there is a git command to judge, so the ordinary
-       Bash call pays nothing, and only outside main, which is not isolated from
-       anything. */
+    the path: one `rev-parse` answers both halves, and the git dir is the
+    exemption the rule cannot do without — a worktree's real one sits under the
+    *main* checkout. Only when there is a git command to judge, so the ordinary
+    Bash call pays nothing, and only outside main, which is not isolated from
+    anything. */
     let (worktree, git_dir) = match (a.value("--main"), cwd.filter(|_| mentions_git(command))) {
         (Some(main), Some(cwd)) => match worktree_of(cwd) {
             Some((top, dir)) if top != std::path::Path::new(main) => (Some(top), Some(dir)),
@@ -604,14 +616,14 @@ fn guard(a: &Parsed) -> ExitCode {
         _ => (None, None),
     };
     /* **The grants are handed to the rule rather than turning it off.** The daemon
-       holds them per session (`api::allow_outside`), one folder per yes, and
-       [`orchd::guard::isolation`] reads them exactly like the worktree — so the rule
-       stays a pure function of the command and can still say no to the checkout you
-       never approved. This used to drop the worktree from the `Call` on a blanket
-       yes, which no list of folders can be expressed as.
-       Only asked when there *is* a worktree to be let out of, so an ordinary session
-       in main pays nothing, and an empty answer leaves the rule on: a daemon that
-       does not answer must not silently widen what an agent may reach. */
+    holds them per session (`api::allow_outside`), one folder per yes, and
+    [`orchd::guard::isolation`] reads them exactly like the worktree — so the rule
+    stays a pure function of the command and can still say no to the checkout you
+    never approved. This used to drop the worktree from the `Call` on a blanket
+    yes, which no list of folders can be expressed as.
+    Only asked when there *is* a worktree to be let out of, so an ordinary session
+    in main pays nothing, and an empty answer leaves the rule on: a daemon that
+    does not answer must not silently widen what an agent may reach. */
     let granted = match &worktree {
         Some(_) => outside_grants(),
         None => Vec::new(),
@@ -647,7 +659,12 @@ fn outside_grants() -> Vec<std::path::PathBuf> {
     let Ok((base, me, token)) = session_env() else {
         return Vec::new();
     };
-    let Ok(out) = http("GET", &format!("{base}/api/session/{me}/outside"), &token, None) else {
+    let Ok(out) = http(
+        "GET",
+        &format!("{base}/api/session/{me}/outside"),
+        &token,
+        None,
+    ) else {
         return Vec::new();
     };
     let Ok(v) = reply(&out) else {
@@ -667,7 +684,8 @@ fn outside_grants() -> Vec<std::path::PathBuf> {
 /// Is there a `git` anywhere in this command? The cheap gate in front of the two
 /// subprocesses the worktree rule needs, since most Bash calls are not git at all.
 fn mentions_git(command: &str) -> bool {
-    command.split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+    command
+        .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
         .any(|w| w == "git")
 }
 
@@ -677,7 +695,13 @@ fn mentions_git(command: &str) -> bool {
 /// inside the checkout and would then be resolved against the wrong directory.
 fn worktree_of(cwd: &str) -> Option<(std::path::PathBuf, std::path::PathBuf)> {
     let out = std::process::Command::new("git")
-        .args(["-C", cwd, "rev-parse", "--show-toplevel", "--absolute-git-dir"])
+        .args([
+            "-C",
+            cwd,
+            "rev-parse",
+            "--show-toplevel",
+            "--absolute-git-dir",
+        ])
         .output()
         .ok()?;
     if !out.status.success() {
@@ -711,9 +735,11 @@ fn run(cmd: &str, a: &Parsed) -> Result<String, String> {
             // Refused here as well as by the daemon, because this is where the words
             // are: two names for one place is a request nobody can honour.
             if a.has("--workspace") && a.has("--worktree") {
-                return Err("--workspace names an existing checkout and --worktree cuts a \
+                return Err(
+                    "--workspace names an existing checkout and --worktree cuts a \
                             new one; pick one"
-                    .into());
+                        .into(),
+                );
             }
             let mut body = json!({ "prompt": a.value("--prompt").unwrap_or("") });
             if let Some(w) = a.value("--workspace") {
@@ -822,7 +848,12 @@ fn run(cmd: &str, a: &Parsed) -> Result<String, String> {
             let (w1, w2, w3) = (width(1), width(2), width(3));
             Ok(rows
                 .iter()
-                .map(|r| format!("{}  {:w1$}  {:w2$}  {:w3$}  {}", r[0], r[1], r[2], r[3], r[4]))
+                .map(|r| {
+                    format!(
+                        "{}  {:w1$}  {:w2$}  {:w3$}  {}",
+                        r[0], r[1], r[2], r[3], r[4]
+                    )
+                })
                 .collect::<Vec<_>>()
                 .join("\n"))
         }
@@ -987,7 +1018,9 @@ mod tests {
     /// workspace must already exist" came to be learnable only by triggering it.
     #[test]
     fn every_command_documents_its_own_flags() {
-        for cmd in ["new", "kill", "teardown", "ls", "ask", "run", "outside", "guard"] {
+        for cmd in [
+            "new", "kill", "teardown", "ls", "ask", "run", "outside", "guard",
+        ] {
             let h = help_for(cmd).unwrap_or_else(|| panic!("{cmd} has no help"));
             let flags = spec(cmd).unwrap_or_else(|| panic!("{cmd} has no flag spec"));
             for (flag, _) in flags {
@@ -1021,7 +1054,10 @@ mod tests {
         std::env::set_var("ORCH_SESSION_ID", "abc");
         let e = session_env().expect_err("two are missing");
         assert!(e.contains("ORCH_URL and ORCH_ASK_TOKEN"), "{e}");
-        assert!(!e.contains("only runs inside a session"), "wrong diagnosis: {e}");
+        assert!(
+            !e.contains("only runs inside a session"),
+            "wrong diagnosis: {e}"
+        );
 
         std::env::set_var("ORCH_URL", "http://127.0.0.1:7777");
         std::env::set_var("ORCH_ASK_TOKEN", "tok");

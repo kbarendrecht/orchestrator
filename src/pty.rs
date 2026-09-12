@@ -56,7 +56,6 @@ impl RingBuffer {
         out.extend_from_slice(b);
         out
     }
-
 }
 
 pub struct Spawned {
@@ -243,7 +242,10 @@ impl PtyHandle {
         // holding it open would hang the reader loop forever.
         drop(pair.slave);
 
-        let reader = pair.master.try_clone_reader().context("cloning pty reader")?;
+        let reader = pair
+            .master
+            .try_clone_reader()
+            .context("cloning pty reader")?;
         let writer = pair.master.take_writer().context("taking pty writer")?;
 
         let buffer = Arc::new(Mutex::new(RingBuffer::new(BUFFER_BYTES)));
@@ -328,10 +330,7 @@ impl PtyHandle {
 
     /// Everything the daemon still holds of this pty's output.
     pub fn snapshot(&self) -> Vec<u8> {
-        self.buffer
-            .lock()
-            .map(|b| b.snapshot())
-            .unwrap_or_default()
+        self.buffer.lock().map(|b| b.snapshot()).unwrap_or_default()
     }
 
     /// Queue `data` for the child. Never blocks.
@@ -693,11 +692,14 @@ pub(crate) mod tests {
         );
     }
 
-
     #[test]
     fn spawns_reads_and_reports_exit() {
         let spawned = PtyHandle::spawn(
-            &["sh".to_string(), "-c".to_string(), "echo hello; exit 3".to_string()],
+            &[
+                "sh".to_string(),
+                "-c".to_string(),
+                "echo hello; exit 3".to_string(),
+            ],
             Path::new("/tmp"),
             &[],
             &[],
@@ -747,7 +749,10 @@ pub(crate) mod tests {
         }
         let out = String::from_utf8_lossy(&spawned.handle.snapshot()).to_string();
         let _ = std::fs::remove_dir_all(&dir);
-        assert!(out.contains("hi"), "expected /bin/echo to have run, got {out:?}");
+        assert!(
+            out.contains("hi"),
+            "expected /bin/echo to have run, got {out:?}"
+        );
     }
 
     /// Two PATH entries in `env` is the normal shape (`session_env` layers one on
@@ -780,9 +785,13 @@ pub(crate) mod tests {
         let dir = crate::testutil::scratch("relpath");
         std::fs::create_dir_all(&dir).expect("the temp dir");
         let script = dir.join("say.sh");
-        std::fs::write(&script, "#!/bin/sh
+        std::fs::write(
+            &script,
+            "#!/bin/sh
 echo from-the-cwd
-").expect("the script");
+",
+        )
+        .expect("the script");
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -836,12 +845,18 @@ echo from-the-cwd
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
-        assert!(spawned.handle.is_alive(), "the child should still be running");
+        assert!(
+            spawned.handle.is_alive(),
+            "the child should still be running"
+        );
 
         let started = std::time::Instant::now();
         let code = spawned.handle.kill_gracefully().await;
         assert!(code.is_some(), "the child outlived even the SIGKILL");
-        assert!(!spawned.handle.is_alive(), "still alive after kill_gracefully");
+        assert!(
+            !spawned.handle.is_alive(),
+            "still alive after kill_gracefully"
+        );
         // It had to wait out the grace, which is what says the trap really fired
         // and the SIGKILL is what ended it.
         assert!(
@@ -906,7 +921,10 @@ echo from-the-cwd
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         let _ = std::fs::remove_dir_all(&dir);
-        assert!(gone, "the grandchild outlived its session (pid {grandchild})");
+        assert!(
+            gone,
+            "the grandchild outlived its session (pid {grandchild})"
+        );
     }
 
     /// The case the group lookup got wrong: the shell goes on `SIGHUP` at once,
@@ -954,7 +972,10 @@ echo from-the-cwd
         assert!(code.is_some(), "the leader itself did not exit");
         // The leader went on the first signal, so no grace was spent: the sweep is
         // what has to reach the grandchild, not the escalation.
-        assert!(started.elapsed() < KILL_GRACE, "the shell should have gone on SIGHUP");
+        assert!(
+            started.elapsed() < KILL_GRACE,
+            "the shell should have gone on SIGHUP"
+        );
 
         let mut gone = false;
         for _ in 0..150 {
@@ -965,7 +986,10 @@ echo from-the-cwd
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         let _ = std::fs::remove_dir_all(&dir);
-        assert!(gone, "the HUP-ignoring grandchild outlived its session (pid {grandchild})");
+        assert!(
+            gone,
+            "the HUP-ignoring grandchild outlived its session (pid {grandchild})"
+        );
     }
 
     /// A pause holds the bytes after it back until the gap has passed *at the fd*.
@@ -986,12 +1010,21 @@ echo from-the-cwd
 
         tokio::time::sleep(Duration::from_millis(300)).await;
         let early = String::from_utf8_lossy(&spawned.handle.snapshot()).to_string();
-        assert!(early.contains("first"), "the bytes before the pause went out: {early:?}");
-        assert!(!early.contains("second"), "the bytes after the pause were held back: {early:?}");
+        assert!(
+            early.contains("first"),
+            "the bytes before the pause went out: {early:?}"
+        );
+        assert!(
+            !early.contains("second"),
+            "the bytes after the pause were held back: {early:?}"
+        );
 
         tokio::time::sleep(Duration::from_millis(700)).await;
         let late = String::from_utf8_lossy(&spawned.handle.snapshot()).to_string();
-        assert!(late.contains("second"), "the pause ended and the rest went out: {late:?}");
+        assert!(
+            late.contains("second"),
+            "the pause ended and the rest went out: {late:?}"
+        );
         let _ = spawned.handle.kill();
     }
 
@@ -1175,7 +1208,10 @@ echo from-the-cwd
         // pid 1 is init/launchd — always running, and never signallable by a
         // normal user. It is the EPERM case, which must read alive rather than
         // dead: "cannot signal" is not "not there".
-        assert!(pid_alive(1), "pid 1 must read alive even when unsignallable");
+        assert!(
+            pid_alive(1),
+            "pid 1 must read alive even when unsignallable"
+        );
 
         // 0 means "my process group" to `kill`, a different question entirely,
         // and no session ever carries it.

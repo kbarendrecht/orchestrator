@@ -196,7 +196,10 @@ pub fn plugin_dir() -> Result<PathBuf> {
 /// measurement — and the story run's instructions are a skill now.
 pub fn flag() -> Vec<String> {
     match plugin_dir() {
-        Ok(dir) => vec!["--plugin-dir".to_string(), dir.to_string_lossy().into_owned()],
+        Ok(dir) => vec![
+            "--plugin-dir".to_string(),
+            dir.to_string_lossy().into_owned(),
+        ],
         Err(e) => {
             tracing::warn!("no plugin dir, sessions get no orch skill: {e:#}");
             Vec::new()
@@ -262,9 +265,17 @@ mod tests {
     #[test]
     fn a_skill_reads_the_variables_its_run_is_given() {
         for (name, body, vars) in [
-            ("fix-pr", FIX_PR, &[VAR_PR, VAR_UPSTREAM, VAR_UPSTREAM_REMOTE, VAR_LOGIN][..]),
+            (
+                "fix-pr",
+                FIX_PR,
+                &[VAR_PR, VAR_UPSTREAM, VAR_UPSTREAM_REMOTE, VAR_LOGIN][..],
+            ),
             ("resolve-run", RESOLVE_RUN, &[VAR_PLAN][..]),
-            ("story", STORY, &[VAR_STORIES, VAR_DROP, VAR_TRACKER_HOST][..]),
+            (
+                "story",
+                STORY,
+                &[VAR_STORIES, VAR_DROP, VAR_TRACKER_HOST][..],
+            ),
             // The pane pass gets two and reads both. It deliberately does *not*
             // read `VAR_LOGIN`, which its run does not set: its authorship stop
             // asks `gh` instead, the way `green` does.
@@ -314,7 +325,10 @@ mod tests {
     /// same rule was checked against the rendered template this replaced.
     #[test]
     fn the_review_skill_asks_for_the_language_rather_than_naming_one() {
-        assert!(REVIEW.contains("$LANGUAGE"), "the review skill hardcodes a language");
+        assert!(
+            REVIEW.contains("$LANGUAGE"),
+            "the review skill hardcodes a language"
+        );
         for (name, body) in VENDORED {
             for word in body.split(|c: char| !c.is_alphabetic()) {
                 assert!(
@@ -328,7 +342,10 @@ mod tests {
     #[test]
     fn manifest_is_json_and_names_the_namespace() {
         let v: serde_json::Value = serde_json::from_str(MANIFEST).expect("valid json");
-        assert_eq!(v["name"], "orchd", "the namespace `/orchd:orch` resolves through");
+        assert_eq!(
+            v["name"], "orchd",
+            "the namespace `/orchd:orch` resolves through"
+        );
     }
 
     /// The two paths are Claude Code's, not ours: a manifest somewhere else is a

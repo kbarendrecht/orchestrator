@@ -78,7 +78,8 @@ impl Phases {
     /// Close the phase that just finished.
     pub fn mark(&mut self, what: &'static str) {
         let now = Instant::now();
-        self.marks.push((what, now.duration_since(self.last).as_millis()));
+        self.marks
+            .push((what, now.duration_since(self.last).as_millis()));
         self.last = now;
     }
 

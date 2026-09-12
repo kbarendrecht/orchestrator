@@ -37,7 +37,6 @@ pub fn verdict(spec: &ManagedSpec, raw: &str) -> Option<Health> {
     None
 }
 
-
 /// Drain whole lines out of `pending` and return the health verdict they imply.
 ///
 /// Keeps draining past a failure rather than stopping on the first error line.
@@ -67,7 +66,6 @@ pub fn scan_lines(spec: &ManagedSpec, pending: &mut String) -> Option<Health> {
     }
     changed
 }
-
 
 /// Strip CSI/OSC escape sequences so pattern matching sees the plain text.
 fn strip_ansi(s: &str) -> String {
@@ -108,7 +106,6 @@ fn strip_ansi(s: &str) -> String {
     }
     out
 }
-
 
 /// Where a session that is not working belongs, given the build beside it.
 ///
@@ -157,7 +154,6 @@ mod tests {
     fn strips_osc_titles() {
         assert_eq!(strip_ansi("\x1b]0;title\x07done"), "done");
     }
-
 
     fn ng() -> ManagedSpec {
         ManagedSpec {
@@ -240,7 +236,10 @@ mod tests {
         // The success line carries none of the webpack markers, so before this was
         // recognised a fixed build stayed red in the rail forever.
         assert_eq!(
-            verdict(&ng(), "Application bundle generation complete. (1.2 seconds)"),
+            verdict(
+                &ng(),
+                "Application bundle generation complete. (1.2 seconds)"
+            ),
             Some(Health::Ok)
         );
         match verdict(&ng(), "Application bundle generation failed. (0.9 seconds)") {
@@ -254,5 +253,4 @@ mod tests {
         assert_eq!(verdict(&ng(), "compiling 412 files"), None);
         assert_eq!(verdict(&ng(), "   "), None);
     }
-
 }

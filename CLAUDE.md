@@ -79,6 +79,7 @@ what it costs.
 ```
 cargo check                         # the daemon
 cargo test                          # 522 tests, all in-tree
+cargo fmt --all                     # the formatter, gated in CI and the hook
 cargo clippy --workspace --all-targets   # what CI lints with, and it denies warnings
 mise run check-web                  # type-check and lint the SPA + enforce its module graph
 mise run check-docs                 # the doc comments' links, denied as warnings
@@ -1451,10 +1452,17 @@ mean *this* repo; if you do, name it.
   developer on a newer rustc meets a new clippy lint *before* CI does, rather than
   CI failing on a commit that touched no Rust. Collapsing it to one source of truth
   means provisioning Rust through mise in CI too.
-- **`cargo fmt` is not this repo's formatter.** There is no `rustfmt.toml` and
-  `main` is not stable-rustfmt-clean, so running it out of habit reformats around
-  27 files you never touched. Revert everything outside your own change before
-  committing.
+- **`cargo fmt` is the formatter now, and the tree was formatted in one commit.**
+  It used not to be, and the rule in its place — "revert everything outside your
+  own change" — was a rule nothing ran. `rustfmt.toml` keeps the defaults, and
+  every other width was measured and is worse: 100 is 764 hunks, 110 is 998, 120
+  is 1203, because rustfmt then *joins* lines the author split.
+  **`wrap_comments` stays off**, which is the setting that made this affordable:
+  of 6,208 lines the reformat changed, 29 touched a comment, and all 29 were the
+  indentation of a continuation line. The prose is untouched.
+  `.git-blame-ignore-revs` names the formatting commit. Turn it on once per
+  clone, beside the hooks line:
+  `git config blame.ignoreRevsFile .git-blame-ignore-revs`.
 - **Git exports its own state into hooks and `--exec`, and one of the variables is
   a *relative* path.** Measured, not assumed: a pre-commit hook here runs with
   `GIT_INDEX_FILE=.git/index`, `GIT_PREFIX`, `GIT_AUTHOR_*` and `GIT_EXEC_PATH`

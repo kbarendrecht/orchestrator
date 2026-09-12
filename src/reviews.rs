@@ -10,7 +10,11 @@ use std::path::Path;
 /// request, re-review detection, reviewer-count tiebreak. The daemon consumes
 /// that shape rather than imposing the one §6b invented.
 #[derive(Debug, Clone, Serialize)]
-#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
+#[cfg_attr(
+    test,
+    derive(ts_rs::TS),
+    ts(export, export_to = "../web/snapshot.d.ts")
+)]
 pub struct Review {
     #[cfg_attr(test, ts(type = "number"))]
     pub number: u64,
@@ -35,7 +39,11 @@ pub struct Review {
 }
 
 #[derive(Debug, Clone, Serialize, Default)]
-#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
+#[cfg_attr(
+    test,
+    derive(ts_rs::TS),
+    ts(export, export_to = "../web/snapshot.d.ts")
+)]
 pub struct ReviewQueue {
     pub login: String,
     pub actionable: Vec<Review>,
@@ -51,10 +59,16 @@ pub struct ReviewQueue {
 /// unparseable output or an unknown `version` all land here instead.
 #[derive(Debug, Clone, Default, Serialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
-#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
+#[cfg_attr(
+    test,
+    derive(ts_rs::TS),
+    ts(export, export_to = "../web/snapshot.d.ts")
+)]
 pub enum ReviewState {
     Ok(ReviewQueue),
-    Degraded { reason: String },
+    Degraded {
+        reason: String,
+    },
     /// Before the first poll lands. Distinct from `Degraded` so startup does
     /// not read as a broken command — and so it never becomes a TODO entry.
     #[default]
@@ -106,7 +120,12 @@ pub fn eject_default_script() -> Result<std::path::PathBuf> {
     Ok(path)
 }
 
-pub fn fetch(main: &Path, timeout_secs: u64, command: &[String], repo: Option<&str>) -> ReviewState {
+pub fn fetch(
+    main: &Path,
+    timeout_secs: u64,
+    command: &[String],
+    repo: Option<&str>,
+) -> ReviewState {
     if command.is_empty() {
         return ReviewState::Off;
     }
@@ -118,7 +137,12 @@ pub fn fetch(main: &Path, timeout_secs: u64, command: &[String], repo: Option<&s
     }
 }
 
-fn run(main: &Path, timeout_secs: u64, command: &[String], repo: Option<&str>) -> Result<ReviewQueue> {
+fn run(
+    main: &Path,
+    timeout_secs: u64,
+    command: &[String],
+    repo: Option<&str>,
+) -> Result<ReviewQueue> {
     let out = crate::proc::run_bounded(main, timeout_secs, command, "reviews")?;
 
     if !out.status.success() {
@@ -129,8 +153,7 @@ fn run(main: &Path, timeout_secs: u64, command: &[String], repo: Option<&str>) -
         );
     }
 
-    let v: Value =
-        serde_json::from_slice(&out.stdout).context("reviews output was not JSON")?;
+    let v: Value = serde_json::from_slice(&out.stdout).context("reviews output was not JSON")?;
     // Several logins would come back as an array; the daemon only ever asks
     // about one.
     let v = match v {
@@ -286,7 +309,6 @@ mod tests {
         serde_json::from_str(s).unwrap()
     }
 
-
     #[test]
     fn reads_the_shape_the_source_actually_emits() {
         let q = parse_t(v(r#"{
@@ -311,8 +333,10 @@ mod tests {
 
     #[test]
     fn accepts_age_in_days_as_well_as_hours() {
-        let q = parse_t(v(r#"{"actionable":[{"pr":{"number":1,"title":"t","author":"a"},
-            "ageDays":2}],"blocked":[]}"#))
+        let q = parse_t(v(
+            r#"{"actionable":[{"pr":{"number":1,"title":"t","author":"a"},
+            "ageDays":2}],"blocked":[]}"#,
+        ))
         .unwrap();
         assert!((q.actionable[0].age_hours - 48.0).abs() < 0.01);
     }
@@ -320,12 +344,17 @@ mod tests {
     #[test]
     fn derives_a_url_from_the_configured_repo_when_the_field_is_missing() {
         let q = parse(
-            v(r#"{"actionable":[{"pr":{"number":99,"title":"t","author":"a"}}],
-            "blocked":[]}"#),
+            v(
+                r#"{"actionable":[{"pr":{"number":99,"title":"t","author":"a"}}],
+            "blocked":[]}"#,
+            ),
             Some("acme/monorepo"),
         )
         .unwrap();
-        assert_eq!(q.actionable[0].url, "https://github.com/acme/monorepo/pull/99");
+        assert_eq!(
+            q.actionable[0].url,
+            "https://github.com/acme/monorepo/pull/99"
+        );
     }
 
     /// It used to name one hardcoded repo here, so everyone else's rows linked
@@ -333,8 +362,10 @@ mod tests {
     #[test]
     fn an_unknown_repo_yields_no_link_rather_than_a_wrong_one() {
         let q = parse(
-            v(r#"{"actionable":[{"pr":{"number":99,"title":"t","author":"a"}}],
-            "blocked":[]}"#),
+            v(
+                r#"{"actionable":[{"pr":{"number":99,"title":"t","author":"a"}}],
+            "blocked":[]}"#,
+            ),
             None,
         )
         .unwrap();
@@ -359,7 +390,10 @@ mod tests {
             {"pr":{"number":8,"title":"also fine","author":"b"}}],
             "blocked":[]}"#))
         .unwrap();
-        assert_eq!(q.actionable.iter().map(|r| r.number).collect::<Vec<_>>(), vec![7, 8]);
+        assert_eq!(
+            q.actionable.iter().map(|r| r.number).collect::<Vec<_>>(),
+            vec![7, 8]
+        );
     }
 
     /// The count of reviewers arrives as an array in one place and as a number in
