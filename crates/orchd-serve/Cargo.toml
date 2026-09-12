@@ -33,7 +33,7 @@ path = "src/bin/orch.rs"
 
 [dependencies]
 anyhow = { workspace = true }
-orchd = { path = "../.." }
+orchd = { path = "../orchd" }
 # `host::Checkout` is generated into `web/serve.d.ts`. Optional for the reason the
 # other two crates give: as a dev-dependency the derive is invisible to anything
 # that builds this crate as a dependency.
@@ -47,7 +47,7 @@ tracing = { workspace = true }
 uuid = { version = "1", features = ["v4", "serde"] }
 
 [dev-dependencies]
-orchd = { path = "../..", features = ["test-util"] }
+orchd = { path = "../orchd", features = ["test-util"] }
 orchd-base = { path = "../orchd-base", features = ["test-util"] }
 # Also a dev-dependency: `cfg(test)` is true for this crate's own tests while the
 # feature is not, so the optional copy above is not linked then.

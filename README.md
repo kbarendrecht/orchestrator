@@ -556,7 +556,7 @@ crates/orchd-repo/    one checkout, described. No session state lives here.
   machine.rs      what the daemon needs from the machine, warned about at boot
   logging.rs      the file log, since a launcher-started app has no stdout
 
-src/                  the runtime core: the `orchd` library, what the daemon knows.
+crates/orchd/         the runtime core: the `orchd` library, what the daemon knows.
   api.rs          HTTP surface and the origin/token guards
   state.rs        the daemon's owned state, snapshots, reconcile, durable writes
   store.rs        session record persistence, orphan reaping

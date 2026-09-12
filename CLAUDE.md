@@ -123,9 +123,11 @@ file and `mv`, which is what `release` does.
 runs it with warnings denied, so a lint that is a warning here is a red build there.
 Both flags matter. `--all-targets` matters because the eight that caught this were
 all in test code that a plain `cargo clippy` never compiles. `--workspace` matters
-because the root manifest is the `orchd` package as well as the workspace root, so
-without it `desktop/` is never linted at all — the crate with the window, the
-launcher and the restart handoff in it. Green tests, `check-web` and e2e are
+because without it cargo lints the package in the current directory and nothing
+else — so `desktop/` goes unlinted, the crate with the window, the launcher and
+the restart handoff in it. The root manifest used to be the `orchd` package as
+well, which made that default quietly wrong for every tool that has one; it is
+the workspace and nothing else now. Green tests, `check-web` and e2e are
 not enough on their own.
 
 **One daemon per checkout.** The lock is an `flock` on
@@ -1556,6 +1558,22 @@ mean *this* repo; if you do, name it.
   developer on a newer rustc meets a new clippy lint *before* CI does, rather than
   CI failing on a commit that touched no Rust. Collapsing it to one source of truth
   means provisioning Rust through mise in CI too.
+- **Four crates, all under `crates/`, and the root is the workspace and nothing
+  else.** `orchd-base` the primitives, `orchd-repo` one checkout described,
+  `orchd` the runtime core, `orchd-serve` the daemon; `desktop/` sits on top.
+  The root manifest **was the `orchd` package as well**, and that is the thing to
+  remember about the last move: a manifest that is both is a default that is wrong
+  for every tool that has one. `cargo clippy` without `--workspace` linted it and
+  never `desktop/`, and `cargo about` and `cargo deny` rooted at it silently — so
+  the desktop shell's ~130 dependencies went unchecked and unlisted until somebody
+  passed `--workspace`. The name did not change with the directory, deliberately:
+  `orchd::…` is 162 paths and a dozen sentences, and a rename buys symmetry and
+  nothing else.
+  **A crate move breaks whatever reads a path**, and this is the third time: the
+  module ratchet in step 1, `check-module-routes.mjs` in step 2, and `typos.toml`
+  now — its `src/names.rs` exclude went stale and a list of computer scientists'
+  surnames failed the spell check. All three fail loudly, which is the good case;
+  look for the fourth before assuming there is none.
 - **`orchd` is a library only. `crates/orchd-serve` is the daemon**, and it holds
   both binaries. The router, `start`, `StartOptions`, `Server` and every
   `start_*_poller` are there with `host`, `hooks`, `firstrun` and `ws` — because
@@ -1589,8 +1607,8 @@ mean *this* repo; if you do, name it.
 - **This is a workspace, and `crates/orchd-base` is the first crate out.**
   Thirteen modules — `child edit git guard headroom model proc proposal pty
   review_commit secret timing window` — and `cargo` now refuses an import from any
-  of them back up into the daemon. `src/lib.rs` re-exports every one at the path it
-  always had, so **`crate::git::…` still reads the same everywhere** and the move
+  of them back up into the daemon. `crates/orchd/src/lib.rs` re-exports every one at
+  the path it always had, so **`crate::git::…` still reads the same everywhere** and the move
   cost no call site a rename. `docs/crate-split.md` has the plan, the measurements
   and what the first step actually cost.
   Four things about it are worth knowing before touching the next step, and all

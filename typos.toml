@@ -27,6 +27,9 @@ extend-exclude = [
     "tools/node_modules/**",
     "Cargo.lock",
     # A list of computer scientists' surnames. A spell checker will always have
-    # an opinion about those, and it will always be wrong.
-    "src/names.rs",
+    # an opinion about those, and it will always be wrong. Spelled in full rather
+    # than as `**/names.rs`: this path has moved once already, and a glob that
+    # cannot miss is also a glob that would silently cover the next `names.rs`
+    # somebody writes.
+    "crates/orchd/src/names.rs",
 ]

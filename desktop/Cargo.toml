@@ -15,7 +15,7 @@ workspace = true
 tauri-build = "2.6"
 
 [dependencies]
-orchd = { path = ".." }
+orchd = { path = "../crates/orchd" }
 # The daemon itself: `start`, the window commands and the first-run server.
 orchd-serve = { path = "../crates/orchd-serve" }
 anyhow = { workspace = true }

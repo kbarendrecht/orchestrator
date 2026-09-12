@@ -4,11 +4,11 @@ A sketch, not a plan of record. Everything here is measured against the tree at
 the commit that added it; re-measure before acting on any of it with
 `mise run check-modules` and `node tools/rust-modules.mjs --dot`.
 
-**Steps 1, 2 and 3 are done.** `crates/orchd-base` holds the primitives,
-`crates/orchd-repo` one checkout described, `crates/orchd-serve` the daemon — the
-server, the boot sequence, the pollers and the two binaries. What is left in
-`orchd` is the runtime core, which is step 4 and the one that cannot be split.
-The three *cost* sections at the end are the part worth reading first.
+**All four steps are done.** `crates/orchd-base` holds the primitives,
+`crates/orchd-repo` one checkout described, `crates/orchd` the runtime core and
+`crates/orchd-serve` the daemon — the server, the boot sequence, the pollers and
+the two binaries. The four *cost* sections at the end are the part worth reading
+first: every step cost something the sketch did not predict.
 
 ## Why this is on the table at all
 
@@ -50,13 +50,20 @@ broken first.
 | --- | --- | --- | --- |
 | `orchd-base` | 13 | ~10,000 | the primitives: processes, ptys, git, the data model, the guard, secrets — **done** |
 | `orchd-repo` | 12 | ~9,300 | what a checkout *is*: config, the forge, diffs, patches, skills, the launch argv — **done** |
-| `orchd-run` | 11 | 20,556 | the runtime core, unchanged and still one crate |
+| `orchd` | 11 | 20,556 | the runtime core, unchanged and still one crate — **done** |
 | `orchd-serve` | 4 + `lib.rs` | ~6,900 | the daemon: `host`, `hooks`, `firstrun`, `ws`, `start`, the pollers and both binaries — **done** |
 
 `orchestrator-desktop` stays where it is and depends on `orchd-serve`. The two
 binaries (`orchd`, `orch`) go in a thin top crate.
 
-**`orchd-run` is the one that cannot be split**, and that is the honest shape of
+**The sketch called the fourth crate `orchd-run` and it is called `orchd`.** The
+rename was the only part of step 4 that was not a move — 162 `orchd::` paths, the
+mise tasks, CI, the hook and a dozen sentences of prose — and it buys symmetry
+with the three sibling names and nothing else. The line it would have cost is
+worth more than the symmetry: *`orchd` is what the daemon knows, `orchd-serve` is
+the daemon.*
+
+**The runtime core is the one that cannot be split**, and that is the honest shape of
 this repo: `api` (5,853 lines), `spawn` (3,479), `post` (2,701), `state` (2,193)
 and seven more genuinely call each other. A session's state, the store behind it
 and the PR flows that drive both are one thing today. Splitting *that* is a
@@ -77,7 +84,7 @@ actually call:
 
 So the filesystem and git fixtures belong to `orchd-base` behind a `test-util`
 feature, the forge fixtures (`pr`, `comment`, `thread`, whose types live in
-`forge`) to `orchd-repo`, and the three `app*` builders to `orchd-run`, where
+`forge`) to `orchd-repo`, and the three `app*` builders to the runtime core, where
 `AppState` is. No fixture wants to be in two places.
 
 Four things will actually fight, and none is subtle:
@@ -142,7 +149,7 @@ The `pub(crate)` tax was smaller than feared: nine items in base, six of them
 ## What it does not buy
 
 **Not build time.** Cold build is 19 s and an incremental rebuild after touching
-`lib.rs` is 3 s. Crates parallelise, but `orchd-run` is half the lines and would
+`lib.rs` is 3 s. Crates parallelise, but the runtime core is half the lines and would
 dominate any build that touches `base` — which is most of them, since `git` and
 `model` live there. Expect a wash, and measure rather than assume.
 
@@ -165,12 +172,9 @@ person can read.
    `include_str!` tax.
 3. ~~**`orchd-repo`.**~~ **Done.** Sandwiched, so its boundary was already
    proven — it compiled at the first attempt.
-4. **`orchd-run`** is what is left. Delete `tools/rust-modules.mjs` at this step
-   — or keep it pointed at that crate alone, since the ten pairs inside it are
-   still worth ratcheting.
-
-Steps 1 and 2 are worth doing on their own. Step 4 is the one that lets the
-script go, and nothing is lost by stopping before it.
+4. ~~**The runtime core.**~~ **Done**, as `crates/orchd`. The script was *not*
+   deleted — see the step 4 section for why the argument for deleting it turned
+   out to be wrong.
 
 
 ## What step 2 actually cost
@@ -249,3 +253,51 @@ a feature needs the dependency *both* optional and as a dev-dependency.
 And `cargo machete` earned its keep for the third time: `libc` and
 `tracing-subscriber` in `orchd`, `tokio` in `orchd-repo`, all left declared after
 the code that used them moved.
+
+
+## What step 4 actually cost
+
+**The least of the four, because there was nothing left to separate from.** The
+first three steps each drew a boundary and had to prove it; this one moved the
+remainder into `crates/orchd/` and split the root manifest in two. 14 files,
+21,650 lines, and the module graph came out identical — 41 modules, 122 edges, 10
+mutual pairs — which is exactly the result a pure move should produce.
+
+**What it actually bought is the root manifest, and that is worth more than the
+tidiness.** The root was the workspace root *and* the `orchd` package, so every
+tool with a default rooted at it: `cargo clippy` without `--workspace` linted
+`orchd` and never `desktop/`, and `cargo about` and `cargo deny` rooted there
+silently — which is how the desktop shell's ~130 dependencies went unchecked and
+unlisted for months (step 2 found that, and the fix was a flag; this is the fix to
+the cause). The root is now `[workspace]`, `[workspace.dependencies]`,
+`[workspace.lints]` and `[profile.release]`, and nothing else. `[profile.*]` is
+only honoured in a workspace root, so that one stanza stays behind while the
+`[package]` half moves down.
+
+**The name did not move with the directory.** The sketch above called this crate
+`orchd-run`; it is `crates/orchd`. Measured before deciding: 162 `orchd::` paths
+outside the crate, plus `-p orchd` in the mise tasks, CI and the pre-commit hook,
+plus every sentence of prose that names it. A rename buys symmetry with three
+sibling names and costs the one line worth keeping — *`orchd` is what the daemon
+knows, `orchd-serve` is the daemon.*
+
+**One gate broke, and it is the same class as the last two.** `typos.toml`
+excluded `src/names.rs` — a list of computer scientists' surnames, which a spell
+checker will always have an opinion about and always be wrong — and the path went
+stale, so one of those surnames failed `check-deps`. That is three for three: the
+module ratchet in step 1, `check-module-routes.mjs` in step 2, `typos.toml` here. **Anything that
+reads a source path by name breaks on a crate move**, and all three broke loudly,
+which is the good case. The exclude is spelled in full rather than as
+`**/names.rs`, because a glob that cannot miss would also silently cover the next
+`names.rs` somebody writes.
+
+**And the script that started all of this stayed.** The plan said to delete
+`tools/rust-modules.mjs` at this step, on the reasoning that `cargo` would then
+enforce what it ratchets. That reasoning is wrong, and its own *What it does not
+buy* section says so two paragraphs earlier: `cargo` enforces the boundaries a
+split **draws**, and it draws none through a crate. All ten remaining mutual pairs
+are inside a single crate — nine in the runtime core, one (`git <-> review_commit`)
+in `orchd-base` — so `cargo` can see none of them. The script is the only thing
+that can, and it now needs no special case for a root `src/`: every crate is under
+`crates/`. It goes when the runtime core is split, which is a design change and
+not on this page.

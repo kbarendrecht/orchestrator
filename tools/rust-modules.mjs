@@ -6,9 +6,9 @@
 //   node tools/rust-modules.mjs --dot     graphviz, to look at
 //
 // **A ratchet, not a gate.** The SPA's graph is a DAG and `dependency-cruiser`
-// keeps it one; `src/` is the inverse — it started at 39 modules, 154 edges, 17
-// mutual pairs and a 16-module strongly connected component, and nothing
-// reported it. That is a fair part of why `api.rs` is 5,681 lines and `spawn.rs`
+// keeps it one; the daemon's is the inverse — it started at 39 modules, 154
+// edges, 17 mutual pairs and a 16-module strongly connected component, and
+// nothing reported it. That is a fair part of why `api.rs` is 5,681 lines and `spawn.rs`
 // 3,371: inside an SCC no module can be read, tested or moved on its own.
 //
 // Making it a DAG today is not a change anybody can review, so this holds the
@@ -38,8 +38,11 @@
 // store, story, triage, update, worktree — eleven modules that genuinely call
 // each other, and the next move on them is a crate split rather than a rename.
 //
-// `cargo-modules` and `cargo-deny`'s `[bans]` take over if `orchd` is ever split
-// into crates, which is the real fix and a much larger one.
+// **The split is done and this script stayed.** Four crates now, and `cargo`
+// refuses a cycle that crosses any of their lines — but it cannot see one *inside*
+// a crate, and all ten remaining pairs are inside one: nine in the runtime core,
+// and `git <-> review_commit` in `orchd-base`. Splitting the runtime core is a
+// design change rather than a move, so this is what watches those ten until then.
 
 import { readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
@@ -48,16 +51,19 @@ import { fileURLToPath } from 'node:url';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const BASELINE = `${root}/tools/rust-modules.json`;
 
-/** Every crate's `src/`, not just the daemon's.
+/** Every crate's `src/`.
  *
  *  **Written when `orchd-base` was split out**, because the thirteen modules that
- *  moved took a mutual pair with them and this script — reading `src/` alone —
- *  reported it as *fixed*. A tool that stops watching what it was watching is
- *  worse than no tool: it says the number went down. Cargo enforces that no cycle
- *  crosses a crate line, so what is left to count is inside each one. */
-const ROOTS = [`${root}/src`, ...readdirSync(`${root}/crates`, { withFileTypes: true })
+ *  moved took a mutual pair with them and this script — reading the root `src/`
+ *  alone — reported it as *fixed*. A tool that stops watching what it was watching
+ *  is worse than no tool: it says the number went down. Cargo enforces that no
+ *  cycle crosses a crate line, so what is left to count is inside each one.
+ *
+ *  There is no root `src/` any more: every crate lives under `crates/`, so this
+ *  needs no special case for the one that used to sit at the top. */
+const ROOTS = readdirSync(`${root}/crates`, { withFileTypes: true })
   .filter((d) => d.isDirectory())
-  .map((d) => `${root}/crates/${d.name}/src`)];
+  .map((d) => `${root}/crates/${d.name}/src`);
 
 const files = [];
 for (const src of ROOTS) {
