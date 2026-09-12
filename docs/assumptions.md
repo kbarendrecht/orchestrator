@@ -186,7 +186,9 @@ macOS, where `/tmp`, `/var` and `$TMPDIR` are symlinks into `/private`.
 **25. One daemon per config dir, and one main checkout per daemon.**
 An `flock` on `<config dir>/instance.pid` decides, and the lock file is deliberately
 left behind — it is what the lock is taken *on*. The kernel releases it however the
-process ends, so there is no stale path to reason about. *Kind:* orchd's own rule.
+process ends, so there is no stale path to reason about — but not instantly: a
+descendant holds a forked copy of the fd until its `exec`, so the claim retries for
+`instance::PATIENCE`. *Kind:* orchd's own rule.
 *Breaks:* two daemons fight over `sessions.json` and the hook settings file.
 
 **26. A session's environment is not the shell's.** Started from a launcher it is

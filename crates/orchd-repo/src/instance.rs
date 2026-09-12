@@ -79,10 +79,34 @@ pub fn acquire() -> Result<Lock> {
     acquire_at(Config::config_dir()?.join("instance.pid"))
 }
 
+/// How long a refusal waits before it believes itself.
+///
+/// **A dead daemon's lock can outlive the daemon**, and that is not a kernel
+/// delay: `fork` duplicates every descriptor, so a child the daemon spawned holds
+/// a copy of the lock fd from the `fork` until its own `exec` closes it
+/// (`CLOEXEC`, which Rust sets). The copy holds the `flock` for that window, and
+/// the window is whatever the scheduler gives it.
+///
+/// The daemon forks hardest exactly where this bites — `reconcile_all` runs four
+/// git processes wide at boot — so a checkout's daemon killed during its own sweep
+/// leaves the lock held for a few milliseconds after it has been reaped. The host
+/// restarts a dead daemon **once**, so one such millisecond spends the only
+/// recovery that checkout has, and it stays down. Measured on a 2-core CI runner:
+/// the restart was refused 250ms into the run, naming the pid it had just reaped.
+///
+/// Two seconds costs nothing it should not: a real second instance holds the lock
+/// for its whole life, so the refusal still arrives, with the same sentence.
+const PATIENCE: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// The real work, with the path injected so a test can point it at a temp dir
 /// rather than the machine's one true `~/.config/orchd/instance.pid` — which a
 /// real daemon might hold and which two tests cannot share.
 fn acquire_at(path: PathBuf) -> Result<Lock> {
+    acquire_within(path, PATIENCE)
+}
+
+/// The same, with the patience injected so a test does not wait [`PATIENCE`] out.
+fn acquire_within(path: PathBuf, patience: std::time::Duration) -> Result<Lock> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
@@ -100,6 +124,13 @@ fn acquire_at(path: PathBuf) -> Result<Lock> {
     // `LOCK_NB` so this answers rather than waits. Three outcomes, and they must
     // not be conflated: taken, held by someone else, or a real error — reading the
     // last as "already running" would refuse to start for the wrong reason.
+    //
+    // `LOCK_NB` rather than a blocking `flock` even though this now waits, because
+    // the two waits are not the same wait: a blocking call gives up never, and a
+    // daemon that hangs forever on a lock somebody else really holds is worse than
+    // one that says so. The deadline is ours to enforce, so the syscall stays the
+    // one that answers.
+    let deadline = std::time::Instant::now() + patience;
     let taken = loop {
         // SAFETY: a descriptor just opened here; `flock` touches only the kernel's
         // lock table for it.
@@ -110,8 +141,16 @@ fn acquire_at(path: PathBuf) -> Result<Lock> {
         match err.raw_os_error() {
             // A signal arrived, which says nothing about the lock. Ask again.
             Some(libc::EINTR) => continue,
-            // The only errno that means somebody else has it.
-            Some(libc::EWOULDBLOCK) => break false,
+            // Somebody has it. Whether that is an instance or a corpse's forked
+            // descriptor is not answerable from here — only waiting tells them
+            // apart, and [`PATIENCE`] is how long that is worth.
+            Some(libc::EWOULDBLOCK) => {
+                if std::time::Instant::now() >= deadline {
+                    break false;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+                continue;
+            }
             _ => return Err(err).with_context(|| format!("locking {}", path.display())),
         }
     };
@@ -160,11 +199,17 @@ mod tests {
     /// `flock` locks the *open file description*, not the process, so a second
     /// `open` of the same path in this same process is refused exactly as another
     /// daemon would be — which is what makes this testable at all.
+    ///
+    /// Driven through `acquire_within` with no patience at all, because the wait
+    /// [`PATIENCE`] buys is for a *corpse's* descriptor and this holder is alive:
+    /// waiting two seconds here would only make the suite two seconds slower and
+    /// assert nothing the first `flock` has not already answered.
     #[test]
     fn a_second_attempt_is_refused_while_the_first_is_held() {
         let path = scratch("held");
-        let first = acquire_at(path.clone()).expect("the first lock");
-        let err = acquire_at(path.clone())
+        let first =
+            acquire_within(path.clone(), std::time::Duration::ZERO).expect("the first lock");
+        let err = acquire_within(path.clone(), std::time::Duration::ZERO)
             .expect_err("a second instance must be refused")
             .to_string();
         assert!(err.contains("already running"), "unhelpful: {err}");
@@ -185,7 +230,8 @@ mod tests {
         // Exactly what a previous run leaves: the file, with a pid in it. 999999
         // is either dead or something unrelated; neither may block the lock.
         std::fs::write(&path, "999999").unwrap();
-        let lock = acquire_at(path.clone()).expect("a stale file must not block the lock");
+        let lock = acquire_within(path.clone(), std::time::Duration::ZERO)
+            .expect("a stale file must not block the lock");
         // And ours is recorded over it.
         assert_eq!(
             std::fs::read_to_string(&path).unwrap().trim(),
@@ -208,30 +254,36 @@ mod tests {
             "the lock file must survive the guard — it is the lock's target"
         );
 
-        /* **Retried, and the reason is worth knowing.** `fork` duplicates every
-        descriptor, so any *other* thread in this process spawning a child while
-        our lock fd is open hands that child a copy — and the copy holds the
-        flock until its `exec` closes it (`CLOEXEC`, which Rust sets). The window
-        is microseconds, but a 460-test suite forks constantly, and asserting
-        "free immediately" failed about two runs in five. Measured, not guessed:
-        the refusal came back `EWOULDBLOCK`, not `EINTR`.
+        /* **Retaken rather than probed once, and the reason is the whole of
+        [`PATIENCE`].** `fork` duplicates every descriptor, so any *other* thread in
+        this process spawning a child while our lock fd is open hands that child a
+        copy — and the copy holds the flock until its `exec` closes it (`CLOEXEC`,
+        which Rust sets). The window is microseconds, but a 575-test suite forks
+        constantly, and asserting "free immediately" failed about two runs in five.
+        Measured, not guessed: the refusal came back `EWOULDBLOCK`, not `EINTR`.
 
-        Nothing to fix in the daemon — it takes this lock once at startup and
-        does not release and immediately retake it — so the test's assumption was
-        the wrong half. What is actually being asserted is that the lock is
-        released at all, which a bounded retry says just as well. */
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        loop {
-            match acquire_at(path.clone()) {
-                Ok(again) => {
-                    drop(again);
-                    return;
-                }
-                Err(e) if std::time::Instant::now() > deadline => {
-                    panic!("the lock was never released: {e}")
-                }
-                Err(_) => std::thread::sleep(std::time::Duration::from_millis(20)),
-            }
-        }
+        That used to be the test's own bounded retry, on the reasoning that nothing
+        in the daemon releases and immediately retakes this lock. The host does:
+        it restarts a dead checkout's daemon the moment it reaps it. So the retry
+        moved into `acquire_at`, and this asserts it from the outside. */
+        drop(acquire_at(path).expect("the lock was never released"));
+    }
+
+    /// A holder that lets go inside [`PATIENCE`] is waited out, not refused.
+    ///
+    /// This is the host's restart in miniature: the corpse's descriptor goes away
+    /// a moment after the daemon does, and the replacement must get the lock
+    /// rather than spend the checkout's one free recovery on a few milliseconds.
+    #[test]
+    fn a_lock_let_go_during_the_wait_is_taken() {
+        let path = scratch("patience");
+        let held = acquire_at(path.clone()).expect("the first lock");
+        let releasing = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(150));
+            drop(held);
+        });
+        let took = acquire_within(path, std::time::Duration::from_secs(2));
+        releasing.join().unwrap();
+        drop(took.expect("a lock released during the wait must be taken, not refused"));
     }
 }

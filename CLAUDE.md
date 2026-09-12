@@ -151,6 +151,15 @@ thing the lock exists to stop. And guessing from a command line meant a recycled
 pid belonging to `vim ~/orchestrator/x` read as a live holder and wedged the app
 out of starting.
 
+**But the release is not instant, and the reason is `fork`.** A descendant holds a
+copy of the lock fd from the `fork` until its own `exec` closes it, so a daemon
+killed while `reconcile_all` is spawning git four wide leaves the lock held for a
+few milliseconds *after it has been reaped*. The host restarts a dead checkout's
+daemon exactly once, so those milliseconds spent that checkout's only recovery and
+left it down — measured on a 2-core CI runner, refused 250ms in, naming the pid it
+had just reaped. `instance::PATIENCE` is two seconds of retry, and it costs a real
+refusal nothing: a second instance holds the lock for its whole life.
+
 ## One repo is the test, not the specification
 
 `orchd` is developed against a single monorepo, and almost every fact in this file
