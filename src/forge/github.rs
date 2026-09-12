@@ -98,7 +98,7 @@ pub fn resolve_token(token_file: Option<&Path>) -> Result<Token> {
     })
 }
 
-/// Shared with `story::resolve_token`: both ladders read a token out of a file
+/// Shared with `config::resolve_token`: both ladders read a token out of a file
 /// that is meant to be `0600`.
 #[cfg(unix)]
 pub fn warn_if_world_readable(p: &Path) {

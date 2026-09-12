@@ -7,7 +7,7 @@
 //! command used to be the wrong shape here because it resolved from the agent's own
 //! command path, which depends on a repo usually not installed — the daemon now
 //! ships the skill itself and pushes `--plugin-dir` on every spawn
-//! ([`crate::config::session_flags`]), so the path is one it owns. The runs that
+//! ([`crate::launch::session_flags`]), so the path is one it owns. The runs that
 //! still have a multi-line prompt carry it another way: every vendored prompt is
 //! a skill now, and what a template used to interpolate arrives by route or by
 //! environment ([`crate::skills`]).

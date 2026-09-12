@@ -17,20 +17,26 @@
 // makes it a ratchet rather than a permanent list of exceptions — the number can
 // only go down, and going down is a commit that says so.
 //
-// **The first three pairs are gone, and what they cost is the pattern.** `model`
-// was mutual with `state`, `git` and `diff`, and all three were the same mistake
-// in two directions: a *shape* living in the module that produces it.
-// `state::random_token` moved to the leaf `secret.rs`; `git::Bank` and
-// `diff::DiffFile` moved into `model`, beside `ChangedFile` and `FileSet`, which
-// were already there. The rule those three now follow: a shape lives in `model`,
-// and the module that fills it depends on `model`.
+// **Seven pairs are gone, in two passes, and each pass had one shape.**
 //
-// They did **not** shrink the SCC, which is still 16 and never contained `model`
-// at all. A 23-module figure was reported once and was this script's own bug —
-// see `strip` below.
+// `model` was mutual with `state`, `git` and `diff`, and all three were a *shape*
+// living in the module that produces it: `state::random_token` moved to the leaf
+// `secret.rs`, and `git::Bank` and `diff::DiffFile` into `model`, beside
+// `ChangedFile` and `FileSet`, which were already right. That pass did **not**
+// shrink the SCC, which was 16 and never contained `model` at all — a 23-module
+// figure was reported once and was this script's own bug, see `strip` below.
 //
-// What is left reaching the wrong way: `config` <-> `story`/`skills`/`reviews`/
-// `env_source`, configuration depending on the features it configures.
+// `config` was mutual with `story`, `skills`, `reviews` and `env_source`, and all
+// four were *behaviour* living in the module that holds the settings:
+// `session_env` and `session_flags` built a session's process from inside
+// `config`, reaching into the three features `config` configures. They are
+// `launch.rs` now, a layer above both. `story::token_env_pair` went the other
+// way, into `config` beside the `Tracker` field it reads. That pass took the SCC
+// from 16 to 11.
+//
+// What is left is the runtime core: api, fix_pr, health, post, spawn, state,
+// store, story, triage, update, worktree — eleven modules that genuinely call
+// each other, and the next move on them is a crate split rather than a rename.
 //
 // `cargo-modules` and `cargo-deny`'s `[bans]` take over if `orchd` is ever split
 // into crates, which is the real fix and a much larger one.

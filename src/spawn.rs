@@ -541,7 +541,7 @@ async fn spawn_session_with_id(
             cmd.push(id.to_string());
         }
     }
-    cmd.extend(crate::config::session_flags()?);
+    cmd.extend(crate::launch::session_flags()?);
 
     phases.mark("claim");
 
@@ -953,7 +953,7 @@ pub async fn spawn_worktree_session(
         cmd.push("--fork-session".into());
     }
     cmd.extend(["--session-id".to_string(), id.to_string()]);
-    cmd.extend(crate::config::session_flags()?);
+    cmd.extend(crate::launch::session_flags()?);
     // After the tree exists, because the environment is read in the directory the
     // session will run in — a fresh worktree is a fresh path, and `mise` answers
     // per directory.
@@ -962,7 +962,7 @@ pub async fn spawn_worktree_session(
     let (env, unset) = {
         let (app, at, tok) = (app.clone(), spawn_cwd.clone(), ask_token.clone());
         crate::proc::run_blocking("reading the session environment", move || {
-            crate::config::session_env(&app.cfg, &at, id, Some(&tok))
+            crate::launch::session_env(&app.cfg, &at, id, Some(&tok))
         })
         .await?
     };
@@ -1133,7 +1133,7 @@ pub(crate) fn run_env(
     post: Option<&str>,
     extra: &[(String, String)],
 ) -> (Vec<(String, String)>, Vec<&'static str>) {
-    let (mut env, unset) = crate::config::session_env(cfg, cwd, id, ask);
+    let (mut env, unset) = crate::launch::session_env(cfg, cwd, id, ask);
     if let Some(token) = post {
         env.push(("ORCH_POST_TOKEN".to_string(), token.to_string()));
     }
@@ -1181,7 +1181,7 @@ pub(crate) async fn spawn_run(
     // Through `session_flags` like every other spawn: it carries `--settings` and
     // the vendored skill's `--plugin-dir`, and that flag is per *invocation*, so a
     // run that built its own argv would be the one session on the board without it.
-    cmd.extend(crate::config::session_flags()?);
+    cmd.extend(crate::launch::session_flags()?);
 
     let session = spec.session(id, workspace, path.clone(), pr);
     // Minted with the session so the same value goes into the environment and onto
@@ -2633,7 +2633,7 @@ mod tests {
             crate::testutil::app_with("agent-env", r#""port":7794,"env_source":"none""#);
 
         let id = Uuid::new_v4();
-        let (env, _) = crate::config::session_env(&app.cfg, &dir, id, Some("ask-tok"));
+        let (env, _) = crate::launch::session_env(&app.cfg, &dir, id, Some("ask-tok"));
         let get = |k: &str| {
             env.iter()
                 .find(|(n, _)| n == k)

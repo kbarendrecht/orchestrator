@@ -89,8 +89,12 @@ const KNOWN_VERSION: u64 = 1;
 const DEFAULT_SCRIPT: &str = include_str!("../reviews/default.js");
 
 /// Where the ejected copy lives.
+///
+/// The path itself is [`crate::config::Config::reviews_script_path`] — the layout
+/// of the config dir is config's, and the default for `reviews_command` is read
+/// from it, which is why it cannot be the other way round.
 pub fn default_script_path() -> Result<std::path::PathBuf> {
-    Ok(crate::config::Config::config_dir()?.join("reviews.js"))
+    crate::config::Config::reviews_script_path()
 }
 
 /// Eject the built-in queue to the config dir, **without ever clobbering it.**

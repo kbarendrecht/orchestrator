@@ -82,7 +82,7 @@ fn resolve_program(
     if prog.contains('/') {
         return Ok(cwd.join(prog));
     }
-    // The *last* PATH, because that is the one the child gets: `config::session_env`
+    // The *last* PATH, because that is the one the child gets: `launch::session_env`
     // pushes a second PATH on top of the first and says "last wins", and
     // `CommandBuilder` applies them in order. Reading the first here resolved the
     // program against a PATH the child would never see.

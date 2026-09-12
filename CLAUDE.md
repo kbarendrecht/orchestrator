@@ -531,15 +531,25 @@ mean *this* repo; if you do, name it.
   the SPA gets: a new mutual pair fails, and a pair that goes away fails too
   until it is deleted from `tools/rust-modules.json`, so the number can only
   fall. Making it a DAG today is not a change anybody could review.
-  **Three pairs are gone, and all three were one mistake**: a *shape* living in
-  the module that produces it. `state::random_token` moved to the leaf
-  `secret.rs` — a leaf is what a cycle can be broken with, and `secret.rs` says at
-  the top that it must never grow an import. `git::Bank` and `diff::DiffFile`
-  moved into `model`, beside `ChangedFile` and `FileSet`, which were already
-  there. The rule the three now follow: **a shape lives in `model`, and the
-  module that fills it depends on `model`.**
-  **They did not shrink the SCC, and the 23-module figure first reported for it
-  was wrong.** It is 16, it never contained `model`, and the error was in the
+  **Seven pairs are gone, in two passes, and each pass had one shape.**
+  - `model` was mutual with `state`, `git` and `diff`, and all three were a
+    *shape* living in the module that produces it. `state::random_token` moved to
+    the leaf `secret.rs` — a leaf is what a cycle can be broken with, and that
+    file says at the top that it must never grow an import. `git::Bank` and
+    `diff::DiffFile` moved into `model`, beside `ChangedFile` and `FileSet`,
+    which were already right. **A shape lives in `model`; the module that fills
+    it depends on `model`.**
+  - `config` was mutual with `story`, `skills`, `reviews` and `env_source`, and
+    all four were *behaviour* living in the module that holds the settings.
+    `session_env` and `session_flags` built a session's process from inside
+    `config`, reaching into the three features `config` configures; they are
+    `src/launch.rs` now, a layer that sits above both and that nothing below may
+    import. `story::token_env_pair` and `resolve_token` went the other way, into
+    `config` beside the `Tracker` field they read, and `reviews`'s ejected-script
+    path became `Config::reviews_script_path` beside `hooks_settings_path` —
+    the layout of the config dir is config's own.
+  **The first pass did not shrink the SCC and the second took it from 16 to 11.**
+  The 23-module figure first reported for it was wrong, and the error was in the
   measuring script: `pty.rs` writes `pub(crate) mod tests`, which the pattern
   cutting test code did not match, so that whole module read as shipped code and
   put `pty -> testutil -> state -> model` into the graph. `testutil` is
@@ -547,8 +557,9 @@ mean *this* repo; if you do, name it.
   this script: **a number a tool reports is a claim the tool has to earn**, and
   this one was repeated into a commit message and a review before anybody checked
   it.
-  What is left reaching the wrong way: `config` <-> `story`/`skills`/`reviews`/
-  `env_source`, configuration depending on the features it configures.
+  What is left is the runtime core — api, fix_pr, health, post, spawn, state,
+  store, story, triage, update, worktree — eleven modules that genuinely call
+  each other. The next move on those is a crate split, not a rename.
   One more thing to know about the reader: it cuts each file at its test module,
   so anything below that line is invisible to it — which is why a probe appended
   to the end of a file shows nothing.

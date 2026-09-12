@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Component, Path, PathBuf};
 
@@ -72,7 +72,7 @@ pub struct Config {
     /// has the shape and why it is explicit rather than detected.
     ///
     /// Its credential is **not** a config key: `ORCHD_TRACKER_TOKEN` in the
-    /// daemon's environment, and nowhere else. See `story::resolve_token`.
+    /// daemon's environment, and nowhere else. See `config::resolve_token`.
     #[serde(default, deserialize_with = "tracker_or_warn")]
     pub tracker: Option<Tracker>,
     /// Which tool a spawned session's own environment comes from.
@@ -482,7 +482,7 @@ fn default_upstream_remote() -> String {
 /// pane reads "not configured" rather than pointing at a path that is not there.
 /// `docs/reviews-json.md` has the contract, for replacing it outright.
 fn default_reviews_command() -> Vec<String> {
-    match crate::reviews::default_script_path() {
+    match Config::reviews_script_path() {
         Ok(p) => vec![p.to_string_lossy().into_owned()],
         Err(_) => Vec::new(),
     }
@@ -1077,116 +1077,84 @@ impl Config {
     pub fn hooks_settings_path() -> Result<PathBuf> {
         Ok(Self::config_dir()?.join("hooks.json"))
     }
+
+    /// Where the review queue's ejected script lives.
+    ///
+    /// Beside `hooks_settings_path` because it is the same kind of fact — the
+    /// layout of this directory — and it has to be here rather than in
+    /// [`crate::reviews`]: the default for `reviews_command` is read out of it,
+    /// so a locator over there meant configuration importing the feature it
+    /// configures while that feature imported `config` back. `reviews` still owns
+    /// the script and the writing of it.
+    pub fn reviews_script_path() -> Result<PathBuf> {
+        Ok(Self::config_dir()?.join("reviews.js"))
+    }
 }
 
-/// The environment a spawned Claude session gets, so the outcome never depends
-/// on which shell started the daemon.
+// ---------------------------------------------------------------------------
+// The tracker's credential
+// ---------------------------------------------------------------------------
+//
+// Here rather than in `story`, which is the one pass that files into a tracker:
+// `Tracker` and its `token_env` are fields of this file, and the pair below is
+// read by `launch::session_env` for *every* session. With it in `story`, the
+// module that builds a session's environment had to import the story pass while
+// the story pass imported this file back.
+
+/// The tracker's variable and its value, for a session that may or may not need one.
 ///
-/// Transcripts are always on: resume (§2) and the teardown transcript check both
-/// need one, and a session without a transcript costs you the conversation. Set
-/// explicitly rather than inherited, because a shell inside a Claude Code session
-/// carries `CLAUDE_CODE_CHILD_SESSION`, which turns transcript saving off in every
-/// child — so without clearing it the daemon would behave differently depending on
-/// what launched it.
+/// `None` means "nothing to hand over" — no tracker configured, or no token in the
+/// daemon's environment — and says so in silence, because boot already logs the
+/// missing token once (`lib.rs`) and a warning per spawn would only bury it.
 ///
-/// Returns `(set, unset)`.
+/// The story pass keeps the hard [`resolve_token`] instead: a run that files into a
+/// tracker with no credential can only fail mid-flight, so it is refused up front.
 ///
-/// # Why every spawn goes through here
-///
-/// This used to be `transcript_env`, and each spawn site added its own `ORCH_*` on
-/// top. They drifted, silently and more than once: `spawn_worktree_session` set
-/// `ORCH_SESSION_ID` and stopped, so `orch` in a `claude --worktree` session had a
-/// name for itself and no address and answered "only runs inside a session the
-/// daemon started" — a sentence describing a session that is not one. The fix-pr and
-/// triage spawns had the same hole. The signature changed rather than gaining a
-/// default so the compiler names every site, which is the only reason a future spawn
-/// cannot quietly leave one out.
-///
-/// `ask_token` is `None` for a run with nobody to ask — the headless triage pass.
-///
-/// `cwd` is where the session will run, and it is asked what it exports
-/// ([`crate::env_source`]): the daemon's own environment is whatever started it, so
-/// from a desktop launcher it holds no checkout's variables at all. That is the
-/// other half of the tracker token below, and of every `${…}` a repo's `.mcp.json`
-/// expands.
-pub fn session_env(
-    cfg: &Config,
-    cwd: &Path,
-    id: uuid::Uuid,
-    ask_token: Option<&str>,
-) -> (Vec<(String, String)>, Vec<&'static str>) {
-    // The checkout's own variables first, so everything the daemon sets below wins
-    // — the pty applies these in order, and a repo exporting `ORCH_ASK_TOKEN` must
-    // not be able to overwrite the one this session was given.
-    let mut set = crate::env_source::read(cfg.env_source, cwd);
-    set.push((
-        "CLAUDE_CODE_FORCE_SESSION_PERSISTENCE".to_string(),
-        "1".to_string(),
-    ));
-    set.push(("ORCH_SESSION_ID".to_string(), id.to_string()));
-    if let Some(t) = ask_token {
-        set.push(("ORCH_ASK_TOKEN".to_string(), t.to_string()));
-    }
-    // So `orch` needs no configuration: the session's own environment says where
-    // the daemon is and who it is.
-    set.push((
-        "ORCH_URL".to_string(),
-        format!("http://127.0.0.1:{}", cfg.port),
-    ));
-    // And so it is *findable*. `orch` ships beside the binary that is running, but
-    // only the tarball puts that directory on your PATH — inside an AppImage or a
-    // macOS bundle it is a mount point nothing else knows about, and the agent's
-    // `orch new` would be a command not found. Prepended, so a build you are
-    // testing wins over an installed one.
-    if let Some(dir) = crate::sibling_bin_dir() {
-        // Prepend to the checkout's PATH when there is one, not the daemon's: the
-        // source above may already have put a PATH here holding the tools this
-        // checkout pins, and rebuilding from the daemon's would drop them. Last
-        // wins, the same rule the pty applies.
-        let rest = set
-            .iter()
-            .rev()
-            .find(|(k, _)| k == "PATH")
-            .map(|(_, v)| v.clone())
-            .unwrap_or_else(|| std::env::var("PATH").unwrap_or_default());
-        set.push(("PATH".to_string(), format!("{dir}:{rest}")));
-    }
-    // What the repo's `.mcp.json` `${…}` expands from, named by the tracker.
-    //
-    // Claude Code expands those from the **real process environment** and nowhere
-    // else — an `env` block in a settings file is not consulted, and an unset
-    // variable is passed through as the literal `${VAR}`. Shortcut answers a
-    // literal with "the access token expired", so the one thing the chain never
-    // said was that no token had been sent. In the child's environment rather than
-    // the settings file the daemon writes, which would put a secret in
-    // `~/.config/orchd/`.
-    if let Some(pair) = crate::story::token_env_pair(&cfg.tracker, &set) {
-        set.push(pair);
-    }
-    (set, vec!["CLAUDE_CODE_CHILD_SESSION"])
+/// `checkout` is the environment built so far, which is where the token comes from
+/// when the daemon's own has none.
+pub fn token_env_pair(
+    tracker: &Option<Tracker>,
+    checkout: &[(String, String)],
+) -> Option<(String, String)> {
+    // `None` is two different things and both mean "push nothing": no tracker at
+    // all, and a tracker that authenticates itself. Neither is a failure.
+    let var = tracker.as_ref()?.token_env.as_deref()?;
+    Some((var.to_string(), resolve_token(checkout, var).ok()?))
 }
 
-/// The argv every spawned `claude` carries whatever the run is: the daemon's hook
-/// settings, and the plugin dir its vendored skills live in.
+/// The tracker's API token, for its MCP server's `Authorization` header.
 ///
-/// The pair beside [`session_env`], and here for the same reason. Both halves are
-/// per *process*, not per conversation — a resume that omits either gets a session
-/// with no hooks or no skill, and neither says so — and both were spelled out at
-/// each spawn site, which is exactly how the environment drifted before. One call
-/// is what a sixth site has to remember instead of two.
+/// **Environment only.** The forge keeps a file ladder because its token is read
+/// on every poll from the daemon's own process; this one is only ever handed to a
+/// child, so a file bought nothing but a second place for a credential to sit at
+/// the wrong mode. One source, and it is the one already in your shell.
 ///
-/// It cannot be made un-forgettable the way `session_env`'s signature was: an argv
-/// tail a site simply never appends is invisible to the compiler. The e2e fake
-/// agent checks it for that reason.
-pub fn session_flags() -> Result<Vec<String>> {
-    let mut v = vec![
-        "--settings".to_string(),
-        Config::hooks_settings_path()?
-            .to_string_lossy()
-            .into_owned(),
-    ];
-    v.extend(crate::skills::flag());
-    Ok(v)
+/// Deliberately **not** a reader for the repo's `.env`, where a team's copy
+/// actually lives. That file is shell-ish, and the line as it stands is
+/// `SHORTCUT_API_TOKEN='' # can be generated in …`; a naive split yields
+/// `'' # can be` and injects a garbage Bearer, which surfaces later as "the
+/// tracker is down" rather than "the token is not set".
+///
+/// `checkout` is that same team copy read *correctly* — by the tool that owns the
+/// file ([`crate::env_source`]), under the name the tracker's MCP entry expands.
+/// It is a fallback, not the first answer: `ORCHD_TRACKER_TOKEN` is what an
+/// operator set for this daemon, and a checkout must not be able to redirect
+/// filing by exporting a token of its own.
+pub fn resolve_token(checkout: &[(String, String)], var: &str) -> Result<String> {
+    if let Ok(v) = std::env::var("ORCHD_TRACKER_TOKEN") {
+        let v = v.trim().to_string();
+        if !v.is_empty() {
+            return Ok(v);
+        }
+    }
+    // Last wins, the same rule the pty applies to these pairs.
+    if let Some((_, v)) = checkout.iter().rev().find(|(k, _)| k == var) {
+        let v = v.trim().to_string();
+        if !v.is_empty() {
+            return Ok(v);
+        }
+    }
+    bail!("no tracker token: set ORCHD_TRACKER_TOKEN in the daemon's environment, or {var} in the checkout")
 }
 
 /// Claude Code keys its transcript directory by working directory, slugging the
@@ -1533,21 +1501,6 @@ mod tests {
         assert_eq!(cfg.reviews_command, vec!["gh", "pr"]);
         assert!(cfg.main_processes.is_empty());
         assert_eq!(cfg.worktree_setup, vec![".claude/hooks/worktree-setup"]);
-    }
-
-    #[test]
-    fn persistence_clears_the_child_marker() {
-        // The marker is what a daemon launched from inside a Claude session
-        // inherits, and it silently turns transcripts off in every child.
-        let cfg = Config {
-            env_source: EnvSourceKind::None,
-            ..super::test_config()
-        };
-        let (set, unset) = session_env(&cfg, Path::new("/tmp"), uuid::Uuid::nil(), None);
-        assert!(unset.contains(&"CLAUDE_CODE_CHILD_SESSION"));
-        assert!(set
-            .iter()
-            .any(|(k, v)| k == "CLAUDE_CODE_FORCE_SESSION_PERSISTENCE" && v == "1"));
     }
 
     #[test]

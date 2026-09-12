@@ -20,6 +20,7 @@ pub mod health;
 pub mod hooks;
 pub mod host;
 pub mod instance;
+pub mod launch;
 pub mod logging;
 pub mod machine;
 pub mod migrate;
@@ -490,7 +491,7 @@ pub async fn start(opts: StartOptions) -> Result<Server> {
                     // so the boot line has to read it too. Without this it would
                     // warn about a missing token that a run then finds.
                     let checkout = env_source::read(app.cfg.env_source, &app.cfg.main_checkout);
-                    match story::resolve_token(&checkout, var) {
+                    match config::resolve_token(&checkout, var) {
                         Ok(_) => tracing::info!(
                             "tracker: {server}, token resolved, {} story/ies cached",
                             inner.stories.len()

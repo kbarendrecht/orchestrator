@@ -26,31 +26,10 @@
 //! report's "reused" wording; losing it costs latency, not correctness, which is
 //! why it may degrade to empty like every other store here.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
-
-/// The tracker's variable and its value, for a session that may or may not need one.
-///
-/// `None` means "nothing to hand over" — no tracker configured, or no token in the
-/// daemon's environment — and says so in silence, because boot already logs the
-/// missing token once (`lib.rs`) and a warning per spawn would only bury it.
-///
-/// The story pass keeps the hard [`resolve_token`] instead: a run that files into a
-/// tracker with no credential can only fail mid-flight, so it is refused up front.
-///
-/// `checkout` is the environment built so far, which is where the token comes from
-/// when the daemon's own has none.
-pub fn token_env_pair(
-    tracker: &Option<crate::config::Tracker>,
-    checkout: &[(String, String)],
-) -> Option<(String, String)> {
-    // `None` is two different things and both mean "push nothing": no tracker at
-    // all, and a tracker that authenticates itself. Neither is a failure.
-    let var = tracker.as_ref()?.token_env.as_deref()?;
-    Some((var.to_string(), resolve_token(checkout, var).ok()?))
-}
 
 /// The `Pass` command a story pass carries, and the skill the daemon
 /// types at it.
@@ -60,41 +39,6 @@ pub fn token_env_pair(
 /// is written to. `skills::a_skill_is_named_after_the_command_that_types_it` walks
 /// the last two.
 pub const COMMAND: &str = "story";
-
-/// The tracker's API token, for its MCP server's `Authorization` header.
-///
-/// **Environment only.** The forge keeps a file ladder because its token is read
-/// on every poll from the daemon's own process; this one is only ever handed to a
-/// child, so a file bought nothing but a second place for a credential to sit at
-/// the wrong mode. One source, and it is the one already in your shell.
-///
-/// Deliberately **not** a reader for the repo's `.env`, where a team's copy
-/// actually lives. That file is shell-ish, and the line as it stands is
-/// `SHORTCUT_API_TOKEN='' # can be generated in …`; a naive split yields
-/// `'' # can be` and injects a garbage Bearer, which surfaces later as "the
-/// tracker is down" rather than "the token is not set".
-///
-/// `checkout` is that same team copy read *correctly* — by the tool that owns the
-/// file ([`crate::env_source`]), under the name the tracker's MCP entry expands.
-/// It is a fallback, not the first answer: `ORCHD_TRACKER_TOKEN` is what an
-/// operator set for this daemon, and a checkout must not be able to redirect
-/// filing by exporting a token of its own.
-pub fn resolve_token(checkout: &[(String, String)], var: &str) -> Result<String> {
-    if let Ok(v) = std::env::var("ORCHD_TRACKER_TOKEN") {
-        let v = v.trim().to_string();
-        if !v.is_empty() {
-            return Ok(v);
-        }
-    }
-    // Last wins, the same rule the pty applies to these pairs.
-    if let Some((_, v)) = checkout.iter().rev().find(|(k, _)| k == var) {
-        let v = v.trim().to_string();
-        if !v.is_empty() {
-            return Ok(v);
-        }
-    }
-    bail!("no tracker token: set ORCHD_TRACKER_TOKEN in the daemon's environment, or {var} in the checkout")
-}
 
 /// A story that exists in the tracker.
 ///
@@ -607,7 +551,7 @@ async fn run_filer(
     // `--allowedTools "Read Write"` runs the skill, because the allowlist gates
     // tool calls and a typed command is expanded before the model acts. Model-
     // *chosen* skills are a different question — those go through a tool.
-    cmd.extend(crate::config::session_flags()?);
+    cmd.extend(crate::launch::session_flags()?);
     if tracker.stub {
         // Only the stub, and nothing else: `--strict-mcp-config` ignores every
         // configured server, which is what keeps a verification run from reaching
@@ -626,7 +570,7 @@ async fn run_filer(
     // that is the whole board freezing while this run starts.
     let (mut env, unset) = crate::proc::run_blocking("reading the session environment", {
         let (cfg, at) = (app.cfg.clone(), path.clone());
-        move || crate::config::session_env(&cfg, &at, id, None)
+        move || crate::launch::session_env(&cfg, &at, id, None)
     })
     .await?;
     /* What the skill reads instead of what a template substituted. The host is in
@@ -657,7 +601,7 @@ async fn run_filer(
     are OAuth-first — and there is then nothing here to resolve and nothing to
     refuse the run for. */
     if let Some(var) = tracker.token_env.as_deref() {
-        resolve_token(&env, var)?;
+        crate::config::resolve_token(&env, var)?;
     }
 
     // A real session, so its pty is there to read when a story goes wrong. It is a

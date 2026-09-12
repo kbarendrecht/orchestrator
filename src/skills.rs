@@ -17,9 +17,9 @@
 //! from its description. Resuming that same session id *without* the flag answers
 //! `Unknown command`. So the flag is not a property of the conversation, it is a
 //! property of the process — and every spawn has to push it, resumes and forks
-//! included. It reaches them through [`crate::config::session_flags`], beside the
+//! included. It reaches them through [`crate::launch::session_flags`], beside the
 //! settings file, because these sites have drifted before: that is the whole story
-//! in [`crate::config::session_env`]'s docblock.
+//! in [`crate::launch::session_env`]'s docblock.
 //!
 //! A missing directory is not an error to Claude Code — it starts and says
 //! nothing — which is why the flag is pushed unconditionally and [`write_plugin`]
@@ -187,7 +187,7 @@ pub fn plugin_dir() -> Result<PathBuf> {
 /// The plugin-dir argv, or nothing when the directory could not be resolved at
 /// all.
 ///
-/// Reached through [`crate::config::session_flags`], which is what every spawn
+/// Reached through [`crate::launch::session_flags`], which is what every spawn
 /// site calls. Uniform on purpose: a site that opts out is a site that silently
 /// differs, and the cost of carrying it is two argv words.
 ///
