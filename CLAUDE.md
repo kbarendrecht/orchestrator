@@ -531,10 +531,19 @@ mean *this* repo; if you do, name it.
   the SPA gets: a new mutual pair fails, and a pair that goes away fails too
   until it is deleted from `tools/rust-modules.json`, so the number can only
   fall. Making it a DAG today is not a change anybody could review.
-  The three worth breaking first are the ones reaching the wrong way:
-  `model` <-> `state` and `model` <-> `git` (a data model reaching into the
-  runtime), and `config` <-> `story`/`skills`/`reviews`/`env_source`
-  (configuration depending on the features it configures). If `orchd` is ever
+  **`model` <-> `state` is broken, and how it went is the pattern.** The whole
+  edge was one call: `Session::new` minting an ask token through
+  `state::random_token`, a three-line function with no state of its own that five
+  modules reached for. It moved to `src/secret.rs`, a **leaf** — and a leaf is
+  what breaks a cycle, because everyone may depend on one. `secret.rs` says at the
+  top that it must never grow an import, since the moment it does the cycle it
+  stands between comes back.
+  It did not shrink the SCC, which is still 23: `model` is still mutual with
+  `git` and `diff`, and those two are type references (`git::Bank` on a session,
+  `diff::DiffFile` beside `model::ChangedFile`) rather than a call — so breaking
+  them is a decision about where a type belongs, not a move.
+  The rest, still reaching the wrong way: `config` <-> `story`/`skills`/
+  `reviews`/`env_source`, configuration depending on the features it configures. If `orchd` is ever
   split into crates, `cargo` enforces this for free and the script goes.
   One thing to know about the reader: it cuts each file at its
   `#[cfg(test)] mod tests {`, so anything below that line is invisible to it —

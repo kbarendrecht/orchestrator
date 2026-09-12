@@ -3728,7 +3728,7 @@ mod tests {
     async fn a_run_posts_proposals_on_a_token_that_opens_nothing_else() {
         let (app, dir) = crate::testutil::app("proposaltok");
         let pr = 10001u64;
-        let narrow = crate::state::random_token();
+        let narrow = crate::secret::random_token();
         app.inner
             .write()
             .await

@@ -32,6 +32,7 @@ pub mod proposal;
 pub mod pty;
 pub mod review_commit;
 pub mod reviews;
+pub mod secret;
 pub mod skills;
 pub mod spawn;
 pub mod state;
@@ -366,7 +367,7 @@ pub async fn start(opts: StartOptions) -> Result<Server> {
         tracing::warn!("could not configure the repo: {e:#}");
     }
 
-    let token = state::random_token();
+    let token = secret::random_token();
     let app = AppState::new(cfg, token.clone(), opts.chrome);
 
     // Keep the base ref fresh or the merge-base the context bar shows drifts

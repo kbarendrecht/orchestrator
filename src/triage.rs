@@ -189,7 +189,7 @@ pub fn posts_proposals(command: &str) -> bool {
 /// the value is only ever compared against this record, so a new pair costs
 /// nothing, and the record is dropped with the process that minted it.
 pub async fn mint_post_token(app: &Arc<AppState>, pr: u64) -> String {
-    let token = crate::state::random_token();
+    let token = crate::secret::random_token();
     app.inner
         .write()
         .await

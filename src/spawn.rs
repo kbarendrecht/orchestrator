@@ -836,7 +836,7 @@ pub async fn spawn_worktree_session(
     // the cwd, so `Session::new` happens after the pty. The token has to be in the
     // environment the pty is *given*, so it is generated first and written onto the
     // session below.
-    let ask_token = crate::state::random_token();
+    let ask_token = crate::secret::random_token();
 
     // Where the daemon looks for worktrees decides who creates this one — **unless
     // this is a fork**, which the daemon always cuts itself. `claude --worktree`

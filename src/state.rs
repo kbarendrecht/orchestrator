@@ -1740,15 +1740,6 @@ impl SessionView {
     }
 }
 
-/// A fresh secret: 32 lowercase hex characters, 122 random bits.
-///
-/// A v4 uuid rather than a second RNG dependency: `uuid` already draws from the
-/// OS RNG for every session id, and nothing anywhere parses the token's shape,
-/// only compares it whole.
-pub fn random_token() -> String {
-    uuid::Uuid::new_v4().simple().to_string()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

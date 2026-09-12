@@ -519,7 +519,7 @@ impl Session {
             fix_pr_on_exit: false,
             // Always a real one, so an empty stored token can never match an
             // empty header.
-            ask_token: crate::state::random_token(),
+            ask_token: crate::secret::random_token(),
             interaction: None,
         }
     }
