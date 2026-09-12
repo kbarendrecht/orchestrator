@@ -1,7 +1,7 @@
 // The settings panel. The zoom control it offers lives in core, because the
 // terminals read the scale too.
 
-import { ctl, $, WHEEL, ZOOM, call, callHost, caret, currentPreset, detectedFonts, FONTS, fontStack, PRESETS, resetTheme, SEE_THROUGH, SIZE_MAX, SIZE_MIN,
+import { ctl, $, WHEEL, ZOOM, call, callHost, caret, currentPreset, detectedFonts, FONTS, fontStack, PRESETS, resetTheme, SEE_THROUGH, SIZE_MAX, SIZE_MIN, setUiPx, uiPx, UI_PX_MAX, UI_PX_MIN,
   setTheme, theme, validFontName, closeLegend, el, get, MOD_LABEL, saveWheel, saveZoom, setWheel, setZoom, snap, wheelScale, zoomScale } from './core.js';
 
 const settingsOpen = () => !$('settings').hidden;
@@ -277,14 +277,20 @@ function showTheme() {
     showFont(role);
     if (size) showSize(step, theme[size]);
   }
-  $('fsval').textContent = `${Math.round(zoomScale * 100)}%`;
+  // `setZoom` writes this too; said here so the renderer covers all six controls
+  // rather than covering five and relying on something else for the sixth.
+  showSize('fs', uiPx(), UI_PX_MIN, UI_PX_MAX);
 }
 
-/** One size readout, and its two buttons at the ends of the range. */
-function showSize(step, px) {
+/** One size readout, and its two buttons at the ends of its own range.
+ *
+ *  The interface range is narrower than the other two and not ours to widen: it is
+ *  the board scale, whose bounds keep the rail's own columns from collapsing.
+ */
+function showSize(step, px, min = SIZE_MIN, max = SIZE_MAX) {
   $(`${step}val`).textContent = `${px}px`;
-  ctl(`${step}down`).disabled = px <= SIZE_MIN;
-  ctl(`${step}up`).disabled = px >= SIZE_MAX;
+  ctl(`${step}down`).disabled = px <= min;
+  ctl(`${step}up`).disabled = px >= max;
 }
 
 /** Fill one role's dropdown: the vendored faces, whatever resolves here, and
@@ -348,8 +354,11 @@ function setupSettings() {
   // it. `MOD_LABEL` because the modifier differs by platform.
   $('fsdown').title = `Smaller · ${MOD_LABEL} \u2212`;
   $('fsup').title = `Larger · ${MOD_LABEL} =`;
-  $('fsdown').onclick = () => { saveZoom(setZoom(zoomScale - ZOOM.step)); showTheme(); };
-  $('fsup').onclick = () => { saveZoom(setZoom(zoomScale + ZOOM.step)); showTheme(); };
+  // By the pixel the readout shows, not by the scale behind it: a step that moves
+  // the number by one is the same control as the other two sizes, which is the whole
+  // reason this reads in px.
+  $('fsdown').onclick = () => { saveZoom(setUiPx(uiPx() - 1)); showTheme(); };
+  $('fsup').onclick = () => { saveZoom(setUiPx(uiPx() + 1)); showTheme(); };
   // No chord for these: the keyboard map's own contract says a plain letter is
   // taken only where the idiom earns it, and nobody expects one for a wheel.
   $('wsdown').onclick = () => saveWheel(setWheel(wheelScale - WHEEL.step));

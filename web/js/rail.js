@@ -111,15 +111,23 @@ function renderRail() {
   $('prpane').replaceChildren(prGroup());
 }
 
-/** `+ checkout`, and the menu of ways to name one.
+/** `+ open project`, and the menu of ways to name one.
  *
  *  A menu rather than a screen, because the answer is nearly always one of the
  *  checkouts you had open before — the host keeps that list, and the folder dialog
  *  is the way in for the one it has never seen.
+ *
+ *  **"Project" on the button, "checkout" everywhere in the code.** They are the
+ *  same thing said to two audiences: what you pick is a folder you think of as a
+ *  project, and what the host opens is a git checkout with a daemon of its own.
+ *  The label is for the person standing in front of the rail; the noun stays in the
+ *  code, the config and this file's own prose, because every rule about it —
+ *  containment, one repository per daemon, `checkout_dir` — is a rule about a
+ *  checkout and reads as nonsense about a project.
  */
 function addCheckoutButton() {
-  const btn = el('button', 'railbtn addco', '+ checkout');
-  btn.title = 'Open another checkout beside this one';
+  const btn = el('button', 'railbtn addco', '+ open project');
+  btn.title = 'Open another project beside this one';
   btn.onclick = async (ev) => {
     let recent = [];
     try {

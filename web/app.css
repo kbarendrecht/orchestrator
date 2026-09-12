@@ -973,6 +973,9 @@ body.row-resizing{cursor:row-resize;user-select:none}
   font-family:var(--mono);font-size:calc(10.5px * var(--fs));
 }
 .settings-select:focus{outline:2px solid var(--focus);outline-offset:1px}
+/* The rows of the list a select opens. `color-scheme` is what makes the popup dark
+   at all — these two only stop the engine choosing its own near-black over ours. */
+.settings-select option,.settings-select optgroup{background:var(--bg);color:var(--text)}
 /* The box a font family is typed into. It used to borrow the hex field's rule and
    then fight it for a width; the wells and their hex boxes are gone with the colour
    controls, so it has the rule to itself. */

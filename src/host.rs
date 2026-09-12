@@ -477,7 +477,7 @@ impl Host {
             .find(|c| c.path == info.path)
             .ok_or_else(|| "the checkout started and then vanished from the list".to_string())?;
         self.remember();
-        Ok(Added::Opened(opened))
+        Ok(Added::Opened { checkout: opened })
     }
 
     /// The path half of [`add_checkout`]'s refusals: same path, and containment
@@ -678,7 +678,15 @@ async fn guard(State(host): State<Arc<Host>>, req: Request<axum::body::Body>, ne
 #[serde(tag = "added", rename_all = "snake_case")]
 pub enum Added {
     /// The checkout is open and its daemon reported ready.
-    Opened(Checkout),
+    ///
+    /// **A named field rather than a newtype, because the tag is internal.** With
+    /// `Opened(Checkout)` serde flattens the row's own keys into the same object
+    /// as `added`, so the answer was `{"added":"opened","name":…,"port":…}` and the
+    /// page's `result.checkout.name` read `undefined` — a `TypeError` in the one
+    /// place a person had just picked a folder and was waiting to be told it
+    /// worked. Nothing typed it: the route hand-builds its JSON and `callHost`
+    /// answers `any`, so neither `check-web` nor a Rust test could see it.
+    Opened { checkout: Checkout },
     /// This path's `sessions.json` still holds conversations that were live when
     /// it was last closed. Ask, then call again with the answer.
     Ask { path: String, sessions: usize },

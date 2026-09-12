@@ -884,6 +884,23 @@ export function onScaleChange(fn) { scaleListeners.push(fn); }
 const FS_BASE = 1.155;
 export const ZOOM = { key: 'orch.uiZoom', def: 1, min: 0.8, max: 1.5, step: 0.05 };
 
+/** The body's own font size in px at a given scale, which is what the pane shows.
+ *
+ *  **Pixels rather than a percentage, so the three sizes are one question asked
+ *  three times.** The stored value is still a scale — it has to be, because `--fs`
+ *  multiplies every font size in the sheet and the terminal reads it as a ratio —
+ *  but "115%" answers a different question from "12px" and the pane was asking both
+ *  under one heading. 13px is the body's declared size before `--fs`, so the default
+ *  reads as 15px, which is the size a ruler would give you.
+ */
+const UI_PX_AT = (z) => Math.round(13 * FS_BASE * z);
+export const uiPx = () => UI_PX_AT(zoomScale);
+export const UI_PX_MIN = UI_PX_AT(ZOOM.min);
+export const UI_PX_MAX = UI_PX_AT(ZOOM.max);
+
+/** Set the interface size by the px the pane shows. Rounds back to a scale. */
+export const setUiPx = (px) => setZoom(px / (13 * FS_BASE));
+
 /** The user-facing scale, where 1 is the default. */
 export let zoomScale = ZOOM.def;
 
@@ -895,7 +912,10 @@ export function setZoom(z) {
   const next = Math.min(ZOOM.max, Math.max(ZOOM.min, Math.round(z * 100) / 100));
   zoomScale = next;
   document.documentElement.style.setProperty('--fs', String(next * FS_BASE));
-  $('fsval').textContent = `${Math.round(next * 100)}%`;
+  // Written here as well as by the settings renderer, because the chords change the
+  // scale with the pane open and a readout that only the buttons update is a readout
+  // that disagrees with the board.
+  $('fsval').textContent = `${UI_PX_AT(next)}px`;
   ctl('fsdown').disabled = next <= ZOOM.min;
   ctl('fsup').disabled = next >= ZOOM.max;
   // Announced rather than applied: the terminals' own font is xterm's business,
@@ -1169,6 +1189,15 @@ export function applyTheme() {
   /* The diff's own size, before `--fs` multiplies it — the stylesheet does that
      multiplication, so the three code blocks that share this size keep sharing it. */
   root.style.setProperty('--code-px', `${theme.diffSize}px`);
+  /* **What the engine paints a `<select>`, a scrollbar and a range track.** Those
+     are the browser's own widgets, and without this it draws them for a light page
+     whatever the stylesheet says — so the settings pane's dropdowns came up white on
+     a black board under WebKitGTK, along with the list each one opens, which no CSS
+     of ours can reach at all. Read from the palette rather than stored: a theme
+     whose ground is darker than its text is a dark theme, and that is true of a
+     preset and of a hand-edited pair alike. */
+  root.style.colorScheme =
+    Palette.luminance(theme.bg) < Palette.luminance(theme.text) ? 'dark' : 'light';
   for (const fn of themeListeners) fn(theme);
 }
 

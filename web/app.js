@@ -6,7 +6,7 @@ import {
   $, el, toast, call, callHost, get, duration, activeCheckout, CHECKOUTS, setCheckouts,
   HOST, snapshotOf, wsKey, everySession, enterCheckout, onThemeChange,
   snap, receive, keyActivate,
-  setZoom, saveZoom, onScaleChange, ZOOM, zoomScale,
+  setZoom, setUiPx, uiPx, saveZoom, onScaleChange, ZOOM,
   selected, setSelected, onSelection, prForWorkspace,
   terms, CHROME, stateLabel, dotClass, isWaiting, isArchived,
   pending, byNewest, currentSession,
@@ -1391,10 +1391,10 @@ function keymap(e) {
     // platforms, because ⌘Tab belongs to the OS.
     // Zoom. '=' shares its key with '+'; '_' rides '-'; the numpad spells both.
     if (k === '=' || e.key === '+' || e.code === 'NumpadAdd') {
-      e.preventDefault(); saveZoom(setZoom(zoomScale + ZOOM.step)); return;
+      e.preventDefault(); saveZoom(setUiPx(uiPx() + 1)); return;
     }
     if (k === '-' || e.code === 'NumpadSubtract') {
-      e.preventDefault(); saveZoom(setZoom(zoomScale - ZOOM.step)); return;
+      e.preventDefault(); saveZoom(setUiPx(uiPx() - 1)); return;
     }
     if (e.key === '0' || e.code === 'Numpad0') {
       e.preventDefault(); saveZoom(setZoom(ZOOM.def)); return;

@@ -222,6 +222,17 @@ async fn a_host_adds_closes_and_reopens_checkouts_and_refuses_the_three() {
         );
         assert_eq!(code, 200, "adding {} was refused: {body}", checkout.display());
         assert_eq!(body["result"]["added"], "opened");
+        /* **The shape the page reads, not just the tag.** `rail.js` toasts
+           `result.checkout.name`, and this assertion used to stop one key short of
+           it — so an internally-tagged newtype variant flattened the row into the
+           same object, `checkout` was never a key, and picking a folder ended in a
+           TypeError instead of a toast. */
+        assert_eq!(
+            body["result"]["checkout"]["path"].as_str(),
+            Some(checkout.to_string_lossy().as_ref()),
+            "the page reads result.checkout.name; the answer was {body}"
+        );
+        assert!(body["result"]["checkout"]["name"].is_string(), "no name on the row: {body}");
     }
 
     let listed = rows(&base, &token);

@@ -7,7 +7,11 @@
 <!-- The ground, before the stylesheet that carries it has parsed. Without this the
      window is white for as long as app.css takes, which is what the splash-to-board
      hand-off looked like: the page in one corner and white around it. -->
-<style>html,body{background:#101010;margin:0}</style>
+<style>html,body{background:#101010;margin:0}
+  /* Before the theme can say so: the engine paints its own widgets — selects,
+     scrollbars, range tracks — for a light page until told otherwise, and the
+     shipped board is dark. `applyTheme` sets the real answer from the palette. */
+  :root{color-scheme:dark}</style>
 <!-- Fonts are @font-face'd from app.css against the daemon's own /vendor/fonts. -->
 <link rel="stylesheet" href="/vendor/xterm.css">
 <link rel="stylesheet" href="/app.css">
@@ -21,7 +25,7 @@
   <div class="top top-l">
     <!-- Which checkout everything to the right of this describes, and which
          repository that checkout works on. Not a button any more: the rail lists
-         every open checkout and its `+ checkout` opens another, so there is
+         every open checkout and its `+ open project` opens another, so there is
          nothing left for a switcher to do. PRs are opened against upstream while
          branches live on the fork (§6), so this names both rather than collapsing
          them into one path. -->
@@ -325,7 +329,7 @@
       </div>
       <div class="settings-row">
         <span class="settings-k">Size
-          <span class="settings-hint">scales the whole board, including the two below</span>
+          <span class="settings-hint">body text; scales the whole board, the two below included</span>
         </span>
         <span class="settings-step">
           <button class="stepbtn" id="fsdown" title="Smaller">&#8722;</button>
