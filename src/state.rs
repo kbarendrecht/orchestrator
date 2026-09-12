@@ -245,7 +245,7 @@ struct Measured {
     branch: Option<String>,
     unpushed: Option<u32>,
     base: Option<String>,
-    changed: Option<(Vec<crate::diff::DiffFile>, u32)>,
+    changed: Option<(Vec<crate::model::DiffFile>, u32)>,
 }
 
 #[derive(Default)]
@@ -1185,7 +1185,7 @@ impl AppState {
     /// The daemon's copy of a fact that lives in a git ref. Written by whoever
     /// moved the ref, in the same breath, so the strip in the pane and the object
     /// in the repository cannot disagree for longer than one request.
-    pub async fn set_banked(&self, workspace: &str, banked: Option<crate::git::Bank>) {
+    pub async fn set_banked(&self, workspace: &str, banked: Option<crate::model::Bank>) {
         let mut inner = self.inner.write().await;
         if let Some(w) = inner.workspaces.get_mut(workspace) {
             w.banked = banked;
@@ -1193,7 +1193,7 @@ impl AppState {
     }
 
     /// What this workspace has banked, as the daemon last knew it.
-    pub async fn workspace_banked(&self, workspace: &str) -> Option<crate::git::Bank> {
+    pub async fn workspace_banked(&self, workspace: &str) -> Option<crate::model::Bank> {
         let inner = self.inner.read().await;
         inner
             .workspaces
@@ -1343,7 +1343,7 @@ impl AppState {
                     // branch differ because of a commit and have nothing to stage
                     // or discard.
                     crate::diff::mark_worktree_state(&mut files, &set);
-                    files.extend(set.untracked.iter().map(crate::diff::DiffFile::untracked));
+                    files.extend(set.untracked.iter().map(crate::model::DiffFile::untracked));
                     files.sort_by(|a, b| a.path.cmp(&b.path));
                     let total = files.len() as u32;
                     files.truncate(CHANGED_CAP);
@@ -1594,7 +1594,7 @@ pub struct WorkspaceView {
     ///
     /// **Capped at [`CHANGED_CAP`]**, with the real number in `changed_total`.
     /// That constant carries the measurement and the incident behind it.
-    pub changed: Vec<crate::diff::DiffFile>,
+    pub changed: Vec<crate::model::DiffFile>,
     /// How many there really are, when `changed` is a prefix of them.
     ///
     /// Sent rather than inferred from the length, so the pane can say "500 of
@@ -2155,7 +2155,7 @@ mod tests {
         {
             let mut inner = app.inner.write().await;
             let w = inner.workspaces.get_mut("pr-1").unwrap();
-            w.tree.changed = vec![crate::diff::DiffFile::untracked(
+            w.tree.changed = vec![crate::model::DiffFile::untracked(
                 &crate::model::ChangedFile {
                     path: "only-in-the-old-one.rs".into(),
                     status: crate::model::FileStatus::Untracked,

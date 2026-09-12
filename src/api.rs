@@ -5649,7 +5649,7 @@ async fn settle_bank(
     app: &Arc<AppState>,
     workspace: &str,
     path: &std::path::Path,
-    banked: Option<&crate::git::Bank>,
+    banked: Option<&crate::model::Bank>,
     result: &anyhow::Result<()>,
 ) -> Option<String> {
     banked?;

@@ -6,10 +6,10 @@
 //   node tools/rust-modules.mjs --dot     graphviz, to look at
 //
 // **A ratchet, not a gate.** The SPA's graph is a DAG and `dependency-cruiser`
-// keeps it one; `src/` is the inverse — 40 modules, 159 edges, 17 mutual pairs
-// and a 23-module strongly connected component — and nothing reported it. That
-// is a fair part of why `api.rs` is 5,681 lines and `spawn.rs` 3,371: inside an
-// SCC no module can be read, tested or moved on its own.
+// keeps it one; `src/` is the inverse — it started at 39 modules, 154 edges, 17
+// mutual pairs and a 16-module strongly connected component, and nothing
+// reported it. That is a fair part of why `api.rs` is 5,681 lines and `spawn.rs`
+// 3,371: inside an SCC no module can be read, tested or moved on its own.
 //
 // Making it a DAG today is not a change anybody can review, so this holds the
 // line instead: a **new** mutual pair fails, and a pair that disappears fails
@@ -17,10 +17,20 @@
 // makes it a ratchet rather than a permanent list of exceptions — the number can
 // only go down, and going down is a commit that says so.
 //
-// Three pairs are the strangest and the ones to break first, because each is a
-// layer reaching the wrong way: `model` <-> `state` and `model` <-> `git` (a data
-// model reaching into the runtime), and `config` <-> `story`/`skills`/`reviews`/
-// `env_source` (configuration depending on the features it configures).
+// **The first three pairs are gone, and what they cost is the pattern.** `model`
+// was mutual with `state`, `git` and `diff`, and all three were the same mistake
+// in two directions: a *shape* living in the module that produces it.
+// `state::random_token` moved to the leaf `secret.rs`; `git::Bank` and
+// `diff::DiffFile` moved into `model`, beside `ChangedFile` and `FileSet`, which
+// were already there. The rule those three now follow: a shape lives in `model`,
+// and the module that fills it depends on `model`.
+//
+// They did **not** shrink the SCC, which is still 16 and never contained `model`
+// at all. A 23-module figure was reported once and was this script's own bug —
+// see `strip` below.
+//
+// What is left reaching the wrong way: `config` <-> `story`/`skills`/`reviews`/
+// `env_source`, configuration depending on the features it configures.
 //
 // `cargo-modules` and `cargo-deny`'s `[bans]` take over if `orchd` is ever split
 // into crates, which is the real fix and a much larger one.
@@ -53,28 +63,46 @@ function moduleOf(path) {
  *
  *  The test module is cut at its attribute rather than brace-matched: it is the
  *  last item in every file here, and a brace counter would have to understand
- *  strings and char literals to be right. */
+ *  strings and char literals to be right.
+ *
+ *  **The visibility is optional and that is not cosmetic.** `pty.rs` writes
+ *  `pub(crate) mod tests` so its fixtures can be shared, and a pattern that only
+ *  matched a bare `mod tests` read that whole module as shipped code — which put
+ *  `pty -> testutil -> state -> model` into the graph and reported a 23-module
+ *  strongly connected component that does not exist. */
 function strip(src) {
   const noComments = src.replace(/\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '');
-  const at = noComments.search(/#\[cfg\(test\)\]\s*mod\s+tests\s*\{/);
+  const at = noComments.search(/#\[cfg\(test\)\]\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+tests\s*\{/);
   return at >= 0 ? noComments.slice(0, at) : noComments;
 }
+
+/** Modules `lib.rs` declares under `#[cfg(test)]` — `testutil` — are not in the
+ *  shipped binary, so an edge into one is not a dependency of the daemon. */
+function testOnlyModules() {
+  const lib = readFileSync(`${SRC}/lib.rs`, 'utf8');
+  const out = new Set();
+  for (const [, name] of lib.matchAll(/#\[cfg\(test\)\]\s*(?:pub\s+)?mod\s+([a-z_]+)\s*;/g)) out.add(name);
+  return out;
+}
+const testOnly = testOnlyModules();
 
 /** @type {Map<string, Set<string>>} */
 const edges = new Map();
 const mods = new Set();
 for (const f of files) {
   const m = moduleOf(f);
-  if (!m) continue;
+  if (!m || testOnly.has(m)) continue;
   mods.add(m);
   const to = edges.get(m) ?? new Set();
   edges.set(m, to);
   const s = strip(readFileSync(f, 'utf8'));
   // `crate::x` covers both a path and a `use`; the braced form is the one shape
   // that names several modules at once and so needs its own pass.
-  for (const [, name] of s.matchAll(/\bcrate::([a-z_][a-z0-9_]*)/g)) if (name !== m) to.add(name);
+  for (const [, name] of s.matchAll(/\bcrate::([a-z_][a-z0-9_]*)/g)) if (name !== m && !testOnly.has(name)) to.add(name);
   for (const [, body] of s.matchAll(/\buse\s+crate::\{([^}]*)\}/g)) {
-    for (const [, name] of body.matchAll(/(?:^|,)\s*([a-z_][a-z0-9_]*)/g)) if (name !== m) to.add(name);
+    for (const [, name] of body.matchAll(/(?:^|,)\s*([a-z_][a-z0-9_]*)/g)) {
+      if (name !== m && !testOnly.has(name)) to.add(name);
+    }
   }
 }
 // `crate::model` is a module; `crate::MAIN` is not.

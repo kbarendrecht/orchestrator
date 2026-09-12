@@ -2,7 +2,7 @@ use anyhow::{bail, Context, Result};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::model::{ChangedFile, FileSet, FileStatus};
+use crate::model::{Bank, ChangedFile, FileSet, FileStatus};
 
 /// A git run this slow is worth a line of its own.
 ///
@@ -1534,16 +1534,6 @@ fn apply_wip(cwd: &Path, sha: &str, what_happened: &str) -> Result<()> {
 // ---------------------------------------------------------------------------
 // Banked work
 // ---------------------------------------------------------------------------
-
-/// Work parked out of the way of a rebase, and how much of it there is.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Bank {
-    /// The WIP commit. Named in every message about it, because
-    /// `git stash apply <sha>` is the recovery a person can run without us.
-    pub sha: String,
-    /// Tracked files in it, for a strip that says "3 changed files are banked".
-    pub files: u32,
-}
 
 /// Where a workspace's banked work is kept.
 ///

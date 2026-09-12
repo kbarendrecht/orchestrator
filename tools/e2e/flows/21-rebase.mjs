@@ -47,6 +47,18 @@ export async function run(t) {
   await t.settled(session)
   const dir = t.worktreePath('invoice')
 
+  /* Every call below is refused while a session in this workspace is mid-turn,
+     which is right: rebasing under a working agent would fight it. This flow
+     settled its session once at the top and then assumed it stayed settled, and
+     under a full run it does not — about one run in six failed here with
+     `<id> is working here`, because the agent's hooks land on the daemon's clock
+     and not on this flow's. So idleness is a *condition* before each call rather
+     than an assumption, which is the rule every other wait in this suite follows. */
+  const act = async (path, body) => {
+    await t.settled(session)
+    return t.api('POST', `/api/workspace/invoice/${path}`, body)
+  }
+
   // The worktree's own commit, and a base that has moved past it since.
   fs.writeFileSync(path.join(dir, 'feature.txt'), 'mine\n')
   git(dir, ['add', '-A'])
@@ -55,7 +67,7 @@ export async function run(t) {
 
   // --- the clean replay --------------------------------------------------------
 
-  const done = await t.api('POST', '/api/workspace/invoice/rebase')
+  const done = await act('rebase')
   assert.equal(done.warning ?? null, null, 'the fetch failed, so the base may be stale')
   assert.ok(fs.existsSync(path.join(dir, 'base.txt')), 'the base commit did not arrive')
   assert.deepEqual(
@@ -75,7 +87,7 @@ export async function run(t) {
   fs.writeFileSync(path.join(dir, 'feature.txt'), 'mine, edited\n')
   advanceBase(t, 'other.txt', 'theirs again\n', 'a second colleague commit')
 
-  const carried = await t.api('POST', '/api/workspace/invoice/rebase')
+  const carried = await act('rebase')
   assert.equal(carried.wip, 'reapplied', `the work did not come back: ${JSON.stringify(carried)}`)
   assert.equal(carried.banked_files, 2)
   assert.equal(fs.readFileSync(path.join(dir, 'feature.txt'), 'utf8'), 'mine, edited\n')
@@ -101,7 +113,7 @@ export async function run(t) {
   fs.writeFileSync(path.join(dir, 'README.md'), '# my uncommitted line\n')
   advanceBase(t, 'README.md', '# their line\n', 'they took the readme')
 
-  const kept = await t.api('POST', '/api/workspace/invoice/rebase')
+  const kept = await act('rebase')
   assert.equal(kept.wip, 'conflicted', `wanted a kept bank: ${JSON.stringify(kept)}`)
   assert.match(banks(t), /refs\/orchd\/wip\/invoice/)
   const view = await t.workspace('invoice')
@@ -115,11 +127,11 @@ export async function run(t) {
   // Neither button pretends the conflict is not there: git cannot apply anything
   // over unmerged paths, and pressing rebase again would have to bank one.
   await assert.rejects(
-    () => t.api('POST', '/api/workspace/invoice/wip/restore'),
+    () => act('wip/restore'),
     /settle the conflict/,
   )
   await assert.rejects(
-    () => t.api('POST', '/api/workspace/invoice/rebase'),
+    () => act('rebase'),
     /still has conflicts/,
   )
 
@@ -127,7 +139,7 @@ export async function run(t) {
      so the button gives that session the conflict as an ordinary user turn. The
      fake agent logs whatever is typed at it, which is the only view of a turn a
      flow has. */
-  const handed = await t.api('POST', '/api/workspace/invoice/wip/resolve')
+  const handed = await act('wip/resolve')
   assert.equal(handed.told, session)
   await until('the session to be told about the conflict', async () =>
     t.agentLog().includes('refs/orchd/wip/invoice'))
@@ -138,7 +150,7 @@ export async function run(t) {
 
   // Discard is the only verb here git cannot undo, and it is the one that clears
   // the strip when you have taken what you wanted out of the conflict.
-  await t.api('POST', '/api/workspace/invoice/wip/discard')
+  await act('wip/discard')
   assert.equal(banks(t), '', 'the ref outlived its discard')
   assert.equal((await t.workspace('invoice')).banked, null)
   // Settled the way a person would, so the section below starts from a clean tree.
@@ -155,7 +167,7 @@ export async function run(t) {
   fs.writeFileSync(path.join(dir, 'feature.txt'), 'mine, still unsaved\n')
 
   await assert.rejects(
-    () => t.api('POST', '/api/workspace/invoice/rebase'),
+    () => act('rebase'),
     /stopped on conflicts.*banked at refs\/orchd\/wip\/invoice/s,
   )
   assert.equal((await t.workspace('invoice')).banked?.files, 1, 'the bank must wait, and show')
@@ -164,13 +176,13 @@ export async function run(t) {
   await until('the pane to report the tree as mid-rebase', async () =>
     (await t.workspace('invoice')).rebasing === true)
   await assert.rejects(
-    () => t.api('POST', '/api/workspace/invoice/rebase'),
+    () => act('rebase'),
     /already stopped part-way/,
   )
 
   // --- and the abort puts it back ------------------------------------------------
 
-  const undone = await t.api('POST', '/api/workspace/invoice/rebase/abort')
+  const undone = await act('rebase/abort')
   await until('the pane to report the rebase gone', async () =>
     (await t.workspace('invoice')).rebasing === false)
   assert.equal(branchOf(dir), 'worktree-invoice')

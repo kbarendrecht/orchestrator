@@ -524,31 +524,34 @@ mean *this* repo; if you do, name it.
   chrome — under a thousand lines, from 4798 before the split.
   `mise run check-web` prints the current module and dependency count.
 - **The daemon's module graph is the inverse of the SPA's, and it is now held
-  where it is.** 40 modules, 159 edges, **17 mutual pairs and one 23-module
-  strongly connected component** — measured, and a fair part of why `api.rs` is
-  5,681 lines and `spawn.rs` 3,371: nothing inside an SCC can be read, tested or
+  where it is.** It began at 39 modules, 154 edges, **17 mutual pairs** and a
+  16-module strongly connected component — a fair part of why `api.rs` is 5,681
+  lines and `spawn.rs` 3,371, since nothing inside an SCC can be read, tested or
   moved on its own. `mise run check-modules` is a **ratchet**, not the DAG rule
   the SPA gets: a new mutual pair fails, and a pair that goes away fails too
   until it is deleted from `tools/rust-modules.json`, so the number can only
   fall. Making it a DAG today is not a change anybody could review.
-  **`model` <-> `state` is broken, and how it went is the pattern.** The whole
-  edge was one call: `Session::new` minting an ask token through
-  `state::random_token`, a three-line function with no state of its own that five
-  modules reached for. It moved to `src/secret.rs`, a **leaf** — and a leaf is
-  what breaks a cycle, because everyone may depend on one. `secret.rs` says at the
-  top that it must never grow an import, since the moment it does the cycle it
-  stands between comes back.
-  It did not shrink the SCC, which is still 23: `model` is still mutual with
-  `git` and `diff`, and those two are type references (`git::Bank` on a session,
-  `diff::DiffFile` beside `model::ChangedFile`) rather than a call — so breaking
-  them is a decision about where a type belongs, not a move.
-  The rest, still reaching the wrong way: `config` <-> `story`/`skills`/
-  `reviews`/`env_source`, configuration depending on the features it configures. If `orchd` is ever
-  split into crates, `cargo` enforces this for free and the script goes.
-  One thing to know about the reader: it cuts each file at its
-  `#[cfg(test)] mod tests {`, so anything below that line is invisible to it —
-  true of every file here, and the reason a probe appended to the end of one
-  showed nothing.
+  **Three pairs are gone, and all three were one mistake**: a *shape* living in
+  the module that produces it. `state::random_token` moved to the leaf
+  `secret.rs` — a leaf is what a cycle can be broken with, and `secret.rs` says at
+  the top that it must never grow an import. `git::Bank` and `diff::DiffFile`
+  moved into `model`, beside `ChangedFile` and `FileSet`, which were already
+  there. The rule the three now follow: **a shape lives in `model`, and the
+  module that fills it depends on `model`.**
+  **They did not shrink the SCC, and the 23-module figure first reported for it
+  was wrong.** It is 16, it never contained `model`, and the error was in the
+  measuring script: `pty.rs` writes `pub(crate) mod tests`, which the pattern
+  cutting test code did not match, so that whole module read as shipped code and
+  put `pty -> testutil -> state -> model` into the graph. `testutil` is
+  `#[cfg(test)]` in `lib.rs` and is excluded now as well. Worth carrying beyond
+  this script: **a number a tool reports is a claim the tool has to earn**, and
+  this one was repeated into a commit message and a review before anybody checked
+  it.
+  What is left reaching the wrong way: `config` <-> `story`/`skills`/`reviews`/
+  `env_source`, configuration depending on the features it configures.
+  One more thing to know about the reader: it cuts each file at its test module,
+  so anything below that line is invisible to it — which is why a probe appended
+  to the end of a file shows nothing.
 - **The module graph is a DAG, and it was made one on purpose.** `app.js` → the
   six; `rail` → `term`, `review`; `review` → `diff`; everything → `core`. Three
   cycles had to be broken first, and each inversion is the reason a boundary is
@@ -1207,6 +1210,14 @@ mean *this* repo; if you do, name it.
   exception is `mise run e2e`, where the agent is a fake with no credentials to
   lose, so relocating `HOME` is what keeps transcripts out of your
   `~/.claude/projects`.
+- **An e2e flow must make idleness a condition, not an assumption.** Every
+  mutating route refuses a workspace whose session is mid-turn, and the rebase
+  flow settled its session once at the top and then made ten calls against that
+  one reading. About **one full run in six** failed with `<id> is working here` —
+  the agent's hooks land on the daemon's clock, not on the flow's. `t.settled` is
+  idempotent and costs one snapshot read, so the fix was to call it before each
+  call rather than once. A flaky gate is worse than no gate: it is what teaches
+  everybody `--no-verify`.
 - **`mise run e2e` needs no product change, because the agent is a PATH lookup.**
   The daemon spawns `CommandBuilder::new("claude")` and reaches GitHub only through
   `Command::new("curl")`, so a shim earlier on PATH substitutes either without the

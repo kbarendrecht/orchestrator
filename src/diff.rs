@@ -3,6 +3,8 @@ use serde::Serialize;
 use std::path::Path;
 
 use crate::git::git;
+// The shapes this module measures; they live with the rest of the data model.
+use crate::model::DiffFile;
 
 /// Eager cap: past this a file is listed but its hunks are only fetched on
 /// explicit request (§5).
@@ -58,69 +60,6 @@ pub fn resolve_base(
                 }
             }
             bail!("could not resolve the PR base {r}")
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// File list
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone, Serialize)]
-#[cfg_attr(
-    test,
-    derive(ts_rs::TS),
-    ts(export, export_to = "../web/snapshot.d.ts")
-)]
-pub struct DiffFile {
-    pub path: String,
-    /// Verbatim from `--name-status`: M, A, D, R…, C…
-    pub status: String,
-    pub added: u32,
-    pub deleted: u32,
-    pub binary: bool,
-    /// Whether the client should fetch hunks without being asked.
-    pub eager: bool,
-    /// Present for renames.
-    pub old_path: Option<String>,
-    /// Whether this file has changes in the **index**, and whether it has changes
-    /// in the **working tree** — `git status`'s two answers, joined on by path.
-    ///
-    /// **Not derivable from `status` above, and that is the point.** This list is
-    /// `git diff <merge-base>`, so most rows on a PR branch differ from the base
-    /// because of a *commit* and are otherwise clean. Offering "discard changes"
-    /// against that list would be offering to throw away nothing on some rows and
-    /// a commit's content on others, from a menu that cannot tell them apart. The
-    /// pane's git verbs are drawn from these two instead, so what is offered is
-    /// exactly what exists: staged → unstage, working-tree → stage, discard.
-    ///
-    /// Both `false` is the ordinary case (changed in a commit, clean on disk) and
-    /// gets no verbs at all.
-    pub staged: bool,
-    pub unstaged: bool,
-}
-
-impl DiffFile {
-    /// A file git has never seen. `git diff` cannot report one, so the pane's
-    /// list would be missing exactly the files a session just created.
-    ///
-    /// No line counts: counting them means reading every new file on every
-    /// reconcile, and an untracked file is entirely new by definition — the
-    /// number would only ever say "all of it".
-    pub fn untracked(f: &crate::model::ChangedFile) -> Self {
-        DiffFile {
-            path: f.path.clone(),
-            status: "?".to_string(),
-            added: 0,
-            deleted: 0,
-            binary: false,
-            // Nothing to diff against, so there are no hunks to fetch.
-            eager: false,
-            old_path: None,
-            // Untracked is neither: nothing of it is in the index, and there is no
-            // tracked version for the working tree to differ from.
-            staged: false,
-            unstaged: false,
         }
     }
 }
