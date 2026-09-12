@@ -559,9 +559,16 @@ mean *this* repo; if you do, name it.
   it.
   What is left is the runtime core — api, fix_pr, health, post, spawn, state,
   store, story, triage, update, worktree — eleven modules that genuinely call
-  each other, plus `git <-> review_commit` inside `orchd-base`. The script reads
-  **every crate's `src/`**, learned the hard way: reading `src/` alone, it called
-  that pair *fixed* the moment both modules moved out. The next move on those is a crate split, not a rename, and
+  each other, plus `git <-> review_commit` inside `orchd-base`. **Nine of the ten
+  are in `orchd` and the tenth is in `orchd-base`, so every one is now a cycle
+  inside a single crate** — which is exactly what `cargo` cannot see and this
+  script can. The script reads **every crate's `src/`**, learned the hard way:
+  reading `src/` alone, it called that pair *fixed* the moment both modules moved
+  out.
+  **The baseline holds the pairs and nothing else.** It used to record the module
+  and edge counts beside them, and nothing read those back — so they sat at 155
+  edges while the tree had 122. A number a file states and no tool verifies is a
+  number that rots; the live counts are printed on every run instead. The next move on those is a crate split, not a rename, and
   **`docs/crate-split.md` has it measured**: condense that core to one node and
   the remaining graph is a clean nine-layer DAG, so four crates are legal today
   with zero upward edges. `cargo` would then enforce what this script ratchets,

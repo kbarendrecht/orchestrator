@@ -146,11 +146,14 @@ if (process.argv.includes('--dot')) {
 
 const edgeCount = [...edges.values()].reduce((n, s) => n + s.size, 0);
 if (process.argv.includes('--write')) {
+  // **Only what is checked.** This file used to record the module and edge counts
+  // beside the pairs, and nothing read them back — so they sat at 155 edges while
+  // the tree had 122. A number a file states and nothing verifies is a number that
+  // rots. The live counts are printed on every run instead.
   writeFileSync(BASELINE, `${JSON.stringify({
-    '//': 'Mutual imports between daemon modules. A ratchet: new ones fail, and a '
-        + 'pair that goes away has to be deleted here. See tools/rust-modules.mjs.',
-    modules: mods.size,
-    edges: edgeCount,
+    '//': 'Mutual imports between modules, and nothing else. A ratchet: a new pair '
+        + 'fails, and a pair that goes away has to be deleted here. Counts are not '
+        + 'recorded — see tools/rust-modules.mjs for why.',
     mutual: pairs,
   }, null, 2)}\n`);
   console.log(`rust-modules: recorded ${pairs.length} mutual pair(s)`);
