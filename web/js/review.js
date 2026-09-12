@@ -32,11 +32,11 @@ import { patchStats, hunkEl, fileListLabel } from './review-diff.js';
  *    viewer: string,
  *    head_sha: string,
  *    answerable: number,
- *    threads: import('../snapshot').Thread[],
+ *    threads: import('../repo').Thread[],
  *    proposals: import('../base').ProposalSet | null,
  *    manual: import('../snapshot').ManualPhase | null,
  *    gate: import('../snapshot').Gate | null,
- *    checks: import('../snapshot').Checks,
+ *    checks: import('../repo').Checks,
  *    mergeable: string,
  *    tracker: boolean,
  *  }} ReviewData
@@ -92,7 +92,7 @@ const reviewState = {
  *  overlay closes — walking away from a phase and coming back should not lose what
  *  you typed about work that is already on disk. */
 /** @type {{ comments: Record<string, string>, finished: any,
- *           changed: { files: import('../snapshot').FileStat[], diff: string } | null }} */
+ *           changed: { files: import('../repo').FileStat[], diff: string } | null }} */
 const manualState = {
   comments: {},     // thread_id -> the comment, required
   /* The payload the last `/manual/done` sent, so the report's retry can go back to
@@ -109,7 +109,7 @@ const manualState = {
 /** One thread and the agent's proposal for it, the way `queue()` pairs them.
  *  Every card, box and count below takes one of these.
  *
- *  @typedef {{ t: import('../snapshot').Thread, p: import('../base').Proposal }} QueueItem
+ *  @typedef {{ t: import('../repo').Thread, p: import('../base').Proposal }} QueueItem
  */
 
 const draftKey = (/** @type {string} */ id, /** @type {number} */ pos) => `${id} ${pos}`;
@@ -176,7 +176,7 @@ const isHandled = (/** @type {QueueItem} */ item) =>
 const isDecided = (/** @type {QueueItem} */ item) => isHandled(item) || !!reviewState.skipped[item.t.id];
 
 /** `renovate.json5:161 · bob`, matching what the daemon's report uses. */
-function threadLabel(/** @type {import('../snapshot').Thread} */ t) {
+function threadLabel(/** @type {import('../repo').Thread} */ t) {
   const who = t.comments?.[0]?.author || 'ghost';
   const line = t.line ?? t.original_line;
   if (!t.path) return `review summary · ${who}`;

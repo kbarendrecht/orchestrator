@@ -2,7 +2,7 @@
 //!
 //! **Its own module because both halves reach into features, and `config` must
 //! not.** These two lived in `config`, where `session_env` called
-//! [`crate::env_source`] and [`crate::story`] and `session_flags` called
+//! [`crate::env_source`] and `story` and `session_flags` called
 //! [`crate::skills`] — so configuration imported the three features it configures
 //! and each imported `config` back. Four of the seventeen mutual pairs
 //! `mise run check-modules` counts were these.
@@ -75,7 +75,7 @@ pub fn session_env(
     // macOS bundle it is a mount point nothing else knows about, and the agent's
     // `orch new` would be a command not found. Prepended, so a build you are
     // testing wins over an installed one.
-    if let Some(dir) = crate::sibling_bin_dir() {
+    if let Some(dir) = sibling_bin_dir() {
         // Prepend to the checkout's PATH when there is one, not the daemon's: the
         // source above may already have put a PATH here holding the tools this
         // checkout pins, and rebuilding from the daemon's would drop them. Last
@@ -126,6 +126,21 @@ pub fn session_flags() -> Result<Vec<String>> {
     Ok(v)
 }
 
+/// The directory the running executable sits in, when `orch` is really there.
+///
+/// Every packaging puts the two binaries side by side — the tarball, the `.deb`'s
+/// `/usr/bin`, the AppImage's AppDir, the macOS bundle's `Contents/MacOS` — but
+/// only the tarball's directory is on anybody's PATH. Answering `None` when the
+/// sibling is missing keeps a development build (`cargo run`, where `orch` may
+/// not have been built) from prepending a directory that has no `orch` in it.
+pub fn sibling_bin_dir() -> Option<String> {
+    let exe = std::env::current_exe().ok()?;
+    let dir = exe.parent()?;
+    dir.join("orch")
+        .is_file()
+        .then(|| dir.to_string_lossy().into_owned())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -137,7 +152,7 @@ mod tests {
         // inherits, and it silently turns transcripts off in every child.
         let cfg = Config {
             env_source: EnvSourceKind::None,
-            ..crate::config::test_config()
+            ..crate::testutil::test_config()
         };
         let (set, unset) = session_env(&cfg, Path::new("/tmp"), uuid::Uuid::nil(), None);
         assert!(unset.contains(&"CLAUDE_CODE_CHILD_SESSION"));

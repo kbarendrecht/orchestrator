@@ -98,14 +98,18 @@ fi
 # A Rust change can move the snapshot the SPA is typed against. Regenerate and
 # refuse if the committed copy no longer matches the structs.
 if [ "$rust" = 1 ]; then
-  # Two crates generate types now, so `--workspace`. Where they go is in
-  # `.cargo/config.toml`, so a bare `cargo test` puts them in the same place.
-  cargo test --workspace --lib export_bindings >/dev/null 2>&1 || {
-    echo "pre-commit: the snapshot type export failed to build" >&2; exit 1; }
-  if ! git diff --quiet web/snapshot.d.ts web/base.d.ts web/serve.d.ts; then
+  # Four crates generate types, and the order is load-bearing: ts-rs exports a
+  # type's dependencies too, so a crate's run rewrites its dependencies' files
+  # with only the subset it references. Top of the graph down, so each file is
+  # written last by the crate that owns it.
+  for crate in orchd-serve orchd orchd-repo orchd-base; do
+    cargo test -p "$crate" --lib export_bindings >/dev/null 2>&1 || {
+      echo "pre-commit: the type export failed to build ($crate)" >&2; exit 1; }
+  done
+  if ! git diff --quiet web/snapshot.d.ts web/base.d.ts web/repo.d.ts web/serve.d.ts; then
     echo "pre-commit: the generated types are out of date with the Rust structs." >&2
     echo "            The regenerated files are in your tree — stage them:" >&2
-    echo "              git add web/snapshot.d.ts web/base.d.ts web/serve.d.ts" >&2
+    echo "              git add web/*.d.ts" >&2
     exit 1
   fi
 fi

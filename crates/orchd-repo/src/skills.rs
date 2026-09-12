@@ -33,7 +33,7 @@ use crate::config::Config;
 
 /// What a session can ask the daemon for. Teaches the `orch` CLI, which is on
 /// every session's `PATH` already.
-pub const ORCH: &str = include_str!("../skills/orch/SKILL.md");
+pub const ORCH: &str = include_str!("../../../skills/orch/SKILL.md");
 
 /// Getting a PR green: rebase, fix the easy red, ask about the rest, amend, push,
 /// watch.
@@ -44,7 +44,7 @@ pub const ORCH: &str = include_str!("../skills/orch/SKILL.md");
 /// lines that are that repo's convention rather than a rule (its task runner, its
 /// `upstream` remote) are marked as such in the file, per the repo's own portability
 /// rule.
-pub const GREEN: &str = include_str!("../skills/green/SKILL.md");
+pub const GREEN: &str = include_str!("../../../skills/green/SKILL.md");
 
 /// The read-and-propose pass over a PR's review threads.
 ///
@@ -53,7 +53,7 @@ pub const GREEN: &str = include_str!("../skills/green/SKILL.md");
 /// `/api/pr/:n/triage-context` at the start of the pass instead. That is also what
 /// makes it work when a person types it, which a prompt file the daemon wrote
 /// never did.
-pub const TRIAGE: &str = include_str!("../skills/triage/SKILL.md");
+pub const TRIAGE: &str = include_str!("../../../skills/triage/SKILL.md");
 
 /// Getting a PR green, mechanically: take the base in, fix the red, amend, push,
 /// watch.
@@ -64,7 +64,7 @@ pub const TRIAGE: &str = include_str!("../skills/triage/SKILL.md");
 /// was deliberately given no ask token (`942d01b`), so a route would have meant
 /// handing it a credential to read values the daemon can just as easily put in the
 /// environment it is already building for that run.
-pub const FIX_PR: &str = include_str!("../skills/fix-pr/SKILL.md");
+pub const FIX_PR: &str = include_str!("../../../skills/fix-pr/SKILL.md");
 
 /// Working a PR's review threads in a pane, with a person watching.
 ///
@@ -83,7 +83,7 @@ pub const FIX_PR: &str = include_str!("../skills/fix-pr/SKILL.md");
 ///
 /// It asks with `AskUserQuestion` rather than over the ask channel, which is right
 /// for a pane and wrong for the overlay: nobody is reading a card here.
-pub const HANDLE_REVIEW: &str = include_str!("../skills/handle-review/SKILL.md");
+pub const HANDLE_REVIEW: &str = include_str!("../../../skills/handle-review/SKILL.md");
 
 /// Filing the stories a human approved on the cards.
 ///
@@ -97,7 +97,7 @@ pub const HANDLE_REVIEW: &str = include_str!("../skills/handle-review/SKILL.md")
 /// research; the short of it is that Linear does not publish its tool names and
 /// Atlassian's are versioned, so the repo's own tracker skill is the only place
 /// that knowledge can live without going stale in a release.
-pub const STORY: &str = include_str!("../skills/story/SKILL.md");
+pub const STORY: &str = include_str!("../../../skills/story/SKILL.md");
 
 /// The overlay session: read the threads, propose, make what the human picked, post.
 ///
@@ -107,7 +107,7 @@ pub const STORY: &str = include_str!("../skills/story/SKILL.md");
 /// `triage-context` for it: the prompt used it for "CI red or behind the base is
 /// fix-pr's job", and deriving it in the skill would have been a second answer to
 /// what "behind" means.
-pub const REVIEW: &str = include_str!("../skills/review/SKILL.md");
+pub const REVIEW: &str = include_str!("../../../skills/review/SKILL.md");
 
 /// Carrying out a triaged review: apply, commit per thread, tell the daemon.
 ///
@@ -122,7 +122,7 @@ pub const REVIEW: &str = include_str!("../skills/review/SKILL.md");
 /// `mode: "manual"` thread to "ask the question below", two sections above saying
 /// there is no question channel. The question below was `/stuck`, so the skill says
 /// `/stuck` — the ask token here is for `committed` and `stuck`, never for asking.
-pub const RESOLVE_RUN: &str = include_str!("../skills/resolve-run/SKILL.md");
+pub const RESOLVE_RUN: &str = include_str!("../../../skills/resolve-run/SKILL.md");
 
 /// The four values a fix run finds in its environment.
 ///
@@ -151,7 +151,7 @@ pub const VAR_LANGUAGE: &str = "ORCH_LANGUAGE";
 /// A table rather than a write per skill, because the writer and the frontmatter
 /// test both walk it: adding a skill is then a line here, and it cannot be
 /// written out without also being checked.
-const VENDORED: &[(&str, &str)] = &[
+pub const VENDORED: &[(&str, &str)] = &[
     ("orch", ORCH),
     ("green", GREEN),
     ("triage", TRIAGE),
@@ -295,29 +295,6 @@ mod tests {
             !HANDLE_REVIEW.contains(&format!("${VAR_LOGIN}")),
             "handle-review reads ${VAR_LOGIN}, which its run does not set"
         );
-    }
-
-    /// It is typed as one line, so a newline in the invocation would submit half a
-    /// command — and the daemon builds that line from `fix_pr::COMMAND`, which has
-    /// to be the directory the skill is written to.
-    /// Each is typed as `/orchd:<command> <pr>` from the command string the run
-    /// carries, so the directory it is written to has to *be* that string. A
-    /// mismatch is `Unknown command` on the run's first turn and nothing before it.
-    #[test]
-    fn a_skill_is_named_after_the_command_that_types_it() {
-        for command in [
-            crate::fix_pr::COMMAND,
-            crate::spawn::RESOLVE_RUN_COMMAND,
-            crate::triage::COMMAND,
-            crate::triage::TRIAGE_COMMAND,
-            crate::story::COMMAND,
-            crate::spawn::HANDLE_REVIEW_COMMAND,
-        ] {
-            assert!(
-                VENDORED.iter().any(|(name, _)| *name == command),
-                "no vendored skill directory called {command}"
-            );
-        }
     }
 
     /// The language a run writes replies in is a setting, and a skill cannot have

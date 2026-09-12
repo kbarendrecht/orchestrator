@@ -20,7 +20,7 @@ use serde::Serialize;
 #[cfg_attr(
     any(test, feature = "test-util"),
     derive(ts_rs::TS),
-    ts(export, export_to = "snapshot.d.ts")
+    ts(export, export_to = "repo.d.ts")
 )]
 pub enum Checks {
     Passing,
@@ -33,7 +33,7 @@ pub enum Checks {
 #[cfg_attr(
     any(test, feature = "test-util"),
     derive(ts_rs::TS),
-    ts(export, export_to = "snapshot.d.ts")
+    ts(export, export_to = "repo.d.ts")
 )]
 pub struct Pr {
     #[cfg_attr(any(test, feature = "test-util"), ts(type = "number"))]
@@ -139,7 +139,7 @@ pub fn answered(last_author: &str, viewer_thumbed: bool, viewer: &str) -> bool {
 #[cfg_attr(
     any(test, feature = "test-util"),
     derive(ts_rs::TS),
-    ts(export, export_to = "snapshot.d.ts")
+    ts(export, export_to = "repo.d.ts")
 )]
 pub struct Comment {
     /// REST id. The reply endpoint is keyed on this, not on the GraphQL node id.
@@ -165,7 +165,7 @@ pub struct Comment {
 #[cfg_attr(
     any(test, feature = "test-util"),
     derive(ts_rs::TS),
-    ts(export, export_to = "snapshot.d.ts")
+    ts(export, export_to = "repo.d.ts")
 )]
 pub struct Thread {
     /// `PRRT_…`. **Not** a resolve target — closing a thread is the comment

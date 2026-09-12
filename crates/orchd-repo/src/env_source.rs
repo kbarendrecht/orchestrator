@@ -76,7 +76,7 @@ pub fn read(kind: EnvSourceKind, cwd: &Path) -> Vec<(String, String)> {
         return Vec::new();
     };
     let argv: Vec<String> = argv.iter().map(|a| (*a).to_string()).collect();
-    let out = match crate::proc::run_bounded(cwd, TIMEOUT_SECS, &argv, argv[0].as_str()) {
+    let out = match orchd_base::proc::run_bounded(cwd, TIMEOUT_SECS, &argv, argv[0].as_str()) {
         Ok(out) => out,
         // Includes the common case of the tool not being installed, which is not
         // worth a warning on every spawn.

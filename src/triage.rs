@@ -335,7 +335,7 @@ mod tests {
         // real source would make the answer depend on the machine it runs on.
         let cfg = crate::config::Config {
             env_source: crate::config::EnvSourceKind::None,
-            ..crate::config::test_config()
+            ..crate::testutil::test_config()
         };
         let dir = std::env::temp_dir();
         let run_env = |post: Option<&str>, ask: Option<&str>| {

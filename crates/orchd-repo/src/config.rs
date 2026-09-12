@@ -289,7 +289,7 @@ impl Config {
     /// here" must have one answer: a name the drawer refuses and the CLI accepts
     /// would be two products. `api` asks through here, and so does the stop path.
     pub fn processes_for(&self, workspace: &str) -> &[ManagedSpec] {
-        if workspace == crate::model::MAIN {
+        if workspace == orchd_base::model::MAIN {
             &self.main_processes
         } else {
             &self.worktree_processes
@@ -566,7 +566,7 @@ pub struct Tracker {
     /// Used to check that a URL the *agent* reported is really this tracker's. The
     /// id and the URL both come out of agent output, whose input is third-party
     /// comment text, and the pair ends up as a permanent public link in a reply on
-    /// somebody's review. See [`crate::story::StoryRef::consistent`].
+    /// somebody's review. See `story::StoryRef::consistent`.
     pub host: String,
     /// The variable the MCP entry expands for its credential, e.g. a
     /// `Bearer ${SHORTCUT_API_TOKEN}` header. The daemon resolves the value itself
@@ -1023,7 +1023,7 @@ impl Config {
         // daemon measures against is visible in `config.json` and editable there.
         // A detected value living only in code would be a base ref nobody could
         // see, which is worse than one they had to type.
-        if let Some((base, remote)) = crate::git::detect_base(&main_checkout) {
+        if let Some((base, remote)) = orchd_base::git::detect_base(&main_checkout) {
             tracing::info!(%base, %remote, "first run: detected a fork layout");
             obj.insert("upstream_ref".into(), base.into());
             obj.insert("upstream_remote".into(), remote.into());
@@ -1177,18 +1177,6 @@ pub fn transcript_dir_for(cwd: &Path) -> Result<PathBuf> {
 /// test reaching into `HOME` and changing it under every other test.
 fn transcript_slug(cwd: &Path) -> String {
     cwd.to_string_lossy().replace(['/', '.'], "-")
-}
-
-/// A parsed `Config` for a test that only needs one to exist. `Config` has no
-/// `Default` on purpose — `main_checkout` is canonicalised at parse, and a default
-/// one would be a path that resolves to nothing.
-#[cfg(test)]
-pub(crate) fn test_config() -> Config {
-    Config::parse(&format!(
-        r#"{{"main_checkout":"{}"}}"#,
-        std::env::temp_dir().display()
-    ))
-    .expect("a config")
 }
 
 #[cfg(test)]

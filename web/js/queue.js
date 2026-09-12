@@ -30,7 +30,7 @@ const listDrawn = { sig: null };
    are most likely to be reaching for one. */
 
 /** Why this row is in your queue, when there is a reason worth the width. */
-function reviewReason(/** @type {import('../snapshot').Review} */ r) {
+function reviewReason(/** @type {import('../repo').Review} */ r) {
   if (r.blockers && r.blockers.length) return r.blockers.join(', ');
   if (r.needs_re_review) return 're-requested';
   if (r.is_draft) return 'draft';
@@ -112,7 +112,7 @@ function renderReviews() {
   // The file-count column only earns its width once the source emits it.
   const anyFiles = [...rows, ...blocked].some((r) => r.changed_files != null);
 
-  const rowFor = (/** @type {import('../snapshot').Review} */ r, /** @type {boolean} */ dim) => {
+  const rowFor = (/** @type {import('../repo').Review} */ r, /** @type {boolean} */ dim) => {
     // Rows are anchors, so ⌘-click and copy-link behave, and the browser
     // already holds the GitHub session (§6b).
     const a = el('a', 'rvrow' + (dim ? ' dim' : ''));

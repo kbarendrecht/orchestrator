@@ -23,12 +23,14 @@
 /// here so every `testutil::scratch` in the workspace is the same function. The
 /// builders below are the half that cannot move: they build an `AppState`.
 pub use orchd_base::testutil::{git, scratch, scratch_repo, TRUE_BIN};
+/// The forge fixtures moved with `forge` itself, and are re-exported for the same
+/// reason as the three above: one `pr(1)` in the workspace, not two.
+pub use orchd_repo::testutil::{comment, pr, test_config, thread};
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::config::Config;
-use crate::forge::{Checks, Comment, Pr, Thread};
 use crate::state::AppState;
 
 /// An `AppState` over a scratch directory, and that directory.
@@ -61,57 +63,4 @@ pub fn app_at(main: &Path, extra: &str) -> Arc<AppState> {
     };
     let cfg: Config = serde_json::from_str(&raw).expect("the fixture config parses");
     AppState::new(cfg, "t".into(), crate::window::Chrome::None)
-}
-
-/// A PR with nothing remarkable about it: open, mergeable, checks unknown, no
-/// stack. Override what a test is actually about.
-pub fn pr(number: u64) -> Pr {
-    Pr {
-        number,
-        title: "t".into(),
-        url: String::new(),
-        head_ref: "feature/x".into(),
-        head_repo: None,
-        head_pushable: None,
-        base_ref: "develop".into(),
-        is_draft: false,
-        mergeable: "MERGEABLE".into(),
-        merge_state: "CLEAN".into(),
-        checks: Checks::Unknown,
-        head_sha: None,
-        unresolved: 0,
-        unresolved_capped: false,
-        awaiting_you: 0,
-        changes_requested: false,
-        needs_you: false,
-        children: vec![],
-    }
-}
-
-/// One comment by `author`, of the shape a review thread carries.
-pub fn comment(id: u64, author: &str, body: &str) -> Comment {
-    Comment {
-        database_id: id,
-        author: author.into(),
-        body: body.into(),
-        created_at: "2026-08-17T00:00:00Z".into(),
-        url: "u".into(),
-        diff_hunk: None,
-        viewer_thumbed: false,
-    }
-}
-
-/// An open, answerable thread carrying one comment by `author`.
-pub fn thread(id: &str, path: Option<&str>, line: Option<u32>, author: &str) -> Thread {
-    Thread {
-        id: id.into(),
-        path: path.map(str::to_string),
-        line,
-        start_line: None,
-        original_line: None,
-        is_resolved: false,
-        is_outdated: false,
-        comments: vec![comment(100, author, "you call this twice")],
-        answerable: true,
-    }
 }

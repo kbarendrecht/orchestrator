@@ -1050,7 +1050,7 @@ pub async fn spawn_worktree_session(
 /// Named for the reason `fix_pr::COMMAND` and `triage::COMMAND` are: the spawn,
 /// the prompt table and the exit watcher all have to agree on this string, and it
 /// was a bare literal in four places.
-pub(crate) const RESOLVE_RUN_COMMAND: &str = "resolve-run";
+pub const RESOLVE_RUN_COMMAND: &str = "resolve-run";
 
 /// The pane pass over a PR's review threads, and the rail's default review verb.
 ///

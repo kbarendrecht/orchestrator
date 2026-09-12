@@ -1,0 +1,43 @@
+# What a checkout *is*: its config, its forge, its diffs and patches, the skills
+# the daemon vendors, and the argv a session is launched with.
+#
+# **Step three of `docs/crate-split.md`.** The layer between the primitives and
+# the runtime: everything here reads or describes one repository, and nothing
+# here keeps state about a session. `cargo` refuses an import from any of it back
+# into `orchd`, which is the boundary the module graph could only ask for.
+[package]
+name = "orchd-repo"
+version = "2026.9.12"
+edition = "2021"
+description = "Config, forge, diffs, patches and skills for one checkout"
+repository = "https://github.com/kbarendrecht/orchestrator"
+license = "AGPL-3.0-only"
+authors = ["Kars Barendrecht <18546657+kbarendrecht@users.noreply.github.com>"]
+publish = false
+
+[dependencies]
+anyhow = { workspace = true }
+orchd-base = { path = "../orchd-base" }
+libc = "0.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+# `forge` and `patch` generate types into `web/repo.d.ts`. Optional for the reason
+# the other crates give: as a dev-dependency the derives are invisible to anything
+# that builds this crate as a dependency.
+ts-rs = { version = "12.0.1", features = ["uuid-impl"], optional = true }
+
+[dev-dependencies]
+orchd-base = { path = "../orchd-base", features = ["test-util"] }
+# Also a dev-dependency: `cfg(test)` is true for this crate's own tests while the
+# feature is not, so the optional copy above is not linked then.
+ts-rs = { version = "12.0.1", features = ["uuid-impl"] }
+
+[features]
+# The forge fixtures (`pr`, `comment`, `thread`), and the `TS` derives with them.
+test-util = ["dep:ts-rs", "orchd-base/test-util"]
+
+[lints]
+workspace = true

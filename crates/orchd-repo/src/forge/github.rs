@@ -20,7 +20,7 @@ use super::Forge;
 #[cfg_attr(
     any(test, feature = "test-util"),
     derive(ts_rs::TS),
-    ts(export, export_to = "snapshot.d.ts")
+    ts(export, export_to = "repo.d.ts")
 )]
 pub enum TokenSource {
     /// `ORCHD_GITHUB_TOKEN`, injected at daemon start.
@@ -72,9 +72,9 @@ pub fn resolve_token(token_file: Option<&Path>) -> Result<Token> {
     // not prompt the way git does, but a keyring or a proxy can still hang it, and
     // this runs on the poll and inside review requests.
     let argv = ["gh", "auth", "token"].map(String::from);
-    let out = match crate::proc::run_bounded(Path::new("/"), 15, &argv, "gh auth token") {
+    let out = match orchd_base::proc::run_bounded(Path::new("/"), 15, &argv, "gh auth token") {
         Ok(out) => out,
-        Err(e) if crate::proc::not_installed(&e) => bail!(
+        Err(e) if orchd_base::proc::not_installed(&e) => bail!(
             "no GitHub credential: install `gh` and run `gh auth login`, or point \
              github_token_file at a token"
         ),
@@ -122,7 +122,7 @@ pub fn warn_if_world_readable(p: &Path) {
 /// token is passed on stdin, never on the command line, so it cannot be read
 /// out of the process table.
 ///
-/// Through [`crate::proc::run_bounded_with_input`] like every other subprocess
+/// Through [`orchd_base::proc::run_bounded_with_input`] like every other subprocess
 /// that can reach the network. `--max-time` below bounds the *transfer*, which is
 /// not the same as bounding the process: a curl wedged before the transfer starts
 /// is outside it. So the Rust deadline sits above curl's own, as a backstop —
@@ -158,7 +158,7 @@ pub fn graphql(token: &str, query: &str) -> Result<Value> {
     ]
     .map(String::from)
     .into();
-    let out = crate::proc::run_bounded_with_input(
+    let out = orchd_base::proc::run_bounded_with_input(
         Path::new("/"),
         150,
         &argv,
@@ -226,7 +226,7 @@ pub fn latest_release(owner: &str, name: &str, token: Option<&str>) -> Option<(S
     }
     argv.push(url);
     // Bounded above curl's own `--max-time`, for the reason [`graphql`] gives.
-    let out = crate::proc::run_bounded_with_input(
+    let out = orchd_base::proc::run_bounded_with_input(
         Path::new("/"),
         20,
         &argv,

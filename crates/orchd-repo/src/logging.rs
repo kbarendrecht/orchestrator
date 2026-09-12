@@ -3,7 +3,7 @@
 //! **An app launched from Finder or a desktop launcher has no stdout**, so every
 //! line the daemon writes goes nowhere. That is not a small gap: it is why a
 //! colleague reporting a slow start could not send anything to look at, and why
-//! [`crate::timing`] would have been invisible to the only people who can see the
+//! [`orchd_base::timing`] would have been invisible to the only people who can see the
 //! problem. So the same lines also go to a file next to the config, which is the
 //! one place every part of the app already agrees on.
 //!

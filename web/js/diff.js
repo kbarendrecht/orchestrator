@@ -360,8 +360,8 @@ function renderFiles() {
  *  fail here rather than render as nothing.
  *
  *  @type {{ open: boolean, ws: string | null, base: string,
- *           summary: import('../snapshot').DiffSummary | null, path: string | null,
- *           file: import('../snapshot').FileDiff | null, split: boolean,
+ *           summary: import('../repo').DiffSummary | null, path: string | null,
+ *           file: import('../repo').FileDiff | null, split: boolean,
  *           cursor: number, pendingCursor: 'first' | 'last' | null, context: number,
  *           anchors?: HTMLElement[], loading?: boolean }}
  */
@@ -519,7 +519,7 @@ function detailEl(/** @type {string} */ text) {
   return paintRanges(el('pre', 'oqd'), text, diffRanges(text));
 }
 
-function lineEl(/** @type {import('../snapshot').Row} */ row, /** @type {'old' | 'new'} */ side) {
+function lineEl(/** @type {import('../repo').Row} */ row, /** @type {'old' | 'new'} */ side) {
   // side: 'old' | 'new'. In split view each pane shows only its own side.
   const empty = !row || (side === 'old' && row.kind === 'add') ||
                         (side === 'new' && row.kind === 'del');
@@ -561,7 +561,7 @@ function lineEl(/** @type {import('../snapshot').Row} */ row, /** @type {'old' |
  *
  *  The server emits deletions then additions; split view needs them abreast,
  *  padding the shorter run so the two panes stay in step. */
-function pairRows(/** @type {import('../snapshot').Row[]} */ rows) {
+function pairRows(/** @type {import('../repo').Row[]} */ rows) {
   const out = [];
   let i = 0;
   while (i < rows.length) {

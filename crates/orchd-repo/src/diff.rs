@@ -2,9 +2,9 @@ use anyhow::{bail, Result};
 use serde::Serialize;
 use std::path::Path;
 
-use crate::git::git;
+use orchd_base::git::git;
 // The shapes this module measures; they live with the rest of the data model.
-use crate::model::DiffFile;
+use orchd_base::model::DiffFile;
 
 /// Eager cap: past this a file is listed but its hunks are only fetched on
 /// explicit request (§5).
@@ -68,7 +68,7 @@ pub fn resolve_base(
 #[cfg_attr(
     any(test, feature = "test-util"),
     derive(ts_rs::TS),
-    ts(export, export_to = "snapshot.d.ts")
+    ts(export, export_to = "repo.d.ts")
 )]
 pub struct DiffSummary {
     pub base: String,
@@ -162,8 +162,8 @@ pub fn summary(cwd: &Path, base: &str) -> Result<DiffSummary> {
 ///
 /// Untracked rows are not touched. `DiffFile::untracked` sets them itself, since a
 /// file git has never seen is unstaged by definition.
-pub fn mark_worktree_state(files: &mut [DiffFile], set: &crate::model::FileSet) {
-    let by_path = |rows: &[crate::model::ChangedFile]| -> std::collections::HashSet<String> {
+pub fn mark_worktree_state(files: &mut [DiffFile], set: &orchd_base::model::FileSet) {
+    let by_path = |rows: &[orchd_base::model::ChangedFile]| -> std::collections::HashSet<String> {
         rows.iter().map(|f| f.path.clone()).collect()
     };
     let staged = by_path(&set.staged);
@@ -182,7 +182,7 @@ pub fn mark_worktree_state(files: &mut [DiffFile], set: &crate::model::FileSet) 
 #[cfg_attr(
     any(test, feature = "test-util"),
     derive(ts_rs::TS),
-    ts(export, export_to = "snapshot.d.ts")
+    ts(export, export_to = "repo.d.ts")
 )]
 #[serde(rename_all = "snake_case")]
 pub enum RowKind {
@@ -195,7 +195,7 @@ pub enum RowKind {
 #[cfg_attr(
     any(test, feature = "test-util"),
     derive(ts_rs::TS),
-    ts(export, export_to = "snapshot.d.ts")
+    ts(export, export_to = "repo.d.ts")
 )]
 pub struct Row {
     pub kind: RowKind,
@@ -219,7 +219,7 @@ pub struct Row {
 #[cfg_attr(
     any(test, feature = "test-util"),
     derive(ts_rs::TS),
-    ts(export, export_to = "snapshot.d.ts")
+    ts(export, export_to = "repo.d.ts")
 )]
 pub struct Hunk {
     pub old_start: u32,
@@ -235,7 +235,7 @@ pub struct Hunk {
 #[cfg_attr(
     any(test, feature = "test-util"),
     derive(ts_rs::TS),
-    ts(export, export_to = "snapshot.d.ts")
+    ts(export, export_to = "repo.d.ts")
 )]
 pub struct FileDiff {
     pub path: String,
@@ -612,7 +612,7 @@ mod tests {
             "-qm",
             "base",
         ]);
-        let base = crate::git::head_sha(&dir).unwrap();
+        let base = orchd_base::git::head_sha(&dir).unwrap();
 
         g(&["mv", "old.txt", "new.txt"]);
         std::fs::write(dir.join("café.md"), "bonjour\nencore\n").unwrap();

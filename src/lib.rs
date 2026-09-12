@@ -17,23 +17,19 @@ pub use orchd_base::{
     window,
 };
 
+// The checkout layer, at the paths it always had, for the same reason: moving it
+// into `orchd-repo` cost no call site a rename, and `cargo` now refuses an import
+// from there back up here.
+pub use orchd_repo::{
+    config, diff, env_source, forge, instance, launch, logging, machine, migrate, patch, reviews,
+    skills,
+};
+
 pub mod api;
-pub mod config;
-pub mod diff;
-pub mod env_source;
 pub mod fix_pr;
-pub mod forge;
 pub mod health;
-pub mod instance;
-pub mod launch;
-pub mod logging;
-pub mod machine;
-pub mod migrate;
 pub mod names;
-pub mod patch;
 pub mod post;
-pub mod reviews;
-pub mod skills;
 pub mod spawn;
 pub mod state;
 pub mod store;
@@ -49,21 +45,6 @@ pub mod worktree;
 use std::sync::Arc;
 
 use state::AppState;
-
-/// The directory the running executable sits in, when `orch` is really there.
-///
-/// Every packaging puts the two binaries side by side — the tarball, the `.deb`'s
-/// `/usr/bin`, the AppImage's AppDir, the macOS bundle's `Contents/MacOS` — but
-/// only the tarball's directory is on anybody's PATH. Answering `None` when the
-/// sibling is missing keeps a development build (`cargo run`, where `orch` may
-/// not have been built) from prepending a directory that has no `orch` in it.
-pub fn sibling_bin_dir() -> Option<String> {
-    let exe = std::env::current_exe().ok()?;
-    let dir = exe.parent()?;
-    dir.join("orch")
-        .is_file()
-        .then(|| dir.to_string_lossy().into_owned())
-}
 
 /// The repository this daemon polls, `owner/name`.
 ///

@@ -37,7 +37,7 @@ pub struct Patch {
 #[cfg_attr(
     any(test, feature = "test-util"),
     derive(ts_rs::TS),
-    ts(export, export_to = "snapshot.d.ts")
+    ts(export, export_to = "repo.d.ts")
 )]
 pub struct FileStat {
     pub path: String,
@@ -351,7 +351,7 @@ pub fn write_batch(
     // 1. Blame before anything touches the tree.
     // No rev: nothing has been applied yet, so the working tree *is* the
     // committed state and blaming it is correct.
-    let amend = crate::review_commit::amend_target(cwd, None, merge_base, touched, my_email)?;
+    let amend = orchd_base::review_commit::amend_target(cwd, None, merge_base, touched, my_email)?;
 
     // What the tree already held. The gate upstream requires a clean tree, so this
     // is normally empty — but `write_batch` is `pub` and states no such
@@ -415,7 +415,8 @@ pub fn write_batch(
     exactly what the manual phase exists to collect. */
     const UNREVERTED: &str =
         "the applied patch could not be reverted, so it is still in the working tree";
-    let restored = added_since(cwd, &before).and_then(|ours| crate::git::restore_paths(cwd, &ours));
+    let restored =
+        added_since(cwd, &before).and_then(|ours| orchd_base::git::restore_paths(cwd, &ours));
     match (why, restored) {
         (Ok(Some(why)), Ok(())) => Ok(Written::Refused(why)),
         // Better a refusal that admits the mess than one that hides it.
@@ -447,7 +448,7 @@ fn land(
     paths: &[String],
     before: &[String],
     touched: &[String],
-    amend: &crate::review_commit::Amend,
+    amend: &orchd_base::review_commit::Amend,
 ) -> Result<Option<String>> {
     if let Some(why) = hooks_refusal(cwd, paths, false)? {
         return Ok(Some(why));
@@ -455,7 +456,7 @@ fn land(
     if let Some(why) = hooks_wrote_elsewhere(cwd, before, touched, "the accepted patch")? {
         return Ok(Some(why));
     }
-    crate::git::fold_in(cwd, amend)?;
+    orchd_base::git::fold_in(cwd, amend)?;
     Ok(None)
 }
 
@@ -505,26 +506,26 @@ fn hooks_wrote_elsewhere(
 /// hooks are for — so a rewrite is reported rather than refused, and the caller's
 /// file list includes it.
 fn hooks_refusal(cwd: &Path, paths: &[String], own_edits: bool) -> Result<Option<String>> {
-    Ok(match crate::git::pre_commit(cwd, paths)? {
-        crate::git::PreCommit::Passed | crate::git::PreCommit::NotConfigured => None,
-        crate::git::PreCommit::NotInstalled => {
+    Ok(match orchd_base::git::pre_commit(cwd, paths)? {
+        orchd_base::git::PreCommit::Passed | orchd_base::git::PreCommit::NotConfigured => None,
+        orchd_base::git::PreCommit::NotInstalled => {
             tracing::warn!(
                 "`.pre-commit-config.yaml` is present but `pre-commit` is not installed; \
                  pushing code the local hooks did not see"
             );
             None
         }
-        crate::git::PreCommit::Failed(detail) if own_edits => Some(format!(
+        orchd_base::git::PreCommit::Failed(detail) if own_edits => Some(format!(
             "pre-commit failed on your edits, so nothing was committed:\n{detail}"
         )),
-        crate::git::PreCommit::Failed(detail) => Some(format!(
+        orchd_base::git::PreCommit::Failed(detail) => Some(format!(
             "pre-commit failed, so nothing was committed:\n{detail}"
         )),
-        crate::git::PreCommit::Reformatted(rewritten) if own_edits => {
+        orchd_base::git::PreCommit::Reformatted(rewritten) if own_edits => {
             tracing::info!("the hooks reformatted {}", rewritten.join(", "));
             None
         }
-        crate::git::PreCommit::Reformatted(paths) => Some(format!(
+        orchd_base::git::PreCommit::Reformatted(paths) => Some(format!(
             "the hooks rewrote {} — what would land is no longer what you approved. \
              Nothing was committed.",
             paths.join(", ")
@@ -639,9 +640,9 @@ pub fn write_manual(
         // Through the shared constructor, never `Amend::Head` directly: it is the
         // only thing that checks whether HEAD is ours to rewrite, and building one
         // here walked straight past it.
-        crate::review_commit::head_or_on_top(
+        orchd_base::review_commit::head_or_on_top(
             cwd,
-            crate::git::effective_email(cwd).as_deref(),
+            orchd_base::git::effective_email(cwd).as_deref(),
             format!(
                 "the accepted patches moved the lines in {}, so the reviewers' anchors no \
                  longer say which commit owns them",
@@ -649,7 +650,7 @@ pub fn write_manual(
             ),
         )
     } else {
-        crate::review_commit::amend_target(cwd, Some("HEAD"), merge_base, &usable, my_email)?
+        orchd_base::review_commit::amend_target(cwd, Some("HEAD"), merge_base, &usable, my_email)?
     };
 
     if let Some(why) = hooks_refusal(cwd, &paths, true)? {
@@ -667,7 +668,7 @@ pub fn write_manual(
 
     // Recounted after the hooks, so the file list is what will actually land.
     let files = numstat_worktree(cwd)?;
-    crate::git::fold_in(cwd, &amend)?;
+    orchd_base::git::fold_in(cwd, &amend)?;
     Ok(Written::Committed {
         files,
         amend: amend.describe(),
@@ -681,7 +682,7 @@ pub fn write_manual(
 /// file would be missing from both halves.
 pub fn worktree_change(cwd: &Path) -> Result<(Vec<FileStat>, String)> {
     let files = numstat_worktree(cwd)?;
-    let mut diff = crate::git::git(cwd, &["diff", "HEAD"])?;
+    let mut diff = orchd_base::git::git(cwd, &["diff", "HEAD"])?;
 
     // `git diff HEAD` cannot see an untracked file at all, and the only way to make
     // it — `--intent-to-add` — is the index write that broke `git stash`. So each new
@@ -791,7 +792,7 @@ fn paths_changed_between(
     cwd: &Path,
     since: &str,
 ) -> Result<Option<std::collections::HashSet<String>>> {
-    let out = match crate::git::git(cwd, &["diff", "--name-only", "-z", since, "HEAD"]) {
+    let out = match orchd_base::git::git(cwd, &["diff", "--name-only", "-z", since, "HEAD"]) {
         Ok(out) => out,
         Err(e) => {
             tracing::warn!("could not diff {since}..HEAD, so no anchor is trusted: {e:#}");
@@ -811,7 +812,7 @@ fn paths_changed_between(
 /// The one source of path strings for the manual phase. A rename appears once, as its
 /// new path, because that is what `--porcelain=v2` reports.
 pub fn dirty_paths(cwd: &Path) -> Result<Vec<String>> {
-    let set = crate::git::status(cwd, None, crate::git::Untracked::Each)?;
+    let set = orchd_base::git::status(cwd, None, orchd_base::git::Untracked::Each)?;
     Ok(set
         .staged
         .iter()
@@ -830,7 +831,7 @@ pub fn dirty_paths(cwd: &Path) -> Result<Vec<String>> {
 /// is `added\tdeleted\t\0old\0new\0` — the path field is empty and the two paths
 /// follow as their own records.
 fn numstat_counts(cwd: &Path) -> Result<std::collections::HashMap<String, (u32, u32)>> {
-    let raw = crate::git::git(cwd, &["diff", "--numstat", "-z", "HEAD"])?;
+    let raw = orchd_base::git::git(cwd, &["diff", "--numstat", "-z", "HEAD"])?;
     // Keyed on a rename's new path, so it matches what `git status` reported.
     Ok(parse_numstat_z(&raw)
         .into_iter()
@@ -1063,7 +1064,7 @@ mod tests {
         assert_eq!(commit_count(&d), before);
         let content = std::fs::read_to_string(d.join("f.txt")).unwrap();
         assert!(content.contains("FIVE") && content.contains("THIRTY"));
-        assert!(crate::git::is_clean(&d).unwrap(), "tree left dirty");
+        assert!(orchd_base::git::is_clean(&d).unwrap(), "tree left dirty");
     }
 
     #[test]
@@ -1091,7 +1092,7 @@ mod tests {
 
         let touched = vec![("f.txt".to_string(), 5)];
         let approved = vec!["f.txt".to_string(), "new.txt".to_string()];
-        let head = crate::git::head_sha(&d).unwrap();
+        let head = orchd_base::git::head_sha(&d).unwrap();
         match write_manual(&d, "base", "me@here", &touched, &approved, &head).unwrap() {
             Written::Committed { files, amend } => {
                 // Blamed against HEAD, so it found the owning commit rather than
@@ -1107,7 +1108,7 @@ mod tests {
             other => panic!("expected Committed, got {other:?}"),
         }
         assert_eq!(commit_count(&d), before, "folded, not stacked");
-        assert!(crate::git::is_clean(&d).unwrap(), "tree left dirty");
+        assert!(orchd_base::git::is_clean(&d).unwrap(), "tree left dirty");
         assert!(std::fs::read_to_string(&f).unwrap().contains("by hand"));
     }
 
@@ -1122,7 +1123,7 @@ mod tests {
         std::fs::write(d.join("f.txt"), "by hand\n").unwrap();
         std::fs::write(d.join("debug.log"), "scratch from a session\n").unwrap();
 
-        let head = crate::git::head_sha(&d).unwrap();
+        let head = orchd_base::git::head_sha(&d).unwrap();
         let got = write_manual(
             &d,
             "base",
@@ -1142,7 +1143,7 @@ mod tests {
         }
         assert_eq!(commit_count(&d), before, "nothing may be committed");
         assert!(
-            !crate::git::is_clean(&d).unwrap(),
+            !orchd_base::git::is_clean(&d).unwrap(),
             "your edits stay on disk"
         );
     }
@@ -1173,7 +1174,7 @@ mod tests {
 
         // And what the phase showed is accepted by the gate that consumes it.
         let approved: Vec<String> = listed.iter().map(|s| s.to_string()).collect();
-        let head = crate::git::head_sha(&d).unwrap();
+        let head = orchd_base::git::head_sha(&d).unwrap();
         let got = write_manual(&d, "base", "me@here", &[], &approved, &head).unwrap();
         assert!(
             !matches!(got, Written::Refused(_)),
@@ -1189,7 +1190,7 @@ mod tests {
         for n in 0..25 {
             std::fs::write(d.join(format!("stray{n:02}.txt")), "x\n").unwrap();
         }
-        let head = crate::git::head_sha(&d).unwrap();
+        let head = orchd_base::git::head_sha(&d).unwrap();
         match write_manual(&d, "base", "me@here", &[], &[], &head).unwrap() {
             Written::Refused(why) => {
                 assert!(why.contains("and 15 more"), "{why}");
@@ -1235,7 +1236,7 @@ mod tests {
         assert!(diff.contains("+three"), "including nested ones:\n{diff}");
 
         // ...and one file out of the directory can be refused on its own.
-        let head = crate::git::head_sha(&d).unwrap();
+        let head = orchd_base::git::head_sha(&d).unwrap();
         let got = write_manual(
             &d,
             "base",
@@ -1290,7 +1291,7 @@ mod tests {
         std::fs::write(d.join("other.txt"), "line1\nline2\n").unwrap();
         run(&d, &["add", "-A"]);
         run(&d, &["commit", "-qm", "another file"]);
-        let at_triage = crate::git::head_sha(&d).unwrap();
+        let at_triage = orchd_base::git::head_sha(&d).unwrap();
 
         // Half one: a patch lands in f.txt and is committed.
         std::fs::write(d.join("f.txt"), "half one wrote this\n").unwrap();
@@ -1324,7 +1325,7 @@ mod tests {
         // number reads a different line and picks the wrong commit — silently, and
         // reported as "folded into" it. So the fold says so instead of guessing.
         let d = batch_repo();
-        let at_triage = crate::git::head_sha(&d).unwrap();
+        let at_triage = orchd_base::git::head_sha(&d).unwrap();
 
         // Half one rewrites the very file the anchor is in.
         std::fs::write(d.join("f.txt"), "half one rewrote this whole file\n").unwrap();
@@ -1377,8 +1378,8 @@ mod tests {
             "reading the diff must not stage anything"
         );
         // The thing that actually broke: stash still works afterwards.
-        crate::git::stash(&d).expect("stash after a phase read");
-        assert!(crate::git::is_clean(&d).unwrap());
+        orchd_base::git::stash(&d).expect("stash after a phase read");
+        assert!(orchd_base::git::is_clean(&d).unwrap());
     }
 
     #[test]
@@ -1414,7 +1415,7 @@ mod tests {
             other => panic!("expected Refused, got {other:?}"),
         }
         assert_eq!(commit_count(&d), before + 1, "only the test's own commit");
-        assert!(crate::git::is_clean(&d).unwrap());
+        assert!(orchd_base::git::is_clean(&d).unwrap());
     }
 
     #[test]
@@ -1442,7 +1443,7 @@ mod tests {
             other => panic!("expected Refused, got {other:?}"),
         }
         assert_eq!(commit_count(&d), before);
-        assert!(crate::git::is_clean(&d).unwrap());
+        assert!(orchd_base::git::is_clean(&d).unwrap());
     }
 
     #[test]
@@ -1472,9 +1473,12 @@ mod tests {
         run(&d, &["commit", "-qm", "hook fixture"]);
         let before = commit_count(&d);
 
-        let got = with_path(&bin, || crate::git::pre_commit(&d, &["f.txt".to_string()])).unwrap();
+        let got = with_path(&bin, || {
+            orchd_base::git::pre_commit(&d, &["f.txt".to_string()])
+        })
+        .unwrap();
         match got {
-            crate::git::PreCommit::Failed(detail) => {
+            orchd_base::git::PreCommit::Failed(detail) => {
                 // And the hook's own words survive, which the old ordering dropped.
                 assert!(detail.contains("unused import"), "{detail}");
             }
@@ -1484,7 +1488,7 @@ mod tests {
         // ...and the manual half refuses it rather than logging and committing.
         // The hook rewrote f.txt when it ran above, so the tree is dirty there too.
         std::fs::write(d.join("by-hand.txt"), "edited\n").unwrap();
-        let head = crate::git::head_sha(&d).unwrap();
+        let head = orchd_base::git::head_sha(&d).unwrap();
         let approved = vec!["f.txt".to_string(), "by-hand.txt".to_string()];
         let got = with_path(&bin, || {
             write_manual(
@@ -1540,7 +1544,7 @@ mod tests {
         }
         assert_eq!(commit_count(&d), before, "must not have committed");
         assert!(
-            crate::git::is_clean(&d).unwrap(),
+            orchd_base::git::is_clean(&d).unwrap(),
             "the patch and the rewrite must both be gone"
         );
     }
@@ -1583,7 +1587,7 @@ mod tests {
             "the refused patch was left in f.txt:\n{after}"
         );
         assert!(
-            crate::git::is_clean(&d).unwrap(),
+            orchd_base::git::is_clean(&d).unwrap(),
             "the tree must be back to HEAD"
         );
 
@@ -1726,7 +1730,7 @@ mod tests {
         }
         assert_eq!(commit_count(&d), before);
         assert!(
-            crate::git::is_clean(&d).unwrap(),
+            orchd_base::git::is_clean(&d).unwrap(),
             "the hook's file and the patch must both be gone"
         );
     }
@@ -1766,7 +1770,7 @@ mod tests {
 
         let touched = vec![("f.txt".to_string(), 5)];
         let approved = vec!["f.txt".to_string()];
-        let head = crate::git::head_sha(&d).unwrap();
+        let head = orchd_base::git::head_sha(&d).unwrap();
         let got = with_path(&bin, || {
             write_manual(&d, "base", "me@here", &touched, &approved, &head)
         })
@@ -1866,6 +1870,6 @@ mod tests {
             !d.join("g.txt").exists(),
             "the new half of the rename was left behind"
         );
-        assert!(crate::git::is_clean(&d).unwrap());
+        assert!(orchd_base::git::is_clean(&d).unwrap());
     }
 }

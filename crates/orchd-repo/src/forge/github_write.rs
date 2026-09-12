@@ -147,7 +147,14 @@ impl Target {
         let argv: Vec<String> = std::iter::once("gh".to_string())
             .chain(args.iter().map(|a| (*a).to_string()))
             .collect();
-        crate::proc::run_bounded_with_input(&self.cwd, WRITE_TIMEOUT_SECS, &argv, label, input, &[])
+        orchd_base::proc::run_bounded_with_input(
+            &self.cwd,
+            WRITE_TIMEOUT_SECS,
+            &argv,
+            label,
+            input,
+            &[],
+        )
     }
 }
 

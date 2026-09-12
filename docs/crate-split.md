@@ -4,10 +4,11 @@ A sketch, not a plan of record. Everything here is measured against the tree at
 the commit that added it; re-measure before acting on any of it with
 `mise run check-modules` and `node tools/rust-modules.mjs --dot`.
 
-**Steps 1 and 2 are done.** `crates/orchd-base` holds the primitives;
-`crates/orchd-serve` holds the daemon — the server, the boot sequence, the
-pollers and the two binaries. The two *cost* sections at the end are the part
-worth reading before starting step 3.
+**Steps 1, 2 and 3 are done.** `crates/orchd-base` holds the primitives,
+`crates/orchd-repo` one checkout described, `crates/orchd-serve` the daemon — the
+server, the boot sequence, the pollers and the two binaries. What is left in
+`orchd` is the runtime core, which is step 4 and the one that cannot be split.
+The three *cost* sections at the end are the part worth reading first.
 
 ## Why this is on the table at all
 
@@ -48,7 +49,7 @@ broken first.
 | crate | modules | lines | what it is |
 | --- | --- | --- | --- |
 | `orchd-base` | 13 | ~10,000 | the primitives: processes, ptys, git, the data model, the guard, secrets — **done** |
-| `orchd-repo` | 11 | 9,044 | what a checkout *is*: config, the forge, diffs, patches, skills, the launch argv |
+| `orchd-repo` | 12 | ~9,300 | what a checkout *is*: config, the forge, diffs, patches, skills, the launch argv — **done** |
 | `orchd-run` | 11 | 20,556 | the runtime core, unchanged and still one crate |
 | `orchd-serve` | 4 + `lib.rs` | ~6,900 | the daemon: `host`, `hooks`, `firstrun`, `ws`, `start`, the pollers and both binaries — **done** |
 
@@ -162,7 +163,8 @@ person can read.
    before starting the next one.
 2. ~~**`orchd-serve`.**~~ **Done.** The other end, and the one that paid the
    `include_str!` tax.
-3. **`orchd-repo`.** Now sandwiched, so its boundary is already proven.
+3. ~~**`orchd-repo`.**~~ **Done.** Sandwiched, so its boundary was already
+   proven — it compiled at the first attempt.
 4. **`orchd-run`** is what is left. Delete `tools/rust-modules.mjs` at this step
    — or keep it pointed at that crate alone, since the ten pairs inside it are
    still worth ratcheting.
@@ -208,3 +210,42 @@ dependencies had never been checked or listed at all**. The notices went from 11
 crates to 355, and six unmaintained advisories under `tauri` are recorded in
 `deny.toml` with reasons. That hole predates the split; the split is what showed
 it.
+
+
+## What step 3 actually cost
+
+**The least of the three, and the reason is the shape of the work.** `orchd-repo`
+was sandwiched between two crates that already existed, so its boundary had been
+proven twice over: the move compiled at the first attempt, with no visibility to
+widen at all.
+
+Three things moved with it that the layer diagram did not show:
+
+- **`migrate` came along after all.** Step 1 left it in `orchd` because its test
+  asserts against `config::Config::parse` — and `config` is in this crate, so the
+  pair is together again and the test needed no change.
+- **`sibling_bin_dir` moved down** from `orchd`'s `lib.rs` into `launch`, its only
+  caller. A one-function helper at the crate root was the only shipped code in
+  the whole layer that pointed upward.
+- **One skills test became an integration test.** `skills::VENDORED` is this
+  crate's and the command constants are `orchd`'s, and the assertion is about the
+  pair — so it is `tests/skills_are_named_after_commands.rs` now. Expect one of
+  these per crate: a unit test that was really a pair test.
+
+**The one genuinely new failure is the generation order, and it is worth knowing
+before step 4.** `ts-rs` exports a type's *dependencies* as well as the type, so
+a crate's export run rewrites its dependencies' files with only the subset it
+happens to reference — `cargo test --workspace` left `base.d.ts` holding **1 type
+where it should hold 15**. Running the crates from the **top of the graph down**
+(`orchd-serve`, `orchd`, `orchd-repo`, `orchd-base`) leaves each file written
+last by the crate that owns it. That order is in `check-web`, the hook and CI,
+with the measurement beside it.
+
+Beside it sat a quieter trap: **`cargo test -p orchd` alone failed to build while
+`--workspace` succeeded**, because a sibling's dev-dependency turned on `orchd`'s
+optional `ts-rs` in the unified feature graph. Every crate that gates derives on
+a feature needs the dependency *both* optional and as a dev-dependency.
+
+And `cargo machete` earned its keep for the third time: `libc` and
+`tracing-subscriber` in `orchd`, `tokio` in `orchd-repo`, all left declared after
+the code that used them moved.

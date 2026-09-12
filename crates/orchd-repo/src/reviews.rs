@@ -13,7 +13,7 @@ use std::path::Path;
 #[cfg_attr(
     any(test, feature = "test-util"),
     derive(ts_rs::TS),
-    ts(export, export_to = "snapshot.d.ts")
+    ts(export, export_to = "repo.d.ts")
 )]
 pub struct Review {
     #[cfg_attr(any(test, feature = "test-util"), ts(type = "number"))]
@@ -42,7 +42,7 @@ pub struct Review {
 #[cfg_attr(
     any(test, feature = "test-util"),
     derive(ts_rs::TS),
-    ts(export, export_to = "snapshot.d.ts")
+    ts(export, export_to = "repo.d.ts")
 )]
 pub struct ReviewQueue {
     pub login: String,
@@ -62,7 +62,7 @@ pub struct ReviewQueue {
 #[cfg_attr(
     any(test, feature = "test-util"),
     derive(ts_rs::TS),
-    ts(export, export_to = "snapshot.d.ts")
+    ts(export, export_to = "repo.d.ts")
 )]
 pub enum ReviewState {
     Ok(ReviewQueue),
@@ -86,7 +86,7 @@ const KNOWN_VERSION: u64 = 1;
 /// The queue that ships, kept as a real script rather than a string literal so it
 /// can be read, run and diffed. No dependencies, so it works from the config dir
 /// where nothing has been installed.
-const DEFAULT_SCRIPT: &str = include_str!("../reviews/default.js");
+const DEFAULT_SCRIPT: &str = include_str!("../../../reviews/default.js");
 
 /// Where the ejected copy lives.
 ///
@@ -147,13 +147,13 @@ fn run(
     command: &[String],
     repo: Option<&str>,
 ) -> Result<ReviewQueue> {
-    let out = crate::proc::run_bounded(main, timeout_secs, command, "reviews")?;
+    let out = orchd_base::proc::run_bounded(main, timeout_secs, command, "reviews")?;
 
     if !out.status.success() {
         bail!(
             "reviews exited {}: {}",
             out.status.code().unwrap_or(-1),
-            crate::proc::stderr_tail(&out.stderr)
+            orchd_base::proc::stderr_tail(&out.stderr)
         );
     }
 

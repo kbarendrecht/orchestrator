@@ -10,7 +10,7 @@ with them.
 
 ## GNU Affero General Public License v3.0 only
 
-Used by [orchd 2026.9.12](https://github.com/kbarendrecht/orchestrator), [orchd-base 2026.9.12](https://github.com/kbarendrecht/orchestrator), [orchd-serve 2026.9.12](https://github.com/kbarendrecht/orchestrator), [orchestrator-desktop 2026.9.12](https://github.com/kbarendrecht/orchestrator)
+Used by [orchd 2026.9.12](https://github.com/kbarendrecht/orchestrator), [orchd-base 2026.9.12](https://github.com/kbarendrecht/orchestrator), [orchd-repo 2026.9.12](https://github.com/kbarendrecht/orchestrator), [orchd-serve 2026.9.12](https://github.com/kbarendrecht/orchestrator), [orchestrator-desktop 2026.9.12](https://github.com/kbarendrecht/orchestrator)
 
 ```
 GNU AFFERO GENERAL PUBLIC LICENSE
