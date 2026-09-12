@@ -4,8 +4,7 @@
 //! sessions, its worktrees, its git, its PRs — and knows nothing about any other.
 //! The host serves the one page, owns the one window, and knows which checkouts
 //! are open. Those were the same thing while there was one checkout, and `orchd`
-//! was built that way; `multirepo.md` has the argument for separating them and the
-//! measurements behind it.
+//! was built that way.
 //!
 //! Nothing here knows what a session is, and that is the boundary to keep. A host
 //! that learned the session model would be the conflation coming back.

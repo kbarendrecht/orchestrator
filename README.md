@@ -495,15 +495,18 @@ worth catching — not because an agent could be prevented from pushing.
 mise install
 npm install --prefix tools               # once per clone: check-web and shot need it
 git config core.hooksPath .githooks      # once per clone
-cargo test                               # the daemon
-mise run check-web                       # type-check the SPA + its module graph
-cargo run -p orchestrator-desktop        # the app, daemon embedded
+git config blame.ignoreRevsFile .git-blame-ignore-revs   # once per clone
+cargo test --workspace                   # the four crates
+mise run check-web                       # type-check and lint the SPA + its graph
+cargo run -p orchestrator-desktop        # the app: it hosts the page and spawns
+                                         # one orchd per checkout
 mise run shot                            # screenshot the running app (drives Chrome)
 mise run fixture                         # a throwaway PR to drive the review flow
 ```
 
-`cargo run -p orchd -- --main /path/to/your/repo` runs the daemon headless on the
-app's own config and prints a tokened URL. `mise run shot` drives Chrome while the
+`cargo run -p orchd-serve --bin orchd -- --main /path/to/your/repo` runs one daemon
+headless and prints a tokened URL. The binaries live in `orchd-serve` since the
+split, so `--bin orchd` from the root no longer resolves. `mise run shot` drives Chrome while the
 app runs in **WebKitGTK**, so it is good for layout and not the last word.
 
 [`CLAUDE.md`](CLAUDE.md) has the traps, [`TODO.md`](TODO.md) what is open,
@@ -517,49 +520,68 @@ refuses a tag that disagrees with the crate version.
 
 ### Layout
 
+Four crates, split so `cargo` enforces the layering rather than a script counting
+it. Each depends only on the ones above it; `docs/crate-split.md` has why, what it
+cost, and why the runtime core is still one crate.
+
 ```
-src/
-  lib.rs        wiring, the router, the pollers, startup recovery, SPA serving
-  main.rs       the headless CLI over the library; desktop/ is the other caller
-  config.rs     config file, defaults, Settings read/write, transcript slug
-  firstrun.rs   the first-run page: merges config, detects a fork layout, restarts
-  model.rs      Workspace / Session / Process, State, ArchiveState
-  state.rs      the daemon's owned state, snapshots, reconcile, durable-store writes
-  instance.rs   the one-daemon-at-a-time pid lock
-  headroom.rs   the pre-spawn resource check every session goes through
-  window.rs     Chrome, and the handle the desktop shell registers
-  pty.rs        portable-pty host, and the scrollback ring every pty keeps
-  proc.rs       run a child with a deadline, portably (no coreutils `timeout`)
-  hooks.rs      hook receiver and the generated settings file
-  spawn.rs      session / worktree / process spawning, and worktree_setup
-  health.rs     a managed process's output → health
-  diff.rs       numstat, hunk parsing, word-level LCS
-  edit.rs       file read/write with containment and conflict detection
-  git.rs        status parsing, refs, unpushed, worktree ops, the review writes
+crates/orchd-base/    the primitives. Nothing here may import anything below.
+  git.rs          status parsing, refs, unpushed, worktree ops, the review writes
+  pty.rs          portable-pty host, and the scrollback ring every pty keeps
+  proc.rs         run a child with a deadline, portably (no coreutils `timeout`)
+  child.rs        the protocol for a checkout's daemon: launch, ready line, observer
+  model.rs        Workspace / Session / Process, State, ArchiveState, DiffFile, Bank
+  proposal.rs     what triage proposes: Stance × Mode, positions, patches, stories
+  guard.rs        the git rules (push blast radius, reach), run by `orch guard push`
+  edit.rs         file read/write with containment and conflict detection
   review_commit.rs  which commit a batch's work may be folded into
-  forge/        the Forge seam: trait + dispatch (mod.rs), agnostic model
-                (model.rs), the GitHub impl (github.rs, github_write.rs)
-  triage.rs     the triage run, and the gates a worktree must pass first
-  proposal.rs   what triage proposes: Stance × Mode, positions, patches, stories
-  post.rs       the review batch end to end
-  patch.rs      applying and committing what you approved, with staleness checks
-  skills.rs     the vendored skills in skills/, written out as the plugin dir
-                every spawn is handed with --plugin-dir
-  story.rs      filing a tracker story for a fair-but-out-of-scope point
-  env_source.rs where a session's own variables come from: mise or direnv, asked per spawn
-  reviews.rs    review queue: runs reviews_command, parses JSON, degraded states
-  fix_pr.rs     automation state, the fix-pr guard table, a run's verdict
-  update.rs     both upgrade bars: is Claude Code behind (via mise), and which
-                mise tool installed *us*, so the app can upgrade itself
-  worktree.rs   teardown preflight, archive, revive, removal
-  store.rs      session record persistence, orphan reaping
-  api.rs        HTTP surface and the origin/token guards      ws.rs  event stream + pty attach
-  guard.rs      the git rules (push blast radius, worktree isolation), run by `orch guard push`
-  machine.rs    what the daemon needs from the machine, warned about at boot
-  timing.rs     per-start phase lines: exec counts, share of the time, slow git
-  testutil.rs   the shared test fixtures (scratch dirs, an AppState, a Pr)
+  headroom.rs     the pre-spawn resource check every session goes through
+  window.rs       Chrome, and the handle the desktop shell registers
+  timing.rs       per-start phase lines: exec counts, share of the time, slow git
+  secret.rs       one fresh token, and the leaf that broke a cycle to get here
+
+crates/orchd-repo/    one checkout, described. No session state lives here.
+  config.rs       config file, defaults, the tracker and its credential
+  launch.rs       the environment and argv a session's process is built with
+  forge/          the Forge seam: trait + dispatch (mod.rs), agnostic model
+                  (model.rs), the GitHub impl (github.rs, github_write.rs)
+  diff.rs         numstat, hunk parsing, word-level LCS
+  patch.rs        applying and committing what you approved, with staleness checks
+  skills.rs       the vendored skills in skills/, written out as the plugin dir
+                  every spawn is handed with --plugin-dir
+  reviews.rs      review queue: runs reviews_command, parses JSON, degraded states
+  env_source.rs   where a session's own variables come from: mise or direnv, per spawn
+  migrate.rs      repairs a config this build could not otherwise read
+  instance.rs     the one-daemon-per-checkout flock
+  machine.rs      what the daemon needs from the machine, warned about at boot
+  logging.rs      the file log, since a launcher-started app has no stdout
+
+src/                  the runtime core: the `orchd` library, what the daemon knows.
+  api.rs          HTTP surface and the origin/token guards
+  state.rs        the daemon's owned state, snapshots, reconcile, durable writes
+  store.rs        session record persistence, orphan reaping
+  spawn.rs        session / worktree / process spawning, and worktree_setup
+  worktree.rs     teardown preflight, archive, revive, removal
+  triage.rs       the triage run, and the gates a worktree must pass first
+  post.rs         the review batch end to end
+  fix_pr.rs       automation state, the fix-pr guard table, a run's verdict
+  story.rs        filing a tracker story for a fair-but-out-of-scope point
+  update.rs       both upgrade bars: is Claude Code behind, and which mise tool
+                  installed *us*, so the app can upgrade itself
+  health.rs       a managed process's output → health
+  names.rs        the worktree names the rail offers
+
+crates/orchd-serve/   the daemon: the server, and everything it starts.
+  lib.rs          start, the router, the pollers, startup recovery
+  host.rs         the page, the asset routes, the checkout list, the window commands
+  hooks.rs        hook receiver and the generated settings file
+  ws.rs           event stream + pty attach
+  firstrun.rs     the first-run page: merges config, detects a fork layout, restarts
+  main.rs         the `orchd` binary; bin/orch.rs is the `orch` CLI a session gets
+
 web/            the SPA (vanilla, xterm.js vendored) — one module graph under js/,
-                booted by app.js; snapshot.d.ts is generated from the Rust structs
+                booted by app.js; the *.d.ts files are generated from the Rust
+                structs, one per crate that exports any
 desktop/src/    the Tauri shell: main.rs (window, boot, splash), launcher.rs (the
                 .desktop entry and the macOS .app bundle), login_path.rs (the
                 login shell's PATH, adopted before the runtime exists)

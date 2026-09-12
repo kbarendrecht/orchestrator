@@ -65,10 +65,9 @@ non-Claude agent is ever hosted.
 
 **The daemon excludes the worktrees dir from the parent's `git status`.** A
 registered worktree inside the working tree shows up as `?? .claude/` — git does
-not auto-ignore it. A managed block in `.git/info/exclude`, written by
-`git::configure_repo` where fsmonitor is already set, under its own markers (the
-shape `todo.rs` uses) so it sits alongside any block the repo's own hooks
-maintain.
+not auto-ignore it. A managed block in `.git/info/exclude`, written where
+`git::configure_repo` already sets fsmonitor, under its own markers so it sits
+alongside any block the repo's own hooks maintain. **Not built** — see below.
 
 **A worktree is removed when its session ends clean.** Otherwise
 worktree-per-session silts the rail up with throwaway branches. Removal runs
@@ -98,7 +97,10 @@ tree".
 
 ## What became of it
 
-The decisions above are implemented: `worktrees_subdir` makes the layout
+The decisions above are implemented, with one exception: `configure_repo` sets
+fsmonitor and the caches and writes **no** exclude block, so a worktree under the
+working tree still shows as untracked in the parent's `git status` unless the repo
+ignores it itself. Everything else landed — `worktrees_subdir` makes the layout
 configurable, `main_processes` are `autostart:false` specs a fresh checkout never
 starts, and the capability subsystem is gone. `spawn_worktree_session` cuts every
 tree itself, running the repo's own `WorktreeCreate` hook through `create_worktree`

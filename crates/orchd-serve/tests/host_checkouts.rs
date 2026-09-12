@@ -3,7 +3,7 @@
 //! **This is `tools/e2e/flows/25-host.mjs`, moved.** That flow was written as the
 //! specification for Stage 3 before the host existed and held `pending` until it
 //! did. It never ran, and moving it here rather than growing the e2e harness a
-//! host is the decision `multirepo.md` left open — for one reason that settles it:
+//! host is deliberate, for one reason that settles it:
 //! the e2e harness exists to put a fake `claude` on PATH, and **the host owns no
 //! sessions**. Everything flow 25 asserts is one process pair speaking HTTP, which
 //! is exactly what an integration test already drives in `host_and_child.rs`.

@@ -18,9 +18,9 @@
 //! **The observer has to know why the child exited**, and that is the part worth
 //! reading twice. A `close`, a quit and a crash all produce the same EOF, so an
 //! observer that restarts on exit restarts the daemon a `close` just stopped — and
-//! a restart runs `auto_resume`, which spawns an agent per live record. That is the
-//! resurrection `multirepo.md` lists as a safety finding, arriving through the
-//! front door. So a deliberate stop sets [`Child::stopping`] **before** it signals,
+//! a restart runs `auto_resume`, which spawns an agent per live record — the same
+//! resurrection `Host::add_checkout` spends an ask on avoiding, arriving through
+//! the front door instead. So a deliberate stop sets [`Child::stopping`] **before** it signals,
 //! never after, and the observer reads it once `wait` returns.
 //!
 //! Ownership follows from `std::process::Child` rather than from taste: `wait` and

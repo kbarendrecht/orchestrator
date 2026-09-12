@@ -573,8 +573,8 @@ fn build_window(
 /// **The app is the host, and every checkout is a child process.** It used to run
 /// `orchd::start` in this process and point the webview at the daemon; now it
 /// serves the page itself and spawns one `orchd` per checkout, which is what makes
-/// several checkouts possible at all — `multirepo.md` has the argument and the
-/// measured cost (2.7 ms and 9.3 MB for the extra process).
+/// several checkouts possible at all. The extra process was measured before it
+/// was chosen: 2.7 ms and 9.3 MB, and CLAUDE.md carries the rest of the figures.
 ///
 /// Two things follow from that and are easy to miss. The **instance lock is the
 /// child's**, taken inside its own `orchd::start`, so a second app on the same

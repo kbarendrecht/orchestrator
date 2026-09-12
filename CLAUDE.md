@@ -204,6 +204,15 @@ mean *this* repo; if you do, name it.
   app.** `ldd` says why: `orchd` links 5 shared objects and
   `orchestrator-desktop` links 133, twenty of them WebKit and GTK, and a child would
   pay that loader cost to serve a page it never serves.
+  **A child process rather than an embedded daemon is measured, not assumed**, and
+  the number is the answer to the question somebody will ask again. Release build,
+  wall clock from `Command::spawn` to the daemon serving, minus the `daemon start`
+  phase the daemon logs itself — so it is exactly what the extra process costs on
+  top of the `orchd::start` both shapes run: **2.6–2.7 ms and 11 execs**, and
+  **9.3 MB RSS** idle per daemon. The delta does not move when the repo work goes
+  up 58× (a throwaway checkout against this one, 23 ms against 1334 ms of
+  `daemon start`), which is what says it is exec plus loader and nothing else.
+  It is 0.2% of a real start, and the children start in parallel.
   One test-only wrinkle worth knowing: those tests write a stub and exec it, and
   `ETXTBSY` there is a **fork race** (a sibling thread's `fork` copies the write fd
   until its own `exec`), not a defect — `launch_stub` retries it and says so.
@@ -266,11 +275,10 @@ mean *this* repo; if you do, name it.
   app that way: minimise, close, drag, resize and restart all succeeded at
   nothing. `core.HOST` and `callHost` are the seam, and
   `tests/host_and_child.rs` asserts the swallow so the reason cannot be tidied
-  away. One process still serves both and
-  they share a port and a token, so nothing behaves differently yet — but the two
-  routers have their own guards and their own state, because they answer to
-  different owners: a daemon manages one checkout, and there is one page over all
-  of them. `multirepo.md` has the argument and the measurements.
+  away. **They are separate processes on separate ports with separate tokens**:
+  the host serves the page from the app, and every checkout is a child `orchd`
+  that mints its own. The two routers answer to different owners — a daemon
+  manages one checkout, and there is one page over all of them.
   Three consequences worth knowing. The window handle is on `host::Host`, not
   `AppState`, so `server.host.attach_window` is what the shell calls. The page's
   token now comes from the substituted checkout list (`core.CHECKOUTS[0].token`),
@@ -510,6 +518,13 @@ mean *this* repo; if you do, name it.
   which would let any page in the browser drive the daemon. This shipped missing
   and the symptom was a board that drew from its websockets (CORS does not cover
   those) and could then do nothing at all.
+  **One port per daemon, and the host proxies nothing.** The cost of not proxying
+  is one extra origin per daemon — the same string for every one, handed in at
+  spawn, so it is one rule instantiated N times rather than N rules that have to
+  agree. The cost of proxying would be a second loopback hop on the keystroke
+  path, and the pty socket is nothing but small frames in both directions: this
+  repo already had to set `TCP_NODELAY` because Nagle plus a delayed ACK is ~40 ms
+  per round trip on exactly that traffic.
 - **`orchd --host <checkout>…` is how the multi-checkout page gets driven without a
   screen.** The app is the only other host and it needs a window. It is a *real*
   host: each checkout gets its state directory under `ORCHD_CONFIG_DIR` and lands in
@@ -1545,6 +1560,16 @@ mean *this* repo; if you do, name it.
   which now produces no binary, and turning that on showed that the desktop
   shell's ~130 dependencies had never been checked or listed at all. The notices
   went from 111 crates to 355. That hole predates the split.
+- **The words are `host`, `checkout` and `session`, and `repository` is reserved.**
+  `host` names the process role above the daemons, not a UI metaphor — it extends
+  `firstrun::BootstrapHost`, which is the trait by which the app gives a server it
+  hosts the window side, so `host.rs`, `/api/host/*`, `/ws/host` and `host.json`
+  read as one vocabulary. Its one cost is named: `api::guard`'s rules are about
+  the HTTP `Host` header, so `/api/host/checkouts` sits beside "the Host rule" and
+  reads confusingly for a moment — a collision in one module, where a metaphor
+  would have been in every sentence. **`repository` stays reserved for
+  `state::Repos`**, the GitHub owner/name pair, which is why the rail lists
+  *checkouts* and nothing in the product is called a board.
 - **`crates/orchd-repo` is what a checkout is**: `config`, `forge`, `diff`,
   `patch`, `skills`, `launch`, `migrate` and the rest — everything that reads or
   describes one repository and keeps no session state. It was the cheapest of the

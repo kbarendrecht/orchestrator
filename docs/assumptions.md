@@ -184,9 +184,10 @@ across the boundary fail silently. Barely visible on Linux; the normal case on
 macOS, where `/tmp`, `/var` and `$TMPDIR` are symlinks into `/private`.
 
 **25. One daemon per config dir, and one main checkout per daemon.**
-`instance::holder` decides by asking whether the pid is alive, and the lock file is
-deliberately left behind. *Kind:* orchd's own rule. *Breaks:* two daemons fight over
-`sessions.json` and the hook settings file.
+An `flock` on `<config dir>/instance.pid` decides, and the lock file is deliberately
+left behind — it is what the lock is taken *on*. The kernel releases it however the
+process ends, so there is no stale path to reason about. *Kind:* orchd's own rule.
+*Breaks:* two daemons fight over `sessions.json` and the hook settings file.
 
 **26. A session's environment is not the shell's.** Started from a launcher it is
 the systemd user manager's, holding no checkout's variables, so `env_source` asks
