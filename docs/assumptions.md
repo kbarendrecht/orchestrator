@@ -62,7 +62,9 @@ you worked in for weeks would read as ancient the day after you stopped.
 **6b. `created_at` is the only clock persisted on the record.** `state_since` is
 not in `SessionRecord`, so anything reasoning about "archived when" is really
 reasoning about the last daemon start. That is why age comes off the transcript
-rather than off the state machine. *Kind:* orchd's own rule.
+rather than off the state machine. *Kind:* orchd's own rule. *Breaks:* every age
+the daemon reports is measured from the last start, so a warning that fires on a
+stale claim goes quiet for exactly the session that has been sitting longest.
 
 **7. The per-worktree git index mtime says nothing about when a tree was last
 used.** Measured, not assumed: the daemon's own reconcile runs `git status` in every
@@ -106,7 +108,9 @@ one is missing rather than failing silently.
 
 **12. Main is privileged and is never torn down.** `worktree::preflight` bails on
 `MAIN` before any check runs. *Kind:* orchd's own rule, and a real constraint: one
-checkout is one working tree, one index, and at most one dev stack.
+checkout is one working tree, one index, and at most one dev stack. *Breaks:* a
+teardown reaches the checkout every worktree is cut from, and takes the repository
+the daemon is pointed at with it.
 
 ## The Claude Code contract
 
@@ -121,7 +125,9 @@ slug replaces both `/` and `.`.** *Kind:* contract, undocumented shape.
 **15. A transcript is keyed by session uuid, so two conversations in one directory
 do not interleave.** Said here because the opposite was written into two comments
 and justified a guard that refused reviewing any PR whose worktree you had torn
-down. *Kind:* contract, measured.
+down. *Kind:* contract, measured. *Breaks:* if a transcript were keyed by the
+directory instead, two sessions in one worktree would append to one file, and the
+guard that refused a PR whose tree you had removed would have been right.
 
 **16. Session names come from an undocumented `ai-title` record.**
 `store::ai_title` tails the transcript. Degrades to the workspace name.
@@ -169,7 +175,9 @@ a worktree can hold symlinks back into main, and a recursive delete that follows
 them destroys the main checkout. *Kind:* contract. *Breaks:* catastrophically, once.
 
 **22. `git worktree remove` leaves the branch alone.** What makes an orphaned tree
-safe to reap: the commits stay reachable from main. *Kind:* contract.
+safe to reap: the commits stay reachable from main. *Kind:* contract. *Breaks:*
+reaping an orphaned tree would delete its branch with it, and unmerged commits go
+with the branch.
 
 **23. The base ref splits as `<remote>/<branch>`.** `git::base_branch` and the
 SPA's `mainHoldsWork`. `origin/HEAD` is the case that cannot be split that way, and

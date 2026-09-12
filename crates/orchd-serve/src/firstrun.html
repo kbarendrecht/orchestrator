@@ -246,13 +246,6 @@
           <div class="lab">Worktrees<span class="sub">where sessions are cut</span></div>
           <div class="ctl"><div class="field ro" id="r-wt">.claude/worktrees</div><span class="detected">default</span></div>
         </div>
-        <div class="frow">
-          <div class="lab">Issue tracker<span class="sub">file stories from a review</span></div>
-          <div class="ctl">
-            <select class="field" id="r-tracker"><option value="none">None</option><option value="shortcut">Shortcut</option></select>
-            <span class="detected">optional</span>
-          </div>
-        </div>
       </div>
       <div id="r-procs"></div>
       <div class="ractions">
@@ -374,7 +367,6 @@
     $('r-env-note').textContent = d.env_source === 'mise' ? 'found mise.toml'
       : d.env_source === 'direnv' ? 'found .envrc' : 'nothing detected — sessions get the daemon’s environment';
     $('r-wt').textContent = d.worktrees;
-    $('r-tracker').value = 'none';
 
     // processes found — a card of opt-in rows, each off by default.
     const procs = $('r-procs');
@@ -423,7 +415,12 @@
       base_branch: $('r-base').value || null,
       repo: $('r-repo').value.trim() || null,
       env_source: env ? env.dataset.v : null,
-      tracker: $('r-tracker').value || null,
+      // No tracker here. It is three fields (`mcp_server`, `host`, `token_env`)
+      // and no dropdown can spell a per-site host — the settings pane dropped its
+      // control for that reason and this page kept one, offering `shortcut`, a
+      // bare name the daemon only still *reads* for configs that shipped with it.
+      // `Overrides` never had the field, so serde dropped the value in silence and
+      // the control did nothing from the day it was drawn.
       processes,
     });
   });

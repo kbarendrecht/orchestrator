@@ -580,7 +580,7 @@ pub fn reap_orphans(records: &[SessionRecord]) -> usize {
 /// missing file is a normal state, and the archived copy is then the best remaining
 /// evidence — its mtime is when the daemon copied it, which is close to when the
 /// session ended. Falling back to the start is the conservative end: it can only
-/// make a tree look *older* than it is, and the six-check preflight is what stands
+/// make a tree look *older* than it is, and the seven-check preflight is what stands
 /// between that and losing anything.
 pub fn last_used(s: &crate::model::Session) -> std::time::SystemTime {
     let mtime = |p: Option<&Path>| {

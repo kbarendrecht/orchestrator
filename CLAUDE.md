@@ -235,7 +235,7 @@ mean *this* repo; if you do, name it.
   the number is the answer to the question somebody will ask again. Release build,
   wall clock from `Command::spawn` to the daemon serving, minus the `daemon start`
   phase the daemon logs itself — so it is exactly what the extra process costs on
-  top of the `orchd::start` both shapes run: **2.6–2.7 ms and 11 execs**, and
+  top of the `orchd_serve::start` both shapes run: **2.6–2.7 ms and 11 execs**, and
   **9.3 MB RSS** idle per daemon. The delta does not move when the repo work goes
   up 58× (a throwaway checkout against this one, 23 ms against 1334 ms of
   `daemon start`), which is what says it is exec plus loader and nothing else.
@@ -281,11 +281,11 @@ mean *this* repo; if you do, name it.
   app). A relative fetch under the app would reach the host, which answers `{}` to
   an unknown route, so the failure would look like an empty daemon rather than a
   misrouted call.
-  **A hosted child does not serve the page.** `orchd::start` mounts the host router
+  **A hosted child does not serve the page.** `orchd_serve::start` mounts the host router
   only when `host_origin` is absent, which is exactly the question "did somebody
   host me". Its `/` then falls through to the catch-all and answers `200 {}` — so a
   test for this must assert on the *body*, not the status.
-  **The instance lock is the child's**, taken inside its own `orchd::start`. A
+  **The instance lock is the child's**, taken inside its own `orchd_serve::start`. A
   second app on one checkout now surfaces as a child that never reported ready,
   which is a worse message than the old refusal and is why the lock re-key is still
   on the list.
@@ -826,8 +826,13 @@ mean *this* repo; if you do, name it.
   The pane shows `snap.tracker_server` read-only, because a write of that whole
   struct is how a hand-edited tracker would have been replaced by whichever name a
   dropdown happened to show — and no control can spell a per-site host anyway.
-  The first-run page never collected one either; that override existed only in a
-  test.
+  **The first-run page drew a dropdown for it anyway, and it did nothing.** It
+  offered `None` and `Shortcut` and posted the value; `firstrun::Overrides` has no
+  such field and serde drops an unknown key in silence, so the control never wrote
+  anything from the day it was drawn. It is gone now, for the reason the settings
+  pane's went: a tracker is three fields and no dropdown can spell a per-site host.
+  This entry used to say the page never collected one — which was true of the
+  config it wrote and false of what it showed you.
   Three things the research settled, none of them guessable from the Shortcut setup
   this was built against:
   - **Both official remote trackers are OAuth-first.** Linear is
@@ -1276,7 +1281,7 @@ mean *this* repo; if you do, name it.
   remaining copy of a conversation once a worktree is gone and a session record
   survives because that copy does, so taking the directory would undo what `close`
   does on purpose. Its safety cannot be borrowed from `worktree::reap_old`, which
-  is safe because it routes through `teardown`'s six checks; a directory of JSON
+  is safe because it routes through `teardown`'s seven checks; a directory of JSON
   has no such gate.
 - **`ORCHD_CONFIG_DIR` relocates every piece of durable state**, which is what
   makes a fixture daemon safe: config, `sessions.json`, `automation.json`,
@@ -1362,7 +1367,7 @@ mean *this* repo; if you do, name it.
   box disagreeing with the rail and the waitbar, which read `wants_attention` off
   the daemon and are right — the agent really is still blocked.
 - **A start is a pile of child processes, and that is why it is slow somewhere
-  else.** Almost nothing in `orchd::start` is CPU work, so "better hardware, worse
+  else.** Almost nothing in `orchd_serve::start` is CPU work, so "better hardware, worse
   start" is not a contradiction: the cost is per exec, and a Mac pays dyld on every
   one plus whatever endpoint-security software a managed laptop carries. Measured
   on the real monorepo, release, **64 worktrees: 7836 ms and 447 child processes**,

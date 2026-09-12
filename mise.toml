@@ -127,9 +127,17 @@ dir = "{{config_root}}"
 run = "node tools/rust-modules.mjs"
 
 [tasks.check-docs]
-description = "Check the doc comments' links resolve"
+# Two kinds of prose, one task, because both fail the same way: silently.
+# `cargo doc` answers whether an intra-doc link resolves; `check-assumptions.mjs`
+# answers whether `docs/assumptions.md` keeps the format its own header demands —
+# four of its twenty-seven entries had dropped the `*Breaks:*` half, which that
+# header calls "the only reason to write the list".
+description = "Check the doc comments' links resolve, and assumptions.md its own format"
 dir = "{{config_root}}"
-run = "RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps --document-private-items"
+run = """
+RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps --document-private-items
+node tools/check-assumptions.mjs
+"""
 
 [tasks.shot]
 description = "Screenshot the running SPA (optionally one selector)"

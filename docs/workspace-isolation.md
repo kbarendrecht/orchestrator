@@ -71,7 +71,7 @@ alongside any block the repo's own hooks maintain. **Not built** — see below.
 
 **A worktree is removed when its session ends clean.** Otherwise
 worktree-per-session silts the rail up with throwaway branches. Removal runs
-*iff* the existing six-check teardown preflight passes — clean tree, nothing
+*iff* the existing seven-check teardown preflight passes — clean tree, nothing
 unpushed, no commits beyond base, transcript archived. Anything carrying work
 stays. "Has work" is the gate that already guards manual removal, defined once.
 

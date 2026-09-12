@@ -422,7 +422,7 @@ impl Host {
         locked(&self.started).insert(checkout.to_path_buf(), Instant::now());
         // **The host owns `recent.json`.** A hosted child's config dir is its own
         // checkout directory, so a child writing this would leave one single-entry
-        // list per checkout — see the matching arm in `orchd::start`. Best effort:
+        // list per checkout — see the matching arm in `crate::start`. Best effort:
         // a list that cannot be written is not a reason to fail an open.
         if let Err(e) = crate::firstrun::record_recent(checkout) {
             tracing::warn!("could not record the recent checkout: {e:#}");

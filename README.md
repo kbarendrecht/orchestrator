@@ -402,7 +402,7 @@ is logged and the pty is killed anyway.
 ## How it works
 
 - **One process.** `desktop/` is a [Tauri](https://v2.tauri.app/) v2 shell around
-  the daemon as a library: `orchd::start` binds a loopback port and the webview is
+  the daemon as a library: `orchd_serve::start` binds a loopback port and the webview is
   pointed at it. No sidecar, no fixed port, nothing left running. The window is
   frameless and the web UI draws its own titlebar (real traffic lights on macOS);
   window controls go over the same authenticated HTTP as everything else, never
@@ -422,7 +422,7 @@ is logged and the pty is killed anyway.
   worktree isolation — and that pin refuses writes as well as git, so a scratch dir
   shared into the tree by symlink could not be written from either side of the link.
   The isolation the daemon needs instead is its own, on the agent's Bash, and it is
-  git-only: see the push guard below. Teardown is a six-check preflight, then your
+  git-only: see the push guard below. Teardown is a seven-check preflight, then your
   repo's `WorktreeRemove` hooks, then `git worktree remove`. Never `rm -rf`, because
   a worktree is full of symlinks into main.
 - **The review flow, and there are two.** The rail's `handle` button starts
