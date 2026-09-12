@@ -31,6 +31,15 @@
 //! Every wait is a condition, never a sleep, for the reason `docs/e2e.md` gives: a
 //! daemon's start is a network fetch away from slow, so a fixed sleep trades
 //! flakiness for slowness and gets both.
+// A test binary, so a panic is how a failure is reported. `clippy.toml`'s
+// `allow-*-in-tests` covers `#[test]` functions and `#[cfg(test)]` modules, and
+// the helpers in an integration crate are neither.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing
+)]
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

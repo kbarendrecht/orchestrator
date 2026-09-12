@@ -1,0 +1,46 @@
+# What the shipped binaries are allowed to contain.
+#
+# The desktop bundle redistributes ~490 crates, and until this file nothing here
+# noticed a security advisory against any of them: advisories arrive on their own
+# calendar, not on a push, which is why `health.yml` runs this weekly as well as
+# per commit. A vulnerable dependency inside a signed `.dmg` is the failure being
+# guarded against, and it is not the kind that shows up in a test.
+#
+# The other half is the licence list. It is exactly what the tree uses today, so
+# a new dependency under a licence nobody has read fails here rather than in
+# somebody's legal review of the bundle.
+
+[advisories]
+# `serial` is pulled in by `portable-pty`, which is the crate this daemon cannot
+# do without — and the advisory is "unmaintained", not a vulnerability: last
+# release 2017, no safe upgrade, no exploit. Recorded rather than silenced so the
+# next reader sees the decision instead of an empty file.
+ignore = [{ id = "RUSTSEC-2017-0008", reason = "unmaintained `serial`, via portable-pty; no vulnerability and no upgrade path" }]
+
+[licenses]
+# Permissive plus our own AGPL. Nothing copyleft-by-linking is on this list, and
+# that is the point: adding one is a decision, made here, in writing.
+allow = [
+    "AGPL-3.0-only",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "MIT",
+    "Unicode-3.0",
+    "Unlicense",
+]
+
+[bans]
+multiple-versions = "allow"
+# A desktop app that links the system OpenSSL is a support burden on every
+# machine it is installed on, and `rustls` is what the tree uses. Denied here so
+# a transitive dependency cannot quietly reintroduce it.
+deny = [
+    { name = "openssl" },
+    { name = "openssl-sys" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

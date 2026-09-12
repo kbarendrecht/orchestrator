@@ -1,0 +1,77 @@
+name: health
+
+# What the shipped binaries contain, checked on a calendar rather than on a push.
+#
+# `check.yml` answers "does this commit build and pass". Nothing answered "is a
+# dependency of ours now known to be vulnerable", and that question changes
+# without anybody touching the repo — an advisory is published against a crate
+# that was fine yesterday, and a desktop app that redistributes ~490 of them
+# hears nothing. So this runs weekly as well as on a push that moves a manifest.
+#
+# Deliberately separate from `check.yml`: a red build here means "go and read an
+# advisory", not "your commit is broken", and mixing the two teaches people to
+# ignore the one that matters.
+on:
+  push:
+    branches: [main]
+    paths:
+      - '**/Cargo.toml'
+      - Cargo.lock
+      - deny.toml
+      - about.toml
+      - .github/workflows/health.yml
+  pull_request:
+    paths:
+      - '**/Cargo.toml'
+      - Cargo.lock
+      - deny.toml
+      - about.toml
+  schedule:
+    # Monday morning, so a week's advisories are read on a working day rather
+    # than found during a release.
+    - cron: '0 7 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  dependencies:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@4716b85f2fac3e324e64fa2810f6b5c3905760a5 # 1.97.1
+
+      # Prebuilt binaries. Building `cargo-deny` and friends from source is
+      # several minutes of a job whose own work takes seconds.
+      - uses: taiki-e/install-action@d31232495ad76f47aad66e3501e47780b49f0f3e # v2
+        with:
+          tool: cargo-deny,cargo-about,cargo-machete,typos-cli
+
+      # Advisories, licences, banned crates and unknown sources. `deny.toml` has
+      # the argument for each, including the one advisory that is recorded rather
+      # than fixed.
+      - name: Dependencies
+        run: cargo deny check
+
+      # An unused dependency is a crate compiled into nothing, and it found one
+      # the day it was first run.
+      - name: Unused dependencies
+        run: cargo machete
+
+      # Regenerate and diff, the same shape `web/snapshot.d.ts` uses: the file in
+      # the tree is the answer, and CI's job is to say when it stopped being.
+      #
+      # This is the half `THIRD-PARTY.md` never had. That file lists the vendored
+      # JavaScript because it ships inside the binary — and so do ~490 crates,
+      # whose MIT and Apache terms ask for the same notice to travel along.
+      - name: Third-party notices
+        run: |
+          cargo about generate --fail about.hbs > THIRD-PARTY-RUST.md
+          git diff --exit-code --stat THIRD-PARTY-RUST.md \
+            || { echo 'THIRD-PARTY-RUST.md is stale: run `mise run notices` and commit it.'; exit 1; }
+
+      # The prose is the design record here, so a misspelling in it outlives the
+      # code it describes.
+      - name: Spelling
+        run: typos

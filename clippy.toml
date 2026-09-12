@@ -1,0 +1,10 @@
+# `unwrap` in a test is a test that fails with a panic, which is what a failing
+# test is. `unwrap` in the daemon is a session's worth of state gone. That
+# difference is why these lints were once written off — policing a few dozen real
+# sites cost 755 silenced ones in tests — and these five switches are what removes
+# the cost.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+allow-print-in-tests = true
+allow-indexing-slicing-in-tests = true

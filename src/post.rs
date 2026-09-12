@@ -77,6 +77,7 @@ pub struct Batch {
 
 /// A single outward write, named the way the report renders it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
 #[serde(rename_all = "snake_case")]
 pub enum What {
     /// Filed in the tracker. First in the enum because it is first in the
@@ -89,6 +90,7 @@ pub enum What {
 
 /// Something that is now true on GitHub.
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
 pub struct Landed {
     pub thread_id: String,
     /// `renovate.json5:161 · bob`, for the report's left column.
@@ -107,6 +109,7 @@ pub struct Landed {
 
 /// A write that was attempted and refused. `error` is `gh`'s own words.
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
 pub struct Failed {
     pub thread_id: String,
     pub label: String,
@@ -116,6 +119,7 @@ pub struct Failed {
 
 /// A write that was never tried, and what it is waiting on.
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
 pub struct Skipped {
     pub label: String,
     pub what: What,
@@ -124,6 +128,7 @@ pub struct Skipped {
 
 /// A thread the human said they would handle themselves.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
 pub struct ManualThread {
     pub thread_id: String,
     pub label: String,
@@ -142,6 +147,7 @@ pub struct ManualThread {
 /// decision — often *why* this thread needed hands. **Nothing has been pushed and
 /// nothing posted**, so backing out costs only the local commit.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
 pub struct ManualPhase {
     /// The commit the accepted patches landed in. `/manual/done` checks `HEAD`
     /// against it, which is what keeps the phase from resuming onto a branch that
@@ -243,6 +249,7 @@ fn digest_of(batch: &Batch) -> String {
 /// pushed, so every other field is empty and the screen is panel 7 rather than
 /// panel 8.
 #[derive(Debug, Clone, Default, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
 pub struct PostReport {
     pub refused: Option<String>,
     /// Whether pressing the same button again could succeed once you have acted on

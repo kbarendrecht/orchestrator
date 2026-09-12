@@ -95,20 +95,22 @@ function adopt() {
   snapAt = Date.now();
 }
 
-export const sinceSnap = (ms) => (ms == null ? null : ms + (Date.now() - snapAt));
+export const sinceSnap = (/** @type {number | null | undefined} */ ms) => (ms == null ? null : ms + (Date.now() - snapAt));
 
 /** The PR whose head ref this workspace holds, if any. */
-export function prForWorkspace(wsId) {
+export function prForWorkspace(/** @type {string | null} */ wsId) {
   return (snap.prs || []).find((p) => p.workspace === wsId) || null;
 }
 
 /* Which session the centre pane is showing. Owned here because the rail picks it
  * and the terminals and the render both react — leaving the state in `app.js`
  * meant the rail had to reach back into the module that renders it. */
+/** @type {string | null} */
 export let selected = null;
 
+/** @type {((id: string | null, auto: boolean) => void)[]} */
 const selectionListeners = [];
-export function onSelection(fn) { selectionListeners.push(fn); }
+export function onSelection(/** @type {(id: string | null, auto: boolean) => void} */ fn) { selectionListeners.push(fn); }
 
 /** Pick a session. What *happens* next is whoever registered's business.
  *
@@ -116,7 +118,7 @@ export function onSelection(fn) { selectionListeners.push(fn); }
  *  when the session you were on ends. A listener that reads that as a gesture is
  *  reacting to a session finishing, so anything standing down on "you went
  *  somewhere else" has to be able to tell the two apart. */
-export function setSelected(id, auto = false) {
+export function setSelected(/** @type {string | null} */ id, auto = false) {
   selected = id;
   // Picking a session is also saying which checkout you are in, which is what
   // holds the pane still when that session ends.
@@ -233,10 +235,10 @@ export const HOST = {
 };
 
 /** POST to the host. */
-export const callHost = (path, body) => callOn(HOST, path, body);
+export const callHost = (/** @type {string} */ path, /** @type {any} */ body) => callOn(HOST, path, body);
 
 /** GET from the host. */
-export const getHost = (path) => getOn(HOST, path);
+export const getHost = (/** @type {string} */ path) => getOn(HOST, path);
 
 /** The checkout everything that is not the rail follows.
  *
@@ -263,6 +265,7 @@ export function activeCheckout() {
  * "the checkout you were last in" rather than a variable anyone sets to mean
  * something else. Without it, stepping into a checkout with no sessions puts you
  * back in the first one, because the derivation has nothing to derive from. */
+/** @type {string | null} */
 let lastCheckout = null;
 
 /* Which band each checkout wears, by path.
@@ -357,18 +360,20 @@ export function checkoutOf(id) {
  *
  * Measured from `timeOrigin`, so `scripts` includes the page fetch and the three
  * classic vendor scripts (xterm, the fit addon, prism) that block this module. */
+/** @type {Record<string, number>} */
 const marks = {};
 
 /** Record a boot milestone, the first time it happens.
  *
  *  First only: `attach` and `paint` repeat every time a session is switched, and
  *  a later one is not boot. */
-export function mark(what) {
+export function mark(/** @type {string} */ what) {
   if (marks[what] == null) marks[what] = Math.round(performance.now());
 }
 mark('scripts');
 
 let reported = false;
+/** @type {ReturnType<typeof setTimeout> | null} */
 let reportTimer = null;
 
 /** Send the marks once, a moment after the last one that is going to arrive.
@@ -385,13 +390,13 @@ let reportTimer = null;
  *  without this the answer to "which renderer were you on" is a screen recording.
  *
  *  Best effort and never awaited — a log line must not be able to fail anything. */
-export function note(text) {
+export function note(/** @type {string} */ text) {
   call('/api/client/note', { note: text }).catch(() => {});
 }
 
 export function reportBoot() {
   if (reported) return;
-  clearTimeout(reportTimer);
+  clearTimeout(reportTimer ?? undefined);
   reportTimer = setTimeout(() => {
     reported = true;
     // Failure is silence. This is a diagnostic, and a toast about it would be
@@ -400,7 +405,33 @@ export function reportBoot() {
   }, 1500);
 }
 
-export const $ = (id) => document.getElementById(id);
+/** The element with this id, which the page is expected to have.
+ *
+ *  **It throws rather than returning `null`**, and that is what lets the other
+ *  161 call sites read `.hidden` and `.replaceChildren()` without a guard each.
+ *  Every id `$` is asked for is in `index.html`, which is `include_str!`d into
+ *  the same binary as this file — so a miss is not a condition to handle, it is
+ *  the page and the code having gone out of step, and the throw says so at the
+ *  call instead of surfacing three lines later as "cannot read properties of
+ *  null". Under `strictNullChecks` the alternative was 300 guards that can never
+ *  run. */
+/** What went wrong, as a sentence, from whatever was thrown.
+ *
+ *  `catch (e)` hands you `unknown`, and that is not pedantry: a `throw 'nope'`,
+ *  a `DOMException` or a rejected fetch with no `message` all reach these
+ *  handlers, and `e.message` on one of them puts the word "undefined" in a
+ *  toast. One helper, so the 46 catch blocks that all said `e.message` say the
+ *  same thing and say it correctly.
+ *
+ *  @param {unknown} e
+ */
+export const reason = (e) => (e instanceof Error ? e.message : String(e));
+
+export const $ = (/** @type {string} */ id) => {
+  const found = document.getElementById(id);
+  if (!found) throw new Error(`no element #${id} — index.html and the code disagree`);
+  return found;
+};
 
 /** `$` for a form control, where the caller wants `.value` or `.disabled`.
  *
@@ -410,8 +441,21 @@ export const $ = (id) => document.getElementById(id);
  *  reduces that intersection to `never`, and a union only offers what all three
  *  share. So this is one named escape hatch for controls — `$` stays typed, and
  *  everything fetched through it keeps being checked. */
-export const ctl = (id) => /** @type {any} */ (document.getElementById(id));
+export const ctl = (/** @type {string} */ id) => /** @type {any} */ (document.getElementById(id));
 
+/** `document.createElement` with the three things every call here sets.
+ *
+ *  Generic on the tag so `el('input')` is an `HTMLInputElement` and its `.value`
+ *  type-checks: a plain `HTMLElement` return would send every form control in the
+ *  app through `ctl`, which is the deliberate `any` and should stay rare.
+ *
+ *  @template {keyof HTMLElementTagNameMap} K
+ *  @param {K} tag
+ *  @param {string | null} [cls]
+ *  @param {string} [text]
+ *  @param {string} [title]
+ *  @returns {HTMLElementTagNameMap[K]}
+ */
 export function el(tag, cls, text, title) {
   const n = document.createElement(tag);
   if (cls) n.className = cls;
@@ -450,7 +494,7 @@ export function caret() {
  *  queue's "· 3s ago" was re-rendered by the rebuild this change is removing, so
  *  once the pane stopped rebuilding the clock stopped with it.
  */
-export function clock(cls, ms, suffix = '', prefix = '') {
+export function clock(/** @type {string} */ cls, /** @type {number | null | undefined} */ ms, suffix = '', prefix = '') {
   // An absent base renders empty and is left un-marked. `Number('')` is 0, so a
   // null written into the dataset would come back as a clock counting up from the
   // epoch of nothing — a "0s" that grows where there had been no text at all.
@@ -462,7 +506,8 @@ export function clock(cls, ms, suffix = '', prefix = '') {
      backwards: measured at 55s, then 53s five seconds later. Invisible while
      every push rebuilt the rail, and the first thing the render guards exposed.
      An absolute instant does not care how often a snapshot lands. */
-  const started = Date.now() - sinceSnap(ms);
+  // `ms` is non-null here — the guard above returned — so the fallback never runs.
+  const started = Date.now() - (sinceSnap(ms) ?? 0);
   const span = el('span', cls, prefix + duration(Date.now() - started) + suffix);
   span.dataset.clock = String(started);
   if (suffix) span.dataset.clockSuffix = suffix;
@@ -490,18 +535,19 @@ const MAX_TOASTS = 5;
 const toastTimers = new WeakMap();
 
 /** Whatever had the keyboard when an error row took it, to give back afterwards. */
+/** @type {HTMLElement | null} */
 let toastReturn = null;
 
 /** In use: the pointer is in the row, or it holds a selection nobody has copied.
  *  7 seconds is not enough to read a refusal, aim at it and drag across it, so
  *  the clock does not run while you are working in the row. */
-function toastHeld(row) {
+function toastHeld(/** @type {HTMLElement} */ row) {
   if (row.matches(':hover')) return true;
   const sel = window.getSelection();
   return !!sel && !sel.isCollapsed && !!sel.anchorNode && row.contains(sel.anchorNode);
 }
 
-function dismissToast(row) {
+function dismissToast(/** @type {HTMLElement} */ row) {
   clearTimeout(toastTimers.get(row));
   toastTimers.delete(row);
   /* Hand the keyboard back to the exact element the row took it from — the
@@ -518,7 +564,7 @@ function dismissToast(row) {
 
 /** A receipt's dismissal clock, restarted while the row is held. An error never
  *  arms one — it stays until the ✕. */
-function armToast(row, ms) {
+function armToast(/** @type {HTMLElement} */ row, /** @type {number} */ ms) {
   clearTimeout(toastTimers.get(row));
   // Re-checked on a short beat, not on pointerleave: a selection left alone has
   // to keep the text up too, and there is no event for "still selected".
@@ -528,7 +574,7 @@ function armToast(row, ms) {
   }, ms));
 }
 
-export function toast(message, bad) {
+export function toast(/** @type {string} */ message, /** @type {boolean | undefined} */ bad) {
   const stack = $('toaststack');
   const row = el('div', 'toast on' + (bad ? ' bad' : ''));
   row.appendChild(el('span', 'toast-msg', message));
@@ -543,7 +589,7 @@ export function toast(message, bad) {
     /* Take focus on pointerdown, or the copy never happens: with a terminal
        focused, Ctrl+C is an interrupt on its way to the pty, not a copy. The ✕ is
        exempt, so dismissing does not first steal focus for a copy nobody made. */
-    row.addEventListener('pointerdown', (e) => {
+    row.addEventListener('pointerdown', (/** @type {PointerEvent} */ e) => {
       if (e.target === x) return;
       toastReturn = /** @type {HTMLElement} */ (document.activeElement);
       row.focus();
@@ -583,6 +629,7 @@ export function toast(message, bad) {
  * ------------------------------------------------------------------------- */
 
 /** Resolve for the dialog currently on screen, or null when there is none. */
+/** @type {((answer: any) => void) | null} */
 let dlgSettle = null;
 /** What that dialog is asking, and the promise everyone waiting shares.
  *
@@ -593,11 +640,13 @@ let dlgSettle = null;
  *  does not, so the same question arriving twice has to answer from the dialog
  *  already on screen rather than tearing it down and building it again, which
  *  would be a box that flickers once a frame and can never be answered. */
+/** @type {string | null} */
 let dlgAsking = null;
+/** @type {Promise<any> | null} */
 let dlgPending = null;
 
 /** Take the dialog down and answer whoever is waiting. */
-function dlgClose(answer) {
+function dlgClose(/** @type {any} */ answer) {
   const host = $('dlg');
   host.hidden = true;
   host.replaceChildren();
@@ -624,10 +673,21 @@ export function dismissDialog() {
  *  guards on a gesture and two on screen means one of the gestures is lost. */
 // `body` and `focus` default rather than being left off, so `checkJs` reads them
 // as optional: a destructured parameter with no default is a required field.
+//
+// The types are spelled out because a default of `null` infers the type `null`,
+// which is what refused `cancelValue: false` and `focus: <input>` the moment
+// `strictNullChecks` came on.
+/**
+ *  @param {string} message
+ *  @param {{ ok: string, danger?: boolean, answer: () => any,
+ *            body?: HTMLElement | null, focus?: HTMLElement | null,
+ *            cancel?: string, cancelValue?: any }} opts
+ */
 function dlgOpen(message, {
   ok, danger, answer, body = null, focus = null, cancel = 'Cancel', cancelValue = null,
 }) {
-  if (dlgSettle && dlgAsking === message) return dlgPending;
+  // Non-null whenever `dlgSettle` is: the two are set and cleared together.
+  if (dlgSettle && dlgAsking === message) return /** @type {Promise<any>} */ (dlgPending);
   if (dlgSettle) dlgClose(null);
   const host = $('dlg');
   host.replaceChildren();
@@ -654,7 +714,7 @@ function dlgOpen(message, {
   host.appendChild(card);
   host.hidden = false;
 
-  card.onkeydown = (ev) => {
+  card.onkeydown = (/** @type {KeyboardEvent} */ ev) => {
     // Enter commits, except in a textarea where it is a newline. None of these
     // use one today; the guard is here so adding one does not surprise anybody.
     if (ev.key === 'Enter' && !ev.shiftKey
@@ -670,9 +730,9 @@ function dlgOpen(message, {
 }
 
 /** `window.confirm`, drawn by the app. Resolves true or false, never throws. */
-export function confirmBox(message, { ok = 'Yes', danger = true } = {}) {
+export function confirmBox(/** @type {string} */ message, { ok = 'Yes', danger = true } = {}) {
   return dlgOpen(message, { ok, danger, answer: () => true })
-    .then((a) => a === true);
+    .then((/** @type {any} */ a) => a === true);
 }
 
 /** A question with two *actions* rather than a yes and a refusal.
@@ -692,7 +752,7 @@ export function chooseBox(message, { ok, other }) {
     cancel: other,
     cancelValue: false,
     answer: () => true,
-  }).then((a) => (a === null ? null : a === true));
+  }).then((/** @type {any} */ a) => (a === null ? null : a === true));
 }
 
 /** `window.prompt`, drawn by the app. Resolves the text, or null if cancelled.
@@ -700,7 +760,7 @@ export function chooseBox(message, { ok, other }) {
  *  Blank resolves as the empty string rather than null, because one caller means
  *  something by it: naming a worktree blank is "let Claude name it". Callers that
  *  need words check for them. */
-export function promptBox(message, { value = '', placeholder = '', ok = 'OK' } = {}) {
+export function promptBox(/** @type {string} */ message, { value = '', placeholder = '', ok = 'OK' } = {}) {
   const box = el('div', 'dlgbody');
   const input = /** @type {HTMLInputElement} */ (el('input', 'dlginput'));
   input.type = 'text';
@@ -714,7 +774,7 @@ export function promptBox(message, { value = '', placeholder = '', ok = 'OK' } =
     body: box,
     focus: input,
     answer: () => input.value,
-  }).then((a) => (a === null ? null : String(a)));
+  }).then((/** @type {any} */ a) => (a === null ? null : String(a)));
 }
 
 /** POST to one checkout's daemon.
@@ -773,10 +833,10 @@ export const snapshotFor = (id) => snapshotOf((checkoutOf(id) ?? activeCheckout(
 /* The shorthand for the checkout you are in. Every other call names its target,
    because "the active one" is only ever right for the panes that follow the
    selection — the rail does not. */
-export const call = (path, body) => callOn(activeCheckout(), path, body);
-export const get = (path) => getOn(activeCheckout(), path);
+export const call = (/** @type {string} */ path, /** @type {any} */ body) => callOn(activeCheckout(), path, body);
+export const get = (/** @type {string} */ path) => getOn(activeCheckout(), path);
 
-export function duration(ms) {
+export function duration(/** @type {number | null | undefined} */ ms) {
   if (ms == null) return '';
   const s = Math.floor(ms / 1000);
   if (s < 60) return `${s}s`;
@@ -791,24 +851,26 @@ export function duration(ms) {
 
 /** Compact age from hours: `now`, `5h`, `2d`. The review card and the queue row
  *  share the 48h cut-over, so it lives once. */
-export function compactAge(hours) {
-  if (hours < 1) return 'now';
+export function compactAge(/** @type {number | null | undefined} */ hours) {
+  // `null < 1` was already true, so an absent age has always read `now`.
+  if (hours == null || hours < 1) return 'now';
   if (hours < 48) return `${Math.round(hours)}h`;
   return `${Math.round(hours / 24)}d`;
 }
 
 // The poll counter each pane captured when its refresh was pressed; the button
 // spins until the live counter moves past it. null = not spinning.
+/** @type {Record<string, number | null>} */
 const spinFloor = { pr: null, review: null };
 
 /** Give a `role="button"` span what a real <button> has for free: a tab stop and
  *  Enter/Space activation. Without this a span-button is mouse-only, which is a
  *  keyboard trap for the refresh icons and the update-nudge dismiss. */
-export function keyActivate(el) {
+export function keyActivate(/** @type {HTMLElement} */ el) {
   el.tabIndex = 0;
   // Property assignment, not addEventListener: renderUpdate re-wires #updatex on
   // every snapshot, and a stacked listener would fire click N times.
-  el.onkeydown = (e) => {
+  el.onkeydown = (/** @type {KeyboardEvent} */ e) => {
     if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); el.click(); }
   };
 }
@@ -843,7 +905,7 @@ export function keyActivate(el) {
  *  rewrites the workspace's changed-file list and that rides the same snapshot,
  *  and the rail does not draw it. Naming what to ignore keeps "any change
  *  rebuilds" as the default and takes the churn out one pane at a time. */
-function paintSig(value, drop = []) {
+function paintSig(/** @type {any} */ value, /** @type {string[]} */ drop = []) {
   return JSON.stringify(value, (k, v) => (k.endsWith('_ms') || drop.includes(k) ? undefined : v));
 }
 
@@ -853,14 +915,14 @@ function paintSig(value, drop = []) {
  *  module-level `let xSig`, the same three lines of compare-and-remember, and the
  *  same comment with one noun changed. One name for the idiom means a reader
  *  confirms it once. */
-export function unchanged(box, value, drop = []) {
+export function unchanged(/** @type {{ sig: string | null | undefined }} */ box, /** @type {any} */ value, /** @type {string[]} */ drop = []) {
   const sig = paintSig(value, drop);
   if (box.sig === sig) return true;
   box.sig = sig;
   return false;
 }
 
-export function refreshButton(kind, pollCount, endpoint, polling) {
+export function refreshButton(/** @type {'pr' | 'review'} */ kind, /** @type {number} */ pollCount, /** @type {string} */ endpoint, /** @type {boolean} */ polling) {
   // Drawn, not typed — see the files-header refresh in index.html for why the
   // reload glyph is an SVG rather than U+21BB. 1em tracks the font-size setting.
   const btn = el('span', 'rvrefresh');
@@ -904,8 +966,9 @@ export function refreshButton(kind, pollCount, endpoint, polling) {
  * `zoom`, which is a legacy property that WebKitGTK mispaints at scale. */
 /* Who wants to know the UI scale changed. A list rather than a direct call so
  * `setZoom` needs no opinion about what is scalable. */
+/** @type {((scale: number) => void)[]} */
 const scaleListeners = [];
-export function onScaleChange(fn) { scaleListeners.push(fn); }
+export function onScaleChange(/** @type {(scale: number) => void} */ fn) { scaleListeners.push(fn); }
 
 const FS_BASE = 1.155;
 export const ZOOM = { key: 'orch.uiZoom', def: 1, min: 0.8, max: 1.5, step: 0.05 };
@@ -919,13 +982,13 @@ export const ZOOM = { key: 'orch.uiZoom', def: 1, min: 0.8, max: 1.5, step: 0.05
  *  under one heading. 13px is the body's declared size before `--fs`, so the default
  *  reads as 15px, which is the size a ruler would give you.
  */
-const UI_PX_AT = (z) => Math.round(13 * FS_BASE * z);
+const UI_PX_AT = (/** @type {number} */ z) => Math.round(13 * FS_BASE * z);
 export const uiPx = () => UI_PX_AT(zoomScale);
 export const UI_PX_MIN = UI_PX_AT(ZOOM.min);
 export const UI_PX_MAX = UI_PX_AT(ZOOM.max);
 
 /** Set the interface size by the px the pane shows. Rounds back to a scale. */
-export const setUiPx = (px) => setZoom(px / (13 * FS_BASE));
+export const setUiPx = (/** @type {number} */ px) => setZoom(px / (13 * FS_BASE));
 
 /** The user-facing scale, where 1 is the default. */
 export let zoomScale = ZOOM.def;
@@ -934,7 +997,7 @@ export let zoomScale = ZOOM.def;
 export const uiScale = () =>
   Number(getComputedStyle(document.documentElement).getPropertyValue('--fs')) || FS_BASE;
 
-export function setZoom(z) {
+export function setZoom(/** @type {number} */ z) {
   const next = Math.min(ZOOM.max, Math.max(ZOOM.min, Math.round(z * 100) / 100));
   zoomScale = next;
   document.documentElement.style.setProperty('--fs', String(next * FS_BASE));
@@ -988,6 +1051,8 @@ export const FONTS = {
    temporal dead zone until the line that defines it runs. With this below, the
    whole module threw on import — so the page loaded its markup and no behaviour at
    all, which looks like a dead board rather than an error. */
+/** @typedef {'ui' | 'mono' | 'code'} Role */
+
 const THEME_DEF = {
   ...Palette.DEFAULT,
   ui: 'plexsans',
@@ -1030,9 +1095,10 @@ export const PRESETS = {
  *  them.
  */
 export function currentPreset() {
-  const same = (a, b) => a.toLowerCase() === b.toLowerCase();
-  return Object.keys(PRESETS).find((k) => ['bg', 'panel', 'text']
-    .every((role) => same(PRESETS[k][role], theme[role]))) ?? null;
+  const same = (/** @type {string} */ a, /** @type {string} */ b) => a.toLowerCase() === b.toLowerCase();
+  const roles = /** @type {const} */ (['bg', 'panel', 'text']);
+  return Object.keys(PRESETS).find((k) => roles
+    .every((role) => same(PRESETS[/** @type {keyof typeof PRESETS} */ (k)][role], theme[role]))) ?? null;
 }
 
 /* Monospace and sans families worth *asking* about.
@@ -1074,10 +1140,10 @@ const SANS_CANDIDATES = [
  *  trap. **The preview beside each control is what makes the remaining error
  *  harmless**: you see the face you will get before you keep it.
  */
-function resolves(name, ctx) {
+function resolves(/** @type {string} */ name, /** @type {CanvasRenderingContext2D} */ ctx) {
   const NOTHING = '__orchd_no_such_family__';
   const sample = 'MWil10O—mmmiii';
-  const width = (family) => {
+  const width = (/** @type {string} */ family) => {
     ctx.font = `48px ${family}`;
     return ctx.measureText(sample).width;
   };
@@ -1090,13 +1156,14 @@ function resolves(name, ctx) {
  *  the near-black window before the first paint, for a list nothing reads until
  *  somebody opens the settings pane. The branch this comes from did it at import.
  */
+/** @type {{ mono: string[], sans: string[] } | null} */
 let detected = null;
 export function detectedFonts() {
   if (detected) return detected;
   const ctx = document.createElement('canvas').getContext('2d');
   if (!ctx) return { mono: [], sans: [] };
   const shipped = new Set(Object.values(FONTS).map((f) => f.label));
-  const find = (names) => names.filter((n) => !shipped.has(n) && resolves(n, ctx));
+  const find = (/** @type {string[]} */ names) => names.filter((/** @type {string} */ n) => !shipped.has(n) && resolves(n, ctx));
   detected = { mono: find(MONO_CANDIDATES), sans: find(SANS_CANDIDATES) };
   return detected;
 }
@@ -1104,10 +1171,11 @@ export function detectedFonts() {
 /** The theme as it stands. Replaced whole by [`setTheme`], never mutated. */
 export let theme = loadTheme();
 
+/** @type {((theme: Theme) => void)[]} */
 const themeListeners = [];
 /** Register for theme changes. The terminals are the one consumer that cannot
  *  read a CSS custom property — xterm takes hex strings — so they are told. */
-export function onThemeChange(fn) { themeListeners.push(fn); }
+export function onThemeChange(/** @type {(theme: Theme) => void} */ fn) { themeListeners.push(fn); }
 
 /** Read the stored theme, keeping only what is valid.
  *
@@ -1121,18 +1189,30 @@ export function onThemeChange(fn) { themeListeners.push(fn); }
  *  and `"toString"` pass the latter, and the token then becomes the literal string
  *  `undefined`.
  */
+/** The board's theme: three colours, three font families, two sizes and the
+ *  window opacity. Spelled out because the settings pane indexes it by a role
+ *  name, and a checker with no shape to index cannot tell `theme.termSize` from
+ *  a typo.
+ *
+ *  @typedef {{ bg: string, panel: string, text: string,
+ *              ui: string, mono: string, code: string,
+ *              termSize: number, diffSize: number, opacity: number }} Theme
+ */
+
+/** @returns {Theme} */
 function loadTheme() {
+  /** @type {Record<string, unknown>} */
   let got = {};
   try {
     got = JSON.parse(localStorage.getItem(THEME.key) || '{}') || {};
   } catch (e) {
     got = {};
   }
-  const hex = (v, fallback) => {
-    const rgb = Palette.parseHex(v);
+  const hex = (/** @type {unknown} */ v, /** @type {string} */ fallback) => {
+    const rgb = Palette.parseHex(/** @type {string | null | undefined} */ (v));
     return rgb ? Palette.toHex(rgb) : fallback;
   };
-  const family = (v, fallback) =>
+  const family = (/** @type {unknown} */ v, /** @type {string} */ fallback) =>
     (typeof v === 'string' && (v.startsWith('custom:') || Object.hasOwn(FONTS, v)) ? v : fallback);
   const next = {
     bg: hex(got.bg, THEME_DEF.bg),
@@ -1155,13 +1235,13 @@ function loadTheme() {
 /** 8 to 24 px, and not `NaN`. The floor is where a terminal stops being one. */
 export const SIZE_MIN = 8;
 export const SIZE_MAX = 24;
-function clampSize(v, def) {
+function clampSize(/** @type {unknown} */ v, /** @type {number} */ def) {
   const n = Number(v);
   return Number.isFinite(n) ? Math.min(SIZE_MAX, Math.max(SIZE_MIN, Math.round(n))) : def;
 }
 
 /** 0.35 to 1. Floored well above zero for the reason `THEME_DEF.opacity` gives. */
-function clampOpacity(v) {
+function clampOpacity(/** @type {unknown} */ v) {
   const n = Number(v);
   if (!Number.isFinite(n)) return 1;
   return Math.min(1, Math.max(0.35, Math.round(n * 100) / 100));
@@ -1175,10 +1255,10 @@ function clampOpacity(v) {
  *  second family — `Comic, monospace` is two. Letters, digits, spaces, dots and
  *  hyphens cover every real family name and nothing that can end a declaration.
  */
-export const validFontName = (name) => /^[\w .-]{1,64}$/.test(String(name ?? ''));
+export const validFontName = (/** @type {string | null | undefined} */ name) => /^[\w .-]{1,64}$/.test(name ?? '');
 
 /** The CSS stack for one role, or the vendored default if the key is unknown. */
-export function fontStack(role) {
+export function fontStack(/** @type {Role} */ role) {
   const key = theme[role];
   if (typeof key === 'string' && key.startsWith('custom:')) {
     /* A name that does not pass falls back to the vendored stack rather than
@@ -1190,7 +1270,8 @@ export function fontStack(role) {
       return `'${name}',${generic}`;
     }
   }
-  return (FONTS[key] || FONTS[THEME_DEF[role]]).stack;
+  return (FONTS[/** @type {keyof typeof FONTS} */ (key)]
+    || FONTS[/** @type {keyof typeof FONTS} */ (THEME_DEF[role])]).stack;
 }
 
 /** Write the theme to the page.
@@ -1252,7 +1333,7 @@ const SIGNALS = {
  *  what keeps the way back reachable, since a theme that made the settings pane
  *  invisible could only be undone by clearing browser storage.
  */
-export function setTheme(patch) {
+export function setTheme(/** @type {Partial<Theme>} */ patch) {
   const next = { ...theme, ...patch };
   if (!Palette.legible(next)) {
     const got = Palette.contrast(next.bg, next.text).toFixed(1);
@@ -1311,7 +1392,7 @@ export const WHEEL = { key: 'orch.wheelScale', def: 1, min: 0.1, max: 2, step: 0
  *  the next wheel event without the terminals re-importing anything. */
 export let wheelScale = WHEEL.def;
 
-export function setWheel(w) {
+export function setWheel(/** @type {number} */ w) {
   const next = Math.min(WHEEL.max, Math.max(WHEEL.min, Math.round(w * 10) / 10));
   wheelScale = next;
   $('wsval').textContent = `${Math.round(next * 100)}%`;
@@ -1320,14 +1401,14 @@ export function setWheel(w) {
   return next;
 }
 
-export function saveWheel(w) {
+export function saveWheel(/** @type {number} */ w) {
   try {
     if (w === WHEEL.def) localStorage.removeItem(WHEEL.key);
     else localStorage.setItem(WHEEL.key, String(w));
   } catch (e) { /* private mode: it still applies for this session */ }
 }
 
-export function saveZoom(z) {
+export function saveZoom(/** @type {number} */ z) {
   try {
     if (z === ZOOM.def) localStorage.removeItem(ZOOM.key);
     else localStorage.setItem(ZOOM.key, String(z));
@@ -1342,7 +1423,25 @@ export function saveZoom(z) {
 // in `app.js` because that was the only file; the seams all reached for it, which
 // is what made them seams rather than modules.
 
-export const terms = new Map();      // termKey -> { term, fit, sock, host, checkout }
+/** One attached terminal, keyed by `termKey`.
+ *
+ *  `term` and `fit` are xterm's, which ships no types here, so they stay `any`;
+ *  everything `term.js` hangs on the entry itself is spelled out, because that is
+ *  the half a typo can silently add a second copy of.
+ *
+ *  @typedef {{ term: any, fit: any, host: HTMLDivElement,
+ *              checkout: Target, key: string,
+ *              badge?: HTMLElement, sock?: WebSocket,
+ *              closed?: boolean, everOpened?: boolean,
+ *              needsReset?: boolean, backoff?: number, box?: string | null,
+ *              reconnectTimer?: ReturnType<typeof setTimeout>,
+ *              pending: (string | Uint8Array)[], pendingBytes: number,
+ *              queued: (string | Uint8Array)[], queuedBytes: number,
+ *              sent?: { rows: number, cols: number } | null }} TermEntry
+ */
+
+/** @type {Map<string, TermEntry>} */
+export const terms = new Map();      // termKey -> a TermEntry
 
 /** The key a terminal is held under: its checkout and its wire target.
  *
@@ -1358,7 +1457,7 @@ export const terms = new Map();      // termKey -> { term, fit, sock, host, chec
  */
 export const termKey = (checkout, target) => `${checkout.path}\u0000${target}`;
 
-export function stateLabel(s) {
+export function stateLabel(/** @type {import('../snapshot').SessionView} */ s) {
   const handed = handedToPr(s);
   if (handed) return `#${handed.number} ${prState(handed)}`;
   switch (s.state.state) {
@@ -1379,12 +1478,12 @@ export function stateLabel(s) {
     // restart are the same thing to you, a conversation you are not in.
     case 'exited': return 'archived';
     case 'archived': return s.state.resumable ? 'archived' : 'archived, transcript only';
-    default: return s.state.state;
+    default: return /** @type {{ state: string }} */ (s.state).state;
   }
 }
 
 /** Dot colours are shared across every row so one legend covers them all (§9). */
-export function dotClass(s) {
+export function dotClass(/** @type {import('../snapshot').SessionView} */ s) {
   const k = s.state.state;
   if (k === 'build_failing' || k === 'error') return 'build';
   if (handedToPr(s)) return 'pr';
@@ -1404,7 +1503,7 @@ export function dotClass(s) {
   return 'idle';
 }
 
-export function stateClass(s) {
+export function stateClass(/** @type {import('../snapshot').SessionView} */ s) {
   const k = s.state.state;
   if (k === 'build_failing' || k === 'error') return 'build';
   if (handedToPr(s)) return 'pr';
@@ -1414,7 +1513,7 @@ export function stateClass(s) {
 
 /** Idle time worth surfacing. A session you opened and have not typed into is
  *  idle, but shouting about it the moment you open it is noise. */
-export const isWaiting = (s) => s.wants_attention;
+export const isWaiting = (/** @type {import('../snapshot').SessionView} */ s) => s.wants_attention;
 
 /**
  * A menu at the cursor. `items` are `[label, extraClass, handler]`; a null
@@ -1430,7 +1529,7 @@ export const isWaiting = (s) => s.wants_attention;
  *
  *  Here rather than in `term.js` because the rail's `copy id` needs the same two
  *  attempts, and the fallback is the part that is easy to get subtly wrong. */
-export async function copyText(text) {
+export async function copyText(/** @type {string} */ text) {
   try {
     await navigator.clipboard.writeText(text);
     return true;
@@ -1452,7 +1551,7 @@ export async function copyText(text) {
   }
 }
 
-export function openMenu(ev, items) {
+export function openMenu(/** @type {MouseEvent} */ ev, /** @type {([string, string | null, (() => void) | null])[]} */ items) {
   ev.preventDefault();
   const menu = $('ctxmenu');
   menuAnchor = /** @type {HTMLElement} */ (ev.currentTarget || ev.target);
@@ -1470,7 +1569,7 @@ export function openMenu(ev, items) {
   // pinning it to the top-left corner.
   let { clientX: x, clientY: y } = ev;
   if (!x && !y) {
-    const r = (ev.currentTarget || ev.target).getBoundingClientRect();
+    const r = /** @type {HTMLElement} */ (ev.currentTarget || ev.target).getBoundingClientRect();
     [x, y] = [r.left, r.bottom];
   }
   menu.style.left = `${Math.min(x, window.innerWidth - box.width - 6)}px`;
@@ -1493,16 +1592,17 @@ export function closeMenu() {
 
 /** What the open menu is pointing at, so a scroll can tell "the row this menu
  *  belongs to moved" from "a terminal three panes away printed a line". */
+/** @type {HTMLElement | null} */
 let menuAnchor = null;
 
-export function sessionsOf(wsId, state = snap) {
+export function sessionsOf(/** @type {string | null} */ wsId, state = snap) {
   return state.sessions.filter((s) => s.workspace === wsId);
 }
 
 /* A session is one of two things: active, or a past conversation you can come
  * back to. The daemon's `exited` and `archived` are the same fact from here, and
  * neither is a state worth a word of its own in the rail. */
-export const isArchived = (s) => s.state.state === 'archived' || s.state.state === 'exited';
+export const isArchived = (/** @type {import('../snapshot').SessionView} */ s) => s.state.state === 'archived' || s.state.state === 'exited';
 
 /** `spawn::PENDING_WORKTREE`: the workspace a worktree session sits in until
  *  `SessionStart` reports the name Claude Code gave it. */
@@ -1510,16 +1610,16 @@ const PENDING_WORKTREE = '\u2026creating';
 
 /** A worktree Claude Code has not named yet (§2): the daemon knows the session
  *  before it knows where it lives. */
-export const pending = (s) => s.workspace === PENDING_WORKTREE;
+export const pending = (/** @type {import('../snapshot').SessionView} */ s) => s.workspace === PENDING_WORKTREE;
 
 /* A finished session that never had a turn wrote no transcript, so there is no
  * conversation to come back to — `claude --resume` answers "no conversation
  * found" and exits. Listing one is offering something that cannot work, so the
  * archive is conversations, not every session that ever stopped. */
-export const isConversation = (s) => isArchived(s) && s.has_transcript;
+export const isConversation = (/** @type {import('../snapshot').SessionView} */ s) => isArchived(s) && s.has_transcript;
 
 /** Newest first: `created_ms` is an age, so the smallest number is the newest. */
-export const byNewest = (a, b) => a.created_ms - b.created_ms;
+export const byNewest = (/** @type {import('../snapshot').SessionView} */ a, /** @type {import('../snapshot').SessionView} */ b) => a.created_ms - b.created_ms;
 
 export function currentSession() {
   return snap.sessions.find((s) => s.id === selected) || null;
@@ -1543,7 +1643,7 @@ export function activeWorkspaceId() {
    it draws all of them. One spelling either way: a second pair of functions for
    "but in that checkout" is how the two answers drift apart. */
 export const mainWorkspace = (state = snap) => state.workspaces.find((w) => w.is_main);
-export const workspaceById = (id, state = snap) => state.workspaces.find((w) => w.id === id);
+export const workspaceById = (/** @type {string | null} */ id, state = snap) => state.workspaces.find((w) => w.id === id);
 
 export function currentWorkspaceId() {
   const s = currentSession();
@@ -1563,11 +1663,13 @@ export function currentWorkspaceId() {
  * It does not replace the daemon's own refusals: main is exclusive
  * (`refuse_if_occupied`) and says so with a disabled `+`. This is about the gap
  * *before* any of that state exists. */
+/** @type {string | null} */
 let creatingWhat = null;
 export const creating = () => creatingWhat;
 
+/** @type {((what: string | null) => void)[]} */
 const creatingListeners = [];
-export function onCreatingChange(fn) { creatingListeners.push(fn); }
+export function onCreatingChange(/** @type {(what: string | null) => void} */ fn) { creatingListeners.push(fn); }
 
 /** Run `go` as the one create in flight, or say what is already going.
  *
@@ -1576,7 +1678,7 @@ export function onCreatingChange(fn) { creatingListeners.push(fn); }
  *  because the interesting frame is the one where the button goes dead — the
  *  snapshot that would have redrawn it is not promised to arrive while a worktree
  *  is being cut. */
-async function asTheOnlyCreate(what, go) {
+async function asTheOnlyCreate(/** @type {string} */ what, /** @type {() => Promise<any>} */ go) {
   if (creatingWhat) {
     toast(`still ${creatingWhat}`);
     return;
@@ -1599,7 +1701,7 @@ export async function newSession(workspace, where) {
       const r = await callOn(where ?? activeCheckout(), '/api/session', { workspace });
       pendingSelect = r.session;
     } catch (e) {
-      toast(e.message, true);
+      toast(reason(e), true);
     }
   });
 }
@@ -1629,7 +1731,7 @@ export async function newWorktree(named, where) {
       pendingSelect = r.session;
       toast(name ? `creating worktree ${name}` : 'creating worktree');
     } catch (e) {
-      toast(e.message, true);
+      toast(reason(e), true);
     }
   });
 }
@@ -1651,7 +1753,7 @@ export async function newShell() {
     // rather than waiting for one that has been.
     redrawDrawer();
   } catch (e) {
-    toast(e.message, true);
+    toast(reason(e), true);
   }
 }
 
@@ -1717,7 +1819,8 @@ window.addEventListener('blur', closeMenu);
 // Shared UI state
 // ---------------------------------------------------------------------------
 
-export let selectedProc = {};        // wsKey -> process id
+/** @type {Record<string, string | null>} */
+export const selectedProc = {};        // wsKey -> process id
 
 /** The key per-workspace UI state is held under: its checkout and its id.
  *
@@ -1730,12 +1833,15 @@ export let selectedProc = {};        // wsKey -> process id
  *  Always the checkout you are in: every reader of these three is a pane that
  *  follows the selection.
  *
- *  @param {string} wsId
+ *  `null` is a real caller: `currentWorkspaceId()` answers it when nothing is
+ *  selected, and the key has to stay a string either way — "no workspace in this
+ *  checkout" is its own slot, not an error.
+ *
+ *  @param {string | null} wsId
  */
 export const wsKey = (wsId) => `${activeCheckout().path}\u0000${wsId}`;
-
 /** What a PR is doing, in the two or three words a row has space for. */
-export function prState(p) {
+export function prState(/** @type {import('../snapshot').PrView} */ p) {
   if (p.awaiting_you) return `${p.awaiting_you} waiting on you`;
   if (p.mergeable === 'CONFLICTING') return 'conflicted';
   if (p.checks === 'failing') return 'checks failing';
@@ -1749,15 +1855,15 @@ export function prState(p) {
  *  A question or a permission prompt is still about this session, so those keep
  *  the amber and their own words. */
 /** The PR a session's work belongs to, whether by branch or by its pass. */
-export function prOf(s) {
+export function prOf(/** @type {import('../snapshot').SessionView} */ s) {
   if (!s) return null;
   if (s.pass) {
-    return (snap.prs || []).find((p) => p.number === s.pass.pr) || null;
+    return (snap.prs || []).find((p) => p.number === s.pass?.pr) || null;
   }
   return prForWorkspace(s.workspace);
 }
 
-export function handedToPr(s) {
+export function handedToPr(/** @type {import('../snapshot').SessionView} */ s) {
   // `renderContext` asks this about `currentSession()`, which is null whenever
   // nothing is selected — the state the app opens in. Without this the context
   // bar threw on every render until you clicked a row.
@@ -1775,11 +1881,11 @@ export let drawerTouched = false;
  * does not silently reopen it — the whole point, now that ng-watch means main
  * always has a process and so the drawer is otherwise always open there. */
 export let drawerCollapsed = localStorage.getItem('orch.drawerCollapsed') === '1';
-
+/** @type {((collapsed: boolean) => void)[]} */
 const drawerListeners = [];
-export function onDrawerChange(fn) { drawerListeners.push(fn); }
+export function onDrawerChange(/** @type {(collapsed: boolean) => void} */ fn) { drawerListeners.push(fn); }
 
-export function setDrawerCollapsed(v) {
+export function setDrawerCollapsed(/** @type {boolean} */ v) {
   drawerCollapsed = v;
   try {
     localStorage.setItem('orch.drawerCollapsed', v ? '1' : '0');
@@ -1821,7 +1927,7 @@ export let procOrder = (() => {
   }
 })();
 
-export function setProcOrder(wsId, keys) {
+export function setProcOrder(/** @type {string | null} */ wsId, /** @type {string[]} */ keys) {
   procOrder = { ...procOrder, [wsKey(wsId)]: keys };
   try {
     localStorage.setItem('orch.procOrder', JSON.stringify(procOrder));
@@ -1847,6 +1953,7 @@ export function typingElsewhere() {
 }
 
 /** A shell whose terminal should take the cursor as soon as it exists. */
+/** @type {string | null} */
 export let pendingProcFocus = null;
 
 /** A session the daemon has just been asked to create.
@@ -1854,12 +1961,13 @@ export let pendingProcFocus = null;
  *  Setting `selected` alone is not enough: the terminal is only opened when a
  *  session is shown, and the snapshot handler skips that once something is
  *  already selected. */
+/** @type {string | null} */
 export let pendingSelect = null;
 
 /* Written from more than one module, and an imported binding is read-only, so the
  * writes come through here. The alternative — leaving the state in `app.js` and
  * letting modules reach back for it — is the coupling the modules exist to end. */
-export function setPendingSelect(id) { pendingSelect = id; }
-export function setPendingProcFocus(id) { pendingProcFocus = id; }
-export function setDrawerTouched(v) { drawerTouched = v; }
-export function setSelectedProc(wsId, procId) { selectedProc[wsKey(wsId)] = procId; }
+export function setPendingSelect(/** @type {string | null} */ id) { pendingSelect = id; }
+export function setPendingProcFocus(/** @type {string | null} */ id) { pendingProcFocus = id; }
+export function setDrawerTouched(/** @type {boolean} */ v) { drawerTouched = v; }
+export function setSelectedProc(/** @type {string | null} */ wsId, /** @type {string | null} */ procId) { selectedProc[wsKey(wsId)] = procId; }

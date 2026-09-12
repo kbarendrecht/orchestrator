@@ -392,7 +392,7 @@ pub fn has_unpushed(cwd: &Path, branch: &str) -> bool {
 
 /// Who git will author a commit as here.
 ///
-/// Wanted by [`amend_target`], which refuses to fold into a commit somebody else
+/// Wanted by [`crate::review_commit::amend_target`], which refuses to fold into a commit somebody else
 /// wrote. Empty rather than an error when git has no `user.email`: an unset
 /// identity means "match nobody", which degrades the fold to a plain HEAD amend
 /// instead of failing the batch.
@@ -1973,7 +1973,7 @@ pub(crate) fn is_ancestor(cwd: &Path, a: &str, b: &str) -> bool {
     git_ok(cwd, &["merge-base", "--is-ancestor", a, b])
 }
 
-/// Commit everything staged-or-not into the shape [`Amend`] chose.
+/// Commit everything staged-or-not into the shape [`crate::review_commit::Amend`] chose.
 ///
 /// `Fixup` writes a `fixup!` commit and then autosquashes it away, so the PR's
 /// history keeps one commit per change rather than growing a "fix review" commit.

@@ -134,6 +134,16 @@ fi
 if [ "$web" = 1 ]; then
   npx --prefix tools tsc -p tools/tsconfig.json
   npx --prefix tools depcruise --config tools/.dependency-cruiser.cjs web/app.js >/dev/null
+  # What `tsc` cannot see: a promise nobody awaited, and a reach for
+  # `confirm`/`prompt`/`alert`. `tools/eslint.config.mjs` has the account.
+  npx --prefix tools eslint --config tools/eslint.config.mjs web
+fi
+
+# A module that is not served is a 404 only the running app shows, and adding a
+# file to `web/js/` is a Rust change. Either side can break it, so either side
+# runs it — it is a directory listing and one regex.
+if [ "$web" = 1 ] || [ "$rust" = 1 ]; then
+  node tools/check-module-routes.mjs >/dev/null || exit 1
 fi
 
 # The end-to-end flows, every Nth Rust commit rather than every one.

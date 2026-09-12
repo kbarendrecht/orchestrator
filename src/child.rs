@@ -74,7 +74,7 @@ pub struct Child {
     /// against paths git printed or `Config::parse` resolved.
     pub checkout: PathBuf,
     pub ready: Ready,
-    /// The leader's pid, which is also its process group id: [`spawn`] puts the
+    /// The leader's pid, which is also its process group id: [`launch`] puts the
     /// child in its own group, so signalling the group cannot reach the host.
     pub pid: u32,
     /// Set before any deliberate signal. The observer reads it to tell a stop from
@@ -101,7 +101,15 @@ impl Child {
         // The EOF, which is what the child is actually listening for. A stop that
         // only signalled would work too; this is the path that does not depend on
         // a signal handler being installed.
-        drop(self.stdin.lock().unwrap().take());
+        // Poisoning does not matter here: the field is an `Option` this takes
+        // whole, and refusing to stop the child because some other thread panicked
+        // would strand the process this call exists to end.
+        drop(
+            self.stdin
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .take(),
+        );
         let deadline = Instant::now() + STOP_GRACE;
         // SIGTERM the group rather than the pid: the child's own children are in
         // it, and git removes its `.lock` files on TERM and not on KILL.
@@ -161,7 +169,7 @@ pub fn launch(
 }
 
 /// The real work, with the binary injected — the same split as
-/// [`crate::instance::acquire_at`] and [`crate::config::Config::existing_at`], and
+/// `instance::acquire_at` and [`crate::config::Config::existing_at`], and
 /// for the same reason: a test can drive the protocol and the observer against a
 /// stub without needing a built `orchd`, and without setting a process-global
 /// environment variable that every other test in the binary would also see.

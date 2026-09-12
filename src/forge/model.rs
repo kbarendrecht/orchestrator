@@ -128,6 +128,7 @@ pub fn answered(last_author: &str, viewer_thumbed: bool, viewer: &str) -> bool {
 
 /// One comment in a review thread.
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
 pub struct Comment {
     /// REST id. The reply endpoint is keyed on this, not on the GraphQL node id.
     pub database_id: u64,
@@ -149,6 +150,7 @@ pub struct Comment {
 
 /// An unresolved conversation on a PR.
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
 pub struct Thread {
     /// `PRRT_…`. **Not** a resolve target — closing a thread is the comment
     /// author's button, never ours — but the join key between a thread and the

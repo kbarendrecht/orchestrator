@@ -102,6 +102,7 @@ pub fn resolve_token(checkout: &[(String, String)], var: &str) -> Result<String>
 /// `format!`: the org slug in the URL belongs to your tracker workspace and the daemon has no
 /// business knowing it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
 pub struct StoryRef {
     /// Short form, `sc-12345`. What the report shows.
     ///

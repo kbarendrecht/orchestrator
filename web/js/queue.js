@@ -30,7 +30,7 @@ const listDrawn = { sig: null };
    are most likely to be reaching for one. */
 
 /** Why this row is in your queue, when there is a reason worth the width. */
-function reviewReason(r) {
+function reviewReason(/** @type {import('../snapshot').Review} */ r) {
   if (r.blockers && r.blockers.length) return r.blockers.join(', ');
   if (r.needs_re_review) return 're-requested';
   if (r.is_draft) return 'draft';
@@ -112,7 +112,7 @@ function renderReviews() {
   // The file-count column only earns its width once the source emits it.
   const anyFiles = [...rows, ...blocked].some((r) => r.changed_files != null);
 
-  const rowFor = (r, dim) => {
+  const rowFor = (/** @type {import('../snapshot').Review} */ r, /** @type {boolean} */ dim) => {
     // Rows are anchors, so ⌘-click and copy-link behave, and the browser
     // already holds the GitHub session (§6b).
     const a = el('a', 'rvrow' + (dim ? ' dim' : ''));
@@ -140,7 +140,7 @@ function renderReviews() {
      * "conflicts". */
     const blocked = r.blockers && r.blockers.length;
     const dot = r.prio <= 1 ? ' prio' : blocked ? ' bad' : r.needs_re_review ? ' blocked' : '';
-    a.appendChild(el('span', 'dot' + dot, null, blocked ? r.blockers.join(', ') : undefined));
+    a.appendChild(el('span', 'dot' + dot, undefined, blocked ? r.blockers.join(', ') : undefined));
     // Age, not the PR number: how long it has waited is what tells you to pick
     // it up. The whole row already links to the PR, so the number earns nothing.
     const age = el('span', 'num', compactAge(r.age_hours || 0));

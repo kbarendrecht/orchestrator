@@ -113,8 +113,8 @@ fn segments(command: &str) -> Vec<String> {
         }
         if two || matches!(c, ';' | '\n' | '|') {
             out.push(String::new());
-        } else {
-            out.last_mut().unwrap().push(c);
+        } else if let Some(seg) = out.last_mut() {
+            seg.push(c);
         }
     }
     out

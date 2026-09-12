@@ -1,7 +1,7 @@
 // The review overlay: read a PR's threads, decide each one, then one batch of
 // outward writes. The largest single feature in the SPA.
 
-import { $, call, compactAge, confirmBox, el, get, MOD_LABEL, newShell, pending, promptBox, selected, setSelected, snap, toast, unchanged, setPendingSelect } from './core.js';
+import { $, call, compactAge, confirmBox, el, get, MOD_LABEL, newShell, promptBox, selected, setSelected, snap, reason, toast, unchanged, setPendingSelect } from './core.js';
 import * as Diff from './diff.js';
 import { langFor, hlTokens, paintRanges } from './diff.js';
 import { patchStats, hunkEl, fileListLabel } from './review-diff.js';
@@ -17,6 +17,39 @@ import { patchStats, hunkEl, fileListLabel } from './review-diff.js';
    Snapshot on every websocket tick, and `Diff.state`/`Diff.edit` survive only
    because `render()` never touches them; this follows that idiom, or every tick
    would reset the scroll position and drop focus out of a half-typed reply. */
+/** The review payload from `GET /api/pr/:n/review`.
+ *
+ *  Composed from the generated types rather than described by hand: `threads`,
+ *  `proposals`, `manual` and `gate` are `ts-rs` exports of the structs the route
+ *  serialises, so a renamed field on the Rust side fails here. The route itself
+ *  builds a `json!` object, which is the one part with no struct to generate
+ *  from — the four fields below the composed ones are what that literal adds.
+ *
+ *  @typedef {{
+ *    title: string,
+ *    url: string,
+ *    head_ref: string,
+ *    viewer: string,
+ *    head_sha: string,
+ *    answerable: number,
+ *    threads: import('../snapshot').Thread[],
+ *    proposals: import('../snapshot').ProposalSet | null,
+ *    manual: import('../snapshot').ManualPhase | null,
+ *    gate: import('../snapshot').Gate | null,
+ *    checks: import('../snapshot').Checks,
+ *    mergeable: string,
+ *    tracker: boolean,
+ *  }} ReviewData
+ */
+
+/** @type {{ open: boolean, pr: number | null, head: string | null,
+ *           data: ReviewData | null, screen: string, i: number,
+ *           picks: Record<string, number>, modes: Record<string, string>,
+ *           skipped: Record<string, boolean>, drafts: Record<string, string>,
+ *           notes: Record<string, string>, editing: Record<string, boolean>,
+ *           report: import('../snapshot').PostReport | null, busy: boolean,
+ *           session: string | null, proposalsLoaded: boolean,
+ *           decisionsSent: boolean }} */
 const reviewState = {
   open: false,
   pr: null,
@@ -58,6 +91,8 @@ const reviewState = {
  *  rather than being the card drafts. Cleared when a batch is sent, not when the
  *  overlay closes — walking away from a phase and coming back should not lose what
  *  you typed about work that is already on disk. */
+/** @type {{ comments: Record<string, string>, finished: any,
+ *           changed: { files: import('../snapshot').FileStat[], diff: string } | null }} */
 const manualState = {
   comments: {},     // thread_id -> the comment, required
   /* The payload the last `/manual/done` sent, so the report's retry can go back to
@@ -71,19 +106,25 @@ const manualState = {
   changed: null,
 };
 
-const draftKey = (id, pos) => `${id} ${pos}`;
+/** One thread and the agent's proposal for it, the way `queue()` pairs them.
+ *  Every card, box and count below takes one of these.
+ *
+ *  @typedef {{ t: import('../snapshot').Thread, p: import('../snapshot').Proposal }} QueueItem
+ */
+
+const draftKey = (/** @type {string} */ id, /** @type {number} */ pos) => `${id} ${pos}`;
 
 /** Who writes the code for this thread. The third of the three decisions, and
  *  the one the agent has no say in. */
-const modeOf = (item) => reviewState.modes[item.t.id] || 'agent';
+const modeOf = (/** @type {QueueItem} */ item) => reviewState.modes[item.t.id] || 'agent';
 
 /** Whether a position would have the agent change code. Under `manual` the same
  *  position stages the same fix, but you are the one who writes it. */
-const writesCode = (item, pos) => !!pos.patch && modeOf(item) === 'agent';
+const writesCode = (/** @type {QueueItem} */ item, /** @type {import('../snapshot').Position} */ pos) => !!pos.patch && modeOf(item) === 'agent';
 
 /** Compact age off an ISO timestamp: `4h`, `6d`. */
-function commentAge(iso) {
-  const then = Date.parse(iso);
+function commentAge(/** @type {string | null | undefined} */ iso) {
+  const then = Date.parse(iso ?? '');
   if (!then) return '';
   return compactAge((Date.now() - then) / 36e5);
 }
@@ -95,14 +136,14 @@ function queue() {
   const by = new Map(set.map((p) => [p.thread_id, p]));
   return (reviewState.data?.threads || [])
     .filter((t) => by.has(t.id))
-    .map((t) => ({ t, p: by.get(t.id) }));
+    .map((t) => ({ t, p: /** @type {import('../snapshot').Proposal} */ (by.get(t.id)) }));
 }
 
 /** Whether a position can be acted on at all.
  *
  *  Only one thing makes a position unavailable: a story with no tracker
  *  configured. It is hidden rather than offered-and-refused. */
-const offered = (pos) => pos.stance !== 'story' || !!reviewState.data.tracker;
+const offered = (/** @type {import('../snapshot').Position} */ pos) => pos.stance !== 'story' || !!reviewState.data?.tracker;
 
 /** Which position is selected on a card: your pick, else the recommendation.
  *
@@ -110,7 +151,7 @@ const offered = (pos) => pos.stance !== 'story' || !!reviewState.data.tracker;
  *  recommendation is often the story one — that is the whole point of a story on a
  *  review summary — and with no tracker it is not on screen. Leaving the pick
  *  pointing at a hidden row would have Enter send a decision the daemon refuses. */
-function pickOf(item) {
+function pickOf(/** @type {QueueItem} */ item) {
   const own = reviewState.picks[item.t.id];
   const want = own === undefined ? item.p.recommend : own;
   if (offered(item.p.positions[want])) return want;
@@ -118,24 +159,24 @@ function pickOf(item) {
   return first < 0 ? want : first;
 }
 
-const positionOf = (item) => item.p.positions[pickOf(item)];
+const positionOf = (/** @type {QueueItem} */ item) => item.p.positions[pickOf(item)];
 
 /** The reply that would be posted: your wording if you typed one. */
-function replyOf(item) {
+function replyOf(/** @type {QueueItem} */ item) {
   const i = pickOf(item);
   const drafted = item.p.positions[i]?.reply ?? '';
   return reviewState.drafts[draftKey(item.t.id, i)] ?? drafted;
 }
 
-const isHandled = (item) =>
+const isHandled = (/** @type {QueueItem} */ item) =>
   !reviewState.skipped[item.t.id] && reviewState.picks[item.t.id] !== undefined;
 
 /** Decided: handled or skipped. One word for one idea — the strip, the counts,
  *  the overview and the final screen all ask this and used to spell it out. */
-const isDecided = (item) => isHandled(item) || !!reviewState.skipped[item.t.id];
+const isDecided = (/** @type {QueueItem} */ item) => isHandled(item) || !!reviewState.skipped[item.t.id];
 
 /** `renovate.json5:161 · bob`, matching what the daemon's report uses. */
-function threadLabel(t) {
+function threadLabel(/** @type {import('../snapshot').Thread} */ t) {
   const who = t.comments?.[0]?.author || 'ghost';
   const line = t.line ?? t.original_line;
   if (!t.path) return `review summary · ${who}`;
@@ -145,7 +186,7 @@ function threadLabel(t) {
 /* ---------- chrome shared by every screen ---------- */
 
 /** The header. `sub` is the right-hand half of the title line. */
-function rvHead(sub, count) {
+function rvHead(/** @type {string} */ sub, /** @type {string | number | undefined} */ count) {
   const head = el('div', 'ov-head');
   const path = el('div', 'ov-path', `#${reviewState.pr} `);
   path.appendChild(el('span', null, `· ${sub}`));
@@ -154,7 +195,7 @@ function rvHead(sub, count) {
 
   const nav = el('div', 'ov-nav');
   nav.appendChild(rvSteps());
-  if (count) nav.appendChild(el('span', 'ov-count', count));
+  if (count) nav.appendChild(el('span', 'ov-count', String(count)));
   const esc = el('button', 'head-btn', 'esc');
   esc.onclick = () => closeReview();
   nav.appendChild(esc);
@@ -175,7 +216,7 @@ function rvSteps() {
     final: 'send', changing: 'send', report: 'send',
   };
   const order = ['triage', 'answer', 'send'];
-  const cur = order.indexOf(stageOf[reviewState.screen] || 'found');
+  const cur = order.indexOf(stageOf[/** @type {keyof typeof stageOf} */ (reviewState.screen)] || 'found');
   const wrap = el('div', 'rvsteps');
   order.forEach((name, i) => {
     wrap.appendChild(el('span', 's' + (i < cur ? ' done' : i === cur ? ' on' : ''), name));
@@ -190,13 +231,13 @@ function rvSteps() {
  *  pre-decision screens, because the two flows are mutually exclusive and
  *  offering it from an active card would just be refused. */
 function rvHealth() {
-  const d = reviewState.data || {};
+  const d = reviewState.data;
   const wrap = el('div', 'health');
   const said = [];
-  if (d.checks === 'failing') { wrap.classList.add('bad'); said.push('checks failing'); }
-  else if (d.checks === 'passing') { wrap.classList.add('ok'); said.push('checks passing'); }
-  else if (d.checks === 'pending') { wrap.classList.add('pending'); said.push('checks running'); }
-  if (d.mergeable === 'CONFLICTING') said.push('conflicts with develop');
+  if (d?.checks === 'failing') { wrap.classList.add('bad'); said.push('checks failing'); }
+  else if (d?.checks === 'passing') { wrap.classList.add('ok'); said.push('checks passing'); }
+  else if (d?.checks === 'pending') { wrap.classList.add('pending'); said.push('checks running'); }
+  if (d?.mergeable === 'CONFLICTING') said.push('conflicts with develop');
   if (!said.length) return wrap;
 
   wrap.appendChild(el('span', 'hdot'));
@@ -207,7 +248,7 @@ function rvHealth() {
     wrap.appendChild(n);
   });
   const preDecision = reviewState.screen === 'intake' || reviewState.screen === 'overview';
-  if (preDecision && (d.checks === 'failing' || d.mergeable === 'CONFLICTING')) {
+  if (preDecision && (d?.checks === 'failing' || d?.mergeable === 'CONFLICTING')) {
     const b = el('button', 'head-btn', 'fix');
     b.title = 'Rebase on develop and fix what CI says. It cannot run while a review is open.';
     // Confirm first: this is the one control in the flow that rewrites the published
@@ -215,7 +256,7 @@ function rvHealth() {
     b.onclick = async () => {
       if (!await confirmBox('Start a fix run?\n\nIt rebases on develop, force-pushes this branch, and closes the review.',
         { ok: 'Start' })) return;
-      rvAct(() => call(`/api/pr/${reviewState.pr}/fix-pr`), 'started the fix run', true);
+      void rvAct(() => call(`/api/pr/${reviewState.pr}/fix-pr`), 'started the fix run', true);
     };
     wrap.appendChild(b);
   }
@@ -225,7 +266,7 @@ function rvHealth() {
 /** One bar per thread, filled by outcome. Bars read as progress through a
  *  queue; dots would read as status lights and invite a colour per verdict,
  *  which is not what varies. */
-function rvStrip(cur) {
+function rvStrip(/** @type {number | null} */ cur) {
   const strip = el('div', 'strip');
   const q = queue();
   q.forEach((item, i) => {
@@ -262,14 +303,14 @@ function decidedCount() {
   return skipped ? `${of} · ${skipped} skipped` : of;
 }
 
-function rvActs(buttons, hint) {
+function rvActs(/** @type {(HTMLElement | null)[]} */ buttons, /** @type {string | undefined} */ hint) {
   const bar = el('div', 'acts');
   for (const b of buttons) if (b) bar.appendChild(b);
   if (hint) bar.appendChild(el('span', 'hint', hint));
   return bar;
 }
 
-function actBtn(label, cls, onclick, disabled) {
+function actBtn(/** @type {string} */ label, /** @type {string | null} */ cls, /** @type {() => unknown} */ onclick, /** @type {boolean | undefined} */ disabled) {
   const b = el('button', 'act' + (cls ? ' ' + cls : ''), label);
   b.disabled = !!disabled || reviewState.busy;
   b.onclick = onclick;
@@ -278,12 +319,12 @@ function actBtn(label, cls, onclick, disabled) {
 
 /** A button with its chord in the tooltip. Separate from [`actBtn`] because only
  *  a couple of these have one, and a parameter nobody passes reads as noise. */
-function withTitle(button, title) {
+function withTitle(/** @type {HTMLElement} */ button, /** @type {string} */ title) {
   button.title = title;
   return button;
 }
 
-function headBtn(label, cls, onclick) {
+function headBtn(/** @type {string} */ label, /** @type {string | null} */ cls, /** @type {() => unknown} */ onclick) {
   const b = el('button', 'head-btn' + (cls ? ' ' + cls : ''), label);
   b.disabled = reviewState.busy;
   b.onclick = onclick;
@@ -294,9 +335,12 @@ function headBtn(label, cls, onclick) {
 
 /** Nothing triaged yet. The line under the heading is what the old design could
  *  not say: reading is all that happens. */
-function rvIntake(root) {
+function rvIntake(/** @type {HTMLElement} */ root) {
   const d = reviewState.data;
-  root.appendChild(rvHead(reviewState.data.title || 'review'));
+  // The screen is only reached with a payload loaded; drawing nothing beats
+  // throwing if that ever stops being true.
+  if (!d) return;
+  root.appendChild(rvHead(d.title || 'review'));
 
   const mid = el('div', 'mid');
   const n = d.answerable || 0;
@@ -351,9 +395,11 @@ function rvIntake(root) {
 /** The tree is not mine to write to yet. Three reasons, one screen: the design
  *  rests on the tree being clean until the final action, so it must start
  *  clean. CI colour and a develop conflict are deliberately not here. */
-function rvGate(root) {
-  const g = reviewState.data.gate;
-  root.appendChild(rvHead(reviewState.data.title || 'review'));
+function rvGate(/** @type {HTMLElement} */ root) {
+  const d = reviewState.data;
+  const g = d?.gate;
+  if (!d || !g) return;
+  root.appendChild(rvHead(d.title || 'review'));
 
   const mid = el('div', 'mid');
   if (g.gate === 'dirty') {
@@ -380,13 +426,13 @@ function rvGate(root) {
       const message = await promptBox('Commit message for the work already in this worktree',
         { ok: 'Commit' });
       if (!message || !message.trim()) return;
-      rvAct(() => call(`/api/pr/${reviewState.pr}/commit`, { message: message.trim() }), 'committed');
+      void rvAct(() => call(`/api/pr/${reviewState.pr}/commit`, { message: message.trim() }), 'committed');
     }));
     // Never popped automatically: popping onto a branch the review just amended
     // can conflict, and silently juggling your work is worse than leaving it.
     row.appendChild(headBtn('stash', 'go', () =>
       rvAct(() => call(`/api/pr/${reviewState.pr}/stash`), 'stashed — pop it yourself')));
-    row.appendChild(headBtn('open a shell', null, () => { closeReview(); newShell(); }));
+    row.appendChild(headBtn('open a shell', null, () => { closeReview(); void newShell(); }));
     mid.appendChild(row);
   } else if (g.gate === 'rebasing') {
     mid.appendChild(el('div', 'eyebrow', 'a rebase is stopped part-way'));
@@ -396,7 +442,7 @@ function rvGate(root) {
       'Resolve opens once the rebase is out of the way.'));
     const row = el('div');
     row.style.cssText = 'display:flex;gap:8px;margin-top:4px';
-    row.appendChild(headBtn('open a shell', null, () => { closeReview(); newShell(); }));
+    row.appendChild(headBtn('open a shell', null, () => { closeReview(); void newShell(); }));
     mid.appendChild(row);
   } else {
     mid.appendChild(el('div', 'eyebrow', 'a fix run is going on this branch'));
@@ -414,7 +460,7 @@ function rvGate(root) {
 
 /** The shape of the work, not a summary of things already done: how long this
  *  will take and where the hard part is. */
-function rvOverview(root) {
+function rvOverview(/** @type {HTMLElement} */ root) {
   const q = queue();
   root.appendChild(rvHead('review', `${q.length} thread${q.length === 1 ? '' : 's'}`));
   root.appendChild(rvFreshBar());
@@ -426,6 +472,7 @@ function rvOverview(root) {
   /* Grouped by what the agent's recommendation costs you, because that is what
      decides how long the queue takes — not by a category it would have to
      invent and keep consistent. */
+  /** @type {[string, string, (x: any) => boolean][]} */
   const buckets = [
     ['Straightforward', 'they are right — one keystroke each',
       (x) => positionOf(x).stance === 'agree'],
@@ -475,7 +522,7 @@ function rvFreshBar() {
   // A comment node, not null: `appendChild(null)` is a TypeError, and the
   // callers append this unconditionally — which silently killed the rest of
   // every card on a PR with no new threads, the common case.
-  if (!fresh.length || !reviewState.data.proposals) return document.createComment('no new threads');
+  if (!fresh.length || !reviewState.data?.proposals) return document.createComment('no new threads');
 
   const bar = el('div', 'autobar');
   bar.appendChild(el('b', null,
@@ -491,7 +538,7 @@ function rvFreshBar() {
 /** One card per thread, including the obvious ones — the agent just recommends
  *  the obvious thing and pre-selects it. That costs one keystroke on an easy
  *  thread and buys back the property that nothing happens you did not choose. */
-function rvCard(root) {
+function rvCard(/** @type {HTMLElement} */ root) {
   const q = queue();
   const item = q[reviewState.i];
   if (!item) { reviewState.screen = 'overview'; return rvOverview(root); }
@@ -528,7 +575,7 @@ function rvCard(root) {
 
   const chain = el('div', 'chain');
   for (const c of t.comments || []) {
-    const mine = c.author === reviewState.data.viewer;
+    const mine = c.author === reviewState.data?.viewer;
     const cmt = el('div', 'cmt' + (mine ? ' mine' : ''));
     const hd = el('div', 'hd');
     hd.appendChild(el('b', null, c.author));
@@ -587,7 +634,7 @@ function rvCard(root) {
  *
  *  Anything unterminated is left as prose, so a comment merely *discussing* a
  *  fence does not swallow the rest of itself. */
-function commentParts(body, path) {
+function commentParts(/** @type {string} */ body, /** @type {string | null} */ path) {
   const text = body || '';
   const out = [];
   // ```suggestion … ``` — the fence may carry trailing spaces, and GitHub allows
@@ -611,11 +658,11 @@ function commentParts(body, path) {
  *  GitHub gives the replacement text only, so the lines it *removes* are not in
  *  the comment — showing them as additions against nothing would be inventing a
  *  diff. Labelled instead, and syntax-coloured from the thread's own path. */
-function suggestionEl(code, path) {
+function suggestionEl(/** @type {string} */ code, /** @type {string | null} */ path) {
   const box = el('div', 'suggestion');
   box.appendChild(el('div', 'sghead', 'suggested change'));
   const body = el('div', 'sgbody');
-  const lang = langFor(path);
+  const lang = langFor(path ?? '');
   for (const line of code.split('\n')) {
     const row = el('div', 'sgline');
     // A blank line still needs something in it, or the row collapses.
@@ -627,7 +674,7 @@ function suggestionEl(code, path) {
 }
 
 /** One line of code, syntax-coloured with the viewer's palette. */
-function hlLine(text, lang) {
+function hlLine(/** @type {string} */ text, /** @type {string | null} */ lang) {
   return paintRanges(el('span', 'sgcode'), text, lang ? hlTokens(text, lang) : []);
 }
 
@@ -650,7 +697,7 @@ let readsOpen = false;
  *  toggle *sticky for the session*: open one and they are all open. It resets to
  *  collapsed next launch, so each session starts with the human forming their own view.
  *  The prompt still keeps the read terse. */
-function rvRead(p) {
+function rvRead(/** @type {import('../snapshot').Proposal} */ p) {
   const sec = el('div', 'sec');
   if (!readsOpen) {
     const tog = el('button', 'readtog');
@@ -681,7 +728,7 @@ function rvRead(p) {
 
 /** A short preview of the reply a reply/story option would post, drafted or as
  *  edited on the overview. Empty when there is nothing written yet. */
-function replyPreview(item, i) {
+function replyPreview(/** @type {QueueItem} */ item, /** @type {number} */ i) {
   const pos = item.p.positions[i];
   const r = (reviewState.drafts[draftKey(item.t.id, i)] ?? pos.reply ?? '').trim();
   if (!r) return '';
@@ -692,12 +739,12 @@ function replyPreview(item, i) {
  *  the order triage handed them (it leads with `agree` where the reviewer is
  *  simply right), then Skip. No stance segment, no alts sub-row, no inline editor —
  *  picking a row stages it, and the words are edited on the overview. */
-function rvOptions(item) {
+function rvOptions(/** @type {QueueItem} */ item) {
   const sec = el('div', 'sec');
   const list = el('div', 'opts');
   const chosen = reviewState.skipped[item.t.id] ? -1 : pickOf(item);
 
-  item.p.positions.forEach((pos, i) => {
+  item.p.positions.forEach((/** @type {import('../snapshot').Position} */ pos, /** @type {number} */ i) => {
     if (!offered(pos)) return;
     const b = el('button', 'opt' + (i === chosen ? ' on' : ''));
     const head = el('div', 'ohead');
@@ -737,7 +784,7 @@ function rvOptions(item) {
 
 /** The daemon's appended free-text option ("Something else"): a reply stance with
  *  no drafted words. Identified by shape, not label, so a rename cannot break it. */
-const isFreeText = (pos) => pos.stance === 'reply' && !((pos.reply || '').trim());
+const isFreeText = (/** @type {import('../snapshot').Position} */ pos) => pos.stance === 'reply' && !((pos.reply || '').trim());
 
 /** The reply box, shared by the card and the overview's edit toggle. Prefilled
  *  from the draft the read already produced — instant, nothing waits on the agent —
@@ -745,7 +792,7 @@ const isFreeText = (pos) => pos.stance === 'reply' && !((pos.reply || '').trim()
  *  cursor never jumps. A textarea, not contenteditable: the text goes to GitHub as
  *  plain markdown, so rich paste is liability and browsers insert <div>/<br> where
  *  a newline belongs. `Diff.openEditor()` settled this. */
-function replyBox(item) {
+function replyBox(/** @type {QueueItem} */ item) {
   const i = pickOf(item);
   const pos = item.p.positions[i];
   const wrap = el('div', 'replyedit');
@@ -770,7 +817,7 @@ function replyBox(item) {
  *  `note`, which `commands/review-session.md` already reads as "the human's own
  *  instruction; follow it". Keyed per thread, not per option, because it describes
  *  the thread's work rather than one wording of it. */
-function instructionBox(item) {
+function instructionBox(/** @type {QueueItem} */ item) {
   const wrap = el('div', 'replyedit');
   const box = el('textarea', 'box');
   box.setAttribute('aria-label', `Instructions for ${threadLabel(item.t)}`);
@@ -787,7 +834,7 @@ function instructionBox(item) {
  *  two: what to do, and what to say. They are separate because they go to
  *  different readers — the instruction to the agent, the reply to the reviewer —
  *  and one box for both meant the reviewer read your instructions. */
-function answerBoxes(item) {
+function answerBoxes(/** @type {QueueItem} */ item) {
   const wrap = el('div', 'answerboxes');
   if (isFreeText(positionOf(item))) {
     wrap.appendChild(el('div', 'boxlab', 'instructions for the session'));
@@ -801,7 +848,7 @@ function answerBoxes(item) {
 /** The selected option's answer, edited on the card. Absent for agree/skip, which
  *  post no words. Shares `reviewState.drafts`/`notes` with the overview's edit
  *  box, so text typed on either surface shows on the other. */
-function rvCardReply(item) {
+function rvCardReply(/** @type {QueueItem} */ item) {
   if (reviewState.skipped[item.t.id]) return null;
   const pos = positionOf(item);
   if (!['reply', 'story'].includes(pos.stance)) return null;
@@ -818,7 +865,7 @@ function rvCardReply(item) {
 
 /** The footer under a reply box: what gets appended, and — only once the text
  *  actually differs from the draft — the offer to put it back. */
-function rvFootState(bodyEl, item, pos, i) {
+function rvFootState(/** @type {HTMLElement} */ bodyEl, /** @type {QueueItem} */ item, /** @type {import('../snapshot').Position} */ pos, /** @type {number} */ i) {
   const foot = bodyEl.querySelector('.foot');
   if (!foot) return;
   foot.replaceChildren();
@@ -851,13 +898,13 @@ function rvFootState(bodyEl, item, pos, i) {
 
 /** Whether a thread's pick posts words the human has to write. `agree` posts a
  *  thumbs up and no words, `skip` posts nothing; both need no reply. */
-const needsWords = (item) =>
+const needsWords = (/** @type {QueueItem} */ item) =>
   isHandled(item) && ['reply', 'story'].includes(positionOf(item).stance);
 
 /** The overview: every thread's answer in one list, with the drafted replies
  *  listed and editable here rather than one card at a time. Nothing has left the
  *  machine yet — the session applies the picks and posts only on your go. */
-function rvFinal(root) {
+function rvFinal(/** @type {HTMLElement} */ root) {
   const q = queue();
   root.appendChild(rvHead('review & send', decidedCount()));
   root.appendChild(rvStrip(null));
@@ -905,7 +952,7 @@ function rvFinal(root) {
 /** One thread's row on the overview: what it will do, and its reply as a line with
  *  an `edit` toggle — not a textarea by default, which read as clutter. `agree`/
  *  `skip` are static; a reply/story shows the drafted words and opens a box on ask. */
-function rvOverviewRow(item) {
+function rvOverviewRow(/** @type {QueueItem} */ item) {
   const pos = positionOf(item);
   const skipped = reviewState.skipped[item.t.id];
   const row = el('div', 'stage-row');
@@ -982,11 +1029,11 @@ function rvOverviewRow(item) {
  *  The irreversibility is stated once, quietly, under them. It used to be a framed
  *  panel of its own; a warning repeated in its own box on every send is one the eye
  *  learns to jump, and it was describing the same batch the list already showed. */
-function rvWillDo(out) {
+function rvWillDo(/** @type {ReturnType<typeof outward>} */ out) {
   const sec = el('div', 'sec willdo');
   sec.appendChild(el('div', 'eyebrow', 'what will be done'));
   const row = el('div', 'tallies');
-  const add = (kind, n, one, many) => {
+  const add = (/** @type {string} */ kind, /** @type {number} */ n, /** @type {string} */ one, /** @type {string} */ many) => {
     if (!n) return;
     row.appendChild(el('span', 'tally-b ' + kind, `${n} ${n === 1 ? one : many}`));
   };
@@ -1024,9 +1071,9 @@ function rvWillDo(out) {
  *  out of the list was worse: `outward().commits` reads position patches, which the
  *  session flow never has, so the most destructive act in the batch was the one
  *  thing the screen never mentioned. The certainty is graded rather than guessed. */
-function rvCommitRow(out) {
+function rvCommitRow(/** @type {ReturnType<typeof outward>} */ out) {
   if (out.push === 'no') return null;
-  const branch = `origin/${reviewState.data.head_ref || 'this branch'}`;
+  const branch = `origin/${reviewState.data?.head_ref || 'this branch'}`;
   const row = el('div', 'stage-row');
   const c = el('span', 'c');
   const head = el('div', 'threadhead');
@@ -1055,15 +1102,15 @@ function rvCommitRow(out) {
  *  Per reviewer, not per PR: one whose every thread is addressed is re-requested
  *  even while another's are still open. The daemon recomputes this from a fresh
  *  fetch at post time; this is the same rule, shown early. */
-function rvRerequestRows(q) {
-  const viewer = reviewState.data.viewer;
+function rvRerequestRows(/** @type {QueueItem[]} */ q) {
+  const viewer = reviewState.data?.viewer;
   const mine = new Map();   // login -> { open: [labels] }
-  for (const t of reviewState.data.threads || []) {
+  for (const t of reviewState.data?.threads || []) {
     if (!t.answerable) continue;
     const who = t.comments?.[0]?.author;
     if (!who || who === viewer) continue;
     const entry = mine.get(who) || { open: [] };
-    const item = q.find((x) => x.t.id === t.id);
+    const item = q.find((/** @type {QueueItem} */ x) => x.t.id === t.id);
     if (!item || !isHandled(item)) {
       const line = t.line ?? t.original_line;
       entry.open.push(t.path ? (line ? `${t.path}:${line}` : t.path) : 'the review summary');
@@ -1093,7 +1140,7 @@ function rvRerequestRows(q) {
 
 
 /** `2 replies and 1 👍`: the outward writes in words, or '' for none. */
-function saidCounts(out) {
+function saidCounts(/** @type {ReturnType<typeof outward>} */ out) {
   return [
     out.replies && `${out.replies} ${out.replies === 1 ? 'reply' : 'replies'}`,
     out.thumbs && `${out.thumbs} 👍`,
@@ -1102,8 +1149,9 @@ function saidCounts(out) {
 }
 
 /** Everything the batch would do, counted. */
-function outward(q) {
+function outward(/** @type {QueueItem[]} */ q) {
   const handled = q.filter(isHandled);
+  /** @type {{ path: string, added: number, deleted: number }[]} */
   const files = [];
   for (const item of handled) {
     if (!writesCode(item, positionOf(item))) continue;
@@ -1113,22 +1161,22 @@ function outward(q) {
       else files.push({ ...f });
     }
   }
-  const replies = handled.filter((x) => replyOf(x).trim() &&
+  const replies = handled.filter((/** @type {QueueItem} */ x) => replyOf(x).trim() &&
     ['reply', 'story'].includes(positionOf(x).stance)).length;
   // Counted apart from the GitHub writes: a story goes to a different system, and
   // it is the one thing in the batch that is not re-derivable from the PR.
-  const stories = handled.filter((x) => positionOf(x).stance === 'story').length;
-  const thumbs = handled.filter((x) => positionOf(x).stance === 'agree').length;
+  const stories = handled.filter((/** @type {QueueItem} */ x) => positionOf(x).stance === 'story').length;
+  const thumbs = handled.filter((/** @type {QueueItem} */ x) => positionOf(x).stance === 'agree').length;
 
-  const viewer = reviewState.data.viewer;
+  const viewer = reviewState.data?.viewer;
   const open = new Set();
   const all = new Set();
-  for (const t of reviewState.data.threads || []) {
+  for (const t of reviewState.data?.threads || []) {
     if (!t.answerable) continue;
     const who = t.comments?.[0]?.author;
     if (!who || who === viewer) continue;
     all.add(who);
-    const item = q.find((x) => x.t.id === t.id);
+    const item = q.find((/** @type {QueueItem} */ x) => x.t.id === t.id);
     if (!item || !isHandled(item)) open.add(who);
   }
   const rerequests = [...all].filter((w) => !open.has(w)).length;
@@ -1141,10 +1189,10 @@ function outward(q) {
      note is an instruction to change something, so either proves work. A plain
      reply might be prose, so it only earns `may`. Never `no` while the agent owns a
      thread — under-reporting a force-push is the bad direction to be wrong in. */
-  const coding = handled.filter((x) => modeOf(x) === 'agent' &&
+  const coding = handled.filter((/** @type {QueueItem} */ x) => modeOf(x) === 'agent' &&
     positionOf(x).stance !== 'story');
   const push = !coding.length ? 'no'
-    : coding.some((x) => positionOf(x).stance === 'agree' ||
+    : coding.some((/** @type {QueueItem} */ x) => positionOf(x).stance === 'agree' ||
         (reviewState.notes[x.t.id] || '').trim()) ? 'will' : 'may';
 
   return {
@@ -1168,8 +1216,9 @@ function outward(q) {
  *  A push with failures after it is the hard one: the code is public and cannot
  *  be recalled, so landed / failed / not attempted are separated before anything
  *  is offered. */
-function rvReport(root) {
+function rvReport(/** @type {HTMLElement} */ root) {
   const r = reviewState.report;
+  if (!r) return;
   root.appendChild(rvHead(r.refused ? 'stopped' : r.failed.length ? 'posted with errors' : 'posted'));
 
   const banner = el('div', 'banner' + (r.pushed ? '' : ' clean'));
@@ -1180,7 +1229,7 @@ function rvReport(root) {
     const p = el('p');
     p.appendChild(el('span', 'm', r.pushed.slice(0, 7)));
     p.appendChild(document.createTextNode(
-      ` is on origin/${reviewState.data.head_ref || 'this branch'}. ` +
+      ` is on origin/${reviewState.data?.head_ref || 'this branch'}. ` +
       'Retrying posts only what is missing — it will not push again, and it re-reads the ' +
       'threads first so nothing is sent twice.'));
     tx.appendChild(p);
@@ -1227,7 +1276,7 @@ function rvReport(root) {
     body.appendChild(sec);
   }
 
-  body.appendChild(resultSec('landed', r.landed, (x) => {
+  body.appendChild(resultSec('landed', r.landed, (/** @type {any} */ x) => {
     if (x.what === 'story') {
       return {
         cls: 'ok', st: '✓',
@@ -1249,7 +1298,7 @@ function rvReport(root) {
         : `${whatWord(x.what)} posted. Cannot be unsent.`,
     };
   }));
-  body.appendChild(resultSec('failed', r.failed, (x) => ({
+  body.appendChild(resultSec('failed', r.failed, (/** @type {any} */ x) => ({
     // A story is filed, not posted. The verb is the difference between "a
     // colleague can see this" and "a record exists somewhere else".
     cls: 'no', st: '✕',
@@ -1260,7 +1309,7 @@ function rvReport(root) {
      is waiting on. They arrive as two lists only because one is per-write and the
      other is per-reviewer — rendering only `held_back` dropped every reply that
      was skipped because its story did not land. */
-  body.appendChild(resultSec('not attempted', [...r.skipped, ...r.held_back], (x) => ({
+  body.appendChild(resultSec('not attempted', [...r.skipped, ...r.held_back], (/** @type {any} */ x) => ({
     cls: 'wait', st: '·',
     t: x.what === 'reply' ? `Reply not posted — ${x.waiting_on}.` : x.waiting_on,
     held: true,
@@ -1275,8 +1324,8 @@ function rvReport(root) {
          `/post` is refused every time — the branch it pushed is now the remote head —
          and it would resolve with no comments, so the Manual thread would post
          nothing at all. */
-      if (manualState.finished) finishManual(manualState.finished);
-      else sendBatch();
+      if (manualState.finished) void finishManual(manualState.finished);
+      else void sendBatch();
     }) : actBtn('done', 'pri', () => closeReview()),
     retry ? actBtn('leave it', null, () => closeReview()) : null,
   ], r.refused
@@ -1284,10 +1333,10 @@ function rvReport(root) {
     : 're-reads the threads first · never reposts'));
 }
 
-const whatWord = (w) =>
+const whatWord = (/** @type {string} */ w) =>
   ({ story: 'Story', reply: 'Reply', thumbs_up: 'Thumbs up', rerequest: 'Re-request' }[w] || w);
 
-function waitRow(text) {
+function waitRow(/** @type {string} */ text) {
   const row = el('div', 'res wait');
   row.appendChild(el('span', 'st', '·'));
   const c = el('span', 'c');
@@ -1296,7 +1345,7 @@ function waitRow(text) {
   return row;
 }
 
-function resultSec(title, rows, shape) {
+function resultSec(/** @type {string} */ title, /** @type {any[]} */ rows, /** @type {(row: any) => any} */ shape) {
   if (!rows?.length) return document.createComment(`no ${title}`);
   const sec = el('div', 'sec');
   sec.appendChild(el('div', 'eyebrow', title));
@@ -1339,9 +1388,10 @@ function resultSec(title, rows, shape) {
  *  Two things fall out for free: you cannot describe work you have not done, so the
  *  comment is written here rather than guessed at on the card; and `git diff` makes
  *  the file list complete, because nobody had to declare it. */
-function rvManual(root) {
-  const m = reviewState.report.manual;
-  const refused = reviewState.report.refused;
+function rvManual(/** @type {HTMLElement} */ root) {
+  const m = reviewState.report?.manual;
+  const refused = reviewState.report?.refused;
+  if (!m) return;
   root.appendChild(rvHead(refused ? 'stopped' : 'your turn', `${m.threads.length} by hand`));
 
   if (refused) {
@@ -1434,7 +1484,7 @@ function rvManual(root) {
 }
 
 /** One thread waiting on you: what they said, what you changed, what you will say. */
-function rvManualRow(th) {
+function rvManualRow(/** @type {import('../snapshot').ManualThread} */ th) {
   const wrap = el('div', 'manrow');
 
   const top = el('div', 'top');
@@ -1464,7 +1514,8 @@ function rvManualRow(th) {
     // repainting here would drop focus out of the box mid-sentence.
     const send = $('rvoverlay').querySelector('.acts .act.warm');
     if (send) {
-      const m = reviewState.report.manual;
+      const m = reviewState.report?.manual;
+      if (!m) return;
       /** @type {HTMLButtonElement} */ (send).disabled = !m.threads.every((x) => (manualState.comments[x.thread_id] || '').trim());
     }
     // The row's own chip tracks the same thing, so it is flipped by hand rather
@@ -1485,7 +1536,7 @@ function rvManualRow(th) {
 }
 
 /** `a.ts:12 · alice` back into its two halves, for the row's own layout. */
-function splitLabel(label) {
+function splitLabel(/** @type {string} */ label) {
   const at = label.lastIndexOf(' · ');
   return at < 0 ? [label, ''] : [label.slice(0, at), label.slice(at + 3)];
 }
@@ -1500,7 +1551,7 @@ async function loadManualDiff() {
   try {
     manualState.changed = await get(`/api/pr/${reviewState.pr}/manual`);
   } catch (e) {
-    toast(e.message, true);
+    toast(reason(e), true);
   }
   renderReview();
 }
@@ -1510,13 +1561,13 @@ async function loadManualDiff() {
  *  Carries the decisions again, and the sha the phase reported. There is no pending
  *  state on the daemon to go stale: what the first half produced is a commit, so
  *  git is the record, and `HEAD` moving is what a refusal is made of. */
-async function finishManual(replay) {
+async function finishManual(/** @type {any} */ replay) {
   if (reviewState.busy) return;
   // Only reachable from the phase's own button and the report's retry, but it reads a
   // phase out of the report and a throw here would blank the screen mid-batch.
-  const m = replay ? { threads: [] } : reviewState.report?.manual;
-  if (!m) return;
-  const missing = m.threads.filter((th) => !(manualState.comments[th.thread_id] || '').trim());
+  const m = replay ? null : reviewState.report?.manual;
+  if (!replay && !m) return;
+  const missing = (m?.threads || []).filter((th) => !(manualState.comments[th.thread_id] || '').trim());
   if (missing.length) {
     return toast('a comment is required on a manual thread — the reviewer would get ' +
                  'a commit and silence otherwise', true);
@@ -1527,7 +1578,7 @@ async function finishManual(replay) {
      already happened — so the retry has to be the same request, not a new one. */
   const payload = replay || {
     batch: batchPayload(),
-    committed: m.committed,
+    committed: m?.committed,
     comments: manualState.comments,
     // What the screen showed you, which is what you pressed the button under. The
     // daemon refuses anything dirty that is not in here rather than sweeping it into
@@ -1565,9 +1616,9 @@ async function finishManual(replay) {
     // A stray-file refusal is about a tree that has moved on, so re-read it: the
     // screen then shows what is actually there and pressing continue is a real
     // second look rather than the same refusal again.
-    if (got.refused && got.retryable) loadManualDiff();
+    if (got.refused && got.retryable) void loadManualDiff();
   } catch (e) {
-    toast(e.message, true);
+    toast(reason(e), true);
   }
   reviewState.busy = false;
   renderReview();
@@ -1589,8 +1640,8 @@ function renderReview() {
 
   if (reviewState.report?.manual) reviewState.screen = 'manual';
   else if (reviewState.report) reviewState.screen = 'report';
-  else if (reviewState.data.gate) reviewState.screen = 'gate';
-  else if (!reviewState.data.proposals) reviewState.screen = 'intake';
+  else if (reviewState.data?.gate) reviewState.screen = 'gate';
+  else if (!reviewState.data?.proposals) reviewState.screen = 'intake';
   // Proposals are in and the tree is writable, but the screen is still sitting on
   // a pre-decision default: `intake` because triage had not run when the overlay
   // opened (and reopening the same PR does not reset it), or `gate` from before it
@@ -1600,6 +1651,7 @@ function renderReview() {
     reviewState.screen = 'overview';
   }
 
+  /** @type {Record<string, (root: HTMLElement) => void>} */
   ({
     intake: rvIntake,
     gate: rvGate,
@@ -1621,7 +1673,7 @@ function sessionAsk() {
   const i = s && s.interaction && !s.interaction.answer ? s.interaction : null;
   return i && i.options ? i : null;
 }
-const askHasValue = (ask, v) => !!ask && ask.options.some((o) => o.value === v);
+const askHasValue = (/** @type {import('../snapshot').Interaction | null | undefined} */ ask, /** @type {string} */ v) => !!ask && ask.options.some((/** @type {import('../snapshot').InteractionOption} */ o) => o.value === v);
 
 /** Start one session that reads, then makes the changes you pick and posts.
  *
@@ -1654,7 +1706,7 @@ async function startReviewSession() {
     // screen, so this is putting the window away rather than ending anything.
     closeReview();
   } catch (e) {
-    toast(e.message, true);
+    toast(reason(e), true);
     reviewState.screen = 'intake';
   }
   reviewState.busy = false;
@@ -1667,7 +1719,7 @@ async function startReviewSession() {
  *  session there. `reviewTick` does it on its own for a pass already running when
  *  the page loaded; this is the same two fields, set at the moment the run starts,
  *  so the bar is up before the first snapshot carrying it arrives. */
-function adoptTriage(pr, session) {
+function adoptTriage(/** @type {number | null} */ pr, /** @type {string} */ session) {
   reviewState.pr = pr;
   reviewState.session = session;
   reviewState.screen = 'reading';
@@ -1701,14 +1753,14 @@ function reviewTick() {
   if (!reviewState.session && selected) {
     const s = (snap.sessions || []).find((x) => x.id === selected);
     const k = s && s.alive ? s.pass : null;
-    if (k && k.command === 'resolve-run') {
+    if (s && k && k.command === 'resolve-run') {
       // Mid-run, from a reload or from landing on its pane: the plan is gone and
       // the run's own record is what the screen and the bar read.
       reviewState.pr = k.pr;
       reviewState.session = s.id;
       reviewState.decisionsSent = true;
       reviewState.screen = 'run';
-    } else if (k && (k.command === 'review' || k.command === 'triage')) {
+    } else if (s && k && (k.command === 'review' || k.command === 'triage')) {
       reviewState.pr = k.pr;
       reviewState.session = s.id;
       reviewState.proposalsLoaded = false;
@@ -1728,11 +1780,11 @@ function reviewTick() {
      and ends at the proposals POST, so the decision ask below never comes and the
      screen would sit on `reading` with the cards already waiting behind it. The
      daemon sets `posted` in the same write that stores them. */
-  const t = (snap.triage || {})[reviewState.pr];
+  const t = (snap.triage || {})[String(reviewState.pr)];
   if (t && t.posted && !reviewState.proposalsLoaded) {
     reviewState.proposalsLoaded = true;
     reviewState.screen = 'overview';
-    loadReview(reviewState.pr);
+    void loadReview(reviewState.pr);
     return;
   }
   // The decision ask appears only after the session has posted its proposals, so it
@@ -1740,7 +1792,7 @@ function reviewTick() {
   if (askHasValue(ask, 'decisions') && !reviewState.proposalsLoaded) {
     reviewState.proposalsLoaded = true;
     reviewState.screen = 'overview';
-    loadReview(reviewState.pr);
+    void loadReview(reviewState.pr);
     return;
   }
   // The session ended.
@@ -1753,7 +1805,7 @@ function reviewTick() {
      session null, `proposalsLoaded` false — and the triage branch above then fired
      again on the next tick, which is the overview appearing over a run you had just
      approved a commit for. */
-  const run = (snap.resolve_runs || {})[reviewState.pr];
+  const run = (snap.resolve_runs || {})[String(reviewState.pr)];
   if (run && !run.ended) {
     if (reviewState.session !== run.session || reviewState.screen !== 'run') {
       reviewState.session = run.session;
@@ -1771,7 +1823,7 @@ function reviewTick() {
   // Not a screen of our own reporting on someone else's run, which is how you end up
   // with two places to look and one of them a version behind.
   if (s && s.handed_off) {
-    const run = (snap.automation || {})[reviewState.pr];
+    const run = (snap.automation || {})[String(reviewState.pr)];
     // The run does not exist yet — the daemon is still cutting its worktree. Hold
     // the screen we are on rather than showing the report we are about to replace.
     if (!run || run.state !== 'running' || run.session === reviewState.session) return;
@@ -1808,12 +1860,13 @@ function reviewTick() {
 }
 
 /** Route the session flow's own screens. */
-function renderSessionReview(root) {
+function renderSessionReview(/** @type {HTMLElement} */ root) {
   if (reviewState.screen === 'reading') return rvReading(root);
   if (reviewState.screen === 'report') return rvSessionReport(root);
   if (reviewState.decisionsSent) return rvChanging(root);
-  if (!reviewState.data || !reviewState.data.proposals) return rvReading(root);
-  ({ overview: rvOverview, card: rvCard, final: rvFinal })[
+  if (!reviewState.data || !reviewState.data?.proposals) return rvReading(root);
+  (/** @type {Record<string, (root: HTMLElement) => void>} */
+    ({ overview: rvOverview, card: rvCard, final: rvFinal }))[
     ['overview', 'card', 'final'].includes(reviewState.screen) ? reviewState.screen : 'overview'
   ](root);
 }
@@ -1821,12 +1874,12 @@ function renderSessionReview(root) {
 /** A phase the session owns and you only watch: what it is doing, and the one
  *  way out. Both such phases ask for permissions in the pane, so the pane has to
  *  be one gesture away. */
-function waitScreen(root, eyebrow, big, para) {
+function waitScreen(/** @type {HTMLElement} */ root, /** @type {string} */ eyebrow, /** @type {string} */ big, /** @type {string | null} */ para) {
   root.appendChild(rvHead(reviewState.data?.title || 'review'));
   const mid = el('div', 'mid');
   mid.appendChild(el('div', 'eyebrow', eyebrow));
   mid.appendChild(el('div', 'big', big));
-  mid.appendChild(el('p', null, para));
+  if (para !== null) mid.appendChild(el('p', null, para));
   const row = el('div');
   row.style.cssText = 'display:flex;gap:8px;margin-top:6px';
   row.appendChild(headBtn('go to the pane', 'go', () => { closeReview(); setSelected(reviewState.session); }));
@@ -1842,13 +1895,13 @@ function waitScreen(root, eyebrow, big, para) {
  *  line the bar already carries, and it covers the pane the agent asks its own
  *  questions in. This is the overlay session's flow (`commands/review-session.md`),
  *  which stays open across its own read phase and has nowhere else to say so. */
-function rvReading(root) {
+function rvReading(/** @type {HTMLElement} */ root) {
   waitScreen(root, 'the session is reading the threads', 'Reading…',
     'The cards open here when it is done. Permission prompts appear in the session’s pane.');
 }
 
 /** Between the decision submit and the post-go ask: the session is writing code. */
-function rvChanging(root) {
+function rvChanging(/** @type {HTMLElement} */ root) {
   waitScreen(root, 'the session is making the changes you picked', 'Applying…',
     'It writes the code for each solution you chose, runs the repo’s checks, amends '
     + 'the owning commit and pushes, then posts your replies. Answer any permission '
@@ -1857,7 +1910,7 @@ function rvChanging(root) {
 
 
 /** Nothing more to do: the session finished. */
-function rvSessionReport(root) {
+function rvSessionReport(/** @type {HTMLElement} */ root) {
   root.appendChild(rvHead('done'));
   const q = queue();
   const out = outward(q);
@@ -1898,6 +1951,7 @@ function decisionSet() {
   return queue().map((item) => {
     if (reviewState.skipped[item.t.id]) return { thread_id: item.t.id, stance: 'skip' };
     const pos = positionOf(item);
+    /** @type {{ thread_id: string, stance: string, solution: string, reply: string, note?: string }} */
     const d = {
       thread_id: item.t.id,
       stance: pos.stance,
@@ -1914,7 +1968,7 @@ function decisionSet() {
 
 /** Answer the review session's pending ask, carrying the JSON in the free-text
  *  field the option opened. */
-async function answerSession(value, payload) {
+async function answerSession(/** @type {string} */ value, /** @type {any} */ payload) {
   const ask = sessionAsk();
   if (!ask) { toast('the session is not waiting on anything just now', true); return false; }
   try {
@@ -1923,7 +1977,7 @@ async function answerSession(value, payload) {
     });
     return true;
   } catch (e) {
-    toast(e.message, true);
+    toast(reason(e), true);
     return false;
   }
 }
@@ -1974,7 +2028,7 @@ async function submitDecisions() {
  *  The proposals ride the snapshot too, but this fetch is what the overlay reads:
  *  it also carries the gate state and the thread bodies, and it is deliberately
  *  explicit rather than a side effect of a tick. */
-async function loadReview(pr) {
+async function loadReview(/** @type {number | null} */ pr) {
   const p = (snap.prs || []).find((x) => x.number === pr);
   reviewState.pr = pr;
   try {
@@ -2015,22 +2069,22 @@ async function loadReview(pr) {
        enabled, because every() over no rows is true. */
     if (data.manual && data.manual.open && !reviewState.report) {
       reviewState.report = {
-        refused: null, files: [], amend: null, pushed: null,
+        refused: null, retryable: false, files: [], amend: null, pushed: null,
         landed: [], failed: [], skipped: [], rerequested: [], held_back: [],
         manual: data.manual,
       };
       reviewState.screen = 'manual';
-      loadManualDiff();
+      void loadManualDiff();
     }
     renderReview();
   } catch (e) {
-    toast(e.message, true);
+    toast(reason(e), true);
     if (!reviewState.data) closeReview();
   }
 }
 
 /** The live session answering this PR, whichever window started it. */
-function liveReviewSession(pr) {
+function liveReviewSession(/** @type {number | null} */ pr) {
   return (snap.sessions || []).find((x) => x.alive
     && x.pass && x.pass.command === 'review' && x.pass.pr === pr) || null;
 }
@@ -2042,10 +2096,10 @@ function liveReviewSession(pr) {
  *  screen with empty picks, and post the recommended reply for every thread —
  *  including the ones the other window skipped. So: no ask yet (still reading),
  *  or the decision ask still open. Anything later is watched from its pane. */
-function adoptable(s) {
+function adoptable(/** @type {import('../snapshot').SessionView | null | undefined} */ s) {
   if (!s) return false;
   const i = s.interaction;
-  return !i || (!i.answer && i.options.some((o) => o.value === 'decisions'));
+  return !i || (!i.answer && i.options.some((/** @type {import('../snapshot').InteractionOption} */ o) => o.value === 'decisions'));
 }
 
 /** Is a pass working through this PR, with nothing yet for you to act on?
@@ -2060,27 +2114,27 @@ function adoptable(s) {
  *  and what is left is an agent working — which the bar reports in a line, next to
  *  the pane where that agent asks anything it needs. The screen becomes worth
  *  opening again when the run is done and its push and re-request buttons are. */
-function busyOnItsOwn(pr) {
-  const t = (snap.triage || {})[pr];
+function busyOnItsOwn(/** @type {number | null} */ pr) {
+  const t = (snap.triage || {})[String(pr)];
   if (t && !t.posted) return true;
-  const run = (snap.resolve_runs || {})[pr];
+  const run = (snap.resolve_runs || {})[String(pr)];
   return !!run && !run.ended && run.threads.some((x) => x.status === 'pending');
 }
 
-async function openReview(pr) {
+async function openReview(/** @type {number | null} */ pr) {
   /* Nothing to open while the pass is still reading: the only screen the overlay
      has then is a full window repeating what the bar says in a line, over the pane
      where the agent's own questions appear. Guarded here rather than at the button,
      because the chord and the ask box's `back to the review` reach the same
      place. */
   if (busyOnItsOwn(pr)) {
-    const t = (snap.triage || {})[pr];
+    const t = (snap.triage || {})[String(pr)];
     return toast(t && !t.posted
       ? `triage is reading thread ${Math.min(t.done + 1, t.total)} of ${t.total}`
       : 'the run is applying your decisions');
   }
   // Two overlays at the same z-index would stack; the diff viewer goes first.
-  if (Diff.state.open) Diff.close();
+  if (Diff.state.open) void Diff.close();
   if (reviewState.pr !== pr) {
     manualState.comments = {};
     manualState.changed = null;
@@ -2102,7 +2156,7 @@ async function openReview(pr) {
     // leaving it mid-ask with nothing able to answer it. Its phase comes from the
     // ask, so `tick` sorts out which screen this is.
     const live = liveReviewSession(pr);
-    if (adoptable(live)) {
+    if (live && adoptable(live)) {
       reviewState.session = live.id;
       reviewState.screen = 'reading';
     }
@@ -2125,7 +2179,7 @@ function closeReview() {
  *  session and no daemon fetch — so the flattened UI can be clicked while the
  *  GitHub fixture is blocked on CI. Reached only from `/review-preview`; nothing
  *  in the app calls it, and `send` is inert because there is no session to answer. */
-export function preview(data) {
+export function preview(/** @type {any} */ data) {
   reviewState.picks = {};
   reviewState.skipped = {};
   reviewState.drafts = {};
@@ -2149,7 +2203,7 @@ export function preview(data) {
  *
  *  `andClose` is for the two calls that hand you to a session — a triage run and
  *  `fix-pr`, because the useful next screen is the pty, not this one. */
-async function rvAct(fn, said, andClose) {
+async function rvAct(/** @type {() => Promise<any>} */ fn, /** @type {string} */ said, /** @type {boolean | undefined} */ andClose) {
   if (reviewState.busy) return;
   reviewState.busy = true;
   renderReview();
@@ -2162,7 +2216,7 @@ async function rvAct(fn, said, andClose) {
       return closeReview();
     }
   } catch (e) {
-    toast(e.message, true);
+    toast(reason(e), true);
   }
   reviewState.busy = false;
   await loadReview(reviewState.pr);
@@ -2188,7 +2242,14 @@ function acceptCard() {
  *  Deliberately not a fourth stance. The words and the position are unchanged —
  *  only who implements them — and the reply is written later, in the phase, once
  *  the work exists. So an empty box is not a refusal here the way it is under
- *  `accept`. */
+ *  `accept`.
+ *
+ *  **Nothing calls this, and so no thread is ever in `'manual'` mode.** No card
+ *  button and no key choose it, which makes `modeOf` answer `'agent'` always and
+ *  the `manual` label at the bottom of this file unreachable. Kept rather than
+ *  deleted because the gap is a missing `actBtn`, not a wrong decision — the
+ *  daemon's own `manual` screen is a different thing and still works. */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- unwired, see above.
 function manualCard() {
   const item = queue()[reviewState.i];
   if (!item) return;
@@ -2223,7 +2284,7 @@ function advance() {
 /** j / k. Both ways on purpose: a later thread often changes what an earlier one
  *  deserves as an answer, and decisions stage rather than post, so revising one
  *  is free right up to the final action. */
-function moveCard(delta) {
+function moveCard(/** @type {number} */ delta) {
   const q = queue();
   if (!q.length) return;
   reviewState.i = Math.max(0, Math.min(q.length - 1, reviewState.i + delta));
@@ -2250,7 +2311,7 @@ function batchPayload() {
       mode: modeOf(item),
     };
   });
-  return { base_sha: reviewState.data.proposals.base_sha, decisions };
+  return { base_sha: reviewState.data?.proposals?.base_sha, decisions };
 }
 
 async function sendBatch() {
@@ -2263,12 +2324,12 @@ async function sendBatch() {
   try {
     reviewState.report = await call(`/api/pr/${reviewState.pr}/post`, batchPayload());
     // A batch that stopped for the manual phase is not a report yet.
-    reviewState.screen = reviewState.report.manual ? 'manual' : 'report';
-    if (reviewState.report.manual) loadManualDiff();
+    reviewState.screen = reviewState.report?.manual ? 'manual' : 'report';
+    if (reviewState.report?.manual) void loadManualDiff();
   } catch (e) {
     // A rejected request is the daemon refusing before it wrote anything —
     // a bad index, a thread that has gone, a gate that closed under you.
-    toast(e.message, true);
+    toast(reason(e), true);
   }
   reviewState.busy = false;
   renderReview();
@@ -2311,7 +2372,7 @@ async function startRun() {
   } catch (e) {
     reviewState.screen = was;
     reviewState.decisionsSent = false;
-    toast(e.message, true);
+    toast(reason(e), true);
   }
   reviewState.busy = false;
   renderReview();
@@ -2336,8 +2397,8 @@ const RUN_STATE = {
  *  Reads the daemon's own record rather than a report handed back at the end, so
  *  a run you are half-way through is as legible as a finished one — and a run
  *  whose session died still shows exactly how far it got. */
-function rvRun(root) {
-  const run = (snap.resolve_runs || {})[reviewState.pr];
+function rvRun(/** @type {HTMLElement} */ root) {
+  const run = (snap.resolve_runs || {})[String(reviewState.pr)];
   root.appendChild(rvHead('the session is working'));
 
   const body = el('div', 'body');
@@ -2364,7 +2425,7 @@ function rvRun(root) {
 
   // The count that matters is not "how many done" but which kinds, so the tail
   // buttons can be read against it.
-  const by = (st) => run.threads.filter((t) => t.status === st).length;
+  const by = (/** @type {string} */ st) => run.threads.filter((t) => t.status === st).length;
   const left = by('pending') + by('committed');
   const foot = el('div', 'sec');
   // A run that ended says so first: without it, threads left `pending` read as
@@ -2402,7 +2463,7 @@ function rvRun(root) {
 
 /** The two claims about the whole branch. Explicit, and never a side effect of
  *  the last reply going out. */
-async function runTail(what) {
+async function runTail(/** @type {string} */ what) {
   if (reviewState.busy) return;
   reviewState.busy = true;
   renderReview();
@@ -2419,7 +2480,7 @@ async function runTail(what) {
       for (const f of r.failed || []) toast(f, true);
     }
   } catch (e) {
-    toast(e.message, true);
+    toast(reason(e), true);
   }
   reviewState.busy = false;
   renderReview();
@@ -2430,7 +2491,7 @@ async function runTail(what) {
  *  Only bare keys, and only when nothing is focused for typing: the capture
  *  handler runs before any element listener wherever focus is, so a reply
  *  containing "check the job" would otherwise jump cards mid-sentence. */
-function reviewKey(e) {
+function reviewKey(/** @type {KeyboardEvent} */ e) {
   if (e.key === 'Enter') {
     // A focused control owns Enter. Without this the global handler hijacks it to
     // accept the card, so a keyboard user who tabbed to an option button pressed
@@ -2498,7 +2559,7 @@ function barState() {
   /* The run's own record, counted the way the read pass is: what is settled out of
      what was handed over. `pending` is the only status that means "not yet". */
   if (reviewState.decisionsSent) {
-    const run = (snap.resolve_runs || {})[reviewState.pr];
+    const run = (snap.resolve_runs || {})[String(reviewState.pr)];
     if (run && run.threads.length) {
       const done = run.threads.filter((t) => t.status !== 'pending').length;
       return done < run.threads.length
@@ -2511,7 +2572,7 @@ function barState() {
      how many threads it handed over, not which one the agent is on. `posted` is
      the moment the cards exist, and it is the only thing that turns this bar from
      a progress report into a request. */
-  const t = (snap.triage || {})[reviewState.pr];
+  const t = (snap.triage || {})[String(reviewState.pr)];
   if (t && t.posted) {
     return { tone: 'attn', what: `triage done · ${t.total} threads need your call` };
   }

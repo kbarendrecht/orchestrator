@@ -26,6 +26,15 @@
 //!  6. The instance lock now guards the **checkout**: a second daemon for one
 //!     checkout is refused, which is the invariant `instance.rs` always claimed
 //!     and could not keep while the lock lived one level up.
+// A test binary, so a panic is how a failure is reported. `clippy.toml`'s
+// `allow-*-in-tests` covers `#[test]` functions and `#[cfg(test)]` modules, and
+// the helpers in an integration crate are neither.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing
+)]
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};

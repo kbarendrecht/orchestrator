@@ -951,6 +951,7 @@ pub fn write_settings(
     // both sets of rules apply (§11).
     match push_guard_hook(base_branch, main) {
         Some(hook) => {
+            #[expect(clippy::expect_used, reason = "PreToolUse is the array written a few lines above")]
             settings["hooks"]["PreToolUse"]
                 .as_array_mut()
                 .expect("PreToolUse is the array written just above")
@@ -965,7 +966,9 @@ pub fn write_settings(
     }
 
     let path = Config::hooks_settings_path()?;
-    std::fs::create_dir_all(path.parent().unwrap())?;
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
     std::fs::write(&path, serde_json::to_string_pretty(&settings)?)?;
     Ok(path)
 }

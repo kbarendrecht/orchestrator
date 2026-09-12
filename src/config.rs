@@ -845,7 +845,7 @@ impl Config {
     }
 
     /// The real work, with the path injected — the same split as
-    /// [`crate::instance::acquire_at`] and for the same reason: the caller above
+    /// `instance::acquire_at` and for the same reason: the caller above
     /// reads `ORCHD_CONFIG_DIR`, which is process-global, and a test that set it
     /// would be setting it for every other test in the binary. What is worth
     /// pinning here is the *decision* (first run, or a checkout that moved), not
@@ -996,8 +996,10 @@ impl Config {
     /// can answer for itself: an `upstream` remote beside `origin` is a fork
     /// layout, unmistakably, and guessing wrong there means every diff is measured
     /// against nothing.
+    #[expect(clippy::expect_used, reason = "every key written here is known-valid, so a parse failure is this function being wrong")]
     fn default_for(main_checkout: PathBuf) -> Self {
         let mut obj = serde_json::Map::new();
+        #[expect(clippy::expect_used, reason = "a PathBuf serialises unless it is not UTF-8, and a checkout path that is not is a first run that cannot proceed")]
         obj.insert(
             "main_checkout".into(),
             serde_json::to_value(&main_checkout).expect("a path is JSON"),

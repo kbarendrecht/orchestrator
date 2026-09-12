@@ -166,6 +166,22 @@ pub struct Host {
     changes: tokio::sync::broadcast::Sender<Vec<Checkout>>,
 }
 
+/// Lock, and survive a poisoning.
+///
+/// A `std::sync::Mutex` stays poisoned for the life of the process once a thread
+/// panics holding it, and unwrapping the guard turns that into a second panic —
+/// in the **host**, which owns every checkout's child process. One panic anywhere
+/// under one of these locks would therefore take every open checkout down with
+/// it, which is the one failure this process must not have.
+///
+/// Recovering is safe because of what the locks hold: a vector of rows, two maps
+/// and an `Option<Arc>`, each updated by whole assignments and `insert`/`remove`.
+/// There is no half-applied state a panic can leave behind — unlike a structure
+/// with an invariant spanning two fields, which is what poisoning exists for.
+fn locked<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 impl Host {
     pub fn new(token: String, port: u16, chrome: crate::window::Chrome) -> Arc<Self> {
         Arc::new(Host {
@@ -186,7 +202,7 @@ impl Host {
 
     /// Give the host its native window. Called once, by whichever process has one.
     pub fn attach_window(&self, control: Arc<dyn WindowControl>) {
-        *self.window.lock().unwrap() = Some(control);
+        *locked(&self.window) = Some(control);
     }
 
     /// Add or replace a checkout's entry, keyed on the path.
@@ -195,7 +211,7 @@ impl Host {
     /// on a new port with a new token, and two rows for one path is the shape
     /// where the page picks whichever it happened to render.
     pub fn record(&self, checkout: Checkout) {
-        let mut open = self.checkouts.lock().unwrap();
+        let mut open = locked(&self.checkouts);
         match open.iter_mut().find(|c| c.path == checkout.path) {
             Some(existing) => *existing = checkout,
             None => open.push(checkout),
@@ -206,7 +222,7 @@ impl Host {
     }
 
     pub fn checkouts(&self) -> Vec<Checkout> {
-        self.checkouts.lock().unwrap().clone()
+        locked(&self.checkouts).clone()
     }
 
     /// Tell every open page what the list is now.
@@ -270,7 +286,7 @@ impl Host {
     /// Put the rows in the given order, keeping any the caller did not name.
     fn reorder(&self, order: &[PathBuf]) {
         let wanted: Vec<String> = order.iter().map(|p| p.to_string_lossy().into_owned()).collect();
-        self.checkouts.lock().unwrap().sort_by_key(|c| {
+        locked(&self.checkouts).sort_by_key(|c| {
             wanted.iter().position(|w| *w == c.path).unwrap_or(usize::MAX)
         });
         self.announce();
@@ -289,7 +305,7 @@ impl Host {
 
     /// The native window, when one is attached.
     fn window(&self) -> Option<Arc<dyn WindowControl>> {
-        self.window.lock().unwrap().clone()
+        locked(&self.window).clone()
     }
 
     /// The pid of a checkout's daemon, while there is one.
@@ -298,7 +314,7 @@ impl Host {
     /// pid. This is for a log line and for a test that needs to kill a daemon the
     /// way a crash would.
     pub fn pid_of(&self, checkout: &Path) -> Option<u32> {
-        self.children.lock().unwrap().get(checkout).map(|c| c.pid)
+        locked(&self.children).get(checkout).map(|c| c.pid)
     }
 
     /// Mark a checkout's row down, keeping the row.
@@ -308,10 +324,10 @@ impl Host {
     /// checkout is gone" and "this checkout's daemon is gone".
     fn mark_down(&self, checkout: &Path) {
         let path = checkout.to_string_lossy();
-        if let Some(row) = self.checkouts.lock().unwrap().iter_mut().find(|c| c.path == path) {
+        if let Some(row) = locked(&self.checkouts).iter_mut().find(|c| c.path == path) {
             row.live = false;
         }
-        self.children.lock().unwrap().remove(checkout);
+        locked(&self.children).remove(checkout);
         self.announce();
     }
 
@@ -358,11 +374,11 @@ impl Host {
             }
             // A daemon that ran a while and then died is not a daemon that will
             // not start. It has earned the free recovery back.
-            let lived = host.started.lock().unwrap().remove(path).map(|at| at.elapsed());
+            let lived = locked(&host.started).remove(path).map(|at| at.elapsed());
             if lived.is_some_and(|d| d >= HEALTHY_UPTIME) {
-                host.retried.lock().unwrap().remove(path);
+                locked(&host.retried).remove(path);
             }
-            let spent = host.retried.lock().unwrap().insert(path.to_path_buf(), true);
+            let spent = locked(&host.retried).insert(path.to_path_buf(), true);
             if spent == Some(true) {
                 tracing::error!(
                     checkout = %path.display(),
@@ -384,7 +400,7 @@ impl Host {
             },
         )?;
 
-        self.started.lock().unwrap().insert(checkout.to_path_buf(), Instant::now());
+        locked(&self.started).insert(checkout.to_path_buf(), Instant::now());
         // **The host owns `recent.json`.** A hosted child's config dir is its own
         // checkout directory, so a child writing this would leave one single-entry
         // list per checkout — see the matching arm in `crate::start`. Best effort:
@@ -410,7 +426,7 @@ impl Host {
             clash: None,
         });
         self.note_repo_clash(checkout);
-        self.children.lock().unwrap().insert(checkout.to_path_buf(), Arc::new(child));
+        locked(&self.children).insert(checkout.to_path_buf(), Arc::new(child));
         Ok(())
     }
 
@@ -533,7 +549,7 @@ impl Host {
         let stopped = self.stop_checkout(checkout);
         let path = checkout.to_string_lossy();
         {
-            let mut open = self.checkouts.lock().unwrap();
+            let mut open = locked(&self.checkouts);
             open.retain(|c| c.path != path);
             // The set shrank, so a name that was only long because of a collision
             // gets its short form back.
@@ -547,8 +563,8 @@ impl Host {
         // A closed checkout that is opened again deserves its free recovery back:
         // the retry count is about a daemon that will not stay up, not about a
         // path you once closed.
-        self.retried.lock().unwrap().remove(checkout);
-        self.started.lock().unwrap().remove(checkout);
+        locked(&self.retried).remove(checkout);
+        locked(&self.started).remove(checkout);
         self.remember();
         self.announce();
         stopped
@@ -569,7 +585,7 @@ impl Host {
                 // The retry the last two deaths spent. A reopen is a person saying
                 // to try again, so it is worth the same free recovery a first
                 // start gets.
-                self.retried.lock().unwrap().remove(checkout);
+                locked(&self.retried).remove(checkout);
                 self.open_checkout(checkout).map_err(|e| format!("{e:#}"))
             }
             None => Err(format!("{path} is not open.")),
@@ -584,7 +600,7 @@ impl Host {
     /// one.
     fn note_repo_clash(&self, checkout: &Path) {
         let path = checkout.to_string_lossy().into_owned();
-        let mut open = self.checkouts.lock().unwrap();
+        let mut open = locked(&self.checkouts);
         let Some(mine) = open.iter().find(|c| c.path == path).and_then(|c| c.repo.clone()) else {
             return;
         };
@@ -615,7 +631,7 @@ impl Host {
     /// Every stop path goes through here so the flag is always set before the
     /// signal. Returns whether there was a daemon to stop.
     pub fn stop_checkout(&self, checkout: &Path) -> bool {
-        let child = self.children.lock().unwrap().get(checkout).cloned();
+        let child = locked(&self.children).get(checkout).cloned();
         match child {
             Some(child) => {
                 child.stop();
@@ -631,7 +647,7 @@ impl Host {
     /// `shutdown` is the only thing that reaches its sessions, and those run in
     /// parallel with each other already.
     pub fn stop_all(&self) {
-        let children: Vec<_> = self.children.lock().unwrap().values().cloned().collect();
+        let children: Vec<_> = locked(&self.children).values().cloned().collect();
         let mut waiting = Vec::new();
         for child in children {
             waiting.push(std::thread::spawn(move || child.stop()));

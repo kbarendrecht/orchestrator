@@ -17,6 +17,13 @@ on:
   pull_request:
   workflow_dispatch:
 
+# Read the code and nothing else. The default for a token is whatever the
+# repository setting says, which is `write` on plenty of repositories and is a
+# credential every third-party action in this file can read. `release.yml` needs
+# `contents: write` to publish; this one needs to compile.
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: ${{ matrix.os }}
@@ -103,12 +110,27 @@ jobs:
       - name: Lint
         run: cargo clippy --workspace --all-targets -- -D warnings
 
+      # The doc comments are this repo's design record, and until this step they
+      # were the only prose nothing checked. Nine links were dangling when it was
+      # first run — `render_prompt_file` and `crate::config::transcript_slug`
+      # among them, both renamed or deleted months before — and a pointer that
+      # leads nowhere costs a reader a search to find that out.
+      #
+      # Linux only: doc links do not vary by platform, and the macOS runner is
+      # here for what only it can answer.
+      - name: Check the doc links
+        if: runner.os == 'Linux'
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --workspace --no-deps --document-private-items
+
       # The SPA's own gate, which until now ran *only* in a per-clone pre-commit
       # hook — so a clone that never ran `git config core.hooksPath .githooks` (a
-      # fresh one, and CI itself) checked none of it. Three things in one: that
+      # fresh one, and CI itself) checked none of it. Five things in one: that
       # `web/snapshot.d.ts` still matches the Rust structs it is generated from,
-      # that the SPA type-checks under `--checkJs`, and that its module graph is
-      # still a DAG.
+      # that the SPA type-checks under `--checkJs`, that its module graph is
+      # still a DAG, that no promise is dropped and no native dialog is reached
+      # for, and that every module in `web/js/` has a route serving it.
       #
       # Linux only: nothing here is platform-dependent, and `tsc` twice buys
       # nothing.
@@ -130,6 +152,20 @@ jobs:
             || { echo 'web/snapshot.d.ts is stale: run `mise run check-web` and commit the regenerated file.'; exit 1; }
           npx --prefix tools tsc -p tools/tsconfig.json
           npx --prefix tools depcruise --config tools/.dependency-cruiser.cjs web/app.js
+          npx --prefix tools eslint --config tools/eslint.config.mjs web
+          node tools/check-module-routes.mjs
+
+      # What the rendered page must never show: an unresolved `MOD` placeholder,
+      # the word `undefined` where a person reads, two sets of window buttons, or
+      # anything thrown at boot — each of which has happened here. Chrome is on
+      # the ubuntu runner already, so this costs a daemon build and five seconds.
+      #
+      # Not screenshots, deliberately: `tools/e2e/page.mjs` has the argument.
+      - name: Check the page
+        if: runner.os == 'Linux'
+        run: |
+          cargo build --bin orchd
+          node tools/e2e/page.mjs
 
       # The part no Linux box can answer, so it runs even when the tests above
       # failed: a red test would otherwise skip this step and hide the one signal

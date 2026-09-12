@@ -124,6 +124,7 @@ pub fn amend_target(
             }
         }
     }
+    #[expect(clippy::expect_used, reason = "the loop above returns for an empty touched set")]
     let hit = target.expect("non-empty touched set");
 
     // An ancestor of the merge base came from the base branch, not this PR.

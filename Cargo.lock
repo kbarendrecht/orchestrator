@@ -2347,7 +2347,6 @@ dependencies = [
  "tauri-runtime",
  "tokio",
  "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]

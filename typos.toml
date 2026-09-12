@@ -1,0 +1,32 @@
+# The prose is the design record here, so a misspelling in it outlives the code it
+# describes. Cheap to run, and the list below is short because most of what it
+# flags is a real slip.
+
+[default.extend-words]
+# Chosen spellings, not slips. "unparseable" is what this codebase says and says
+# consistently; "mis-shaped" and "mis-renders" are hyphenated on purpose.
+unparseable = "unparseable"
+mis = "mis"
+# A grep pattern, a local named for `base`, an escaped UTF-8 example, and the
+# middle of a font-metric sample string. Each one is what the line means to say.
+promot = "promot"
+ba = "ba"
+caf = "caf"
+Wil = "Wil"
+
+[default.extend-identifiers]
+# `PN` is the start of `PNGs`.
+PNGs = "PNGs"
+
+[files]
+# Vendored and generated: other people's spelling, and a file we do not write.
+extend-exclude = [
+    "web/vendor/**",
+    "web/snapshot.d.ts",
+    "THIRD-PARTY-RUST.md",
+    "tools/node_modules/**",
+    "Cargo.lock",
+    # A list of computer scientists' surnames. A spell checker will always have
+    # an opinion about those, and it will always be wrong.
+    "src/names.rs",
+]

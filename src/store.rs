@@ -280,7 +280,9 @@ fn automation_path() -> Result<PathBuf> {
 /// cannot leave a truncated file that would lose every record at once — one
 /// discipline for every store, so a change to it lands everywhere.
 fn save_json<T: Serialize + ?Sized>(p: &Path, value: &T) -> Result<()> {
-    std::fs::create_dir_all(p.parent().unwrap())?;
+    if let Some(dir) = p.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
     /* **A tmp name unique to this write.** Every store shared one
        `<name>.json.tmp`, so two overlapping writers used the same scratch file:
        both wrote it, the first rename moved it away, and the second failed
@@ -812,7 +814,7 @@ pub fn delete_transcript(id: uuid::Uuid, cwd: &Path, recorded: Option<&Path>) ->
 }
 
 /// The filesystem half of [`move_transcript`], split out for the same reason
-/// [`crate::config::transcript_slug`] is: both ends of the real call are slugs
+/// `config::transcript_slug` is: both ends of the real call are slugs
 /// under `$HOME`, and a test that set `HOME` to reach them would change it under
 /// every other test in the process.
 fn relocate_file(src: &Path, dest: &Path) -> Result<PathBuf> {

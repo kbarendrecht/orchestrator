@@ -879,8 +879,8 @@ fn fetch_threads(token: &str, owner: &str, name: &str, pr: u64) -> Result<Thread
 
 /// One page of the thread query, plus the cursor for the next one.
 ///
-/// Split out from [`threads`] so the paging and parsing can be tested without a
-/// network round trip.
+/// Split out from [`Forge::threads`] so the paging and parsing can be tested
+/// without a network round trip.
 fn parse_thread_page(mut v: Value, pr: u64) -> Result<(Threads, Option<String>)> {
     let viewer = v
         .pointer("/data/viewer/login")

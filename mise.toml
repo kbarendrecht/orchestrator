@@ -57,8 +57,49 @@ git diff --exit-code --stat web/snapshot.d.ts \
   || { echo 'web/snapshot.d.ts was stale — the regenerated copy is in your tree; commit it.'; exit 1; }
 npx --prefix tools tsc -p tools/tsconfig.json
 npx --prefix tools depcruise --config tools/.dependency-cruiser.cjs web/app.js
+npx --prefix tools eslint --config tools/eslint.config.mjs web
 node tools/check-palette.mjs
+node tools/check-module-routes.mjs
 """
+
+# What ships inside the binaries: advisories, licences, banned crates, unknown
+# sources, and dependencies nothing uses. `deny.toml` carries the argument for
+# each. Also in `health.yml`, weekly — an advisory arrives without a commit, so a
+# per-push check alone would never see one.
+#
+# The tools are not in `[tools]`: they are needed by this task and by CI, not by
+# anyone building the app, and CI installs them from prebuilt binaries.
+#   cargo install cargo-deny cargo-machete typos-cli
+[tasks.check-deps]
+description = "Advisories, licences, unused dependencies and spelling"
+dir = "{{config_root}}"
+run = """
+cargo deny check
+cargo machete
+typos
+"""
+
+# Regenerate the Rust third-party notices. `THIRD-PARTY.md` explains the
+# obligation for the vendored JavaScript; this is the same one for ~490 crates,
+# which had no notice at all. CI regenerates and diffs, like `snapshot.d.ts`.
+#   cargo install cargo-about --features cli
+[tasks.notices]
+description = "Regenerate THIRD-PARTY-RUST.md from Cargo.lock"
+dir = "{{config_root}}"
+run = "cargo about generate --fail about.hbs > THIRD-PARTY-RUST.md"
+
+# The doc comments are the design record here, so they are the one prose in this
+# repo a compiler can check. Nine links were dangling the first time this ran,
+# pointing at functions renamed or deleted months ago — `cargo doc` had never been
+# run at all. `--document-private-items` because nearly every module is private
+# and documents itself for whoever reads the source next.
+#
+# Not in the pre-commit hook: clippy already costs ~7s of a Rust commit, and a
+# dead link is not a build people can trip over. CI is the gate.
+[tasks.check-docs]
+description = "Check the doc comments' links resolve"
+dir = "{{config_root}}"
+run = "RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps --document-private-items"
 
 [tasks.shot]
 description = "Screenshot the running SPA (optionally one selector)"
@@ -107,6 +148,24 @@ description = "Drive the terminal pane in a real browser"
 depends = ["deps"]
 dir = "{{config_root}}"
 run = "cargo build --bin orchd && node tools/e2e/term.mjs"
+
+# What the rendered page must never show: an unresolved `MOD` placeholder, the
+# word `undefined` where a person reads, two sets of window buttons, or anything
+# thrown at boot. Every one of those has happened here.
+#
+# **Not screenshots, and that is the decision.** A pixel baseline would police
+# layout and copy, which is what most commits here change, so every intentional
+# change would arrive red and be answered with a blind baseline update — the same
+# habit as `--no-verify`. It would also police Chrome, while the app ships
+# WebKitGTK and WKWebView. These four assertions are text, so they are stable.
+#
+#   mise run page-check
+#   mise run page-check -- --mac   the macOS chrome, simulated
+[tasks.page-check]
+description = "Assert what the rendered page must never show"
+depends = ["deps"]
+dir = "{{config_root}}"
+run = "cargo build --bin orchd && node tools/e2e/page.mjs"
 
 # Which renderer each terminal opens with, asserted instead of eyeballed. Proves
 # the *decision* — one live WebGL context per window on macOS (#8) — not that the

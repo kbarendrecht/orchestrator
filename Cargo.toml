@@ -38,6 +38,58 @@ tracing-subscriber = "0.3"
 [workspace.lints.rust]
 unsafe_code = "deny"
 
+# The design record is in the doc comments, and a doc comment is the one kind of
+# prose in this repo that a compiler can check. Nine links were dangling when this
+# was first run — `render_prompt_file` and `crate::config::transcript_slug` among
+# them, both pointing at things renamed or deleted months ago — and nothing said
+# so, because `cargo doc` was never run at all. A pointer to a function that no
+# longer exists is worse than no pointer: it costs a reader a search before they
+# learn it leads nowhere.
+#
+# `private_intra_doc_links` is allowed on purpose. Almost every module here is
+# private and documents itself for the next person reading the source, so the
+# "public item links to a private one" warning fires on the normal case rather
+# than on a mistake. The one that matters is the link that goes nowhere.
+#
+# Run as `RUSTDOCFLAGS=-D warnings cargo doc -p orchd --no-deps
+# --document-private-items` — the flags belong together, since `--no-deps` keeps
+# it to our own prose and the deny is what makes it a gate.
+# Five ways a daemon can die where a message would have done, denied rather than
+# discussed.
+#
+# This was written off once, and the note said why: policing a few dozen real
+# sites would cost 755 silenced ones in tests. `clippy.toml`'s `allow-*-in-tests`
+# is what removes that cost — the lints now see only the code that ships. What was
+# left was 64 `unwrap`/`expect` and 19 prints, and most of it fixed itself:
+# `host.rs` had **20** `lock().unwrap()`, where one panic under any of them
+# poisons the mutex and every later caller panics too — in the host, which owns
+# every checkout's child process. Three modules spelled `path.parent().unwrap()`
+# by hand. What is left carries `#[expect(…, reason = "…")]` at the site, which
+# fails when the code stops needing it.
+#
+# `print_stdout`/`print_stderr` are about where output belongs: a launcher-started
+# app has no terminal, so a `println!` in the library is a line nobody will ever
+# read. The two CLI binaries allow it at the top of the file, and that allow is the
+# statement that they are CLIs.
+#
+# `indexing_slicing` is deliberately **not** here yet: 59 sites, 21 of them in
+# `diff.rs`, which is the changed-files parser named in the one open crash report.
+# That is a pass with a bug to chase, not a lint to flip.
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+print_stdout = "deny"
+print_stderr = "deny"
+# Zero sites today, and the reason to keep it that way is `host.rs`'s own note: a
+# `std::sync::Mutex` held across an `.await` is a deadlock that needs two tasks and
+# a scheduling order to show itself, so it ships green.
+await_holding_lock = "deny"
+
+[workspace.lints.rustdoc]
+broken_intra_doc_links = "deny"
+private_intra_doc_links = "allow"
+
 [package]
 name = "orchd"
 version = "2026.9.12"

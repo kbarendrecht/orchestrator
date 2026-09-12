@@ -2,7 +2,7 @@
 // terminals read the scale too.
 
 import { ctl, $, WHEEL, ZOOM, call, callHost, caret, currentPreset, detectedFonts, FONTS, fontStack, PRESETS, resetTheme, SEE_THROUGH, SIZE_MAX, SIZE_MIN, setUiPx, uiPx, UI_PX_MAX, UI_PX_MIN,
-  setTheme, theme, validFontName, closeLegend, el, get, MOD_LABEL, saveWheel, saveZoom, setWheel, setZoom, snap, wheelScale, zoomScale } from './core.js';
+  setTheme, theme, validFontName, closeLegend, el, get, MOD_LABEL, reason, saveWheel, saveZoom, setWheel, setZoom, snap, wheelScale } from './core.js';
 
 const settingsOpen = () => !$('settings').hidden;
 
@@ -50,6 +50,12 @@ function closeSettings() {
 // A working copy of `main_processes` while the panel is open. Each field is kept
 // as the string the input shows (command joined by spaces, patterns by commas);
 // `saveSettings` parses them back to arrays. Mutated in place by the row inputs.
+/** One row of the processes editor: the strings the fields are bound to.
+ *  Every field is the string the input holds, not the shape the daemon takes —
+ *  `save` splits them back. `open` is the row's fold state and never travels.
+ *  @type {{ name: string, command: string, ok_patterns: string,
+ *           failure_patterns: string, restart: string, autostart: boolean,
+ *           stop_command: string, open?: boolean }[]} */
 let procDraft = [];
 
 function openSettings() {
@@ -62,7 +68,7 @@ function openSettings() {
   $('gearbtn').setAttribute('aria-expanded', 'true');
   showDirty();
   // The panel edits the daemon's config, not the snapshot, so read it fresh.
-  loadConfigInto();
+  void loadConfigInto();
 }
 
 async function loadConfigInto(force = false) {
@@ -74,7 +80,7 @@ async function loadConfigInto(force = false) {
   try {
     cfg = await get('/api/config');
   } catch (e) {
-    $('setnote').textContent = e.message;
+    $('setnote').textContent = reason(e);
     return;
   }
   ctl('setlang').value = cfg.default_language || '';
@@ -96,7 +102,7 @@ async function loadConfigInto(force = false) {
   ctl('setseveral').checked = !!cfg.allow_several_in_main;
   dirty = false;
   showDirty();
-  procDraft = (cfg.main_processes || []).map((p) => ({
+  procDraft = (cfg.main_processes || []).map((/** @type {any} */ p) => ({
     name: p.name || '',
     command: (p.command || []).join(' '),
     ok_patterns: (p.ok_patterns || []).join(', '),
@@ -109,7 +115,7 @@ async function loadConfigInto(force = false) {
 }
 
 // A labelled text input bound to one string field of a process draft.
-function procField(label, p, key) {
+function procField(/** @type {string} */ label, /** @type {{ name: string, command: string, ok_patterns: string, failure_patterns: string, restart: string, autostart: boolean, stop_command: string, open?: boolean }} */ p, /** @type {'name' | 'command' | 'ok_patterns' | 'failure_patterns' | 'stop_command'} */ key) {
   const row = el('label', 'settings-field');
   row.appendChild(el('span', 'settings-k', label));
   const inp = el('input', 'settings-in');
@@ -194,8 +200,8 @@ function renderProcs() {
 }
 
 async function saveSettings() {
-  const argv = (s) => (s.trim() ? s.trim().split(/\s+/) : []);
-  const list = (s) => s.split(',').map((x) => x.trim()).filter(Boolean);
+  const argv = (/** @type {string} */ s) => (s.trim() ? s.trim().split(/\s+/) : []);
+  const list = (/** @type {string} */ s) => s.split(',').map((/** @type {string} */ x) => x.trim()).filter(Boolean);
   const body = {
     default_language: ctl('setlang').value.trim(),
     upstream_ref: ctl('setupref').value.trim(),
@@ -219,7 +225,7 @@ async function saveSettings() {
   try {
     await call('/api/config', body);
   } catch (e) {
-    $('setnote').textContent = e.message;
+    $('setnote').textContent = reason(e);
     return;
   }
   /* Saved is only half of it: nothing here reaches the running daemon. The config
@@ -237,7 +243,7 @@ async function saveSettings() {
     // A browser tab has no window to restart, and the daemon says so. Then the
     // old sentence is the right one: it is saved, and it applies when you restart
     // it yourself.
-    $('setnote').textContent = `saved, restart orchd to apply (${e.message})`;
+    $('setnote').textContent = `saved, restart orchd to apply (${reason(e)})`;
   }
 }
 
@@ -245,6 +251,7 @@ async function saveSettings() {
 const THEME_DEF_KEY = { ui: 'plexsans', mono: 'plex', code: 'jetbrains' };
 
 /** What each font role is called in the pane, and which size rides with it. */
+/** @type {{ role: import('./core.js').Role, size: 'termSize' | 'diffSize' | null, step?: string }[]} */
 const ROLES = [
   { role: 'ui', size: null },        // the interface size is the board zoom
   { role: 'mono', size: 'termSize', step: 'ts' },
@@ -258,7 +265,7 @@ const ROLES = [
  *  announces through, so a screen reader was told nothing when a font name was
  *  declined. Passing `''` clears both.
  */
-function noteFor(role, text = '') {
+function noteFor(/** @type {import('./core.js').Role} */ role, text = '') {
   $(`th${role}note`).textContent = text;
   $(`th${role}noterow`).hidden = !text;
   if (text) $('live').textContent = text;
@@ -280,7 +287,7 @@ function showTheme() {
   $('thopacityval').textContent = `${pct}%`;
   for (const { role, size, step } of ROLES) {
     showFont(role);
-    if (size) showSize(step, theme[size]);
+    if (size && step) showSize(step, theme[size]);
   }
   // `setZoom` writes this too; said here so the renderer covers all six controls
   // rather than covering five and relying on something else for the sixth.
@@ -292,7 +299,7 @@ function showTheme() {
  *  The interface range is narrower than the other two and not ours to widen: it is
  *  the board scale, whose bounds keep the rail's own columns from collapsing.
  */
-function showSize(step, px, min = SIZE_MIN, max = SIZE_MAX) {
+function showSize(/** @type {string} */ step, /** @type {number} */ px, min = SIZE_MIN, max = SIZE_MAX) {
   $(`${step}val`).textContent = `${px}px`;
   ctl(`${step}down`).disabled = px <= min;
   ctl(`${step}up`).disabled = px >= max;
@@ -305,11 +312,11 @@ function showSize(step, px, min = SIZE_MIN, max = SIZE_MAX) {
  *  only families certain to be there — everything under `detected` is a name this
  *  machine answered to, which is not the same as a name it has.
  */
-function fillFonts(role) {
+function fillFonts(/** @type {import('./core.js').Role} */ role) {
   const sel = ctl(`th${role}`);
   if (sel.options.length) return;
   const want = role !== 'ui';
-  const group = (label, names, value) => {
+  const group = (/** @type {string} */ label, /** @type {(string | { key: string, label: string })[]} */ names, /** @type {(name: any) => string} */ value) => {
     if (!names.length) return;
     const g = el('optgroup');
     g.label = label;
@@ -321,15 +328,15 @@ function fillFonts(role) {
     sel.appendChild(g);
   };
   group('Bundled', Object.entries(FONTS).filter(([, f]) => f.mono === want).map(([k, f]) => ({ key: k, label: f.label })),
-    (n) => n.key);
-  group('On this machine', detectedFonts()[want ? 'mono' : 'sans'], (n) => `custom:${n}`);
+    (/** @type {{ key: string }} */ n) => n.key);
+  group('On this machine', detectedFonts()[want ? 'mono' : 'sans'], (/** @type {string} */ n) => `custom:${n}`);
   const other = el('option', null, 'Other\u2026');
   other.value = 'other';
   sel.appendChild(other);
 }
 
 /** Show a role's current font, its preview, and its name box when it has one. */
-function showFont(role) {
+function showFont(/** @type {import('./core.js').Role} */ role) {
   const key = theme[role];
   const custom = typeof key === 'string' && key.startsWith('custom:');
   const sel = ctl(`th${role}`);
@@ -381,16 +388,16 @@ function setupSettings() {
   custom.value = 'custom';
   custom.disabled = true;
   presets.appendChild(custom);
-  presets.onchange = (ev) => {
-    const p = PRESETS[ev.target.value];
+  presets.onchange = (/** @type {Event} */ ev) => {
+    const p = PRESETS[/** @type {keyof typeof PRESETS} */ (/** @type {HTMLSelectElement} */ (ev.target).value)];
     if (p) setTheme({ bg: p.bg, panel: p.panel, text: p.text });
     showTheme();
   };
 
-  for (const role of ['ui', 'mono', 'code']) {
+  for (const role of /** @type {import('./core.js').Role[]} */ (['ui', 'mono', 'code'])) {
     fillFonts(role);
-    ctl(`th${role}`).onchange = (ev) => {
-      const v = ev.target.value;
+    ctl(`th${role}`).onchange = (/** @type {Event} */ ev) => {
+      const v = /** @type {HTMLSelectElement} */ (ev.target).value;
       // "Other…" is a request to type a name, not a font: keep the face until one
       // arrives, and open the box.
       if (v === 'other') {
@@ -402,8 +409,8 @@ function setupSettings() {
       setTheme({ [role]: v });
       showFont(role);
     };
-    ctl(`th${role}custom`).onchange = (ev) => {
-      const name = String(ev.target.value).trim();
+    ctl(`th${role}custom`).onchange = (/** @type {Event} */ ev) => {
+      const name = String(/** @type {HTMLInputElement} */ (ev.target).value).trim();
       // Said, not swallowed: a box still holding a name the board is not using is
       // a control disagreeing with the board and saying nothing about it.
       if (name && !validFontName(name)) {
@@ -422,16 +429,19 @@ function setupSettings() {
 
   /* One handler for the two px sizes, because they are the same control twice and
      the pane has already paid once for two spellings of one idea. */
-  for (const { size, step } of ROLES.filter((r) => r.size)) {
-    const nudge = (by) => { setTheme({ [size]: theme[size] + by }); showTheme(); };
+  for (const { size, step } of ROLES) {
+    // A `filter` does not narrow the element type, and `ui` has neither: its
+    // size is the board zoom, set from the other pane.
+    if (!size || !step) continue;
+    const nudge = (/** @type {number} */ by) => { setTheme({ [size]: theme[size] + by }); showTheme(); };
     ctl(`${step}down`).onclick = () => nudge(-1);
     ctl(`${step}up`).onclick = () => nudge(1);
   }
 
   /* `input`, not `change`: the point of a slider here is watching the board move
      under it. Cheap enough — one `setProperty` of `--ground` per frame. */
-  ctl('thopacity').oninput = (ev) => {
-    setTheme({ opacity: Number(ev.target.value) / 100 });
+  ctl('thopacity').oninput = (/** @type {Event} */ ev) => {
+    setTheme({ opacity: Number(/** @type {HTMLInputElement} */ (ev.target).value) / 100 });
     showTheme();
   };
   /* Said once, at boot, because the window cannot become see-through while it is
@@ -460,7 +470,7 @@ function setupSettings() {
      Folding a row open is a click on a button and raises neither event, which is
      right: looking at a process is not editing it. */
   for (const ev of ['input', 'change']) $('setprocs').addEventListener(ev, markDirty);
-  $('setdiscard').onclick = () => { dirty = false; loadConfigInto(true); };
+  $('setdiscard').onclick = () => { dirty = false; void loadConfigInto(true); };
   $('setdiscard').title = 'Throw the unsaved edits away and read the config again';
 
   $('setclose').onclick = () => closeSettings();

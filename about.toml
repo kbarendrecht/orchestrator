@@ -1,0 +1,23 @@
+# What `cargo about` is allowed to find, and where.
+#
+# `THIRD-PARTY.md` explains the obligation for the vendored JavaScript: it is
+# `include_str!`d into the binary, so it is redistributed in binary form and each
+# licence asks for its notice to travel along. The Rust dependencies are in
+# exactly the same position and were not listed at all — ~490 crates, mostly MIT
+# and Apache-2.0, both of which ask for the notice to ship with the binary.
+#
+# The generated file is `THIRD-PARTY-RUST.md`, regenerated and diffed in CI the
+# way `web/snapshot.d.ts` is.
+accepted = [
+    "Apache-2.0",
+    "MIT",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "Unicode-3.0",
+    "Unlicense",
+    "AGPL-3.0-only",
+]
+# The two targets a release is actually built for. Without this, `cargo about`
+# walks every platform's dependencies and lists crates no bundle contains.
+targets = ["x86_64-unknown-linux-gnu", "aarch64-apple-darwin"]

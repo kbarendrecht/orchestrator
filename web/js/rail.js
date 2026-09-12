@@ -1,18 +1,21 @@
 // The rail: what is running, what is waiting on you, and the PRs beside it.
 // Twenty-four names, three out; the rest is how a row decides what it says.
 
-import { $, activeCheckout, byNewest, call, callFor, bandOf, callHost, callOn, checkoutOf, CHECKOUTS, chooseBox, enterCheckout, everySession, getHost, snapshotOf, snapshotFor, repoSummary, terms, caret, clock, confirmBox, copyText, creating, dotClass, duration, el, isArchived, isConversation, isWaiting, mainWorkspace, MOD_LABEL, newSession, newWorktree, openMenu, pending, refreshButton, selected, sessionsOf, setSelected, sinceSnap, snap, stateClass, stateLabel, toast, unchanged, setPendingSelect } from './core.js';
+import { $, activeCheckout, byNewest, call, callFor, bandOf, callHost, callOn, checkoutOf, CHECKOUTS, chooseBox, enterCheckout, everySession, getHost, snapshotOf, snapshotFor, repoSummary, terms, caret, clock, confirmBox, copyText, creating, dotClass, el, isArchived, isConversation, isWaiting, mainWorkspace, MOD_LABEL, newSession, newWorktree, openMenu, pending, refreshButton, selected, sessionsOf, setSelected, snap, stateClass, stateLabel, reason, toast, unchanged, setPendingSelect } from './core.js';
 import * as Review from './review.js';
 import * as Term from './term.js';
 
 /* Expanded per group and kept across renders. Main's two conversations and the
  * worktrees' twenty are not the same question. */
+/** @type {Record<string, boolean>} */
+/** @type {Record<string, boolean>} */
 const showArchived = { main: false, worktrees: false };
 
 /* The session whose name is being edited in place, or null. A snapshot lands
  * every second and rebuilds the rail, which would blow the input away mid-type —
  * so the rebuild is held off while it is open, the same way `tabDrag` holds off
  * `renderDrawer`. `renameSession` sets it and clears it. */
+/** @type {string | null} */
 let editingName = null;
 
 
@@ -134,9 +137,9 @@ function addCheckoutButton() {
       ({ recent } = await getHost('/api/host/recent'));
     } catch (e) {
       // The list is a convenience; the dialog still works without it.
-      toast(e.message, true);
+      toast(reason(e), true);
     }
-    const items = recent.slice(0, 8).map((r) =>
+    const items = recent.slice(0, 8).map((/** @type {{ path: string, name?: string }} */ r) =>
       [r.name, null, () => addCheckout(r.path)]);
     items.push(['browse\u2026', null, browseForCheckout]);
     openMenu(ev, items);
@@ -155,7 +158,7 @@ async function browseForCheckout() {
     const { path } = await callHost('/api/host/pick');
     if (path) await addCheckout(path);
   } catch (e) {
-    toast(e.message, true);
+    toast(reason(e), true);
   }
 }
 
@@ -169,7 +172,8 @@ async function browseForCheckout() {
  *  @param {string} path
  *  @param {boolean} [resume]
  */
-async function addCheckout(path, resume) {
+/** @returns {Promise<void>} */
+async function addCheckout(/** @type {string} */ path, /** @type {boolean | undefined} */ resume) {
   try {
     const { result } = await callHost('/api/host/checkout',
       resume === undefined ? { path } : { path, resume });
@@ -182,11 +186,12 @@ async function addCheckout(path, resume) {
         { ok: 'Resume', other: 'Start empty' });
       // `Esc` is neither answer: the checkout stays closed rather than opening
       // one of the two ways nobody chose.
-      return yes === null ? undefined : addCheckout(path, yes);
+      if (yes !== null) await addCheckout(path, yes);
+      return;
     }
     toast(`opened ${result.checkout.name}`);
   } catch (e) {
-    toast(e.message, true);
+    toast(reason(e), true);
   }
 }
 
@@ -217,7 +222,7 @@ async function closeCheckout(c) {
       if (entry.checkout.path === c.path) Term.close(c, key.slice(key.indexOf('\u0000') + 1));
     }
   } catch (e) {
-    toast(e.message, true);
+    toast(reason(e), true);
   }
 }
 
@@ -237,7 +242,7 @@ const folded = (() => {
   }
 })();
 
-function setFolded(path, on) {
+function setFolded(/** @type {string} */ path, /** @type {boolean} */ on) {
   if (on) folded.add(path);
   else folded.delete(path);
   try {
@@ -250,6 +255,7 @@ function setFolded(path, on) {
  *
  *  The rail rebuilds every second, and rebuilding the node under the pointer ends
  *  the gesture — so `renderRail` stands still while this is set. */
+/** @type {string | null} */
 let dragging = null;
 
 /** ` in alpha`, for a message read away from the rail — or nothing at all when
@@ -351,6 +357,8 @@ function checkoutHead(c) {
   head.draggable = true;
   head.ondragstart = (ev) => {
     dragging = c.path;
+    // Absent only for a synthetic event nothing here dispatches.
+    if (!ev.dataTransfer) return;
     ev.dataTransfer.effectAllowed = 'move';
     // Firefox starts no drag at all without a payload, even one nothing reads.
     ev.dataTransfer.setData('text/plain', c.path);
@@ -361,7 +369,7 @@ function checkoutHead(c) {
     ev.preventDefault();
     const moved = dragging;
     dragging = null;
-    if (moved && moved !== c.path) reorderCheckouts(moved, c.path);
+    if (moved && moved !== c.path) void reorderCheckouts(moved, c.path);
     else renderRail();
   };
   return head;
@@ -406,7 +414,7 @@ async function reorderCheckouts(moved, onto) {
     // The host answers on `/ws/host`, which is what actually moves the rail — so
     // nothing is drawn from here and the two cannot disagree.
   } catch (e) {
-    toast(e.message, true);
+    toast(reason(e), true);
     renderRail();
   }
 }
@@ -417,13 +425,13 @@ async function reopenCheckout(c) {
     await callHost('/api/host/checkout/reopen', { path: c.path });
     toast(`reopening ${c.name}`);
   } catch (e) {
-    toast(e.message, true);
+    toast(reason(e), true);
   }
 }
 
 
 /** Dot colour for a PR, sharing the session legend so one key covers both (§9). */
-function prDot(p) {
+function prDot(/** @type {import('../snapshot').PrView} */ p) {
   // Red first, above everything. A PR that is failing or conflicting is failing
   // whoever happens to be sitting in it, and the teal "a session holds this" used
   // to hide exactly that: you opened a session on a red PR and the row went calm.
@@ -439,6 +447,7 @@ let showPrs = true;
 
 /** The session a pointer just picked, so the `click` behind it does not pick it
  *  again. See `sessionRow`. */
+/** @type {string | null} */
 let picked = null;
 
 /** The one button on a PR row: start the pass that answers its threads.
@@ -455,7 +464,7 @@ let picked = null;
  *  review item — but the cards are not good enough to be the only way through a
  *  review yet, and a button whose result you have to learn a new screen for is a
  *  worse default than one that hands you a terminal. */
-function reviewButtons(p) {
+function reviewButtons(/** @type {import('../snapshot').PrView} */ p) {
   const wrap = el('span', 'prpair');
   /* `handle`, not `resolve`. GitHub has a literal "Resolve conversation" button,
      and this flow's own first paragraph says marking a thread resolved stays the
@@ -468,7 +477,7 @@ function reviewButtons(p) {
     // The row is an anchor to the PR on GitHub; this is not that.
     ev.preventDefault();
     ev.stopPropagation();
-    startHandleReview(p.number, btn);
+    void startHandleReview(p.number, btn);
   };
   wrap.appendChild(btn);
   return wrap;
@@ -487,8 +496,9 @@ function reviewButtons(p) {
  *  they are the same question — "do something with this PR" — and having two
  *  different menus for it is how you end up hunting for the one that has the item
  *  you want. */
-function prMenu(p, btn) {
-  return [
+/** @returns {[string, string | null, (() => void) | null][]} */
+function prMenu(/** @type {import('../snapshot').PrView} */ p, /** @type {HTMLButtonElement | null} */ btn) {
+  return /** @type {[string, string | null, (() => void) | null][]} */ ([
     ['open in main checkout', null, () => openPr(p.number, 'main')],
     ['open in worktree', null, () => openPr(p.number, 'worktree')],
     /* Two review verbs, and the first is the button's. The pane pass is one agent
@@ -499,30 +509,30 @@ function prMenu(p, btn) {
        one lives. */
     ['handle in a pane', null, () => startHandleReview(p.number, btn)],
     ['read into the cards', null, () => startTriage(p.number, btn)],
-  ];
+  ]);
 }
 
 /** Start a plain session on a PR: a worktree pinned to its head branch, or the
  *  main checkout moved onto it. */
-async function openPr(number, where) {
+async function openPr(/** @type {number} */ number, /** @type {string} */ where) {
   try {
     const r = await call(`/api/pr/${number}/open`, { where });
     setPendingSelect(r.session);
     toast(`#${number} in ${r.workspace}`);
   } catch (e) {
-    toast(e.message, true);
+    toast(reason(e), true);
   }
 }
 
 /** Start the pane pass on a PR, and land on the session doing it. */
-async function startHandleReview(number, btn) {
+async function startHandleReview(/** @type {number} */ number, /** @type {HTMLButtonElement | null} */ btn) {
   if (btn) btn.disabled = true;
   try {
     const r = await call(`/api/pr/${number}/handle-review`);
     setPendingSelect(r.session);
     toast(`handling #${number}`);
   } catch (e) {
-    toast(e.message, true);
+    toast(reason(e), true);
   } finally {
     if (btn) btn.disabled = false;
   }
@@ -534,7 +544,7 @@ async function startHandleReview(number, btn) {
  *  else's work, and a full screen saying so is a window spent on one sentence:
  *  the bar carries it beside the pane where the agent's own questions appear, and
  *  `MOD⇧R` is how you go to the cards once it says they are there. */
-async function startTriage(number, btn) {
+async function startTriage(/** @type {number} */ number, /** @type {HTMLButtonElement | null} */ btn) {
   // No button when this came from a right-click on the row.
   if (btn) btn.disabled = true;
   try {
@@ -543,7 +553,7 @@ async function startTriage(number, btn) {
     setPendingSelect(r.session);
     toast(`reading #${number}`);
   } catch (e) {
-    toast(e.message, true);
+    toast(reason(e), true);
   } finally {
     if (btn) btn.disabled = false;
   }
@@ -553,7 +563,7 @@ async function startTriage(number, btn) {
  *  the button says, because the endpoint's name is not the useful word on a row.
  *  A refusal from the guard table is shown verbatim: it is the whole point of
  *  triggering by hand. */
-function actionButton(p, action, label) {
+function actionButton(/** @type {import('../snapshot').PrView} */ p, /** @type {string} */ action, /** @type {string} */ label) {
   const b = el('button', 'pract', label);
   b.title = 'Rebase on develop, fix what CI says, push — in a pane you can take over';
   b.onclick = async (ev) => {
@@ -565,7 +575,7 @@ function actionButton(p, action, label) {
       setPendingSelect(r.session);
       toast(`${label} ${p.number}`);
     } catch (e) {
-      toast(e.message, true);
+      toast(reason(e), true);
     } finally {
       b.disabled = false;
     }
@@ -607,7 +617,8 @@ function prGroup() {
     if (needs) bits.push(`${needs} needs you`);
     if (failing) bits.push(`${failing} failing`);
     count.appendChild(el('b', null, bits.join(' · ')));
-    if (needs) count.querySelector('b').classList.add('n');
+    // The `<b>` was appended two lines above, so it is there.
+    if (needs) count.querySelector('b')?.classList.add('n');
     // How long since a poll actually landed. Live-ticked off the snapshot clock
     // like the rail's other ages, so a poller that is stuck without erroring
     // reads as stale rather than current. Hidden while a fetch is in flight.
@@ -738,7 +749,7 @@ function prGroup() {
 }
 
 /** A label and the button that adds to the group under it. */
-function groupHead(label, add) {
+function groupHead(/** @type {string} */ label, /** @type {HTMLElement} */ add) {
   const head = el('div', 'ws-head');
   const name = el('div', 'ws-name');
   name.appendChild(el('span', 'eyebrow', label));
@@ -754,7 +765,7 @@ function groupHead(label, add) {
  *  daemon reports in the snapshot. Then `+` stays live and the holder's name is
  *  still worth saying, because a second session in one checkout is a thing to do
  *  on purpose rather than by accident. */
-function mainGroup(c, state, w) {
+function mainGroup(/** @type {import('./core.js').Target} */ c, /** @type {import('../snapshot').Snapshot} */ state, /** @type {import('../snapshot').WorkspaceView} */ w) {
   const group = el('div', 'ws');
   const sessions = sessionsOf(w.id, state);
   const active = sessions.filter((s) => !isArchived(s));
@@ -770,7 +781,7 @@ function mainGroup(c, state, w) {
      legend button already makes for itself. `MOD_LABEL` rather than a literal —
      the modifier is ⌘ on macOS and Ctrl everywhere else. */
   add.title = creating()
-    ? creating()
+    ? creating() ?? ''
     : occupant
       ? `main is held by ${occupant.title || occupant.id.slice(0, 8)}${several ? ' · another is allowed' : ''}`
       : `New session in main · ${MOD_LABEL} Shift N`;
@@ -790,7 +801,7 @@ function mainGroup(c, state, w) {
  *  is a session whose worktree has no name yet, which shows as `…creating`
  *  rather than nothing at all — an invisible session is how you end up
  *  starting a second one. */
-function worktreeGroup(c, state, mainId) {
+function worktreeGroup(/** @type {import('./core.js').Target} */ c, /** @type {import('../snapshot').Snapshot} */ state, /** @type {string | undefined} */ mainId) {
   const group = el('div', 'ws');
   const add = el('button', 'plus', '+');
   /* Dead while one is being cut, and it says which one in the tooltip.
@@ -805,7 +816,7 @@ function worktreeGroup(c, state, mainId) {
      the placeholder workspace for good, and counting that would leave the `+`
      dead until a restart. */
   const cutting = creating()
-    || (state.sessions.some((s) => pending(s) && !isArchived(s)) ? 'creating a worktree' : null);
+    || (state.sessions.some((/** @type {import('../snapshot').SessionView} */ s) => pending(s) && !isArchived(s)) ? 'creating a worktree' : null);
   add.disabled = !!cutting;
   add.title = cutting || `New worktree session · ${MOD_LABEL} N (shift-click to name it)`;
   add.onclick = (ev) => newWorktree(ev.shiftKey, c);
@@ -815,8 +826,8 @@ function worktreeGroup(c, state, mainId) {
    * A worktree Claude Code has not named yet has no workspace record at all,
    * only a session pointing at the placeholder, so filtering on the known
    * workspaces dropped exactly the row that says something is happening. */
-  const sessions = state.sessions.filter((s) => s.workspace !== mainId);
-  const active = sessions.filter((s) => !isArchived(s));
+  const sessions = state.sessions.filter((/** @type {import('../snapshot').SessionView} */ s) => s.workspace !== mainId);
+  const active = sessions.filter((/** @type {import('../snapshot').SessionView} */ s) => !isArchived(s));
 
   for (const s of active.sort(byNewest)) {
     // The workspace is only needed for the name it lends the row.
@@ -833,12 +844,12 @@ function worktreeGroup(c, state, mainId) {
  *  opened whenever the conversation you are looking at is in here, so the rail
  *  never goes silent about what the centre pane is showing.
  */
-function appendArchived(c, group, key, sessions) {
+function appendArchived(/** @type {import('./core.js').Target} */ c, /** @type {HTMLElement} */ group, /** @type {string} */ key, /** @type {import('../snapshot').SessionView[]} */ sessions) {
   if (!sessions.length) return;
   // Qualified, because `main` and `worktrees` name a group in every checkout and
   // one open archive would open all of them.
   const held = `${c.path}\u0000${key}`;
-  const open = showArchived[held] || sessions.some((s) => s.id === selected);
+  const open = showArchived[held] || sessions.some((/** @type {import('../snapshot').SessionView} */ s) => s.id === selected);
 
   const toggle = el('button', 'arctoggle');
   toggle.setAttribute('aria-expanded', String(open));
@@ -856,7 +867,7 @@ function appendArchived(c, group, key, sessions) {
  *
  *  No state word — `archived` is the state, and the section it sits in already
  *  says it. Clicking rebuilds what it needs and resumes it. */
-function archivedRow(s) {
+function archivedRow(/** @type {import('../snapshot').SessionView} */ s) {
   const btn = el('button', 'sess arc');
   btn.setAttribute('aria-current', String(s.id === selected));
   // So a rename can find this row's name span again after any re-render.
@@ -899,7 +910,7 @@ function archivedRow(s) {
 }
 
 /** Continue a past conversation, rebuilding its worktree first if it is gone. */
-async function openArchived(s) {
+async function openArchived(/** @type {import('../snapshot').SessionView} */ s) {
   if (!s.resumable) {
     toast('transcript only: the branch is gone and the commit is unreachable', true);
     return;
@@ -916,7 +927,7 @@ async function openArchived(s) {
     // about are not the files on disk. Worth saying, not worth refusing over.
     if (r.warning) toast(r.warning, true);
   } catch (e) {
-    toast(e.message, true);
+    toast(reason(e), true);
   }
 }
 
@@ -932,16 +943,16 @@ async function openArchived(s) {
  *
  *  The placeholder workspace id is the daemon's own bookkeeping, so a worktree
  *  still being cut says what is happening instead. */
-function railName(s, w) {
+function railName(/** @type {import('../snapshot').SessionView} */ s, /** @type {{ id: string | null } | undefined} */ w) {
   if (pending(s)) return 'creating worktree';
   // A pass's workspace is `pr-10006`, which repeats the number it is about to
   // print and says nothing else. The PR's own title is already in the snapshot,
   // put there for the pane at the bottom of this rail.
   if (s.pass) {
-    const pr = (snapshotFor(s.id).prs || []).find((p) => p.number === s.pass.pr);
+    const pr = (snapshotFor(s.id).prs || []).find((p) => p.number === s.pass?.pr);
     return pr ? `#${s.pass.pr} ${pr.title}` : `#${s.pass.pr}`;
   }
-  return s.title || w.id;
+  return s.title || w?.id || '';
 }
 
 /** Marks a conversation that was cut from another one.
@@ -953,11 +964,11 @@ function railName(s, w) {
  *  The word is `fork`, not `forked`: this row *is* the fork, and a past participle
  *  on it reads as "forked from", which points at the other row. A noun for the
  *  thing the row is has no direction to get wrong. */
-function forkBadge(s) {
+function forkBadge(/** @type {import('../snapshot').SessionView} */ s) {
   return s.forked_from ? el('span', 'forked', 'fork') : null;
 }
 
-function sessionRow(s, w) {
+function sessionRow(/** @type {import('../snapshot').SessionView} */ s, /** @type {{ id: string | null } | undefined} */ w) {
   const btn = el('button', 'sess');
   btn.setAttribute('aria-current', String(s.id === selected));
   // So a rename can find this row's name span again after any re-render.
@@ -986,9 +997,9 @@ function sessionRow(s, w) {
   // seconds of nothing. A number that moves is the difference between slow and
   // hung.
   if (isWaiting(s) && s.waiting_ms != null) {
-    sub.appendChild(clock(null, s.waiting_ms));
+    sub.appendChild(clock('', s.waiting_ms));
   } else if (s.state.state === 'starting') {
-    sub.appendChild(clock(null, s.created_ms));
+    sub.appendChild(clock('', s.created_ms));
   }
   btn.appendChild(sub);
 
@@ -1078,7 +1089,7 @@ function sessionRow(s, w) {
  *  `--session-id` — so it is what `claude --resume`, a transcript path and a hook
  *  correlation all key on. The rail is the only place it is visible, and it is
  *  not selectable text there. */
-async function copyId(s) {
+async function copyId(/** @type {import('../snapshot').SessionView} */ s) {
   if (await copyText(s.id)) toast('id copied');
 }
 
@@ -1089,7 +1100,7 @@ async function copyId(s) {
  *  that expect an answer would take it as one — cancelling a question, declining a
  *  permission prompt. The daemon refuses the same three, so this only decides
  *  whether the item is offered, never whether it is safe. */
-const isRewindable = (s) =>
+const isRewindable = (/** @type {import('../snapshot').SessionView} */ s) =>
   s.alive
   && s.state.state === 'your_turn'
   && s.state.reason !== 'asked_a_question'
@@ -1101,13 +1112,13 @@ const isRewindable = (s) =>
  *
  *  Selects first, because the picker draws in the pane and pressing this on a row
  *  you cannot see would put a modal somewhere out of sight. */
-async function rewindSession(s) {
+async function rewindSession(/** @type {import('../snapshot').SessionView} */ s) {
   setSelected(s.id);
   try {
     await callFor(s.id, `/api/session/${s.id}/rewind`);
     toast('opened the rewind picker — pick a point in the pane');
   } catch (e) {
-    toast(e.message, true);
+    toast(reason(e), true);
   }
 }
 
@@ -1129,7 +1140,7 @@ async function rewindSession(s) {
  *  Read off the whole branch *set*, not `branches[0]`: that set is built from a
  *  `HashSet`, so its order says nothing, and "the only thing main has is base" is
  *  a question about the set rather than about its first element. */
-function mainHoldsWork(main, state = snap) {
+function mainHoldsWork(/** @type {import('../snapshot').WorkspaceView | undefined} */ main, state = snap) {
   /* A conversation in main is work, whatever branch main is on. Without this the
      item read the git side only: main sitting on its base with somebody working in
      it answered "nothing of its own", so the menu offered `move to main` and the
@@ -1167,7 +1178,7 @@ function mainHoldsWork(main, state = snap) {
  *  Confirmed for the same reason the swap is: every file under main changes, and
  *  the daemon's refusals are about what it can see, not about whether you meant
  *  it. */
-async function moveOutOfMain(s) {
+async function moveOutOfMain(/** @type {import('../snapshot').SessionView} */ s) {
   if (!await confirmBox(
     `Move this session out of main${inCheckout(s)}?\n\n`
     + 'Its branch gets a worktree of its own and main goes back to its base branch \u2014 '
@@ -1194,7 +1205,7 @@ async function moveOutOfMain(s) {
       toast('the conversation would not resume there, so it was forked instead', true);
     }
   } catch (e) {
-    toast(e.message, true);
+    toast(reason(e), true);
   }
 }
 
@@ -1271,7 +1282,7 @@ async function swapWithMain(wsId, s) {
       );
     }
   } catch (e) {
-    toast(e.message, true);
+    toast(reason(e), true);
   } finally {
     swapInFlight = false;
   }
@@ -1285,7 +1296,7 @@ async function swapWithMain(wsId, s) {
  *  No `closeTerm` unlike resume, which keeps the old id and would otherwise hand
  *  back the dead terminal. A fork has an id of its own and nothing to collide
  *  with. */
-async function forkSession(s) {
+async function forkSession(/** @type {import('../snapshot').SessionView} */ s) {
   try {
     const r = await callFor(s.id, `/api/session/${s.id}/fork`);
     setPendingSelect(r.session);
@@ -1294,7 +1305,7 @@ async function forkSession(s) {
     // not worth refusing over.
     if (r.warning) toast(r.warning, true);
   } catch (e) {
-    toast(e.message, true);
+    toast(reason(e), true);
   }
 }
 
@@ -1308,7 +1319,7 @@ async function forkSession(s) {
  *  The row is a `<button>`, so every event the input handles is stopped from
  *  bubbling: a click must not select the session, and a keystroke must not reach
  *  the app's keyboard map. */
-function renameSession(s) {
+function renameSession(/** @type {import('../snapshot').SessionView} */ s) {
   const rail = $('rail');
   const span = rail.querySelector(`[data-id="${s.id}"] .sess-name`);
   // The menu action can outlive the row it was opened on; if a re-render dropped
@@ -1325,7 +1336,7 @@ function renameSession(s) {
   input.select();
 
   let done = false;
-  const finish = async (commit) => {
+  const finish = async (/** @type {boolean} */ commit) => {
     if (done) return;             // blur fires alongside Enter; settle once.
     done = true;
     const given = input.value.trim();
@@ -1334,15 +1345,15 @@ function renameSession(s) {
       try {
         await callFor(s.id, `/api/session/${s.id}/rename`, { name: given });
       } catch (e) {
-        toast(e.message, true);
+        toast(reason(e), true);
       }
     }
     renderRail();                 // put the row back, whichever way it ended.
   };
 
   input.onkeydown = (e) => {
-    if (e.key === 'Enter') { e.preventDefault(); finish(true); }
-    else if (e.key === 'Escape') { e.preventDefault(); finish(false); }
+    if (e.key === 'Enter') { e.preventDefault(); void finish(true); }
+    else if (e.key === 'Escape') { e.preventDefault(); void finish(false); }
     e.stopPropagation();
   };
   input.onblur = () => finish(true);
@@ -1357,7 +1368,7 @@ function renameSession(s) {
  *  matters — the conversation is still there to resume — and this is not. The
  *  wording says what survives, so "delete" does not have to be read as deleting
  *  the conversation itself. */
-async function deleteSession(s) {
+async function deleteSession(/** @type {import('../snapshot').SessionView} */ s) {
   const name = railName(s, { id: s.workspace });
   const ending = s.alive ? 'It is still running, so this ends it first. ' : '';
   if (!await confirmBox(`Delete "${name}"${inCheckout(s)}?\n\n${ending}The row and orchd's copy of the `
@@ -1369,7 +1380,7 @@ async function deleteSession(s) {
 }
 
 /** End a session: kills the pty, keeps the row and its scrollback (§2). */
-function closeSession(id) {
+function closeSession(/** @type {string} */ id) {
   // Claude takes several seconds to shut down and the row only turns `exited`
   // once the daemon sees it go, so without this the click reads as a no-op.
   callFor(id, `/api/session/${id}/kill`)
@@ -1383,7 +1394,7 @@ function closeSession(id) {
  *  Wider than `isWaiting`, on purpose. A session that has only just resumed is
  *  `ready`, which `wants_attention` excludes because an idle agent is not
  *  something to shout about — but it is exactly the one you want to send on. */
-const isNudgeable = (s) =>
+const isNudgeable = (/** @type {import('../snapshot').SessionView} */ s) =>
   // `ready` alone: resumed mid-conversation and not prompted since. A finished
   // turn is not paused mid-work, it is done, and telling it to continue would
   // invent the next thing for you.
@@ -1437,7 +1448,7 @@ function renderWaitbar() {
        Two nodes, because only the second half moves: the count changes with a
        snapshot, the duration changes every second. */
     bar.appendChild(el('span', null, `${waiting.length} need you · longest `));
-    bar.appendChild(clock(null, longest.waiting_ms ?? 0));
+    bar.appendChild(clock('', longest.waiting_ms ?? 0));
     /* **Where it will take you, when that is not where you are.** The bar counts
        across every checkout, so pressing it can move you out of the one you are
        looking at — and the rail scrolling to a row under a different header is the
@@ -1466,7 +1477,7 @@ function renderWaitbar() {
   if (ready.length > 1) {
     const all = el('button', 'waitall', 'continue');
     all.title = 'Type "continue" into every session paused mid-work';
-    all.onclick = (ev) => { ev.stopPropagation(); nudgeAll(); };
+    all.onclick = (ev) => { ev.stopPropagation(); void nudgeAll(); };
     bar.appendChild(all);
   }
 }
@@ -1496,7 +1507,7 @@ async function nudgeAll() {
       toast(`${held.join(', ')} ${held.length === 1 ? 'is' : 'are'} waiting on an answer from you`, true);
     }
   } catch (e) {
-    toast(e.message, true);
+    toast(reason(e), true);
   }
 }
 

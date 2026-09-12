@@ -2,7 +2,7 @@
 // drives it. One module because the three call each other; splitting them would
 // only have turned that into circular imports.
 
-import { $, activeWorkspaceId, call, confirmBox, currentSession, currentWorkspaceId, el, get, MOD_LABEL, openMenu, pending, prForWorkspace, snap, toast, unchanged, workspaceById } from './core.js';
+import { $, activeWorkspaceId, call, confirmBox, currentSession, currentWorkspaceId, el, get, MOD_LABEL, openMenu, pending, prForWorkspace, snap, reason, toast, unchanged, workspaceById } from './core.js';
 
 // Written back onto the button after a save, so it is spelled from the same
 // platform label the page resolved `data-mod` with — a hardcoded glyph here was
@@ -24,7 +24,7 @@ const SAVE_LABEL = `Save ${MOD_LABEL} S`;
  *  The ref comes from the snapshot rather than being written here: it is a
  *  setting, and this used to print the default as a literal — so a repo that had
  *  edited it read the wrong ref beside numbers measured against the right one. */
-function renderDivergence(w) {
+function renderDivergence(/** @type {import('../snapshot').WorkspaceView} */ w) {
   const box = $('diverge');
   box.replaceChildren();
   // Reset the class too, not just the children: `on` is what makes this visible,
@@ -111,7 +111,7 @@ function renderDivergence(w) {
 }
 
 /** `3 changed files`, or `1 changed file`. */
-function files(bank) {
+function files(/** @type {import('../snapshot').BankedView} */ bank) {
   return `${bank.files} changed file${bank.files === 1 ? '' : 's'}`;
 }
 
@@ -121,7 +121,7 @@ function files(bank) {
  *  type the conflict at the agent again, run a second apply — and the snapshot that
  *  redraws the strip arrives after the response, not with the click.
  */
-async function press(btn, path, verb) {
+async function press(/** @type {HTMLButtonElement} */ btn, /** @type {string} */ path, /** @type {string} */ verb) {
   btn.disabled = true;
   try {
     await act(path, verb);
@@ -130,7 +130,7 @@ async function press(btn, path, verb) {
   }
 }
 
-async function act(path, verb) {
+async function act(/** @type {string} */ path, /** @type {string} */ verb) {
   try {
     const r = await call(path);
     toast(verb);
@@ -139,7 +139,7 @@ async function act(path, verb) {
     // openArchived and forkSession already do.
     if (r && r.warning) toast(r.warning, true);
   } catch (e) {
-    toast(e.message, true);
+    toast(reason(e), true);
   }
 }
 
@@ -149,7 +149,7 @@ async function act(path, verb) {
  *  what a blob URL looks like are both the forge's business, and a second forge
  *  is meant to be a `ForgeKind` arm rather than an edit to this file. So the
  *  client says only which file it wants. */
-function openFileOnForge(w, path) {
+function openFileOnForge(/** @type {import('../snapshot').WorkspaceView} */ w, /** @type {string} */ path) {
   call('/api/open/file', { workspace: w.id, path })
     .catch((err) => toast(err.message, true));
 }
@@ -164,7 +164,7 @@ function openFileOnForge(w, path) {
  *  The daemon refuses what the row cannot do, and refuses everything while an
  *  agent is mid-turn in that workspace, so this does not pre-judge: it sends the
  *  verb and shows the answer. */
-async function fileVerb(w, f, verb) {
+async function fileVerb(/** @type {import('../snapshot').WorkspaceView} */ w, /** @type {import('../snapshot').DiffFile} */ f, /** @type {string} */ verb) {
   if (verb === 'discard') {
     const yes = await confirmBox(
       `Throw away your changes to ${f.path}? Uncommitted content cannot be `
@@ -177,7 +177,7 @@ async function fileVerb(w, f, verb) {
     await call('/api/file/verb', { workspace: w.id, path: f.path, verb });
     toast(`${verb === 'discard' ? 'discarded' : verb + 'd'} ${f.path}`);
   } catch (e) {
-    toast(e.message, true);
+    toast(reason(e), true);
   }
 }
 
@@ -190,7 +190,8 @@ async function fileVerb(w, f, verb) {
  *
  *  `discard` is last, being the only one that cannot be pressed back; `open on
  *  forge` stays on top because it is the one you reach for while reading. */
-function fileMenu(w, f) {
+function fileMenu(/** @type {import('../snapshot').WorkspaceView} */ w, /** @type {import('../snapshot').DiffFile} */ f) {
+  /** @type {[string, string | null, (() => void) | null][]} */
   const items = [];
   const linkable = f.status !== '?' && !f.path.endsWith('/');
   items.push(['open on forge', null, linkable ? () => openFileOnForge(w, f.path) : null]);
@@ -238,7 +239,7 @@ function renderFiles() {
      being the overlay's rather than the list's. */
   if (unchanged(drawn, [wsId, w, currentSession(), diffState.open, diffState.path,
     diffState.summary])) return;
-  renderDivergence(w);
+  if (w) renderDivergence(w);
   const panes = $('filepanes');
   panes.replaceChildren();
 
@@ -293,9 +294,9 @@ function renderFiles() {
       if (sum) {
         diffState.cursor = 0;
         diffState.context = 3;
-        loadFile(f.path);
+        void loadFile(f.path);
       } else {
-        openDiff(f.path);
+        void openDiff(f.path);
       }
     };
     /* The row's menu: the file on the forge, and what git can be asked to do with
@@ -351,6 +352,19 @@ function renderFiles() {
 
 // Kept short: the right header also carries the title and the refresh control,
 // and a long label wraps it onto two lines.
+/** The open diff, and everything a redraw needs to reproduce it.
+ *
+ *  Typed against the generated `DiffSummary` / `FileDiff` rather than a
+ *  hand-written shape, for the reason `snapshot.d.ts` exists at all: these come
+ *  off `/api/workspace/:id/diff`, and a renamed field on the Rust side should
+ *  fail here rather than render as nothing.
+ *
+ *  @type {{ open: boolean, ws: string | null, base: string,
+ *           summary: import('../snapshot').DiffSummary | null, path: string | null,
+ *           file: import('../snapshot').FileDiff | null, split: boolean,
+ *           cursor: number, pendingCursor: 'first' | 'last' | null, context: number,
+ *           anchors?: HTMLElement[], loading?: boolean }}
+ */
 const diffState = {
   open: false,
   /* Which workspace the open diff describes. Every fetch used to read the
@@ -401,20 +415,20 @@ const BASENAME_LANG = {
   dockerfile: 'docker', makefile: 'makefile', 'cargo.lock': 'toml',
   'go.mod': 'go', 'go.sum': 'go',
 };
-function langFor(path) {
+function langFor(/** @type {string} */ path) {
   if (!path || !window.Prism) return null;
-  const base = path.split('/').pop().toLowerCase();
-  const byName = BASENAME_LANG[base];
+  const base = (path.split('/').pop() ?? '').toLowerCase();
+  const byName = BASENAME_LANG[/** @type {keyof typeof BASENAME_LANG} */ (base)];
   if (byName) return Prism.languages[byName] ? byName : null;
   const dot = base.lastIndexOf('.');
-  const lang = EXT_LANG[dot >= 0 ? base.slice(dot + 1) : ''];
+  const lang = EXT_LANG[/** @type {keyof typeof EXT_LANG} */ (dot >= 0 ? base.slice(dot + 1) : '')];
   return lang && Prism.languages[lang] ? lang : null;
 }
 
 /** Prism's nested token tree, flattened to non-overlapping `{s,e,cls}` ranges in
  *  character offsets. The deepest token wins, which is what falls out of only
  *  emitting a range at each string leaf. */
-function hlTokens(text, lang) {
+function hlTokens(/** @type {string} */ text, /** @type {string | null} */ lang) {
   if (!lang) return [];
   let tree;
   try { tree = Prism.tokenize(text, Prism.languages[lang]); }
@@ -442,7 +456,7 @@ function hlTokens(text, lang) {
 
 /** Split a line at every boundary — syntax-token edges and word-diff edges both
  *  — so each segment can carry a token colour and a change background at once. */
-function lineSegments(text, words, lang) {
+function lineSegments(/** @type {string} */ text, /** @type {{ s: number, e: number }[]} */ words, /** @type {string | null} */ lang) {
   const toks = hlTokens(text, lang);
   const bset = new Set([0, text.length]);
   for (const t of toks) { bset.add(t.s); bset.add(t.e); }
@@ -453,7 +467,7 @@ function lineSegments(text, words, lang) {
     const s = pts[k], e = pts[k + 1];
     if (s === e) continue;
     const tok = toks.find((t) => t.s <= s && t.e >= e);
-    const word = words.some((w) => w.s <= s && w.e >= e);
+    const word = words.some((/** @type {{ s: number, e: number }} */ w) => w.s <= s && w.e >= e);
     segs.push({ s, e, cls: tok ? tok.cls : null, word });
   }
   return segs;
@@ -465,12 +479,12 @@ function lineSegments(text, words, lang) {
  *  not a deletion, so the `--- the reply ---` separator does not read as removed.
  *  Only the top-level (per-line) token is taken, so the whole line is coloured
  *  rather than the sign alone. Non-diff prose has no diff tokens and stays plain. */
-function tokenLen(x) {
+function tokenLen(/** @type {any} */ x) {
   if (typeof x === 'string') return x.length;
   if (Array.isArray(x)) return x.reduce((a, c) => a + tokenLen(c), 0);
   return tokenLen(x.content);
 }
-function diffRanges(text) {
+function diffRanges(/** @type {string} */ text) {
   if (!window.Prism || !Prism.languages.diff) return [];
   let toks;
   try { toks = Prism.tokenize(text, Prism.languages.diff); }
@@ -490,7 +504,7 @@ function diffRanges(text) {
  *  plain. Ranges do not overlap. No ranges → one text node: the same content minus
  *  colour, never an error. Shared by every painter of highlighted code, because
  *  three copies of this loop had already started to drift. */
-export function paintRanges(node, text, ranges) {
+export function paintRanges(/** @type {HTMLElement} */ node, /** @type {string} */ text, /** @type {{ s: number, e: number, cls?: string }[]} */ ranges) {
   if (!ranges.length) { node.textContent = text; return node; }
   let at = 0;
   for (const r of ranges) {
@@ -501,11 +515,11 @@ export function paintRanges(node, text, ranges) {
   if (at < text.length) node.appendChild(document.createTextNode(text.slice(at)));
   return node;
 }
-function detailEl(text) {
+function detailEl(/** @type {string} */ text) {
   return paintRanges(el('pre', 'oqd'), text, diffRanges(text));
 }
 
-function lineEl(row, side) {
+function lineEl(/** @type {import('../snapshot').Row} */ row, /** @type {'old' | 'new'} */ side) {
   // side: 'old' | 'new'. In split view each pane shows only its own side.
   const empty = !row || (side === 'old' && row.kind === 'add') ||
                         (side === 'new' && row.kind === 'del');
@@ -524,9 +538,9 @@ function lineEl(row, side) {
     // string. Convert the ranges to character offsets so the two line up, then
     // merge. A blank line still needs a space so the row has height.
     const bytes = ENC.encode(row.text);
-    const b2c = (b) => DEC.decode(bytes.slice(0, b)).length;
+    const b2c = (/** @type {number} */ b) => DEC.decode(bytes.slice(0, b)).length;
     const words = (row.words || []).map(([ws, we]) => ({ s: b2c(ws), e: b2c(we) }));
-    const segs = lineSegments(row.text, words, langFor(diffState.path));
+    const segs = lineSegments(row.text, words, langFor(diffState.path ?? ''));
     if (!segs.length) {
       body.textContent = row.text || ' ';
     } else {
@@ -547,7 +561,7 @@ function lineEl(row, side) {
  *
  *  The server emits deletions then additions; split view needs them abreast,
  *  padding the shorter run so the two panes stay in step. */
-function pairRows(rows) {
+function pairRows(/** @type {import('../snapshot').Row[]} */ rows) {
   const out = [];
   let i = 0;
   while (i < rows.length) {
@@ -577,13 +591,14 @@ function renderDiff() {
   $('ovpath').replaceChildren();
   if (diffState.path) {
     const parts = diffState.path.split('/');
-    const name = parts.pop();
+    // A path always has a last segment; `pop` cannot say so.
+    const name = parts.pop() ?? '';
     $('ovpath').appendChild(el('span', null, parts.length ? parts.join('/') + '/' : ''));
     $('ovpath').appendChild(document.createTextNode(name));
   }
   $('ovmode').textContent = diffState.split ? 'Unified' : 'Split';
 
-  const note = (t) => {
+  const note = (/** @type {string} */ t) => {
     body.appendChild(el('div', 'diffnote', t));
     $('ovcount').textContent = '';
     diffState.anchors = [];
@@ -598,7 +613,7 @@ function renderDiff() {
 
   // Every row is three grid cells in split view and one in unified, so a fold
   // spanning the full width interleaves naturally between hunks.
-  const push3 = (a, b) => {
+  const push3 = (/** @type {HTMLElement} */ a, /** @type {HTMLElement} */ b) => {
     body.appendChild(a);
     body.appendChild(el('div', 'gutter'));
     body.appendChild(b);
@@ -609,7 +624,7 @@ function renderDiff() {
       const b = el('div', 'fold', `⋯ ${h.gap_before} unchanged lines — click to expand`);
       b.onclick = () => {
         diffState.context = Math.min(diffState.context + Math.max(h.gap_before, 20), 10000);
-        loadFile(diffState.path);
+        void loadFile(diffState.path ?? '');
       };
       body.appendChild(b);
     }
@@ -661,7 +676,8 @@ function renderDiff() {
 
 function markCursor() {
   for (const e of $('diffbody').querySelectorAll('.ln.cur')) e.classList.remove('cur');
-  const a = (diffState.anchors || [])[diffState.cursor];
+  const anchors = diffState.anchors || [];
+  const a = anchors[diffState.cursor];
   if (!a) return;
   a.classList.add('cur');
   a.scrollIntoView({ block: 'center', behavior: 'smooth' });
@@ -671,14 +687,14 @@ function markCursor() {
   const files = diffState.summary?.files || [];
   const fi = files.findIndex((f) => f.path === diffState.path);
   const where = files.length > 1 && fi >= 0 ? ` · file ${fi + 1} of ${files.length}` : '';
-  $('ovcount').textContent = `change ${diffState.cursor + 1} of ${diffState.anchors.length}${where}`;
+  $('ovcount').textContent = `change ${diffState.cursor + 1} of ${anchors.length}${where}`;
 }
 
 /** Walk to the next/previous change block, carrying on into the next file in the
  *  changeset's order rather than wrapping inside the current one. Files with no
  *  change blocks (binary, or nothing textual) are hopped over, and the whole
  *  changeset wraps end to end so the stepper never dead-ends. */
-async function stepChange(delta) {
+async function stepChange(/** @type {number} */ delta) {
   const n = (diffState.anchors || []).length;
   const next = diffState.cursor + delta;
   if (n && next >= 0 && next < n) {
@@ -714,12 +730,12 @@ async function loadSummary() {
     diffState.summary = await get(`/api/diff?${q}`);
   } catch (e) {
     diffState.summary = null;
-    toast(e.message, true);
+    toast(reason(e), true);
   }
   renderFiles();
 }
 
-async function loadFile(path) {
+async function loadFile(/** @type {string} */ path) {
   const ws = diffState.ws || activeWorkspaceId();
   if (!ws) return;
   if (editState.on && path !== editState.path && !await closeEditor()) return;
@@ -737,7 +753,7 @@ async function loadFile(path) {
     diffState.file = await get(`/api/diff/file?${q}`);
   } catch (e) {
     diffState.file = null;
-    toast(e.message, true);
+    toast(reason(e), true);
   }
   clearTimeout(slow);
   diffState.loading = false;
@@ -745,7 +761,7 @@ async function loadFile(path) {
   renderFiles();
 }
 
-async function openDiff(path) {
+async function openDiff(/** @type {string} */ path) {
   // No falling back to `currentWorkspaceId`, which answers main when nothing is
   // selected. `activeWorkspaceId` already decided what the file pane does with a
   // finished session — nothing — and this fallback walked around that decision:
@@ -788,17 +804,23 @@ async function closeDiff() {
 // Editable right pane (§5, step 9)
 // ---------------------------------------------------------------------------
 
+/** The open editor. `version` is what the buffer was loaded at, and `watch` is
+ *  the poll that notices somebody editing the file underneath you.
+ *
+ *  @type {{ on: boolean, path: string | null, version: number | null,
+ *           dirty: boolean, watch: ReturnType<typeof setInterval> | null }}
+ */
 const editState = {
   on: false,
   path: null,
-  version: null,     // what the buffer was loaded at
+  version: null,
   dirty: false,
-  watch: null,       // polls for someone editing underneath you
+  watch: null,
 };
 
-function editQuery(extra) {
+function editQuery(/** @type {Record<string, string>} */ extra) {
   const ws = diffState.ws || activeWorkspaceId();
-  const q = new URLSearchParams({ workspace: ws, path: diffState.path, ...extra });
+  const q = new URLSearchParams({ workspace: ws ?? '', path: diffState.path ?? '', ...extra });
   const pr = prForWorkspace(ws);
   if (pr && pr.base_ref) q.set('pr_base', pr.base_ref);
   return q;
@@ -815,7 +837,7 @@ async function openEditor() {
       get(`/api/file?${editQuery({ base: diffState.base })}`),
     ]);
   } catch (e) {
-    return toast(e.message, true);
+    return toast(reason(e), true);
   }
 
   editState.on = true;
@@ -848,7 +870,7 @@ async function openEditor() {
 
   // Invalidation: an agent editing the same file underneath you must not be
   // discovered only at save time (§5).
-  clearInterval(editState.watch);
+  clearInterval(editState.watch ?? undefined);
   editState.watch = setInterval(checkUnderneath, 4000);
 }
 
@@ -857,7 +879,7 @@ async function checkUnderneath() {
   try {
     const now = await get(`/api/file?${editQuery({})}`);
     if (now.version !== editState.version) {
-      clearInterval(editState.watch);
+      clearInterval(editState.watch ?? undefined);
       editState.watch = null;
       $('ovsave').textContent = 'Save (conflict)';
       toast('this file changed on disk — an agent is editing it too. Saving will be refused.', true);
@@ -868,13 +890,13 @@ async function checkUnderneath() {
   }
 }
 
-async function closeEditor(silent) {
+async function closeEditor(/** @type {boolean | undefined} */ silent) {
   // Async now, and the callers await it: `confirm` blocked the thread, this does
   // not. Everything below has to stay after the answer, or the editor tears
   // itself down while the question about it is still on screen.
   if (editState.on && editState.dirty && !silent
       && !await confirmBox('Discard unsaved edits?', { ok: 'Discard' })) return false;
-  clearInterval(editState.watch);
+  clearInterval(editState.watch ?? undefined);
   editState.watch = null;
   editState.on = false;
   editState.dirty = false;
@@ -898,7 +920,7 @@ async function saveEditor() {
       version: editState.version,
     });
   } catch (e) {
-    return toast(e.message, true);
+    return toast(reason(e), true);
   }
   if (out.result === 'conflict') {
     return toast(

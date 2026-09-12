@@ -3,6 +3,15 @@
 //! Its own binary for the reason `host_file.rs` gives — `ORCHD_CONFIG_DIR` is
 //! process-global, and cargo runs the tests in one binary in parallel, so one
 //! fixture that owns that variable is one binary.
+// A test binary, so a panic is how a failure is reported. `clippy.toml`'s
+// `allow-*-in-tests` covers `#[test]` functions and `#[cfg(test)]` modules, and
+// the helpers in an integration crate are neither.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing
+)]
 
 use std::path::{Path, PathBuf};
 

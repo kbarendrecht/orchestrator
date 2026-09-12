@@ -35,7 +35,6 @@ tauri-runtime = "2.11"
 # orchd would make that work by accident.
 tokio = { workspace = true, features = ["rt-multi-thread", "time", "net"] }
 tracing = { workspace = true }
-tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
 # macOS only. **One question, asked of AppKit directly**: is the event the window
 # server is currently dispatching a mouse event? `WindowCmd::StartDrag` has the

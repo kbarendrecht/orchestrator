@@ -3,6 +3,10 @@
 //! Everything of substance is in the library, which the desktop shell embeds.
 //! This is the entry point for running it in a terminal and pointing a browser
 //! at it — still the fastest way to debug the daemon itself.
+// A command-line binary: printing *is* its output, and `print_stdout` is denied
+// across the workspace so the daemon library cannot quietly grow a `println!`
+// that no log ever sees.
+#![allow(clippy::print_stdout, clippy::print_stderr)]
 
 use anyhow::Result;
 use std::path::PathBuf;

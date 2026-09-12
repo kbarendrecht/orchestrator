@@ -89,6 +89,29 @@ clash: string | null, };
 
 export type Checks = "passing" | "failing" | "pending" | "unknown";
 
+/**
+ * One comment in a review thread.
+ */
+export type Comment = { 
+/**
+ * REST id. The reply endpoint is keyed on this, not on the GraphQL node id.
+ */
+database_id: bigint, author: string, body: string, created_at: string, url: string, 
+/**
+ * The anchored patch text. GitHub hangs it off every comment; only the
+ * first one's is worth rendering, so `Thread::diff_hunk` reads that.
+ */
+diff_hunk: string | null, 
+/**
+ * You have 👍'd this comment.
+ *
+ * Fetched because the poll and the resolve flow have to agree on what a
+ * thumbs-up means, and only the poll could see one: the detailed thread query
+ * did not ask for reactions, so `is_answerable` re-offered every thread the
+ * flow had already answered with a 👍 — the review's §3 finding.
+ */
+viewer_thumbed: boolean, };
+
 export type DiffFile = { path: string, 
 /**
  * Verbatim from `--name-status`: M, A, D, R…, C…
@@ -119,7 +142,40 @@ old_path: string | null,
  */
 staged: boolean, unstaged: boolean, };
 
+export type DiffSummary = { base: string, files: Array<DiffFile>, added: number, deleted: number, };
+
+/**
+ * A write that was attempted and refused. `error` is `gh`'s own words.
+ */
+export type Failed = { thread_id: string, label: string, what: What, error: string, };
+
+export type FileDiff = { path: string, hunks: Array<Hunk>, binary: boolean, truncated: boolean, };
+
+/**
+ * A path the batch will touch, with its line counts — the data behind the
+ * card's `will write renovate.json5 +2 −1` label.
+ */
+export type FileStat = { path: string, added: number, deleted: number, };
+
+/**
+ * Why a triage run cannot start.
+ *
+ * These are the worktree-readiness gates: the review flow writes into this
+ * worktree, and every guarantee downstream — the check ladder, the complete file
+ * list, "only what you approved" — assumes the tree starts clean. CI colour and
+ * a merge conflict deliberately do **not** appear here; they are signals about a
+ * future merge and never touch the branch-local machinery.
+ */
+export type Gate = { "gate": "dirty", files: Array<string>, } | { "gate": "rebasing" } | { "gate": "fix_pr_running" };
+
 export type Health = { "health": "starting" } | { "health": "ok" } | { "health": "failing", summary: string, } | { "health": "dead" };
+
+export type Hunk = { old_start: number, new_start: number, header: string, 
+/**
+ * Unchanged lines skipped before this hunk, so the client can render a
+ * fold bar and expand on click.
+ */
+gap_before: number, rows: Array<Row>, };
 
 /**
  * A question a running session is blocked on.
@@ -168,6 +224,94 @@ value: string, label: string, sub: string,
 free: boolean, };
 
 /**
+ * Something that is now true on GitHub.
+ */
+export type Landed = { thread_id: string, 
+/**
+ * `renovate.json5:161 · bob`, for the report's left column.
+ */
+label: string, what: What, 
+/**
+ * It was already there, so nothing was sent. The distinction matters on a
+ * retry: "posted" and "already posted" read the same to a reviewer but not
+ * to someone deciding whether the retry worked.
+ */
+already: boolean, 
+/**
+ * Set on a `Story` row. Not a bare id on the struct, which would be
+ * meaningless next to a reply or a reaction — and the report needs the URL
+ * too, to show what the reply will actually link to.
+ */
+story: StoryRef | null, };
+
+/**
+ * The batch stopped to wait for you.
+ *
+ * Reached only when a decision chose `Manual`. The accepted patches are written
+ * and committed by then, so you edit a tree that already reflects every other
+ * decision — often *why* this thread needed hands. **Nothing has been pushed and
+ * nothing posted**, so backing out costs only the local commit.
+ */
+export type ManualPhase = { 
+/**
+ * The commit the accepted patches landed in. `/manual/done` checks `HEAD`
+ * against it, which is what keeps the phase from resuming onto a branch that
+ * moved underneath it.
+ *
+ * Kept in step with the worktree by `update_phase_head` and written to disk with
+ * the rest of the phase, because `fold_in` rewrites shas in both its arms — after
+ * a fold the old sha is not even an ancestor of `HEAD`, so nothing can re-derive
+ * which commit was ours.
+ */
+committed: string, 
+/**
+ * What was already written, for the phase screen's first line.
+ */
+files: Array<FileStat>, amend: string | null, threads: Array<ManualThread>, 
+/**
+ * A digest of the decisions half one resolved.
+ *
+ * The resume re-supplies the whole batch and the daemon re-resolves it from
+ * scratch, with only `committed == HEAD` checked — and that says nothing about
+ * *which* decisions produced that commit. A decision half one never saw would
+ * otherwise post a reply describing code that was never applied.
+ */
+decisions: string, 
+/**
+ * Is there a phase here to finish, or only a push to remember?
+ *
+ * [`remember_push`] needs somewhere durable to say "the daemon pushed this,
+ * for these decisions", so a retry after a failed reply is not refused as
+ * "the branch moved since triage"; the phase store is the one per-PR record a
+ * batch has. But a batch that never stopped for the manual phase has no phase,
+ * so that record went in as an entry with empty `threads` — and emptiness was
+ * the only thing telling the two apart.
+ *
+ * Nothing read it that way. The boot log announced "manual phase still open",
+ * the review payload served it, and the SPA adopted it: it dropped you on a
+ * manual screen with no rows, where `threads.every(…)` is vacuously true and
+ * `continue · push and post` was therefore enabled. Worse, the record is
+ * cleared only when nothing failed, so it survived exactly when it was wrong.
+ * Hence a field rather than a shape a reader has to infer.
+ */
+open: boolean, };
+
+/**
+ * A thread the human said they would handle themselves.
+ */
+export type ManualThread = { thread_id: string, label: string, 
+/**
+ * The reviewer's own words, so the phase screen needs no second fetch.
+ */
+comment: string, 
+/**
+ * What the card's box held. A starting point, not the comment — you cannot
+ * describe work you have not done yet, which is why the real one is written
+ * in the phase.
+ */
+draft: string, };
+
+/**
  * The PR pass a session was started to run, when it was started as one.
  *
  * **One field rather than two.** `pr` and `command` are inseparable — a pass with
@@ -190,6 +334,64 @@ free: boolean, };
  * nobody is". A session is a session; its state says whether it wants you.
  */
 export type Pass = { pr: number, command: string, };
+
+/**
+ * One complete way of answering a thread.
+ */
+export type Position = { label: string, 
+/**
+ * The line under the label — why you would pick this one.
+ */
+sub: string, stance: Stance, 
+/**
+ * A unified diff, exactly as `git diff` printed it in the agent's scratch
+ * worktree. Its presence is what "this position changes code" means; there
+ * is no second field that could disagree with it.
+ */
+patch: string | null, 
+/**
+ * Present iff `stance.writes_reply()`. For a story position it must contain
+ * `{story}`, substituted once the story exists.
+ */
+reply: string | null, story: StoryDraft | null, };
+
+/**
+ * What the failure panel renders.
+ *
+ * `refused` is the local half saying no — the ladder found a stale patch, the
+ * hooks rewrote a file, pre-commit failed. Nothing was committed and nothing was
+ * pushed, so every other field is empty and the screen is panel 7 rather than
+ * panel 8.
+ */
+export type PostReport = { refused: string | null, 
+/**
+ * Whether pressing the same button again could succeed once you have acted on
+ * `refused`.
+ *
+ * A stray file or a failing hook is something you fix and retry; the branch
+ * having moved under an open phase is not — that sha will never match again, so
+ * restoring the phase for it pins you to a screen whose only button is
+ * guaranteed to fail. The SPA needs to tell those apart and the message alone
+ * cannot.
+ */
+retryable: boolean, 
+/**
+ * Set when the batch is waiting on you. Everything else is empty: the outward
+ * half has not run.
+ */
+manual: ManualPhase | null, 
+/**
+ * The complete file list the batch wrote, from `git apply --numstat`.
+ */
+files: Array<FileStat>, 
+/**
+ * How the fold resolved, including when it fell back to a HEAD amend.
+ */
+amend: string | null, 
+/**
+ * The sha now on origin. `Some` means the code cannot be taken back.
+ */
+pushed: string | null, landed: Array<Landed>, failed: Array<Failed>, skipped: Array<Skipped>, rerequested: Array<string>, held_back: Array<Skipped>, };
 
 export type Pr = { number: number, title: string, url: string, head_ref: string, 
 /**
@@ -355,6 +557,44 @@ export type ProcKind = { "kind": "managed", command: Array<string>, } | { "kind"
 
 export type ProcessView = { id: string, name: string, kind: ProcKind, health: Health, cwd: string, alive: boolean, exit_code: number | null, };
 
+/**
+ * One thread's triage: what the agent made of it, and the ways out.
+ */
+export type Proposal = { thread_id: string, 
+/**
+ * You already replied here and the reviewer came back. The card flags it,
+ * because a new reply has to stay consistent with what you said before.
+ */
+continued: boolean, 
+/**
+ * The agent's assessment: is the reviewer right, what breaks either way.
+ */
+read: string, 
+/**
+ * The command it ran in its scratch worktree and what that showed. Absent
+ * only when no position changes code — there is nothing to re-prove.
+ */
+verified: string | null, 
+/**
+ * Index into `positions` of the one to pre-select.
+ */
+recommend: number, 
+/**
+ * Named `positions` on the wire too; the agent's schema calls them options,
+ * which collides with `Option`.
+ */
+positions: Array<Position>, };
+
+/**
+ * A whole triage run's output.
+ */
+export type ProposalSet = { 
+/**
+ * The PR head the patches were generated against. Re-checked before
+ * writing: a force-push in between invalidates every diff.
+ */
+base_sha: string, proposals: Array<Proposal>, };
+
 export type Repos = { 
 /**
  * Where PRs are opened, e.g. `acme/monorepo`.
@@ -404,6 +644,16 @@ export type ReviewQueue = { login: string, actionable: Array<Review>, blocked: A
  * unparseable output or an unknown `version` all land here instead.
  */
 export type ReviewState = { "state": "ok" } & ReviewQueue | { "state": "degraded", reason: string, } | { "state": "pending" } | { "state": "off" };
+
+export type Row = { kind: RowKind, old: number | null, new: number | null, text: string, 
+/**
+ * Byte ranges within `text` that actually differ, for word-level
+ * highlighting. Computed here so the browser's main thread never pays for
+ * it (§5). Non-overlapping and in ascending order.
+ */
+words: [number, number][] | undefined, };
+
+export type RowKind = "context" | "del" | "add";
 
 export type RunThreadView = { thread_id: string, location: string, status: ThreadStatus, commit: string | null, note: string | null, };
 
@@ -489,6 +739,11 @@ interrupted: boolean,
  * to show than either state.
  */
 handed_off: boolean, };
+
+/**
+ * A write that was never tried, and what it is waiting on.
+ */
+export type Skipped = { label: string, what: What, waiting_on: string, };
 
 /**
  * What the SPA receives on every tick.
@@ -589,7 +844,69 @@ triage: { [key in string]: TriageProgress },
  */
 version: string, };
 
+/**
+ * What you are saying back to the reviewer.
+ *
+ * One of the three things decided per thread, and deliberately only that. It
+ * used to be `Does`, which bundled the stance together with whether code gets
+ * written and who writes it — so "agree, and I will fix it by hand" had no
+ * spelling. Code is now simply whether the position carries a patch, and who
+ * writes it is [`Mode`], chosen by the human rather than proposed by the agent.
+ */
+export type Stance = "agree" | "reply" | "story";
+
 export type State = { "state": "starting" } | { "state": "working" } | { "state": "your_turn", since: { secs_since_epoch: number, nanos_since_epoch: number }, reason: TurnReason, } | { "state": "build_failing", summary: string, } | { "state": "error", message: string, } | { "state": "exited" } | { "state": "archived", resumable: boolean, };
+
+/**
+ * A story to file, when a position defers the point rather than answering it.
+ */
+export type StoryDraft = { title: string, body: string, };
+
+/**
+ * A story that exists in the tracker.
+ *
+ * Both halves come from the tool response and neither is ever constructed by
+ * `format!`: the org slug in the URL belongs to your tracker workspace and the daemon has no
+ * business knowing it.
+ */
+export type StoryRef = { 
+/**
+ * Short form, `sc-12345`. What the report shows.
+ *
+ * Private, with [`StoryRef::new`] the only way in, because the pair is agent
+ * text that ends up as a link in a public comment: a value that has not been
+ * through [`StoryRef::consistent`] must not be constructible outside this
+ * module. Serde is the exception it cannot police — a `stories.json` written
+ * before the id was checked deserializes straight past the constructor, which
+ * is why [`Cache::get`] re-checks on the way out.
+ */
+id: string, 
+/**
+ * The clickable one, `https://app.shortcut.com/<org>/story/12345`.
+ */
+url: string, };
+
+/**
+ * An unresolved conversation on a PR.
+ */
+export type Thread = { 
+/**
+ * `PRRT_…`. **Not** a resolve target — closing a thread is the comment
+ * author's button, never ours — but the join key between a thread and the
+ * finding the triage agent returns for it.
+ */
+id: string, path: string | null, 
+/**
+ * `null` on an outdated thread; the finding can still stand.
+ */
+line: number | null, start_line: number | null, original_line: number | null, is_resolved: boolean, is_outdated: boolean, comments: Array<Comment>, 
+/**
+ * [`Thread::is_answerable`] against the fetch's own viewer, resolved by
+ * [`Threads::mark_answerable`] so the SPA does not have to reimplement the
+ * rule. Always false straight out of parsing, which has no viewer to judge
+ * by.
+ */
+answerable: boolean, };
 
 /**
  * Where one thread of a run has got to.
@@ -698,6 +1015,11 @@ to: string, running: boolean,
  * and dismissed like any other.
  */
 tail: string, };
+
+/**
+ * A single outward write, named the way the report renders it.
+ */
+export type What = "story" | "reply" | "thumbs_up" | "rerequest";
 
 export type WorkspaceKind = { "kind": "main" } | { "kind": "worktree", name: string, };
 

@@ -1350,6 +1350,7 @@ async fn adopt_pending_worktrees(app: &Arc<AppState>) {
         );
         return;
     }
+    #[expect(clippy::expect_used, reason = "the guard above returned unless there is exactly one")]
     let (name, path, branch) = orphans.into_iter().next().expect("one");
     let id = pending[0];
     app.register_worktree(&name, path.clone(), branch).await;

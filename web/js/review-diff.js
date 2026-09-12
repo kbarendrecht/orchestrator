@@ -13,7 +13,7 @@ import { langFor, hlTokens, paintRanges } from './diff.js';
  *  `git apply --numstat`, which is what the daemon re-derives authoritatively
  *  before it writes. Done here so a card can label what it would write without
  *  a round trip. */
-function patchStats(diff) {
+function patchStats(/** @type {string | null} */ diff) {
   const out = [];
   let cur = null;
   for (const line of (diff || '').split('\n')) {
@@ -34,7 +34,7 @@ function patchStats(diff) {
 /** `will write renovate.json5 +3 -1`, every path, derived rather than
  *  hand-written — there is no deny-list, so showing what will be written is
  *  what stands in for one. */
-function willWriteLabel(diff, verb) {
+function willWriteLabel(/** @type {string | null} */ diff, /** @type {string | undefined} */ verb) {
   return fileListLabel(patchStats(diff), verb || 'will write');
 }
 
@@ -43,7 +43,7 @@ function willWriteLabel(diff, verb) {
  *  Shared by the card (from a proposed patch) and the manual phase (from
  *  `git diff`), because in both places the point is the same: the list is derived,
  *  so it cannot be wrong about what is being written. */
-function fileListLabel(files, verb) {
+function fileListLabel(/** @type {{ path: string, added: number, deleted: number }[]} */ files, /** @type {string} */ verb) {
   const row = el('div', 'willwrite');
   row.appendChild(document.createTextNode(verb));
   for (const f of files) {
@@ -70,7 +70,7 @@ function fileListLabel(files, verb) {
  *  `hlTokens` gives non-overlapping ranges; anything it does not cover is plain
  *  text. No language, no grammar, or a tokenizer that threw → one text node, which
  *  is the same row minus colour rather than an error. */
-function codeEl(text, lang) {
+function codeEl(/** @type {string} */ text, /** @type {string | null} */ lang) {
   return paintRanges(el('s'), text, lang ? hlTokens(text, lang) : []);
 }
 
@@ -86,12 +86,12 @@ function codeEl(text, lang) {
  *  `path` names the language for a bare GitHub hunk, which carries no header to
  *  read one from. A full `git diff` re-reads it at every `diff --git`, so a
  *  multi-file diff is coloured per file rather than all as the first one. */
-function hunkEl(text, hitLast, path) {
+function hunkEl(/** @type {string} */ text, /** @type {boolean} */ hitLast, /** @type {string | null | undefined} */ path) {
   const box = el('div', 'hunk');
   let oldNo = 0;
   let newNo = 0;
   let last = null;
-  let lang = langFor(path);
+  let lang = langFor(path ?? '');
   for (const line of (text || '').split('\n')) {
     /* A file boundary, and the states that have no hunk at all. Skipping these
        rendered a binary replacement, a pure rename and a deletion as *nothing* —

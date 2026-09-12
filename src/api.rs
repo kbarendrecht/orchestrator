@@ -186,7 +186,7 @@ fn is_agent_route(path: &str) -> bool {
 /// Hooks cannot easily carry it, which is why they are confined to a separate
 /// prefix and a schema that only ever updates state. GETs are otherwise exempt so
 /// a same-origin address-bar read works — with the exception
-/// [`SPENDS_GITHUB_TOKEN`] names.
+/// `SPENDS_GITHUB_TOKEN` names.
 pub async fn guard(
     State(app): State<Arc<AppState>>,
     req: Request<axum::body::Body>,
@@ -1895,7 +1895,7 @@ pub async fn resume_session(
 /// That also makes a fork cheaper than a resume: nothing has to be rebuilt, so a
 /// conversation whose branch is long gone can still be forked.
 ///
-/// A session started as a [`Pass`](crate::model::Pass) forks like any other. It
+/// A session started as a [`Pass`] forks like any other. It
 /// used to resume instead, on the reasoning that a run cut a fresh worktree from
 /// upstream and so would come back on the wrong code — but "fork" that silently
 /// continues one conversation is the worse surprise, and the new tree is the
@@ -4637,6 +4637,13 @@ pub async fn pr_review(
     };
 
     Ok(Json(json!({
+        // The overlay's header reads all three, each behind a fallback — so they
+        // were never missed: the title read "review", the branch read "this
+        // branch", and the GitHub button was hidden by its own `if`. Found by
+        // typing the payload against the structs it is built from.
+        "title": pr.title,
+        "url": pr.url,
+        "head_ref": pr.head_ref,
         "viewer": fetched.viewer,
         "head_sha": fetched.head_sha,
         "answerable": fetched.answerable_count(),

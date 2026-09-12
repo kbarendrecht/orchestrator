@@ -4,6 +4,15 @@
 //! is process-global and cargo runs the tests in one binary in parallel: two tests
 //! pointing that variable at two directories is a race whose loser reads the
 //! wrong config. One binary per checkout-shaped fixture is the cheap way out.
+// A test binary, so a panic is how a failure is reported. `clippy.toml`'s
+// `allow-*-in-tests` covers `#[test]` functions and `#[cfg(test)]` modules, and
+// the helpers in an integration crate are neither.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing
+)]
 
 use std::path::{Path, PathBuf};
 

@@ -2,7 +2,7 @@
 // over a websocket. The DOM renderer is deliberate under WebKitGTK, and only
 // there — see the renderer comment below, and CLAUDE.md.
 
-import { $, CHROME, IS_MAC, copyText, fontStack, onThemeChange, theme, el, mark, note, reportBoot, selected, terms, termKey, toast, typingElsewhere, uiScale, wheelScale } from './core.js';
+import { $, CHROME, IS_MAC, copyText, fontStack, theme, el, mark, note, reason, reportBoot, selected, terms, termKey, typingElsewhere, uiScale, wheelScale } from './core.js';
 import { termColours } from './palette.js';
 
 
@@ -87,7 +87,10 @@ function openTerm(checkout, target, parent) {
   // Declared before the key and wheel handlers below so they can send through
   // `entry.sock`, which `connect` replaces on a reconnect. Closing over the socket
   // directly is what pinned them to the first, dead one (#7).
-  const entry = { term, fit, host };
+  /* `checkout` and `key` are built in rather than assigned after: they are the
+     two fields every reconnect reads, and an entry without them is not usable. */
+  /** @type {import('./core.js').TermEntry} */
+  const entry = { term, fit, host, checkout, key, pending: [], pendingBytes: 0, queued: [], queuedBytes: 0 };
 
   /* The pty-status pill: `connecting…` until the socket is up, `starting…` until
      there is something readable on the pane, `reconnecting…` if an open socket
@@ -118,7 +121,7 @@ function openTerm(checkout, target, parent) {
    * there is no interrupt to protect it from.
    *
    * Returning false tells xterm not to handle the event itself. */
-  term.attachCustomKeyEventHandler((e) => {
+  term.attachCustomKeyEventHandler((/** @type {KeyboardEvent} */ e) => {
     if (e.type !== 'keydown') return true;
     /* **Shift+Enter is a newline, and a terminal cannot say so by itself.** Enter
        and Shift+Enter both leave xterm as a bare CR — measured here with `cat -v`,
@@ -152,7 +155,7 @@ function openTerm(checkout, target, parent) {
     const key = e.key.toLowerCase();
     if (key === 'c') {
       const text = term.getSelection();
-      if (text) copyText(text);
+      if (text) void copyText(text);
       return false;
     }
     // Paste is deliberately *not* claimed here. Both spellings already reach
@@ -221,7 +224,7 @@ function openTerm(checkout, target, parent) {
       renderer = 'webgl';
     } catch (e) {
       // Software rendering is slower but correct; not worth failing over.
-      note(`${target}: webgl refused (${e}), using the dom renderer`);
+      note(`${target}: webgl refused (${reason(e)}), using the dom renderer`);
     }
   }
   note(`${target} renderer=${renderer} engine=${engine}`);
@@ -262,7 +265,7 @@ function openTerm(checkout, target, parent) {
    * xterm's documented escape to the scrollback — `consumeWheelEvent` returns 0
    * on Shift, so that keeps working and is worth knowing about. */
   let wheelLines = 0;
-  term.attachCustomWheelEventHandler((ev) => {
+  term.attachCustomWheelEventHandler((/** @type {WheelEvent} */ ev) => {
     if (!agentPane || ev.shiftKey || ev.deltaMode !== 0) return true;
     // `modes` is public API. `any`/`drag` is `?1003h`/`?1002h`, which is what an
     // agent TUI sets; anything less capable is left alone rather than guessed at,
@@ -316,15 +319,13 @@ function openTerm(checkout, target, parent) {
     return false;
   });
 
-  term.onData((d) => sendInput(entry, new TextEncoder().encode(d)));
+  term.onData((/** @type {string} */ d) => sendInput(entry, new TextEncoder().encode(d)));
 
   /* **The checkout is taken here, at open, and never read from a global again.**
      `connect` is also the reconnect path, so a socket that read "the checkout you
      are in now" would re-aim itself at whichever checkout you happened to be
      looking at when the network blipped — and never heal, because nothing
      re-opens a terminal that is working. */
-  entry.checkout = checkout;
-  entry.key = key;
   terms.set(key, entry);
   connect(entry, target);
   return entry;
@@ -337,7 +338,7 @@ function openTerm(checkout, target, parent) {
  *  reattach costs one ring-buffer replay and lands the pane where it was. Without
  *  a reconnect a closed socket stayed closed, and every keystroke took the false
  *  branch and vanished while the cursor kept blinking on xterm's own buffer (#7). */
-function connect(entry, target) {
+function connect(/** @type {import('./core.js').TermEntry} */ entry, /** @type {string} */ target) {
   const { wsBase, token } = entry.checkout;
   const sock = new WebSocket(
     `${wsBase}/ws/pty?token=${encodeURIComponent(token)}&target=${encodeURIComponent(target)}`
@@ -433,7 +434,7 @@ const BADGE = {
   reconnecting: 'reconnecting…',
 };
 
-function setBadge(entry, state) {
+function setBadge(/** @type {import('./core.js').TermEntry} */ entry, /** @type {'connecting' | 'starting' | 'reconnecting' | null} */ state) {
   const b = entry.badge;
   if (!b) return;
   /* **Nothing to blink at while nothing is attached.** A cursor on an empty pane
@@ -443,17 +444,17 @@ function setBadge(entry, state) {
      one lever that reaches both. */
   entry.term.options.theme = state ? { ...THEME, cursor: THEME.background } : THEME;
   if (!state) { b.hidden = true; return; }
-  b.querySelector('.term-badge-t').textContent = BADGE[state] || BADGE.connecting;
+  const t = b.querySelector('.term-badge-t');
+  if (t) t.textContent = (state && BADGE[state]) || BADGE.connecting;
   b.hidden = false;
 }
 
 /** Send a keystroke, or bank it if the socket is down so nothing is lost silently. */
-function sendInput(entry, bytes) {
+function sendInput(/** @type {import('./core.js').TermEntry} */ entry, /** @type {Uint8Array} */ bytes) {
   if (entry.sock && entry.sock.readyState === WebSocket.OPEN) {
     entry.sock.send(bytes);
     return;
   }
-  if (!entry.pending) { entry.pending = []; entry.pendingBytes = 0; }
   // Over budget: drop, and leave the mark up — a truncated command replayed is
   // worse than one the user retypes against a pane that says it was not live.
   if (entry.pendingBytes + bytes.byteLength > INPUT_BUDGET) return;
@@ -462,7 +463,7 @@ function sendInput(entry, bytes) {
 }
 
 /** Replay everything typed while the socket was down, in order. */
-function flushInput(entry) {
+function flushInput(/** @type {import('./core.js').TermEntry} */ entry) {
   const pending = entry.pending;
   entry.pending = [];
   entry.pendingBytes = 0;
@@ -481,18 +482,19 @@ function flushInput(entry) {
 const HIDDEN_BUDGET = 1 << 20;
 
 /** Bank a chunk for a terminal that is not being looked at. */
-function queueChunk(entry, chunk) {
+function queueChunk(/** @type {import('./core.js').TermEntry} */ entry, /** @type {string | Uint8Array} */ chunk) {
   if (!entry.queued) { entry.queued = []; entry.queuedBytes = 0; }
   entry.queued.push(chunk);
   entry.queuedBytes += typeof chunk === 'string' ? chunk.length : chunk.byteLength;
   while (entry.queuedBytes > HIDDEN_BUDGET && entry.queued.length > 1) {
     const old = entry.queued.shift();
+    if (old === undefined) break;
     entry.queuedBytes -= typeof old === 'string' ? old.length : old.byteLength;
   }
 }
 
 /** Write what arrived while this terminal was hidden, in the order it arrived. */
-function flushQueued(entry) {
+function flushQueued(/** @type {import('./core.js').TermEntry} */ entry) {
   if (!entry.queued?.length) return;
   const queued = entry.queued;
   entry.queued = [];
@@ -504,7 +506,7 @@ function flushQueued(entry) {
  *  replay the whole buffer on top of the old one. Both the live and the
  *  hidden-then-flushed paths go through here so the reset happens exactly once,
  *  before the replay, whichever arrives first. */
-function writeChunk(entry, chunk) {
+function writeChunk(/** @type {import('./core.js').TermEntry} */ entry, /** @type {string | Uint8Array} */ chunk) {
   if (entry.needsReset) { entry.needsReset = false; entry.term.reset(); }
   /* The callback, not the call: xterm parses asynchronously, so the buffer holds
      nothing yet on the line after `write`. */
@@ -524,7 +526,7 @@ function writeChunk(entry, chunk) {
  *
  *  The viewport rather than the whole buffer, because that is what the pane shows,
  *  and only while the pill is up, so the cost is bounded to the wait itself. */
-function somethingOnScreen(term) {
+function somethingOnScreen(/** @type {any} */ term) {
   const buf = term.buffer.active;
   for (let i = 0; i < term.rows; i++) {
     const line = buf.getLine(buf.viewportY + i);
@@ -549,7 +551,7 @@ function somethingOnScreen(term) {
  * focus, and switching to the pane). A same-size resize is a no-op in the daemon
  * — `PtyHandle::resize` says why — so re-stating costs nothing when nothing
  * drifted. */
-function resize(entry, force) {
+function resize(/** @type {import('./core.js').TermEntry} */ entry, /** @type {boolean | undefined} */ force) {
   if (!entry || entry.host.hidden) return;
   // Nothing moved, nothing to do. Without this a repeated observation refits at
   // the same size, and a box whose width lands between two whole cells can flip
@@ -581,7 +583,7 @@ function resize(entry, force) {
   entry.sent = { rows, cols };
   // An observer never reshapes the session it is watching: see `OBSERVE`.
   if (OBSERVE) return;
-  if (entry.sock.readyState === WebSocket.OPEN) {
+  if (entry.sock?.readyState === WebSocket.OPEN) {
     entry.sock.send(JSON.stringify({ type: 'resize', rows, cols }));
   }
 }
@@ -591,7 +593,7 @@ function resize(entry, force) {
  *  Dropping the atlas is the half that matters after a resize or a spell hidden:
  *  it is the piece that survives the canvas being sized to something else, and
  *  it is what the leftover garbage is made of. */
-function repaint(entry) {
+function repaint(/** @type {import('./core.js').TermEntry} */ entry) {
   requestAnimationFrame(() => {
     try {
       entry.term.clearTextureAtlas?.();
@@ -600,7 +602,7 @@ function repaint(entry) {
   });
 }
 
-function closeTerm(checkout, target) {
+function closeTerm(/** @type {import('../snapshot').Checkout} */ checkout, /** @type {string} */ target) {
   const entry = terms.get(termKey(checkout, target));
   if (!entry) return;
   // Mark it torn down before closing, so the socket's `onclose` does not read a
@@ -621,7 +623,7 @@ function closeTerm(checkout, target) {
  */
 function showTerm(checkout, target, parent) {
   const key = checkout && target ? termKey(checkout, target) : null;
-  const entry = key ? openTerm(checkout, target, parent) : null;
+  const entry = checkout && target ? openTerm(checkout, target, parent) : null;
   for (const [held, e] of terms) {
     if (e.host.parentElement !== parent) continue;
     e.host.hidden = held !== key;
@@ -650,7 +652,7 @@ function showTerm(checkout, target, parent) {
 
 /** Re-fit every attached terminal. Lives with the terminals rather than with the
  *  zoom control, which is what stopped the two depending on each other. */
-function refit(force) {
+function refit(/** @type {boolean | undefined} */ force) {
   for (const entry of terms.values()) resize(entry, force);
 }
 
@@ -698,7 +700,7 @@ function applyTermTheme() {
  *  from the tail because a watcher that has been idle leaves the screen padded,
  *  and 50 rows of nothing is not what you meant to send.
  */
-function readTerm(checkout, target, lines = 50) {
+function readTerm(/** @type {import('../snapshot').Checkout} */ checkout, /** @type {string} */ target, lines = 50) {
   const entry = terms.get(termKey(checkout, target));
   if (!entry) return null;
   const picked = entry.term.getSelection();
@@ -719,7 +721,7 @@ function readTerm(checkout, target, lines = 50) {
 }
 
 /** Whether this pane has a selection, which is what the menu's wording turns on. */
-function hasSelection(checkout, target) {
+function hasSelection(/** @type {import('../snapshot').Checkout} */ checkout, /** @type {string} */ target) {
   const entry = terms.get(termKey(checkout, target));
   return !!entry && !!entry.term.getSelection().trim();
 }

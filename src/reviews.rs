@@ -93,7 +93,9 @@ pub fn eject_default_script() -> Result<std::path::PathBuf> {
     if path.exists() {
         return Ok(path);
     }
-    std::fs::create_dir_all(path.parent().unwrap())?;
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
     std::fs::write(&path, DEFAULT_SCRIPT)?;
     #[cfg(unix)]
     {

@@ -111,11 +111,30 @@ fn wsl_render_workaround() {
 #[cfg(not(target_os = "linux"))]
 fn wsl_render_workaround() {}
 
+/// A poisoned lock here is still readable, and refusing it is worse than reading it.
+///
+/// Both of these hold an `Option` the code takes whole — the bootstrap server's
+/// abort handle and the running daemon — so there is no half-written state for
+/// poisoning to protect. `unwrap` instead would mean one panic anywhere in the
+/// shell turning "quit" and "restart" into panics of their own, in the process
+/// that owns the window and every child daemon. `orchd::host` says the same at
+/// more length.
+fn poisoned_is_still_usable<T>(poisoned: std::sync::PoisonError<T>) -> T {
+    poisoned.into_inner()
+}
+
 fn main() {
     // Before anything opens a window: a one-shot for the person who wants the
     // entry written now, or written again somewhere the refresh below declines to
     // touch. The launch-time refresh covers the ordinary case.
     if std::env::args().any(|a| a == "--install-desktop-entry") {
+        // The one branch of this binary that is a command line rather than a
+        // window, so it is the one place a print reaches a person.
+        #[expect(
+            clippy::print_stdout,
+            clippy::print_stderr,
+            reason = "run from a shell, never from the launcher"
+        )]
         match install_desktop_entry() {
             Ok(Some(path)) => println!("wrote {}", path.display()),
             Ok(None) => println!("already current"),
@@ -166,6 +185,7 @@ fn main() {
     // Tauri owns the main thread, so the async half gets its own runtime. It is
     // never dropped — `App::run` does not return — which is what keeps the
     // daemon's pollers and pty readers alive for the life of the window.
+    #[expect(clippy::expect_used, reason = "no runtime is no app; there is nothing to degrade to")]
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -173,6 +193,7 @@ fn main() {
     let handle = rt.handle().clone();
     let _ = RT.set(handle.clone());
 
+    #[expect(clippy::expect_used, reason = "a window that will not build is a launch that has already failed")]
     let app = with_settings_item(tauri::Builder::default().plugin(tauri_plugin_dialog::init()))
         .setup(move |app| {
             let app_handle = app.handle().clone();
@@ -304,7 +325,7 @@ fn first_run(app_handle: &AppHandle, rt: &tokio::runtime::Handle) -> Result<()> 
         .context("starting the first-run server")?;
     let url = serving.url().parse().context("the bootstrap URL")?;
     // Kept so the daemon boot can stop it once a project is committed.
-    *BOOTSTRAP.get_or_init(|| Mutex::new(None)).lock().unwrap() = Some(serving.task.abort_handle());
+    *BOOTSTRAP.get_or_init(|| Mutex::new(None)).lock().unwrap_or_else(poisoned_is_still_usable) = Some(serving.task.abort_handle());
     // The open-project page wants the full board size; it is the window you work in.
     build_window(app_handle, WebviewUrl::External(url), board_size(), MIN_SIZE, false)
 }
@@ -599,7 +620,7 @@ fn boot_daemon(app_handle: AppHandle, rt: tokio::runtime::Handle, main: Option<s
             serving.host.port
         );
         let url = serving.url();
-        *SERVER.get_or_init(|| Mutex::new(None)).lock().unwrap() = Some(serving);
+        *SERVER.get_or_init(|| Mutex::new(None)).lock().unwrap_or_else(poisoned_is_still_usable) = Some(serving);
 
         /* Grow from the splash to the board, then hand the window over. GTK calls
            only on the main thread.
@@ -815,7 +836,7 @@ fn ensure_on_screen(win: &tauri::WebviewWindow) {
 
 /// Stop the first-run server if one is still running.
 fn stop_bootstrap() {
-    if let Some(handle) = BOOTSTRAP.get().and_then(|b| b.lock().unwrap().take()) {
+    if let Some(handle) = BOOTSTRAP.get().and_then(|b| b.lock().unwrap_or_else(poisoned_is_still_usable).take()) {
         handle.abort();
     }
 }
@@ -825,7 +846,7 @@ fn stop_bootstrap() {
 fn daemon_url() -> Option<String> {
     SERVER
         .get()
-        .and_then(|s| s.lock().unwrap().as_ref().map(|serving| serving.url()))
+        .and_then(|s| s.lock().unwrap_or_else(poisoned_is_still_usable).as_ref().map(|serving| serving.url()))
 }
 
 /// Ask for a restart: verify there is a binary to come back as, then close the
@@ -896,7 +917,7 @@ impl orchd::firstrun::BootstrapHost for TauriBootstrap {
     /// The first-run page is reached only at boot with nothing configured, so no
     /// daemon is ever up while it is on screen. It stays because it is a
     /// *defaulted* trait method: dropping the impl compiles silently, and this is
-    /// the only branch of [`Self::open`] that reaches `request_restart` — so if a
+    /// the only branch of [`BootstrapHost::open`](orchd::firstrun::BootstrapHost::open) that reaches `request_restart` — so if a
     /// flow ever puts this page over a running board again, losing it would mean
     /// every open taking the `BOOTING` branch, which is set by the first boot and
     /// never cleared.
@@ -904,7 +925,7 @@ impl orchd::firstrun::BootstrapHost for TauriBootstrap {
         daemon_url().is_some()
     }
 
-    /// The page's own way back, for the same reason [`Self::switching`] stays.
+    /// The page's own way back, for the same reason [`BootstrapHost::switching`](orchd::firstrun::BootstrapHost::switching) stays.
     fn cancel(&self) {
         let Some(url) = daemon_url() else { return };
         navigate_main(&self.app, url);
@@ -1111,7 +1132,7 @@ fn relaunch() {
     }
 }
 
-/// The successor's argv: our own, minus argv[0], with **one** handoff pair.
+/// The successor's argv: our own, minus `argv[0]`, with **one** handoff pair.
 ///
 /// The stripping is the whole point. This used to be
 /// `args_os().skip(1).collect()` plus a push, which **keeps** the pair a previous
@@ -1192,7 +1213,7 @@ fn await_handoff() {
 /// model: stopping a process is a signal and a wait, not an async teardown of state
 /// this process holds.
 fn shutdown() {
-    let Some(serving) = SERVER.get().and_then(|s| s.lock().unwrap().take()) else {
+    let Some(serving) = SERVER.get().and_then(|s| s.lock().unwrap_or_else(poisoned_is_still_usable).take()) else {
         return;
     };
     serving.host.stop_all();

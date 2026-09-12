@@ -49,6 +49,7 @@ const MIN_POSITIONS: usize = 1;
 /// spelling. Code is now simply whether the position carries a patch, and who
 /// writes it is [`Mode`], chosen by the human rather than proposed by the agent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
 #[serde(rename_all = "lowercase")]
 pub enum Stance {
     /// The reviewer is right: make the change they asked for, and answer with a
@@ -97,6 +98,7 @@ pub enum Mode {
 
 /// A story to file, when a position defers the point rather than answering it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
 pub struct StoryDraft {
     pub title: String,
     pub body: String,
@@ -104,6 +106,7 @@ pub struct StoryDraft {
 
 /// One complete way of answering a thread.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
 pub struct Position {
     pub label: String,
     /// The line under the label — why you would pick this one.
@@ -136,6 +139,7 @@ pub const STORY_TOKEN: &str = "{story}";
 
 /// One thread's triage: what the agent made of it, and the ways out.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
 pub struct Proposal {
     pub thread_id: String,
     /// You already replied here and the reviewer came back. The card flags it,
@@ -158,6 +162,7 @@ pub struct Proposal {
 
 /// A whole triage run's output.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "../web/snapshot.d.ts"))]
 pub struct ProposalSet {
     /// The PR head the patches were generated against. Re-checked before
     /// writing: a force-push in between invalidates every diff.

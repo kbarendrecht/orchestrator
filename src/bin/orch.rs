@@ -13,6 +13,10 @@
 //!
 //! It replaces a page of `curl | jq` in `commands/resolve-run.md`, where the
 //! long-poll loop was written out by hand and easy to get wrong.
+// A command-line binary: printing *is* its output, and `print_stdout` is denied
+// across the workspace so the daemon library cannot quietly grow a `println!`
+// that no log ever sees.
+#![allow(clippy::print_stdout, clippy::print_stderr)]
 
 use serde_json::{json, Value};
 use std::process::ExitCode;
@@ -404,8 +408,11 @@ fn session_env() -> Result<(String, String, String), String> {
     .map(|(k, _)| k)
     .collect();
 
+    if let (Some(url), Some(me), Some(token)) = (url, me, token) {
+        return Ok((url, me, token));
+    }
+
     match missing.len() {
-        0 => Ok((url.unwrap(), me.unwrap(), token.unwrap())),
         3 => Err("this only runs inside a session the daemon started — \
                   ORCH_URL, ORCH_SESSION_ID and ORCH_ASK_TOKEN are all unset"
             .into()),

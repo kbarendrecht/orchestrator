@@ -27,7 +27,10 @@
  *  loose form and then wrote the raw string into a custom property, where
  *  `D2D2D2` is not a colour and every rule using it silently died.
  */
-export function parseHex(s) {
+/** The three colours a board is built from; everything else is mixed out of them.
+ *  @typedef {{ bg: string, panel: string, text: string }} Palette */
+
+export function parseHex(/** @type {string | null | undefined} */ s) {
   const m = /^#?([0-9a-f]{6})$/i.exec(String(s ?? '').trim());
   if (!m) return null;
   const n = parseInt(m[1], 16);
@@ -35,9 +38,9 @@ export function parseHex(s) {
 }
 
 /** Three channels back to `#rrggbb`, clamped and rounded. */
-export function toHex(rgb) {
-  const out = rgb.map((c) => Math.max(0, Math.min(255, Math.round(c))));
-  return `#${out.map((c) => c.toString(16).padStart(2, '0')).join('')}`;
+export function toHex(/** @type {number[]} */ rgb) {
+  const out = rgb.map((/** @type {number} */ c) => Math.max(0, Math.min(255, Math.round(c))));
+  return `#${out.map((/** @type {number} */ c) => c.toString(16).padStart(2, '0')).join('')}`;
 }
 
 /** `a` moved `t` of the way toward `b`. `t` of 0 is `a`, 1 is `b`.
@@ -46,14 +49,14 @@ export function toHex(rgb) {
  *  ratios below were solved against *this* arithmetic, so a cleverer mix would
  *  stop reproducing the palette it is calibrated on.
  */
-export function mix(a, b, t) {
+export function mix(/** @type {string} */ a, /** @type {string} */ b, /** @type {number} */ t) {
   const [x, y] = [parseHex(a), parseHex(b)];
   if (!x || !y) return a;
   return toHex(x.map((c, i) => c + (y[i] - c) * t));
 }
 
 /** WCAG relative luminance. */
-export function luminance(hex) {
+export function luminance(/** @type {string} */ hex) {
   const rgb = parseHex(hex);
   if (!rgb) return 0;
   const [r, g, b] = rgb.map((c) => {
@@ -64,7 +67,7 @@ export function luminance(hex) {
 }
 
 /** WCAG contrast ratio, 1 to 21. Order does not matter. */
-export function contrast(a, b) {
+export function contrast(/** @type {string} */ a, /** @type {string} */ b) {
   const [x, y] = [luminance(a), luminance(b)];
   return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05);
 }
@@ -129,8 +132,9 @@ const FROM_TEXT = {
  *  has to stop. It keeps painting while the board is solid, where there is no alpha
  *  to stack and a canvas with no fill is a white flash.
  */
-export function tokens({ bg, panel, text }, { opacity = 1 } = {}) {
+export function tokens(/** @type {Palette} */ { bg, panel, text }, /** @type {{ opacity?: number }} */ { opacity = 1 } = {}) {
   const see = opacity < 1;
+  /** @type {Record<string, string>} */
   const out = {
     '--bg': bg,
     '--ground': see ? alpha(bg, opacity) : bg,
@@ -145,7 +149,7 @@ export function tokens({ bg, panel, text }, { opacity = 1 } = {}) {
 }
 
 /** `#rrggbb` plus an alpha, as `rgba()`. */
-export function alpha(hex, a) {
+export function alpha(/** @type {string} */ hex, /** @type {number} */ a) {
   const rgb = parseHex(hex);
   if (!rgb) return hex;
   return `rgba(${rgb.join(',')},${a})`;
@@ -168,7 +172,7 @@ export function alpha(hex, a) {
  *  palette every semantic already clears 4.5 (the lowest is `--auto` at 5.63), so
  *  this returns them untouched and the default board does not move.
  */
-export function readable(colour, { bg, text }, floor = MIN_CONTRAST) {
+export function readable(/** @type {string} */ colour, /** @type {Palette} */ { bg, text }, floor = MIN_CONTRAST) {
   if (contrast(colour, bg) >= floor) return colour;
   // Coarse enough to be one pass and fine enough that the step is not visible.
   for (let t = 0.04; t <= 1; t += 0.04) {
@@ -187,7 +191,7 @@ export function readable(colour, { bg, text }, floor = MIN_CONTRAST) {
  *  refusal is also what keeps the way back reachable — a theme that made the
  *  settings pane invisible could only be undone by clearing `localStorage`.
  */
-export function legible({ bg, text }) {
+export function legible(/** @type {Palette} */ { bg, text }) {
   return contrast(bg, text) >= MIN_CONTRAST;
 }
 
@@ -215,8 +219,8 @@ export function legible({ bg, text }) {
  *  you type into. A see-through board with a solid terminal costs nothing; the
  *  reverse costs the typing.
  */
-export function termColours(t) {
-  const on = (c) => readable(c, t);
+export function termColours(/** @type {Palette} */ t) {
+  const on = (/** @type {string} */ c) => readable(c, t);
   return {
     background: t.bg,
     foreground: t.text,

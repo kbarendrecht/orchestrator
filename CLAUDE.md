@@ -6,13 +6,85 @@ map; **TODO.md** has what is open. Read it before proposing work: several obviou
 ideas are already in there, with what has been tried and why the shape is what it
 is.
 
+## Tools, not rules
+
+**A rule nothing runs is a rule somebody will break, and the person who breaks it
+will be whoever read this file longest ago.** So the standing move here is to turn
+a rule into something that fails a build. Nearly everything in *Things that will
+bite you* was a rule first and cost a session before it became a check: the SPA's
+module graph is a DAG because `dependency-cruiser` says so, `snapshot.d.ts` cannot
+drift because `check-web` regenerates and diffs it, a fixture identity cannot be
+committed because the pre-commit hook reads `git var`, `confirm()` cannot come
+back because ESLint refuses the name, and a doc link cannot rot because
+`check-docs` denies it.
+
+Two moves do most of the work: **deny rather than warn** (a warning is a rule
+again — CI's `-D warnings` is what makes clippy a gate), and **regenerate, then
+diff against the committed copy** (`snapshot.d.ts`, `THIRD-PARTY-RUST.md`).
+
+**The bar is on refusing a tool, not on adopting one.** Two refusals do not count,
+because both were used here and both were wrong:
+
+- *"Nothing has gone wrong yet."* A gate's whole job is the failure that has not
+  happened. An advisory against a crate in the bundle arrives without a commit; a
+  `println!` in the library is invisible until somebody launches from a desktop
+  entry and has no terminal. If the failure would be expensive and silent, that is
+  the argument for the tool, not against it.
+- *"Not evaluated."* That is a sentence to delete by running the thing. Every lint
+  below took one command to measure. `await_holding_lock` was written off as
+  unevaluated and turned out to be zero sites — free, and it stays zero.
+
+A refusal has to name what was **measured**. Two that qualify, so nobody
+re-litigates them from the doctrine alone:
+
+- `clippy::indexing_slicing` — 59 sites, and about a dozen are
+  `body["key"] = json!(…)` on a `serde_json::Value`, where `IndexMut` inserts and
+  cannot panic. A lint that fires on a safe, idiomatic API is a lint people learn
+  to `#[allow]`, and the habit then covers the real ones. The rest of the list is
+  worth a pass with the open crash report (#14, in `diff.rs`) in hand.
+- `cargo nextest` — one process per test is the right shape for a suite whose
+  fixtures are process-global, and it is **3x slower here** (50s against 16s,
+  because most of these tests spawn git) *and* the generated-bindings tests race
+  each other once they are separate processes, which needs a `test-group` to
+  serialise. Measured, both numbers. Revisit if the suite grows a test that hangs.
+- **ast-grep** — its useful rules here are expressible in tools already running.
+  "A host route must go through `callHost`" is an ESLint `no-restricted-syntax`
+  selector and catches both spellings; the dialog and blocking-call rules were
+  already covered. A second query language earns its place when something needs
+  checking that neither ESLint nor clippy can see.
+- **Pixel screenshots** — see `mise run page-check`: the churn lands on the
+  commits that are *supposed* to change the page, and the baselines would be
+  Chrome's while the app ships WebKitGTK and WKWebView.
+- **`localStorage` only in `core.js`** — 26 uses across four modules, and each is
+  that pane's own remembered preference. Centralising them buys one file to read
+  and costs a layer of indirection on every setting. The hazard CLAUDE.md
+  actually names — a key that does not carry its checkout — is not something a
+  lint can see.
+- **Anything only a Mac can check** — the renderer, the window chrome, the native
+  dialogs. `mise run renderer-check`, the e2e flows and a real machine before a tag
+  are the gate, and this is the one place a written rule is still the mechanism.
+
+What is left is cost, and cost is negotiable rather than disqualifying. The hook
+runs only what the staged files could break, because a hook that is slow on a docs
+commit teaches everybody `--no-verify`. A weekly job lives in `health.yml` rather
+than `check.yml`, because "go and read an advisory" and "your commit is broken"
+are different messages and mixing them teaches people to ignore the one that
+matters.
+
+When a rule truly cannot become a tool, say so where the rule is written, and say
+what it costs.
+
 ## Build and run
 
 ```
 cargo check                         # the daemon
 cargo test                          # 522 tests, all in-tree
 cargo clippy --workspace --all-targets   # what CI lints with, and it denies warnings
-mise run check-web                  # type-check the SPA + enforce its module graph
+mise run check-web                  # type-check and lint the SPA + enforce its module graph
+mise run check-docs                 # the doc comments' links, denied as warnings
+mise run check-deps                 # advisories, licences, unused crates, spelling
+mise run page-check                 # what the rendered page must never show
+mise run notices                    # regenerate THIRD-PARTY-RUST.md
 mise run e2e                        # 24 flows against a real daemon, ~60s
 cargo run -p orchestrator-desktop   # the app, daemon embedded in-process
 mise run shot                       # screenshot the running SPA (drives Chrome)
@@ -245,18 +317,129 @@ mean *this* repo; if you do, name it.
   `swapping_exchanges_two_branches_and_is_its_own_inverse` sat unregistered in a
   pushed commit that way. Anchor after the previous test's closing brace, and read
   the test count.
-- **`mise run check-web` is the SPA's gate, and it bites.** Three things in one:
+- **`mise run check-web` is the SPA's gate, and it bites.** Five things in one:
   it regenerates `web/snapshot.d.ts` and fails if the committed copy drifted, it
-  runs `tsc --noEmit --checkJs` over every SPA file, and it runs
-  `dependency-cruiser` over the module graph. All three were checked against
-  deliberate breakage — a `#[serde(rename)]`, a typo'd `snap.` field, and an added
-  cycle each fail it. There is still **no build step**: `tsc` only checks, and the
-  files ship exactly as written.
+  runs `tsc --noEmit --checkJs` over every SPA file, it runs `dependency-cruiser`
+  over the module graph, it runs `eslint` with typescript-eslint's *typed* rules,
+  and it checks that every module in `web/js/` has a route serving it. Each was
+  checked against deliberate breakage — a `#[serde(rename)]`, a typo'd `snap.`
+  field, an added cycle, an un-awaited `confirmBox`, and a new module file each
+  fail it. There is still **no build step**: `tsc` only checks, and the files ship
+  exactly as written.
+- **ESLint answers what `tsc` structurally cannot: the promise nobody awaited.**
+  `tsc` knows a name and its type; it has nothing to say about a `Promise` used as
+  a boolean. `if (Diff.edit.on && !Diff.closeEditor())` shipped that way after the
+  native-dialog migration made `closeEditor` async — `!promise` is always false,
+  so the split-mode toggle went ahead while "Discard unsaved edits?" was still on
+  screen, whatever you answered. `no-misused-promises` reported that line and one
+  other, and nothing else in the SPA.
+  Three settings are load-bearing, and `tools/eslint.config.mjs` says why beside
+  each. `no-floating-promises` runs with `ignoreVoid`, so **`void f()` is how you
+  say "fire and forget" out loud** — 37 handlers say it now, and the next dropped
+  promise that did not mean to is the one the rule catches. `checksVoidReturn` is
+  off for properties, because `el.onclick = async () => …` is how every handler
+  here is written. And `no-restricted-globals` refuses `confirm`, `prompt` and
+  `alert`: that rule was a paragraph in this file, and a paragraph cannot fail a
+  build.
+- **The SPA type-checks under `strict`, and getting there found two bugs.**
+  `strictNullChecks` was the expensive-looking one at 400 errors
+  and **`$` was 268 of them**: it returned `HTMLElement | null`, so every one of
+  161 call sites owed a guard that could never run. It throws now — every id it
+  is asked for is in `index.html`, which is compiled into the same binary, so a
+  miss is the page and the code out of step rather than a state to handle, and
+  the throw says which id at the call instead of surfacing three lines later as
+  "cannot read properties of null".
+  The remaining 132 were real, and two were bugs. The review overlay reads
+  `data.title`, `data.url` and `data.head_ref`, each behind a fallback, and
+  `api::pr_review` never sent any of them — so the header read "review", the
+  branch read "this branch", and the GitHub button hid itself, for months.
+  `diffState.anchors` was annotated `number[]` by hand and holds `HTMLElement`s;
+  the checker said so immediately.
+  **The types came from Rust wherever there was a struct to take them from.**
+  `DiffSummary`, `FileDiff`, `Hunk`, `Row`, `Thread`, `Proposal`, `PostReport`,
+  `Gate` and the rest are `ts-rs` exports now, like the snapshot — so the diff
+  pane and the review overlay are checked against the daemon rather than against
+  a hand-written guess. `/api/pr/:n/review` builds a `json!` literal with no
+  struct behind it, and that is the one shape `review.js` still describes by
+  hand; it says so where it does.
+  `noImplicitAny` was the long tail: **589 errors, 478 of them a parameter with
+  no annotation**. The types are spelled against the `ts-rs` exports wherever a
+  struct exists, so an annotation is the daemon's own shape rather than a guess —
+  and the guesses that were not caught themselves immediately: `TermEntry.sent`
+  was annotated `number` and holds `{rows, cols}`, `anchors` `number[]` and holds
+  elements, `rvRead` took a `Position` and is given a `Proposal`.
+  Two things learned the hard way while doing it. **A parameter annotation goes in
+  by line and column, so never insert a line into the same file in the same
+  pass** — everything after it lands in the middle of a word, and the repair is
+  manual. And `el()` is generic on its tag (`@template {keyof HTMLElementTagNameMap}`)
+  rather than returning `HTMLElement`: that is what keeps `el('input').value`
+  checked instead of sending every form control through `ctl`.
+- **`catch (e)` gives you `unknown`, and `core.reason(e)` is the one answer.**
+  46 catch blocks all said `e.message`, which is `undefined` for a thrown string,
+  a `DOMException`, or anything else that is not an `Error` — and that word then
+  goes in a toast. `useUnknownInCatchVariables` is on, so the next one cannot.
+- **`mise run page-check` asserts what the page must never *show*.** Four things,
+  each of which has happened: an unresolved `MOD` placeholder (the legend's
+  descriptions kept theirs once), the word `undefined` or `NaN` where a person
+  reads, two sets of window buttons (#11), and anything thrown during boot.
+  **Deliberately not screenshots**, and the reason is this repo's own commit log:
+  layout and copy are what most commits change, so a pixel baseline would arrive
+  red on the intentional ones and be answered with a blind update — the same
+  habit as `--no-verify`. It would also police Chrome, while the app ships
+  WebKitGTK and WKWebView. Text assertions are stable across both.
 - **Type-checking found bugs clicking around did not.** Turning `checkJs` on after
   the module split surfaced five modules referencing names that had stayed behind
   in `app.js` (`pendingSelect`, `TOKEN`, `WS_BASE`, `selected`, `prOf`) — every one
   a `ReferenceError` waiting for a code path the browser checks never hit. Treat a
   green page as weaker evidence than a green `check-web`.
+- **A panic is denied where it can take the daemon down, and `clippy.toml` is why
+  that became affordable.** `unwrap_used`, `expect_used`, `panic`, `print_stdout`,
+  `print_stderr` and `await_holding_lock` are all `deny` at the workspace now. The
+  old note said the trade was not worth it — 755 silenced sites in tests to police
+  a few in the daemon — and `allow-*-in-tests` is what removes the 755. What the
+  lints then saw was 64 `unwrap`/`expect` outside tests, and the shape of it was
+  the argument: **`host.rs` had 20 `lock().unwrap()`**, where one panic under any
+  of them poisons the mutex and every later caller panics too — in the host, which
+  owns every checkout's child process. `host::locked` and the desktop's
+  `poisoned_is_still_usable` recover instead, which is safe because every one of
+  those locks holds a map or a vector updated whole. Three modules had written
+  `path.parent().unwrap()` by hand.
+  Three things to know before adding a site. An integration test in `tests/` is
+  **not** covered by `allow-*-in-tests` — that setting reaches `#[test]` functions
+  and `#[cfg(test)]` modules, and a helper in an integration crate is neither, so
+  those four files carry a file-level `allow` with the reason. A CLI binary allows
+  the print lints at the top of the file, and that allow *is* the statement that it
+  is a CLI — the daemon library cannot print, because a launcher-started app has no
+  terminal and the line would reach nobody. And what is left uses
+  `#[expect(…, reason = "…")]` rather than `#[allow]`, so the exemption fails the
+  build when the code stops needing it.
+- **`cargo deny`, `cargo machete` and `typos` run weekly in `health.yml`, not in
+  `check.yml`.** The desktop bundle redistributes ~490 crates, and an advisory
+  against one of them is published without anybody pushing a commit — so a
+  per-push gate would never see it. They are in their own workflow because "go and
+  read an advisory" and "your commit is broken" are different messages, and a
+  repository that mixes them teaches people to ignore the one that matters.
+  `deny.toml` records the one advisory that is accepted rather than fixed
+  (`serial`, unmaintained since 2017, reached through `portable-pty`, no upgrade
+  and no vulnerability) and bans `openssl` outright, so a transitive dependency
+  cannot put a system TLS into a desktop app.
+  **`THIRD-PARTY-RUST.md` is generated, never edited.** `THIRD-PARTY.md` already
+  argues the obligation for the vendored JavaScript — it is `include_str!`d, so it
+  is redistributed in binary form and its notice has to travel — and every crate in
+  the bundle is in the same position. `cargo about` writes it from `Cargo.lock`,
+  and CI regenerates and diffs it, exactly as it does `web/snapshot.d.ts`.
+- **The doc comments are checked now, and they were not.** `[`like this`]` is an
+  intra-doc link, `cargo doc` is the only thing that reads one, and it had never
+  been run: twelve were dangling, pointing at items renamed or deleted months
+  before — `render_prompt_file` outlived the whole prompt-to-skill conversion.
+  A pointer that leads nowhere is worse than none, because it costs a reader a
+  search to find that out. `mise run check-docs` and CI deny
+  `rustdoc::broken_intra_doc_links`; `private_intra_doc_links` is **allowed**,
+  because nearly every module here is private and documents itself for whoever
+  reads the source next, so that warning fires on the normal case. Two spellings
+  that will not resolve and are not worth fighting: a private item reached by a
+  `crate::…` path from another module, and `Self::` inside a trait `impl` — use a
+  plain code span or name the trait.
 - **`ctl(id)` is the one deliberate `any` in the SPA.** `getElementById` can only
   promise `HTMLElement`, so reading `.value` through `$` is a type error even when
   the id certainly names an `<input>`. `ctl` is the named escape hatch for form
@@ -334,7 +517,11 @@ mean *this* repo; if you do, name it.
     drawn through it.
   Adding a cycle back would work (ESM allows it) and would quietly undo this.
 - **Each module needs a line in `module()` in `host.rs` and a rebuild.**
-  `include_str!` again: adding a JS file is a Rust change. That cost is why the
+  `include_str!` again: adding a JS file is a Rust change.
+  `tools/check-module-routes.mjs` is what says so now, from both sides of the
+  hook, because `dependency-cruiser` answers "is this module imported" and cannot
+  answer "is this module reachable" — and the two look nothing alike: an
+  unimported module is dead, an unserved one is a page that stops booting. That cost is why the
   modules track features rather than being cut finer. It was `lib.rs` until the
   page moved to the host — see below.
 - **`snap` is a live binding, and only `receive()` may replace it.** It is

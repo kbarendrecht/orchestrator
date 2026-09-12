@@ -3,13 +3,13 @@
 // The SPA is a module now, so what it reaches for is written down. `core.js` holds
 // the primitives every part needs; `queue.js` is the first seam extracted whole.
 import {
-  $, el, toast, call, callHost, get, duration, activeCheckout, CHECKOUTS, setCheckouts,
+  $, el, toast, reason, call, callHost, get, activeCheckout, CHECKOUTS, setCheckouts,
   HOST, snapshotOf, repoSummary, wsKey, everySession, enterCheckout, onThemeChange,
   snap, receive, keyActivate,
   setZoom, setUiPx, uiPx, saveZoom, onScaleChange, ZOOM,
   selected, setSelected, onSelection, prForWorkspace,
   terms, CHROME, stateLabel, dotClass, isWaiting, isArchived,
-  pending, byNewest, currentSession,
+  byNewest, currentSession,
   activeWorkspaceId, currentWorkspaceId, closeMenu, menuOpen, openMenu,
   newSession, newWorktree, newShell, mainWorkspace, workspaceById,
   selectedProc, setSelectedProc, prState, handedToPr, procOrder, setProcOrder,
@@ -84,7 +84,7 @@ onCreatingChange(() => Rail.render());
 function syncDiffToSession() {
   if (!Diff.state.open) return;
   const ws = activeWorkspaceId();
-  if (!ws || ws !== Diff.state.ws) Diff.close();
+  if (!ws || ws !== Diff.state.ws) void Diff.close();
 }
 
 /** Repaint the board, at most once a frame.
@@ -151,6 +151,7 @@ const askDrawn = { sig: null };
  *  you shut once must not swallow the one after it. Folded, never dismissed —
  *  the agent is still stopped, so a control that made the question go away would
  *  be this box disagreeing with the rail and the waitbar beside it. */
+/** @type {string | null} */
 let askFolded = null;
 
 /* Whether the free-text box is open, by the option it belongs to.
@@ -159,10 +160,11 @@ let askFolded = null;
  * above: the box replaces the option row, and `back to the options` puts the row
  * back by re-rendering. Without this the guard saw an unchanged signature and
  * that button did nothing. */
+/** @type {string | null} */
 let askFree = null;
 
 /** Fold the open question away, or open it again. */
-function foldAsk(id) {
+function foldAsk(/** @type {string} */ id) {
   askFolded = askFolded === id ? null : id;
   renderInteraction();
 }
@@ -200,7 +202,7 @@ function renderInteraction() {
   // The PR a review pass is answering, or null for every other session. Its
   // checkpoints are the overlay's cards, so this box behaves differently below.
   // Both commands, because the triage pass reaches the same cards.
-  const rvPr = q && s.pass
+  const rvPr = q && s?.pass
     && (s.pass.command === 'review' || s.pass.command === 'triage') ? s.pass.pr : null;
   const mine = !!q && q.options.some((o) => o.value === DECISIONS);
   /* **Rebuilt only when it would come out different**, like every other pane.
@@ -212,7 +214,7 @@ function renderInteraction() {
      The overlay's claim is in the signature because a box hidden while the cards
      own the ask has to come back when they let go of it. */
   if (unchanged(askDrawn, [s && s.id, q, rvPr, mine, Review.state.session, askFolded, askFree])) return;
-  if (!q) { host.hidden = true; host.replaceChildren(); return; }
+  if (!q || !s) { host.hidden = true; host.replaceChildren(); return; }
 
   /* **Only a checkpoint belongs to the overlay.** This used to be true of every
      ask a review session made, and that is what stranded one: the session hit a
@@ -295,7 +297,7 @@ function renderInteraction() {
 
 /** The escape hatch's box. Replaces the option row it belongs to, so there is one
  *  thing on screen to finish rather than a form beside a button that also works. */
-function openFreeAnswer(opts, session, ask, option) {
+function openFreeAnswer(/** @type {HTMLElement} */ opts, /** @type {string} */ session, /** @type {string} */ ask, /** @type {import('../web/snapshot').InteractionOption} */ option) {
   if (opts.querySelector('.oqfree')) return;
   askFree = option.value;
   const wrap = el('div', 'oqfree');
@@ -308,7 +310,8 @@ function openFreeAnswer(opts, session, ask, option) {
   const send = el('button', 'oqsend', 'send');
   send.onclick = () => {
     if (!box.value.trim()) return toast('nothing written yet', true);
-    answerInteraction(session, ask, option.value, opts.parentElement, box.value);
+    // The box is built into `opts`' parent, so it is there.
+    void answerInteraction(session, ask, option.value, /** @type {HTMLElement} */ (opts.parentElement), box.value);
   };
   const back = el('button', 'oqback', 'back to the options');
   back.onclick = () => { askFree = null; renderInteraction(); };
@@ -325,13 +328,13 @@ function openFreeAnswer(opts, session, ask, option) {
  *  The buttons go dead immediately: the agent is released the moment the daemon
  *  has the answer, and a second click would be answering a question that is no
  *  longer open. */
-async function answerInteraction(session, ask, answer, host, text) {
-  const buttons = host.querySelectorAll('.oqopt, .oqsend');
+async function answerInteraction(/** @type {string} */ session, /** @type {string} */ ask, /** @type {string} */ answer, /** @type {HTMLElement} */ host, /** @type {string | undefined} */ text) {
+  const buttons = /** @type {NodeListOf<HTMLButtonElement>} */ (host.querySelectorAll('.oqopt, .oqsend'));
   for (const b of buttons) b.disabled = true;
   try {
     await call(`/api/session/${session}/answer`, { ask, answer, text: text ?? null });
   } catch (e) {
-    toast(e.message, true);
+    toast(reason(e), true);
     for (const b of buttons) b.disabled = false;
   }
 }
@@ -343,6 +346,7 @@ async function answerInteraction(session, ask, answer, host, text) {
  * file is hand-written and a typed version number is exactly the kind of thing
  * that drifts a release behind and is never noticed. Guarded on a change so a
  * notice that cannot move is not rewritten on every snapshot. */
+/** @type {string | null} */
 let legendVersion = null;
 function renderLegalNotice() {
   if (!snap.version || snap.version === legendVersion) return;
@@ -352,6 +356,7 @@ function renderLegalNotice() {
 
 // The version the user dismissed this session. A newer release than this shows
 // again; the same one stays hidden until the next launch.
+/** @type {string | null} */
 let updateDismissed = null;
 function renderUpdate() {
   const bar = $('updatebar');
@@ -375,9 +380,9 @@ function renderUpdate() {
       ? `v${run.to} installed — restart to run it`
       : run
         ? `installing v${run.to}\u2026`
-        : u.tool
-          ? `Update available — v${u.latest} (you have v${u.current})`
-          : `Update available — v${u.latest} (you have v${u.current}). Run mise up`;
+        : u?.tool
+          ? `Update available — v${u?.latest} (you have v${u?.current})`
+          : `Update available — v${u?.latest} (you have v${u?.current}). Run mise up`;
   link.href = u?.url || '#';
   link.title = failed ? run.tail : '';
 
@@ -393,7 +398,7 @@ function renderUpdate() {
     : succeeded
       ? 'Quits and comes back on the new version. Your sessions are resumed as they were.'
       : run ? 'Running `mise upgrade`.'
-        : `Runs \`mise upgrade ${u.tool}\`. Installed beside this build, so nothing `
+        : `Runs \`mise upgrade ${u?.tool}\`. Installed beside this build, so nothing `
           + 'changes until you restart, and your sessions are untouched either way.';
   go.onclick = async () => {
     // A restart takes the window down, so there is nothing to report back into:
@@ -401,7 +406,7 @@ function renderUpdate() {
     try {
       await (succeeded ? callHost('/api/window/restart') : call('/api/update/upgrade'));
     } catch (e) {
-      toast(e.message, true);
+      toast(reason(e), true);
     }
   };
 
@@ -412,7 +417,7 @@ function renderUpdate() {
       try {
         await call('/api/update/upgrade/dismiss');
       } catch (e) {
-        toast(e.message, true);
+        toast(reason(e), true);
       }
     }
     if (u) updateDismissed = u.latest;
@@ -428,6 +433,7 @@ function renderUpdate() {
    that failed — is a different sentence, so anything new speaks up again while the
    same one stays quiet until the next launch. A version key could not tell a
    failure from the nudge that preceded it. */
+/** @type {string | null} */
 let agentDismissed = null;
 
 function renderAgentUpdate() {
@@ -459,7 +465,7 @@ function renderAgentUpdate() {
       ? `Claude Code ${run.to} installed, restart a session to pick it up`
       : run
         ? `installing Claude Code ${run.to}\u2026`
-        : `Claude Code ${u.latest} available (you have ${u.current})`;
+        : `Claude Code ${u?.latest} available (you have ${u?.current})`;
   if (agentDismissed === msg) { bar.hidden = true; return; }
 
   // Below the release bar when that one is up, at the top when it is not.
@@ -481,7 +487,7 @@ function renderAgentUpdate() {
       ? 'Quits and comes back. Your sessions are resumed as they were, on the new '
         + 'version, because a running agent goes on being the build it started as.'
       : run ? `Running \`mise upgrade\`. ${safety}`
-        : `Runs \`mise upgrade ${u.tool}\`. ${safety}`;
+        : `Runs \`mise upgrade ${u?.tool}\`. ${safety}`;
   go.onclick = async () => {
     // A restart takes the window down, so there is nothing to report back into:
     // the answer is the app coming back. Everything else reports through this bar
@@ -490,7 +496,7 @@ function renderAgentUpdate() {
       try {
         await callHost('/api/window/restart');
       } catch (e) {
-        toast(e.message, true);
+        toast(reason(e), true);
       }
       return;
     }
@@ -498,9 +504,9 @@ function renderAgentUpdate() {
       await call('/api/agent/upgrade');
       // Nothing to point at: the button disables itself on the next snapshot, the
       // one carrying the run, and this same bar reports how it ended.
-      toast(`upgrading Claude Code to ${run?.to ?? u.latest}`);
+      toast(`upgrading Claude Code to ${run?.to ?? u?.latest}`);
     } catch (e) {
-      toast(e.message, true);
+      toast(reason(e), true);
     }
   };
   // A finished run lives in the snapshot, so dismissing it there is what makes it
@@ -550,7 +556,7 @@ function renderContext() {
   const bits = [];
   if (s) bits.push(stateLabel(s));
   // Not when the session label is already the PR's, or the header says it twice.
-  if (pr && !handedToPr(s)) bits.push(`#${pr.number} ${prState(pr)}`);
+  if (pr && s && !handedToPr(s)) bits.push(`#${pr.number} ${prState(pr)}`);
   $('ctxstate').textContent = bits.join(' · ');
   $('killbtn').style.display = s && s.alive ? '' : 'none';
 
@@ -564,6 +570,7 @@ function renderContext() {
    mid-drag would `replaceChildren` the strip out from under the pointer, so the
    render is skipped until the drop — which then renders once, from the order the
    drop just saved. */
+/** @type {string | null} */
 let tabDrag = null;
 
 /** Reorder the drawer's tabs by dragging one.
@@ -572,17 +579,18 @@ let tabDrag = null;
  *  a native drag brings a drag image, a text selection and its own dragover rules
  *  along with it, none of which a 20px tab wants. The 4px threshold is what keeps
  *  a plain click on a tab a click. */
-function startTabDrag(ev, tab, wsId) {
+function startTabDrag(/** @type {PointerEvent} */ ev, /** @type {HTMLElement} */ tab, /** @type {string | null} */ wsId) {
   if (ev.button !== 0) return;
   const strip = $('dtabs');
   const startX = ev.clientX;
   let moved = false;
   let lastX = startX;
+  /** @type {ReturnType<typeof setInterval> | null} */
   let edge = null;
 
   // Land before the first tab whose middle the pointer has passed — the same rule
   // in both directions, so there is no left/right special case.
-  const placeAt = (x) => {
+  const placeAt = (/** @type {number} */ x) => {
     const before = [...strip.children]
       .filter((c) => c !== tab)
       .find((c) => {
@@ -597,7 +605,7 @@ function startTabDrag(ev, tab, wsId) {
      timer rather than on movement, because holding still at the edge is exactly
      the gesture — and it re-places the tab on every tick, since the pointer is
      not moving but everything under it is. */
-  const edgeScroll = (x) => {
+  const edgeScroll = (/** @type {number} */ x) => {
     const r = strip.getBoundingClientRect();
     const dir = x > r.right - 28 ? 1 : x < r.left + 28 ? -1 : 0;
     if (!dir || edge) {
@@ -610,7 +618,7 @@ function startTabDrag(ev, tab, wsId) {
     }, 16);
   };
 
-  const onMove = (e) => {
+  const onMove = (/** @type {PointerEvent} */ e) => {
     if (!moved && Math.abs(e.clientX - startX) < 4) return;
     if (!moved) {
       moved = true;
@@ -632,7 +640,8 @@ function startTabDrag(ev, tab, wsId) {
     // on. Swallowed once, within the same gesture.
     window.addEventListener('click', (e) => { e.stopPropagation(); e.preventDefault(); },
       { capture: true, once: true });
-    setProcOrder(wsId, [...strip.children].map((c) => /** @type {HTMLElement} */ (c).dataset.key));
+    // Every tab carries its key; the map's type cannot say so.
+    setProcOrder(wsId, [...strip.children].map((c) => /** @type {HTMLElement} */ (c).dataset.key ?? ''));
     tabDrag = null;
     renderDrawer();
   };
@@ -670,6 +679,7 @@ new MutationObserver(updateTabOverflow).observe($('dtabs'), { childList: true })
 
 /** The tab last scrolled into view, per workspace, so a snapshot does not drag
  *  the strip back while you are reading the other end of it. */
+/** @type {Record<string, string | null>} */
 const shownTab = {};
 
 /** What the drawer was last built from — see `unchanged`. */
@@ -690,7 +700,7 @@ const drawerDrawn = { sig: null };
  *  The daemon owns *when* — only it knows whether a keystroke would land in a
  *  prompt, a permission dialog or the middle of a turn (`api::tell_session`) — so
  *  a refusal comes back as its sentence rather than being guessed at here. */
-async function sendPaneToSession(target, label) {
+async function sendPaneToSession(/** @type {string} */ target, /** @type {string} */ label) {
   const s = currentSession();
   if (!s) return toast('no session in this workspace to send to', true);
   const text = Term.readTerm(activeCheckout(), target);
@@ -702,7 +712,7 @@ async function sendPaneToSession(target, label) {
     await call(`/api/session/${encodeURIComponent(s.id)}/tell`, body);
     toast(`sent to ${s.title || 'the session'}`);
   } catch (e) {
-    toast(e.message, true);
+    toast(reason(e), true);
   }
 }
 
@@ -711,6 +721,12 @@ async function sendPaneToSession(target, label) {
  *  Two items rather than one, because the wording is the affordance: with a
  *  selection this sends *that*, and without one it sends the tail. A single item
  *  saying "send output" would leave you guessing which. */
+/** The right-click menu shared by a process tab and the pane body.
+ *
+ *  @param {string} target
+ *  @param {string} label
+ *  @returns {[string, string | null, (() => void) | null][]}
+ */
 function paneMenu(target, label) {
   const picked = Term.hasSelection(activeCheckout(), target);
   const to = currentSession();
@@ -749,6 +765,10 @@ function renderDrawer() {
   dcwd.appendChild(el('span', null, up ? 'stack up' : 'stack down'));
 
   const procs = w ? w.processes : [];
+  /* The rows below spell the workspace into their URLs. `procs` is empty unless
+     there is a workspace, so `wsId` is there whenever a row is drawn — encoded
+     once here rather than asserted twice inside the loop. */
+  const wsUrl = encodeURIComponent(wsId ?? '');
   const drawer = $('drawer');
 
   // On a worktree the drawer starts empty and is a thin bar until you open
@@ -768,7 +788,7 @@ function renderDrawer() {
   // the same word would sit on screen twice.
   $('dlabel').hidden = procs.length > 0;
 
-  const alive = (p) =>
+  const alive = (/** @type {import('./snapshot').ProcessView} */ p) =>
     p.kind.kind === 'shell' ? p.kind.exit_code == null : p.health.health !== 'dead';
 
   let active = selectedProc[wsKey(wsId)];
@@ -788,6 +808,7 @@ function renderDrawer() {
      key is what the order is remembered by: a managed process by name, so
      `docker` keeps its place whether it is up or not and across a restart, and a
      shell by id, which is the only thing that tells two of them apart. */
+  /** @type {[string, HTMLButtonElement][]} */
   const made = [];
 
   // Shells are numbered per workspace, and the number comes from *this* loop —
@@ -843,7 +864,7 @@ function renderDrawer() {
       r.onclick = (ev) => {
         ev.stopPropagation();
         Term.close(activeCheckout(), `proc:${p.id}`);
-        call(`/api/workspace/${encodeURIComponent(wsId)}/process/${encodeURIComponent(p.name)}/restart`)
+        call(`/api/workspace/${wsUrl}/process/${encodeURIComponent(p.name)}/restart`)
           .catch((e) => toast(e.message, true));
       };
       tab.appendChild(r);
@@ -872,7 +893,7 @@ function renderDrawer() {
     go.onclick = (ev) => {
       ev.stopPropagation();
       setDrawerTouched(true);
-      call(`/api/workspace/${encodeURIComponent(wsId)}/process/${encodeURIComponent(name)}/restart`)
+      call(`/api/workspace/${wsUrl}/process/${encodeURIComponent(name)}/restart`)
         // You pressed it to watch it come up, so land on it. The response carries
         // the id; the snapshot that will carry the tab has not arrived yet.
         .then((r) => { setSelectedProc(wsId, r.process); renderDrawer(); })
@@ -885,7 +906,7 @@ function renderDrawer() {
   /* Your order. Stable, and a key the order has never seen sorts last — which is
      where a process you have just started belongs. */
   const order = procOrder[wsKey(wsId)] || [];
-  const place = (k) => (order.indexOf(k) < 0 ? order.length : order.indexOf(k));
+  const place = (/** @type {string} */ k) => (order.indexOf(k) < 0 ? order.length : order.indexOf(k));
   made.sort((a, b) => place(a[0]) - place(b[0]));
   for (const [k, tab] of made) {
     tab.dataset.key = k;
@@ -960,19 +981,10 @@ import * as Queue from './js/queue.js';
 // Actions
 // ---------------------------------------------------------------------------
 
-/* The session the last selection landed on, so "you came back to it" can be told
-   from "you were already here". Only the review overlay needs the difference, and
-   it needs it badly: `go to the pane` closes the overlay and selects the very
-   session the overlay is driving, so a reopen rule keyed on the session alone
-   fires on the way out and the button appears to do nothing. */
-let cameFrom = null;
-
 // What picking a session means: open its terminal, redraw, and put the cursor
 // where you are about to type. Registered rather than called by the rail, so the
 // rail does not have to know about rendering.
 onSelection((id, auto) => {
-  const arrived = id !== cameFrom;
-  cameFrom = id;
   // Picking a session is going back to work: the legend was an aside, and leaving
   // it up over the pane you just chose is the app arguing with you.
   closeLegend();
@@ -1016,14 +1028,14 @@ onSelection((id, auto) => {
 
 /** Teardown is offered, never automatic, and the preflight is shown in full
  *  before anything is removed (§2). */
-async function teardown(wsId) {
+async function teardown(/** @type {string} */ wsId) {
   let pf;
   try {
     pf = await get(`/api/workspace/${encodeURIComponent(wsId)}/preflight`);
   } catch (e) {
-    return toast(e.message, true);
+    return toast(reason(e), true);
   }
-  const lines = pf.checks.map((c) => `${c.passed ? '✓' : '✗'} ${c.name} — ${c.detail}`);
+  const lines = pf.checks.map((/** @type {{ passed: boolean, name: string, detail: string }} */ c) => `${c.passed ? '✓' : '✗'} ${c.name} — ${c.detail}`);
   if (!pf.can_remove) {
     return toast(`cannot remove ${wsId}:\n${lines.join('\n')}`, true);
   }
@@ -1032,15 +1044,18 @@ async function teardown(wsId) {
     await call(`/api/workspace/${encodeURIComponent(wsId)}/teardown`);
     toast(`removed ${wsId}`);
   } catch (e) {
-    toast(e.message, true);
+    toast(reason(e), true);
   }
 }
 
 $('ovclose').onclick = Diff.close;
 $('ovprev').onclick = () => Diff.step(-1);
 $('ovnext').onclick = () => Diff.step(1);
-$('ovmode').onclick = () => {
-  if (Diff.edit.on && !Diff.closeEditor()) return;
+$('ovmode').onclick = async () => {
+  // `closeEditor` is async — it may draw a confirm box — so the guard has to
+  // await it. Un-awaited, `!promise` is always false and the mode flipped while
+  // "Discard unsaved edits?" was still on screen, whatever you answered.
+  if (Diff.edit.on && !(await Diff.closeEditor())) return;
   Diff.state.split = !Diff.state.split;
   Diff.render();
 };
@@ -1161,7 +1176,7 @@ $('killbtn').onclick = () => {
  *
  * Every live session has a row, so the original bug cannot come back through here.
  */
-function switchSession(step) {
+function switchSession(/** @type {number} */ step) {
   /* Across every checkout, in rail order: the chord steps through what the rail
      shows, and the rail shows all of them. Stepping only within the checkout you
      are in would make the last row of one block the first row of the same block
@@ -1216,7 +1231,7 @@ window.addEventListener('keydown', (e) => {
   if (e.defaultPrevented) e.stopPropagation();
 }, true);
 
-function keymap(e) {
+function keymap(/** @type {KeyboardEvent} */ e) {
   /* First in the chain, because it is modal and the topmost thing on screen: a
      confirm drawn over the review overlay has to be the thing `Esc` answers, or
      the overlay closes underneath the question about it. Cancelling is the safe
@@ -1250,7 +1265,7 @@ function keymap(e) {
   }
   if ((e.metaKey || e.ctrlKey) && e.key === 's' && Diff.edit.on) {
     e.preventDefault();
-    Diff.saveEditor();
+    void Diff.saveEditor();
     return;
   }
   /* The overlay wants bare Enter, j/k and digits, and this handler is registered
@@ -1289,7 +1304,7 @@ function keymap(e) {
     return;
   }
   if (Diff.state.open) {
-    if (e.key === 'Escape') { e.preventDefault(); Diff.close(); return; }
+    if (e.key === 'Escape') { e.preventDefault(); void Diff.close(); return; }
     // j/k steps through the changeset, matching the review overlay's motion so
     // "next/previous in a list" is one idiom everywhere. Guarded on not-typing
     // because the diff hosts an editor. Ctrl+←/→ stays as an alias — it was the
@@ -1298,12 +1313,12 @@ function keymap(e) {
     const typingInDiff = !!/** @type {HTMLElement} */ (e.target).closest?.('textarea, input, [contenteditable="true"]');
     if (!typingInDiff && !e.ctrlKey && !e.altKey && !e.metaKey && (e.key === 'j' || e.key === 'k')) {
       e.preventDefault();
-      Diff.step(e.key === 'j' ? 1 : -1);
+      void Diff.step(e.key === 'j' ? 1 : -1);
       return;
     }
     if (e.ctrlKey && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
       e.preventDefault();
-      Diff.step(e.key === 'ArrowLeft' ? -1 : 1);
+      void Diff.step(e.key === 'ArrowLeft' ? -1 : 1);
       return;
     }
   }
@@ -1328,7 +1343,7 @@ function keymap(e) {
     // Ctrl+Shift zone terminals leave alone. A shell is a process in the drawer,
     // so this is the third rung of the same ladder as Ctrl+N / Ctrl+Shift+N.
     if (e.key === '`' || (e.shiftKey && k === 't')) {
-      e.preventDefault(); newShell(); return;
+      e.preventDefault(); void newShell(); return;
     }
     // Back to a review from anywhere. Shift, like the rest of this layer, and `r`
     // was free; a browser tab spends it on a hard reload, the same trade `Ctrl+N`
@@ -1337,14 +1352,14 @@ function keymap(e) {
       if (!Review.state.session) return;   // nothing to go back to; let the pty have it
       e.preventDefault();
       if (Review.state.open) return toast('the review is already open');
-      Review.open(Review.state.pr);
+      void Review.open(Review.state.pr);
       return;
     }
     // Shift, not plain: Ctrl+D is EOF and still has to exit a shell.
     if (e.shiftKey && k === 'd') {
       e.preventDefault();
       if (Review.state.open) return toast('close the review first');
-      Diff.state.open ? Diff.close() : Diff.open();
+      void (Diff.state.open ? Diff.close() : Diff.open());
       return;
     }
     /* Ctrl+N keeps the "new" idiom every other app has trained into your fingers,
@@ -1356,11 +1371,11 @@ function keymap(e) {
       e.preventDefault();
       if (e.shiftKey) {
         const main = mainWorkspace();
-        if (main) newSession(main.id);
+        if (main) void newSession(main.id);
       } else {
         // The rail's + is the named variant (Shift+click); a hotkey takes the
         // common case and lets Claude Code name it.
-        newWorktree(false);
+        void newWorktree(false);
       }
       return;
     }
@@ -1422,6 +1437,7 @@ function keymap(e) {
  *
  * Coalesced to one refit per frame, and a refit that changes nothing sends
  * nothing. */
+/** @type {ReturnType<typeof setTimeout> | null} */
 let refitTimer = null;
 function queueRefit() {
   // Settled, not per-frame: a drag or a compositor animation fires this dozens of
@@ -1479,6 +1495,7 @@ document.addEventListener('visibilitychange', refreshOnReturn);
  *  is for, and the only thing nothing else says out loud — to a screen reader and
  *  to a backgrounded window. Polite (waits for a pause) and only on the transition
  *  in, so it never nags; the first snapshot seeds the set without speaking. */
+/** @type {Set<string> | null} */
 let waitingKnown = null;
 function announceWaiting() {
   /* Every checkout, for the reason the waitbar gives — and the transition is
@@ -1486,8 +1503,9 @@ function announceWaiting() {
      does not make every session in it look newly waiting. */
   const all = everySession().map((r) => r.session);
   const now = new Set(all.filter(isWaiting).map((s) => s.id));
-  if (waitingKnown) {
-    const fresh = [...now].filter((id) => !waitingKnown.has(id));
+  const known = waitingKnown;
+  if (known) {
+    const fresh = [...now].filter((id) => !known.has(id));
     if (fresh.length) {
       const names = fresh.map((id) => {
         const s = all.find((x) => x.id === id);
@@ -1558,14 +1576,14 @@ function connect(path) {
        `proc:main:ng-watch` exists in every checkout — it would *keep* a pane that
        is gone because a different daemon still has one by that name. */
     const liveProcs = new Set(
-      state.workspaces.flatMap((w) => w.processes.map((p) => `proc:${p.id}`))
+      state.workspaces.flatMap((/** @type {import('./snapshot').WorkspaceView} */ w) => w.processes.map((/** @type {import('./snapshot').ProcessView} */ p) => `proc:${p.id}`))
     );
     for (const [key, entry] of [...terms]) {
       if (entry.checkout.path !== checkout.path) continue;
       const target = key.slice(key.indexOf('\u0000') + 1);
       if (target.startsWith('session:')) {
         const id = target.slice('session:'.length);
-        if (!state.sessions.some((x) => x.id === id)) Term.close(checkout, target);
+        if (!state.sessions.some((/** @type {import('./snapshot').SessionView} */ x) => x.id === id)) Term.close(checkout, target);
       } else if (!liveProcs.has(target)) {
         // A shell that closed cleanly is gone from the snapshot; drop its
         // terminal rather than leaving a hidden host behind forever.
@@ -1681,7 +1699,7 @@ function connectHost() {
   );
   sock.onmessage = (ev) => {
     const { checkouts } = JSON.parse(ev.data);
-    const open = new Set(checkouts.map((c) => c.path));
+    const open = new Set(checkouts.map((/** @type {import('./js/core.js').Target} */ c) => c.path));
     /* **A checkout that came back on a new port is as gone as one that left.** Both
        leave terminals attached to a daemon that has stopped, and nothing will ever
        close their sockets for them. A restart keeps the path — the row never leaves
@@ -1692,7 +1710,7 @@ function connectHost() {
        sessions are respawned by `auto_resume` under the same ids, so the pane is
        reopened against the new row the moment it is selected. */
     const moved = new Set(CHECKOUTS
-      .filter((was) => checkouts.some((now) => now.path === was.path && now.port !== was.port))
+      .filter((was) => checkouts.some((/** @type {import('./js/core.js').Target} */ now) => now.path === was.path && now.port !== was.port))
       .map((c) => c.path));
     for (const [key, entry] of [...terms]) {
       const path = entry.checkout.path;
@@ -1760,18 +1778,21 @@ function setupChrome() {
   // **To the host, not to a checkout.** The window belongs to whatever serves
   // the page; a daemon has no window and answers `200 {}` to the route, so these
   // aimed at `LOCAL` were six buttons that silently did nothing under the app.
-  const wcmd = (cmd) => callHost(`/api/window/${cmd}`).catch((e) => toast(e.message, true));
+  const wcmd = (/** @type {string | undefined} */ cmd) => callHost(`/api/window/${cmd}`).catch((e) => toast(e.message, true));
 
   for (const b of /** @type {NodeListOf<HTMLElement>} */ (
     document.querySelectorAll('.wctl-btn'))) {
-    b.addEventListener('click', () => wcmd(b.dataset.cmd));
+    b.addEventListener('click', () => void wcmd(b.dataset.cmd));
   }
 
   /** How far the pointer must travel before a press on a bar becomes a drag. */
   const DRAG_SLOP = 3;
 
   for (const bar of document.querySelectorAll('.top')) {
-    bar.addEventListener('mousedown', (/** @type {MouseEvent} */ e) => {
+    bar.addEventListener('mousedown', (ev) => {
+      // `addEventListener` promises the handler an `Event`; narrowing in the
+      // parameter is what `strictFunctionTypes` refuses, so it happens here.
+      const e = /** @type {MouseEvent} */ (ev);
       // Left button only, and only on the bar's own background: a drag that
       // swallowed clicks on the session name or the close button would make
       // the header unusable.
@@ -1810,7 +1831,7 @@ function setupChrome() {
       const moved = (/** @type {MouseEvent} */ m) => {
         if (Math.abs(m.clientX - from.x) + Math.abs(m.clientY - from.y) < DRAG_SLOP) return;
         stop();
-        wcmd('start-drag');
+        void wcmd('start-drag');
       };
       window.addEventListener('mousemove', moved);
       window.addEventListener('mouseup', stop);
@@ -1818,7 +1839,7 @@ function setupChrome() {
     });
     bar.addEventListener('dblclick', (e) => {
       if (/** @type {HTMLElement} */ (e.target).closest('button, input, a, kbd, .ctx-btn')) return;
-      wcmd('toggle-maximize');
+      void wcmd('toggle-maximize');
     });
   }
 
@@ -1828,7 +1849,7 @@ function setupChrome() {
       if (e.button !== 0) return;
       // Stop the browser starting a text selection that outlives the resize.
       e.preventDefault();
-      wcmd(`resize/${rz.dataset.edge}`);
+      void wcmd(`resize/${rz.dataset.edge}`);
     });
   }
 }
@@ -1854,11 +1875,11 @@ const CENTRE_MIN = 420;
 const DRAWER = { prop: '--drawer', key: 'orch.drawerHeight', def: 210, min: 96 };
 const TERM_MIN = 150;
 
-const colWidth = (col) =>
+const colWidth = (/** @type {{ prop: string, key: string, def: number, min: number }} */ col) =>
   parseInt(getComputedStyle(document.documentElement).getPropertyValue(col.prop), 10) || col.def;
 
 /** Set a column, clamped so the centre always survives and so does the other one. */
-function setCol(col, px) {
+function setCol(/** @type {{ prop: string, key: string, def: number, min: number }} */ col, /** @type {number} */ px) {
   const other = col === COLS.rail ? COLS.files : COLS.rail;
   const room = window.innerWidth - CENTRE_MIN - colWidth(other);
   const width = Math.round(Math.max(col.min, Math.min(px, Math.max(col.min, room))));
@@ -1871,7 +1892,7 @@ const drawerHeight = () =>
   || DRAWER.def;
 
 /** Set the drawer height, clamped so the terminal above it stays usable. */
-function setDrawer(px) {
+function setDrawer(/** @type {number} */ px) {
   const centre = document.querySelector('.center');
   const room = (centre ? centre.clientHeight : window.innerHeight) - TERM_MIN;
   const h = Math.round(Math.max(DRAWER.min, Math.min(px, Math.max(DRAWER.min, room))));
@@ -1880,8 +1901,9 @@ function setDrawer(px) {
 }
 
 /** xterm sizes itself to its host, and a column drag is not a window resize. */
-function dragColumn(handle, col, fromLeft) {
-  handle.addEventListener('mousedown', (e) => {
+function dragColumn(/** @type {HTMLElement} */ handle, /** @type {{ prop: string, key: string, def: number, min: number }} */ col, /** @type {boolean} */ fromLeft) {
+  handle.addEventListener('mousedown', (ev) => {
+    const e = /** @type {MouseEvent} */ (ev);
     if (e.button !== 0) return;
     // The titlebar's own drag handler lives under this strip.
     e.preventDefault();
@@ -1889,7 +1911,7 @@ function dragColumn(handle, col, fromLeft) {
     handle.classList.add('dragging');
     document.body.classList.add('col-resizing');
 
-    const move = (ev) => setCol(col, fromLeft ? ev.clientX : window.innerWidth - ev.clientX);
+    const move = (/** @type {MouseEvent} */ ev) => setCol(col, fromLeft ? ev.clientX : window.innerWidth - ev.clientX);
     const done = () => {
       window.removeEventListener('mousemove', move);
       handle.classList.remove('dragging');
@@ -1917,16 +1939,20 @@ function dragColumn(handle, col, fromLeft) {
 /* The drawer's own drag. Not `dragColumn` with a flag: it reads clientY against
  * the centre pane rather than clientX against the window, and it has no sibling
  * column to leave room for. */
-function dragDrawer(handle) {
-  handle.addEventListener('mousedown', (e) => {
+function dragDrawer(/** @type {HTMLElement} */ handle) {
+  handle.addEventListener('mousedown', (ev) => {
+    const e = /** @type {MouseEvent} */ (ev);
     if (e.button !== 0) return;
     e.preventDefault();
     e.stopPropagation();
     handle.classList.add('dragging');
     document.body.classList.add('row-resizing');
 
-    const bottom = document.querySelector('.center').getBoundingClientRect().bottom;
-    const move = (ev) => setDrawer(bottom - ev.clientY);
+    // `.center` is in `index.html`, so a miss is the page and the code out of
+    // step rather than a state to handle — the same argument `$` makes.
+    const centre = /** @type {HTMLElement} */ (document.querySelector('.center'));
+    const bottom = centre.getBoundingClientRect().bottom;
+    const move = (/** @type {MouseEvent} */ ev) => setDrawer(bottom - ev.clientY);
     const done = () => {
       window.removeEventListener('mousemove', move);
       handle.classList.remove('dragging');
