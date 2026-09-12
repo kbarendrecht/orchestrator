@@ -44,9 +44,20 @@ jobs:
 
       # Prebuilt binaries. Building `cargo-deny` and friends from source is
       # several minutes of a job whose own work takes seconds.
+      #
+      # **Pinned, and this is the same rule as the Rust toolchain pin in
+      # `check.yml`.** These are linters whose *configuration* they parse, so a
+      # newer one is a red build on a commit that touched nothing: the first run
+      # of this workflow failed because the version CI picked rejected
+      # `AGPL-3.0-only` in `deny.toml` and wanted the bare `AGPL-3.0`, while the
+      # version here rejects the bare form. One spelling cannot satisfy both, so
+      # the version is the thing that has to be said out loud.
+      #
+      # Bumping is deliberate: raise these, run `mise run check-deps` and
+      # `mise run notices`, and fix what the new version found in the same commit.
       - uses: taiki-e/install-action@d31232495ad76f47aad66e3501e47780b49f0f3e # v2
         with:
-          tool: cargo-deny,cargo-about,cargo-machete,typos-cli
+          tool: cargo-deny@0.20.2,cargo-about@0.9.2,cargo-machete@0.9.2,typos-cli@1.50.1
 
       # Advisories, licences, banned crates and unknown sources. `deny.toml` has
       # the argument for each, including the one advisory that is recorded rather

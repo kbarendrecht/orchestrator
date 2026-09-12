@@ -69,7 +69,11 @@ node tools/check-module-routes.mjs
 #
 # The tools are not in `[tools]`: they are needed by this task and by CI, not by
 # anyone building the app, and CI installs them from prebuilt binaries.
-#   cargo install cargo-deny cargo-machete typos-cli
+#   cargo install cargo-deny@0.20.2 cargo-machete@0.9.2 typos-cli@1.50.1
+#
+# The versions are pinned in `health.yml` and matter: these linters parse the
+# config they are given, and the first CI run of this failed on a `deny.toml`
+# licence spelling that one version wants and another refuses.
 [tasks.check-deps]
 description = "Advisories, licences, unused dependencies and spelling"
 dir = "{{config_root}}"
@@ -82,7 +86,7 @@ typos
 # Regenerate the Rust third-party notices. `THIRD-PARTY.md` explains the
 # obligation for the vendored JavaScript; this is the same one for ~490 crates,
 # which had no notice at all. CI regenerates and diffs, like `snapshot.d.ts`.
-#   cargo install cargo-about --features cli
+#   cargo install cargo-about@0.9.2 --features cli
 [tasks.notices]
 description = "Regenerate THIRD-PARTY-RUST.md from Cargo.lock"
 dir = "{{config_root}}"
