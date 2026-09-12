@@ -1093,6 +1093,17 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
 }
 .settings-save:hover{border-color:var(--dim)}
 .settings-note{font-family:var(--mono);font-size:calc(10.5px * var(--fs));color:var(--faint-solid)}
+/* The one line in the foot that asks for something, rather than reporting. `--bad`
+   because it is the colour this board already uses for "this needs you to act", and
+   the dot so it reads as a state at a glance rather than as more foot text. */
+.settings-note.dirty{color:var(--bad);display:flex;align-items:center;gap:7px}
+.settings-note.dirty::before{
+  content:'';width:6px;height:6px;border-radius:50%;background:var(--bad);flex:0 0 auto;
+}
+/* Save is what clears it, so it stops being the quietest thing on the row. */
+.settings-foot:has(.settings-note.dirty) .settings-save{
+  border-color:var(--bad);color:var(--text);
+}
 
 /* ---------- context menu ---------- */
 /* Right-click on a session row. Above the toast, because it is the thing you

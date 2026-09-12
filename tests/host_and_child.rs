@@ -367,6 +367,28 @@ async fn a_host_serves_the_page_for_a_checkout_its_child_manages() {
         "the child wrote its hook settings into the shared config dir"
     );
 
+    /* **A daemon started again is a different daemon, and the row says so.** The
+       page holds one events socket per checkout and keeps it open across a restart,
+       so what it must not do is freeze the row it dialled with: the path is the same
+       and the port may well be too — the child binds the configured one — while the
+       token is minted fresh by every process. A page reconnecting with the old token
+       is refused by the very daemon it is drawing, which shipped as "reconnecting…"
+       that never cleared on a checkout the rail showed as live, with no session
+       openable in it.
+
+       Asserted here rather than in the page because there is no SPA test to put it
+       in; this is the fact `connect` re-reads the row *for*. */
+    let before = host.checkouts()[0].token.clone();
+    /* Closed and started again, which is the path a person takes; a crash and its
+       restart differ only in who asked. Through `open_checkout_with` rather than
+       `add_checkout` because that one resolves `orchd` beside the *running*
+       executable, and the running executable here is a test binary. */
+    host.close_checkout(&repo);
+    host.open_checkout_with(exe, &repo, false).expect("the checkout opened again");
+    let after = &host.checkouts()[0];
+    assert!(after.live, "the checkout opened again is not live");
+    assert_ne!(after.token, before, "a daemon started again reused its token");
+
     let _ = std::fs::remove_dir_all(&repo);
     let _ = std::fs::remove_dir_all(&cfg);
 }

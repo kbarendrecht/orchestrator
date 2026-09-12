@@ -33,6 +33,11 @@ function markDirty() {
 
 function showDirty() {
   $('setdiscard').hidden = !dirty;
+  /* **Red, and with a dot.** The foot note is `--faint-solid`, which is right for
+     "saved, restarting…" and wrong for the one line in this pane that is asking you
+     to do something: it sat at the bottom of a 1850px card in the dimmest colour the
+     palette has, next to a Save button that looked exactly as it always does. */
+  $('setnote').classList.toggle('dirty', dirty);
   if (dirty) $('setnote').textContent = 'unsaved changes';
   else if ($('setnote').textContent === 'unsaved changes') $('setnote').textContent = '';
 }

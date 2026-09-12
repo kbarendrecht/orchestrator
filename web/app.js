@@ -1508,13 +1508,28 @@ function announceWaiting() {
  *  report on all of them, and the page composing N snapshots is what makes one
  *  rail over several checkouts possible.
  *
- *  The checkout is taken here and closed over, never read from a global: this is
- *  also the reconnect path, and a socket that re-read "the checkout you are in"
- *  would re-aim itself after a network blip and never heal.
+ *  **A path, not a row, and the distinction is the whole bug.** This used to take
+ *  the row and close over it, arguing that a socket re-reading a global would
+ *  re-aim itself after a blip and never heal. That is true of *which* checkout —
+ *  and this does not read that. It re-reads the current row for the path it was
+ *  given, which is the one thing that must not be frozen: a daemon that dies and
+ *  starts again keeps its path and gets a new port and a new token, so the frozen
+ *  row dialled a dead port every 1.5 seconds for the life of the page. The symptom
+ *  was "reconnecting…" that never cleared, on a checkout the rail was drawing as
+ *  live, with no session openable in it.
  *
- *  @param {import('./js/core.js').Target} checkout
+ *  @param {string} path
  */
-function connect(checkout) {
+function connect(path) {
+  /* **Looked up now, not captured when the socket was first opened.** A checkout's
+     daemon can die and be started again at the same path, and the new process binds
+     a fresh port and mints a fresh token — so a retry holding the row it was handed
+     reconnects to a port nothing is listening on, for the life of the page. That is
+     what "reconnecting…" that never clears was: the bar was telling the truth, and
+     the thing behind it was dialling a dead number every 1.5 seconds. */
+  const checkout = CHECKOUTS.find((c) => c.path === path);
+  // Closed while a retry was pending. Nothing to connect to and nothing to retry.
+  if (!checkout) { socketed.delete(path); return; }
   const sock = new WebSocket(
     `${checkout.wsBase}/ws/events?token=${encodeURIComponent(checkout.token)}`
   );
@@ -1604,9 +1619,9 @@ function connect(checkout) {
     // A dropped socket is a condition, not an error: a quiet status that clears
     // itself on reconnect (see onopen), rather than a toast that — now that
     // errors persist — would linger after the daemon came back.
-    dropped.add(checkout.path);
+    dropped.add(path);
     showConnBar();
-    setTimeout(() => connect(checkout), 1500);
+    setTimeout(() => connect(path), 1500);
   };
 }
 
@@ -1635,7 +1650,10 @@ function showConnBar() {
 /** Which checkouts already have an events socket, by path.
  *
  *  A set rather than a count, because the list changes by add and close and a
- *  second socket on one checkout would double every snapshot. */
+ *  second socket on one checkout would double every snapshot. Keyed on the path
+ *  alone even though a restart changes the port: the socket is per checkout, and
+ *  [`connect`] reads the current row every time it dials, so one entry here covers
+ *  every process that ever serves that path. */
 const socketed = new Set();
 
 /** One events socket per open checkout, for any that does not have one yet. */
@@ -1643,7 +1661,7 @@ function connectAll() {
   for (const c of CHECKOUTS) {
     if (socketed.has(c.path)) continue;
     socketed.add(c.path);
-    connect(c);
+    connect(c.path);
   }
 }
 
@@ -1664,10 +1682,21 @@ function connectHost() {
   sock.onmessage = (ev) => {
     const { checkouts } = JSON.parse(ev.data);
     const open = new Set(checkouts.map((c) => c.path));
-    // A checkout that is gone takes its terminals with it: they are attached to a
-    // daemon that has stopped, and nothing will ever close their sockets for them.
+    /* **A checkout that came back on a new port is as gone as one that left.** Both
+       leave terminals attached to a daemon that has stopped, and nothing will ever
+       close their sockets for them. A restart keeps the path — the row never leaves
+       the list — so comparing paths alone missed it, and the panes stayed wired to a
+       dead process while the rail drew the live one beside them.
+
+       The port is what says so. A daemon started again binds a fresh one, and its
+       sessions are respawned by `auto_resume` under the same ids, so the pane is
+       reopened against the new row the moment it is selected. */
+    const moved = new Set(CHECKOUTS
+      .filter((was) => checkouts.some((now) => now.path === was.path && now.port !== was.port))
+      .map((c) => c.path));
     for (const [key, entry] of [...terms]) {
-      if (!open.has(entry.checkout.path)) {
+      const path = entry.checkout.path;
+      if (!open.has(path) || moved.has(path)) {
         Term.close(entry.checkout, key.slice(key.indexOf('\u0000') + 1));
       }
     }
