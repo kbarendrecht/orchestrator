@@ -333,7 +333,16 @@ mean *this* repo; if you do, name it.
   `mise run check-web`.
   **Every fifth Rust-or-`tools/e2e/` commit it also runs the e2e flows**, ~45s
   instead of ~2s — a middle ground, since running them always teaches everybody
-  `--no-verify` and never running them leaves those faults to CI. The counter is
+  `--no-verify`.
+  **And the hook is the only thing that runs them.** This used to say that never
+  running them here "leaves those faults to CI", which was a fallback nobody had
+  built: `check.yml` runs the tests, the lints, the SPA gates and `page.mjs`, and
+  no workflow runs `tools/e2e/run.mjs` at all. So a commit that skips the hook
+  skips those 24 flows entirely, and the class of fault they exist for — the
+  `claim_main` race, what git hands a hook — reaches nobody. Worth closing, and
+  cheap to (`node tools/e2e/run.mjs` builds its own binaries); the reason it has
+  not been is that a flaky gate is worse than no gate, and these flows have
+  flaked twice. Measure the flake rate before adding the job, not after. The counter is
   in `.git/`, only qualifying commits spend it, and a *failure does not reset it*
   so the next commit tries again rather than burying a break for four more.
   `E2E_EVERY=1` forces a run, `E2E_EVERY=0` turns it off.
@@ -453,8 +462,8 @@ mean *this* repo; if you do, name it.
   terminal and the line would reach nobody. And what is left uses
   `#[expect(…, reason = "…")]` rather than `#[allow]`, so the exemption fails the
   build when the code stops needing it.
-- **`health.yml` runs `cargo deny`, `cargo machete`, `typos` and `zizmor` — on
-  every push and weekly, in its own workflow.** The desktop bundle redistributes ~490 crates, and an advisory
+- **`health.yml` runs `cargo deny`, `cargo about`, `cargo machete`, `typos` and
+  `zizmor` — on every push and weekly, in its own workflow.** The desktop bundle redistributes ~490 crates, and an advisory
   against one of them is published without anybody pushing a commit — so a
   per-push gate would never see it. They are in their own workflow because "go and
   read an advisory" and "your commit is broken" are different messages, and a
@@ -463,10 +472,11 @@ mean *this* repo; if you do, name it.
   (`serial`, unmaintained since 2017, reached through `portable-pty`, no upgrade
   and no vulnerability) and bans `openssl` outright, so a transitive dependency
   cannot put a system TLS into a desktop app.
-  **It had a `paths:` filter and that was wrong**: three of its four checks have
-  nothing to do with a manifest, so a misspelling in a `.rs` commit waited for
-  the next Monday. The whole job is ~20s with prebuilt binaries.
-  **The four tool versions are pinned**, for the reason the Rust toolchain is:
+  **It had a `paths:` filter and that was wrong**: two of its five checks —
+  `typos` over the whole tree and `zizmor` over the workflows — have nothing to do
+  with a manifest, so a misspelling in a `.rs` commit waited for the next Monday.
+  The whole job is ~20s with prebuilt binaries.
+  **All five tool versions are pinned**, for the reason the Rust toolchain is:
   these linters parse the config they are handed, and the first run of this
   workflow went red because the `cargo-deny` CI installed wants `AGPL-3.0` where
   the one it was written against wants `AGPL-3.0-only`. No spelling satisfies

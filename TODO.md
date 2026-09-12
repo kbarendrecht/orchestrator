@@ -5,16 +5,6 @@ this file, which churned it from every build; that feature is gone.
 
 ## Next
 
-- **Split `orchd` into crates, bottom up. `docs/crate-split.md` has the sketch.**
-  Measured: the module graph is already a clean nine-layer DAG once the runtime
-  core is condensed, so four crates — `orchd-base`, `orchd-repo`, `orchd-run`,
-  `orchd-serve` — are legal *today* with zero upward edges and no cycle to break
-  first. `testutil` splits along the same lines, which is the sign the boundaries
-  are right. What it buys is `cargo` enforcing what `tools/rust-modules.mjs`
-  currently ratchets; what it does not buy is build time, and the doc says so with
-  numbers. Do it one crate at a time or it is one unreviewable commit — the same
-  objection that keeps the graph from being made a DAG in a single pass.
-
 - **`edit::read` closes the symlink race on the final component only.** The parents
   are canonicalised earlier and can still be swapped between the check and the open;
   closing it properly needs `openat2` with `RESOLVE_BENEATH`, which is Linux-only

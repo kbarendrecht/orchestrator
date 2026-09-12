@@ -94,6 +94,48 @@ for (const [name, want] of Object.entries(SHIPPED_TERM)) {
   if (got !== want) problems.push(`terminal ${name}: shipped ${want}, derived ${got}`);
 }
 
+/** Every `var(--x)` the stylesheet reads has to be a token somebody writes.
+ *
+ *  **`.addco:hover{color:var(--fg)}` shipped, and no token has ever been called
+ *  `--fg`.** An undefined custom property makes the declaration invalid at
+ *  computed-value time, so the colour falls back to the inherited one: the hover
+ *  simply did nothing, on the "+ open project" button, silently. Nothing could
+ *  have caught it — the check above compares `:root` against the theme engine and
+ *  says nothing about a name neither of them has.
+ *
+ *  Two sources count as defining one: the `:root` block, and `palette.js`, whose
+ *  tokens `applyTheme` sets on the root element at boot. A name in neither is a
+ *  typo for a name in one of them. */
+function undefinedTokens() {
+  // Three places legitimately define one, and a check that knew only the first
+  // would report seven false alarms — measured, on the first run of this.
+  //   1. any declaration in app.css, `:root` or not (`--setw` is on a panel,
+  //      `--add`/`--del` on the diff);
+  //   2. the palette, whose tokens `applyTheme` sets on the root element;
+  //   3. `setProperty` in the SPA (`--band` per rail group, `--code-px` per
+  //      theme, the font stacks and the UI scale).
+  const js = ['core.js', 'rail.js', 'term.js', 'diff.js', 'review.js', 'settings.js', 'queue.js']
+    .map((f) => path.join(here, '..', 'web', 'js', f))
+    .filter((f) => fs.existsSync(f))
+    .map((f) => fs.readFileSync(f, 'utf8'))
+    .concat(fs.readFileSync(path.join(here, '..', 'web', 'app.js'), 'utf8'))
+    .join('\n');
+  const defined = new Set([
+    ...[...css.matchAll(/(--[a-z0-9-]+)\s*:/g)].map((m) => m[1]),
+    ...Object.keys(tokens(DEFAULT, { opacity: DEFAULT.opacity })),
+    ...[...js.matchAll(/setProperty\(\s*['"`](--[a-z0-9-]+)/g)].map((m) => m[1]),
+  ]);
+  // Names built at run time — `var(--co-${band})` — cannot be matched literally,
+  // so the family is accepted rather than each member invented here.
+  const dynamic = /^--co-/;
+  const used = new Set([...css.matchAll(/var\((--[a-z0-9-]+)/g)].map((m) => m[1]));
+  return [...used].filter((n) => !defined.has(n) && !dynamic.test(n)).sort();
+}
+
+for (const name of undefinedTokens()) {
+  problems.push(`app.css reads \`var(${name})\`, and nothing defines ${name}`);
+}
+
 if (problems.length) {
   console.error('the default theme and app.css disagree:\n');
   for (const p of problems) console.error(`  ${p}`);

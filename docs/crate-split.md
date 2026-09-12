@@ -24,7 +24,7 @@ buy* below.
 
 ## The graph today
 
-41 modules, 155 edges, 10 mutual pairs. Condense the strongly connected component
+41 modules, 122 edges, 10 mutual pairs. Condense the strongly connected component
 to one node and what is left is a **clean nine-layer DAG** — the split needs no
 code change to be *possible*, only the mechanical work of moving files.
 

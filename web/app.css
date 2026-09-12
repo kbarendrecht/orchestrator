@@ -343,7 +343,7 @@ button.ctx-btn:hover{color:var(--text)}
    count beside it: it is the qualifier, not the news. */
 .waitwhere{color:var(--faint-solid)}
 .addco{width:100%;text-align:left;color:var(--faint-solid);cursor:pointer;background:none;border:0}
-.addco:hover{color:var(--fg)}
+.addco:hover{color:var(--text)}
 
 /* The one row that says how much you are losing to idle agents. */
 .waitbar{
