@@ -559,7 +559,11 @@ mean *this* repo; if you do, name it.
   it.
   What is left is the runtime core — api, fix_pr, health, post, spawn, state,
   store, story, triage, update, worktree — eleven modules that genuinely call
-  each other. The next move on those is a crate split, not a rename.
+  each other. The next move on those is a crate split, not a rename, and
+  **`docs/crate-split.md` has it measured**: condense that core to one node and
+  the remaining graph is a clean nine-layer DAG, so four crates are legal today
+  with zero upward edges. `cargo` would then enforce what this script ratchets,
+  which is the day it gets deleted.
   One more thing to know about the reader: it cuts each file at its test module,
   so anything below that line is invisible to it — which is why a probe appended
   to the end of a file shows nothing.
