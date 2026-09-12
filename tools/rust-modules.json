@@ -1,0 +1,24 @@
+{
+  "//": "Mutual imports between daemon modules. A ratchet: new ones fail, and a pair that goes away has to be deleted here. See tools/rust-modules.mjs.",
+  "modules": 40,
+  "edges": 159,
+  "mutual": [
+    "api <-> post",
+    "config <-> env_source",
+    "config <-> reviews",
+    "config <-> skills",
+    "config <-> story",
+    "diff <-> model",
+    "fix_pr <-> spawn",
+    "fix_pr <-> state",
+    "git <-> model",
+    "git <-> review_commit",
+    "model <-> state",
+    "post <-> state",
+    "spawn <-> triage",
+    "spawn <-> worktree",
+    "state <-> store",
+    "state <-> story",
+    "state <-> update"
+  ]
+}

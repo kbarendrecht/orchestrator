@@ -156,6 +156,11 @@ if [ "$web" = 1 ] || [ "$rust" = 1 ]; then
   node tools/check-module-routes.mjs >/dev/null || exit 1
 fi
 
+# The module graph, held no worse. Reads 40 files, so it is free beside clippy.
+if [ "$rust" = 1 ]; then
+  node tools/rust-modules.mjs >/dev/null || exit 1
+fi
+
 # The end-to-end flows, every Nth Rust commit rather than every one.
 #
 # They cost ~45s, which is twenty times the rest of this hook, so running them

@@ -54,6 +54,11 @@ jobs:
       # makes a bump reviewable — `gh api repos/<owner>/<repo>/commits/<tag> --jq
       # .sha` is how to resolve the next one.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # Nothing here pushes, and a checkout that leaves the token in
+          # `.git/config` hands it to every later step — including `npx`, the
+          # bundler and every third-party action in the job.
+          persist-credentials: false
 
       - name: Tag matches the version the app reports
         run: |
@@ -108,6 +113,11 @@ jobs:
       # good, and it can only prove the version it actually used.
       - uses: dtolnay/rust-toolchain@4716b85f2fac3e324e64fa2810f6b5c3905760a5 # 1.97.1
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          # Read the cache, never write it. A tag build is the one job whose
+          # output people install, and a cache entry poisoned by any earlier run
+          # would end up inside it.
+          lookup-only: true
 
       # **Nothing is published from an untested tree.** `check.yml` runs the suite
       # on pushes to `main`, but a tag is not a push to `main`: it can name any

@@ -36,7 +36,16 @@ jobs:
           - os: ubuntu-22.04
           - os: macos-14
     steps:
-      - uses: actions/checkout@v7
+      # Pinned by hash, like `release.yml` and `health.yml`: a tag is a moving
+      # target that a third party can repoint at other code, and these actions
+      # run with the repository token. There is no bot moving them, so bumping
+      # one is a deliberate commit — which is the trade, and the safer half of it.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # Nothing here pushes, and a checkout that leaves the token in
+          # `.git/config` hands it to every later step — including `npx`, the
+          # bundler and every third-party action in the job.
+          persist-credentials: false
 
       - name: System libraries (Tauri/WebKitGTK)
         if: runner.os == 'Linux'
@@ -76,10 +85,10 @@ jobs:
       # have to provision Rust through mise as well (`jdx/mise-action`).
       # `rustfmt` as well as `clippy`: the toolchain action installs only what it
       # is asked for, and `cargo fmt` is a gate here now.
-      - uses: dtolnay/rust-toolchain@1.97.1
+      - uses: dtolnay/rust-toolchain@4716b85f2fac3e324e64fa2810f6b5c3905760a5 # 1.97.1
         with:
           components: clippy, rustfmt
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           # Or the two platforms share one cache key and evict each other.
           key: ${{ matrix.os }}
@@ -148,7 +157,7 @@ jobs:
       # nothing.
       - name: Set up node
         if: runner.os == 'Linux'
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '22'
 
@@ -173,6 +182,12 @@ jobs:
       # the ubuntu runner already, so this costs a daemon build and five seconds.
       #
       # Not screenshots, deliberately: `tools/e2e/page.mjs` has the argument.
+      # The daemon's own module graph, which is the SPA's rule pointed at `src/`.
+      # A ratchet, not a gate: `tools/rust-modules.mjs` has the argument.
+      - name: Check the module graph
+        if: runner.os == 'Linux'
+        run: node tools/rust-modules.mjs
+
       - name: Check the page
         if: runner.os == 'Linux'
         run: |

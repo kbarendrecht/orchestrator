@@ -1,0 +1,124 @@
+#!/usr/bin/env node
+// The daemon's module graph, held where it is and no worse.
+//
+//   node tools/rust-modules.mjs           check against the baseline
+//   node tools/rust-modules.mjs --write   re-record it, after breaking a pair
+//   node tools/rust-modules.mjs --dot     graphviz, to look at
+//
+// **A ratchet, not a gate.** The SPA's graph is a DAG and `dependency-cruiser`
+// keeps it one; `src/` is the inverse — 40 modules, 159 edges, 17 mutual pairs
+// and a 23-module strongly connected component — and nothing reported it. That
+// is a fair part of why `api.rs` is 5,681 lines and `spawn.rs` 3,371: inside an
+// SCC no module can be read, tested or moved on its own.
+//
+// Making it a DAG today is not a change anybody can review, so this holds the
+// line instead: a **new** mutual pair fails, and a pair that disappears fails
+// too until it is taken out of `rust-modules.json`. The second half is what
+// makes it a ratchet rather than a permanent list of exceptions — the number can
+// only go down, and going down is a commit that says so.
+//
+// Three pairs are the strangest and the ones to break first, because each is a
+// layer reaching the wrong way: `model` <-> `state` and `model` <-> `git` (a data
+// model reaching into the runtime), and `config` <-> `story`/`skills`/`reviews`/
+// `env_source` (configuration depending on the features it configures).
+//
+// `cargo-modules` and `cargo-deny`'s `[bans]` take over if `orchd` is ever split
+// into crates, which is the real fix and a much larger one.
+
+import { readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const SRC = `${root}/src`;
+const BASELINE = `${root}/tools/rust-modules.json`;
+
+const files = [];
+(function walk(d) {
+  for (const e of readdirSync(d)) {
+    const p = `${d}/${e}`;
+    if (statSync(p).isDirectory()) walk(p);
+    else if (e.endsWith('.rs')) files.push(p);
+  }
+})(SRC);
+
+/** `src/forge/github.rs` belongs to `forge`; `src/lib.rs` to no module. */
+function moduleOf(path) {
+  const rel = path.slice(SRC.length + 1).replace(/\.rs$/, '');
+  const first = rel.split('/')[0];
+  return ['lib', 'main', 'bin', 'mod'].includes(first) ? null : first;
+}
+
+/** Comments are not dependencies, and neither is a `#[cfg(test)] mod tests`.
+ *
+ *  The test module is cut at its attribute rather than brace-matched: it is the
+ *  last item in every file here, and a brace counter would have to understand
+ *  strings and char literals to be right. */
+function strip(src) {
+  const noComments = src.replace(/\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '');
+  const at = noComments.search(/#\[cfg\(test\)\]\s*mod\s+tests\s*\{/);
+  return at >= 0 ? noComments.slice(0, at) : noComments;
+}
+
+/** @type {Map<string, Set<string>>} */
+const edges = new Map();
+const mods = new Set();
+for (const f of files) {
+  const m = moduleOf(f);
+  if (!m) continue;
+  mods.add(m);
+  const to = edges.get(m) ?? new Set();
+  edges.set(m, to);
+  const s = strip(readFileSync(f, 'utf8'));
+  // `crate::x` covers both a path and a `use`; the braced form is the one shape
+  // that names several modules at once and so needs its own pass.
+  for (const [, name] of s.matchAll(/\bcrate::([a-z_][a-z0-9_]*)/g)) if (name !== m) to.add(name);
+  for (const [, body] of s.matchAll(/\buse\s+crate::\{([^}]*)\}/g)) {
+    for (const [, name] of body.matchAll(/(?:^|,)\s*([a-z_][a-z0-9_]*)/g)) if (name !== m) to.add(name);
+  }
+}
+// `crate::model` is a module; `crate::MAIN` is not.
+for (const to of edges.values()) for (const t of [...to]) if (!mods.has(t)) to.delete(t);
+
+const pairs = [];
+for (const [a, to] of edges) {
+  for (const b of to) if (a < b && edges.get(b)?.has(a)) pairs.push(`${a} <-> ${b}`);
+}
+pairs.sort();
+
+if (process.argv.includes('--dot')) {
+  console.log('digraph orchd {');
+  for (const [a, to] of [...edges].sort()) for (const b of [...to].sort()) console.log(`  "${a}" -> "${b}";`);
+  console.log('}');
+  process.exit(0);
+}
+
+const edgeCount = [...edges.values()].reduce((n, s) => n + s.size, 0);
+if (process.argv.includes('--write')) {
+  writeFileSync(BASELINE, `${JSON.stringify({
+    '//': 'Mutual imports between daemon modules. A ratchet: new ones fail, and a '
+        + 'pair that goes away has to be deleted here. See tools/rust-modules.mjs.',
+    modules: mods.size,
+    edges: edgeCount,
+    mutual: pairs,
+  }, null, 2)}\n`);
+  console.log(`rust-modules: recorded ${pairs.length} mutual pair(s)`);
+  process.exit(0);
+}
+
+const want = JSON.parse(readFileSync(BASELINE, 'utf8')).mutual;
+const added = pairs.filter((p) => !want.includes(p));
+const gone = want.filter((p) => !pairs.includes(p));
+
+if (added.length) {
+  console.error('rust-modules: a new mutual import — these two modules are now one:');
+  for (const p of added) console.error(`  ${p}`);
+  console.error('Break it, or record it with `node tools/rust-modules.mjs --write` and say why.');
+}
+if (gone.length) {
+  console.error('rust-modules: these pairs are gone — good. Take them out of the baseline:');
+  for (const p of gone) console.error(`  ${p}`);
+  console.error('  node tools/rust-modules.mjs --write');
+}
+if (added.length || gone.length) process.exit(1);
+console.log(`rust-modules: ${mods.size} modules, ${edgeCount} edges, ${pairs.length} mutual pairs (no worse)`);

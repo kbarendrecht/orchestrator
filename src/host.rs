@@ -179,7 +179,14 @@ pub struct Host {
 /// There is no half-applied state a panic can leave behind — unlike a structure
 /// with an invariant spanning two fields, which is what poisoning exists for.
 fn locked<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    m.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    m.lock().unwrap_or_else(|poisoned| {
+        // Said out loud, because recovering silently makes "the host kept going"
+        // an inference rather than a fact. The panic itself is already in the log
+        // — `install_panic_hook` writes it — and this is the line that connects
+        // the two.
+        tracing::warn!("recovered a poisoned lock; a thread panicked holding it");
+        poisoned.into_inner()
+    })
 }
 
 impl Host {

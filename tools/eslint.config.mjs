@@ -64,9 +64,10 @@ export default tseslint.config(
         'error',
         { checksVoidReturn: { attributes: true, properties: false, variables: false } },
       ],
-      // Its reach is the direct test of a conditional, measured rather than
-      // assumed: `a && !p()` is reported, a bare `if (!p())` is not. So it
-      // catches the guard that reads as a guard, which is the shape that shipped.
+      // Its reach is every boolean position, measured against all three shapes:
+      // `a && !p()`, a bare `if (!p())` and `const x = !p()` are each reported.
+      // An earlier note here claimed the bare form slipped through; it does not,
+      // and believing that would mean writing a guard for a case already covered.
       //
       // `ignoreVoid` is the escape hatch: `void f()` says "fire and forget, on
       // purpose" once, and the rule then catches the calls that were not.

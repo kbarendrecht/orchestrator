@@ -47,6 +47,9 @@ re-litigates them from the doctrine alone:
   because most of these tests spawn git) *and* the generated-bindings tests race
   each other once they are separate processes, which needs a `test-group` to
   serialise. Measured, both numbers. Revisit if the suite grows a test that hangs.
+- The Rust module graph is **not** on this list: it is a ratchet now
+  (`mise run check-modules`), and the entry below says what it holds and why it
+  is not a gate.
 - **ast-grep** — its useful rules here are expressible in tools already running.
   "A host route must go through `callHost`" is an ESLint `no-restricted-syntax`
   selector and catches both spellings; the dialog and blocking-call rules were
@@ -84,6 +87,7 @@ cargo clippy --workspace --all-targets   # what CI lints with, and it denies war
 mise run check-web                  # type-check and lint the SPA + enforce its module graph
 mise run check-docs                 # the doc comments' links, denied as warnings
 mise run check-deps                 # advisories, licences, unused crates, spelling
+mise run check-modules              # the daemon's module graph, held no worse
 mise run page-check                 # what the rendered page must never show
 mise run notices                    # regenerate THIRD-PARTY-RUST.md
 mise run e2e                        # 24 flows against a real daemon, ~60s
@@ -414,8 +418,8 @@ mean *this* repo; if you do, name it.
   terminal and the line would reach nobody. And what is left uses
   `#[expect(…, reason = "…")]` rather than `#[allow]`, so the exemption fails the
   build when the code stops needing it.
-- **`cargo deny`, `cargo machete` and `typos` run weekly in `health.yml`, not in
-  `check.yml`.** The desktop bundle redistributes ~490 crates, and an advisory
+- **`health.yml` runs `cargo deny`, `cargo machete`, `typos` and `zizmor` — on
+  every push and weekly, in its own workflow.** The desktop bundle redistributes ~490 crates, and an advisory
   against one of them is published without anybody pushing a commit — so a
   per-push gate would never see it. They are in their own workflow because "go and
   read an advisory" and "your commit is broken" are different messages, and a
@@ -424,6 +428,21 @@ mean *this* repo; if you do, name it.
   (`serial`, unmaintained since 2017, reached through `portable-pty`, no upgrade
   and no vulnerability) and bans `openssl` outright, so a transitive dependency
   cannot put a system TLS into a desktop app.
+  **It had a `paths:` filter and that was wrong**: three of its four checks have
+  nothing to do with a manifest, so a misspelling in a `.rs` commit waited for
+  the next Monday. The whole job is ~20s with prebuilt binaries.
+  **The four tool versions are pinned**, for the reason the Rust toolchain is:
+  these linters parse the config they are handed, and the first run of this
+  workflow went red because the `cargo-deny` CI installed wants `AGPL-3.0` where
+  the one it was written against wants `AGPL-3.0-only`. No spelling satisfies
+  both.
+  **`zizmor` lints the workflows themselves**, and it earned its place on the
+  first run: three checkouts left the repository token in `.git/config` for every
+  later step (`persist-credentials: false` now), and the release build could
+  write the shared cache it installs from (`lookup-only: true`). It is also what
+  would have caught the four unpinned actions in `check.yml`. Every action is
+  pinned by hash now, in all three workflows — and there is no bot moving them,
+  so a bump is a deliberate commit, which is the trade.
   **`THIRD-PARTY-RUST.md` is generated, never edited.** `THIRD-PARTY.md` already
   argues the obligation for the vendored JavaScript — it is `include_str!`d, so it
   is redistributed in binary form and its notice has to travel — and every crate in
@@ -504,6 +523,23 @@ mean *this* repo; if you do, name it.
   what is left over: boot order, the websocket, the keyboard map, the window
   chrome — under a thousand lines, from 4798 before the split.
   `mise run check-web` prints the current module and dependency count.
+- **The daemon's module graph is the inverse of the SPA's, and it is now held
+  where it is.** 40 modules, 159 edges, **17 mutual pairs and one 23-module
+  strongly connected component** — measured, and a fair part of why `api.rs` is
+  5,681 lines and `spawn.rs` 3,371: nothing inside an SCC can be read, tested or
+  moved on its own. `mise run check-modules` is a **ratchet**, not the DAG rule
+  the SPA gets: a new mutual pair fails, and a pair that goes away fails too
+  until it is deleted from `tools/rust-modules.json`, so the number can only
+  fall. Making it a DAG today is not a change anybody could review.
+  The three worth breaking first are the ones reaching the wrong way:
+  `model` <-> `state` and `model` <-> `git` (a data model reaching into the
+  runtime), and `config` <-> `story`/`skills`/`reviews`/`env_source`
+  (configuration depending on the features it configures). If `orchd` is ever
+  split into crates, `cargo` enforces this for free and the script goes.
+  One thing to know about the reader: it cuts each file at its
+  `#[cfg(test)] mod tests {`, so anything below that line is invisible to it —
+  true of every file here, and the reason a probe appended to the end of one
+  showed nothing.
 - **The module graph is a DAG, and it was made one on purpose.** `app.js` → the
   six; `rail` → `term`, `review`; `review` → `diff`; everything → `core`. Three
   cycles had to be broken first, and each inversion is the reason a boundary is

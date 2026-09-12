@@ -11,21 +11,14 @@ name: health
 # Deliberately separate from `check.yml`: a red build here means "go and read an
 # advisory", not "your commit is broken", and mixing the two teaches people to
 # ignore the one that matters.
+#
+# No `paths:` filter, deliberately. It had one, and it meant a misspelling in a
+# `.rs` commit waited for the next Monday — the job is ~20s with prebuilt
+# binaries, so filtering it bought nothing and delayed three of its four checks.
 on:
   push:
     branches: [main]
-    paths:
-      - '**/Cargo.toml'
-      - Cargo.lock
-      - deny.toml
-      - about.toml
-      - .github/workflows/health.yml
   pull_request:
-    paths:
-      - '**/Cargo.toml'
-      - Cargo.lock
-      - deny.toml
-      - about.toml
   schedule:
     # Monday morning, so a week's advisories are read on a working day rather
     # than found during a release.
@@ -40,6 +33,11 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # Nothing here pushes, and a checkout that leaves the token in
+          # `.git/config` hands it to every later step — including `npx`, the
+          # bundler and every third-party action in the job.
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@4716b85f2fac3e324e64fa2810f6b5c3905760a5 # 1.97.1
 
       # Prebuilt binaries. Building `cargo-deny` and friends from source is
@@ -86,3 +84,20 @@ jobs:
       # code it describes.
       - name: Spelling
         run: typos
+
+      # The workflows themselves. It is what would have caught the four unpinned
+      # actions in `check.yml` — pinned now — and it found three checkouts leaving
+      # the repository token in `.git/config` for every later step, plus a release
+      # build that could write the shared cache it installs from.
+      #
+      # `--min-severity low` drops one informational finding we disagree with:
+      # `softprops/action-gh-release` over a `gh release` script step. That action
+      # handles the multi-asset upload and the retry, which is the whole of what
+      # the release job needs from it.
+      #
+      # `--offline` because every audit that matters here reads the files; the
+      # online ones ask GitHub about the actions and would need a token.
+      - name: Workflows
+        run: |
+          pipx install zizmor==1.30.1
+          zizmor --offline --min-severity low .github/workflows

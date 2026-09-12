@@ -100,6 +100,20 @@ run = "cargo about generate --fail about.hbs > THIRD-PARTY-RUST.md"
 #
 # Not in the pre-commit hook: clippy already costs ~7s of a Rust commit, and a
 # dead link is not a build people can trip over. CI is the gate.
+# The daemon's module graph, held where it is. `src/` is the inverse of the SPA's
+# DAG — 40 modules, 159 edges, 17 mutual pairs, a 23-module strongly connected
+# component — and nothing reported it until now. A ratchet rather than a gate: a
+# new mutual pair fails, and one that goes away has to be taken out of the
+# baseline, so the number can only fall.
+#
+#   mise run check-modules
+#   node tools/rust-modules.mjs --write   # after breaking a pair
+#   node tools/rust-modules.mjs --dot     # to look at it
+[tasks.check-modules]
+description = "Hold the daemon's module graph no worse than it is"
+dir = "{{config_root}}"
+run = "node tools/rust-modules.mjs"
+
 [tasks.check-docs]
 description = "Check the doc comments' links resolve"
 dir = "{{config_root}}"

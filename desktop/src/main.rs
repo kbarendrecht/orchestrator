@@ -123,6 +123,9 @@ fn wsl_render_workaround() {}
 /// that owns the window and every child daemon. `orchd::host` says the same at
 /// more length.
 fn poisoned_is_still_usable<T>(poisoned: std::sync::PoisonError<T>) -> T {
+    // See `orchd::host`'s `locked`: recovering without a line in the log makes
+    // "the shell kept going" a guess.
+    tracing::warn!("recovered a poisoned lock; a thread panicked holding it");
     poisoned.into_inner()
 }
 
