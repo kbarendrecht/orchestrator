@@ -255,7 +255,20 @@ pub fn show_at(cwd: &Path, base: &str, path: &str) -> Result<String> {
 pub fn file_diff(cwd: &Path, base: &str, path: &str, context: u32) -> Result<FileDiff> {
     let ctx = format!("-U{context}");
     let out = git(cwd, &["diff", &ctx, base, "--", path])?;
-    Ok(parse_unified(path, &out))
+    let diff = parse_unified(path, &out);
+    /* **An empty diff has two meanings, and only one of them is "nothing here".**
+    A file git has never seen produces no output at all, so the pane showed every
+    newly created file as "No textual changes against this base" — on precisely the
+    rows where the whole file is the change. The list already carries them
+    (`DiffFile::untracked`); this is what makes one readable when you open it.
+    The question is only asked when the ordinary diff came back empty, which is the
+    rare case, and it is asked rather than assumed: taking an empty diff *as*
+    untracked would show a tracked, unmodified file as entirely added. */
+    if diff.hunks.is_empty() && !diff.binary && orchd_base::git::is_untracked(cwd, path) {
+        let out = orchd_base::git::diff_untracked(cwd, path, context)?;
+        return Ok(parse_unified(path, &out));
+    }
+    Ok(diff)
 }
 
 fn parse_unified(path: &str, raw: &str) -> FileDiff {
@@ -956,5 +969,44 @@ index 111..222 100644
                 ranges_are_sane(&row.text, &row.words, "a paired row");
             }
         }
+    }
+    /// A file git has never seen is entirely the change, and the pane said the
+    /// opposite of that.
+    ///
+    /// `git diff <base> -- <path>` answers nothing for an untracked path, which is
+    /// the same empty answer a tracked-and-unmodified file gives — so every file a
+    /// session had just created opened on "No textual changes against this base".
+    #[test]
+    fn an_untracked_file_diffs_as_entirely_added() {
+        let dir = orchd_base::testutil::scratch_repo("diff-untracked");
+        std::fs::write(dir.join("tracked.txt"), "one\ntwo\n").unwrap();
+        orchd_base::testutil::git(&dir, &["add", "-A"]);
+        orchd_base::testutil::git(&dir, &["commit", "-q", "-m", "base"]);
+
+        // The new file, never added.
+        std::fs::write(dir.join("fresh.txt"), "alpha\nbeta\n").unwrap();
+
+        let d = file_diff(&dir, "HEAD", "fresh.txt", 3).expect("a diff");
+        assert!(
+            !d.hunks.is_empty(),
+            "an untracked file must show its contents"
+        );
+        let added: Vec<&str> = d
+            .hunks
+            .iter()
+            .flat_map(|h| h.rows.iter())
+            .filter(|r| r.kind == RowKind::Add)
+            .map(|r| r.text.as_str())
+            .collect();
+        assert_eq!(added, ["alpha", "beta"], "every line of it, as additions");
+
+        // And the case it must not break: a tracked file with nothing to say still
+        // says nothing, rather than reporting itself as entirely new.
+        let clean = file_diff(&dir, "HEAD", "tracked.txt", 3).expect("a diff");
+        assert!(
+            clean.hunks.is_empty(),
+            "an unmodified tracked file is not an addition: {:?}",
+            clean.hunks
+        );
     }
 }

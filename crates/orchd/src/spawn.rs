@@ -355,6 +355,11 @@ pub(crate) async fn insert_and_spawn(
     crate::headroom::check().map_err(|why| anyhow::anyhow!("not starting a session: {why}"))?;
     {
         let mut inner = app.inner.write().await;
+        /* The bar reports the *last* attempt, the way `pr_error` reports the last
+        poll, so a new one clears it here rather than at each of the ten sites that
+        set `had_a_turn` — nine of which would have been the site somebody forgot.
+        A press that fails again puts it straight back, ~50ms later. */
+        inner.agent_error = None;
         inner.sessions.insert(id, session);
     }
     let spawned = match PtyHandle::spawn(cmd, cwd, env, unset, DEFAULT_SIZE) {
@@ -1921,6 +1926,62 @@ pub fn validate_worktree_name(name: &str) -> Result<()> {
     Ok(())
 }
 
+/// Drop terminal escapes, so what is left is what a person would have read.
+///
+/// The destination is a bar, not a terminal: a raw CSI in the middle of a sentence
+/// is line noise, and an OSC title sequence would swallow the sentence after it.
+/// Handles the two shapes anything prints on its way out — `ESC [ … <@-~>` and
+/// `ESC ] … <BEL|ESC \>` — and drops a lone `ESC` with whatever followed it.
+fn strip_escapes(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c != '\u{1b}' {
+            out.push(c);
+            continue;
+        }
+        match chars.next() {
+            Some('[') => {
+                for c in chars.by_ref() {
+                    if ('\u{40}'..='\u{7e}').contains(&c) {
+                        break;
+                    }
+                }
+            }
+            Some(']') => {
+                for c in chars.by_ref() {
+                    if c == '\u{7}' || c == '\u{1b}' {
+                        break;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// The one line of a dead agent's output worth putting in front of a person.
+///
+/// **The first line with anything in it, not the last.** A program that cannot
+/// start says why in its first sentence and then spends four more telling you how
+/// to fix it — the shadowing npm shim that prompted this opens with `Error: claude
+/// native binary not installed.` and ends on `Or reinstall without
+/// --ignore-scripts` — so the tail is the least useful part of the buffer.
+///
+/// Bounded, because the bar is one line tall and the ring holds ~3600 of them.
+fn agent_complaint(buf: &[u8]) -> Option<String> {
+    const MAX: usize = 200;
+    let text = String::from_utf8_lossy(buf);
+    let clean = strip_escapes(&text);
+    let line = clean.lines().map(str::trim).find(|l| !l.is_empty())?;
+    Some(if line.chars().count() > MAX {
+        line.chars().take(MAX).collect::<String>() + "\u{2026}"
+    } else {
+        line.to_string()
+    })
+}
+
 /// The one observer of a session's pty exit: it settles the record and dispatches
 /// whatever that session's pass owes on its way out. Every spawner arms it,
 /// `triage::spawn_posting_run` included — a review session that had its own
@@ -1928,7 +1989,7 @@ pub fn validate_worktree_name(name: &str) -> Result<()> {
 /// session was killed, and no run ever started.
 pub(crate) fn watch_session_exit(app: Arc<AppState>, id: SessionId, handle: Arc<PtyHandle>) {
     tokio::spawn(async move {
-        handle.wait().await;
+        let code = handle.wait().await;
         // What this session *was* decides whether anything else has to be settled
         // now it is over. Read while the lock is already held; acted on below.
         let mut fix_pr_for: Option<u64> = None;
@@ -2013,6 +2074,26 @@ pub(crate) fn watch_session_exit(app: Arc<AppState>, id: SessionId, handle: Arc<
         if let Some((cwd, recorded)) = forget {
             crate::store::delete_transcript(id, &cwd, recorded.as_deref());
             tracing::info!(session = %id, "closed before its first turn; forgotten");
+            /* A pane you opened and closed and an agent that cannot start are the
+            same exit to everything above: turnless, so the row, the transcript and
+            the tree all go. The difference is *why*, and without it the second case
+            is completely silent — a `claude` shadowed on PATH by a broken install
+            took every press of the new-worktree button and left nothing on screen,
+            no row, no pane, no message.
+
+            Two conditions, and both are needed. A non-zero code is the failure; and
+            `stopped_deliberately` excludes the kill button, which ends a session by
+            `SIGKILL` and so produces a failure code of exactly this shape. What the
+            agent printed is the useful half — it is the binary's own sentence about
+            itself — so the tail of the ring buffer travels with the report. */
+            if code != 0 && !handle.stopped_deliberately() {
+                let said = agent_complaint(&handle.snapshot());
+                let mut inner = app.inner.write().await;
+                inner.agent_error = Some(match said {
+                    Some(line) => format!("the agent exited at once ({code}): {line}"),
+                    None => format!("the agent exited at once ({code}) and said nothing"),
+                });
+            }
             /* And the tree it opened in, which is the half that leaked. Forgetting
             the row left a worktree on disk with nothing pointing at it: 32 of the
             61 trees on the machine this was written for, and the retention timer
@@ -3008,6 +3089,128 @@ mod tests {
 
         let _ = new.handle.kill();
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An agent that cannot start has to say so, because nothing else is left to.
+    ///
+    /// The row, the transcript and the worktree all go with a turnless session, so
+    /// the whole failure was silent: a `claude` shadowed on PATH by a broken
+    /// install took every press of the new-worktree button and put nothing at all
+    /// on screen.
+    #[tokio::test]
+    async fn an_agent_that_dies_at_once_reports_what_it_said() {
+        use crate::pty::PtyHandle;
+
+        let (app, dir) = crate::testutil::app("agenterr");
+        let spawned = PtyHandle::spawn(
+            &[
+                "sh".to_string(),
+                "-c".to_string(),
+                // The shape the real one had: a first line that says what is wrong
+                // and three more telling you how to fix it.
+                "echo 'Error: claude native binary not installed.'; echo; \
+                 echo 'Run the postinstall manually'; exit 1"
+                    .to_string(),
+            ],
+            std::path::Path::new("/tmp"),
+            &[],
+            &[],
+            (24, 80),
+        )
+        .unwrap();
+
+        let id = Uuid::new_v4();
+        {
+            let mut inner = app.inner.write().await;
+            let mut s = Session::new(id, MAIN.to_string(), dir.clone(), None);
+            s.pty = Some(spawned.handle.clone());
+            /* Deliberately *not* `set_state(Working)`: that latches `had_a_turn`,
+            which is the whole condition being tested. A session that never had a
+            turn is one that never reached `Working`, and writing it the other way
+            made this test pass through the branch it was written to exercise. */
+            inner.sessions.insert(id, s);
+        }
+        watch_session_exit(app.clone(), id, spawned.handle.clone());
+        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+
+        let inner = app.inner.read().await;
+        assert!(
+            !inner.sessions.contains_key(&id),
+            "a turnless session is still forgotten; this changes what is said, not what is kept"
+        );
+        let said = inner.agent_error.clone().expect("the failure is reported");
+        assert!(
+            said.contains("claude native binary not installed"),
+            "the agent's own first line is the part that says what to fix: {said}"
+        );
+        drop(inner);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Ending a session yourself is not a fault, and it exits like one.
+    ///
+    /// `kill_gracefully` escalates to `SIGKILL`, so the code a killed session
+    /// leaves is indistinguishable from a crash — which is why the handle records
+    /// that the stop came from us.
+    #[tokio::test]
+    async fn killing_a_turnless_session_reports_nothing() {
+        use crate::pty::PtyHandle;
+
+        let (app, dir) = crate::testutil::app("agentkill");
+        let spawned = PtyHandle::spawn(
+            &["cat".to_string()],
+            std::path::Path::new("/tmp"),
+            &[],
+            &[],
+            (24, 80),
+        )
+        .unwrap();
+
+        let id = Uuid::new_v4();
+        {
+            let mut inner = app.inner.write().await;
+            let mut s = Session::new(id, MAIN.to_string(), dir.clone(), None);
+            s.pty = Some(spawned.handle.clone());
+            // Turnless, like the test above and for the same reason: this is the
+            // branch that reports, so the kill has to arrive inside it to be excluded.
+            inner.sessions.insert(id, s);
+        }
+        watch_session_exit(app.clone(), id, spawned.handle.clone());
+        spawned.handle.kill_gracefully().await;
+        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+
+        let inner = app.inner.read().await;
+        assert!(
+            inner.agent_error.is_none(),
+            "a session you ended reads as a fault: {:?}",
+            inner.agent_error
+        );
+        drop(inner);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_agent_complaint_is_its_first_line_without_escapes() {
+        // A clear, a home, and a title sequence — what anything writes to a pty
+        // before it says a word.
+        let buf = b"\x1b[2J\x1b[H\x1b]0;a title\x07Error: not installed.\r\nhow to fix it\r\n";
+        assert_eq!(
+            agent_complaint(buf).as_deref(),
+            Some("Error: not installed."),
+            "the first line with anything in it, and no escapes left in it"
+        );
+        assert_eq!(agent_complaint(b"").as_deref(), None, "said nothing");
+        assert_eq!(
+            agent_complaint(b"\r\n   \r\n").as_deref(),
+            None,
+            "whitespace is saying nothing"
+        );
+        let long = agent_complaint(&vec![b'x'; 400]).expect("a long line still answers");
+        assert!(
+            long.chars().count() <= 201,
+            "the bar is one line tall: {}",
+            long.chars().count()
+        );
     }
 
     /// The prompt is on the record the spawn inserts, not set afterwards. Two of

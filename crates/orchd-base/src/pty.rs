@@ -147,6 +147,14 @@ pub struct PtyHandle {
     /// Kept so a stop can reach the child's whole **process group** rather than
     /// only its leader — see [`PtyHandle::kill`].
     pid: Option<u32>,
+    /// Whether the stop came from us rather than from the child deciding to go.
+    ///
+    /// **The distinction `child.rs` already draws, for the same reason.** A kill
+    /// button, a clean exit and a binary that will not start all arrive at the
+    /// watcher as one exit, so a code alone cannot tell "the user ended this" from
+    /// "the agent fell over" — and we `SIGKILL` on the kill path, which produces a
+    /// failure code of its own. Set before the signal, read after `wait` returns.
+    stopping: std::sync::atomic::AtomicBool,
 }
 
 /// How long a child gets to honour `SIGHUP` before it is `SIGKILL`ed.
@@ -289,6 +297,7 @@ impl PtyHandle {
             exit_rx,
             size: Mutex::new((rows, cols)),
             pid,
+            stopping: std::sync::atomic::AtomicBool::new(false),
         });
 
         // The pty reader is blocking, so it gets a dedicated blocking thread
@@ -450,6 +459,12 @@ impl PtyHandle {
         if self.exit_code().is_some() {
             return Ok(());
         }
+        /* Before the signal, and only past the check above: a child that had
+        already gone was not stopped by us, and marking it here would report every
+        kill of an already-dead session as deliberate. `kill_gracefully` and
+        `kill_hard` both funnel through this, so one store covers every stop. */
+        self.stopping
+            .store(true, std::sync::atomic::Ordering::SeqCst);
         if self.signal_group(libc::SIGHUP) {
             return Ok(());
         }
@@ -558,6 +573,15 @@ impl PtyHandle {
 
     pub fn exit_code(&self) -> Option<i32> {
         *self.exit_rx.borrow()
+    }
+
+    /// Whether this handle's own [`Self::kill`] asked the child to go.
+    ///
+    /// See the `stopping` field. The exit code of a session we `SIGKILL`ed is a
+    /// failure code like any other, so a watcher that reported a bad code as a
+    /// fault would turn every kill button into a fault report.
+    pub fn stopped_deliberately(&self) -> bool {
+        self.stopping.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     pub fn is_alive(&self) -> bool {

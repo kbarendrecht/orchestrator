@@ -385,7 +385,13 @@ tracker_server: string | null, workspaces: Array<WorkspaceView>, sessions: Array
  * Set when the last poll failed; the pane says so rather than showing an
  * empty list.
  */
-pr_error: string | null, pr_age_ms: number, 
+pr_error: string | null, 
+/**
+ * The agent exited before its first turn and we did not stop it; see
+ * `Inner::agent_error`. The board shows it in a bar, since the session it
+ * happened to no longer exists.
+ */
+agent_error: string | null, pr_age_ms: number, 
 /**
  * Monotonic counter of completed PR polls; see `Inner::pr_poll`.
  */

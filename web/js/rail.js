@@ -1,7 +1,7 @@
 // The rail: what is running, what is waiting on you, and the PRs beside it.
 // Twenty-four names, three out; the rest is how a row decides what it says.
 
-import { $, activeCheckout, byNewest, call, callFor, bandOf, callHost, callOn, checkoutOf, CHECKOUTS, chooseBox, enterCheckout, everySession, getHost, snapshotOf, snapshotFor, repoSummary, terms, caret, clock, confirmBox, copyText, creating, dotClass, el, isArchived, isConversation, isWaiting, mainWorkspace, MOD_LABEL, newSession, newWorktree, openMenu, pending, refreshButton, selected, sessionsOf, setSelected, snap, stateClass, stateLabel, reason, toast, unchanged, setPendingSelect } from './core.js';
+import { $, activeCheckout, byNewest, call, callFor, bandOf, callHost, callOn, checkoutOf, CHECKOUTS, chooseBox, enterCheckout, everySession, getHost, snapshotOf, snapshotFor, repoSummary, terms, caret, clock, confirmBox, copyText, creating, dotClass, el, isArchived, isConversation, isWaiting, mainWorkspace, MOD_LABEL, newSession, newWorktree, creatingIn, openMenu, pending, QUEUE_MAX, refreshButton, selected, sessionsOf, setSelected, snap, stateClass, stateLabel, reason, toast, unchanged, setPendingSelect } from './core.js';
 import * as Review from './review.js';
 import * as Term from './term.js';
 
@@ -61,8 +61,14 @@ function renderRail() {
   /* `folded` is a `Set`, which `unchanged` cannot compare by value — so it goes in
      as its contents. Without it a fold wrote the key and redrew nothing, and the
      rail only caught up on the next reload. */
+  /* **The create in flight is an input too**, and it was not in this list. The
+     `+` buttons read `creating()` for their disabled state and `checkoutSessions`
+     now draws a row from it, but the announcement that calls this function changes
+     nothing the signature could see — so the render returned early and neither
+     appeared until the next snapshot happened along. Which is exactly the window
+     both of them exist to cover. */
   if (unchanged(drawn, [states, CHECKOUTS, activeCheckout().path, [...folded], showArchived,
-    showPrs, picked, selected, swapInFlight], NOT_DRAWN)) {
+    showPrs, picked, selected, swapInFlight, creating(), creatingIn()], NOT_DRAWN)) {
     return;
   }
 
@@ -98,10 +104,11 @@ function renderRail() {
       block.appendChild(el('div', 'railbtn', c.live ? 'starting\u2026' : 'not running'));
       continue;
     }
-    const main = mainWorkspace(state);
-    // Main is pinned first (§9).
-    if (main) block.appendChild(mainGroup(c, state, main));
-    block.appendChild(worktreeGroup(c, state, main?.id));
+    /* One list per checkout, main's sessions first (§9). The group headings are
+       gone; `checkoutSessions` says why. It draws its own head only on a
+       single-checkout install, where there is no `checkoutHead` above it and the
+       rail would otherwise open on a bare session row with nothing naming it. */
+    block.appendChild(checkoutSessions(c, state, mainWorkspace(state), !several));
   }
 
   // The one added piece of chrome, at the foot of the list where "and another
@@ -320,6 +327,11 @@ function checkoutHead(c) {
   fold.appendChild(caret());
   fold.onclick = (ev) => { ev.stopPropagation(); setFolded(c.path, !shut); };
   head.appendChild(fold);
+  /* The whole strip folds on a double-click as well. The caret is still the
+     control — this is the gesture people try on a header that looks like a folder,
+     and it cost nothing to answer. A *single* click stays "go there": the name
+     already means that, and one gesture cannot mean both. */
+  head.ondblclick = () => setFolded(c.path, !shut);
 
   const name = el('button', 'co-name', c.name);
   name.type = 'button';
@@ -502,13 +514,19 @@ function prMenu(/** @type {import('../snapshot').PrView} */ p, /** @type {HTMLBu
     ['open in main checkout', null, () => openPr(p.number, 'main')],
     ['open in worktree', null, () => openPr(p.number, 'worktree')],
     /* Two review verbs, and the first is the button's. The pane pass is one agent
-       you watch; the read pass proposes into the cards and a later run carries them
+       you watch; the other proposes into the cards and a later run carries them
        out. Both read the threads, which is the thing that made having two of them
        questionable — the answer for now is that the cards are not finished, so the
        flow that needs no new screen is the default and this menu is where the other
-       one lives. */
-    ['handle in a pane', null, () => startHandleReview(p.number, btn)],
-    ['read into the cards', null, () => startTriage(p.number, btn)],
+       one lives.
+       **Named after the job, not after the machinery.** They read `handle in a
+       pane` and `read into the cards`, which named where the work happened and how
+       it was carried — two things a person picking a menu item does not yet know
+       and has no way to choose between. Both are the same verb, so both say it,
+       and the only difference the label has to carry is that the second one puts a
+       screen in front of you. */
+    ['handle review', null, () => startHandleReview(p.number, btn)],
+    ['handle review in UI', null, () => startTriage(p.number, btn)],
   ]);
 }
 
@@ -592,11 +610,16 @@ function prGroup() {
      scroller, so the block whose colour would have said which has scrolled away.
      The band says it instead. Only with several checkouts open, like every other
      piece of this chrome. */
+  /* On the *block*, not on this group, and that is a fix rather than a detail: the
+     band drew down `.ws`, which ends where its rows do, while the block below it
+     carries the pane's own bottom padding — so the stripe stopped short of the
+     window edge and read as an unfinished line. The review queue's is on its block
+     for the same reason. */
   const band = CHECKOUTS.length > 1 ? bandOf(activeCheckout().path) : null;
-  if (band) {
-    group.classList.add('pr-of-checkout');
-    group.style.setProperty('--band', `var(--co-${band})`);
-  }
+  const block = $('prpane');
+  block.classList.toggle('pr-of-checkout', !!band);
+  if (band) block.style.setProperty('--band', `var(--co-${band})`);
+  else block.style.removeProperty('--band');
 
   const head = el('button', 'prgroup-head');
   head.setAttribute('aria-expanded', String(showPrs));
@@ -639,18 +662,27 @@ function prGroup() {
 
   if (!showPrs) return group;
 
+  /* The body lives in its own element rather than loose in the group, so this
+     pane has the shape the review queue already had: a head that stays put and a
+     list that scrolls under it. That is what lets one rule cap both at ten rows
+     without either pane having to know how tall its own head is — and it is why
+     the two empty states had drifted apart in the first place, each being styled
+     where it happened to sit. */
+  const list = el('div', 'prlist');
+  group.appendChild(list);
+
   if (snap.pr_error) {
     const e = el('div', 'railbtn', snap.pr_error.slice(0, 120));
     e.style.color = 'var(--bad)';
-    group.appendChild(e);
+    list.appendChild(e);
     return group;
   }
   if (!prs.length) {
-    group.appendChild(el('div', 'railbtn', 'none open'));
+    list.appendChild(el('div', 'railbtn', 'none open'));
     return group;
   }
 
-  for (const p of prs) {
+  for (const p of prs.slice(0, QUEUE_MAX)) {
     // Rows for PRs that already have a session are dimmed, and the chip at the
     // end of the row goes to it (§9).
     const row = el('a', 'prrow' + (p.session ? ' linked' : ''));
@@ -743,99 +775,169 @@ function prGroup() {
       };
       row.appendChild(j);
     }
-    group.appendChild(row);
+    list.appendChild(row);
   }
   return group;
 }
 
-/** A label and the button that adds to the group under it. */
-function groupHead(/** @type {string} */ label, /** @type {HTMLElement} */ add) {
-  const head = el('div', 'ws-head');
-  const name = el('div', 'ws-name');
-  name.appendChild(el('span', 'eyebrow', label));
-  head.appendChild(name);
-  head.appendChild(add);
-  return head;
+/** One checkout's sessions: a single list, and the two ways to add to it.
+ *
+ *  **This replaces two headed groups, and the reason is a count.** With two
+ *  projects open the rail drew two project headers, four group headings and four
+ *  "no sessions" lines to carry two sessions — five times as much chrome as
+ *  content, and none of it shrank when a group was empty. The headings are gone;
+ *  main and worktree sessions share one list, ordered newest first within each.
+ *
+ *  **Main is marked and a worktree is not**, which is the whole of what the two
+ *  headings were saying. A tag on every row would be a column of one repeated
+ *  word — nearly every session is a worktree session — so only the exception
+ *  carries one, and it means something every time it appears.
+ */
+function checkoutSessions(/** @type {import('./core.js').Target} */ c, /** @type {import('../snapshot').Snapshot} */ state, /** @type {import('../snapshot').WorkspaceView | undefined} */ main, /** @type {boolean} */ titled = false) {
+  const group = el('div', 'ws');
+  const mainSessions = main ? sessionsOf(main.id, state) : [];
+  const mainActive = mainSessions.filter((/** @type {import('../snapshot').SessionView} */ s) => !isArchived(s));
+
+  /* Anything that is not main's belongs here — by session, not by workspace. A
+     worktree Claude Code has not named yet has no workspace record at all, only a
+     session pointing at the placeholder, so filtering on the known workspaces
+     dropped exactly the row that says something is happening. */
+  const treeSessions = state.sessions.filter((/** @type {import('../snapshot').SessionView} */ s) => s.workspace !== main?.id);
+  const treeActive = treeSessions.filter((/** @type {import('../snapshot').SessionView} */ s) => !isArchived(s));
+
+  /* **A head only when nothing above it is one.** With several checkouts open the
+     `.co-head` names each block and this would be a second heading saying less;
+     with one — which is every install today — there is no header at all, and the
+     rail opened on a bare session row. It counts what it holds, the way the two
+     panes below the rail do. */
+  if (titled) {
+    /* **The project's own name, not the word "sessions".** A rail that holds one
+       project and calls its list `Sessions` is naming the obvious and leaving out
+       the thing worth knowing — which checkout all of this is in. Set like the
+       multi-checkout header's name, so opening a second project changes where the
+       name sits and not what it looks like. Folds on a double-click, the same
+       gesture that folds the header it mirrors. */
+    const head = el('div', 'ws-title');
+    const shut = folded.has(c.path);
+    head.title = repoSummary(c);
+    head.appendChild(el('span', 'co-name solo', c.name));
+    const live = mainActive.length + treeActive.length;
+    head.appendChild(el('span', 'ws-count', live ? String(live) : 'none'));
+    head.ondblclick = () => setFolded(c.path, !shut);
+    group.appendChild(head);
+    if (shut) return group;
+  }
+
+  /* **The press shows before the daemon answers.** A worktree is a POST, the
+     repo's hooks and a `claude` boot; a session in main is a spawn — ten seconds
+     and four in which nothing appeared in the rail at all, so the button read as
+     dead and pressing again was the reasonable thing to do. The row lands first and
+     the real one replaces it, which is what `pendingSelect` was already for.
+     At the top, because it is the newest thing there is. */
+  if (creatingIn() === c.path) group.appendChild(startingRow());
+
+  // Main first, still: it is the checkout itself, and the rest are cut from it.
+  for (const s of mainActive.sort(byNewest)) group.appendChild(sessionRow(s, main, true));
+  // The workspace is only needed for the name it lends the row.
+  for (const s of treeActive.sort(byNewest)) group.appendChild(sessionRow(s, { id: s.workspace }));
+
+  group.appendChild(addRow(c, state, main, mainActive));
+  /* One archive per checkout rather than one per group, which follows from there
+     being one list: the two folds were only ever separate because their headings
+     were. Keyed on the checkout, because `sessions` names a fold in every one of
+     them and a single key would open them all. */
+  appendArchived(c, group, 'sessions',
+    [...mainSessions, ...treeSessions].filter(isConversation));
+  return group;
 }
 
-/** Main is exclusive: one active session at a time, and no queue. While it is
- *  occupied the button is disabled and the row that holds it says so (§2).
+/** A session that has been asked for and does not exist yet.
  *
- *  Unless `allow_several_in_main` is set, which is a config-file decision the
- *  daemon reports in the snapshot. Then `+` stays live and the holder's name is
- *  still worth saying, because a second session in one checkout is a thing to do
- *  on purpose rather than by accident. */
-function mainGroup(/** @type {import('./core.js').Target} */ c, /** @type {import('../snapshot').Snapshot} */ state, /** @type {import('../snapshot').WorkspaceView} */ w) {
-  const group = el('div', 'ws');
-  const sessions = sessionsOf(w.id, state);
-  const active = sessions.filter((s) => !isArchived(s));
-  const occupant = active.find((s) => s.id === w.occupant && s.alive);
-  const several = !!state.several_in_main;
+ *  It wears the selected row's own fill, because it is what the centre pane is
+ *  showing: the two have to agree about what the board is about. Not a button —
+ *  there is no id to select, and a row that looked pressable and was not would be
+ *  a worse answer than the silence it replaces.
+ */
+function startingRow() {
+  const row = el('div', 'sess starting');
+  row.setAttribute('aria-current', 'true');
+  /* **Both lines, or the row is a different height from every other one.** A
+     session row is a name over its state, and a placeholder with only the first
+     of those sat shorter than the rows around it and read as clipped. So it takes
+     the same shape: the name it does not have yet, and what is happening to it.
+     `…creating` is the word the rail already uses for a worktree Claude Code has
+     not named — see `railName` — so the placeholder and the row that replaces it
+     say the same thing. */
+  const top = el('div', 'sess-row');
+  top.appendChild(el('span', 'conn-dot'));
+  top.appendChild(el('span', 'sess-name pending', '\u2026creating'));
+  row.appendChild(top);
+  const sub = el('div', 'sess-sub');
+  sub.appendChild(el('span', 'sess-state', creating() ?? 'starting'));
+  row.appendChild(sub);
+  /* The row's own bottom spacer, which every real row ends on. Without it this one
+     measured 49px against their 60 and read as clipped — the height of a row is
+     `.sess-row` plus `.sess-sub` plus this, and a placeholder that skipped it was
+     not the same object. */
+  row.appendChild(el('div', 'sess-pad'));
+  return row;
+}
 
-  const add = el('button', 'plus', '+');
+/** The two ways to start a session, on one line at the foot of the list.
+ *
+ *  **Both say what they make, and a worktree session is a session too** — which is
+ *  why the first of these is `+ main` and not `+ session`. The old pair sat in two
+ *  headings and read as `+` twice, so which one you were pressing came from where
+ *  it was rather than from what it said.
+ */
+function addRow(/** @type {import('./core.js').Target} */ c, /** @type {import('../snapshot').Snapshot} */ state, /** @type {import('../snapshot').WorkspaceView | undefined} */ main, /** @type {import('../snapshot').SessionView[]} */ mainActive) {
+  const row = el('div', 'ws-add');
+
+  /* Main is exclusive: one active session at a time, and no queue. While it is
+     occupied the button is disabled and says who holds it — unless
+     `allow_several_in_main` is set, which is a config-file decision the daemon
+     reports in the snapshot, and then a second one is a thing you do on purpose. */
+  const occupant = mainActive.find((/** @type {import('../snapshot').SessionView} */ s) => s.id === main?.occupant && s.alive);
+  const several = !!state.several_in_main;
+  const inMain = el('button', 'addbtn', '+ main');
   // Occupied, or already making something: the second reason is the one that used
   // to be invisible, and pressing through it is how you get two of them.
-  add.disabled = (!!occupant && !several) || !!creating();
+  inMain.disabled = !main || (!!occupant && !several) || !!creating();
   /* The chord belongs in the tooltip of the button that does the same thing:
-     finding the button once is how you stop needing it, which is the argument the
-     legend button already makes for itself. `MOD_LABEL` rather than a literal —
-     the modifier is ⌘ on macOS and Ctrl everywhere else. */
-  add.title = creating()
+     finding the button once is how you stop needing it. `MOD_LABEL` rather than a
+     literal — the modifier is ⌘ on macOS and Ctrl everywhere else. */
+  inMain.title = creating()
     ? creating() ?? ''
     : occupant
       ? `main is held by ${occupant.title || occupant.id.slice(0, 8)}${several ? ' · another is allowed' : ''}`
-      : `New session in main · ${MOD_LABEL} Shift N`;
-  add.onclick = () => newSession(w.id, c);
-  group.appendChild(groupHead('Main checkout', add));
+      : `New session in the main checkout · ${MOD_LABEL} Shift N`;
+  // `void` is how this file says fire-and-forget out loud; the row lands on the
+  // next snapshot either way.
+  inMain.onclick = () => { if (main) void newSession(main.id, c); };
+  row.appendChild(inMain);
 
-  for (const s of active.sort(byNewest)) group.appendChild(sessionRow(s, w));
-  if (!active.length) group.appendChild(el('div', 'railbtn', 'no sessions'));
-  appendArchived(c, group, 'main', sessions.filter(isConversation));
-  return group;
-}
+  row.appendChild(el('span', 'addsep', '\u00b7'));
 
-/** Every worktree session under one header.
- *
- *  Rows come from sessions, not from worktrees: a worktree with nothing running
- *  in it is not something you can act on, so it gets no row. The one exception
- *  is a session whose worktree has no name yet, which shows as `…creating`
- *  rather than nothing at all — an invisible session is how you end up
- *  starting a second one. */
-function worktreeGroup(/** @type {import('./core.js').Target} */ c, /** @type {import('../snapshot').Snapshot} */ state, /** @type {string | undefined} */ mainId) {
-  const group = el('div', 'ws');
-  const add = el('button', 'plus', '+');
-  /* Dead while one is being cut, and it says which one in the tooltip.
-     Two things make one press look like none: the POST is a worktree, the repo's
-     hooks and a `claude` boot, and the row that lands after it says `…creating`
-     for as long as it takes Claude Code to name the tree. Both are covered — the
-     claim in `core` for the first, `pending` for the second — because the second
-     window is the longer one and a `+` that came back to life halfway is the same
-     invitation to press again.
+  /* Dead while one is being cut, and it says which one in the tooltip. Two things
+     make one press look like none: the POST is a worktree, the repo's hooks and a
+     `claude` boot, and the row that lands after it says `…creating` for as long as
+     it takes Claude Code to name the tree. Both are covered — the claim in `core`
+     for the first, `pending` for the second — because the second window is the
+     longer one and a `+` that came back to life halfway is the same invitation to
+     press again.
 
      Live ones only. A placeholder session that died before `SessionStart` keeps
-     the placeholder workspace for good, and counting that would leave the `+`
+     the placeholder workspace for good, and counting that would leave the button
      dead until a restart. */
   const cutting = creating()
     || (state.sessions.some((/** @type {import('../snapshot').SessionView} */ s) => pending(s) && !isArchived(s)) ? 'creating a worktree' : null);
-  add.disabled = !!cutting;
-  add.title = cutting || `New worktree session · ${MOD_LABEL} N (shift-click to name it)`;
-  add.onclick = (ev) => newWorktree(ev.shiftKey, c);
-  group.appendChild(groupHead('Worktrees', add));
+  const tree = el('button', 'addbtn', '+ worktree');
+  tree.disabled = !!cutting;
+  tree.title = cutting || `New worktree session · ${MOD_LABEL} N (shift-click to name it)`;
+  tree.onclick = (/** @type {MouseEvent} */ ev) => newWorktree(ev.shiftKey, c);
+  row.appendChild(tree);
 
-  /* Anything that is not main's belongs here — by session, not by workspace.
-   * A worktree Claude Code has not named yet has no workspace record at all,
-   * only a session pointing at the placeholder, so filtering on the known
-   * workspaces dropped exactly the row that says something is happening. */
-  const sessions = state.sessions.filter((/** @type {import('../snapshot').SessionView} */ s) => s.workspace !== mainId);
-  const active = sessions.filter((/** @type {import('../snapshot').SessionView} */ s) => !isArchived(s));
-
-  for (const s of active.sort(byNewest)) {
-    // The workspace is only needed for the name it lends the row.
-    group.appendChild(sessionRow(s, { id: s.workspace }));
-  }
-  if (!active.length) group.appendChild(el('div', 'railbtn', 'no sessions'));
-  appendArchived(c, group, 'worktrees', sessions.filter(isConversation));
-  return group;
+  return row;
 }
 
 /** The group's past conversations, behind a count.
@@ -968,7 +1070,7 @@ function forkBadge(/** @type {import('../snapshot').SessionView} */ s) {
   return s.forked_from ? el('span', 'forked', 'fork') : null;
 }
 
-function sessionRow(/** @type {import('../snapshot').SessionView} */ s, /** @type {{ id: string | null } | undefined} */ w) {
+function sessionRow(/** @type {import('../snapshot').SessionView} */ s, /** @type {{ id: string | null } | undefined} */ w, /** @type {boolean} */ fromMain = false) {
   const btn = el('button', 'sess');
   btn.setAttribute('aria-current', String(s.id === selected));
   // So a rename can find this row's name span again after any re-render.
@@ -980,6 +1082,15 @@ function sessionRow(/** @type {import('../snapshot').SessionView} */ s, /** @typ
   row.appendChild(el('span', 'sess-name' + (pending(s) ? ' pending' : ''), liveName, liveName));
   const forked = forkBadge(s);
   if (forked) row.appendChild(forked);
+  /* **Only the exception is marked.** This row is in the main checkout, which is
+     the unusual one — nearly every session is a worktree session, so a tag on
+     every row would be a column of one repeated word and would spend width the
+     name needs. It carries the title as well as the word, because "no tag means
+     worktree" is a thing you have to be told once. */
+  if (fromMain) {
+    row.appendChild(el('span', 'sess-main', 'main',
+      'In the main checkout · every other session is in a worktree'));
+  }
   // The session's age, not its id. A hex slice told worktree-sharing rows apart
   // but was unreadable — a value you never recognise — and age is worth reading on
   // every row and moves as the session does. Same token the archive rows show.

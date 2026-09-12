@@ -6,6 +6,14 @@
 # unlisted until somebody passed `--workspace` and found out. A manifest that is
 # both is a default that is wrong for every tool that has one.
 members = ["crates/orchd", "crates/orchd-base", "crates/orchd-repo", "crates/orchd-serve", "desktop"]
+# **Stated because the move above would otherwise have changed it in silence.** A
+# root that is also a package takes its resolver from that package's edition, and
+# this one was `2021`, so the workspace resolved features with resolver 2 without
+# anybody writing it down. A *virtual* root has no edition to read and falls back
+# to resolver 1, which unifies features across build kinds — exactly the axis this
+# workspace is delicate on, since `ts-rs` is an optional dependency in three crates
+# and a dev-dependency beside it. Cargo warned; the warning is what found this.
+resolver = "2"
 
 # The four dependencies both this daemon and the desktop shell share. One version
 # each, in one place: they were declared twice and could drift, and a version skew

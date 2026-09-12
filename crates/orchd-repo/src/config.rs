@@ -469,23 +469,20 @@ fn default_upstream_remote() -> String {
     "origin".to_string()
 }
 
-/// The ejected default queue, so the pane works on a fresh install.
+/// Empty, and that now means **the built-in queue** rather than no queue at all.
 ///
-/// There is no *repo task* every repo has, which is why this used to be empty and
-/// a new checkout got no queue at all. The answer is not daemon code — a built-in
-/// GraphQL queue with a ranking engine was built and deliberately reverted for
-/// being more machinery than anyone wanted to own — but a script the daemon ships
-/// and then stops owning: `reviews::eject_default_script` writes it once and never
-/// again, so the ranking is yours to edit.
+/// This has been three things. Empty, when a fresh checkout got no queue and the
+/// pane read `off`. Then a path to an ejected `reviews.js`, which was the answer
+/// until it met a daemon started from a launcher: `#!/usr/bin/env node` resolves
+/// against the daemon's PATH, that PATH is the launcher's rather than a shell's,
+/// and the node it found there could not load `node:child_process`. A default that
+/// depends on what happens to be installed is not a default.
 ///
-/// Empty if the config dir cannot be resolved. That is the honest fallback: the
-/// pane reads "not configured" rather than pointing at a path that is not there.
-/// `docs/reviews-json.md` has the contract, for replacing it outright.
+/// So empty again, and [`crate::reviews::fetch`] reads it as "ask GitHub yourself"
+/// — one search over the token the PR pane already resolves, no external process.
+/// Setting it still wins, which is how a team keeps its own ranking.
 fn default_reviews_command() -> Vec<String> {
-    match Config::reviews_script_path() {
-        Ok(p) => vec![p.to_string_lossy().into_owned()],
-        Err(_) => Vec::new(),
-    }
+    Vec::new()
 }
 
 /// Empty: a managed process is whatever *this* repo runs long-term, and no two
@@ -810,18 +807,30 @@ impl Config {
 
         A temp dir keyed to the process rather than a no-op, so `save`/`load`
         still round-trip honestly; and after the `ORCHD_CONFIG_DIR` check, so a
-        test that wants a specific dir can still say so. */
-        #[cfg(test)]
-        {
+        test that wants a specific dir can still say so.
+
+        **`test-util` and not `cfg(test)` alone, because the crate split
+        disarmed this.** A `#[cfg(test)]` item does not cross a crate line, and
+        `config` moved down here — so every *other* crate's tests compiled this
+        function with the guard off and wrote the developer's real config dir.
+        `orchd-serve`'s `open_route` test drove `/api/open`, which calls
+        `write_config` and `record_recent`: it pointed a live `main_checkout` at
+        a `/tmp` fixture and filled `recent.json` with twelve of them, on every
+        `cargo test --workspace`. Each crate's dev-dependencies turn the feature
+        on, so the guard is armed wherever a test can reach this.
+
+        **`cfg!` rather than two `#[cfg]` blocks**, so both arms are compiled in
+        every configuration and only one is taken. Written as a pair of blocks, the
+        real arm disappears under `test-util` and takes the only call to
+        [`default_config_dir`] with it — which `cargo clippy --all-targets` then
+        reports as dead code, and CI denies warnings. */
+        if cfg!(any(test, feature = "test-util")) {
             let dir = std::env::temp_dir().join(format!("orchd-test-cfg-{}", std::process::id()));
             std::fs::create_dir_all(&dir)?;
-            Ok(dir)
+            return Ok(dir);
         }
-        #[cfg(not(test))]
-        {
-            let home = PathBuf::from(std::env::var("HOME").context("HOME is not set")?);
-            Ok(default_config_dir(&home))
-        }
+        let home = PathBuf::from(std::env::var("HOME").context("HOME is not set")?);
+        Ok(default_config_dir(&home))
     }
 
     pub fn path() -> Result<PathBuf> {
@@ -1077,18 +1086,6 @@ impl Config {
     pub fn hooks_settings_path() -> Result<PathBuf> {
         Ok(Self::config_dir()?.join("hooks.json"))
     }
-
-    /// Where the review queue's ejected script lives.
-    ///
-    /// Beside `hooks_settings_path` because it is the same kind of fact — the
-    /// layout of this directory — and it has to be here rather than in
-    /// [`crate::reviews`]: the default for `reviews_command` is read out of it,
-    /// so a locator over there meant configuration importing the feature it
-    /// configures while that feature imported `config` back. `reviews` still owns
-    /// the script and the writing of it.
-    pub fn reviews_script_path() -> Result<PathBuf> {
-        Ok(Self::config_dir()?.join("reviews.js"))
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1201,12 +1198,12 @@ mod tests {
         // without those read as broken rather than as not having them.
         let cfg = Config::parse(r#"{"main_checkout":"/tmp/x"}"#).expect("parse");
         assert!(cfg.main_processes.is_empty(), "no process every repo runs");
-        // The review queue is the exception, and it asks nothing of the repo
-        // either: the ejected script talks to the forge, not to a repo task.
-        assert_eq!(cfg.reviews_command.len(), 1);
+        // And nothing for the review queue either — which is now how you *get* one:
+        // empty means the daemon asks GitHub itself, so a bare config asks nothing
+        // of the repo and still fills the pane.
         assert!(
-            cfg.reviews_command[0].ends_with("reviews.js"),
-            "the ejected default, not a repo task: {:?}",
+            cfg.reviews_command.is_empty(),
+            "no command every repo has, and none is needed: {:?}",
             cfg.reviews_command
         );
         assert!(cfg.tracker.is_none());
@@ -1599,14 +1596,20 @@ mod tests {
     }
 
     #[test]
-    fn a_fresh_config_talks_to_github_and_gets_the_ejected_queue() {
-        // Both defaults are defensible: GitHub is where the PRs are for most repos
-        // and the only impl, and the queue is a script the daemon ships rather than
-        // a repo task it hopes exists. It lands *in the file*, so it is visible and
-        // replaceable rather than hidden in code.
+    fn a_fresh_config_talks_to_github_and_asks_for_no_review_command() {
+        // GitHub is where the PRs are for most repos and the only impl there is.
+        // The empty queue command is the more interesting half: it used to name an
+        // ejected `reviews.js`, and a path in the file is exactly what made that
+        // default undefaultable — it pointed at a node script, and the node a
+        // launcher-started daemon finds is not the one a shell finds. Empty now
+        // means the daemon answers for itself.
         let cfg = Config::default_for(PathBuf::from("/tmp/x"));
         assert_eq!(cfg.forge, ForgeKind::GitHub);
-        assert!(cfg.reviews_command[0].ends_with("reviews.js"));
+        assert!(
+            cfg.reviews_command.is_empty(),
+            "a fresh config must not name a command: {:?}",
+            cfg.reviews_command
+        );
     }
 
     /// A checkout reached through a symlink has to resolve to the real path, or

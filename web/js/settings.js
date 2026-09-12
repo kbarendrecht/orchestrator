@@ -3,6 +3,11 @@
 
 import { ctl, $, WHEEL, ZOOM, call, callHost, caret, currentPreset, detectedFonts, FONTS, fontStack, PRESETS, resetTheme, SEE_THROUGH, SIZE_MAX, SIZE_MIN, setUiPx, uiPx, UI_PX_MAX, UI_PX_MIN,
   setTheme, theme, validFontName, closeLegend, el, get, MOD_LABEL, reason, saveWheel, saveZoom, setWheel, setZoom, snap, wheelScale } from './core.js';
+/* The arithmetic, for reading a typed hex back. A leaf with no imports of its own,
+   so the module graph stays the DAG `dependency-cruiser` insists on — and the same
+   parser `loadTheme` uses, so the pane and the store cannot disagree about what
+   counts as a colour. */
+import * as Palette from './palette.js';
 
 const settingsOpen = () => !$('settings').hidden;
 
@@ -271,6 +276,52 @@ function noteFor(/** @type {import('./core.js').Role} */ role, text = '') {
   if (text) $('live').textContent = text;
 }
 
+/** The three colours a theme is made of, in the order the pane shows them.
+ *
+ *  Ground, then panel, then text: outside in, which is how the eye reads a board
+ *  and how a person builds one.
+ */
+/** @type {('bg' | 'panel' | 'text')[]} */
+const COLOUR_ROLES = ['bg', 'panel', 'text'];
+
+/** Say why a colour was refused, or clear it.
+ *
+ *  One slot for all three wells, unlike the font notes: the refusal is never about
+ *  the well you touched, it is about the contrast between the ground and the text,
+ *  so a sentence under one of them would be pointing at the wrong control.
+ *  Announced as well as shown, for the reason [`noteFor`] gives.
+ */
+function noteColour(text = '') {
+  $('thcolournote').textContent = text;
+  $('thcolournoterow').hidden = !text;
+  if (text) $('live').textContent = text;
+}
+
+/** Apply one hand-tuned colour, or say why not.
+ *
+ *  **Refused rather than corrected, in two different ways.** A spelling that is not
+ *  a colour never reaches `setTheme`: it would fall back to the stored value there
+ *  and the board would silently keep what it had while the box showed something
+ *  else. A colour that *is* readable as a colour but leaves the board unreadable is
+ *  `setTheme`'s own refusal, and it returns the sentence.
+ *
+ *  Either way the controls are re-rendered from the theme, so what the wells show
+ *  is what the board is — the one property that makes a refusal legible at all.
+ */
+function applyColour(/** @type {'bg' | 'panel' | 'text'} */ role, /** @type {string} */ value) {
+  const rgb = Palette.parseHex(value);
+  if (!rgb) {
+    noteColour(`"${value}" is not a colour. Six hex digits, like #1E1E1E.`);
+    /* The wells alone, not `showTheme`: re-rendering the whole pane would put the
+       box you are correcting back to the applied value mid-keystroke, which is the
+       same trap the font row's note describes. */
+    return;
+  }
+  const refused = setTheme({ [role]: Palette.toHex(rgb), custom: true });
+  noteColour(refused ?? '');
+  showTheme();
+}
+
 /** The whole appearance half, rendered from the theme.
  *
  *  **Everything, every time, and that is the fix for a real defect.** This used to
@@ -282,6 +333,23 @@ function noteFor(/** @type {import('./core.js').Role} */ role, text = '') {
  */
 function showTheme() {
   ctl('thpreset').value = currentPreset() ?? 'custom';
+  /* The wells follow the dropdown rather than `theme.custom`, so the one thing
+     that decides whether they are reachable is the thing the user just picked.
+     They are the same answer except for a board hand-tuned by an older build,
+     which reads as `custom` here and gets its wells. */
+  const custom = ctl('thpreset').value === 'custom';
+  for (const role of COLOUR_ROLES) {
+    $(`th${role}row`).hidden = !custom;
+    // The well takes `#rrggbb` and nothing else, and the theme is normalised to
+    // exactly that on the way in, so neither control needs to defend itself here.
+    ctl(`th${role}well`).value = theme[role];
+    ctl(`th${role}hex`).value = theme[role];
+  }
+  if (!custom) noteColour();
+  /* The slider goes with the wells. Opacity is one of the four things a theme is,
+     and every preset carries its own — so leaving it reachable under a preset
+     would let you drag the board away from the theme the dropdown still names. */
+  $('thopacityrow').hidden = !custom;
   const pct = Math.round(theme.opacity * 100);
   ctl('thopacity').value = String(pct);
   $('thopacityval').textContent = `${pct}%`;
@@ -376,23 +444,41 @@ function setupSettings() {
   $('wsdown').onclick = () => saveWheel(setWheel(wheelScale - WHEEL.step));
   $('wsup').onclick = () => saveWheel(setWheel(wheelScale + WHEEL.step));
   $('wsreset').onclick = () => saveWheel(setWheel(WHEEL.def));
-  /* `custom` is an option rather than a blank, so a hand-tuned set has something
-     to show — and it is `disabled`, because picking it would mean nothing: there
-     is no palette called custom to apply. */
-  /* The presets are the only way to set a colour now, so a picked one has to land
-     whole: `setTheme` refuses a pair under the contrast floor, and every preset
-     clears it, so the refusal is unreachable from here by construction. */
+  /* A picked preset lands whole — the three colours and the opacity — because that
+     is what a theme is now: a board at 72% is not Paper, so picking Paper has to
+     put the slider back or the dropdown would be naming something the window is
+     not. `setTheme` refuses a pair under the contrast floor, and every preset
+     clears it, so the refusal is unreachable from this control by construction.
+
+     `custom` is selectable now, and it is the one entry that applies no values:
+     it unlocks the three wells below and leaves the board exactly as it is, which
+     is why `theme.custom` is stored rather than derived — see `currentPreset`. */
   const presets = ctl('thpreset');
   for (const [key, p] of Object.entries(PRESETS)) presets.appendChild(el('option', null, p.label)).value = key;
-  const custom = el('option', null, 'Custom');
-  custom.value = 'custom';
-  custom.disabled = true;
-  presets.appendChild(custom);
+  presets.appendChild(el('option', null, 'Custom')).value = 'custom';
   presets.onchange = (/** @type {Event} */ ev) => {
-    const p = PRESETS[/** @type {keyof typeof PRESETS} */ (/** @type {HTMLSelectElement} */ (ev.target).value)];
-    if (p) setTheme({ bg: p.bg, panel: p.panel, text: p.text });
+    const key = /** @type {HTMLSelectElement} */ (ev.target).value;
+    const p = PRESETS[/** @type {keyof typeof PRESETS} */ (key)];
+    noteColour();
+    setTheme(p
+      ? { bg: p.bg, panel: p.panel, text: p.text, opacity: p.opacity, custom: false }
+      : { custom: true });
     showTheme();
   };
+
+  /* One handler for the three roles, each with a well and a hex box saying the
+     same thing two ways. The well raises `input` while you drag, which is the
+     point of a picker — you judge a ground against the board, not against a
+     swatch — and the hex box raises `change`, because a half-typed `#1a` is not a
+     refusal, it is somebody still typing. */
+  for (const role of COLOUR_ROLES) {
+    ctl(`th${role}well`).oninput = (/** @type {Event} */ ev) => {
+      applyColour(role, /** @type {HTMLInputElement} */ (ev.target).value);
+    };
+    ctl(`th${role}hex`).onchange = (/** @type {Event} */ ev) => {
+      applyColour(role, /** @type {HTMLInputElement} */ (ev.target).value.trim());
+    };
+  }
 
   for (const role of /** @type {import('./core.js').Role[]} */ (['ui', 'mono', 'code'])) {
     fillFonts(role);
@@ -460,6 +546,9 @@ function setupSettings() {
     resetTheme();
     saveZoom(setZoom(ZOOM.def));
     for (const { role } of ROLES) noteFor(role);
+    // The colour note goes too: Reset puts the shipped palette back, so a refusal
+    // about the pair that was there is about a board that no longer exists.
+    noteColour();
     showTheme();
   };
   showTheme();

@@ -325,15 +325,6 @@ pub async fn start(opts: StartOptions) -> Result<Server> {
     // child processes, and the fix for any of them is the same fix.
     phases.mark("preflight");
 
-    // Put the default queue on disk if it is not there. Every start, not just the
-    // first: deleting the file is how you ask for the shipped version back, and a
-    // config pointing at a script that has gone would otherwise read as a broken
-    // command rather than repairing itself. Never overwrites, so an edited copy is
-    // safe (`reviews::eject_default_script`).
-    if let Err(e) = reviews::eject_default_script() {
-        tracing::warn!("could not write the default review queue: {e:#}");
-    }
-
     // Repo config from §4. fsmonitor is deliberately main-only. Not fatal, but
     // not silent either: a checkout without fsmonitor scans the whole tree on
     // every status, and that is worth one line when it is the reason.
@@ -1232,17 +1223,32 @@ fn start_review_poller(app: Arc<AppState>) {
             // button pulses `review_refresh`.
             app.inner.write().await.reviews_polling = true;
             app.notify().await;
-            // The command answers for itself: no `reviews_command` configured →
-            // `Off`, a non-zero exit or unparseable output → `Degraded`. It shells
-            // out, so it runs off the async runtime.
+            // `fetch` answers for itself: a configured `reviews_command` that
+            // exits non-zero or prints something unreadable → `Degraded`, no
+            // GitHub repo → `Off`, and no command at all → the built-in queue.
             let main = app.cfg.main_checkout.clone();
             let timeout = app.cfg.review_timeout_seconds;
             let command = app.cfg.reviews_command.clone();
-            // For the URL fallback when a row omits one; `None` just means the
-            // row does not link.
+            // Two jobs now: the URL fallback for a configured command that omits
+            // one, and the repository the built-in asks GitHub about. `None` means
+            // no queue rather than an unlinked row.
             let repo = app.repos.upstream.clone();
+            /* The same ladder the PR poller climbs, and resolved here rather than
+            shared with it because there is nowhere to share it: only the *source*
+            reaches the snapshot, never the value. One bounded child per poll
+            period, which is what that poller already pays per tick. */
+            let token_file = app.cfg.github_token_file.clone();
             let state = tokio::task::spawn_blocking(move || {
-                reviews::fetch(&main, timeout, &command, repo.as_deref())
+                let token = forge::resolve_token(token_file.as_deref())
+                    .map_err(|e| tracing::debug!("review queue: no token: {e:#}"))
+                    .ok();
+                reviews::fetch(
+                    &main,
+                    timeout,
+                    &command,
+                    repo.as_deref(),
+                    token.as_ref().map(|t| t.value.as_str()),
+                )
             })
             .await
             .unwrap_or_else(|e| reviews::ReviewState::Degraded {

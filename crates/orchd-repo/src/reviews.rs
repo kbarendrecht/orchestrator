@@ -9,6 +9,11 @@ use std::path::Path;
 /// a richer ranking than §6b describes: prio labels, personal versus team
 /// request, re-review detection, reviewer-count tiebreak. The daemon consumes
 /// that shape rather than imposing the one §6b invented.
+///
+/// **[`builtin`] fills the same struct and fills less of it**, which is the point
+/// of keeping one shape for two sources: the pane reads one row type, and a repo
+/// that wants the richer ranking keeps its command. What the built-in never sets
+/// is said on each field.
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(
     any(test, feature = "test-util"),
@@ -25,6 +30,11 @@ pub struct Review {
     pub age_hours: f64,
     /// Source rank: 0 stopper, 1 prio, 2 requested of you, 3 of your team,
     /// 4 re-review, 5 other, 6 sidequest.
+    ///
+    /// **[`builtin`] emits only 2 and 3.** 0 and 1 are label ranks — `stopper` and
+    /// `prio` — and a label is a convention one team agreed to, so a default that
+    /// ranked on them ranked wrongly in every repository that had never heard of
+    /// them. A configured command may still emit the whole scale.
     pub prio: u32,
     pub needs_re_review: bool,
     pub is_draft: bool,
@@ -33,7 +43,9 @@ pub struct Review {
     pub blockers: Vec<String>,
     pub reviewers: u32,
     /// Review cost. Absent until the source grows `changedFiles`; the column is
-    /// omitted rather than faked (see docs/reviews-json.md).
+    /// omitted rather than faked (see docs/reviews-json.md). [`builtin`] leaves it
+    /// unset: it is another page of the search per poll, for a column that hides
+    /// itself.
     pub changed_files: Option<u32>,
     pub checks: Option<String>,
 }
@@ -73,9 +85,13 @@ pub enum ReviewState {
     /// not read as a broken command — and so it never becomes a TODO entry.
     #[default]
     Pending,
-    /// No review-queue command configured. Not a fault — this repo simply has
-    /// no such source — so, like `Pending`, it never becomes a TODO finding and
-    /// the pane says "not configured" rather than "unavailable".
+    /// Nothing to ask about: no `reviews_command`, and no GitHub repository for
+    /// the built-in queue to search either. Not a fault — this checkout simply has
+    /// no source — so, like `Pending`, it never becomes a TODO finding and the pane
+    /// says so rather than reading "unavailable".
+    ///
+    /// It used to mean "no command configured", which is now the ordinary case and
+    /// answers with a queue.
     Off,
 }
 
@@ -83,57 +99,289 @@ pub enum ReviewState {
 /// absence is accepted; a *different* one is not.
 const KNOWN_VERSION: u64 = 1;
 
-/// The queue that ships, kept as a real script rather than a string literal so it
-/// can be read, run and diffed. No dependencies, so it works from the config dir
-/// where nothing has been installed.
-const DEFAULT_SCRIPT: &str = include_str!("../../../reviews/default.js");
+/// One page of requests. Fifty was what the shipped script asked for and it was
+/// never reached: a review queue that long is not one anybody works from.
+const PAGE: usize = 50;
 
-/// Where the ejected copy lives.
+/// The queue, built by the daemon with no external process at all.
 ///
-/// The path itself is [`crate::config::Config::reviews_script_path`] — the layout
-/// of the config dir is config's, and the default for `reviews_command` is read
-/// from it, which is why it cannot be the other way round.
-pub fn default_script_path() -> Result<std::path::PathBuf> {
-    crate::config::Config::reviews_script_path()
+/// **This is the default now, and the reason is that a script could not be one.**
+/// The `reviews.js` this replaces ran `#!/usr/bin/env node` against the *daemon's*
+/// PATH — which is the launcher's, not a shell's, exactly as `session_env`'s
+/// docblock says of sessions. On the machine this was written for that resolved to
+/// a system node old enough that `require('node:child_process')` does not exist,
+/// so a fresh checkout's pane read `unavailable` and no amount of configuring it
+/// could help. It needed `gh` as well. This needs neither: the token and `curl`
+/// are what the PR pane already runs on, so a checkout that can list its PRs can
+/// show its review queue.
+///
+/// **The rules are deliberately few, because the ones they replace were guesses
+/// about somebody else's repository.** `stopper` and `prio` are label conventions,
+/// not a standard, and a default that ranks on them ranks wrongly everywhere they
+/// are not used — which is every repository but the one they were written for.
+/// What is left holds anywhere on GitHub:
+///
+/// - the queue is what GitHub itself says is **requested of you**
+///   (`review-requested:@me`, which includes a team you are in);
+/// - **age orders it**, oldest first, because how long somebody has waited is true
+///   regardless of how their team labels work;
+/// - a row is **amber when you were named yourself** and grey when the request
+///   went to a team — the difference between somebody asking you and somebody
+///   asking a group you happen to be in;
+/// - draft, conflicting and failing rows **sink below the fold**: those are
+///   waiting on their author rather than on you.
+///
+/// A repo that wants its own opinion sets `reviews_command` and this never runs —
+/// the contract for that is `docs/reviews-json.md`, unchanged.
+pub fn builtin(token: &str, owner: &str, name: &str) -> Result<ReviewQueue> {
+    // `review-requested:` is the filter that already includes team requests;
+    // `user-review-requested:` is the narrower one. Letting GitHub answer "am I
+    // asked" is what keeps this out of the business of knowing your teams.
+    let search = format!("repo:{owner}/{name} is:open is:pr review-requested:@me");
+    let query = format!(
+        r#"{{
+  viewer {{ login }}
+  search(query: "{search}", type: ISSUE, first: {PAGE}) {{
+    issueCount
+    nodes {{
+      ... on PullRequest {{
+        number title url isDraft createdAt mergeable
+        author {{ login }}
+        reviewRequests(first: 20) {{ nodes {{ requestedReviewer {{ ... on User {{ login }} }} }} }}
+        latestReviews(first: 20) {{ nodes {{ author {{ login }} }} }}
+        commits(last: 1) {{ nodes {{ commit {{ statusCheckRollup {{ state }} }} }} }}
+      }}
+    }}
+  }}
+}}"#
+    );
+    from_graphql(&crate::forge::github::graphql(token, &query)?)
 }
 
-/// Eject the built-in queue to the config dir, **without ever clobbering it.**
+/// Map one GraphQL answer onto the queue, applying the whole of the ranking.
 ///
-/// Written once, then yours: the whole point is that the ranking is an opinion you
-/// can edit, and a daemon that rewrote it on every start would silently undo that.
-/// Absent is the one case it writes, which also means deleting the file is how you
-/// ask for the default back.
-///
-/// Returns the path either way, so a caller can point `reviews_command` at it
-/// whether this run created it or a previous one did.
-pub fn eject_default_script() -> Result<std::path::PathBuf> {
-    let path = default_script_path()?;
-    if path.exists() {
-        return Ok(path);
-    }
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    std::fs::write(&path, DEFAULT_SCRIPT)?;
-    #[cfg(unix)]
+/// Split from [`builtin`] so the rules are testable against a captured answer
+/// rather than against GitHub — which is the only way the ordering and the amber
+/// rule get checked at all.
+fn from_graphql(v: &Value) -> Result<ReviewQueue> {
+    let data = v
+        .get("data")
+        .context("the GraphQL answer carried no data")?;
+    let viewer = data
+        .pointer("/viewer/login")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let search = data
+        .get("search")
+        .context("the GraphQL answer carried no search")?;
+    let total = search
+        .get("issueCount")
+        .and_then(Value::as_u64)
+        .unwrap_or(0) as u32;
+
+    let mut actionable = Vec::new();
+    let mut blocked = Vec::new();
+    for n in search
+        .get("nodes")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default()
     {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))?;
+        // A search over issues answers `{}` for anything that is not a pull
+        // request, and `null` for a node it could not read at all.
+        if n.get("number").is_none() {
+            continue;
+        }
+        let r = row(n, &viewer);
+        if r.blockers.is_empty() {
+            actionable.push(r);
+        } else {
+            blocked.push(r);
+        }
     }
-    tracing::info!(path = %path.display(), "ejected the default review queue; edit it or point reviews_command elsewhere");
-    Ok(path)
+    /* **Age, and nothing else.** Oldest first, which is the whole ordering: the
+    thing it replaced sorted on label names first and used age only to break a
+    tie, so on a repo with no such labels every row tied and the age was doing all
+    the work anyway — with four ranks of machinery in front of it. */
+    let oldest_first = |a: &Review, b: &Review| b.age_hours.total_cmp(&a.age_hours);
+    actionable.sort_by(oldest_first);
+    blocked.sort_by(oldest_first);
+
+    Ok(ReviewQueue {
+        login: viewer,
+        // What the page could not carry, so a queue longer than one page says so
+        // rather than quietly being the first fifty.
+        skipped: total.saturating_sub((actionable.len() + blocked.len()) as u32),
+        total,
+        actionable,
+        blocked,
+    })
 }
 
+/// One PR, as the pane reads it.
+fn row(n: &Value, viewer: &str) -> Review {
+    let text = |key: &str| {
+        n.get(key)
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string()
+    };
+    let is_draft = n.get("isDraft").and_then(Value::as_bool).unwrap_or(false);
+    let mergeable = n
+        .get("mergeable")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let checks = n
+        .pointer("/commits/nodes/0/commit/statusCheckRollup/state")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+
+    /* Named yourself, or reached through a team — the one distinction the pane
+    colours, and the only one left. A team entry has no `login` at all (it is a
+    `Team`, and the query asks for the `User` fields alone), so an absent one is
+    the team case rather than a field that failed to read. */
+    let requested_of_you = n
+        .pointer("/reviewRequests/nodes")
+        .and_then(Value::as_array)
+        .is_some_and(|rs| {
+            rs.iter().any(|r| {
+                r.pointer("/requestedReviewer/login")
+                    .and_then(Value::as_str)
+                    == Some(viewer)
+            })
+        });
+
+    // Distinct humans, so two reviews by one person are one pair of eyes.
+    let reviewers: std::collections::BTreeSet<&str> = n
+        .pointer("/latestReviews/nodes")
+        .and_then(Value::as_array)
+        .map(|rs| {
+            rs.iter()
+                .filter_map(|r| r.pointer("/author/login").and_then(Value::as_str))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    /* Waiting on its author rather than on you. Kept from the script it replaces,
+    and the reason it survived the cull where the labels did not: these three are
+    facts GitHub reports about any repository, not conventions somebody's team
+    agreed to. */
+    let mut blockers = Vec::new();
+    if is_draft {
+        blockers.push("draft".to_string());
+    }
+    if mergeable == "CONFLICTING" {
+        blockers.push("conflicts".to_string());
+    }
+    if checks.as_deref() == Some("FAILURE") {
+        blockers.push("failing checks".to_string());
+    }
+
+    Review {
+        number: n.get("number").and_then(Value::as_u64).unwrap_or(0),
+        title: text("title"),
+        url: text("url"),
+        author: n
+            .pointer("/author/login")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown")
+            .to_string(),
+        age_hours: age_hours(n.get("createdAt").and_then(Value::as_str)),
+        /* 2 and 3 are `docs/reviews-json.md`'s own "requested of you" and "of your
+        team", kept rather than renamed because a configured command still emits
+        that scale and the pane reads one field for both sources. The built-in
+        never emits 0 or 1 — those are the label ranks, and they are gone. */
+        prio: if requested_of_you { 2 } else { 3 },
+        needs_re_review: reviewers.contains(viewer),
+        is_draft,
+        blockers,
+        reviewers: reviewers.len() as u32,
+        // One more page of the search to fill, and the column hides itself until
+        // something provides it. Not worth a second round trip per poll.
+        changed_files: None,
+        checks,
+    }
+}
+
+/// Hours since `ts`, a GitHub timestamp (`2026-09-12T18:00:00Z`).
+///
+/// Rounded to a tenth, as the script did: the pane prints `3d` and `33h`, so
+/// anything finer is precision nobody reads.
+fn age_hours(ts: Option<&str>) -> f64 {
+    let Some(then) = ts.and_then(epoch_secs) else {
+        return 0.0;
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    (((now - then).max(0) as f64 / 3600.0) * 10.0).round() / 10.0
+}
+
+/// Epoch seconds from an RFC 3339 UTC timestamp.
+///
+/// Hand-rolled because this workspace carries no date crate and one field does
+/// not earn one — `github.rs` compares these strings lexically for the same
+/// reason. The civil-date arithmetic is Hinnant's `days_from_civil`, which is
+/// exact for every proleptic Gregorian date and has no table and no leap-year
+/// special case beyond the three already in the expression.
+fn epoch_secs(ts: &str) -> Option<i64> {
+    if ts.len() < 19 {
+        return None;
+    }
+    let num = |r: std::ops::Range<usize>| ts.get(r)?.parse::<i64>().ok();
+    let (year, month, day) = (num(0..4)?, num(5..7)?, num(8..10)?);
+    let (hour, minute, second) = (num(11..13)?, num(14..16)?, num(17..19)?);
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return None;
+    }
+    // March-based year: February's length stops being a special case.
+    let y = if month <= 2 { year - 1 } else { year };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let year_of_era = y - era * 400;
+    let month_shifted = (month + 9) % 12;
+    let day_of_year = (153 * month_shifted + 2) / 5 + day - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    // 719468 is the days between 0000-03-01 and 1970-01-01.
+    let days = era * 146097 + day_of_era - 719468;
+    Some(days * 86400 + hour * 3600 + minute * 60 + second)
+}
+
+/// The queue for this checkout: a configured command when there is one, the
+/// built-in otherwise.
+///
+/// The command keeps precedence deliberately. A team's real ranking lives in its
+/// own tooling — this repo's own checkout points `reviews_command` at a `mise`
+/// task — and a default that overrode it would be the daemon insisting where
+/// CLAUDE.md says it should defer.
 pub fn fetch(
     main: &Path,
     timeout_secs: u64,
     command: &[String],
     repo: Option<&str>,
+    token: Option<&str>,
 ) -> ReviewState {
-    if command.is_empty() {
-        return ReviewState::Off;
+    if !command.is_empty() {
+        return match run(main, timeout_secs, command, repo) {
+            Ok(q) => ReviewState::Ok(q),
+            Err(e) => ReviewState::Degraded {
+                reason: format!("{e:#}"),
+            },
+        };
     }
-    match run(main, timeout_secs, command, repo) {
+    // Not a fault: a checkout with no GitHub repository behind it has no queue to
+    // show, which is what `Off` has always meant — only the reason changed.
+    let Some((owner, name)) = repo.and_then(|r| r.split_once('/')) else {
+        return ReviewState::Off;
+    };
+    let Some(token) = token else {
+        return ReviewState::Degraded {
+            reason: "no GitHub token — the review queue reads the same one the PR pane does"
+                .to_string(),
+        };
+    };
+    match builtin(token, owner, name) {
         Ok(q) => ReviewState::Ok(q),
         Err(e) => ReviewState::Degraded {
             reason: format!("{e:#}"),
@@ -439,7 +687,7 @@ mod tests {
     /// hand-written approximation of it, which is the version that stays passing
     /// while the script drifts.
     #[test]
-    fn the_ejected_script_prints_what_the_parser_reads() {
+    fn a_configured_command_prints_what_the_parser_reads() {
         let real = r#"{"forLogin":"kbarendrecht","total":1,"skipped":0,"actionable":[
             {"pr":{"number":10003,
                    "title":"Rename a widget helper",
@@ -464,7 +712,7 @@ mod tests {
 
     /// A repo with nothing waiting is not a broken command.
     #[test]
-    fn an_empty_queue_from_the_script_is_ok() {
+    fn an_empty_queue_from_a_command_is_ok() {
         let q = parse(
             v(r#"{"forLogin":"me","total":0,"skipped":0,"actionable":[],"blocked":[]}"#),
             None,
@@ -474,12 +722,162 @@ mod tests {
     }
 
     #[test]
-    fn no_command_is_off_not_degraded() {
-        // A repo with no review-queue source must not read as a broken command —
-        // that would nag in the TODO block and colour the pane red for nothing.
+    fn no_repo_is_off_not_degraded() {
+        // A checkout with no GitHub repository behind it has no queue to show, and
+        // must not read as a broken command — that would colour the pane red for
+        // nothing. No command *and* no repo is the only way to reach `Off` now.
         assert!(matches!(
-            fetch(Path::new("/nonexistent"), 1, &[], None),
+            fetch(Path::new("/nonexistent"), 1, &[], None, None),
             ReviewState::Off
         ));
+    }
+
+    #[test]
+    fn a_repo_with_no_token_is_degraded_and_says_so() {
+        // The opposite case, and it is a fault: there *is* a repo to ask about and
+        // the daemon cannot. Silence here would read as "nobody wants anything
+        // from you", which is the one wrong answer a review queue can give.
+        let state = fetch(
+            Path::new("/nonexistent"),
+            1,
+            &[],
+            Some("acme/monorepo"),
+            None,
+        );
+        match state {
+            ReviewState::Degraded { reason } => assert!(
+                reason.contains("token"),
+                "the reason has to name what is missing: {reason}"
+            ),
+            other => panic!("a repo with no token must be degraded, got {other:?}"),
+        }
+    }
+
+    /// One captured answer, carrying every rule at once: two people, a team
+    /// request, a draft, a conflict, a failing check and a re-review.
+    fn answer() -> Value {
+        v(r#"{"data":{
+          "viewer":{"login":"me"},
+          "search":{"issueCount":7,"nodes":[
+            {"number":10,"title":"newest, you by name","url":"u10","isDraft":false,
+             "createdAt":"2026-09-12T12:00:00Z","mergeable":"MERGEABLE",
+             "author":{"login":"dana"},
+             "reviewRequests":{"nodes":[{"requestedReviewer":{"login":"me"}}]},
+             "latestReviews":{"nodes":[]},
+             "commits":{"nodes":[{"commit":{"statusCheckRollup":{"state":"SUCCESS"}}}]}},
+            {"number":11,"title":"oldest, your team","url":"u11","isDraft":false,
+             "createdAt":"2026-09-01T12:00:00Z","mergeable":"MERGEABLE",
+             "author":{"login":"ola"},
+             "reviewRequests":{"nodes":[{"requestedReviewer":{}}]},
+             "latestReviews":{"nodes":[{"author":{"login":"me"}},{"author":{"login":"ola"}}]},
+             "commits":{"nodes":[{"commit":{"statusCheckRollup":{"state":"SUCCESS"}}}]}},
+            {"number":12,"title":"a draft","url":"u12","isDraft":true,
+             "createdAt":"2026-09-05T12:00:00Z","mergeable":"MERGEABLE",
+             "author":{"login":"dana"},
+             "reviewRequests":{"nodes":[{"requestedReviewer":{"login":"me"}}]},
+             "latestReviews":{"nodes":[]},"commits":{"nodes":[]}},
+            {"number":13,"title":"conflicting and failing","url":"u13","isDraft":false,
+             "createdAt":"2026-09-06T12:00:00Z","mergeable":"CONFLICTING",
+             "author":{"login":"ola"},
+             "reviewRequests":{"nodes":[{"requestedReviewer":{"login":"me"}}]},
+             "latestReviews":{"nodes":[]},
+             "commits":{"nodes":[{"commit":{"statusCheckRollup":{"state":"FAILURE"}}}]}},
+            {}
+          ]}}}"#)
+    }
+
+    #[test]
+    fn age_orders_the_queue_and_nothing_else_does() {
+        let q = from_graphql(&answer()).expect("a captured answer parses");
+        assert_eq!(
+            q.actionable.iter().map(|r| r.number).collect::<Vec<_>>(),
+            vec![11, 10],
+            "oldest first, whoever it was asked of — #11 is the team request and \
+             still leads, because age is the whole ordering"
+        );
+    }
+
+    #[test]
+    fn amber_is_being_named_yourself_and_a_team_request_is_not() {
+        let q = from_graphql(&answer()).expect("parse");
+        let by = |n: u64| {
+            q.actionable
+                .iter()
+                .chain(q.blocked.iter())
+                .find(|r| r.number == n)
+                .unwrap_or_else(|| panic!("#{n}"))
+        };
+        // 2 and 3 are the contract's "requested of you" and "of your team"; the
+        // pane paints 2 amber. A team entry carries no `login` at all.
+        assert_eq!(by(10).prio, 2, "you were named");
+        assert_eq!(by(11).prio, 3, "a team you are in was named");
+        // And the labels that used to outrank both are gone: nothing emits 0 or 1.
+        assert!(
+            q.actionable
+                .iter()
+                .chain(q.blocked.iter())
+                .all(|r| r.prio >= 2),
+            "the built-in must never emit a label rank"
+        );
+    }
+
+    #[test]
+    fn what_waits_on_its_author_sinks_below_the_fold() {
+        let q = from_graphql(&answer()).expect("parse");
+        let mut sunk: Vec<_> = q.blocked.iter().map(|r| r.number).collect();
+        sunk.sort_unstable();
+        assert_eq!(sunk, vec![12, 13], "the draft and the broken one");
+        let broken = q.blocked.iter().find(|r| r.number == 13).expect("#13");
+        assert_eq!(
+            broken.blockers,
+            vec!["conflicts".to_string(), "failing checks".to_string()],
+            "both reasons travel, because the pane prints them"
+        );
+        assert!(q.blocked.iter().any(|r| r.blockers == ["draft"]));
+    }
+
+    #[test]
+    fn a_row_carries_who_already_looked_and_whether_you_did() {
+        let q = from_graphql(&answer()).expect("parse");
+        let team = q.actionable.iter().find(|r| r.number == 11).expect("#11");
+        assert_eq!(team.reviewers, 2, "two distinct humans");
+        assert!(team.needs_re_review, "you are one of them");
+        let fresh = q.actionable.iter().find(|r| r.number == 10).expect("#10");
+        assert_eq!(fresh.reviewers, 0);
+        assert!(!fresh.needs_re_review);
+        assert_eq!(fresh.author, "dana");
+        assert_eq!(fresh.checks.as_deref(), Some("SUCCESS"));
+    }
+
+    #[test]
+    fn a_node_that_is_not_a_pull_request_is_skipped_not_counted() {
+        let q = from_graphql(&answer()).expect("parse");
+        assert_eq!(
+            q.actionable.len() + q.blocked.len(),
+            4,
+            "the node that is not a pull request is dropped"
+        );
+        assert_eq!(q.total, 7, "what GitHub said the search holds");
+        assert_eq!(q.skipped, 3, "what this page could not carry");
+        assert_eq!(q.login, "me");
+    }
+
+    #[test]
+    fn a_github_timestamp_becomes_an_age() {
+        // Exact anchors, so a wrong civil-date expression cannot pass: these are
+        // the epoch itself, a leap day, and the turn of a century that is not one.
+        assert_eq!(epoch_secs("1970-01-01T00:00:00Z"), Some(0));
+        assert_eq!(epoch_secs("1970-01-02T00:00:01Z"), Some(86401));
+        assert_eq!(epoch_secs("2000-02-29T00:00:00Z"), Some(951782400));
+        assert_eq!(epoch_secs("1900-03-01T00:00:00Z"), Some(-2203891200));
+        assert_eq!(epoch_secs("2026-09-12T18:00:00Z"), Some(1789236000));
+        // Anything that is not one answers `None` rather than a wrong number.
+        assert_eq!(epoch_secs("nope"), None);
+        assert_eq!(epoch_secs("2026-13-01T00:00:00Z"), None);
+        assert_eq!(
+            age_hours(None),
+            0.0,
+            "no timestamp is no age, never a negative"
+        );
     }
 }

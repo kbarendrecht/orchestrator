@@ -463,6 +463,45 @@ impl Unpushed {
 ///
 /// `@{push}` does not resolve on a branch that was never pushed, and `@{u}`
 /// resolves to `upstream/develop` — neither answers the question.
+/// A unified diff of a file git has never seen, against nothing.
+///
+/// **`git diff` cannot report an untracked file**, so the changed-files pane
+/// listed every file a session had just created and then answered "no textual
+/// changes against this base" for each — on the one kind of row where the whole
+/// file *is* the change. `--no-index` against `/dev/null` produces the ordinary
+/// unified format with every line added, so the pane's parser needs no new shape.
+///
+/// **Its exit code is the reason this is not a [`git`] call.** `--no-index`
+/// follows `diff(1)` and exits **1 when the files differ**, which is the success
+/// case here and which `git` treats as a failure. Anything above 1 still is one.
+///
+/// `/dev/null` is POSIX, so it holds on both targets — see CLAUDE.md on shelling
+/// out to anything that is not.
+pub fn diff_untracked(cwd: &Path, path: &str, context: u32) -> Result<String> {
+    let ctx = format!("-U{context}");
+    let args = ["diff", "--no-index", &ctx, "--", "/dev/null", path];
+    let out = run(cwd, &args).with_context(|| format!("running git {}", args.join(" ")))?;
+    match out.status.code() {
+        Some(0 | 1) => Ok(String::from_utf8_lossy(&out.stdout).into_owned()),
+        _ => bail!(
+            "git {} failed in {}: {}",
+            args.join(" "),
+            cwd.display(),
+            String::from_utf8_lossy(&out.stderr).trim()
+        ),
+    }
+}
+
+/// Whether git has never seen this path.
+///
+/// `ls-files --error-unmatch` exits non-zero for one, which is the cheapest
+/// question that tells "this file has no changes against the base" apart from
+/// "this file is not in the base at all" — two states that produce the same empty
+/// diff and mean opposite things.
+pub fn is_untracked(cwd: &Path, path: &str) -> bool {
+    git(cwd, &["ls-files", "--error-unmatch", "--", path]).is_err()
+}
+
 pub fn unpushed(cwd: &Path, branch: &str, upstream: &str) -> Result<Unpushed> {
     let (range, on_origin) = unpushed_range(cwd, branch, upstream);
     if !on_origin {

@@ -23,25 +23,31 @@
   <!-- ============ CONTEXT BAR ============ -->
   <!-- Replaces the centre pane's own header, so it costs no net vertical space. -->
   <div class="top top-l">
-    <!-- The mark, where the repository line used to be. The rail names every open
-         project and each fold header carries its repository on hover, so this strip
-         had nothing left to say — a switcher first, then a label repeating what the
-         rail already shows.
-
-         Drawn rather than fetched, for the reason the gear beside it is drawn: an
-         `<img>` is a route, a `include_bytes!` and a second copy of the icon to keep
-         in step, and this one has to change colour with the theme. It is the app
-         icon's own mark — the rail itself, a state bar against each row — in the
-         board's own signal colours, so amber still means needs-you here. -->
+    <!-- **The mark is the splash's, and that is the point.** The window you stare
+         at while the daemon starts showed a 3x3 grid with an amber X through it,
+         and then the board opened on a different drawing entirely — two marks for
+         one product, the second of which nobody had seen before. This is that grid
+         at 16px: five amber dots on the diagonals, four dark ones holding the
+         shape. Drawn rather than fetched, like the gear beside it — an `<img>` is
+         a route, a second copy to keep in step, and this one changes colour with
+         the theme.
+         Still, not pulsing: on the splash the animation says "starting", and a
+         titlebar that never stops saying it is saying nothing.
+         `aria-hidden` because the word beside it is the accessible name; a reader
+         announcing both would say the product's name twice. -->
     <span class="brand" id="brand">
-      <svg viewBox="0 0 16 16" width="16" height="16" role="img" aria-label="orchd">
-        <rect x="1" y="2" width="2" height="4" rx="1" fill="var(--attn)"/>
-        <rect x="5.5" y="3.2" width="9.5" height="1.6" rx=".8" fill="var(--attn)"/>
-        <rect x="1" y="7.5" width="2" height="3.5" rx="1" fill="var(--work)"/>
-        <rect x="5.5" y="8.5" width="7.5" height="1.4" rx=".7" fill="var(--faint-solid)"/>
-        <rect x="1" y="12.5" width="2" height="2.5" rx="1" fill="var(--ghost)"/>
-        <rect x="5.5" y="13.1" width="5.5" height="1.2" rx=".6" fill="var(--ghost)"/>
+      <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
+        <circle cx="2.6" cy="2.6" r="1.7" fill="var(--attn)"/>
+        <circle cx="8" cy="2.6" r="1.7" fill="var(--ghost)"/>
+        <circle cx="13.4" cy="2.6" r="1.7" fill="var(--attn)"/>
+        <circle cx="2.6" cy="8" r="1.7" fill="var(--ghost)"/>
+        <circle cx="8" cy="8" r="1.7" fill="var(--attn)"/>
+        <circle cx="13.4" cy="8" r="1.7" fill="var(--ghost)"/>
+        <circle cx="2.6" cy="13.4" r="1.7" fill="var(--attn)"/>
+        <circle cx="8" cy="13.4" r="1.7" fill="var(--ghost)"/>
+        <circle cx="13.4" cy="13.4" r="1.7" fill="var(--attn)"/>
       </svg>
+      <span class="brandname">Orchestrator</span>
     </span>
     <!-- Sliders rather than a gear glyph: the font stack has no dependable one at
          this size, which is why the window controls are drawn too. -->
@@ -153,6 +159,18 @@
         <span class="empty-k" data-mod><kbd>MOD `</kbd> a shell here · <kbd>MOD Shift ?</kbd> all shortcuts</span>
       </div>
 
+      <!-- **What a press of `+` looks like before the daemon has answered.** Cutting
+           a worktree is a POST, the repo's hooks and a `claude` boot — ten seconds
+           in which the old pane sat there unchanged and the button looked dead. It
+           covers the terminal region rather than replacing the empty state, because
+           the pane underneath is usually the session you were *just* in, and this
+           is the one moment the board is about something else.
+           `conn-dot` is borrowed on purpose: the reduced-motion rule already names
+           it, so this pulse is covered without a second rule to remember. -->
+      <div class="termstarting" id="termstarting" hidden>
+        <span class="startchip"><span class="conn-dot"></span><span id="startwhat">Starting…</span></span>
+      </div>
+
       <!-- What a review is doing, while its overlay is closed. Inside the terminal
            region so it sits over the pty rather than over the drawer, and outside
            `#rvoverlay` because `renderReview` replaces that element's children on
@@ -240,6 +258,17 @@
   <span class="updatebar-x" id="agentx" role="button" title="Dismiss">&#10005;</span>
 </div>
 
+<!-- The agent would not start. No button: nothing here can repair a `claude` that
+     is missing, shadowed on PATH or half-installed, and a button that cannot is
+     worse than none. The message is the binary's own sentence about itself, which
+     is the part that says what to fix. Red rather than the other two bars' blue:
+     they are offers, this is a failure, and the session it happened to is already
+     gone — the daemon forgets a turnless row and its worktree with it. -->
+<div class="updatebar agenterrbar" id="agenterrbar" hidden>
+  <span class="updatebar-bad" id="agenterrmsg"></span>
+  <span class="updatebar-x" id="agenterrx" role="button" title="Dismiss">&#10005;</span>
+</div>
+
 <!-- Right-click on a session row. Positioned at the cursor from script. -->
 <!-- Column splitters. Drag to resize, double-click to reset. Fixed strips over
      the grid's own boundaries, so the grid itself stays two variables wide. -->
@@ -271,17 +300,63 @@
         until <b>Save &amp; restart</b>.</p>
       <div class="settings-row">
         <span class="settings-k">Theme
-          <span class="settings-hint">ground, panel and text together</span>
+          <span class="settings-hint">ground, panel, text and opacity together</span>
         </span>
         <span class="settings-step">
           <select class="settings-select" id="thpreset" aria-label="Theme"></select>
         </span>
       </div>
+      <!-- The three wells, shown only under Custom. The paragraph above says why a
+           preset moves all three at once; this is the way out of that for somebody
+           who wants their own board, and putting it behind an explicit choice is
+           what keeps the presets the ordinary path. Hidden rather than disabled,
+           the way a font's "Other…" box is: three dead controls on every board
+           would cost the pane more room than they are worth.
+           A well and a hex box for each, because a colour picker cannot be typed
+           into and a hex you were given cannot be dragged to. -->
+      <div class="settings-row thcolour" id="thbgrow" hidden>
+        <span class="settings-k">Ground
+          <span class="settings-hint">the board behind every pane</span>
+        </span>
+        <span class="settings-step">
+          <input class="thwell" type="color" id="thbgwell" aria-label="Ground colour">
+          <input class="thhex" type="text" id="thbghex" maxlength="7" spellcheck="false"
+                 aria-label="Ground colour, as hex">
+        </span>
+      </div>
+      <div class="settings-row thcolour" id="thpanelrow" hidden>
+        <span class="settings-k">Panel
+          <span class="settings-hint">the rail, the drawer and the cards</span>
+        </span>
+        <span class="settings-step">
+          <input class="thwell" type="color" id="thpanelwell" aria-label="Panel colour">
+          <input class="thhex" type="text" id="thpanelhex" maxlength="7" spellcheck="false"
+                 aria-label="Panel colour, as hex">
+        </span>
+      </div>
+      <div class="settings-row thcolour" id="thtextrow" hidden>
+        <span class="settings-k">Text
+          <span class="settings-hint">every line you read</span>
+        </span>
+        <span class="settings-step">
+          <input class="thwell" type="color" id="thtextwell" aria-label="Text colour">
+          <input class="thhex" type="text" id="thtexthex" maxlength="7" spellcheck="false"
+                 aria-label="Text colour, as hex">
+        </span>
+      </div>
+      <!-- One note for the three, because the refusal is about the pair they make
+           rather than about the well you moved. -->
+      <div class="settings-row thnote" id="thcolournoterow" hidden>
+        <span class="settings-note" id="thcolournote"></span>
+      </div>
       <!-- A slider rather than a stepper: you are matching the board against whatever
            is behind it, so the control wants to be dragged while you watch. The hint
            changes to a refusal when the window was not built see-through, because a
-           control that silently does nothing is the defect this row exists to avoid. -->
-      <div class="settings-row">
+           control that silently does nothing is the defect this row exists to avoid.
+           Under Custom with the three wells, because opacity is part of what a theme
+           *is* here: a preset carries its own, so moving this while one is picked
+           would leave the dropdown naming a board the window is not. -->
+      <div class="settings-row thcolour" id="thopacityrow" hidden>
         <span class="settings-k">Board opacity
           <span class="settings-hint" id="thopacityhint">the terminal stays solid</span>
         </span>

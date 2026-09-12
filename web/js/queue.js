@@ -3,7 +3,7 @@
 // The first seam to become a real module: five names, one of which leaves. What
 // it needs from elsewhere is now an import list rather than an assumption about
 // what happens to be in scope.
-import { $, caret, clock, compactAge, el, snap, refreshButton, unchanged } from './core.js';
+import { $, activeCheckout, bandOf, caret, CHECKOUTS, clock, compactAge, el, QUEUE_MAX, snap, refreshButton, unchanged } from './core.js';
 
 let showReviews = true;
 let showBlockedReviews = false;
@@ -47,6 +47,18 @@ function renderReviews() {
   const rv = snap.reviews;
 
   block.classList.toggle('closed', !showReviews);
+  /* The same band the PR pane wears, for the same reason it wears it: this pane
+     answers for one checkout — the one you are in — and it sits below a scroller,
+     so the coloured block that would have said which has scrolled away. The two
+     panes are a pair (yours bottom-left, your colleagues' bottom-right) and one
+     of them saying which checkout it means while the other does not is the pair
+     disagreeing about a question they both answer.
+     On the right edge rather than the left, which is the one thing that differs:
+     each band runs down the outer edge of its own column. */
+  const band = CHECKOUTS.length > 1 ? bandOf(activeCheckout().path) : null;
+  block.classList.toggle('rv-of-checkout', !!band);
+  if (band) block.style.setProperty('--band', `var(--co-${band})`);
+  else block.style.removeProperty('--band');
   /* Whether there is an age to show, not what it says: the text itself is a
      `data-clock` node that `tick` rewrites in place once a second, and
      `paintSig` drops `reviews_age_ms` for exactly that reason.
@@ -86,10 +98,14 @@ function renderReviews() {
       head.onclick = () => { showReviews = !showReviews; renderReviews(); };
     }
     if (drawList) {
+      /* `off` stopped meaning "you configured nothing" when the daemon grew its
+         own queue: nothing to configure is now the ordinary case and answers with
+         one. It means there is no repository to ask about, which is a fact about
+         the checkout rather than something to go and set. */
       list.appendChild(el('div', 'fempty', pending
         ? 'waiting for the first poll'
         : off
-          ? 'no review queue configured\nset `reviews_command` in config.json'
+          ? 'no GitHub repository for this checkout\nso there is nothing to review'
           : `reviews unavailable\n${why.slice(0, 160)}`));
     }
     return;
@@ -139,7 +155,17 @@ function renderReviews() {
      * the reason column and on the dot's own tooltip, because red cannot spell
      * "conflicts". */
     const blocked = r.blockers && r.blockers.length;
-    const dot = r.prio <= 1 ? ' prio' : blocked ? ' bad' : r.needs_re_review ? ' blocked' : '';
+    /* **Amber is `prio === 2`: somebody named you.** The built-in queue only ever
+       emits 2 or 3, so this is the whole of its colour — amber when the request
+       carries your name, grey when it went to a team you happen to be in. That is
+       the legend's "needs you" (§9) meaning what it says: a team request is
+       waiting on the team.
+       The two arms above it survive for a configured command, which may still
+       emit the label ranks and a re-review; the built-in never does. */
+    const dot = r.prio <= 1 ? ' prio'
+      : blocked ? ' bad'
+        : r.needs_re_review ? ' blocked'
+          : r.prio === 2 ? ' attn' : '';
     a.appendChild(el('span', 'dot' + dot, undefined, blocked ? r.blockers.join(', ') : undefined));
     // Age, not the PR number: how long it has waited is what tells you to pick
     // it up. The whole row already links to the PR, so the number earns nothing.
@@ -156,7 +182,9 @@ function renderReviews() {
     return a;
   };
 
-  for (const r of rows) list.appendChild(rowFor(r, false));
+  // Bounded like the PR pane's, and for the same reason `QUEUE_MAX` gives: the
+  // head above still counts every one.
+  for (const r of rows.slice(0, QUEUE_MAX)) list.appendChild(rowFor(r, false));
   if (!rows.length) list.appendChild(el('div', 'fempty', 'Nothing waiting on you.'));
 
   // Blocked on conflicts or red checks: waiting on their author, not on you.
@@ -170,7 +198,9 @@ function renderReviews() {
     t.title = blocked.map((r) => `#${r.number} — ${r.blockers.join(', ')}`).join('\n');
     t.onclick = () => { showBlockedReviews = !showBlockedReviews; renderReviews(); };
     list.appendChild(t);
-    if (showBlockedReviews) for (const r of blocked) list.appendChild(rowFor(r, true));
+    if (showBlockedReviews) {
+      for (const r of blocked.slice(0, QUEUE_MAX)) list.appendChild(rowFor(r, true));
+    }
   }
 }
 

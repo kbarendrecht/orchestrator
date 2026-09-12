@@ -162,12 +162,18 @@ this file, which churned it from every build; that feature is gone.
   those rules are in CLAUDE.md.
 
   What is left is deliberate rather than unfinished:
-  - **The review queue needs a script.** Reverted to `reviews_command` on purpose: a
-    built-in GraphQL queue with config-driven ranking was built, worked, and was
-    more machinery than the one real user wanted to own (`docs/reviews-json.md`).
-    The accepted cost is that a fresh checkout gets **no** queue until it configures
-    one, and the pane reads `off`. Revisit only if a second consumer wants a queue
-    without a script.
+  - ~~**The review queue needs a script.**~~ **Done, and it is the third shape this
+    has had.** A built-in GraphQL queue with config-driven ranking was built and
+    reverted for being more machinery than anyone wanted to own; the ejected
+    `reviews.js` that replaced it then turned out unable to be a default at all,
+    because `#!/usr/bin/env node` resolves against the *daemon's* PATH — the
+    launcher's, not a shell's — and found a system node too old to load
+    `node:child_process`. What is there now is a built-in queue with **four** rules
+    rather than a ranking engine: `review-requested:@me`, oldest first, amber when
+    you were named rather than a team, and draft/conflicting/failing sunk. No node,
+    no `gh`, one `curl` on the token the PR pane already resolves.
+    `reviews_command` still wins where a team has its own ranking, and
+    `docs/reviews-json.md` is unchanged.
   - **Worktree *creation* is decoupled; the session model is not.** The daemon cuts
     every tree itself now — `spawn_worktree_session` runs the repo's own
     `WorktreeCreate` through `create_worktree` and adopts it, with no `--worktree`
@@ -276,8 +282,9 @@ this file, which churned it from every build; that feature is gone.
 - **One credential, and it stops being `gh`'s.** Reads already go out over curl with
   a resolved token (`forge/github.rs`); only three places shell `gh` at all:
   `gh auth token` for the credential (`forge/github.rs:60`), every write
-  (`forge/github_write.rs:156`), and the ejected `reviews.js`, which is the user's
-  own file. So the plan is to move the writes onto the same curl transport, keep
+  (`forge/github_write.rs:156`). The review queue used to be a third and is not:
+  it is a `curl` on the resolved token like every other read. So the plan is to
+  move the writes onto the same curl transport, keep
   `gh auth token` as *discovery* when gh happens to be installed, and prompt for a
   token when it is not. A GitHub OAuth flow is the later shape.
 

@@ -922,6 +922,19 @@ export function unchanged(/** @type {{ sig: string | null | undefined }} */ box,
   return false;
 }
 
+/** How many rows either bottom pane will draw.
+ *
+ *  **A bound on the DOM, not on the truth.** Both heads count what the daemon
+ *  actually found, so a repo with ninety open PRs still says ninety — this only
+ *  stops the pane building ninety rows nobody scrolls to. Fifty is already what
+ *  the review search asks GitHub for, so for that pane it changes nothing and only
+ *  binds a configured `reviews_command` that answers with more.
+ *
+ *  Shared, because the two panes are a pair and a cap on one of them is the kind
+ *  of number that drifts the moment it is written twice.
+ */
+export const QUEUE_MAX = 50;
+
 export function refreshButton(/** @type {'pr' | 'review'} */ kind, /** @type {number} */ pollCount, /** @type {string} */ endpoint, /** @type {boolean} */ polling) {
   // Drawn, not typed — see the files-header refresh in index.html for why the
   // reload glyph is an SVG rather than U+21BB. 1em tracks the font-size setting.
@@ -1068,6 +1081,15 @@ const THEME_DEF = {
   /** 1 is opaque. Floored well above zero: a board you cannot read is the problem
    *  transparency causes rather than the effect it is for. */
   opacity: 1,
+  /** Whether the colours are hand-tuned rather than a preset's.
+   *
+   *  **Stored, where the preset itself is derived.** [`currentPreset`] reads the
+   *  colours back, which is right for "did I edit this away from Paper" and wrong
+   *  for "I chose Custom": picking Custom changes nothing, so a derived answer
+   *  would snap the dropdown back to whichever preset the board already matched
+   *  and fold the wells away under the hand reaching for them. It is the one bit
+   *  of the theme that is a decision rather than a colour. */
+  custom: false,
 };
 
 /** Whole palettes, because one colour at a time cannot get you from dark to light.
@@ -1080,25 +1102,39 @@ const THEME_DEF = {
  *
  *  `orchd` is the palette the app ships with, so "Reset" is a real answer rather
  *  than something that resembles it; `check-palette.mjs` asserts that.
+ *
+ *  **Each carries its own opacity**, so a preset is the whole appearance of the
+ *  board rather than three of its four parts. All three ship opaque, which is what
+ *  they have always been — the field is what a hand-tuned theme varies, and
+ *  picking a preset is how that is put back.
  */
 export const PRESETS = {
-  orchd: { label: 'orchd', ...Palette.DEFAULT },
-  paper: { label: 'Paper', bg: '#F4F2ED', panel: '#EAE7E0', text: '#26231E' },
-  contrast: { label: 'High contrast', bg: '#000000', panel: '#0C0C0C', text: '#FFFFFF' },
+  orchd: { label: 'orchd', ...Palette.DEFAULT, opacity: 1 },
+  paper: { label: 'Paper', bg: '#F4F2ED', panel: '#EAE7E0', text: '#26231E', opacity: 1 },
+  contrast: { label: 'High contrast', bg: '#000000', panel: '#0C0C0C', text: '#FFFFFF', opacity: 1 },
 };
 
-/** Which preset the current colours are, or `null` for a hand-tuned set.
+/** Which preset the board is on, or `null` for a hand-tuned set.
  *
- *  Derived rather than stored, so a theme edited back to a preset's exact colours
- *  reads as that preset again. Compared lowercase: an `input[type=color]` always
- *  reports lowercase, and the constants above are written the way a person writes
- *  them.
+ *  Derived from the values rather than stored, so a theme nudged off a preset and
+ *  back reads as that preset again. Compared lowercase: an `input[type=color]`
+ *  always reports lowercase, and the constants above are written the way a person
+ *  writes them.
+ *
+ *  **`theme.custom` overrides the derivation, and opacity is part of the match.**
+ *  The flag is there because picking Custom changes no value — see `THEME_DEF`.
+ *  Opacity counts because a preset now carries one: a board at 72% is not Paper,
+ *  and a dropdown still saying Paper would be the pane disagreeing with the
+ *  window.
  */
 export function currentPreset() {
+  if (theme.custom) return null;
   const same = (/** @type {string} */ a, /** @type {string} */ b) => a.toLowerCase() === b.toLowerCase();
   const roles = /** @type {const} */ (['bg', 'panel', 'text']);
-  return Object.keys(PRESETS).find((k) => roles
-    .every((role) => same(PRESETS[/** @type {keyof typeof PRESETS} */ (k)][role], theme[role]))) ?? null;
+  return Object.keys(PRESETS).find((k) => {
+    const p = PRESETS[/** @type {keyof typeof PRESETS} */ (k)];
+    return roles.every((role) => same(p[role], theme[role])) && p.opacity === theme.opacity;
+  }) ?? null;
 }
 
 /* Monospace and sans families worth *asking* about.
@@ -1196,7 +1232,8 @@ export function onThemeChange(/** @type {(theme: Theme) => void} */ fn) { themeL
  *
  *  @typedef {{ bg: string, panel: string, text: string,
  *              ui: string, mono: string, code: string,
- *              termSize: number, diffSize: number, opacity: number }} Theme
+ *              termSize: number, diffSize: number, opacity: number,
+ *              custom: boolean }} Theme
  */
 
 /** @returns {Theme} */
@@ -1224,6 +1261,10 @@ function loadTheme() {
     termSize: clampSize(got.termSize, THEME_DEF.termSize),
     diffSize: clampSize(got.diffSize, THEME_DEF.diffSize),
     opacity: clampOpacity(got.opacity),
+    /* `=== true` rather than a cast: this is the one field the store can hold a
+       string or a number in and mean nothing by it, and a truthy `"false"` would
+       unlock the colour wells on a board nobody hand-tuned. */
+    custom: got.custom === true,
   };
   /* A pair that cannot be read never reaches the page, however it got into the
      store — a hand edit, or a build that once allowed it. Falling back to the
@@ -1345,6 +1386,7 @@ export function setTheme(/** @type {Partial<Theme>} */ patch) {
     termSize: clampSize(next.termSize, THEME_DEF.termSize),
     diffSize: clampSize(next.diffSize, THEME_DEF.diffSize),
     opacity: clampOpacity(next.opacity),
+    custom: next.custom === true,
   };
   try {
     localStorage.setItem(THEME.key, JSON.stringify(theme));
@@ -1667,6 +1709,17 @@ export function currentWorkspaceId() {
 let creatingWhat = null;
 export const creating = () => creatingWhat;
 
+/** Which checkout the create in flight belongs to, so the rail can put its
+ *  placeholder row in the right block rather than in whichever one is first.
+ *
+ *  A second value beside `creatingWhat` rather than a shape, because every reader
+ *  wants one or the other: the buttons and the centre pane ask *whether*, and only
+ *  the rail asks *where*.
+ */
+/** @type {string | null} */
+let creatingWhere = null;
+export const creatingIn = () => creatingWhere;
+
 /** @type {((what: string | null) => void)[]} */
 const creatingListeners = [];
 export function onCreatingChange(/** @type {(what: string | null) => void} */ fn) { creatingListeners.push(fn); }
@@ -1678,17 +1731,19 @@ export function onCreatingChange(/** @type {(what: string | null) => void} */ fn
  *  because the interesting frame is the one where the button goes dead — the
  *  snapshot that would have redrawn it is not promised to arrive while a worktree
  *  is being cut. */
-async function asTheOnlyCreate(/** @type {string} */ what, /** @type {() => Promise<any>} */ go) {
+async function asTheOnlyCreate(/** @type {string} */ what, /** @type {Target} */ where, /** @type {() => Promise<any>} */ go) {
   if (creatingWhat) {
     toast(`still ${creatingWhat}`);
     return;
   }
   creatingWhat = what;
+  creatingWhere = where.path;
   for (const fn of creatingListeners) fn(creatingWhat);
   try {
     await go();
   } finally {
     creatingWhat = null;
+    creatingWhere = null;
     for (const fn of creatingListeners) fn(null);
   }
 }
@@ -1696,9 +1751,10 @@ async function asTheOnlyCreate(/** @type {string} */ what, /** @type {() => Prom
 /** @param {string} workspace
  *  @param {Target} [where] the checkout to create in; the active one by default */
 export async function newSession(workspace, where) {
-  await asTheOnlyCreate('starting a session', async () => {
+  const target = where ?? activeCheckout();
+  await asTheOnlyCreate('starting a session', target, async () => {
     try {
-      const r = await callOn(where ?? activeCheckout(), '/api/session', { workspace });
+      const r = await callOn(target, '/api/session', { workspace });
       pendingSelect = r.session;
     } catch (e) {
       toast(reason(e), true);
@@ -1725,9 +1781,10 @@ export async function newWorktree(named, where) {
   // Claimed after the name box, not before: the prompt is open for as long as you
   // take to type, and holding the claim across it would disable the `+` on a
   // dialog you might cancel.
-  await asTheOnlyCreate(name ? `creating worktree ${name}` : 'creating a worktree', async () => {
+  const target = where ?? activeCheckout();
+  await asTheOnlyCreate(name ? `creating worktree ${name}` : 'creating a worktree', target, async () => {
     try {
-      const r = await callOn(where ?? activeCheckout(), '/api/worktree', name ? { name } : {});
+      const r = await callOn(target, '/api/worktree', name ? { name } : {});
       pendingSelect = r.session;
       toast(name ? `creating worktree ${name}` : 'creating worktree');
     } catch (e) {

@@ -199,8 +199,13 @@ everywhere it was tried and means nothing elsewhere: a code path reached only by
 layout nobody else has, or a guard reasoning about a hook the next repo puts on a
 different event. Where a behaviour depends on the repo rather than on the daemon,
 say so where it is written, and make the daemon degrade rather than insist.
-`worktree_setup` and `reviews`'s ejected script are both that shape, configured per
-repo with a sensible default and no opinion at all when they are unset.
+`worktree_setup` and `reviews_command` are both that shape, configured per repo
+with a sensible default and no opinion at all when they are unset. **The review
+queue's default is the daemon's own now, and that is the lesson rather than a
+detail**: it was a `node` script the daemon ejected, which could not be a default,
+because a launcher-started daemon's PATH is not a shell's and the node it found
+there was too old to run it. A default may only depend on what the daemon already
+needs — here the GitHub token and `curl` the PR pane runs on.
 
 Two practical rules. Read the repo's own configuration rather than a remembered copy
 of this one's, which is why `upstream_ref`, `worktrees_subdir` and `tracker` are
@@ -597,9 +602,9 @@ mean *this* repo; if you do, name it.
     `config`, reaching into the three features `config` configures; they are
     `crates/orchd-repo/src/launch.rs` now, a layer that sits above both and that nothing below may
     import. `story::token_env_pair` and `resolve_token` went the other way, into
-    `config` beside the `Tracker` field they read, and `reviews`'s ejected-script
-    path became `Config::reviews_script_path` beside `hooks_settings_path` —
-    the layout of the config dir is config's own.
+    `config` beside the `Tracker` field they read. (`reviews`'s ejected-script path
+    was the third example and is gone with the script itself — the queue is built
+    into the daemon now.)
   **The first pass did not shrink the SCC and the second took it from 16 to 11.**
   The 23-module figure first reported for it was wrong, and the error was in the
   measuring script: `pty.rs` writes `pub(crate) mod tests`, which the pattern

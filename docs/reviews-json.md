@@ -156,8 +156,16 @@ the human and Slack output see.
 
 ## Against the spec
 
-`spec.md` §6b describes a built-in review queue with server-side ranking. That was
-built, worked, and was deliberately reverted — it was more machinery than the one
-real user wanted to own. **This file is the contract, not §6b**: the daemon shells
-out to `reviews_command` and renders its JSON, and a checkout that configures none
-gets a pane reading `off`. `TODO.md` has the trade-off that was accepted.
+`spec.md` §6b describes a built-in review queue with server-side ranking. One was
+built with config-driven ranking and reverted for being more machinery than anyone
+wanted to own; the script that replaced it could not be a default either, because
+it needed a `node` the daemon's PATH does not promise. The daemon builds its own
+queue again now, and the difference from the reverted one is that it has **four
+rules and no configuration**: `review-requested:@me`, oldest first, amber when you
+were named rather than a team, and draft/conflicting/failing sunk below the fold.
+
+**This file is still the contract for replacing it.** Set `reviews_command` and
+the built-in never runs; everything below is unchanged, and it carries more than
+the built-in fills — the label ranks (`prio` 0 and 1), `changedFiles`, a `version`
+— precisely so a source that already emits them keeps working. A checkout with no
+GitHub repository behind it, and no command, is the only thing that reads `off`.

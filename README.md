@@ -46,7 +46,6 @@ The pieces:
 | **git** | Worktrees, branch moves, diffs — all of it. |
 | **WebKitGTK 4.1** (Linux only) | The desktop window. Ubuntu 22.04 / Debian 12 or newer; 20.04 ships 4.0 and will not work. macOS uses the system WebView. |
 | **`gh`**, signed in | Reads go out with `curl`, and for those `github_token_file` replaces it. Every write (a thread reply, a 👍, a re-requested review) shells `gh` and uses its credential, so the resolve flow wants it. |
-| **node** | Only for the review queue that ships with it — the ejected `reviews.js` is a node script. Point `reviews_command` at anything you like, or clear it, and node stops mattering. |
 
 A fresh checkout also needs Claude Code's **workspace trust**, accepted once in
 its dialog. Until then sessions die on spawn.
@@ -169,7 +168,7 @@ back to `config.json`; changes take effect on restart.
 | Setting | Default | What it is |
 | --- | --- | --- |
 | `upstream_ref` / `upstream_remote` | `origin/HEAD`, `origin` | the base every diff and worktree is measured against. On a **fork workflow** — an `upstream` remote beside `origin` — a first run detects it and writes `upstream/<default branch>` instead, so there is nothing to set by hand. |
-| `reviews_command` | the ejected `reviews.js` | argv printing the review queue as JSON. See below. Empty means the pane reads "not configured" rather than "unavailable". |
+| `reviews_command` | *(empty — the built-in queue)* | argv printing the review queue as JSON. See below. Empty means the daemon builds the queue itself; set it to use your team's own ranking. |
 | `main_processes` | *(empty)* | long-running processes shown in the drawer. See below. |
 | `tracker` | `none` | where an out-of-scope review point can be filed as a story. Three fields — `mcp_server`, `host` and an optional `token_env` — so pointing it at another tracker is a config edit rather than a release. Its token is **not** a config key — set `ORCHD_TRACKER_TOKEN` in the daemon's environment, or let `env_source` read the checkout's own. It also needs the repo to declare a matching **MCP server** — see below. |
 | `env_source` | `mise` | which tool is asked what a session's own directory exports — `mise`, `direnv`, or `none`. Config file only, not in the settings panel. See below. |
@@ -190,7 +189,7 @@ repos leave them at the default:
 | `github_token_file` | *(none)* | a `0600` file holding a read-only GitHub token, outside the repo. An alternative to `ORCHD_GITHUB_TOKEN` or `gh auth token`. Reads only: the writes go through `gh`. |
 | `worktree_processes` | *(empty)* | managed processes for worktree workspaces, the counterpart to `main_processes`. Empty means a shell is opened on demand instead. |
 | `poll_seconds` | `300` | how often the PR poll runs. One query per period, negligible against the API budget. |
-| `review_timeout_seconds` | `240` | ceiling for `reviews_command` before the poller gives up on it. |
+| `review_timeout_seconds` | `240` | ceiling for a configured `reviews_command` before the poller gives up on it. The built-in queue is one bounded `curl` and does not read it. |
 | `story_timeout_seconds` | `300` | ceiling for the borrowed story-filing agent — the one timeout in the daemon, because its caller is a blocking request rather than a rail entry someone is watching. |
 | `allow_several_in_main` | `false` | let main hold more than one live session. Off because one checkout is one working tree and one git index: two agents there share both, the changed-file pane merges their edits without saying who wrote what, and one agent's `git add` stages the other's work. Moving main's checkout still refuses while any session is live in it. Editable in the settings panel. |
 | `auto_resume` | `true` | relaunch sessions that were live when the daemon last went down, with `--resume`, so a crash costs the scrollback rather than the conversation. |
@@ -221,27 +220,36 @@ Either way the base ref is one setting and both halves of it agree, which is wha
 
 ### The review queue
 
-A queue ships, so the pane works on a fresh install: on first start the daemon
-writes `reviews.js` into its config dir and points `reviews_command` at it. It
-asks `gh` for open PRs in your repo where your review is requested, ranks them,
-and prints the JSON in [`docs/reviews-json.md`](docs/reviews-json.md). Needs `gh`
-authenticated; no npm install, it has no dependencies.
+The daemon builds one itself, so the pane works on a fresh install with nothing
+configured. It asks GitHub for the open PRs in your repo where your review is
+requested — the same token and the same `curl` the PR pane already uses, so a
+checkout that can list its PRs can show its queue. No script, no `node`, no `gh`.
 
-It is **ejected, not embedded** — three consequences worth knowing:
+**Four rules, and that is all of them.** They are deliberately few, because the
+ranking this replaced guessed at `stopper` and `prio` labels, and a label is a
+convention one team agreed to: ranking on them ranks wrongly in every repository
+that has never heard of them.
 
-- **Edit it.** The ranking is one opinion (it guesses at `stopper` and `prio`
-  labels). It is a normal file in your config dir; change it and the daemon leaves
-  your version alone forever.
-- **Delete it** to get the shipped version back. Absent is the only case the
-  daemon writes, so removing the file is how you ask for a reset.
-- **Replace it** by pointing `reviews_command` anywhere else — your own script, a
-  `mise` task, whatever already knows your team's real ranking. Clear the setting
-  entirely and the pane reads "not configured" rather than pretending.
+- **What is in it**: whatever GitHub answers for `review-requested:@me`, which
+  includes a team you are in.
+- **Age orders it**, oldest first. How long somebody has waited is true regardless
+  of how their team labels work.
+- **Amber means you were named.** A request that went to a team you belong to
+  stays grey and says `team` — it is waiting on the team, not on you.
+- **Draft, conflicting and failing rows sink** below a "not reviewable" fold.
+  Those are waiting on their author.
 
-The one contract is the JSON on stdout. A non-zero exit shows the pane as
-*degraded* with the command's own stderr, deliberately distinct from "no reviews",
-because silently showing an empty queue when the command is broken is the failure
-that would actually cost a colleague a day.
+**Your team's real ranking wins if you have one.** Set `reviews_command` to a
+script, a `mise` task, anything that prints the JSON in
+[`docs/reviews-json.md`](docs/reviews-json.md), and the built-in never runs. That
+contract is unchanged and carries more than the built-in fills — label ranks, a
+changed-file count — so nothing that already works has to be rewritten.
+
+A non-zero exit from such a command shows the pane as *degraded* with its own
+stderr, deliberately distinct from "no reviews", because silently showing an empty
+queue when the source is broken is the failure that would actually cost a
+colleague a day. A checkout with no GitHub repository behind it reads *off*
+instead: there is nothing to ask about.
 
 ### Filing stories in a tracker
 
@@ -378,7 +386,7 @@ is logged and the pty is killed anyway.
 - **It will not start: "Orchestrator is already running".** One instance at a time,
   held by a pid file in the config dir, because a second one would spawn sessions
   into the same worktrees and take over the hook settings. Close the running app.
-- **The review pane reads *degraded*.** `reviews_command` exited non-zero and the
+- **The review pane reads *degraded*.** A configured `reviews_command` exited non-zero and the
   pane is showing its stderr. Deliberately distinct from an empty queue, which is
   what "no reviews" looks like.
 - **A setting does nothing.** An unknown key is ignored in silence. Check the
@@ -387,9 +395,9 @@ is logged and the pty is killed anyway.
   writes its entry on first launch, so start it once from a terminal. If it is
   still missing, run `orchestrator-desktop --install-desktop-entry`, which says
   where it wrote.
-- **Started from the launcher, it cannot find `gh`, `node` or `claude`.** The PR
-  pane reports no credential, the review queue reads unavailable, and a session
-  dies on spawn. An app started by Finder or a desktop entry does not inherit your
+- **Started from the launcher, it cannot find `gh` or `claude`.** The PR pane
+  reports no credential and a session dies on spawn. An app started by Finder or a
+  desktop entry does not inherit your
   shell's `PATH`: macOS hands it `/usr/bin:/bin:/usr/sbin:/sbin`, which holds
   neither Homebrew nor mise. The app asks your login shell for its `PATH` at
   startup and adopts it, so this should heal itself. If it does not, your `PATH` is
@@ -549,7 +557,7 @@ crates/orchd-repo/    one checkout, described. No session state lives here.
   patch.rs        applying and committing what you approved, with staleness checks
   skills.rs       the vendored skills in skills/, written out as the plugin dir
                   every spawn is handed with --plugin-dir
-  reviews.rs      review queue: runs reviews_command, parses JSON, degraded states
+  reviews.rs      review queue: the built-in GitHub search, or reviews_command
   env_source.rs   where a session's own variables come from: mise or direnv, per spawn
   migrate.rs      repairs a config this build could not otherwise read
   instance.rs     the one-daemon-per-checkout flock

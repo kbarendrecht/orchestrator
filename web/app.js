@@ -61,7 +61,17 @@ onDrawerChange(() => { renderDrawer(); Term.refit(); });
 // A create claiming or releasing the `+`. Straight through rather than queued: the
 // whole point is that the frame after the press shows something, and a worktree
 // being cut may be the only thing happening, so there is no snapshot behind it.
-onCreatingChange(() => Rail.render());
+/* A press of `+` has to land somewhere before the daemon answers, and until now
+   it landed nowhere: the rail was unchanged and the centre pane went on showing
+   the session you were leaving. The rail grows a placeholder row (`startingRow`)
+   and the terminal region says so over the top. Both come off on the same
+   announcement, when the create ends however it ends — including a refusal, where
+   the toast is the answer and this must not be left standing. */
+onCreatingChange((what) => {
+  Rail.render();
+  $('startwhat').textContent = what ? `${what}\u2026` : 'Starting\u2026';
+  $('termstarting').hidden = !what;
+});
 
 // ---------------------------------------------------------------------------
 // Context menu
@@ -130,9 +140,11 @@ function render() {
   Review.bar();
   renderInteraction();
   renderUpdate();
-  // After `renderUpdate`, which decides whether the bar above this one is there
-  // and therefore whether this one is stacked.
   renderAgentUpdate();
+  renderAgentError();
+  // Last, because it reads which of the three above ended up showing. Each of them
+  // sets its own `hidden` and nothing else; where they sit is decided once, here.
+  stackBars();
   renderLegalNotice();
 }
 
@@ -468,8 +480,6 @@ function renderAgentUpdate() {
         : `Claude Code ${u?.latest} available (you have ${u?.current})`;
   if (agentDismissed === msg) { bar.hidden = true; return; }
 
-  // Below the release bar when that one is up, at the top when it is not.
-  bar.classList.toggle('stacked', !$('updatebar').hidden);
   $('agentmsg').textContent = msg;
 
   const succeeded = done && !failed;
@@ -520,6 +530,58 @@ function renderAgentUpdate() {
   };
   keyActivate($('agentx'));
   bar.hidden = false;
+}
+
+// The message the user dismissed. A *different* failure shows again; the same one
+// stays hidden, the way the two update bars treat a version. Local rather than
+// daemon-side because the daemon clears it itself on the next spawn — there is no
+// stale state for a dismiss to have to reach.
+/** @type {string | null} */
+let agentErrorDismissed = null;
+
+/** The agent would not start.
+ *
+ *  Board-level, because the session it happened to is already gone: a turnless row
+ *  is forgotten and its worktree removed, so there is nothing left to hang a
+ *  notice on. Without this the whole failure is invisible — the pane never opens
+ *  and the rail never gains a row.
+ */
+function renderAgentError() {
+  const bar = $('agenterrbar');
+  const msg = snap.agent_error;
+  if (!msg || agentErrorDismissed === msg) { bar.hidden = true; return; }
+  $('agenterrmsg').textContent = msg;
+  // Out loud as well: a failure with no row and no pane has nothing else a screen
+  // reader could reach, which is the same gap `noteFor` closes in the settings pane.
+  $('live').textContent = msg;
+  $('agenterrx').onclick = () => {
+    agentErrorDismissed = msg;
+    bar.hidden = true;
+    stackBars();
+  };
+  keyActivate($('agenterrx'));
+  bar.hidden = false;
+}
+
+/** Put the bars in a column, in order, however many are showing.
+ *
+ *  **Computed rather than a class meaning "second".** All three are `position:
+ *  fixed` at the same spot, and the old rule was one `.stacked` class that the
+ *  release bar's renderer set on the agent bar — a scheme with no spelling for a
+ *  third, which would have sat on top of whichever was already there. Counting the
+ *  visible ones is the only thing that can be right for any combination.
+ */
+const BAR_IDS = ['updatebar', 'agentbar', 'agenterrbar'];
+function stackBars() {
+  let shown = 0;
+  for (const id of BAR_IDS) {
+    const bar = $(id);
+    if (bar.hidden) continue;
+    // 10px is the first bar's own offset and 42 the gap the one `.stacked` rule
+    // used (52 - 10), so a board with two bars looks exactly as it did.
+    bar.style.top = `${10 + shown * 42}px`;
+    shown += 1;
+  }
 }
 
 
@@ -1788,7 +1850,14 @@ function setupChrome() {
   /** How far the pointer must travel before a press on a bar becomes a drag. */
   const DRAG_SLOP = 3;
 
-  for (const bar of document.querySelectorAll('.top')) {
+  /* **The two overlay headers drag the window too.** They look like titlebars,
+     they sit where one sits, and they were the only bars in the app that did
+     nothing when you pulled them — which reads as the window being stuck rather
+     than as the header not being a handle. Both are `.settings-title` (the legend
+     reuses the settings shell), and both are in `index.html` at boot behind
+     `hidden`, so one static pass over the document still finds them.
+     The guard below already spares their `×`, which is a `<button>`. */
+  for (const bar of document.querySelectorAll('.top, .settings-title')) {
     bar.addEventListener('mousedown', (ev) => {
       // `addEventListener` promises the handler an `Event`; narrowing in the
       // parameter is what `strictFunctionTypes` refuses, so it happens here.

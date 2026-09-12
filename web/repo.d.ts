@@ -115,6 +115,11 @@ children: Array<number>, };
  * a richer ranking than §6b describes: prio labels, personal versus team
  * request, re-review detection, reviewer-count tiebreak. The daemon consumes
  * that shape rather than imposing the one §6b invented.
+ *
+ * **[`builtin`] fills the same struct and fills less of it**, which is the point
+ * of keeping one shape for two sources: the pane reads one row type, and a repo
+ * that wants the richer ranking keeps its command. What the built-in never sets
+ * is said on each field.
  */
 export type Review = { number: number, title: string, url: string, author: string, 
 /**
@@ -124,6 +129,11 @@ age_hours: number,
 /**
  * Source rank: 0 stopper, 1 prio, 2 requested of you, 3 of your team,
  * 4 re-review, 5 other, 6 sidequest.
+ *
+ * **[`builtin`] emits only 2 and 3.** 0 and 1 are label ranks — `stopper` and
+ * `prio` — and a label is a convention one team agreed to, so a default that
+ * ranked on them ranked wrongly in every repository that had never heard of
+ * them. A configured command may still emit the whole scale.
  */
 prio: number, needs_re_review: boolean, is_draft: boolean, 
 /**
@@ -133,7 +143,9 @@ prio: number, needs_re_review: boolean, is_draft: boolean,
 blockers: Array<string>, reviewers: number, 
 /**
  * Review cost. Absent until the source grows `changedFiles`; the column is
- * omitted rather than faked (see docs/reviews-json.md).
+ * omitted rather than faked (see docs/reviews-json.md). [`builtin`] leaves it
+ * unset: it is another page of the search per poll, for a column that hides
+ * itself.
  */
 changed_files: number | null, checks: string | null, };
 

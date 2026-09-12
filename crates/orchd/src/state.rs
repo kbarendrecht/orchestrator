@@ -290,6 +290,18 @@ pub struct Inner {
     /// Last poll failure. A broken poller must read as broken, never as "no
     /// open PRs".
     pub pr_error: Option<String>,
+    /// What the agent said on its way out, when a session died before it could
+    /// have a turn and we did not stop it.
+    ///
+    /// **Board-level rather than on the row, because the row is deleted.** A
+    /// turnless session is forgotten by design — `spawn::watch_session_exit` says
+    /// why — so a notice hung on it would go with it, which is exactly the silence
+    /// this exists to end: a `claude` that cannot start takes the pane, the row and
+    /// the worktree with it and leaves nothing on screen at all. It is state rather
+    /// than an event because it is one: a binary that will not run will not run for
+    /// the next press either, until somebody fixes the machine. Cleared by the
+    /// first session that reaches a turn.
+    pub agent_error: Option<String>,
     pub pr_fetched: Option<SystemTime>,
     /// Bumped once per completed PR poll, so the refresh button can spin until
     /// the fetch it triggered has landed. Mirrors `reviews_poll`.
@@ -564,6 +576,7 @@ impl AppState {
                 stories: Default::default(),
                 viewer: None,
                 pr_error: None,
+                agent_error: None,
                 pr_fetched: None,
                 resolve_runs: HashMap::new(),
                 triage_progress: HashMap::new(),
@@ -853,6 +866,7 @@ impl AppState {
             sessions,
             prs,
             pr_error: inner.pr_error.clone(),
+            agent_error: inner.agent_error.clone(),
             pr_age_ms: inner
                 .pr_fetched
                 .and_then(|t| now.duration_since(t).ok().map(|d| d.as_millis() as u64)),
@@ -1462,6 +1476,10 @@ pub struct Snapshot {
     /// Set when the last poll failed; the pane says so rather than showing an
     /// empty list.
     pub pr_error: Option<String>,
+    /// The agent exited before its first turn and we did not stop it; see
+    /// `Inner::agent_error`. The board shows it in a bar, since the session it
+    /// happened to no longer exists.
+    pub agent_error: Option<String>,
     #[cfg_attr(any(test, feature = "test-util"), ts(type = "number"))]
     pub pr_age_ms: Option<u64>,
     /// Monotonic counter of completed PR polls; see `Inner::pr_poll`.

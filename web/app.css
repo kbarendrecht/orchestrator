@@ -165,6 +165,19 @@ body[data-chrome="custom"] .wctl{display:flex}
 /* Buttons sit flush to the window edge, so cancel the bar's own padding and
    pay it back as button width: a corner-targeted click still lands. */
 body[data-chrome="custom"] .top-r{padding-right:0}
+/* **The window controls may not be pushed off the edge, and they were.** Drag the
+   changes column narrow and the bar's text — the title and the base it was taken
+   against — kept its full width, because a flex item does not shrink below its
+   content without being told to. The row then overflowed to the right and took
+   minimise, maximise and close with it, off the window, with no way back except
+   widening the column again.
+   `flex:0 0 auto` on the controls was never the problem; what was missing is that
+   everything *before* them can give way. `min-width:0` is the half that actually
+   does it — without it the text is its own floor and the ellipsis never engages. */
+.top-r>.eyebrow,.top-r>.ctx-btn{
+  flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+}
+.top-r>.refresh{flex:0 0 auto}
 
 .wctl-btn{
   width:34px;height:45px;position:relative;background:none;border:0;cursor:default;
@@ -230,6 +243,19 @@ button.ctx-btn:hover{color:var(--text)}
   color:var(--faint-solid);
 }
 .brand svg{flex:0 0 auto}
+/* The product's name beside its mark, set the way the splash sets it.
+   **The two were different treatments of one word.** The splash draws the wordmark
+   at 600 with `.02em` of tracking, and the board opened on a different face with
+   none — so the first thing you see and the thing you then look at all day did not
+   match. The size is this strip's, the rest is the splash's (`desktop/src/main.rs`).
+   Quieter than a project name, because this strip is the one place nothing ever
+   changes: the word is there to be found, not read. Ellipsised because the rail is
+   a resizable column and the titlebar has to survive being dragged narrow. */
+.brandname{
+  margin-left:8px;font-family:var(--label);font-size:calc(12px * var(--fs));
+  font-weight:600;letter-spacing:.02em;color:var(--dim);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;
+}
 .gear{
   flex:0 0 auto;display:flex;align-items:center;justify-content:center;
   width:26px;height:26px;border-radius:2px;color:var(--faint-solid);
@@ -266,21 +292,58 @@ button.ctx-btn:hover{color:var(--text)}
    more solid than the rail behind it. That is what a sticky head is for. Every
    other band inside a panel painted the panel's own colour and now paints nothing.
    See `.termwrap` and `body` for the rule this is the exception to. */
-.ws-head{
-  display:flex;align-items:center;justify-content:space-between;
-  padding:13px 15px 7px;position:sticky;top:0;background:var(--panel-ground,var(--surface));z-index:2;
+/* **`.ws-head` and `.ws-name` are gone with the headings they styled.** Two
+   projects open drew four of them plus four "no sessions" lines to carry two
+   sessions; `checkoutSessions` in `rail.js` has the count and the argument. What
+   replaces them is one line at the foot of each list. */
+/* The list's own head, drawn only when there is no checkout strip above it — see
+   `checkoutSessions`. Sticky for the reason that strip is: the name of what you
+   are scrolling through should not scroll away with it. Padded like `.co-head`,
+   which is the header it stands in for, so opening a second project moves the name
+   rather than restyling it. */
+.ws-title{
+  display:flex;align-items:center;gap:8px;padding:8px 15px 5px;
+  position:sticky;top:0;background:var(--panel-ground,var(--surface));z-index:2;
 }
-.ws-name{display:flex;align-items:center;gap:8px;min-width:0}
+/* It carries the project's name in the same face the multi-checkout header uses.
+   A span rather than that header's button: with one project there is nowhere to
+   switch to, so it is a label and must not offer itself as a control. */
+.co-name.solo{cursor:default;color:var(--text)}
+.ws-count{
+  font-family:var(--mono);font-size:calc(9px * var(--fs));color:var(--faint-solid);
+  margin-left:auto;white-space:nowrap;
+}
+/* The row that stands in for a session the daemon has not answered about yet. It
+   takes the selected row's fill because the centre pane is showing the same thing;
+   `default` cursor because there is nothing to click yet. */
+.sess.starting{background:var(--raised);cursor:default}
+.ws-add{display:flex;align-items:center;gap:8px;padding:6px 15px 12px}
+.addbtn{
+  font-family:var(--mono);font-size:calc(10.5px * var(--fs));color:var(--faint-solid);
+  background:none;border:0;padding:0;cursor:pointer;transition:color .12s;
+}
+.addbtn:hover:not([disabled]){color:var(--text)}
+/* Dimmed rather than hidden: main being occupied is the answer to "why can I not
+   start one", and a button that vanished would take the question with it. */
+.addbtn[disabled]{color:var(--ghost);cursor:default}
+.addsep{color:var(--ghost);font-size:calc(10.5px * var(--fs))}
+/* The one row that is not in a worktree says so. Outlined rather than coloured:
+   every colour in this rail already means a state, and where a session lives is
+   not one. */
+.sess-main{
+  font-family:var(--mono);font-size:calc(8.5px * var(--fs));color:var(--faint-solid);
+  border:1px solid var(--line);border-radius:2px;padding:0 4px;flex:0 0 auto;
+  letter-spacing:.04em;
+}
 .ws-note{font-family:var(--mono);font-size:calc(9px * var(--fs));color:var(--faint-solid);margin-left:auto;white-space:nowrap}
 
-/* The checkout a block of groups belongs to. Drawn only when there is more than
+/* The checkout a block of sessions belongs to. Drawn only when there is more than
    one, so a single-checkout rail is exactly what it always was.
 
-   Sticky above its groups and at a higher `z-index` than `.ws-head`, so the
-   checkout you are scrolled into stays named while its own group headers pass
-   under it. The group heads sit at `top:26px` in that case, which is this strip's
-   height — offset in `.co-head ~ .ws .ws-head` rather than on every `.ws-head`,
-   because a single-checkout rail has no strip to sit under. */
+   Sticky, so the checkout you are scrolled into stays named while its own
+   sessions pass under it. It is the only sticky thing in the rail now: the group
+   headings that used to stick beneath it at `top:26px` are gone, and with them the
+   offset that kept the two from overlapping. */
 .co-head{
   display:flex;align-items:center;gap:6px;width:100%;
   padding:8px 15px 5px 9px;position:sticky;top:0;z-index:3;
@@ -311,9 +374,18 @@ button.ctx-btn:hover{color:var(--text)}
    so it reads as "this block" rather than as a bullet. `aria-hidden` is not needed
    on a border — there is nothing for a screen reader to read. */
 .co-head[data-band]{border-left:3px solid var(--band);padding-left:12px}
+/* A name, not a label — which is the whole of what changed here.
+   It used to be 10px, 700, tracked .08em: an `.eyebrow` with one pixel and half
+   the tracking, sitting directly above a real `.eyebrow` and reading as a slightly
+   wrong copy of it. Worse, the rail's own scale had it upside down — the project
+   is the outermost thing in the tree and was the *smallest* text in it, under the
+   11.5px session names nested two levels inside it.
+   So: 13px above the sessions' 11.5 above the labels' 9, and no tracking, because
+   tracking is what makes a word read as a category rather than as something's
+   name. */
 .co-name{
-  font-family:var(--label);font-size:calc(10px * var(--fs));font-weight:700;
-  letter-spacing:.08em;color:var(--faint-solid);
+  font-family:var(--label);font-size:calc(13px * var(--fs));font-weight:600;
+  letter-spacing:0;color:var(--dim);
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
   background:none;border:0;padding:0;cursor:pointer;text-align:left;min-width:0;
 }
@@ -327,11 +399,6 @@ button.ctx-btn:hover{color:var(--text)}
 }
 /* The count follows a clash rather than fighting it for the same margin. */
 .co-clash ~ .co-count{margin-left:8px}
-/* The group headers sit under their checkout's strip rather than over it. 26px is
-   that strip's height; scoped to a sibling of one, so a single-checkout rail — with
-   no strip at all — is untouched. Each block is its own sticky context, so a
-   header sticks while its own checkout scrolls and leaves with it. */
-.co-head ~ .ws .ws-head{top:26px;z-index:2}
 
 /* The way a second checkout is ever opened, at the foot of the list where "and
    another one" belongs. `.railbtn` gives it the rail's own row shape; this only
@@ -339,6 +406,13 @@ button.ctx-btn:hover{color:var(--text)}
 /* The PR pane answers for one checkout, and it sits below the scroller where that
    checkout's own band has gone. Same edge, same colour. */
 .pr-of-checkout{border-left:3px solid var(--band)}
+/* The review queue says the same thing on the *other* side, because it lives in
+   the other column. Each band runs down the outer edge of the column it is in —
+   the PR pane's against the window's left, this one against its right — so the
+   pair reads as two margins of one board rather than as two lines pointing at
+   each other across the middle of it. Same width and colour; only the edge
+   differs, which is why it is a second rule rather than a variable. */
+.rv-of-checkout{border-right:3px solid var(--band)}
 /* Where the waitbar will take you, when that is another checkout. Dimmer than the
    count beside it: it is the qualifier, not the news. */
 .waitwhere{color:var(--faint-solid)}
@@ -504,6 +578,23 @@ button.ctx-btn:hover{color:var(--text)}
    than the host, so the bar and the empty state — both siblings — stay at full
    strength over it. */
 .termwrap.rvwork .termhost{opacity:.6}
+
+/* The board's answer to `+`, over the terminal region and under nothing. It paints
+   the pane's own ground rather than a scrim: the session underneath is not dimmed,
+   it is *not what the board is about* for the next few seconds. */
+.termstarting{
+  position:absolute;inset:0;z-index:4;
+  display:flex;align-items:center;justify-content:center;
+  background:var(--ground,var(--bg));
+}
+/* An author `display` beats `[hidden]`, which this file has been bitten by four
+   times — see `.settings-row[hidden]`. */
+.termstarting[hidden]{display:none}
+.startchip{
+  display:flex;align-items:center;gap:9px;
+  font-family:var(--mono);font-size:calc(11.5px * var(--fs));color:var(--dim);
+  border:1px solid var(--line);border-radius:20px;padding:7px 15px;background:var(--raised);
+}
 
 /* ---------- what a review is doing, while its overlay is closed ---------- */
 /* Bottom of the *terminal*, not of the column: anchoring it to `.center` would put
@@ -843,7 +934,10 @@ body.row-resizing{cursor:row-resize;user-select:none}
    measure. */
 .settings-card{
   flex:1;min-height:0;overflow-y:auto;
-  padding:16px max(16px, calc((100% - var(--setw)) / 2)) 24px;
+  /* 40 at the foot rather than 24: the last row of the last group used to end
+     within a row's height of the window edge, which reads as the pane having been
+     cut off rather than as having ended. */
+  padding:16px max(16px, calc((100% - var(--setw)) / 2)) 40px;
 }
 /* Its own bar across the pane, like the diff's head, rather than a caption on a
    card that no longer exists. */
@@ -871,13 +965,21 @@ body.row-resizing{cursor:row-resize;user-select:none}
   letter-spacing:.16em;text-transform:uppercase;color:var(--dim);
   /* Clear of the block above it: at 20px a new group was only 2px further away
      than the next field in the one you were reading, so the headings scanned as
-     more fields rather than as divisions. */
-  margin:32px 0 2px;padding-bottom:8px;border-bottom:1px solid var(--line-soft);
+     more fields rather than as divisions.
+     **40 and not 32**, which is the same argument one step further: at 32 against
+     the 18 between rows the ratio was 1.8, and a division has to beat the gap it
+     divides by more than that to be read as one at a glance. The rule under the
+     heading gets its own air for the same reason — it belonged to the heading and
+     sat 2px off it, so the band read as a line drawn through a label rather than
+     as the top of the block below. */
+  margin:40px 0 4px;padding-bottom:10px;border-bottom:1px solid var(--line-soft);
 }
-.settings-group:first-of-type{margin-top:14px}
+.settings-group:first-of-type{margin-top:16px}
 /* A heading already carries the space; the field under it must not add the full
-   block gap on top, or every group opens with a hole in it. */
-.settings-group + .settings-field,.settings-group + .settings-row{margin-top:10px}
+   block gap on top, or every group opens with a hole in it. Enough to clear the
+   rule, and still under the 18 that separates two rows, so the first field still
+   reads as belonging to the heading. */
+.settings-group + .settings-field,.settings-group + .settings-row{margin-top:14px}
 .settings-x{margin-left:auto;letter-spacing:0}
 /* The shortcut legend: a two-column list of chord -> what it does, one grid for
    the whole thing so the descriptions line up across the groups.
@@ -971,22 +1073,29 @@ body.row-resizing{cursor:row-resize;user-select:none}
 /* The rows of the list a select opens. `color-scheme` is what makes the popup dark
    at all — these two only stop the engine choosing its own near-black over ours. */
 .settings-select option,.settings-select optgroup{background:var(--bg);color:var(--text)}
-/* The box a font family is typed into. It used to borrow the hex field's rule and
-   then fight it for a width; the wells and their hex boxes are gone with the colour
-   controls, so it has the rule to itself. */
-.thname{
-  width:190px;padding:3px 6px;border:1px solid var(--line);border-radius:2px;
+/* The box a font family is typed into, and the one a hex is. Written once and
+   shared: the font box used to carry this rule twice over, a verbatim duplicate
+   left behind when the colour controls were removed, and the two spellings would
+   have drifted the first time anybody changed one.
+   The widths differ because the contents do — a family name is long and a hex is
+   seven characters — so only that is said separately. */
+.thname,.thhex{
+  padding:3px 6px;border:1px solid var(--line);border-radius:2px;
   background:var(--bg);color:var(--dim);
   font-family:var(--mono);font-size:calc(10.5px * var(--fs));
 }
-/* The box a font family is typed into. It used to borrow the hex field's rule and
-   then fight it for a width; the wells and their hex boxes are gone with the colour
-   controls, so it has the rule to itself. */
-.thname{
-  width:190px;padding:3px 6px;border:1px solid var(--line);border-radius:2px;
-  background:var(--bg);color:var(--dim);
-  font-family:var(--mono);font-size:calc(10.5px * var(--fs));
+.thname{width:190px}
+.thhex{width:74px;text-transform:lowercase}
+/* The colour picker the engine draws. It needs its own chrome removed: browsers
+   draw a padded swatch inside a border that ignores the pane's own line colour,
+   so without this the well sits in a box two shades off everything beside it. */
+.thwell{
+  width:30px;height:22px;padding:0;border:1px solid var(--line);border-radius:2px;
+  background:none;cursor:pointer;
 }
+.thwell::-webkit-color-swatch-wrapper{padding:2px}
+.thwell::-webkit-color-swatch{border:0;border-radius:1px}
+.thwell:focus,.thhex:focus{outline:2px solid var(--focus);outline-offset:1px}
 /* Narrow enough to leave the readout beside it on the row, and `accent-color` so
    the track wears the board's own focus colour rather than the engine's blue. */
 .thslider{width:120px;accent-color:var(--focus)}
@@ -1207,11 +1316,16 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
 .updatebar-link{color:var(--work);text-decoration:none}
 .updatebar-link:hover{text-decoration:underline}
 .updatebar-x{cursor:pointer}
-/* Both bars are fixed to the same spot, so the second drops below the first —
-   but only when the first is actually there, or it floats at an offset with
-   nothing above it. `renderUpdate` owns the class, since it is the thing that
-   knows whether the release bar is showing. */
-.agentbar.stacked{top:52px}
+/* The failure bar's message. `--bad` rather than `--work`: the other two bars
+   offer you something, this one reports that a thing did not happen. Not a link,
+   so it carries no underline and no pointer — there is nowhere to go. */
+.updatebar-bad{color:var(--bad)}
+/* Every bar is fixed to the same spot, so they have to be told where to sit.
+   `stackBars` in `app.js` sets `top` from how many are actually showing, which is
+   the only thing that can know: this used to be one class meaning "second", set by
+   the release bar's renderer, and a third bar has no spelling in that scheme — it
+   would have sat on top of whichever one was already there. */
+.updatebar[style*="top"]{transition:top .12s}
 .agentgo{
   padding:2px 8px;border-radius:11px;border:1px solid var(--line);
   background:var(--bg);color:var(--text);font-family:var(--mono);
@@ -1324,15 +1438,44 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
 /* At 4-6 sessions plus PRs the rail runs long, so PR rows stay single-line. */
 /* Pinned to the bottom of the rail and scrolling within itself, so a long
    session list never pushes your PRs off the bottom. */
-.prblock{
-  flex:0 0 auto;max-height:46%;overflow-y:auto;
-  border-top:1px solid var(--line);
-  /* The review queue ends on its `arctoggle`, whose 12px bottom padding lifts the
-     last row off the window edge. This list ends on a `prrow` with 4px, so it
-     needs the same space stated rather than inherited from what happens to be
-     last. */
-  padding-bottom:12px;
+/* One row of either bottom pane, and the two really are the same height —
+   **measured, 28px at `--fs` 1.155**, which is the title's line (11.5px scaled,
+   at the body's 1.5) plus the row's own 4px top and bottom. Written as that sum
+   rather than as 28px because only half of it scales: the text follows the
+   interface size and the padding does not.
+   Stated at all so that "ten rows" below is arithmetic rather than a guess. */
+:root{ --queue-row:calc(11.5px * var(--fs) * 1.5 + 8px); }
+
+/* **The two panes are one shape: a head that stays and a list that scrolls.**
+   They were not, which is how their empty bodies came to differ by 31px — 69
+   against 38 — each being styled where it happened to sit.
+   The scroller is the *list*, never the block, and that is the point: capping the
+   block would have meant every cap knowing how tall its own head is, and the two
+   heads differ (48 and 51 measured, and the review one wraps in a narrow column).
+   `flex:1 1 auto` with `min-height:0` lets the list give way when the column is
+   short, so ten rows is a ceiling rather than a demand. */
+.prblock,.rvblock{display:flex;flex-direction:column;min-height:0}
+.prblock .ws{display:flex;flex-direction:column;min-height:0}
+.prlist,.rvlist{
+  flex:1 1 auto;min-height:0;overflow-y:auto;
+  max-height:calc(var(--queue-row) * 10);
 }
+/* Both empty bodies, one rule. `.fempty` elsewhere (the changed-files pane) keeps
+   its roomier padding — this is only about the pair at the foot of the two
+   columns, which have to match each other. */
+.prlist .railbtn,.rvlist .fempty{padding:8px 16px 12px;line-height:1.5}
+
+.prblock{
+  flex:0 0 auto;max-height:46%;
+  border-top:1px solid var(--line);
+}
+/* The review queue ends on its `arctoggle`, whose 12px bottom padding lifts the
+   last row off the window edge. This list ends on a `prrow` with 4px, so it needs
+   the same space stated rather than inherited from what happens to be last.
+   **Inside the list, not on the block**: the block carries the checkout band, and
+   padding under the band's own element is padding the stripe has to run through —
+   which is what left it stopping short of the bottom of the window. */
+.prlist{padding-bottom:12px}
 .prblock .ws{border-bottom:0}
 .prgroup-head{
   display:flex;align-items:center;gap:8px;padding:12px 16px 8px;
@@ -1388,7 +1531,7 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
 /* ---------- review queue (§6b) ---------- */
 /* Dots are always grey here: colour is reserved for your own work, and a queue
    that competed chromatically with your sessions would undo the palette. */
-.rvblock{flex:0 0 auto;max-height:46%;overflow-y:auto;border-top:1px solid var(--line)}
+.rvblock{flex:0 0 auto;max-height:46%;border-top:1px solid var(--line)}
 .rvblock.closed .rvlist{display:none}
 .rvhead{display:flex;align-items:center;gap:8px;padding:12px 16px 8px;width:100%;
   position:sticky;top:0;background:var(--panel-ground,var(--surface));z-index:2}
@@ -1411,6 +1554,14 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
 .rvrow .dot{background-color:#6B6B6B}
 /* Beats the line above on order, not specificity, so it has to come after it. */
 .rvrow .dot.blocked{background-color:var(--attn)}
+/* Somebody asked *you*, by name — the built-in queue's only colour, and the
+   legend's "needs you" meaning exactly what it says. A team request stays grey:
+   it is waiting on the team.
+   The same amber as `.blocked` above and deliberately its own name, for the
+   reason `.bad` and `.prio` are two rules of one colour: they mean different
+   things, and a palette that ever splits them should not have to find the call
+   sites first. */
+.rvrow .dot.attn{background-color:var(--attn)}
 /* A blocker the source named: conflicts, failing checks. Broken, and not yours
    to fix — the row's own dimming says the second half. */
 .rvrow .dot.bad{background-color:var(--bad)}
