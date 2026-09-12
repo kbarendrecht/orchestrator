@@ -50,9 +50,9 @@ const MIN_POSITIONS: usize = 1;
 /// writes it is [`Mode`], chosen by the human rather than proposed by the agent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(
-    test,
+    any(test, feature = "test-util"),
     derive(ts_rs::TS),
-    ts(export, export_to = "../web/snapshot.d.ts")
+    ts(export, export_to = "base.d.ts")
 )]
 #[serde(rename_all = "lowercase")]
 pub enum Stance {
@@ -103,9 +103,9 @@ pub enum Mode {
 /// A story to file, when a position defers the point rather than answering it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(
-    test,
+    any(test, feature = "test-util"),
     derive(ts_rs::TS),
-    ts(export, export_to = "../web/snapshot.d.ts")
+    ts(export, export_to = "base.d.ts")
 )]
 pub struct StoryDraft {
     pub title: String,
@@ -115,9 +115,9 @@ pub struct StoryDraft {
 /// One complete way of answering a thread.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(
-    test,
+    any(test, feature = "test-util"),
     derive(ts_rs::TS),
-    ts(export, export_to = "../web/snapshot.d.ts")
+    ts(export, export_to = "base.d.ts")
 )]
 pub struct Position {
     pub label: String,
@@ -152,9 +152,9 @@ pub const STORY_TOKEN: &str = "{story}";
 /// One thread's triage: what the agent made of it, and the ways out.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(
-    test,
+    any(test, feature = "test-util"),
     derive(ts_rs::TS),
-    ts(export, export_to = "../web/snapshot.d.ts")
+    ts(export, export_to = "base.d.ts")
 )]
 pub struct Proposal {
     pub thread_id: String,
@@ -179,9 +179,9 @@ pub struct Proposal {
 /// A whole triage run's output.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(
-    test,
+    any(test, feature = "test-util"),
     derive(ts_rs::TS),
-    ts(export, export_to = "../web/snapshot.d.ts")
+    ts(export, export_to = "base.d.ts")
 )]
 pub struct ProposalSet {
     /// The PR head the patches were generated against. Re-checked before

@@ -164,7 +164,7 @@ function openFileOnForge(/** @type {import('../snapshot').WorkspaceView} */ w, /
  *  The daemon refuses what the row cannot do, and refuses everything while an
  *  agent is mid-turn in that workspace, so this does not pre-judge: it sends the
  *  verb and shows the answer. */
-async function fileVerb(/** @type {import('../snapshot').WorkspaceView} */ w, /** @type {import('../snapshot').DiffFile} */ f, /** @type {string} */ verb) {
+async function fileVerb(/** @type {import('../snapshot').WorkspaceView} */ w, /** @type {import('../base').DiffFile} */ f, /** @type {string} */ verb) {
   if (verb === 'discard') {
     const yes = await confirmBox(
       `Throw away your changes to ${f.path}? Uncommitted content cannot be `
@@ -190,7 +190,7 @@ async function fileVerb(/** @type {import('../snapshot').WorkspaceView} */ w, /*
  *
  *  `discard` is last, being the only one that cannot be pressed back; `open on
  *  forge` stays on top because it is the one you reach for while reading. */
-function fileMenu(/** @type {import('../snapshot').WorkspaceView} */ w, /** @type {import('../snapshot').DiffFile} */ f) {
+function fileMenu(/** @type {import('../snapshot').WorkspaceView} */ w, /** @type {import('../base').DiffFile} */ f) {
   /** @type {[string, string | null, (() => void) | null][]} */
   const items = [];
   const linkable = f.status !== '?' && !f.path.endsWith('/');

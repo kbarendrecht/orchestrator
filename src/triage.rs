@@ -34,11 +34,7 @@ use crate::state::AppState;
 /// a merge conflict deliberately do **not** appear here; they are signals about a
 /// future merge and never touch the branch-local machinery.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
-#[cfg_attr(
-    test,
-    derive(ts_rs::TS),
-    ts(export, export_to = "../web/snapshot.d.ts")
-)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "snapshot.d.ts"))]
 #[serde(tag = "gate", rename_all = "snake_case")]
 pub enum Gate {
     /// Uncommitted work of your own would be swept into the batch's commit.

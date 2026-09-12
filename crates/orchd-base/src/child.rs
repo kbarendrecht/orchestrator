@@ -2,7 +2,7 @@
 //!
 //! One `orchd` per checkout, spawned by whatever hosts the page. The host knows
 //! nothing about sessions and the child knows nothing about siblings, which is the
-//! whole point of the split — see [`crate::host`].
+//! whole point of the split — see `host`.
 //!
 //! **The child mints its own token and reports it.** Handing one down through the
 //! environment would put it in the environment of every session that child spawns,
@@ -176,7 +176,7 @@ pub fn launch(
 }
 
 /// The real work, with the binary injected — the same split as
-/// `instance::acquire_at` and [`crate::config::Config::existing_at`], and
+/// `instance::acquire_at` and `config::Config::existing_at`, and
 /// for the same reason: a test can drive the protocol and the observer against a
 /// stub without needing a built `orchd`, and without setting a process-global
 /// environment variable that every other test in the binary would also see.

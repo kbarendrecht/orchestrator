@@ -52,9 +52,9 @@ run = "npm install --prefix tools --no-audit --no-fund"
 description = "Type-check the SPA and enforce its module graph"
 depends = ["deps"]
 run = """
-cargo test --lib export_bindings >/dev/null
-git diff --exit-code --stat web/snapshot.d.ts \
-  || { echo 'web/snapshot.d.ts was stale — the regenerated copy is in your tree; commit it.'; exit 1; }
+cargo test --workspace --lib export_bindings >/dev/null
+git diff --exit-code --stat web/snapshot.d.ts web/base.d.ts \
+  || { echo 'the generated types were stale — the regenerated copies are in your tree; commit them.'; exit 1; }
 npx --prefix tools tsc -p tools/tsconfig.json
 npx --prefix tools depcruise --config tools/.dependency-cruiser.cjs web/app.js
 npx --prefix tools eslint --config tools/eslint.config.mjs web

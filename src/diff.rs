@@ -65,11 +65,7 @@ pub fn resolve_base(
 }
 
 #[derive(Debug, Clone, Serialize)]
-#[cfg_attr(
-    test,
-    derive(ts_rs::TS),
-    ts(export, export_to = "../web/snapshot.d.ts")
-)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "snapshot.d.ts"))]
 pub struct DiffSummary {
     pub base: String,
     pub files: Vec<DiffFile>,
@@ -179,11 +175,7 @@ pub fn mark_worktree_state(files: &mut [DiffFile], set: &crate::model::FileSet) 
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[cfg_attr(
-    test,
-    derive(ts_rs::TS),
-    ts(export, export_to = "../web/snapshot.d.ts")
-)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "snapshot.d.ts"))]
 #[serde(rename_all = "snake_case")]
 pub enum RowKind {
     Context,
@@ -192,11 +184,7 @@ pub enum RowKind {
 }
 
 #[derive(Debug, Clone, Serialize)]
-#[cfg_attr(
-    test,
-    derive(ts_rs::TS),
-    ts(export, export_to = "../web/snapshot.d.ts")
-)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "snapshot.d.ts"))]
 pub struct Row {
     pub kind: RowKind,
     pub old: Option<u32>,
@@ -213,11 +201,7 @@ pub struct Row {
 }
 
 #[derive(Debug, Clone, Serialize)]
-#[cfg_attr(
-    test,
-    derive(ts_rs::TS),
-    ts(export, export_to = "../web/snapshot.d.ts")
-)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "snapshot.d.ts"))]
 pub struct Hunk {
     pub old_start: u32,
     pub new_start: u32,
@@ -229,11 +213,7 @@ pub struct Hunk {
 }
 
 #[derive(Debug, Clone, Serialize)]
-#[cfg_attr(
-    test,
-    derive(ts_rs::TS),
-    ts(export, export_to = "../web/snapshot.d.ts")
-)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "snapshot.d.ts"))]
 pub struct FileDiff {
     pub path: String,
     pub hunks: Vec<Hunk>,

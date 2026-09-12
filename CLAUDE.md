@@ -80,8 +80,8 @@ what it costs.
 ## Build and run
 
 ```
-cargo check                         # the daemon
-cargo test                          # 522 tests, all in-tree
+cargo check --workspace             # the daemon and orchd-base
+cargo test --workspace              # 575 tests, all in-tree
 cargo fmt --all                     # the formatter, gated in CI and the hook
 cargo clippy --workspace --all-targets   # what CI lints with, and it denies warnings
 mise run check-web                  # type-check and lint the SPA + enforce its module graph
@@ -559,7 +559,9 @@ mean *this* repo; if you do, name it.
   it.
   What is left is the runtime core — api, fix_pr, health, post, spawn, state,
   store, story, triage, update, worktree — eleven modules that genuinely call
-  each other. The next move on those is a crate split, not a rename, and
+  each other, plus `git <-> review_commit` inside `orchd-base`. The script reads
+  **every crate's `src/`**, learned the hard way: reading `src/` alone, it called
+  that pair *fixed* the moment both modules moved out. The next move on those is a crate split, not a rename, and
   **`docs/crate-split.md` has it measured**: condense that core to one node and
   the remaining graph is a clean nine-layer DAG, so four crates are legal today
   with zero upward edges. `cargo` would then enforce what this script ratchets,
@@ -1523,6 +1525,30 @@ mean *this* repo; if you do, name it.
   developer on a newer rustc meets a new clippy lint *before* CI does, rather than
   CI failing on a commit that touched no Rust. Collapsing it to one source of truth
   means provisioning Rust through mise in CI too.
+- **This is a workspace, and `crates/orchd-base` is the first crate out.**
+  Thirteen modules — `child edit git guard headroom model proc proposal pty
+  review_commit secret timing window` — and `cargo` now refuses an import from any
+  of them back up into the daemon. `src/lib.rs` re-exports every one at the path it
+  always had, so **`crate::git::…` still reads the same everywhere** and the move
+  cost no call site a rename. `docs/crate-split.md` has the plan, the measurements
+  and what the first step actually cost.
+  Four things about it are worth knowing before touching the next step, and all
+  four are one fact — **`#[cfg(test)]` does not cross a crate line.**
+  `migrate` and `names` belonged in base by the graph and stayed in `orchd`
+  because their *tests* assert against `config` and `spawn`. `testutil` is a
+  **feature** (`test-util`), not a `cfg(test)` module, because a dependent crate's
+  tests cannot see one — base owns `scratch`, `git`, `scratch_repo` and
+  `TRUE_BIN`, and `orchd`'s `testutil` re-exports them, so there is one `scratch`
+  in the workspace. `ts-rs` is an **optional dependency** gated by that same
+  feature, because as a dev-dependency the `TS` derives vanish exactly when
+  `orchd`'s tests need them.
+  And **there are two generated type files now**: ts-rs truncates `export_to` per
+  crate, so `orchd-base` writes `web/base.d.ts`, `orchd` writes
+  `web/snapshot.d.ts`, and the `import type … from "./base.d"` between them is
+  only right because `.cargo/config.toml` points both at one `TS_RS_EXPORT_DIR`.
+  Set there rather than in the gates, so a bare `cargo test` does not leave a
+  stray `bindings/`. A type that moves between the crates moves between the files,
+  and the SPA's `import('../snapshot').X` has to follow — `tsc` names every one.
 - **`cargo fmt` is the formatter now, and the tree was formatted in one commit.**
   It used not to be, and the rule in its place — "revert everything outside your
   own change" — was a rule nothing ran. `rustfmt.toml` keeps the defaults, and

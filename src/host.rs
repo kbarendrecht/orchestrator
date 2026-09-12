@@ -54,7 +54,7 @@ const HEALTHY_UPTIME: Duration = Duration::from_secs(60);
 /// the same value as the host's while one process serves both.
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(test, derive(ts_rs::TS))]
-#[cfg_attr(test, ts(export, export_to = "../web/snapshot.d.ts"))]
+#[cfg_attr(test, ts(export, export_to = "snapshot.d.ts"))]
 pub struct Checkout {
     /// Canonical path, which is also the identity: `main_checkout` is resolved in
     /// [`crate::config::Config::parse`], and comparing an unresolved path against

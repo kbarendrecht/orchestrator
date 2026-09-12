@@ -1,7 +1,7 @@
 //! A fresh secret, and nothing else.
 //!
 //! **Its own module because it is a leaf, and a leaf is what breaks a cycle.**
-//! This function lived in [`crate::state`], where it was reached by five modules
+//! This function lived in `state`, where it was reached by five modules
 //! including [`crate::model`] — and `state` reads `model` for every type it
 //! stores, so those two imported each other over one call to a three-line
 //! function with no state of its own. `mise run check-modules` counted that as

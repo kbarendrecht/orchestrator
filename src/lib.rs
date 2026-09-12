@@ -4,18 +4,22 @@
 //! the other caller. Everything the two share — startup order, the router, the
 //! pollers — lives here so neither can drift from the other.
 
+// The primitives, at the paths they have always had. `crate::git::…` and the
+// rest resolve through these, so moving them into `orchd-base` cost no call site
+// a rename — and `cargo` now refuses an import from `orchd-base` back up here,
+// which is the whole point of the move.
+pub use orchd_base::{
+    child, edit, git, guard, headroom, model, proc, proposal, pty, review_commit, secret, timing,
+    window,
+};
+
 pub mod api;
-pub mod child;
 pub mod config;
 pub mod diff;
-pub mod edit;
 pub mod env_source;
 pub mod firstrun;
 pub mod fix_pr;
 pub mod forge;
-pub mod git;
-pub mod guard;
-pub mod headroom;
 pub mod health;
 pub mod hooks;
 pub mod host;
@@ -24,16 +28,10 @@ pub mod launch;
 pub mod logging;
 pub mod machine;
 pub mod migrate;
-pub mod model;
 pub mod names;
 pub mod patch;
 pub mod post;
-pub mod proc;
-pub mod proposal;
-pub mod pty;
-pub mod review_commit;
 pub mod reviews;
-pub mod secret;
 pub mod skills;
 pub mod spawn;
 pub mod state;
@@ -41,10 +39,8 @@ pub mod store;
 pub mod story;
 #[cfg(test)]
 pub mod testutil;
-pub mod timing;
 pub mod triage;
 pub mod update;
-pub mod window;
 pub mod worktree;
 pub mod ws;
 

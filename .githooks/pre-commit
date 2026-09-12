@@ -98,12 +98,14 @@ fi
 # A Rust change can move the snapshot the SPA is typed against. Regenerate and
 # refuse if the committed copy no longer matches the structs.
 if [ "$rust" = 1 ]; then
-  cargo test --lib export_bindings >/dev/null 2>&1 || {
+  # Two crates generate types now, so `--workspace`. Where they go is in
+  # `.cargo/config.toml`, so a bare `cargo test` puts them in the same place.
+  cargo test --workspace --lib export_bindings >/dev/null 2>&1 || {
     echo "pre-commit: the snapshot type export failed to build" >&2; exit 1; }
-  if ! git diff --quiet web/snapshot.d.ts; then
-    echo "pre-commit: web/snapshot.d.ts is out of date with the Rust structs." >&2
-    echo "            The regenerated file is in your tree — stage it:" >&2
-    echo "              git add web/snapshot.d.ts" >&2
+  if ! git diff --quiet web/snapshot.d.ts web/base.d.ts; then
+    echo "pre-commit: the generated types are out of date with the Rust structs." >&2
+    echo "            The regenerated files are in your tree — stage them:" >&2
+    echo "              git add web/snapshot.d.ts web/base.d.ts" >&2
     exit 1
   fi
 fi

@@ -297,7 +297,7 @@ function renderInteraction() {
 
 /** The escape hatch's box. Replaces the option row it belongs to, so there is one
  *  thing on screen to finish rather than a form beside a button that also works. */
-function openFreeAnswer(/** @type {HTMLElement} */ opts, /** @type {string} */ session, /** @type {string} */ ask, /** @type {import('../web/snapshot').InteractionOption} */ option) {
+function openFreeAnswer(/** @type {HTMLElement} */ opts, /** @type {string} */ session, /** @type {string} */ ask, /** @type {import('../web/base').InteractionOption} */ option) {
   if (opts.querySelector('.oqfree')) return;
   askFree = option.value;
   const wrap = el('div', 'oqfree');

@@ -1,0 +1,17 @@
+# Where the generated TypeScript goes.
+#
+# **Set here rather than in the three places that run the check**, because a bare
+# `cargo test` generates it too: without this, ts-rs falls back to a `bindings/`
+# directory beside whichever crate it is generating from, and the tree grows two
+# stray copies that nothing reads and nobody notices.
+#
+# It also has to be one value for the whole workspace. Two crates generate now —
+# `orchd` writes `snapshot.d.ts` and `orchd-base` writes `base.d.ts` — and ts-rs
+# derives the `import type … from "./base.d"` between them from this root. Let each
+# crate resolve its own `export_to` against its own manifest and that import points
+# at a file that is not there.
+#
+# `relative = true` means "relative to this config file's directory", so it is the
+# repo's `web/` however deep the crate is.
+[env]
+TS_RS_EXPORT_DIR = { value = "web", relative = true }

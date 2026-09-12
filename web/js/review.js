@@ -33,7 +33,7 @@ import { patchStats, hunkEl, fileListLabel } from './review-diff.js';
  *    head_sha: string,
  *    answerable: number,
  *    threads: import('../snapshot').Thread[],
- *    proposals: import('../snapshot').ProposalSet | null,
+ *    proposals: import('../base').ProposalSet | null,
  *    manual: import('../snapshot').ManualPhase | null,
  *    gate: import('../snapshot').Gate | null,
  *    checks: import('../snapshot').Checks,
@@ -109,7 +109,7 @@ const manualState = {
 /** One thread and the agent's proposal for it, the way `queue()` pairs them.
  *  Every card, box and count below takes one of these.
  *
- *  @typedef {{ t: import('../snapshot').Thread, p: import('../snapshot').Proposal }} QueueItem
+ *  @typedef {{ t: import('../snapshot').Thread, p: import('../base').Proposal }} QueueItem
  */
 
 const draftKey = (/** @type {string} */ id, /** @type {number} */ pos) => `${id} ${pos}`;
@@ -120,7 +120,7 @@ const modeOf = (/** @type {QueueItem} */ item) => reviewState.modes[item.t.id] |
 
 /** Whether a position would have the agent change code. Under `manual` the same
  *  position stages the same fix, but you are the one who writes it. */
-const writesCode = (/** @type {QueueItem} */ item, /** @type {import('../snapshot').Position} */ pos) => !!pos.patch && modeOf(item) === 'agent';
+const writesCode = (/** @type {QueueItem} */ item, /** @type {import('../base').Position} */ pos) => !!pos.patch && modeOf(item) === 'agent';
 
 /** Compact age off an ISO timestamp: `4h`, `6d`. */
 function commentAge(/** @type {string | null | undefined} */ iso) {
@@ -136,14 +136,14 @@ function queue() {
   const by = new Map(set.map((p) => [p.thread_id, p]));
   return (reviewState.data?.threads || [])
     .filter((t) => by.has(t.id))
-    .map((t) => ({ t, p: /** @type {import('../snapshot').Proposal} */ (by.get(t.id)) }));
+    .map((t) => ({ t, p: /** @type {import('../base').Proposal} */ (by.get(t.id)) }));
 }
 
 /** Whether a position can be acted on at all.
  *
  *  Only one thing makes a position unavailable: a story with no tracker
  *  configured. It is hidden rather than offered-and-refused. */
-const offered = (/** @type {import('../snapshot').Position} */ pos) => pos.stance !== 'story' || !!reviewState.data?.tracker;
+const offered = (/** @type {import('../base').Position} */ pos) => pos.stance !== 'story' || !!reviewState.data?.tracker;
 
 /** Which position is selected on a card: your pick, else the recommendation.
  *
@@ -697,7 +697,7 @@ let readsOpen = false;
  *  toggle *sticky for the session*: open one and they are all open. It resets to
  *  collapsed next launch, so each session starts with the human forming their own view.
  *  The prompt still keeps the read terse. */
-function rvRead(/** @type {import('../snapshot').Proposal} */ p) {
+function rvRead(/** @type {import('../base').Proposal} */ p) {
   const sec = el('div', 'sec');
   if (!readsOpen) {
     const tog = el('button', 'readtog');
@@ -744,7 +744,7 @@ function rvOptions(/** @type {QueueItem} */ item) {
   const list = el('div', 'opts');
   const chosen = reviewState.skipped[item.t.id] ? -1 : pickOf(item);
 
-  item.p.positions.forEach((/** @type {import('../snapshot').Position} */ pos, /** @type {number} */ i) => {
+  item.p.positions.forEach((/** @type {import('../base').Position} */ pos, /** @type {number} */ i) => {
     if (!offered(pos)) return;
     const b = el('button', 'opt' + (i === chosen ? ' on' : ''));
     const head = el('div', 'ohead');
@@ -784,7 +784,7 @@ function rvOptions(/** @type {QueueItem} */ item) {
 
 /** The daemon's appended free-text option ("Something else"): a reply stance with
  *  no drafted words. Identified by shape, not label, so a rename cannot break it. */
-const isFreeText = (/** @type {import('../snapshot').Position} */ pos) => pos.stance === 'reply' && !((pos.reply || '').trim());
+const isFreeText = (/** @type {import('../base').Position} */ pos) => pos.stance === 'reply' && !((pos.reply || '').trim());
 
 /** The reply box, shared by the card and the overview's edit toggle. Prefilled
  *  from the draft the read already produced — instant, nothing waits on the agent —
@@ -865,7 +865,7 @@ function rvCardReply(/** @type {QueueItem} */ item) {
 
 /** The footer under a reply box: what gets appended, and — only once the text
  *  actually differs from the draft — the offer to put it back. */
-function rvFootState(/** @type {HTMLElement} */ bodyEl, /** @type {QueueItem} */ item, /** @type {import('../snapshot').Position} */ pos, /** @type {number} */ i) {
+function rvFootState(/** @type {HTMLElement} */ bodyEl, /** @type {QueueItem} */ item, /** @type {import('../base').Position} */ pos, /** @type {number} */ i) {
   const foot = bodyEl.querySelector('.foot');
   if (!foot) return;
   foot.replaceChildren();
@@ -1673,7 +1673,7 @@ function sessionAsk() {
   const i = s && s.interaction && !s.interaction.answer ? s.interaction : null;
   return i && i.options ? i : null;
 }
-const askHasValue = (/** @type {import('../snapshot').Interaction | null | undefined} */ ask, /** @type {string} */ v) => !!ask && ask.options.some((/** @type {import('../snapshot').InteractionOption} */ o) => o.value === v);
+const askHasValue = (/** @type {import('../base').Interaction | null | undefined} */ ask, /** @type {string} */ v) => !!ask && ask.options.some((/** @type {import('../base').InteractionOption} */ o) => o.value === v);
 
 /** Start one session that reads, then makes the changes you pick and posts.
  *
@@ -2099,7 +2099,7 @@ function liveReviewSession(/** @type {number | null} */ pr) {
 function adoptable(/** @type {import('../snapshot').SessionView | null | undefined} */ s) {
   if (!s) return false;
   const i = s.interaction;
-  return !i || (!i.answer && i.options.some((/** @type {import('../snapshot').InteractionOption} */ o) => o.value === 'decisions'));
+  return !i || (!i.answer && i.options.some((/** @type {import('../base').InteractionOption} */ o) => o.value === 'decisions'));
 }
 
 /** Is a pass working through this PR, with nothing yet for you to act on?

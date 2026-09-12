@@ -46,21 +46,34 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const SRC = `${root}/src`;
 const BASELINE = `${root}/tools/rust-modules.json`;
 
+/** Every crate's `src/`, not just the daemon's.
+ *
+ *  **Written when `orchd-base` was split out**, because the thirteen modules that
+ *  moved took a mutual pair with them and this script — reading `src/` alone —
+ *  reported it as *fixed*. A tool that stops watching what it was watching is
+ *  worse than no tool: it says the number went down. Cargo enforces that no cycle
+ *  crosses a crate line, so what is left to count is inside each one. */
+const ROOTS = [`${root}/src`, ...readdirSync(`${root}/crates`, { withFileTypes: true })
+  .filter((d) => d.isDirectory())
+  .map((d) => `${root}/crates/${d.name}/src`)];
+
 const files = [];
-(function walk(d) {
-  for (const e of readdirSync(d)) {
-    const p = `${d}/${e}`;
-    if (statSync(p).isDirectory()) walk(p);
-    else if (e.endsWith('.rs')) files.push(p);
-  }
-})(SRC);
+for (const src of ROOTS) {
+  (function walk(d) {
+    for (const e of readdirSync(d)) {
+      const p = `${d}/${e}`;
+      if (statSync(p).isDirectory()) walk(p);
+      else if (e.endsWith('.rs')) files.push(p);
+    }
+  })(src);
+}
 
 /** `src/forge/github.rs` belongs to `forge`; `src/lib.rs` to no module. */
 function moduleOf(path) {
-  const rel = path.slice(SRC.length + 1).replace(/\.rs$/, '');
+  const src = ROOTS.find((r) => path.startsWith(`${r}/`));
+  const rel = path.slice(src.length + 1).replace(/\.rs$/, '');
   const first = rel.split('/')[0];
   return ['lib', 'main', 'bin', 'mod'].includes(first) ? null : first;
 }
@@ -85,9 +98,13 @@ function strip(src) {
 /** Modules `lib.rs` declares under `#[cfg(test)]` — `testutil` — are not in the
  *  shipped binary, so an edge into one is not a dependency of the daemon. */
 function testOnlyModules() {
-  const lib = readFileSync(`${SRC}/lib.rs`, 'utf8');
   const out = new Set();
-  for (const [, name] of lib.matchAll(/#\[cfg\(test\)\]\s*(?:pub\s+)?mod\s+([a-z_]+)\s*;/g)) out.add(name);
+  for (const src of ROOTS) {
+    const lib = readFileSync(`${src}/lib.rs`, 'utf8');
+    for (const [, name] of lib.matchAll(/#\[cfg\(test\)\]\s*(?:pub\s+)?mod\s+([a-z_]+)\s*;/g)) out.add(name);
+    // A fixture module behind a feature is test code too, whatever cargo calls it.
+    for (const [, name] of lib.matchAll(/#\[cfg\(any\(test,\s*feature = "test-util"\)\)\]\s*(?:pub\s+)?mod\s+([a-z_]+)\s*;/g)) out.add(name);
+  }
   return out;
 }
 const testOnly = testOnlyModules();

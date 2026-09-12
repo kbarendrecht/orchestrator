@@ -2321,13 +2321,29 @@ dependencies = [
  "axum",
  "bytes",
  "libc",
- "portable-pty",
+ "orchd-base",
  "serde",
  "serde_json",
  "tokio",
  "tower",
  "tracing",
  "tracing-subscriber",
+ "ts-rs",
+ "uuid",
+]
+
+[[package]]
+name = "orchd-base"
+version = "2026.9.12"
+dependencies = [
+ "anyhow",
+ "bytes",
+ "libc",
+ "portable-pty",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
  "ts-rs",
  "uuid",
 ]

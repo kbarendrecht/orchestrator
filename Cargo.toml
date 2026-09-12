@@ -1,5 +1,5 @@
 [workspace]
-members = ["desktop"]
+members = ["crates/orchd-base", "desktop"]
 
 # The four crates both this daemon and the desktop shell depend on. One version
 # each, in one place: they were declared twice and could drift, and a version skew
@@ -118,12 +118,16 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = { workspace = true }
+# The primitives, split out so `cargo` enforces the boundary this repo used to
+# hold with a script. `docs/crate-split.md` has the plan; every module it holds is
+# re-exported from `lib.rs` at the path it always had, so `crate::git::…` still
+# reads the same everywhere.
+orchd-base = { path = "crates/orchd-base" }
 axum = { version = "0.7", features = ["ws", "macros"] }
 bytes = "1"
 # `kill(pid, 0)` for the pid-liveness guards. The /proc stat it replaced was
 # silently always-false off Linux, and those guards fail open.
 libc = "0.2"
-portable-pty = "0.8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "net", "sync", "signal", "process", "io-util", "fs"] }
@@ -138,6 +142,9 @@ workspace = true
 opt-level = 2
 
 [dev-dependencies]
+# The scratch and git fixtures. `orchd-base` keeps them behind a feature because a
+# `#[cfg(test)]` module does not reach a dependent crate's tests.
+orchd-base = { path = "crates/orchd-base", features = ["test-util"] }
 ts-rs = { version = "12.0.1", features = ["uuid-impl"] }
 # Driving the bootstrap router in-process (`oneshot`) so its contract is tested
 # without binding a port or a browser.

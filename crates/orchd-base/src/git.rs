@@ -49,7 +49,7 @@ fn run(cwd: &Path, args: &[&str]) -> std::io::Result<std::process::Output> {
 
 /// Shell out to `git` rather than a library binding — you need fsmonitor and
 /// the real worktree/remote semantics (§1).
-pub(crate) fn git(cwd: &Path, args: &[&str]) -> Result<String> {
+pub fn git(cwd: &Path, args: &[&str]) -> Result<String> {
     let out = run(cwd, args).with_context(|| format!("running git {}", args.join(" ")))?;
     Ok(String::from_utf8_lossy(&checked(cwd, args, out)?).into_owned())
 }
@@ -1941,7 +1941,7 @@ pub fn effective_email(cwd: &Path) -> Option<String> {
 /// involved" and authorise a rewrite. Takes the arguments as a slice because
 /// `["-1 HEAD"]` is one argument git cannot parse — which is how the first draft of
 /// this check silently never fired.
-pub(crate) fn authors_in(cwd: &Path, args: &[&str]) -> Option<Vec<String>> {
+pub fn authors_in(cwd: &Path, args: &[&str]) -> Option<Vec<String>> {
     let mut argv = vec!["log", "--format=%ae"];
     argv.extend_from_slice(args);
     let out = run(cwd, &argv).ok().filter(|o| o.status.success())?;
@@ -1955,7 +1955,7 @@ pub(crate) fn authors_in(cwd: &Path, args: &[&str]) -> Option<Vec<String>> {
 }
 
 /// Does `rev` have more than one parent?
-pub(crate) fn is_merge(cwd: &Path, rev: &str) -> bool {
+pub fn is_merge(cwd: &Path, rev: &str) -> bool {
     run(cwd, &["rev-list", "--parents", "-n", "1", rev])
         .ok()
         .filter(|o| o.status.success())
@@ -1968,7 +1968,7 @@ pub(crate) fn is_merge(cwd: &Path, rev: &str) -> bool {
         .unwrap_or(false)
 }
 
-pub(crate) fn short(sha: &str) -> String {
+pub fn short(sha: &str) -> String {
     sha.chars().take(7).collect()
 }
 
@@ -1979,7 +1979,7 @@ pub(crate) fn short(sha: &str) -> String {
 /// this function's to guess at, and the caller says so in its refusal instead.
 ///
 /// Never for a person's own edits. The distinction is the whole safety of it — see
-/// [`crate::patch::write_batch`], which reverts, against `write_manual`, which must
+/// `patch::write_batch`, which reverts, against `write_manual`, which must
 /// not.
 pub fn restore_paths(cwd: &Path, paths: &[String]) -> Result<()> {
     for p in paths {
@@ -1998,12 +1998,12 @@ pub fn restore_paths(cwd: &Path, paths: &[String]) -> Result<()> {
 }
 
 /// Does this revision resolve?
-pub(crate) fn rev_exists(cwd: &Path, rev: &str) -> bool {
+pub fn rev_exists(cwd: &Path, rev: &str) -> bool {
     git_ok(cwd, &["rev-parse", "--verify", "--quiet", rev])
 }
 
 /// Is `a` an ancestor of `b`? Exit status only, so a failure means "no".
-pub(crate) fn is_ancestor(cwd: &Path, a: &str, b: &str) -> bool {
+pub fn is_ancestor(cwd: &Path, a: &str, b: &str) -> bool {
     git_ok(cwd, &["merge-base", "--is-ancestor", a, b])
 }
 

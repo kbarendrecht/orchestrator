@@ -14,11 +14,7 @@ use crate::pty::pid_alive;
 
 /// What the overview shows about a run: one row per thread, in plan order.
 #[derive(Debug, Clone, Serialize)]
-#[cfg_attr(
-    test,
-    derive(ts_rs::TS),
-    ts(export, export_to = "../web/snapshot.d.ts")
-)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "snapshot.d.ts"))]
 pub struct RunView {
     pub session: Uuid,
     pub threads: Vec<RunThreadView>,
@@ -35,11 +31,7 @@ pub struct RunView {
 }
 
 #[derive(Debug, Clone, Serialize)]
-#[cfg_attr(
-    test,
-    derive(ts_rs::TS),
-    ts(export, export_to = "../web/snapshot.d.ts")
-)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "snapshot.d.ts"))]
 pub struct RunThreadView {
     pub thread_id: String,
     pub location: String,
@@ -85,11 +77,7 @@ impl RunView {
 /// with its session. The proposals themselves are stored, so a restart loses the
 /// caption and not the work.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(
-    test,
-    derive(ts_rs::TS),
-    ts(export, export_to = "../web/snapshot.d.ts")
-)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "snapshot.d.ts"))]
 pub struct TriageProgress {
     /// Threads read so far.
     pub done: u32,
@@ -118,11 +106,7 @@ pub struct ResolveRun {
 }
 
 #[derive(Debug, Clone, Serialize, Default)]
-#[cfg_attr(
-    test,
-    derive(ts_rs::TS),
-    ts(export, export_to = "../web/snapshot.d.ts")
-)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "snapshot.d.ts"))]
 pub struct Repos {
     /// Where PRs are opened, e.g. `acme/monorepo`.
     pub upstream: Option<String>,
@@ -1443,11 +1427,7 @@ impl AppState {
 /// old name there, the way `pr_age_ms` sat unread and the divergence strip named
 /// a ref it had not measured.
 #[derive(Debug, Serialize)]
-#[cfg_attr(
-    test,
-    derive(ts_rs::TS),
-    ts(export, export_to = "../web/snapshot.d.ts")
-)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "snapshot.d.ts"))]
 pub struct Snapshot {
     /// The configured tracker's MCP server name, or `None` for no tracker.
     ///
@@ -1526,11 +1506,7 @@ pub struct Snapshot {
 }
 
 #[derive(Debug, Serialize)]
-#[cfg_attr(
-    test,
-    derive(ts_rs::TS),
-    ts(export, export_to = "../web/snapshot.d.ts")
-)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "snapshot.d.ts"))]
 pub struct PrView {
     #[serde(flatten)]
     pub pr: crate::forge::Pr,
@@ -1547,11 +1523,7 @@ pub struct PrView {
 /// person runs by hand (`git stash apply <at>`) and a second spelling of the name
 /// is a second thing to keep in step.
 #[derive(Debug, Clone, Serialize)]
-#[cfg_attr(
-    test,
-    derive(ts_rs::TS),
-    ts(export, export_to = "../web/snapshot.d.ts")
-)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "snapshot.d.ts"))]
 pub struct BankedView {
     #[cfg_attr(test, ts(type = "number"))]
     pub files: u32,
@@ -1559,11 +1531,7 @@ pub struct BankedView {
 }
 
 #[derive(Debug, Serialize)]
-#[cfg_attr(
-    test,
-    derive(ts_rs::TS),
-    ts(export, export_to = "../web/snapshot.d.ts")
-)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "snapshot.d.ts"))]
 pub struct WorkspaceView {
     pub id: String,
     pub path: String,
@@ -1620,11 +1588,7 @@ pub struct WorkspaceView {
 }
 
 #[derive(Debug, Serialize)]
-#[cfg_attr(
-    test,
-    derive(ts_rs::TS),
-    ts(export, export_to = "../web/snapshot.d.ts")
-)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "snapshot.d.ts"))]
 pub struct ProcessView {
     pub id: String,
     pub name: String,
@@ -1636,11 +1600,7 @@ pub struct ProcessView {
 }
 
 #[derive(Debug, Serialize)]
-#[cfg_attr(
-    test,
-    derive(ts_rs::TS),
-    ts(export, export_to = "../web/snapshot.d.ts")
-)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "snapshot.d.ts"))]
 pub struct SessionView {
     pub id: Uuid,
     pub workspace: String,

@@ -3127,7 +3127,7 @@ mod tests {
 
         // `true` exits immediately, which is the case that used to be lost.
         let pty = PtyHandle::spawn(
-            &[crate::pty::tests::TRUE_BIN.to_string()],
+            &[crate::testutil::TRUE_BIN.to_string()],
             std::path::Path::new("/tmp"),
             &[],
             &[],

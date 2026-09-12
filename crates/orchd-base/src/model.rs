@@ -25,9 +25,9 @@ pub const MAIN: &str = "main";
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 #[cfg_attr(
-    test,
+    any(test, feature = "test-util"),
     derive(ts_rs::TS),
-    ts(export, export_to = "../web/snapshot.d.ts")
+    ts(export, export_to = "base.d.ts")
 )]
 pub enum WorkspaceKind {
     /// Docker stack, dev URL, `ng build --watch`.
@@ -51,7 +51,7 @@ pub enum WorkspaceKind {
 #[derive(Debug, Default, Clone)]
 pub struct Tree {
     /// Everything changed since the branch point, committed and untracked both —
-    /// or the first [`crate::state::CHANGED_CAP`] of it, sorted by path.
+    /// or the first `state::CHANGED_CAP` of it, sorted by path.
     ///
     /// Truncated here rather than on the way out, so the big `Vec` is never held at
     /// all: this is cloned into every workspace of every snapshot, and a snapshot is
@@ -132,9 +132,9 @@ impl Workspace {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(
-    test,
+    any(test, feature = "test-util"),
     derive(ts_rs::TS),
-    ts(export, export_to = "../web/snapshot.d.ts")
+    ts(export, export_to = "base.d.ts")
 )]
 pub enum TurnReason {
     /// `Stop` — the common case under auto-accept.
@@ -162,16 +162,16 @@ pub enum TurnReason {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "state", rename_all = "snake_case")]
 #[cfg_attr(
-    test,
+    any(test, feature = "test-util"),
     derive(ts_rs::TS),
-    ts(export, export_to = "../web/snapshot.d.ts")
+    ts(export, export_to = "base.d.ts")
 )]
 pub enum State {
     Starting,
     Working,
     YourTurn {
         #[cfg_attr(
-            test,
+            any(test, feature = "test-util"),
             ts(type = "{ secs_since_epoch: number, nanos_since_epoch: number }")
         )]
         since: SystemTime,
@@ -273,12 +273,12 @@ impl State {
 /// nobody is". A session is a session; its state says whether it wants you.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(
-    test,
+    any(test, feature = "test-util"),
     derive(ts_rs::TS),
-    ts(export, export_to = "../web/snapshot.d.ts")
+    ts(export, export_to = "base.d.ts")
 )]
 pub struct Pass {
-    #[cfg_attr(test, ts(type = "number"))]
+    #[cfg_attr(any(test, feature = "test-util"), ts(type = "number"))]
     pub pr: u64,
     pub command: String,
 }
@@ -298,9 +298,9 @@ pub struct OutsideAsk {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "recovery", rename_all = "snake_case")]
 #[cfg_attr(
-    test,
+    any(test, feature = "test-util"),
     derive(ts_rs::TS),
-    ts(export, export_to = "../web/snapshot.d.ts")
+    ts(export, export_to = "base.d.ts")
 )]
 pub enum ArchiveState {
     Recoverable {
@@ -389,7 +389,7 @@ pub struct Session {
     /// folder it names and what is under it ([`Session::outside_granted`]), which
     /// is the smallest thing that still answers the case the ask is raised for.
     ///
-    /// **Deliberately not on [`crate::store::SessionRecord`]**: these are
+    /// **Deliberately not on `store::SessionRecord`**: these are
     /// decisions about the conversation in front of you, and a restart is exactly
     /// the moment to ask again rather than to assume.
     ///
@@ -606,9 +606,9 @@ impl Session {
 /// buttons instead of asking you to type into a terminal you cannot see.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(
-    test,
+    any(test, feature = "test-util"),
     derive(ts_rs::TS),
-    ts(export, export_to = "../web/snapshot.d.ts")
+    ts(export, export_to = "base.d.ts")
 )]
 pub struct Interaction {
     pub id: Uuid,
@@ -624,7 +624,7 @@ pub struct Interaction {
     /// prompt for prose the overlay has no box for.
     pub options: Vec<InteractionOption>,
     #[cfg_attr(
-        test,
+        any(test, feature = "test-util"),
         ts(type = "{ secs_since_epoch: number, nanos_since_epoch: number }")
     )]
     pub asked_at: SystemTime,
@@ -638,9 +638,9 @@ pub struct Interaction {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(
-    test,
+    any(test, feature = "test-util"),
     derive(ts_rs::TS),
-    ts(export, export_to = "../web/snapshot.d.ts")
+    ts(export, export_to = "base.d.ts")
 )]
 pub struct InteractionOption {
     /// What comes back to the agent. Its own vocabulary, not the label, so the
@@ -663,9 +663,9 @@ pub struct InteractionOption {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "health", rename_all = "snake_case")]
 #[cfg_attr(
-    test,
+    any(test, feature = "test-util"),
     derive(ts_rs::TS),
-    ts(export, export_to = "../web/snapshot.d.ts")
+    ts(export, export_to = "base.d.ts")
 )]
 pub enum Health {
     Starting,
@@ -677,9 +677,9 @@ pub enum Health {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 #[cfg_attr(
-    test,
+    any(test, feature = "test-util"),
     derive(ts_rs::TS),
-    ts(export, export_to = "../web/snapshot.d.ts")
+    ts(export, export_to = "base.d.ts")
 )]
 pub enum ProcKind {
     /// Declared per workspace in config. Health is parsed from output.
@@ -753,9 +753,9 @@ pub struct FileSet {
 // the SPA's type file should carry.
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(
-    test,
+    any(test, feature = "test-util"),
     derive(ts_rs::TS),
-    ts(export, export_to = "../web/snapshot.d.ts")
+    ts(export, export_to = "base.d.ts")
 )]
 pub struct DiffFile {
     pub path: String,

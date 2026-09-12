@@ -43,11 +43,7 @@ use crate::state::AppState;
 
 /// A newer agent build than the one installed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[cfg_attr(
-    test,
-    derive(ts_rs::TS),
-    ts(export, export_to = "../web/snapshot.d.ts")
-)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "snapshot.d.ts"))]
 pub struct AgentUpdate {
     /// The mise tool name to upgrade — `claude-code` or `claude`, whichever this
     /// checkout pins. Carried rather than assumed so the button upgrades the tool
@@ -180,11 +176,7 @@ fn upgrade_argv(tool: &str) -> Vec<String> {
 /// grew a tab that was not a process of main's at all. It reports through the same
 /// bar that offered the button instead.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[cfg_attr(
-    test,
-    derive(ts_rs::TS),
-    ts(export, export_to = "../web/snapshot.d.ts")
-)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "snapshot.d.ts"))]
 pub struct UpgradeRun {
     /// The version being installed. Carried so the bar can say it even after the
     /// check that found it has been refreshed away.
@@ -602,11 +594,7 @@ pub fn stable_exe(exe: &std::path::Path) -> std::path::PathBuf {
 
 /// A release newer than what is running.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[cfg_attr(
-    test,
-    derive(ts_rs::TS),
-    ts(export, export_to = "../web/snapshot.d.ts")
-)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export, export_to = "snapshot.d.ts"))]
 pub struct UpdateInfo {
     pub current: String,
     pub latest: String,

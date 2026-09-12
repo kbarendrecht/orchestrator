@@ -1,0 +1,57 @@
+# The primitives the daemon is built out of: processes, ptys, git, the data model,
+# the push guard, and the small leaves beside them.
+#
+# **The first of the crates `docs/crate-split.md` sketches, and the reason is the
+# module graph.** `tools/rust-modules.mjs` ratchets a number; `cargo` enforces the
+# same thing for free across a crate line, and nothing in here can import anything
+# above it however hard a later edit tries.
+#
+# Thirteen modules and no `config`: this crate knows how to run git, not what this
+# checkout is. `migrate` and `names` are layer-0 leaves that would have fitted, and
+# stayed in `orchd` because their *tests* assert against `config::Config::parse`
+# and `spawn::validate_worktree_name` — a pair test belongs with the pair, and
+# nothing in here depends on either module.
+[package]
+name = "orchd-base"
+version = "2026.9.12"
+edition = "2021"
+description = "Process, pty, git and data-model primitives for orchd"
+repository = "https://github.com/kbarendrecht/orchestrator"
+license = "AGPL-3.0-only"
+authors = ["Kars Barendrecht <18546657+kbarendrecht@users.noreply.github.com>"]
+publish = false
+
+[dependencies]
+anyhow = { workspace = true }
+bytes = "1"
+libc = "0.2"
+portable-pty = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# `sync` for the pty's broadcast, `time` for its deadlines. Not `full`: this crate
+# runs no server and opens no socket.
+tokio = { workspace = true, features = ["rt", "sync", "time", "macros"] }
+tracing = { workspace = true }
+uuid = { version = "1", features = ["v4", "serde"] }
+
+# Generates `web/snapshot.d.ts` from the structs in `model.rs` and `proposal.rs`.
+#
+# **Optional rather than a dev-dependency, which is the crate line showing.** As a
+# dev-dependency it exists only while *this* crate's own tests build — and
+# `orchd`'s tests build this one as an ordinary dependency, so the `TS` derives
+# would vanish exactly when `orchd`'s own generated types need them.
+ts-rs = { version = "12.0.1", features = ["uuid-impl"], optional = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+ts-rs = { version = "12.0.1", features = ["uuid-impl"] }
+
+[features]
+# The scratch-directory and git fixtures, and the `TS` derives that go with them.
+# Behind a feature rather than `#[cfg(test)]` because a `#[cfg(test)]` item is not
+# compiled for a *dependent* crate's tests — the one thing that does not survive a
+# crate boundary unchanged.
+test-util = ["dep:ts-rs"]
+
+[lints]
+workspace = true

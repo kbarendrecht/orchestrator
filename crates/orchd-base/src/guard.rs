@@ -1,6 +1,6 @@
 //! The blast-radius guard for `git push`, run as a `PreToolUse` hook (§8).
 //!
-//! Registered by [`crate::hooks::write_settings`] and executed by `orch guard
+//! Registered by `hooks::write_settings` and executed by `orch guard
 //! push`, which is why the rules live in the library rather than in the binary:
 //! they are testable here, and the binary is a thin `stdin -> exit code`.
 //!
@@ -307,7 +307,7 @@ fn cd_target(segment: &str) -> Option<Option<PathBuf>> {
 /// The spelling half of [`resolve`], for the one caller with no cwd to resolve
 /// against: `api::allow_outside` stores a grant that this module later compares,
 /// so `/repo/../repo` and `/repo` have to be the same string on both sides.
-pub(crate) fn fold(path: &Path) -> PathBuf {
+pub fn fold(path: &Path) -> PathBuf {
     resolve(None, path)
 }
 
