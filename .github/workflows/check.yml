@@ -74,9 +74,11 @@ jobs:
       # `cargo clippy --workspace --all-targets -- -D warnings`, and fix what the new release
       # found in the same commit. To collapse this to one source of truth, CI would
       # have to provision Rust through mise as well (`jdx/mise-action`).
+      # `rustfmt` as well as `clippy`: the toolchain action installs only what it
+      # is asked for, and `cargo fmt` is a gate here now.
       - uses: dtolnay/rust-toolchain@1.97.1
         with:
-          components: clippy
+          components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
         with:
           # Or the two platforms share one cache key and evict each other.
