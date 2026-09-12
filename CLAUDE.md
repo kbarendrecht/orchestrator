@@ -40,8 +40,24 @@ re-litigates them from the doctrine alone:
 - `clippy::indexing_slicing` — 59 sites, and about a dozen are
   `body["key"] = json!(…)` on a `serde_json::Value`, where `IndexMut` inserts and
   cannot panic. A lint that fires on a safe, idiomatic API is a lint people learn
-  to `#[allow]`, and the habit then covers the real ones. The rest of the list is
-  worth a pass with the open crash report (#14, in `diff.rs`) in hand.
+  to `#[allow]`, and the habit then covers the real ones.
+  **The pass over the rest is done, and it produced tests rather than `.get()`.**
+  Twenty-nine of those sites — half the workspace — are in `diff.rs`, and every
+  one is an LCS table walk or a tokenizer byte offset: the shape where `[i]` *is*
+  the algorithm, and `.get(i).unwrap_or(&0)` would turn an indexing bug into a
+  silently wrong highlight rather than a panic. Each was read and is provably in
+  range, and reading is not evidence — so
+  `the_word_diff_survives_adversarial_lines` and the two beside it drive a
+  thousand generated pairs of the strings that break byte-wise handling
+  (four-byte encodings, a combining mark, a zero-width joiner) and assert the
+  contract `Row::words` promises. **Checked against deliberate breakage**, which
+  is what says the tests have any power: dropping the tokenizer's char-boundary
+  advance and indexing one past the LCS walk each fail them.
+  One thing the pass corrected: this entry used to send the reader to "the open
+  crash report (#14, in `diff.rs`)". **#14 is not a `diff.rs` panic** — it is the
+  AppKit window-drag abort, fixed in `9048384` and `8fb2d0c`, and open only
+  because it waits on the reporter's version. There is no known panic in
+  `diff.rs` and never was one.
 - `cargo nextest` — one process per test is the right shape for a suite whose
   fixtures are process-global, and it is **3x slower here** (50s against 16s,
   because most of these tests spawn git) *and* the generated-bindings tests race

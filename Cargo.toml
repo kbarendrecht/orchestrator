@@ -78,9 +78,13 @@ unsafe_code = "deny"
 # read. The two CLI binaries allow it at the top of the file, and that allow is the
 # statement that they are CLIs.
 #
-# `indexing_slicing` is deliberately **not** here yet: 59 sites, 21 of them in
-# `diff.rs`, which is the changed-files parser named in the one open crash report.
-# That is a pass with a bug to chase, not a lint to flip.
+# `indexing_slicing` is deliberately **not** here, and the pass that settled it is
+# in CLAUDE.md. 59 sites, 29 of them in `diff.rs`, where every one is an LCS table
+# walk or a tokenizer offset — `[i]` is the algorithm there, and `.get(i)` would
+# turn a bug into a wrong answer instead of a panic. The sites stay; what the pass
+# produced is three tests driving generated adversarial lines through them.
+# `diff.rs` was named here as the site of an open crash report, and that was
+# wrong: #14 is the AppKit window-drag abort, and it is fixed.
 [workspace.lints.clippy]
 unwrap_used = "deny"
 expect_used = "deny"

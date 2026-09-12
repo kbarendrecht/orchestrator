@@ -797,4 +797,164 @@ index 111..222 100644
         assert!(d.binary);
         assert!(d.hunks.is_empty());
     }
+
+    /// Deterministic noise, so a failure is a bug report rather than a rerun.
+    ///
+    /// No `rand` dependency for eight lines of xorshift, and a fixed seed because
+    /// a generator that picks its own gives you a test that fails on somebody
+    /// else's machine and passes on yours.
+    struct Noise(u64);
+
+    impl Noise {
+        fn next(&mut self) -> u64 {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            self.0
+        }
+
+        fn upto(&mut self, n: usize) -> usize {
+            (self.next() % n as u64) as usize
+        }
+
+        /// A line built from the pieces that break byte-wise string handling.
+        fn line(&mut self, pieces: usize) -> String {
+            // One, two, three and four byte encodings, a combining mark that makes
+            // one glyph out of two code points, a zero-width joiner, and the plain
+            // ASCII the tokenizer classifies three ways.
+            const PARTS: [&str; 16] = [
+                "name", "_x", "42", " ", "  ", "\t", ".", "->", "(", ")", "\"q\"", "é", "世", "🎉",
+                "e\u{301}", "\u{200d}",
+            ];
+            let mut out = String::new();
+            for _ in 0..pieces {
+                out.push_str(PARTS[self.upto(PARTS.len())]);
+            }
+            out
+        }
+    }
+
+    /// What every byte range this module hands out has to be true of.
+    ///
+    /// **The char-boundary half is the new one, and it is the one with a
+    /// consumer.** `diff.js` turns each range into a character offset with
+    /// `TextDecoder` over a byte slice, so a range landing mid-character does not
+    /// throw — it decodes a replacement character and silently highlights the
+    /// wrong span, which is the failure nobody reports. The ordering half
+    /// `ranges_are_ordered_and_do_not_overlap` already asserts; what it asserts it
+    /// over is one hand-picked ASCII pair, and what this is for is everything
+    /// else.
+    fn ranges_are_sane(text: &str, ranges: &[(usize, usize)], what: &str) {
+        let mut prev_end = 0;
+        for &(s, e) in ranges {
+            assert!(
+                s < e,
+                "{what}: empty or inverted range ({s}, {e}) in {text:?}"
+            );
+            assert!(
+                e <= text.len(),
+                "{what}: range ({s}, {e}) past the end of {text:?}"
+            );
+            assert!(
+                text.is_char_boundary(s) && text.is_char_boundary(e),
+                "{what}: range ({s}, {e}) splits a character in {text:?}"
+            );
+            assert!(
+                s >= prev_end,
+                "{what}: ranges overlap or run backwards at ({s}, {e}) in {text:?}"
+            );
+            prev_end = e;
+        }
+    }
+
+    /// The word-level diff is indexed and sliced throughout, and this is what says
+    /// the indices are in range.
+    ///
+    /// **`clippy::indexing_slicing` is not on for this crate, and this test is the
+    /// reason it does not need to be.** Twenty-nine of the workspace's sites are in
+    /// this one file, and every one is an LCS table walk or a tokenizer offset —
+    /// the shape where `[i]` *is* the algorithm and `.get(i)` would turn a bug into
+    /// a wrong answer instead of a panic. So the sites stay, and a thousand
+    /// adversarial pairs say what the lint would only have gestured at: they are in
+    /// range, and the ranges they produce keep the promise `Row::words` makes.
+    #[test]
+    fn the_word_diff_survives_adversarial_lines() {
+        let mut noise = Noise(0x5eed_1234_9abc_def0);
+        for _ in 0..1000 {
+            let a = noise.line(noise.0 as usize % 12);
+            let b = noise.line(noise.0 as usize % 12);
+
+            let toks = tokenize(&a);
+            let joined: String = toks.iter().map(|(_, t)| *t).collect();
+            assert_eq!(joined, a, "the tokenizer lost or reordered bytes");
+            for &(at, tok) in &toks {
+                assert!(
+                    a.is_char_boundary(at),
+                    "token offset {at} splits a character"
+                );
+                assert_eq!(
+                    &a[at..at + tok.len()],
+                    tok,
+                    "token offset does not point at its own text"
+                );
+            }
+
+            let (da, db) = word_ranges(&a, &b);
+            ranges_are_sane(&a, &da, "the deleted side");
+            ranges_are_sane(&b, &db, "the added side");
+        }
+    }
+
+    /// The same, over the two boundaries the generator above will not reach on its
+    /// own: an empty side, and a line long enough to take the `MAX` escape.
+    #[test]
+    fn the_word_diff_survives_its_own_edges() {
+        let mut noise = Noise(0x0dd_c0ffee);
+        // 400 tokens is the cap, so this crosses it from both sides.
+        let long_a = noise.line(1200);
+        let long_b = noise.line(1200);
+        for (a, b) in [
+            ("", ""),
+            ("", "added"),
+            ("removed", ""),
+            ("same", "same"),
+            ("é", "e\u{301}"),
+            ("🎉", ""),
+            (long_a.as_str(), long_b.as_str()),
+            (long_a.as_str(), ""),
+        ] {
+            let (da, db) = word_ranges(a, b);
+            ranges_are_sane(a, &da, "the deleted side");
+            ranges_are_sane(b, &db, "the added side");
+        }
+    }
+
+    /// `mark_words` walks two runs with hand-managed indices, and an unbalanced
+    /// pair is the case that made it `continue` without advancing. Driven over
+    /// generated runs rather than the three fixtures above it.
+    #[test]
+    fn pairing_runs_of_any_shape_terminates_and_stays_in_range() {
+        let mut noise = Noise(0xfeed_face_cafe_babe);
+        for _ in 0..300 {
+            let mut rows = Vec::new();
+            for _ in 0..noise.upto(12) {
+                let kind = match noise.upto(3) {
+                    0 => RowKind::Context,
+                    1 => RowKind::Del,
+                    _ => RowKind::Add,
+                };
+                rows.push(Row {
+                    kind,
+                    old: None,
+                    new: None,
+                    text: noise.line(noise.0 as usize % 8),
+                    words: Vec::new(),
+                });
+            }
+            mark_words(&mut rows);
+            for row in &rows {
+                ranges_are_sane(&row.text, &row.words, "a paired row");
+            }
+        }
+    }
 }
