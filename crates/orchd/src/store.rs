@@ -411,60 +411,6 @@ pub fn load_stories() -> crate::model::Cache {
     load_json(stories_path())
 }
 
-fn manual_path() -> Result<PathBuf> {
-    Ok(Config::config_dir()?.join("manual.json"))
-}
-
-/// Batches that stopped for the manual phase, per PR.
-///
-/// Persisted because the alternative is a stranded branch: the accepted patches are
-/// already committed by the time the phase opens, and losing the resume pointer to a
-/// restart leaves work that can only be finished by hand in git. `fold_in` rewrites
-/// shas, so nothing can re-derive which commit was ours.
-pub fn save_manual(
-    phases: &std::collections::HashMap<u64, crate::model::ManualPhase>,
-) -> Result<()> {
-    save_json(&manual_path()?, phases)
-}
-
-/// Degrading to empty costs the resume, which is bad but recoverable by hand;
-/// refusing to boot would cost every session.
-pub fn load_manual() -> std::collections::HashMap<u64, crate::model::ManualPhase> {
-    load_json(manual_path())
-}
-
-fn resolve_runs_path() -> Result<PathBuf> {
-    Ok(Config::config_dir()?.join("resolve-runs.json"))
-}
-
-/// Resolve runs, per PR.
-///
-/// Persisted for the same reason as `manual.json` and not the same reason as
-/// `sessions.json`: the run's commits are already in git by the time anything can
-/// go wrong, and this record is the only thing that says which commit answers
-/// which reviewer. Without it a restart left a branch of commits and no map.
-pub fn save_resolve_runs(
-    runs: &std::collections::HashMap<u64, crate::model::ResolveRun>,
-) -> Result<()> {
-    save_json(&resolve_runs_path()?, runs)
-}
-
-/// Every run the last daemon knew about, marked as over.
-///
-/// The session cannot have survived the restart — the daemon owns every pty and
-/// takes them with it — so a restored run is an account, never something still
-/// moving. Said here rather than left for a reader to infer, because a thread
-/// reading `pending` in an overview otherwise looks imminent forever.
-pub fn load_resolve_runs() -> std::collections::HashMap<u64, crate::model::ResolveRun> {
-    let mut runs: std::collections::HashMap<u64, crate::model::ResolveRun> =
-        load_json(resolve_runs_path());
-    for r in runs.values_mut() {
-        r.ended
-            .get_or_insert_with(|| "the daemon restarted; the session did not survive it".into());
-    }
-    runs
-}
-
 pub fn save(records: &[SessionRecord]) -> Result<()> {
     save_json(&path()?, records)
 }
@@ -1117,40 +1063,6 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn a_manual_phase_survives_a_round_trip() {
-        // The file exists so a restart does not strand a batch whose patches are
-        // already committed, which means the digest has to mean the same thing in the
-        // next process too.
-        let phase = crate::model::ManualPhase {
-            committed: "4c1e9a27f3b8d1e5a9c2f7b4e8d3a6c1f5b9e2d7".into(),
-            files: vec![crate::patch::FileStat {
-                path: "renovate.json5".into(),
-                added: 3,
-                deleted: 1,
-            }],
-            amend: Some("folded into 9b21f04".into()),
-            threads: vec![crate::model::ManualThread {
-                thread_id: "PRRT_1".into(),
-                label: "a.ts:12 · alice".into(),
-                comment: "belongs in the repository".into(),
-                draft: String::new(),
-            }],
-            decisions: "0badc0de0badc0de".into(),
-            open: true,
-        };
-        let map: std::collections::HashMap<u64, crate::model::ManualPhase> =
-            [(10001, phase)].into();
-        let back: std::collections::HashMap<u64, crate::model::ManualPhase> =
-            serde_json::from_str(&serde_json::to_string(&map).unwrap()).unwrap();
-
-        let got = back.get(&10001).expect("the phase");
-        assert_eq!(got.committed, map[&10001].committed);
-        assert_eq!(got.decisions, "0badc0de0badc0de", "the digest must survive");
-        assert_eq!(got.files[0].path, "renovate.json5");
-        assert_eq!(got.threads[0].thread_id, "PRRT_1");
     }
 
     #[test]

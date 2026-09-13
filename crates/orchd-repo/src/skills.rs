@@ -46,15 +46,6 @@ pub const ORCH: &str = include_str!("../../../skills/orch/SKILL.md");
 /// rule.
 pub const GREEN: &str = include_str!("../../../skills/green/SKILL.md");
 
-/// The read-and-propose pass over a PR's review threads.
-///
-/// Converted from `commands/triage.md`, which was rendered per run: a skill is
-/// static, so the seven values that were substituted come from
-/// `/api/pr/:n/triage-context` at the start of the pass instead. That is also what
-/// makes it work when a person types it, which a prompt file the daemon wrote
-/// never did.
-pub const TRIAGE: &str = include_str!("../../../skills/triage/SKILL.md");
-
 /// Getting a PR green, mechanically: take the base in, fix the red, amend, push,
 /// watch.
 ///
@@ -71,8 +62,8 @@ pub const FIX_PR: &str = include_str!("../../../skills/fix-pr/SKILL.md");
 /// **The default answer to the rail's review button**, and the reason is the
 /// overlay rather than this file: the cards are not good enough to be the only way
 /// through a review yet, so the flow that puts one agent and one terminal in front
-/// of you is the one the button starts. `triage` and the overlay stay a menu item
-/// away, and `RESOLVE_RUN` still carries out what the cards decide.
+/// of you is the one the button starts. The `review` session stays a menu item
+/// away.
 ///
 /// Vendored from the monorepo's own `/resolve`, which is where it was proven —
 /// and generalised on the way, per this repo's own rule about one repo not being
@@ -102,42 +93,23 @@ pub const STORY: &str = include_str!("../../../skills/story/SKILL.md");
 /// The overlay session: read the threads, propose, make what the human picked, post.
 ///
 /// Converted from `commands/review-session.md`, the most interpolated of them —
-/// nine substitutions, and the values reach it the way `triage`'s do, because this
-/// pass has the same post token and asks the same route. `upstream` was added to
+/// nine substitutions, and the values reach it through `/api/pr/:n/triage-context`
+/// at the start of the pass, because a skill is static. `upstream` was added to
 /// `triage-context` for it: the prompt used it for "CI red or behind the base is
 /// fix-pr's job", and deriving it in the skill would have been a second answer to
 /// what "behind" means.
 pub const REVIEW: &str = include_str!("../../../skills/review/SKILL.md");
-
-/// Carrying out a triaged review: apply, commit per thread, tell the daemon.
-///
-/// Converted from `commands/resolve-run.md`, and the conversion cost nothing that
-/// prompt was doing: three of its four substitutions were prose (`{{PR}}`,
-/// `{{OWNER}}/{{REPO}}` in the opening sentence) and the fourth was `{{ASK_BASE}}`,
-/// which is `$ORCH_URL/api/session` — a variable the run already has. Only the
-/// plan's path is genuinely per-run, and that rides in the environment beside the
-/// fix run's values.
-///
-/// One thing the conversion settled rather than carried over: the prompt told a
-/// `mode: "manual"` thread to "ask the question below", two sections above saying
-/// there is no question channel. The question below was `/stuck`, so the skill says
-/// `/stuck` — the ask token here is for `committed` and `stuck`, never for asking.
-pub const RESOLVE_RUN: &str = include_str!("../../../skills/resolve-run/SKILL.md");
 
 /// The four values a fix run finds in its environment.
 ///
 /// Named here because **the two halves must agree**: `spawn::spawn_fix_pr_session`
 /// sets these and `skills/fix-pr/SKILL.md` reads them, and a rename on one side
 /// alone is silent — the skill would fall back to asking `gh` for a value the
-/// daemon had already handed it, or stop for one it thinks is missing. The same
-/// reason `RESOLVE_RUN_COMMAND` is a constant rather than four literals.
+/// daemon had already handed it, or stop for one it thinks is missing.
 pub const VAR_PR: &str = "ORCH_PR";
 pub const VAR_UPSTREAM: &str = "ORCH_UPSTREAM";
 pub const VAR_UPSTREAM_REMOTE: &str = "ORCH_UPSTREAM_REMOTE";
 pub const VAR_LOGIN: &str = "ORCH_LOGIN";
-/// Where a resolve run finds the plan it is carrying out. Same rule as the four
-/// above: the daemon writes the file and names it here, the skill reads it here.
-pub const VAR_PLAN: &str = "ORCH_PLAN";
 /// The story pass: what to file, where to report, and the host a URL must be on.
 pub const VAR_STORIES: &str = "ORCH_STORIES";
 pub const VAR_DROP: &str = "ORCH_DROP";
@@ -154,9 +126,7 @@ pub const VAR_LANGUAGE: &str = "ORCH_LANGUAGE";
 pub const VENDORED: &[(&str, &str)] = &[
     ("orch", ORCH),
     ("green", GREEN),
-    ("triage", TRIAGE),
     ("fix-pr", FIX_PR),
-    ("resolve-run", RESOLVE_RUN),
     ("review", REVIEW),
     ("story", STORY),
     ("handle-review", HANDLE_REVIEW),
@@ -270,7 +240,6 @@ mod tests {
                 FIX_PR,
                 &[VAR_PR, VAR_UPSTREAM, VAR_UPSTREAM_REMOTE, VAR_LOGIN][..],
             ),
-            ("resolve-run", RESOLVE_RUN, &[VAR_PLAN][..]),
             (
                 "story",
                 STORY,

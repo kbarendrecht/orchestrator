@@ -34,7 +34,6 @@ import { patchStats, hunkEl } from './review-diff.js';
  *    answerable: number,
  *    threads: import('../repo').Thread[],
  *    proposals: import('../base').ProposalSet | null,
- *    manual: import('../snapshot').ManualPhase | null,
  *    gate: import('../snapshot').Gate | null,
  *    checks: import('../repo').Checks,
  *    mergeable: string,
@@ -1302,50 +1301,22 @@ function reviewTick() {
      the whole record needed to pick the thread up: command `review`, with the PR
      on it.
 
-     Deliberately not `resolve_runs`: `store::load_resolve_runs` marks every run
-     ended at boot, on purpose, because no pty survives a restart. It is an account
-     of which commit answered which thread, not a claim that anything is running.
-
      Only the session you are looking at. That is the one the bar would draw for
      anyway — `renderBar` refuses to caption another session's pane — and it is the
      one question with a single answer when two reviews are in flight. */
   if (!reviewState.session && selected) {
     const s = (snap.sessions || []).find((x) => x.id === selected);
     const k = s && s.alive ? s.pass : null;
-    if (s && k && k.command === 'resolve-run') {
-      // Mid-run, from a reload or from landing on its pane: the plan is gone and
-      // the run's own record is what the screen and the bar read.
-      reviewState.pr = k.pr;
-      reviewState.session = s.id;
-      reviewState.decisionsSent = true;
-      reviewState.screen = 'run';
-    } else if (s && k && (k.command === 'review' || k.command === 'triage')) {
+    if (s && k && k.command === 'review') {
       reviewState.pr = k.pr;
       reviewState.session = s.id;
       reviewState.proposalsLoaded = false;
-      /* Which phase, inferred, because nothing states it: a thread leaves
-         `pending` when the apply phase acts on it, so anything else means the
-         decisions went in before the restart. The cost of being wrong is one
-         caption on the bar, and the next decision ask corrects it. */
-      const run = (snap.resolve_runs || {})[k.pr];
-      reviewState.decisionsSent = !!run && run.threads.some((t) => t.status !== 'pending');
       reviewState.screen = 'reading';
     }
   }
   if (!reviewState.session) return;
   const ask = sessionAsk();
 
-  /* **The triage pass says so by posting, not by asking.** It has `asks: false`
-     and ends at the proposals POST, so the decision ask below never comes and the
-     screen would sit on `reading` with the cards already waiting behind it. The
-     daemon sets `posted` in the same write that stores them. */
-  const t = (snap.triage || {})[String(reviewState.pr)];
-  if (t && t.posted && !reviewState.proposalsLoaded) {
-    reviewState.proposalsLoaded = true;
-    reviewState.screen = 'overview';
-    void loadReview(reviewState.pr);
-    return;
-  }
   // The decision ask appears only after the session has posted its proposals, so it
   // is the proof they are ready. Fetch them once, then show the cards.
   if (askHasValue(ask, 'decisions') && !reviewState.proposalsLoaded) {
@@ -1357,23 +1328,6 @@ function reviewTick() {
   // The session ended.
   const s = (snap.sessions || []).find((x) => x.id === reviewState.session);
   if (s && s.alive) return;
-
-  /* **The read pass ending is a hand-over, not the end of the review.**
-     `spawn_resolve_run` closes it to take its worktree, so from here the work is
-     the run's: follow it. Without this the tail below let go of the whole state —
-     session null, `proposalsLoaded` false — and the triage branch above then fired
-     again on the next tick, which is the overview appearing over a run you had just
-     approved a commit for. */
-  const run = (snap.resolve_runs || {})[String(reviewState.pr)];
-  if (run && !run.ended) {
-    if (reviewState.session !== run.session || reviewState.screen !== 'run') {
-      reviewState.session = run.session;
-      reviewState.decisionsSent = true;
-      reviewState.screen = 'run';
-      renderReview();
-    }
-    return;
-  }
 
   // Handed the checks on. The review's last act is `/handoff`, which ends the
   // session and lets its exit start a `fix-pr` run — so the work is somewhere else
@@ -1640,37 +1594,7 @@ function adoptable(/** @type {import('../snapshot').SessionView | null | undefin
   return !i || (!i.answer && i.options.some((/** @type {import('../snapshot').InteractionOption} */ o) => o.value === 'decisions'));
 }
 
-/** Is a pass working through this PR, with nothing yet for you to act on?
- *
- *  **The one question both the door and the bar ask.** Asking it two ways is what
- *  hid the `open` button at the moment it was wanted: the bar's phases are ordered
- *  so that "N threads waiting on you" answers before the posted branch does, so a
- *  flag set in that branch was never reached once the cards existed.
- *
- *  Two phases answer yes, and the overlay has nothing worth a window in either.
- *  Reading: no cards yet. Applying: the cards are spent, the decisions are made,
- *  and what is left is an agent working — which the bar reports in a line, next to
- *  the pane where that agent asks anything it needs. The screen becomes worth
- *  opening again when the run is done and its push and re-request buttons are. */
-function busyOnItsOwn(/** @type {number | null} */ pr) {
-  const t = (snap.triage || {})[String(pr)];
-  if (t && !t.posted) return true;
-  const run = (snap.resolve_runs || {})[String(pr)];
-  return !!run && !run.ended && run.threads.some((x) => x.status === 'pending');
-}
-
 async function openReview(/** @type {number | null} */ pr) {
-  /* Nothing to open while the pass is still reading: the only screen the overlay
-     has then is a full window repeating what the bar says in a line, over the pane
-     where the agent's own questions appear. Guarded here rather than at the button,
-     because the chord and the ask box's `back to the review` reach the same
-     place. */
-  if (busyOnItsOwn(pr)) {
-    const t = (snap.triage || {})[String(pr)];
-    return toast(t && !t.posted
-      ? `triage is reading thread ${Math.min(t.done + 1, t.total)} of ${t.total}`
-      : 'the run is applying your decisions');
-  }
   // Two overlays at the same z-index would stack; the diff viewer goes first.
   if (Diff.state.open) void Diff.close();
   if (reviewState.pr !== pr) {
@@ -1866,36 +1790,10 @@ function barState() {
       ? { tone: 'attn', what: `${left} of ${q.length} threads waiting on you` }
       : { tone: 'attn', what: `${q.length} threads decided · not sent yet` };
   }
-  /* The run's own record, counted the way the read pass is: what is settled out of
-     what was handed over. `pending` is the only status that means "not yet". */
-  if (reviewState.decisionsSent) {
-    const run = (snap.resolve_runs || {})[String(reviewState.pr)];
-    if (run && run.threads.length) {
-      const done = run.threads.filter((t) => t.status !== 'pending').length;
-      return done < run.threads.length
-        ? { tone: 'work', what: `applying · thread ${done + 1} of ${run.threads.length}` }
-        : { tone: 'ok', what: `applied · ${run.threads.length} answered` };
-    }
-    return { tone: 'work', what: 'applying · writing the code' };
-  }
-  /* What the triage pass is doing, counted by the pass itself: the daemon knows
-     how many threads it handed over, not which one the agent is on. `posted` is
-     the moment the cards exist, and it is the only thing that turns this bar from
-     a progress report into a request. */
-  const t = (snap.triage || {})[String(reviewState.pr)];
-  if (t && t.posted) {
-    return { tone: 'attn', what: `triage done · ${t.total} threads need your call` };
-  }
-  /* The phase, then the step inside it. `triage` is the pass; `reading thread 2 of
-     3` is where it has got to, and the two answer different questions: what is
-     happening at all, and whether it is moving. */
-  if (t && t.total) {
-    return {
-      tone: 'work',
-      what: `triage · reading thread ${Math.min(t.done + 1, t.total)} of ${t.total}`,
-    };
-  }
-  return { tone: 'work', what: 'triage · reading the threads' };
+  // The session is carrying out what you decided, and it says how far it has got
+  // in its own pane rather than through the daemon.
+  if (reviewState.decisionsSent) return { tone: 'work', what: 'applying · writing the code' };
+  return { tone: 'work', what: 'review · reading the threads' };
 }
 
 /** Draw the bar, or take it away.
@@ -1921,10 +1819,9 @@ function renderBar() {
      replaced the bar's own children. `:hover` is re-targeted on every rebuild, so
      the `open` button strobed under the pointer, and a click whose mousedown and
      mouseup land on two different nodes is never delivered — the button that
-     flickers and does not open. `busyOnItsOwn` is in the signature because it
-     decides whether that button exists at all, and the class toggle below is
-     idempotent, so skipping it costs nothing. */
-  if (unchanged(barDrawn, [st, reviewState.pr, busyOnItsOwn(reviewState.pr)])) return;
+     flickers and does not open. The class toggle below is idempotent, so skipping
+     it costs nothing. */
+  if (unchanged(barDrawn, [st, reviewState.pr])) return;
   // The pane is Claude's while the agent has the turn, so it reads as Claude's:
   // dimmed, with the bar at full strength over it. Only on `work` — the lift back
   // to normal is itself the signal that the turn came back to you.
@@ -1936,15 +1833,9 @@ function renderBar() {
   host.appendChild(el('span', 'dot'));
   host.appendChild(el('span', 'k', `REVIEW · PR ${reviewState.pr}`));
   host.appendChild(el('span', 'what', st.what));
-  /* **Only when there is something to open.** While the pass reads, the overlay
-     has one screen and it is a full window saying somebody else is working: the
-     bar already says that, in one line, next to the pane where the agent's own
-     questions appear. The button arrives with the cards. */
-  if (!busyOnItsOwn(reviewState.pr)) {
-    const go = el('button', 'go', `open · ${MOD_LABEL}\u21e7R`);
-    go.onclick = () => openReview(reviewState.pr);
-    host.appendChild(go);
-  }
+  const go = el('button', 'go', `open · ${MOD_LABEL}\u21e7R`);
+  go.onclick = () => openReview(reviewState.pr);
+  host.appendChild(go);
   host.hidden = false;
 }
 

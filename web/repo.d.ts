@@ -30,12 +30,6 @@ export type DiffSummary = { base: string, files: Array<DiffFile>, added: number,
 
 export type FileDiff = { path: string, hunks: Array<Hunk>, binary: boolean, truncated: boolean, };
 
-/**
- * A path the batch will touch, with its line counts — the data behind the
- * card's `will write renovate.json5 +2 −1` label.
- */
-export type FileStat = { path: string, added: number, deleted: number, };
-
 export type Hunk = { old_start: number, new_start: number, header: string, 
 /**
  * Unchanged lines skipped before this hunk, so the client can render a

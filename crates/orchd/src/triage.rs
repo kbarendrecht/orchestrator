@@ -202,52 +202,9 @@ async fn spawn_posting_run(
     {
         let mut inner = app.inner.write().await;
         inner.proposals.remove(&pr);
-        /* And the last pass's progress, for the same reason and one of its own: the
-        map is keyed by PR, so a fresh run inherited `posted: true` from the run
-        before it. The bar then opened amber on `3 threads need your call` before
-        the new pass had read a line, and the overlay loaded the proposals that
-        were about to be superseded. */
-        inner.triage_progress.remove(&pr);
-        // And with them any batch that stopped for the manual phase: its decisions
-        // point at positions that no longer exist, so finishing it is impossible and
-        // offering to would be a screen whose button always fails. The local commit it
-        // left behind is not silently lost — the next batch's own gate names it.
-        //
-        // Both kinds of record go, because a new run supersedes a push marker as
-        // squarely as it supersedes a phase. Only the *warning* has to tell them
-        // apart: saying "a manual phase was open" about a marker sends you looking
-        // for half-finished work that was never there.
-        let why = format!("re-{} abandoned a phase", kind.command);
-        let was_open = inner.manual.get(&pr).is_some_and(|p| p.open);
-        if inner.with_manual(&why, |m| m.remove(&pr).is_some()) && was_open {
-            tracing::warn!(
-                pr,
-                "a manual phase was open; a new {} run abandons it",
-                kind.command
-            );
-        }
     }
 
     let id = crate::spawn::spawn_run(app, &workspace, pr, uuid::Uuid::new_v4(), spec).await?;
-    /* **A read pass is "reading" from the spawn, not from its first report.**
-    The skill posts after each thread it finishes, so the first ping is a minute
-    of reading away — and until it landed the map held nothing, which every
-    reader takes to mean no pass is running. The bar offered `open` and the
-    overlay would have shown a full screen saying the session is reading.
-    Zero of zero is the honest opening state: a pass exists, and it has not said
-    how many threads it means to read. */
-    if kind.command == Pass::TRIAGE {
-        let mut inner = app.inner.write().await;
-        inner.triage_progress.insert(
-            pr,
-            crate::state::TriageProgress {
-                done: 0,
-                total: 0,
-                posted: false,
-                session: id,
-            },
-        );
-    }
     app.notify().await;
     Ok(id)
 }
@@ -384,17 +341,10 @@ mod tests {
             get("ORCHD_TOKEN").is_none(),
             "the app token must never reach a run that reads third-party comments"
         );
-        // And the name the two of them actually curl with; a rename here that missed
-        // one would fail only at the POST, in a run that had already done its work.
-        // The triage half is a skill now and is checked the same way, because the
-        // file being static rather than rendered changes nothing about the name.
-        assert!(crate::skills::TRIAGE.contains("$ORCH_POST_TOKEN"));
+        // And the name the run actually curls with; a rename here would fail only
+        // at the POST, in a run that had already done its work.
         assert!(crate::skills::REVIEW.contains("$ORCH_POST_TOKEN"));
 
-        // The headless triage pass has nobody to ask, so it gets no ask token.
-        let (solo, _) = run_env(Some("post-tok"), None);
-        assert!(!solo.iter().any(|(n, _)| n == "ORCH_ASK_TOKEN"));
-        assert!(solo.iter().any(|(n, _)| n == "ORCH_POST_TOKEN"));
         // And a run that posts nothing is handed no post token at all.
         let (fix, _) = run_env(None, None);
         assert!(!fix.iter().any(|(n, _)| n == "ORCH_POST_TOKEN"));

@@ -86,11 +86,6 @@ pub async fn pr_triage_context(
     })))
 }
 
-pub struct TriageProgressBody {
-    pub done: u32,
-    pub total: u32,
-}
-
 pub async fn pr_handle_review(
     State(app): State<Arc<AppState>>,
     Path(number): Path<u64>,
@@ -181,14 +176,6 @@ pub async fn pr_proposals(
     {
         let mut inner = app.inner.write().await;
         inner.proposals.insert(number, validated);
-        // What turns the review bar from a count into "your turn". Only when a
-        // pass reported progress: a run that posted without one leaves nothing to
-        // caption, and inventing an entry here would caption a pane with a total
-        // nobody counted.
-        if let Some(at) = inner.triage_progress.get_mut(&number) {
-            at.posted = true;
-            at.done = at.total;
-        }
     }
     app.notify().await;
     Ok(Json(json!({ "accepted": count })))
@@ -211,16 +198,7 @@ pub async fn pr_review(
         // No worktree yet means nothing to be dirty; triage creates one.
         None => None,
     };
-    let (proposals, manual) = {
-        let inner = app.inner.read().await;
-        (
-            inner.proposals.get(&number).cloned(),
-            // A closed record is a "we pushed this" marker, not a phase to resume;
-            // serving one put the overlay on an empty manual screen with its push
-            // button enabled.
-            inner.manual.get(&number).filter(|p| p.open).cloned(),
-        )
-    };
+    let proposals = app.inner.read().await.proposals.get(&number).cloned();
 
     Ok(Json(json!({
         // The overlay's header reads all three, each behind a fallback — so they
@@ -235,9 +213,6 @@ pub async fn pr_review(
         "answerable": fetched.answerable_count(),
         "threads": fetched.items,
         "proposals": proposals,
-        // A batch that stopped for the manual phase. Served so a reload or a restart
-        // resumes it rather than stranding a branch whose patches are committed.
-        "manual": manual,
         "gate": gate,
         // Shown in the header, never gating: a red or conflicting PR is still
         // answerable, and `fix-pr` is offered rather than required.

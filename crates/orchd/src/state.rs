@@ -1,5 +1,5 @@
 use anyhow::{bail, Context as _, Result};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -23,97 +23,6 @@ use crate::pty::pid_alive;
 /// again under its own lock.
 pub fn no_such_session(id: SessionId) -> anyhow::Error {
     crate::model::Refusal::Missing(format!("no such session {id}")).into()
-}
-
-/// What the overview shows about a run: one row per thread, in plan order.
-#[derive(Debug, Clone, Serialize)]
-#[cfg_attr(
-    any(test, feature = "test-util"),
-    derive(ts_rs::TS),
-    ts(export, export_to = "snapshot.d.ts")
-)]
-pub struct RunView {
-    pub session: Uuid,
-    pub threads: Vec<RunThreadView>,
-    /// Why the run is over, when it is. `null` means the session is still on it.
-    pub ended: Option<String>,
-    /// Commits on the run's branch that its remote does not have.
-    ///
-    /// The one thing the overview could not say before: a run finishes with the
-    /// reviewers answered and the work sitting on nobody's branch but yours, and
-    /// the only mention of it was whatever prose the agent chose to write in the
-    /// pane. Measured at the last reconcile of the run's own worktree, so it
-    /// counts a push made anywhere — not a flag the push button sets.
-    pub unpushed: u32,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[cfg_attr(
-    any(test, feature = "test-util"),
-    derive(ts_rs::TS),
-    ts(export, export_to = "snapshot.d.ts")
-)]
-pub struct RunThreadView {
-    pub thread_id: String,
-    pub location: String,
-    pub status: crate::model::ThreadStatus,
-    pub commit: Option<String>,
-    pub note: Option<String>,
-}
-
-impl RunView {
-    fn of(r: &ResolveRun, unpushed: u32) -> Self {
-        RunView {
-            session: r.session,
-            ended: r.ended.clone(),
-            unpushed,
-            threads: r
-                .plan
-                .threads
-                .iter()
-                .map(|t| RunThreadView {
-                    thread_id: t.thread_id.clone(),
-                    location: t.location.clone(),
-                    status: t.status,
-                    commit: t.commit.clone(),
-                    note: t.note.clone(),
-                })
-                .collect(),
-        }
-    }
-}
-
-/// A resolve run: the session doing it, and the decisions it carries.
-///
-/// How far a triage pass has read, and whether it has handed anything over.
-///
-/// **The agent is the only thing that can count this.** The daemon knows how many
-/// threads it handed over, but the read is a judgement per thread rather than a
-/// loop the daemon drives, so the skill posts after each one and this is where it
-/// lands. `total` is the agent's own count of what it means to read, which can be
-/// fewer than the threads on the PR: an answered thread is skipped, and a bar
-/// counting those would never reach its end.
-///
-/// In memory only, and deliberately: it is a progress bar for a pass that ends
-/// with its session. The proposals themselves are stored, so a restart loses the
-/// caption and not the work.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(
-    any(test, feature = "test-util"),
-    derive(ts_rs::TS),
-    ts(export, export_to = "snapshot.d.ts")
-)]
-pub struct TriageProgress {
-    /// Threads read so far.
-    pub done: u32,
-    /// Threads this pass means to read.
-    pub total: u32,
-    /// The proposals have landed, so the cards are there to go to.
-    pub posted: bool,
-    /// The session doing the reading, so the bar can refuse to caption another
-    /// session's pane.
-    #[cfg_attr(any(test, feature = "test-util"), ts(as = "String"))]
-    pub session: SessionId,
 }
 
 #[derive(Debug, Clone, Serialize, Default)]
@@ -310,16 +219,6 @@ pub struct Inner {
     /// Deliberately **not** persisted: a run does not survive a restart, so a
     /// token that outlived one could only ever be a key nobody is holding.
     pub proposal_tokens: HashMap<u64, String>,
-    /// A batch that stopped for the manual phase, per PR.
-    ///
-    /// The resume pointer used to live only in the browser, so a reload, a daemon
-    /// restart, or opening another PR stranded a batch whose patches were already
-    /// committed — recoverable only by hand in git. Not the ledger the post batch
-    /// rejects: that rule is about what landed on GitHub, which GitHub can be asked
-    /// about. This records a *local* commit, and `fold_in` rewrites shas in both its
-    /// arms, so after a fold the old sha is not even an ancestor of HEAD and no
-    /// reachability query can prove the new one is ours.
-    pub manual: Durable<HashMap<u64, crate::model::ManualPhase>>,
     /// Stories already filed for a review thread, so a retry reuses one rather
     /// than filing a second. A cache, not a ledger — `crate::story` explains why
     /// losing it costs latency and not correctness.
@@ -365,13 +264,6 @@ pub struct Inner {
     /// the other direction, which is the one that loses work silently.
     pub human_edits: HashMap<PathBuf, HumanEdit>,
     pub automation: Durable<crate::model::AutomationStore>,
-    /// The plan a resolve-run session is working from, kept per PR so the daemon
-    /// can answer "what does this thread say" when the agent reports a commit.
-    /// In memory only: the plan is also on disk beside the prompt, and a daemon
-    /// that restarted has lost the session it belonged to anyway.
-    pub resolve_runs: Durable<HashMap<u64, ResolveRun>>,
-    /// How far each triage pass has read, by PR. See [`TriageProgress`].
-    pub triage_progress: HashMap<u64, TriageProgress>,
     /// Whether the main checkout's `docker compose` stack has running containers.
     /// `None` before the first probe; the drawer header reads it as up/down.
     pub stack_up: Option<bool>,
@@ -458,7 +350,7 @@ impl Inner {
     /// Mutating the three stores that outlive the daemon.
     ///
     /// `sessions.json` is written by every `notify()`, so a session record cannot be
-    /// changed without being persisted. `automation`, `manual` and `stories` had no
+    /// changed without being persisted. `automation` and `stories` had no
     /// such guarantee: each was durable only because every mutation site remembered
     /// to call the matching `store::save_*` afterwards. That held, but it made
     /// durability a property of the caller's memory — and a lost automation write in
@@ -471,7 +363,7 @@ impl Inner {
     ///
     /// Reads still go straight at the fields: they are many, harmless, and requiring
     /// an accessor for each would be noise. It is *mutation* that has to carry the
-    /// write with it. `with_manual` and `with_stories` below are the same shape.
+    /// write with it. `with_stories` below is the same shape.
     pub fn with_automation(
         &mut self,
         why: &str,
@@ -481,44 +373,6 @@ impl Inner {
         if changed {
             if let Err(e) = crate::store::save_automation(&self.automation) {
                 tracing::error!("could not persist automation ({why}): {e:#}");
-            }
-        }
-        changed
-    }
-
-    pub fn with_manual(
-        &mut self,
-        why: &str,
-        f: impl FnOnce(&mut HashMap<u64, crate::model::ManualPhase>) -> bool,
-    ) -> bool {
-        let changed = f(&mut self.manual.0);
-        if changed {
-            // A warning, not an error: failing to persist costs the resume after a
-            // restart, and turning that into a failed batch would be worse than
-            // the thing it protects against.
-            if let Err(e) = crate::store::save_manual(&self.manual) {
-                tracing::warn!("could not save manual.json ({why}): {e:#}");
-            }
-        }
-        changed
-    }
-
-    /// Change the run record, and write it.
-    ///
-    /// Every mutation goes through here for the reason the other three do: the
-    /// site that reaches for `store::save_resolve_runs` itself is the one that
-    /// gets forgotten when a fourth caller arrives.
-    pub fn with_resolve_runs(
-        &mut self,
-        why: &str,
-        f: impl FnOnce(&mut HashMap<u64, ResolveRun>) -> bool,
-    ) -> bool {
-        let changed = f(&mut self.resolve_runs.0);
-        if changed {
-            // A warning: the run itself is unharmed by a failed write, and only
-            // the account of it after a restart is at stake.
-            if let Err(e) = crate::store::save_resolve_runs(&self.resolve_runs) {
-                tracing::warn!("could not save resolve-runs.json ({why}): {e:#}");
             }
         }
         changed
@@ -646,14 +500,11 @@ impl AppState {
                 prs: Vec::new(),
                 proposals: HashMap::new(),
                 proposal_tokens: HashMap::new(),
-                manual: Durable::default(),
                 stories: Default::default(),
                 viewer: None,
                 pr_error: None,
                 agent_error: None,
                 pr_fetched: None,
-                resolve_runs: Durable::default(),
-                triage_progress: HashMap::new(),
                 pr_poll: 0,
                 pr_polling: false,
                 token_source: None,
@@ -1104,25 +955,6 @@ impl AppState {
             self_upgrade_run: inner.self_upgrade_run.clone(),
             agent_update: inner.agent_update.clone(),
             upgrade_run: inner.upgrade_run.clone(),
-            triage: inner.triage_progress.clone(),
-            resolve_runs: inner
-                .resolve_runs
-                .iter()
-                .map(|(pr, r)| {
-                    // Through the run's session to its worktree, because that is
-                    // the tree the commits are in and the only one whose reconcile
-                    // measured them. Zero when the session record is gone: the
-                    // overview then says nothing about pushing rather than
-                    // claiming a number it did not measure.
-                    let unpushed = inner
-                        .sessions
-                        .get(&r.session)
-                        .and_then(|s| inner.workspaces.get(&s.workspace))
-                        .map(|w| w.tree.unpushed)
-                        .unwrap_or(0);
-                    (*pr, RunView::of(r, unpushed))
-                })
-                .collect(),
             version: env!("CARGO_PKG_VERSION"),
         }
     }
@@ -1788,20 +1620,6 @@ pub struct Snapshot {
     pub agent_update: Option<crate::model::AgentUpdate>,
     /// The upgrade the update bar reports on, while it runs and after it fails.
     pub upgrade_run: Option<crate::model::UpgradeRun>,
-    /// Resolve runs in flight, by PR: what each thread's outcome was so far. The
-    /// overview reads this rather than the report of a batch that has finished,
-    /// because a run is watchable while it happens.
-    #[cfg_attr(
-        any(test, feature = "test-util"),
-        ts(as = "std::collections::HashMap<String, RunView>")
-    )]
-    pub resolve_runs: HashMap<u64, RunView>,
-    /// How far each triage pass has read, by PR. The review bar counts with it.
-    #[cfg_attr(
-        any(test, feature = "test-util"),
-        ts(as = "std::collections::HashMap<String, TriageProgress>")
-    )]
-    pub triage: HashMap<u64, TriageProgress>,
     /// The running build's own version, for the settings panel. Always here,
     /// unlike `update`, which only appears when there is something newer: "which
     /// build am I on" is a question worth answering when the answer is "the

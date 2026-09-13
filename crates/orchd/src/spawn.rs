@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use uuid::Uuid;
 
-use crate::config::{Config, ManagedSpec};
+use crate::config::ManagedSpec;
 use crate::model::*;
 use crate::pty::PtyHandle;
 use crate::state::AppState;
@@ -1065,14 +1065,13 @@ pub(crate) fn run_env(
 ///
 /// **`id` is the caller's to mint, and that is the whole reason it is a parameter
 /// rather than a `Uuid::new_v4()` here.** Every run has a record of the daemon's
-/// own beside the session — `automation.by_pr`, `resolve_runs`, a posting run's
-/// proposals — and each caller used to write it *after* this returned. A `claude`
-/// that dies at once, on a bad `--settings` or the version gate, is reaped before
-/// that write lands, and [`watch_session_exit`] then goes looking for a run to
-/// settle and finds nothing: the resolve run read as in flight until a restart, a
-/// posting run's "exited without posting" warning read the *previous* run's
-/// proposals and stayed silent, and `fix_pr::start` carried a compensating
-/// re-check for exactly this. So the caller mints the id, writes its record under
+/// own beside the session — `automation.by_pr`, a posting run's proposals — and
+/// each caller used to write it *after* this returned. A `claude` that dies at
+/// once, on a bad `--settings` or the version gate, is reaped before that write
+/// lands, and [`watch_session_exit`] then goes looking for a run to settle and
+/// finds nothing: a posting run's "exited without posting" warning read the
+/// *previous* run's proposals and stayed silent, and `fix_pr::start` carried a
+/// compensating re-check for exactly this. So the caller mints the id, writes its record under
 /// it, and takes the record back out if this returns `Err` — the same ordering
 /// [`insert_and_spawn`] documents for the session record itself.
 pub(crate) async fn spawn_run(
@@ -1620,89 +1619,6 @@ pub async fn switch_main_to_pr(app: &Arc<AppState>, head_ref: &str) -> Result<St
     Ok(MAIN.to_string())
 }
 
-/// Start the session that carries out a triaged PR: the plan, then the agent.
-///
-/// The plan is written beside the prompt rather than fetched, because it is fixed
-/// the moment you press the button: it is your decisions, resolved against a
-/// fetch taken then. A session that re-read it later would be working from a
-/// different set of answers than the one you approved.
-pub async fn spawn_resolve_run(
-    app: &Arc<AppState>,
-    pr: u64,
-    head_ref: &str,
-    plan: &crate::model::Plan,
-    id: SessionId,
-) -> Result<SessionId> {
-    let workspace = ensure_pr_worktree(app, pr, head_ref).await?;
-    /* **The read pass is over, and it is the thing standing in the way.**
-    A triage run posts its proposals and then sits at its prompt like any other
-    Claude Code session: it does not exit, so it still holds the branch, and this
-    guard refused the very run its own proposals asked for. Those proposals are
-    what the human just approved, so the pass has no work left by definition.
-    End it here rather than at the POST: this is the moment somebody decided,
-    and a pane that closes when you press the button reads as one pass handing
-    over to the next.
-    Only a triage run for *this* PR, and only one at rest. Anything else in that
-    worktree — an interactive session, a pass still reading — is somebody's work
-    and still refuses. */
-    for id in app.live_sessions_in(&workspace).await {
-        let finished_read = {
-            let inner = app.inner.read().await;
-            let is_the_pass = inner
-                .sessions
-                .get(&id)
-                .is_some_and(|s| s.pass.as_ref().is_some_and(|p| p.is_triage_of(pr)));
-            /* **Posted, not idle.** `is_busy` was the first test and it read the
-            wrong thing: a pass that has handed over its proposals goes on
-            printing for a few seconds, so a click that came straight off the
-            cards met "already has a live session" from the pass those cards came
-            from. What it is still saying is a farewell. */
-            is_the_pass && inner.triage_progress.get(&pr).is_some_and(|t| t.posted)
-        };
-        if !finished_read {
-            bail!("{workspace} already has a live session for #{pr}; finish or close it first");
-        }
-        tracing::info!(pr, session = %id, "ending the read pass so its decisions can be carried out");
-        let handle = {
-            let inner = app.inner.read().await;
-            inner.sessions.get(&id).and_then(|s| s.pty.clone())
-        };
-        // Awaited rather than detached, unlike the kill button: the run spawning
-        // below wants this branch, and `kill_gracefully` is what makes "gone" true
-        // rather than requested.
-        if let Some(h) = handle {
-            h.kill_gracefully().await;
-        }
-    }
-
-    let dir = Config::config_dir()?.join(format!("{}-{pr}", Pass::RESOLVE_RUN));
-    std::fs::create_dir_all(&dir)?;
-    let plan_file = dir.join("plan.json");
-    // The agent's view, not the whole record: `for_agent` drops the daemon's
-    // per-thread bookkeeping, which the prompt promises is not in this file.
-    std::fs::write(&plan_file, serde_json::to_string_pretty(&plan.for_agent())?)
-        .with_context(|| format!("writing {}", plan_file.display()))?;
-
-    /* A skill and one typed line, like the fix run. The plan is the only value
-    here the daemon has to hand over — the prompt's other three were prose and
-    an ask base that is just `$ORCH_URL` — so it goes in the environment rather
-    than into a sentence typed after the command, which is what "Your plan is
-    …" used to be. */
-    let spec = RunSpec {
-        command: Pass::RESOLVE_RUN.to_string(),
-        pending: format!("/orchd:{} {pr}", Pass::RESOLVE_RUN),
-        asks: true,
-        extra_env: vec![
-            (crate::skills::VAR_PR.to_string(), pr.to_string()),
-            (
-                crate::skills::VAR_PLAN.to_string(),
-                plan_file.to_string_lossy().into_owned(),
-            ),
-        ],
-    };
-    spawn_run(app, &workspace, pr, id, spec).await
-}
-
 /// Worktree names become directory names and branch names (`worktree-<name>`),
 /// so anything that would escape the worktrees dir is refused outright.
 pub fn validate_worktree_name(name: &str) -> Result<()> {
@@ -1843,7 +1759,6 @@ pub(crate) fn watch_session_exit(app: Arc<AppState>, id: SessionId, handle: Arc<
         // it is closed here: nothing else would ever notice that the thing working
         // through it had stopped, and threads left `pending` then read as imminent
         // for as long as the daemon runs.
-        let mut resolve_run_for: Option<u64> = None;
         // A run whose success is "proposals arrived", not "exited zero": an agent
         // can finish cleanly having posted nothing, and that is the failure the
         // user would otherwise stare at an empty overlay wondering about.
@@ -1873,9 +1788,6 @@ pub(crate) fn watch_session_exit(app: Arc<AppState>, id: SessionId, handle: Arc<
                         s.set_state(State::Exited);
                     }
                     if let Some(pass) = &s.pass {
-                        if pass.command == Pass::RESOLVE_RUN {
-                            resolve_run_for = Some(pass.pr);
-                        }
                         if Pass::posts_proposals(&pass.command) {
                             posting_for = Some(pass.pr);
                         }
@@ -1971,19 +1883,6 @@ pub(crate) fn watch_session_exit(app: Arc<AppState>, id: SessionId, handle: Arc<
             if !app.inner.read().await.proposals.contains_key(&pr) {
                 tracing::warn!(pr, session = %id, "the run exited without posting proposals");
             }
-        }
-        // The run's own account, closed. Only if it is still this session's run: a
-        // second run on the same PR replaces the record, and stamping that one as
-        // ended would bury a live run under the exit of the one it replaced.
-        if let Some(pr) = resolve_run_for {
-            let mut inner = app.inner.write().await;
-            inner.with_resolve_runs("session exited", |runs| match runs.get_mut(&pr) {
-                Some(r) if r.session == id && r.ended.is_none() => {
-                    r.ended = Some("the session ended".into());
-                    true
-                }
-                _ => false,
-            });
         }
         app.release_main(id).await;
         /* And the news, after the claim is given back rather than before it.
@@ -3072,18 +2971,18 @@ mod tests {
     #[test]
     fn a_run_spec_puts_the_prompt_on_the_record_before_the_spawn() {
         let spec = RunSpec {
-            command: Pass::RESOLVE_RUN.to_string(),
-            pending: "/orchd:resolve-run 7".to_string(),
+            command: Pass::FIX_PR.to_string(),
+            pending: "/orchd:fix-pr 7".to_string(),
             asks: true,
             extra_env: Vec::new(),
         };
         let id = Uuid::new_v4();
         let s = spec.session(id, "pr-7", PathBuf::from("/tmp"), 7);
-        assert_eq!(s.pending_prompt.as_deref(), Some("/orchd:resolve-run 7"));
+        assert_eq!(s.pending_prompt.as_deref(), Some("/orchd:fix-pr 7"));
         assert_eq!(s.id, id);
         assert!(matches!(
             &s.pass,
-            Some(Pass { pr: 7, command }) if command == Pass::RESOLVE_RUN
+            Some(Pass { pr: 7, command }) if command == Pass::FIX_PR
         ));
     }
 
@@ -3226,84 +3125,6 @@ mod tests {
         assert_eq!(exit.pass.pr, 4242);
         assert_eq!(exit.pass.command, Pass::REVIEW);
         assert!(exit.hand_off, "the review asked for the hand-off");
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// A run whose record is written before its process exists is settled by the
-    /// exit watcher even when the process dies instantly.
-    ///
-    /// The ordering this pins is the one every run caller used to get
-    /// wrong: the record went in *after* the spawn returned, so a `claude` that
-    /// died at once — a bad `--settings`, the version gate — was reaped first and
-    /// the watcher matched on a record that was not there yet. The resolve run then
-    /// read as in flight until a restart. Driven the way the fix arranges it:
-    /// record first, under the id the session carries.
-    #[tokio::test(flavor = "multi_thread")]
-    async fn a_run_recorded_before_its_spawn_is_settled_by_its_own_exit() {
-        use crate::pty::PtyHandle;
-
-        let (app, dir) = crate::testutil::app("run-recorded-first");
-        let (pr, id) = (4242u64, Uuid::new_v4());
-
-        // The caller's half: the record exists before anything could exit.
-        app.inner
-            .write()
-            .await
-            .with_resolve_runs("run started", |runs| {
-                runs.insert(
-                    pr,
-                    crate::model::ResolveRun {
-                        session: id,
-                        plan: crate::model::Plan {
-                            pr,
-                            base_sha: "abc".into(),
-                            threads: Vec::new(),
-                        },
-                        ended: None,
-                    },
-                );
-                true
-            });
-
-        // `true` exits immediately, which is the case that used to be lost.
-        let pty = PtyHandle::spawn(
-            &[crate::testutil::TRUE_BIN.to_string()],
-            std::path::Path::new("/tmp"),
-            &[],
-            &[],
-            (24, 80),
-        )
-        .unwrap();
-        {
-            let mut inner = app.inner.write().await;
-            let mut s = Session::new(
-                id,
-                "wt".to_string(),
-                dir.clone(),
-                Some(Pass {
-                    pr,
-                    command: Pass::RESOLVE_RUN.to_string(),
-                }),
-            );
-            s.pty = Some(pty.handle.clone());
-            s.set_state(State::Working);
-            inner.sessions.insert(id, s);
-        }
-        watch_session_exit(app.clone(), id, pty.handle.clone());
-
-        let mut ended = None;
-        for _ in 0..100 {
-            tokio::time::sleep(std::time::Duration::from_millis(30)).await;
-            let inner = app.inner.read().await;
-            if let Some(e) = inner.resolve_runs.get(&pr).and_then(|r| r.ended.clone()) {
-                ended = Some(e);
-                break;
-            }
-        }
-        assert!(
-            ended.is_some(),
-            "the run stayed in flight; its record was not there for the watcher to close"
-        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

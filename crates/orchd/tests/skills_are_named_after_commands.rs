@@ -14,14 +14,7 @@ use orchd_repo::skills::VENDORED;
 /// is `Unknown command` on the run's first turn and nothing before it.
 #[test]
 fn a_skill_is_named_after_the_command_that_types_it() {
-    for command in [
-        Pass::FIX_PR,
-        Pass::RESOLVE_RUN,
-        Pass::REVIEW,
-        Pass::TRIAGE,
-        Pass::STORY,
-        Pass::HANDLE_REVIEW,
-    ] {
+    for command in [Pass::FIX_PR, Pass::REVIEW, Pass::STORY, Pass::HANDLE_REVIEW] {
         assert!(
             VENDORED.iter().any(|(name, _)| *name == command),
             "no vendored skill directory called {command}"

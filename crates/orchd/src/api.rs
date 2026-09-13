@@ -142,7 +142,7 @@ pub fn origin_ok(
 /// A list rather than a growing chain of `ends_with`, because it has been
 /// outgrown once already — see the note in [`guard`].
 fn is_ask_route(path: &str) -> bool {
-    const ASK_ROUTES: [&str; 10] = [
+    const ASK_ROUTES: [&str; 9] = [
         "/ask",
         "/wait",
         // The worktree grant, asked by the agent and read by the push guard —
@@ -153,7 +153,6 @@ fn is_ask_route(path: &str) -> bool {
         // A review session posting one thread's reply. The rules the words go
         // through are `post_one`'s; see `review_api::thread_reply`.
         "/reply",
-        "/stuck",
         "/process",
         // `orch kill`. Not `/kill` or `/delete`, which are the SPA's own routes on
         // any session — a suffix matcher cannot tell those apart from a narrower
@@ -775,27 +774,6 @@ pub async fn ask(
     Json(body): Json<AskBody>,
 ) -> ApiResult<serde_json::Value> {
     ask_token_ok(&app, id, &headers).await?;
-    /* **A resolve run has nothing to ask.** Its plan is the answer to the only
-    question it could have: which solution per thread, and what the reviewer is
-    told about it, both decided by the person who pressed the button. An ask here
-    spends their attention on a decision they already took and holds the run
-    until somebody looks at the pane. `skills/resolve-run/SKILL.md` says so, and this
-    is the same rule where it cannot be argued with: a thread it truly cannot act
-    on goes to `/stuck`, which posts nothing and blocks nothing, and everything
-    else belongs in the report. */
-    {
-        let inner = app.inner.read().await;
-        let is_run = inner.sessions.get(&id).is_some_and(|s| {
-            s.pass
-                .as_ref()
-                .is_some_and(|p| p.command == Pass::RESOLVE_RUN)
-        });
-        if is_run {
-            refuse!(
-                "a resolve run carries out decisions rather than asking about them:                  report it, or mark the thread stuck"
-            );
-        }
-    }
     if body.question.trim().is_empty() {
         refuse!("a question with no words");
     }
@@ -956,90 +934,6 @@ pub struct AnswerBody {
     /// Required by an option that asked for words, refused by one that did not.
     #[serde(default)]
     pub text: Option<String>,
-}
-
-#[derive(Deserialize)]
-pub struct CommittedBody {
-    /// The commit the session just made for this thread.
-    pub sha: String,
-}
-
-#[derive(Deserialize)]
-pub struct StuckBody {
-    /// What stopped it, in the session's own words. Shown verbatim in the
-    /// overview, so it is the whole of what you get to act on.
-    pub note: String,
-}
-
-/// The session reports a thread it could not finish.
-///
-/// The counterpart to [`thread_committed`], and the reason `NeedsYou` existed as
-/// a state nothing could reach: a run had exactly one way to report progress —
-/// a commit — so a thread it gave up on stayed `Pending` and read as one it had
-/// not got to yet. An honest overview needs the difference, and only the session
-/// knows it.
-///
-/// Does not block and posts nothing: there is no commit to show and no reply that
-/// could truthfully go out. The thread stays open on GitHub, which is what
-/// "needs you" means.
-pub async fn thread_stuck(
-    State(app): State<Arc<AppState>>,
-    Path((id, thread_id)): Path<(Uuid, String)>,
-    headers: axum::http::HeaderMap,
-    Json(body): Json<StuckBody>,
-) -> ApiResult<serde_json::Value> {
-    ask_token_ok(&app, id, &headers).await?;
-    let note = body.note.trim();
-    if note.is_empty() {
-        // A bare "could not do it" is worse than silence: it removes the thread
-        // from the list of things still moving and says nothing about why.
-        refuse!("say what stopped it — the note is all the overview can show");
-    }
-    let number = {
-        let inner = app.inner.read().await;
-        let (number, run) = inner
-            .resolve_runs
-            .iter()
-            .find(|(_, r)| r.session == id)
-            .ok_or_else(|| anyhow::anyhow!("session {id} is not carrying out a resolve run"))?;
-        if !run.plan.threads.iter().any(|t| t.thread_id == thread_id) {
-            refuse!("thread {thread_id} is not in this run's plan");
-        }
-        *number
-    };
-    mark_thread(&app, number, &thread_id, |t| {
-        t.status = crate::model::ThreadStatus::NeedsYou;
-        t.note = Some(note.to_string());
-    })
-    .await;
-    app.notify().await;
-    Ok(Json(json!({ "recorded": true })))
-}
-
-pub(crate) async fn mark_thread(
-    app: &Arc<AppState>,
-    pr: u64,
-    thread_id: &str,
-    f: impl FnOnce(&mut crate::model::PlannedThread),
-) {
-    let mut inner = app.inner.write().await;
-    inner.with_resolve_runs("thread progress", |runs| {
-        let Some(run) = runs.get_mut(&pr) else {
-            return false;
-        };
-        match run
-            .plan
-            .threads
-            .iter_mut()
-            .find(|t| t.thread_id == thread_id)
-        {
-            Some(t) => {
-                f(t);
-                true
-            }
-            None => false,
-        }
-    });
 }
 
 /// Your answer, which releases the tool call the agent is sitting in.
@@ -3533,15 +3427,12 @@ mod tests {
 
     #[test]
     fn every_route_the_vendored_prompts_call_on_the_ask_token_is_exempt() {
-        // The three in `skills/resolve-run/SKILL.md` plus `/spawn`. `/committed` was
-        // missing and the run's central seam answered 403 to the only caller it
-        // has; these are the literal paths those prompts curl.
+        // The literal paths the vendored prompts curl.
         for p in [
             "/api/session/<id>/ask",
             "/api/session/<id>/ask/<ask>/wait",
             // A review session posting one thread's reply.
             "/api/session/<id>/thread/PRRT_x/reply",
-            "/api/session/<id>/thread/PRRT_x/stuck",
             "/api/session/<id>/spawn",
             // `orch run`. Named processes only, so this exemption widens what an
             // agent can start without widening it to arbitrary commands (§12).

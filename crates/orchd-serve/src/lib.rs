@@ -411,30 +411,6 @@ pub async fn start(opts: StartOptions) -> Result<Server> {
         let mut inner = app.inner.write().await;
         inner.automation = state::Durable::new(store::load_automation());
         inner.stories = state::Durable::new(store::load_stories());
-        // A batch that stopped for the manual phase. Its patches are already
-        // committed, so losing this to a restart would strand the branch.
-        inner.manual = state::Durable::new(store::load_manual());
-        // Only the records that really are a phase. The store also holds
-        // `open: false` markers, which say "we pushed this batch" so a retry after
-        // a failed reply can find its way back in; announcing one as an open phase
-        // would send you looking for work nobody left.
-        let open: Vec<String> = inner
-            .manual
-            .iter()
-            .filter(|(_, p)| p.open)
-            .map(|(pr, _)| format!("#{pr}"))
-            .collect();
-        if !open.is_empty() {
-            tracing::info!("manual phase still open on {}", open.join(", "));
-        }
-        // A resolve run's commits outlive its session, and this is the only record
-        // of which commit answers which thread. Restored as an account: `load`
-        // marks every one ended, because no pty survives a restart.
-        inner.resolve_runs = state::Durable::new(store::load_resolve_runs());
-        if !inner.resolve_runs.is_empty() {
-            let prs: Vec<String> = inner.resolve_runs.keys().map(|p| format!("#{p}")).collect();
-            tracing::info!("resolve runs recovered for {}", prs.join(", "));
-        }
         // Said out loud at boot, because `tracker` decides whether a whole option
         // appears on every review card. A misconfigured one must not read as
         // "triage never proposes stories".
@@ -664,10 +640,6 @@ fn daemon_router(app: Arc<AppState>) -> Router {
         .route("/api/session/:id/ask", post(api::ask))
         .route("/api/session/:id/ask/:ask/wait", get(api::ask_wait))
         .route("/api/session/:id/answer", post(api::answer))
-        .route(
-            "/api/session/:id/thread/:thread/stuck",
-            post(api::thread_stuck),
-        )
         .route("/api/session/:id/delete", post(api::delete_session))
         .route("/api/worktree", post(api::new_worktree))
         .route("/api/workspace/:id/shell", post(api::new_shell))
