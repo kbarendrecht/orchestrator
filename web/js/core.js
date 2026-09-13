@@ -908,7 +908,19 @@ export function keyActivate(/** @type {HTMLElement} */ el) {
  *  rail was rebuilt on every edit an agent made, because a `PostToolUse` sweep
  *  rewrites the workspace's changed-file list and that rides the same snapshot,
  *  and the rail does not draw it. Naming what to ignore keeps "any change
- *  rebuilds" as the default and takes the churn out one pane at a time. */
+ *  rebuilds" as the default and takes the churn out one pane at a time.
+ *
+ *  **`tools/check-drop-lists.mjs` holds `drop` to names the daemon still sends**,
+ *  because those are hand-written strings matched against generated ones: rename
+ *  a field in Rust and this list keeps the old spelling, drops nothing, and the
+ *  pane churns again with nothing saying so.
+ *
+ *  Nothing checks the other half, and nothing cheaply can: whether a signature
+ *  that *lists* its inputs listed them all is a question about the whole function
+ *  body. The cost is a pane that freezes, and `renderRail`'s own comments name
+ *  the two inputs it was missing — each found by pressing something. So prefer
+ *  the whole-snapshot-plus-`drop` shape wherever stale would be worse than an
+ *  extra rebuild. */
 function paintSig(/** @type {any} */ value, /** @type {string[]} */ drop = []) {
   return JSON.stringify(value, (k, v) => (k.endsWith('_ms') || drop.includes(k) ? undefined : v));
 }

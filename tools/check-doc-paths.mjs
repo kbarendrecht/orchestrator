@@ -21,6 +21,7 @@
 // Run by `mise run check-docs`.
 
 import fs from 'node:fs';
+import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -76,8 +77,11 @@ for (const doc of docs) {
       if (/\s|\*|\$|^https?:|^~\//.test(t) || t.startsWith('.') || !EXTS.test(t)) continue;
       checked += 1;
       if (ABSENT.has(t)) continue;
+      // Tracked, or simply there: a file added in the same change as the doc that
+      // names it is not staged yet, and refusing that would teach people to write
+      // the doc afterwards.
       const ok = t.includes('/')
-        ? tracked.some((p) => p === t || p.endsWith(`/${t}`))
+        ? tracked.some((p) => p === t || p.endsWith(`/${t}`)) || existsSync(path.join(root, t))
         : basenames.has(t);
       if (!ok) problems.push(`${doc}:${i + 1}  ${t}`);
     }

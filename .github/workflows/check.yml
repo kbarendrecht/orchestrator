@@ -192,6 +192,7 @@ jobs:
           npx --prefix tools eslint --config tools/eslint.config.mjs web
           node tools/check-palette.mjs
           node tools/check-dead-css.mjs
+          node tools/check-drop-lists.mjs
           node tools/check-module-routes.mjs
 
       # What the rendered page must never show: an unresolved `MOD` placeholder,

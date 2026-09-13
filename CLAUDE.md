@@ -380,10 +380,12 @@ where they were written. Every one of them cost something.
   `web/snapshot.d.ts` and fails if the committed copy drifted, runs
   `tsc --noEmit --checkJs` over every SPA file, runs `dependency-cruiser` over the
   module graph, runs `eslint` with typescript-eslint's *typed* rules, holds the
-  palette, refuses a class `app.css` styles that nothing can produce, and checks
-  that every module in `web/js/` has a route serving it. Each was checked against
+  palette, refuses a class `app.css` styles that nothing can produce, holds a
+  pane's `drop` list to field names the daemon still sends, and checks that every
+  module in `web/js/` has a route serving it. Each was checked against
   deliberate breakage — a `#[serde(rename)]`, a typo'd `snap.` field, an added
-  cycle, an un-awaited `confirmBox`, an unwritten class and a new module file each
+  cycle, an un-awaited `confirmBox`, an unwritten class, a misspelt dropped field
+  and a new module file each
   fail it. There is still **no build step**: `tsc` only checks, and the files ship
   exactly as written.
   **`web/snapshot.d.ts` is generated, never hand-written**: it comes from the Rust
@@ -576,6 +578,17 @@ where they were written. Every one of them cost something.
   `tools/check-module-routes.mjs` is what says so, from both sides of the hook —
   its header has why `dependency-cruiser` cannot. That cost is why the modules
   track features rather than being cut finer.
+- **A pane's paint signature is the one guard with no check over half of it.**
+  `core.unchanged(box, value, drop)` decides whether a pane rebuilds. The `drop`
+  half is checked — `tools/check-drop-lists.mjs` holds those strings to names the
+  four generated `.d.ts` files still carry, because a rename in Rust leaves the
+  old spelling dropping nothing and the pane churns again in silence. The other
+  half cannot be checked cheaply: whether a signature that *lists* its inputs
+  listed them all is a question about the whole function body, and getting it
+  wrong freezes a pane rather than churning it. The rail has been missing an
+  input twice, each found by pressing something. Prefer the
+  whole-snapshot-plus-`drop` shape wherever stale is worse than an extra rebuild;
+  `paintSig` says all of this where the idiom is defined.
 - **`snap` is a live binding, and only `receive()` may replace it.** It is
   `export let` in `core.js`, so a hundred readers keep saying `snap.x` and see the
   new snapshot without re-importing. `receive` sets the snapshot and the clock it
