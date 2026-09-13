@@ -1584,14 +1584,26 @@ mod tests {
             "the first notice is what the session is waiting for"
         );
 
-        // And a turn that really starts again does move it: the rule is about a
-        // second notice, not about ever leaving the state.
+        /* And a turn that really starts again waits afresh: the rule is about a
+        second notice, not about ever leaving the state.
+
+        **Asserted on the reason, not on the clock.** The obvious assertion is that
+        the new `since` differs from the old one, and it fails on macOS: two
+        `SystemTime::now()` calls this close together return the *same* value there,
+        where a Linux clock ticks between them. The test went out green and CI's
+        macos-14 runner caught it, which is what that runner is for. The reason
+        changing is the same fact and depends on no clock — a skipped `wait_for`
+        leaves the old reason standing, as the assertions above require. */
         s.set_state(State::Working);
         s.wait_for(TurnReason::TurnComplete);
-        let State::YourTurn { since, .. } = s.state else {
+        let State::YourTurn { reason, .. } = s.state else {
             panic!("a finished turn did not wait: {:?}", s.state);
         };
-        assert_ne!(since, first, "a new turn owes a new clock");
+        assert_eq!(
+            reason,
+            TurnReason::TurnComplete,
+            "a new turn's notice was skipped as though the old wait were still on"
+        );
     }
 
     #[test]

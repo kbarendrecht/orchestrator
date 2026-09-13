@@ -49,6 +49,13 @@ spellings are fine: `touch -t 202001010000` (POSIX, and what `worktree.rs`'s
 reaper tests already used) or `std::fs::File::set_times`, which is `futimens` and
 needs no process.
 
+**And the clock is the second way in.** `a_second_notice_does_not_restart_the_wait_clock`
+asserted that a fresh `SystemTime::now()` differed from one taken a few
+instructions earlier — true on every Linux run, false on macos-14, where two
+`now()` calls that close together return the *same* value. Two timestamps differing
+is not something the language promises; assert on the thing that changed with
+them, which here was the turn's reason.
+
 ## `WorktreeCreate` is not a setup hook. It *is* the creation, and a daemon-cut worktree therefore never fires one.
 Claude Code's own error text says what the
 event is for: worktree isolation "with other VCS systems". The hook reads the
