@@ -47,7 +47,7 @@ import { patchStats, hunkEl } from './review-diff.js';
  *           picks: Record<string, number>, modes: Record<string, string>,
  *           skipped: Record<string, boolean>, drafts: Record<string, string>,
  *           notes: Record<string, string>, editing: Record<string, boolean>,
- *           report: import('../snapshot').PostReport | null, busy: boolean,
+ *           busy: boolean,
  *           session: string | null, proposalsLoaded: boolean,
  *           decisionsSent: boolean }} */
 const reviewState = {
@@ -73,11 +73,10 @@ const reviewState = {
      overview shows a line by default; the box appears only when you ask, so the
      list is not a wall of textareas. */
   editing: {},
-  report: null,
   busy: false,
   /* The single-session flow. `session` is the review session's id once started;
      while it is set, the overlay is driven by that session's ask (read from the
-     snapshot) rather than the daemon batch. Null means the old triage+batch path,
+     snapshot). Null means no review is running on this PR,
      which is left exactly as it was. */
   session: null,
   proposalsLoaded: false,   // fetched /review once, when the decision ask appeared
@@ -1680,7 +1679,6 @@ async function openReview(/** @type {number | null} */ pr) {
     reviewState.drafts = {};
     reviewState.notes = {};
     reviewState.editing = {};
-    reviewState.report = null;
     reviewState.head = null;
     reviewState.i = 0;
     reviewState.screen = 'intake';
@@ -1722,7 +1720,6 @@ export function preview(/** @type {any} */ data) {
   reviewState.drafts = {};
   reviewState.notes = {};
   reviewState.editing = {};
-  reviewState.report = null;
   reviewState.head = data.proposals?.base_sha || null;
   reviewState.i = 0;
   reviewState.session = null;

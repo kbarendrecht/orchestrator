@@ -127,26 +127,18 @@ async fn gate_inner(
     gate
 }
 
-/// Start a triage run pinned to the PR's head branch.
-///
-/// `login` is the viewer whose PR this is; it comes from the thread fetch that
-/// preceded this, rather than a second `gh api user` call.
-pub async fn spawn(app: &Arc<AppState>, pr: u64, head_ref: &str) -> Result<SessionId> {
-    let kind = RunKind {
-        command: Pass::TRIAGE,
-        asks: false,
-    };
-    spawn_posting_run(app, pr, head_ref, kind).await
-}
-
 /// Start the overlay review session pinned to the PR's head branch.
 ///
-/// The single-session replacement for triage + the batch: it posts proposals like
-/// triage does — filling the same overlay cards — but then stays alive, taking the
-/// human's decisions over the ask channel and carrying out the change and the post
-/// itself. So unlike [`spawn`] it needs `ORCH_ASK_TOKEN` in its environment, the
-/// key the `/ask` and `/wait` routes check, and it is marked [`Pass::REVIEW`] so the
-/// rail colours, the guards and the handoff tell it from a triage run.
+/// One session answers the whole PR: it posts proposals into the overlay's cards,
+/// then stays alive, takes the human's decisions over the ask channel and carries
+/// out the change and the post itself. So it needs `ORCH_ASK_TOKEN` in its
+/// environment, the key the `/ask` and `/wait` routes check, and it is marked
+/// [`Pass::REVIEW`] so the rail colours, the guards and the handoff know it.
+///
+/// **It used to have a sibling.** A headless `triage` pass posted the same
+/// proposals and ended there, and a second run carried out what the cards decided.
+/// `RunKind` existed to tell the two apart; with one left, `asks` is always true
+/// and the command is always `REVIEW`.
 pub async fn spawn_review(app: &Arc<AppState>, pr: u64, head_ref: &str) -> Result<SessionId> {
     let kind = RunKind {
         command: Pass::REVIEW,

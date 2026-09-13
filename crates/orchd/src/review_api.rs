@@ -23,12 +23,12 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::api::{
-    ask_token_ok, fetch_threads, mark_thread, pr_from_poll, proposal_token_ok, refuse,
-    refuse_if_occupied, write_forge, ApiError, ApiResult,
+    ask_token_ok, fetch_threads, pr_from_poll, proposal_token_ok, refuse, refuse_if_occupied,
+    write_forge, ApiError, ApiResult,
 };
 use crate::model::*;
 use crate::spawn;
-use crate::state::{AppState, TriageProgress};
+use crate::state::AppState;
 
 /// What the vendored `triage` skill needs to know before it can read anything.
 ///
@@ -86,86 +86,11 @@ pub async fn pr_triage_context(
     })))
 }
 
-/// How far the triage pass has read. One POST per thread, from the skill.
-///
-/// Nothing here is durable: see [`crate::state::TriageProgress`]. A post for a PR
-/// whose session has gone is kept anyway, because the run that ends by posting its
-/// proposals is the ordinary case and the bar reads `posted` to say so.
-pub async fn pr_triage_progress(
-    State(app): State<Arc<AppState>>,
-    Path(number): Path<u64>,
-    headers: axum::http::HeaderMap,
-    Json(body): Json<TriageProgressBody>,
-) -> ApiResult<serde_json::Value> {
-    proposal_token_ok(&app, number, &headers).await?;
-    let session = {
-        let inner = app.inner.read().await;
-        // The run reading this PR right now, so the bar can refuse to caption a
-        // pane that belongs to somebody else.
-        inner
-            .sessions
-            .values()
-            .find(|s| s.state.is_live() && s.pass.as_ref().is_some_and(|p| p.is_triage_of(number)))
-            .map(|s| s.id)
-    };
-    let Some(session) = session else {
-        refuse!("no triage run for PR #{number}");
-    };
-    {
-        let mut inner = app.inner.write().await;
-        let at = inner
-            .triage_progress
-            .entry(number)
-            .or_insert(TriageProgress {
-                done: 0,
-                total: body.total,
-                posted: false,
-                session,
-            });
-        at.done = body.done;
-        at.total = body.total;
-        at.session = session;
-    }
-    app.notify().await;
-    Ok(Json(json!({ "ok": true })))
-}
-
-/// One thread read, out of how many this pass means to read.
-#[derive(serde::Deserialize)]
 pub struct TriageProgressBody {
     pub done: u32,
     pub total: u32,
 }
 
-/// Start a triage run.
-///
-/// Refuses on the worktree gates rather than starting a run whose output could
-/// not be applied. The threads are fetched first so the viewer login is current
-/// and the run has something to triage.
-pub async fn pr_triage(
-    State(app): State<Arc<AppState>>,
-    Path(number): Path<u64>,
-) -> ApiResult<serde_json::Value> {
-    start_posting_run(app, number, PostingRun::Triage).await
-}
-
-/// Work a PR's review threads in a pane, with a person watching.
-///
-/// **The default review verb**, and deliberately the older shape: one agent in the
-/// PR's worktree running `/orchd:handle-review`, asking with `AskUserQuestion`,
-/// drafting replies and posting nothing without a go. The overlay flow
-/// (`pr_triage` into the cards, then a resolve run) stays a menu item away — the
-/// cards are not good enough to be the only way through a review yet.
-///
-/// **The same worktree gates as the other review verb**, because the pass writes
-/// into that tree: a rebase stopped part-way cannot take a commit, a running
-/// `fix-pr` is rewriting the same history, and a dirty tree means the first thing
-/// this agent amends is work somebody else left there.
-///
-/// It takes you to a live session already on the branch when there is one rather
-/// than refusing, which is why the gate is asked *after* that. Both live in
-/// `spawn_command_session`: the route asked the same two questions over again to
-/// decide what that function decides three lines later.
 pub async fn pr_handle_review(
     State(app): State<Arc<AppState>>,
     Path(number): Path<u64>,
@@ -190,27 +115,20 @@ pub async fn pr_review_session(
     State(app): State<Arc<AppState>>,
     Path(number): Path<u64>,
 ) -> ApiResult<serde_json::Value> {
-    start_posting_run(app, number, PostingRun::Review).await
+    start_posting_run(app, number).await
 }
 
-/// Which of the two proposal-posting runs a route is asking for.
-enum PostingRun {
-    Triage,
-    Review,
-}
-
-/// What the two posting-run routes do, which is everything but which run they
-/// start.
+/// Start the overlay review session, or say why not.
 ///
-/// The pair had drifted to being identical, refusal text included, while
-/// `triage::spawn_posting_run` was already the one function they both funnel into
-/// and already runs the worktree gates. Only the "nothing to answer" refusal
-/// belongs here, because it needs the fetch this makes.
-async fn start_posting_run(
-    app: Arc<AppState>,
-    number: u64,
-    which: PostingRun,
-) -> ApiResult<serde_json::Value> {
+/// **The pair this collapsed from is the batch's half going.** There were two
+/// posting runs — the headless triage pass and this one — and a `PostingRun` enum
+/// picking between them, while everything else about the two routes was identical
+/// down to the refusal text. One run is left, so the enum is the thing that was
+/// really describing the difference and it goes with it.
+///
+/// The "nothing to answer" refusal belongs here rather than in the spawner,
+/// because it needs the fetch this makes.
+async fn start_posting_run(app: Arc<AppState>, number: u64) -> ApiResult<serde_json::Value> {
     let pr = {
         let inner = app.inner.read().await;
         pr_from_poll(&inner.prs, number)?
@@ -219,10 +137,7 @@ async fn start_posting_run(
     if fetched.answerable_count() == 0 {
         refuse!("PR #{number} has no threads awaiting an answer");
     }
-    let session = match which {
-        PostingRun::Triage => crate::triage::spawn(&app, number, &pr.head_ref).await?,
-        PostingRun::Review => crate::triage::spawn_review(&app, number, &pr.head_ref).await?,
-    };
+    let session = crate::triage::spawn_review(&app, number, &pr.head_ref).await?;
     Ok(Json(json!({ "session": session })))
 }
 
@@ -365,367 +280,6 @@ pub async fn pr_stash(
     crate::proc::run_blocking("the gate's stash", move || crate::git::stash(&path)).await??;
     app.notify().await;
     Ok(Json(json!({ "stashed": true })))
-}
-
-/// The batch — the one irreversible action.
-///
-/// The threads are refetched here rather than read from the cache, and that fetch
-/// does four jobs at once: the head-sha staleness check, the comment ids the
-/// writes are aimed at, which replies are already posted, and which threads are
-/// still open for the re-request pass. See `post::run` for the order.
-///
-/// A refusal from the local half comes back **200 with `refused` set**, not as an
-/// error: nothing was written, and the overlay renders it as a panel with the
-/// decisions still staged rather than as a failed request.
-pub async fn pr_post(
-    State(app): State<Arc<AppState>>,
-    Path(number): Path<u64>,
-    Json(batch): Json<crate::post::Batch>,
-) -> ApiResult<crate::post::PostReport> {
-    // One batch per PR at a time, refused rather than queued — same shape as
-    // `fix_pr`'s `branch_busy`.
-    //
-    // This was invisible while every write was idempotent: two concurrent batches
-    // would post the same reply twice and GitHub would collapse the reaction. A
-    // story is neither. Both would search, both would find nothing, both would
-    // create — so the check-then-file is a plain race on the one action that cannot
-    // be undone.
-    // Held for the whole batch and released however it ends, including a panic in
-    // the middle: a leaked lock would make the PR unpostable until a restart.
-    let released = app.try_claim(format!("post:{number}")).ok_or_else(|| {
-        anyhow::anyhow!(
-            "a batch for PR #{number} is already running; wait for it rather than \
-             sending a second one"
-        )
-    })?;
-
-    let pr = {
-        let inner = app.inner.read().await;
-        pr_from_poll(&inner.prs, number)?
-    };
-    let fresh = fetch_threads(&app, number).await?;
-    let report = crate::post::run(&app, &pr, &fresh, batch).await?;
-    drop(released);
-    app.notify().await;
-    Ok(Json(report))
-}
-
-/// Start the session that carries out a triaged review.
-///
-/// The other half of `/post`, and deliberately the same payload: your decisions,
-/// resolved through the same [`crate::post::resolve`] the batch uses, so the two
-/// paths cannot read one set of answers differently. What changes is who does the
-/// work — an agent that adapts a fix to a branch that moved and stops to ask,
-/// rather than `git apply` and a refusal.
-///
-/// It writes no comment and pushes nothing. The session is handed a plan and the
-/// worktree; every outward write stays here, on your button.
-pub async fn pr_resolve_run(
-    State(app): State<Arc<AppState>>,
-    Path(number): Path<u64>,
-    Json(batch): Json<crate::post::Batch>,
-) -> ApiResult<serde_json::Value> {
-    let pr = {
-        let inner = app.inner.read().await;
-        pr_from_poll(&inner.prs, number)?
-    };
-    let proposals = {
-        let inner = app.inner.read().await;
-        inner
-            .proposals
-            .get(&number)
-            .cloned()
-            .ok_or_else(|| anyhow::anyhow!("PR #{number} has no triage to carry out"))?
-    };
-    // The same gates the batch refuses on, for the same reasons: uncommitted work
-    // of yours would end up in the run's commits, a stopped rebase cannot take a
-    // commit at all, and `fix-pr` is rewriting this very history. A run puts an
-    // agent in the worktree for minutes, so this is worth refusing before it
-    // starts rather than discovering per thread.
-    if let Some(ws) = app.workspace_for(&pr.head_ref).await {
-        if let Some(g) = crate::triage::gate(&app, number, &ws).await? {
-            refuse!("{}", g.say());
-        }
-    }
-    // Fetched now, not from the cache: it is what makes the thread ids real and
-    // the drift check mean anything.
-    let fresh = fetch_threads(&app, number).await?;
-    let plan = crate::post::plan(
-        number,
-        &proposals,
-        &fresh,
-        &batch,
-        app.cfg.tracker.is_some(),
-    )?;
-    // Kept so the daemon can answer "what does this thread say" when the session
-    // reports a commit. The agent is never told the reply is its to send.
-    //
-    // Written before the spawn, under the id it will run as: `spawn::spawn_run`
-    // has the account. A run whose `claude` died at once was reaped before this
-    // write, and the exit watcher — the only thing that sets `ended` — matched on
-    // a record that was not there yet, so the run read as in flight until a
-    // restart and every thread in it stayed `pending`.
-    let session = Uuid::new_v4();
-    app.inner
-        .write()
-        .await
-        .with_resolve_runs("run started", |runs| {
-            runs.insert(
-                number,
-                crate::model::ResolveRun {
-                    session,
-                    plan: plan.clone(),
-                    ended: None,
-                },
-            );
-            true
-        });
-    if let Err(e) = spawn::spawn_resolve_run(&app, number, &pr.head_ref, &plan, session).await {
-        app.inner
-            .write()
-            .await
-            .with_resolve_runs("run never started", |runs| runs.remove(&number).is_some());
-        return Err(e.into());
-    }
-    app.notify().await;
-
-    let answered = sweep_words_only(&app, number, &plan, &fresh).await;
-    Ok(Json(json!({
-        "session": session,
-        "threads": plan.threads.len(),
-        "answered": answered,
-    })))
-}
-
-/// Answer the threads that need no code, now rather than never.
-///
-/// A words-only thread has nothing for the session to build — the prompt tells it
-/// exactly that ("the daemon posts the reply. Move on.") — so no report from the
-/// run will ever arrive for it, and `thread_committed` only fires on a commit.
-/// Left alone these sat at `WordsOnly` for the life of the run with no button to
-/// finish them.
-///
-/// No per-thread confirmation, unlike a committed thread: that card exists to
-/// show the *real* diff beside the drafted reply, because a commit can differ
-/// from what triage staged. Here there is no commit and nothing can drift — the
-/// words are the ones approved on the card — so asking again would be ceremony.
-///
-/// One thread failing does not stop the others, for the same reason `post_outward`
-/// keeps going: each is an independent write, and a run that answered three of
-/// four should say so rather than lose all four.
-async fn sweep_words_only(
-    app: &Arc<AppState>,
-    number: u64,
-    plan: &crate::model::Plan,
-    fresh: &crate::forge::Threads,
-) -> usize {
-    use crate::model::ThreadStatus;
-    use crate::post::Posted;
-
-    let todo: Vec<_> = plan
-        .threads
-        .iter()
-        .filter(|t| t.status == ThreadStatus::WordsOnly)
-        .cloned()
-        .collect();
-    if todo.is_empty() {
-        return 0;
-    }
-    let forge = match write_forge(app) {
-        Ok(f) => f,
-        Err(e) => {
-            tracing::error!(
-                "resolve run #{number}: no forge to answer words-only threads: {:#}",
-                e.0
-            );
-            return 0;
-        }
-    };
-    let at = app.cfg.main_checkout.clone();
-
-    let mut answered = 0;
-    for t in todo {
-        // A stance with no words is a bare thumbs up; the two are never both.
-        let outcome = match &t.reply {
-            Some(reply) => crate::post::post_one(
-                app,
-                &forge,
-                &at,
-                number,
-                &t.thread_id,
-                reply,
-                t.story.as_ref(),
-                fresh,
-            )
-            .await
-            .map(Some),
-            None if t.stance.gives_thumbs_up() => {
-                crate::post::react_one(&forge, &at, &t.thread_id, fresh)
-                    .await
-                    .map(|()| None)
-            }
-            // Neither words nor a reaction: nothing was ever going to leave for
-            // this one, so it is done rather than stuck.
-            None => Ok(None),
-        };
-
-        match outcome {
-            Ok(Some(Posted::HeldNoStory(why))) => {
-                mark_thread(app, number, &t.thread_id, |x| {
-                    x.note = Some(format!("story not filed — {why}"));
-                })
-                .await;
-            }
-            Ok(_) => {
-                answered += 1;
-                mark_thread(app, number, &t.thread_id, |x| {
-                    x.status = ThreadStatus::Replied;
-                })
-                .await;
-            }
-            Err(e) => {
-                tracing::error!("resolve run #{number}: {} — {e:#}", t.location);
-                mark_thread(app, number, &t.thread_id, |x| {
-                    x.note = Some(format!("could not answer — {e:#}"));
-                })
-                .await;
-            }
-        }
-    }
-    app.notify().await;
-    answered
-}
-
-/// `--force-with-lease` a branch, off the runtime, with its base read on the same
-/// hop.
-///
-/// One function because the two callers had it written out identically and each
-/// disagreed with itself a few lines away: both reached for a bare
-/// `spawn_blocking` and a hand-written `.context("the push panicked")` while their
-/// neighbours used [`crate::proc::run_blocking`], which exists so the `JoinError`
-/// is named the same way everywhere. `push_with_lease` re-states the base-branch
-/// rule itself, because a daemon push never passes through the `PreToolUse` hook.
-/// Push the branch a run has been committing to.
-///
-/// Its own button, and deliberately not the end of the run: a run can answer four
-/// threads and leave two for you, and pushing that is a judgement about whether
-/// what is on the branch is worth showing. `--force-with-lease` only, through the
-/// same helper every other push here uses.
-pub async fn pr_run_push(
-    State(app): State<Arc<AppState>>,
-    Path(number): Path<u64>,
-) -> ApiResult<serde_json::Value> {
-    let pr = {
-        let inner = app.inner.read().await;
-        pr_from_poll(&inner.prs, number)?
-    };
-    let path = gate_worktree(&app, number).await?;
-    app.push_branch(path, pr.head_ref.clone()).await?;
-    // Re-measure, or the overview keeps saying there is work to push: `unpushed`
-    // is the last reconcile's number, and this is the moment it stopped being true.
-    if let Some(ws) = app.workspace_for(&pr.head_ref).await {
-        let _ = app.reconcile(&ws).await;
-    }
-    app.notify().await;
-    Ok(Json(json!({ "pushed": pr.head_ref })))
-}
-
-/// Ask for a fresh review, from the reviewers whose threads are all answered.
-///
-/// Held back per reviewer rather than all-or-nothing: someone with an open thread
-/// of their own is not being asked to look again at work that has not answered
-/// them. Also its own button, because re-requesting is a claim that you are done.
-pub async fn pr_run_rerequest(
-    State(app): State<Arc<AppState>>,
-    Path(number): Path<u64>,
-) -> ApiResult<serde_json::Value> {
-    let fresh = fetch_threads(&app, number).await?;
-    let forge = write_forge(&app)?;
-    let at = app.cfg.main_checkout.clone();
-
-    // The threads this run answered, which is what decides whose review can be
-    // asked for again. Taken from the run's own record: `Replied` is the only
-    // status where the reviewer has actually been told something. `Held` and
-    // `NeedsYou` carry a commit but no answer, and a `Manual` thread is yours —
-    // each of those rightly holds its author back.
-    //
-    // This used to be derived from `!is_resolved` instead, and that could never
-    // work: resolving is the reviewer's button and the daemon never presses it, so
-    // every thread the run had just answered still read as open and nobody was
-    // ever ready. See `post::rerequest_all`, which is now the one implementation.
-    let done: Vec<String> = {
-        let inner = app.inner.read().await;
-        inner
-            .resolve_runs
-            .get(&number)
-            .map(|r| {
-                r.plan
-                    .threads
-                    .iter()
-                    .filter(|t| t.status == crate::model::ThreadStatus::Replied)
-                    .map(|t| t.thread_id.clone())
-                    .collect()
-            })
-            .unwrap_or_default()
-    };
-    let done: Vec<&str> = done.iter().map(String::as_str).collect();
-
-    let out = crate::post::rerequest_all(&forge, &at, number, &fresh, &done).await;
-    app.notify().await;
-    Ok(Json(json!({
-        "rerequested": out.asked,
-        "failed": out.failed.iter().map(|(who, e)| format!("{who}: {e}")).collect::<Vec<_>>(),
-        // Said rather than left as silence: "nobody to re-request" and "three
-        // people are still waiting on you" are different answers.
-        "held_back": out.held.iter().map(|(who, t)| format!("{who} — {t} is still unanswered")).collect::<Vec<_>>(),
-    })))
-}
-
-/// What you have edited since the manual phase opened.
-///
-/// The tree against `HEAD`, which after the phase's own commit is exactly your
-/// hand-written work and nothing else — the ordering is what makes that true. Its
-/// own endpoint rather than the diff viewer's, because the phase wants one refresh
-/// call returning both the file list and the patch text, and because `git diff`
-/// being the source is the point: nobody declared these files, so the list cannot
-/// be wrong about them.
-pub async fn pr_manual(
-    State(app): State<Arc<AppState>>,
-    Path(number): Path<u64>,
-) -> ApiResult<serde_json::Value> {
-    let path = gate_worktree(&app, number).await?;
-    let (files, diff) = tokio::task::spawn_blocking(move || crate::patch::worktree_change(&path))
-        .await
-        .context("reading the worktree diff panicked")??;
-    Ok(Json(json!({ "files": files, "diff": diff })))
-}
-
-/// Finish a batch that stopped for the manual phase.
-///
-/// The same lock and the same pipeline as `/post`; the difference is that the local
-/// half folds *your* edits rather than applying a patch, and the clean-tree gate
-/// stands down because the phase is what asked you to make it dirty.
-pub async fn pr_manual_done(
-    State(app): State<Arc<AppState>>,
-    Path(number): Path<u64>,
-    Json(done): Json<crate::post::Finish>,
-) -> ApiResult<crate::post::PostReport> {
-    let released = app.try_claim(format!("post:{number}")).ok_or_else(|| {
-        anyhow::anyhow!(
-            "a batch for PR #{number} is already running; wait for it rather than \
-             sending a second one"
-        )
-    })?;
-
-    let pr = {
-        let inner = app.inner.read().await;
-        pr_from_poll(&inner.prs, number)?
-    };
-    let fresh = fetch_threads(&app, number).await?;
-    let report = crate::post::finish(&app, &pr, &fresh, done).await?;
-    drop(released);
-    app.notify().await;
-    Ok(Json(report))
 }
 
 /// Where an `open` request wants the session.
@@ -886,6 +440,98 @@ pub async fn write_file(
 // ---------------------------------------------------------------------------
 // The review's hand-off
 // ---------------------------------------------------------------------------
+
+/// What one thread's reply carries. Absent words mean a reaction and nothing else.
+#[derive(Deserialize)]
+pub struct ThreadReply {
+    /// The words to post, as the human edited them. `None` is the bare 👍 a thread
+    /// gets when it was applied exactly as asked and there is nothing to add.
+    #[serde(default)]
+    pub reply: Option<String>,
+    /// Filed before the reply, so the reply can carry the id. The reply must then
+    /// contain `{story}`, which is substituted once the story exists.
+    #[serde(default)]
+    pub story: Option<crate::proposal::StoryDraft>,
+}
+
+/// Post one thread's reply, on behalf of the session that read it.
+///
+/// **The four rules the agent would otherwise be asked to remember.** A review
+/// session posts its own replies — it holds the decisions and it is the thing with
+/// a worktree — and it could do it with `gh` in two lines. What it cannot do in two
+/// lines is what [`crate::post::post_one`] does around the write: refuse a reply
+/// already on the thread, file the story first and substitute `{story}` into the
+/// words, refuse a story position with no tracker configured, and append the
+/// footer. Three of those are idempotency, and the fourth is load-bearing for
+/// something else entirely — `forge::acknowledged` reads `(via orchestrator)` to
+/// decide whether a thread still awaits you, so a reply posted without it is a
+/// thread that reads unanswered for ever.
+///
+/// So the words come from the agent and the writing stays here, where the rules are
+/// enforced rather than remembered and eleven tests say so.
+///
+/// The PR is the session's own, from its `Pass` — not a number in the body, which
+/// would let a session holding one review's token post on another's threads.
+pub async fn thread_reply(
+    State(app): State<Arc<AppState>>,
+    Path((id, thread_id)): Path<(Uuid, String)>,
+    headers: axum::http::HeaderMap,
+    Json(body): Json<ThreadReply>,
+) -> ApiResult<serde_json::Value> {
+    ask_token_ok(&app, id, &headers).await?;
+
+    let number = {
+        let inner = app.inner.read().await;
+        match inner.sessions.get(&id).and_then(|s| s.pass.as_ref()) {
+            Some(Pass { pr, command }) if command == Pass::REVIEW => *pr,
+            _ => refuse!("only a review session posts a reply, and {id} is not one"),
+        }
+    };
+
+    // Fetched now rather than reused: the thread must still be there, and the
+    // comment id the write needs is this fetch's, not the one the read pass saw.
+    let fresh = fetch_threads(&app, number).await?;
+    let forge = write_forge(&app)?;
+    let main = app.cfg.main_checkout.clone();
+
+    let Some(reply) = body
+        .reply
+        .as_deref()
+        .map(str::trim)
+        .filter(|r| !r.is_empty())
+    else {
+        // A thread applied exactly as asked, with nothing to add. The reaction is
+        // the whole of what is said, and it is still a write — so it goes through
+        // the same seam rather than being left to the agent.
+        crate::post::react_one(&forge, &main, &thread_id, &fresh).await?;
+        app.notify().await;
+        return Ok(Json(json!({ "posted": false, "reacted": true })));
+    };
+
+    let posted = crate::post::post_one(
+        &app,
+        &forge,
+        &main,
+        number,
+        &thread_id,
+        reply,
+        body.story.as_ref(),
+        &fresh,
+    )
+    .await?;
+
+    app.notify().await;
+    Ok(Json(json!({
+        "posted": !matches!(posted, crate::post::Posted::HeldNoStory(_)),
+        // Already there is a success: a retry after a failed re-request must not
+        // post the same words twice, and the agent has no way to tell otherwise.
+        "already": posted == crate::post::Posted::AlreadyThere,
+        "held": match &posted {
+            crate::post::Posted::HeldNoStory(why) => json!(why),
+            _ => serde_json::Value::Null,
+        },
+    })))
+}
 
 /// A review session reporting that its own work is finished.
 ///

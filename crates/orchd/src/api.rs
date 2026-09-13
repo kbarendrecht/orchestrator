@@ -150,7 +150,9 @@ fn is_ask_route(path: &str) -> bool {
         // session's ask token and no Origin, exactly like a vendored prompt.
         "/outside",
         "/spawn",
-        "/committed",
+        // A review session posting one thread's reply. The rules the words go
+        // through are `post_one`'s; see `review_api::thread_reply`.
+        "/reply",
         "/stuck",
         "/process",
         // `orch kill`. Not `/kill` or `/delete`, which are the SPA's own routes on
@@ -176,22 +178,21 @@ fn is_proposals_route(path: &str) -> bool {
 }
 
 /// The two routes the vendored `triage` skill calls before it can propose
-/// anything: what to work on, and how far it has got.
+/// anything to start: the repo, the login, the language, the tracker and the base.
 ///
 /// Keyed on a PR like the proposals route and carrying the same run credential.
 /// A route missing from here is refused twice over, and neither refusal names the
 /// cause: the Origin check has no arm for it, and `needs_token` then wants a
 /// credential the agent is deliberately not given.
 fn is_triage_route(path: &str) -> bool {
-    path.starts_with("/api/pr/")
-        && (path.ends_with("/triage-context") || path.ends_with("/triage/progress"))
+    path.starts_with("/api/pr/") && path.ends_with("/triage-context")
 }
 
 /// Every route an *agent* calls, on a credential that is not the app token.
 ///
 /// One predicate because the guard has to make the same two allowances for all of
 /// them — skip `needs_token`, and accept a missing `Origin` — and splitting that
-/// is how `…/committed` shipped reachable by neither. See [`guard`].
+/// is how `…/committed` once shipped reachable by neither. See [`guard`].
 fn is_agent_route(path: &str) -> bool {
     is_ask_route(path) || is_proposals_route(path) || is_triage_route(path)
 }
@@ -1015,179 +1016,6 @@ pub async fn thread_stuck(
     Ok(Json(json!({ "recorded": true })))
 }
 
-/// The session reports a thread's work is committed; the daemon shows it and,
-/// with your say-so, posts the reply.
-///
-/// This is the seam the whole design turns on. The agent wrote the code and knows
-/// nothing about GitHub credentials; the daemon holds them and has not read the
-/// code. Neither can answer a reviewer alone, and that is deliberate — the reply
-/// only goes out attached to a change you have just looked at.
-///
-/// Blocks like `ask` does, and for the same reason: the session must not run on to
-/// the next thread while this one's reply is still a question.
-pub async fn thread_committed(
-    State(app): State<Arc<AppState>>,
-    Path((id, thread_id)): Path<(Uuid, String)>,
-    headers: axum::http::HeaderMap,
-    Json(body): Json<CommittedBody>,
-) -> ApiResult<serde_json::Value> {
-    ask_token_ok(&app, id, &headers).await?;
-
-    let (number, planned, cwd, base_sha) = {
-        let inner = app.inner.read().await;
-        let (number, run) = inner
-            .resolve_runs
-            .iter()
-            .find(|(_, r)| r.session == id)
-            .ok_or_else(|| anyhow::anyhow!("session {id} is not carrying out a resolve run"))?;
-        let planned = run
-            .plan
-            .threads
-            .iter()
-            .find(|t| t.thread_id == thread_id)
-            .cloned()
-            .ok_or_else(|| anyhow::anyhow!("thread {thread_id} is not in this run's plan"))?;
-        let cwd = inner
-            .sessions
-            .get(&id)
-            .map(|s| s.cwd.clone())
-            .ok_or_else(|| crate::state::no_such_session(id))?;
-        (*number, planned, cwd, run.plan.base_sha.clone())
-    };
-
-    // The commit's own diff was read here too, to show beside the reply in a
-    // per-commit confirmation. That confirmation is gone (see below) and it was the
-    // only reader: the record keeps the sha, which is what the run screen and the
-    // report name, and a diff comes from `git show` afterwards.
-    let (dir, base) = (cwd.clone(), base_sha.clone());
-    let still_ours =
-        tokio::task::spawn_blocking(move || crate::git::is_ancestor(&dir, &base, "HEAD"))
-            .await
-            .context("reading the commit panicked")?;
-
-    // Is the tree this run was triaged against still in our history?
-    //
-    // Per thread, and *not* `base_sha == HEAD`: the agent commits once per thread,
-    // so from the second thread on the head has moved by design — which is why the
-    // prompt checks equality only at the start. What must stay true for the whole
-    // run is ancestry. It stops being true when the branch is rewritten underneath
-    // the run: a push from another machine, or somebody force-pushing your branch.
-    //
-    // The harm is outward, which is why it is checked here rather than left to the
-    // push. The agent's commits are then on an orphaned history, and every reply
-    // after that would tell a reviewer about a fix that cannot land — the final
-    // `--force-with-lease` would refuse, but only after N public comments had
-    // already claimed the work. So the reply is held and the thread says why.
-    if !still_ours {
-        let note = format!(
-            "the branch was rewritten under this run ({} is no longer in its history) — \
-             the commit stands but nothing was posted",
-            crate::git::short(&base_sha)
-        );
-        mark_thread(&app, number, &thread_id, |t| {
-            t.commit = Some(body.sha.clone());
-            t.status = crate::model::ThreadStatus::NeedsYou;
-            t.note = Some(note.clone());
-        })
-        .await;
-        app.notify().await;
-        return Ok(Json(json!({ "posted": false, "reason": note })));
-    }
-
-    mark_thread(&app, number, &thread_id, |t| {
-        t.commit = Some(body.sha.clone());
-        t.status = crate::model::ThreadStatus::Committed;
-    })
-    .await;
-
-    let Some(reply) = planned.reply.clone() else {
-        // No words: the stance was a bare thumbs up. This used to return saying it
-        // was "posted with the rest" — nothing posted it, and the run has no
-        // "rest", so the reaction never left. Send it here, without a card: you
-        // approved the stance at triage and there is no diff to weigh it against.
-        if planned.stance.gives_thumbs_up() {
-            // Its own fetch: the reaction needs a comment id from now, and the one
-            // the reply path uses is taken after the confirmation this case skips.
-            let fresh = fetch_threads(&app, number).await?;
-            let forge = write_forge(&app)?;
-            crate::post::react_one(&forge, &app.cfg.main_checkout, &thread_id, &fresh).await?;
-        }
-        mark_thread(&app, number, &thread_id, |t| {
-            t.status = crate::model::ThreadStatus::Replied;
-        })
-        .await;
-        app.notify().await;
-        return Ok(Json(
-            json!({ "posted": false, "reacted": planned.stance.gives_thumbs_up() }),
-        ));
-    };
-
-    /* **Posted on the strength of the button you already pressed.**
-    This used to raise an ask per commit — the diff beside the drafted reply,
-    `Post it` / `Hold it back` — and block the run on it. That was the shape when
-    the decisions were a plan the daemon applied; the button that sends them is
-    called `apply, push and post`, so asking again per thread is asking twice for
-    one answer, and it stops a run that has nothing left to decide.
-
-    What went with it: `hold`, the one-thread "say nothing, I will answer this
-    one myself". Nothing else here is weakened — the ancestry refusal above is a
-    safety check rather than a preference, and it still holds the reply and says
-    why. The ask channel is untouched for what it is for: a run that hits a
-    question only you can answer still asks it (`orch ask`, `/stuck`).
-
-    What you inspect instead is the commit itself: its sha is on the record, the
-    run screen and the report name it, and the reply that went out is beside it
-    there. */
-    // Fetched now: the thread must still be there, and the ids the write needs are
-    // this fetch's, not the ones triage saw.
-    let fresh = fetch_threads(&app, number).await?;
-    let forge = write_forge(&app)?;
-    // `gh` runs in the main checkout, the way every other write does, so it picks
-    // up the same auth and config. Through `post::post_one` rather than
-    // `forge.reply` directly, so this path files the story its reply links to,
-    // substitutes the token, and stays idempotent — the same three rules the
-    // batch obeys, from the same code.
-    let posted = crate::post::post_one(
-        &app,
-        &forge,
-        &app.cfg.main_checkout.clone(),
-        number,
-        &thread_id,
-        &reply,
-        planned.story.as_ref(),
-        &fresh,
-    )
-    .await?;
-
-    // A reply that could not be written is not "answered": leave the thread
-    // committed-but-unanswered so the overview still shows it as yours.
-    if let crate::post::Posted::HeldNoStory(why) = &posted {
-        mark_thread(&app, number, &thread_id, |t| {
-            t.note = Some(format!("story not filed — {why}"));
-        })
-        .await;
-        app.notify().await;
-        return Ok(Json(
-            json!({ "posted": false, "reason": "the story it links to was not filed" }),
-        ));
-    }
-
-    mark_thread(&app, number, &thread_id, |t| {
-        t.status = crate::model::ThreadStatus::Replied;
-    })
-    .await;
-    app.notify().await;
-    Ok(Json(json!({
-        "posted": true,
-        "already": posted == crate::post::Posted::AlreadyThere,
-    })))
-}
-
-/// Update one thread's place in the run, if the run is still there.
-///
-/// Silent when it is not: a run can be closed while its session is still winding
-/// down, and failing the agent's call over bookkeeping would be the tail wagging
-/// the dog.
 pub(crate) async fn mark_thread(
     app: &Arc<AppState>,
     pr: u64,
@@ -3711,7 +3539,8 @@ mod tests {
         for p in [
             "/api/session/<id>/ask",
             "/api/session/<id>/ask/<ask>/wait",
-            "/api/session/<id>/thread/PRRT_x/committed",
+            // A review session posting one thread's reply.
+            "/api/session/<id>/thread/PRRT_x/reply",
             "/api/session/<id>/thread/PRRT_x/stuck",
             "/api/session/<id>/spawn",
             // `orch run`. Named processes only, so this exemption widens what an
@@ -3790,18 +3619,14 @@ mod tests {
     /// route missing from `is_agent_route` is refused twice over without either
     /// refusal naming the cause.
     #[test]
-    fn the_triage_skill_can_reach_its_two_routes() {
-        for p in [
-            "/api/pr/10001/triage-context",
-            "/api/pr/10001/triage/progress",
-        ] {
-            assert!(is_triage_route(p));
-            assert!(is_agent_route(p), "{p} is curled by skills/triage/SKILL.md");
-            // Keyed on a PR, so not an ask route: there is no session in the path.
-            assert!(!is_ask_route(p));
-        }
-        // The run that *starts* a triage pass is the SPA's, on the app token.
-        assert!(!is_agent_route("/api/pr/10001/triage"));
+    fn the_review_skill_can_reach_the_route_it_opens_with() {
+        let p = "/api/pr/10001/triage-context";
+        assert!(is_triage_route(p));
+        assert!(is_agent_route(p), "{p} is curled by skills/review/SKILL.md");
+        // Keyed on a PR, so not an ask route: there is no session in the path.
+        assert!(!is_ask_route(p));
+        // The run that *starts* a review session is the SPA's, on the app token.
+        assert!(!is_agent_route("/api/pr/10001/review-session"));
     }
 
     #[tokio::test]

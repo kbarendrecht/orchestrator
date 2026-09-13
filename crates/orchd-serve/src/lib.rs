@@ -654,14 +654,16 @@ fn daemon_router(app: Arc<AppState>) -> Router {
             "/api/session/:id/handoff",
             post(review_api::session_handoff),
         )
+        // Where a review session's replies actually leave the machine; the rules
+        // live in `post_one` rather than in the skill. See `thread_reply`.
+        .route(
+            "/api/session/:id/thread/:thread/reply",
+            post(review_api::thread_reply),
+        )
         .route("/api/session/:id/tell", post(api::tell_session))
         .route("/api/session/:id/ask", post(api::ask))
         .route("/api/session/:id/ask/:ask/wait", get(api::ask_wait))
         .route("/api/session/:id/answer", post(api::answer))
-        .route(
-            "/api/session/:id/thread/:thread/committed",
-            post(api::thread_committed),
-        )
         .route(
             "/api/session/:id/thread/:thread/stuck",
             post(api::thread_stuck),
@@ -707,21 +709,16 @@ fn daemon_router(app: Arc<AppState>) -> Router {
         .route("/api/open/file", post(api::open_file))
         .route("/api/file/verb", post(api::file_verb))
         .route("/api/pr/:number/review", get(review_api::pr_review))
-        .route("/api/pr/:number/triage", post(review_api::pr_triage))
+        // The overlay session's first call: everything only the daemon knows.
+        .route(
+            "/api/pr/:number/triage-context",
+            get(review_api::pr_triage_context),
+        )
         // The rail's default review verb: one agent and one pane, which the
         // overlay is not good enough to replace yet.
         .route(
             "/api/pr/:number/handle-review",
             post(review_api::pr_handle_review),
-        )
-        // The two the vendored `triage` skill calls. Both are in `is_agent_route`.
-        .route(
-            "/api/pr/:number/triage-context",
-            get(review_api::pr_triage_context),
-        )
-        .route(
-            "/api/pr/:number/triage/progress",
-            post(review_api::pr_triage_progress),
         )
         .route(
             "/api/pr/:number/review-session",
@@ -731,24 +728,6 @@ fn daemon_router(app: Arc<AppState>) -> Router {
         .route("/api/pr/:number/proposals", post(review_api::pr_proposals))
         .route("/api/pr/:number/commit", post(review_api::pr_commit))
         .route("/api/pr/:number/stash", post(review_api::pr_stash))
-        // The only irreversible one. See `post::run` for the order.
-        .route("/api/pr/:number/post", post(review_api::pr_post))
-        .route(
-            "/api/pr/:number/resolve-run",
-            post(review_api::pr_resolve_run),
-        )
-        .route("/api/pr/:number/run/push", post(review_api::pr_run_push))
-        .route(
-            "/api/pr/:number/run/rerequest",
-            post(review_api::pr_run_rerequest),
-        )
-        // ...unless a thread was answered by hand, in which case the batch stops
-        // after the local commit and this finishes it.
-        .route("/api/pr/:number/manual", get(review_api::pr_manual))
-        .route(
-            "/api/pr/:number/manual/done",
-            post(review_api::pr_manual_done),
-        )
         // The rail's default: spawn a session running `/resolve <pr>` in a pane.
         .route("/api/pr/:number/open", post(review_api::open_pr))
         .route("/api/pr/:number/fix-pr", post(api::fix_pr))
