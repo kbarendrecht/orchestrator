@@ -542,7 +542,8 @@ cost, and why the runtime core is still one crate.
 
 ```
 crates/orchd-base/    the primitives. Nothing here may import anything below.
-  git.rs          status parsing, refs, unpushed, worktree ops, the review writes
+  git/            every git call, one file per seam: exec (the timed runner),
+                  status, refs, unpushed, worktree, bank, review
   pty.rs          portable-pty host, and the scrollback ring every pty keeps
   proc.rs         run a child with a deadline, portably (no coreutils `timeout`)
   child.rs        the protocol for a checkout's daemon: launch, ready line, observer

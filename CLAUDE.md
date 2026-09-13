@@ -1684,6 +1684,24 @@ where they were written. Every one of them cost something.
   Set there rather than in the gates, so a bare `cargo test` does not leave a
   stray `bindings/`. A type that moves between the crates moves between the files,
   and the SPA's `import('../snapshot').X` has to follow — `tsc` names every one.
+- **`git` is a directory, and the split was the banners.** It was 4,457 lines —
+  47% of `orchd-base` — already partitioned by banner comments, which became the
+  file names: `exec` (the timed runner), `status`, `refs`, `unpushed`, `worktree`,
+  `bank`, `review`. No item moved between them, `crate::git::…` still resolves for
+  every call site through `mod.rs`'s re-exports, and items the files share are
+  `pub(super)` rather than `pub`.
+  **The tests did not follow, and that is measured.** They group by *fixture*
+  rather than by section: `scratch_repo` is shared by twelve tests spanning refs
+  and worktrees, `amend_repo` by fourteen, `bank_fixture` by four. Splitting them
+  needs a shared fixtures module and a hand assignment of 61 tests, and what a
+  reader navigates while changing behaviour is the shipped code.
+  **And the split broke the module gate, which is how the gate earned its keep.**
+  `crates/orchd-base/src/git/tests.rs` is a file rather than a `mod tests {}` block, so the cut that
+  removes test code did not apply and 2,000 lines of tests read as shipped —
+  producing a `git <-> review_commit` cycle out of a move that changed no shipped
+  line. `declaredTestOnly` is the fix: a file whose own directory declares it
+  `#[cfg(test)] mod <name>;` is test code. Checked both ways, since a rule that
+  skips too much is worse than the bug.
 - **`cargo fmt` is the formatter now, gated in CI and the hook.** The tree was
   formatted in one commit, and `rustfmt.toml` says what was measured to keep the
   defaults — including why `wrap_comments` stays off, which is the setting that
