@@ -521,7 +521,8 @@ headless and prints a tokened URL. The binaries live in `orchd-serve` since the
 split, so `--bin orchd` from the root no longer resolves. `mise run shot` drives Chrome while the
 app runs in **WebKitGTK**, so it is good for layout and not the last word.
 
-[`CLAUDE.md`](CLAUDE.md) has the traps, [`TODO.md`](TODO.md) what is open,
+[`CLAUDE.md`](CLAUDE.md) has the traps as one line each and
+[`docs/traps/`](docs/traps/gates.md) what each one cost, [`TODO.md`](TODO.md) what is open,
 [`docs/assumptions.md`](docs/assumptions.md) what the daemon assumes and what breaks
 when each is false, and [`docs/spec.md`](docs/spec.md) the requirements the `(§N)`
 comments point at.

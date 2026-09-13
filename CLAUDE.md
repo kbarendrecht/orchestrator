@@ -6,17 +6,22 @@ map; **TODO.md** has what is open. Read it before proposing work: several obviou
 ideas are already in there, with what has been tried and why the shape is what it
 is.
 
+This file is the rules. **`docs/traps/` is what each one cost** — the same entries
+in the same order, with the incident, the measurement and the code behind them.
+Read the group before working in it.
+
 ## Tools, not rules
 
 **A rule nothing runs is a rule somebody will break, and the person who breaks it
 will be whoever read this file longest ago.** So the standing move here is to turn
-a rule into something that fails a build. Nearly everything in *Things that will
+a rule into something that fails a build. Nearly every entry in *Things that will
 bite you* was a rule first and cost a session before it became a check: the SPA's
 module graph is a DAG because `dependency-cruiser` says so, `snapshot.d.ts` cannot
 drift because `check-web` regenerates and diffs it, a fixture identity cannot be
 committed because the pre-commit hook reads `git var`, `confirm()` cannot come
 back because ESLint refuses the name, and a doc link cannot rot because
-`check-docs` denies it.
+`check-docs` denies it — and, since the traps became an index over `docs/traps/`,
+that the index and the files still carry the same entries.
 
 Two moves do most of the work: **deny rather than warn** (a warning is a rule
 again — CI's `-D warnings` is what makes clippy a gate), and **regenerate, then
@@ -214,1540 +219,184 @@ mean *this* repo; if you do, name it.
 
 ## Things that will bite you
 
-Grouped, and the grouping is the only order there is: inside one, entries sit
-where they were written. Every one of them cost something.
+Every one of these cost something. The rule is here; what it cost is in
+`docs/traps/`, one file per group, in the same order.
+
+**This was 1,537 lines of it, inline.** That is the whole design record and it
+has plainly stopped regressions — but it is also read in full at the start of
+every session, before a single source file is opened, and most of what it holds
+is the *history* of a rule rather than the rule. So the histories moved and the
+rules stayed. Nothing was deleted: every word is under `docs/traps/`, and the
+heading above each one is the line below.
+
+**A list written twice is a list that drifts**, and this one drifts silently — an
+entry added to one side is simply missing from the other, and the only symptom is
+a reader who never learns the trap. So `mise run check-docs` holds the two
+together: same entries, same order, same groups.
 
 ### The host, its children, and their state
 
-- **A checkout's daemon is a child process, and `crates/orchd-base/src/child.rs` is the protocol.**
-  `child::launch` runs `orchd --main <checkout> --host-origin <origin> --announce`,
-  reads one line — `ready <port> <token>` — and arms **one** observer thread that
-  owns `wait()`. Four things about it are load-bearing.
-  **The child mints its own token and reports it.** Handing one down through the
-  environment would put it in the environment of every session that child spawns,
-  which is the invariant `triage.rs` asserts.
-  **The observer has to know *why* the child exited.** A close, a quit and a crash
-  produce the same EOF, so an observer that restarts on exit restarts the daemon a
-  close just stopped — and a restart runs `auto_resume`, which spawns an agent per
-  live record. So a deliberate stop sets `stopping` **before** it signals, and the
-  observer reads it after `wait` returns. Ownership follows from `std::process`:
-  `wait` needs `&mut self`, so the handle lives in the observer and every stop path
-  signals **by pid**, through `pty::signal_group_of` (which refuses pid 0 and our
-  own group — `killpg(0, …)` would take the host).
-  **Stdin EOF is the second kill switch**, so a `SIGKILL`ed host still takes its
-  children down, and `--announce` turns the child's *stdout* subscriber off: that
-  pipe is the parent's protocol channel, and every line is in the file log anyway.
-  **The binary is `orchd`, beside the running executable — never a re-exec of the
-  app.** `ldd` says why: `orchd` links 5 shared objects and
-  `orchestrator-desktop` links 133, twenty of them WebKit and GTK, and a child would
-  pay that loader cost to serve a page it never serves.
-  **A child process rather than an embedded daemon is measured, not assumed**, and
-  the number is the answer to the question somebody will ask again. Release build,
-  wall clock from `Command::spawn` to the daemon serving, minus the `daemon start`
-  phase the daemon logs itself — so it is exactly what the extra process costs on
-  top of the `orchd_serve::start` both shapes run: **2.6–2.7 ms and 11 execs**, and
-  **9.3 MB RSS** idle per daemon. The delta does not move when the repo work goes
-  up 58× (a throwaway checkout against this one, 23 ms against 1334 ms of
-  `daemon start`), which is what says it is exec plus loader and nothing else.
-  It is 0.2% of a real start, and the children start in parallel.
-  One test-only wrinkle worth knowing: those tests write a stub and exec it, and
-  `ETXTBSY` there is a **fork race** (a sibling thread's `fork` copies the write fd
-  until its own `exec`), not a defect — `launch_stub` retries it and says so.
-- **A checkout's durable state lives in its own directory, and `ORCHD_CONFIG_DIR`
-  is how it gets there.** `host::checkout_dir` is
-  `<config dir>/checkouts/<leaf>-<hash>`, hashed over the **checkout path alone** so
-  the directory is a function of the checkout and nothing else; the leaf is for
-  reading a bug report by eye and is not the key, because two checkouts can share
-  one. The host hands that path to the child as `ORCHD_CONFIG_DIR`, which relocates
-  every durable thing at once — config, `sessions.json`, `automation.json`,
-  `hooks.json`, the skills plugin dir, transcripts, the log and the instance lock.
-  One variable rather than a flag per store, because a flag per store is one
-  somebody forgets and two checkouts then share a file. It is also what makes a
-  fixture daemon safe. **Overriding `HOME` would relocate the same things for free
-  and is wrong** — `claude` reads its credentials from there, so every spawned
-  session would come up unauthenticated. The one exception is `mise run e2e`,
-  where the agent is a fake with no credentials to lose, so relocating `HOME` is
-  what keeps transcripts out of your `~/.claude/projects`.
-  **The move from the old single `config.json` is a one-shot in `host.rs`, not a
-  `migrate.rs` rule**, for two reasons that are easy to get wrong. That table's
-  `apply` is `fn(&mut Map<String, Value>) -> bool` and `config_file` ends in one
-  `fs::write`, so a rule there cannot create a directory or write a sibling file.
-  And its shape would have been wrong anyway: `main_checkout` **stays** at the root
-  of every per-checkout file, so a rule keyed on that key re-fires on every start of
-  every daemon, forever. The shape recognised instead is a *location* — this
-  checkout has no directory yet — and the old file is **copied, not moved**, so an
-  older build still finds its config. The copy happens only when the root config
-  names *this* checkout, because a copy carries `main_checkout` and seeding a second
-  checkout from it would point that daemon at the wrong tree.
-  **Window geometry did not move**, and that is worth knowing rather than checking:
-  `store::save_window` / `load_window` are called only from the desktop crate, which
-  is the host process, so the geometry already lives in the host's own config dir
-  and one window still has one geometry.
-- **The app is the host, and every checkout is a child `orchd`.** `boot_daemon` in
-  `desktop/src/main.rs` runs `host::serve` on an ephemeral port, calls
-  `Host::open_checkout` for the configured checkout, points the webview at the
-  host's URL and calls `host.stop_all()` at quit. `cargo run -p orchestrator-desktop`
-  therefore starts **two** processes, and `cargo run -p orchd` still starts one that
-  serves its own page.
-  Four consequences, each of which has already bitten or nearly did.
-  **The page's calls do not go to the page's own port.** `core.LOCAL` reads the
-  substituted checkout list and aims `base`/`wsBase` at *that checkout's* daemon —
-  relative when they share a port (a solo `orchd`), absolute when they do not (the
-  app). A relative fetch under the app would reach the host, which answers `{}` to
-  an unknown route, so the failure would look like an empty daemon rather than a
-  misrouted call.
-  **A hosted child does not serve the page.** `orchd_serve::start` mounts the host router
-  only when `host_origin` is absent, which is exactly the question "did somebody
-  host me". Its `/` then falls through to the catch-all and answers `200 {}` — so a
-  test for this must assert on the *body*, not the status.
-  **The instance lock is the child's**, taken inside its own `orchd_serve::start`. A
-  second app on one checkout now surfaces as a child that never reported ready,
-  which is a worse message than the old refusal and is why the lock re-key is still
-  on the list.
-  **`--announce` needs a live stdin pipe.** Run that flag by hand from a shell and
-  the daemon exits at once, because stdin is `/dev/null` and EOF is the second kill
-  switch. `tests/host_and_child.rs` is the way to drive this pair; a terminal is not.
-- **First run is a screen, not a second application.** `firstrun.rs` used to serve
-  its own axum server on its own port, with its own router, its own Host/Origin
-  guard, a `BootstrapHost` trait for the two things that need a window, and a
-  500-line HTML page carrying a copy of the SPA's palette and a titlebar of its
-  own. That titlebar had to learn the macOS window-drag rule a second time, four
-  days after the board did, and the same split put two sets of window buttons on a
-  Mac.
-  **The board already had the journey.** `+ open project` lists the same recents
-  and raises the same dialog through `/api/host/recent` and `/api/host/pick`. What
-  it did not have was the *review* — base branch, GitHub repo, environment tool,
-  the repo's own dev processes — which therefore ran once per install and never for
-  a checkout added from the rail.
-  So the app opens one window whatever is configured, `boot_daemon` treats an empty
-  host as a screen rather than a `fail`, and `web/js/open.js` is that screen:
-  welcome when no checkout is open, review before any folder the host has not seen.
-  `host::validate` and `host::detect` are the two routes it needed.
-  What went with it: the bootstrap server, `BootstrapHost`, `TauriBootstrap`, the
-  `BOOTSTRAP` and `BOOTING` statics, `Written::undo`, `/api/context`,
-  `/api/cancel`, that page, and a test which string-searched its own
-  JavaScript for a `DRAG_SLOP` — a test whose only reason to exist was the
-  duplication.
-- **The page is served by `host.rs`, not by the daemon.** `crates/orchd-serve/src/host.rs` owns
-  `GET /`, every asset route, the window commands, the checkout list and the four
-  commands that change it (`add`, `close`, `reopen`, `pick`); the daemon keeps
-  `/api/*`, `/ws/*` and `/hooks/*`.
-  **So a window command must go to the host**, and the page's `call` does not —
-  it aims at `core.LOCAL`, the checkout's own daemon, which answers `200 {}` to a
-  route it does not have. Every titlebar button shipped silently dead under the
-  app that way: minimise, close, drag, resize and restart all succeeded at
-  nothing. `core.HOST` and `callHost` are the seam, and
-  `tests/host_and_child.rs` asserts the swallow so the reason cannot be tidied
-  away. **They are separate processes on separate ports with separate tokens**:
-  the host serves the page from the app, and every checkout is a child `orchd`
-  that mints its own. The two routers answer to different owners — a daemon
-  manages one checkout, and there is one page over all of them.
-  Three consequences worth knowing. The window handle is on `host::Host`, not
-  `AppState`, so `server.host.attach_window` is what the shell calls. The page's
-  token now comes from the substituted checkout list (`core.CHECKOUTS[0].token`),
-  falling back to `__ORCH__.token` for the review-preview page. And `/hooks/*`
-  **cannot** move: `hooks.rs` writes that daemon's own port into its own settings
-  file, so an agent's hook URL is the port of the daemon that spawned it.
+[docs/traps/host.md](docs/traps/host.md)
+
+- A checkout's daemon is a child process, and `crates/orchd-base/src/child.rs` is the protocol.
+- A checkout's durable state lives in its own directory, and `ORCHD_CONFIG_DIR` is how it gets there.
+- The app is the host, and every checkout is a child `orchd`.
+- First run is a screen, not a second application.
+- The page is served by `host.rs`, not by the daemon.
 
 ### The gates, and what each one caught
 
-- **The SPA is compiled in.** Everything under `web/` is `include_str!`d, so a
-  CSS or JS change is invisible until the daemon is rebuilt *and* restarted. No
-  amount of reloading the page helps — and a stale process holding the port makes
-  this worse, because you are then debugging a build from ten minutes ago.
-  `pkill -x orchd` will not always do it: Linux truncates the process name to 15
-  characters, so `orchestrator-desktop` needs killing by pid.
-  **And never `pkill -f orchd`.** It matches the *agents* too: the daemon passes
-  the vendored prompts on the command line, they contain the word, and `-f` reads
-  the whole command line — so it killed two live Claude sessions along with the
-  daemon. Kill by pid, or `pgrep -x orchestrator-de` for the app.
-- **There is a pre-commit hook, and it needs enabling once per clone.**
-  `git config core.hooksPath .githooks` — git will not let a repo point at its own
-  hooks, so a fresh clone has none until you say this. It runs only what the staged
-  files could break, and its own header says why that matters; `--no-verify` is a
-  fine thing to reach for mid-refactor, and the real gate is `mise run check-web`.
-  **Every fifth Rust-or-`tools/e2e/` commit it also runs the e2e flows**, ~35s
-  instead of ~2s. The counter is in `.git/`, only qualifying commits spend it, and
-  a *failure does not reset it* so the next commit tries again rather than burying
-  a break for four more. `E2E_EVERY=1` forces a run, `E2E_EVERY=0` turns it off.
-  **`check.yml` runs them too now, and the hook is no longer the only thing that
-  does.** It was: no workflow ran `tools/e2e/run.mjs` at all, so a fresh clone, a
-  `--no-verify` habit or anybody who never said `git config core.hooksPath
-  .githooks` skipped all 24 flows, and the class of fault they exist for reached
-  nobody. The bar this entry set was to measure the flake rate first, because the
-  flows had flaked twice and a flaky gate is worse than no gate: **seven
-  consecutive clean runs, 168 flow executions**, and both known flakes have a fix
-  behind them (`t.settled` before each call, and `spawn_worktree_session`
-  recording the branch). One machine and a fast one, so a runner may yet find a
-  timing fault this could not — if it does, read the numbers `E2E_TIME=1` prints
-  before reaching for a longer timeout. The hook keeps its counter, because a
-  local answer four commits early is worth more than the same answer from CI.
+[docs/traps/gates.md](docs/traps/gates.md)
 
-- **Splitting one working tree into several commits has two traps, and neither
-  fails loudly.** `git diff -U0` splits finely, but `git apply --cached
-  --unidiff-zero` has no context to check against and *trusts the line numbers*:
-  four `state.rs` insertions landed inside unrelated expressions, and five commits
-  in a row did not compile while `HEAD` did, because a later whole-file commit
-  quietly repaired them. Use context hunks (a mismatch then fails instead of
-  landing somewhere else) or write the whole file per stage, and **check out each
-  commit and `cargo check` it** — a throwaway `git worktree add --detach` is the
-  cheap way. The other trap is the hook: it regenerates `web/snapshot.d.ts` from
-  the *working tree*, which holds every change, so any Rust commit in a split
-  demands the final file and can only pass on the last one. `--no-verify` for the
-  split, then `mise run check-web` on the end state. Worth knowing generally: the
-  hook reads the working tree, so it never validates an intermediate commit at all.
-- **Inserting a test can unregister the one next to it.** An anchor on
-  `fn other_test() {` puts your test *between* that test's `#[test]` and its `fn`,
-  which leaves yours with two attributes and its neighbour with none — so it stops
-  running, and the count barely moves because yours now registers twice.
-  `swapping_exchanges_two_branches_and_is_its_own_inverse` sat unregistered in a
-  pushed commit that way. Anchor after the previous test's closing brace, and read
-  the test count.
-- **`mise run check-web` is the SPA's gate, and it bites.** The list of checks
-  lives in `tools/check-web.sh`, because this task and `check.yml`'s own step each
-  used to spell it out — and the third copy, in the pre-commit hook, had already
-  lost three entries. The hook still runs a subset deliberately; the two that
-  claim to be the whole gate now read one file. It regenerates
-  `web/snapshot.d.ts` and fails if the committed copy drifted, runs
-  `tsc --noEmit --checkJs` over every SPA file, runs `dependency-cruiser` over the
-  module graph, runs `eslint` with typescript-eslint's *typed* rules, holds the
-  palette, refuses a class `app.css` styles that nothing can produce, holds a
-  pane's `drop` list to field names the daemon still sends, and checks that every
-  module in `web/js/` has a route serving it. Each was checked against
-  deliberate breakage — a `#[serde(rename)]`, a typo'd `snap.` field, an added
-  cycle, an un-awaited `confirmBox`, an unwritten class, a misspelt dropped field
-  and a new module file each
-  fail it. There is still **no build step**: `tsc` only checks, and the files ship
-  exactly as written.
-  **`web/snapshot.d.ts` is generated, never hand-written**: it comes from the Rust
-  structs via `ts-rs`, derived under `cfg(test)`, so nothing of it reaches the
-  binary and it is never `include_str!`d or served. Rename a snapshot field and
-  the diff shows up there — which is the point, since the old failure mode was a
-  renamed field reading as `undefined` and rendering as nothing. Commit the
-  regenerated file with the Rust change; the entry on the crates says why four of
-  them are written in a fixed order.
-- **ESLint answers what `tsc` structurally cannot: the promise nobody awaited.**
-  `tsc` knows a name and its type; it has nothing to say about a `Promise` used as
-  a boolean, and one shipped. Three settings are load-bearing and
-  `tools/eslint.config.mjs` says why beside each. The one to know before writing a
-  handler: `no-floating-promises` runs with `ignoreVoid`, so **`void f()` is how
-  you say "fire and forget" out loud** — 37 handlers do, and the next dropped
-  promise that did not mean to is the one the rule catches.
-- **The SPA type-checks under `strict`, and getting there found two bugs.**
-  `tools/tsconfig.json` says what each pass cost and what it caught — the review
-  overlay reading three fields the daemon never sent, `diffState.anchors`
-  annotated `number[]` while holding elements. Three things it does not say.
-  **`$` throws rather than returning `null`**: every id it is asked for is in
-  `index.html`, which is compiled into the same binary, so a miss is the page and
-  the code out of step rather than a state to handle, and the throw names the id
-  at the call instead of surfacing three lines later.
-  **A parameter annotation goes in by line and column**, so never insert a line
-  into the same file in the same pass — everything after it lands in the middle of
-  a word, and the repair is manual.
-  And `el()` is generic on its tag (`@template {keyof HTMLElementTagNameMap}`)
-  rather than returning `HTMLElement`, which is what keeps `el('input').value`
-  checked instead of sending every form control through `ctl`.
-  The types come from Rust wherever there is a struct to take them from, so the
-  diff pane and the review overlay are checked against the daemon rather than a
-  hand-written guess. `/api/pr/:n/review` builds a `json!` literal with no struct
-  behind it, and that is the one shape `review.js` still describes by hand; it
-  says so where it does.
-
-- **`catch (e)` gives you `unknown`, and `core.reason(e)` is the one answer.**
-  46 catch blocks all said `e.message`, which is `undefined` for a thrown string,
-  a `DOMException`, or anything else that is not an `Error` — and that word then
-  goes in a toast. `useUnknownInCatchVariables` is on, so the next one cannot.
-- **`mise run page-check` asserts what the page must never *show*.** Four faults
-  that are text rather than pixels, every one of which has happened here.
-  `tools/e2e/page.mjs` names them and argues why this is deliberately not a
-  screenshot test.
-- **Type-checking found bugs clicking around did not.** Turning `checkJs` on after
-  the module split surfaced five modules referencing names that had stayed behind
-  in `app.js` (`pendingSelect`, `TOKEN`, `WS_BASE`, `selected`, `prOf`) — every one
-  a `ReferenceError` waiting for a code path the browser checks never hit. Treat a
-  green page as weaker evidence than a green `check-web`.
-- **A panic is denied where it can take the daemon down, and `clippy.toml` is why
-  that became affordable.** `unwrap_used`, `expect_used`, `panic`, `print_stdout`,
-  `print_stderr` and `await_holding_lock` are all `deny` at the workspace; that
-  file says what made the trade payable. The shape that argued for it:
-  **`host.rs` had 20 `lock().unwrap()`**, where one panic under any of them
-  poisons the mutex and every later caller panics too — in the host, which owns
-  every checkout's child process. `host::locked` and the desktop's
-  `poisoned_is_still_usable` recover instead, which is safe because every one of
-  those locks holds a map or a vector updated whole.
-  Three things to know before adding a site. An integration test in `tests/` is
-  **not** covered by `allow-*-in-tests` — that setting reaches `#[test]` functions
-  and `#[cfg(test)]` modules, and a helper in an integration crate is neither, so
-  those four files carry a file-level `allow` with the reason. A CLI binary allows
-  the print lints at the top of the file, and that allow *is* the statement that it
-  is a CLI — the daemon library cannot print, because a launcher-started app has no
-  terminal and the line would reach nobody. And what is left uses
-  `#[expect(…, reason = "…")]` rather than `#[allow]`, so the exemption fails the
-  build when the code stops needing it.
-- **`health.yml` runs `cargo deny`, `cargo about`, `cargo machete`, `typos` and
-  `zizmor` — on every push and weekly, in its own workflow.** An advisory against
-  one of the ~490 crates the bundle redistributes arrives without anybody pushing
-  a commit, and "go and read an advisory" is a different message from "your commit
-  is broken". The workflow and `deny.toml` carry the rest, each beside the setting
-  it explains: why the five tool versions are pinned, which advisory is accepted
-  rather than fixed, why `openssl` is banned outright, and why there is no
-  `paths:` filter. Every action in all three workflows is pinned by hash, and
-  there is no bot moving them — a bump is a deliberate commit, which is the trade.
-  **`THIRD-PARTY-RUST.md` is generated, never edited.** `THIRD-PARTY.md` already
-  argues the obligation for the vendored JavaScript — it is `include_str!`d, so it
-  is redistributed in binary form and its notice has to travel — and every crate in
-  the bundle is in the same position. `cargo about` writes it from `Cargo.lock`,
-  and CI regenerates and diffs it, exactly as it does `web/snapshot.d.ts`.
-- **The doc comments are checked now, and they were not.** `[`like this`]` is an
-  intra-doc link, `cargo doc` is the only thing that reads one, and it had never
-  been run: twelve were dangling, pointing at items renamed or deleted months
-  before — `render_prompt_file` outlived the whole prompt-to-skill conversion.
-  A pointer that leads nowhere is worse than none, because it costs a reader a
-  search to find that out. `mise run check-docs` and CI deny
-  `rustdoc::broken_intra_doc_links`; `private_intra_doc_links` is **allowed**,
-  because nearly every module here is private and documents itself for whoever
-  reads the source next, so that warning fires on the normal case. Two spellings
-  that will not resolve and are not worth fighting: a private item reached by a
-  `crate::…` path from another module, and `Self::` inside a trait `impl` — use a
-  plain code span or name the trait.
-- **`ctl(id)` is the one deliberate `any` in the SPA.** `getElementById` can only
-  promise `HTMLElement`, so reading `.value` through `$` is a type error even when
-  the id certainly names an `<input>`. `ctl` is the named escape hatch for form
-  controls; `$` stays typed so everything else fetched through it keeps being
-  checked. Do not widen `$`.
+- The SPA is compiled in.
+- There is a pre-commit hook, and it needs enabling once per clone.
+- Splitting one working tree into several commits has two traps, and neither fails loudly.
+- Inserting a test can unregister the one next to it.
+- `mise run check-web` is the SPA's gate, and it bites.
+- ESLint answers what `tsc` structurally cannot: the promise nobody awaited.
+- The SPA type-checks under `strict`, and getting there found two bugs.
+- `catch (e)` gives you `unknown`, and `core.reason(e)` is the one answer.
+- `mise run page-check` asserts what the page must never *show*.
+- Type-checking found bugs clicking around did not.
+- A panic is denied where it can take the daemon down, and `clippy.toml` is why that became affordable.
+- `health.yml` runs `cargo deny`, `cargo about`, `cargo machete`, `typos` and `zizmor` — on every push and weekly, in its own workflow.
+- The doc comments are checked now, and they were not.
+- `ctl(id)` is the one deliberate `any` in the SPA.
 
 ### The SPA, the webview, and the two module graphs
 
-- **ES modules work in the real webview — measured, not assumed.** WebKitGTK
-  **2.50.4** ships here, and a spike drove the actual desktop window (not Chrome,
-  not playwright's WebKit): a `type="module"` script imported a second module over
-  a `/js/:file` route, the relative import resolved, strict mode was on, and the
-  vendored classic globals (`window.__ORCH__`, `Terminal`, `Prism`) were all
-  present by the time the module ran — module deferral happens *after* the classic
-  scripts, so the ordering is safe. Two things the spike settled that matter for
-  the migration: the content type must be a JavaScript one (`text/plain` loads and
-  then refuses to execute), and modules come from `include_str!` like everything
-  else, so **each new module needs an entry in the route's match and a rebuild** —
-  adding a JS file stops being a JS-only change.
-- **The page holds one snapshot and one socket per checkout, and `snap` is the
-  active one.** `core.snapshotOf(path)` is any checkout's; `snap` is whichever
-  checkout you are in, and **the checkout is derived from the selection** —
-  `activeCheckout()`, never written. A second variable saying which checkout you
-  are in is a second source of truth, and the one that goes stale is whichever the
-  next reader forgets. The one exception is a remembered path used *only* when
-  nothing is selected, so activating an empty checkout does not put you back in the
-  first one.
-  Three consequences. **`call` and `get` aim at the active checkout**, so anything
-  acting on a row in another one uses `callFor(sessionId, …)`, which derives the
-  target the same way. **Every per-target key carries its checkout** (`termKey`,
-  `wsKey`): `main` names a workspace in every daemon and `proc:main:ng-watch` a
-  process, so an unqualified map hands you the other checkout's live terminal — and
-  `orch.procOrder` is *persisted* under that key, which no amount of disposing
-  terminals undoes. And **attention is global**: the waitbar, `MOD+Space`,
-  `Ctrl+Tab` and the screen-reader announcement read every checkout, because a bar
-  saying "2 need you" while its own chord answers "nothing waiting on you" is the
-  two disagreeing about one fact.
-- **A page served by a host is cross-origin to every child daemon.** Every call
-  carries `x-orch-token`, which makes it a non-simple request, so the browser sends
-  `OPTIONS` first and drops any answer that does not name its origin.
-  `api::guard` answers that for the one origin `host_origin` names — never `*`,
-  which would let any page in the browser drive the daemon. This shipped missing
-  and the symptom was a board that drew from its websockets (CORS does not cover
-  those) and could then do nothing at all.
-  **One port per daemon, and the host proxies nothing.** The cost of not proxying
-  is one extra origin per daemon — the same string for every one, handed in at
-  spawn, so it is one rule instantiated N times rather than N rules that have to
-  agree. The cost of proxying would be a second loopback hop on the keystroke
-  path, and the pty socket is nothing but small frames in both directions: this
-  repo already had to set `TCP_NODELAY` because Nagle plus a delayed ACK is ~40 ms
-  per round trip on exactly that traffic.
-- **`orchd --host <checkout>…` is how the multi-checkout page gets driven without a
-  screen.** The app is the only other host and it needs a window. It is a *real*
-  host: each checkout gets its state directory under `ORCHD_CONFIG_DIR` and lands in
-  `recent.json`, so point that variable at a scratch dir or it writes into your own
-  config. `mise run shot` then works against it.
-- **The SPA is a module graph, not a file.** `web/js/core.js` is the shared layer
-  — the fetch wrappers, the DOM shorthands, the snapshot, the selection, the UI
-  scale, and the vocabulary every pane needs to describe a session (`stateLabel`,
-  `dotClass`, `isArchived`, `pending`, …). The features beside it are `term`,
-  `rail`, `diff`, `review` (+ `review-diff`), `queue` and `settings`. `app.js` is
-  what is left over: boot order, the websocket, the keyboard map, the window
-  chrome — under a thousand lines, from 4798 before the split.
-  `mise run check-web` prints the current module and dependency count.
-- **The daemon's module graph is a DAG now, and `mise run check-modules` refuses a
-  cycle.** It was a ratchet for a long time and its own header carries the three
-  passes that got it here: 17 mutual pairs and a 16-module strongly connected
-  component at the start, seven broken by moving a *shape* into the module that
-  owns shapes, six more when `state::Inner`'s four feature types followed them
-  into `model`, and the last two by the inversion below.
-  **The swap from ratchet to rule is the point, not the count.** A pair list
-  cannot see a three-module cycle, so what it counted was never quite what hurt —
-  measured by deliberate breakage, one added edge in `model.rs` now reports
-  `git -> model -> state -> store -> git`, which the old check would have called
-  no worse. And a ratchet sitting on an empty baseline is a rule with nothing left
-  to negotiate, so the baseline file is gone.
-  Two things about the reader are worth carrying. **A number a tool reports is a
-  claim the tool has to earn**: the SCC was once reported as 23 modules, which was
-  this script's own pattern failing to cut `pty.rs`'s `pub(crate) mod tests`, and
-  the figure reached a commit message and a review before anybody checked it. And
-  **it cuts every `#[cfg(test)]` module rather than slicing the file at the first
-  one** — the old cut kept the head of the file on the written assumption that the
-  test module is last, and `api.rs` carried 858 lines of handlers below its tests,
-  two of whose edges were read nowhere.
-- **A run's end is published, not dispatched by name.** `spawn` owns the only
-  `pty.wait()`, so it is where a run ending is learned — and it used to settle the
-  run itself, calling `fix_pr::settle`, `fix_pr::start` and `triage`'s predicates,
-  which is exactly why it imported the two modules that call `spawn_run` to start
-  a run. `watch_session_exit` now fills a `state::RunExit` and calls
-  `app.run_ended`; `orchd_serve::settle_run` is the one subscriber, installed by
-  `start` beside the pollers.
-  **A hook on `RunSpec` is the obvious shape and is wrong.** `RunSpec` is neither
-  persisted nor in `spawn::Carried`, and `auto_resume` rebuilds a run's session
-  from its `Pass` alone — so a fix run resumed after a restart would have no hook
-  left and would never settle, silently. The observer is installed once per
-  process, so a resume finds it exactly as the first spawn did.
-  Two details that are load-bearing. It is a plain `fn` returning a boxed future
-  rather than a channel, so the call keeps its place in the exit sequence; and it
-  is called **after** `release_main`, because `fix_pr::start` refuses while a live
-  session holds the branch. An unobserved `AppState` — every unit test — drops the
-  news, which is why the pair of tests is split: `spawn` asserts the exit is
-  published with the right pass and flag, and `orchd-serve` asserts a refused
-  hand-off takes `fix_pr_on_exit` back.
-  The vocabulary moved with it: the six `Pass` commands are associated constants
-  on `model::Pass` (`FIX_PR`, `REVIEW`, `TRIAGE`, `RESOLVE_RUN`, `HANDLE_REVIEW`,
-  `STORY`) with `posts_proposals` and `is_triage_of` beside them, because "which
-  command is this" is asked by the spawn that records it, the route that finds it,
-  the rail that colours it and the watcher that settles it.
-- **The module graph is a DAG, and it was made one on purpose.** `app.js` → the
-  six; `rail` → `term`, `review`; `review` → `diff`; everything → `core`. Three
-  cycles had to be broken first, and each inversion is the reason a boundary is
-  real rather than decorative:
-  - zoom used to resize the terminals directly while they read the scale back.
-    `core.setZoom` now announces through `onScaleChange`, and `term` registers.
-  - the rail called `select()` which called `render()` which redrew the rail.
-    `core` owns `selected`/`setSelected` and announces through `onSelection`;
-    `app.js` registers what picking a session *means*.
-  - the changed-files pane and the diff called each other, so the pane moved
-    *inside* `diff` — two modules that call each other are one module with a line
-    drawn through it.
-  Adding a cycle back would work (ESM allows it) and would quietly undo this.
-- **Each module needs a line in `module()` in `host.rs` and a rebuild.**
-  `include_str!` again: adding a JS file is a Rust change, and
-  `tools/check-module-routes.mjs` is what says so, from both sides of the hook —
-  its header has why `dependency-cruiser` cannot. That cost is why the modules
-  track features rather than being cut finer.
-- **A pane's paint signature is the one guard with no check over half of it.**
-  `core.unchanged(box, value, drop)` decides whether a pane rebuilds. The `drop`
-  half is checked — `tools/check-drop-lists.mjs` holds those strings to names the
-  four generated `.d.ts` files still carry, because a rename in Rust leaves the
-  old spelling dropping nothing and the pane churns again in silence. The other
-  half cannot be checked cheaply: whether a signature that *lists* its inputs
-  listed them all is a question about the whole function body, and getting it
-  wrong freezes a pane rather than churning it. The rail has been missing an
-  input twice, each found by pressing something. Prefer the
-  whole-snapshot-plus-`drop` shape wherever stale is worse than an extra rebuild;
-  `paintSig` says all of this where the idiom is defined.
-- **`snap` is a live binding, and only `receive()` may replace it.** It is
-  `export let` in `core.js`, so a hundred readers keep saying `snap.x` and see the
-  new snapshot without re-importing. `receive` sets the snapshot and the clock it
-  is measured against together — those drifting apart is what froze durations.
-- **Never rewrite an identifier across an SPA file with a regex.** Three of the
-  four apparent uses of `resize` were the *string* `'resize'` — an event name and a
-  URL path — and a blind substitution would have broken window resizing with
-  nothing failing. Rewrite by line number, asserting each line really is a call.
-  `mise run check-web` catches a *renamed* identifier; it cannot catch a string
-  that changed meaning.
-- **The app is WebKitGTK, not Chrome.** `mise run shot` drives Chrome and is fine
-  for layout and copy, but the two engines disagree often enough to matter.
-  `tools/` pins `playwright-core` to the version whose WebKit build is on disk so
-  an engine-specific fault can be reproduced; stub `/vendor/addon-webgl.js` in
-  such a test, because headless WebKit dies on xterm's WebGL renderer.
-- **The DOM renderer is a WebKitGTK workaround, and only WebKitGTK's.** WebGL
-  garbles glyphs there: text arrives as noise and only comes back when a scroll or
-  a selection forces a redraw. Clearing the texture atlas after every refit and
-  disposing the addon on context loss both failed, so the canvas is gone under
-  that engine.
-  **WKWebView garbles too, and the experiment is settled** (#8): on a Retina Mac
-  the agent pane turns to noise cell by cell, and worse than on Linux — a scroll
-  does not clean it up, because the repaint comes from the same corrupted atlas.
-  The trigger is a *second* terminal writing while the pane repaints; a drawer
-  shell running `git status` was enough, and a single terminal never garbled.
-  So the rule is now **one live WebGL context per window on macOS**: the agent
-  pane keeps the canvas, every drawer terminal takes the DOM renderer. Dropping
-  `IS_MAC` outright was the other candidate and is worse — it brings back the
-  typing lag the flag exists for (a Retina panel composites four times the pixels
-  while Claude Code repaints its whole TUI per keystroke) on the one pane you type
-  into. **A browser tab keeps WebGL everywhere**, deliberately: Chromium and
-  Firefox have no such fault, and a shell streaming a build log is where the canvas
-  earns its keep.
-  Which renderer a terminal opened with now reaches `orchd.log` (`page:
-  <target> renderer=… engine=…`, plus a line on context loss), because the report
-  needed a screen recording to answer "which renderer were you on".
-- **Slow trackpad scroll in an agent pane is xterm's wheel maths, not the
-  renderer.** With mouse reporting on, `consumeWheelEvent` cuts any event under
-  50px to 30% and passes only whole lines, and it sends one report per event
-  whatever the delta. A mouse never enters that branch; a macOS trackpad always
-  does. Measured against the vendored build: at 1px per event 5 of 300 reached the
-  agent; a real slow drag has a 13px median, so ~4.6 events per line. `term.js`
-  takes the wheel over through `attachCustomWheelEventHandler` and emits one
-  undamped SGR report per line. Three things that matter if you touch it:
-  **agent panes only** (it writes the SGR encoding, which is right because the
-  agent asked for `?1006h` and wrong for a program that did not), `scrollSensitivity`
-  is a dead end (it multiplies before the threshold test, which reads the raw
-  delta, so fixing a trackpad breaks a mouse), and **Shift+wheel** bypasses the
-  whole path into xterm's own scrollback, which is in the legend now.
-- **A window drag is the one call in this app that can abort the process, and it
-  is guarded in two places.** tao's `drag_window` hands AppKit's *current* event to
-  `performWindowDragWithEvent:`, which accepts nothing but a mouse event — a keyDown
-  is type 10, and the Objective-C exception takes the process, the daemon and every
-  session with it. Press a titlebar, then press a key, and the queued request is
-  handed that keyDown.
-  **tao's own guard does not fire.** `tao-0.35.3` substitutes a synthetic mouse-down
-  when the event type is `0x15` — which is 21, while `NSEventTypeApplicationDefined`
-  is 15. So nearly every call reaches AppKit with whatever event is current. Read
-  from the vendored source; do not conclude from tao's code that ours is redundant.
-  **The shell refuses the call** when AppKit is not on a mouse event
-  (`desktop/src/main.rs`'s `start_dragging` → `on_a_mouse_event`), on the main
-  thread, with no queue between the check and the call — `[NSApp currentEvent]` is
-  meaningless anywhere else, and `dispatch` runs on an axum worker. No `unsafe`:
-  `sharedApplication`, `currentEvent` and `type` are all safe in `objc2-app-kit`, so
-  the crate keeps `unsafe_code = deny`.
-  **And the page drawing the titlebar arms on mousedown and asks on mousemove**,
-  which keeps the request inside a gesture in the first place. **There used to be
-  two such pages and they paid for this separately** — the board in `2990237`, the
-  first-run page four days later, because it drew its own chrome rather than
-  sharing `app.js`. That split also put two sets of window buttons on macOS. There
-  is one page now: first run is `web/js/open.js` over the board, so a fix to the
-  chrome is a fix everywhere it is drawn.
-  The resize strips fire on mousedown and are *not* guarded — they are
-  `display:none` on macOS, so the AppKit call is unreachable there. That is safety
-  by platform rather than by design: showing them on a Mac would reopen this.
-- **`window.confirm`, `window.prompt` and `window.alert` do nothing in this app on
-  macOS.** WKWebView shows a script dialog only if the host implements the
-  matching `WKUIDelegate` method, and wry implements exactly three — the file-open
-  panel, media-capture permission and `window.open`. None of the dialogs. So
-  `confirm()` returns **false**, `prompt()` returns **null**, `alert()` is a
-  no-op, and eight guarded actions silently did nothing on a Mac: two naming
-  flows took the cancel branch, and six destructive guards refused. WebKitGTK
-  ships default dialogs, which is why Linux never showed it. `core.js` draws its
-  own (`confirmBox`, `promptBox`) and they are async — the callers had to become
-  `async` with them. **Never reach for the native three again.** Two properties of
-  the replacement worth knowing: the same question asked while it is still open
-  returns the promise already outstanding, because one of these guards is reached
-  from `render` and a refusing guard would otherwise re-ask every frame; and it is
-  first in the `Esc` chain, since a confirm over an overlay must not close the
-  overlay underneath it.
+[docs/traps/spa.md](docs/traps/spa.md)
+
+- ES modules work in the real webview — measured, not assumed.
+- The page holds one snapshot and one socket per checkout, and `snap` is the active one.
+- A page served by a host is cross-origin to every child daemon.
+- `orchd --host <checkout>…` is how the multi-checkout page gets driven without a screen.
+- The SPA is a module graph, not a file.
+- The daemon's module graph is a DAG now, and `mise run check-modules` refuses a cycle.
+- A run's end is published, not dispatched by name.
+- The module graph is a DAG, and it was made one on purpose.
+- Each module needs a line in `module()` in `host.rs` and a rebuild.
+- A pane's paint signature is the one guard with no check over half of it.
+- `snap` is a live binding, and only `receive()` may replace it.
+- Never rewrite an identifier across an SPA file with a regex.
+- The app is WebKitGTK, not Chrome.
+- The DOM renderer is a WebKitGTK workaround, and only WebKitGTK's.
+- Slow trackpad scroll in an agent pane is xterm's wheel maths, not the renderer.
+- A window drag is the one call in this app that can abort the process, and it is guarded in two places.
+- `window.confirm`, `window.prompt` and `window.alert` do nothing in this app on macOS.
 
 ### Claude Code, and what it guarantees
 
-- **A skill reaches a session through `--plugin-dir`, and that flag is per
-  *invocation*.** Measured against Claude Code 2.1.260: a session spawned with it
-  runs the skill both ways, typed as `/orchd:orch` and picked up by the model from
-  its description — and resuming that same session id *without* the flag answers
-  `Unknown command` for the skill it had a moment ago. So it is a property of the
-  process, not of the conversation, and every site that builds a `claude` argv has
-  to push it. `config::session_flags` is the one spelling, and it carries
-  `--settings` too — the pair beside `session_env`, for the reason that docblock
-  gives: these sites have drifted before.
-  Two things that make it safe to push unconditionally. A directory that is not
-  there is not an error — Claude Code starts and says nothing — so a failed write
-  degrades to a session without the skill rather than a session that will not
-  start. And the layout is Claude Code's, not ours: the manifest at
-  `.claude-plugin/plugin.json` names the namespace, the skill lives at
-  `skills/<name>/SKILL.md`, and either one in the wrong place fails silently.
-  **Adding a skill is a Rust change**, `include_str!` again, like the SPA's
-  modules.
-  **Every vendored prompt is a skill now**, and `commands/` and `prompt.rs` are
-  gone with them. The conversion has one rule worth knowing: a prompt was
-  substituted per run and written to a file, a skill is static and typed as one
-  line, so every value a template interpolated has to arrive another way. Two ways
-  are in use, and which one is not a style choice. A run that already has a token
-  asks `/api/pr/:n/triage-context` (`triage`, `review`). A run that deliberately
-  has none reads its values out of the environment (`fix-pr`, `resolve-run`,
-  `story`), because a route would have meant handing an unattended force-pushing
-  run a credential to read what the daemon can just put there. `skills::VAR_*`
-  names those variables once, since the spawner sets them and the skill reads them
-  and a rename on one side alone is silent.
-  **`--allowedTools` does not gate a typed skill, and the opposite was written in
-  three places.** `story.rs` and `skills.rs` both claimed its allowlist
-  (`mcp__<tracker> Read Write`) meant that run could not invoke a skill at all, and
-  this file repeated it. Measured against 2.1.263: `claude -p "/orchd:orch"` under
-  `--allowedTools "Read Write"` runs the skill and answers out of its contents. The
-  allowlist gates **tool calls**, and Claude Code expands a typed command before the
-  model acts — which is also why `-p` is the shape that proves it, since that is
-  exactly how the story run is spawned. Model-*chosen* skill use is the open half:
-  that goes through a `Skill` tool, which an allowlist would gate.
-- **The daemon's session id is Claude's session id.** Every spawn passes
-  `--session-id`, which is what makes `--resume`, transcript lookup and hook
-  correlation need no mapping. A fork passes `--session-id <new> --resume <old>
-  --fork-session`, which is honoured. Keep that invariant.
-- **Transcript paths slug both `/` and `.`.** `.claude/worktrees/x` becomes
-  `--claude-worktrees-x`, not `-.claude-...`. Getting this wrong makes every
-  worktree session look like it has no transcript.
-- **A transcript is keyed by session uuid, so two sessions in one directory do not
-  interleave.** Said here because the opposite was written into two code comments
-  and a domain finding, and it justified a guard that refused reviewing any PR
-  whose worktree you had torn down. `transcript_file`, `find_transcript` and
-  `archive`'s copy all key on the uuid; sharing a directory slug gets you two
-  files. The real hazard of reusing a worktree name is elsewhere — a resume landing
-  in a tree cut again for something else — and `worktree::branch_drift` says so
-  rather than refusing.
-- **A tracker is three config fields, and there is one way to write it.**
-  `mcp_server`, `host` and an optional `token_env` (`config::Tracker`), so pointing
-  the daemon at Linear or Jira is a config edit rather than a release. It was an
-  enum arm per tracker, then briefly both — the object *and* `"shortcut"`/`"stub"`
-  as shorthands — and two spellings of one setting is worse than either: the file
-  stops being readable on its own, the SPA can offer one form and not the other,
-  and every reader needs an arm per shape. A name that never shipped is **refused
-  with the object to write**, which is one of the two reasons `Tracker` has a
-  hand-written `Deserialize`; serde's own answer names the problem and not the fix.
-  **But the refusal costs you the tracker, not the config.** `config::tracker_or_warn`
-  turns it into a warning and loads the rest of the file, because the asymmetry is
-  not close: a tracker is one optional flow, while refusing the file costs the
-  checkout, the port and every hand-tuned key — and `Config::existing` then reads
-  that as first run and offers a folder picker. Measured before it: a daemon on
-  `tracker: "jira"` exited 1 and served nothing. `Tracker`'s own `Deserialize` is
-  unchanged and still produces the sentence; this only decides who pays. It does
-  not guess either — an unreadable value leaves the tracker unconfigured rather
-  than pointed at somebody's host.
-  **The file is migrated on start, and the reader is the fallback.**
-  `migrate::config_file` rewrites `"tracker": "<name>"` into the object it meant
-  before either reader parses the file — see the entry below. `"shortcut"` and
-  `"stub"` are *also* still read, permanently, because they shipped —
-  and a refusal there does not cost you a key, it costs you **the whole file**:
-  `Config::existing` drops a config it cannot parse, and the app then reads that as
-  first run and shows a *folder picker* for a project you configured months ago.
-  With no way back, since `firstrun::write_config` merges by JSON key and so keeps
-  the very line that is being refused. One key nobody touched, every setting gone.
-  So the two names read as the objects they meant, nothing is written back (a
-  downgrade keeps working), and this is how the file is read rather than a
-  migration — `store::OnDiskKind` holds the same position for `sessions.json`.
-  The constants are back in the code and that is the trade: they are *file
-  reading*, never what the daemon believes, and no caller can reach them.
-  It is also gone from `config::Settings` and from the settings pane's controls.
-  The pane shows `snap.tracker_server` read-only, because a write of that whole
-  struct is how a hand-edited tracker would have been replaced by whichever name a
-  dropdown happened to show — and no control can spell a per-site host anyway.
-  **The first-run page drew a dropdown for it anyway, and it did nothing.** It
-  offered `None` and `Shortcut` and posted the value; `firstrun::Overrides` has no
-  such field and serde drops an unknown key in silence, so the control never wrote
-  anything from the day it was drawn. It is gone now, for the reason the settings
-  pane's went: a tracker is three fields and no dropdown can spell a per-site host.
-  This entry used to say the page never collected one — which was true of the
-  config it wrote and false of what it showed you.
-  Three things the research settled, none of them guessable from the Shortcut setup
-  this was built against:
-  - **Both official remote trackers are OAuth-first.** Linear is
-    `https://mcp.linear.app/mcp`, Atlassian `https://mcp.atlassian.com/v2/mcp`, and
-    each offers a bearer path *and* there is an open Claude Code issue where a
-    configured `Authorization` header is ignored when the server advertises OAuth.
-    So `token_env` is optional and its absence is not a broken config: the run
-    authenticates out of a login the user did earlier and the boot line says
-    "authenticating itself" rather than warning about a variable.
-  - **No tracker tool name may live in the daemon.** Linear does not publish theirs
-    and Atlassian's are versioned. `skills/story/SKILL.md` says "your tracker's own
-    search" and leans on the repo's tracker skill, which is where the README already
-    put the team id, the workflow state and the epic routing.
-  - **The id/URL agreement rule was Shortcut-shaped.** `StoryRef::consistent`
-    required a path segment equal to the id's *digits*, which is true of
-    `sc-12345` → `/story/12345` and false of every Linear (`/issue/ENG-123`) and
-    Jira (`/browse/ABC-123`) URL there is. It accepts the whole id in a segment too
-    now. It would have refused every story either tracker filed, as "the agent
-    reported an id and URL that disagree".
-- **Session names come from an undocumented field.** `store::ai_title` tails the
-  transcript for `{"type":"ai-title","aiTitle":…}`. It degrades to the workspace
-  name rather than failing, so a rail that suddenly reads `dfafdf` everywhere
-  means Claude Code changed the format. Identical titles across unrelated sessions
-  are Claude Code's doing, not a bug here: one `ai-title` string turned up in 8
-  transcripts across 3 repositories, each correctly attributed to its own
-  sessionId. The reader is right; the file says that.
-- **There is no findings log any more.** `daemon.log` and `log_path` are gone: the
-  one finding the daemon ever produced (the review queue is unavailable) was already
-  in the snapshot and the pane, so the file was a second copy of one line. It once
-  spliced a block into `TODO.md` at the build-time path and churned this repo from
-  every build; do not bring back a file the daemon writes into a checkout.
-- **Stopping a session is `kill_gracefully`, on every path.** One `SIGHUP` is a
-  request Node is entitled to decline, and three sites still sent only that: the
-  rail's kill button "succeeded" while the row stayed Working, a review's hand-off
-  was armed on an exit that never came, and the story filer outlived its timeout.
-  `kill_gracefully` signals the *group* (the group id is the leader's pid, since
-  `portable-pty` `setsid`s the child; asking `getpgid` failed the moment the leader
-  was reaped, which is exactly when a HUP-ignoring grandchild needed reaching),
-  waits `KILL_GRACE`, `SIGKILL`s, and sweeps the group once more after the leader
-  exits. `kill` and `kill_hard` refuse an exited child, because a reaped pid may
-  already be somebody else's.
-- **The open screen merges into `config.json`, never replaces it.** It runs on
-  every reviewed add and used to build the file from scratch, so re-picking a moved
-  checkout dropped every hand-tuned key. It keeps the previous file as
-  `config.json.bak`, pins `repo` only when the remote does not already derive it,
-  and detects a fork layout itself (the daemon's own first write no longer runs,
-  since this write comes first).
-  **It writes the checkout's own directory now, and that is what makes the review
-  run at all.** The root `config.json` it used to write is one checkout's —
-  `host::checkout_dir` gives each its own `ORCHD_CONFIG_DIR` and the root file is
-  copied into one of them once — so a base branch or a dev process detected for the
-  *second* checkout you opened was detected for nobody. There is no undo any more
-  either: it existed because a refused switch left the root file naming a checkout
-  the daemon was not on, and a leftover config in a checkout's own directory is
-  read by that checkout's daemon alone.
-- **A session's environment is not the shell's, and the gap is invisible.** The
-  daemon's environment is whatever started it; from a desktop launcher that is the
-  systemd user manager's, which holds no checkout's variables. So a `.mcp.json`
-  header spelled `Bearer ${SHORTCUT_API_TOKEN}` went out as literal text and the
-  server answered 401 — while the same session started by typing `claude` in that
-  checkout worked, because `mise activate` exports at a shell prompt and an app has
-  no prompt. That is why the terminal is the worst place to reproduce this.
-  `config::session_env` now asks the tool itself (`crates/orchd-repo/src/env_source.rs`, `mise` by
-  default, `direnv` beside it, `none` to turn it off), per spawn, in the session's
-  own cwd. Two things it will not do: it never fails a spawn (a missing variable is
-  degraded, a refused spawn is lost), and it cannot trust a config for you — mise
-  refuses an untrusted `mise.toml`, a fresh worktree is a fresh path, and the only
-  sign is one warning in the log. Put `mise trust` in `worktree_setup` if that
-  bites.
+[docs/traps/claude-code.md](docs/traps/claude-code.md)
+
+- A skill reaches a session through `--plugin-dir`, and that flag is per *invocation*.
+- The daemon's session id is Claude's session id.
+- Transcript paths slug both `/` and `.`.
+- A transcript is keyed by session uuid, so two sessions in one directory do not interleave.
+- A tracker is three config fields, and there is one way to write it.
+- Session names come from an undocumented field.
+- There is no findings log any more.
+- Stopping a session is `kill_gracefully`, on every path.
+- The open screen merges into `config.json`, never replaces it.
+- A session's environment is not the shell's, and the gap is invisible.
 
 ### Portability, and the processes the daemon spawns
 
-- **No `std::process::Command` and no `std::fs` on a tokio worker.**
-  `proc::run_blocking` is the helper, and it takes a label so a panic says what
-  died. The rule was applied unevenly for a long time and the sweep that fixed
-  that is finished, so what is worth carrying is the rule plus the three places
-  it deliberately does *not* apply — each measured, so nobody re-opens them on a
-  hunch.
-  - **Single syscalls stay where they are.** `hooks.rs` has four `canonicalize`
-    calls and one `exists`; `api.rs` has `revive`'s `cwd.exists()`,
-    `forget_session`'s one `remove_file` and `free_worktree_name`'s stat loop. A
-    `spawn_blocking` hop costs more than a stat, and `post_tool_use` runs per
-    `Edit`.
-  - **The `with_*` store writes stay under the global write lock.**
-    `automation.json` is **17 bytes**, and `manual.json`, `resolve-runs.json` and
-    `stories.json` have never been written on this machine at all — a `write` +
-    `rename` of tens of bytes is sub-millisecond. Getting them off the lock needs
-    a channel, a writer task and an ordering guarantee, and it would either break
-    the "mutating a durable store carries its own write" invariant or make every
-    call site remember to persist, which is the exact shape `with_*` exists to
-    prevent. Revisit if a store grows (`stories` is the only candidate, being a
-    cache), with a number.
-  - **A `debug_assert` cannot enforce it.** `Handle::try_current()` succeeds on
-    blocking-pool threads too, because the runtime handle stays in scope across
-    `spawn_blocking`, so the check flagged 36 correctly-wrapped calls. The note is
-    in `git::run`.
-- **Shelling out to coreutils is the other portability trap.** The review queue
-  ran its command under `timeout`, which is GNU and not on a Mac, so it failed at
-  the spawn and the pane blamed the review command for a missing binary it never
-  named. `proc::run_bounded` enforces the deadline in Rust instead — one
-  bounded-exec primitive (own process group; at the deadline SIGTERM the group,
-  a second's grace, then SIGKILL, because git removes its `.lock` files on TERM
-  and not on KILL; pipes drained on threads; the timeout error carries the stderr
-  tail), used by the review queue, `worktree_setup`, `mise` queries and every
-  network git call. Every other
-  command the daemon spawns is POSIX (`git`, `curl`, `gh`, `ps`, `which`, `kill`) —
-  keep it that way, and check `command -v` before reaching for a GNU flag.
-  **The tests are not exempt, and that is where it got in.** A sweep test backdated
-  a directory with `touch -d @<epoch>`, which BSD `touch` has no `-d` for at all —
-  its `-t` takes `[[CC]YY]MMDDhhmm[.SS]` — so it passed on every Linux run and went
-  red on macos-14 alone, with `out of range or illegal time specification`. Two
-  spellings are fine: `touch -t 202001010000` (POSIX, and what `worktree.rs`'s
-  reaper tests already used) or `std::fs::File::set_times`, which is `futimens` and
-  needs no process.
-- **`WorktreeCreate` is not a setup hook. It *is* the creation, and a daemon-cut
-  worktree therefore never fires one.** Claude Code's own error text says what the
-  event is for: worktree isolation "with other VCS systems". The hook reads the
-  request on stdin, creates the tree by whatever means it likes, and prints the
-  path, which Claude Code then validates (absolute, no dot segments, a real
-  directory, not a symlink). So it cannot be re-run over a tree that already exists,
-  and it cannot be asked to honour a base the daemon chose: the monorepo's copy
-  hardcodes `upstream/develop`, which is exactly wrong for a PR worktree pinned to a
-  head ref or a fork cut from its parent. That is why `ensure_pr_worktree` and the
-  fork path cut their own.
-  **The post-create seam is `SessionStart`**, because Claude Code has no post-create
-  worktree event, and that one *does* fire for a daemon-cut tree: the daemon's
-  `--settings` merges with the repo's rather than replacing it. Measured, after a
-  session spent believing the opposite: three daemon-cut PR worktrees all had
-  `remote.pushDefault`, the shared `.plan` and every symlink, because the monorepo
-  hangs its `worktree-link` there. Do not "fix" a gap here without checking which
-  event the repo in front of you actually uses.
-  `worktree_init` and `worktree_setup` remain for a repo that puts real setup inside
-  `WorktreeCreate`, where a daemon-cut tree would genuinely miss it:
-  `spawn::run_worktree_hooks` runs both in each daemon-cut worktree, before the
-  session, non-fatal. They mirror the monorepo's two hooks — `worktree-create` bases
-  the tree, `worktree-link` puts the shared files in place — so a repo with two
-  scripts needs no wrapper to fan back out. Order is fixed and the second runs even
-  if the first failed, because an un-based tree is still worth linking.
-  A relative script path resolves against `main_checkout`; cwd is the worktree.
-  **There is no `claude --worktree` arm any more** — the daemon cuts every tree, so
-  every tree runs this. See the entry below on the isolation pin for why that arm
-  went.
-  The matching teardown event is `WorktreeRemove`, which the daemon also does not
-  fire; `git::worktree_remove` does its own thing.
-- **Paths are resolved at one boundary, and comparing across it silently fails.**
-  `main_checkout` is `canonicalize`d in `Config::parse`, so `worktrees_dir` and
-  `worktree_path` are resolved too, and the agent-reported cwd is resolved where a
-  delegated worktree is adopted. That is what lets `workspace_for_path` match the
-  resolved paths `PostToolUse` hands it — an unresolved workspace root matches
-  nothing, and the symptom is not an error but an edit that never appears in the
-  changed-files pane. Do not introduce a workspace path that skipped that step.
-  Barely visible on Linux; on macOS `/tmp`, `/var` and `$TMPDIR` are symlinks into
-  `/private`, so it is the normal case.
-  **Which is why `testutil::scratch` canonicalises.** A fixture that skips that
-  step is on the wrong side of this boundary from everything it will be compared
-  against — the daemon's own paths (resolved by `Config::parse`) and every path git
-  prints — and the comparisons that then fail are the silent kind:
-  `workspace_for_path` decides no workspace owns the directory, and
-  `git::holder_of_branch`'s answer looks like a different tree. Two tests shipped
-  that way, passed on every Linux run, and failed only on the macos-14 runner after
-  the tag had been pushed. `holder_of_branch` resolves its own answer for the same
-  reason, so the invariant does not rest on git happening to.
-- **A `/proc` read is a portability bug that compiles.** Two guards stat'd `/proc`
-  and so answered *wrongly*, not loudly, off Linux: `pid_alive` read every session
-  as dead (teardown would delete a worktree with a live agent — it fails open), and
-  the instance lock's `holder` read every lock as stale (a second daemon starts).
-  `pid_alive` is now `kill(pid, 0)`; the lock stopped asking about pids at all and
-  took an `flock` instead, which is the kernel's answer rather than a guess about a
-  command line. `headroom` still
-  reads `/proc/meminfo` on purpose, because it is documented to mean "no opinion"
-  when it cannot read. Before adding a `/proc` read, ask which way it fails when
-  the file is absent; CI cannot catch this, since it compiles everywhere.
-- **The daemon cross-checks for macOS; the app cannot.** `cargo check --target
-  aarch64-apple-darwin -p orchd` works and is worth running after touching
-  anything platform-shaped. `-p orchestrator-desktop` does *not*:
-  `objc2-exception-helper` compiles Objective-C and needs a real macOS SDK, so it
-  fails in `cc-rs` on Linux for reasons that say nothing about your code. That
-  half is only answered by `check.yml` on the macos-14 runner.
-- **A mise install path is version-pinned, so never write one into a file that
-  outlives the process.** mise installs each version in its own directory and
-  removes the old one on upgrade, while `current_exe` resolves symlinks and so
-  hands back the pinned path rather than the `latest` beside it. Three things
-  wrote that path down and each broke on the next `mise up`: the `.desktop` entry
-  (a launcher pointing at a version that is gone), `relaunch` (a restart that
-  cannot find itself), and the push guard's `PreToolUse` hook — which is the worst
-  of the three, because a `type: "command"` hook whose binary is missing fails
-  **open**. That one showed up as four `PreToolUse:Bash hook error` lines in a
-  session, with the guard silently not running for any of those pushes.
-  `update::stable_exe` is the one rule: swap the version component for
-  `latest` when that path really exists, else keep what you had. Use it anywhere a
-  path is persisted.
-- **A missing `cwd` is not an error to `portable-pty` — it is `$HOME`.**
-  `CommandBuilder::as_command` filters the cwd on `is_dir()` and falls back to the
-  home directory, so a session aimed at a worktree that no longer exists does not
-  fail: it starts in `~` and runs there. A fix-pr run did exactly that, and the
-  only thing that stopped it was Claude Code's workspace-trust prompt for a
-  directory nobody had chosen. `PtyHandle::spawn` now refuses a `cwd` that is not a
-  directory, which is the one place every session, process and shell goes through.
-  The record that pointed there is the other half. A workspace record outlives its
-  directory — `claude --worktree` removes its own tree when that session ends, and
-  only `worktree::teardown` ever drops a record — so the PR flows were handed a
-  name whose tree was gone. **The repair is to rebuild it where it stood**, not to
-  cut a second tree or to prune the record: the session owns that directory,
-  because transcripts are keyed by it. A resume already did that
-  (`api::revive` → `worktree::revive`); `ensure_pr_worktree` now does it too, via
-  `recorded_worktree_for`, which hands back the recorded path precisely so the tree
-  can be cut again at it. `worktree_holding` deliberately ignores whether the
-  directory exists — a live session whose tree was deleted still holds its branch,
-  and `branch_busy` must keep saying so.
+[docs/traps/portability.md](docs/traps/portability.md)
+
+- No `std::process::Command` and no `std::fs` on a tokio worker.
+- Shelling out to coreutils is the other portability trap.
+- `WorktreeCreate` is not a setup hook. It *is* the creation, and a daemon-cut worktree therefore never fires one.
+- Paths are resolved at one boundary, and comparing across it silently fails.
+- A `/proc` read is a portability bug that compiles.
+- The daemon cross-checks for macOS; the app cannot.
+- A mise install path is version-pinned, so never write one into a file that outlives the process.
+- A missing `cwd` is not an error to `portable-pty` — it is `$HOME`.
 
 ### The daemon's machinery: hooks, worktrees, main, the stores
 
-- **Hooks are observers, not gatekeepers.** They answer immediately and finish
-  their work detached, because Claude gives a hook one second and a dropped
-  future silently loses the state change. Do not make a hook wait on anything.
-- **Every hook finds its session, and the window where one did not is closed.**
-  `insert_and_spawn` puts the record in *before* `PtyHandle::spawn` and takes it out
-  again if the spawn fails (`a6d4854`, "Record a session before its agent can
-  speak"). It used to insert *after*, so an agent quick enough to fire
-  `UserPromptSubmit` lost it, and a `Stop` arriving after the insert left a session
-  at `your_turn` with `had_a_turn` false, a conversation the rail would not offer to
-  fork or resume. Real Claude Code took human-scale seconds to a first prompt and
-  never landed there; anything scripted did, which is why the e2e agent waits to see
-  itself in `sessions.json` before speaking. That wait is now belt and braces rather
-  than the thing that makes the flows work.
-  **What is left is narrower and still silent.** The pty is attached to the record
-  *after* the spawn returns, and `hooks::session_start` calls `pending_prompt.take()`
-  unconditionally while only writing it when a pty is present. A `SessionStart`
-  landing in that gap takes a run's first turn and drops it. The gap is one lock
-  acquisition against Claude Code's whole boot, so it is documented rather than
-  guarded.
-  **A PR run's record follows the same rule now.** A `claude` that exits
-  at once — a bad `--settings`, the version gate — was reaped before its
-  `Running` / `ResolveRun` record existed, so the exit watcher found nothing to
-  settle and the record named a corpse until a restart. The caller mints the id,
-  writes the record, then spawns, and takes the record back out on failure.
-  `headroom::check` moved into `insert_and_spawn` for the same reason: it was at
-  two of the four spawners, so the rail's new-worktree button, the fork path and
-  the story filer had no check at all.
-- **`forge/github_write.rs` will not resolve a thread, approve, merge or open a PR.**
-  That is a design boundary, not a gap. Resolving is the comment author's button.
-  Which means **`is_resolved` can never stand for "handled"**: the daemon never
-  sets it, so every thread it has ever answered is still unresolved. A re-request
-  guard derived from `!is_resolved` shipped and could never fire — read
-  `post::rerequest_all`, and ask "did *we* settle it" instead. The neighbouring
-  trap is `answerable`, which flips the moment you post: it answers "is anyone
-  owed a reply", so it is only "who reviewed" on a fetch taken *before* the
-  posting.
-- **The daemon no longer asks Claude Code to cut a worktree, and the isolation pin
-  is why.** `claude --worktree` was the creation path at Claude Code's own layout,
-  and every session it starts is pinned into worktree isolation. That pin refuses
-  **writes** as well as git, and both refusals landed on one ordinary thing: the
-  monorepo shares a `.plan` scratch dir into each tree as a relative symlink, and a
-  pinned session could write neither the link ("the path is spelled in a form that
-  cannot be safely resolved … a symlink storing a raw dot segment") nor the shared
-  checkout behind it ("This session is isolated in the worktree …"). Both doors
-  shut, and the hooks were fine — a session spent chasing them because `.plan`'s
-  mtime looks like evidence and is not: `worktree-link` re-links on every start, so
-  that timestamp is the *last* session start in the tree, never the first.
-  Measured across 119 worktree transcripts: 49 carry a pin and every one came from
-  that arm; the 70 the daemon cut carry none. So `spawn_worktree_session` cuts every
-  tree itself (the repo's `WorktreeCreate` still does the work, adopted), and the
-  isolation the daemon actually needs — main's branch and occupant, which
-  `claim_main`, `park_main`, `switch_main_to_pr` and `branch_busy` all read — is
-  `guard::isolation`, on the agent's Bash, git-only and silent about writes.
-- **Claude Code pins worktree isolation in the transcript, and the daemon clears it
-  by writing to that same file.** Every turn re-appends a `worktree-state` record
-  (`worktreePath`, `worktreeName`, `hookBased: true`), and on resume its own hook
-  refuses any git command aimed outside that original worktree — *including the
-  tree the daemon just moved it into*. A swap that worked perfectly (branch, files,
-  record, conversation all correct) left the agent unable to run `git status` on
-  its own work: "This session is isolated in the worktree …, but this command
-  redirects git to the shared checkout".
+[docs/traps/daemon.md](docs/traps/daemon.md)
 
-  **A resume now clears any pin, not only one that disagrees with the cwd.** The old
-  rule read an agreeing pin as correct isolation; the entry above is why that is
-  wrong, and sessions cut by the old arm carry exactly that kind of pin, so this is
-  the only thing that ever releases them.
-
-  It used to say here that the daemon cannot clear that from outside, since
-  `ExitWorktree` is the agent's own tool, so `api::arrival_notice` asked the agent
-  to call it. **Both halves of that were wrong, and a conversation paid for it for
-  two days**: it went on editing a worktree that had since been cut again for a
-  different branch while its own branch sat in main, taking the bare isolation
-  refusal sixteen times, and it never called `ExitWorktree` once.
-
-  - **The pin is a running value, not a header.** The *last* `worktree-state`
-    record wins, and letting go is one line —
-    `{"type":"worktree-state","worktreeSession":null,"sessionId":…}`, preceded by
-    `{"type":"relocated","relocatedCwd":…}`. Measured across 395 transcripts: 128
-    end exactly that way. So `store::clear_worktree_pin` appends what Claude Code
-    would have written, and `spawn_session` calls it on resume whenever the pin
-    disagrees with the cwd. **Only ever between processes** — the old pty dead, the
-    new one not started — because a live agent is appending to that file too.
-  - **Asking was delivered on the wrong tools.** The notice rides `PreToolUse`,
-    which was registered `Edit|Write`, and the isolation bites on *git* — Bash. The
-    explanation sat queued behind a write the session never made. `PostToolUse` had
-    been widened off that same matcher for the same reason; `PreToolUse` now matches
-    every tool.
-
-  `arrival_notice` stays, because it says in words what the record only implies, but
-  it is no longer the mechanism.
-- **Opening a PR in a worktree can move main's branch out from under you** — by
-  design, since `park_main` will not carry uncommitted work and a branch stuck in
-  main makes every PR flow for it impossible. If main holds that PR's own branch,
-  `ensure_pr_worktree` moves branch *and* work into the tree it was about to cut
-  and puts main back on base, logging that it did. Only a live session in main is
-  still refused. It is not a read-only flow with respect to main.
-- **Main goes back to base when the last session leaves it, and it takes the base
-  back to do so.** `park_main` parks whatever main holds — a PR branch, a
-  swapped-in one, a hand-checkout — and not only what `open_pr(main)` put there.
-  It used to need that provenance (an `AppState::main_pr_park` mark, now gone), on
-  the reasoning that parking a swapped-in branch would undo the swap; but nobody is
-  working it once the last session has gone, and a branch resting in main blocks
-  every flow that needs main on base. The branch is not lost, and
-  `move_branch_out` is how it gets a tree if you want one. `park_on_base` still
-  refuses a dirty main, which is the safety that matters.
-  **The other half is that base can be somewhere else entirely.** Git allows one
-  checkout per branch, so a worktree sitting on `develop` makes main's return
-  *impossible* rather than refused, and a swap is how it gets there: main resting
-  on base, a worktree swapped in, base handed out as the exchange. It surfaced days
-  later as `fatal: 'develop' is already used by worktree at …` from four calls deep
-  inside `move_branch_out`. So `park_main` reclaims it — `git::holder_of_branch`
-  finds the tree and `git::release_branch` gives that tree a `worktree-<name>` at
-  the commit it already has, so every file and commit stays put and only the name
-  changes. Reclaimed at park rather than refused at the swap, because pressing swap
-  twice has to stay the undo. Two things it will not do: a tree with a **live
-  session** keeps its branch (a name changing under a working agent is a surprise
-  the log cannot undo) and a directory that is not a workspace of ours is never
-  touched; both leave main where it is and say why.
-- **The drawer can hand a pane's output to the session, and the daemon owns
-  *when*.** `api::tell_session` types text into one session's pty, reached from a
-  right-click on a process tab or on the pane itself (`paneMenu` in `web/app.js`).
-  It lands as an ordinary **user turn**, which is what it is — you pointed at
-  something, and the transcript should read as though a human did.
-  Three states refuse it, and each is a keystroke meaning something other than a
-  prompt: mid-turn (Claude Code submits whatever is half-typed), a permission
-  prompt (consent) and an open question (the highlighted choice). `nudge_sessions`
-  learned those first; this is the same table with one target. The refusal is a
-  sentence the pane toasts, because a press that silently did nothing reads as a
-  broken button.
-  Two things keep it **agnostic**, which is the whole point of the shape: the text
-  is read out of *xterm* (`Term.readTerm` — the selection if there is one, else the
-  last 50 non-blank rows), so no output is parsed anywhere and the payload is
-  whatever you highlighted; and the only name involved is the one the repo's config
-  gave the process. `ng-watch` appears nowhere in the code — only in comments and
-  test fixtures — and this must not be what changes that. 8 KB is the cap, because
-  a ring buffer holds ~3600 lines and a prompt is a line somebody reads, not a log.
-- **A config this build cannot read is repaired on disk, not tolerated in
-  memory.** `crates/orchd-repo/src/migrate.rs` runs on start, from both readers of the file
-  (`Config::existing` for the desktop app, `Config::load_or_init` for a daemon
-  started from a terminal), and it is idempotent so the second call costs a read.
-  It exists because tolerating the old spelling in the *reader* was not enough:
-  a config the parser refuses costs the **whole file**, the app reads that as first
-  run and offers a folder picker for a project configured months ago, and the
-  first-run write then merges by key and keeps the very line being refused.
-  A colleague met that on `"tracker": "none"` — which was the **default** and which
-  the old settings pane wrote back on every save (`Settings::merge_into` wrote every
-  field), so it is on most machines that ever pressed save.
-  Four properties, each deliberate. **Shape-driven, with no schema version**: a
-  counter is state that has to be maintained and got right, while a rule that
-  recognises the shape it fixes is idempotent by construction and testable without
-  a fixture of old files. **It never fails a start**: a missing file is nothing to
-  do, a file that is not JSON is left for `Config::parse` to report with a line and
-  a column, and an unwritable dir is a warning — which is exactly why the `Tracker`
-  reader stays as the fallback for a config we cannot write. **It writes only when
-  a rule applied**, because the JSON round trip sorts the keys and reformats the
-  file, so that happens on the one start that migrates and never again. **The
-  previous file is `config.json.premigrate`**, its own name because
-  `config.json.bak` belongs to the first-run page and a boot that happened to
-  migrate would otherwise overwrite it.
-  Adding one is a `Migration { name, apply }` in the table. A rule must recognise
-  its own input and leave anything else alone: the name migration does not invent a
-  host for `"jira"`, because `Tracker`'s refusal already names the object to write
-  and a guess written to disk is worse than a message.
-- **The changed-files pane's git verbs are drawn from `git status`, not from its
-  own list.** That list is `git diff <merge-base>` plus untracked files, so most
-  rows on a PR branch differ from the base because of a **commit** and are clean on
-  disk — `discard changes` there would offer to throw away nothing on some rows and
-  a commit's content on others, from a menu that cannot tell them apart.
-  `DiffFile::staged` / `unstaged` carry `git status`'s two answers, joined on by
-  path in the same closure that already reads them, and the menu offers exactly
-  what exists: staged → `unstage`, working-tree → `stage` and `discard changes`,
-  untracked → `stage`, and a row that is neither gets no git verbs at all.
-  `api::file_verb` keeps three rules the pane cannot: the path goes through
-  `edit::resolve_in_workspace` (relative, no `..`, under the root), the verb is
-  checked against a *fresh* status rather than the snapshot the click came from,
-  and **everything is refused while a session in that workspace is mid-turn** —
-  staging under a working agent changes what its next `git commit` picks up, which
-  is the "changed underneath it" case `pre_edit`'s stale notice exists for, except
-  this time it would be your doing. Only `discard` is confirmed, and that is the
-  asymmetry that matters: stage and unstage are each other's undo, while `git
-  restore` overwrites the working tree and git keeps no copy of content that was
-  never committed.
-- **The rebase button banks a dirty tree, and never on `refs/stash`.**
-  `git rebase --autostash` is the obvious implementation and it is wrong here, for
-  two measured reasons. A failing autostash apply **exits 0** — git says "Applying
-  autostash resulted in conflicts" and then "Successfully rebased", so
-  `rebase_onto` reads a lost re-apply as success — and it parks the work on
-  `refs/stash`, which **every worktree of a repo shares**: a `git stash` in a
-  worktree is `stash@{0}` in the main checkout, so another tree could pop work it
-  never took.
-  So `api::rebase` banks with `git::bank_wip`: `stash create`, a ref of the
-  daemon's own at `refs/orchd/wip/<workspace>`, then `reset --hard`. Three
-  properties are deliberate. The **ref goes on before the reset**, so there is no
-  window in which the work exists only as a sha in memory, and it survives
-  `git gc --prune=now`, which a bare `stash create` object does not promise. It
-  **comes off only after a clean re-apply** — `git stash apply` exits 1 on a
-  conflict and leaves both sides in the tree as `UU`, which is where they can be
-  resolved, with the bank still standing behind them. And a rebase left **stopped
-  part-way owns the tree**, so the bank waits for the abort, which puts it back
-  because an abort is the undo of the press that took it.
-  `Workspace::banked` is **not** on `Tree`, because nothing measures it in the
-  sweep: the daemon knows because it did the banking, and a restart re-derives
-  every bank in the repo with a single `git for-each-ref` on main. Unmerged paths
-  refuse the whole flow — `stash create` answers "Cannot save the current index
-  state" — and untracked files never travel, so a base that adds a path you have
-  untracked is refused by name rather than by git's own header.
-- **One pty exit, one observer.** `spawn::watch_session_exit` is the only thing
-  that waits on a session's handle; it dispatches onward (a fix run's verdict goes
-  to `fix_pr::settle`). A second `pty.wait()` on the same handle would work and
-  then rot, because "is this over" would have two answers maintained apart.
-- **Main's claim belongs to the session record, and a relocation reuses the id.**
-  `claim_main` runs before anything is created so a refusal costs no worktree and
-  no pty — but until the record is installed the map still describes the *outgoing*
-  session, whose exit watcher is entitled to settle it, and `release_main` keys on
-  the id. So the claim the incoming session just took gets handed back, and main
-  holds a live agent with **no occupant recorded** — the value `switch_main_to_pr`
-  reads before moving the checkout. `spawn::spawn_session` closes the window with
-  `reclaim_main` after the insert. Reproduced one run in four by the two-way swap
-  e2e flow, and invisible to every unit test.
-- **Mutating a durable store carries its own write, and the compiler now says
-  so.** `automation`, `manual`, `stories` and `resolve_runs` are changed through
-  `Inner::with_automation` and its three siblings, which persist and log with the
-  caller's own context. Reaching for `store::save_*` at a call site is the shape
-  where one site gets the fix and the others quietly do not.
-  It was a paragraph, and it is `state::Durable<T>` now: `Deref` and deliberately
-  no `DerefMut`, so every reader goes on writing `inner.automation.get(pr)`
-  unchanged and `inner.automation.insert(…)` outside `state.rs` stops compiling.
-  **There were no offenders when it went in**, which is the argument for it rather
-  than against — nothing would have reported the first one, and the failure it
-  guards is a record changed in memory and never written, which looks right until
-  a restart drops it.
-- **You cannot self-review your way to a testable review thread — use the
-  fixture.** `acknowledged()` (`forge/github.rs`) treats a thread whose last
-  comment is yours as answered, so a PR you comment on yourself has nothing
-  awaiting an answer, and `query_for` polls `author:@me` so the PR must still be
-  yours. `mise run fixture` builds a throwaway private repo whose threads are
-  posted by `github-actions[bot]`, which satisfies both; `docs/fixture-pr.md` has
-  the why and the two GitHub behaviours that cost an afternoon. It does not cover
-  `rerequest()` — a bot cannot be a requested reviewer. The resolve run itself is
-  still unit-tested only and has never made a real round trip, so do not read a
-  green suite as more than that.
-- **The host's own file is `host.json`, and a hosted child must not write the
-  host's files.** It carries the open checkout list — so the app opens what was
-  open — and `checkout_retention_days`. A child's `ORCHD_CONFIG_DIR` is its *own*
-  checkout directory, which is the trap: `recent.json` written by a child leaves
-  one single-entry list per checkout and none of them the list the add screen
-  reads, so `crate::start` writes it only when `host_origin` is absent and
-  `Host::open_checkout` is the other writer.
-  The sweep over `checkouts/` may delete **only what a daemon rebuilds** — the
-  skills plugin copy, `hooks.json`, `window.json`. `transcripts/` is the only
-  remaining copy of a conversation once a worktree is gone and a session record
-  survives because that copy does, so taking the directory would undo what `close`
-  does on purpose. Its safety cannot be borrowed from `worktree::reap_old`, which
-  is safe because it routes through `teardown`'s seven checks; a directory of JSON
-  has no such gate.
-- **A resume rebuilds a session's environment, so anything the daemon put there
-  has to be re-handed.** The ask token always was, because `Session::new` mints a
-  fresh one on every spawn and the route compares it against the record. The
-  *post* token was not: only `triage.rs` set `ORCH_POST_TOKEN`, and a resume goes
-  through `spawn::spawn_session`, which knows nothing about it. So a resumed
-  review run came back able to ask you questions and unable to post its
-  proposals — reported by the agent as `ORCH_POST_TOKEN is absent from this
-  environment`, after it had read every thread. Two ways in, neither exotic: the
-  app restarting (`auto_resume` resumes every session that was live, runs
-  included) and the rail's own resume button (`api::revive` carries the recorded
-  `Pass`). The rule now lives
-  in `triage::mint_post_token` / `posts_proposals`, called by all three spawns.
-  **`spawn::run_env` is the seam, and `clippy::disallowed_methods` now refuses
-  `launch::session_env` anywhere else.** Three sites built a session's environment
-  themselves — the worktree spawner, the story filer and `run_env` — and the two
-  that bypassed it were right only because neither carries a `Pass` today. The
-  difference between the two spellings is one variable an agent reports missing
-  hours later, which is what this entry is about.
-  `proposal_tokens` says it is deliberately not persisted, and that is still right
-  — the token is only ever compared against the record, so re-minting is the fix
-  and persisting would be the wrong one.
+- Hooks are observers, not gatekeepers.
+- Every hook finds its session, and the window where one did not is closed.
+- `forge/github_write.rs` will not resolve a thread, approve, merge or open a PR.
+- The daemon no longer asks Claude Code to cut a worktree, and the isolation pin is why.
+- Claude Code pins worktree isolation in the transcript, and the daemon clears it by writing to that same file.
+- Opening a PR in a worktree can move main's branch out from under you
+- Main goes back to base when the last session leaves it, and it takes the base back to do so.
+- The drawer can hand a pane's output to the session, and the daemon owns *when*.
+- A config this build cannot read is repaired on disk, not tolerated in memory.
+- The changed-files pane's git verbs are drawn from `git status`, not from its own list.
+- The rebase button banks a dirty tree, and never on `refs/stash`.
+- One pty exit, one observer.
+- Main's claim belongs to the session record, and a relocation reuses the id.
+- Mutating a durable store carries its own write, and the compiler now says so.
+- You cannot self-review your way to a testable review thread — use the fixture.
+- The host's own file is `host.json`, and a hosted child must not write the host's files.
+- A resume rebuilds a session's environment, so anything the daemon put there has to be re-handed.
 
 ### The e2e flows
 
-- **An e2e flow must make idleness a condition, not an assumption.** Every
-  mutating route refuses a workspace whose session is mid-turn, and the rebase
-  flow settled its session once at the top and then made ten calls against that
-  one reading. About **one full run in six** failed with `<id> is working here` —
-  the agent's hooks land on the daemon's clock, not on the flow's. `t.settled` is
-  idempotent and costs one snapshot read, so the fix was to call it before each
-  call rather than once. A flaky gate is worse than no gate: it is what teaches
-  everybody `--no-verify`.
-- **`mise run e2e` needs no product change, because the agent is a PATH lookup.**
-  The daemon spawns `CommandBuilder::new("claude")` and reaches GitHub only through
-  `Command::new("curl")`, so a shim earlier on PATH substitutes either without the
-  daemon knowing. Everything else in those flows is real — real worktrees, real
-  branch moves, real `stash create` carries, real locks, the real API, and the hooks
-  read out of the settings file the daemon itself wrote, so a change to
-  `hooks::write_settings` changes what they exercise instead of passing them by.
-  Read `docs/e2e.md` before adding one: it has the sandbox options, why every wait
-  is a condition rather than a sleep, and the limits (no SPA, no real round trip to
-  GitHub, nothing about what a fix run *does*). What they buy is the class of fault
-  unit tests structurally cannot see: the first full run turned up a `claim_main`
-  race, and driving them from the hook turned up what git hands a hook.
+[docs/traps/e2e.md](docs/traps/e2e.md)
+
+- An e2e flow must make idleness a condition, not an assumption.
+- `mise run e2e` needs no product change, because the agent is a PATH lookup.
 
 ### The UI's contracts
 
-- **The keyboard map has a contract, and it is the reason the next binding is
-  obvious.** Above the keydown handler in `web/app.js`: **bare keys belong to the
-  open overlay, `Ctrl` is the whole app, `Esc` dismisses the topmost thing.** The
-  whole `Alt` layer was deleted to get here — every action it held already had a
-  `Ctrl` spelling, and two vocabularies for one set of verbs is what made the map
-  unpredictable. Do not reintroduce `Alt` to dodge a collision; `Ctrl+Shift` is the
-  escape hatch. Plain `Ctrl+<letter>` shadows the pty, so `Ctrl+Shift+…` is the
-  default and a plain letter is taken only where the idiom earns it. The legend
-  (`Ctrl+Shift+?`) is hand-written HTML and is the one thing here that can silently
-  drift from the code.
-- **The rail's `handle` button starts a pane, not the overlay.** `/orchd:handle-review`
-  (`skills/handle-review/SKILL.md`, vendored from the monorepo's own `/resolve` and
-  generalised) is one agent in the PR's worktree with a person watching: it asks with
-  `AskUserQuestion`, drafts replies and posts nothing without a go. The
-  triage-into-cards flow is the menu's second review item and still carries out what
-  the cards decide.
-  The label is `handle` rather than `resolve` because GitHub has a literal "Resolve
-  conversation" button and this pass deliberately does not press it — marking a
-  thread resolved stays the reviewer's. The internal `resolve-run` keeps its name:
-  that is the overlay's carry-out step, and it is not a button.
-  This is a **reversal**, and the reason is the UI rather than the flow: the cards
-  are not good enough to be the only way through a review yet. `spawn_command_session`
-  is the seam, and it had no caller but a test for a while — its docblock claimed the
-  pane was the default the whole time, with a prompt lookup that could not have
-  answered. If the overlay ever becomes the default again, that docblock and
-  `README.md`'s "there are two" are the two sentences to change.
-- **An ask the review overlay does not own must still be answerable in the box.**
-  `renderInteraction` dropped *every* free-text option for a review session, on
-  the assumption that the only one is the overlay's decision payload. The prompt's
-  ask template gives an ask exactly one free option, so a review session asking
-  anything of its own — a problem it hit, in its own words — rendered a box with
-  no answer in it and a "back to the review" button pointing at cards that had
-  never heard of the question. Answerable from neither side, and the session sat
-  on `your_turn` for good, because nothing ever clears `Session::interaction`; only
-  an answer hides it. It is dropped by *value* now (`decisions`), and the overlay
-  only claims the ask when that value is present.
-  The escape hatch beside it is a **fold**, not a dismiss: the header stays as a
-  one-line strip (`.oq.min`, the `×`, or `Esc`). Hiding it outright would be this
-  box disagreeing with the rail and the waitbar, which read `wants_attention` off
-  the daemon and are right — the agent really is still blocked.
+[docs/traps/ui.md](docs/traps/ui.md)
+
+- The keyboard map has a contract, and it is the reason the next binding is obvious.
+- The rail's `handle` button starts a pane, not the overlay.
+- An ask the review overlay does not own must still be answerable in the box.
 
 ### Performance, measured
 
-- **A start is a pile of child processes, and that is why it is slow somewhere
-  else.** Almost nothing in `orchd_serve::start` is CPU work, so "better hardware, worse
-  start" is not a contradiction: the cost is per exec, and a Mac pays dyld on every
-  one plus whatever endpoint-security software a managed laptop carries. Measured
-  on the real monorepo, release, **64 worktrees: 7836 ms and 447 child processes**,
-  of which `reconcile_all` was 6294 ms and the upstream fetch 1479 ms. Everything
-  else in `start` came to 59 ms. `crates/orchd-base/src/timing.rs` is what says so — a phase line per
-  start (`daemon start`, `session … start`, `shell start`, `window open`), each
-  carrying its own exec count and its own share of the time in them, plus `slow
-  git` for a single call over 300 ms and a `page start` line from the SPA.
-  **The sweep is now spawned rather than awaited**, which is what took the start to
-  ~1.4 s: `reconcile_all` holds `AppState::sweeping` so boot and the PR poller's
-  first tick cannot overlap, walks [`sweep_order`] (sessions, then main, then the
-  rest) so the pane you land on fills first, and notifies per workspace so they
-  fill in as it goes. **The page was never the problem** — 570 ms to a painted
-  terminal in that same reading, which is why the SPA posts its own boot marks to
-  `/api/client/timing`. What is left on the critical path is the **upstream fetch,
-  which is a network round trip**. Two things still true and worth knowing:
-  `configure_repo` sets fsmonitor on main *only*, so every worktree's `git status`
-  is a full scan; and the poller's first tick deliberately skips the fetch and the
-  sweep, because boot has just done both.
-  One follow-on lives in the desktop crate: the login shell's PATH is remembered
-  in `<config_dir>/login-path` and refreshed in the background *for the next
-  launch*, because `set_var` is process-global and unsound beside threads — which
-  is why `adopt_login_path` runs before the runtime exists and why the refresh
-  must never apply itself.
-  **The sweep runs four wide, not one** (`SWEEP_WIDTH`), because its cost is execs:
-  seven git processes per tree at 8 to 9 ms each on a Mac, so 58 trees took 20 to
-  46 s in a row (#10) and the per-tree half is nothing a user can change. And it
-  **skips a workspace whose directory is gone without dropping the row**: the row
-  is where `revive` and the PR flows rebuild the tree, so dropping it would trade
-  a warning per sweep for a second tree on the same branch. The tally says how
-  many were skipped.
-- **A keystroke is one small frame, so the served sockets set `TCP_NODELAY`.**
-  `axum::serve` defaults it to `None` and only calls `set_nodelay` when the
-  builder is told to, so every connection ran with Nagle on: a small write waits
-  for an ACK that waits for the peer's delayed-ACK timer, the classic ~40ms per
-  round trip. The pty websocket is nothing but small frames in both directions.
-  Loopback made it look like it could not matter, and on Linux it mostly does not.
-  **Three servers bound a port here and the third forgot it** — the bootstrap
-  server the first-run page ran on, which no test and no log could have told you
-  about. That one is gone with the page, and two are left. `serving::spawn` is the
-  one call, and `clippy::disallowed_methods` refuses `axum::serve` anywhere else,
-  so the next one gets it by construction.
-- **`mise env` per spawn is a decision, not an oversight.** `env_source`'s own
-  docblock says why: caching it needs invalidation against files the daemon does
-  not watch, and a session with a stale environment is a worse bug than a slow one.
-  The 50ms floor `proc::run_bounded` used to add is gone (it backs off from 2ms),
-  and the cost is now in the log per spawn. Revisit it with a number, not a guess.
-- **A resume rebuilds the record from `spawn::Carried`, and anything not named
-  there is thrown away.** `SessionRecord` persists twenty fields and `restore`
-  puts them all back at boot — then `auto_resume` respawns through
-  `spawn_session`, which rebuilds the record under the same id from `Carried`
-  alone. So a field that persists but is not carried is restored and discarded a
-  moment later, and the only sign is a behaviour that quietly stops working after
-  a restart. `created_at` was the first (a resumed session claimed to have started
-  this second, which silenced `claim_stale_warning` for the one session that
-  needed it); `spawned_by`, `spawn_cut_worktree` and `forked_from` were the rest.
-  The first pair is the sharpest, because it is the one fact on the record with
-  **no other home**: everything else either persists or heals itself from disk — a
-  title from the transcript, a branch from the tree — while "which session spawned
-  which" exists nowhere else. Lost, an agent that restarts can no longer undo the
-  child it created, and `api::discard_spawned` refuses with the opposite of what
-  happened.
-  Deliberately *not* carried, each for a reason: `recovery` (the tree is rebuilt,
-  so the session is no longer archived), `ask_token` (re-minted per spawn by
-  design), `outside_grants` (a restart asks again rather than assuming), and
-  `state`/`pty`/`pid` (a new process). Before adding a field to `SessionRecord`,
-  decide which side of that line it is on.
-- **Every spawner records the session's branch, and the swap depends on it.**
-  `Session::branch` is what `api::to_carry` matches on to decide which
-  conversation travels when a branch moves, so a record with `branch: None` is a
-  conversation the swap silently leaves behind — the branch goes into main and the
-  agent that was working on it stays put, with no error anywhere.
-  `spawn_worktree_session` built its own `Session` and never set it, so a worktree
-  session had no branch until a `reconcile` of its workspace happened to run.
-  Pressing swap before that sweep lost the conversation.
-  It surfaced as the swap e2e flows failing about one run in three, which reads as
-  a slow resume and is not: `E2E_TIME=1 mise run e2e` prints how long each wait
-  took, and every wait that *succeeds* lands in 3–7ms against a 10s deadline. A
-  flaky wait here is a condition that never becomes true, not one that is slow —
-  check the numbers before reaching for a longer timeout.
-- **Nothing may read `Tree` without asking whether it has been measured.** Every
-  field on it defaults to a value indistinguishable from a real answer: no changed
-  files is a clean tree, `changed_total` 0 is zero files, `(0,0)` divergence is up
-  to date, `branch: None` is... nothing. That was invisible while the first sweep
-  finished before the window opened, and became a lie the moment it did not.
-  `Tree::measured` is the difference, and it reaches the SPA on `WorkspaceView`.
-  The changed-files pane shows a loader on `false` (`.fempty.counting`, reusing
-  `.conn-dot` so the reduced-motion rule that names it already covers it) and its
-  footer says `counting…` rather than `0 files`. The two other readers already
-  degraded correctly and their comments say why: the rail's swap affordance treats
-  an unknown branch as the cautious answer, and `api.rs`'s post-swap mismatch
-  warning treats it as "not a mismatch". Teardown never trusted the cache at all —
-  `worktree::preflight` measures unpushed work with a fresh `git::unpushed`, which
-  is why deferring the sweep costs no safety.
-- **A launcher-started app has no stdout, so it used to leave no log at all.** That
-  is why a colleague's slow start could not be looked at: `tracing` went to a
-  terminal nobody had. `logging::init` writes the same lines to
-  `<config_dir>/orchd.log`, one generation kept as `orchd.log.1`, and says the path
-  in its first line. It follows `ORCHD_CONFIG_DIR`, so a fixture daemon does not
-  write over the real one.
-  **It lives in `orchd`, not in the desktop shell where it was written**, and both
-  hosts call it — so `cargo run -p orchd` leaves a file too, which it did not. The
-  reason is the multi-checkout work: a checkout's daemon is a child process whose
-  stdout the parent reads one line of and then drains, so a stdout-only subscriber
-  in a child logs nowhere anybody looks. `install_panic_hook` moved with it, for the
-  same reason and because it writes through that subscriber.
-- **The page's own boot timing is not visible from Rust.** The daemon can time up
-  to serving the page and sending the first snapshot; the vendored script parse, the
-  first render, and the centre pane's terminal attaching and painting only exist in
-  the webview. So `core.js` marks them and POSTs once to `/api/client/timing`, which
-  logs a `page start` line beside the daemon's. Marks are first-wins, because
-  `attach` and `paint` repeat on every session switch and a later one is not boot.
-  While reading those numbers: `index.html` loads `prism.min.js` (574 KB) and
-  `addon-webgl.js` (247 KB) as blocking classic scripts, and the webgl addon is
-  dead weight in the desktop window, where `CHROME !== 'none'` never loads it.
-- **Measure a release build, or do not quote the number.** "orchd uses 76 MB" was a
-  `cargo run` debug build — 113 MB of binary against release's 11 MB, nearly all
-  paged-in debug text. Release, idle, polling: 7.6 MB RSS and **1.1 MB** of heap.
-  Two performance suspects were chased on the strength of the wrong figure. For the
-  same reason `web/js/term.js` pins `scrollback: 2000`: xterm holds each line as a
-  `Uint32Array` of `cols * 3`, so depth costs process memory whether or not a
-  terminal paints (10000 lines cost +36.7 MB against 2000's +13.3 MB) — and the
-  daemon's ring buffer only replays ~3600 lines anyway, so a deeper buffer was
-  never durable. JS-heap metrics are useless here: CDP reported 0.9 MB for 9000
-  lines that cost ~23 MB, because typed-array stores are external memory.
+[docs/traps/performance.md](docs/traps/performance.md)
+
+- A start is a pile of child processes, and that is why it is slow somewhere else.
+- A keystroke is one small frame, so the served sockets set `TCP_NODELAY`.
+- `mise env` per spawn is a decision, not an oversight.
+- A resume rebuilds the record from `spawn::Carried`, and anything not named there is thrown away.
+- Every spawner records the session's branch, and the swap depends on it.
+- Nothing may read `Tree` without asking whether it has been measured.
+- A launcher-started app has no stdout, so it used to leave no log at all.
+- The page's own boot timing is not visible from Rust.
+- Measure a release build, or do not quote the number.
 
 ### macOS, and the tooling around the build
 
-- **The app's modifier is ⌘ on macOS and Ctrl elsewhere** (`core.appMod`, from the
-  `__ORCH_PLATFORM__` the daemon substitutes into the page — told, not sniffed).
-  Worth knowing why rather than just that: on a Mac ⌘ never reaches the pty, so the
-  Ctrl-shadows-the-terminal trade-off the layer contract agonises over is
-  Linux-only. Two exceptions, both deliberate: session switching is `Ctrl+Tab`
-  everywhere because ⌘Tab is the macOS app switcher and never arrives, and the
-  legend's rows carry `MOD` placeholders resolved at boot — including in the
-  descriptions, not just the chords, which is a bug that shipped once.
-- **The config dir has a space in it on macOS**, and anything from it that reaches
-  a shell must be quoted. `config_dir` is `~/Library/Application Support/orchd`
-  there and `~/.config/orchd` elsewhere. The push guard's hook is a shell string
-  (`type: "command"` — that is how `SessionStart` gets a pipe and `|| true`), so an
-  unquoted path splits at the space and the hook runs nothing: the guard fails
-  open and silently stops existing. Use `hooks::sh_quote`. Prompt-file paths are
-  fine — they go into prose the agent reads, not a shell.
-- **A fresh checkout the daemon points at needs Claude Code's workspace trust
-  accepted once.** Until then `claude --worktree` refuses ("Workspace trust not
-  yet accepted") and the spawned session exits instantly, leaving a workspace
-  record for a worktree that was never created. Accept it in the dialog or set
-  `hasTrustDialogAccepted` for that dir in `~/.claude.json`. The monorepo hides
-  this by having been trusted long ago; `docs/fixture-pr.md` has it.
-- **`claude --worktree` leaves a lock the daemon must clear at teardown.** Every
-  worktree it cuts is `git worktree lock`ed, and the lock outlives the session the
-  daemon kills — so a plain `git worktree remove` refuses it forever.
-  `git::worktree_remove` clears a lock whose owning pid is dead and retries, still
-  never `--force` and never a filesystem delete (preflight already proved the tree
-  clean, so a stale lock is the only thing left to trip on). Do not "simplify" the
-  retry away.
-- **`POST /api/pr/:n/fix-pr` starts a run immediately.** No confirmation: the
-  guard table refuses on authorship — *can you push to the head repo*, read from
-  `headRepository.viewerPermission`, not whose name is on it — a run already going,
-  a busy branch and the concurrency cap, and *nothing else*. "The PR looks fine" is not a refusal,
-  because a run is also how a PR that has fallen behind gets rebased. Easy to fire
-  by accident while poking at the API.
-- **Pushes are guarded, by two halves that must agree.**
-  `crates/orchd-base/src/guard.rs` holds the rules and its module doc says what it
-  is and is not — a **mistake-catcher, not a control**, Bash only, so `gh` or a
-  script the agent writes goes around it. Do not write docs that claim otherwise;
-  the README did, and that is the kind of sentence that earns misplaced trust.
-  Three rules: no lease-less `--force`, no push to the base branch (from
-  `upstream_ref`, never a list of likely names), and no git aimed out of the
-  worktree the session works in. Never `git merge` into a branch here, rebase.
-  **The two halves.** `orch guard push` runs them as a `PreToolUse` hook on the
-  agent's Bash, and `git::push_with_lease` re-states the base-branch rule because
-  a *daemon* push never passes through a hook. The hook cannot name two facts per
-  session, since one settings file serves them all: `--main` is baked in, and the
-  tree is read from the payload's own cwd. Its one exemption is the session's own
-  git dir, since a worktree's real one lives under the *main* checkout.
-  **And it is a question, not a wall.** The refusal names `orch outside <path>`,
-  which raises an *ordinary* `Interaction` — the same field, the same box, the
-  same `/ask/:id/wait` the agent already polls — and a yes appends that folder to
-  `Session::outside_grants`. **A yes is one folder, not the session**: it was a
-  `bool`, so the first grant let the session reach every checkout for the rest of
-  the conversation, and the question that named a folder had answered about all of
-  them. Two more things are deliberate: the grant keys on the **ask id**, because
-  an agent writes its own option values through `orch ask` and would otherwise be
-  asking itself; and it is **not** on `SessionRecord`, so a restart asks again
-  rather than assuming.
-  `tools/e2e/flows/14-outside-grant.mjs` drives the whole path. **`mise run e2e`
-  builds `orch` as well as `orchd`**, and did not: that flow runs `orch guard push`
-  directly, so a change to the guard's own half was measured against whatever
-  binary was on disk, and it read as the grant refusing every command it had just
-  allowed.
+[docs/traps/macos.md](docs/traps/macos.md)
 
-- **A `rust-toolchain.toml` is a no-op here, and silently.** `mise env` exports
-  `RUSTUP_TOOLCHAIN=stable`, and that variable **outranks** the file in rustup's
-  precedence — so a pin written there is ignored on any machine with mise active
-  (which is every developer's) and honoured in CI, which has no mise. That is the
-  opposite of what a pin is for: it manufactures an invisible divergence instead of
-  removing one. Measured, not assumed — `rustup show` reports "overridden by
-  environment variable RUSTUP_TOOLCHAIN", and dropping the variable made rustup
-  start downloading the pinned toolchain.
-  So the Rust version is pinned **in the workflows** (`dtolnay/rust-toolchain@<v>`,
-  the same string in `check.yml` and `release.yml`, bumped together) and local stays
-  on mise's `rust = "latest"`. The drift that leaves runs the harmless way round: a
-  developer on a newer rustc meets a new clippy lint *before* CI does, rather than
-  CI failing on a commit that touched no Rust. Collapsing it to one source of truth
-  means provisioning Rust through mise in CI too.
+- The app's modifier is ⌘ on macOS and Ctrl elsewhere
+- The config dir has a space in it on macOS
+- A fresh checkout the daemon points at needs Claude Code's workspace trust accepted once.
+- `claude --worktree` leaves a lock the daemon must clear at teardown.
+- `POST /api/pr/:n/fix-pr` starts a run immediately.
+- Pushes are guarded, by two halves that must agree.
+- A `rust-toolchain.toml` is a no-op here, and silently.
 
 ### The crates, and what a move breaks
 
-- **Four crates, all under `crates/`, and the root is the workspace and nothing
-  else.** `orchd-base` the primitives, `orchd-repo` one checkout described,
-  `orchd` the runtime core, `orchd-serve` the daemon; `desktop/` sits on top.
-  The root manifest **was the `orchd` package as well**, and that is the thing to
-  remember about the last move: a manifest that is both is a default that is wrong
-  for every tool that has one. `cargo clippy` without `--workspace` linted it and
-  never `desktop/`, and `cargo about` and `cargo deny` rooted at it silently — so
-  the desktop shell's ~130 dependencies went unchecked and unlisted until somebody
-  passed `--workspace`. The name did not change with the directory, deliberately:
-  `orchd::…` is 162 paths and a dozen sentences, and a rename buys symmetry and
-  nothing else.
-  **A crate move breaks whatever reads a path**, and this is the fourth time: the
-  module ratchet in step 1, `check-module-routes.mjs` in step 2, `typos.toml` —
-  its `src/names.rs` exclude went stale and a list of computer scientists'
-  surnames failed the spell check — and **the version**, which is the one that
-  did not fail loudly. It moved out of the root manifest into five crate
-  manifests, and both readers of it (`mise run release` and the release
-  workflow's tag-matches-version step) go on `grep`ing the root; the workflow's
-  half compared the empty string against every tag and said nothing, because
-  nothing tags on an ordinary push. `[workspace.package]` holds it now — see
-  *Releases*. Three of the four failed loudly, which is the good case; look for
-  the fifth, and prefer the one cargo can enforce over the one a script promises.
-- **`orchd` is a library only. `crates/orchd-serve` is the daemon**, and it holds
-  both binaries. The router, `start`, `StartOptions`, `Server` and every
-  `start_*_poller` are there with `host`, `hooks`, `firstrun` and `ws` — because
-  `lib.rs` reached all four, and `lib.rs` is not a module so the graph never saw
-  it. The line to remember: **`orchd` is what the daemon knows; `orchd-serve` is
-  the daemon.**
-  Two consequences bite immediately. **`cargo build --bin orchd` no longer works
-  from the root** — it is `cargo build -p orchd-serve --bin orchd`, and every
-  mise task, workflow and e2e runner says so. And **`cargo about` and
-  `cargo deny` needed `--workspace`**: both were rooting at the `orchd` package,
-  which now produces no binary, and turning that on showed that the desktop
-  shell's ~130 dependencies had never been checked or listed at all. The notices
-  went from 111 crates to 355. That hole predates the split.
-- **The words are `host`, `checkout` and `session`, and `repository` is reserved.**
-  `host` names the process role above the daemons, not a UI metaphor — it began as
-  `firstrun::BootstrapHost`, the trait by which the app gave a server it hosts the
-  window side, and `host.rs`, `/api/host/*`, `/ws/host` and `host.json` read as one
-  vocabulary. The trait is gone with the bootstrap server; the word stayed. Its one cost is named: `api::guard`'s rules are about
-  the HTTP `Host` header, so `/api/host/checkouts` sits beside "the Host rule" and
-  reads confusingly for a moment — a collision in one module, where a metaphor
-  would have been in every sentence. **`repository` stays reserved for
-  `state::Repos`**, the GitHub owner/name pair, which is why the rail lists
-  *checkouts* and nothing in the product is called a board.
-- **`crates/orchd-repo` is what a checkout is**: `config`, `forge`, `diff`,
-  `patch`, `skills`, `launch`, `migrate` and the rest — everything that reads or
-  describes one repository and keeps no session state. It was the cheapest of the
-  three splits, because it was sandwiched between two that already existed.
-  `sibling_bin_dir` moved down into `launch`, its only caller, and one `skills`
-  test became `tests/skills_are_named_after_commands.rs` because its two halves
-  are now in different crates.
-- **This is a workspace, and `crates/orchd-base` is the first crate out.**
-  Thirteen modules — `child edit git guard headroom model proc proposal pty
-  review_commit secret timing window` — and `cargo` now refuses an import from any
-  of them back up into the daemon. `crates/orchd/src/lib.rs` re-exports every one at
-  the path it always had, so **`crate::git::…` still reads the same everywhere** and the move
-  cost no call site a rename. `docs/crate-split.md` has the plan, the measurements
-  and what the first step actually cost.
-  Four things about it are worth knowing before touching the next step, and all
-  four are one fact — **`#[cfg(test)]` does not cross a crate line.**
-  `migrate` and `names` belonged in base by the graph and stayed in `orchd`
-  because their *tests* assert against `config` and `spawn`. `testutil` is a
-  **feature** (`test-util`), not a `cfg(test)` module, because a dependent crate's
-  tests cannot see one — base owns `scratch`, `git`, `scratch_repo` and
-  `TRUE_BIN`, and `orchd`'s `testutil` re-exports them, so there is one `scratch`
-  in the workspace. `ts-rs` is an **optional dependency** gated by that same
-  feature, because as a dev-dependency the `TS` derives vanish exactly when
-  `orchd`'s tests need them.
-  And **there are four generated type files now, written in a fixed order**:
-  ts-rs truncates `export_to` per crate *and* exports a type's dependencies, so a
-  crate's run rewrites its dependencies' files with only the subset it
-  references — `cargo test --workspace` left `base.d.ts` holding 1 type where it
-  should hold 15. The gates run the crates **top of the graph down**
-  (`orchd-serve`, `orchd`, `orchd-repo`, `orchd-base`), which leaves each file
-  written last by its owner. `orchd-base` writes `web/base.d.ts`, `orchd-repo`
-  `web/repo.d.ts`, `orchd-serve` `web/serve.d.ts`, `orchd` `web/snapshot.d.ts`, and the `import type … from "./base.d"` between them is
-  only right because `.cargo/config.toml` points both at one `TS_RS_EXPORT_DIR`.
-  Set there rather than in the gates, so a bare `cargo test` does not leave a
-  stray `bindings/`. A type that moves between the crates moves between the files,
-  and the SPA's `import('../snapshot').X` has to follow — `tsc` names every one.
-- **`git` is a directory, and the split was the banners.** It was 4,457 lines —
-  47% of `orchd-base` — already partitioned by banner comments, which became the
-  file names: `exec` (the timed runner), `status`, `refs`, `unpushed`, `worktree`,
-  `bank`, `review`. No item moved between them, `crate::git::…` still resolves for
-  every call site through `mod.rs`'s re-exports, and items the files share are
-  `pub(super)` rather than `pub`.
-  **The tests did not follow, and that is measured.** They group by *fixture*
-  rather than by section: `scratch_repo` is shared by twelve tests spanning refs
-  and worktrees, `amend_repo` by fourteen, `bank_fixture` by four. Splitting them
-  needs a shared fixtures module and a hand assignment of 61 tests, and what a
-  reader navigates while changing behaviour is the shipped code.
-  **And the split broke the module gate, which is how the gate earned its keep.**
-  `crates/orchd-base/src/git/tests.rs` is a file rather than a `mod tests {}` block, so the cut that
-  removes test code did not apply and 2,000 lines of tests read as shipped —
-  producing a `git <-> review_commit` cycle out of a move that changed no shipped
-  line. `declaredTestOnly` is the fix: a file whose own directory declares it
-  `#[cfg(test)] mod <name>;` is test code. Checked both ways, since a rule that
-  skips too much is worse than the bug.
-- **`cargo fmt` is the formatter now, gated in CI and the hook.** The tree was
-  formatted in one commit, and `rustfmt.toml` says what was measured to keep the
-  defaults — including why `wrap_comments` stays off, which is the setting that
-  made it affordable. One thing to turn on per clone, beside the hooks line:
-  `git config blame.ignoreRevsFile .git-blame-ignore-revs`.
+[docs/traps/crates.md](docs/traps/crates.md)
+
+- Four crates, all under `crates/`, and the root is the workspace and nothing else.
+- `orchd` is a library only. `crates/orchd-serve` is the daemon
+- The words are `host`, `checkout` and `session`, and `repository` is reserved.
+- `crates/orchd-repo` is what a checkout is
+- This is a workspace, and `crates/orchd-base` is the first crate out.
+- `git` is a directory, and the split was the banners.
+- `cargo fmt` is the formatter now, gated in CI and the hook.
 
 ### git, and driving the API by hand
 
-- **Git exports its own state into hooks and `--exec`, and one of the variables is
-  a *relative* path.** Measured, not assumed: a pre-commit hook here runs with
-  `GIT_INDEX_FILE=.git/index`, `GIT_PREFIX`, `GIT_AUTHOR_*` and `GIT_EXEC_PATH`
-  set. Because that index path is relative, any `git` a hook runs from a
-  *different* directory resolves it against that directory instead — which is how
-  the e2e suite, run from the hook, died on
-  `Unable to create '<newtree>/.git/index.lock': Not a directory`: a worktree's
-  `.git` is a file. Anything spawning git from a hook must strip `GIT_*` first;
-  `tools/e2e/harness.mjs` does, and that is the only reason the suite can run
-  there.
-- **`git rebase --exec 'cargo test'` did something unexplained.** It put test
-  fixture commits into the repo and moved its HEAD. Recovered fully, and the
-  mechanism was never confirmed — but the entry above is the strongest candidate
-  yet, and it re-opens a hypothesis once written off: `--exec` sets the same
-  variables, and the one that bites is `GIT_INDEX_FILE`, not the `GIT_DIR` that
-  was tested and cleared. Still worth avoiding until somebody proves it.
-- **A test that asserts on git's own error wording fails on an older git.** Git
-  says "already used by worktree at" from 2.35 and "already checked out at"
-  before it, and 2.34.1 is what some machines have — so the worktree guard and the
-  swap test both failed for a reason that had nothing to do with the code.
-  `git::refused_as_already_checked_out` matches either. The refusal is the
-  invariant; its phrasing is not.
-- **A route an agent calls needs a line in `is_ask_route`, and forgetting it fails
-  as `bad origin`.** The vendored skills curl with no `Origin` and carry the
-  session's ask token, not the app token — so a session route missing from that
-  list is refused twice: the Origin check has no arm for it, and `needs_token`
-  then wants a token the agent is deliberately not given.
-  `…/thread/:id/committed` shipped like that, which made the resolve run's central
-  seam unreachable by its only caller while every unit test passed. Add the
-  suffix, and the test in `api::tests` that walks the paths the prompts really
-  call.
-- **Driving the API by hand has four traps.** The header is `x-orch-token`
-  (`Authorization: Bearer` is not read), the route is `/api/state` (`/api/snapshot`
-  does not exist, and an unknown route answers `{}`, which reads exactly like an
-  empty daemon), a POST needs an `Origin` matching the port or it is "bad origin",
-  and the config key is `worktrees_subdir`. An unknown config key is ignored in
-  silence, so `worktrees_dir` leaves the daemon managing `.claude/worktrees` and
-  logging that it is "ignoring worktree outside the managed dir".
+[docs/traps/git.md](docs/traps/git.md)
+
+- Git exports its own state into hooks and `--exec`, and one of the variables is a *relative* path.
+- `git rebase --exec 'cargo test'` did something unexplained.
+- A test that asserts on git's own error wording fails on an older git.
+- A route an agent calls needs a line in `is_ask_route`, and forgetting it fails as `bad origin`.
+- Driving the API by hand has four traps.
 
 ## Releases
 
