@@ -1193,14 +1193,8 @@ pub async fn serve(
     let bound = listener.local_addr()?.port();
     let host = Host::new(token, bound, chrome);
     let router = router(host.clone());
-    let task = tokio::spawn(async move {
-        // `TCP_NODELAY` for the same reason the daemon sets it: a keystroke is one
-        // small frame, and Nagle plus a delayed ACK is ~40 ms per round trip. The
-        // host serves no pty, but it serves the page that opens them.
-        if let Err(e) = axum::serve(listener, router).tcp_nodelay(true).await {
-            tracing::error!("the host stopped serving: {e:#}");
-        }
-    });
+    // The host serves no pty, but it serves the page that opens them.
+    let task = crate::serving::spawn("the host", listener, router);
     tracing::info!(port = bound, "the host is serving the page");
     Ok(Serving { host, task })
 }

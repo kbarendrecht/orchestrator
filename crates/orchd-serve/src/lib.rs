@@ -13,6 +13,7 @@
 pub mod firstrun;
 pub mod hooks;
 pub mod host;
+pub mod serving;
 pub mod ws;
 
 use anyhow::{Context, Result};
@@ -531,22 +532,10 @@ pub async fn start(opts: StartOptions) -> Result<Server> {
     } else {
         router(app.clone(), host.clone())
     };
-    let serve = tokio::spawn(async move {
-        // **`TCP_NODELAY`, because a keystroke is one small frame.** axum defaults
-        // it to `None` (`serve.rs`: it only calls `set_nodelay` when told to), so
-        // every connection here was running with Nagle on: the kernel holds a
-        // small write back waiting for an ACK it will not get until the peer's
-        // delayed-ACK timer fires. That is the classic ~40ms per round trip, and
-        // the pty websocket is nothing *but* small frames in both directions —
-        // a character out, the redrawn line back.
-        //
-        // Loopback, so this looks like it should not matter, and on Linux it
-        // mostly does not. It was reported as typing lag on macOS, where the
-        // delayed-ACK behaviour is more eager. Free to set either way.
-        if let Err(e) = axum::serve(listener, router).tcp_nodelay(true).await {
-            tracing::error!("server stopped: {e:#}");
-        }
-    });
+    // `TCP_NODELAY` and the reason for it are in `serving`: the pty websocket is
+    // nothing *but* small frames in both directions, a character out and the
+    // redrawn line back.
+    let serve = serving::spawn("the daemon", listener, router);
     phases.mark("serve");
     // Named, because with a daemon per checkout two of these lines are otherwise
     // indistinguishable — and this line exists so a number survives being pasted
@@ -1141,14 +1130,21 @@ fn start_pr_poller(app: Arc<AppState>) {
                 inner.pr_polling = false;
             }
             app.notify().await;
-            // A manual refresh cuts the wait short and restarts the period, so a
-            // button press and the next scheduled poll never land back to back.
-            tokio::select! {
-                _ = tokio::time::sleep(interval) => {}
-                _ = app.pr_refresh.notified() => {}
-            }
+            next_tick(interval, &app.pr_refresh).await;
         }
     });
+}
+
+/// Wait out a poll interval, unless somebody presses refresh first.
+///
+/// **A refresh cuts the wait short *and* restarts the period**, so a button press
+/// and the next scheduled poll never land back to back. Both pollers with a
+/// button spelled this out; a third would have had to know to.
+async fn next_tick(interval: std::time::Duration, refresh: &tokio::sync::Notify) {
+    tokio::select! {
+        _ = tokio::time::sleep(interval) => {}
+        _ = refresh.notified() => {}
+    }
 }
 
 /// Of several resumable records, the ones to actually bring back: at most one per
@@ -1289,12 +1285,7 @@ fn start_review_poller(app: Arc<AppState>) {
             }
             app.notify().await;
 
-            // A manual refresh cuts the wait short and restarts the period, so a
-            // button press and the next scheduled poll never land back to back.
-            tokio::select! {
-                _ = tokio::time::sleep(interval) => {}
-                _ = app.review_refresh.notified() => {}
-            }
+            next_tick(interval, &app.review_refresh).await;
         }
     });
 }

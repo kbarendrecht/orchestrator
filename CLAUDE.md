@@ -1341,6 +1341,10 @@ where they were written. Every one of them cost something.
   for an ACK that waits for the peer's delayed-ACK timer, the classic ~40ms per
   round trip. The pty websocket is nothing but small frames in both directions.
   Loopback made it look like it could not matter, and on Linux it mostly does not.
+  **Three servers bind a port here and the third forgot it** — the bootstrap
+  server the first-run page runs on, which no test and no log could have told you
+  about. `serving::spawn` is the one call now, and `clippy::disallowed_methods`
+  refuses `axum::serve` anywhere else, so a fourth server gets it by construction.
 - **`mise env` per spawn is a decision, not an oversight.** `env_source`'s own
   docblock says why: caching it needs invalidation against files the daemon does
   not watch, and a session with a stale environment is a worse bug than a slow one.

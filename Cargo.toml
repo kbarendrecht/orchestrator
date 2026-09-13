@@ -119,6 +119,9 @@ print_stderr = "deny"
 # `std::sync::Mutex` held across an `.await` is a deadlock that needs two tasks and
 # a scheduling order to show itself, so it ships green.
 await_holding_lock = "deny"
+# One way onto a socket, spelled in `clippy.toml`: three servers bind a loopback
+# port here and the third had no `TCP_NODELAY`, which no test and no log can see.
+disallowed_methods = "deny"
 
 [workspace.lints.rustdoc]
 broken_intra_doc_links = "deny"

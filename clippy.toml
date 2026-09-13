@@ -8,3 +8,12 @@ allow-expect-in-tests = true
 allow-panic-in-tests = true
 allow-print-in-tests = true
 allow-indexing-slicing-in-tests = true
+
+# One way onto a socket. Three servers in `orchd-serve` bind a loopback port and
+# the third forgot `TCP_NODELAY` — a fault that fails no test, shows in no log,
+# and costs ~40 ms per round trip on the one path a person feels. `serving::spawn`
+# is the call now, and it allows this lint at the one site that may make it.
+disallowed-methods = [
+    { path = "axum::serve", reason = "use `crate::serving::spawn`, which sets TCP_NODELAY" },
+]
+

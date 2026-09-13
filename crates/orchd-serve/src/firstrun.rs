@@ -812,11 +812,9 @@ pub async fn serve(host: Arc<dyn BootstrapHost>) -> Result<Serving> {
         .context("binding the bootstrap server")?;
     let addr = listener.local_addr()?;
     let app = router(host, addr.port());
-    let task = tokio::spawn(async move {
-        if let Err(e) = axum::serve(listener, app).await {
-            tracing::error!("bootstrap server stopped: {e}");
-        }
-    });
+    // Through `serving` like the other two, which is how this one stops being the
+    // server that forgot `TCP_NODELAY`.
+    let task = crate::serving::spawn("the bootstrap server", listener, app);
     Ok(Serving { addr, task })
 }
 
