@@ -1481,10 +1481,17 @@ mod tests {
     /// Proven through a real shell, in a directory whose name has a space —
     /// which is the macOS config dir (`~/Library/Application Support/orchd`), and
     /// the reason this quoting exists at all.
+    ///
+    /// **The parent carries the pid and the space sits below it**, because the
+    /// second half of this test asserts that the *unquoted* form fails. The name
+    /// used to be `orchd quote <pid>`, so the word a shell split off was
+    /// `<tmp>/orchd` — a path this workspace's own tests create, and one run of
+    /// `cargo test --workspace` found it there and read "unquoted works". A
+    /// negative assertion has to own every name it depends on.
     #[test]
     fn a_quoted_path_survives_a_shell_even_with_a_space_in_it() {
         let dir = std::env::temp_dir()
-            .join(format!("orchd quote {}", std::process::id()))
+            .join(format!("orchd-quote-{}", std::process::id()))
             .join("Application Support");
         std::fs::create_dir_all(&dir).expect("mkdir");
         let script = dir.join("orch");
@@ -1516,7 +1523,7 @@ mod tests {
         assert!(!broken, "unquoted should fail, or this test proves nothing");
 
         let _ = std::fs::remove_dir_all(
-            std::env::temp_dir().join(format!("orchd quote {}", std::process::id())),
+            std::env::temp_dir().join(format!("orchd-quote-{}", std::process::id())),
         );
     }
 
