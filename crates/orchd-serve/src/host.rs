@@ -1346,6 +1346,8 @@ async fn module(UrlPath(file): UrlPath<String>) -> Response {
         "queue.js" => include_str!("../../../web/js/queue.js"),
         "settings.js" => include_str!("../../../web/js/settings.js"),
         "open.js" => include_str!("../../../web/js/open.js"),
+        "theme.js" => include_str!("../../../web/js/theme.js"),
+        "drawer.js" => include_str!("../../../web/js/drawer.js"),
         _ => return (StatusCode::NOT_FOUND, "no such module").into_response(),
     };
     asset("text/javascript; charset=utf-8", body)

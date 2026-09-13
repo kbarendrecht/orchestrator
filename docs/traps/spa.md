@@ -63,12 +63,20 @@ config. `mise run shot` then works against it.
 — the fetch wrappers, the DOM shorthands, the snapshot, the selection, the UI
 scale, and the vocabulary every pane needs to describe a session (`stateLabel`,
 `dotClass`, `isArchived`, `pending`, …). The features beside it are `term`,
-`rail`, `diff`, `review` (+ `review-diff`), `queue` and `settings`. `app.js` is
-what is left over: boot order, the websocket, the keyboard map, the window
-chrome — 2,141 lines, from 4,798 before the split. That number is a count of a
-file rather than a rule, so it is the kind that rots: this said "under a thousand"
-for long enough to be wrong by a factor of two.
-`mise run check-web` prints the current module and dependency count.
+`rail`, `diff`, `review` (+ `review-diff`), `queue`, `settings`, `theme`,
+`drawer` and `open`. `app.js` is what is left over: boot order, the websocket,
+the keyboard map, the window chrome.
+**`core` is a floor, and what makes it one is that nothing feature-shaped lives
+there.** Two things did and are out: the theme — 400 lines of palette solving,
+font detection and `localStorage` reading that two modules use — and the
+drawer, whose *state* was already in `core` (per-checkout keyed) while its
+400-line render sat in `app.js`, one feature across two files. `core` now imports
+nothing of the SPA's, which is the rule stated as a property rather than as an
+intention.
+`mise run check-web` prints the current module and dependency count, and the
+count is printed rather than written down here: a number a file states and no
+tool verifies is one that rots, which this entry proved by saying `app.js` was
+"under a thousand lines" long enough to be wrong by a factor of two.
 
 ## The daemon's module graph is a DAG now, and `mise run check-modules` refuses a cycle.
 It was a ratchet for a long time and its own header carries the three

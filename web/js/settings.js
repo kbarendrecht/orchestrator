@@ -1,8 +1,8 @@
 // The settings panel. The zoom control it offers lives in core, because the
 // terminals read the scale too.
 
-import { ctl, $, WHEEL, ZOOM, call, callHost, caret, currentPreset, detectedFonts, FONTS, fontStack, PRESETS, resetTheme, SEE_THROUGH, SIZE_MAX, SIZE_MIN, setUiPx, uiPx, UI_PX_MAX, UI_PX_MIN,
-  setTheme, theme, validFontName, closeLegend, el, get, MOD_LABEL, reason, saveWheel, saveZoom, setWheel, setZoom, snap, wheelScale } from './core.js';
+import { ctl, $, WHEEL, ZOOM, call, callHost, caret, setUiPx, uiPx, UI_PX_MAX, UI_PX_MIN, closeLegend, el, get, MOD_LABEL, reason, saveWheel, saveZoom, setWheel, setZoom, snap, wheelScale } from './core.js';
+import { currentPreset, detectedFonts, FONTS, fontStack, PRESETS, resetTheme, SEE_THROUGH, setTheme, SIZE_MAX, SIZE_MIN, theme, validFontName } from './theme.js';
 /* The arithmetic, for reading a typed hex back. A leaf with no imports of its own,
    so the module graph stays the DAG `dependency-cruiser` insists on — and the same
    parser `loadTheme` uses, so the pane and the store cannot disagree about what
@@ -256,7 +256,7 @@ async function saveSettings() {
 const THEME_DEF_KEY = { ui: 'plexsans', mono: 'plex', code: 'jetbrains' };
 
 /** What each font role is called in the pane, and which size rides with it. */
-/** @type {{ role: import('./core.js').Role, size: 'termSize' | 'diffSize' | null, step?: string }[]} */
+/** @type {{ role: import('./theme.js').Role, size: 'termSize' | 'diffSize' | null, step?: string }[]} */
 const ROLES = [
   { role: 'ui', size: null },        // the interface size is the board zoom
   { role: 'mono', size: 'termSize', step: 'ts' },
@@ -270,7 +270,7 @@ const ROLES = [
  *  announces through, so a screen reader was told nothing when a font name was
  *  declined. Passing `''` clears both.
  */
-function noteFor(/** @type {import('./core.js').Role} */ role, text = '') {
+function noteFor(/** @type {import('./theme.js').Role} */ role, text = '') {
   $(`th${role}note`).textContent = text;
   $(`th${role}noterow`).hidden = !text;
   if (text) $('live').textContent = text;
@@ -380,7 +380,7 @@ function showSize(/** @type {string} */ step, /** @type {number} */ px, min = SI
  *  only families certain to be there — everything under `detected` is a name this
  *  machine answered to, which is not the same as a name it has.
  */
-function fillFonts(/** @type {import('./core.js').Role} */ role) {
+function fillFonts(/** @type {import('./theme.js').Role} */ role) {
   const sel = ctl(`th${role}`);
   if (sel.options.length) return;
   const want = role !== 'ui';
@@ -404,7 +404,7 @@ function fillFonts(/** @type {import('./core.js').Role} */ role) {
 }
 
 /** Show a role's current font, its preview, and its name box when it has one. */
-function showFont(/** @type {import('./core.js').Role} */ role) {
+function showFont(/** @type {import('./theme.js').Role} */ role) {
   const key = theme[role];
   const custom = typeof key === 'string' && key.startsWith('custom:');
   const sel = ctl(`th${role}`);
@@ -480,7 +480,7 @@ function setupSettings() {
     };
   }
 
-  for (const role of /** @type {import('./core.js').Role[]} */ (['ui', 'mono', 'code'])) {
+  for (const role of /** @type {import('./theme.js').Role[]} */ (['ui', 'mono', 'code'])) {
     fillFonts(role);
     ctl(`th${role}`).onchange = (/** @type {Event} */ ev) => {
       const v = /** @type {HTMLSelectElement} */ (ev.target).value;

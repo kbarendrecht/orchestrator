@@ -114,10 +114,16 @@ function undefinedTokens() {
   //   2. the palette, whose tokens `applyTheme` sets on the root element;
   //   3. `setProperty` in the SPA (`--band` per rail group, `--code-px` per
   //      theme, the font stacks and the UI scale).
-  const js = ['core.js', 'rail.js', 'term.js', 'diff.js', 'review.js', 'settings.js', 'queue.js']
-    .map((f) => path.join(here, '..', 'web', 'js', f))
-    .filter((f) => fs.existsSync(f))
-    .map((f) => fs.readFileSync(f, 'utf8'))
+  // **Every module, read rather than listed.** This named seven files, and the
+  // moment the theme moved out of `core.js` into `theme.js` — taking every
+  // `setProperty` with it — the check reported `--code-px` as undefined. A scan
+  // that names its inputs stops covering the thing it was written for as soon as
+  // somebody adds a file, and says so as a false alarm rather than a silence,
+  // which is the lucky half.
+  const jsDir = path.join(here, '..', 'web', 'js');
+  const js = fs.readdirSync(jsDir)
+    .filter((f) => f.endsWith('.js'))
+    .map((f) => fs.readFileSync(path.join(jsDir, f), 'utf8'))
     .concat(fs.readFileSync(path.join(here, '..', 'web', 'app.js'), 'utf8'))
     .join('\n');
   const defined = new Set([

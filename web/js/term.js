@@ -2,7 +2,8 @@
 // over a websocket. The DOM renderer is deliberate under WebKitGTK, and only
 // there — see the renderer comment below, and CLAUDE.md.
 
-import { $, CHROME, IS_MAC, copyText, fontStack, theme, el, mark, note, reason, reportBoot, selected, terms, termKey, typingElsewhere, uiScale, wheelScale } from './core.js';
+import { $, CHROME, IS_MAC, copyText, el, mark, note, reason, reportBoot, selected, terms, termKey, typingElsewhere, uiScale, wheelScale } from './core.js';
+import { fontStack, theme } from './theme.js';
 import { termColours } from './palette.js';
 
 
