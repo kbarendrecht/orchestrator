@@ -304,6 +304,12 @@ pub async fn session_start(
     ok()
 }
 
+/* **Two shapes of "which session is this", and they are not interchangeable.**
+Most handlers take `let Some(id) = session_of(…) else { return ok() };` — no
+session, nothing to do. The three that use `if let` instead go on to do something
+without one: `user_prompt_submit` and `stop_failure` still `notify` (a payload the
+daemon cannot place is still a moment the page's clocks moved), and `subagent_stop`
+only logs. Reading them as one idiom and unifying would drop those notifies. */
 pub async fn user_prompt_submit(
     AxState(app): AxState<Arc<AppState>>,
     headers: HeaderMap,
@@ -427,20 +433,7 @@ pub async fn notification(
         "permission_prompt" => permission_reason(payload.message.as_deref()),
         _ => TurnReason::TurnComplete,
     };
-    {
-        let mut inner = app.inner.write().await;
-        if let Some(s) = inner.sessions.get_mut(&id) {
-            // Don't restart the clock if the session is already waiting: the
-            // wait time is the metric, and a second notification about the same
-            // idle turn would silently reset it.
-            if !matches!(s.state, State::YourTurn { .. }) {
-                s.set_state(State::YourTurn {
-                    since: SystemTime::now(),
-                    reason,
-                });
-            }
-        }
-    }
+    app.with_session(id, |s| s.wait_for(reason)).await;
     app.notify().await;
     ok()
 }
@@ -473,13 +466,12 @@ pub async fn stop(
     };
 
     app.with_session(id, |s| {
-        let want = orchd::health::at_rest(build_failure.as_deref());
-        // Re-stamping `YourTurn` would restart the waiting clock on a session
-        // that was already waiting, and that clock is what the rail sorts on.
-        let already_waiting =
-            matches!(want, State::YourTurn { .. }) && matches!(s.state, State::YourTurn { .. });
-        if !already_waiting {
-            s.set_state(want);
+        // `at_rest` answers `BuildFailing` or `YourTurn`, and only the second is a
+        // wait — `Session::wait_for` is the one place that decides not to restart a
+        // clock that is already running.
+        match orchd::health::at_rest(build_failure.as_deref()) {
+            State::YourTurn { reason, .. } => s.wait_for(reason),
+            other => s.set_state(other),
         }
     })
     .await;

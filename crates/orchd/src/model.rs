@@ -710,6 +710,29 @@ impl Session {
             self.state_since = SystemTime::now();
         }
     }
+
+    /// Start waiting for you, unless this session already is.
+    ///
+    /// **The wait clock is the metric, so a second notice about one idle turn must
+    /// not restart it.** The rail sorts on how long a session has been waiting and
+    /// the waitbar counts it, and Claude Code sends more than one notification for
+    /// a single stop — a permission prompt and then the stop itself, say. Re-stamping
+    /// `YourTurn` there says the session became free just now, and the row you have
+    /// been ignoring longest moves to the bottom.
+    ///
+    /// **A method because the rule was written twice**, in `hooks.rs`, in two
+    /// shapes — `if !matches!(s.state, State::YourTurn { .. })` in `notification`
+    /// and an `already_waiting` local in `stop`. Two spellings of one rule is how
+    /// the third site gets it wrong, and the state is this type's to own.
+    pub fn wait_for(&mut self, reason: TurnReason) {
+        if matches!(self.state, State::YourTurn { .. }) {
+            return;
+        }
+        self.set_state(State::YourTurn {
+            since: SystemTime::now(),
+            reason,
+        });
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1488,6 +1511,50 @@ mod tests {
         // A turn that ends is not an interrupted one.
         s.set_state(your_turn(TurnReason::TurnComplete));
         assert!(!s.interrupted);
+    }
+
+    /// A second notice about one idle turn must not restart the wait clock.
+    ///
+    /// **That clock is the metric.** The rail sorts on how long a session has been
+    /// waiting and the waitbar counts it, and Claude Code sends more than one
+    /// notification for a single stop — a permission prompt, then the stop. Restamp
+    /// it and the row you have been ignoring longest moves to the bottom. The rule
+    /// was written twice in `hooks.rs`, in two shapes, and tested in neither.
+    #[test]
+    fn a_second_notice_does_not_restart_the_wait_clock() {
+        let mut s = Session::new(
+            Uuid::new_v4(),
+            "wt".into(),
+            std::path::PathBuf::from("/tmp"),
+            None,
+        );
+        s.set_state(State::Working);
+        s.wait_for(TurnReason::AskedAQuestion);
+        let State::YourTurn { since: first, .. } = s.state else {
+            panic!("the first notice did not start a wait: {:?}", s.state);
+        };
+        let began = s.state_since;
+
+        s.wait_for(TurnReason::TurnComplete);
+        let State::YourTurn { since, reason } = s.state else {
+            panic!("the second notice ended the wait: {:?}", s.state);
+        };
+        assert_eq!(since, first, "the clock restarted");
+        assert_eq!(s.state_since, began, "so did the one the rail sorts on");
+        assert_eq!(
+            reason,
+            TurnReason::AskedAQuestion,
+            "the first notice is what the session is waiting for"
+        );
+
+        // And a turn that really starts again does move it: the rule is about a
+        // second notice, not about ever leaving the state.
+        s.set_state(State::Working);
+        s.wait_for(TurnReason::TurnComplete);
+        let State::YourTurn { since, .. } = s.state else {
+            panic!("a finished turn did not wait: {:?}", s.state);
+        };
+        assert_ne!(since, first, "a new turn owes a new clock");
     }
 
     #[test]
