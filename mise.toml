@@ -341,6 +341,14 @@ main() {
   # crate split, which is the kind of number this `bump` refuses rather than
   # half-applies.
   bump Cargo.lock "version = \\"$cur\\"" "version = \\"$VERSION\\"" 5
+  # **The notices carry the version too**, on the one line that names this
+  # workspace's five crates under the AGPL heading — `cargo about` writes it out of
+  # `Cargo.lock`. Left behind, `health.yml` goes red on the next push and stays
+  # red, which is the worst state for that workflow to be in: its whole job is to
+  # say "go and read an advisory", and a job that is always failing is one nobody
+  # reads. Bumped here rather than regenerated, so a release needs no `cargo
+  # about`; CI regenerates and diffs, which is what would catch a wrong guess.
+  bump THIRD-PARTY-RUST.md "$cur" "$VERSION" 1
 
   [ "$DRY" = 1 ] && { printf '\\n(dry run: nothing written, nothing tagged; %s would have been pushed)\\n' "$tag"; return 0; }
 

@@ -92,7 +92,12 @@ web=0
 rust=0
 e2e=0
 if printf '%s\n' "$staged" | grep -qE '^web/'; then web=1; fi
-if printf '%s\n' "$staged" | grep -qE '\.rs$'; then rust=1; fi
+# A generated type file counts as a Rust change for the regeneration below. It is
+# the hole this fell into twice: `cargo test --workspace` truncates `base.d.ts`
+# (ts-rs writes a crate's dependencies with only the subset it references), and a
+# later `git add -A` stages the truncated copy. With no `.rs` staged the check
+# below never ran, so the commit carried it and only `tsc` further down said so.
+if printf '%s\n' "$staged" | grep -qE '\.rs$|^web/.*\.d\.ts$'; then rust=1; fi
 # The flows themselves count: changing the harness without running it is how a
 # suite quietly stops testing anything.
 if printf '%s\n' "$staged" | grep -qE '^tools/e2e/'; then e2e=1; fi
