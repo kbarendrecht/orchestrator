@@ -569,30 +569,33 @@ async fn run_filer(
     // runs a bounded child (`mise env`, `direnv export`) that `run_bounded` polls
     // with `thread::sleep` for up to five seconds, and a tokio worker parked on
     // that is the whole board freezing while this run starts.
-    let (mut env, unset) = crate::proc::run_blocking("reading the session environment", {
-        let (cfg, at) = (app.cfg.clone(), path.clone());
-        move || crate::launch::session_env(&cfg, &at, id, None)
-    })
-    .await?;
     /* What the skill reads instead of what a template substituted. The host is in
     here too, because the skill has to tell the agent which host a URL it hands
     back must be on — and that is now config rather than a constant the daemon
-    could write into a prompt. */
-    env.push((
-        crate::skills::VAR_STORIES.to_string(),
-        stories_file.to_string_lossy().into_owned(),
-    ));
-    env.push((
-        crate::skills::VAR_DROP.to_string(),
-        drop_file.to_string_lossy().into_owned(),
-    ));
-    {
-        let host = &tracker.host;
-        env.push((
+    could write into a prompt.
+
+    Handed to `run_env` as its `extra` rather than pushed afterwards, so this run
+    builds its environment through the one seam every other spawn uses. It has no
+    ask token and no `Pass`, which is why both are `None` here. */
+    let extra = vec![
+        (
+            crate::skills::VAR_STORIES.to_string(),
+            stories_file.to_string_lossy().into_owned(),
+        ),
+        (
+            crate::skills::VAR_DROP.to_string(),
+            drop_file.to_string_lossy().into_owned(),
+        ),
+        (
             crate::skills::VAR_TRACKER_HOST.to_string(),
-            host.to_string(),
-        ));
-    }
+            tracker.host.to_string(),
+        ),
+    ];
+    let (env, unset) = crate::proc::run_blocking("reading the session environment", {
+        let (cfg, at) = (app.cfg.clone(), path.clone());
+        move || crate::spawn::run_env(&cfg, &at, id, None, None, &extra)
+    })
+    .await?;
     // Still refused before the agent runs: `session_env` shrugs when there is no
     // token, which is right for every other session and not for this one. Asked of
     // the environment it just built rather than of the daemon's, because the

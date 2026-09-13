@@ -154,6 +154,7 @@ mod tests {
             env_source: EnvSourceKind::None,
             ..crate::testutil::test_config()
         };
+        #[expect(clippy::disallowed_methods, reason = "this is its own test")]
         let (set, unset) = session_env(&cfg, Path::new("/tmp"), uuid::Uuid::nil(), None);
         assert!(unset.contains(&"CLAUDE_CODE_CHILD_SESSION"));
         assert!(set

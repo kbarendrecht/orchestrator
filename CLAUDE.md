@@ -1237,6 +1237,12 @@ where they were written. Every one of them cost something.
   included) and the rail's own resume button (`api::revive` carries the recorded
   `Pass`). The rule now lives
   in `triage::mint_post_token` / `posts_proposals`, called by all three spawns.
+  **`spawn::run_env` is the seam, and `clippy::disallowed_methods` now refuses
+  `launch::session_env` anywhere else.** Three sites built a session's environment
+  themselves — the worktree spawner, the story filer and `run_env` — and the two
+  that bypassed it were right only because neither carries a `Pass` today. The
+  difference between the two spellings is one variable an agent reports missing
+  hours later, which is what this entry is about.
   `proposal_tokens` says it is deliberately not persisted, and that is still right
   — the token is only ever compared against the record, so re-minting is the fix
   and persisting would be the wrong one.

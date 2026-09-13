@@ -15,5 +15,10 @@ allow-indexing-slicing-in-tests = true
 # is the call now, and it allows this lint at the one site that may make it.
 disallowed-methods = [
     { path = "axum::serve", reason = "use `crate::serving::spawn`, which sets TCP_NODELAY" },
+    # One way to build a session's environment. Three spawners called this directly
+    # and `run_env` was meant to be the seam — the difference between them is one
+    # variable an agent reports missing hours later, which is exactly how the resume
+    # path lost `ORCH_POST_TOKEN` after it had read every thread.
+    { path = "orchd_repo::launch::session_env", reason = "use `spawn::run_env`, which adds the run's own credential" },
 ]
 

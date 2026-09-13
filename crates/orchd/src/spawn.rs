@@ -980,10 +980,15 @@ pub async fn spawn_worktree_session(
     // per directory.
     // Off the runtime — see the note in `spawn_session`; this is a child process
     // on the spawn path too.
+    // Through `run_env`, the seam every other spawner uses, with no post token: a
+    // worktree session carries no `Pass`, so it has nothing to post. Spelled as the
+    // same call rather than `session_env` directly, because the difference between
+    // the two is one variable an agent reports missing hours later — which is how
+    // the resume path lost `ORCH_POST_TOKEN` once.
     let (env, unset) = {
         let (app, at, tok) = (app.clone(), spawn_cwd.clone(), ask_token.clone());
         crate::proc::run_blocking("reading the session environment", move || {
-            crate::launch::session_env(&app.cfg, &at, id, Some(&tok))
+            run_env(&app.cfg, &at, id, Some(&tok), None, &[])
         })
         .await?
     };
@@ -1154,6 +1159,10 @@ pub(crate) fn run_env(
     post: Option<&str>,
     extra: &[(String, String)],
 ) -> (Vec<(String, String)>, Vec<&'static str>) {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "this is the one call the lint funnels every spawner into"
+    )]
     let (mut env, unset) = crate::launch::session_env(cfg, cwd, id, ask);
     if let Some(token) = post {
         env.push(("ORCH_POST_TOKEN".to_string(), token.to_string()));
@@ -2734,6 +2743,10 @@ mod tests {
             crate::testutil::app_with("agent-env", r#""port":7794,"env_source":"none""#);
 
         let id = Uuid::new_v4();
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "asserting on what the seam wraps"
+        )]
         let (env, _) = crate::launch::session_env(&app.cfg, &dir, id, Some("ask-tok"));
         let get = |k: &str| {
             env.iter()
