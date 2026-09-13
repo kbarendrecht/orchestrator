@@ -63,8 +63,16 @@ const basenames = new Set(tracked.map((p) => path.posix.basename(p)));
 // **`TODO.md` is not scanned**, and that is not an oversight: it names work that
 // has not happened, so `skills/restack/SKILL.md` is a file it is proposing and
 // `reviews.js` one it is remembering. Both are the point of the sentence.
-const docs = ['CLAUDE.md', 'README.md']
-  .concat(fs.readdirSync(path.join(root, 'docs')).filter((f) => f.endsWith('.md')).map((f) => `docs/${f}`));
+// **`docs/` is walked, not listed.** It was one `readdirSync` of the top level, and
+// the moment `CLAUDE.md`'s 1,537 lines of traps moved into `docs/traps/` the count
+// of checked paths fell from 219 to 106 — the gate went on passing while it had
+// stopped reading half the prose it exists for. A scan that silently covers less
+// than it did is the failure this whole file is about.
+const markdownUnder = (dir) => fs.readdirSync(path.join(root, dir), { withFileTypes: true })
+  .flatMap((e) => (e.isDirectory()
+    ? markdownUnder(`${dir}/${e.name}`)
+    : (e.name.endsWith('.md') ? [`${dir}/${e.name}`] : [])));
+const docs = ['CLAUDE.md', 'README.md'].concat(markdownUnder('docs'));
 
 const problems = [];
 let checked = 0;

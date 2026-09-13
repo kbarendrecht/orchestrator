@@ -117,12 +117,13 @@ run = "node tools/rust-modules.mjs"
 # answers whether `docs/assumptions.md` keeps the format its own header demands —
 # four of its twenty-seven entries had dropped the `*Breaks:*` half, which that
 # header calls "the only reason to write the list".
-description = "Check the doc comments' links resolve, the prose's paths exist, and assumptions.md its own format"
+description = "Check the doc comments' links, the prose's paths, and the two prose files with a format"
 dir = "{{config_root}}"
 run = """
 RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps --document-private-items
 node tools/check-assumptions.mjs
 node tools/check-doc-paths.mjs
+node tools/check-traps.mjs
 """
 
 [tasks.shot]

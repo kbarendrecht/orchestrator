@@ -175,6 +175,7 @@ jobs:
         run: |
           node tools/check-assumptions.mjs
           node tools/check-doc-paths.mjs
+          node tools/check-traps.mjs
 
       # One list, in `tools/check-web.sh`, because this step and `mise run
       # check-web` each used to spell it themselves — and the third copy, in the

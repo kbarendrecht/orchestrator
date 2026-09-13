@@ -86,6 +86,9 @@ if printf '%s\n' "$staged" | grep -qE '\.md$|\.rs$'; then
     exit 1
   fi
   node tools/check-doc-paths.mjs || exit 1
+  # The traps index against the files it points at. Two node runs on a docs commit,
+  # which is where both of these are most often broken.
+  node tools/check-traps.mjs >/dev/null || { node tools/check-traps.mjs; exit 1; }
 fi
 
 web=0

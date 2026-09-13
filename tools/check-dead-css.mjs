@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Every class the stylesheet styles must be one the page can produce.
 //
-// `app.css` is 442 classes and the page is rebuilt from `el()` calls, so a rule
+// `app.css` is hundreds of classes and the page is rebuilt from `el()` calls, so a rule
 // whose class nothing writes any more is invisible: it costs no render, breaks no
 // test, and reads to the next person as a style that is in use. Thirteen families
 // had gone that way — the review overlay's segmented control, a settings row, a
