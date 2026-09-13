@@ -376,13 +376,14 @@ where they were written. Every one of them cost something.
   `swapping_exchanges_two_branches_and_is_its_own_inverse` sat unregistered in a
   pushed commit that way. Anchor after the previous test's closing brace, and read
   the test count.
-- **`mise run check-web` is the SPA's gate, and it bites.** Five things in one:
-  it regenerates `web/snapshot.d.ts` and fails if the committed copy drifted, it
-  runs `tsc --noEmit --checkJs` over every SPA file, it runs `dependency-cruiser`
-  over the module graph, it runs `eslint` with typescript-eslint's *typed* rules,
-  and it checks that every module in `web/js/` has a route serving it. Each was
-  checked against deliberate breakage — a `#[serde(rename)]`, a typo'd `snap.`
-  field, an added cycle, an un-awaited `confirmBox`, and a new module file each
+- **`mise run check-web` is the SPA's gate, and it bites.** It regenerates
+  `web/snapshot.d.ts` and fails if the committed copy drifted, runs
+  `tsc --noEmit --checkJs` over every SPA file, runs `dependency-cruiser` over the
+  module graph, runs `eslint` with typescript-eslint's *typed* rules, holds the
+  palette, refuses a class `app.css` styles that nothing can produce, and checks
+  that every module in `web/js/` has a route serving it. Each was checked against
+  deliberate breakage — a `#[serde(rename)]`, a typo'd `snap.` field, an added
+  cycle, an un-awaited `confirmBox`, an unwritten class and a new module file each
   fail it. There is still **no build step**: `tsc` only checks, and the files ship
   exactly as written.
   **`web/snapshot.d.ts` is generated, never hand-written**: it comes from the Rust

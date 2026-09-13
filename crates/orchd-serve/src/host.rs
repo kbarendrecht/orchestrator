@@ -29,6 +29,7 @@ use axum::middleware::Next;
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use orchd::window;
 use serde::Serialize;
 use serde_json::json;
 use std::collections::HashMap;
@@ -1161,13 +1162,13 @@ impl Serving {
     }
 }
 
-/// A fresh page token.
+/// A fresh token for a server.
 ///
-/// Here rather than at the call site so both hosts mint it the same way, and
-/// because a host that let its caller choose could be handed a value from a config
-/// file — the one place a token must never come from.
+/// `secret::random_token` is the one implementation; this name is kept because
+/// the host's callers read better for it. Two spellings of "a token" is the shape
+/// where one of them quietly stops being random.
 pub fn mint_token() -> String {
-    uuid::Uuid::new_v4().simple().to_string()
+    orchd::secret::random_token()
 }
 
 impl Drop for Serving {
@@ -1579,7 +1580,7 @@ async fn reopen_checkout(
 /// `http://127.0.0.1:*` would hand window control to anything else that managed to
 /// get itself loaded there.
 async fn window_cmd(State(host): State<Arc<Host>>, UrlPath(cmd): UrlPath<String>) -> Response {
-    match orchd::api::parse_window_cmd(&cmd) {
+    match window::parse_cmd(&cmd) {
         Some(parsed) => dispatch(&host, parsed).await,
         None => refusal(&format!("no such window command: {cmd}")),
     }
@@ -1588,7 +1589,7 @@ async fn window_cmd(State(host): State<Arc<Host>>, UrlPath(cmd): UrlPath<String>
 /// Resize takes an edge, so it gets its own route rather than bending the command
 /// enum into something that serialises from a single word.
 async fn window_resize(State(host): State<Arc<Host>>, UrlPath(edge): UrlPath<String>) -> Response {
-    match orchd::api::parse_resize_edge(&edge) {
+    match window::parse_resize_edge(&edge) {
         Some(parsed) => dispatch(&host, orchd::window::WindowCmd::StartResize(parsed)).await,
         None => refusal(&format!("no such resize edge: {edge}")),
     }

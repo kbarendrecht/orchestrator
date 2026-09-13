@@ -338,7 +338,6 @@ button.ctx-btn:hover{color:var(--text)}
   border:1px solid var(--line);border-radius:2px;padding:0 4px;flex:0 0 auto;
   letter-spacing:.04em;
 }
-.ws-note{font-family:var(--mono);font-size:calc(9px * var(--fs));color:var(--faint-solid);margin-left:auto;white-space:nowrap}
 
 /* The checkout a block of sessions belongs to. Drawn only when there is more than
    one, so a single-checkout rail is exactly what it always was.
@@ -852,7 +851,6 @@ button.ctx-btn:hover{color:var(--text)}
 
 /* ---------- files ---------- */
 .files{border-left:1px solid var(--line);background:var(--panel-ground,var(--surface));display:flex;flex-direction:column;overflow:hidden}
-.fgroup{padding:9px 13px 3px}
 /* One line per file. Three columns, because a row is status, path and counts —
    with two, the counts wrapped onto a second grid row and every file took two
    lines. Shared with `.dfrow`: the pane and the changeset list render the same
@@ -1066,8 +1064,6 @@ body.row-resizing{cursor:row-resize;user-select:none}
    never hides: `el.hidden = true` sets the attribute and `display:flex` ignores
    it. */
 .settings-row[hidden]{display:none}
-.settings-info{margin-top:9px}
-.settings-v{margin-left:auto;font-family:var(--mono);font-size:calc(11.5px * var(--fs));color:var(--dim)}
 .settings-k{font-family:var(--mono);font-size:calc(11.5px * var(--fs));color:var(--text)}
 /* Which panes a setting reaches, where that is not obvious from its name. Dimmer
    and smaller than the key it qualifies, so the row still reads as one label. */
@@ -1916,14 +1912,6 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
 .rv .plan .threadhead .k.push{color:var(--attn);border-color:rgba(224,162,68,.55)}
 .rv .plan .threadhead .k.req{color:var(--work);border-color:rgba(76,154,175,.35)}
 .rv .plan .threadhead .p{font-size:calc(11.5px * var(--fs))}
-/* Re-request: the first column holds a login, which is one unbreakable token, so
-   it sizes to its content instead of hyphenating inside the chip column's width. */
-.rv .rereq .stage-row .k{flex:0 0 auto;white-space:nowrap;min-width:82px}
-/* The three sections of this screen are built differently — panels, plain rows and
-   a framed callout — so their insets are set to agree rather than left to fall out
-   of each one's own padding. Everything starts on the same column. */
-.rv .rereq .eyebrow,
-.rv .rereq .stage-row{padding-left:14px}
 
 /* A free-text answer is two boxes going to two readers, so each is captioned —
    an uncaptioned pair is exactly how you post your instructions to the reviewer. */
@@ -1952,27 +1940,9 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
 /* positions — the reply and the proposed change live inside the position, not
    beside it. Picking a stance, writing the words and choosing the edit are one
    act, so they are one control: you can never do A and say B. */
-/* One labelled decision: caption, optional hint, control. The card is three of
-   these in a row, which is what makes the three decisions legible as three. */
+/* One decision, stacked. The card is three of these in a row, which is what makes
+   the three decisions legible as three. */
 .rv .field{display:flex;flex-direction:column;gap:7px}
-.rv .flab{
-  font-family:var(--label);font-size:calc(9px * var(--fs));font-weight:700;
-  letter-spacing:.16em;text-transform:uppercase;color:var(--faint-solid);
-}
-.rv .fhint{
-  margin-left:9px;font-family:var(--mono);font-size:calc(9px * var(--fs));
-  font-weight:400;letter-spacing:0;text-transform:none;color:var(--dim);
-}
-/* An answer to "what are you saying", not a primary and two escapes, so the
-   options sit in one row as peers of equal weight. */
-.rv .seg{display:flex;gap:0;border:1px solid var(--line);border-radius:2px;width:fit-content;overflow:hidden}
-.rv .segbtn{
-  font-size:calc(11.5px * var(--fs));color:var(--dim);padding:4px 12px;
-  border-right:1px solid var(--line);white-space:nowrap;
-}
-.rv .segbtn:last-child{border-right:0}
-.rv .segbtn:hover{color:var(--text);background:var(--raised)}
-.rv .segbtn.on{color:#1A1206;background:var(--attn)}
 /* Two ways of taking the same stance. Only on screen when there is actually a
    choice left, so the row is never a list of one. */
 .rv .alts{display:flex;flex-direction:column;gap:4px}
@@ -2118,19 +2088,6 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
   padding:4px 8px;white-space:pre-wrap;margin-top:2px;
 }
 
-/* A story the post step will file. Shown as fields rather than prose so it is
-   obvious this is a record being created, not a sentence being written. */
-.rv .storydraft{
-  border:1px solid var(--line-soft);border-radius:2px;background:#0B0B0B;
-  display:flex;flex-direction:column;
-}
-.rv .sline{display:flex;gap:12px;padding:8px 8px;border-bottom:1px solid var(--line-soft)}
-.rv .sline:last-child{border-bottom:0}
-.rv .sline .lbl{
-  font-family:var(--label);font-size:calc(9px * var(--fs));font-weight:700;letter-spacing:.1em;
-  text-transform:uppercase;color:var(--faint-solid);flex:0 0 44px;padding-top:4px;
-}
-.rv .sline .val{font-size:calc(11.5px * var(--fs));color:var(--dim);min-width:0}
 
 /* The last thing read before the only irreversible button on the screen, so it
    is set apart rather than being one more list among the others.

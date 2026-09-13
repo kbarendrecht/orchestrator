@@ -2165,19 +2165,6 @@ pub async fn restart_process(
     Ok(Json(json!({ "process": id })))
 }
 
-/// The path segment the titlebar sends, as a command. Shared with the bootstrap
-/// server, which serves the same chrome before a daemon exists: the two dispatch
-/// differently (it has no `WindowControl` to refuse) but must accept exactly the
-/// same words, or a button works on one page and 400s on the other.
-pub fn parse_window_cmd(cmd: &str) -> Option<crate::window::WindowCmd> {
-    serde_json::from_value(json!(cmd)).ok()
-}
-
-/// The same for a resize edge.
-pub fn parse_resize_edge(edge: &str) -> Option<crate::window::ResizeEdge> {
-    serde_json::from_value(json!(edge)).ok()
-}
-
 pub async fn close_process(
     State(app): State<Arc<AppState>>,
     Path(proc_id): Path<String>,

@@ -1173,7 +1173,7 @@ impl AppState {
     /// `async` for its callers' sake only; nothing here awaits. The set is its own
     /// `std` mutex (see [`AppState::locks_held`]), so taking and releasing are both
     /// immediate and a claim taken right after a release sees the release.
-    pub async fn try_claim(self: &Arc<Self>, lock: impl Into<String>) -> Option<Claim> {
+    pub fn try_claim(self: &Arc<Self>, lock: impl Into<String>) -> Option<Claim> {
         let lock = lock.into();
         let mut held = self.locks_held.lock().ok()?;
         if !held.insert(lock.clone()) {
@@ -2144,33 +2144,29 @@ mod tests {
     #[tokio::test]
     async fn a_claim_is_exclusive_and_released_by_its_guard() {
         let app = app().await;
-        let held = app.try_claim("post:1").await.expect("first claim");
+        let held = app.try_claim("post:1").expect("first claim");
+        assert!(app.try_claim("post:1").is_none(), "refused while held");
         assert!(
-            app.try_claim("post:1").await.is_none(),
-            "refused while held"
-        );
-        assert!(
-            app.try_claim("post:2").await.is_some(),
+            app.try_claim("post:2").is_some(),
             "another name is independent"
         );
         drop(held);
         // Synchronous release: no scheduler hop between the drop and this claim.
         assert!(
-            app.try_claim("post:1").await.is_some(),
+            app.try_claim("post:1").is_some(),
             "free once the guard is dropped"
         );
 
         async fn bails_early(app: &Arc<AppState>) -> anyhow::Result<()> {
             let _claim = app
                 .try_claim("post:3")
-                .await
                 .ok_or_else(|| anyhow::anyhow!("held"))?;
             Err::<(), _>(anyhow::anyhow!("something went wrong"))?;
             Ok(())
         }
         assert!(bails_early(&app).await.is_err());
         assert!(
-            app.try_claim("post:3").await.is_some(),
+            app.try_claim("post:3").is_some(),
             "the early return let go of it"
         );
     }

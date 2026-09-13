@@ -26,6 +26,7 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use orchd::config::Config;
+use orchd::window;
 
 /// A project opened before, newest first. The path is absolute; the name is its
 /// last component, which is what a person recognises the checkout by.
@@ -665,7 +666,7 @@ async fn window_route(
     State(host): State<Arc<dyn BootstrapHost>>,
     AxPath(cmd): AxPath<String>,
 ) -> StatusCode {
-    match orchd::api::parse_window_cmd(&cmd) {
+    match window::parse_cmd(&cmd) {
         Some(cmd) => {
             host.window_cmd(cmd);
             StatusCode::OK
@@ -678,7 +679,7 @@ async fn resize_route(
     State(host): State<Arc<dyn BootstrapHost>>,
     AxPath(edge): AxPath<String>,
 ) -> StatusCode {
-    match orchd::api::parse_resize_edge(&edge) {
+    match window::parse_resize_edge(&edge) {
         Some(edge) => {
             host.window_cmd(orchd::window::WindowCmd::StartResize(edge));
             StatusCode::OK

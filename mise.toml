@@ -66,6 +66,7 @@ npx --prefix tools tsc -p tools/tsconfig.json
 npx --prefix tools depcruise --config tools/.dependency-cruiser.cjs web/app.js
 npx --prefix tools eslint --config tools/eslint.config.mjs web
 node tools/check-palette.mjs
+node tools/check-dead-css.mjs
 node tools/check-module-routes.mjs
 """
 

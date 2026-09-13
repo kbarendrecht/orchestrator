@@ -262,12 +262,9 @@ pub async fn start(
     exists, so the first run is invisible to it for exactly the window that
     matters. Held until this function returns, by which point `Running` is
     written and the ordinary guard takes over. */
-    let _claim = app
-        .try_claim(format!("fix-pr:{number}"))
-        .await
-        .ok_or_else(|| {
-            anyhow::anyhow!("a fix run for PR #{number} is already starting; wait for it")
-        })?;
+    let _claim = app.try_claim(format!("fix-pr:{number}")).ok_or_else(|| {
+        anyhow::anyhow!("a fix run for PR #{number} is already starting; wait for it")
+    })?;
 
     let pr = {
         let inner = app.inner.read().await;

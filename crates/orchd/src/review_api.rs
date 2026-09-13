@@ -396,15 +396,12 @@ pub async fn pr_post(
     // be undone.
     // Held for the whole batch and released however it ends, including a panic in
     // the middle: a leaked lock would make the PR unpostable until a restart.
-    let released = app
-        .try_claim(format!("post:{number}"))
-        .await
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "a batch for PR #{number} is already running; wait for it rather than \
+    let released = app.try_claim(format!("post:{number}")).ok_or_else(|| {
+        anyhow::anyhow!(
+            "a batch for PR #{number} is already running; wait for it rather than \
              sending a second one"
-            )
-        })?;
+        )
+    })?;
 
     let pr = {
         let inner = app.inner.read().await;
@@ -716,15 +713,12 @@ pub async fn pr_manual_done(
     Path(number): Path<u64>,
     Json(done): Json<crate::post::Finish>,
 ) -> ApiResult<crate::post::PostReport> {
-    let released = app
-        .try_claim(format!("post:{number}"))
-        .await
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "a batch for PR #{number} is already running; wait for it rather than \
+    let released = app.try_claim(format!("post:{number}")).ok_or_else(|| {
+        anyhow::anyhow!(
+            "a batch for PR #{number} is already running; wait for it rather than \
              sending a second one"
-            )
-        })?;
+        )
+    })?;
 
     let pr = {
         let inner = app.inner.read().await;

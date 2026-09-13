@@ -129,3 +129,20 @@ impl Chrome {
         }
     }
 }
+
+/// The path segment a titlebar sends, as a command.
+///
+/// **Here rather than in a handler module**, because two servers parse it: the
+/// host, and the bootstrap server that serves the same chrome before a daemon
+/// exists. They dispatch differently — the bootstrap one has no [`WindowControl`]
+/// to refuse — but they must accept exactly the same words, or a button works on
+/// one page and 400s on the other. It lived in `orchd::api`, which neither of them
+/// is, and which has no window.
+pub fn parse_cmd(cmd: &str) -> Option<WindowCmd> {
+    serde_json::from_value(serde_json::Value::String(cmd.to_string())).ok()
+}
+
+/// The same for a resize edge.
+pub fn parse_resize_edge(edge: &str) -> Option<ResizeEdge> {
+    serde_json::from_value(serde_json::Value::String(edge.to_string())).ok()
+}
