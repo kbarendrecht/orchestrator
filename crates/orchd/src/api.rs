@@ -2248,745 +2248,6 @@ pub async fn teardown_from_session(
     Ok(Json(worktree::teardown(&app, &body.workspace).await?))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// The button is offered on `tool`, so the refusal has to be on `tool` too: a
-    /// `.deb` or an AppImage has nothing to name in `mise upgrade`, and running it
-    /// anyway would upgrade some *other* copy of the app and report success.
-    #[tokio::test]
-    async fn a_build_mise_did_not_install_cannot_upgrade_itself() {
-        use crate::update::UpdateInfo;
-
-        let (app, _dir) = crate::testutil::app("selfup");
-
-        // Nothing found yet: nothing to install.
-        assert!(upgrade_app(State(app.clone())).await.is_err());
-
-        let mut info = UpdateInfo {
-            current: "2026.9.1".into(),
-            latest: "2026.9.2".into(),
-            url: "https://example.invalid/r".into(),
-            tool: None,
-        };
-        app.inner.write().await.update = Some(info.clone());
-        let err = match upgrade_app(State(app.clone())).await {
-            Ok(_) => panic!("a non-mise install must refuse"),
-            Err(e) => e,
-        };
-        assert!(
-            format!("{}", err.0).contains("mise"),
-            "the refusal has to say why: {}",
-            err.0
-        );
-        assert!(
-            app.inner.read().await.self_upgrade_run.is_none(),
-            "a refusal must not leave a run behind for the bar to report"
-        );
-
-        // A run in flight refuses the next press, because two `mise upgrade`s of one
-        // tool race over the same install directory.
-        //
-        // Set here rather than by pressing the button: a real press spawns a real
-        // `mise upgrade`, and a unit test that reaches the network — or worse,
-        // installs something on the machine running it — is not a unit test. The
-        // claim itself is three lines above this in the handler and is read there.
-        info.tool = Some("github:kbarendrecht/orchestrator".into());
-        app.inner.write().await.update = Some(info);
-        app.inner.write().await.self_upgrade_run = Some(crate::update::UpgradeRun {
-            to: "2026.9.2".into(),
-            running: true,
-            tail: String::new(),
-        });
-        assert!(
-            upgrade_app(State(app.clone())).await.is_err(),
-            "one run at a time"
-        );
-    }
-
-    /// The route's own rules, which the pane cannot be trusted to keep.
-    ///
-    /// A snapshot is a moment old by the time you click it, and the route is
-    /// reachable without the pane at all — so the path, the verb and "is anybody
-    /// working in there" are all asked here rather than inferred from what the
-    /// client sent.
-    #[tokio::test]
-    async fn a_file_verb_stays_in_its_workspace_and_off_a_working_tree() {
-        use crate::model::{Session, State as S, MAIN};
-
-        let (app, dir) = crate::testutil::app("fileverb-api");
-        crate::testutil::git(&dir, &["init", "-q", "-b", "main"]);
-        crate::testutil::git(&dir, &["config", "user.email", "t@t"]);
-        crate::testutil::git(&dir, &["config", "user.name", "t"]);
-        std::fs::write(dir.join("f.txt"), "committed\n").unwrap();
-        crate::testutil::git(&dir, &["add", "-A"]);
-        crate::testutil::git(&dir, &["commit", "-qm", "base"]);
-        std::fs::write(dir.join("f.txt"), "edited\n").unwrap();
-
-        let go = |path: &str, verb: &str| {
-            let (app, path, verb) = (app.clone(), path.to_string(), verb.to_string());
-            async move {
-                file_verb(
-                    State(app),
-                    Json(FileVerbBody {
-                        workspace: MAIN.to_string(),
-                        path,
-                        verb,
-                    }),
-                )
-                .await
-            }
-        };
-        let said = |e: ApiError| format!("{:#}", e.0);
-
-        // Out of the workspace, both spellings. `edit::resolve_in_workspace` is the
-        // one rule, and this is the route that would otherwise hand git a path
-        // somebody else's tree.
-        assert!(go("../elsewhere/f.txt", "stage").await.is_err());
-        assert!(go("/etc/passwd", "stage").await.is_err());
-        // Not a verb at all.
-        let e = said(go("f.txt", "delete").await.expect_err("not a verb"));
-        assert!(e.contains("not a file verb"), "{e}");
-
-        // Nothing to do is refused rather than silently succeeding: a button that
-        // does nothing reads as broken.
-        let e = said(go("f.txt", "unstage").await.expect_err("nothing staged"));
-        assert!(e.contains("nothing to unstage"), "{e}");
-
-        // The happy path, and then the guard that only this daemon needs.
-        assert!(go("f.txt", "stage").await.is_ok());
-        {
-            let mut inner = app.inner.write().await;
-            let id = Uuid::new_v4();
-            let mut s = Session::new(id, MAIN.to_string(), dir.clone(), None);
-            s.set_state(S::Working);
-            inner.sessions.insert(id, s);
-        }
-        let e = said(
-            go("f.txt", "unstage")
-                .await
-                .expect_err("an agent is working"),
-        );
-        assert!(e.contains("mid-turn"), "{e}");
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// The drawer may hand a session text only when a keystroke means "a prompt".
-    ///
-    /// Every refusal here is a state where `Enter` means something else — a submit
-    /// mid-turn, consent to a permission prompt, an answer to a question — so this
-    /// walks them rather than testing the happy path alone. Driven against a real
-    /// pty, because `type_and_send` is what the guards are protecting.
-    #[tokio::test(flavor = "multi_thread")]
-    async fn text_reaches_a_session_at_its_prompt_and_no_other_state() {
-        use crate::model::{Session, State as S, TurnReason as R, MAIN};
-        use crate::pty::PtyHandle;
-        use std::time::SystemTime;
-
-        let (app, dir) = crate::testutil::app("tell");
-        let id = Uuid::new_v4();
-        // `cat` echoes, so the pty is both alive and readable — the happy path can
-        // assert the text actually arrived rather than that nothing complained.
-        let spawned = PtyHandle::spawn(&["cat".to_string()], &dir, &[], &[], (24, 80))
-            .expect("a pty to type into");
-        {
-            let mut inner = app.inner.write().await;
-            let mut s = Session::new(id, MAIN.to_string(), dir.clone(), None);
-            s.pty = Some(spawned.handle.clone());
-            s.had_a_turn = true;
-            inner.sessions.insert(id, s);
-        }
-        let set = |st: S| {
-            let app = app.clone();
-            async move { app.with_session(id, |s| s.set_state(st)).await }
-        };
-        let tell = |text: &str| {
-            let (app, text) = (app.clone(), text.to_string());
-            async move { tell_session(State(app), Path(id), Json(TellBody { text })).await }
-        };
-
-        // Mid-turn: a stray line of input, and `Enter` submits whatever is typed.
-        set(S::Working).await;
-        let said = |e: ApiError| format!("{:#}", e.0);
-        let e = said(
-            tell("ng-watch said: TS2345")
-                .await
-                .expect_err("mid-turn is refused"),
-        );
-        assert!(e.contains("mid-turn"), "{e}");
-
-        // Both of these read a keystroke as an *answer*.
-        set(S::YourTurn {
-            since: SystemTime::now(),
-            reason: R::NeedsPermission,
-        })
-        .await;
-        assert!(
-            tell("x").await.is_err(),
-            "a permission prompt takes it as consent"
-        );
-        set(S::YourTurn {
-            since: SystemTime::now(),
-            reason: R::AskedAQuestion,
-        })
-        .await;
-        assert!(
-            tell("x").await.is_err(),
-            "a question takes it as the highlighted choice"
-        );
-
-        // Size, which is the other half of "a prompt is not a log".
-        set(S::YourTurn {
-            since: SystemTime::now(),
-            reason: R::TurnComplete,
-        })
-        .await;
-        assert!(
-            tell(&"x".repeat(9 * 1024)).await.is_err(),
-            "a buffer-sized paste is refused"
-        );
-        assert!(tell("   ").await.is_err(), "and so is nothing at all");
-
-        // At its prompt: it goes, and `cat` hands it back.
-        assert!(
-            tell("ng-watch said: TS2345").await.is_ok(),
-            "a session at its prompt takes it",
-        );
-        let seen = tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            loop {
-                let out = String::from_utf8_lossy(&spawned.handle.snapshot()).into_owned();
-                if out.contains("TS2345") {
-                    return out;
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-            }
-        })
-        .await;
-        assert!(seen.is_ok(), "the text never reached the pty");
-
-        // A session with no pty is a resume, not a target.
-        app.with_session(id, |s| s.pty = None).await;
-        let e = said(tell("x").await.expect_err("nothing to type into"));
-        assert!(e.contains("resume it first"), "{e}");
-
-        let _ = spawned.handle.kill();
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// The whole point of the channel: the agent's poll is released by the answer
-    /// rather than by a timeout, and it comes back carrying the choice.
-    #[tokio::test]
-    async fn an_answer_releases_the_poll_the_agent_is_sitting_in() {
-        use crate::model::{Interaction, InteractionOption, Session, MAIN};
-
-        let (app, dir) = crate::testutil::app("ask");
-
-        let id = Uuid::new_v4();
-        let ask_id = Uuid::new_v4();
-        {
-            let mut inner = app.inner.write().await;
-            let mut sess = Session::new(id, MAIN.to_string(), dir.clone(), None);
-            sess.interaction = Some(Interaction {
-                id: ask_id,
-                thread_id: None,
-                question: "rebase or stop?".into(),
-                detail: None,
-                options: vec![InteractionOption {
-                    value: "rebase".into(),
-                    label: "Rebase".into(),
-                    sub: String::new(),
-                    free: false,
-                }],
-                asked_at: std::time::SystemTime::now(),
-                answer: None,
-                answer_text: None,
-            });
-            inner.sessions.insert(id, sess);
-        }
-
-        let mut agent = axum::http::HeaderMap::new();
-        let token = app.inner.read().await.sessions[&id].ask_token.clone();
-        agent.insert("x-orch-ask", token.parse().unwrap());
-
-        // Another session's agent, or any local process, must not be able to read
-        // this one's answer.
-        let mut wrong = axum::http::HeaderMap::new();
-        wrong.insert("x-orch-ask", "not-the-token".parse().unwrap());
-        assert!(
-            ask_wait(State(app.clone()), Path((id, ask_id)), wrong)
-                .await
-                .is_err(),
-            "a wrong ask token was let through"
-        );
-
-        // The agent is already waiting when the answer arrives, which is the
-        // ordering that matters: a poll that started first must still be woken.
-        let waiter = tokio::spawn({
-            let app = app.clone();
-            async move { ask_wait(State(app), Path((id, ask_id)), agent).await }
-        });
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        let _ = answer(
-            State(app.clone()),
-            Path(id),
-            Json(AnswerBody {
-                ask: ask_id,
-                answer: "rebase".into(),
-                text: None,
-            }),
-        )
-        .await
-        .map_err(|e| format!("{}", e.0))
-        .expect("answer accepted");
-
-        let got = tokio::time::timeout(std::time::Duration::from_secs(5), waiter)
-            .await
-            .expect("the poll was never released")
-            .unwrap()
-            .map_err(|e| format!("{}", e.0))
-            .expect("wait succeeded");
-        assert_eq!(got.0["answered"], true);
-        assert_eq!(got.0["answer"], "rebase");
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// The escape hatch: an option that asks for words is not answered by picking
-    /// it, and the words travel beside the value rather than as it.
-    #[tokio::test]
-    async fn the_option_that_asks_for_words_is_not_answered_without_them() {
-        use crate::model::{Interaction, InteractionOption, Session, MAIN};
-
-        let (app, dir) = crate::testutil::app("ask3");
-        let id = Uuid::new_v4();
-        let ask_id = Uuid::new_v4();
-        {
-            let mut inner = app.inner.write().await;
-            let mut sess = Session::new(id, MAIN.to_string(), dir.clone(), None);
-            sess.interaction = Some(Interaction {
-                id: ask_id,
-                thread_id: None,
-                question: "how should it be documented?".into(),
-                detail: None,
-                options: vec![InteractionOption {
-                    value: "mine".into(),
-                    label: "Let me write it…".into(),
-                    sub: String::new(),
-                    free: true,
-                }],
-                asked_at: std::time::SystemTime::now(),
-                answer: None,
-                answer_text: None,
-            });
-            inner.sessions.insert(id, sess);
-        }
-
-        let err = answer(
-            State(app.clone()),
-            Path(id),
-            Json(AnswerBody {
-                ask: ask_id,
-                answer: "mine".into(),
-                text: None,
-            }),
-        )
-        .await
-        .expect_err("refused with no words");
-        assert!(format!("{}", err.0).contains("none were written"));
-
-        let _ = answer(
-            State(app.clone()),
-            Path(id),
-            Json(AnswerBody {
-                ask: ask_id,
-                answer: "mine".into(),
-                text: Some("put it under Pushing, but say why".into()),
-            }),
-        )
-        .await
-        .map_err(|e| format!("{}", e.0))
-        .expect("accepted with words");
-
-        let inner = app.inner.read().await;
-        let got = inner.sessions[&id].interaction.as_ref().unwrap();
-        assert_eq!(got.answer.as_deref(), Some("mine"));
-        assert_eq!(
-            got.answer_text.as_deref(),
-            Some("put it under Pushing, but say why")
-        );
-        drop(inner);
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// An answer nobody offered would reach the agent as an instruction no branch
-    /// was written for.
-    #[tokio::test]
-    async fn an_answer_that_was_not_offered_is_refused() {
-        use crate::model::{Interaction, InteractionOption, Session, MAIN};
-
-        let (app, dir) = crate::testutil::app("ask2");
-        let id = Uuid::new_v4();
-        let ask_id = Uuid::new_v4();
-        {
-            let mut inner = app.inner.write().await;
-            let mut sess = Session::new(id, MAIN.to_string(), dir.clone(), None);
-            sess.interaction = Some(Interaction {
-                id: ask_id,
-                thread_id: None,
-                question: "rebase or stop?".into(),
-                detail: None,
-                options: vec![InteractionOption {
-                    value: "rebase".into(),
-                    label: "Rebase".into(),
-                    sub: String::new(),
-                    free: false,
-                }],
-                asked_at: std::time::SystemTime::now(),
-                answer: None,
-                answer_text: None,
-            });
-            inner.sessions.insert(id, sess);
-        }
-        let err = answer(
-            State(app.clone()),
-            Path(id),
-            Json(AnswerBody {
-                ask: ask_id,
-                answer: "force-push".into(),
-                text: None,
-            }),
-        )
-        .await
-        .expect_err("refused");
-        assert!(format!("{}", err.0).contains("not one of the options"));
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn only_the_spas_own_origin_is_accepted() {
-        assert!(origin_allowed("http://127.0.0.1:7777", 7777, None));
-        assert!(origin_allowed("http://localhost:7777", 7777, None));
-        assert!(!origin_allowed("http://evil.example", 7777, None));
-        // A page on another port is still another origin.
-        assert!(!origin_allowed("http://127.0.0.1:7778", 7777, None));
-        // Guards against a DNS-rebinding host that merely contains the address.
-        assert!(!origin_allowed(
-            "http://127.0.0.1.evil.example:7777",
-            7777,
-            None
-        ));
-    }
-
-    /// `(origin, is_hook, is_get, token_ok)` at port 7777.
-    fn ok(origin: Option<&str>, is_hook: bool, is_get: bool, token_ok: bool) -> bool {
-        origin_ok(origin, 7777, None, is_hook, is_get, token_ok)
-    }
-
-    #[test]
-    fn a_present_origin_must_be_ours_whatever_else_is_true() {
-        assert!(ok(Some("http://127.0.0.1:7777"), false, false, true));
-        // A token does not buy a pass for a page on another origin: that is
-        // exactly the request the check exists to stop.
-        assert!(!ok(Some("http://evil.example"), false, false, true));
-        assert!(!ok(Some("http://evil.example"), true, true, true));
-    }
-
-    #[test]
-    fn a_tokened_post_with_no_origin_is_the_agents_own_shape() {
-        // `skills/triage/SKILL.md` POSTs with curl, which sends no Origin. Without
-        // this arm the one route an agent calls answered 403 to its only caller.
-        assert!(ok(None, false, false, true));
-        // Still nothing without the token.
-        assert!(!ok(None, false, false, false));
-    }
-
-    /// A stray escape is not harmless, so the states that would misread it are
-    /// refused by name.
-    ///
-    /// The two waiting ones are the point: mid-turn was driven against a real
-    /// session and refused, but a question and a permission prompt cannot be
-    /// arranged on demand, and those are exactly the two where the keystroke would
-    /// *answer* — cancelling the one, declining the other — rather than do nothing.
-    #[tokio::test]
-    async fn rewind_refuses_every_state_that_would_read_an_escape_as_an_answer() {
-        use crate::model::{Session, State as S, TurnReason as R, MAIN};
-
-        let (app, dir) = crate::testutil::app("rewind");
-
-        let at = |reason| S::YourTurn {
-            since: std::time::SystemTime::now(),
-            reason,
-        };
-        for (state, want) in [
-            (at(R::AskedAQuestion), "cancel the question"),
-            (at(R::NeedsPermission), "decline it"),
-            (S::Working, "mid-turn"),
-            (S::Starting, "still starting"),
-        ] {
-            let id = Uuid::new_v4();
-            {
-                let mut inner = app.inner.write().await;
-                let mut s = Session::new(id, MAIN.to_string(), dir.clone(), None);
-                s.had_a_turn = true;
-                s.state = state.clone();
-                inner.sessions.insert(id, s);
-            }
-            match rewind_session(State(app.clone()), Path(id)).await {
-                Err(e) => {
-                    let said = format!("{:#}", e.0);
-                    assert!(
-                        said.contains(want),
-                        "{state:?} said {said:?}, wanted {want:?}"
-                    );
-                }
-                Ok(_) => panic!("{state:?} must not open the picker"),
-            }
-        }
-
-        // And a session at the prompt with nothing behind it: the picker would
-        // open on an empty conversation, which reads as a broken button.
-        let id = Uuid::new_v4();
-        {
-            let mut inner = app.inner.write().await;
-            let mut s = Session::new(id, MAIN.to_string(), dir.clone(), None);
-            s.state = at(R::TurnComplete);
-            inner.sessions.insert(id, s); // had_a_turn stays false
-        }
-        let said = format!(
-            "{:#}",
-            rewind_session(State(app.clone()), Path(id))
-                .await
-                .expect_err("no conversation must refuse")
-                .0
-        );
-        assert!(said.contains("no conversation to rewind"), "{said}");
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// The whole of what makes `orch kill` safe to put on the ask token: it reaches
-    /// the caller's own spawns and nothing else. Only the refusal is driven here —
-    /// it answers before anything is mutated, whereas the accepting path forgets a
-    /// record and tears a worktree down, which is what the e2e flows are for.
-    #[tokio::test]
-    async fn discard_reaches_only_the_sessions_the_caller_spawned() {
-        use crate::model::{Session, MAIN};
-
-        let (app, dir) = crate::testutil::app("discard");
-
-        let caller = Uuid::new_v4();
-        let mine = Uuid::new_v4();
-        let someone_elses = Uuid::new_v4();
-        {
-            let mut inner = app.inner.write().await;
-            for id in [caller, mine, someone_elses] {
-                let s = Session::new(id, MAIN.to_string(), dir.clone(), None);
-                inner.sessions.insert(id, s);
-            }
-            // Spawned by a third session, not by the caller — the shape an agent
-            // reaches by misreading a uuid out of `orch ls`.
-            inner.sessions.get_mut(&someone_elses).unwrap().spawned_by = Some(Uuid::new_v4());
-            inner.sessions.get_mut(&mine).unwrap().spawned_by = Some(caller);
-        }
-
-        let mut headers = axum::http::HeaderMap::new();
-        headers.insert("x-orch-token", "t".parse().unwrap());
-
-        for (child, want) in [
-            (someone_elses, "is not a session you spawned"),
-            // A session nobody spawned — every one you started yourself, so the
-            // conversation you are sitting in is refused by the same rule.
-            (caller, "is not a session you spawned"),
-            (Uuid::new_v4(), "no such session"),
-        ] {
-            let said = format!(
-                "{:#}",
-                discard_spawned(State(app.clone()), Path((caller, child)), headers.clone())
-                    .await
-                    .expect_err("must refuse")
-                    .0
-            );
-            assert!(
-                said.contains(want),
-                "{child} said {said:?}, wanted {want:?}"
-            );
-        }
-
-        // And the one that is the caller's own is not refused on authorship. Not
-        // carried further here: the next step writes records and removes a tree.
-        let inner = app.inner.read().await;
-        assert_eq!(inner.sessions[&mine].spawned_by, Some(caller));
-        drop(inner);
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn every_route_the_vendored_prompts_call_on_the_ask_token_is_exempt() {
-        // The three in `skills/resolve-run/SKILL.md` plus `/spawn`. `/committed` was
-        // missing and the run's central seam answered 403 to the only caller it
-        // has; these are the literal paths those prompts curl.
-        for p in [
-            "/api/session/<id>/ask",
-            "/api/session/<id>/ask/<ask>/wait",
-            "/api/session/<id>/thread/PRRT_x/committed",
-            "/api/session/<id>/thread/PRRT_x/stuck",
-            "/api/session/<id>/spawn",
-            // `orch run`. Named processes only, so this exemption widens what an
-            // agent can start without widening it to arbitrary commands (§12).
-            "/api/session/<id>/process",
-            // `orch kill`. Only the caller's own spawns, which `discard_spawned`
-            // enforces from the record — the exemption is what lets it be called at
-            // all, not what decides which sessions it reaches.
-            "/api/session/<id>/spawned/<child>/discard",
-            // `orch teardown`. Any worktree, through the ordinary preflight.
-            "/api/session/<id>/teardown",
-            // Phase 4 of `skills/review/SKILL.md`: the review saying it is done.
-            "/api/session/<id>/handoff",
-            // `orch outside`, and the push guard's read of what it granted. The
-            // guard is a `command` hook: it has the session's ask token and no
-            // app token, so a missing entry here would make the grant unreadable
-            // and the refusal permanent.
-            "/api/session/<id>/outside",
-        ] {
-            assert!(is_ask_route(p), "{p} must not need the app token");
-        }
-        // And nothing else on the session: these are the SPA's, on the app token.
-        for p in [
-            "/api/session/<id>/kill",
-            "/api/session/<id>/answer",
-            "/api/session/<id>/fork",
-            // The unrestricted delete the rail's own button uses. `/discard` above
-            // exists *because* this one must stay out of the agent's reach.
-            "/api/session/<id>/delete",
-            "/api/state",
-            // The drawer's own button, which restarts a *running* process. Named
-            // the same thing, deliberately not the agent's.
-            "/api/workspace/main/process/docker/restart",
-            // The rail's teardown. Same verb as `orch teardown`, which is only safe
-            // because this one is outside the `/api/session/` prefix.
-            "/api/workspace/pr-1/teardown",
-        ] {
-            assert!(!is_ask_route(p), "{p} is not the agent's to call");
-        }
-    }
-
-    /// The guard consults [`is_agent_route`], not [`is_ask_route`]. A route the
-    /// prompts really curl that is missing from it is refused twice over — `bad
-    /// origin` first, because the agent's curl carries none, and then for want of
-    /// an app token it is deliberately not given. That is how `…/committed` shipped
-    /// unreachable by its only caller.
-    #[test]
-    fn the_proposals_post_is_an_agent_route_and_reachable_without_an_origin() {
-        let p = "/api/pr/10001/proposals";
-        assert!(is_proposals_route(p));
-        assert!(
-            is_agent_route(p),
-            "{p} is curled by the triage and review skills"
-        );
-        // Not an *ask* route: it is keyed on a PR, and has no session to check.
-        assert!(!is_ask_route(p));
-        // The Origin allowance the agent's curl depends on.
-        assert!(
-            ok(None, true, false, false),
-            "no Origin must pass for an agent route"
-        );
-        // Neighbours that stay the SPA's, on the app token.
-        for other in [
-            "/api/pr/10001/review",
-            "/api/pr/10001/fix-pr",
-            "/api/pr/10001",
-        ] {
-            assert!(!is_agent_route(other), "{other} is not the agent's to call");
-        }
-    }
-
-    /// The two the vendored `triage` skill calls before it can propose anything.
-    ///
-    /// Same trap as the proposals route and the same reason for a test: the skill
-    /// is the only caller, it curls with no Origin and the run credential, and a
-    /// route missing from `is_agent_route` is refused twice over without either
-    /// refusal naming the cause.
-    #[test]
-    fn the_triage_skill_can_reach_its_two_routes() {
-        for p in [
-            "/api/pr/10001/triage-context",
-            "/api/pr/10001/triage/progress",
-        ] {
-            assert!(is_triage_route(p));
-            assert!(is_agent_route(p), "{p} is curled by skills/triage/SKILL.md");
-            // Keyed on a PR, so not an ask route: there is no session in the path.
-            assert!(!is_ask_route(p));
-        }
-        // The run that *starts* a triage pass is the SPA's, on the app token.
-        assert!(!is_agent_route("/api/pr/10001/triage"));
-    }
-
-    #[tokio::test]
-    async fn a_run_posts_proposals_on_a_token_that_opens_nothing_else() {
-        let (app, dir) = crate::testutil::app("proposaltok");
-        let pr = 10001u64;
-        let narrow = crate::secret::random_token();
-        app.inner
-            .write()
-            .await
-            .proposal_tokens
-            .insert(pr, narrow.clone());
-
-        let hdr = |v: &str| {
-            let mut h = axum::http::HeaderMap::new();
-            h.insert("x-orch-token", v.parse().unwrap());
-            h
-        };
-
-        // The run's own credential works for its own PR.
-        assert!(proposal_token_ok(&app, pr, &hdr(&narrow)).await.is_ok());
-        // The app token still works, so the SPA and these tests can drive it.
-        assert!(proposal_token_ok(&app, pr, &hdr(&app.token)).await.is_ok());
-        // A wrong one, an empty one, and no header at all are all refused.
-        assert!(proposal_token_ok(&app, pr, &hdr("nope")).await.is_err());
-        assert!(proposal_token_ok(&app, pr, &hdr("")).await.is_err());
-        assert!(proposal_token_ok(&app, pr, &axum::http::HeaderMap::new())
-            .await
-            .is_err());
-        // Scoped to the PR it was minted for: the same token is nothing on another.
-        assert!(proposal_token_ok(&app, 999, &hdr(&narrow)).await.is_err());
-        // And a PR with no run recorded authenticates nobody but the app.
-        assert!(proposal_token_ok(&app, 999, &hdr(&app.token)).await.is_ok());
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn a_no_origin_get_or_hook_still_passes_untokened() {
-        assert!(ok(None, false, true, false));
-        assert!(ok(None, true, false, false));
-    }
-
-    #[test]
-    fn host_must_be_loopback() {
-        assert!(host_allowed("127.0.0.1:7777", 7777));
-        assert!(host_allowed("localhost:7777", 7777));
-        assert!(!host_allowed("evil.example:7777", 7777));
-        assert!(!host_allowed("127.0.0.1", 7777));
-    }
-
-    /// The daemon says the facts; the repo says what its own checkouts mean. A note
-    /// is attached to the destination it was written about and nowhere else, which
-    /// is what keeps "the dev stack only runs in main" out of orchd.
-    #[test]
-    fn a_project_note_reaches_only_the_workspace_kind_it_was_written_for() {
-        let notes = crate::config::WorkspaceNotes {
-            main: Some("the stack runs here".into()),
-            worktree: None,
-        };
-        assert_eq!(notes.for_main(true), Some("the stack runs here"));
-        assert_eq!(notes.for_main(false), None);
-        assert_eq!(
-            crate::config::WorkspaceNotes::default().for_main(true),
-            None
-        );
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Diff (§5)
 // ---------------------------------------------------------------------------
@@ -3843,4 +3104,743 @@ pub async fn wip_resolve(
     );
     type_user_turn(&app, id, &text).await?;
     Ok(Json(json!({ "told": id })))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The button is offered on `tool`, so the refusal has to be on `tool` too: a
+    /// `.deb` or an AppImage has nothing to name in `mise upgrade`, and running it
+    /// anyway would upgrade some *other* copy of the app and report success.
+    #[tokio::test]
+    async fn a_build_mise_did_not_install_cannot_upgrade_itself() {
+        use crate::update::UpdateInfo;
+
+        let (app, _dir) = crate::testutil::app("selfup");
+
+        // Nothing found yet: nothing to install.
+        assert!(upgrade_app(State(app.clone())).await.is_err());
+
+        let mut info = UpdateInfo {
+            current: "2026.9.1".into(),
+            latest: "2026.9.2".into(),
+            url: "https://example.invalid/r".into(),
+            tool: None,
+        };
+        app.inner.write().await.update = Some(info.clone());
+        let err = match upgrade_app(State(app.clone())).await {
+            Ok(_) => panic!("a non-mise install must refuse"),
+            Err(e) => e,
+        };
+        assert!(
+            format!("{}", err.0).contains("mise"),
+            "the refusal has to say why: {}",
+            err.0
+        );
+        assert!(
+            app.inner.read().await.self_upgrade_run.is_none(),
+            "a refusal must not leave a run behind for the bar to report"
+        );
+
+        // A run in flight refuses the next press, because two `mise upgrade`s of one
+        // tool race over the same install directory.
+        //
+        // Set here rather than by pressing the button: a real press spawns a real
+        // `mise upgrade`, and a unit test that reaches the network — or worse,
+        // installs something on the machine running it — is not a unit test. The
+        // claim itself is three lines above this in the handler and is read there.
+        info.tool = Some("github:kbarendrecht/orchestrator".into());
+        app.inner.write().await.update = Some(info);
+        app.inner.write().await.self_upgrade_run = Some(crate::update::UpgradeRun {
+            to: "2026.9.2".into(),
+            running: true,
+            tail: String::new(),
+        });
+        assert!(
+            upgrade_app(State(app.clone())).await.is_err(),
+            "one run at a time"
+        );
+    }
+
+    /// The route's own rules, which the pane cannot be trusted to keep.
+    ///
+    /// A snapshot is a moment old by the time you click it, and the route is
+    /// reachable without the pane at all — so the path, the verb and "is anybody
+    /// working in there" are all asked here rather than inferred from what the
+    /// client sent.
+    #[tokio::test]
+    async fn a_file_verb_stays_in_its_workspace_and_off_a_working_tree() {
+        use crate::model::{Session, State as S, MAIN};
+
+        let (app, dir) = crate::testutil::app("fileverb-api");
+        crate::testutil::git(&dir, &["init", "-q", "-b", "main"]);
+        crate::testutil::git(&dir, &["config", "user.email", "t@t"]);
+        crate::testutil::git(&dir, &["config", "user.name", "t"]);
+        std::fs::write(dir.join("f.txt"), "committed\n").unwrap();
+        crate::testutil::git(&dir, &["add", "-A"]);
+        crate::testutil::git(&dir, &["commit", "-qm", "base"]);
+        std::fs::write(dir.join("f.txt"), "edited\n").unwrap();
+
+        let go = |path: &str, verb: &str| {
+            let (app, path, verb) = (app.clone(), path.to_string(), verb.to_string());
+            async move {
+                file_verb(
+                    State(app),
+                    Json(FileVerbBody {
+                        workspace: MAIN.to_string(),
+                        path,
+                        verb,
+                    }),
+                )
+                .await
+            }
+        };
+        let said = |e: ApiError| format!("{:#}", e.0);
+
+        // Out of the workspace, both spellings. `edit::resolve_in_workspace` is the
+        // one rule, and this is the route that would otherwise hand git a path
+        // somebody else's tree.
+        assert!(go("../elsewhere/f.txt", "stage").await.is_err());
+        assert!(go("/etc/passwd", "stage").await.is_err());
+        // Not a verb at all.
+        let e = said(go("f.txt", "delete").await.expect_err("not a verb"));
+        assert!(e.contains("not a file verb"), "{e}");
+
+        // Nothing to do is refused rather than silently succeeding: a button that
+        // does nothing reads as broken.
+        let e = said(go("f.txt", "unstage").await.expect_err("nothing staged"));
+        assert!(e.contains("nothing to unstage"), "{e}");
+
+        // The happy path, and then the guard that only this daemon needs.
+        assert!(go("f.txt", "stage").await.is_ok());
+        {
+            let mut inner = app.inner.write().await;
+            let id = Uuid::new_v4();
+            let mut s = Session::new(id, MAIN.to_string(), dir.clone(), None);
+            s.set_state(S::Working);
+            inner.sessions.insert(id, s);
+        }
+        let e = said(
+            go("f.txt", "unstage")
+                .await
+                .expect_err("an agent is working"),
+        );
+        assert!(e.contains("mid-turn"), "{e}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The drawer may hand a session text only when a keystroke means "a prompt".
+    ///
+    /// Every refusal here is a state where `Enter` means something else — a submit
+    /// mid-turn, consent to a permission prompt, an answer to a question — so this
+    /// walks them rather than testing the happy path alone. Driven against a real
+    /// pty, because `type_and_send` is what the guards are protecting.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn text_reaches_a_session_at_its_prompt_and_no_other_state() {
+        use crate::model::{Session, State as S, TurnReason as R, MAIN};
+        use crate::pty::PtyHandle;
+        use std::time::SystemTime;
+
+        let (app, dir) = crate::testutil::app("tell");
+        let id = Uuid::new_v4();
+        // `cat` echoes, so the pty is both alive and readable — the happy path can
+        // assert the text actually arrived rather than that nothing complained.
+        let spawned = PtyHandle::spawn(&["cat".to_string()], &dir, &[], &[], (24, 80))
+            .expect("a pty to type into");
+        {
+            let mut inner = app.inner.write().await;
+            let mut s = Session::new(id, MAIN.to_string(), dir.clone(), None);
+            s.pty = Some(spawned.handle.clone());
+            s.had_a_turn = true;
+            inner.sessions.insert(id, s);
+        }
+        let set = |st: S| {
+            let app = app.clone();
+            async move { app.with_session(id, |s| s.set_state(st)).await }
+        };
+        let tell = |text: &str| {
+            let (app, text) = (app.clone(), text.to_string());
+            async move { tell_session(State(app), Path(id), Json(TellBody { text })).await }
+        };
+
+        // Mid-turn: a stray line of input, and `Enter` submits whatever is typed.
+        set(S::Working).await;
+        let said = |e: ApiError| format!("{:#}", e.0);
+        let e = said(
+            tell("ng-watch said: TS2345")
+                .await
+                .expect_err("mid-turn is refused"),
+        );
+        assert!(e.contains("mid-turn"), "{e}");
+
+        // Both of these read a keystroke as an *answer*.
+        set(S::YourTurn {
+            since: SystemTime::now(),
+            reason: R::NeedsPermission,
+        })
+        .await;
+        assert!(
+            tell("x").await.is_err(),
+            "a permission prompt takes it as consent"
+        );
+        set(S::YourTurn {
+            since: SystemTime::now(),
+            reason: R::AskedAQuestion,
+        })
+        .await;
+        assert!(
+            tell("x").await.is_err(),
+            "a question takes it as the highlighted choice"
+        );
+
+        // Size, which is the other half of "a prompt is not a log".
+        set(S::YourTurn {
+            since: SystemTime::now(),
+            reason: R::TurnComplete,
+        })
+        .await;
+        assert!(
+            tell(&"x".repeat(9 * 1024)).await.is_err(),
+            "a buffer-sized paste is refused"
+        );
+        assert!(tell("   ").await.is_err(), "and so is nothing at all");
+
+        // At its prompt: it goes, and `cat` hands it back.
+        assert!(
+            tell("ng-watch said: TS2345").await.is_ok(),
+            "a session at its prompt takes it",
+        );
+        let seen = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let out = String::from_utf8_lossy(&spawned.handle.snapshot()).into_owned();
+                if out.contains("TS2345") {
+                    return out;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+        })
+        .await;
+        assert!(seen.is_ok(), "the text never reached the pty");
+
+        // A session with no pty is a resume, not a target.
+        app.with_session(id, |s| s.pty = None).await;
+        let e = said(tell("x").await.expect_err("nothing to type into"));
+        assert!(e.contains("resume it first"), "{e}");
+
+        let _ = spawned.handle.kill();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The whole point of the channel: the agent's poll is released by the answer
+    /// rather than by a timeout, and it comes back carrying the choice.
+    #[tokio::test]
+    async fn an_answer_releases_the_poll_the_agent_is_sitting_in() {
+        use crate::model::{Interaction, InteractionOption, Session, MAIN};
+
+        let (app, dir) = crate::testutil::app("ask");
+
+        let id = Uuid::new_v4();
+        let ask_id = Uuid::new_v4();
+        {
+            let mut inner = app.inner.write().await;
+            let mut sess = Session::new(id, MAIN.to_string(), dir.clone(), None);
+            sess.interaction = Some(Interaction {
+                id: ask_id,
+                thread_id: None,
+                question: "rebase or stop?".into(),
+                detail: None,
+                options: vec![InteractionOption {
+                    value: "rebase".into(),
+                    label: "Rebase".into(),
+                    sub: String::new(),
+                    free: false,
+                }],
+                asked_at: std::time::SystemTime::now(),
+                answer: None,
+                answer_text: None,
+            });
+            inner.sessions.insert(id, sess);
+        }
+
+        let mut agent = axum::http::HeaderMap::new();
+        let token = app.inner.read().await.sessions[&id].ask_token.clone();
+        agent.insert("x-orch-ask", token.parse().unwrap());
+
+        // Another session's agent, or any local process, must not be able to read
+        // this one's answer.
+        let mut wrong = axum::http::HeaderMap::new();
+        wrong.insert("x-orch-ask", "not-the-token".parse().unwrap());
+        assert!(
+            ask_wait(State(app.clone()), Path((id, ask_id)), wrong)
+                .await
+                .is_err(),
+            "a wrong ask token was let through"
+        );
+
+        // The agent is already waiting when the answer arrives, which is the
+        // ordering that matters: a poll that started first must still be woken.
+        let waiter = tokio::spawn({
+            let app = app.clone();
+            async move { ask_wait(State(app), Path((id, ask_id)), agent).await }
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let _ = answer(
+            State(app.clone()),
+            Path(id),
+            Json(AnswerBody {
+                ask: ask_id,
+                answer: "rebase".into(),
+                text: None,
+            }),
+        )
+        .await
+        .map_err(|e| format!("{}", e.0))
+        .expect("answer accepted");
+
+        let got = tokio::time::timeout(std::time::Duration::from_secs(5), waiter)
+            .await
+            .expect("the poll was never released")
+            .unwrap()
+            .map_err(|e| format!("{}", e.0))
+            .expect("wait succeeded");
+        assert_eq!(got.0["answered"], true);
+        assert_eq!(got.0["answer"], "rebase");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The escape hatch: an option that asks for words is not answered by picking
+    /// it, and the words travel beside the value rather than as it.
+    #[tokio::test]
+    async fn the_option_that_asks_for_words_is_not_answered_without_them() {
+        use crate::model::{Interaction, InteractionOption, Session, MAIN};
+
+        let (app, dir) = crate::testutil::app("ask3");
+        let id = Uuid::new_v4();
+        let ask_id = Uuid::new_v4();
+        {
+            let mut inner = app.inner.write().await;
+            let mut sess = Session::new(id, MAIN.to_string(), dir.clone(), None);
+            sess.interaction = Some(Interaction {
+                id: ask_id,
+                thread_id: None,
+                question: "how should it be documented?".into(),
+                detail: None,
+                options: vec![InteractionOption {
+                    value: "mine".into(),
+                    label: "Let me write it…".into(),
+                    sub: String::new(),
+                    free: true,
+                }],
+                asked_at: std::time::SystemTime::now(),
+                answer: None,
+                answer_text: None,
+            });
+            inner.sessions.insert(id, sess);
+        }
+
+        let err = answer(
+            State(app.clone()),
+            Path(id),
+            Json(AnswerBody {
+                ask: ask_id,
+                answer: "mine".into(),
+                text: None,
+            }),
+        )
+        .await
+        .expect_err("refused with no words");
+        assert!(format!("{}", err.0).contains("none were written"));
+
+        let _ = answer(
+            State(app.clone()),
+            Path(id),
+            Json(AnswerBody {
+                ask: ask_id,
+                answer: "mine".into(),
+                text: Some("put it under Pushing, but say why".into()),
+            }),
+        )
+        .await
+        .map_err(|e| format!("{}", e.0))
+        .expect("accepted with words");
+
+        let inner = app.inner.read().await;
+        let got = inner.sessions[&id].interaction.as_ref().unwrap();
+        assert_eq!(got.answer.as_deref(), Some("mine"));
+        assert_eq!(
+            got.answer_text.as_deref(),
+            Some("put it under Pushing, but say why")
+        );
+        drop(inner);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An answer nobody offered would reach the agent as an instruction no branch
+    /// was written for.
+    #[tokio::test]
+    async fn an_answer_that_was_not_offered_is_refused() {
+        use crate::model::{Interaction, InteractionOption, Session, MAIN};
+
+        let (app, dir) = crate::testutil::app("ask2");
+        let id = Uuid::new_v4();
+        let ask_id = Uuid::new_v4();
+        {
+            let mut inner = app.inner.write().await;
+            let mut sess = Session::new(id, MAIN.to_string(), dir.clone(), None);
+            sess.interaction = Some(Interaction {
+                id: ask_id,
+                thread_id: None,
+                question: "rebase or stop?".into(),
+                detail: None,
+                options: vec![InteractionOption {
+                    value: "rebase".into(),
+                    label: "Rebase".into(),
+                    sub: String::new(),
+                    free: false,
+                }],
+                asked_at: std::time::SystemTime::now(),
+                answer: None,
+                answer_text: None,
+            });
+            inner.sessions.insert(id, sess);
+        }
+        let err = answer(
+            State(app.clone()),
+            Path(id),
+            Json(AnswerBody {
+                ask: ask_id,
+                answer: "force-push".into(),
+                text: None,
+            }),
+        )
+        .await
+        .expect_err("refused");
+        assert!(format!("{}", err.0).contains("not one of the options"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn only_the_spas_own_origin_is_accepted() {
+        assert!(origin_allowed("http://127.0.0.1:7777", 7777, None));
+        assert!(origin_allowed("http://localhost:7777", 7777, None));
+        assert!(!origin_allowed("http://evil.example", 7777, None));
+        // A page on another port is still another origin.
+        assert!(!origin_allowed("http://127.0.0.1:7778", 7777, None));
+        // Guards against a DNS-rebinding host that merely contains the address.
+        assert!(!origin_allowed(
+            "http://127.0.0.1.evil.example:7777",
+            7777,
+            None
+        ));
+    }
+
+    /// `(origin, is_hook, is_get, token_ok)` at port 7777.
+    fn ok(origin: Option<&str>, is_hook: bool, is_get: bool, token_ok: bool) -> bool {
+        origin_ok(origin, 7777, None, is_hook, is_get, token_ok)
+    }
+
+    #[test]
+    fn a_present_origin_must_be_ours_whatever_else_is_true() {
+        assert!(ok(Some("http://127.0.0.1:7777"), false, false, true));
+        // A token does not buy a pass for a page on another origin: that is
+        // exactly the request the check exists to stop.
+        assert!(!ok(Some("http://evil.example"), false, false, true));
+        assert!(!ok(Some("http://evil.example"), true, true, true));
+    }
+
+    #[test]
+    fn a_tokened_post_with_no_origin_is_the_agents_own_shape() {
+        // `skills/triage/SKILL.md` POSTs with curl, which sends no Origin. Without
+        // this arm the one route an agent calls answered 403 to its only caller.
+        assert!(ok(None, false, false, true));
+        // Still nothing without the token.
+        assert!(!ok(None, false, false, false));
+    }
+
+    /// A stray escape is not harmless, so the states that would misread it are
+    /// refused by name.
+    ///
+    /// The two waiting ones are the point: mid-turn was driven against a real
+    /// session and refused, but a question and a permission prompt cannot be
+    /// arranged on demand, and those are exactly the two where the keystroke would
+    /// *answer* — cancelling the one, declining the other — rather than do nothing.
+    #[tokio::test]
+    async fn rewind_refuses_every_state_that_would_read_an_escape_as_an_answer() {
+        use crate::model::{Session, State as S, TurnReason as R, MAIN};
+
+        let (app, dir) = crate::testutil::app("rewind");
+
+        let at = |reason| S::YourTurn {
+            since: std::time::SystemTime::now(),
+            reason,
+        };
+        for (state, want) in [
+            (at(R::AskedAQuestion), "cancel the question"),
+            (at(R::NeedsPermission), "decline it"),
+            (S::Working, "mid-turn"),
+            (S::Starting, "still starting"),
+        ] {
+            let id = Uuid::new_v4();
+            {
+                let mut inner = app.inner.write().await;
+                let mut s = Session::new(id, MAIN.to_string(), dir.clone(), None);
+                s.had_a_turn = true;
+                s.state = state.clone();
+                inner.sessions.insert(id, s);
+            }
+            match rewind_session(State(app.clone()), Path(id)).await {
+                Err(e) => {
+                    let said = format!("{:#}", e.0);
+                    assert!(
+                        said.contains(want),
+                        "{state:?} said {said:?}, wanted {want:?}"
+                    );
+                }
+                Ok(_) => panic!("{state:?} must not open the picker"),
+            }
+        }
+
+        // And a session at the prompt with nothing behind it: the picker would
+        // open on an empty conversation, which reads as a broken button.
+        let id = Uuid::new_v4();
+        {
+            let mut inner = app.inner.write().await;
+            let mut s = Session::new(id, MAIN.to_string(), dir.clone(), None);
+            s.state = at(R::TurnComplete);
+            inner.sessions.insert(id, s); // had_a_turn stays false
+        }
+        let said = format!(
+            "{:#}",
+            rewind_session(State(app.clone()), Path(id))
+                .await
+                .expect_err("no conversation must refuse")
+                .0
+        );
+        assert!(said.contains("no conversation to rewind"), "{said}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The whole of what makes `orch kill` safe to put on the ask token: it reaches
+    /// the caller's own spawns and nothing else. Only the refusal is driven here —
+    /// it answers before anything is mutated, whereas the accepting path forgets a
+    /// record and tears a worktree down, which is what the e2e flows are for.
+    #[tokio::test]
+    async fn discard_reaches_only_the_sessions_the_caller_spawned() {
+        use crate::model::{Session, MAIN};
+
+        let (app, dir) = crate::testutil::app("discard");
+
+        let caller = Uuid::new_v4();
+        let mine = Uuid::new_v4();
+        let someone_elses = Uuid::new_v4();
+        {
+            let mut inner = app.inner.write().await;
+            for id in [caller, mine, someone_elses] {
+                let s = Session::new(id, MAIN.to_string(), dir.clone(), None);
+                inner.sessions.insert(id, s);
+            }
+            // Spawned by a third session, not by the caller — the shape an agent
+            // reaches by misreading a uuid out of `orch ls`.
+            inner.sessions.get_mut(&someone_elses).unwrap().spawned_by = Some(Uuid::new_v4());
+            inner.sessions.get_mut(&mine).unwrap().spawned_by = Some(caller);
+        }
+
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert("x-orch-token", "t".parse().unwrap());
+
+        for (child, want) in [
+            (someone_elses, "is not a session you spawned"),
+            // A session nobody spawned — every one you started yourself, so the
+            // conversation you are sitting in is refused by the same rule.
+            (caller, "is not a session you spawned"),
+            (Uuid::new_v4(), "no such session"),
+        ] {
+            let said = format!(
+                "{:#}",
+                discard_spawned(State(app.clone()), Path((caller, child)), headers.clone())
+                    .await
+                    .expect_err("must refuse")
+                    .0
+            );
+            assert!(
+                said.contains(want),
+                "{child} said {said:?}, wanted {want:?}"
+            );
+        }
+
+        // And the one that is the caller's own is not refused on authorship. Not
+        // carried further here: the next step writes records and removes a tree.
+        let inner = app.inner.read().await;
+        assert_eq!(inner.sessions[&mine].spawned_by, Some(caller));
+        drop(inner);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn every_route_the_vendored_prompts_call_on_the_ask_token_is_exempt() {
+        // The three in `skills/resolve-run/SKILL.md` plus `/spawn`. `/committed` was
+        // missing and the run's central seam answered 403 to the only caller it
+        // has; these are the literal paths those prompts curl.
+        for p in [
+            "/api/session/<id>/ask",
+            "/api/session/<id>/ask/<ask>/wait",
+            "/api/session/<id>/thread/PRRT_x/committed",
+            "/api/session/<id>/thread/PRRT_x/stuck",
+            "/api/session/<id>/spawn",
+            // `orch run`. Named processes only, so this exemption widens what an
+            // agent can start without widening it to arbitrary commands (§12).
+            "/api/session/<id>/process",
+            // `orch kill`. Only the caller's own spawns, which `discard_spawned`
+            // enforces from the record — the exemption is what lets it be called at
+            // all, not what decides which sessions it reaches.
+            "/api/session/<id>/spawned/<child>/discard",
+            // `orch teardown`. Any worktree, through the ordinary preflight.
+            "/api/session/<id>/teardown",
+            // Phase 4 of `skills/review/SKILL.md`: the review saying it is done.
+            "/api/session/<id>/handoff",
+            // `orch outside`, and the push guard's read of what it granted. The
+            // guard is a `command` hook: it has the session's ask token and no
+            // app token, so a missing entry here would make the grant unreadable
+            // and the refusal permanent.
+            "/api/session/<id>/outside",
+        ] {
+            assert!(is_ask_route(p), "{p} must not need the app token");
+        }
+        // And nothing else on the session: these are the SPA's, on the app token.
+        for p in [
+            "/api/session/<id>/kill",
+            "/api/session/<id>/answer",
+            "/api/session/<id>/fork",
+            // The unrestricted delete the rail's own button uses. `/discard` above
+            // exists *because* this one must stay out of the agent's reach.
+            "/api/session/<id>/delete",
+            "/api/state",
+            // The drawer's own button, which restarts a *running* process. Named
+            // the same thing, deliberately not the agent's.
+            "/api/workspace/main/process/docker/restart",
+            // The rail's teardown. Same verb as `orch teardown`, which is only safe
+            // because this one is outside the `/api/session/` prefix.
+            "/api/workspace/pr-1/teardown",
+        ] {
+            assert!(!is_ask_route(p), "{p} is not the agent's to call");
+        }
+    }
+
+    /// The guard consults [`is_agent_route`], not [`is_ask_route`]. A route the
+    /// prompts really curl that is missing from it is refused twice over — `bad
+    /// origin` first, because the agent's curl carries none, and then for want of
+    /// an app token it is deliberately not given. That is how `…/committed` shipped
+    /// unreachable by its only caller.
+    #[test]
+    fn the_proposals_post_is_an_agent_route_and_reachable_without_an_origin() {
+        let p = "/api/pr/10001/proposals";
+        assert!(is_proposals_route(p));
+        assert!(
+            is_agent_route(p),
+            "{p} is curled by the triage and review skills"
+        );
+        // Not an *ask* route: it is keyed on a PR, and has no session to check.
+        assert!(!is_ask_route(p));
+        // The Origin allowance the agent's curl depends on.
+        assert!(
+            ok(None, true, false, false),
+            "no Origin must pass for an agent route"
+        );
+        // Neighbours that stay the SPA's, on the app token.
+        for other in [
+            "/api/pr/10001/review",
+            "/api/pr/10001/fix-pr",
+            "/api/pr/10001",
+        ] {
+            assert!(!is_agent_route(other), "{other} is not the agent's to call");
+        }
+    }
+
+    /// The two the vendored `triage` skill calls before it can propose anything.
+    ///
+    /// Same trap as the proposals route and the same reason for a test: the skill
+    /// is the only caller, it curls with no Origin and the run credential, and a
+    /// route missing from `is_agent_route` is refused twice over without either
+    /// refusal naming the cause.
+    #[test]
+    fn the_triage_skill_can_reach_its_two_routes() {
+        for p in [
+            "/api/pr/10001/triage-context",
+            "/api/pr/10001/triage/progress",
+        ] {
+            assert!(is_triage_route(p));
+            assert!(is_agent_route(p), "{p} is curled by skills/triage/SKILL.md");
+            // Keyed on a PR, so not an ask route: there is no session in the path.
+            assert!(!is_ask_route(p));
+        }
+        // The run that *starts* a triage pass is the SPA's, on the app token.
+        assert!(!is_agent_route("/api/pr/10001/triage"));
+    }
+
+    #[tokio::test]
+    async fn a_run_posts_proposals_on_a_token_that_opens_nothing_else() {
+        let (app, dir) = crate::testutil::app("proposaltok");
+        let pr = 10001u64;
+        let narrow = crate::secret::random_token();
+        app.inner
+            .write()
+            .await
+            .proposal_tokens
+            .insert(pr, narrow.clone());
+
+        let hdr = |v: &str| {
+            let mut h = axum::http::HeaderMap::new();
+            h.insert("x-orch-token", v.parse().unwrap());
+            h
+        };
+
+        // The run's own credential works for its own PR.
+        assert!(proposal_token_ok(&app, pr, &hdr(&narrow)).await.is_ok());
+        // The app token still works, so the SPA and these tests can drive it.
+        assert!(proposal_token_ok(&app, pr, &hdr(&app.token)).await.is_ok());
+        // A wrong one, an empty one, and no header at all are all refused.
+        assert!(proposal_token_ok(&app, pr, &hdr("nope")).await.is_err());
+        assert!(proposal_token_ok(&app, pr, &hdr("")).await.is_err());
+        assert!(proposal_token_ok(&app, pr, &axum::http::HeaderMap::new())
+            .await
+            .is_err());
+        // Scoped to the PR it was minted for: the same token is nothing on another.
+        assert!(proposal_token_ok(&app, 999, &hdr(&narrow)).await.is_err());
+        // And a PR with no run recorded authenticates nobody but the app.
+        assert!(proposal_token_ok(&app, 999, &hdr(&app.token)).await.is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_no_origin_get_or_hook_still_passes_untokened() {
+        assert!(ok(None, false, true, false));
+        assert!(ok(None, true, false, false));
+    }
+
+    #[test]
+    fn host_must_be_loopback() {
+        assert!(host_allowed("127.0.0.1:7777", 7777));
+        assert!(host_allowed("localhost:7777", 7777));
+        assert!(!host_allowed("evil.example:7777", 7777));
+        assert!(!host_allowed("127.0.0.1", 7777));
+    }
+
+    /// The daemon says the facts; the repo says what its own checkouts mean. A note
+    /// is attached to the destination it was written about and nowhere else, which
+    /// is what keeps "the dev stack only runs in main" out of orchd.
+    #[test]
+    fn a_project_note_reaches_only_the_workspace_kind_it_was_written_for() {
+        let notes = crate::config::WorkspaceNotes {
+            main: Some("the stack runs here".into()),
+            worktree: None,
+        };
+        assert_eq!(notes.for_main(true), Some("the stack runs here"));
+        assert_eq!(notes.for_main(false), None);
+        assert_eq!(
+            crate::config::WorkspaceNotes::default().for_main(true),
+            None
+        );
+    }
 }
