@@ -176,24 +176,20 @@ jobs:
           node tools/check-assumptions.mjs
           node tools/check-doc-paths.mjs
 
+      # One list, in `tools/check-web.sh`, because this step and `mise run
+      # check-web` each used to spell it themselves — and the third copy, in the
+      # pre-commit hook, had already lost the palette, the dead-CSS and the
+      # drop-list checks. The hook still runs a subset deliberately; these two
+      # claim to be the whole gate, so they read from one file.
       - name: Check the SPA
         if: runner.os == 'Linux'
-        run: |
-          # Top of the graph down: ts-rs exports a type's dependencies too, so a
-          # crate's run rewrites its dependencies' files with only the subset it
-          # references. This order leaves each file written by its owner.
-          for crate in orchd-serve orchd orchd-repo orchd-base; do
-            cargo test -p "$crate" --lib export_bindings >/dev/null
-          done
-          git diff --exit-code --stat web/snapshot.d.ts web/base.d.ts web/repo.d.ts web/serve.d.ts \
-            || { echo 'the generated types are stale: run `mise run check-web` and commit them.'; exit 1; }
-          npx --prefix tools tsc -p tools/tsconfig.json
-          npx --prefix tools depcruise --config tools/.dependency-cruiser.cjs web/app.js
-          npx --prefix tools eslint --config tools/eslint.config.mjs web
-          node tools/check-palette.mjs
-          node tools/check-dead-css.mjs
-          node tools/check-drop-lists.mjs
-          node tools/check-module-routes.mjs
+        run: sh tools/check-web.sh
+
+      # The daemon's own module graph, which is the SPA's rule pointed at `src/`.
+      # A ratchet, not a gate: `tools/rust-modules.mjs` has the argument.
+      - name: Check the module graph
+        if: runner.os == 'Linux'
+        run: node tools/rust-modules.mjs
 
       # What the rendered page must never show: an unresolved `MOD` placeholder,
       # the word `undefined` where a person reads, two sets of window buttons, or
@@ -201,17 +197,30 @@ jobs:
       # the ubuntu runner already, so this costs a daemon build and five seconds.
       #
       # Not screenshots, deliberately: `tools/e2e/page.mjs` has the argument.
-      # The daemon's own module graph, which is the SPA's rule pointed at `src/`.
-      # A ratchet, not a gate: `tools/rust-modules.mjs` has the argument.
-      - name: Check the module graph
-        if: runner.os == 'Linux'
-        run: node tools/rust-modules.mjs
-
       - name: Check the page
         if: runner.os == 'Linux'
         run: |
           cargo build -p orchd-serve --bin orchd
           node tools/e2e/page.mjs
+
+      # The 24 flows, which until now ran **only** in a per-clone pre-commit hook,
+      # and there only every fifth qualifying commit. So a fresh clone, a
+      # `--no-verify` habit or a contributor who never ran
+      # `git config core.hooksPath .githooks` skipped the one suite that drives the
+      # daemon end to end — and the class of fault it exists for (a state machine
+      # driven by hooks over HTTP against a real git repo) reached nobody.
+      #
+      # The hook's frugality argument does not apply to a runner: it is ~45s here
+      # and nobody is waiting on it. The counter in `.git/` stays, so a local
+      # commit still gets the early answer.
+      #
+      # Offline and deterministic — the agent and the GitHub calls are PATH shims,
+      # and `run.mjs` builds both binaries itself. `docs/e2e.md` has the limits.
+      # Linux only: the flows are about git and the daemon, and the macOS runner is
+      # here for what only it can answer.
+      - name: The end-to-end flows
+        if: runner.os == 'Linux'
+        run: node tools/e2e/run.mjs
 
       # The part no Linux box can answer, so it runs even when the tests above
       # failed: a red test would otherwise skip this step and hide the one signal

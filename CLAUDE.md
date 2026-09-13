@@ -346,15 +346,21 @@ where they were written. Every one of them cost something.
   files could break, and its own header says why that matters; `--no-verify` is a
   fine thing to reach for mid-refactor, and the real gate is `mise run check-web`.
   **Every fifth Rust-or-`tools/e2e/` commit it also runs the e2e flows**, ~35s
-  instead of ~2s, and **the hook is the only thing that runs them** — no workflow
-  runs `tools/e2e/run.mjs` at all, so a commit that skips the hook skips those 24
-  flows entirely, and the class of fault they exist for reaches nobody. Worth
-  closing and cheap to; the reason it is not closed is that these flows have flaked
-  twice and a flaky gate is worse than no gate. Measure the flake rate before
-  adding the job, not after. The counter is in `.git/`, only qualifying commits
-  spend it, and a *failure does not reset it* so the next commit tries again rather
-  than burying a break for four more. `E2E_EVERY=1` forces a run, `E2E_EVERY=0`
-  turns it off.
+  instead of ~2s. The counter is in `.git/`, only qualifying commits spend it, and
+  a *failure does not reset it* so the next commit tries again rather than burying
+  a break for four more. `E2E_EVERY=1` forces a run, `E2E_EVERY=0` turns it off.
+  **`check.yml` runs them too now, and the hook is no longer the only thing that
+  does.** It was: no workflow ran `tools/e2e/run.mjs` at all, so a fresh clone, a
+  `--no-verify` habit or anybody who never said `git config core.hooksPath
+  .githooks` skipped all 24 flows, and the class of fault they exist for reached
+  nobody. The bar this entry set was to measure the flake rate first, because the
+  flows had flaked twice and a flaky gate is worse than no gate: **seven
+  consecutive clean runs, 168 flow executions**, and both known flakes have a fix
+  behind them (`t.settled` before each call, and `spawn_worktree_session`
+  recording the branch). One machine and a fast one, so a runner may yet find a
+  timing fault this could not — if it does, read the numbers `E2E_TIME=1` prints
+  before reaching for a longer timeout. The hook keeps its counter, because a
+  local answer four commits early is worth more than the same answer from CI.
 
 - **Splitting one working tree into several commits has two traps, and neither
   fails loudly.** `git diff -U0` splits finely, but `git apply --cached
@@ -376,7 +382,11 @@ where they were written. Every one of them cost something.
   `swapping_exchanges_two_branches_and_is_its_own_inverse` sat unregistered in a
   pushed commit that way. Anchor after the previous test's closing brace, and read
   the test count.
-- **`mise run check-web` is the SPA's gate, and it bites.** It regenerates
+- **`mise run check-web` is the SPA's gate, and it bites.** The list of checks
+  lives in `tools/check-web.sh`, because this task and `check.yml`'s own step each
+  used to spell it out — and the third copy, in the pre-commit hook, had already
+  lost three entries. The hook still runs a subset deliberately; the two that
+  claim to be the whole gate now read one file. It regenerates
   `web/snapshot.d.ts` and fails if the committed copy drifted, runs
   `tsc --noEmit --checkJs` over every SPA file, runs `dependency-cruiser` over the
   module graph, runs `eslint` with typescript-eslint's *typed* rules, holds the
@@ -557,8 +567,14 @@ where they were written. Every one of them cost something.
   printed on every run instead. **A number a tool reports is a claim the tool has
   to earn**: the SCC was reported as 23 modules, which was this script's own
   pattern failing to cut `pty.rs`'s `pub(crate) mod tests`, and the figure reached
-  a commit message and a review before anybody checked it. And **it cuts each file
-  at its test module**, so a probe appended to the end of a file shows nothing.
+  a commit message and a review before anybody checked it. And **it cuts every
+  `#[cfg(test)]` module rather than slicing the file at the first one**, which is
+  the same lesson a third time: the old cut kept the head of the file on the
+  written assumption that the test module is the last item, and `api.rs` carried
+  858 lines of handlers below its tests — two edges read nowhere, measured by
+  running both versions over the same file. Their tests are at the end now as
+  well, because clippy's `items_after_test_module` reads the crate root alone and
+  every file here is a submodule.
 
 - **The module graph is a DAG, and it was made one on purpose.** `app.js` → the
   six; `rail` → `term`, `review`; `review` → `diff`; everything → `core`. Three
