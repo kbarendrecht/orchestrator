@@ -712,9 +712,6 @@ fn new_file_diff(cwd: &Path, path: &str) -> Result<String> {
         .current_dir(cwd)
         .output()
         .context("running git diff --no-index")?;
-    // **1 means "they differ"**, which for a new file is always — so the usual
-    // `ensure!(success)` would treat every success as a failure. Only 2 and above is
-    // a real error.
     let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
     // **1 means "they differ"**, which for a new file is always — so the usual

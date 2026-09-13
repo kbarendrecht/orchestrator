@@ -583,7 +583,14 @@ async fn bind(port: u16, fallback: bool) -> Result<(tokio::net::TcpListener, u16
     }
 }
 
-/// The HTTP surface.
+/// The HTTP surface: the daemon's routes, with the host's merged in.
+///
+/// **Two routers rather than one list**, because they answer to different owners:
+/// `/api/*`, `/ws/*` and `/hooks/*` belong to the daemon that manages one
+/// checkout, and the page, the window and the checkout list belong to the host.
+/// They share a port while one process serves both — see [`crate::host`] — and
+/// each keeps its own guard, so the daemon's arms for hooks and agent routes stay
+/// where they are and the host's stay narrow.
 ///
 /// **Two lists in `api.rs::guard` have to be kept in step with this table**, and
 /// neither will fail loudly if you forget:
@@ -598,14 +605,6 @@ async fn bind(port: u16, fallback: bool) -> Result<(tokio::net::TcpListener, u16
 ///
 /// Adding a route is otherwise a one-liner; adding one that touches either of
 /// those two properties is not.
-/// The daemon's routes, with the host's merged in.
-///
-/// **Two routers rather than one list**, because they answer to different owners:
-/// `/api/*`, `/ws/*` and `/hooks/*` belong to the daemon that manages one
-/// checkout, and the page, the window and the checkout list belong to the host.
-/// They share a port while one process serves both — see [`crate::host`] — and
-/// each keeps its own guard, so the daemon's arms for hooks and agent routes stay
-/// where they are and the host's stay narrow.
 fn router(app: Arc<AppState>, host: Arc<crate::host::Host>) -> Router {
     crate::host::router(host).merge(daemon_router(app))
 }

@@ -40,10 +40,6 @@ impl Unpushed {
     }
 }
 
-/// Resolve the fork branch explicitly (§2).
-///
-/// `@{push}` does not resolve on a branch that was never pushed, and `@{u}`
-/// resolves to `upstream/develop` — neither answers the question.
 /// A unified diff of a file git has never seen, against nothing.
 ///
 /// **`git diff` cannot report an untracked file**, so the changed-files pane
