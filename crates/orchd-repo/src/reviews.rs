@@ -155,7 +155,7 @@ pub fn builtin(token: &str, owner: &str, name: &str) -> Result<ReviewQueue> {
   }}
 }}"#
     );
-    from_graphql(&crate::forge::github::graphql(token, &query)?)
+    from_graphql(&crate::forge::graphql(token, &query)?)
 }
 
 /// Map one GraphQL answer onto the queue, applying the whole of the ranking.

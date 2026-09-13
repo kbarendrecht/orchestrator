@@ -307,7 +307,7 @@ pub fn detect(path: &Path) -> Detected {
             None => "origin/HEAD".to_string(),
         });
 
-    let repo = orchd::forge::github::GitHubForge::detect(path, remote)
+    let repo = orchd::forge::GitHubForge::detect(path, remote)
         .map(|(owner, name)| format!("{owner}/{name}"));
 
     let env_source = if path.join("mise.toml").exists() || path.join(".mise.toml").exists() {
@@ -433,8 +433,8 @@ fn write_config_to(file: &Path, path: &Path, ov: &Overrides) -> Result<Written> 
             .unwrap_or("origin");
         // Through `detect`, which is that pair of calls, and is what filled the
         // field the review is handing back — so the two answers cannot disagree.
-        let derived = orchd::forge::github::GitHubForge::detect(path, remote)
-            .map(|(o, n)| format!("{o}/{n}"));
+        let derived =
+            orchd::forge::GitHubForge::detect(path, remote).map(|(o, n)| format!("{o}/{n}"));
         if derived.as_deref() == Some(repo) {
             obj.remove("repo");
         } else {

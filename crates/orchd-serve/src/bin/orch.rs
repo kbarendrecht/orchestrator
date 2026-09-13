@@ -599,8 +599,16 @@ fn guard(a: &Parsed) -> ExitCode {
     // The branch only matters for a bare `git push`, and it is read from the
     // payload's own cwd rather than this process's — a hook's working directory
     // is not promised to be the checkout the command runs in.
+    //
+    // **Behind `mentions_git` like the `rev-parse` below**, which is what that
+    // claim already implied and the code did not: this ran a `symbolic-ref` on
+    // every Bash call an agent makes, so an `ls` paid for a git subprocess inside
+    // a hook Claude Code gives one second. `guard::check` reads it in one place —
+    // the bare-`git push` rule — which cannot fire without a git command.
     let cwd = v.get("cwd").and_then(Value::as_str);
-    let branch = cwd.and_then(current_branch);
+    let branch = cwd
+        .filter(|_| mentions_git(command))
+        .and_then(current_branch);
 
     /* The worktree this session may reach, asked of git rather than derived from
     the path: one `rev-parse` answers both halves, and the git dir is the

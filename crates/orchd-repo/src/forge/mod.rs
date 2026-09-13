@@ -6,7 +6,9 @@
 //! is a sibling module behind the same trait rather than a rewrite of every
 //! caller. The seam is these modules, not the code that calls them.
 //!
-//! Two things deliberately sit *outside* the trait:
+//! Four things sit *outside* the trait. The first two are deliberate; the last
+//! two are what a second platform would actually cost, written down rather than
+//! implied away.
 //!
 //! - **Repo detection** ([`GitHubForge::detect`]) — it runs before an instance
 //!   exists, to learn which repo to build one for, and it is inherently
@@ -15,6 +17,13 @@
 //!   releases, riding the read-token ladder to stay off the 60/hour anonymous
 //!   rate limit. It asks about *orchd's own* release repo, not the hosted
 //!   monorepo, so it belongs to no forge instance.
+//! - **The review queue's search** — `crate::reviews` writes its own GraphQL and
+//!   sends it through [`graphql`]. The trait has no "search for my reviews", so
+//!   that query is GitHub's shape in a module that is not a forge module.
+//! - **[`Pr::mergeable`] carries GitHub's own spelling** — `MERGEABLE` /
+//!   `CONFLICTING` / `UNKNOWN` — and it reaches the SPA that way, where five
+//!   places compare against `'CONFLICTING'`. [`Checks`] is an enum for exactly
+//!   this reason and `mergeable` is the one field that was not made one.
 //!
 //! The model types ([`Pr`], [`Threads`], …) live in [`model`] so they carry no
 //! GitHub dependency; the write handle and the token ladder are re-exported from
