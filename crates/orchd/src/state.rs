@@ -279,11 +279,11 @@ pub struct Inner {
     /// about. This records a *local* commit, and `fold_in` rewrites shas in both its
     /// arms, so after a fold the old sha is not even an ancestor of HEAD and no
     /// reachability query can prove the new one is ours.
-    pub manual: HashMap<u64, crate::post::ManualPhase>,
+    pub manual: Durable<HashMap<u64, crate::post::ManualPhase>>,
     /// Stories already filed for a review thread, so a retry reuses one rather
     /// than filing a second. A cache, not a ledger — `crate::story` explains why
     /// losing it costs latency and not correctness.
-    pub stories: crate::story::Cache,
+    pub stories: Durable<crate::story::Cache>,
     /// Your own GitHub login, from the PR poll's `viewer { login }`. The vendored
     /// prompts take it as `{{LOGIN}}`.
     pub viewer: Option<String>,
@@ -324,12 +324,12 @@ pub struct Inner {
     /// told. Conflict detection on save protects you from the agent; this is
     /// the other direction, which is the one that loses work silently.
     pub human_edits: HashMap<PathBuf, HumanEdit>,
-    pub automation: crate::fix_pr::AutomationStore,
+    pub automation: Durable<crate::fix_pr::AutomationStore>,
     /// The plan a resolve-run session is working from, kept per PR so the daemon
     /// can answer "what does this thread say" when the agent reports a commit.
     /// In memory only: the plan is also on disk beside the prompt, and a daemon
     /// that restarted has lost the session it belonged to anyway.
-    pub resolve_runs: HashMap<u64, ResolveRun>,
+    pub resolve_runs: Durable<HashMap<u64, ResolveRun>>,
     /// How far each triage pass has read, by PR. See [`TriageProgress`].
     pub triage_progress: HashMap<u64, TriageProgress>,
     /// Whether the main checkout's `docker compose` stack has running containers.
@@ -437,7 +437,7 @@ impl Inner {
         why: &str,
         f: impl FnOnce(&mut crate::fix_pr::AutomationStore) -> bool,
     ) -> bool {
-        let changed = f(&mut self.automation);
+        let changed = f(&mut self.automation.0);
         if changed {
             if let Err(e) = crate::store::save_automation(&self.automation) {
                 tracing::error!("could not persist automation ({why}): {e:#}");
@@ -451,7 +451,7 @@ impl Inner {
         why: &str,
         f: impl FnOnce(&mut HashMap<u64, crate::post::ManualPhase>) -> bool,
     ) -> bool {
-        let changed = f(&mut self.manual);
+        let changed = f(&mut self.manual.0);
         if changed {
             // A warning, not an error: failing to persist costs the resume after a
             // restart, and turning that into a failed batch would be worse than
@@ -473,7 +473,7 @@ impl Inner {
         why: &str,
         f: impl FnOnce(&mut HashMap<u64, ResolveRun>) -> bool,
     ) -> bool {
-        let changed = f(&mut self.resolve_runs);
+        let changed = f(&mut self.resolve_runs.0);
         if changed {
             // A warning: the run itself is unharmed by a failed write, and only
             // the account of it after a restart is at stake.
@@ -489,7 +489,7 @@ impl Inner {
         why: &str,
         f: impl FnOnce(&mut crate::story::Cache) -> bool,
     ) -> bool {
-        let changed = f(&mut self.stories);
+        let changed = f(&mut self.stories.0);
         if changed {
             // A cache that failed to persist costs a search next time, nothing more.
             if let Err(e) = crate::store::save_stories(&self.stories) {
@@ -510,6 +510,35 @@ pub struct HumanEdit {
     /// Sessions already interrupted about this edit. Each is told exactly once,
     /// so the retry after re-reading goes through.
     pub told: std::collections::HashSet<SessionId>,
+}
+
+/// A store that is on disk as well as in memory.
+///
+/// **Read through it freely; the only way to change it is an `Inner::with_*`.**
+/// `Deref` and deliberately no `DerefMut` is how that is said to the compiler:
+/// every reader goes on writing `inner.automation.get(pr)` unchanged, and
+/// `inner.automation.insert(…)` outside this module stops compiling.
+///
+/// The rule it replaces was a paragraph — "mutating a durable store carries its
+/// own write" — and the failure it guards is the quiet one: a record changed in
+/// memory and never written, which looks correct until a restart drops it. There
+/// were no offenders when this went in, which is the argument for it rather than
+/// against: nothing would have reported the first one.
+#[derive(Debug, Default, Clone)]
+pub struct Durable<T>(T);
+
+impl<T> Durable<T> {
+    /// Wrap what was just read off disk. The only other writer is a `with_*`.
+    pub fn new(value: T) -> Self {
+        Self(value)
+    }
+}
+
+impl<T> std::ops::Deref for Durable<T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        &self.0
+    }
 }
 
 impl AppState {
@@ -576,13 +605,13 @@ impl AppState {
                 prs: Vec::new(),
                 proposals: HashMap::new(),
                 proposal_tokens: HashMap::new(),
-                manual: HashMap::new(),
+                manual: Durable::default(),
                 stories: Default::default(),
                 viewer: None,
                 pr_error: None,
                 agent_error: None,
                 pr_fetched: None,
-                resolve_runs: HashMap::new(),
+                resolve_runs: Durable::default(),
                 triage_progress: HashMap::new(),
                 pr_poll: 0,
                 pr_polling: false,

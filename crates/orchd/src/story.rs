@@ -831,7 +831,7 @@ mod tests {
         // This is the path that makes stories re-derivable rather than remembered:
         // a run that filed and then died leaves no record, and the next attempt has
         // to find the story instead of making another.
-        app.inner.write().await.stories = Cache::default();
+        app.inner.write().await.stories = crate::state::Durable::default();
         let healed = file_all(&app, pr, &wanted).await;
         let found = healed
             .get("PRRT_test_1")

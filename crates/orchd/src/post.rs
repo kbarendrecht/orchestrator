@@ -2645,11 +2645,10 @@ mod tests {
         // hang together before anything can render it as a link.
         let story = crate::story::StoryRef::new("sc-1", "https://tracker/story/1", "tracker")
             .expect("a consistent pair");
-        app.inner
-            .write()
-            .await
-            .stories
-            .put(10001, "PRRT_1", story.clone());
+        app.inner.write().await.with_stories("a test fixture", |c| {
+            c.put(10001, "PRRT_1", story.clone());
+            true
+        });
 
         let mut t = thread("PRRT_1", Some("a.ts"), Some(1), "alice");
         t.comments.push(comment(

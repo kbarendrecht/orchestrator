@@ -1189,11 +1189,18 @@ where they were written. Every one of them cost something.
   reads before moving the checkout. `spawn::spawn_session` closes the window with
   `reclaim_main` after the insert. Reproduced one run in four by the two-way swap
   e2e flow, and invisible to every unit test.
-- **Mutating a durable store carries its own write.** `automation`, `manual` and
-  `stories` are changed through `Inner::with_automation` / `with_manual` /
-  `with_stories`, which persist and log with the caller's own context. Do not
-  reach for `store::save_*` at a call site — that is the shape where one site gets
-  the fix and the others quietly do not.
+- **Mutating a durable store carries its own write, and the compiler now says
+  so.** `automation`, `manual`, `stories` and `resolve_runs` are changed through
+  `Inner::with_automation` and its three siblings, which persist and log with the
+  caller's own context. Reaching for `store::save_*` at a call site is the shape
+  where one site gets the fix and the others quietly do not.
+  It was a paragraph, and it is `state::Durable<T>` now: `Deref` and deliberately
+  no `DerefMut`, so every reader goes on writing `inner.automation.get(pr)`
+  unchanged and `inner.automation.insert(…)` outside `state.rs` stops compiling.
+  **There were no offenders when it went in**, which is the argument for it rather
+  than against — nothing would have reported the first one, and the failure it
+  guards is a record changed in memory and never written, which looks right until
+  a restart drops it.
 - **You cannot self-review your way to a testable review thread — use the
   fixture.** `acknowledged()` (`forge/github.rs`) treats a thread whose last
   comment is yours as answered, so a PR you comment on yourself has nothing
