@@ -49,6 +49,10 @@ async fn main() -> Result<()> {
     // says why.
     let host_origin = arg("--host-origin");
 
+    // Woken by the stdin-EOF thread below, so that kill switch ends in the same
+    // `Server::shutdown` the signals do.
+    let eof = std::sync::Arc::new(tokio::sync::Notify::new());
+
     let server = orchd_serve::start(orchd_serve::StartOptions {
         main_checkout,
         // A busy port here means another orchd is already running, and saying
@@ -81,7 +85,16 @@ async fn main() -> Result<()> {
         let _ = std::io::stdout().flush();
         // The second kill switch: a host that was SIGKILLed leaves no signal to
         // catch, only this pipe going away.
-        orchd::child::exit_on_stdin_eof(|| std::process::exit(0));
+        //
+        // **It joins the signal path rather than exiting**, because `Child::stop`
+        // drops our stdin *before* it signals: an `exit(0)` here won the race with
+        // the SIGTERM handler every time, so a closed checkout skipped
+        // `Server::shutdown`. Its sessions are `setsid` ptys, so they are not in
+        // this process group and outlived it, and no managed process ever got its
+        // `stop_command`. `Notify` keeps one permit, so an EOF that lands before
+        // the `select!` below is not lost.
+        let n = std::sync::Arc::clone(&eof);
+        orchd::child::exit_on_stdin_eof(move || n.notify_one());
     } else {
         println!("orchd  {}", server.url());
         println!("main   {}", server.app.cfg.main_checkout.display());
@@ -116,8 +129,18 @@ async fn main() -> Result<()> {
             tokio::signal::ctrl_c().await
         }
     };
-    stopped.await?;
-    println!();
+    tokio::select! {
+        r = stopped => r?,
+        _ = eof.notified() => {}
+    }
+    // A terminal run ends a line of its own; an announcing child must not print at
+    // all here. Its stdout is the parent's protocol pipe, and the parent has
+    // usually already dropped it — `println!` panics on a broken pipe, which took
+    // the process out one line above `shutdown` and reinstated the very defect the
+    // wakeup above exists to fix.
+    if !announce {
+        println!();
+    }
     server.shutdown().await;
     Ok(())
 }
