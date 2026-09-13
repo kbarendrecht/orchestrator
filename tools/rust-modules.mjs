@@ -34,9 +34,24 @@
 // way, into `config` beside the `Tracker` field it reads. That pass took the SCC
 // from 16 to 11.
 //
-// What is left is the runtime core: api, fix_pr, health, post, spawn, state,
-// store, story, triage, update, worktree — eleven modules that genuinely call
-// each other, and the next move on them is a crate split rather than a rename.
+// **A third pass took six more, and every one was the same shape as the first.**
+// `state::Inner` held four feature modules' own types — `fix_pr::AutomationStore`,
+// `post::ManualPhase`, `story::Cache`, `update::UpdateInfo` and its two siblings —
+// and `store` persisted them, so `state` imported the four modules that import
+// `state`. They are in `model` now, beside `Bank` and `DiffFile`, which is the
+// rule this file already recorded: a shape lives in `model`, the module that
+// fills it depends on `model`. `state::ResolveRun` went with them because `store`
+// loads it. The sixth was `spawn::run_worktree_hooks`, one function `worktree`
+// called back into `spawn` for — it is in `worktree` now, beside `revive`, the
+// caller that needed it.
+//
+// **Two are left, and they are one fact.** `spawn` owns the only `pty.wait()`, so
+// it is where a run's end is learned, and it settles that run by naming
+// `fix_pr::settle`, `fix_pr::start` and `triage`'s guards — while `fix_pr` and
+// `triage` call `spawn_run` to start the run. Inverting it means publishing the
+// exit and letting the feature subscribe, and the subscription has to outlive a
+// restart: `auto_resume` rebuilds a run's session from its persisted `Pass`, so a
+// hook stored on `RunSpec` would be gone by the time the run ends.
 //
 // **The split is done and this script stayed.** Four crates now, and `cargo`
 // refuses a cycle that crosses any of their lines — but it cannot see one *inside*

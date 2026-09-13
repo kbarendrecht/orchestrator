@@ -557,9 +557,18 @@ where they were written. Every one of them cost something.
   it is.** `mise run check-modules` is a **ratchet**, not the DAG rule the SPA
   gets: a new mutual pair fails, and a pair that goes away fails too until it is
   deleted from `tools/rust-modules.json`, so the number can only fall. That
-  script's own header carries where it started, the two passes that broke seven
-  pairs and the shape each had; `docs/crate-split.md` has the measured plan for
-  what is left, which is a crate split rather than a rename.
+  script's own header carries where it started, the three passes that broke
+  fifteen pairs and the shape each had; `docs/crate-split.md` has the measured
+  plan for what is left.
+  **Two pairs are left, and both are one fact**: `spawn` owns the only
+  `pty.wait()`, so it is where a run's end is learned — and it then calls
+  `fix_pr::settle`, `fix_pr::start` and `triage`'s guards by name, while both
+  modules call `spawn_run` to start the run in the first place. Breaking that is
+  a design change rather than a move: the exit has to be published and the
+  feature has to subscribe, and the subscription has to survive a restart, since
+  `auto_resume` rebuilds a run's session from its `Pass` alone. A hook on
+  `RunSpec` does **not** do it — `RunSpec` is not persisted, so a fix run
+  resumed after a restart would never settle.
   Three things about the reader are worth carrying beyond it. **The baseline holds
   the pairs and nothing else** — it used to record module and edge counts that
   nothing read back, so they sat at 155 while the tree had 122, and a number a

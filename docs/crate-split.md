@@ -14,7 +14,7 @@ first: every step cost something the sketch did not predict.
 
 `tools/rust-modules.mjs` exists because nothing reported the daemon's module
 graph, and what it found was 17 mutual imports and a strongly connected component
-of 16 modules. Seven of those pairs are gone. What is left is a ratchet — a
+of 16 modules. All but two of those pairs are gone. What is left is a ratchet — a
 script that holds a number — and a script holding a number is a rule with a
 runtime. **`cargo` enforces this for free between crates**, and the day the split
 happens that script can be deleted.
@@ -24,7 +24,7 @@ buy* below.
 
 ## The graph today
 
-41 modules, 122 edges, 10 mutual pairs. Condense the strongly connected component
+44 modules, 136 edges, 2 mutual pairs. Condense the strongly connected component
 to one node and what is left is a **clean nine-layer DAG** — the split needs no
 code change to be *possible*, only the mechanical work of moving files.
 
@@ -154,8 +154,7 @@ dominate any build that touches `base` — which is most of them, since `git` an
 `model` live there. Expect a wash, and measure rather than assume.
 
 **Not fewer cycles.** `cargo` enforces the boundaries a split *draws*; it draws
-none through a crate. Nine of the ten remaining pairs are inside the runtime
-core, and the tenth — `git <-> review_commit` — is inside `orchd-base`, which is
+none through a crate. Both remaining pairs are inside the runtime core, which is
 why `tools/rust-modules.mjs` still has work to do after every step.
 
 ## How to do it without one unreviewable commit
@@ -295,9 +294,9 @@ which is the good case. The exclude is spelled in full rather than as
 `tools/rust-modules.mjs` at this step, on the reasoning that `cargo` would then
 enforce what it ratchets. That reasoning is wrong, and its own *What it does not
 buy* section says so two paragraphs earlier: `cargo` enforces the boundaries a
-split **draws**, and it draws none through a crate. All ten remaining mutual pairs
-are inside a single crate — nine in the runtime core, one (`git <-> review_commit`)
-in `orchd-base` — so `cargo` can see none of them. The script is the only thing
+split **draws**, and it draws none through a crate. Every remaining mutual pair
+is inside a single crate — `fix_pr <-> spawn` and `spawn <-> triage`, both in the
+runtime core — so `cargo` can see none of them. The script is the only thing
 that can, and it now needs no special case for a root `src/`: every crate is under
 `crates/`. It goes when the runtime core is split, which is a design change and
 not on this page.
