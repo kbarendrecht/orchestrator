@@ -430,23 +430,97 @@ fn session_env() -> Result<(String, String, String), String> {
     }
 }
 
+/// A refusal, and what a script should make of it.
+///
+/// **An exit code, because matching on English is the alternative.** Every one of
+/// the daemon's refusals used to be a `400` and this binary exited `1` for all of
+/// them, so a script could not tell "that session is gone" from "wait, an agent is
+/// mid-turn" from "the daemon fell over" without reading the sentence. The daemon
+/// answers `404` and `409` for the two it can name (`orchd::api::Refusal`), and
+/// these are the two codes that carry it out:
+///
+/// * **4** — nothing here by that name. Retrying will not help.
+/// * **9** — here, but held. Retrying later is exactly the thing to do.
+/// * **1** — everything else, which is what it always was.
+///
+/// The message is unchanged in all three: the code is for a script and the
+/// sentence is for a person, and neither has to give way to the other.
+#[derive(Debug)]
+struct Failure {
+    message: String,
+    code: u8,
+}
+
+impl Failure {
+    fn of(message: impl Into<String>) -> Self {
+        Failure {
+            message: message.into(),
+            code: 1,
+        }
+    }
+
+    /// The code an HTTP status means to a caller of this binary.
+    fn from_status(status: u32, message: impl Into<String>) -> Self {
+        Failure {
+            message: message.into(),
+            code: match status {
+                404 => 4,
+                409 => 9,
+                _ => 1,
+            },
+        }
+    }
+}
+
+impl std::fmt::Display for Failure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl From<String> for Failure {
+    fn from(message: String) -> Self {
+        Failure::of(message)
+    }
+}
+
+impl From<&str> for Failure {
+    fn from(message: &str) -> Self {
+        Failure::of(message)
+    }
+}
+
 /// One blocking HTTP call, via `curl`.
 ///
 /// `curl` rather than an HTTP crate on purpose: this binary rides in the same
 /// tarball as the app, and the daemon already shells to `curl` for its own
 /// GitHub calls. A second TLS stack for loopback JSON would be all cost.
-fn http(method: &str, url: &str, token: &str, body: Option<&str>) -> Result<String, String> {
+fn http(method: &str, url: &str, token: &str, body: Option<&str>) -> Result<String, Failure> {
     let mut cmd = std::process::Command::new("curl");
-    cmd.args(["-sS", "-X", method, "-H", &format!("x-orch-ask: {token}")]);
+    // `-w` puts the status on the end, because it is the half `reply` cannot infer:
+    // the body of a refusal says what went wrong and the status says what kind.
+    cmd.args([
+        "-sS",
+        "-w",
+        "\n%{http_code}",
+        "-X",
+        method,
+        "-H",
+        &format!("x-orch-ask: {token}"),
+    ]);
     if let Some(b) = body {
         cmd.args(["-H", "content-type: application/json", "-d", b]);
     }
     cmd.arg(url);
     let out = cmd.output().map_err(|e| format!("running curl: {e}"))?;
     if !out.status.success() {
-        return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
+        return Err(Failure::of(
+            String::from_utf8_lossy(&out.stderr).trim().to_string(),
+        ));
     }
-    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    let text = String::from_utf8_lossy(&out.stdout).into_owned();
+    let (body, status) = text.rsplit_once('\n').unwrap_or((text.as_str(), "0"));
+    Ok(format!("{}\n{}", status.trim(), body))
 }
 
 /// The daemon's reply, or its `{"error": …}` as an `Err`.
@@ -463,7 +537,7 @@ fn http(method: &str, url: &str, token: &str, body: Option<&str>) -> Result<Stri
 /// a human taking ten minutes safe. Shared by `ask` and `outside`, which differ
 /// only in what they do with the answer — the loop was `ask`'s alone and the second
 /// caller is exactly when a copy would start drifting.
-fn await_answer(base: &str, me: &str, token: &str, ask: &str) -> Result<(String, String), String> {
+fn await_answer(base: &str, me: &str, token: &str, ask: &str) -> Result<(String, String), Failure> {
     loop {
         let r = http(
             "GET",
@@ -488,15 +562,23 @@ fn await_answer(base: &str, me: &str, token: &str, ask: &str) -> Result<(String,
     }
 }
 
-fn reply(out: &str) -> Result<Value, String> {
-    let v: Value = serde_json::from_str(out.trim()).map_err(|e| {
-        format!(
-            "the daemon answered something that is not JSON ({e}): {}",
-            out.trim()
+fn reply(out: &str) -> Result<Value, Failure> {
+    // `http` puts the status on the first line. A caller that built this string
+    // itself (a test) has no status, and `0` then means "unknown", which maps to
+    // the ordinary exit code.
+    let (status, body) = out.trim_start().split_once('\n').unwrap_or(("0", out));
+    let status: u32 = status.trim().parse().unwrap_or(0);
+    let v: Value = serde_json::from_str(body.trim()).map_err(|e| {
+        Failure::from_status(
+            status,
+            format!(
+                "the daemon answered something that is not JSON ({e}): {}",
+                body.trim()
+            ),
         )
     })?;
     if let Some(err) = v.get("error").and_then(Value::as_str) {
-        return Err(err.to_string());
+        return Err(Failure::from_status(status, err));
     }
     Ok(v)
 }
@@ -565,7 +647,9 @@ fn main() -> ExitCode {
         }
         Err(e) => {
             eprintln!("orch: {e}");
-            ExitCode::FAILURE
+            // The kind, for a script. A person reads the line above and gets the
+            // same sentence either way — see `Failure`.
+            ExitCode::from(e.code)
         }
     }
 }
@@ -735,7 +819,7 @@ fn current_branch(cwd: &str) -> Option<String> {
     (!name.is_empty()).then_some(name)
 }
 
-fn run(cmd: &str, a: &Parsed) -> Result<String, String> {
+fn run(cmd: &str, a: &Parsed) -> Result<String, Failure> {
     let (base, me, token) = session_env()?;
 
     match cmd {
@@ -815,10 +899,10 @@ fn run(cmd: &str, a: &Parsed) -> Result<String, String> {
         "ls" => {
             if let Some(want) = a.value("--state") {
                 if !STATES.contains(&want) {
-                    return Err(format!(
+                    return Err(Failure::of(format!(
                         "unknown state {want} — one of: {}",
                         STATES.join(", ")
-                    ));
+                    )));
                 }
             }
             let out = http("GET", &format!("{base}/api/state"), &token, None)?;
@@ -948,7 +1032,7 @@ fn run(cmd: &str, a: &Parsed) -> Result<String, String> {
                 format!("{answer}\n{text}")
             })
         }
-        other => Err(format!("unknown command `{other}`\n\n{USAGE}")),
+        other => Err(Failure::of(format!("unknown command `{other}`\n\n{USAGE}"))),
     }
 }
 
@@ -1101,10 +1185,43 @@ mod tests {
     #[test]
     fn an_error_body_becomes_an_error() {
         let e = reply(r#"{"error":"unknown workspace foo — known: main"}"#).expect_err("refusal");
-        assert!(e.contains("known: main"), "{e}");
+        assert!(e.to_string().contains("known: main"), "{e}");
         let v = reply(r#"{"session":"abc","workspace":"main","path":"/tmp/x"}"#).unwrap();
         assert_eq!(str_at(&v, "path"), "/tmp/x");
         // An unknown route answers `{}`, which must not read as a successful spawn.
         assert_eq!(str_at(&reply("{}").unwrap(), "session"), "-");
+    }
+
+    /// The exit code is the *kind* of refusal, so a script does not read English.
+    ///
+    /// `http` puts the status on the first line, which is the half the body cannot
+    /// carry: a session that is gone and an agent that is mid-turn are the same
+    /// sentence shape and want opposite answers from a caller — one is final, the
+    /// other means "later".
+    #[test]
+    fn a_refusals_kind_reaches_the_exit_code() {
+        let gone = reply("404\n{\"error\":\"no such session abc\"}").expect_err("refusal");
+        assert_eq!(gone.code, 4, "a missing thing is not a retry");
+        assert_eq!(
+            gone.to_string(),
+            "no such session abc",
+            "the sentence is unchanged"
+        );
+
+        let held = reply("409\n{\"error\":\"abc is working here\"}").expect_err("refusal");
+        assert_eq!(held.code, 9, "held is worth trying again");
+
+        let other = reply("400\n{\"error\":\"no path given\"}").expect_err("refusal");
+        assert_eq!(other.code, 1, "everything else is what it always was");
+
+        // And a body with no status line at all — a test, or an older daemon —
+        // still reads as an ordinary failure rather than as nothing.
+        let bare = reply(r#"{"error":"whatever"}"#).expect_err("refusal");
+        assert_eq!(bare.code, 1);
+        // A success with a status line is still a success.
+        assert_eq!(
+            str_at(&reply("200\n{\"path\":\"/tmp/x\"}").unwrap(), "path"),
+            "/tmp/x"
+        );
     }
 }

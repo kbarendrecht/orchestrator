@@ -23,11 +23,21 @@ impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         // Errors are shown verbatim in the rail: a refused `git worktree remove`
         // is information, not noise to swallow.
-        (
-            StatusCode::BAD_REQUEST,
-            Json(json!({ "error": format!("{:#}", self.0) })),
-        )
-            .into_response()
+        //
+        // The status is the *kind*, and the body is unchanged either way — the SPA
+        // and `orch` both read `error`, and a refusal that changed its sentence to
+        // gain a code would be a worse trade than the one it fixes.
+        let status = self
+            .0
+            .chain()
+            .find_map(|e| e.downcast_ref::<Refusal>())
+            .map_or(StatusCode::BAD_REQUEST, |r| match r {
+                // The kinds are the daemon's; the codes are this layer's, which is
+                // why the mapping is here and the enum is in `model`.
+                Refusal::Missing(_) => StatusCode::NOT_FOUND,
+                Refusal::Busy(_) => StatusCode::CONFLICT,
+            });
+        (status, Json(json!({ "error": format!("{:#}", self.0) }))).into_response()
     }
 }
 
@@ -53,6 +63,21 @@ macro_rules! refuse {
 // vocabulary: a `macro_rules!` is textually scoped, so a sibling module cannot see
 // one without this.
 pub(crate) use refuse;
+
+/// `refuse!` for a resource somebody else is holding: the same sentence, answered
+/// `409` rather than `400`.
+///
+/// **"Try again when the agent stops" and "the daemon will never accept this" are
+/// different answers**, and a script could not tell them apart — every refusal was
+/// a `400` and the only signal was English. Every site that uses this is a
+/// *temporary* no: a session mid-turn, a stopped rebase, a question already open.
+macro_rules! refuse_busy {
+    ($($arg:tt)*) => {
+        return Err(ApiError(
+            crate::model::Refusal::Busy(format!($($arg)*)).into(),
+        ))
+    };
+}
 
 // ---------------------------------------------------------------------------
 // Guards (§12)
@@ -795,7 +820,7 @@ pub async fn ask(
             .ok_or_else(|| crate::state::no_such_session(id))?;
         if let Some(open) = &s.interaction {
             if open.answer.is_none() {
-                refuse!("session {id} is already asking something else");
+                refuse_busy!("session {id} is already asking something else");
             }
         }
         s.interaction = Some(interaction);
@@ -1312,7 +1337,7 @@ pub async fn file_verb(
         .into_owned();
 
     if let Some(who) = app.busy_session_in(&body.workspace).await {
-        refuse!("{who} is mid-turn in {} — wait for it", body.workspace);
+        refuse_busy!("{who} is mid-turn in {} — wait for it", body.workspace);
     }
 
     let (at, want) = (root.clone(), rel.clone());
@@ -1558,7 +1583,7 @@ pub async fn allow_outside(
             .ok_or_else(|| crate::state::no_such_session(id))?;
         if let Some(open) = &s.interaction {
             if open.answer.is_none() {
-                refuse!("session {id} is already asking something else");
+                refuse_busy!("session {id} is already asking something else");
             }
         }
         s.interaction = Some(interaction);
@@ -2752,7 +2777,7 @@ pub async fn rebase(
         .await?
     };
     if mid_rebase {
-        refuse!("a rebase is already stopped part-way here; finish or abort it first");
+        refuse_busy!("a rebase is already stopped part-way here; finish or abort it first");
     }
     /* **Unmerged paths are the one dirty tree this cannot bank.** `git stash
     create` refuses them outright ("Cannot save the current index state"), so
@@ -2772,7 +2797,7 @@ pub async fn rebase(
         );
     }
     if let Some(who) = app.busy_session_in(&workspace).await {
-        refuse!("{who} is working here; rebasing under it would fight it");
+        refuse_busy!("{who} is working here; rebasing under it would fight it");
     }
     /* **One bank at a time, or the second press loses the first.** `update-ref`
     overwrites, which would leave the earlier WIP commit unreferenced with
@@ -2997,7 +3022,7 @@ pub async fn wip_restore(
         refuse!("{workspace} has nothing banked");
     }
     if let Some(who) = app.busy_session_in(&workspace).await {
-        refuse!("{who} is working here; wait for the turn to finish");
+        refuse_busy!("{who} is working here; wait for the turn to finish");
     }
     /* Git cannot apply anything onto unmerged paths, and its own refusal is about
     the index rather than about the conflict sitting in front of you. Which is

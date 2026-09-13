@@ -22,7 +22,7 @@ use crate::pty::pid_alive;
 /// extractor could only prove the id exists and leave every caller to look it up
 /// again under its own lock.
 pub fn no_such_session(id: SessionId) -> anyhow::Error {
-    anyhow::anyhow!("no such session {id}")
+    crate::model::Refusal::Missing(format!("no such session {id}")).into()
 }
 
 /// What the overview shows about a run: one row per thread, in plan order.

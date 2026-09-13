@@ -735,6 +735,43 @@ impl Session {
     }
 }
 
+/// A refusal the daemon knows the *kind* of.
+///
+/// **Everything used to be `400`,** including a git command that blew up — so a
+/// session that is not there, a branch somebody else is working on and a genuine
+/// daemon failure all said "your request was wrong", which for the last of those is
+/// simply false. The sentence was the only signal, and matching on English is what
+/// a status code exists to stop.
+///
+/// Two kinds, because two are what the daemon can tell apart without re-judging
+/// every one of its forty-odd refusals: **`Missing`** is nothing here by that name,
+/// and **`Busy`** is here, but held. Everything else stays `400`, which is what
+/// most refusals honestly are — a request the daemon will never accept as written.
+///
+/// **Here rather than in `api`, because the kind is the daemon's and the status is
+/// the HTTP layer's.** It started in `api` and the module gate refused it within
+/// the hour: `state::no_such_session` builds one, so `state` imported `api`, which
+/// imports everything — a ten-module cycle out of one `use`.
+///
+/// Carried as an `anyhow::Error` so `?` keeps working at every call site: the kind
+/// is recovered by `api::ApiError::into_response` downcasting, which sees through a
+/// `.context()` chain.
+#[derive(Debug)]
+pub enum Refusal {
+    Missing(String),
+    Busy(String),
+}
+
+impl std::fmt::Display for Refusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Refusal::Missing(what) | Refusal::Busy(what) => f.write_str(what),
+        }
+    }
+}
+
+impl std::error::Error for Refusal {}
+
 // ---------------------------------------------------------------------------
 // Interaction
 // ---------------------------------------------------------------------------
