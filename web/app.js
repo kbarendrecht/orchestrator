@@ -3,7 +3,7 @@
 // The SPA is a module now, so what it reaches for is written down. `core.js` holds
 // the primitives every part needs; `queue.js` is the first seam extracted whole.
 import {
-  $, el, toast, reason, call, callHost, get, activeCheckout, CHECKOUTS, setCheckouts,
+  $, el, toast, reason, safeHref, call, callHost, get, activeCheckout, CHECKOUTS, setCheckouts,
   HOST, snapshotOf, repoSummary, wsKey, everySession, enterCheckout, onThemeChange,
   snap, receive, keyActivate,
   setZoom, setUiPx, uiPx, saveZoom, onScaleChange, ZOOM,
@@ -431,7 +431,7 @@ function renderUpdate() {
         : u?.tool
           ? `Update available — v${u?.latest} (you have v${u?.current})`
           : `Update available — v${u?.latest} (you have v${u?.current}). Run mise up`;
-  link.href = u?.url || '#';
+  link.href = safeHref(u?.url);
   link.title = failed ? run.tail : '';
 
   /* No button unless mise installed this build. A `.deb` wants apt and a password,

@@ -19,8 +19,12 @@
 //   * `undefined` or `NaN` in something a person reads. The review header spent
 //     months reading its fallback because the daemon never sent `title` — a
 //     missing field shows up exactly this way.
-//   * two sets of window buttons. The board and `firstrun.html` draw their own
-//     chrome separately, and macOS grew a native titlebar beside ours (#11).
+//   * two sets of window buttons. The board and the first-run page used to draw
+//     their own chrome separately, and macOS grew a native titlebar beside ours
+//     (#11). One page draws it now, and this is what keeps that true.
+//   * a link the page would navigate to that is not `http`. `safeHref` is the one
+//     rule and every `href =` goes through it; asserted by calling it, because a
+//     rendered page has no such link in it to look at — which is the point.
 //   * anything thrown during boot, which `pageerror` catches for free.
 
 import { chromium } from 'playwright-core'
@@ -98,6 +102,31 @@ try {
 
   check(seen.wctl === 1, `one window-button group${seen.wctl === 1 ? '' : `, found ${seen.wctl}`}`)
   check(seen.buttons === 3, `three window buttons${seen.buttons === 3 ? '' : `, found ${seen.buttons}`}`)
+
+  /* The href rule, in the page's own module rather than a copy of it here. A PR's
+     URL comes from GitHub, a review row's from whatever `reviews_command` prints,
+     a story's from an agent reading third-party comments — and `javascript:` in
+     one of them is a script running with the page's token on a click that looks
+     like a link. The refused shapes are the ones a prefix test gets wrong. */
+  const hrefs = await page.evaluate(async () => {
+    const { safeHref } = await import('/js/core.js')
+    return {
+      https: safeHref('https://github.com/acme/mono/pull/7'),
+      http: safeHref('http://127.0.0.1:9/x'),
+      script: safeHref('javascript:fetch("/api/state")'),
+      spaced: safeHref('  javascript:alert(1)'),
+      cased: safeHref('JavaScript:alert(1)'),
+      data: safeHref('data:text/html,<script>1</script>'),
+      empty: safeHref(''),
+      relative: safeHref('/review-preview'),
+    }
+  })
+  check(hrefs.https.startsWith('https://github.com/'), 'an https URL is left alone')
+  check(hrefs.http.startsWith('http://'), 'so is plain http')
+  check(hrefs.relative.startsWith(`http://127.0.0.1:${t.port}/`), 'a relative URL resolves against the page')
+  const refused = ['script', 'spaced', 'cased', 'data', 'empty']
+  const got = refused.filter((k) => hrefs[k] !== '#')
+  check(got.length === 0, `nothing but http reaches an href${got.length ? `: ${got.join(', ')} did` : ''}`)
 
   console.log(`\npage-check: ${failed ? 'FAILED' : 'ok'}`)
 } finally {

@@ -1,7 +1,7 @@
 // The review overlay: read a PR's threads, decide each one, then one batch of
 // outward writes. The largest single feature in the SPA.
 
-import { $, call, compactAge, confirmBox, el, get, MOD_LABEL, newShell, promptBox, selected, setSelected, snap, reason, toast, unchanged, setPendingSelect } from './core.js';
+import { $, call, compactAge, confirmBox, el, get, MOD_LABEL, newShell, promptBox, reason, safeHref, selected, setPendingSelect, setSelected, snap, toast, unchanged } from './core.js';
 import * as Diff from './diff.js';
 import { langFor, hlTokens, paintRanges } from './diff.js';
 import { patchStats, hunkEl, fileListLabel } from './review-diff.js';
@@ -1359,7 +1359,7 @@ function resultSec(/** @type {string} */ title, /** @type {any[]} */ rows, /** @
     c.appendChild(el('span', s.held ? 't held' : 't', s.t));
     if (s.link) {
       const a = el('a', 'm', s.link);
-      a.href = s.link;
+      a.href = safeHref(s.link);
       a.target = '_blank';
       a.rel = 'noreferrer';
       a.style.color = 'var(--work)';

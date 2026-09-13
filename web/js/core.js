@@ -447,6 +447,35 @@ export const $ = (/** @type {string} */ id) => {
  *  everything fetched through it keeps being checked. */
 export const ctl = (/** @type {string} */ id) => /** @type {any} */ (document.getElementById(id));
 
+/** A URL fit to put in an `href`, or `#`.
+ *
+ *  **Every one of these comes from outside.** A PR's URL and a release's come from
+ *  GitHub, a review row's from `reviews_command` — a command the repo configures,
+ *  so its output is whatever that prints — and a story's from an agent whose own
+ *  input is third-party review comments. Four `href =` sites took the string as it
+ *  arrived, and `javascript:` in one of them is a script running with the page's
+ *  token, on a click that looks like a link.
+ *
+ *  `http` and `https` only, judged by parsing rather than by prefix: `URL` resolves
+ *  the scheme the way the browser will, so ` javascript:…`, `JavaScript:…` and a
+ *  `data:` URL are refused by one rule. A relative URL has no scheme of its own and
+ *  resolves against this page, which is where it belongs.
+ *
+ *  `#` rather than no anchor, because the row is still the row: it reads and copies
+ *  the same, and only the navigation is refused.
+ *
+ *  @param {string | null | undefined} url
+ */
+export function safeHref(url) {
+  if (!url) return '#';
+  try {
+    const parsed = new URL(url, location.href);
+    return parsed.protocol === 'https:' || parsed.protocol === 'http:' ? parsed.href : '#';
+  } catch {
+    return '#';
+  }
+}
+
 /** `document.createElement` with the three things every call here sets.
  *
  *  Generic on the tag so `el('input')` is an `HTMLInputElement` and its `.value`

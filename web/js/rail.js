@@ -1,7 +1,7 @@
 // The rail: what is running, what is waiting on you, and the PRs beside it.
 // Twenty-four names, three out; the rest is how a row decides what it says.
 
-import { $, activeCheckout, byNewest, call, callFor, bandOf, callHost, callOn, checkoutOf, CHECKOUTS, chooseBox, enterCheckout, everySession, getHost, snapshotOf, snapshotFor, repoSummary, terms, caret, clock, confirmBox, copyText, creating, startingShown, watchStarting, dotClass, el, isArchived, isConversation, isWaiting, mainWorkspace, MOD_LABEL, newSession, newWorktree, creatingIn, openMenu, pending, QUEUE_MAX, refreshButton, selected, sessionsOf, setSelected, snap, stateClass, stateLabel, reason, toast, unchanged, setPendingSelect } from './core.js';
+import { $, activeCheckout, bandOf, byNewest, call, callFor, callHost, callOn, caret, checkoutOf, CHECKOUTS, chooseBox, clock, confirmBox, copyText, creating, creatingIn, dotClass, el, enterCheckout, everySession, getHost, isArchived, isConversation, isWaiting, mainWorkspace, MOD_LABEL, newSession, newWorktree, openMenu, pending, QUEUE_MAX, reason, refreshButton, repoSummary, safeHref, selected, sessionsOf, setPendingSelect, setSelected, snap, snapshotFor, snapshotOf, startingShown, stateClass, stateLabel, terms, toast, unchanged, watchStarting } from './core.js';
 import * as Open from './open.js';
 import * as Review from './review.js';
 import * as Term from './term.js';
@@ -694,7 +694,7 @@ function prGroup() {
     // Rows for PRs that already have a session are dimmed, and the chip at the
     // end of the row goes to it (§9).
     const row = el('a', 'prrow' + (p.session ? ' linked' : ''));
-    row.href = p.url || '#';
+    row.href = safeHref(p.url);
     row.oncontextmenu = (ev) => openMenu(ev, prMenu(p, null));
     // ⌘-click, middle-click and copy-link all behave, and the browser already
     // holds the GitHub session.

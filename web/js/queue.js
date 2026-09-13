@@ -3,7 +3,7 @@
 // The first seam to become a real module: five names, one of which leaves. What
 // it needs from elsewhere is now an import list rather than an assumption about
 // what happens to be in scope.
-import { $, activeCheckout, bandOf, caret, CHECKOUTS, clock, compactAge, el, QUEUE_MAX, snap, refreshButton, unchanged } from './core.js';
+import { $, activeCheckout, bandOf, caret, CHECKOUTS, clock, compactAge, el, QUEUE_MAX, refreshButton, safeHref, snap, unchanged } from './core.js';
 
 let showReviews = true;
 let showBlockedReviews = false;
@@ -134,7 +134,7 @@ function renderReviews() {
     const a = el('a', 'rvrow' + (dim ? ' dim' : ''));
     // The conversation tab: what a reviewer needs first is the description and
     // what has already been said, not a wall of diff with none of the context.
-    a.href = r.url;
+    a.href = safeHref(r.url);
     a.target = '_blank';
     a.rel = 'noreferrer';
     /* Grey unless it is a re-review: the source only sets `needsReReview` for
