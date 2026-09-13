@@ -87,21 +87,40 @@ function moduleOf(path) {
   return ['lib', 'main', 'bin', 'mod'].includes(first) ? null : first;
 }
 
-/** Comments are not dependencies, and neither is a `#[cfg(test)] mod tests`.
+/** Comments are not dependencies, and neither is a `#[cfg(test)] mod`.
  *
- *  The test module is cut at its attribute rather than brace-matched: it is the
- *  last item in every file here, and a brace counter would have to understand
- *  strings and char literals to be right.
+ *  **Every one of them is cut, not the first.** This used to slice the file at
+ *  the first `mod tests` attribute and keep the head, on the written assumption
+ *  that the test module is the last item in the file — and `api.rs` broke it,
+ *  carrying 858 lines of handlers below its tests. Their imports (`fix_pr`,
+ *  `git`, `forge`) were read nowhere, so a mutual pair among them could have
+ *  landed while this printed "no worse". A tool that quietly stops watching part
+ *  of the tree is worse than no tool, and clippy does not cover the gap:
+ *  `items_after_test_module` reads the crate root alone, and every file here is a
+ *  submodule.
+ *
+ *  Each module is cut from its attribute to the first `}` in the first column,
+ *  which `cargo fmt` — a gate here — makes exact: nothing nested can start a
+ *  line there. `names.rs` has a second such module (`sample`), so the name is
+ *  not matched either.
  *
  *  **The visibility is optional and that is not cosmetic.** `pty.rs` writes
  *  `pub(crate) mod tests` so its fixtures can be shared, and a pattern that only
  *  matched a bare `mod tests` read that whole module as shipped code — which put
  *  `pty -> testutil -> state -> model` into the graph and reported a 23-module
  *  strongly connected component that does not exist. */
+const TEST_MOD = /#\[cfg\(test\)\]\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+[a-z_]+\s*\{/;
+
 function strip(src) {
-  const noComments = src.replace(/\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '');
-  const at = noComments.search(/#\[cfg\(test\)\]\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+tests\s*\{/);
-  return at >= 0 ? noComments.slice(0, at) : noComments;
+  let out = src.replace(/\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '');
+  for (;;) {
+    const at = out.search(TEST_MOD);
+    if (at < 0) return out;
+    const close = out.indexOf('\n}\n', at);
+    // An unclosed module is the end of the file, so there is nothing after it.
+    if (close < 0) return out.slice(0, at);
+    out = out.slice(0, at) + out.slice(close + 3);
+  }
 }
 
 /** Modules `lib.rs` declares under `#[cfg(test)]` — `testutil` — are not in the
