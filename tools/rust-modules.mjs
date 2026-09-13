@@ -140,6 +140,34 @@ function strip(src) {
   }
 }
 
+/** Is this file a test module its own directory declares under `#[cfg(test)]`?
+ *
+ *  **A file, not a `mod tests {}` block, which [`strip`] would have cut.** The
+ *  `git` module became a directory with a `tests.rs` beside its seven source
+ *  files, and this script read those 2,000 lines as shipped code — the amend tests
+ *  import `crate::review_commit`, so a `git <-> review_commit` cycle appeared out
+ *  of a move that changed no shipped line. It failed, which is the gate doing its
+ *  job; this is the answer it was asking for.
+ *
+ *  Asked of the declaration rather than of the filename, so a real `tests.rs` that
+ *  somebody ships would still be counted. */
+function declaredTestOnly(path) {
+  const dir = dirname(path);
+  const stem = path.slice(dir.length + 1).replace(/\.rs$/, '');
+  for (const parent of [`${dir}/mod.rs`, `${dir}/lib.rs`]) {
+    let src;
+    try {
+      src = readFileSync(parent, 'utf8');
+    } catch {
+      continue;
+    }
+    if (new RegExp(`#\\[cfg\\(test\\)\\]\\s*(?:pub(?:\\([^)]*\\))?\\s+)?mod\\s+${stem}\\s*;`).test(src)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 /** Modules `lib.rs` declares under `#[cfg(test)]` — `testutil` — are not in the
  *  shipped binary, so an edge into one is not a dependency of the daemon. */
 function testOnlyModules() {
@@ -159,7 +187,7 @@ const edges = new Map();
 const mods = new Set();
 for (const f of files) {
   const m = moduleOf(f);
-  if (!m || testOnly.has(m)) continue;
+  if (!m || testOnly.has(m) || declaredTestOnly(f)) continue;
   mods.add(m);
   const to = edges.get(m) ?? new Set();
   edges.set(m, to);
