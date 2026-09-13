@@ -595,7 +595,7 @@ crates/orchd-serve/   the daemon: the server, and everything it starts.
   host.rs         the page, the asset routes, the checkout list, the window commands
   hooks.rs        hook receiver and the generated settings file
   ws.rs           event stream + pty attach
-  firstrun.rs     the first-run page: merges config, detects a fork layout, restarts
+  firstrun.rs     judging a folder, reading a repo, writing its config, the recents
   main.rs         the `orchd` binary; bin/orch.rs is the `orch` CLI a session gets
 
 web/            the SPA (vanilla, xterm.js vendored) — one module graph under js/,

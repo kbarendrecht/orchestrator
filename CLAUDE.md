@@ -307,6 +307,27 @@ where they were written. Every one of them cost something.
   **`--announce` needs a live stdin pipe.** Run that flag by hand from a shell and
   the daemon exits at once, because stdin is `/dev/null` and EOF is the second kill
   switch. `tests/host_and_child.rs` is the way to drive this pair; a terminal is not.
+- **First run is a screen, not a second application.** `firstrun.rs` used to serve
+  its own axum server on its own port, with its own router, its own Host/Origin
+  guard, a `BootstrapHost` trait for the two things that need a window, and a
+  500-line HTML page carrying a copy of the SPA's palette and a titlebar of its
+  own. That titlebar had to learn the macOS window-drag rule a second time, four
+  days after the board did, and the same split put two sets of window buttons on a
+  Mac.
+  **The board already had the journey.** `+ open project` lists the same recents
+  and raises the same dialog through `/api/host/recent` and `/api/host/pick`. What
+  it did not have was the *review* — base branch, GitHub repo, environment tool,
+  the repo's own dev processes — which therefore ran once per install and never for
+  a checkout added from the rail.
+  So the app opens one window whatever is configured, `boot_daemon` treats an empty
+  host as a screen rather than a `fail`, and `web/js/open.js` is that screen:
+  welcome when no checkout is open, review before any folder the host has not seen.
+  `host::validate` and `host::detect` are the two routes it needed.
+  What went with it: the bootstrap server, `BootstrapHost`, `TauriBootstrap`, the
+  `BOOTSTRAP` and `BOOTING` statics, `Written::undo`, `/api/context`,
+  `/api/cancel`, that page, and a test which string-searched its own
+  JavaScript for a `DRAG_SLOP` — a test whose only reason to exist was the
+  duplication.
 - **The page is served by `host.rs`, not by the daemon.** `crates/orchd-serve/src/host.rs` owns
   `GET /`, every asset route, the window commands, the checkout list and the four
   commands that change it (`add`, `close`, `reopen`, `pick`); the daemon keeps
@@ -691,12 +712,13 @@ where they were written. Every one of them cost something.
   meaningless anywhere else, and `dispatch` runs on an axum worker. No `unsafe`:
   `sharedApplication`, `currentEvent` and `type` are all safe in `objc2-app-kit`, so
   the crate keeps `unsafe_code = deny`.
-  **And any page drawing a titlebar arms on mousedown and asks on mousemove**, which
-  keeps the request inside a gesture in the first place. Both pages that draw one
-  paid for it separately — the board in `2990237`, `firstrun.html` four days later,
-  because it draws its own chrome rather than sharing `app.js`. That split is the
-  same one that put two sets of window buttons on macOS; when fixing something in
-  the board's chrome, check whether the first-run page needs it too.
+  **And the page drawing the titlebar arms on mousedown and asks on mousemove**,
+  which keeps the request inside a gesture in the first place. **There used to be
+  two such pages and they paid for this separately** — the board in `2990237`, the
+  first-run page four days later, because it drew its own chrome rather than
+  sharing `app.js`. That split also put two sets of window buttons on macOS. There
+  is one page now: first run is `web/js/open.js` over the board, so a fix to the
+  chrome is a fix everywhere it is drawn.
   The resize strips fire on mousedown and are *not* guarded — they are
   `display:none` on macOS, so the AppKit call is unreachable there. That is safety
   by platform rather than by design: showing them on a Mac would reopen this.
@@ -854,15 +876,20 @@ where they were written. Every one of them cost something.
   waits `KILL_GRACE`, `SIGKILL`s, and sweeps the group once more after the leader
   exits. `kill` and `kill_hard` refuse an exited child, because a reaped pid may
   already be somebody else's.
-- **The first-run page merges into `config.json`, never replaces it.** It runs on
-  every open (fresh checkout, recent, switch) and used to build the file from
-  scratch, so re-picking a moved checkout dropped every hand-tuned key. It keeps
-  the previous file as `config.json.bak`, pins `repo` only when the remote does not
-  already derive it, detects a fork layout itself (the daemon's own first write no
-  longer runs, since this write comes first), and undoes the write when a switch's
-  restart is refused. Its bootstrap server carries the daemon's Host and Origin
-  rules: body-less POSTs are CORS simple requests, so `/api/window/restart` was one
-  `fetch` away from any page in any browser.
+- **The open screen merges into `config.json`, never replaces it.** It runs on
+  every reviewed add and used to build the file from scratch, so re-picking a moved
+  checkout dropped every hand-tuned key. It keeps the previous file as
+  `config.json.bak`, pins `repo` only when the remote does not already derive it,
+  and detects a fork layout itself (the daemon's own first write no longer runs,
+  since this write comes first).
+  **It writes the checkout's own directory now, and that is what makes the review
+  run at all.** The root `config.json` it used to write is one checkout's —
+  `host::checkout_dir` gives each its own `ORCHD_CONFIG_DIR` and the root file is
+  copied into one of them once — so a base branch or a dev process detected for the
+  *second* checkout you opened was detected for nobody. There is no undo any more
+  either: it existed because a refused switch left the root file naming a checkout
+  the daemon was not on, and a leftover config in a checkout's own directory is
+  read by that checkout's daemon alone.
 - **A session's environment is not the shell's, and the gap is invisible.** The
   daemon's environment is whatever started it; from a desktop launcher that is the
   systemd user manager's, which holds no checkout's variables. So a `.mcp.json`
@@ -1404,10 +1431,11 @@ where they were written. Every one of them cost something.
   for an ACK that waits for the peer's delayed-ACK timer, the classic ~40ms per
   round trip. The pty websocket is nothing but small frames in both directions.
   Loopback made it look like it could not matter, and on Linux it mostly does not.
-  **Three servers bind a port here and the third forgot it** — the bootstrap
-  server the first-run page runs on, which no test and no log could have told you
-  about. `serving::spawn` is the one call now, and `clippy::disallowed_methods`
-  refuses `axum::serve` anywhere else, so a fourth server gets it by construction.
+  **Three servers bound a port here and the third forgot it** — the bootstrap
+  server the first-run page ran on, which no test and no log could have told you
+  about. That one is gone with the page, and two are left. `serving::spawn` is the
+  one call, and `clippy::disallowed_methods` refuses `axum::serve` anywhere else,
+  so the next one gets it by construction.
 - **`mise env` per spawn is a decision, not an oversight.** `env_source`'s own
   docblock says why: caching it needs invalidation against files the daemon does
   not watch, and a session with a stale environment is a worse bug than a slow one.
@@ -1611,10 +1639,10 @@ where they were written. Every one of them cost something.
   shell's ~130 dependencies had never been checked or listed at all. The notices
   went from 111 crates to 355. That hole predates the split.
 - **The words are `host`, `checkout` and `session`, and `repository` is reserved.**
-  `host` names the process role above the daemons, not a UI metaphor — it extends
-  `firstrun::BootstrapHost`, which is the trait by which the app gives a server it
-  hosts the window side, so `host.rs`, `/api/host/*`, `/ws/host` and `host.json`
-  read as one vocabulary. Its one cost is named: `api::guard`'s rules are about
+  `host` names the process role above the daemons, not a UI metaphor — it began as
+  `firstrun::BootstrapHost`, the trait by which the app gave a server it hosts the
+  window side, and `host.rs`, `/api/host/*`, `/ws/host` and `host.json` read as one
+  vocabulary. The trait is gone with the bootstrap server; the word stayed. Its one cost is named: `api::guard`'s rules are about
   the HTTP `Host` header, so `/api/host/checkouts` sits beside "the Host rule" and
   reads confusingly for a moment — a collision in one module, where a metaphor
   would have been in every sentence. **`repository` stays reserved for
