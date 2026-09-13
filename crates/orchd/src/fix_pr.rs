@@ -138,13 +138,6 @@ pub fn wants_watching(pr: &Pr) -> bool {
     ended_red(pr) || pr.checks == Checks::Pending
 }
 
-/// The `Pass` command a fix run carries.
-///
-/// Named rather than spelled at the spawn site and again at the place that reacts
-/// to the exit: those two have to agree, and a literal in both is how they stop
-/// agreeing without anything failing.
-pub const COMMAND: &str = "fix-pr";
-
 /// Start a run: the guard table, the spawn, and the record, in that order.
 ///
 /// One function because there are two callers now — the rail's button and a review

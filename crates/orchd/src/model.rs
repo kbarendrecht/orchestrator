@@ -356,6 +356,52 @@ pub struct Pass {
     pub command: String,
 }
 
+impl Pass {
+    /* **The six commands a run can carry, in one place.**
+
+    Each is also the directory its vendored skill lives in, because the first turn
+    is typed as `/orchd:<command> <pr>` — `skills_are_named_after_commands` asserts
+    exactly that pair. A literal at the spawn site and another at the place that
+    reacts to the exit is how the two stop agreeing without anything failing, which
+    is why these were constants at all.
+
+    They were one per feature module, and that is what made `spawn` import the two
+    modules that import `spawn`: the spawn records the command, the route finds it,
+    the rail colours by it and the exit watcher settles on it, so every one of those
+    reached into `fix_pr` or `triage` for a string. The vocabulary belongs to the
+    shape. */
+    /// The run that rebases and force-pushes until CI is green (§8).
+    pub const FIX_PR: &'static str = "fix-pr";
+    /// The overlay review session: proposes, then carries out what you decide.
+    pub const REVIEW: &'static str = "review";
+    /// The headless read-and-propose pass.
+    pub const TRIAGE: &'static str = "triage";
+    /// The batch's carry-out step.
+    pub const RESOLVE_RUN: &'static str = "resolve-run";
+    /// The pane pass over a PR's review threads, and the rail's default review verb.
+    pub const HANDLE_REVIEW: &'static str = "handle-review";
+    /// The tracker filer.
+    pub const STORY: &'static str = "story";
+
+    /// Does this run post proposals, and so need the credential for it?
+    ///
+    /// Asked by the *resume* path, which is the only caller that cannot see how
+    /// the run was started.
+    pub fn posts_proposals(command: &str) -> bool {
+        command == Self::REVIEW || command == Self::TRIAGE
+    }
+
+    /// Is this the triage pass for `pr`?
+    ///
+    /// Asked by the progress route, which is handed a PR number and has to find
+    /// the run that may report against it. One place, because "which command is a
+    /// triage run" is the same question [`Pass::posts_proposals`] answers, and the
+    /// pair drifting apart is what the named constants exist to stop.
+    pub fn is_triage_of(&self, pr: u64) -> bool {
+        self.pr == pr && self.command == Self::TRIAGE
+    }
+}
+
 /// An outstanding "may this session reach that folder?" question.
 ///
 /// Both halves are needed at the moment the answer lands: the id says the question
@@ -1853,5 +1899,27 @@ mod tests {
             "now it really moved"
         );
         assert!(store.get(7).is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // What a run carries
+    // -----------------------------------------------------------------------
+
+    /// Which runs the resume path has to re-credential.
+    ///
+    /// `spawn::spawn_session` rebuilds a resumed session's environment and asks
+    /// this. It answered wrong by not existing: a resumed review run kept its
+    /// ask channel and lost its post token, so it reported the variable missing
+    /// and then asked the human a question the overlay had no card for. Both
+    /// spellings are recorded by `triage::spawn` and `triage::spawn_review`, so a rename that
+    /// misses one turns the bug straight back on.
+    #[test]
+    fn both_posting_runs_are_recognised_and_no_others() {
+        assert!(Pass::posts_proposals(Pass::REVIEW));
+        assert!(Pass::posts_proposals(Pass::TRIAGE));
+        // A fix run posts nothing itself, and handing it the credential would
+        // widen what a run reading third-party comments can reach.
+        assert!(!Pass::posts_proposals(Pass::FIX_PR));
+        assert!(!Pass::posts_proposals("resolve"));
     }
 }

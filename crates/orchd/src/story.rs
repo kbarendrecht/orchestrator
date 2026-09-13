@@ -33,15 +33,6 @@ use crate::model::StoryRef;
 use std::collections::HashMap;
 use std::path::Path;
 
-/// The `Pass` command a story pass carries, and the skill the daemon
-/// types at it.
-///
-/// One spelling, because three things have to agree: the record (the rail colours
-/// and the guards read it), the typed `/orchd:story`, and the directory the skill
-/// is written to. `skills::a_skill_is_named_after_the_command_that_types_it` walks
-/// the last two.
-pub const COMMAND: &str = "story";
-
 /// One story asked for: which thread it answers, and the text approved on the card.
 pub struct Wanted {
     pub thread_id: String,
@@ -325,7 +316,7 @@ async fn run_filer(
         // expands under a tight `--allowedTools`: the allowlist gates *tool calls*
         // and Claude Code expands a typed command before the model acts. The
         // comment below used to say the opposite and it was never measured.
-        format!("/orchd:{COMMAND} {pr}"),
+        format!("/orchd:{} {pr}", Pass::STORY),
         "--output-format".to_string(),
         "stream-json".to_string(),
         "--verbose".to_string(),
@@ -428,7 +419,7 @@ async fn run_filer(
         path.clone(),
         Some(Pass {
             pr,
-            command: COMMAND.to_string(),
+            command: Pass::STORY.to_string(),
         }),
     );
     let spawned =

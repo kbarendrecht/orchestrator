@@ -762,7 +762,7 @@ pub async fn ask(
         let is_run = inner.sessions.get(&id).is_some_and(|s| {
             s.pass
                 .as_ref()
-                .is_some_and(|p| p.command == crate::spawn::RESOLVE_RUN_COMMAND)
+                .is_some_and(|p| p.command == Pass::RESOLVE_RUN)
         });
         if is_run {
             refuse!(

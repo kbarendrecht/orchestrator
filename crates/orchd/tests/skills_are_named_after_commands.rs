@@ -6,6 +6,7 @@
 //! rather than in either one. `docs/crate-split.md` calls this the shape to
 //! expect once per crate: a unit test that was really a pair test.
 
+use orchd::model::Pass;
 use orchd_repo::skills::VENDORED;
 
 /// Each is typed as `/orchd:<command> <pr>` from the command string the run
@@ -14,12 +15,12 @@ use orchd_repo::skills::VENDORED;
 #[test]
 fn a_skill_is_named_after_the_command_that_types_it() {
     for command in [
-        orchd::fix_pr::COMMAND,
-        orchd::spawn::RESOLVE_RUN_COMMAND,
-        orchd::triage::COMMAND,
-        orchd::triage::TRIAGE_COMMAND,
-        orchd::story::COMMAND,
-        orchd::spawn::HANDLE_REVIEW_COMMAND,
+        Pass::FIX_PR,
+        Pass::RESOLVE_RUN,
+        Pass::REVIEW,
+        Pass::TRIAGE,
+        Pass::STORY,
+        Pass::HANDLE_REVIEW,
     ] {
         assert!(
             VENDORED.iter().any(|(name, _)| *name == command),

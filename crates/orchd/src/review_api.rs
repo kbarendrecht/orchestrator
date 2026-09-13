@@ -105,7 +105,7 @@ pub async fn pr_triage_progress(
         inner
             .sessions
             .values()
-            .find(|s| s.state.is_live() && crate::triage::is_triage_of(&s.pass, number))
+            .find(|s| s.state.is_live() && s.pass.as_ref().is_some_and(|p| p.is_triage_of(number)))
             .map(|s| s.id)
     };
     let Some(session) = session else {
@@ -174,13 +174,9 @@ pub async fn pr_handle_review(
         let inner = app.inner.read().await;
         pr_from_poll(&inner.prs, number)?
     };
-    let session = crate::spawn::spawn_command_session(
-        &app,
-        number,
-        &pr.head_ref,
-        crate::spawn::HANDLE_REVIEW_COMMAND,
-    )
-    .await?;
+    let session =
+        crate::triage::spawn_command_session(&app, number, &pr.head_ref, Pass::HANDLE_REVIEW)
+            .await?;
     Ok(Json(json!({ "session": session })))
 }
 
@@ -921,7 +917,7 @@ pub async fn session_handoff(
     let hand_on = {
         let inner = app.inner.read().await;
         let pr = match inner.sessions.get(&id).and_then(|s| s.pass.as_ref()) {
-            Some(Pass { pr, command }) if command == crate::triage::COMMAND => *pr,
+            Some(Pass { pr, command }) if command == Pass::REVIEW => *pr,
             _ => {
                 refuse!("only a review session hands over, and {id} is not one")
             }
@@ -999,14 +995,14 @@ mod tests {
         let review = |pr: u64| {
             Some(Pass {
                 pr,
-                command: crate::triage::COMMAND.to_string(),
+                command: Pass::REVIEW.to_string(),
             })
         };
 
         let (rid, rtok, r) = put(review(pr_num));
         let (fid, ftok, f) = put(Some(Pass {
             pr: pr_num,
-            command: crate::fix_pr::COMMAND.to_string(),
+            command: Pass::FIX_PR.to_string(),
         }));
         let (iid, itok, i) = put(None);
         {
