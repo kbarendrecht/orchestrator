@@ -71,9 +71,10 @@ pub fn run_bounded(cwd: &Path, timeout_secs: u64, argv: &[String], label: &str) 
 /// time.
 ///
 /// `Arc` and not a plain closure because both pipes are drained on their own
-/// thread, so the two halves of one command's output share it. Interleaved in
-/// arrival order, which is what a script that reports its steps on stderr and its
-/// answer on stdout means by "what it said".
+/// thread, so the two halves of one command's output share it. Each stream keeps
+/// its own order; the order *between* them is the scheduler's, since two threads
+/// are reading. A caller that needs stdout and stderr to relate to each other has
+/// to ask for a pty, not for this.
 pub type LineSink = std::sync::Arc<dyn Fn(&str) + Send + Sync>;
 
 /// [`run_bounded`], reporting each line as the child writes it.
@@ -512,9 +513,11 @@ mod tests {
             began.elapsed() >= Duration::from_millis(900),
             "the child really did wait"
         );
-        assert_eq!(
-            watcher.join().unwrap_or(0),
-            1,
+        // `>=`, not `==`: what this is about is that a line arrived before the
+        // command ended, and pinning the count would make a slow runner's timing
+        // into a failure about something the test does not claim.
+        assert!(
+            watcher.join().unwrap_or(0) >= 1,
             "the first line was reported while the command was still running"
         );
         assert_eq!(
@@ -530,6 +533,13 @@ mod tests {
     /// line with a carriage return and erases with `\x1b[K`. The reader here is a
     /// web page, so a held-back line would arrive as one 4kB blob at the end and an
     /// escape would arrive as visible rubbish.
+    ///
+    /// **One stream, deliberately.** This asserted an interleaving of stdout and
+    /// stderr at first, and the two pipes are drained on two threads — so the order
+    /// *between* them is the scheduler's, not the script's. It passed on every
+    /// Linux run and went red on macos-14, after the tag had been pushed. What this
+    /// is about is how one stream is cut into lines; ordering across two is not
+    /// something the sink promises.
     #[test]
     fn progress_lines_are_split_on_a_return_and_stripped_of_escapes() {
         let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
@@ -542,9 +552,9 @@ mod tests {
         let argv = vec![
             "sh".to_string(),
             "-c".to_string(),
-            // Two steps on one terminal line, then a third with no terminator at all.
-            "printf '  … step one\\r\\033[K  ✔ step one\\n'; printf 'no newline here' 1>&2"
-                .to_string(),
+            // Two steps on one terminal line, then a third with no terminator at
+            // all — all on stderr, which is where a script reports its steps.
+            "printf '  … step one\\r\\033[K  ✔ step one\\nno newline here' 1>&2".to_string(),
         ];
         run_bounded_streaming(&std::env::temp_dir(), 10, &argv, "test", sink).expect("it ran");
         let seen = seen.lock().expect("not poisoned").clone();
