@@ -471,7 +471,7 @@ pub async fn kill_session(
             });
             Ok(Json(json!({ "killed": id })))
         }
-        None => Err(ApiError(anyhow::anyhow!("no such session {id}"))),
+        None => Err(ApiError(crate::state::no_such_session(id))),
     }
 }
 
@@ -508,7 +508,7 @@ pub async fn rename_session(
         let s = inner
             .sessions
             .get_mut(&id)
-            .ok_or_else(|| anyhow::anyhow!("no such session {id}"))?;
+            .ok_or_else(|| crate::state::no_such_session(id))?;
         s.name = name.clone();
     }
     // Persists on the way out: `notify` writes `sessions.json` before it pushes.
@@ -546,7 +546,7 @@ pub async fn rewind_session(
         let s = inner
             .sessions
             .get(&id)
-            .ok_or_else(|| anyhow::anyhow!("no such session {id}"))?;
+            .ok_or_else(|| crate::state::no_such_session(id))?;
         // Nothing to rewind to. The picker opens on an empty conversation and has
         // nothing to offer, which reads as a broken button.
         if !s.had_a_turn {
@@ -627,7 +627,7 @@ async fn forget_session(app: &Arc<AppState>, id: SessionId) -> anyhow::Result<()
         let s = inner
             .sessions
             .get(&id)
-            .ok_or_else(|| anyhow::anyhow!("no such session {id}"))?;
+            .ok_or_else(|| crate::state::no_such_session(id))?;
         (s.pty.clone(), s.archived_transcript.clone())
     };
 
@@ -682,7 +682,7 @@ pub async fn discard_spawned(
         let s = inner
             .sessions
             .get(&child)
-            .ok_or_else(|| anyhow::anyhow!("no such session {child}"))?;
+            .ok_or_else(|| crate::state::no_such_session(child))?;
         if s.spawned_by != Some(id) {
             refuse!("{child} is not a session you spawned; close it in the app");
         }
@@ -792,7 +792,7 @@ pub async fn ask(
         let s = inner
             .sessions
             .get_mut(&id)
-            .ok_or_else(|| anyhow::anyhow!("no such session {id}"))?;
+            .ok_or_else(|| crate::state::no_such_session(id))?;
         if let Some(open) = &s.interaction {
             if open.answer.is_none() {
                 refuse!("session {id} is already asking something else");
@@ -836,7 +836,7 @@ pub async fn ask_wait(
             let s = inner
                 .sessions
                 .get(&id)
-                .ok_or_else(|| anyhow::anyhow!("no such session {id}"))?;
+                .ok_or_else(|| crate::state::no_such_session(id))?;
             match &s.interaction {
                 Some(i) if i.id == ask_id => {
                     if let Some(answer) = &i.answer {
@@ -886,7 +886,7 @@ pub(crate) async fn ask_token_ok(
     let s = inner
         .sessions
         .get(&id)
-        .ok_or_else(|| ApiError(anyhow::anyhow!("no such session {id}")))?;
+        .ok_or_else(|| ApiError(crate::state::no_such_session(id)))?;
     if given.is_empty() || given != s.ask_token {
         refuse!("bad ask token for session {id}");
     }
@@ -1026,7 +1026,7 @@ pub async fn thread_committed(
             .sessions
             .get(&id)
             .map(|s| s.cwd.clone())
-            .ok_or_else(|| anyhow::anyhow!("no such session {id}"))?;
+            .ok_or_else(|| crate::state::no_such_session(id))?;
         (*number, planned, cwd, run.plan.base_sha.clone())
     };
 
@@ -1200,7 +1200,7 @@ pub async fn answer(
         let s = inner
             .sessions
             .get_mut(&id)
-            .ok_or_else(|| anyhow::anyhow!("no such session {id}"))?;
+            .ok_or_else(|| crate::state::no_such_session(id))?;
         let open = s
             .interaction
             .as_mut()
@@ -1410,7 +1410,7 @@ async fn type_user_turn(app: &Arc<AppState>, id: SessionId, text: &str) -> anyho
         let s = inner
             .sessions
             .get(&id)
-            .ok_or_else(|| anyhow::anyhow!("no such session {id}"))?;
+            .ok_or_else(|| crate::state::no_such_session(id))?;
         let name = s.label().unwrap_or(&s.workspace).to_string();
         let Some(pty) = s.pty.clone().filter(|p| p.is_alive()) else {
             anyhow::bail!("{name} is not running — resume it first");
@@ -1508,7 +1508,7 @@ pub async fn allow_outside(
         let s = inner
             .sessions
             .get(&id)
-            .ok_or_else(|| anyhow::anyhow!("no such session {id}"))?;
+            .ok_or_else(|| crate::state::no_such_session(id))?;
         // Already yes for this folder: asking again would spend attention on a
         // decision that is still in force. Covered by an outer grant counts, since
         // that is exactly what the outer yes said.
@@ -1555,7 +1555,7 @@ pub async fn allow_outside(
         let s = inner
             .sessions
             .get_mut(&id)
-            .ok_or_else(|| anyhow::anyhow!("no such session {id}"))?;
+            .ok_or_else(|| crate::state::no_such_session(id))?;
         if let Some(open) = &s.interaction {
             if open.answer.is_none() {
                 refuse!("session {id} is already asking something else");
@@ -1599,7 +1599,7 @@ pub async fn outside_allowed(
     let s = inner
         .sessions
         .get(&id)
-        .ok_or_else(|| anyhow::anyhow!("no such session {id}"))?;
+        .ok_or_else(|| crate::state::no_such_session(id))?;
     let paths: Vec<String> = s
         .outside_grants
         .iter()
@@ -1653,7 +1653,7 @@ pub async fn spawn_from_session(
             .sessions
             .get(&id)
             .map(|s| s.workspace.clone())
-            .ok_or_else(|| anyhow::anyhow!("no such session {id}"))?
+            .ok_or_else(|| crate::state::no_such_session(id))?
     };
 
     let named = body
@@ -1780,7 +1780,7 @@ pub async fn process_from_session(
             .sessions
             .get(&id)
             .map(|s| s.workspace.clone())
-            .ok_or_else(|| anyhow::anyhow!("no such session {id}"))?
+            .ok_or_else(|| crate::state::no_such_session(id))?
     };
 
     let spec = app
@@ -1953,7 +1953,7 @@ pub async fn fork_session(
         inner
             .sessions
             .get(&id)
-            .ok_or_else(|| anyhow::anyhow!("no such session {id}"))?
+            .ok_or_else(|| crate::state::no_such_session(id))?
             .had_a_turn
     };
     // Refuse before a worktree is cut, not after the fork dies in it. A fork
@@ -1981,7 +1981,7 @@ async fn revive(app: &Arc<AppState>, id: Uuid) -> ApiResult<serde_json::Value> {
         let s = inner
             .sessions
             .get(&id)
-            .ok_or_else(|| anyhow::anyhow!("no such session {id}"))?;
+            .ok_or_else(|| crate::state::no_such_session(id))?;
         (s.workspace.clone(), s.recovery.clone(), s.cwd.clone())
     };
     let path_exists = cwd.exists();

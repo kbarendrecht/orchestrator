@@ -409,10 +409,12 @@ async fn run_filer(
     // A real session, so its pty is there to read when a story goes wrong. It is a
     // run like `fix-pr` and triage, and archives the same way — and it goes
     // through the same two seams as every other spawn: `insert_and_spawn`, so the
-    // record is in the map before the agent can fire a hook, and
-    // `watch_session_exit`, the one observer that settles a pty ending. This used to
-    // insert the record by hand after the spawn and settle nothing, so a filer's
-    // row stayed live in the rail after the process had gone.
+    // record is in the map before the agent can fire a hook, and `spawn::started`,
+    // which arms the one observer that settles a pty ending. This used to insert
+    // the record by hand after the spawn and settle nothing, so a filer's row
+    // stayed live in the rail after the process had gone — and then it armed the
+    // watcher by hand and was the one spawn that never re-checked the agent
+    // version, which is what `started` exists to stop.
     let session = Session::new(
         id,
         workspace,
@@ -426,8 +428,7 @@ async fn run_filer(
         crate::spawn::insert_and_spawn(app, id, session, &cmd, &path, &env, &unset).await?;
     let worktree = path;
     let handle = spawned.handle.clone();
-    crate::spawn::watch_session_exit(app.clone(), id, spawned.handle);
-    app.notify().await;
+    crate::spawn::started(app, id, spawned.handle).await;
 
     // The one timeout in this daemon. Every other agent runs under a rail entry
     // somebody is watching; this one runs inside an HTTP request the SPA is

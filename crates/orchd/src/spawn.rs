@@ -380,6 +380,35 @@ impl Carried {
             created_at: (!fork).then_some(prev.created_at),
         }
     }
+
+    /// Put what travelled onto the record that continues the conversation.
+    ///
+    /// **The other half of [`Carried::from`], and the reason it is a method.** A
+    /// field named there and not here is carried and then thrown away a moment
+    /// later, and the only sign is a behaviour that quietly stops working after a
+    /// restart — `created_at`, `spawned_by`, `spawn_cut_worktree` and `forked_from`
+    /// were each lost exactly that way, one at a time, over four separate fixes.
+    /// The read and the write were a destructuring of nine names and ten
+    /// assignments thirty lines apart; now adding a field to one side fails to
+    /// compile until it is on the other.
+    ///
+    /// The branch is **returned rather than set**, because it is the one carried
+    /// value with a fallback: only a genuinely new session asks git, and that
+    /// question is a `spawn_blocking` the caller owns. Returned rather than left on
+    /// the struct so it cannot be the field somebody forgets.
+    fn apply(self, session: &mut Session) -> Option<String> {
+        session.interrupted = self.interrupted;
+        session.had_a_turn = self.had_a_turn;
+        session.arrival_notice = self.notice;
+        session.name = self.name;
+        if let Some(began) = self.created_at {
+            session.created_at = began;
+        }
+        session.spawned_by = self.spawned_by;
+        session.spawn_cut_worktree = self.spawn_cut_worktree;
+        session.forked_from = self.forked_from;
+        self.branch
+    }
 }
 
 /// Spawn an interactive Claude session in an existing workspace.
@@ -464,17 +493,7 @@ async fn spawn_session_with_id(
     // the insert below replaces it: a resume keeps the id, so the record of what
     // the conversation was doing is about to be overwritten. One read for the lot;
     // these used to be four separate lock acquisitions on the same record.
-    let Carried {
-        interrupted,
-        had_a_turn,
-        branch: carried_branch,
-        notice: carried_notice,
-        name: carried_name,
-        created_at: carried_created_at,
-        spawned_by: carried_spawned_by,
-        spawn_cut_worktree: carried_cut,
-        forked_from: carried_fork,
-    } = match resume {
+    let carried = match resume {
         Some(Source::Resume(prev)) | Some(Source::Fork(prev)) => {
             let fork = matches!(resume, Some(Source::Fork(_)));
             let inner = app.inner.read().await;
@@ -541,9 +560,11 @@ async fn spawn_session_with_id(
     // a transcript is megabytes of turns.
     phases.mark("transcript");
 
+    let mut session = Session::new(id, workspace.to_string(), path.clone(), pass);
+    let carried_branch = carried.apply(&mut session);
     // Off the runtime like every other git call on this path; only a new session
     // asks (see `Carried::branch`).
-    let branch = match carried_branch {
+    session.branch = match carried_branch {
         Some(b) => Some(b),
         None => {
             let at = path.clone();
@@ -554,19 +575,6 @@ async fn spawn_session_with_id(
             .unwrap_or(None)
         }
     };
-
-    let mut session = Session::new(id, workspace.to_string(), path.clone(), pass);
-    session.interrupted = interrupted;
-    session.had_a_turn = had_a_turn;
-    session.branch = branch;
-    session.arrival_notice = carried_notice;
-    session.name = carried_name;
-    if let Some(began) = carried_created_at {
-        session.created_at = began;
-    }
-    session.spawned_by = carried_spawned_by;
-    session.spawn_cut_worktree = carried_cut;
-    session.forked_from = carried_fork;
     if let Some(Source::Fork(prev)) = resume {
         session.forked_from = Some(prev);
     }
@@ -602,9 +610,7 @@ async fn spawn_session_with_id(
         app.reclaim_main(id).await;
     }
 
-    watch_session_exit(app.clone(), id, spawned.handle);
-    crate::update::refresh_detached(app);
-    app.notify().await;
+    started(app, id, spawned.handle).await;
     phases.log(&format!(
         "session {} start in {workspace}",
         crate::model::short_id(&id)
@@ -959,9 +965,7 @@ pub async fn spawn_worktree_session(
     }
     let spawned = insert_and_spawn(app, id, session, &cmd, &spawn_cwd, &env, &unset).await?;
 
-    watch_session_exit(app.clone(), id, spawned.handle);
-    crate::update::refresh_detached(app);
-    app.notify().await;
+    started(app, id, spawned.handle).await;
     Ok(id)
 }
 
@@ -1114,9 +1118,7 @@ pub(crate) async fn spawn_run(
 
     let spawned = insert_and_spawn(app, id, session, &cmd, &path, &env, &unset).await?;
 
-    watch_session_exit(app.clone(), id, spawned.handle);
-    crate::update::refresh_detached(app);
-    app.notify().await;
+    started(app, id, spawned.handle).await;
     Ok(id)
 }
 
@@ -1776,6 +1778,24 @@ fn agent_complaint(buf: &[u8]) -> Option<String> {
     } else {
         line.to_string()
     })
+}
+
+/// The tail every spawn shares: arm the one exit observer, re-check the agent
+/// version, and tell the page.
+///
+/// **One call because it was four copies and one of them was short.** The story
+/// filer armed the watcher and notified but never asked `update::refresh_detached`,
+/// so a spawn that was in every other way a run of its own quietly skipped the
+/// version check. A tail that is spelled out at each site is a tail that drifts at
+/// one of them, and the one it drifts at is whichever was written last.
+///
+/// Not folded into [`insert_and_spawn`], which would make it unforgettable, for
+/// one reason: `spawn_session` does `reclaim_main` between the insert and this,
+/// and that ordering is load-bearing — see the comment there.
+pub(crate) async fn started(app: &Arc<AppState>, id: SessionId, handle: Arc<PtyHandle>) {
+    watch_session_exit(app.clone(), id, handle);
+    crate::update::refresh_detached(app);
+    app.notify().await;
 }
 
 /// The one observer of a session's pty exit: it settles the record and dispatches
@@ -3031,6 +3051,75 @@ mod tests {
             &s.pass,
             Some(Pass { pr: 7, command }) if command == Pass::RESOLVE_RUN
         ));
+    }
+
+    /// Every field a resume carries actually lands on the record that continues it.
+    ///
+    /// **The one test the four historical losses would each have failed.**
+    /// `created_at`, `spawned_by`, `spawn_cut_worktree` and `forked_from` all
+    /// persisted, were restored at boot, and were then thrown away by the respawn a
+    /// moment later — each found by a behaviour that had quietly stopped working
+    /// (a stale-file warning that never fired, a spawned child that could no longer
+    /// be undone, a forked row that stopped reading as forked), never by a test.
+    /// Checked against deliberate breakage: dropping any assignment in
+    /// [`Carried::apply`] fails this.
+    #[test]
+    fn a_resume_carries_every_field_it_says_it_does() {
+        let parent = Uuid::new_v4();
+        let began = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000);
+        let mut prev = Session::new(Uuid::new_v4(), "wt".into(), PathBuf::from("/tmp"), None);
+        prev.interrupted = true;
+        prev.had_a_turn = true;
+        prev.branch = Some("feature/x".into());
+        prev.arrival_notice = Some("moved while you were away".into());
+        prev.name = Some("the one you named".into());
+        prev.spawned_by = Some(parent);
+        prev.spawn_cut_worktree = true;
+        prev.forked_from = Some(parent);
+        prev.created_at = began;
+
+        let mut next = Session::new(Uuid::new_v4(), "wt".into(), PathBuf::from("/tmp"), None);
+        let branch = Carried::from(Some(&prev), false).apply(&mut next);
+
+        assert_eq!(branch.as_deref(), Some("feature/x"), "the branch");
+        assert!(next.interrupted, "the interrupted turn");
+        assert!(next.had_a_turn, "that it is a conversation at all");
+        assert_eq!(
+            next.arrival_notice.as_deref(),
+            Some("moved while you were away")
+        );
+        assert_eq!(next.name.as_deref(), Some("the one you named"));
+        assert_eq!(next.spawned_by, Some(parent), "who spawned it");
+        assert!(next.spawn_cut_worktree, "whether that spawn cut the tree");
+        assert_eq!(next.forked_from, Some(parent), "that it was forked");
+        assert_eq!(next.created_at, began, "when the conversation began");
+    }
+
+    /// A fork is a new conversation, so four of those deliberately do *not* travel.
+    #[test]
+    fn a_fork_starts_its_own_conversation() {
+        let parent = Uuid::new_v4();
+        let began = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000);
+        let mut prev = Session::new(Uuid::new_v4(), "wt".into(), PathBuf::from("/tmp"), None);
+        prev.interrupted = true;
+        prev.name = Some("the one you named".into());
+        prev.forked_from = Some(parent);
+        prev.created_at = began;
+        prev.had_a_turn = true;
+
+        let mut next = Session::new(Uuid::new_v4(), "wt".into(), PathBuf::from("/tmp"), None);
+        Carried::from(Some(&prev), true).apply(&mut next);
+
+        assert!(!next.interrupted, "a fork opens at a fresh prompt");
+        assert!(next.name.is_none(), "a fork earns its own name");
+        assert!(
+            next.forked_from.is_none(),
+            "spawn_session sets this from the Source"
+        );
+        assert_ne!(next.created_at, began, "a fork started when it was forked");
+        // And the one that does: a fork replays the parent's turns, so it opens on
+        // a conversation rather than an empty pane.
+        assert!(next.had_a_turn);
     }
 
     /// What the exit watcher published, for the test below.

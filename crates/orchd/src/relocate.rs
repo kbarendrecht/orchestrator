@@ -337,7 +337,7 @@ pub async fn move_out_of_main(
         let s = inner
             .sessions
             .get(&id)
-            .ok_or_else(|| anyhow::anyhow!("no such session {id}"))?;
+            .ok_or_else(|| crate::state::no_such_session(id))?;
         if s.workspace != MAIN {
             refuse!(
                 "{} is not in main, so there is nothing to move it out of",

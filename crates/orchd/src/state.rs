@@ -12,6 +12,19 @@ use crate::git;
 use crate::model::*;
 use crate::pty::pid_alive;
 
+/// The one refusal for a session id nothing knows.
+///
+/// **A function because it was eighteen copies of one sentence** — seventeen in
+/// `api.rs` and one in `relocate.rs` — and the `orch` CLI and the SPA both match on
+/// what it says. Not an axum extractor, which is the shape this looks like it wants
+/// and is not: the handlers differ in whether they take the read lock or the write
+/// one, and nearly all of them hold the guard across the work that follows, so an
+/// extractor could only prove the id exists and leave every caller to look it up
+/// again under its own lock.
+pub fn no_such_session(id: SessionId) -> anyhow::Error {
+    anyhow::anyhow!("no such session {id}")
+}
+
 /// What the overview shows about a run: one row per thread, in plan order.
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(
