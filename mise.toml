@@ -202,7 +202,7 @@ run = "cargo build -p orchd-serve --bin orchd && node tools/e2e/page.mjs"
 description = "Assert which renderer each terminal opens with"
 depends = ["deps"]
 dir = "{{config_root}}"
-run = "cargo build -p orchd-serve --bin orchd && E2E_LOG=${E2E_LOG:-info} node tools/e2e/renderer.mjs"
+run = "cargo build -p orchd-serve --bin orchd && node tools/e2e/renderer.mjs"
 
 # Cut a release, refusing while CI has not answered for the commit you are on.
 #

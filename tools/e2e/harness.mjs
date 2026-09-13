@@ -165,6 +165,14 @@ export async function sandbox({
   pollSeconds = 3600,
   autoResume = false,
   processes = [],
+  // **The level a flow needs, asked for by the flow that needs it.** `warn` is
+  // right for the suite — a flow asserts on the API and a chatty daemon is noise
+  // in a failure — but `renderer.mjs` reads its answer *out of the log*, and at
+  // `warn` the lines it waits for are never written. That was the mise task's
+  // `E2E_LOG=info` to supply, so running the script directly timed out after 15
+  // seconds saying "no `page: … renderer=` lines yet", which names the symptom and
+  // not the cause. A flow that depends on a level now says so here.
+  log = 'warn',
 } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'orchd-e2e-'))
   const dirs = {
@@ -247,7 +255,7 @@ export async function sandbox({
     ORCHD_CONFIG_DIR: dirs.cfg,
     ORCH_E2E_DIR: root,
     PATH: `${dirs.bin}:${process.env.PATH}`,
-    RUST_LOG: process.env.E2E_LOG ?? 'warn',
+    RUST_LOG: process.env.E2E_LOG ?? log,
     // A real `gh` here would reach the network on someone's account. Nothing in
     // these flows needs it, and an empty token keeps the GitHub paths off.
     GH_TOKEN: '',

@@ -37,7 +37,9 @@ const check = (ok, what) => {
   if (!ok) failed = true
 }
 
-const t = await sandbox({ turns: 1 })
+// `info`, because the assertion is read out of the daemon's log — see the
+// `log` option. `E2E_LOG` still overrides it.
+const t = await sandbox({ turns: 1, log: 'info' })
 let browser
 try {
   const { session } = await t.api('POST', '/api/worktree', { name: 'rend' })
@@ -82,8 +84,8 @@ try {
 
   /* Read back out of the *daemon's log*, not out of the page. That is the point:
      it is the same line a person on a Mac can paste, so this test and a real bug
-     report are answering from one source. Needs the daemon at info — the harness
-     runs it at `warn` unless told otherwise. */
+     report are answering from one source. The sandbox is asked for `info` above,
+     because a flow that needs a log level is the flow that should say so. */
   const log = await until(
     'the renderer lines to reach the daemon log',
     async () => {
