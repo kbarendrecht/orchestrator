@@ -41,138 +41,16 @@
     clippy::indexing_slicing
 )]
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-/// A git checkout with an identity, and no remote to reach for.
-///
-/// **`repo` is pinned in the checkout's own config rather than left to a remote**,
-/// and that is what keeps this test offline. `polled_repo` and the daemon's
-/// `resolve_repo` both read that key before they shell out to `git remote
-/// get-url`, so a pinned value exercises the same refusal without a URL anything
-/// might try to fetch — and the boot fetch is on the critical path of a start, so
-/// an unreachable remote would cost this test a 60 s ready timeout.
-fn scratch_repo(root: &Path, name: &str, repo: Option<&str>) -> PathBuf {
-    let dir = root.join(name);
-    std::fs::create_dir_all(&dir).unwrap();
-    // Canonical, because `Config::parse` resolves `main_checkout` and every
-    // comparison downstream is against a resolved path. On macOS `/tmp` is a
-    // symlink into `/private`, so skipping this makes the checkout list disagree
-    // with the daemon about which directory it manages.
-    let dir = dir.canonicalize().unwrap();
-    let git = |args: &[&str]| {
-        let out = std::process::Command::new("git")
-            .args(args)
-            .current_dir(&dir)
-            .output()
-            .expect("git ran");
-        assert!(
-            out.status.success(),
-            "git {args:?}: {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-    };
-    git(&["init", "-q", "-b", "main"]);
-    git(&["config", "user.email", "test@test"]);
-    git(&["config", "user.name", "test"]);
-    std::fs::write(dir.join("README.md"), "# fixture\n").unwrap();
-    git(&["add", "-A"]);
-    git(&["commit", "-qm", "base"]);
-
-    if let Some(repo) = repo {
-        let state = orchd_serve::host::checkout_dir(&dir).unwrap();
-        std::fs::create_dir_all(&state).unwrap();
-        std::fs::write(
-            state.join("config.json"),
-            format!(
-                r#"{{"main_checkout":{:?},"repo":{repo:?},"auto_resume":false}}"#,
-                dir.to_string_lossy()
-            ),
-        )
-        .unwrap();
-    }
-    dir
-}
-
-fn get(url: &str, token: &str) -> (u32, String) {
-    curl(&["-s", "-w", "\n%{http_code}", url], token, None)
-}
-
-/// A `POST` with a JSON body and an Origin, which is what the page's `fetch` sends.
-fn post(url: &str, origin: &str, token: &str, body: &str) -> (u32, serde_json::Value) {
-    let (code, text) = curl(
-        &[
-            "-s",
-            "-w",
-            "\n%{http_code}",
-            "-X",
-            "POST",
-            "-H",
-            "Content-Type: application/json",
-            "-H",
-            &format!("Origin: {origin}"),
-            "--data-binary",
-            body,
-            url,
-        ],
-        token,
-        None,
-    );
-    (
-        code,
-        serde_json::from_str(&text).unwrap_or(serde_json::Value::Null),
-    )
-}
-
-fn curl(args: &[&str], token: &str, _unused: Option<()>) -> (u32, String) {
-    let out = std::process::Command::new("curl")
-        .args(args)
-        .arg("-H")
-        .arg(format!("x-orch-token: {token}"))
-        .output()
-        .expect("curl ran");
-    let text = String::from_utf8_lossy(&out.stdout).into_owned();
-    let (body, code) = text.rsplit_once('\n').unwrap_or(("", "0"));
-    (code.trim().parse().unwrap_or(0), body.to_string())
-}
-
-/// Wait for a condition, or say what was there on the last look.
-///
-/// **The deadline is the child's own, not a round number.** `child::READY_TIMEOUT`
-/// is 60s, so anything waiting on a daemon *starting* — which a restart is — cannot
-/// honestly give up sooner than the launch it is waiting for. 30s was shorter than
-/// the thing it waited for, and a cold CI runner is exactly where that shows.
-fn until<T>(what: &str, mut ready: impl FnMut() -> Option<T>) -> T {
-    until_seeing(what, ready_nothing, &mut ready)
-}
-
-fn ready_nothing() -> String {
-    String::new()
-}
-
-/// The same, with a closure that renders what the condition could see — the
-/// difference between "timed out" and a failure that names its own cause.
-fn until_seeing<T>(
-    what: &str,
-    mut seen: impl FnMut() -> String,
-    ready: &mut impl FnMut() -> Option<T>,
-) -> T {
-    let deadline = Instant::now() + Duration::from_secs(60);
-    loop {
-        if let Some(value) = ready() {
-            return value;
-        }
-        if Instant::now() >= deadline {
-            panic!("timed out waiting for {what}\nlast saw: {}", seen());
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
-}
+mod common;
+use common::{daemon_on_path, get, post_json as post, scratch_repo, until, until_seeing};
 
 /// The rows as the page sees them: over HTTP, not out of the `Host` in memory.
 fn rows(base: &str, token: &str) -> Vec<serde_json::Value> {
-    let (code, body) = get(&format!("{base}/api/host/checkouts"), token);
+    let (code, body) = get(&format!("{base}/api/host/checkouts"), Some(token));
     assert_eq!(code, 200, "the host refused its own checkout list");
     serde_json::from_str::<serde_json::Value>(&body).unwrap()["checkouts"]
         .as_array()
@@ -207,10 +85,7 @@ async fn a_host_adds_closes_and_reopens_checkouts_and_refuses_the_three() {
     // `child::daemon_binary` looks beside the running executable first, and a test
     // binary lives in `deps/`. `CARGO_BIN_EXE_orchd` is also what makes cargo build
     // it before this test runs.
-    let exe = PathBuf::from(env!("CARGO_BIN_EXE_orchd"));
-    let bin_dir = exe.parent().unwrap().to_path_buf();
-    let path_var = std::env::var("PATH").unwrap_or_default();
-    std::env::set_var("PATH", format!("{}:{path_var}", bin_dir.display()));
+    daemon_on_path(env!("CARGO_BIN_EXE_orchd"));
 
     let cfg = root.join("config");
     std::fs::create_dir_all(&cfg).unwrap();
@@ -269,7 +144,10 @@ async fn a_host_adds_closes_and_reopens_checkouts_and_refuses_the_three() {
         // does, which is the daemon saying which tree it manages. Checked rather
         // than assumed, because two daemons answering one list is the whole point
         // of this step and a mixed-up port would otherwise pass.
-        let (code, state) = get(&format!("http://127.0.0.1:{port}/api/state"), child_token);
+        let (code, state) = get(
+            &format!("http://127.0.0.1:{port}/api/state"),
+            Some(child_token),
+        );
         assert_eq!(code, 200, "a daemon refused the token its own row carries");
         let state: serde_json::Value = serde_json::from_str(&state).unwrap();
         let main = state["workspaces"]
@@ -378,7 +256,7 @@ async fn a_host_adds_closes_and_reopens_checkouts_and_refuses_the_three() {
     // minus the ones already open, so no row refuses when pressed. Asked here,
     // with one checkout closed, because a list filtered down to nothing would
     // satisfy the filter without proving it.
-    let (code, body) = get(&format!("{base}/api/host/recent"), &token);
+    let (code, body) = get(&format!("{base}/api/host/recent"), Some(&token));
     assert_eq!(code, 200);
     let listed: serde_json::Value = serde_json::from_str(&body).unwrap();
     let paths: Vec<String> = listed["recent"]

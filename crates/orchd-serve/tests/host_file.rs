@@ -14,35 +14,9 @@
     clippy::indexing_slicing
 )]
 
-use std::path::{Path, PathBuf};
-
 /// A git checkout, with nothing in the config dir but what a test writes.
-fn scratch_repo(root: &Path, name: &str) -> PathBuf {
-    let dir = root.join(name);
-    std::fs::create_dir_all(&dir).unwrap();
-    // Canonical, because `Config::parse` resolves `main_checkout` and comparing an
-    // unresolved path against a resolved one silently matches nothing.
-    let dir = dir.canonicalize().unwrap();
-    let git = |args: &[&str]| {
-        let out = std::process::Command::new("git")
-            .args(args)
-            .current_dir(&dir)
-            .output()
-            .expect("git ran");
-        assert!(
-            out.status.success(),
-            "git {args:?}: {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-    };
-    git(&["init", "-q", "-b", "main"]);
-    git(&["config", "user.email", "test@test"]);
-    git(&["config", "user.name", "test"]);
-    std::fs::write(dir.join("README.md"), "# fixture\n").unwrap();
-    git(&["add", "-A"]);
-    git(&["commit", "-qm", "base"]);
-    dir
-}
+mod common;
+use common::scratch_repo;
 
 /// With no host file, the host opens what `config.json` names.
 ///
@@ -59,7 +33,7 @@ fn a_missing_host_file_falls_back_to_the_configured_checkout() {
     std::fs::create_dir_all(&cfg).unwrap();
     std::env::set_var("ORCHD_CONFIG_DIR", &cfg);
 
-    let repo = scratch_repo(&root, "only");
+    let repo = scratch_repo(&root, "only", None);
     std::fs::write(
         cfg.join("config.json"),
         format!(r#"{{"main_checkout":{:?}}}"#, repo.to_string_lossy()),

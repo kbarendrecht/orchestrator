@@ -27,79 +27,15 @@
     clippy::indexing_slicing
 )]
 
-use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::path::Path;
 
 /// A git checkout, since a daemon refuses to start without one.
-fn scratch_repo(tag: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("orchd-hoststop-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    // Canonical, because `Config::parse` resolves `main_checkout`: on macOS `/tmp`
-    // is a symlink into `/private`, so skipping this makes every comparison
-    // against the daemon's own paths fail silently.
-    let dir = dir.canonicalize().unwrap();
-    let git = |args: &[&str]| {
-        let out = std::process::Command::new("git")
-            .args(args)
-            .current_dir(&dir)
-            .output()
-            .expect("git ran");
-        assert!(
-            out.status.success(),
-            "git {args:?}: {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-    };
-    git(&["init", "-q", "-b", "main"]);
-    git(&["config", "user.email", "test@test"]);
-    git(&["config", "user.name", "test"]);
-    std::fs::write(dir.join("README.md"), "# fixture\n").unwrap();
-    git(&["add", "-A"]);
-    git(&["commit", "-qm", "base"]);
-    dir
-}
-
-/// Wait for a condition, or say what it still was. A condition rather than a
-/// sleep, for the reason `docs/e2e.md` gives.
-fn until(what: &str, mut ready: impl FnMut() -> bool) {
-    let deadline = Instant::now() + Duration::from_secs(30);
-    while !ready() {
-        assert!(Instant::now() < deadline, "timed out waiting for {what}");
-        std::thread::sleep(Duration::from_millis(50));
-    }
-}
-
-/// A `POST` with a body, an Origin and a token — the shape the page's `fetch`
-/// sends to a child daemon.
-fn post_json(url: &str, origin: &str, token: &str, body: &str) -> (u32, String) {
-    let out = std::process::Command::new("curl")
-        .args([
-            "-s",
-            "-w",
-            "\n%{http_code}",
-            "-X",
-            "POST",
-            "-H",
-            "content-type: application/json",
-            "-H",
-            &format!("Origin: {origin}"),
-            "-H",
-            &format!("x-orch-token: {token}"),
-            "-d",
-            body,
-            url,
-        ])
-        .output()
-        .expect("curl ran");
-    let text = String::from_utf8_lossy(&out.stdout).into_owned();
-    let (body, code) = text.rsplit_once('\n').unwrap_or(("", "0"));
-    (code.trim().parse().unwrap_or(0), body.to_string())
-}
+mod common;
+use common::{post, scratch_repo, scratch_root, until_true as until};
 
 #[tokio::test(flavor = "multi_thread")]
 async fn closing_a_checkout_takes_its_sessions_with_it() {
-    let repo = scratch_repo("one");
+    let repo = scratch_repo(&scratch_root("hoststop"), "one", None);
     let cfg = repo.parent().unwrap().join("orchd-hoststop-cfg");
     let _ = std::fs::remove_dir_all(&cfg);
     std::fs::create_dir_all(&cfg).unwrap();
@@ -155,11 +91,11 @@ async fn closing_a_checkout_takes_its_sessions_with_it() {
         .expect("the child started and reported ready");
     let row = host.checkouts()[0].clone();
 
-    let (code, body) = post_json(
+    let (code, body) = post(
         &format!("http://127.0.0.1:{}/api/session", row.port),
         &base,
         &row.token,
-        r#"{"workspace":"main"}"#,
+        Some(r#"{"workspace":"main"}"#),
     );
     assert_eq!(code, 200, "the session was refused: {body}");
 

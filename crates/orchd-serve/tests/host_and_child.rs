@@ -36,114 +36,15 @@
     clippy::indexing_slicing
 )]
 
-use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::path::Path;
+use std::time::Duration;
 
-/// The one line of setup every assertion needs: a git checkout, since a daemon
-/// refuses to start without one, and a config dir of its own so nothing here
-/// touches the real `~/.config/orchd`.
-fn scratch_repo(tag: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("orchd-hostchild-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    // Canonical, because `Config::parse` resolves `main_checkout` and every
-    // comparison downstream is against a resolved path. On macOS `/tmp` is a
-    // symlink into `/private`, so skipping this makes the checkout list disagree
-    // with the daemon about which directory it manages.
-    let dir = dir.canonicalize().unwrap();
-    let git = |args: &[&str]| {
-        let out = std::process::Command::new("git")
-            .args(args)
-            .current_dir(&dir)
-            .output()
-            .expect("git ran");
-        assert!(
-            out.status.success(),
-            "git {args:?}: {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-    };
-    git(&["init", "-q", "-b", "main"]);
-    git(&["config", "user.email", "test@test"]);
-    git(&["config", "user.name", "test"]);
-    std::fs::write(dir.join("README.md"), "# fixture\n").unwrap();
-    git(&["add", "-A"]);
-    git(&["commit", "-qm", "base"]);
-    dir
-}
-
-/// A `GET`, returning status and body.
-fn get(url: &str, token: Option<&str>) -> (u32, String) {
-    curl(&["-s", "-w", "\n%{http_code}", url], token)
-}
-
-/// A `POST` with an Origin, which is what a page's `fetch` sends.
-fn post(url: &str, origin: &str, token: &str) -> u32 {
-    let (code, _) = curl(
-        &[
-            "-s",
-            "-o",
-            "/dev/null",
-            "-w",
-            "\n%{http_code}",
-            "-X",
-            "POST",
-            "-H",
-            &format!("Origin: {origin}"),
-            url,
-        ],
-        Some(token),
-    );
-    code
-}
-
-/// The response headers of a `GET`, as text.
-fn headers_of(url: &str, origin: &str, token: &str) -> String {
-    let out = std::process::Command::new("curl")
-        .args([
-            "-s",
-            "-o",
-            "/dev/null",
-            "-D",
-            "-",
-            "-H",
-            &format!("Origin: {origin}"),
-            "-H",
-            &format!("x-orch-token: {token}"),
-            url,
-        ])
-        .output()
-        .expect("curl ran");
-    String::from_utf8_lossy(&out.stdout).into_owned()
-}
-
-fn curl(args: &[&str], token: Option<&str>) -> (u32, String) {
-    let mut command = std::process::Command::new("curl");
-    command.args(args);
-    if let Some(token) = token {
-        command.arg("-H").arg(format!("x-orch-token: {token}"));
-    }
-    let out = command.output().expect("curl ran");
-    let text = String::from_utf8_lossy(&out.stdout).into_owned();
-    let (body, code) = text.rsplit_once('\n').unwrap_or(("", "0"));
-    (code.trim().parse().unwrap_or(0), body.to_string())
-}
-
-/// Wait for a condition, or say what it still was. Every wait in here is one of
-/// these rather than a sleep, for the reason `docs/e2e.md` gives: a daemon's start
-/// is a network fetch away from slow, so a fixed sleep trades flakiness for
-/// slowness and gets both.
-fn until(what: &str, mut ready: impl FnMut() -> bool) {
-    let deadline = Instant::now() + Duration::from_secs(30);
-    while !ready() {
-        assert!(Instant::now() < deadline, "timed out waiting for {what}");
-        std::thread::sleep(Duration::from_millis(50));
-    }
-}
+mod common;
+use common::{get, headers_of, post, preflight, scratch_repo, scratch_root, until_true as until};
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_host_serves_the_page_for_a_checkout_its_child_manages() {
-    let repo = scratch_repo("one");
+    let repo = scratch_repo(&scratch_root("hostchild"), "one", None);
     let cfg = repo.parent().unwrap().join("orchd-hostchild-cfg");
     let _ = std::fs::remove_dir_all(&cfg);
     std::fs::create_dir_all(&cfg).unwrap();
@@ -226,12 +127,12 @@ async fn a_host_serves_the_page_for_a_checkout_its_child_manages() {
     // 2 — the child accepts the host's origin and refuses a foreign one.
     let child_api = format!("http://127.0.0.1:{}/api/prs/refresh", row.port);
     assert_eq!(
-        post(&child_api, &base, &row.token),
+        post(&child_api, &base, &row.token, None).0,
         202,
         "the child refused its host's origin"
     );
     assert_eq!(
-        post(&child_api, "http://evil.example", &row.token),
+        post(&child_api, "http://evil.example", &row.token, None).0,
         403,
         "the child accepted a foreign origin"
     );
@@ -280,18 +181,11 @@ async fn a_host_serves_the_page_for_a_checkout_its_child_manages() {
     // 3 — no window, so the titlebar refuses by name rather than panicking. This
     // is the browser-tab case, and it is the behaviour that had to survive the
     // window handle moving off `AppState`.
-    let (code, refusal) = curl(
-        &[
-            "-s",
-            "-w",
-            "\n%{http_code}",
-            "-X",
-            "POST",
-            "-H",
-            &format!("Origin: {base}"),
-            &format!("{base}/api/window/minimize"),
-        ],
-        Some(&host.token),
+    let (code, refusal) = post(
+        &format!("{base}/api/window/minimize"),
+        &base,
+        &host.token,
+        None,
     );
     assert_eq!(code, 400);
     assert!(
@@ -306,25 +200,7 @@ async fn a_host_serves_the_page_for_a_checkout_its_child_manages() {
     // origin. Nothing answered that for a long time, and the symptom was a board
     // that drew from its websockets and could not do anything: only curl, which
     // has no CORS, worked.
-    let (code, _) = curl(
-        &[
-            "-s",
-            "-o",
-            "/dev/null",
-            "-w",
-            "\n%{http_code}",
-            "-X",
-            "OPTIONS",
-            "-H",
-            &format!("Origin: {base}"),
-            "-H",
-            "Access-Control-Request-Method: POST",
-            "-H",
-            "Access-Control-Request-Headers: content-type,x-orch-token",
-            &format!("http://127.0.0.1:{}/api/state", row.port),
-        ],
-        None,
-    );
+    let code = preflight(&format!("http://127.0.0.1:{}/api/state", row.port), &base);
     assert_eq!(code, 204, "the child refused its host's preflight");
     // The header rides the real answer too, not only the preflight: the browser
     // drops a cross-origin response that does not name it, whatever the status.
@@ -355,13 +231,13 @@ async fn a_host_serves_the_page_for_a_checkout_its_child_manages() {
     // host, so `core.LOCAL` aims at the child's port with the host's origin. That
     // pairing is the whole wiring, and it is the one thing a green type-check
     // cannot see.
-    let as_the_page_would = post(&child_api, &base, &row.token);
+    let as_the_page_would = post(&child_api, &base, &row.token, None).0;
     assert_eq!(
         as_the_page_would, 202,
         "the page's own call shape was refused"
     );
     assert_eq!(
-        post(&format!("{base}/api/prs/refresh"), &base, &host.token),
+        post(&format!("{base}/api/prs/refresh"), &base, &host.token, None).0,
         404,
         "the host answered a daemon route, so a relative call would silently work"
     );
@@ -373,8 +249,10 @@ async fn a_host_serves_the_page_for_a_checkout_its_child_manages() {
         post(
             &format!("http://127.0.0.1:{}/api/window/minimize", row.port),
             &base,
-            &row.token
-        ),
+            &row.token,
+            None,
+        )
+        .0,
         200,
         "the daemon stopped swallowing window commands; core.HOST can be revisited"
     );

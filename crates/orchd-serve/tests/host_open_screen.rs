@@ -28,86 +28,24 @@
     clippy::indexing_slicing
 )]
 
-use std::path::{Path, PathBuf};
-
-/// A git checkout with one commit, canonical for the reason `Config::parse` makes
-/// it one: every comparison downstream is against a resolved path, and on macOS
-/// `/tmp` is a symlink into `/private`.
-fn scratch_repo(root: &Path, name: &str) -> PathBuf {
-    let dir = root.join(name);
-    std::fs::create_dir_all(&dir).unwrap();
-    let dir = dir.canonicalize().unwrap();
-    let git = |args: &[&str]| {
-        let out = std::process::Command::new("git")
-            .args(args)
-            .current_dir(&dir)
-            .output()
-            .expect("git ran");
-        assert!(
-            out.status.success(),
-            "git {args:?}: {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-    };
-    git(&["init", "-q", "-b", "main"]);
-    git(&["config", "user.email", "test@test"]);
-    git(&["config", "user.name", "test"]);
-    std::fs::write(dir.join("README.md"), "# fixture\n").unwrap();
-    git(&["add", "-A"]);
-    git(&["commit", "-qm", "base"]);
-    dir
-}
-
-/// A `POST` with a JSON body and an Origin, which is what the page's `fetch` sends.
-fn post(url: &str, origin: &str, token: &str, body: &str) -> (u32, serde_json::Value) {
-    let out = std::process::Command::new("curl")
-        .args([
-            "-s",
-            "-w",
-            "\n%{http_code}",
-            "-X",
-            "POST",
-            "-H",
-            "Content-Type: application/json",
-            "-H",
-            &format!("Origin: {origin}"),
-            "--data-binary",
-            body,
-            url,
-        ])
-        .arg("-H")
-        .arg(format!("x-orch-token: {token}"))
-        .output()
-        .expect("curl ran");
-    let text = String::from_utf8_lossy(&out.stdout).into_owned();
-    let (body, code) = text.rsplit_once('\n').unwrap_or(("", "0"));
-    (
-        code.trim().parse().unwrap_or(0),
-        serde_json::from_str(body).unwrap_or(serde_json::Value::Null),
-    )
-}
+mod common;
+use common::{daemon_on_path, post_json as post, scratch_repo, scratch_root};
 
 #[tokio::test(flavor = "multi_thread")]
 async fn the_open_screen_judges_a_folder_reads_it_and_carries_its_answers() {
-    let root = std::env::temp_dir().join(format!("orchd-open-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
-    std::fs::create_dir_all(&root).unwrap();
-    let root = root.canonicalize().unwrap();
+    let root = scratch_root("open");
 
     // **The host spawns `orchd` by name**, so the built binary has to be findable:
     // `child::daemon_binary` looks beside the running executable first, and a test
     // binary lives in `deps/`. `CARGO_BIN_EXE_orchd` is also what makes cargo build
     // it before this test runs.
-    let exe = PathBuf::from(env!("CARGO_BIN_EXE_orchd"));
-    let bin_dir = exe.parent().unwrap().to_path_buf();
-    let path_var = std::env::var("PATH").unwrap_or_default();
-    std::env::set_var("PATH", format!("{}:{path_var}", bin_dir.display()));
+    daemon_on_path(env!("CARGO_BIN_EXE_orchd"));
 
     let cfg = root.join("config");
     std::fs::create_dir_all(&cfg).unwrap();
     std::env::set_var("ORCHD_CONFIG_DIR", &cfg);
 
-    let repo = scratch_repo(&root, "repo");
+    let repo = scratch_repo(&root, "repo", None);
     let plain = root.join("plain");
     std::fs::create_dir_all(&plain).unwrap();
 

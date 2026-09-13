@@ -16,39 +16,9 @@
 use std::path::{Path, PathBuf};
 
 /// A git checkout, with nothing in the config dir but what a test writes.
-fn scratch_repo(root: &Path, name: &str) -> PathBuf {
-    let dir = root.join(name);
-    std::fs::create_dir_all(&dir).unwrap();
-    // Canonical, because `Config::parse` resolves `main_checkout` and comparing an
-    // unresolved path against a resolved one silently matches nothing.
-    let dir = dir.canonicalize().unwrap();
-    let git = |args: &[&str]| {
-        let out = std::process::Command::new("git")
-            .args(args)
-            .current_dir(&dir)
-            .output()
-            .expect("git ran");
-        assert!(
-            out.status.success(),
-            "git {args:?}: {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-    };
-    git(&["init", "-q", "-b", "main"]);
-    git(&["config", "user.email", "test@test"]);
-    git(&["config", "user.name", "test"]);
-    std::fs::write(dir.join("README.md"), "# fixture\n").unwrap();
-    git(&["add", "-A"]);
-    git(&["commit", "-qm", "base"]);
-    dir
-}
+mod common;
+use common::scratch_repo;
 
-/// The sweep drops what a daemon rebuilds, and never a conversation.
-///
-/// **The distinction is the whole rule.** `transcripts/` is the only remaining
-/// copy of a conversation once a worktree is gone, and a session record survives
-/// because that copy does — so a sweep that took the directory would undo the
-/// decision `close` makes on purpose, which is to leave records alone.
 #[test]
 fn the_sweep_takes_derived_state_and_leaves_conversations() {
     let root = std::env::temp_dir().join(format!("orchd-sweep-{}", std::process::id()));
@@ -60,9 +30,9 @@ fn the_sweep_takes_derived_state_and_leaves_conversations() {
     std::env::set_var("ORCHD_CONFIG_DIR", &cfg);
 
     // Three checkout directories: one open, one recent, one long untouched.
-    let open = scratch_repo(&root, "open");
-    let recent = scratch_repo(&root, "recent");
-    let old = scratch_repo(&root, "old");
+    let open = scratch_repo(&root, "open", None);
+    let recent = scratch_repo(&root, "recent", None);
+    let old = scratch_repo(&root, "old", None);
     let dirs: Vec<PathBuf> = [&open, &recent, &old]
         .iter()
         .map(|c| {
