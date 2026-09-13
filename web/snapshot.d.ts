@@ -192,7 +192,7 @@ decisions: string,
 /**
  * Is there a phase here to finish, or only a push to remember?
  *
- * [`remember_push`] needs somewhere durable to say "the daemon pushed this,
+ * `post::remember_push` needs somewhere durable to say "the daemon pushed this,
  * for these decisions", so a retry after a failed reply is not refused as
  * "the branch moved since triage"; the phase store is the one per-PR record a
  * batch has. But a batch that never stopped for the manual phase has no phase,
@@ -610,9 +610,10 @@ export type StoryRef = {
  * Private, with [`StoryRef::new`] the only way in, because the pair is agent
  * text that ends up as a link in a public comment: a value that has not been
  * through [`StoryRef::consistent`] must not be constructible outside this
- * module. Serde is the exception it cannot police — a `stories.json` written
- * before the id was checked deserializes straight past the constructor, which
- * is why [`Cache::get`] re-checks on the way out.
+ * module — `model` now, with `story` one of its callers. Serde is the
+ * exception it cannot police — a `stories.json` written before the id was
+ * checked deserializes straight past the constructor, which is why
+ * [`Cache::get`] re-checks on the way out.
  */
 id: string, 
 /**

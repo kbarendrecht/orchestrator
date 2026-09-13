@@ -982,7 +982,7 @@ pub async fn thread_stuck(
         *number
     };
     mark_thread(&app, number, &thread_id, |t| {
-        t.status = crate::post::ThreadStatus::NeedsYou;
+        t.status = crate::model::ThreadStatus::NeedsYou;
         t.note = Some(note.to_string());
     })
     .await;
@@ -1061,7 +1061,7 @@ pub async fn thread_committed(
         );
         mark_thread(&app, number, &thread_id, |t| {
             t.commit = Some(body.sha.clone());
-            t.status = crate::post::ThreadStatus::NeedsYou;
+            t.status = crate::model::ThreadStatus::NeedsYou;
             t.note = Some(note.clone());
         })
         .await;
@@ -1071,7 +1071,7 @@ pub async fn thread_committed(
 
     mark_thread(&app, number, &thread_id, |t| {
         t.commit = Some(body.sha.clone());
-        t.status = crate::post::ThreadStatus::Committed;
+        t.status = crate::model::ThreadStatus::Committed;
     })
     .await;
 
@@ -1088,7 +1088,7 @@ pub async fn thread_committed(
             crate::post::react_one(&forge, &app.cfg.main_checkout, &thread_id, &fresh).await?;
         }
         mark_thread(&app, number, &thread_id, |t| {
-            t.status = crate::post::ThreadStatus::Replied;
+            t.status = crate::model::ThreadStatus::Replied;
         })
         .await;
         app.notify().await;
@@ -1148,7 +1148,7 @@ pub async fn thread_committed(
     }
 
     mark_thread(&app, number, &thread_id, |t| {
-        t.status = crate::post::ThreadStatus::Replied;
+        t.status = crate::model::ThreadStatus::Replied;
     })
     .await;
     app.notify().await;
@@ -1167,7 +1167,7 @@ pub(crate) async fn mark_thread(
     app: &Arc<AppState>,
     pr: u64,
     thread_id: &str,
-    f: impl FnOnce(&mut crate::post::PlannedThread),
+    f: impl FnOnce(&mut crate::model::PlannedThread),
 ) {
     let mut inner = app.inner.write().await;
     inner.with_resolve_runs("thread progress", |runs| {
@@ -3115,7 +3115,7 @@ mod tests {
     /// anyway would upgrade some *other* copy of the app and report success.
     #[tokio::test]
     async fn a_build_mise_did_not_install_cannot_upgrade_itself() {
-        use crate::update::UpdateInfo;
+        use crate::model::UpdateInfo;
 
         let (app, _dir) = crate::testutil::app("selfup");
 
@@ -3152,7 +3152,7 @@ mod tests {
         // claim itself is three lines above this in the handler and is read there.
         info.tool = Some("github:kbarendrecht/orchestrator".into());
         app.inner.write().await.update = Some(info);
-        app.inner.write().await.self_upgrade_run = Some(crate::update::UpgradeRun {
+        app.inner.write().await.self_upgrade_run = Some(crate::model::UpgradeRun {
             to: "2026.9.2".into(),
             running: true,
             tail: String::new(),

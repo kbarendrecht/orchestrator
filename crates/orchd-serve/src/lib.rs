@@ -32,8 +32,8 @@ use orchd::resolve_repo;
 use orchd::state::{self, AppState};
 use orchd::window;
 use orchd::{
-    api, env_source, fix_pr, git, instance, machine, model, proc, relocate, review_api, reviews,
-    secret, skills, spawn, store, update,
+    api, env_source, git, instance, machine, model, proc, relocate, review_api, reviews, secret,
+    skills, spawn, store, update,
 };
 
 /// How the caller wants the daemon brought up.
@@ -1093,7 +1093,7 @@ fn start_pr_poller(app: Arc<AppState>) {
                                 for (number, head) in heads {
                                     let alive = matches!(
                                         a.get(number),
-                                        Some(fix_pr::PrAutomation::Running { .. })
+                                        Some(model::PrAutomation::Running { .. })
                                     );
                                     if !alive {
                                         // Reported rather than assumed, so a poll

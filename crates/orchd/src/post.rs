@@ -25,6 +25,7 @@ use std::sync::Arc;
 
 use crate::forge::{self, Forge, ForgeImpl};
 use crate::forge::{Pr, ThreadRoot, Threads};
+use crate::model::{ManualPhase, ManualThread, Plan, PlannedThread, ThreadStatus};
 use crate::patch::{FileStat, Patch, Written};
 use crate::proposal::{Mode, Position, Stance};
 use crate::state::AppState;
@@ -112,7 +113,7 @@ pub struct Landed {
     /// meaningless next to a reply or a reaction — and the report needs the URL
     /// too, to show what the reply will actually link to.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub story: Option<crate::story::StoryRef>,
+    pub story: Option<crate::model::StoryRef>,
 }
 
 /// A write that was attempted and refused. `error` is `gh`'s own words.
@@ -140,82 +141,6 @@ pub struct Skipped {
     pub label: String,
     pub what: What,
     pub waiting_on: String,
-}
-
-/// A thread the human said they would handle themselves.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(
-    any(test, feature = "test-util"),
-    derive(ts_rs::TS),
-    ts(export, export_to = "snapshot.d.ts")
-)]
-pub struct ManualThread {
-    pub thread_id: String,
-    pub label: String,
-    /// The reviewer's own words, so the phase screen needs no second fetch.
-    pub comment: String,
-    /// What the card's box held. A starting point, not the comment — you cannot
-    /// describe work you have not done yet, which is why the real one is written
-    /// in the phase.
-    pub draft: String,
-}
-
-/// The batch stopped to wait for you.
-///
-/// Reached only when a decision chose `Manual`. The accepted patches are written
-/// and committed by then, so you edit a tree that already reflects every other
-/// decision — often *why* this thread needed hands. **Nothing has been pushed and
-/// nothing posted**, so backing out costs only the local commit.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(
-    any(test, feature = "test-util"),
-    derive(ts_rs::TS),
-    ts(export, export_to = "snapshot.d.ts")
-)]
-pub struct ManualPhase {
-    /// The commit the accepted patches landed in. `/manual/done` checks `HEAD`
-    /// against it, which is what keeps the phase from resuming onto a branch that
-    /// moved underneath it.
-    ///
-    /// Kept in step with the worktree by `update_phase_head` and written to disk with
-    /// the rest of the phase, because `fold_in` rewrites shas in both its arms — after
-    /// a fold the old sha is not even an ancestor of `HEAD`, so nothing can re-derive
-    /// which commit was ours.
-    pub committed: String,
-    /// What was already written, for the phase screen's first line.
-    pub files: Vec<FileStat>,
-    pub amend: Option<String>,
-    pub threads: Vec<ManualThread>,
-    /// A digest of the decisions half one resolved.
-    ///
-    /// The resume re-supplies the whole batch and the daemon re-resolves it from
-    /// scratch, with only `committed == HEAD` checked — and that says nothing about
-    /// *which* decisions produced that commit. A decision half one never saw would
-    /// otherwise post a reply describing code that was never applied.
-    pub decisions: String,
-    /// Is there a phase here to finish, or only a push to remember?
-    ///
-    /// [`remember_push`] needs somewhere durable to say "the daemon pushed this,
-    /// for these decisions", so a retry after a failed reply is not refused as
-    /// "the branch moved since triage"; the phase store is the one per-PR record a
-    /// batch has. But a batch that never stopped for the manual phase has no phase,
-    /// so that record went in as an entry with empty `threads` — and emptiness was
-    /// the only thing telling the two apart.
-    ///
-    /// Nothing read it that way. The boot log announced "manual phase still open",
-    /// the review payload served it, and the SPA adopted it: it dropped you on a
-    /// manual screen with no rows, where `threads.every(…)` is vacuously true and
-    /// `continue · push and post` was therefore enabled. Worse, the record is
-    /// cleared only when nothing failed, so it survived exactly when it was wrong.
-    /// Hence a field rather than a shape a reader has to infer.
-    #[serde(default = "phase_is_open")]
-    pub open: bool,
-}
-
-/// A record written before [`ManualPhase::open`] existed is a real phase — the
-/// push-only entry is the newcomer, so absence has to mean `true`.
-fn phase_is_open() -> bool {
-    true
 }
 
 /// A stable fingerprint of what a batch decided.
@@ -570,143 +495,6 @@ fn label_for(t: &crate::forge::Thread) -> String {
         (Some(p), Some(l)) => format!("{p}:{l} · {who}"),
         (Some(p), None) => format!("{p} · {who}"),
         (None, _) => format!("review summary · {who}"),
-    }
-}
-
-/// Where one thread of a run has got to.
-///
-/// The states a thread can actually be in, rather than done/not-done: a run that
-/// answered four threads, held one back and could not apply a sixth has five
-/// different outcomes to account for, and an overview that says "5 of 6" about it
-/// is hiding the only rows worth reading.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-#[cfg_attr(
-    any(test, feature = "test-util"),
-    derive(ts_rs::TS),
-    ts(export, export_to = "snapshot.d.ts")
-)]
-pub enum ThreadStatus {
-    /// Not reached yet.
-    #[default]
-    Pending,
-    /// The session committed for it, and you have not decided about the reply.
-    Committed,
-    /// Committed and the reviewer has been answered. Done.
-    Replied,
-    /// Committed, and you kept the reply back to write yourself.
-    Held,
-    /// Handed to you at triage; the session did not touch it.
-    Manual,
-    /// Words only: nothing to build, so the reply is the whole of it.
-    WordsOnly,
-    /// The session could not finish it and said why.
-    NeedsYou,
-}
-
-/// One thread as the implementing session sees it.
-///
-/// Derived from the same [`resolve`] the batch path uses, so the session and the
-/// daemon are working from one reading of your decisions: the drift checks, the
-/// story/tracker refusal and the reply resolution have all already happened by
-/// the time this is written out.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PlannedThread {
-    pub thread_id: String,
-    /// `path:line`, or the thread's label when it is a review summary.
-    pub location: String,
-    pub reviewer_said: String,
-    pub stance: crate::proposal::Stance,
-    pub mode: crate::proposal::Mode,
-    /// The words the daemon will post once the work lands. The session does not
-    /// post them; it is told them so its commit message and its own reasoning
-    /// match what the reviewer will read.
-    pub reply: Option<String>,
-    /// **The option the human picked, in their own list's words.**
-    ///
-    /// The run needs it and used to be told only the reply. Triage proposes
-    /// *solutions* now rather than staged patches, so "make the rate an argument"
-    /// is the instruction and the reply is only what the reviewer will read about
-    /// it. Without this the run had to infer the work from the promise, and the
-    /// first real one stopped to ask whether it should write the change at all.
-    pub solution: String,
-    /// The fix triage staged, when a flow stages one. The triage skill does not:
-    /// it proposes and the run writes. `skills/review/SKILL.md` still can.
-    pub patch: Option<String>,
-    pub story: Option<crate::proposal::StoryDraft>,
-    /// Where this thread has got to — the daemon's account of the run, not the
-    /// session's. Kept out of the file the agent reads by [`Plan::for_agent`]
-    /// rather than by a `skip_serializing` here, which is what made this type
-    /// unpersistable: the three fields a restart most needs to keep were the
-    /// three no serializer would write.
-    #[serde(default)]
-    pub status: ThreadStatus,
-    /// The commit the session made for it, once it reports one.
-    #[serde(default)]
-    pub commit: Option<String>,
-    /// Why it stopped, when it did.
-    #[serde(default)]
-    pub note: Option<String>,
-}
-
-/// The whole run, in the order the threads should be worked.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Plan {
-    pub pr: u64,
-    /// The head the decisions were taken against. The session re-checks it before
-    /// touching anything, because a force-push in between invalidates every patch.
-    pub base_sha: String,
-    pub threads: Vec<PlannedThread>,
-}
-
-/// One thread as the file the agent reads describes it.
-///
-/// The plan minus the daemon's bookkeeping. `skills/resolve-run/SKILL.md` documents
-/// exactly these keys, and the session is told one thread's progress at a time —
-/// through the reply to its own `committed` call — never a table of all of them.
-#[derive(Debug, Serialize)]
-struct AgentThread<'a> {
-    thread_id: &'a str,
-    location: &'a str,
-    reviewer_said: &'a str,
-    stance: crate::proposal::Stance,
-    mode: crate::proposal::Mode,
-    reply: Option<&'a str>,
-    /// What was chosen. See [`PlannedThread::solution`].
-    solution: &'a str,
-    patch: Option<&'a str>,
-    story: Option<&'a crate::proposal::StoryDraft>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct AgentPlan<'a> {
-    pr: u64,
-    base_sha: &'a str,
-    threads: Vec<AgentThread<'a>>,
-}
-
-impl Plan {
-    /// The plan as `plan.json`, for the session to work from.
-    pub fn for_agent(&self) -> AgentPlan<'_> {
-        AgentPlan {
-            pr: self.pr,
-            base_sha: &self.base_sha,
-            threads: self
-                .threads
-                .iter()
-                .map(|t| AgentThread {
-                    thread_id: &t.thread_id,
-                    location: &t.location,
-                    reviewer_said: &t.reviewer_said,
-                    stance: t.stance,
-                    mode: t.mode,
-                    reply: t.reply.as_deref(),
-                    solution: &t.solution,
-                    patch: t.patch.as_deref(),
-                    story: t.story.as_ref(),
-                })
-                .collect(),
-        }
     }
 }
 
@@ -1394,7 +1182,7 @@ pub(crate) async fn post_one(
 /// story twice stays consistent.
 ///
 /// [`STORY_TOKEN`]: crate::proposal::STORY_TOKEN
-fn with_story_id(reply: &str, story: &crate::story::StoryRef) -> String {
+fn with_story_id(reply: &str, story: &crate::model::StoryRef) -> String {
     reply.replace(crate::proposal::STORY_TOKEN, &story.link())
 }
 
@@ -2643,7 +2431,7 @@ mod tests {
         let app = app().await;
         // Through the constructor, which is the only way in now: the pair has to
         // hang together before anything can render it as a link.
-        let story = crate::story::StoryRef::new("sc-1", "https://tracker/story/1", "tracker")
+        let story = crate::model::StoryRef::new("sc-1", "https://tracker/story/1", "tracker")
             .expect("a consistent pair");
         app.inner.write().await.with_stories("a test fixture", |c| {
             c.put(10001, "PRRT_1", story.clone());

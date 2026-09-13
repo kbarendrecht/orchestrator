@@ -95,7 +95,7 @@ async fn gate_inner(
     // has a record but has let go, so it must not gate.
     let fix_pr_running = matches!(
         app.inner.read().await.automation.get(pr),
-        Some(crate::fix_pr::PrAutomation::Running { .. })
+        Some(crate::model::PrAutomation::Running { .. })
     );
     if fix_pr_running {
         return Ok(Some(Gate::FixPrRunning));

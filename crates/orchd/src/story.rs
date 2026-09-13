@@ -22,12 +22,14 @@
 //! containing it before creating one. A duplicate is then impossible at the
 //! source, and a retry heals rather than stranding the thread.
 //!
-//! [`Cache`] therefore is what its name says. It saves an agent run and drives the
+//! [`crate::model::Cache`] therefore is what its name says. It saves an agent run and drives the
 //! report's "reused" wording; losing it costs latency, not correctness, which is
 //! why it may degrade to empty like every other store here.
 
 use anyhow::{Context, Result};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+
+use crate::model::StoryRef;
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -39,141 +41,6 @@ use std::path::Path;
 /// is written to. `skills::a_skill_is_named_after_the_command_that_types_it` walks
 /// the last two.
 pub const COMMAND: &str = "story";
-
-/// A story that exists in the tracker.
-///
-/// Both halves come from the tool response and neither is ever constructed by
-/// `format!`: the org slug in the URL belongs to your tracker workspace and the daemon has no
-/// business knowing it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(
-    any(test, feature = "test-util"),
-    derive(ts_rs::TS),
-    ts(export, export_to = "snapshot.d.ts")
-)]
-pub struct StoryRef {
-    /// Short form, `sc-12345`. What the report shows.
-    ///
-    /// Private, with [`StoryRef::new`] the only way in, because the pair is agent
-    /// text that ends up as a link in a public comment: a value that has not been
-    /// through [`StoryRef::consistent`] must not be constructible outside this
-    /// module. Serde is the exception it cannot police — a `stories.json` written
-    /// before the id was checked deserializes straight past the constructor, which
-    /// is why [`Cache::get`] re-checks on the way out.
-    id: String,
-    /// The clickable one, `https://app.shortcut.com/<org>/story/12345`.
-    url: String,
-}
-
-impl StoryRef {
-    /// A story reference, or `None` when the id and the URL do not hang together.
-    ///
-    /// The one constructor, so [`StoryRef::link`] cannot be handed a pair nobody
-    /// checked.
-    pub fn new(id: &str, url: &str, host: &str) -> Option<Self> {
-        let s = StoryRef {
-            id: id.trim().to_string(),
-            url: url.trim().to_string(),
-        };
-        s.consistent(host).then_some(s)
-    }
-
-    pub fn id(&self) -> &str {
-        &self.id
-    }
-
-    pub fn url(&self) -> &str {
-        &self.url
-    }
-
-    /// What `{story}` becomes in the posted reply.
-    ///
-    /// A markdown link rather than either half alone: the skill's rule is "never
-    /// a bare number, always the full URL" because a colleague has to be able to
-    /// click it, and a naked URL mid-sentence reads badly in prose. The
-    /// substitution is deterministic given `(id, url)`, so `already_replied`'s
-    /// exact match still recognises a reply it posted before.
-    pub fn link(&self) -> String {
-        format!("[{}]({})", self.id, self.url)
-    }
-
-    /// Does the URL actually point at this id, **on the tracker's own host**?
-    ///
-    /// The agent hands back both, and an id it invented for a story it never
-    /// created would put a permanent public link to *somebody else's* story into
-    /// a reply. The id's number appearing in the URL is what ties the two together.
-    ///
-    /// Matched as a whole path segment rather than as a substring, because
-    /// Shortcut hands out URLs both bare and with a title slug on the end, and a
-    /// slug can carry digits of its own.
-    ///
-    /// **The host and the scheme are checked too, and that is not paranoia.** This
-    /// used to accept any URL carrying the number as a segment, so
-    /// `http://attacker.example/12345` passed — and both halves of the pair come
-    /// out of agent output whose *input* is third-party review comments, with the
-    /// result posted publicly as a link somebody is meant to click. So: `https`
-    /// only, an exact host match (which also rules out `app.shortcut.com.evil.com`
-    /// and a userinfo prefix, since the authority is compared whole), and the
-    /// number as a path segment.
-    fn consistent(&self, host: &str) -> bool {
-        // The id is agent text too, and it lands inside markdown link syntax.
-        // "Ends in digits" was the whole check, so `x](https://evil.example)
-        // [sc-12345` with a legitimate URL passed and rendered as a clickable link
-        // to an arbitrary host — the hole the URL check closes, through the other
-        // field. So the id has to be a tracker prefix and a number, nothing else.
-        let Some(number) = well_formed_id(&self.id) else {
-            return false;
-        };
-        // Scheme, then authority, then path — no URL crate, because the shapes
-        // being refused are exactly the ones a hand-rolled split gets right when
-        // it compares the whole authority rather than searching inside it.
-        let Some(rest) = self.url.strip_prefix("https://") else {
-            return false;
-        };
-        let Some((authority, path)) = rest.split_once('/') else {
-            return false;
-        };
-        // Hosts are case-insensitive; everything else here is not.
-        if !authority.eq_ignore_ascii_case(host) {
-            return false;
-        }
-        // The query and fragment are not path, and a number in either proves
-        // nothing about which story this is.
-        let path = path
-            .split_once(['?', '#'])
-            .map_or(path, |(before, _)| before);
-        /* A segment equal to the number, **or to the whole id**.
-
-        Which of the two a tracker uses is not a detail: Shortcut's URLs carry
-        the bare number (`/story/12345` for `sc-12345`), while Linear's and
-        Jira's carry the whole key (`/issue/ENG-123`, `/browse/ABC-123`). The
-        digits-only match this replaced would have refused every story either of
-        those files — and refused it as "the agent reported an id and URL that
-        disagree", which reads like the agent's fault rather than a rule that
-        only ever fitted one tracker.
-        Still two exact comparisons against one path segment, so the decoy the
-        test names (a slug with digits of its own) is refused exactly as before.
-        Case-insensitive for the id because a key is conventionally uppercase and
-        an agent writing prose around it may not be; a number has no case. */
-        path.split('/')
-            .any(|seg| seg == number || seg.eq_ignore_ascii_case(&self.id))
-    }
-}
-
-/// The number in a story id of the shape `sc-12345`: one to eight letters, an
-/// optional dash, one to twelve digits. Anything else — a bracket, a newline, a
-/// second id, an unbounded string — is `None`, and the caller refuses it.
-fn well_formed_id(id: &str) -> Option<&str> {
-    let letters = id.len()
-        - id.trim_start_matches(|c: char| c.is_ascii_alphabetic())
-            .len();
-    if !(1..=8).contains(&letters) {
-        return None;
-    }
-    let rest = id[letters..].strip_prefix('-').unwrap_or(&id[letters..]);
-    let digits = (1..=12).contains(&rest.len()) && rest.chars().all(|c| c.is_ascii_digit());
-    digits.then_some(rest)
-}
 
 /// One story asked for: which thread it answers, and the text approved on the card.
 pub struct Wanted {
@@ -201,66 +68,6 @@ pub struct Filed {
 /// thread simply stays open and its author is held back, which the report already
 /// knows how to say.
 pub type Results = HashMap<String, std::result::Result<Filed, String>>;
-
-/// Stories filed per PR, keyed by the thread they answer.
-///
-/// Nested rather than keyed on a tuple because JSON object keys are strings, and
-/// a `(u64, String)` key would have to be encoded and parsed back — a format to
-/// get wrong for no gain.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct Cache {
-    #[serde(default)]
-    pub by_pr: HashMap<u64, HashMap<String, StoryRef>>,
-}
-
-impl Cache {
-    /// A stored story, if it is still one this daemon would be willing to write.
-    ///
-    /// The file is durable and the check on the id is newer than some of what is in
-    /// it: an entry written when "ends in digits" was the whole test could carry
-    /// `x](https://evil.example) [sc-12345`, which [`StoryRef::link`] renders as a
-    /// clickable link to somebody else's host in a comment on a colleague's review.
-    /// Validating only what the agent reports leaves that entry served from disk
-    /// for as long as the file lives, so the way out re-checks too.
-    ///
-    /// The id is checked unconditionally because it is the half that escapes the
-    /// markdown; the URL's host only when the caller knows one. A cache hit
-    /// deliberately works with no tracker configured, and there is then nothing to
-    /// compare a host against.
-    pub fn get(&self, pr: u64, thread_id: &str, host: Option<&str>) -> Option<&StoryRef> {
-        let hit = self.by_pr.get(&pr)?.get(thread_id)?;
-        let ok = match host {
-            Some(h) => hit.consistent(h),
-            None => well_formed_id(&hit.id).is_some(),
-        };
-        if !ok {
-            tracing::warn!(
-                pr,
-                thread_id,
-                "a cached story does not hold together; refusing to link it"
-            );
-            return None;
-        }
-        Some(hit)
-    }
-
-    pub fn put(&mut self, pr: u64, thread_id: &str, story: StoryRef) {
-        self.by_pr
-            .entry(pr)
-            .or_default()
-            .insert(thread_id.to_string(), story);
-    }
-
-    /// Never pruned by PR. A merged PR's stories still matter to a late retry,
-    /// and the whole file is a handful of ids.
-    pub fn len(&self) -> usize {
-        self.by_pr.values().map(HashMap::len).sum()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-}
 
 // ---------------------------------------------------------------------------
 // The run
@@ -804,11 +611,14 @@ mod tests {
             .expect("an answer for the thread")
             .as_ref()
             .unwrap_or_else(|e| panic!("the filer failed: {e}"));
-        eprintln!("filed {} at {}", filed.story.id, filed.story.url);
+        eprintln!("filed {} at {}", filed.story.id(), filed.story.url());
         assert!(!filed.reused, "the first run created it");
-        assert!(filed.story.consistent(HOST), "id and url must agree");
         assert!(
-            filed.story.link().contains(&filed.story.id),
+            StoryRef::new(filed.story.id(), filed.story.url(), "app.shortcut.com").is_some(),
+            "id and url must agree"
+        );
+        assert!(
+            filed.story.link().contains(filed.story.id()),
             "the reply substitution carries the id"
         );
 
@@ -924,239 +734,5 @@ mod tests {
             head_ref: head_ref.into(),
             ..crate::testutil::pr(number)
         }
-    }
-
-    fn story() -> StoryRef {
-        StoryRef {
-            id: "sc-12345".into(),
-            url: "https://app.shortcut.com/acme/story/12345".into(),
-        }
-    }
-
-    #[test]
-    fn the_substitution_is_clickable_and_short() {
-        assert_eq!(
-            story().link(),
-            "[sc-12345](https://app.shortcut.com/acme/story/12345)"
-        );
-    }
-
-    /// A tracker's host, as `config::Tracker::host` carries it.
-    const HOST: &str = "app.shortcut.com";
-
-    #[test]
-    fn an_id_that_does_not_match_its_url_is_refused() {
-        // The agent hands back both. If they disagree, one of them is invented,
-        // and posting the link would point a colleague at someone else's story.
-        assert!(story().consistent(HOST));
-
-        let mut swapped = story();
-        swapped.url = "https://app.shortcut.com/acme/story/99999".into();
-        assert!(!swapped.consistent(HOST));
-
-        // Shortcut hands out both forms; a title slug on the end is still the
-        // same story.
-        let mut slugged = story();
-        slugged.url = "https://app.shortcut.com/acme/story/12345/document-the-schedules".into();
-        assert!(slugged.consistent(HOST));
-
-        // ...and a slug carrying digits of its own must not stand in for the id.
-        let mut decoy = story();
-        decoy.id = "sc-777".into();
-        decoy.url = "https://app.shortcut.com/acme/story/12345/fix-777-errors".into();
-        assert!(
-            !decoy.consistent(HOST),
-            "matched a slug instead of the id segment"
-        );
-
-        let mut empty = story();
-        empty.id = "sc-".into();
-        assert!(!empty.consistent(HOST));
-    }
-
-    /// The other two trackers anyone is likely to point this at, whose URLs carry
-    /// the whole key rather than the bare number.
-    ///
-    /// Looked up rather than guessed: Linear is `linear.app/<workspace>/issue/ENG-123/<slug>`
-    /// and Jira is `<site>.atlassian.net/browse/ABC-123`. Both parse as an id here
-    /// already — `well_formed_id` takes one to eight letters and a number — so the
-    /// only thing that refused them was the path match.
-    #[test]
-    fn a_key_in_the_path_agrees_with_its_id_too() {
-        let linear = StoryRef::new(
-            "ENG-123",
-            "https://linear.app/acme/issue/ENG-123/stop-the-flaky-poller",
-            "linear.app",
-        );
-        assert!(linear.is_some(), "a Linear issue URL was refused");
-
-        let jira = StoryRef::new(
-            "ABC-123",
-            "https://acme.atlassian.net/browse/ABC-123",
-            "acme.atlassian.net",
-        );
-        assert!(jira.is_some(), "a Jira browse URL was refused");
-
-        // The pair still has to agree: a different key in the path is a different
-        // issue, whichever tracker it is.
-        assert!(
-            StoryRef::new(
-                "ENG-123",
-                "https://linear.app/acme/issue/ENG-999/other",
-                "linear.app",
-            )
-            .is_none(),
-            "a mismatched key passed"
-        );
-        // And the host rule is untouched by any of it.
-        assert!(
-            StoryRef::new(
-                "ENG-123",
-                "https://evil.example/acme/issue/ENG-123",
-                "linear.app",
-            )
-            .is_none(),
-            "a foreign host passed"
-        );
-    }
-
-    /// **The URL is agent output, and its input is third-party review text.** The
-    /// pair ends up as a permanent public link in a reply, so a number appearing
-    /// somewhere in the string was never enough: every URL below carries the right
-    /// story number and every one of them must still be refused.
-    /// The other field. Every id below carries the right number *and* a legitimate
-    /// URL, and every one must still be refused: the id is rendered verbatim into
-    /// `[id](url)`, so a bracket in it closes the link text and opens another.
-    #[test]
-    fn an_id_that_is_not_a_prefix_and_a_number_is_refused() {
-        let with = |id: &str| {
-            let mut s = story();
-            s.id = id.into();
-            s.consistent(HOST)
-        };
-        assert!(with("sc-12345"), "the ordinary shape");
-        assert!(with("SC12345"), "no dash is fine");
-        assert!(
-            !with("x](https://evil.example) [sc-12345"),
-            "a link injected through the id"
-        );
-        assert!(!with("sc-12345\nsee also"), "a newline");
-        assert!(!with("sc-12345 sc-12345"), "two ids");
-        assert!(!with("12345"), "no prefix");
-        assert!(!with("sc-"), "no number");
-        assert!(
-            !with("storyprefix-12345"),
-            "a prefix too long to be a tracker's"
-        );
-        assert!(
-            !with("sc-1234567890123"),
-            "a number too long to be a story's"
-        );
-        assert!(!with(""), "empty");
-    }
-
-    #[test]
-    fn a_url_off_the_trackers_host_is_refused() {
-        let with = |url: &str| {
-            let mut s = story();
-            s.url = url.into();
-            s.consistent(HOST)
-        };
-
-        assert!(
-            !with("http://attacker.example/12345"),
-            "another host entirely"
-        );
-        assert!(
-            !with("https://attacker.example/story/12345"),
-            "https, still not ours"
-        );
-        // The shapes a substring check on the host would have let through.
-        assert!(
-            !with("https://app.shortcut.com.evil.example/story/12345"),
-            "suffixed host"
-        );
-        assert!(
-            !with("https://evil.example/app.shortcut.com/story/12345"),
-            "host in the path"
-        );
-        assert!(
-            !with("https://app.shortcut.com@evil.example/story/12345"),
-            "userinfo pointing elsewhere"
-        );
-        // Scheme matters: a link somebody clicks should not be downgradeable.
-        assert!(
-            !with("http://app.shortcut.com/acme/story/12345"),
-            "plain http"
-        );
-        assert!(!with("//app.shortcut.com/acme/story/12345"), "no scheme");
-        // A number in the query or the fragment is not a path segment.
-        assert!(
-            !with("https://app.shortcut.com/acme/story/999?id=12345"),
-            "query"
-        );
-        assert!(
-            !with("https://app.shortcut.com/acme/story/999#12345"),
-            "fragment"
-        );
-        // And the host on its own, with no path, names no story.
-        assert!(!with("https://app.shortcut.com"), "no path at all");
-
-        // The real thing still passes, including a differently-cased host.
-        assert!(with("https://app.shortcut.com/acme/story/12345"));
-        assert!(
-            with("https://APP.Shortcut.COM/acme/story/12345"),
-            "hosts are case-insensitive"
-        );
-    }
-
-    #[test]
-    fn the_cache_is_keyed_by_pr_and_thread() {
-        let mut c = Cache::default();
-        assert!(c.is_empty());
-        c.put(10001, "PRRT_1", story());
-        assert_eq!(c.get(10001, "PRRT_1", Some(HOST)), Some(&story()));
-        // Same thread id under a different PR is a different story.
-        assert_eq!(c.get(10004, "PRRT_1", Some(HOST)), None);
-        assert_eq!(c.get(10001, "PRRT_2", Some(HOST)), None);
-        assert_eq!(c.len(), 1);
-    }
-
-    /// The file outlives the rule. An entry written when "ends in digits" was the
-    /// whole check carries an id that breaks out of `[id](url)` markdown, and
-    /// validating only what the agent reports left it served from disk for good.
-    #[test]
-    fn a_poisoned_cache_entry_is_refused_on_the_way_out() {
-        let mut c = Cache::default();
-        // Straight into the map, the way a `stories.json` from an older build
-        // deserializes: past the constructor, which is the point.
-        let poisoned = StoryRef {
-            id: "x](https://evil.example) [sc-12345".into(),
-            url: "https://app.shortcut.com/acme/story/12345".into(),
-        };
-        c.put(10001, "PRRT_1", poisoned);
-        assert_eq!(
-            c.get(10001, "PRRT_1", Some(HOST)),
-            None,
-            "the host is known"
-        );
-        assert_eq!(
-            c.get(10001, "PRRT_1", None),
-            None,
-            "and the id alone is enough to refuse it, with no tracker configured"
-        );
-
-        // A sound entry still comes back either way.
-        c.put(10002, "PRRT_1", story());
-        assert_eq!(c.get(10002, "PRRT_1", Some(HOST)), Some(&story()));
-        assert_eq!(c.get(10002, "PRRT_1", None), Some(&story()));
-    }
-
-    #[test]
-    fn the_cache_survives_a_round_trip() {
-        let mut c = Cache::default();
-        c.put(10001, "PRRT_1", story());
-        let back: Cache = serde_json::from_str(&serde_json::to_string(&c).unwrap()).unwrap();
-        assert_eq!(back.get(10001, "PRRT_1", Some(HOST)), Some(&story()));
     }
 }

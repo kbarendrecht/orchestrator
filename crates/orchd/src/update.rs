@@ -31,31 +31,15 @@
 //! See the "Upgrading the app" section below for what differs.
 
 use anyhow::Result;
-use serde::Serialize;
 use std::path::Path;
 use std::sync::Arc;
 
+use crate::model::{AgentUpdate, UpdateInfo, UpgradeRun};
 use crate::state::AppState;
 
 // ---------------------------------------------------------------------------
 // The agent
 // ---------------------------------------------------------------------------
-
-/// A newer agent build than the one installed.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[cfg_attr(
-    any(test, feature = "test-util"),
-    derive(ts_rs::TS),
-    ts(export, export_to = "snapshot.d.ts")
-)]
-pub struct AgentUpdate {
-    /// The mise tool name to upgrade — `claude-code` or `claude`, whichever this
-    /// checkout pins. Carried rather than assumed so the button upgrades the tool
-    /// that actually provides the binary.
-    pub tool: String,
-    pub current: String,
-    pub latest: String,
-}
 
 /// Ask mise whether the agent is behind, in the checkout whose config decides it.
 ///
@@ -170,37 +154,6 @@ fn parse(stdout: &[u8], tool: &str) -> Option<AgentUpdate> {
 /// resolves the tool version from.
 fn upgrade_argv(tool: &str) -> Vec<String> {
     vec!["mise".into(), "upgrade".into(), tool.into()]
-}
-
-/// An upgrade the daemon is running, or the failure it left behind.
-///
-/// The run used to be a process in main's drawer, which was the wrong home twice:
-/// the drawer is *this workspace's* processes, and upgrading the agent belongs to
-/// no workspace — so from any worktree the run was invisible, and main's drawer
-/// grew a tab that was not a process of main's at all. It reports through the same
-/// bar that offered the button instead.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[cfg_attr(
-    any(test, feature = "test-util"),
-    derive(ts_rs::TS),
-    ts(export, export_to = "snapshot.d.ts")
-)]
-pub struct UpgradeRun {
-    /// The version being installed. Carried so the bar can say it even after the
-    /// check that found it has been refreshed away.
-    pub to: String,
-    pub running: bool,
-    /// The tail of the output, for a run that failed. Empty while it runs, and
-    /// empty on success — which, with `running` false, is how the bar tells the two
-    /// finished states apart.
-    ///
-    /// Success used to clear the run outright, on the reasoning that the nudge
-    /// going away *is* the report. It is not: the sessions you have open go on
-    /// printing Claude Code's own upgrade notice, because they really are still the
-    /// old build, so a bar that vanishes silently against a terminal that still
-    /// says "update available" reads as a button that did nothing. It is reported,
-    /// and dismissed like any other.
-    pub tail: String,
 }
 
 /// How long an upgrade may take before it is killed and reported as failed.
@@ -599,27 +552,6 @@ pub fn stable_exe(exe: &std::path::Path) -> std::path::PathBuf {
 // ---------------------------------------------------------------------------
 // Noticing a newer app release
 // ---------------------------------------------------------------------------
-
-/// A release newer than what is running.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[cfg_attr(
-    any(test, feature = "test-util"),
-    derive(ts_rs::TS),
-    ts(export, export_to = "snapshot.d.ts")
-)]
-pub struct UpdateInfo {
-    pub current: String,
-    pub latest: String,
-    pub url: String,
-    /// The mise tool that installed this binary, when one did.
-    ///
-    /// What decides whether the bar can offer a button at all: `Some` is an install
-    /// the app can upgrade itself (`mise upgrade <tool>`), `None` is a `.deb`, an
-    /// AppImage, a `.dmg` or a checkout, where the honest offer is the release link
-    /// it already had. Resolved by `update::app_providing_tool` at check time,
-    /// off-thread, because it shells mise.
-    pub tool: Option<String>,
-}
 
 /// Notice a newer GitHub release than the running build.
 ///

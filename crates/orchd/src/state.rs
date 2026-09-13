@@ -43,7 +43,7 @@ pub struct RunView {
 pub struct RunThreadView {
     pub thread_id: String,
     pub location: String,
-    pub status: crate::post::ThreadStatus,
+    pub status: crate::model::ThreadStatus,
     pub commit: Option<String>,
     pub note: Option<String>,
 }
@@ -101,20 +101,6 @@ pub struct TriageProgress {
     /// session's pane.
     #[cfg_attr(any(test, feature = "test-util"), ts(as = "String"))]
     pub session: SessionId,
-}
-
-/// Persisted, because the commits outlive the record and an account of them is
-/// the only thing that says which commit answers which thread. Losing it to a
-/// restart left a branch of commits nobody could map back to a reviewer.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ResolveRun {
-    pub session: Uuid,
-    pub plan: crate::post::Plan,
-    /// Why the run is over, when it is. Set when the session exits and on load,
-    /// where a restored run's session never survived the restart — so a thread
-    /// still reading `pending` is understood as abandoned rather than imminent.
-    #[serde(default)]
-    pub ended: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Default)]
@@ -279,11 +265,11 @@ pub struct Inner {
     /// about. This records a *local* commit, and `fold_in` rewrites shas in both its
     /// arms, so after a fold the old sha is not even an ancestor of HEAD and no
     /// reachability query can prove the new one is ours.
-    pub manual: Durable<HashMap<u64, crate::post::ManualPhase>>,
+    pub manual: Durable<HashMap<u64, crate::model::ManualPhase>>,
     /// Stories already filed for a review thread, so a retry reuses one rather
     /// than filing a second. A cache, not a ledger — `crate::story` explains why
     /// losing it costs latency and not correctness.
-    pub stories: Durable<crate::story::Cache>,
+    pub stories: Durable<crate::model::Cache>,
     /// Your own GitHub login, from the PR poll's `viewer { login }`. The vendored
     /// prompts take it as `{{LOGIN}}`.
     pub viewer: Option<String>,
@@ -324,7 +310,7 @@ pub struct Inner {
     /// told. Conflict detection on save protects you from the agent; this is
     /// the other direction, which is the one that loses work silently.
     pub human_edits: HashMap<PathBuf, HumanEdit>,
-    pub automation: Durable<crate::fix_pr::AutomationStore>,
+    pub automation: Durable<crate::model::AutomationStore>,
     /// The plan a resolve-run session is working from, kept per PR so the daemon
     /// can answer "what does this thread say" when the agent reports a commit.
     /// In memory only: the plan is also on disk beside the prompt, and a daemon
@@ -342,18 +328,18 @@ pub struct Inner {
     /// A newer GitHub release than the running build, if the update poller has
     /// found one. Surfaced to the SPA as a dismissible nudge, with a button when
     /// mise is what installed us.
-    pub update: Option<crate::update::UpdateInfo>,
+    pub update: Option<crate::model::UpdateInfo>,
     /// The app's own upgrade, while it runs and after it ends. The sibling of
     /// `upgrade_run`, kept apart from it because both can be in flight at once and
     /// a shared slot would let one report the other's outcome.
-    pub self_upgrade_run: Option<crate::update::UpgradeRun>,
+    pub self_upgrade_run: Option<crate::model::UpgradeRun>,
     /// A newer Claude Code than the one installed, if the agent poller has found
     /// one. Unlike `update` this one is actionable in place: upgrading cannot
     /// disturb a running session, so the SPA offers a button rather than a link.
-    pub agent_update: Option<crate::update::AgentUpdate>,
+    pub agent_update: Option<crate::model::AgentUpdate>,
     /// An agent upgrade in flight, or the failure one left behind. Deliberately
     /// not a workspace process — see `update::UpgradeRun`.
-    pub upgrade_run: Option<crate::update::UpgradeRun>,
+    pub upgrade_run: Option<crate::model::UpgradeRun>,
 }
 
 /// Releases a lock taken with [`AppState::try_claim`] when it goes out of scope.
@@ -435,7 +421,7 @@ impl Inner {
     pub fn with_automation(
         &mut self,
         why: &str,
-        f: impl FnOnce(&mut crate::fix_pr::AutomationStore) -> bool,
+        f: impl FnOnce(&mut crate::model::AutomationStore) -> bool,
     ) -> bool {
         let changed = f(&mut self.automation.0);
         if changed {
@@ -449,7 +435,7 @@ impl Inner {
     pub fn with_manual(
         &mut self,
         why: &str,
-        f: impl FnOnce(&mut HashMap<u64, crate::post::ManualPhase>) -> bool,
+        f: impl FnOnce(&mut HashMap<u64, crate::model::ManualPhase>) -> bool,
     ) -> bool {
         let changed = f(&mut self.manual.0);
         if changed {
@@ -487,7 +473,7 @@ impl Inner {
     pub fn with_stories(
         &mut self,
         why: &str,
-        f: impl FnOnce(&mut crate::story::Cache) -> bool,
+        f: impl FnOnce(&mut crate::model::Cache) -> bool,
     ) -> bool {
         let changed = f(&mut self.stories.0);
         if changed {
@@ -1675,9 +1661,9 @@ pub struct Snapshot {
     pub reviews_polling: bool,
     #[cfg_attr(
         any(test, feature = "test-util"),
-        ts(as = "std::collections::HashMap<String, crate::fix_pr::PrAutomation>")
+        ts(as = "std::collections::HashMap<String, crate::model::PrAutomation>")
     )]
-    pub automation: HashMap<u64, crate::fix_pr::PrAutomation>,
+    pub automation: HashMap<u64, crate::model::PrAutomation>,
     pub repos: Repos,
     /// Main may hold more than one live session (`allow_several_in_main`).
     ///
@@ -1696,16 +1682,16 @@ pub struct Snapshot {
     /// [`crate::model::CreateRun`].
     pub create_run: Option<crate::model::CreateRun>,
     /// A newer release than the running build, or `None`.
-    pub update: Option<crate::update::UpdateInfo>,
+    pub update: Option<crate::model::UpdateInfo>,
     /// The app's own upgrade run: `running` while `mise upgrade` goes, then a tail
     /// that is empty on success. Success means *installed*, not applied — this
     /// process is still the old build, so the bar then asks for a restart.
-    pub self_upgrade_run: Option<crate::update::UpgradeRun>,
+    pub self_upgrade_run: Option<crate::model::UpgradeRun>,
     /// A newer Claude Code than the installed one, or `None`. Actionable in the
     /// UI: the upgrade cannot disturb a session already running.
-    pub agent_update: Option<crate::update::AgentUpdate>,
+    pub agent_update: Option<crate::model::AgentUpdate>,
     /// The upgrade the update bar reports on, while it runs and after it fails.
-    pub upgrade_run: Option<crate::update::UpgradeRun>,
+    pub upgrade_run: Option<crate::model::UpgradeRun>,
     /// Resolve runs in flight, by PR: what each thread's outcome was so far. The
     /// overview reads this rather than the report of a batch that has finished,
     /// because a run is watchable while it happens.

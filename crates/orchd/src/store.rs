@@ -360,13 +360,13 @@ fn load_json<T: serde::de::DeserializeOwned + Default>(p: Result<PathBuf>) -> T 
 
 /// §8 says SQLite; a JSON file with the same write-and-rename discipline holds
 /// a handful of PR numbers just as safely and keeps the dependency list short.
-pub fn save_automation(store: &crate::fix_pr::AutomationStore) -> Result<()> {
+pub fn save_automation(store: &crate::model::AutomationStore) -> Result<()> {
     save_json(&automation_path()?, store)
 }
 
 /// A restart must not resurrect a `Running` state whose session is gone (§8).
-pub fn load_automation() -> crate::fix_pr::AutomationStore {
-    let mut store: crate::fix_pr::AutomationStore = load_json(automation_path());
+pub fn load_automation() -> crate::model::AutomationStore {
+    let mut store: crate::model::AutomationStore = load_json(automation_path());
     // Orphaned Running is demoted to Exhausted: the run is not going to finish,
     // and pretending it might would block the PR forever. With no head — nobody
     // knows what the crashed run left, and the `""` this used to write matched no
@@ -374,15 +374,15 @@ pub fn load_automation() -> crate::fix_pr::AutomationStore {
     // record away.
     for state in store.by_pr.values_mut() {
         match state {
-            crate::fix_pr::PrAutomation::Running { .. } => {
-                *state = crate::fix_pr::PrAutomation::Exhausted {
+            crate::model::PrAutomation::Running { .. } => {
+                *state = crate::model::PrAutomation::Exhausted {
                     at_head: None,
                     at: std::time::SystemTime::now(),
                 };
             }
             // The old sentinel, from a file written before `at_head` could say
             // "unknown". Read as what it meant rather than as a sha.
-            crate::fix_pr::PrAutomation::Exhausted { at_head, .. } => {
+            crate::model::PrAutomation::Exhausted { at_head, .. } => {
                 if at_head.as_deref() == Some("") {
                     *at_head = None;
                 }
@@ -403,11 +403,11 @@ fn stories_path() -> Result<PathBuf> {
 /// saves an agent run. Which is why, unlike the two stores above, nothing here
 /// tries to repair or reconcile it on load: the worst an empty file costs is one
 /// redundant search.
-pub fn save_stories(cache: &crate::story::Cache) -> Result<()> {
+pub fn save_stories(cache: &crate::model::Cache) -> Result<()> {
     save_json(&stories_path()?, cache)
 }
 
-pub fn load_stories() -> crate::story::Cache {
+pub fn load_stories() -> crate::model::Cache {
     load_json(stories_path())
 }
 
@@ -422,14 +422,14 @@ fn manual_path() -> Result<PathBuf> {
 /// restart leaves work that can only be finished by hand in git. `fold_in` rewrites
 /// shas, so nothing can re-derive which commit was ours.
 pub fn save_manual(
-    phases: &std::collections::HashMap<u64, crate::post::ManualPhase>,
+    phases: &std::collections::HashMap<u64, crate::model::ManualPhase>,
 ) -> Result<()> {
     save_json(&manual_path()?, phases)
 }
 
 /// Degrading to empty costs the resume, which is bad but recoverable by hand;
 /// refusing to boot would cost every session.
-pub fn load_manual() -> std::collections::HashMap<u64, crate::post::ManualPhase> {
+pub fn load_manual() -> std::collections::HashMap<u64, crate::model::ManualPhase> {
     load_json(manual_path())
 }
 
@@ -444,7 +444,7 @@ fn resolve_runs_path() -> Result<PathBuf> {
 /// go wrong, and this record is the only thing that says which commit answers
 /// which reviewer. Without it a restart left a branch of commits and no map.
 pub fn save_resolve_runs(
-    runs: &std::collections::HashMap<u64, crate::state::ResolveRun>,
+    runs: &std::collections::HashMap<u64, crate::model::ResolveRun>,
 ) -> Result<()> {
     save_json(&resolve_runs_path()?, runs)
 }
@@ -455,8 +455,8 @@ pub fn save_resolve_runs(
 /// takes them with it — so a restored run is an account, never something still
 /// moving. Said here rather than left for a reader to infer, because a thread
 /// reading `pending` in an overview otherwise looks imminent forever.
-pub fn load_resolve_runs() -> std::collections::HashMap<u64, crate::state::ResolveRun> {
-    let mut runs: std::collections::HashMap<u64, crate::state::ResolveRun> =
+pub fn load_resolve_runs() -> std::collections::HashMap<u64, crate::model::ResolveRun> {
+    let mut runs: std::collections::HashMap<u64, crate::model::ResolveRun> =
         load_json(resolve_runs_path());
     for r in runs.values_mut() {
         r.ended
@@ -1124,7 +1124,7 @@ mod tests {
         // The file exists so a restart does not strand a batch whose patches are
         // already committed, which means the digest has to mean the same thing in the
         // next process too.
-        let phase = crate::post::ManualPhase {
+        let phase = crate::model::ManualPhase {
             committed: "4c1e9a27f3b8d1e5a9c2f7b4e8d3a6c1f5b9e2d7".into(),
             files: vec![crate::patch::FileStat {
                 path: "renovate.json5".into(),
@@ -1132,7 +1132,7 @@ mod tests {
                 deleted: 1,
             }],
             amend: Some("folded into 9b21f04".into()),
-            threads: vec![crate::post::ManualThread {
+            threads: vec![crate::model::ManualThread {
                 thread_id: "PRRT_1".into(),
                 label: "a.ts:12 · alice".into(),
                 comment: "belongs in the repository".into(),
@@ -1141,8 +1141,9 @@ mod tests {
             decisions: "0badc0de0badc0de".into(),
             open: true,
         };
-        let map: std::collections::HashMap<u64, crate::post::ManualPhase> = [(10001, phase)].into();
-        let back: std::collections::HashMap<u64, crate::post::ManualPhase> =
+        let map: std::collections::HashMap<u64, crate::model::ManualPhase> =
+            [(10001, phase)].into();
+        let back: std::collections::HashMap<u64, crate::model::ManualPhase> =
             serde_json::from_str(&serde_json::to_string(&map).unwrap()).unwrap();
 
         let got = back.get(&10001).expect("the phase");

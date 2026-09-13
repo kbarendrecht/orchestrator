@@ -476,7 +476,7 @@ pub async fn pr_resolve_run(
         .with_resolve_runs("run started", |runs| {
             runs.insert(
                 number,
-                crate::state::ResolveRun {
+                crate::model::ResolveRun {
                     session,
                     plan: plan.clone(),
                     ended: None,
@@ -520,10 +520,11 @@ pub async fn pr_resolve_run(
 async fn sweep_words_only(
     app: &Arc<AppState>,
     number: u64,
-    plan: &crate::post::Plan,
+    plan: &crate::model::Plan,
     fresh: &crate::forge::Threads,
 ) -> usize {
-    use crate::post::{Posted, ThreadStatus};
+    use crate::model::ThreadStatus;
+    use crate::post::Posted;
 
     let todo: Vec<_> = plan
         .threads
@@ -665,7 +666,7 @@ pub async fn pr_run_rerequest(
                 r.plan
                     .threads
                     .iter()
-                    .filter(|t| t.status == crate::post::ThreadStatus::Replied)
+                    .filter(|t| t.status == crate::model::ThreadStatus::Replied)
                     .map(|t| t.thread_id.clone())
                     .collect()
             })
