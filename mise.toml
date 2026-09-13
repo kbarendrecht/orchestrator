@@ -326,12 +326,18 @@ main() {
   done
 
   step "bumping the version"
+  # **Three files, and the crate manifests are not among them.** Every member says
+  # `version.workspace = true`, so the one literal is the root's
+  # `[workspace.package]` and cargo refuses a disagreement — which is why this no
+  # longer bumps `desktop/Cargo.toml`, and why it cannot silently miss a crate the
+  # next split adds.
   bump Cargo.toml "version = \\"$cur\\"" "version = \\"$VERSION\\"" 1
-  bump desktop/Cargo.toml "version = \\"$cur\\"" "version = \\"$VERSION\\"" 1
   bump desktop/tauri.conf.json "\\"version\\": \\"$cur\\"" "\\"version\\": \\"$VERSION\\"" 1
-  # Both crates, and only those two: every dependency in the lock carries its own
-  # version line, so the count is the check.
-  bump Cargo.lock "version = \\"$cur\\"" "version = \\"$VERSION\\"" 2
+  # The workspace's five members, and only those: every dependency in the lock
+  # carries its own version line, so the count is the check. It was 2 before the
+  # crate split, which is the kind of number this `bump` refuses rather than
+  # half-applies.
+  bump Cargo.lock "version = \\"$cur\\"" "version = \\"$VERSION\\"" 5
 
   [ "$DRY" = 1 ] && { printf '\\n(dry run: nothing written, nothing tagged; %s would have been pushed)\\n' "$tag"; return 0; }
 

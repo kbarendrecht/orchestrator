@@ -63,28 +63,32 @@ jobs:
       - name: Tag matches the version the app reports
         run: |
           # The update nudge compares releases against orchd's own
-          # env!("CARGO_PKG_VERSION"), i.e. the root Cargo.toml version. If the
-          # tag and that version drift, a released build nags about "an update"
-          # that it already is. Refuse to release a mismatch.
+          # env!("CARGO_PKG_VERSION"). If the tag and that version drift, a
+          # released build nags about "an update" that it already is. Refuse to
+          # release a mismatch.
           #
-          # **All three files, not just the root one.** CLAUDE.md's release steps
-          # say to bump `Cargo.toml`, `desktop/Cargo.toml` and `tauri.conf.json`
-          # together, and this only ever checked the first — so a release could
-          # ship a `.deb` and a `.dmg` whose bundle version disagreed with the
-          # binary inside them, which is the half nobody notices until an upgrade
-          # behaves oddly. Checking what the docs already require costs nothing.
+          # **Two files, because cargo holds the rest.** Every crate says
+          # `version.workspace = true`, so `[workspace.package]` in the root is the
+          # one literal a crate can disagree with — and cargo refuses to build the
+          # disagreement, which is stronger than a grep here. `tauri.conf.json` is
+          # the bundler's own copy and nothing checks it but this: a `.deb` and a
+          # `.dmg` whose bundle version disagreed with the binary inside them is
+          # the half nobody notices until an upgrade behaves oddly.
+          #
+          # This step read `^version` out of the root when the root had stopped
+          # carrying one — the crate split moved it — so it compared the empty
+          # string against every tag. Nothing failed until somebody tried to
+          # release; the workspace version above is what put it back.
           tag="${GITHUB_REF_NAME#v}"
           fail=0
           check() {
             if [ "$2" != "$tag" ]; then
-              echo "::error file=$1::$1 says $2, but the tag says $tag — bump it before tagging"
+              echo "::error file=$1::$1 says '$2', but the tag says $tag — bump it before tagging"
               fail=1
             fi
           }
           check Cargo.toml \
             "$(grep -m1 '^version' Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')"
-          check desktop/Cargo.toml \
-            "$(grep -m1 '^version' desktop/Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')"
           check desktop/tauri.conf.json \
             "$(grep -m1 '"version"' desktop/tauri.conf.json | sed -E 's/.*"version"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/')"
           exit "$fail"

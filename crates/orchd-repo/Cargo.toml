@@ -7,7 +7,7 @@
 # into `orchd`, which is the boundary the module graph could only ask for.
 [package]
 name = "orchd-repo"
-version = "2026.9.12"
+version.workspace = true
 edition = "2021"
 description = "Config, forge, diffs, patches and skills for one checkout"
 repository = "https://github.com/kbarendrecht/orchestrator"

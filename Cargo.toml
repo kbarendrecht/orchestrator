@@ -15,6 +15,22 @@ members = ["crates/orchd", "crates/orchd-base", "crates/orchd-repo", "crates/orc
 # and a dev-dependency beside it. Cargo warned; the warning is what found this.
 resolver = "2"
 
+# **The product's version, in one place, held there by cargo rather than by a
+# script.** Five crates read `env!("CARGO_PKG_VERSION")` between them — the update
+# nudge compares it against the newest tag, the skills carry it, the desktop
+# shell's `Info.plist` is built from it — so all five have to agree, and the crate
+# split left five literals to keep in step. They drifted the way five literals
+# always do: the split emptied the root manifest, and both readers of "the
+# version" (`mise run release` and the release workflow's own tag-matches-version
+# step) went on `grep`ing a line that was no longer there. Neither failed loudly;
+# the release simply could not be cut.
+#
+# A rule nothing runs is a rule somebody will break. This is the tool: a member
+# says `version.workspace = true` and cargo refuses to build a disagreement,
+# which no bumper script can promise.
+[workspace.package]
+version = "2026.9.12"
+
 # The four dependencies both this daemon and the desktop shell share. One version
 # each, in one place: they were declared twice and could drift, and a version skew
 # between the two halves of one binary surfaces as a baffling trait error rather

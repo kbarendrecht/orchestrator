@@ -12,7 +12,7 @@
 # anything in here, and `cargo` is what says so.
 [package]
 name = "orchd-serve"
-version = "2026.9.12"
+version.workspace = true
 edition = "2021"
 description = "The orchd daemon: its HTTP server, its boot sequence and its binaries"
 repository = "https://github.com/kbarendrecht/orchestrator"

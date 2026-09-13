@@ -13,7 +13,7 @@
 # nothing in here depends on either module.
 [package]
 name = "orchd-base"
-version = "2026.9.12"
+version.workspace = true
 edition = "2021"
 description = "Process, pty, git and data-model primitives for orchd"
 repository = "https://github.com/kbarendrecht/orchestrator"

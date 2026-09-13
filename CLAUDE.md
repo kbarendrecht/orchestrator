@@ -1605,11 +1605,17 @@ mean *this* repo; if you do, name it.
   passed `--workspace`. The name did not change with the directory, deliberately:
   `orchd::…` is 162 paths and a dozen sentences, and a rename buys symmetry and
   nothing else.
-  **A crate move breaks whatever reads a path**, and this is the third time: the
-  module ratchet in step 1, `check-module-routes.mjs` in step 2, and `typos.toml`
-  now — its `src/names.rs` exclude went stale and a list of computer scientists'
-  surnames failed the spell check. All three fail loudly, which is the good case;
-  look for the fourth before assuming there is none.
+  **A crate move breaks whatever reads a path**, and this is the fourth time: the
+  module ratchet in step 1, `check-module-routes.mjs` in step 2, `typos.toml` —
+  its `src/names.rs` exclude went stale and a list of computer scientists'
+  surnames failed the spell check — and **the version**, which is the one that
+  did not fail loudly. It moved out of the root manifest into five crate
+  manifests, and both readers of it (`mise run release` and the release
+  workflow's tag-matches-version step) go on `grep`ing the root; the workflow's
+  half compared the empty string against every tag and said nothing, because
+  nothing tags on an ordinary push. `[workspace.package]` holds it now — see
+  *Releases*. Three of the four failed loudly, which is the good case; look for
+  the fifth, and prefer the one cargo can enforce over the one a script promises.
 - **`orchd` is a library only. `crates/orchd-serve` is the daemon**, and it holds
   both binaries. The router, `start`, `StartOptions`, `Server` and every
   `start_*_poller` are there with `host`, `hooks`, `firstrun` and `ws` — because
@@ -1734,12 +1740,25 @@ on Linux and failed on macos-14, and both times it cost the same: a version numb
 spent, a tag deleted by hand, the next release starting over. Nothing in git stops
 you tagging a red commit, so the guard has to be in front of the tag.
 
-By hand it is: bump the version in `Cargo.toml`, `desktop/Cargo.toml`,
-`desktop/tauri.conf.json` and `Cargo.lock` (two lines there), commit as `Release
-<version>`, then `git tag v<version> && git push origin v<version>`. The workflow
-refuses a tag that does not match the crate version, because a released build that
-disagrees with its own tag nags about an update it already is. Versions are
-CalVer: `<year>.<month>.<n>`.
+By hand it is: bump the version in `Cargo.toml` (`[workspace.package]`),
+`desktop/tauri.conf.json` and `Cargo.lock` (five lines there, one per member),
+commit as `Release <version>`, then `git tag v<version> && git push origin
+v<version>`. The workflow refuses a tag that does not match the crate version,
+because a released build that disagrees with its own tag nags about an update it
+already is. Versions are CalVer: `<year>.<month>.<n>`.
+
+**The crate manifests are not on that list, and that is the fix for a release
+that could not be cut.** The version used to be a literal in each of them, and
+the crate split then took it out of the root — where *both* readers of "the
+version" look. `mise run release` died on "no version line in Cargo.toml", and
+the workflow's tag-matches-version step had been comparing the empty string
+against every tag since the split, silently, because nothing tags on an ordinary
+push. `[workspace.package]` holds it now and every member says
+`version.workspace = true`, so cargo refuses a disagreement rather than a script
+promising to prevent one. **This is the fourth thing a crate move broke by
+reading a path** — after the module ratchet, `check-module-routes.mjs` and
+`typos.toml` — and the first that failed silently; the entry on the crate layout
+says to look for the next one.
 
 ## Style
 
