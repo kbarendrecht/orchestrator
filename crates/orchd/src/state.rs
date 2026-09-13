@@ -695,6 +695,72 @@ impl AppState {
         self.notify().await;
     }
 
+    /// The workspace already holding this branch, if any.
+    ///
+    /// Read-only: unlike `crate::worktree::ensure_pr_worktree` this never creates
+    /// one, so a gate can be reported without a side effect.
+    ///
+    /// **Here rather than in `api`, because `post` and `story` both ask it.** A
+    /// question about the workspace map is not an HTTP question, and reaching up
+    /// into the handler module for it is what made `api` and `post` import each
+    /// other.
+    pub async fn workspace_for(&self, head_ref: &str) -> Option<String> {
+        self.holding(head_ref, |_| true).await
+    }
+
+    /// The **worktree** holding this branch, if one does.
+    ///
+    /// Main is never the answer, even when its branch set says it has been on this
+    /// ref: main's branches accumulate and are never removed (§2), so a PR whose
+    /// head main once visited would otherwise send a fix or a review run into the
+    /// main checkout — rebasing and force-pushing the one tree every worktree is
+    /// cut from.
+    ///
+    /// Beside [`Self::workspace_for`] rather than in `spawn`, because the two are
+    /// one query with one word between them, and that word is the whole safety
+    /// rule. Apart, a reader met either one without the other.
+    pub async fn worktree_holding(&self, head_ref: &str) -> Option<String> {
+        self.holding(head_ref, |w| !w.is_main()).await
+    }
+
+    /// The one traversal both questions above are: first workspace `allow` accepts
+    /// whose branch set holds `head_ref`.
+    async fn holding(
+        &self,
+        head_ref: &str,
+        allow: impl Fn(&crate::model::Workspace) -> bool,
+    ) -> Option<String> {
+        let inner = self.inner.read().await;
+        inner
+            .workspaces
+            .values()
+            .filter(|w| allow(w))
+            .find(|w| w.branches.iter().any(|b| b == head_ref))
+            .map(|w| w.id.clone())
+    }
+
+    /// Push a worktree's branch, with a lease, against the configured base.
+    ///
+    /// The base read is a git run too, so it rides the same blocking hop as the
+    /// push. Here for the same reason as [`Self::workspace_for`]: the review's
+    /// posting flow pushes, and it should not have to call a handler module to do
+    /// it.
+    pub async fn push_branch(
+        &self,
+        path: std::path::PathBuf,
+        branch: String,
+    ) -> anyhow::Result<()> {
+        let (main, upstream) = (
+            self.cfg.main_checkout.clone(),
+            self.cfg.upstream_ref.clone(),
+        );
+        crate::proc::run_blocking("the push", move || {
+            let base = crate::git::base_checkout_branch(&main, &upstream);
+            crate::git::push_with_lease(&path, &branch, base.as_deref())
+        })
+        .await?
+    }
+
     /// The resume set as it stands: one record per session, live state included.
     ///
     /// Shutdown takes this **before** it kills anything, because `was_live` is read
@@ -1238,7 +1304,7 @@ impl AppState {
     ///
     /// `reconcile` only ever *adds* to a workspace's branch set, which was safe
     /// while a worktree kept one branch for life — the set could only grow for
-    /// main, and `spawn::worktree_holding` excludes main for exactly that reason.
+    /// main, and [`Self::worktree_holding`] excludes main for exactly that reason.
     ///
     /// A swap breaks that: the worktree gives its branch away and would go on
     /// claiming it, so a PR flow for that branch would be pointed at a tree that no
@@ -2296,5 +2362,48 @@ mod tests {
         assert_eq!(tree.base, None, "stale base survived teardown");
         assert_eq!(tree.divergence, (0, 0), "stale counts survived teardown");
         assert!(!tree.rebasing, "stale rebase flag survived teardown");
+    }
+
+    /// **Main answers "who has this branch" and never "who is working on it".**
+    ///
+    /// Main's branch set only ever grows (§2), so a PR whose head main once
+    /// visited stays in it for good. Answering [`AppState::worktree_holding`] with
+    /// main would aim a fix or a review run at the checkout every worktree is cut
+    /// from, and force-push from there.
+    ///
+    /// Written because the rule is now one word of one closure. Deleting that word
+    /// failed nothing: the `ensure_pr_worktree` test that looked like it covered
+    /// this passes either way, because the branch has left main by the time it
+    /// asks.
+    #[tokio::test]
+    async fn main_holds_a_branch_without_being_the_worktree_for_it() {
+        let app = app().await;
+        {
+            let mut inner = app.inner.write().await;
+            inner
+                .workspaces
+                .get_mut(MAIN)
+                .expect("main is always there")
+                .branches
+                .insert("feature/x".to_string());
+        }
+        assert_eq!(app.workspace_for("feature/x").await.as_deref(), Some(MAIN));
+        assert_eq!(
+            app.worktree_holding("feature/x").await,
+            None,
+            "a run would have been sent into main"
+        );
+
+        // And a worktree that really holds it answers both.
+        app.register_worktree(
+            "pr-7",
+            std::path::PathBuf::from("/tmp/pr-7"),
+            Some("feature/x".to_string()),
+        )
+        .await;
+        assert_eq!(
+            app.worktree_holding("feature/x").await.as_deref(),
+            Some("pr-7")
+        );
     }
 }

@@ -13,8 +13,7 @@
 // a rename — and `cargo` now refuses an import from `orchd-base` back up here,
 // which is the whole point of the move.
 pub use orchd_base::{
-    child, edit, git, guard, headroom, model, proc, proposal, pty, review_commit, secret, timing,
-    window,
+    child, edit, git, guard, headroom, proc, proposal, pty, review_commit, secret, timing, window,
 };
 
 // The checkout layer, at the paths it always had, for the same reason: moving it
@@ -28,8 +27,11 @@ pub use orchd_repo::{
 pub mod api;
 pub mod fix_pr;
 pub mod health;
+pub mod model;
 pub mod names;
 pub mod post;
+pub mod relocate;
+pub mod review_api;
 pub mod spawn;
 pub mod state;
 pub mod store;

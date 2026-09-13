@@ -800,7 +800,8 @@ async fn run_inner(
 ) -> Result<PostReport> {
     // The gates again. A review can sit open for hours: the tree can go dirty, a
     // rebase can stop, or fix-pr can start between opening the cards and pushing.
-    let workspace = crate::api::workspace_for(app, &pr.head_ref)
+    let workspace = app
+        .workspace_for(&pr.head_ref)
         .await
         .with_context(|| format!("no worktree holding {} — re-triage", pr.head_ref))?;
     let gated = match &resume {
@@ -1021,7 +1022,7 @@ async fn run_inner(
         }
     };
     if unpushed {
-        let pushed = crate::api::push_branch(app, path.clone(), pr.head_ref.clone()).await;
+        let pushed = app.push_branch(path.clone(), pr.head_ref.clone()).await;
         if let Err(e) = pushed {
             // **HEAD has moved by now**, on both halves — the local write committed.
             // Returning an `Err` here 500s the request, the SPA only toasts, and the

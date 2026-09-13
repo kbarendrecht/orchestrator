@@ -1,10 +1,8 @@
 {
   "//": "Mutual imports between modules, and nothing else. A ratchet: a new pair fails, and a pair that goes away has to be deleted here. Counts are not recorded — see tools/rust-modules.mjs for why.",
   "mutual": [
-    "api <-> post",
     "fix_pr <-> spawn",
     "fix_pr <-> state",
-    "git <-> review_commit",
     "post <-> state",
     "spawn <-> triage",
     "spawn <-> worktree",

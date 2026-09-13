@@ -31,8 +31,8 @@ use orchd::resolve_repo;
 use orchd::state::{self, AppState};
 use orchd::window;
 use orchd::{
-    api, env_source, fix_pr, git, instance, machine, model, proc, reviews, secret, skills, spawn,
-    store, update,
+    api, env_source, fix_pr, git, instance, machine, model, proc, relocate, review_api, reviews,
+    secret, skills, spawn, store, update,
 };
 
 /// How the caller wants the daemon brought up.
@@ -624,12 +624,15 @@ fn daemon_router(app: Arc<AppState>) -> Router {
         .route("/api/config", get(api::get_config).post(api::set_config))
         .route("/api/diff", get(api::diff_summary))
         .route("/api/diff/file", get(api::diff_file))
-        .route("/api/file", get(api::read_file))
-        .route("/api/file", post(api::write_file))
+        .route("/api/file", get(review_api::read_file))
+        .route("/api/file", post(review_api::write_file))
         .route("/api/session", post(api::new_session))
         .route("/api/session/:id/kill", post(api::kill_session))
         .route("/api/session/:id/rename", post(api::rename_session))
-        .route("/api/session/:id/out-of-main", post(api::move_out_of_main))
+        .route(
+            "/api/session/:id/out-of-main",
+            post(relocate::move_out_of_main),
+        )
         .route("/api/session/:id/rewind", post(api::rewind_session))
         .route("/api/session/:id/resume", post(api::resume_session))
         .route("/api/sessions/nudge", post(api::nudge_sessions))
@@ -656,7 +659,10 @@ fn daemon_router(app: Arc<AppState>) -> Router {
             "/api/session/:id/teardown",
             post(api::teardown_from_session),
         )
-        .route("/api/session/:id/handoff", post(api::session_handoff))
+        .route(
+            "/api/session/:id/handoff",
+            post(review_api::session_handoff),
+        )
         .route("/api/session/:id/tell", post(api::tell_session))
         .route("/api/session/:id/ask", post(api::ask))
         .route("/api/session/:id/ask/:ask/wait", get(api::ask_wait))
@@ -680,7 +686,10 @@ fn daemon_router(app: Arc<AppState>) -> Router {
         .route("/api/workspace/:id/wip/resolve", post(api::wip_resolve))
         .route("/api/workspace/:id/preflight", get(api::preflight))
         .route("/api/workspace/:id/teardown", post(api::teardown))
-        .route("/api/workspace/:id/swap-main", post(api::swap_with_main))
+        .route(
+            "/api/workspace/:id/swap-main",
+            post(relocate::swap_with_main),
+        )
         .route(
             "/api/workspace/:id/process/:name/restart",
             post(api::restart_process),
@@ -706,39 +715,51 @@ fn daemon_router(app: Arc<AppState>) -> Router {
         .route("/api/open", post(api::open_url))
         .route("/api/open/file", post(api::open_file))
         .route("/api/file/verb", post(api::file_verb))
-        .route("/api/pr/:number/review", get(api::pr_review))
-        .route("/api/pr/:number/triage", post(api::pr_triage))
+        .route("/api/pr/:number/review", get(review_api::pr_review))
+        .route("/api/pr/:number/triage", post(review_api::pr_triage))
         // The rail's default review verb: one agent and one pane, which the
         // overlay is not good enough to replace yet.
-        .route("/api/pr/:number/handle-review", post(api::pr_handle_review))
+        .route(
+            "/api/pr/:number/handle-review",
+            post(review_api::pr_handle_review),
+        )
         // The two the vendored `triage` skill calls. Both are in `is_agent_route`.
         .route(
             "/api/pr/:number/triage-context",
-            get(api::pr_triage_context),
+            get(review_api::pr_triage_context),
         )
         .route(
             "/api/pr/:number/triage/progress",
-            post(api::pr_triage_progress),
+            post(review_api::pr_triage_progress),
         )
         .route(
             "/api/pr/:number/review-session",
-            post(api::pr_review_session),
+            post(review_api::pr_review_session),
         )
         // The one route a subprocess calls. Hostile input; see `pr_proposals`.
-        .route("/api/pr/:number/proposals", post(api::pr_proposals))
-        .route("/api/pr/:number/commit", post(api::pr_commit))
-        .route("/api/pr/:number/stash", post(api::pr_stash))
+        .route("/api/pr/:number/proposals", post(review_api::pr_proposals))
+        .route("/api/pr/:number/commit", post(review_api::pr_commit))
+        .route("/api/pr/:number/stash", post(review_api::pr_stash))
         // The only irreversible one. See `post::run` for the order.
-        .route("/api/pr/:number/post", post(api::pr_post))
-        .route("/api/pr/:number/resolve-run", post(api::pr_resolve_run))
-        .route("/api/pr/:number/run/push", post(api::pr_run_push))
-        .route("/api/pr/:number/run/rerequest", post(api::pr_run_rerequest))
+        .route("/api/pr/:number/post", post(review_api::pr_post))
+        .route(
+            "/api/pr/:number/resolve-run",
+            post(review_api::pr_resolve_run),
+        )
+        .route("/api/pr/:number/run/push", post(review_api::pr_run_push))
+        .route(
+            "/api/pr/:number/run/rerequest",
+            post(review_api::pr_run_rerequest),
+        )
         // ...unless a thread was answered by hand, in which case the batch stops
         // after the local commit and this finishes it.
-        .route("/api/pr/:number/manual", get(api::pr_manual))
-        .route("/api/pr/:number/manual/done", post(api::pr_manual_done))
+        .route("/api/pr/:number/manual", get(review_api::pr_manual))
+        .route(
+            "/api/pr/:number/manual/done",
+            post(review_api::pr_manual_done),
+        )
         // The rail's default: spawn a session running `/resolve <pr>` in a pane.
-        .route("/api/pr/:number/open", post(api::open_pr))
+        .route("/api/pr/:number/open", post(review_api::open_pr))
         .route("/api/pr/:number/fix-pr", post(api::fix_pr))
         .route("/ws/events", get(ws::events))
         .route("/ws/pty", get(ws::pty))

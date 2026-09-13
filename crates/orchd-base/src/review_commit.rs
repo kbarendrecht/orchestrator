@@ -30,6 +30,19 @@ pub enum Amend {
 }
 
 impl Amend {
+    /// What git is actually asked to do, with the reasons left behind.
+    ///
+    /// The decision lives here and the execution lives in [`crate::git`], so the
+    /// conversion does too: `git` used to take an `Amend`, which meant the plumbing
+    /// imported the module that decides and the two imported each other.
+    pub fn fold(&self) -> git::Fold {
+        match self {
+            Amend::Fixup(sha) => git::Fold::Fixup(sha.clone()),
+            Amend::Head(_) => git::Fold::AmendHead,
+            Amend::OnTop(why) => git::Fold::OnTop(why.clone()),
+        }
+    }
+
     /// The one line a user reads about what happened to their commit.
     pub fn describe(self) -> String {
         match self {

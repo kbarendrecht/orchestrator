@@ -462,7 +462,8 @@ async fn run_filer(
             .map(|p| p.head_ref.clone())
             .with_context(|| format!("PR #{pr} is not in the current poll"))?
     };
-    let workspace = crate::api::workspace_for(app, &head_ref)
+    let workspace = app
+        .workspace_for(&head_ref)
         .await
         .with_context(|| format!("no worktree holding {head_ref}"))?;
     let path = app

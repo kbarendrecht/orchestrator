@@ -1344,7 +1344,7 @@ pub async fn spawn_command_session(
 ) -> Result<SessionId> {
     // If the branch already has a worktree with a live session, take you there
     // rather than spawning a second one (§8).
-    if let Some(ws) = worktree_holding(app, head_ref).await {
+    if let Some(ws) = app.worktree_holding(head_ref).await {
         let live = app.live_sessions_in(&ws).await;
         if let Some(id) = live.first() {
             return Ok(*id);
@@ -1434,22 +1434,6 @@ pub(crate) fn rebase_target(
     }
 }
 
-/// The worktree holding `head_ref`, if one already does.
-///
-/// Main is never the answer, even when its branch set says it has been on this
-/// ref: main's branches accumulate and are never removed (§2), so a PR whose head
-/// main once visited would otherwise send a fix or a review run into the main
-/// checkout — rebasing and force-pushing the one tree every worktree is cut from.
-async fn worktree_holding(app: &Arc<AppState>, head_ref: &str) -> Option<String> {
-    let inner = app.inner.read().await;
-    inner
-        .workspaces
-        .values()
-        .filter(|w| !w.is_main())
-        .find(|w| w.branches.iter().any(|b| b == head_ref))
-        .map(|w| w.id.clone())
-}
-
 /// Where this branch is already recorded, whether or not the tree is still there.
 ///
 /// A workspace record outlives the directory it names: `claude --worktree` removes
@@ -1462,16 +1446,16 @@ async fn worktree_holding(app: &Arc<AppState>, head_ref: &str) -> Option<String>
 /// **rebuild it where it stood**, not to cut a second one somewhere else. The
 /// session is what owns that directory: transcripts are keyed by working directory,
 /// so a conversation resumed later looks for its own path, and two trees on one
-/// branch is a choice `worktree_holding` should never have to make.
+/// branch is a choice `AppState::worktree_holding` should never have to make.
 ///
-/// Deliberately not folded into [`worktree_holding`], which answers "is anyone
+/// Deliberately not folded into [`AppState::worktree_holding`], which answers "is anyone
 /// working on this branch". That one must keep saying yes for a live session whose
 /// tree was deleted under it, or a fix run would start beside it.
 async fn recorded_worktree_for(
     app: &Arc<AppState>,
     head_ref: &str,
 ) -> Option<(String, std::path::PathBuf)> {
-    let ws = worktree_holding(app, head_ref).await?;
+    let ws = app.worktree_holding(head_ref).await?;
     let path = app.workspace_path(&ws).await?;
     Some((ws, path))
 }
@@ -1485,7 +1469,7 @@ async fn recorded_worktree_for(
 /// had been announced. `is_live` is the operative rule: fix-pr rebases, and a
 /// session sitting at its prompt is one you are still working in.
 pub async fn branch_busy(app: &Arc<AppState>, head_ref: &str) -> Option<String> {
-    let ws = worktree_holding(app, head_ref).await?;
+    let ws = app.worktree_holding(head_ref).await?;
     (!app.live_sessions_in(&ws).await.is_empty()).then_some(ws)
 }
 /// Refuse a PR flow only when main holds something that cannot be moved.
@@ -1636,7 +1620,7 @@ async fn park_main(app: &Arc<AppState>) {
                 /* The record follows the branch, because `reconcile` only ever
                 *adds* to a workspace's set: left in, that tree would go on
                 claiming the base for good, and two workspaces claiming it is
-                what `worktree_holding` and the snapshot's PR lookup both read.
+                what `AppState::worktree_holding` and the snapshot's PR lookup both read.
                 `move_out_of_main` does the same for the same reason. */
                 if let Some(id) = &ws {
                     app.forget_branch(id, &base).await;
@@ -2850,7 +2834,7 @@ mod tests {
         );
         // And the daemon agrees about who holds it, or the next flow looks in main.
         assert_eq!(
-            worktree_holding(&app, "feature/theirs").await.as_deref(),
+            app.worktree_holding("feature/theirs").await.as_deref(),
             Some("pr-4242")
         );
     }
@@ -2900,7 +2884,7 @@ mod tests {
 
     /// A workspace record outlives the directory it names, and the PR flows key on
     /// that record. The run this cost opened in `$HOME`: the tree had been removed,
-    /// `worktree_holding` handed its name back anyway, `ensure_pr_worktree` took the
+    /// `AppState::worktree_holding` handed its name back anyway, `ensure_pr_worktree` took the
     /// early return, and the spawn was aimed at a path that was not there.
     #[tokio::test]
     async fn a_worktree_whose_directory_is_gone_does_not_hold_a_branch() {
@@ -2938,7 +2922,7 @@ mod tests {
         // And it is still where that branch is being worked on, which is a different
         // question and the one the busy guard asks.
         assert_eq!(
-            worktree_holding(&app, "feature/gone").await.as_deref(),
+            app.worktree_holding("feature/gone").await.as_deref(),
             Some("gone"),
             "a deleted tree does not free the branch for a second agent"
         );
@@ -3498,7 +3482,7 @@ mod tests {
         );
         /* And the *record* followed the branch. `reconcile` only ever adds to a
         workspace's set, so a base left in there is claimed by two workspaces
-        for good — which `worktree_holding` and the snapshot's PR lookup both
+        for good — which `AppState::worktree_holding` and the snapshot's PR lookup both
         read. Asserted here because the git side passing says nothing about it. */
         assert!(
             !app.inner.read().await.workspaces["w"]

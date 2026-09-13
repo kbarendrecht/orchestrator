@@ -456,7 +456,7 @@ fn land(
     if let Some(why) = hooks_wrote_elsewhere(cwd, before, touched, "the accepted patch")? {
         return Ok(Some(why));
     }
-    orchd_base::git::fold_in(cwd, amend)?;
+    orchd_base::git::fold_in(cwd, &amend.fold())?;
     Ok(None)
 }
 
@@ -668,7 +668,7 @@ pub fn write_manual(
 
     // Recounted after the hooks, so the file list is what will actually land.
     let files = numstat_worktree(cwd)?;
-    orchd_base::git::fold_in(cwd, &amend)?;
+    orchd_base::git::fold_in(cwd, &amend.fold())?;
     Ok(Written::Committed {
         files,
         amend: amend.describe(),

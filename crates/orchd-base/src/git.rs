@@ -2047,7 +2047,23 @@ pub fn is_ancestor(cwd: &Path, a: &str, b: &str) -> bool {
     git_ok(cwd, &["merge-base", "--is-ancestor", a, b])
 }
 
-/// Commit everything staged-or-not into the shape [`crate::review_commit::Amend`] chose.
+/// The three shapes [`fold_in`] can be asked for.
+///
+/// The *decision* is `review_commit::Amend`, which also carries the reasons a
+/// person reads. This is what is left once that decision is made, and it is a
+/// separate type because the executor importing the decision is what made `git`
+/// and `review_commit` import each other. `Amend::fold` is the one conversion.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Fold {
+    /// Fold into this commit of the PR's own history.
+    Fixup(String),
+    /// Amend `HEAD`.
+    AmendHead,
+    /// A new commit on top, with the reason for the message.
+    OnTop(String),
+}
+
+/// Commit everything staged-or-not into the shape a review batch asked for.
 ///
 /// `Fixup` writes a `fixup!` commit and then autosquashes it away, so the PR's
 /// history keeps one commit per change rather than growing a "fix review" commit.
@@ -2057,11 +2073,10 @@ pub fn is_ancestor(cwd: &Path, a: &str, b: &str) -> bool {
 /// A conflict during the rebase aborts and reports: there is no session attached
 /// to a button press to resolve one, and leaving a stopped rebase behind would
 /// strand the worktree.
-pub fn fold_in(cwd: &Path, amend: &crate::review_commit::Amend) -> Result<()> {
-    use crate::review_commit::Amend;
+pub fn fold_in(cwd: &Path, fold: &Fold) -> Result<()> {
     git(cwd, &["add", "-A"])?;
-    match amend {
-        Amend::OnTop(why) => {
+    match fold {
+        Fold::OnTop(why) => {
             // `--amend` succeeds on an empty staged diff; `commit -m` does not, and
             // a hook that reverted an edit back to HEAD's content would otherwise
             // turn a silent success into a hard error.
@@ -2073,11 +2088,11 @@ pub fn fold_in(cwd: &Path, amend: &crate::review_commit::Amend) -> Result<()> {
             git(cwd, &["commit", "-m", &format!("review batch: {why}")])?;
             Ok(())
         }
-        Amend::Head(_) => {
+        Fold::AmendHead => {
             git(cwd, &["commit", "--amend", "--no-edit"])?;
             Ok(())
         }
-        Amend::Fixup(sha) => {
+        Fold::Fixup(sha) => {
             git(cwd, &["commit", "--fixup", sha])?;
             let out = Command::new("git")
                 .args(["rebase", "-i", "--autosquash", &format!("{sha}~1")])
@@ -4279,7 +4294,7 @@ mod tests {
             .unwrap();
 
         std::fs::write(d.join("f.txt"), "base1\nbase2\nmine\nby hand\n").unwrap();
-        fold_in(&d, &Amend::OnTop("HEAD is alice's commit".into())).unwrap();
+        fold_in(&d, &Fold::OnTop("HEAD is alice's commit".into())).unwrap();
 
         let after_count = std::process::Command::new("git")
             .args(["rev-list", "--count", "HEAD"])
@@ -4310,7 +4325,7 @@ mod tests {
         // into a hard error — which, mid-batch, is a 500 with HEAD already moved.
         let d = amend_repo();
         let before = head_sha(&d).unwrap();
-        fold_in(&d, &Amend::OnTop("nothing to attribute".into())).unwrap();
+        fold_in(&d, &Fold::OnTop("nothing to attribute".into())).unwrap();
         assert_eq!(
             head_sha(&d).unwrap(),
             before,
@@ -4354,7 +4369,7 @@ mod tests {
 
         // Edit the line that commit owns, then fold into it.
         std::fs::write(d.join("f.txt"), "base1\nbase2\nMINE\n").unwrap();
-        fold_in(&d, &Amend::Fixup(target)).unwrap();
+        fold_in(&d, &Fold::Fixup(target)).unwrap();
 
         assert_eq!(count_commits(&d), before, "fixup should not add a commit");
         assert!(!subjects(&d).iter().any(|s| s.starts_with("fixup!")));
@@ -4367,7 +4382,7 @@ mod tests {
         let d = amend_repo();
         let before = count_commits(&d);
         std::fs::write(d.join("g.txt"), "new\n").unwrap();
-        fold_in(&d, &Amend::Head("spanned".into())).unwrap();
+        fold_in(&d, &Fold::AmendHead).unwrap();
         assert_eq!(count_commits(&d), before);
         assert!(d.join("g.txt").exists());
     }

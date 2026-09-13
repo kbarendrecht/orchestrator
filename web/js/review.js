@@ -1673,7 +1673,7 @@ function sessionAsk() {
   const i = s && s.interaction && !s.interaction.answer ? s.interaction : null;
   return i && i.options ? i : null;
 }
-const askHasValue = (/** @type {import('../base').Interaction | null | undefined} */ ask, /** @type {string} */ v) => !!ask && ask.options.some((/** @type {import('../base').InteractionOption} */ o) => o.value === v);
+const askHasValue = (/** @type {import('../snapshot').Interaction | null | undefined} */ ask, /** @type {string} */ v) => !!ask && ask.options.some((/** @type {import('../snapshot').InteractionOption} */ o) => o.value === v);
 
 /** Start one session that reads, then makes the changes you pick and posts.
  *
@@ -2099,7 +2099,7 @@ function liveReviewSession(/** @type {number | null} */ pr) {
 function adoptable(/** @type {import('../snapshot').SessionView | null | undefined} */ s) {
   if (!s) return false;
   const i = s.interaction;
-  return !i || (!i.answer && i.options.some((/** @type {import('../base').InteractionOption} */ o) => o.value === 'decisions'));
+  return !i || (!i.answer && i.options.some((/** @type {import('../snapshot').InteractionOption} */ o) => o.value === 'decisions'));
 }
 
 /** Is a pass working through this PR, with nothing yet for you to act on?
