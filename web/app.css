@@ -583,19 +583,22 @@ button.ctx-btn:hover{color:var(--text)}
 .termwrap.rvwork .termhost{opacity:.6}
 
 /* The board's answer to `+`, over the terminal region and under nothing.
-   **Translucent rather than opaque**, which is the difference between a report and
-   a modal: the pane underneath is the session you were just in, and a create is
-   ten seconds of somebody else's script, not a reason to take the screen. Steady,
-   like `.rvwork` and for its reason — a state that lifts when you point at it is
-   not a state indicator.
-   It is not a scrim either: nothing under it is disabled, and clicking a session
-   in the rail takes this down. */
+   **A panel in the corner, not a sheet over the pane.** It used to fill the
+   region and centre itself, which is a modal's shape, and a create is ten seconds
+   of somebody else's script rather than a reason to take the screen — so the pane
+   underneath stays whole and readable and this sits on top of it, top left, where
+   the pty's own badge is not. Translucent for the same reason, and steady like
+   `.rvwork`: a state that lifts when you point at it is not a state indicator.
+   `pointer-events:none` on the frame, because it covers scrollback somebody may
+   want to select; the panel itself takes them back so its output can be scrolled.
+   It is not a scrim either — nothing under it is disabled, and clicking a session
+   in the rail takes it down. */
 .termstarting{
-  position:absolute;inset:0;z-index:4;
-  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;
-  padding:16px;
-  background:var(--ground,var(--bg));opacity:.94;
+  position:absolute;inset:0;z-index:4;pointer-events:none;
+  display:flex;flex-direction:column;align-items:flex-start;justify-content:flex-start;gap:8px;
+  padding:10px 12px;
 }
+.termstarting > *{pointer-events:auto;opacity:.94}
 /* An author `display` beats `[hidden]`, which this file has been bitten by four
    times — see `.settings-row[hidden]`. */
 .termstarting[hidden]{display:none}
@@ -610,7 +613,7 @@ button.ctx-btn:hover{color:var(--text)}
    caps what a long line does to the layout. `pre` rather than a div per line,
    because the alignment a script's own columns were written for is the point. */
 .startout{
-  flex:0 1 auto;max-width:min(760px, 100%);max-height:46%;overflow:auto;
+  flex:0 1 auto;max-width:min(620px, 100%);max-height:60%;overflow:auto;
   margin:0;padding:10px 14px;
   background:var(--raised);border:1px solid var(--line);border-radius:2px;
   font-family:var(--mono);font-size:calc(10.5px * var(--fs));line-height:1.55;
