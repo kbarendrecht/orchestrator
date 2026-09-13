@@ -154,6 +154,7 @@ impl Target {
             label,
             input,
             &[],
+            None,
         )
     }
 }

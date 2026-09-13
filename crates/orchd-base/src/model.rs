@@ -121,6 +121,66 @@ impl Workspace {
 }
 
 // ---------------------------------------------------------------------------
+// Cutting a worktree
+// ---------------------------------------------------------------------------
+
+/// What a worktree cut is doing, while it does it.
+///
+/// **Cutting a tree is other people's scripts, and they are the slow part.** The
+/// repo's `WorktreeCreate` fetches, checks out 18k files and warms git; the
+/// configured `worktree_init` and `worktree_setup` run on top. The board said
+/// `creating a worktree` for all of it, so ten seconds of real work looked
+/// identical to a button that had done nothing.
+///
+/// One slot per daemon rather than one per create. Two cuts at once is possible
+/// through the API and the board already refuses it (`asTheOnlyCreate`), so a map
+/// would buy a key nobody reads for a case nobody can reach from the page.
+///
+/// Here in `model` because `orchd`'s `Snapshot` carries it and `state` may
+/// not import the modules that fill it — a shape lives in `model`, the module that
+/// fills it depends on `model`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[cfg_attr(
+    any(test, feature = "test-util"),
+    derive(ts_rs::TS),
+    ts(export, export_to = "base.d.ts")
+)]
+pub struct CreateRun {
+    /// The worktree being made. Carried so the pane can name it once the create
+    /// has moved on to a step that does not.
+    pub name: String,
+    /// The script running now, by the name it is configured under:
+    /// `WorktreeCreate`, `worktree init`, `worktree setup`.
+    pub step: String,
+    /// False once the scripts are done. The session's own boot follows, and the
+    /// board keeps its overlay up for that — so this going false is not the end of
+    /// the create, only the end of what this reports on.
+    pub running: bool,
+    /// What the scripts said, oldest first, capped at [`CREATE_LINES`].
+    pub lines: Vec<String>,
+    /// The step that failed, and how. A worktree hook is never fatal, so a run can
+    /// carry on past this — it is a note on the output, not a terminal state.
+    pub failed: Option<String>,
+}
+
+/// How much of a create's output is kept.
+///
+/// A tail, not a log: this rides every snapshot while a create runs, and the pane
+/// shows the last few lines of it. A script that prints a build is not something
+/// to accumulate in memory and push over a websocket.
+pub const CREATE_LINES: usize = 200;
+
+impl CreateRun {
+    /// Add a line, dropping the oldest once the cap is reached.
+    pub fn push(&mut self, line: String) {
+        if self.lines.len() >= CREATE_LINES {
+            self.lines.remove(0);
+        }
+        self.lines.push(line);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Session
 // ---------------------------------------------------------------------------
 

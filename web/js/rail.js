@@ -1,7 +1,7 @@
 // The rail: what is running, what is waiting on you, and the PRs beside it.
 // Twenty-four names, three out; the rest is how a row decides what it says.
 
-import { $, activeCheckout, byNewest, call, callFor, bandOf, callHost, callOn, checkoutOf, CHECKOUTS, chooseBox, enterCheckout, everySession, getHost, snapshotOf, snapshotFor, repoSummary, terms, caret, clock, confirmBox, copyText, creating, dotClass, el, isArchived, isConversation, isWaiting, mainWorkspace, MOD_LABEL, newSession, newWorktree, creatingIn, openMenu, pending, QUEUE_MAX, refreshButton, selected, sessionsOf, setSelected, snap, stateClass, stateLabel, reason, toast, unchanged, setPendingSelect } from './core.js';
+import { $, activeCheckout, byNewest, call, callFor, bandOf, callHost, callOn, checkoutOf, CHECKOUTS, chooseBox, enterCheckout, everySession, getHost, snapshotOf, snapshotFor, repoSummary, terms, caret, clock, confirmBox, copyText, creating, startingShown, watchStarting, dotClass, el, isArchived, isConversation, isWaiting, mainWorkspace, MOD_LABEL, newSession, newWorktree, creatingIn, openMenu, pending, QUEUE_MAX, refreshButton, selected, sessionsOf, setSelected, snap, stateClass, stateLabel, reason, toast, unchanged, setPendingSelect } from './core.js';
 import * as Review from './review.js';
 import * as Term from './term.js';
 
@@ -853,14 +853,23 @@ function checkoutSessions(/** @type {import('./core.js').Target} */ c, /** @type
 
 /** A session that has been asked for and does not exist yet.
  *
- *  It wears the selected row's own fill, because it is what the centre pane is
- *  showing: the two have to agree about what the board is about. Not a button —
- *  there is no id to select, and a row that looked pressable and was not would be
- *  a worse answer than the silence it replaces.
+ *  It wears the selected row's own fill while the centre pane is showing the
+ *  create, because the two have to agree about what the board is about.
+ *
+ *  **It is a button now.** It used not to be, on the reasoning that there is no id
+ *  to select and a row that looked pressable and was not would be worse than
+ *  silence. That held while the overlay was unconditional; once picking a session
+ *  takes the overlay down, this row is the only way back to a create that is still
+ *  running — and the output it is now showing is worth coming back to. What it
+ *  selects is not a session, it is *the create*, which is why it goes through
+ *  `watchStarting` rather than `setSelected`.
  */
 function startingRow() {
-  const row = el('div', 'sess starting');
-  row.setAttribute('aria-current', 'true');
+  const row = el('button', 'sess starting');
+  row.type = 'button';
+  const watched = startingShown();
+  if (watched) row.setAttribute('aria-current', 'true');
+  row.onclick = () => watchStarting(true);
   /* **Both lines, or the row is a different height from every other one.** A
      session row is a name over its state, and a placeholder with only the first
      of those sat shorter than the rows around it and read as clipped. So it takes
@@ -1072,7 +1081,12 @@ function forkBadge(/** @type {import('../snapshot').SessionView} */ s) {
 
 function sessionRow(/** @type {import('../snapshot').SessionView} */ s, /** @type {{ id: string | null } | undefined} */ w, /** @type {boolean} */ fromMain = false) {
   const btn = el('button', 'sess');
-  btn.setAttribute('aria-current', String(s.id === selected));
+  /* **Current means "what the centre pane is showing", not "what is selected".**
+     While you are watching a create, the pane is showing the create — the selection
+     is still whatever session you came from, and marking that row as well would put
+     two rows in one state. `startingShown` is false the moment you pick a session,
+     so this reads as normal again immediately. */
+  btn.setAttribute('aria-current', String(s.id === selected && !startingShown()));
   // So a rename can find this row's name span again after any re-render.
   btn.dataset.id = s.id;
 

@@ -106,7 +106,8 @@ fn git_net(cwd: &Path, args: &[&str], label: &str) -> Result<std::process::Outpu
         .collect();
     let envs = net_env(cwd);
     let began = std::time::Instant::now();
-    let out = crate::proc::run_bounded_with_input(cwd, NET_TIMEOUT_SECS, &argv, label, None, &envs);
+    let out =
+        crate::proc::run_bounded_with_input(cwd, NET_TIMEOUT_SECS, &argv, label, None, &envs, None);
     let took = began.elapsed();
     crate::timing::record_exec(took);
     if took >= SLOW_GIT {

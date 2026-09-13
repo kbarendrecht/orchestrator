@@ -119,6 +119,10 @@ export function onSelection(/** @type {(id: string | null, auto: boolean) => voi
  *  reacting to a session finishing, so anything standing down on "you went
  *  somewhere else" has to be able to tell the two apart. */
 export function setSelected(/** @type {string | null} */ id, auto = false) {
+  // Picking a session while a worktree is being cut is not cancelling the cut; it
+  // is saying the pane is about something else now. `auto` is excluded because the
+  // pick the app makes for you when a session ends is not that statement.
+  if (id && !auto) startingWatched = false;
   selected = id;
   // Picking a session is also saying which checkout you are in, which is what
   // holds the pane still when that session ends.
@@ -1720,6 +1724,26 @@ export const creating = () => creatingWhat;
 let creatingWhere = null;
 export const creatingIn = () => creatingWhere;
 
+/** Whether the centre pane is still about the create in flight.
+ *
+ *  **A create is not a modal, and it used to behave like one.** The overlay covers
+ *  the terminal region for as long as the POST takes — a fetch, an 18k-file
+ *  checkout and a `claude` boot — and it covered it whichever session you picked,
+ *  so the rail answered a click and the pane went on saying `creating a worktree`.
+ *  Nothing was ever blocked; there was simply nothing to see.
+ *
+ *  So the overlay belongs to the placeholder row rather than to the app: it is up
+ *  while the create is what you are looking at, and picking any session says you
+ *  are looking at something else. The placeholder row puts it back — see
+ *  `startingRow`, which is a button now for exactly that reason.
+ */
+let startingWatched = false;
+export const startingShown = () => startingWatched && creatingWhat !== null;
+export function watchStarting(/** @type {boolean} */ on) {
+  startingWatched = on;
+  for (const fn of creatingListeners) fn(creatingWhat);
+}
+
 /** @type {((what: string | null) => void)[]} */
 const creatingListeners = [];
 export function onCreatingChange(/** @type {(what: string | null) => void} */ fn) { creatingListeners.push(fn); }
@@ -1738,6 +1762,9 @@ async function asTheOnlyCreate(/** @type {string} */ what, /** @type {Target} */
   }
   creatingWhat = what;
   creatingWhere = where.path;
+  // You pressed `+`, so the create is what you are looking at — until you say
+  // otherwise by picking a session.
+  startingWatched = true;
   for (const fn of creatingListeners) fn(creatingWhat);
   try {
     await go();
@@ -1755,7 +1782,7 @@ export async function newSession(workspace, where) {
   await asTheOnlyCreate('starting a session', target, async () => {
     try {
       const r = await callOn(target, '/api/session', { workspace });
-      pendingSelect = r.session;
+      if (startingWatched) pendingSelect = r.session;
     } catch (e) {
       toast(reason(e), true);
     }
@@ -1785,7 +1812,15 @@ export async function newWorktree(named, where) {
   await asTheOnlyCreate(name ? `creating worktree ${name}` : 'creating a worktree', target, async () => {
     try {
       const r = await callOn(target, '/api/worktree', name ? { name } : {});
-      pendingSelect = r.session;
+      /* **Only if you are still watching it.** Landing you on what you asked for is
+         right when you waited for it and wrong when you did not: a worktree cut is
+         ten seconds, being able to work in those ten seconds is the point, and a
+         pane taken back at a moment you did not choose is the same interruption the
+         overlay used to be. Decided here rather than where the selection is applied,
+         because this is the line that asks for it — and by then `creating` has
+         already been cleared by the `finally` below, so nothing downstream can still
+         tell the two cases apart. */
+      if (startingWatched) pendingSelect = r.session;
       toast(name ? `creating worktree ${name}` : 'creating worktree');
     } catch (e) {
       toast(reason(e), true);

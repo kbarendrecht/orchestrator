@@ -15,7 +15,7 @@ import {
   selectedProc, setSelectedProc, prState, handedToPr, procOrder, setProcOrder,
   drawerTouched, setDrawerTouched, drawerCollapsed, setDrawerCollapsed,
   pendingProcFocus, setPendingProcFocus, pendingSelect, setPendingSelect,
-  onDrawerChange, onCreatingChange, appMod, IS_MAC, MOD_LABEL, closeLegend, typingElsewhere,
+  onDrawerChange, onCreatingChange, creating, creatingIn, startingShown, appMod, IS_MAC, MOD_LABEL, closeLegend, typingElsewhere,
   mark, reportBoot, confirmBox, dialogOpen, dismissDialog, unchanged, tick,
 } from './js/core.js';
 
@@ -67,11 +67,44 @@ onDrawerChange(() => { renderDrawer(); Term.refit(); });
    and the terminal region says so over the top. Both come off on the same
    announcement, when the create ends however it ends — including a refusal, where
    the toast is the answer and this must not be left standing. */
-onCreatingChange((what) => {
+onCreatingChange(() => {
   Rail.render();
-  $('startwhat').textContent = what ? `${what}\u2026` : 'Starting\u2026';
-  $('termstarting').hidden = !what;
+  renderStarting();
 });
+
+/** The overlay over the terminal region while a worktree is being cut.
+ *
+ *  Two sources, because they answer different halves. The page knows *that* a
+ *  create is in flight and what it asked for, from the press — the daemon cannot
+ *  say so until it has been asked. The daemon knows which script is running and
+ *  what it has printed, which the page cannot see at all.
+ *
+ *  Read off the creating checkout's own snapshot rather than `snap`: switching to
+ *  another session is exactly what this now allows, and `snap` follows the
+ *  selection, so the report would otherwise be about whichever checkout you
+ *  wandered into. */
+function renderStarting() {
+  const what = creating();
+  $('startwhat').textContent = what ? `${what}\u2026` : 'Starting\u2026';
+  $('termstarting').hidden = !startingShown();
+  const out = $('startout');
+  const where = creatingIn();
+  const run = what && where ? snapshotOf(where)?.create_run : null;
+  const lines = run?.lines ?? [];
+  out.hidden = lines.length === 0;
+  if (out.hidden) return;
+  // The step is the heading the lines are under, so it travels with them rather
+  // than replacing the chip's own word — the chip says what you asked for, this
+  // says which script is answering.
+  const said = (run?.step ? [`${run.step}:`, ...lines] : lines).join('\n');
+  if (out.textContent !== said) {
+    out.textContent = said;
+    // Newest at the bottom, in view. Only on a change, so a render that said
+    // nothing new does not fight a scroll back through the tail.
+    out.scrollTop = out.scrollHeight;
+  }
+  out.classList.toggle('failed', !!run?.failed);
+}
 
 // ---------------------------------------------------------------------------
 // Context menu
@@ -129,6 +162,9 @@ function scheduleRender() {
 function render() {
   syncDiffToSession();
   Rail.render();
+  // The create in flight reports through the snapshot, so its overlay is redrawn
+  // with everything else rather than only when the press changed.
+  renderStarting();
   renderContext();
   renderDrawer();
   Diff.renderFiles();

@@ -165,6 +165,7 @@ pub fn graphql(token: &str, query: &str) -> Result<Value> {
         "the GitHub API request",
         Some(format!("Authorization: bearer {token}\n").into_bytes()),
         &[],
+        None,
     )?;
     if !out.status.success() {
         bail!(
@@ -233,6 +234,7 @@ pub fn latest_release(owner: &str, name: &str, token: Option<&str>) -> Option<(S
         "the release check",
         token.map(|t| format!("Authorization: Bearer {t}\n").into_bytes()),
         &[],
+        None,
     )
     .ok()?;
     if !out.status.success() {

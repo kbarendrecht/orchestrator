@@ -51,6 +51,9 @@ fn resolve_setup_exe(main: &std::path::Path, exe: &str) -> String {
 pub(crate) async fn run_worktree_hooks(app: &Arc<AppState>, path: &std::path::Path) {
     run_worktree_hook(app, path, &app.cfg.worktree_init, "worktree init").await;
     run_worktree_hook(app, path, &app.cfg.worktree_setup, "worktree setup").await;
+    // The end of the scripts, not the end of the create: the session's own boot
+    // follows and the board keeps saying so. See `AppState::create_end`.
+    app.create_end().await;
 }
 
 /// One of the two, named for its logs.
@@ -74,28 +77,41 @@ async fn run_worktree_hook(
     }
     let at = path.to_path_buf();
     let shown = argv.join(" ");
+    // Streamed, because this is a script somebody is waiting on: the board shows
+    // the lines as they arrive rather than one word for however long it takes.
+    let (sink, pump) = crate::worktree::publish_output(app, label).await;
     let result = tokio::task::spawn_blocking(move || {
-        crate::proc::run_bounded(&at, WORKTREE_SETUP_TIMEOUT_SECS, &argv, label)
+        crate::proc::run_bounded_streaming(&at, WORKTREE_SETUP_TIMEOUT_SECS, &argv, label, sink)
     })
     .await;
+    // After the blocking call, never before: the sink is dropped with the closure,
+    // which closes the channel, which is what ends the pump.
+    let _ = pump.await;
 
     match result {
         Ok(Ok(out)) if out.status.success() => {
             tracing::info!(worktree = %path.display(), "ran {label}: {shown}");
         }
         Ok(Ok(out)) => {
+            let tail = crate::proc::stderr_tail(&out.stderr);
             tracing::error!(
                 worktree = %path.display(),
-                "{label} `{shown}` exited {}: {}",
+                "{label} `{shown}` exited {}: {tail}",
                 out.status.code().unwrap_or(-1),
-                crate::proc::stderr_tail(&out.stderr)
             );
+            app.create_failed(format!(
+                "{label} exited {}",
+                out.status.code().unwrap_or(-1)
+            ))
+            .await;
         }
         Ok(Err(e)) => {
             tracing::error!(worktree = %path.display(), "{label} `{shown}` failed: {e:#}");
+            app.create_failed(format!("{label} failed: {e}")).await;
         }
         Err(e) => {
             tracing::error!(worktree = %path.display(), "{label} task panicked: {e}");
+            app.create_failed(format!("{label} panicked")).await;
         }
     }
 }
@@ -2553,6 +2569,11 @@ pub(crate) async fn create_worktree(
     path: &std::path::Path,
     want: Want<'_>,
 ) -> Result<std::path::PathBuf> {
+    // The board's report on this cut starts here, because this is where the first
+    // script runs: the repo's own `WorktreeCreate` is usually the whole of the wait.
+    // Ended by `run_worktree_hooks`, which every caller of this runs after it, and
+    // on the error path below.
+    app.create_begin(name).await;
     // Owned up front: every git call below goes to a blocking thread, because each
     // one can fetch and a fetch against an unreachable remote parks a runtime worker
     // for as long as git waits.
@@ -2593,12 +2614,27 @@ pub(crate) async fn create_worktree(
     }
 
     let p = path.to_path_buf();
-    tokio::task::spawn_blocking(move || match base {
+    // Named rather than streamed: `git worktree add` goes through `git::run`, which
+    // is the one exec path in the daemon that is not a script somebody wrote, and
+    // its progress is already a `slow git` line in the log.
+    app.create_step("worktree add").await;
+    let added = tokio::task::spawn_blocking(move || match base {
         Some(base) => crate::git::worktree_add_new(&main, &p, &branch, &base),
         None => crate::git::worktree_add_existing(&main, &p, &branch),
     })
-    .await
-    .context("the worktree add panicked")??;
+    .await;
+    let added = match added {
+        Ok(r) => r,
+        Err(e) => Err(anyhow::anyhow!("the worktree add panicked: {e}")),
+    };
+    // The caller gives up here, so nothing downstream will close the run, and a
+    // report left saying `running` would sit on the board until the next create.
+    if let Err(e) = &added {
+        app.create_failed(format!("the worktree add failed: {e}"))
+            .await;
+        app.create_end().await;
+    }
+    added?;
     Ok(path.to_path_buf())
 }
 

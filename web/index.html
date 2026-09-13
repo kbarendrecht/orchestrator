@@ -169,6 +169,12 @@
            it, so this pulse is covered without a second rule to remember. -->
       <div class="termstarting" id="termstarting" hidden>
         <span class="startchip"><span class="conn-dot"></span><span id="startwhat">Starting…</span></span>
+        <!-- What the repo's own scripts are saying while they say it. A worktree cut
+             is a fetch, a checkout of thousands of files and a warm-up, all of it
+             somebody else's shell script — so the one word above was the whole
+             report on the slowest thing the board does. Empty until a line
+             arrives, so a checkout with no scripts shows the chip alone. -->
+        <pre class="startout" id="startout" hidden></pre>
       </div>
 
       <!-- What a review is doing, while its overlay is closed. Inside the terminal

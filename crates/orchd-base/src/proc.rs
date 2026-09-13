@@ -64,7 +64,113 @@ pub fn not_installed(e: &anyhow::Error) -> bool {
 /// never reach the deadline. `label` is only for the timeout message, so a caller
 /// gets "reviews timed out" rather than a generic one.
 pub fn run_bounded(cwd: &Path, timeout_secs: u64, argv: &[String], label: &str) -> Result<Output> {
-    run_bounded_with_input(cwd, timeout_secs, argv, label, None, &[])
+    run_bounded_with_input(cwd, timeout_secs, argv, label, None, &[], None)
+}
+
+/// A place for a bounded command's output to go **while it runs**, a line at a
+/// time.
+///
+/// `Arc` and not a plain closure because both pipes are drained on their own
+/// thread, so the two halves of one command's output share it. Interleaved in
+/// arrival order, which is what a script that reports its steps on stderr and its
+/// answer on stdout means by "what it said".
+pub type LineSink = std::sync::Arc<dyn Fn(&str) + Send + Sync>;
+
+/// [`run_bounded`], reporting each line as the child writes it.
+///
+/// For a command a person is waiting on: a worktree cut is a fetch, a checkout of
+/// 18k files and a warm-up, and the board had one word for all of it. The `Output`
+/// is unchanged — the sink is a copy of the stream, not a replacement — so a
+/// caller that also reads stdout as a protocol (`WorktreeCreate` prints the path
+/// it made) keeps working.
+pub fn run_bounded_streaming(
+    cwd: &Path,
+    timeout_secs: u64,
+    argv: &[String],
+    label: &str,
+    sink: LineSink,
+) -> Result<Output> {
+    run_bounded_with_input(cwd, timeout_secs, argv, label, None, &[], Some(sink))
+}
+
+/// Read one pipe to the end, keeping every byte and announcing whole lines.
+///
+/// Kept as one function with the sink optional, because the two behaviours differ
+/// only in whether anybody is listening: the bytes are collected either way, since
+/// `stderr_tail` and the `WorktreeCreate` contract both read the whole stream after
+/// the child has gone.
+fn drain(
+    mut pipe: impl Read + Send + 'static,
+    sink: Option<LineSink>,
+) -> std::thread::JoinHandle<Vec<u8>> {
+    std::thread::spawn(move || {
+        let mut all = Vec::new();
+        let Some(sink) = sink else {
+            let _ = pipe.read_to_end(&mut all);
+            return all;
+        };
+        let mut buf = [0u8; 4096];
+        let mut line = Vec::new();
+        loop {
+            match pipe.read(&mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    all.extend_from_slice(&buf[..n]);
+                    for &b in &buf[..n] {
+                        // A carriage return ends a line too: git writes its progress
+                        // that way, and holding it back would mean one 4kB line at
+                        // the end instead of a count that moves.
+                        if b == b'\n' || b == b'\r' {
+                            emit(&sink, &mut line);
+                        } else {
+                            line.push(b);
+                        }
+                    }
+                }
+            }
+        }
+        // A last line with no terminator is still something the child said.
+        emit(&sink, &mut line);
+        all
+    })
+}
+
+/// Hand one line over and clear the buffer, unless it is nothing.
+fn emit(sink: &LineSink, line: &mut Vec<u8>) {
+    let text = strip_ansi(&String::from_utf8_lossy(line));
+    line.clear();
+    if !text.trim().is_empty() {
+        sink(&text);
+    }
+}
+
+/// Drop the escape sequences a terminal would have acted on.
+///
+/// The reader here is a web page, not a terminal, so a `\x1b[K` arrives as
+/// visible rubbish rather than as an erased line — and scripts written for a
+/// person emit them freely. Only CSI and the two-byte forms are handled, which is
+/// all a progress line uses; anything more needs a real parser, and the answer to
+/// that is a pty rather than a bigger regex.
+fn strip_ansi(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c != '\u{1b}' {
+            out.push(c);
+            continue;
+        }
+        // CSI: parameters, then one letter that says what it meant. Anything else
+        // is a two-byte escape, and the `next` above has already eaten its second
+        // byte.
+        if let Some('[') = chars.next() {
+            for c in chars.by_ref() {
+                if c.is_ascii_alphabetic() {
+                    break;
+                }
+            }
+        }
+    }
+    out
 }
 
 /// The last three stderr lines of a failed command, on one line, for a log entry
@@ -95,7 +201,8 @@ pub fn stderr_tail(stderr: &[u8]) -> String {
 /// payload larger than the pipe buffer would otherwise deadlock against a child
 /// that is writing output before it finishes reading.
 ///
-/// `envs` are added to the child's inherited environment.
+/// `envs` are added to the child's inherited environment, and `sink` — if there is
+/// one — sees each line as the child writes it; see [`run_bounded_streaming`].
 pub fn run_bounded_with_input(
     cwd: &Path,
     timeout_secs: u64,
@@ -103,6 +210,7 @@ pub fn run_bounded_with_input(
     label: &str,
     input: Option<Vec<u8>>,
     envs: &[(String, String)],
+    sink: Option<LineSink>,
 ) -> Result<Output> {
     use std::os::unix::process::CommandExt;
 
@@ -140,18 +248,10 @@ pub fn run_bounded_with_input(
             let _ = pipe.write_all(&payload);
         });
     }
-    let mut out_pipe = child.stdout.take().context("no stdout pipe")?;
-    let mut err_pipe = child.stderr.take().context("no stderr pipe")?;
-    let out_thread = std::thread::spawn(move || {
-        let mut v = Vec::new();
-        let _ = out_pipe.read_to_end(&mut v);
-        v
-    });
-    let err_thread = std::thread::spawn(move || {
-        let mut v = Vec::new();
-        let _ = err_pipe.read_to_end(&mut v);
-        v
-    });
+    let out_pipe = child.stdout.take().context("no stdout pipe")?;
+    let err_pipe = child.stderr.take().context("no stderr pipe")?;
+    let out_thread = drain(out_pipe, sink.clone());
+    let err_thread = drain(err_pipe, sink);
 
     let began = Instant::now();
     let deadline = began + Duration::from_secs(timeout_secs);
@@ -302,6 +402,7 @@ mod tests {
             "t",
             Some(br#"{"worktreePath":"/x"}"#.to_vec()),
             &[],
+            None,
         )
         .expect("it finished rather than hitting the deadline");
         assert!(out.status.success());
@@ -322,7 +423,8 @@ mod tests {
             "printf %s \"$ORCH_T\"".to_string(),
         ];
         let envs = vec![("ORCH_T".to_string(), "child-only".to_string())];
-        let out = run_bounded_with_input(Path::new("/tmp"), 5, &argv, "t", None, &envs).unwrap();
+        let out =
+            run_bounded_with_input(Path::new("/tmp"), 5, &argv, "t", None, &envs, None).unwrap();
         assert_eq!(String::from_utf8_lossy(&out.stdout), "child-only");
         assert!(
             std::env::var("ORCH_T").is_err(),
@@ -375,5 +477,84 @@ mod tests {
     #[test]
     fn an_empty_command_is_an_error_not_a_panic() {
         assert!(run_bounded(&std::env::temp_dir(), 5, &[], "test").is_err());
+    }
+
+    /// The point of streaming is that a line arrives *before* the command ends.
+    /// Asserted by holding the child open past the first write: a sink that only
+    /// sees its lines at the end would still pass an assertion made afterwards.
+    #[test]
+    fn a_line_reaches_the_sink_while_the_command_is_still_running() {
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let into = std::sync::Arc::clone(&seen);
+        let sink: LineSink = std::sync::Arc::new(move |line: &str| {
+            if let Ok(mut v) = into.lock() {
+                v.push(line.to_string());
+            }
+        });
+        let argv = vec![
+            "sh".to_string(),
+            "-c".to_string(),
+            "echo first; sleep 1; echo second".to_string(),
+        ];
+        let began = Instant::now();
+        let watcher = {
+            let seen = std::sync::Arc::clone(&seen);
+            std::thread::spawn(move || {
+                // Well inside the sleep, and well after the first echo.
+                std::thread::sleep(Duration::from_millis(400));
+                seen.lock().map(|v| v.len()).unwrap_or(0)
+            })
+        };
+        let out =
+            run_bounded_streaming(&std::env::temp_dir(), 10, &argv, "test", sink).expect("it ran");
+        assert!(out.status.success());
+        assert!(
+            began.elapsed() >= Duration::from_millis(900),
+            "the child really did wait"
+        );
+        assert_eq!(
+            watcher.join().unwrap_or(0),
+            1,
+            "the first line was reported while the command was still running"
+        );
+        assert_eq!(
+            *seen.lock().expect("not poisoned"),
+            vec!["first".to_string(), "second".to_string()]
+        );
+        // The sink is a copy of the stream, never a replacement: a caller that reads
+        // stdout as a protocol (`WorktreeCreate` prints the path it made) is unaffected.
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "first\nsecond\n");
+    }
+
+    /// A script written for a person writes for a terminal: it overwrites its own
+    /// line with a carriage return and erases with `\x1b[K`. The reader here is a
+    /// web page, so a held-back line would arrive as one 4kB blob at the end and an
+    /// escape would arrive as visible rubbish.
+    #[test]
+    fn progress_lines_are_split_on_a_return_and_stripped_of_escapes() {
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let into = std::sync::Arc::clone(&seen);
+        let sink: LineSink = std::sync::Arc::new(move |line: &str| {
+            if let Ok(mut v) = into.lock() {
+                v.push(line.to_string());
+            }
+        });
+        let argv = vec![
+            "sh".to_string(),
+            "-c".to_string(),
+            // Two steps on one terminal line, then a third with no terminator at all.
+            "printf '  … step one\\r\\033[K  ✔ step one\\n'; printf 'no newline here' 1>&2"
+                .to_string(),
+        ];
+        run_bounded_streaming(&std::env::temp_dir(), 10, &argv, "test", sink).expect("it ran");
+        let seen = seen.lock().expect("not poisoned").clone();
+        assert_eq!(
+            seen,
+            vec![
+                "  … step one".to_string(),
+                "  ✔ step one".to_string(),
+                "no newline here".to_string(),
+            ]
+        );
     }
 }

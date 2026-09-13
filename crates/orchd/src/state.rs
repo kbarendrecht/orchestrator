@@ -335,6 +335,10 @@ pub struct Inner {
     /// Whether the main checkout's `docker compose` stack has running containers.
     /// `None` before the first probe; the drawer header reads it as up/down.
     pub stack_up: Option<bool>,
+    /// The worktree cut in flight, and what its scripts are saying. Cleared to
+    /// `running: false` when they finish, and left there — the last create's output
+    /// is what the pane shows while the session it belongs to boots.
+    pub create_run: Option<crate::model::CreateRun>,
     /// A newer GitHub release than the running build, if the update poller has
     /// found one. Surfaced to the SPA as a dismissible nudge, with a button when
     /// mise is what installed us.
@@ -590,6 +594,7 @@ impl AppState {
                 human_edits: HashMap::new(),
                 automation: Default::default(),
                 stack_up: None,
+                create_run: None,
                 update: None,
                 self_upgrade_run: None,
                 agent_update: None,
@@ -614,6 +619,80 @@ impl AppState {
         if let Ok(json) = serde_json::to_string(&snapshot) {
             let _ = self.events.send(json);
         }
+    }
+
+    /// Start reporting on a worktree cut, and clear whatever the last one said.
+    ///
+    /// The three create helpers live here rather than beside the scripts they
+    /// report on, because `state` may not import `spawn` or `worktree` — the same
+    /// reason [`crate::model::CreateRun`] is a `model` shape.
+    pub async fn create_begin(self: &Arc<Self>, name: &str) {
+        self.inner.write().await.create_run = Some(crate::model::CreateRun {
+            name: name.to_string(),
+            running: true,
+            ..Default::default()
+        });
+        self.notify().await;
+    }
+
+    /// Name the script that is running now.
+    pub async fn create_step(self: &Arc<Self>, step: &str) {
+        {
+            let mut inner = self.inner.write().await;
+            let Some(run) = inner.create_run.as_mut() else {
+                return;
+            };
+            run.step = step.to_string();
+        }
+        self.notify().await;
+    }
+
+    /// Append what a script just said.
+    ///
+    /// A batch rather than a line, because the caller coalesces: a chatty script
+    /// must not push a snapshot per line down every socket.
+    pub async fn create_lines(self: &Arc<Self>, lines: Vec<String>) {
+        {
+            let mut inner = self.inner.write().await;
+            let Some(run) = inner.create_run.as_mut() else {
+                return;
+            };
+            for line in lines {
+                run.push(line);
+            }
+        }
+        self.notify().await;
+    }
+
+    /// Note a step that did not succeed.
+    ///
+    /// Only ever set, never cleared: a later step succeeding does not undo an
+    /// earlier one having failed, and this note is what explains a tree that came
+    /// up half-configured. A worktree hook is never fatal, so the cut carries on
+    /// past it and this is a mark on the output rather than a terminal state.
+    pub async fn create_failed(self: &Arc<Self>, why: String) {
+        {
+            let mut inner = self.inner.write().await;
+            let Some(run) = inner.create_run.as_mut() else {
+                return;
+            };
+            if run.failed.is_none() {
+                run.failed = Some(why);
+            }
+        }
+        self.notify().await;
+    }
+
+    /// The scripts are done.
+    pub async fn create_end(self: &Arc<Self>) {
+        {
+            let mut inner = self.inner.write().await;
+            let Some(run) = inner.create_run.as_mut() else {
+                return;
+            };
+            run.running = false;
+        }
+        self.notify().await;
     }
 
     /// The resume set as it stands: one record per session, live state included.
@@ -884,6 +963,7 @@ impl AppState {
             several_in_main: self.cfg.allow_several_in_main,
             upstream_ref: self.cfg.upstream_ref.clone(),
             stack_up: inner.stack_up,
+            create_run: inner.create_run.clone(),
             update: inner.update.clone(),
             self_upgrade_run: inner.self_upgrade_run.clone(),
             agent_update: inner.agent_update.clone(),
@@ -1517,6 +1597,9 @@ pub struct Snapshot {
     pub upstream_ref: String,
     /// `docker compose` stack has running containers; `None` before first probe.
     pub stack_up: Option<bool>,
+    /// The worktree cut in flight: which step, and what it has printed. See
+    /// [`crate::model::CreateRun`].
+    pub create_run: Option<crate::model::CreateRun>,
     /// A newer release than the running build, or `None`.
     pub update: Option<crate::update::UpdateInfo>,
     /// The app's own upgrade run: `running` while `mise upgrade` goes, then a tail

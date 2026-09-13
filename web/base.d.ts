@@ -5,6 +5,50 @@
  */
 export type ArchiveState = { "recovery": "recoverable", name: string, branch: string, head_sha: string, } | { "recovery": "transcript_only" };
 
+/**
+ * What a worktree cut is doing, while it does it.
+ *
+ * **Cutting a tree is other people's scripts, and they are the slow part.** The
+ * repo's `WorktreeCreate` fetches, checks out 18k files and warms git; the
+ * configured `worktree_init` and `worktree_setup` run on top. The board said
+ * `creating a worktree` for all of it, so ten seconds of real work looked
+ * identical to a button that had done nothing.
+ *
+ * One slot per daemon rather than one per create. Two cuts at once is possible
+ * through the API and the board already refuses it (`asTheOnlyCreate`), so a map
+ * would buy a key nobody reads for a case nobody can reach from the page.
+ *
+ * Here in `model` because `orchd`'s `Snapshot` carries it and `state` may
+ * not import the modules that fill it — a shape lives in `model`, the module that
+ * fills it depends on `model`.
+ */
+export type CreateRun = { 
+/**
+ * The worktree being made. Carried so the pane can name it once the create
+ * has moved on to a step that does not.
+ */
+name: string, 
+/**
+ * The script running now, by the name it is configured under:
+ * `WorktreeCreate`, `worktree init`, `worktree setup`.
+ */
+step: string, 
+/**
+ * False once the scripts are done. The session's own boot follows, and the
+ * board keeps its overlay up for that — so this going false is not the end of
+ * the create, only the end of what this reports on.
+ */
+running: boolean, 
+/**
+ * What the scripts said, oldest first, capped at [`CREATE_LINES`].
+ */
+lines: Array<string>, 
+/**
+ * The step that failed, and how. A worktree hook is never fatal, so a run can
+ * carry on past this — it is a note on the output, not a terminal state.
+ */
+failed: string | null, };
+
 export type DiffFile = { path: string, 
 /**
  * Verbatim from `--name-status`: M, A, D, R…, C…

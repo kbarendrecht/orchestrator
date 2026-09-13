@@ -680,6 +680,43 @@ pub(crate) fn repo_worktree_hooks(main: &std::path::Path, event: &str) -> Vec<St
     out
 }
 
+/// A sink whose lines land in the snapshot, so a script a person is waiting on
+/// says what it is doing.
+///
+/// Returns the sink to hand to [`crate::proc::run_bounded_streaming`] and the task
+/// that drains it. **Await the task after the blocking call**: the sink is dropped
+/// with the closure that held it, which closes the channel, which is what ends the
+/// task — so awaiting it before the command finishes would hang.
+///
+/// The lines are coalesced rather than forwarded one at a time. A snapshot is the
+/// whole board, sent to every socket, and a `git checkout` of 18k files prints
+/// faster than a screen refreshes; ten a second is already more than a person can
+/// read.
+pub(crate) async fn publish_output(
+    app: &Arc<AppState>,
+    step: &str,
+) -> (crate::proc::LineSink, tokio::task::JoinHandle<()>) {
+    app.create_step(step).await;
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let app = app.clone();
+    let pump = tokio::spawn(async move {
+        while let Some(first) = rx.recv().await {
+            let mut batch = vec![first];
+            while let Ok(more) = rx.try_recv() {
+                batch.push(more);
+            }
+            app.create_lines(batch).await;
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    });
+    let sink: crate::proc::LineSink = std::sync::Arc::new(move |line: &str| {
+        // The receiver outlives every sender by construction, so a send that fails
+        // means the daemon is going down. Nothing to report to.
+        let _ = tx.send(line.to_string());
+    });
+    (sink, pump)
+}
+
 /// Run the repo's `command` hooks for one worktree event, in order.
 ///
 /// One function because there are two events and they differ only in their payload:
@@ -715,6 +752,7 @@ pub(crate) async fn run_repo_hooks(
         )];
         let body = body.clone();
         let label = event.to_string();
+        let (sink, pump) = publish_output(app, event).await;
         let run = tokio::task::spawn_blocking(move || {
             crate::proc::run_bounded_with_input(
                 &at,
@@ -723,19 +761,31 @@ pub(crate) async fn run_repo_hooks(
                 &label,
                 Some(body),
                 &envs,
+                Some(sink),
             )
         })
         .await;
+        let _ = pump.await;
         match run {
             Ok(Ok(o)) if o.status.success() => out.push(o),
-            Ok(Ok(o)) => tracing::warn!(
-                event,
-                "the repo's {event} hook exited {}: {}",
-                o.status,
-                String::from_utf8_lossy(&o.stderr).trim()
-            ),
-            Ok(Err(e)) => tracing::warn!(event, "the repo's {event} hook failed: {e:#}"),
-            Err(e) => tracing::warn!(event, "the {event} hook task panicked: {e}"),
+            Ok(Ok(o)) => {
+                tracing::warn!(
+                    event,
+                    "the repo's {event} hook exited {}: {}",
+                    o.status,
+                    String::from_utf8_lossy(&o.stderr).trim()
+                );
+                app.create_failed(format!("{event} exited {}", o.status))
+                    .await;
+            }
+            Ok(Err(e)) => {
+                tracing::warn!(event, "the repo's {event} hook failed: {e:#}");
+                app.create_failed(format!("{event} failed: {e}")).await;
+            }
+            Err(e) => {
+                tracing::warn!(event, "the {event} hook task panicked: {e}");
+                app.create_failed(format!("{event} panicked")).await;
+            }
         }
     }
     out

@@ -313,10 +313,13 @@ button.ctx-btn:hover{color:var(--text)}
   font-family:var(--mono);font-size:calc(9px * var(--fs));color:var(--faint-solid);
   margin-left:auto;white-space:nowrap;
 }
-/* The row that stands in for a session the daemon has not answered about yet. It
-   takes the selected row's fill because the centre pane is showing the same thing;
-   `default` cursor because there is nothing to click yet. */
-.sess.starting{background:var(--raised);cursor:default}
+/* The row that stands in for a session the daemon has not answered about yet.
+   **No fill of its own**: it takes the current row's through `[aria-current]` like
+   every other row, because the two now disagree — picking a session leaves the
+   create running, and a row that is always filled would then be a second row
+   claiming to be what the pane is showing. It is pressable, and that is what
+   brings the report back. */
+.sess.starting{background:none}
 .ws-add{display:flex;align-items:center;gap:8px;padding:6px 15px 12px}
 .addbtn{
   font-family:var(--mono);font-size:calc(10.5px * var(--fs));color:var(--faint-solid);
@@ -579,22 +582,46 @@ button.ctx-btn:hover{color:var(--text)}
    strength over it. */
 .termwrap.rvwork .termhost{opacity:.6}
 
-/* The board's answer to `+`, over the terminal region and under nothing. It paints
-   the pane's own ground rather than a scrim: the session underneath is not dimmed,
-   it is *not what the board is about* for the next few seconds. */
+/* The board's answer to `+`, over the terminal region and under nothing.
+   **Translucent rather than opaque**, which is the difference between a report and
+   a modal: the pane underneath is the session you were just in, and a create is
+   ten seconds of somebody else's script, not a reason to take the screen. Steady,
+   like `.rvwork` and for its reason — a state that lifts when you point at it is
+   not a state indicator.
+   It is not a scrim either: nothing under it is disabled, and clicking a session
+   in the rail takes this down. */
 .termstarting{
   position:absolute;inset:0;z-index:4;
-  display:flex;align-items:center;justify-content:center;
-  background:var(--ground,var(--bg));
+  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;
+  padding:16px;
+  background:var(--ground,var(--bg));opacity:.94;
 }
 /* An author `display` beats `[hidden]`, which this file has been bitten by four
    times — see `.settings-row[hidden]`. */
 .termstarting[hidden]{display:none}
 .startchip{
-  display:flex;align-items:center;gap:9px;
+  display:flex;align-items:center;gap:9px;flex:0 0 auto;
   font-family:var(--mono);font-size:calc(11.5px * var(--fs));color:var(--dim);
   border:1px solid var(--line);border-radius:20px;padding:7px 15px;background:var(--raised);
 }
+/* The scripts' own output, newest at the bottom, the way a terminal reads.
+   Bounded in both directions: it is a tail of what is happening, not a log to
+   scroll through — the daemon caps what it sends at `model::CREATE_LINES` and this
+   caps what a long line does to the layout. `pre` rather than a div per line,
+   because the alignment a script's own columns were written for is the point. */
+.startout{
+  flex:0 1 auto;max-width:min(760px, 100%);max-height:46%;overflow:auto;
+  margin:0;padding:10px 14px;
+  background:var(--raised);border:1px solid var(--line);border-radius:2px;
+  font-family:var(--mono);font-size:calc(10.5px * var(--fs));line-height:1.55;
+  color:var(--dim);white-space:pre-wrap;overflow-wrap:anywhere;
+}
+/* Stated, because an author `display` beats `[hidden]` — the trap four rules in
+   this file already carry a note about. */
+.startout[hidden]{display:none}
+/* A script that failed. The cut carries on — a worktree hook is never fatal — so
+   this colours the report rather than replacing it. */
+.startout.failed{border-color:var(--bad);color:var(--text)}
 
 /* ---------- what a review is doing, while its overlay is closed ---------- */
 /* Bottom of the *terminal*, not of the column: anchoring it to `.center` would put
