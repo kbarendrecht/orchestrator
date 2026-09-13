@@ -1,8 +1,7 @@
 {
-  "//": "Mutual imports between modules, and nothing else. A ratchet: a new pair fails, and a pair that goes away has to be deleted here. Counts are not recorded \u2014 see tools/rust-modules.mjs for why.",
+  "//": "Mutual imports between modules, and nothing else. A ratchet: a new pair fails, and a pair that goes away has to be deleted here. Counts are not recorded — see tools/rust-modules.mjs for why.",
   "mutual": [
     "fix_pr <-> spawn",
-    "spawn <-> triage",
-    "spawn <-> worktree"
+    "spawn <-> triage"
   ]
 }

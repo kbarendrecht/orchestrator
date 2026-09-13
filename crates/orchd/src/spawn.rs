@@ -10,112 +10,6 @@ use crate::state::AppState;
 
 pub(crate) const DEFAULT_SIZE: (u16, u16) = (40, 140);
 
-/// How long *each* worktree hook may run before it is killed.
-///
-/// Generous — a hook might install or codegen — but bounded, because they run
-/// *before* the session spawns, so a hang here is a worktree that never opens.
-/// The deadline is enforced in Rust (`proc::run_bounded`), which also takes any
-/// children the script left behind. Per hook, not shared: `worktree_setup` should
-/// not lose its budget to a slow `worktree_init`.
-const WORKTREE_SETUP_TIMEOUT_SECS: u64 = 300;
-
-/// Resolve a worktree hook's command word.
-///
-/// The command runs *in* the worktree (cwd), but a **relative script path** is
-/// resolved against main, not the worktree. That is the common idiom made to
-/// work — its hooks are `$CLAUDE_PROJECT_DIR/.claude/hooks/…` operating on the
-/// worktree — and without it `.claude/hooks/setup` would be looked up inside a
-/// just-created worktree that may not carry it. A bare command name (no slash,
-/// e.g. `just`) is left alone for a normal PATH lookup; an absolute path is
-/// already unambiguous.
-fn resolve_setup_exe(main: &std::path::Path, exe: &str) -> String {
-    let p = std::path::Path::new(exe);
-    if p.is_relative() && exe.contains('/') {
-        main.join(exe).to_string_lossy().into_owned()
-    } else {
-        exe.to_string()
-    }
-}
-
-/// Both worktree hooks, in order, in a worktree the daemon just cut.
-///
-/// `worktree_init` then `worktree_setup`, mirroring the repo's own
-/// `worktree-create` and `worktree-link`. Sequential, not concurrent: linking into
-/// a tree that has not been based yet is the ordering the repo's hooks already
-/// assume.
-///
-/// The second runs even if the first failed. They answer different questions — is
-/// this branch based correctly, does it have the files it needs beside the code —
-/// and a tree that is merely un-based is still worth linking. Skipping the link
-/// would turn one visible failure into two invisible ones.
-pub(crate) async fn run_worktree_hooks(app: &Arc<AppState>, path: &std::path::Path) {
-    run_worktree_hook(app, path, &app.cfg.worktree_init, "worktree init").await;
-    run_worktree_hook(app, path, &app.cfg.worktree_setup, "worktree setup").await;
-    // The end of the scripts, not the end of the create: the session's own boot
-    // follows and the board keeps saying so. See `AppState::create_end`.
-    app.create_end().await;
-}
-
-/// One of the two, named for its logs.
-///
-/// **Non-fatal.** A hook failing must not strand the worktree: the session is more
-/// useful open-with-a-warning than refused, and the same reasoning is why the
-/// repo's own hook treats its settings write as best-effort. A failure is logged
-/// with the command's own stderr tail, never swallowed.
-async fn run_worktree_hook(
-    app: &Arc<AppState>,
-    path: &std::path::Path,
-    configured: &[String],
-    label: &'static str,
-) {
-    let mut argv = configured.to_vec();
-    if argv.is_empty() {
-        return;
-    }
-    if let Some(exe) = argv.first_mut() {
-        *exe = resolve_setup_exe(&app.cfg.main_checkout, exe);
-    }
-    let at = path.to_path_buf();
-    let shown = argv.join(" ");
-    // Streamed, because this is a script somebody is waiting on: the board shows
-    // the lines as they arrive rather than one word for however long it takes.
-    let (sink, pump) = crate::worktree::publish_output(app, label).await;
-    let result = tokio::task::spawn_blocking(move || {
-        crate::proc::run_bounded_streaming(&at, WORKTREE_SETUP_TIMEOUT_SECS, &argv, label, sink)
-    })
-    .await;
-    // After the blocking call, never before: the sink is dropped with the closure,
-    // which closes the channel, which is what ends the pump.
-    let _ = pump.await;
-
-    match result {
-        Ok(Ok(out)) if out.status.success() => {
-            tracing::info!(worktree = %path.display(), "ran {label}: {shown}");
-        }
-        Ok(Ok(out)) => {
-            let tail = crate::proc::stderr_tail(&out.stderr);
-            tracing::error!(
-                worktree = %path.display(),
-                "{label} `{shown}` exited {}: {tail}",
-                out.status.code().unwrap_or(-1),
-            );
-            app.create_failed(format!(
-                "{label} exited {}",
-                out.status.code().unwrap_or(-1)
-            ))
-            .await;
-        }
-        Ok(Err(e)) => {
-            tracing::error!(worktree = %path.display(), "{label} `{shown}` failed: {e:#}");
-            app.create_failed(format!("{label} failed: {e}")).await;
-        }
-        Err(e) => {
-            tracing::error!(worktree = %path.display(), "{label} task panicked: {e}");
-            app.create_failed(format!("{label} panicked")).await;
-        }
-    }
-}
-
 /// Placeholder workspace for a worktree whose name Claude Code has not reported
 /// yet. Replaced at `SessionStart`.
 pub const PENDING_WORKTREE: &str = "\u{2026}creating";
@@ -948,7 +842,7 @@ pub async fn spawn_worktree_session(
         // Both worktree hooks on top, `worktree_init` then `worktree_setup`, for a
         // repo whose setup does not hang off the `WorktreeCreate` the line above
         // just ran. Configured per repo, and nothing at all when unset.
-        run_worktree_hooks(app, &path).await;
+        crate::worktree::run_worktree_hooks(app, &path).await;
         // Now the parent's uncommitted work, on top of the parent's HEAD the tree
         // was just cut from. Before the session starts, so the agent never sees the
         // tree change under it.
@@ -1767,7 +1661,7 @@ pub async fn ensure_pr_worktree(app: &Arc<AppState>, pr: u64, head_ref: &str) ->
                     "main was on #{pr}'s branch, so it moved into {name} and main went back to {}",
                     moved.base
                 );
-                run_worktree_hooks(app, &path).await;
+                crate::worktree::run_worktree_hooks(app, &path).await;
                 moved_out = true;
             }
         }
@@ -1777,7 +1671,7 @@ pub async fn ensure_pr_worktree(app: &Arc<AppState>, pr: u64, head_ref: &str) ->
             path = create_worktree(app, &name, &path, Want::Existing { branch: head_ref }).await?;
             // Only when we actually cut it. Skipped when the tree was already there,
             // since setup ran when it was first created.
-            run_worktree_hooks(app, &path).await;
+            crate::worktree::run_worktree_hooks(app, &path).await;
         }
     }
     app.register_worktree(&name, path, Some(head_ref.to_string()))
@@ -1841,7 +1735,7 @@ pub async fn spawn_resolve_run(
     app: &Arc<AppState>,
     pr: u64,
     head_ref: &str,
-    plan: &crate::post::Plan,
+    plan: &crate::model::Plan,
     id: SessionId,
 ) -> Result<SessionId> {
     let workspace = ensure_pr_worktree(app, pr, head_ref).await?;
@@ -3348,9 +3242,9 @@ mod tests {
             .with_resolve_runs("run started", |runs| {
                 runs.insert(
                     pr,
-                    crate::state::ResolveRun {
+                    crate::model::ResolveRun {
                         session: id,
-                        plan: crate::post::Plan {
+                        plan: crate::model::Plan {
                             pr,
                             base_sha: "abc".into(),
                             threads: Vec::new(),
@@ -3506,86 +3400,6 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// The two hooks in order, and the second surviving the first.
-    ///
-    /// Order matters because linking into a tree that has not been based yet is
-    /// the sequence the repo's own hooks assume. The survival matters because they
-    /// answer different questions — is this branch based, does it have the files it
-    /// needs beside the code — so a failed init must not silently cost the link
-    /// too.
-    #[tokio::test]
-    async fn both_worktree_hooks_run_in_order_and_the_link_survives_a_failed_init() {
-        let dir = crate::testutil::scratch("wthooks");
-        let log = dir.join("order.log");
-
-        let mut cfg = crate::config::Config::parse(&format!(
-            r#"{{"main_checkout":{:?}}}"#,
-            dir.to_string_lossy()
-        ))
-        .expect("parse");
-        // init appends and then fails; setup appends. If the failure short-circuited
-        // the pair, the log would hold only "init".
-        cfg.worktree_init = vec![
-            "sh".into(),
-            "-c".into(),
-            format!("echo init >> {:?}; exit 3", log.to_string_lossy()),
-        ];
-        cfg.worktree_setup = vec![
-            "sh".into(),
-            "-c".into(),
-            format!("echo setup >> {:?}", log.to_string_lossy()),
-        ];
-        let app = crate::state::AppState::new(cfg, "t".into(), crate::window::Chrome::None);
-
-        run_worktree_hooks(&app, &dir).await;
-
-        let got = std::fs::read_to_string(&log).expect("both hooks wrote");
-        assert_eq!(
-            got.lines().collect::<Vec<_>>(),
-            vec!["init", "setup"],
-            "init runs first, and a non-zero init does not skip setup"
-        );
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// Neither configured is the default, and it must cost nothing.
-    #[tokio::test]
-    async fn no_worktree_hooks_configured_runs_nothing() {
-        let dir = crate::testutil::scratch("wtnone");
-        let cfg = crate::config::Config::parse(&format!(
-            r#"{{"main_checkout":{:?}}}"#,
-            dir.to_string_lossy()
-        ))
-        .expect("parse");
-        assert!(cfg.worktree_init.is_empty() && cfg.worktree_setup.is_empty());
-        let app = crate::state::AppState::new(cfg, "t".into(), crate::window::Chrome::None);
-        // No panic, no process, nothing to assert but that it returns.
-        run_worktree_hooks(&app, &dir).await;
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn worktree_setup_resolves_a_repo_script_but_leaves_commands_alone() {
-        let main = std::path::Path::new("/home/me/repo");
-        // A repo-relative script path resolves against main, so it is found even
-        // though the command runs with cwd set to the worktree.
-        assert_eq!(
-            resolve_setup_exe(main, ".claude/hooks/wt-setup"),
-            "/home/me/repo/.claude/hooks/wt-setup"
-        );
-        assert_eq!(
-            resolve_setup_exe(main, "scripts/setup.sh"),
-            "/home/me/repo/scripts/setup.sh"
-        );
-        // A bare command is a PATH lookup — untouched.
-        assert_eq!(resolve_setup_exe(main, "just"), "just");
-        // An absolute path is already unambiguous.
-        assert_eq!(
-            resolve_setup_exe(main, "/usr/local/bin/setup"),
-            "/usr/local/bin/setup"
-        );
     }
 
     /// Reviewing a PR whose worktree you tore down must not be refused on the name.
