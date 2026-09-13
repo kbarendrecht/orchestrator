@@ -1488,6 +1488,42 @@ mod tests {
         assert_eq!(cfg.worktree_setup, vec![".claude/hooks/worktree-setup"]);
     }
 
+    /// **A moved checkout is recorded by rewriting one key, not the file.**
+    ///
+    /// The other three writers of `config.json` each have a test saying they keep
+    /// the keys they do not know; this one had none, and it is the writer with the
+    /// sharpest failure. Re-serializing a parsed `Config` would expand a slim
+    /// `{ main_checkout }` file into every field at its default — which is how a
+    /// colleague's config came to hold `"tracker": "none"`, a key nobody typed,
+    /// that a later build then refused to parse at all.
+    #[test]
+    fn recording_a_moved_checkout_rewrites_one_key_and_adds_none() {
+        let dir = crate::testutil::scratch("config-rewrite");
+        let file = dir.join("config.json");
+        std::fs::write(
+            &file,
+            "{\n  \"main_checkout\": \"/old/place\",\n  \"port\": 8080\n}\n",
+        )
+        .expect("wrote the slim config");
+
+        let raw = std::fs::read_to_string(&file).expect("read");
+        rewrite_main_checkout(&file, &raw, Path::new("/new/place")).expect("rewrote");
+
+        let after: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&file).expect("read back"))
+                .expect("json");
+        let obj = after.as_object().expect("an object");
+        assert_eq!(obj["main_checkout"], "/new/place");
+        assert_eq!(obj["port"], 8080, "an untouched key was lost");
+        let mut keys: Vec<&str> = obj.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            ["main_checkout", "port"],
+            "the file grew keys nobody typed"
+        );
+    }
+
     #[test]
     fn a_config_sets_its_reviews_command() {
         let cfg: Config = serde_json::from_str(
