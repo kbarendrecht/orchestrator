@@ -2,6 +2,7 @@
 // Twenty-four names, three out; the rest is how a row decides what it says.
 
 import { $, activeCheckout, byNewest, call, callFor, bandOf, callHost, callOn, checkoutOf, CHECKOUTS, chooseBox, enterCheckout, everySession, getHost, snapshotOf, snapshotFor, repoSummary, terms, caret, clock, confirmBox, copyText, creating, startingShown, watchStarting, dotClass, el, isArchived, isConversation, isWaiting, mainWorkspace, MOD_LABEL, newSession, newWorktree, creatingIn, openMenu, pending, QUEUE_MAX, refreshButton, selected, sessionsOf, setSelected, snap, stateClass, stateLabel, reason, toast, unchanged, setPendingSelect } from './core.js';
+import * as Open from './open.js';
 import * as Review from './review.js';
 import * as Term from './term.js';
 
@@ -154,16 +155,23 @@ function addCheckoutButton() {
   return btn;
 }
 
-/** Raise the native folder dialog, then open what came back.
+/** Raise the native folder dialog, then review what came back.
  *
  *  A cancelled dialog answers with no path, which is an answer rather than an
  *  error. In a browser tab there is no window to raise one from, and the host
  *  says so in the sentence every other window route uses.
+ *
+ *  **Through the review, which is the half this journey never had.** A folder the
+ *  host has never seen has no config written for it, and the base branch, the
+ *  GitHub repo, the environment tool and the repo's own dev processes are exactly
+ *  what a first look can answer and a person cannot be expected to type. That step
+ *  used to exist only on the first-run page, so it ran once per install and never
+ *  for a checkout added from here.
  */
 async function browseForCheckout() {
   try {
     const { path } = await callHost('/api/host/pick');
-    if (path) await addCheckout(path);
+    if (path) await Open.reviewAndAdd(path);
   } catch (e) {
     toast(reason(e), true);
   }

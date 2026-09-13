@@ -2150,3 +2150,128 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
 }
 .rv .manrow .state.wait{color:var(--faint-solid)}
 .rv .manrow .state.got{color:var(--ok);border-color:rgba(95,169,124,.35)}
+
+/* ---------- opening a project ---------- */
+/* `46px` is the board's own top row (`grid-template-rows:46px 1fr`), left
+   uncovered on purpose: off macOS that row *is* the titlebar, so an overlay over
+   it would be a window nobody can drag, minimise or close. */
+/* Ported from `firstrun.html`, which was a second application: its own server,
+   its own router, its own copy of this palette and its own titlebar — which had
+   to learn the macOS window-drag rule a second time. One screen now, over the
+   board, so there is one titlebar and one set of tokens. The `op` prefix is the
+   module's; `web/js/open.js` says what each panel is for. */
+.openco{
+  position:fixed;inset:46px 0 0 0;z-index:60;background:var(--bg);
+  overflow-y:auto;display:flex;justify-content:center;
+}
+.oppanel{
+  width:100%;max-width:720px;padding:40px 44px 34px;
+  display:flex;flex-direction:column;gap:20px;
+}
+/* A `display` on the class outranks the user agent's `[hidden]{display:none}` —
+   same specificity, later rule — so without these the panels paint on top of each
+   other and the whole screen stays up over the board it just opened. Both were
+   found by looking, one after the other; every other pane here that sets `display`
+   carries the same line. */
+.openco[hidden],.oppanel[hidden]{display:none}
+
+/* The screen's own buttons. `firstrun.html` styled these itself and the board
+   never had a `.btn`, so porting the markup without them left "Choose a folder…"
+   rendering as a line of text with a click handler on it. */
+.opbtn{
+  font-family:var(--sans);font-size:calc(12.5px * var(--fs));border-radius:8px;
+  padding:10px 16px;display:inline-flex;align-items:center;gap:10px;
+  border:1px solid transparent;transition:background .12s,border-color .12s;
+}
+.opbtn.primary{background:var(--attn);color:#1a1206;font-weight:600}
+.opbtn.primary:hover{background:#e8ad55}
+.opbtn.ghost{border-color:var(--line);color:var(--dim)}
+.opbtn.ghost:hover{border-color:var(--faint-solid);color:var(--text)}
+.opbrand{display:flex;align-items:center;gap:10px}
+.opdot{width:8px;height:8px;border-radius:50%;background:var(--attn)}
+.opname{font-family:var(--mono);font-size:calc(13px * var(--fs));font-weight:600;letter-spacing:.02em}
+.ophead{font-size:calc(21px * var(--fs));font-weight:600;letter-spacing:-.015em;line-height:1.15}
+.opsub{color:var(--dim);font-size:calc(12.5px * var(--fs));max-width:56ch;line-height:1.5}
+.opsub2{display:block;color:var(--faint-solid);font-size:calc(10.5px * var(--fs));font-family:var(--mono);margin-top:3px}
+.opbrowse{align-self:flex-start}
+.opor{
+  display:flex;align-items:center;gap:12px;color:var(--ghost);
+  font-family:var(--mono);font-size:calc(9.5px * var(--fs));letter-spacing:.1em;text-transform:uppercase;
+}
+.opor::before,.opor::after{content:"";height:1px;flex:1;background:var(--line-soft)}
+.oprow{display:flex;gap:8px}
+.opfield{
+  background:var(--bg);border:1px solid var(--line);border-radius:8px;
+  padding:9px 12px;font-family:var(--mono);font-size:calc(11.5px * var(--fs));color:var(--text);
+  display:flex;align-items:center;gap:8px;min-height:36px;width:100%;user-select:text;
+}
+.oprow .opfield{flex:1}
+.opfield.ro{color:var(--faint-solid);background:var(--surface)}
+.opfield::placeholder{color:var(--ghost)}
+.opfield:focus{outline:none;border-color:var(--faint-solid)}
+.opfield.bad{border-color:var(--bad)}
+select.opfield,input.opfield{appearance:none}
+.opgo{border:1px solid var(--line);border-radius:8px;padding:0 16px;color:var(--dim);
+  font-family:var(--mono);font-size:calc(11.5px * var(--fs))}
+.opgo:enabled:hover{border-color:var(--faint-solid);color:var(--text)}
+.opgo:disabled{opacity:.45;cursor:default}
+.opmsg{min-height:16px;font-family:var(--mono);font-size:calc(10.5px * var(--fs));color:var(--ghost)}
+.opmsg.bad{color:var(--bad)}
+.opsechead{
+  font-family:var(--mono);font-size:calc(9.5px * var(--fs));letter-spacing:.16em;
+  text-transform:uppercase;color:var(--faint-solid);
+}
+.oprecent{display:flex;flex-direction:column;gap:4px}
+.oprec{
+  display:flex;flex-direction:column;gap:2px;padding:9px 12px;border-radius:8px;
+  border:1px solid transparent;cursor:pointer;text-align:left;
+}
+.oprec:hover{background:var(--hover);border-color:var(--line-soft)}
+.oprecname{font-family:var(--mono);font-size:calc(11.5px * var(--fs));color:var(--text)}
+.oprecpath{font-family:var(--mono);font-size:calc(10px * var(--fs));color:var(--ghost);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.oprecwhen{font-family:var(--mono);font-size:calc(9.5px * var(--fs));color:var(--faint-solid)}
+.opempty{
+  color:var(--ghost);font-family:var(--mono);font-size:calc(10.5px * var(--fs));
+  border:1px dashed var(--line);border-radius:8px;padding:16px;text-align:center;
+}
+.oplink{align-self:flex-start;font-family:var(--mono);font-size:calc(10.5px * var(--fs));
+  color:var(--faint-solid);cursor:pointer}
+.oplink:hover{color:var(--text)}
+.oppath{font-family:var(--mono);font-size:calc(11px * var(--fs));color:var(--faint-solid)}
+.opform{display:flex;flex-direction:column}
+.opfrow{
+  display:grid;grid-template-columns:150px 1fr;gap:16px;align-items:start;
+  padding:14px 0;border-top:1px solid var(--line-soft);
+}
+.opfrow:first-child{border-top:0}
+.oplab{font-size:calc(12px * var(--fs));color:var(--text);padding-top:8px}
+.opcell{display:flex;flex-direction:column;gap:6px}
+.opnote{font-family:var(--mono);font-size:calc(10px * var(--fs));color:var(--ghost)}
+.opseg{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden;width:fit-content}
+.opsegb{font-family:var(--mono);font-size:calc(11px * var(--fs));color:var(--faint-solid);
+  padding:8px 14px;border-right:1px solid var(--line)}
+.opsegb:last-child{border-right:0}
+.opsegb.sel{background:var(--raised);color:var(--text)}
+.opprocs{display:flex;flex-direction:column;border:1px solid var(--line);border-radius:10px;overflow:hidden}
+.opprocs:empty{display:none}
+.opprocs .opsechead{background:var(--surface);padding:10px 14px;border-bottom:1px solid var(--line-soft)}
+.opprocs .opsub{padding:11px 14px 12px;border-bottom:1px solid var(--line-soft);max-width:none}
+.opprow{
+  display:flex;align-items:center;gap:12px;padding:11px 14px;
+  border-top:1px solid var(--line-soft);cursor:pointer;text-align:left;
+}
+.opprow:hover{background:var(--hover)}
+.opbox{
+  width:16px;height:16px;border-radius:5px;border:1px solid var(--line);flex:0 0 auto;
+  background:var(--bg);display:flex;align-items:center;justify-content:center;
+}
+.opbox.on{background:var(--attn);border-color:var(--attn)}
+.opbox.on::after{content:"✓";color:#1a1206;font-size:calc(10px * var(--fs));font-weight:700;line-height:1}
+.opcmd{font-family:var(--mono);font-size:calc(11.5px * var(--fs));color:var(--text)}
+.opsrc{font-family:var(--mono);font-size:calc(10px * var(--fs));color:var(--ghost);margin-left:auto}
+.opactions{
+  margin-top:6px;padding-top:16px;border-top:1px solid var(--line-soft);
+  display:flex;align-items:center;gap:12px;
+}
+.opactions .opbtn.primary{margin-left:auto}

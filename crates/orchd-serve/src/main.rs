@@ -159,9 +159,10 @@ async fn main() -> Result<()> {
 /// one-off, the way `--main` is. An `add` or a `close` during the session does
 /// write, because that is a decision rather than an argument.
 async fn run_host(checkouts: Vec<String>) -> Result<()> {
-    if checkouts.is_empty() {
-        anyhow::bail!("--host takes one or more checkout paths");
-    }
+    // **No paths is a host with nothing open, which is a screen rather than an
+    // error** — the same state the app boots into on first run, where
+    // `web/js/open.js` offers the recents and the folder dialog. It bailed here,
+    // which made that state impossible to drive without a window.
     let paths: Vec<PathBuf> = checkouts
         .iter()
         .map(|p| {
@@ -184,6 +185,9 @@ async fn run_host(checkouts: Vec<String>) -> Result<()> {
     tokio::task::spawn_blocking(move || host.open_remembered(&opened)).await?;
 
     println!("orchd  {}", serving.url());
+    if serving.host.checkouts().is_empty() {
+        println!("       no checkout open — the page offers the open screen");
+    }
     for c in serving.host.checkouts() {
         println!(
             "       {} on {} ({})",

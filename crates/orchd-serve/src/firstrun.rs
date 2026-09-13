@@ -1,36 +1,33 @@
-//! First-run logic: the recent-projects list and validating a chosen folder.
+//! What opening a project needs to know: the recents, whether a folder is a
+//! checkout, and what its settings should be.
 //!
-//! The pure half of the first-boot flow — no window, no daemon, no Tauri — so it
-//! runs and is tested like everything else. The bootstrap server that serves it is
-//! [`serve`], below; the app adds the two things that need a window, through
-//! [`BootstrapHost`]: the native folder dialog and starting the daemon.
-//! Detection of a repo's settings (base branch, GitHub repo, processes) is here
-//! too, in [`detect`] — this docblock said it would "land beside this later", and
-//! it landed.
+//! **No server and no page any more.** This was a second application — its own
+//! axum server on its own port, its own router and guard, a `BootstrapHost` trait
+//! for the two things needing a window, and an HTML page with a copy of the SPA's
+//! palette and a titlebar that had to learn the macOS window-drag rule a second
+//! time. The host serves the board with no checkouts open instead, and
+//! `web/js/open.js` is the screen; `host::validate` and `host::detect` are the
+//! routes. What is left here is the part that was always pure: read a list, judge
+//! a folder, look at a repo, write a config.
 //!
 //! Recents live in the config dir, so `ORCHD_CONFIG_DIR` relocates them with
 //! everything else — which is what lets a test point the whole list at a temp dir.
 
 use anyhow::{Context, Result};
-use axum::{
-    extract::{Path as AxPath, State},
-    http::StatusCode,
-    response::Html,
-    routing::{get, post},
-    Json, Router,
-};
 use serde::{Deserialize, Serialize};
-use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use orchd::config::Config;
-use orchd::window;
 
 /// A project opened before, newest first. The path is absolute; the name is its
 /// last component, which is what a person recognises the checkout by.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(
+    any(test, feature = "test-util"),
+    derive(ts_rs::TS),
+    ts(export, export_to = "serve.d.ts")
+)]
 pub struct RecentProject {
     pub path: String,
     pub name: String,
@@ -165,6 +162,11 @@ fn expand_home(path: &Path, home: Option<&Path>) -> PathBuf {
 /// Every field is a guess with a default, and the page says where each came from —
 /// a wrong one is caught here rather than discovered on the first sweep.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[cfg_attr(
+    any(test, feature = "test-util"),
+    derive(ts_rs::TS),
+    ts(export, export_to = "serve.d.ts")
+)]
 pub struct Detected {
     pub path: String,
     pub name: String,
@@ -190,6 +192,11 @@ pub struct Detected {
 
 /// A process orchd guessed the repo runs, and how to run it.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[cfg_attr(
+    any(test, feature = "test-util"),
+    derive(ts_rs::TS),
+    ts(export, export_to = "serve.d.ts")
+)]
 pub struct DetectedProcess {
     /// Short name for the drawer tab.
     pub name: String,
@@ -331,6 +338,34 @@ pub fn detect(path: &Path) -> Detected {
     }
 }
 
+/// The review's answers, sent with the add. Every override is optional — an unset
+/// one leaves the daemon's default, and a `None` `repo` means "watch what origin
+/// resolves to" rather than "watch nothing".
+#[derive(Deserialize, Default)]
+pub struct Overrides {
+    pub path: String,
+    #[serde(default)]
+    pub base_branch: Option<String>,
+    #[serde(default)]
+    pub repo: Option<String>,
+    /// Typed rather than a string, so serde refuses a value the daemon could not
+    /// have loaded — the page sends the enum's own spelling, and a mismatch is a
+    /// 422 naming the field instead of a config written and then rejected.
+    #[serde(default)]
+    pub env_source: Option<orchd::config::EnvSourceKind>,
+    /// The processes the user ticked in the review, to manage from the start.
+    #[serde(default)]
+    pub processes: Vec<SelectedProcess>,
+}
+
+/// A process the review ticked, to write into `main_processes`.
+#[derive(Deserialize, Default)]
+pub struct SelectedProcess {
+    pub name: String,
+    #[serde(default)]
+    pub command: Vec<String>,
+}
+
 /// Write the first-run `config.json` from the review's answers, before the daemon
 /// starts and reads it.
 ///
@@ -341,6 +376,13 @@ pub fn detect(path: &Path) -> Detected {
 /// was gone with no copy kept. Only the keys the review answered change; the
 /// previous file is kept beside it as `config.json.bak`.
 ///
+/// **Into the checkout's own state directory**, which is where a reviewed setting
+/// has to land. The root `config.json` this used to write is one checkout's:
+/// `host::checkout_dir` gives every checkout its own `ORCHD_CONFIG_DIR`, and the
+/// root file is only ever *copied* into one of them, once, when it happens to name
+/// that checkout. So a second checkout's review had nowhere to go, which is half of
+/// why the review step only ever ran on a fresh install.
+///
 /// Slim on purpose — only `main_checkout` and the fields that differ from a plain
 /// default are written, the same shape a hand-written config takes, so the file
 /// stays readable. Each value is validated by parsing the whole config before it is
@@ -348,46 +390,11 @@ pub fn detect(path: &Path) -> Detected {
 /// start. Never fatal to the caller: if this fails, the daemon's own `load_or_init`
 /// still writes a sensible default for the checkout — the review's edits are just
 /// lost, which is better than no window.
-fn write_config(path: &Path, ov: &Overrides) -> Result<Written> {
-    write_config_to(&Config::path()?, path, ov)
+pub fn write_config_in(dir: &Path, path: &Path, ov: &Overrides) -> Result<()> {
+    write_config_to(&dir.join("config.json"), path, ov)
 }
 
-/// What [`write_config`] did, so a caller whose open is then refused can put the
-/// file back the way it was: a switch writes the new checkout first and only then
-/// learns whether the restart is possible, and without this a refused restart left
-/// the daemon on one checkout and the disk naming another, so the *next* launch
-/// opened the wrong project.
-struct Written {
-    file: PathBuf,
-    /// The file's contents before the write; `None` when there was no file.
-    ///
-    /// **Held in memory rather than read back from `config.json.bak`.** The backup
-    /// is written best effort, so a failed copy left this `None` while the config
-    /// it was meant to preserve still had content, and undoing then *deleted* it.
-    /// The text was already in hand at that point, which is what makes the whole
-    /// question moot; the `.bak` stays as a convenience for a person, not as this
-    /// function's memory.
-    previous: Option<String>,
-}
-
-impl Written {
-    /// Undo the write: put the previous contents back, or remove the file when
-    /// nothing existed before. Best effort, logged.
-    fn undo(&self) {
-        let outcome = match &self.previous {
-            Some(raw) => std::fs::write(&self.file, raw),
-            None => std::fs::remove_file(&self.file),
-        };
-        if let Err(e) = outcome {
-            tracing::warn!(
-                "could not restore {} after a refused open: {e}",
-                self.file.display()
-            );
-        }
-    }
-}
-
-fn write_config_to(file: &Path, path: &Path, ov: &Overrides) -> Result<Written> {
+fn write_config_to(file: &Path, path: &Path, ov: &Overrides) -> Result<()> {
     use serde_json::json;
     let previous = std::fs::read_to_string(file).ok();
     let mut obj = match previous
@@ -468,435 +475,19 @@ fn write_config_to(file: &Path, path: &Path, ov: &Overrides) -> Result<Written> 
     }
     // One generation back on disk, for the edit above that turns out to be wrong
     // and is only noticed later, by a person. Best effort: a failed backup is not
-    // a reason to refuse the open, and [`Written`] does not depend on it.
+    // a reason to refuse the open.
     if previous.is_some() {
         let bak = file.with_extension("json.bak");
         if let Err(e) = std::fs::copy(file, &bak) {
             tracing::warn!("could not keep {}: {e}", bak.display());
         }
     }
-    std::fs::write(file, raw).with_context(|| format!("writing {}", file.display()))?;
-    Ok(Written {
-        file: file.to_path_buf(),
-        previous,
-    })
-}
-
-// ---------------------------------------------------------------------------
-// The bootstrap server
-// ---------------------------------------------------------------------------
-//
-// Served on an ephemeral loopback port before the daemon exists, so the window has
-// a real page to load on first run. HTTP + `fetch` rather than Tauri IPC, on
-// purpose: it is the same shape the daemon SPA already uses and it can be driven
-// headlessly in a test, where IPC would need the real window. The two things that
-// need the window — the native folder dialog and starting the daemon — are behind
-// `BootstrapHost`, which the desktop crate implements and a test stubs.
-
-/// The first-run page, told how its window is decorated.
-///
-/// **Substituted rather than fetched**, unlike the `switching` flag the page asks
-/// for after it loads: this decides whether a titlebar is drawn at all, and a page
-/// that painted one and then removed it would flash a set of buttons that should
-/// never have been there.
-///
-/// From `cfg!` rather than from [`BootstrapHost`], because it is a compile-time
-/// fact and this server runs in the same process as the window — the same way the
-/// board's `__ORCH_PLATFORM__` is decided. The board's own value comes from
-/// `host::Host`, which has a third state (`none`, a browser tab) that this page
-/// never has: it is only ever served into the app's own window.
-fn page() -> String {
-    let chrome = if cfg!(target_os = "macos") {
-        "overlay"
-    } else {
-        "custom"
-    };
-    include_str!("firstrun.html").replace("__ORCH_CHROME__", chrome)
-}
-
-/// The window-side actions the bootstrap page cannot do over HTTP. Implemented by
-/// the desktop crate (Tauri) and stubbed in tests.
-pub trait BootstrapHost: Send + Sync + 'static {
-    /// Open the native folder dialog and block until the user answers. `None` on
-    /// cancel. Runs on a request thread, never the GTK main thread.
-    fn pick(&self) -> Option<PathBuf>;
-    /// Commit to a checkout: start the daemon on it and hand the window over.
-    /// `true` when the hand-over is under way; `false` when it was refused (a
-    /// switch that cannot restart, a second open while the first boots), so the
-    /// caller can undo what it wrote for it.
-    fn open(&self, path: PathBuf) -> bool;
-    /// Drive the frameless window — drag, resize edges, minimise, close. The
-    /// first-run window has no decorations (the SPA that follows draws its own), so
-    /// the page draws a titlebar and calls this, the same way the daemon's SPA does.
-    fn window_cmd(&self, cmd: orchd::window::WindowCmd);
-
-    /// True when a daemon is already running and this is a **switch**, not first
-    /// run. The page shows a way back to the current project when so, and the copy
-    /// changes from "open" to "switch".
-    fn switching(&self) -> bool {
-        false
-    }
-
-    /// Abandon a switch and return to the running project. No-op on first run,
-    /// where there is nothing to go back to.
-    fn cancel(&self) {}
-}
-
-#[derive(Deserialize)]
-struct PathReq {
-    path: String,
-}
-
-/// The review's answers, sent with the open. Every override is optional — an
-/// unset one leaves the daemon's default, and a `None` `repo` means "watch what
-/// origin resolves to" rather than "watch nothing".
-#[derive(Deserialize, Default)]
-pub struct Overrides {
-    pub path: String,
-    #[serde(default)]
-    pub base_branch: Option<String>,
-    #[serde(default)]
-    pub repo: Option<String>,
-    /// Typed rather than a string, so serde refuses a value the daemon could not
-    /// have loaded — the page sends the enum's own spelling, and a mismatch is a
-    /// 422 naming the field instead of a config written and then rejected.
-    #[serde(default)]
-    pub env_source: Option<orchd::config::EnvSourceKind>,
-    /// The processes the user ticked in the review, to manage from the start.
-    #[serde(default)]
-    pub processes: Vec<SelectedProcess>,
-}
-
-/// A process the review ticked, to write into `main_processes`.
-#[derive(Deserialize, Default)]
-pub struct SelectedProcess {
-    pub name: String,
-    #[serde(default)]
-    pub command: Vec<String>,
-}
-
-/// The answer to validate/pick/open, flat so the page reads one shape. `picked` is
-/// only meaningful for the dialog: false means cancelled, distinct from a folder
-/// that was chosen and rejected.
-#[derive(Serialize, Default)]
-struct Outcome {
-    ok: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    picked: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    path: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    error: Option<String>,
-}
-
-impl Outcome {
-    fn of(result: std::result::Result<ProjectInfo, String>) -> Self {
-        match result {
-            Ok(info) => Outcome {
-                ok: true,
-                name: Some(info.name),
-                path: Some(info.path),
-                ..Default::default()
-            },
-            Err(error) => Outcome {
-                ok: false,
-                error: Some(error),
-                ..Default::default()
-            },
-        }
-    }
-}
-
-/// The bootstrap router: the first-run page and the JSON it calls. `port` is the
-/// one it is served on, for the Host and Origin checks in [`guard`].
-pub fn router(host: Arc<dyn BootstrapHost>, port: u16) -> Router {
-    Router::new()
-        .route("/", get(|| async { Html(page()) }))
-        .route("/api/context", get(context_route))
-        .route("/api/recent", get(|| async { Json(recent_projects()) }))
-        .route("/api/validate", post(validate_route))
-        .route("/api/detect", post(detect_route))
-        .route("/api/pick", post(pick_route))
-        .route("/api/open", post(open_route))
-        .route("/api/cancel", post(cancel_route))
-        .route("/api/window/:cmd", post(window_route))
-        .route("/api/window/resize/:edge", post(resize_route))
-        .layer(axum::middleware::from_fn(
-            move |req: axum::extract::Request, next: axum::middleware::Next| guard(port, req, next),
-        ))
-        .with_state(host)
-}
-
-/// The daemon's own Host and Origin rules, for the same reason it has them: a
-/// loopback port is reachable by any page in any browser on the machine.
-///
-/// Body-less POSTs are CORS "simple requests", so without this every route here
-/// was one `fetch` away from any site you had open — `/api/window/restart`, which
-/// on a switch takes every live session with it, and `/api/pick`, which raises a
-/// dialog. With DNS rebinding `GET /api/recent` read paths under `$HOME`. The
-/// JSON routes were covered only by axum's content-type check, which is
-/// incidental. The page is same-origin, so it costs nothing; no token, because
-/// unlike the daemon's page this one has no secret to carry and nothing behind it
-/// worth more than the window.
-async fn guard(
-    port: u16,
-    req: axum::extract::Request,
-    next: axum::middleware::Next,
-) -> axum::response::Response {
-    use axum::response::IntoResponse;
-    let host = req
-        .headers()
-        .get("host")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
-    if !orchd::api::host_allowed(host, port) {
-        return (StatusCode::FORBIDDEN, "bad host").into_response();
-    }
-    let origin = req.headers().get("origin").and_then(|v| v.to_str().ok());
-    let is_get = req.method() == axum::http::Method::GET;
-    if !orchd::api::origin_ok(origin, port, None, false, is_get, false) {
-        return (StatusCode::FORBIDDEN, "bad origin").into_response();
-    }
-    next.run(req).await
-}
-
-async fn window_route(
-    State(host): State<Arc<dyn BootstrapHost>>,
-    AxPath(cmd): AxPath<String>,
-) -> StatusCode {
-    match window::parse_cmd(&cmd) {
-        Some(cmd) => {
-            host.window_cmd(cmd);
-            StatusCode::OK
-        }
-        None => StatusCode::BAD_REQUEST,
-    }
-}
-
-async fn resize_route(
-    State(host): State<Arc<dyn BootstrapHost>>,
-    AxPath(edge): AxPath<String>,
-) -> StatusCode {
-    match window::parse_resize_edge(&edge) {
-        Some(edge) => {
-            host.window_cmd(orchd::window::WindowCmd::StartResize(edge));
-            StatusCode::OK
-        }
-        None => StatusCode::BAD_REQUEST,
-    }
-}
-
-async fn validate_route(Json(req): Json<PathReq>) -> Json<Outcome> {
-    Json(Outcome::of(validate(Path::new(&req.path))))
-}
-
-async fn detect_route(Json(req): Json<PathReq>) -> Result<Json<Detected>, StatusCode> {
-    let path = PathBuf::from(req.path);
-    // Several git runs, so off the runtime worker like every other git call: on a
-    // switch this runtime is also serving the live daemon.
-    orchd::proc::run_blocking("detecting a checkout", move || detect(&path))
-        .await
-        .map(Json)
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
-}
-
-/// Whether the page is a first run or a switch away from a running project.
-async fn context_route(State(host): State<Arc<dyn BootstrapHost>>) -> Json<serde_json::Value> {
-    Json(serde_json::json!({ "switching": host.switching() }))
-}
-
-async fn cancel_route(State(host): State<Arc<dyn BootstrapHost>>) -> StatusCode {
-    host.cancel();
-    StatusCode::OK
-}
-
-async fn pick_route(State(host): State<Arc<dyn BootstrapHost>>) -> Json<Outcome> {
-    // The dialog blocks until you answer it, and the trait promises "a request
-    // thread" for exactly that — so give it one, rather than parking a runtime
-    // worker for as long as the dialog is open.
-    let picked = orchd::proc::run_blocking("the folder dialog", move || host.pick())
-        .await
-        .unwrap_or_else(|e| {
-            tracing::warn!("{e:#}");
-            None
-        });
-    match picked {
-        None => Json(Outcome {
-            ok: false,
-            picked: Some(false),
-            ..Default::default()
-        }),
-        Some(path) => {
-            let mut out = Outcome::of(validate(&path));
-            out.picked = Some(true);
-            Json(out)
-        }
-    }
-}
-
-async fn open_route(
-    State(host): State<Arc<dyn BootstrapHost>>,
-    Json(ov): Json<Overrides>,
-) -> Json<Outcome> {
-    // Off the runtime, like `detect_route` beside it: `validate` canonicalises and
-    // `write_config` spawns git twice (the fork probe and the repo derivation), and
-    // on a switch this runtime is also serving the live daemon.
-    let prepared = orchd::proc::run_blocking("preparing the chosen project", move || {
-        // Validate again server-side: the page validated to enable the button, but
-        // the tree could have moved since, and this is the last gate before the
-        // daemon.
-        let info = validate(Path::new(&ov.path))?;
-        // The canonical path, not the one typed: it is what the config and the
-        // recents record.
-        let path = PathBuf::from(&info.path);
-        // Persist the review's answers before the daemon reads them. Non-fatal:
-        // a failure here loses the edits, not the open — `load_or_init` still
-        // writes a default for the checkout. Written *before* the open on
-        // purpose: on a switch the open closes the window, and the process may
-        // be gone before a write placed after it lands.
-        let written = write_config(&path, &ov)
-            .map_err(|e| tracing::warn!("could not write the first-run config: {e:#}"))
-            .ok();
-        Ok((path, written))
-    })
-    .await
-    .unwrap_or_else(|e| {
-        tracing::warn!("{e:#}");
-        Err("Could not read that folder. See the log.".to_string())
-    });
-
-    match prepared {
-        Ok((path, written)) => {
-            if !host.open(path.clone()) {
-                // A refused open must not leave the disk naming a checkout the
-                // daemon is not on, or the next launch opens the wrong project.
-                if let Some(w) = written {
-                    w.undo();
-                }
-                return Json(Outcome::of(Err(
-                    "Could not switch to that project; the running one is kept. See the log."
-                        .to_string(),
-                )));
-            }
-            if let Err(e) = record_recent(&path) {
-                tracing::warn!("could not record the recent project: {e:#}");
-            }
-            Json(Outcome {
-                ok: true,
-                ..Default::default()
-            })
-        }
-        Err(e) => Json(Outcome::of(Err(e))),
-    }
-}
-
-/// A running bootstrap server: its address and the task serving it.
-pub struct Serving {
-    pub addr: SocketAddr,
-    pub task: tokio::task::JoinHandle<()>,
-}
-
-impl Serving {
-    /// The URL to point the window at.
-    pub fn url(&self) -> String {
-        format!("http://{}/", self.addr)
-    }
-}
-
-/// Bind the bootstrap server on an ephemeral loopback port and start serving.
-pub async fn serve(host: Arc<dyn BootstrapHost>) -> Result<Serving> {
-    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
-        .await
-        .context("binding the bootstrap server")?;
-    let addr = listener.local_addr()?;
-    let app = router(host, addr.port());
-    // Through `serving` like the other two, which is how this one stops being the
-    // server that forgot `TCP_NODELAY`.
-    let task = crate::serving::spawn("the bootstrap server", listener, app);
-    Ok(Serving { addr, task })
+    std::fs::write(file, raw).with_context(|| format!("writing {}", file.display()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// **One set of window buttons, not two.**
-    ///
-    /// macOS keeps its decorations (`TitleBarStyle::Overlay`), so the real traffic
-    /// lights are already there — and this page drew its own minimise, maximise
-    /// and close on top of them, both sets working. Reported as "what is this
-    /// toolbar on mac?!" (#11). The board's stylesheet has gated its controls
-    /// since the window existed; this page never did, because it draws its own
-    /// titlebar rather than sharing `app.css`.
-    ///
-    /// Asserted on the substitution rather than on the rendering, which is all a
-    /// test here can reach — but it is the half that was missing: the page had no
-    /// way to know.
-    /// **A window drag is asked for on movement, never on the press.**
-    ///
-    /// `start_dragging` posts a message the event loop drains later, and tao then
-    /// hands AppKit's *current* event to `performWindowDragWithEvent:` — which
-    /// accepts nothing but a mouse event. Press the titlebar, press a key, and the
-    /// queued request is handed a keyDown: the Objective-C exception takes the
-    /// whole process, sessions and all.
-    ///
-    /// The board learned this in `2990237`; this page fired on `mousedown` for
-    /// another four days, because it draws its own chrome rather than sharing
-    /// `app.js` — the same split that put two sets of window buttons on macOS.
-    /// Asserted on the shape rather than on behaviour, which is all a test here can
-    /// reach: no `post` of a drag may sit in a `mousedown` handler.
-    #[test]
-    fn a_drag_is_asked_for_on_movement_not_on_the_press() {
-        let html = page();
-        let press = html
-            .find("$('drag').addEventListener('mousedown'")
-            .expect("the titlebar still starts a drag");
-        let guard = html[press..]
-            .find("DRAG_SLOP")
-            .or_else(|| html[..press].find("DRAG_SLOP"));
-        assert!(guard.is_some(), "the drag has no movement threshold");
-        // And the request itself is inside the movement handler, not the press.
-        let moved = html
-            .find("const moved = (m) =>")
-            .expect("a movement handler");
-        let asks = html
-            .find("post('/api/window/start-drag')")
-            .expect("it still asks");
-        assert!(
-            asks > moved,
-            "the drag is asked for before the pointer has moved"
-        );
-    }
-
-    #[test]
-    fn the_first_run_page_is_told_how_its_window_is_decorated() {
-        let html = page();
-        assert!(
-            !html.contains("__ORCH_CHROME__"),
-            "the placeholder survived"
-        );
-        let want = if cfg!(target_os = "macos") {
-            "overlay"
-        } else {
-            "custom"
-        };
-        assert!(
-            html.contains(&format!(r#"data-chrome="{want}""#)),
-            "the page was not told it is {want}"
-        );
-        // And the rule that spends it: the controls are off unless the window is
-        // frameless.
-        assert!(
-            html.contains(".wctl{display:none}"),
-            "the controls are not gated"
-        );
-        assert!(
-            html.contains(r#"body[data-chrome="custom"] .wctl{display:flex}"#),
-            "nothing turns them back on where they are needed"
-        );
-    }
 
     /// A unique dir per test, so the recents functions can be exercised through
     /// their dir-taking half with no global `ORCHD_CONFIG_DIR` — the tests run in
@@ -1162,66 +753,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
     }
 
-    /// A write that is then undone puts the previous file back, or removes the new
-    /// one when there was none: the two shapes a refused switch can leave behind.
-    #[test]
-    fn a_written_config_can_be_undone() {
-        let base = tmp("wc-undo");
-        let repo = base.join("proj");
-        std::fs::create_dir_all(&repo).unwrap();
-        git_repo(&repo);
-        let cfg = base.join("config.json");
-
-        // Nothing before: undo removes.
-        let w = write_config_to(&cfg, &repo, &Overrides::default()).unwrap();
-        assert!(cfg.exists());
-        w.undo();
-        assert!(
-            !cfg.exists(),
-            "a first write is undone by removing the file"
-        );
-
-        // Something before: undo restores it byte for byte.
-        let old = r#"{"main_checkout":"/somewhere/else"}"#;
-        std::fs::write(&cfg, old).unwrap();
-        let w = write_config_to(&cfg, &repo, &Overrides::default()).unwrap();
-        assert_ne!(std::fs::read_to_string(&cfg).unwrap(), old);
-        w.undo();
-        assert_eq!(std::fs::read_to_string(&cfg).unwrap(), old);
-        let _ = std::fs::remove_dir_all(&base);
-    }
-
-    /// And it puts it back when the `.bak` copy failed, which is the case that
-    /// made undoing *destructive*: the backup is best effort, so a failed copy
-    /// used to leave the restore with nothing to restore from, and it removed a
-    /// config that had content. A directory sitting on the `.bak` path is the
-    /// cheapest way to make `fs::copy` fail.
-    #[test]
-    fn an_undo_survives_a_backup_that_could_not_be_written() {
-        let base = tmp("wc-undo-nobak");
-        let repo = base.join("proj");
-        std::fs::create_dir_all(&repo).unwrap();
-        git_repo(&repo);
-        let cfg = base.join("config.json");
-        let old = r#"{"main_checkout":"/somewhere/else"}"#;
-        std::fs::write(&cfg, old).unwrap();
-        std::fs::create_dir_all(cfg.with_extension("json.bak")).unwrap();
-
-        let w = write_config_to(&cfg, &repo, &Overrides::default()).unwrap();
-        assert_ne!(
-            std::fs::read_to_string(&cfg).unwrap(),
-            old,
-            "the write still happened"
-        );
-        w.undo();
-        assert_eq!(
-            std::fs::read_to_string(&cfg).unwrap(),
-            old,
-            "the previous config came back rather than being deleted"
-        );
-        let _ = std::fs::remove_dir_all(&base);
-    }
-
     /// Re-picking a checkout keeps every key the review did not answer, and keeps
     /// the previous file beside it. Building the object from scratch lost them all.
     #[test]
@@ -1349,257 +880,6 @@ mod tests {
             v["upstream_ref"].as_str().unwrap().starts_with("upstream/"),
             "an unreviewed open still measures against upstream: {v}"
         );
-        let _ = std::fs::remove_dir_all(&base);
-    }
-
-    // --- the bootstrap router ------------------------------------------------
-
-    use axum::body::{to_bytes, Body};
-    use axum::http::Request;
-    use std::sync::Mutex;
-    use tower::ServiceExt; // for `oneshot`
-
-    /// A `BootstrapHost` that records opens and answers the dialog with a fixed
-    /// path, so the router's contract can be checked without a window.
-    #[derive(Default)]
-    struct StubHost {
-        opened: Mutex<Vec<PathBuf>>,
-        pick_result: Option<PathBuf>,
-        switching: bool,
-        cancelled: Mutex<bool>,
-        refuse_open: bool,
-    }
-    impl BootstrapHost for StubHost {
-        fn pick(&self) -> Option<PathBuf> {
-            self.pick_result.clone()
-        }
-        fn open(&self, path: PathBuf) -> bool {
-            if self.refuse_open {
-                return false;
-            }
-            self.opened.lock().unwrap().push(path);
-            true
-        }
-        fn window_cmd(&self, _cmd: orchd::window::WindowCmd) {}
-        fn switching(&self) -> bool {
-            self.switching
-        }
-        fn cancel(&self) {
-            *self.cancelled.lock().unwrap() = true;
-        }
-    }
-
-    /// The port the test router claims to serve on; the helpers send the Host and
-    /// Origin a same-origin page would, so the guard lets them through.
-    const PORT: u16 = 7777;
-
-    async fn post(host: Arc<dyn BootstrapHost>, uri: &str, body: &str) -> serde_json::Value {
-        let res = router(host, PORT)
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri(uri)
-                    .header("host", format!("127.0.0.1:{PORT}"))
-                    .header("origin", format!("http://127.0.0.1:{PORT}"))
-                    .header("content-type", "application/json")
-                    .body(Body::from(body.to_string()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        let bytes = to_bytes(res.into_body(), 1 << 16).await.unwrap();
-        serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null)
-    }
-
-    fn stub() -> Arc<StubHost> {
-        Arc::new(StubHost::default())
-    }
-
-    async fn get(host: Arc<dyn BootstrapHost>, uri: &str) -> serde_json::Value {
-        let res = router(host, PORT)
-            .oneshot(
-                Request::builder()
-                    .uri(uri)
-                    .header("host", format!("127.0.0.1:{PORT}"))
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        let bytes = to_bytes(res.into_body(), 1 << 16).await.unwrap();
-        serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null)
-    }
-
-    /// The bootstrap server is a loopback port like the daemon's, and gets the
-    /// daemon's rules: a request from another page — a foreign Host, or a POST
-    /// whose Origin is not ours or is missing — is refused before any handler.
-    #[tokio::test]
-    async fn the_bootstrap_router_refuses_a_foreign_page() {
-        let status = |req: Request<Body>| async {
-            router(stub(), PORT).oneshot(req).await.unwrap().status()
-        };
-        let ours = format!("127.0.0.1:{PORT}");
-
-        // A rebound host name, on the innocuous-looking GET.
-        let req = Request::builder()
-            .uri("/api/recent")
-            .header("host", "evil.example:7777")
-            .body(Body::empty())
-            .unwrap();
-        assert_eq!(status(req).await, StatusCode::FORBIDDEN);
-
-        // A cross-site POST: body-less, so a "simple request" no browser blocks.
-        let req = Request::builder()
-            .method("POST")
-            .uri("/api/window/restart")
-            .header("host", &ours)
-            .header("origin", "https://evil.example")
-            .body(Body::empty())
-            .unwrap();
-        assert_eq!(status(req).await, StatusCode::FORBIDDEN);
-        let req = Request::builder()
-            .method("POST")
-            .uri("/api/pick")
-            .header("host", &ours)
-            .body(Body::empty())
-            .unwrap();
-        assert_eq!(status(req).await, StatusCode::FORBIDDEN, "no Origin at all");
-
-        // And the page's own requests still pass.
-        assert_eq!(get(stub(), "/api/context").await["switching"], false);
-    }
-
-    #[tokio::test]
-    async fn validate_route_answers_ok_or_a_message() {
-        let base = tmp("router-val");
-        let repo = base.join("proj");
-        std::fs::create_dir_all(&repo).unwrap();
-        git_repo(&repo);
-
-        let ok = post(
-            stub(),
-            "/api/validate",
-            &format!("{{\"path\":{:?}}}", repo.to_string_lossy()),
-        )
-        .await;
-        assert_eq!(ok["ok"], true);
-        assert_eq!(ok["name"], "proj");
-
-        let bad = post(stub(), "/api/validate", "{\"path\":\"/no/such/place\"}").await;
-        assert_eq!(bad["ok"], false);
-        assert!(
-            bad["error"].is_string(),
-            "an invalid folder explains itself"
-        );
-        let _ = std::fs::remove_dir_all(&base);
-    }
-
-    #[tokio::test]
-    async fn context_says_whether_it_is_a_switch_and_cancel_reaches_the_host() {
-        // First run: not switching, and there is nothing to cancel to.
-        assert_eq!(get(stub(), "/api/context").await["switching"], false);
-
-        // A switch: the page is told so, and cancel reaches the host.
-        let host = Arc::new(StubHost {
-            switching: true,
-            ..Default::default()
-        });
-        assert_eq!(get(host.clone(), "/api/context").await["switching"], true);
-        post(host.clone(), "/api/cancel", "").await;
-        assert!(
-            *host.cancelled.lock().unwrap(),
-            "cancel returns to the running project"
-        );
-    }
-
-    #[tokio::test]
-    async fn detect_route_returns_the_detected_settings() {
-        let dir = tmp("route-detect");
-        run_git(&dir, &["init", "-q"]);
-        run_git(
-            &dir,
-            &["remote", "add", "origin", "git@github.com:acme/thing.git"],
-        );
-        let out = post(
-            stub(),
-            "/api/detect",
-            &format!("{{\"path\":{:?}}}", dir.to_string_lossy()),
-        )
-        .await;
-        assert_eq!(out["repo"], "acme/thing");
-        assert_eq!(out["worktrees"], ".claude/worktrees");
-        assert!(out["base_branch"].is_string());
-    }
-
-    #[tokio::test]
-    async fn open_route_validates_then_hands_the_path_to_the_host() {
-        let base = tmp("router-open");
-        let repo = base.join("proj");
-        std::fs::create_dir_all(&repo).unwrap();
-        git_repo(&repo);
-
-        let host = stub();
-        let out = post(
-            host.clone(),
-            "/api/open",
-            &format!("{{\"path\":{:?}}}", repo.to_string_lossy()),
-        )
-        .await;
-        assert_eq!(out["ok"], true);
-        let canonical = std::fs::canonicalize(&repo).unwrap();
-        assert_eq!(
-            host.opened.lock().unwrap().as_slice(),
-            std::slice::from_ref(&canonical),
-            "the host was handed the checkout"
-        );
-
-        // A host that cannot take the open (a switch with no binary to restart
-        // into) is reported as such, not as a success the window never follows.
-        let host = Arc::new(StubHost {
-            refuse_open: true,
-            ..Default::default()
-        });
-        let out = post(
-            host.clone(),
-            "/api/open",
-            &format!("{{\"path\":{:?}}}", repo.to_string_lossy()),
-        )
-        .await;
-        assert_eq!(out["ok"], false);
-        assert!(out["error"].as_str().unwrap().contains("kept"), "{out}");
-
-        // A folder that is not a repo never reaches the host.
-        let host = stub();
-        let out = post(host.clone(), "/api/open", "{\"path\":\"/no/such/place\"}").await;
-        assert_eq!(out["ok"], false);
-        assert!(
-            host.opened.lock().unwrap().is_empty(),
-            "an invalid open is refused before the daemon"
-        );
-        let _ = std::fs::remove_dir_all(&base);
-    }
-
-    #[tokio::test]
-    async fn pick_route_distinguishes_cancel_from_a_chosen_folder() {
-        let base = tmp("router-pick");
-        let repo = base.join("proj");
-        std::fs::create_dir_all(&repo).unwrap();
-        git_repo(&repo);
-
-        // Cancelled dialog.
-        let cancelled = post(stub(), "/api/pick", "").await;
-        assert_eq!(cancelled["picked"], false);
-        assert_eq!(cancelled["ok"], false);
-
-        // A folder was chosen and it validates.
-        let host = Arc::new(StubHost {
-            pick_result: Some(repo.clone()),
-            ..Default::default()
-        });
-        let picked = post(host, "/api/pick", "").await;
-        assert_eq!(picked["picked"], true);
-        assert_eq!(picked["ok"], true);
-        assert_eq!(picked["name"], "proj");
         let _ = std::fs::remove_dir_all(&base);
     }
 }

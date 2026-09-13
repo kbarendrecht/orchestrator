@@ -61,3 +61,72 @@ repo: string | null,
  * cannot see each other's fix runs, and nothing else would ever say so.
  */
 clash: string | null, };
+
+/**
+ * What orchd worked out about a chosen checkout, for the review step to confirm.
+ * Every field is a guess with a default, and the page says where each came from —
+ * a wrong one is caught here rather than discovered on the first sweep.
+ */
+export type Detected = { path: string, name: string, 
+/**
+ * The base ref worktrees branch from, `<remote>/<branch>`. The resolved
+ * default (`origin/main`) when the symref is known, else the first remote
+ * branch, else `origin/HEAD` — the daemon's own default.
+ */
+base_branch: string, 
+/**
+ * The remote-tracking branches to choose among.
+ */
+base_branches: Array<string>, 
+/**
+ * `owner/name` for PR watching, from the origin remote. `None` off GitHub.
+ */
+repo: string | null, 
+/**
+ * Where a session's environment comes from: `mise`, `direnv` or `none`,
+ * detected from the files in the checkout.
+ */
+env_source: string, 
+/**
+ * Where worktrees are cut. Always the default today; shown so it is not a
+ * surprise later.
+ */
+worktrees: string, 
+/**
+ * Long-running processes the repo appears to define — a compose stack, a dev
+ * watch. Offered unchecked: orchd never starts someone's stack behind their
+ * back on first open.
+ */
+processes: Array<DetectedProcess>, };
+
+/**
+ * A process orchd guessed the repo runs, and how to run it.
+ */
+export type DetectedProcess = { 
+/**
+ * Short name for the drawer tab.
+ */
+name: string, 
+/**
+ * The argv to run.
+ */
+command: Array<string>, 
+/**
+ * How it reads to a person (`pnpm run dev`).
+ */
+label: string, 
+/**
+ * The file it was inferred from, shown so a wrong guess is obvious.
+ */
+source: string, };
+
+/**
+ * A project opened before, newest first. The path is absolute; the name is its
+ * last component, which is what a person recognises the checkout by.
+ */
+export type RecentProject = { path: string, name: string, 
+/**
+ * Milliseconds since the epoch of the last open. The page renders "2 hours
+ * ago" from it; stored as a number so it needs no locale.
+ */
+last_opened_ms: bigint, };

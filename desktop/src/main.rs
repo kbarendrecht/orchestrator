@@ -40,16 +40,6 @@ static SERVER: OnceLock<Mutex<Option<orchd_serve::host::Serving>>> = OnceLock::n
 /// boot by the loading screen, and the position with it.
 static BOARD_UP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// Set by the first open that boots the daemon, and never cleared: a second open
-/// before the board is up would start `orchd::start` twice, and the second one
-/// fails on the instance lock — which `fail` turns into an exit of the whole app,
-/// right after a boot that had worked. A double-click on "Open project" did that.
-static BOOTING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
-/// The first-run bootstrap server, while one is up. Aborted once a project is
-/// committed and the window has moved to the daemon.
-static BOOTSTRAP: OnceLock<Mutex<Option<tokio::task::AbortHandle>>> = OnceLock::new();
-
 /// The async runtime handle, so the first-run page can boot a daemon long after
 /// `setup` has returned — the checkout is picked by a person, at their own pace.
 static RT: OnceLock<tokio::runtime::Handle> = OnceLock::new();
@@ -211,24 +201,16 @@ fn main() {
             let app_handle = app.handle().clone();
             let rt = handle.clone();
 
-            match orchd::config::Config::existing() {
-                // Configured already: straight to a window. A failure here is
-                // shown rather than propagated: `?` would surface as a panic
-                // from `build()`, and "already running" deserves a sentence in a
-                // dialog, not a backtrace nobody launched a GUI to read.
-                Some(_) => {
-                    if let Err(e) = open(&app_handle, &rt, None) {
-                        fail(&app_handle, &format!("{e:#}"));
-                    }
-                }
-                // First run, or a config pointing at a checkout that has since
-                // moved. Bring up the open-project window rather than a bare OS
-                // dialog — there is no terminal here to read a CLI flag in either.
-                None => {
-                    if let Err(e) = first_run(&app_handle, &rt) {
-                        fail(&app_handle, &format!("{e:#}"));
-                    }
-                }
+            /* **One window, configured or not.** First run used to raise a
+            second application here — its own HTTP server, router, guard and page,
+            with a titlebar that had to learn the macOS window-drag rule all over
+            again. The host serves the board with no checkouts open instead, and
+            `web/js/open.js` is the screen that fills it. A failure is shown rather
+            than propagated: `?` would surface as a panic from `build()`, and
+            "already running" deserves a sentence in a dialog, not a backtrace
+            nobody launched a GUI to read. */
+            if let Err(e) = open(&app_handle, &rt, None) {
+                fail(&app_handle, &format!("{e:#}"));
             }
             Ok(())
         })
@@ -324,36 +306,6 @@ fn with_settings_item(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tau
     builder
 }
 
-/// First run: no config, so bring up the open-project window instead of a native
-/// dialog fired at nothing.
-///
-/// A small HTTP bootstrap server ([`orchd_serve::firstrun`]) serves the page and the JSON
-/// it calls; the window loads it, and choosing a project comes back through
-/// [`TauriBootstrap`], which hands off to [`boot_daemon`]. HTTP rather than Tauri
-/// IPC so the flow is the same shape as the daemon SPA and can be tested headlessly.
-fn first_run(app_handle: &AppHandle, rt: &tokio::runtime::Handle) -> Result<()> {
-    let host: Arc<dyn orchd_serve::firstrun::BootstrapHost> = Arc::new(TauriBootstrap {
-        app: app_handle.clone(),
-    });
-    let serving = rt
-        .block_on(orchd_serve::firstrun::serve(host))
-        .context("starting the first-run server")?;
-    let url = serving.url().parse().context("the bootstrap URL")?;
-    // Kept so the daemon boot can stop it once a project is committed.
-    *BOOTSTRAP
-        .get_or_init(|| Mutex::new(None))
-        .lock()
-        .unwrap_or_else(poisoned_is_still_usable) = Some(serving.task.abort_handle());
-    // The open-project page wants the full board size; it is the window you work in.
-    build_window(
-        app_handle,
-        WebviewUrl::External(url),
-        board_size(),
-        MIN_SIZE,
-        false,
-    )
-}
-
 /// A splash window smaller than the board it grows into. Just big enough for the
 /// wordmark and its dots; `boot_daemon` grows it to the real size when the daemon
 /// is up, so the splash reads as a loading card rather than a full empty window.
@@ -362,25 +314,6 @@ const SPLASH_SIZE: (f64, f64) = (520.0, 340.0);
 /// Below this the three-column grid stops being three columns. Applied to the board
 /// and re-applied when the splash grows into it.
 const MIN_SIZE: (f64, f64) = (1000.0, 600.0);
-
-/// Navigate the main window to `url`, on the main thread — GTK calls only run there.
-/// Best effort: a missing window or an unparseable URL is logged, not fatal.
-fn navigate_main(app: &AppHandle, url: String) {
-    let app = app.clone();
-    let _ = app.clone().run_on_main_thread(move || {
-        let Some(w) = app.get_webview_window("main") else {
-            return;
-        };
-        match url.parse::<tauri::Url>() {
-            Ok(u) => {
-                if let Err(e) = w.navigate(u) {
-                    tracing::error!("could not navigate to {url}: {e}");
-                }
-            }
-            Err(e) => tracing::error!("bad URL to navigate to ({url}): {e}"),
-        }
-    });
-}
 
 /// The size to open the board at: the one you left it, or 20% up on the 1440x900
 /// this started at — three columns and a terminal want the room.
@@ -603,13 +536,6 @@ fn boot_daemon(
             Some(p) => vec![p],
             None => orchd_serve::host::remembered_checkouts(),
         };
-        if checkouts.is_empty() {
-            let ah = app_handle.clone();
-            let _ = app_handle.run_on_main_thread(move || {
-                fail(&ah, "no checkout is configured, and none was picked")
-            });
-            return;
-        }
         // A port of 0: the page's URL is handed to the webview, so nothing has to
         // predict it, and a stale process on a configured port cannot be the
         // difference between an app that opens and one that does not.
@@ -644,14 +570,17 @@ fn boot_daemon(
         // just made, not the subset that happened to start.
         orchd_serve::host::remember_checkouts(&checkouts);
         serving.host.open_remembered(&checkouts);
+        /* **An empty host is a screen, not a failure**, and that is the whole of
+        the first-run fold. Nothing configured is the ordinary first launch; a set
+        of remembered checkouts that all refuse to start is a worse day but the
+        same window, and the page says which and offers the recents. This used to
+        `fail` — a dialog and an exit — which is how "no checkout is configured"
+        became a second application to configure one. */
         if serving.host.checkouts().is_empty() {
-            let ah = app_handle.clone();
-            let message = format!(
-                "none of the {} remembered checkouts would start; see the log",
+            tracing::info!(
+                "no checkout is open ({} remembered); the page shows the open screen",
                 checkouts.len()
             );
-            let _ = app_handle.run_on_main_thread(move || fail(&ah, &message));
-            return;
         }
         phases.mark("daemon");
         tracing::info!(
@@ -714,8 +643,6 @@ fn boot_daemon(
                 Err(e) => tracing::error!("the daemon's own URL did not parse ({url}): {e}"),
             }
         });
-        // The first-run page and its port are dead weight now.
-        stop_bootstrap();
         phases.log("daemon ready");
     });
 }
@@ -888,27 +815,6 @@ fn ensure_on_screen(win: &tauri::WebviewWindow) {
     }
 }
 
-/// Stop the first-run server if one is still running.
-fn stop_bootstrap() {
-    if let Some(handle) = BOOTSTRAP
-        .get()
-        .and_then(|b| b.lock().unwrap_or_else(poisoned_is_still_usable).take())
-    {
-        handle.abort();
-    }
-}
-
-/// The URL of the running daemon, if there is one. `None` on first run, before any
-/// project has been opened.
-fn daemon_url() -> Option<String> {
-    SERVER.get().and_then(|s| {
-        s.lock()
-            .unwrap_or_else(poisoned_is_still_usable)
-            .as_ref()
-            .map(|serving| serving.url())
-    })
-}
-
 /// Ask for a restart: verify there is a binary to come back as, then close the
 /// window so the exit path tears the daemon down and `relaunch` starts the
 /// replacement. Called off the main thread (a window command or a bootstrap request),
@@ -933,70 +839,6 @@ fn request_restart(app: &AppHandle) -> bool {
             tracing::error!("not restarting: no path to this binary ({e:#}), sessions kept");
             false
         }
-    }
-}
-
-/// The window-side of the first-run flow, handed to [`orchd_serve::firstrun`]'s HTTP
-/// server: the native folder dialog, the daemon boot, and the frameless window
-/// commands the page's own titlebar needs.
-struct TauriBootstrap {
-    app: AppHandle,
-}
-
-impl orchd_serve::firstrun::BootstrapHost for TauriBootstrap {
-    fn pick(&self) -> Option<std::path::PathBuf> {
-        pick_folder(&self.app)
-    }
-
-    fn open(&self, path: std::path::PathBuf) -> bool {
-        if self.switching() {
-            // A daemon is already up and the new project's config is written, so a
-            // restart brings the app back on it. The current project's live sessions
-            // go with the restart — `auto_resume` brings a project's sessions back
-            // when you switch to it again. A refusal is reported, so the caller can
-            // put the config back: the daemon stays on the old project.
-            tracing::info!("switching project — restarting onto {}", path.display());
-            request_restart(&self.app)
-        } else if BOOTING.swap(true, std::sync::atomic::Ordering::SeqCst) {
-            tracing::warn!("a project is already opening; ignoring a second open");
-            false
-        } else if let Some(rt) = RT.get() {
-            boot_daemon(self.app.clone(), rt.clone(), Some(path));
-            true
-        } else {
-            tracing::error!("no runtime to boot the daemon");
-            false
-        }
-    }
-
-    fn window_cmd(&self, cmd: orchd::window::WindowCmd) {
-        if let Err(e) = (TauriWindow {
-            app: self.app.clone(),
-        })
-        .dispatch(cmd)
-        {
-            tracing::warn!("first-run window command failed: {e}");
-        }
-    }
-
-    /// **Always false now that the header switcher is gone**, and kept anyway.
-    ///
-    /// The first-run page is reached only at boot with nothing configured, so no
-    /// daemon is ever up while it is on screen. It stays because it is a
-    /// *defaulted* trait method: dropping the impl compiles silently, and this is
-    /// the only branch of [`BootstrapHost::open`](orchd_serve::firstrun::BootstrapHost::open) that reaches `request_restart` — so if a
-    /// flow ever puts this page over a running board again, losing it would mean
-    /// every open taking the `BOOTING` branch, which is set by the first boot and
-    /// never cleared.
-    fn switching(&self) -> bool {
-        daemon_url().is_some()
-    }
-
-    /// The page's own way back, for the same reason [`BootstrapHost::switching`](orchd_serve::firstrun::BootstrapHost::switching) stays.
-    fn cancel(&self) {
-        let Some(url) = daemon_url() else { return };
-        navigate_main(&self.app, url);
-        stop_bootstrap();
     }
 }
 

@@ -475,6 +475,7 @@ impl Host {
         self: &Arc<Self>,
         candidate: &Path,
         resume: Option<bool>,
+        settings: Option<&crate::firstrun::Overrides>,
     ) -> std::result::Result<Added, String> {
         let info = crate::firstrun::validate(candidate)?;
         let path = PathBuf::from(&info.path);
@@ -510,6 +511,24 @@ impl Host {
             None => true,
         };
 
+        /* The review's answers, into this checkout's own state directory and before
+        its daemon reads them. Non-fatal, the way the first-run write always was: a
+        failure here loses the edits rather than the open, since `load_or_init`
+        still writes a sensible default for the checkout.
+
+        `ensure_checkout_dir` rather than the root `config.json` this used to go to.
+        That file is one checkout's — it is copied into a per-checkout directory
+        once, when it names that checkout — so a review answered for the *second*
+        checkout had nowhere to land, which is why the step only ever ran on a fresh
+        install. */
+        if let Some(ov) = settings {
+            match ensure_checkout_dir(&path)
+                .and_then(|dir| crate::firstrun::write_config_in(&dir, &path, ov))
+            {
+                Ok(()) => tracing::info!(checkout = %path.display(), "wrote the reviewed settings"),
+                Err(e) => tracing::warn!("could not write the reviewed settings: {e:#}"),
+            }
+        }
         self.open_checkout_with(&orchd::child::daemon_binary(), &path, !resume)
             .map_err(|e| format!("{e:#}"))?;
         let opened = self
@@ -1216,6 +1235,8 @@ pub fn router(host: Arc<Host>) -> Router {
         .route("/ws/host", get(host_socket))
         .route("/api/host/recent", get(recent))
         .route("/api/host/pick", post(pick))
+        .route("/api/host/validate", post(validate))
+        .route("/api/host/detect", post(detect))
         .route("/api/window/resize/:edge", post(window_resize))
         .route("/api/window/:cmd", post(window_cmd))
         .layer(axum::middleware::from_fn_with_state(host.clone(), guard))
@@ -1324,6 +1345,7 @@ async fn module(UrlPath(file): UrlPath<String>) -> Response {
         "review-diff.js" => include_str!("../../../web/js/review-diff.js"),
         "queue.js" => include_str!("../../../web/js/queue.js"),
         "settings.js" => include_str!("../../../web/js/settings.js"),
+        "open.js" => include_str!("../../../web/js/open.js"),
         _ => return (StatusCode::NOT_FOUND, "no such module").into_response(),
     };
     asset("text/javascript; charset=utf-8", body)
@@ -1509,6 +1531,34 @@ async fn pick(State(host): State<Arc<Host>>) -> Response {
     }
 }
 
+/// Is this folder a checkout the host could open? The open screen asks per
+/// keystroke, so it stays the cheap half: one `canonicalize` and one `.git` test.
+async fn validate(Json(body): Json<CheckoutPath>) -> Response {
+    match crate::firstrun::validate(Path::new(&body.path)) {
+        Ok(info) => {
+            Json(json!({ "ok": true, "name": info.name, "path": info.path })).into_response()
+        }
+        Err(message) => refusal(&message),
+    }
+}
+
+/// What the review screen shows: the base branch, the GitHub repo, the environment
+/// tool and the processes this checkout declares.
+///
+/// **Several git runs**, so off the runtime worker like every other git call — this
+/// runtime is serving every open checkout's page while it answers.
+async fn detect(Json(body): Json<CheckoutPath>) -> Response {
+    let path = PathBuf::from(&body.path);
+    match orchd::proc::run_blocking("detecting a checkout", move || {
+        crate::firstrun::detect(&path)
+    })
+    .await
+    {
+        Ok(found) => Json(found).into_response(),
+        Err(e) => refusal(&format!("{e:#}")),
+    }
+}
+
 /// The one body every checkout command takes: which checkout.
 #[derive(serde::Deserialize)]
 struct CheckoutPath {
@@ -1516,6 +1566,10 @@ struct CheckoutPath {
     /// `add` only: the answer to the resume question, absent until it is asked.
     #[serde(default)]
     resume: Option<bool>,
+    /// `add` only: what the review screen answered, when it was shown. Absent is
+    /// "open it as it stands", which is every add that skipped the review.
+    #[serde(default)]
+    settings: Option<crate::firstrun::Overrides>,
 }
 
 /// Open a checkout, on a blocking thread.
@@ -1527,8 +1581,9 @@ struct CheckoutPath {
 async fn add_checkout(State(host): State<Arc<Host>>, Json(body): Json<CheckoutPath>) -> Response {
     let path = PathBuf::from(&body.path);
     let resume = body.resume;
+    let settings = body.settings;
     let added = orchd::proc::run_blocking("adding a checkout", move || {
-        host.add_checkout(&path, resume)
+        host.add_checkout(&path, resume, settings.as_ref())
     })
     .await;
     match added {

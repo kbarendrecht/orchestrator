@@ -1361,6 +1361,12 @@ function keymap(/** @type {KeyboardEvent} */ e) {
     Settings.close();
     return;
   }
+  // Last of the overlays, and it refuses to close when there is nothing behind
+  // it — see `Open.close`.
+  if (e.key === 'Escape' && Open.isOpen() && Open.close()) {
+    e.preventDefault();
+    return;
+  }
   if ((e.metaKey || e.ctrlKey) && e.key === 's' && Diff.edit.on) {
     e.preventDefault();
     void Diff.saveEditor();
@@ -2103,6 +2109,7 @@ function setupColumns() {
 
 
 import * as Settings from './js/settings.js';
+import * as Open from './js/open.js';
 
 Settings.setup();
 setupColumns();
@@ -2117,6 +2124,12 @@ connectHost();
    a second — arrived late or never. `tick` rewrites the duration strings in
    place. */
 setInterval(() => { tick(); }, 1000);
+
+/* **A host with no checkouts open is the screen this used to be a second
+   application for.** First run lands here, and so does closing the last checkout,
+   which is what `Host::close_checkout` means by staying symmetric down to the last
+   one. Last, so the rail and the chrome are already up behind it. */
+if (!CHECKOUTS.length) Open.showWelcome();
 
 window.orchTeardown = teardown;
 /* The macOS menu bar's Settings item. A native menu cannot reach a module, so
