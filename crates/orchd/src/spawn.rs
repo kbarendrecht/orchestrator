@@ -965,20 +965,6 @@ pub async fn spawn_worktree_session(
     Ok(id)
 }
 
-/// The `Pass` command a resolve run carries.
-///
-/// Named for the reason `fix_pr::COMMAND` and `triage::COMMAND` are: the spawn,
-/// the prompt table and the exit watcher all have to agree on this string, and it
-/// was a bare literal in four places.
-pub const RESOLVE_RUN_COMMAND: &str = "resolve-run";
-
-/// The pane pass over a PR's review threads, and the rail's default review verb.
-///
-/// One spelling, for the same reason `RESOLVE_RUN_COMMAND` is one: the record the
-/// rail colours by, the typed `/orchd:handle-review`, and the directory the skill
-/// is written to all have to agree.
-pub const HANDLE_REVIEW_COMMAND: &str = "handle-review";
-
 /// One run over a PR, in the shape every such spawn shares.
 ///
 /// Four spawns — fix-pr, `/resolve`, the resolve run and the two posting runs —
@@ -1038,8 +1024,8 @@ impl RunSpec {
 /// value is only ever compared against the record this write updates.
 pub(crate) async fn post_token_for(app: &Arc<AppState>, pass: &Option<Pass>) -> Option<String> {
     match pass {
-        Some(Pass { pr, command }) if crate::triage::posts_proposals(command) => {
-            Some(crate::triage::mint_post_token(app, *pr).await)
+        Some(Pass { pr, command }) if Pass::posts_proposals(command) => {
+            Some(app.mint_post_token(*pr).await)
         }
         _ => None,
     }
@@ -1213,107 +1199,14 @@ pub async fn spawn_fix_pr_session(
     // same shape as /resolve. The guard table is what decides whether the run may
     // start (§8); it never depended on the run being invisible.
     let spec = RunSpec {
-        command: crate::fix_pr::COMMAND.to_string(),
-        pending: format!("/orchd:{} {pr}", crate::fix_pr::COMMAND),
+        command: Pass::FIX_PR.to_string(),
+        pending: format!("/orchd:{} {pr}", Pass::FIX_PR),
         // No ask token: a fix run has nothing to ask, which is the narrower surface
         // 942d01b chose on purpose.
         asks: false,
         extra_env,
     };
     spawn_run(app, &workspace, pr, id, spec).await
-}
-
-/// Spawn an interactive session pinned to a PR's head branch, and type a slash
-/// command into it once it is ready.
-///
-/// The default answer to the rail's review button, again: a `claude` session in the
-/// PR worktree running `/orchd:handle-review <pr>` in the pane, the agent doing the
-/// reading, fixing, pushing and posting itself while you supervise. The daemon does
-/// no irreversible writes here — the agent does, in a shell you can take over.
-///
-/// **"Again" because this had no caller for a while.** The button went to the
-/// triage-into-cards flow, and the docblock went on claiming the pane was the
-/// default while the only path in was a test — with a prompt lookup that could not
-/// have answered anyway. The overlay is the opt-in alternative once more, for the
-/// reason it was written down as the robust path in the first place: the cards are
-/// not good enough to be the only way through a review yet, and a review you can
-/// only finish by learning a new screen is a worse default than one that hands you
-/// a terminal.
-pub async fn spawn_command_session(
-    app: &Arc<AppState>,
-    pr: u64,
-    head_ref: &str,
-    command: &str,
-) -> Result<SessionId> {
-    // If the branch already has a worktree with a live session, take you there
-    // rather than spawning a second one (§8).
-    if let Some(ws) = app.worktree_holding(head_ref).await {
-        let live = app.live_sessions_in(&ws).await;
-        if let Some(id) = live.first() {
-            return Ok(*id);
-        }
-        /* **The same worktree gates as the other review verb**, because the pass
-        writes into that tree: a rebase stopped part-way cannot take a commit, a
-        running `fix-pr` is rewriting the same history, and a dirty tree means
-        the first thing this agent amends is work somebody else left there.
-
-        Here rather than at the route, and after the live-session branch above
-        for the reason that branch exists: landing on the pane already doing this
-        is not a refusal case. The route used to re-derive both reads to decide
-        the same thing, which is two spellings of "is anyone on this branch" —
-        the pair `branch_busy` was written to be the only definition of. */
-        if let Some(g) = crate::triage::gate(app, pr, &ws).await? {
-            bail!("{}", g.say());
-        }
-        return start_with_prompt(app, &ws, pr, command).await;
-    }
-
-    // Otherwise pin a worktree to that branch. `git worktree add` directly,
-    // because the WorktreeCreate hook always cuts a new branch from
-    // upstream/develop; `worktree-link` still runs at SessionStart.
-    //
-    // No name-reuse refusal here, deliberately, and it was removed rather than
-    // never written. It refused whenever an archived session's recovery record
-    // named `pr-<n>` — which teardown writes — so reviewing a PR whose worktree you
-    // had torn down was refused for good, with advice ("rename") that cannot be
-    // followed for a name the daemon derives from the PR number. `fix-pr` and
-    // `triage` never had the check and were unaffected, so one PR answered two ways.
-    //
-    // What it claimed to prevent does not happen (transcripts are keyed by session
-    // uuid; `spawn_worktree_session` has the whole account), and the real hazard,
-    // a resume into a tree cut again at the same path, is `worktree::branch_drift`'s.
-    let name = ensure_pr_worktree(app, pr, head_ref).await?;
-    start_with_prompt(app, &name, pr, command).await
-}
-
-async fn start_with_prompt(
-    app: &Arc<AppState>,
-    workspace: &str,
-    pr: u64,
-    command: &str,
-) -> Result<SessionId> {
-    /* A vendored skill, typed. This rendered a *prompt* until the conversion, and
-    the lookup had no arm for the command it was called with — so the only path
-    into here could only ever bail, which is why it had no caller but a test.
-    Namespaced (`/orchd:<command>`), because what it types now is one of this
-    daemon's own skills rather than whatever the repo happens to define. */
-    let spec = RunSpec {
-        command: command.to_string(),
-        pending: format!("/orchd:{command} {pr}"),
-        asks: true,
-        extra_env: vec![
-            (crate::skills::VAR_PR.to_string(), pr.to_string()),
-            // The language a reply is written in when the thread does not settle
-            // it. Config, so the skill cannot carry it.
-            (
-                crate::skills::VAR_LANGUAGE.to_string(),
-                app.cfg.default_language.clone(),
-            ),
-        ],
-    };
-    // Its own id: this is the `/resolve` pane, the one run with no record of the
-    // daemon's beside it, so there is nothing for a caller to write first.
-    spawn_run(app, workspace, pr, Uuid::new_v4(), spec).await
 }
 
 /// The ref a per-PR run rebases onto: the PR's *own* base branch on the upstream
@@ -1756,7 +1649,7 @@ pub async fn spawn_resolve_run(
             let is_the_pass = inner
                 .sessions
                 .get(&id)
-                .is_some_and(|s| crate::triage::is_triage_of(&s.pass, pr));
+                .is_some_and(|s| s.pass.as_ref().is_some_and(|p| p.is_triage_of(pr)));
             /* **Posted, not idle.** `is_busy` was the first test and it read the
             wrong thing: a pass that has handed over its proposals goes on
             printing for a few seconds, so a click that came straight off the
@@ -1780,7 +1673,7 @@ pub async fn spawn_resolve_run(
         }
     }
 
-    let dir = Config::config_dir()?.join(format!("{RESOLVE_RUN_COMMAND}-{pr}"));
+    let dir = Config::config_dir()?.join(format!("{}-{pr}", Pass::RESOLVE_RUN));
     std::fs::create_dir_all(&dir)?;
     let plan_file = dir.join("plan.json");
     // The agent's view, not the whole record: `for_agent` drops the daemon's
@@ -1794,8 +1687,8 @@ pub async fn spawn_resolve_run(
     than into a sentence typed after the command, which is what "Your plan is
     …" used to be. */
     let spec = RunSpec {
-        command: RESOLVE_RUN_COMMAND.to_string(),
-        pending: format!("/orchd:{RESOLVE_RUN_COMMAND} {pr}"),
+        command: Pass::RESOLVE_RUN.to_string(),
+        pending: format!("/orchd:{} {pr}", Pass::RESOLVE_RUN),
         asks: true,
         extra_env: vec![
             (crate::skills::VAR_PR.to_string(), pr.to_string()),
@@ -1893,19 +1786,18 @@ fn agent_complaint(buf: &[u8]) -> Option<String> {
 pub(crate) fn watch_session_exit(app: Arc<AppState>, id: SessionId, handle: Arc<PtyHandle>) {
     tokio::spawn(async move {
         let code = handle.wait().await;
-        // What this session *was* decides whether anything else has to be settled
-        // now it is over. Read while the lock is already held; acted on below.
-        let mut fix_pr_for: Option<u64> = None;
-        // Same idea for a resolve run, and the reason it is needed at all: the run
-        // record is the daemon's, so nothing else would ever notice that the thing
-        // working through it had stopped. Threads left `pending` then read as
-        // imminent for as long as the daemon runs.
+        /* What this session *was*, read while the lock is already held and acted on
+        below. A run's end is owed to the module that started it — a fix run's
+        verdict to `fix_pr`, the review's hand-off to the same — and this is the
+        only place that learns a pty is over, which is why the news is *published*
+        here rather than dispatched by name. `state::RunObserver` says why that
+        inversion is the shape and a hook on `RunSpec` is not. */
+        let mut ended: Option<crate::state::RunExit> = None;
+        // The run's own account is the daemon's record rather than a feature's, so
+        // it is closed here: nothing else would ever notice that the thing working
+        // through it had stopped, and threads left `pending` then read as imminent
+        // for as long as the daemon runs.
         let mut resolve_run_for: Option<u64> = None;
-        // And the review that asked, on its way out, for the CI it is not allowed to
-        // touch to be picked up by a run. Read here for the same reason as the two
-        // above: this is where a pty ending is learned, and the guard `fix_pr::start`
-        // has to pass — no live session on the branch — is only true once it has.
-        let mut hand_off_for: Option<u64> = None;
         // A run whose success is "proposals arrived", not "exited zero": an agent
         // can finish cleanly having posted nothing, and that is the failure the
         // user would otherwise stare at an empty overlay wondering about.
@@ -1934,24 +1826,23 @@ pub(crate) fn watch_session_exit(app: Arc<AppState>, id: SessionId, handle: Arc<
                     if s.state.is_live() {
                         s.set_state(State::Exited);
                     }
-                    if let Some(Pass { pr, command }) = &s.pass {
-                        if command == crate::fix_pr::COMMAND {
-                            fix_pr_for = Some(*pr);
+                    if let Some(pass) = &s.pass {
+                        if pass.command == Pass::RESOLVE_RUN {
+                            resolve_run_for = Some(pass.pr);
                         }
-                        if command == RESOLVE_RUN_COMMAND {
-                            resolve_run_for = Some(*pr);
+                        if Pass::posts_proposals(&pass.command) {
+                            posting_for = Some(pass.pr);
                         }
-                        if crate::triage::posts_proposals(command) {
-                            posting_for = Some(*pr);
-                        }
-                        // Only a review that said so. Every other way one ends — you
-                        // closed it, it fell over reading, you killed it mid-cards —
-                        // leaves the flag false and hands on nothing, which is the
-                        // whole difference between this and a run that trips behind
-                        // you.
-                        if s.fix_pr_on_exit {
-                            hand_off_for = Some(*pr);
-                        }
+                        ended = Some(crate::state::RunExit {
+                            session: id,
+                            pass: pass.clone(),
+                            // Only a review that said so. Every other way one ends
+                            // — you closed it, it fell over reading, you killed it
+                            // mid-cards — leaves the flag false and hands on
+                            // nothing, which is the whole difference between this
+                            // and a run that trips behind you.
+                            hand_off: s.fix_pr_on_exit,
+                        });
                     }
                     // Last chance to find the conversation. A session closed
                     // between two `Stop`s can be carrying a transcript path
@@ -2035,11 +1926,6 @@ pub(crate) fn watch_session_exit(app: Arc<AppState>, id: SessionId, handle: Arc<
                 tracing::warn!(pr, session = %id, "the run exited without posting proposals");
             }
         }
-        // A fix run's verdict belongs to `fix_pr`, and this is the only place that
-        // learns the run is over.
-        if let Some(pr) = fix_pr_for {
-            crate::fix_pr::settle(&app, pr, id).await;
-        }
         // The run's own account, closed. Only if it is still this session's run: a
         // second run on the same PR replaces the record, and stamping that one as
         // ended would bury a live run under the exit of the one it replaced.
@@ -2054,27 +1940,12 @@ pub(crate) fn watch_session_exit(app: Arc<AppState>, id: SessionId, handle: Arc<
             });
         }
         app.release_main(id).await;
-        // The branch is free now, which is the only reason this waited for the exit.
-        // A refusal is not raised, because by here nobody is waiting: the guard
-        // table's reasons are written for whoever asked, and the rail's own `fix`
-        // button is still there to be pressed and will say the same thing.
-        //
-        // But it is *taken back*. `handed_off` is what tells the overlay to hold its
-        // report and wait for a run, so a refusal that left the flag standing would
-        // strand the review on "applying" for good — which is the fault this whole
-        // hand-off was built to fix, rebuilt one branch over.
-        if let Some(pr) = hand_off_for {
-            match crate::fix_pr::start(&app, pr).await {
-                Ok(session) => {
-                    tracing::info!(pr, %session, "review handed the checks to a fix-pr run")
-                }
-                Err(e) => {
-                    tracing::warn!(pr, "review's hand-off to fix-pr refused: {e}");
-                    if let Some(s) = app.inner.write().await.sessions.get_mut(&id) {
-                        s.fix_pr_on_exit = false;
-                    }
-                }
-            }
+        /* And the news, after the claim is given back rather than before it.
+        The hand-off is the reason: `fix_pr::start` refuses while a live session
+        holds the branch, and that is only true once the record says `Exited` and
+        main has let go. The verdict half does not care either way. */
+        if let Some(exit) = ended {
+            app.run_ended(exit).await;
         }
         if let Some(ws) = workspace {
             // The drawer's processes belong to whoever was working here. Only once
@@ -3147,7 +3018,7 @@ mod tests {
     #[test]
     fn a_run_spec_puts_the_prompt_on_the_record_before_the_spawn() {
         let spec = RunSpec {
-            command: RESOLVE_RUN_COMMAND.to_string(),
+            command: Pass::RESOLVE_RUN.to_string(),
             pending: "/orchd:resolve-run 7".to_string(),
             asks: true,
             extra_env: Vec::new(),
@@ -3158,15 +3029,25 @@ mod tests {
         assert_eq!(s.id, id);
         assert!(matches!(
             &s.pass,
-            Some(Pass { pr: 7, command }) if command == RESOLVE_RUN_COMMAND
+            Some(Pass { pr: 7, command }) if command == Pass::RESOLVE_RUN
         ));
     }
 
-    /// A review that asked for its checks to be handed on is acted on when its pty
-    /// ends. The review spawner used to arm a watcher of its own that never reached
-    /// the hand-off, so the flag stayed set and nothing started. The start is refused
-    /// here (the PR is not in the poll), and the refusal *taking the flag back* is
-    /// what proves the dispatch ran at all.
+    /// What the exit watcher published, for the test below.
+    ///
+    /// A `static` because [`crate::state::RunObserver`] is a plain `fn`: the
+    /// observer is installed once per process and outlives every call, so there is
+    /// nothing for a closure to capture.
+    static PUBLISHED: std::sync::Mutex<Vec<crate::state::RunExit>> =
+        std::sync::Mutex::new(Vec::new());
+
+    /// A review that asked for its checks to be handed on says so when its pty ends.
+    ///
+    /// The review spawner used to arm a watcher of its own that never reached the
+    /// hand-off, so the flag stayed set and nothing started. What is asserted is the
+    /// *published* exit, since settling one is `orchd-serve`'s now
+    /// ([`crate::state::RunObserver`]) — and the payload is the stronger assertion
+    /// anyway: the old test could only watch a refusal take the flag back.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_review_exit_acts_on_its_hand_off_flag() {
         use crate::pty::PtyHandle;
@@ -3190,7 +3071,7 @@ mod tests {
                 dir.clone(),
                 Some(Pass {
                     pr: 4242,
-                    command: crate::triage::COMMAND.to_string(),
+                    command: Pass::REVIEW.to_string(),
                 }),
             );
             s.pty = Some(pty.handle.clone());
@@ -3199,23 +3080,29 @@ mod tests {
             inner.sessions.insert(id, s);
         }
 
+        app.observe_runs(|_app, exit| {
+            Box::pin(async move {
+                PUBLISHED.lock().expect("the recorder").push(exit);
+            })
+        });
+        PUBLISHED.lock().expect("the recorder").clear();
+
         watch_session_exit(app.clone(), id, pty.handle.clone());
         let _ = pty.handle.kill();
 
-        let mut settled = false;
+        let mut published = None;
         for _ in 0..100 {
             tokio::time::sleep(std::time::Duration::from_millis(30)).await;
-            let inner = app.inner.read().await;
-            let s = &inner.sessions[&id];
-            if !s.state.is_live() && !s.fix_pr_on_exit {
-                settled = true;
+            if !app.inner.read().await.sessions[&id].state.is_live() {
+                published = PUBLISHED.lock().expect("the recorder").pop();
                 break;
             }
         }
-        assert!(
-            settled,
-            "the exit neither settled the session nor acted on the hand-off flag"
-        );
+        let exit = published.expect("the exit was never published");
+        assert_eq!(exit.session, id);
+        assert_eq!(exit.pass.pr, 4242);
+        assert_eq!(exit.pass.command, Pass::REVIEW);
+        assert!(exit.hand_off, "the review asked for the hand-off");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -3272,7 +3159,7 @@ mod tests {
                 dir.clone(),
                 Some(Pass {
                     pr,
-                    command: RESOLVE_RUN_COMMAND.to_string(),
+                    command: Pass::RESOLVE_RUN.to_string(),
                 }),
             );
             s.pty = Some(pty.handle.clone());
@@ -3399,52 +3286,6 @@ mod tests {
             "the worktree still claims the base it gave up",
         );
 
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// Reviewing a PR whose worktree you tore down must not be refused on the name.
-    ///
-    /// Teardown writes a recovery record naming `pr-<n>`, and the old check refused
-    /// on exactly that — for good, since "rename" is impossible for a name derived
-    /// from the PR number, leaving deleting the conversation as the only way out.
-    /// `fix-pr` and `triage` never had the check, so one PR answered two ways.
-    ///
-    /// Asserted as "not *this* refusal" rather than success: reaching a real spawn
-    /// would need a repo, a branch and `claude`. The failure here is the missing
-    /// branch, which is the next thing the path legitimately trips on.
-    #[tokio::test]
-    async fn reviewing_a_pr_is_not_refused_because_its_worktree_was_torn_down() {
-        let dir = crate::testutil::scratch("reuse");
-        let cfg = crate::config::Config::parse(&format!(
-            r#"{{"main_checkout":{:?}}}"#,
-            dir.to_string_lossy()
-        ))
-        .expect("parse");
-        let app = crate::state::AppState::new(cfg, "t".into(), crate::window::Chrome::None);
-        {
-            let mut inner = app.inner.write().await;
-            let id = uuid::Uuid::new_v4();
-            let mut s = Session::new(id, "pr-4".into(), dir.join("pr-4"), None);
-            s.had_a_turn = true;
-            s.set_state(State::Archived { resumable: true });
-            // Exactly what `worktree::archive` writes when a pr-4 tree is torn down.
-            s.recovery = Some(ArchiveState::Recoverable {
-                name: "pr-4".into(),
-                branch: "feature/x".into(),
-                head_sha: "abc1234".into(),
-            });
-            inner.sessions.insert(id, s);
-        }
-        let err = format!(
-            "{:#}",
-            spawn_command_session(&app, 4, "feature/x", "resolve")
-                .await
-                .expect_err("no repo here, so it cannot get as far as a session")
-        );
-        assert!(
-            !err.contains("already used") && !err.contains("interleave"),
-            "refused on the reused name again: {err}"
-        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

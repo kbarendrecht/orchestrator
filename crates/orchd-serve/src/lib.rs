@@ -32,8 +32,8 @@ use orchd::resolve_repo;
 use orchd::state::{self, AppState};
 use orchd::window;
 use orchd::{
-    api, env_source, git, instance, machine, model, proc, relocate, review_api, reviews, secret,
-    skills, spawn, store, update,
+    api, env_source, fix_pr, git, instance, machine, model, proc, relocate, review_api, reviews,
+    secret, skills, spawn, store, update,
 };
 
 /// How the caller wants the daemon brought up.
@@ -335,6 +335,9 @@ pub async fn start(opts: StartOptions) -> Result<Server> {
 
     let token = secret::random_token();
     let app = AppState::new(cfg, token.clone(), opts.chrome);
+    // Before anything can spawn a session, `auto_resume` included: a run whose
+    // exit nobody is listening for is a verdict that never lands.
+    app.observe_runs(settle_run);
 
     // Keep the base ref fresh or the merge-base the context bar shows drifts
     // (§5). Offline is not fatal — the last-known ref still resolves.
@@ -996,6 +999,53 @@ async fn autostart_processes(app: &Arc<AppState>) {
             tracing::warn!("could not start {}: {e:#}", spec.name);
         }
     }
+}
+
+/// What a finished run owes, dispatched by the one place that knows every module.
+///
+/// **This is the inversion [`orchd::state::RunObserver`] exists for.** `spawn` owns
+/// the only `pty.wait()`, so it learns that a run is over — and it used to settle
+/// the run by naming `fix_pr::settle` and `fix_pr::start`, which is why `spawn`
+/// imported the module that calls `spawn_run` to start one. The wiring belongs
+/// here, where the pollers are already wired and every module is already in scope.
+///
+/// Installed once per process, so a session resumed by `auto_resume` — which
+/// rebuilds a run from its persisted `Pass` and nothing else — is dispatched
+/// exactly as the first spawn was.
+fn settle_run(
+    app: Arc<AppState>,
+    exit: orchd::state::RunExit,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> {
+    Box::pin(async move {
+        // A fix run's verdict belongs to `fix_pr`.
+        if exit.pass.command == model::Pass::FIX_PR {
+            fix_pr::settle(&app, exit.pass.pr, exit.session).await;
+        }
+        /* The review that asked, on its way out, for the CI it is not allowed to
+        touch to be picked up by a run. The branch is free by now, which is the only
+        reason this waits for the exit.
+
+        A refusal is not raised, because by here nobody is waiting: the guard table's
+        reasons are written for whoever asked, and the rail's own `fix` button is
+        still there to be pressed and will say the same thing. But it is *taken
+        back*. `handed_off` is what tells the overlay to hold its report and wait for
+        a run, so a refusal that left the flag standing would strand the review on
+        "applying" for good — the fault this whole hand-off was built to fix. */
+        if exit.hand_off {
+            let pr = exit.pass.pr;
+            match fix_pr::start(&app, pr).await {
+                Ok(session) => {
+                    tracing::info!(pr, %session, "review handed the checks to a fix-pr run")
+                }
+                Err(e) => {
+                    tracing::warn!(pr, "review's hand-off to fix-pr refused: {e}");
+                    if let Some(s) = app.inner.write().await.sessions.get_mut(&exit.session) {
+                        s.fix_pr_on_exit = false;
+                    }
+                }
+            }
+        }
+    })
 }
 
 /// One GraphQL query per 5 minutes, read-only (§6).
@@ -1816,5 +1866,49 @@ mod tests {
         assert_eq!(bogus.status(), 400);
         let answer: serde_json::Value = serde_json::from_str(&body_of(bogus).await).unwrap();
         assert_eq!(answer["error"], "no such window command: explode");
+    }
+
+    /// A refused hand-off takes the flag back.
+    ///
+    /// `handed_off` is what tells the overlay to hold its report and wait for a
+    /// run, so a refusal that left the flag standing strands the review on
+    /// "applying" for good — the fault the hand-off was built to fix. The start is
+    /// refused here because the PR is not in the poll, which is the cheapest real
+    /// refusal there is.
+    ///
+    /// **Here rather than in `spawn`**, because settling a run is this crate's job
+    /// now: `spawn` publishes the exit and [`settle_run`] is what acts on it. The
+    /// matching half — that the exit is published, and with the flag — is
+    /// `spawn::tests::a_review_exit_acts_on_its_hand_off_flag`.
+    #[tokio::test]
+    async fn a_refused_hand_off_takes_the_flag_back() {
+        let (app, dir) = orchd::testutil::app("handoff-refused");
+        let id = uuid::Uuid::new_v4();
+        let pass = model::Pass {
+            pr: 4242,
+            command: model::Pass::REVIEW.to_string(),
+        };
+        {
+            let mut inner = app.inner.write().await;
+            let mut s = model::Session::new(id, "wt".to_string(), dir.clone(), Some(pass.clone()));
+            s.fix_pr_on_exit = true;
+            inner.sessions.insert(id, s);
+        }
+
+        settle_run(
+            app.clone(),
+            orchd::state::RunExit {
+                session: id,
+                pass,
+                hand_off: true,
+            },
+        )
+        .await;
+
+        assert!(
+            !app.inner.read().await.sessions[&id].fix_pr_on_exit,
+            "the refusal left the overlay waiting on a run that never started"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
