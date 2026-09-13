@@ -39,10 +39,10 @@ const ABSENT = new Map([
   ['recent.json', 'a daemon writes it'],
   ['host.json', 'a daemon writes it'],
   ['window.json', 'a daemon writes it'],
-  ['resolve-runs.json', 'a daemon writes it'],
+  ['resolve-runs.json', 'gone with the batch flow; named in a trap that measured it'],
   ['stories.json', 'a daemon writes it'],
-  ['manual.json', 'a daemon writes it'],
-  ['plan.json', 'a run writes it'],
+  ['manual.json', 'gone with the batch flow; named in a trap that measured it'],
+  ['plan.json', 'gone with the batch flow; named in the fixture record'],
   ['ping.yml', 'the fixture script writes it into a throwaway repo'],
   // Named as gone, which is the point of the sentence.
   ['prompt.rs', 'deleted with the prompt-to-skill conversion'],

@@ -1013,7 +1013,6 @@ function rvWillDo(/** @type {ReturnType<typeof outward>} */ out) {
   }
   add('reply', out.replies, 'reply', 'replies');
   add('thumb', out.thumbs, 'thumbs up', 'thumbs up');
-  add('req', out.rerequests, 're-request', 're-requests');
   add('story', out.stories, 'story', 'stories');
   if (!row.children.length) {
     row.appendChild(el('span', 'tally-b none', 'nothing'));
@@ -1135,19 +1134,6 @@ function outward(/** @type {QueueItem[]} */ q) {
   const stories = handled.filter((/** @type {QueueItem} */ x) => positionOf(x).stance === 'story').length;
   const thumbs = handled.filter((/** @type {QueueItem} */ x) => positionOf(x).stance === 'agree').length;
 
-  const viewer = reviewState.data?.viewer;
-  const open = new Set();
-  const all = new Set();
-  for (const t of reviewState.data?.threads || []) {
-    if (!t.answerable) continue;
-    const who = t.comments?.[0]?.author;
-    if (!who || who === viewer) continue;
-    all.add(who);
-    const item = q.find((/** @type {QueueItem} */ x) => x.t.id === t.id);
-    if (!item || !isHandled(item)) open.add(who);
-  }
-  const rerequests = [...all].filter((w) => !open.has(w)).length;
-
   /* How sure we are that a force-push happens.
      `commits` was derived from position patches, and the session flow's positions
      carry none — so the panel silently stopped reporting the most destructive
@@ -1169,8 +1155,8 @@ function outward(/** @type {QueueItem[]} */ q) {
     commits: files.length ? 1 : 0,
     push, pushThreads: coding.length,
     stories,
-    replies, thumbs, rerequests,
-    total: replies + thumbs + rerequests,
+    replies, thumbs,
+    total: replies + thumbs,
   };
 }
 

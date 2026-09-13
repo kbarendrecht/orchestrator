@@ -19,81 +19,27 @@ this file, which churned it from every build; that feature is gone.
   wants a second human identity: a throwaway account, or a fine-grained token for
   one.
 
-- **The two-phase resolve flow — proven on a fixture, not yet on real work.**
-  `docs/resolve-flow-plan.md` has the nine decisions behind it, and the three that
-  landed differently once driven.
-  Every phase has landed and a run has answered real reviewers: plan → session → a
-  commit per thread → the real diff beside the drafted reply → the daemon posting on
-  its own credential, with nothing pushed and no thread resolved until you press
-  those buttons yourself.
+- **The review session is the contender, and the pane is what works.**
+  The batch flow — a headless triage pass, cards, then a resolve run carrying out
+  what the cards decided — is deleted. It was the third of three flows over one
+  review, it had never answered a real reviewer through the UI, and it was what
+  made the overlay six screens deep. What it took with it: `skills/triage`,
+  `skills/resolve-run`, the manual phase, the plan and run records, both their
+  stores, and `patch.rs`'s apply-and-fold ladder, which only the batch used.
 
-  Getting there cost four bugs no test could have found, each now recorded where it
-  will be read again — `is_ask_route` and "`is_resolved` can never mean handled" are
-  CLAUDE.md entries, the rest are comments at the seams they broke.
+  Two things it was right about, kept: a card that waits for you rather than a
+  timeout that posts on your behalf, and `Skip` as the absence of a decision rather
+  than a stance of its own.
 
-  *What is still unproven.* `manual` mode has never executed. The story arm has
-  never run (the fixture daemon has `tracker: none`). `rerequest()` cannot be
-  verified without a second human identity. And every drive so far went through the
-  API, so `rvRun`/`rvOverview` and the cards as the *overlay* draws them are
-  type-checked but never opened in a browser.
+  What is left is two flows. `/orchd:handle-review` in a pane is the default and the
+  one proven on real reviews. The review session is the same agent with the overlay
+  in front of it, and the open question is whether card-then-approve beats reading
+  the pane. It has to be driven on real work before the pane's button changes.
 
-  *The old batch stays, and its retirement bar was raised.* `/api/pr/:n/post` and
-  the manual phase are still the secondary button. Retiring them would make every
-  review answer cost an agent session, delete the proven path for the unproven one,
-  lose a resumability the run does not have, and take ~1500 lines with no
-  replacement for `patch.rs`'s apply ladder. A fairer bar: `manual` mode exercised,
-  the overlay driven in a browser, and a run against a real monorepo PR. The only
-  argument that did hold — two implementations of "the daemon answers a reviewer" —
-  is gone: `post_outward` now goes through the same `with_story_id`,
-  `send_reply_once`, `react_one` and `rerequest_all` a run uses.
-
-  *Not to be confused with the beta gate below*, which is a separate decision and
-  needs no deletion.
-
-- **A resolve run should amend the PR's own commits, not append one per thread.**
-  Wanted, and the decision already exists — it is what the *batch* does and what the
-  run never learned. `review_commit::amend_target` blames the reviewed line, finds
-  the commit that introduced it, and answers `Fixup(sha)` / `Head(reason)` /
-  `OnTop(reason)`; the discriminator is **authorship, not publication**, so it
-  refuses to rewrite somebody else's commit and shows the reason at every fallback.
-  `git::fold_in` executes. The run uses none of it: `skills/resolve-run/SKILL.md` says
-  "one commit per thread, nothing else in that commit", and `patch.rs`'s whole
-  apply-and-fold ladder is dead on that path.
-
-  Why the current shape is thinner than it looks: one-commit-per-thread exists only
-  so the confirm card can show `commit_diff(sha)` beside the drafted reply — a *UI*
-  need leaking into git history. It is prose, not a constraint; nothing enforces it;
-  and if an agent commits two threads together and reports the same sha twice,
-  `thread_committed` accepts it and posts both replies. Its real cost is the case it
-  handles worst: two comments on one function usually want *one* coherent change,
-  and splitting it leaves the first commit incoherent on its own.
-
-  Force-with-lease needs no new decision — `crates/orchd-base/src/guard.rs` already permits no other
-  form, and refuses a push to the base branch.
-
-  **Three consequences to settle before building it.**
-  1. **The card's sha goes stale.** A `fixup!` is squashed later, so the sha the
-     agent reports is not the one that survives. Showing the fixup's own diff is
-     right — it is exactly the fix — but `PlannedThread::commit` then names a commit
-     that no longer exists. The record wants the fixup *target*, or a re-resolve
-     after the squash.
-  2. **Amending outdates other threads.** GitHub anchors a thread to a commit and a
-     line, so rewriting a commit a reviewer read can flip *their other* threads to
-     outdated — answering A can make B and C stop pointing at real code. The
-     append-only model cannot do that. This is a judgement about reviewers, not about
-     git, and it is the real price.
-  3. **The per-thread ancestry check would fire on every thread after the first.**
-     `thread_committed` holds a reply when the plan's `base_sha` is no longer an
-     ancestor of `HEAD` — which is exactly what an autosquash makes true. It would
-     have to tell *our own* rewrite from somebody else's, the same provenance problem
-     `Exhausted.at_head` already lost once.
-
-  The shape that dodges (3) and keeps the cards honest: the agent still owns code and
-  commits `--fixup <target>` where `amend_target` says `Fixup` — the daemon hands the
-  target in the plan, since it already blames for the batch — and the squash happens
-  **once at the end, before the push**, not per thread. One rewrite instead of N, so
-  the ancestry check needs a single exemption rather than continuous forgiveness, and
-  every card still shows a real standalone diff while you are approving it.
+  *Still unproven in the session flow.* The story arm has never run (the fixture
+  daemon has `tracker: none`), and `rerequest()` has no caller at all now — the batch
+  was the only one, and the approval page stopped promising a re-request it could not
+  perform.
 
 - **Sibling worktrees, for the agent that is not Claude Code.** Not wanted for
   Claude, which is the whole reason it is not built: `.claude/worktrees` is Claude

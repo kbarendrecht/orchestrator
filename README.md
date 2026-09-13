@@ -440,11 +440,11 @@ is logged and the pty is killed anyway.
   `/orchd:handle-review` in a pane: one agent in the PR's worktree, reading the
   threads, applying what is right, asking you about the rest, and drafting replies
   it posts only on an explicit go. That is the default because the other one is not
-  finished. The other one is the overlay — triage reads the threads and proposes,
-  per thread, a stance and whether code changes; you decide on cards; a run commits
-  per thread and drafts a reply you see beside the real diff before the daemon posts
-  it on its own credentials. It is the second review item in a PR row's menu.
-  Resolving a thread stays your button either way, by design.
+  finished. The other one is the review session — the same agent, in the same
+  worktree, but it proposes a stance per thread and the overlay puts those on
+  cards; it then writes the code and drafts each reply, which the daemon posts on
+  its own credentials. It is the second review item in a PR row's menu. Resolving
+  a thread stays your button either way, by design.
 - **`fix-pr` is hand-triggered, never automatic.** The guards that protect the
   machine and the repo remain (authorship, one run per PR, a busy branch, the push
   guard below); the automatic trigger does not. It is a gate you read before starting, not one that trips
@@ -478,8 +478,8 @@ discovery the tooling depends on. It is written down because the alternative is 
 sentence that earns trust it has not got.
 
 Agents get narrower credentials than the SPA does, and that part *is* enforced: a
-session asks with `ORCH_ASK_TOKEN`, good for its own session's routes, and a triage
-run posts with `ORCH_POST_TOKEN`, good for one route on one PR. Neither is the app
+session asks with `ORCH_ASK_TOKEN`, good for its own session's routes, and a review
+session posts with `ORCH_POST_TOKEN`, good for one route on one PR. Neither is the app
 token — which matters because those are the runs that read other people's review
 comments.
 
@@ -549,10 +549,10 @@ crates/orchd-base/    the primitives. Nothing here may import anything below.
   proc.rs         run a child with a deadline, portably (no coreutils `timeout`)
   child.rs        the protocol for a checkout's daemon: launch, ready line, observer
   model.rs        the shared value types: ChangedFile, FileSet, DiffFile, Bank
-  proposal.rs     what triage proposes: Stance × Mode, positions, patches, stories
+  proposal.rs     what a review session proposes: Stance × Mode, positions, stories
   guard.rs        the git rules (push blast radius, reach), run by `orch guard push`
   edit.rs         file read/write with containment and conflict detection
-  review_commit.rs  which commit a batch's work may be folded into
+  review_commit.rs  which commit a review's work may be folded into
   headroom.rs     the pre-spawn resource check every session goes through
   window.rs       Chrome, and the handle the desktop shell registers
   timing.rs       per-start phase lines: exec counts, share of the time, slow git
@@ -564,7 +564,7 @@ crates/orchd-repo/    one checkout, described. No session state lives here.
   forge/          the Forge seam: trait + dispatch (mod.rs), agnostic model
                   (model.rs), the GitHub impl (github.rs, github_write.rs)
   diff.rs         numstat, hunk parsing, word-level LCS
-  patch.rs        applying and committing what you approved, with staleness checks
+  patch.rs        what git says changed: the numstat parser and the dirty list
   skills.rs       the vendored skills in skills/, written out as the plugin dir
                   every spawn is handed with --plugin-dir
   reviews.rs      review queue: the built-in GitHub search, or reviews_command
@@ -578,13 +578,14 @@ crates/orchd/         the runtime core: the `orchd` library, what the daemon kno
   api.rs          HTTP surface and the origin/token guards
   model.rs        Workspace / Session / Process, State, ArchiveState
   relocate.rs     the swap, the move out of main, and the conversation that travels
-  review_api.rs   the review overlay's routes: triage, the batch, a run, the hand-off
+  review_api.rs   the review overlay's routes: the threads, the proposals, one
+                  thread's reply, the hand-off
   state.rs        the daemon's owned state, snapshots, reconcile, durable writes
   store.rs        session record persistence, orphan reaping
   spawn.rs        session / worktree / process spawning, and worktree_setup
   worktree.rs     teardown preflight, archive, revive, removal
-  triage.rs       the triage run, and the gates a worktree must pass first
-  post.rs         the review batch end to end
+  triage.rs       the review session's spawn, and the gates a worktree must pass
+  post.rs         one thread's outward words: the story, the reply, the reaction
   fix_pr.rs       automation state, the fix-pr guard table, a run's verdict
   story.rs        filing a tracker story for a fair-but-out-of-scope point
   update.rs       both upgrade bars: is Claude Code behind, and which mise tool

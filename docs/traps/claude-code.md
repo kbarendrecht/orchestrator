@@ -26,9 +26,8 @@ gone with them. The conversion has one rule worth knowing: a prompt was
 substituted per run and written to a file, a skill is static and typed as one
 line, so every value a template interpolated has to arrive another way. Two ways
 are in use, and which one is not a style choice. A run that already has a token
-asks `/api/pr/:n/triage-context` (`triage`, `review`). A run that deliberately
-has none reads its values out of the environment (`fix-pr`, `resolve-run`,
-`story`), because a route would have meant handing an unattended force-pushing
+asks `/api/pr/:n/triage-context` (`review`). A run that deliberately has none
+reads its values out of the environment (`fix-pr`, `story`), because a route would have meant handing an unattended force-pushing
 run a credential to read what the daemon can just put there. `skills::VAR_*`
 names those variables once, since the spawner sets them and the skill reads them
 and a rename on one side alone is silent.

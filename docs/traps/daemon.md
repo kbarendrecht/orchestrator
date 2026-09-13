@@ -259,9 +259,9 @@ awaiting an answer, and `query_for` polls `author:@me` so the PR must still be
 yours. `mise run fixture` builds a throwaway private repo whose threads are
 posted by `github-actions[bot]`, which satisfies both; `docs/fixture-pr.md` has
 the why and the two GitHub behaviours that cost an afternoon. It does not cover
-`rerequest()` — a bot cannot be a requested reviewer. The resolve run itself is
-still unit-tested only and has never made a real round trip, so do not read a
-green suite as more than that.
+`rerequest()` — a bot cannot be a requested reviewer, and nothing calls it since
+the batch went. The review session has never made a real round trip either, so do
+not read a green suite as more than that.
 
 ## The host's own file is `host.json`, and a hosted child must not write the host's files.
 It carries the open checkout list — so the app opens what was
@@ -289,7 +289,8 @@ environment`, after it had read every thread. Two ways in, neither exotic: the
 app restarting (`auto_resume` resumes every session that was live, runs
 included) and the rail's own resume button (`api::revive` carries the recorded
 `Pass`). The rule now lives
-in `triage::mint_post_token` / `posts_proposals`, called by all three spawns.
+in `triage::mint_post_token` / `posts_proposals`, called by every spawn that
+posts.
 **`spawn::run_env` is the seam, and `clippy::disallowed_methods` now refuses
 `launch::session_env` anywhere else.** Three sites built a session's environment
 themselves — the worktree spawner, the story filer and `run_env` — and the two

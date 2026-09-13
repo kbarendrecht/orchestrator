@@ -1,7 +1,12 @@
 # The review fixture
 
-A throwaway GitHub repo with a PR whose review threads are somebody else's, so
-the resolve flow can be *driven* rather than reasoned about.
+A throwaway GitHub repo with a PR whose review threads are somebody else's, so a
+review flow can be *driven* rather than reasoned about.
+
+**Much of what this file records was driven against the batch flow, which is
+deleted.** The fixture itself is unaffected — it builds threads, not screens — but
+`POST …/triage`, the resolve run and the manual phase are gone, so read those
+sections as the record of what they proved rather than as a route list.
 
 ```
 mise run fixture                 # build or rebuild it

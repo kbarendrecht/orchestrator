@@ -19,13 +19,12 @@ drift from the code.
 `/orchd:handle-review`
 (`skills/handle-review/SKILL.md`, vendored from the monorepo's own `/resolve` and
 generalised) is one agent in the PR's worktree with a person watching: it asks with
-`AskUserQuestion`, drafts replies and posts nothing without a go. The
-triage-into-cards flow is the menu's second review item and still carries out what
-the cards decide.
+`AskUserQuestion`, drafts replies and posts nothing without a go. The review
+session is the menu's second review item: the same agent, with the overlay showing
+its proposals as cards.
 The label is `handle` rather than `resolve` because GitHub has a literal "Resolve
 conversation" button and this pass deliberately does not press it — marking a
-thread resolved stays the reviewer's. The internal `resolve-run` keeps its name:
-that is the overlay's carry-out step, and it is not a button.
+thread resolved stays the reviewer's.
 This is a **reversal**, and the reason is the UI rather than the flow: the cards
 are not good enough to be the only way through a review yet. `spawn_command_session`
 is the seam, and it had no caller but a test for a while — its docblock claimed the
