@@ -583,39 +583,43 @@ button.ctx-btn:hover{color:var(--text)}
 .termwrap.rvwork .termhost{opacity:.6}
 
 /* The board's answer to `+`, over the terminal region and under nothing.
-   **A panel in the corner, not a sheet over the pane.** It used to fill the
-   region and centre itself, which is a modal's shape, and a create is ten seconds
-   of somebody else's script rather than a reason to take the screen — so the pane
-   underneath stays whole and readable and this sits on top of it, top left, where
-   the pty's own badge is not. Translucent for the same reason, and steady like
-   `.rvwork`: a state that lifts when you point at it is not a state indicator.
-   `pointer-events:none` on the frame, because it covers scrollback somebody may
-   want to select; the panel itself takes them back so its output can be scrolled.
-   It is not a scrim either — nothing under it is disabled, and clicking a session
-   in the rail takes it down. */
+   **The output takes the region and the chip floats over it.** The scripts are
+   what the wait is, so their output gets the space a pty would have had — top
+   left, filling the pane, reading the way a terminal reads — and the one word
+   saying what you asked for sits in the middle of it, where the eye lands before
+   it starts reading. Translucent, and steady like `.rvwork`: a state that lifts
+   when you point at it is not a state indicator.
+   It is not a scrim: nothing under it is disabled, and clicking a session in the
+   rail takes it down. */
 .termstarting{
-  position:absolute;inset:0;z-index:4;pointer-events:none;
-  display:flex;flex-direction:column;align-items:flex-start;justify-content:flex-start;gap:8px;
-  padding:10px 12px;
+  position:absolute;inset:0;z-index:4;
+  opacity:.96;
 }
-.termstarting > *{pointer-events:auto;opacity:.94}
-/* An author `display` beats `[hidden]`, which this file has been bitten by four
-   times — see `.settings-row[hidden]`. */
+/* Belt and braces: this rule carries no author `display` any more, but four rules
+   in this file have been bitten by one that did — see `.settings-row[hidden]`. */
 .termstarting[hidden]{display:none}
+/* What you asked for, over the middle of its own output. Absolute rather than a
+   flex child, so the output keeps the whole region and this does not push it
+   down. It is a label, not a control, so it takes no pointer events — a drag that
+   started on the output must not stop at it. */
 .startchip{
-  display:flex;align-items:center;gap:9px;flex:0 0 auto;
+  position:absolute;top:50%;left:50%;transform:translate(-50%, -50%);z-index:1;
+  pointer-events:none;
+  display:flex;align-items:center;gap:9px;
   font-family:var(--mono);font-size:calc(11.5px * var(--fs));color:var(--dim);
   border:1px solid var(--line);border-radius:20px;padding:7px 15px;background:var(--raised);
+  box-shadow:0 4px 14px #0006;
 }
-/* The scripts' own output, newest at the bottom, the way a terminal reads.
-   Bounded in both directions: it is a tail of what is happening, not a log to
-   scroll through — the daemon caps what it sends at `model::CREATE_LINES` and this
-   caps what a long line does to the layout. `pre` rather than a div per line,
-   because the alignment a script's own columns were written for is the point. */
+/* The scripts' own output, in the space the pty would have had: top left, the
+   whole region, newest at the bottom, the way a terminal reads. It is still a
+   tail rather than a log — the daemon caps what it sends at `model::CREATE_LINES`
+   — and it scrolls itself, so a script that prints more than fits is readable
+   rather than clipped. `pre` rather than a div per line, because the alignment a
+   script's own columns were written for is the point. */
 .startout{
-  flex:0 1 auto;max-width:min(620px, 100%);max-height:60%;overflow:auto;
+  position:absolute;inset:0;overflow:auto;
   margin:0;padding:10px 14px;
-  background:var(--raised);border:1px solid var(--line);border-radius:2px;
+  background:var(--ground,var(--bg));
   font-family:var(--mono);font-size:calc(10.5px * var(--fs));line-height:1.55;
   color:var(--dim);white-space:pre-wrap;overflow-wrap:anywhere;
 }
@@ -623,8 +627,9 @@ button.ctx-btn:hover{color:var(--text)}
    this file already carry a note about. */
 .startout[hidden]{display:none}
 /* A script that failed. The cut carries on — a worktree hook is never fatal — so
-   this colours the report rather than replacing it. */
-.startout.failed{border-color:var(--bad);color:var(--text)}
+   this colours the report rather than replacing it. A left rule rather than a box:
+   the output has no border to colour now that it fills the region. */
+.startout.failed{border-left:2px solid var(--bad);color:var(--text)}
 
 /* ---------- what a review is doing, while its overlay is closed ---------- */
 /* Bottom of the *terminal*, not of the column: anchoring it to `.center` would put
