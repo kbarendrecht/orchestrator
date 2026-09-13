@@ -116,6 +116,42 @@ pub struct Repos {
     pub fork: Option<String>,
 }
 
+/// A run's session has ended.
+///
+/// Published by [`crate::spawn::watch_session_exit`], which owns the only
+/// `pty.wait()` and is therefore the one place a run's end is learned.
+#[derive(Debug, Clone)]
+pub struct RunExit {
+    pub session: SessionId,
+    /// What the session was. The command decides who is owed the news.
+    pub pass: Pass,
+    /// The review asked, on its way out, for the CI it may not touch to be picked
+    /// up by a fix run. Only a review that said so: every other way one ends leaves
+    /// this false.
+    pub hand_off: bool,
+}
+
+/* **Who settles a finished run, told rather than known.**
+
+`spawn` owns the pty, so it is where an exit is learned — and it used to settle
+the run itself, by name: `fix_pr::settle`, `fix_pr::start`, and `triage`'s
+predicates. That is why `spawn` imported the two modules that call `spawn_run` to
+start a run in the first place, and it is the last mutual pair the module ratchet
+held.
+
+Inverted here rather than hooked onto `RunSpec`, which is the obvious shape and is
+wrong: `RunSpec` is neither persisted nor in `spawn::Carried`, and `auto_resume`
+rebuilds a run's session from its `Pass` alone — so a fix run resumed after a
+restart would have no hook left and would never settle. This is installed once per
+process by the composition root (`orchd_serve::start`), which already wires the
+pollers, so a resume finds it exactly as the first spawn did.
+
+A plain `fn` returning a boxed future rather than a channel, so the call keeps its
+place in the exit sequence: `settle` used to run before `release_main` and the
+hand-off after, and a queue would have made both "some time later". */
+pub type RunObserver =
+    fn(Arc<AppState>, RunExit) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>;
+
 /// How long `notify` waits before the records reach disk.
 ///
 /// A second: long enough that a burst of hooks is one write, short enough that a
@@ -149,6 +185,11 @@ pub struct AppState {
     /// Which sessions the last written `sessions.json` knows about; see
     /// [`Self::persist_when_due`].
     persisted_ids: std::sync::atomic::AtomicU64,
+    /// Who to tell when a run's session ends. See [`RunObserver`].
+    ///
+    /// Empty in a unit test, and that is the degradation on purpose: a test that
+    /// spawns a session is not testing what a fix run's exit means.
+    run_observer: std::sync::OnceLock<RunObserver>,
     pub inner: RwLock<Inner>,
     /// Held for the length of a swap, so two of them cannot interleave.
     ///
@@ -585,6 +626,7 @@ impl AppState {
             persist_pending: std::sync::atomic::AtomicBool::new(false),
             persist_writing: tokio::sync::Mutex::new(()),
             persisted_ids: std::sync::atomic::AtomicU64::new(0),
+            run_observer: std::sync::OnceLock::new(),
             inner: RwLock::new(Inner {
                 workspaces,
                 sessions: HashMap::new(),
@@ -1296,6 +1338,47 @@ impl AppState {
                 // daemon has never seen may still have work banked in it.
                 banked: None,
             });
+    }
+
+    /// Install the run observer. Once per process, by the composition root.
+    ///
+    /// A second call is ignored rather than refused: nothing here is worth failing
+    /// a start over, and the first caller is the only one that ever runs.
+    pub fn observe_runs(&self, f: RunObserver) {
+        let _ = self.run_observer.set(f);
+    }
+
+    /// Tell whoever started this run that it is over. Nothing to do if nobody is
+    /// listening, which is every unit test.
+    pub async fn run_ended(self: &Arc<Self>, exit: RunExit) {
+        if let Some(f) = self.run_observer.get() {
+            f(Arc::clone(self), exit).await;
+        }
+    }
+
+    /// Mint the proposals credential for `pr`, and record it as the one that route
+    /// will accept.
+    ///
+    /// **Called on every spawn of a posting run, resumes included**, which is the
+    /// whole reason it is a function. A resume rebuilds the environment from scratch
+    /// (`spawn::spawn_session`), so a review session that came back from a restart or
+    /// from the rail's resume button had a fresh ask token and *no* post token: it
+    /// could still ask you questions and could no longer post its proposals, which
+    /// reached the agent as `ORCH_POST_TOKEN is absent from this environment` and
+    /// reached the user as a review that had read everything and could not hand it
+    /// over.
+    ///
+    /// Re-minted rather than persisted, exactly like [`crate::model::Session::ask_token`]:
+    /// the value is only ever compared against this record, so a new pair costs
+    /// nothing, and the record is dropped with the process that minted it.
+    pub async fn mint_post_token(&self, pr: u64) -> String {
+        let token = crate::secret::random_token();
+        self.inner
+            .write()
+            .await
+            .proposal_tokens
+            .insert(pr, token.clone());
+        token
     }
 
     pub async fn workspace_path(&self, id: &str) -> Option<PathBuf> {

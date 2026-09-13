@@ -19,7 +19,7 @@
 //! exit 0 having said nothing useful, and parsing its output would be a second,
 //! worse source of truth.
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 use std::sync::Arc;
 
 use crate::model::*;
@@ -133,69 +133,10 @@ async fn gate_inner(
 /// preceded this, rather than a second `gh api user` call.
 pub async fn spawn(app: &Arc<AppState>, pr: u64, head_ref: &str) -> Result<SessionId> {
     let kind = RunKind {
-        command: TRIAGE_COMMAND,
+        command: Pass::TRIAGE,
         asks: false,
     };
     spawn_posting_run(app, pr, head_ref, kind).await
-}
-
-/// The `Pass` command a review session carries.
-///
-/// Named for the same reason `fix_pr::COMMAND` is: the spawn, the handoff route and
-/// the exit watcher all have to agree on this string, and three literals is how
-/// they stop agreeing without anything failing.
-pub const COMMAND: &str = "review";
-
-/// The same, for the headless triage pass.
-///
-/// Named late, because the literal it replaces was exactly the hazard the note
-/// above describes: [`posts_proposals`] has to agree with what [`spawn`] records,
-/// and a spelling that lives in one place cannot drift.
-pub const TRIAGE_COMMAND: &str = "triage";
-
-/// Is this session the triage pass for `pr`?
-///
-/// Asked by the progress route, which is handed a PR number and has to find the
-/// run that may report against it. One place, because "which command is a triage
-/// run" is the same question `posts_proposals` answers and the pair drifting apart
-/// is what the named constants exist to stop.
-pub fn is_triage_of(pass: &Option<crate::model::Pass>, pr: u64) -> bool {
-    pass.as_ref()
-        .is_some_and(|p| p.pr == pr && p.command == TRIAGE_COMMAND)
-}
-
-/// Does this run post proposals, and so need the credential for it?
-///
-/// Asked by the *resume* path, which is the only caller that cannot see how the
-/// run was started. Both posting runs spawn themselves here, so this is where
-/// the answer belongs.
-pub fn posts_proposals(command: &str) -> bool {
-    command == COMMAND || command == TRIAGE_COMMAND
-}
-
-/// Mint the proposals credential for `pr`, and record it as the one that route
-/// will accept.
-///
-/// **Called on every spawn of a posting run, resumes included**, which is the
-/// whole reason it is a function. A resume rebuilds the environment from scratch
-/// (`spawn::spawn_session`), so a review session that came back from a restart or
-/// from the rail's resume button had a fresh ask token and *no* post token: it
-/// could still ask you questions and could no longer post its proposals, which
-/// reached the agent as `ORCH_POST_TOKEN is absent from this environment` and
-/// reached the user as a review that had read everything and could not hand it
-/// over.
-///
-/// Re-minted rather than persisted, exactly like [`crate::model::Session::ask_token`]:
-/// the value is only ever compared against this record, so a new pair costs
-/// nothing, and the record is dropped with the process that minted it.
-pub async fn mint_post_token(app: &Arc<AppState>, pr: u64) -> String {
-    let token = crate::secret::random_token();
-    app.inner
-        .write()
-        .await
-        .proposal_tokens
-        .insert(pr, token.clone());
-    token
 }
 
 /// Start the overlay review session pinned to the PR's head branch.
@@ -204,11 +145,11 @@ pub async fn mint_post_token(app: &Arc<AppState>, pr: u64) -> String {
 /// triage does — filling the same overlay cards — but then stays alive, taking the
 /// human's decisions over the ask channel and carrying out the change and the post
 /// itself. So unlike [`spawn`] it needs `ORCH_ASK_TOKEN` in its environment, the
-/// key the `/ask` and `/wait` routes check, and it is marked [`COMMAND`] so the
+/// key the `/ask` and `/wait` routes check, and it is marked [`Pass::REVIEW`] so the
 /// rail colours, the guards and the handoff tell it from a triage run.
 pub async fn spawn_review(app: &Arc<AppState>, pr: u64, head_ref: &str) -> Result<SessionId> {
     let kind = RunKind {
-        command: COMMAND,
+        command: Pass::REVIEW,
         asks: true,
     };
     spawn_posting_run(app, pr, head_ref, kind).await
@@ -303,7 +244,7 @@ async fn spawn_posting_run(
     overlay would have shown a full screen saying the session is reading.
     Zero of zero is the honest opening state: a pass exists, and it has not said
     how many threads it means to read. */
-    if kind.command == TRIAGE_COMMAND {
+    if kind.command == Pass::TRIAGE {
         let mut inner = app.inner.write().await;
         inner.triage_progress.insert(
             pr,
@@ -317,6 +258,99 @@ async fn spawn_posting_run(
     }
     app.notify().await;
     Ok(id)
+}
+
+/// Spawn an interactive session pinned to a PR's head branch, and type a slash
+/// command into it once it is ready.
+///
+/// The default answer to the rail's review button, again: a `claude` session in the
+/// PR worktree running `/orchd:handle-review <pr>` in the pane, the agent doing the
+/// reading, fixing, pushing and posting itself while you supervise. The daemon does
+/// no irreversible writes here — the agent does, in a shell you can take over.
+///
+/// **"Again" because this had no caller for a while.** The button went to the
+/// triage-into-cards flow, and the docblock went on claiming the pane was the
+/// default while the only path in was a test — with a prompt lookup that could not
+/// have answered anyway. The overlay is the opt-in alternative once more, for the
+/// reason it was written down as the robust path in the first place: the cards are
+/// not good enough to be the only way through a review yet, and a review you can
+/// only finish by learning a new screen is a worse default than one that hands you
+/// a terminal.
+pub async fn spawn_command_session(
+    app: &Arc<AppState>,
+    pr: u64,
+    head_ref: &str,
+    command: &str,
+) -> Result<SessionId> {
+    // If the branch already has a worktree with a live session, take you there
+    // rather than spawning a second one (§8).
+    if let Some(ws) = app.worktree_holding(head_ref).await {
+        let live = app.live_sessions_in(&ws).await;
+        if let Some(id) = live.first() {
+            return Ok(*id);
+        }
+        /* **The same worktree gates as the other review verb**, because the pass
+        writes into that tree: a rebase stopped part-way cannot take a commit, a
+        running `fix-pr` is rewriting the same history, and a dirty tree means
+        the first thing this agent amends is work somebody else left there.
+
+        Here rather than at the route, and after the live-session branch above
+        for the reason that branch exists: landing on the pane already doing this
+        is not a refusal case. The route used to re-derive both reads to decide
+        the same thing, which is two spellings of "is anyone on this branch" —
+        the pair `branch_busy` was written to be the only definition of. */
+        if let Some(g) = gate(app, pr, &ws).await? {
+            bail!("{}", g.say());
+        }
+        return start_with_prompt(app, &ws, pr, command).await;
+    }
+
+    // Otherwise pin a worktree to that branch. `git worktree add` directly,
+    // because the WorktreeCreate hook always cuts a new branch from
+    // upstream/develop; `worktree-link` still runs at SessionStart.
+    //
+    // No name-reuse refusal here, deliberately, and it was removed rather than
+    // never written. It refused whenever an archived session's recovery record
+    // named `pr-<n>` — which teardown writes — so reviewing a PR whose worktree you
+    // had torn down was refused for good, with advice ("rename") that cannot be
+    // followed for a name the daemon derives from the PR number. `fix-pr` and
+    // `triage` never had the check and were unaffected, so one PR answered two ways.
+    //
+    // What it claimed to prevent does not happen (transcripts are keyed by session
+    // uuid; `spawn_worktree_session` has the whole account), and the real hazard,
+    // a resume into a tree cut again at the same path, is `worktree::branch_drift`'s.
+    let name = ensure_pr_worktree(app, pr, head_ref).await?;
+    start_with_prompt(app, &name, pr, command).await
+}
+
+async fn start_with_prompt(
+    app: &Arc<AppState>,
+    workspace: &str,
+    pr: u64,
+    command: &str,
+) -> Result<SessionId> {
+    /* A vendored skill, typed. This rendered a *prompt* until the conversion, and
+    the lookup had no arm for the command it was called with — so the only path
+    into here could only ever bail, which is why it had no caller but a test.
+    Namespaced (`/orchd:<command>`), because what it types now is one of this
+    daemon's own skills rather than whatever the repo happens to define. */
+    let spec = crate::spawn::RunSpec {
+        command: command.to_string(),
+        pending: format!("/orchd:{command} {pr}"),
+        asks: true,
+        extra_env: vec![
+            (crate::skills::VAR_PR.to_string(), pr.to_string()),
+            // The language a reply is written in when the thread does not settle
+            // it. Config, so the skill cannot carry it.
+            (
+                crate::skills::VAR_LANGUAGE.to_string(),
+                app.cfg.default_language.clone(),
+            ),
+        ],
+    };
+    // Its own id: this is the `/resolve` pane, the one run with no record of the
+    // daemon's beside it, so there is nothing for a caller to write first.
+    crate::spawn::spawn_run(app, workspace, pr, uuid::Uuid::new_v4(), spec).await
 }
 
 #[cfg(test)]
@@ -374,24 +408,6 @@ mod tests {
         assert!(!fix.iter().any(|(n, _)| n == "ORCH_POST_TOKEN"));
     }
 
-    /// Which runs the resume path has to re-credential.
-    ///
-    /// `spawn::spawn_session` rebuilds a resumed session's environment and asks
-    /// this. It answered wrong by not existing: a resumed review run kept its
-    /// ask channel and lost its post token, so it reported the variable missing
-    /// and then asked the human a question the overlay had no card for. Both
-    /// spellings are recorded by [`spawn`] and [`spawn_review`], so a rename that
-    /// misses one turns the bug straight back on.
-    #[test]
-    fn both_posting_runs_are_recognised_and_no_others() {
-        assert!(posts_proposals(COMMAND));
-        assert!(posts_proposals(TRIAGE_COMMAND));
-        // A fix run posts nothing itself, and handing it the credential would
-        // widen what a run reading third-party comments can reach.
-        assert!(!posts_proposals(crate::fix_pr::COMMAND));
-        assert!(!posts_proposals("resolve"));
-    }
-
     #[test]
     fn a_gate_says_what_is_wrong_in_one_line() {
         assert!(Gate::Rebasing.say().contains("rebase"));
@@ -413,5 +429,51 @@ mod tests {
         assert!(j.contains(r#""gate":"dirty""#), "{j}");
         let j = serde_json::to_string(&Gate::FixPrRunning).unwrap();
         assert!(j.contains(r#""gate":"fix_pr_running""#), "{j}");
+    }
+
+    /// Reviewing a PR whose worktree you tore down must not be refused on the name.
+    ///
+    /// Teardown writes a recovery record naming `pr-<n>`, and the old check refused
+    /// on exactly that — for good, since "rename" is impossible for a name derived
+    /// from the PR number, leaving deleting the conversation as the only way out.
+    /// `fix-pr` and `triage` never had the check, so one PR answered two ways.
+    ///
+    /// Asserted as "not *this* refusal" rather than success: reaching a real spawn
+    /// would need a repo, a branch and `claude`. The failure here is the missing
+    /// branch, which is the next thing the path legitimately trips on.
+    #[tokio::test]
+    async fn reviewing_a_pr_is_not_refused_because_its_worktree_was_torn_down() {
+        let dir = crate::testutil::scratch("reuse");
+        let cfg = crate::config::Config::parse(&format!(
+            r#"{{"main_checkout":{:?}}}"#,
+            dir.to_string_lossy()
+        ))
+        .expect("parse");
+        let app = crate::state::AppState::new(cfg, "t".into(), crate::window::Chrome::None);
+        {
+            let mut inner = app.inner.write().await;
+            let id = uuid::Uuid::new_v4();
+            let mut s = Session::new(id, "pr-4".into(), dir.join("pr-4"), None);
+            s.had_a_turn = true;
+            s.set_state(State::Archived { resumable: true });
+            // Exactly what `worktree::archive` writes when a pr-4 tree is torn down.
+            s.recovery = Some(ArchiveState::Recoverable {
+                name: "pr-4".into(),
+                branch: "feature/x".into(),
+                head_sha: "abc1234".into(),
+            });
+            inner.sessions.insert(id, s);
+        }
+        let err = format!(
+            "{:#}",
+            spawn_command_session(&app, 4, "feature/x", "resolve")
+                .await
+                .expect_err("no repo here, so it cannot get as far as a session")
+        );
+        assert!(
+            !err.contains("already used") && !err.contains("interleave"),
+            "refused on the reused name again: {err}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
