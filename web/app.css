@@ -2056,19 +2056,6 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
 .rv .stage-row .c .t{font-size:calc(11.5px * var(--fs));color:var(--dim)}
 .rv .held{color:var(--faint-solid);font-size:calc(11.5px * var(--fs));font-style:italic}
 
-/* A banner for what is already true on the remote. It uses --attn rather than
-   --bad because it is not an error — it is the fact you need before you can
-   read anything below it. */
-.rv .banner{
-  display:flex;gap:12px;padding:12px 16px;border-bottom:1px solid var(--line);
-  border-left:2px solid var(--attn);background:rgba(224,162,68,.06);flex:0 0 auto;
-}
-.rv .banner.clean{border-left-color:var(--ok);background:rgba(95,169,124,.05)}
-.rv .banner .ico{font-family:var(--mono);font-size:calc(11.5px * var(--fs));color:var(--attn);flex:0 0 auto}
-.rv .banner.clean .ico{color:var(--ok)}
-.rv .banner .tx b{display:block;font-size:calc(13px * var(--fs));font-weight:600;margin-bottom:2px}
-.rv .banner .tx p{color:var(--dim);font-size:calc(11.5px * var(--fs));max-width:62ch}
-
 .rv .group{display:flex;flex-direction:column;gap:0}
 .rv .res{display:flex;align-items:baseline;gap:12px;padding:8px 0;border-bottom:1px solid var(--line-soft)}
 .rv .res:last-child{border-bottom:0}
@@ -2127,29 +2114,6 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
 .rv .autobar b{color:var(--attn);font-weight:400}
 .rv .autobar .why{margin-left:auto;color:var(--faint-solid)}
 .rv .autobar .act{margin-left:0;padding:2px 8px;font-size:calc(9px * var(--fs));letter-spacing:.1em}
-
-/* ---------- the manual phase ---------- */
-/* A comment is required on a Manual thread, so the label says so rather than
-   letting you find out from a disabled button. */
-.rv .req{color:var(--attn)}
-.rv .manrow{
-  display:flex;flex-direction:column;gap:8px;padding:12px 0;
-  border-bottom:1px solid var(--line-soft);
-}
-.rv .manrow:last-child{border-bottom:0}
-.rv .manrow .top{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
-.rv .manrow .top .p{font-family:var(--mono);font-size:calc(11.5px * var(--fs));color:var(--text)}
-.rv .manrow .top .who{font-size:calc(11.5px * var(--fs));color:var(--dim)}
-.rv .manrow blockquote{
-  padding-left:12px;border-left:1px solid var(--line);
-  color:var(--dim);font-size:calc(11.5px * var(--fs));max-width:70ch;white-space:pre-wrap;
-}
-.rv .manrow .state{
-  font-family:var(--label);font-size:calc(9px * var(--fs));font-weight:700;letter-spacing:.1em;
-  text-transform:uppercase;padding:2px 4px;border-radius:2px;border:1px solid var(--line);
-}
-.rv .manrow .state.wait{color:var(--faint-solid)}
-.rv .manrow .state.got{color:var(--ok);border-color:rgba(95,169,124,.35)}
 
 /* ---------- opening a project ---------- */
 /* `46px` is the board's own top row (`grid-template-rows:46px 1fr`), left

@@ -1,10 +1,10 @@
 // The review overlay: read a PR's threads, decide each one, then one batch of
 // outward writes. The largest single feature in the SPA.
 
-import { $, call, compactAge, confirmBox, el, get, MOD_LABEL, newShell, promptBox, reason, safeHref, selected, setPendingSelect, setSelected, snap, toast, unchanged } from './core.js';
+import { $, call, compactAge, confirmBox, el, get, MOD_LABEL, newShell, promptBox, reason, selected, setPendingSelect, setSelected, snap, toast, unchanged } from './core.js';
 import * as Diff from './diff.js';
 import { langFor, hlTokens, paintRanges } from './diff.js';
-import { patchStats, hunkEl, fileListLabel } from './review-diff.js';
+import { patchStats, hunkEl } from './review-diff.js';
 
 
 /* Replaces typing `/resolve <pr>` into a terminal pane. The agent reads every
@@ -84,28 +84,6 @@ const reviewState = {
   decisionsSent: false,     // answered the decision ask; the change phase is running
 };
 
-/** The manual phase's own state.
- *
- *  Separate from `reviewState` because it has a different lifetime: the phase opens
- *  once a batch has already committed, and its comments are written after the fact
- *  rather than being the card drafts. Cleared when a batch is sent, not when the
- *  overlay closes — walking away from a phase and coming back should not lose what
- *  you typed about work that is already on disk. */
-/** @type {{ comments: Record<string, string>, finished: any,
- *           changed: { files: import('../repo').FileStat[], diff: string } | null }} */
-const manualState = {
-  comments: {},     // thread_id -> the comment, required
-  /* The payload the last `/manual/done` sent, so the report's retry can go back to
-     the same endpoint. Retrying a manual batch through `/post` cannot work: the
-     branch it pushed is the remote head now, and it would resolve with no comments. */
-  finished: null,
-  /* `git diff HEAD` for the whole tree — one object, not one per thread. Two
-     manual threads editing the same file cannot be told apart, and the commit is
-     the tree's anyway, so attributing it per thread would be a guess dressed as a
-     fact. */
-  changed: null,
-};
-
 /** One thread and the agent's proposal for it, the way `queue()` pairs them.
  *  Every card, box and count below takes one of these.
  *
@@ -114,15 +92,6 @@ const manualState = {
 
 const draftKey = (/** @type {string} */ id, /** @type {number} */ pos) => `${id} ${pos}`;
 
-/** Who writes the code for this thread. The third of the three decisions, and
- *  the one the agent has no say in. */
-const modeOf = (/** @type {QueueItem} */ item) => reviewState.modes[item.t.id] || 'agent';
-
-/** Whether a position would have the agent change code. Under `manual` the same
- *  position stages the same fix, but you are the one who writes it. */
-const writesCode = (/** @type {QueueItem} */ item, /** @type {import('../base').Position} */ pos) => !!pos.patch && modeOf(item) === 'agent';
-
-/** Compact age off an ISO timestamp: `4h`, `6d`. */
 function commentAge(/** @type {string | null | undefined} */ iso) {
   const then = Date.parse(iso ?? '');
   if (!then) return '';
@@ -1154,7 +1123,7 @@ function outward(/** @type {QueueItem[]} */ q) {
   /** @type {{ path: string, added: number, deleted: number }[]} */
   const files = [];
   for (const item of handled) {
-    if (!writesCode(item, positionOf(item))) continue;
+    if (!positionOf(item).patch) continue;
     for (const f of patchStats(positionOf(item).patch)) {
       const seen = files.find((x) => x.path === f.path);
       if (seen) { seen.added += f.added; seen.deleted += f.deleted; }
@@ -1189,8 +1158,10 @@ function outward(/** @type {QueueItem[]} */ q) {
      note is an instruction to change something, so either proves work. A plain
      reply might be prose, so it only earns `may`. Never `no` while the agent owns a
      thread — under-reporting a force-push is the bad direction to be wrong in. */
-  const coding = handled.filter((/** @type {QueueItem} */ x) => modeOf(x) === 'agent' &&
-    positionOf(x).stance !== 'story');
+  // Every handled thread but a story: the agent owns all of them now that a thread
+  // cannot be taken over by hand. `manual` was the batch's third decision and went
+  // with it.
+  const coding = handled.filter((/** @type {QueueItem} */ x) => positionOf(x).stance !== 'story');
   const push = !coding.length ? 'no'
     : coding.some((/** @type {QueueItem} */ x) => positionOf(x).stance === 'agree' ||
         (reviewState.notes[x.t.id] || '').trim()) ? 'will' : 'may';
@@ -1205,427 +1176,6 @@ function outward(/** @type {QueueItem[]} */ q) {
   };
 }
 
-/* ---------- screens 7 and 8: what the batch actually did ---------- */
-
-/** The report. Two different screens wearing one shape:
- *
- *  `refused` is the local half saying no — a stale patch, a hook that rewrote a
- *  file, pre-commit failing. Nothing was committed and nothing was pushed, so
- *  every decision is still staged and the button can simply be pressed again.
- *
- *  A push with failures after it is the hard one: the code is public and cannot
- *  be recalled, so landed / failed / not attempted are separated before anything
- *  is offered. */
-function rvReport(/** @type {HTMLElement} */ root) {
-  const r = reviewState.report;
-  if (!r) return;
-  root.appendChild(rvHead(r.refused ? 'stopped' : r.failed.length ? 'posted with errors' : 'posted'));
-
-  const banner = el('div', 'banner' + (r.pushed ? '' : ' clean'));
-  banner.appendChild(el('span', 'ico', r.pushed ? '▲' : '✓'));
-  const tx = el('span', 'tx');
-  if (r.pushed) {
-    tx.appendChild(el('b', null, 'The code is pushed.'));
-    const p = el('p');
-    p.appendChild(el('span', 'm', r.pushed.slice(0, 7)));
-    p.appendChild(document.createTextNode(
-      ` is on origin/${reviewState.data?.head_ref || 'this branch'}. ` +
-      'Retrying posts only what is missing — it will not push again, and it re-reads the ' +
-      'threads first so nothing is sent twice.'));
-    tx.appendChild(p);
-  } else {
-    tx.appendChild(el('b', null, 'Nothing was pushed or posted.'));
-    tx.appendChild(el('p', null,
-      'The worktree is as it was, and every decision is still staged — fix what it names ' +
-      'and press the button again, or hand it to a session.'));
-  }
-  banner.appendChild(tx);
-  root.appendChild(banner);
-
-  const body = el('div', 'body');
-
-  if (r.refused) {
-    const sec = el('div', 'sec');
-    const group = el('div', 'group');
-    const row = el('div', 'res no');
-    row.appendChild(el('span', 'st', '✕'));
-    const c = el('span', 'c');
-    c.appendChild(el('span', 't', 'the batch was refused'));
-    // Verbatim, per the daemon's own rule: a refused call is information, not
-    // noise to swallow behind a friendly paraphrase.
-    c.appendChild(el('span', 'err', r.refused));
-    row.appendChild(c);
-    group.appendChild(row);
-    group.appendChild(waitRow('push — not attempted'));
-    group.appendChild(waitRow('nothing posted to github'));
-    sec.appendChild(group);
-    body.appendChild(sec);
-  }
-
-  if (r.files?.length) {
-    const sec = el('div', 'sec');
-    const group = el('div', 'group');
-    const row = el('div', 'res ok');
-    row.appendChild(el('span', 'st', '✓'));
-    const c = el('span', 'c');
-    c.appendChild(el('span', 't',
-      `Wrote ${r.files.map((f) => f.path).join(', ')} — ${r.amend || 'committed'}.`));
-    row.appendChild(c);
-    group.appendChild(row);
-    sec.appendChild(group);
-    body.appendChild(sec);
-  }
-
-  body.appendChild(resultSec('landed', r.landed, (/** @type {any} */ x) => {
-    if (x.what === 'story') {
-      return {
-        cls: 'ok', st: '✓',
-        t: x.already
-          /* A reused story is the retry working, and it carries a consequence
-             worth stating: the fields are whatever the first run filed, so any
-             edit made since is not in the tracker. */
-          ? `Story ${x.story.id} was already filed — reused, not filed again. ` +
-            'Its fields are as they were then, so any later edit is not in it.'
-          : `Story ${x.story.id} filed. Its reply carries the link; a retry reuses ` +
-            'this id rather than filing a second one.',
-        link: x.story.url,
-      };
-    }
-    return {
-      cls: 'ok', st: '✓',
-      t: x.already
-        ? `${whatWord(x.what)} was already there — nothing sent.`
-        : `${whatWord(x.what)} posted. Cannot be unsent.`,
-    };
-  }));
-  body.appendChild(resultSec('failed', r.failed, (/** @type {any} */ x) => ({
-    // A story is filed, not posted. The verb is the difference between "a
-    // colleague can see this" and "a record exists somewhere else".
-    cls: 'no', st: '✕',
-    t: x.what === 'story' ? 'Story not filed.' : `${whatWord(x.what)} not posted.`,
-    err: x.error,
-  })));
-  /* `skipped` and `held_back` are the same row: never tried, and here is what it
-     is waiting on. They arrive as two lists only because one is per-write and the
-     other is per-reviewer — rendering only `held_back` dropped every reply that
-     was skipped because its story did not land. */
-  body.appendChild(resultSec('not attempted', [...r.skipped, ...r.held_back], (/** @type {any} */ x) => ({
-    cls: 'wait', st: '·',
-    t: x.what === 'reply' ? `Reply not posted — ${x.waiting_on}.` : x.waiting_on,
-    held: true,
-  })));
-  root.appendChild(body);
-
-  const retry = r.failed.length || r.refused;
-  root.appendChild(rvActs([
-    retry ? actBtn(r.refused ? 'back' : `retry ${r.failed.length}`, 'pri', () => {
-      if (r.refused) { reviewState.report = null; reviewState.screen = 'final'; return renderReview(); }
-      /* Back to whichever endpoint the batch used. A manual batch retried through
-         `/post` is refused every time — the branch it pushed is now the remote head —
-         and it would resolve with no comments, so the Manual thread would post
-         nothing at all. */
-      if (manualState.finished) void finishManual(manualState.finished);
-      else void sendBatch();
-    }) : actBtn('done', 'pri', () => closeReview()),
-    retry ? actBtn('leave it', null, () => closeReview()) : null,
-  ], r.refused
-    ? 'decisions kept · worktree unchanged'
-    : 're-reads the threads first · never reposts'));
-}
-
-const whatWord = (/** @type {string} */ w) =>
-  ({ story: 'Story', reply: 'Reply', thumbs_up: 'Thumbs up', rerequest: 'Re-request' }[w] || w);
-
-function waitRow(/** @type {string} */ text) {
-  const row = el('div', 'res wait');
-  row.appendChild(el('span', 'st', '·'));
-  const c = el('span', 'c');
-  c.appendChild(el('span', 't', text));
-  row.appendChild(c);
-  return row;
-}
-
-function resultSec(/** @type {string} */ title, /** @type {any[]} */ rows, /** @type {(row: any) => any} */ shape) {
-  if (!rows?.length) return document.createComment(`no ${title}`);
-  const sec = el('div', 'sec');
-  sec.appendChild(el('div', 'eyebrow', title));
-  const group = el('div', 'group');
-  for (const x of rows) {
-    const s = shape(x);
-    const row = el('div', 'res ' + s.cls);
-    row.appendChild(el('span', 'st', s.st));
-    const c = el('span', 'c');
-    if (x.label) c.appendChild(el('span', 'p', x.label));
-    c.appendChild(el('span', s.held ? 't held' : 't', s.t));
-    if (s.link) {
-      const a = el('a', 'm', s.link);
-      a.href = safeHref(s.link);
-      a.target = '_blank';
-      a.rel = 'noreferrer';
-      a.style.color = 'var(--work)';
-      c.appendChild(a);
-    }
-    if (s.err) c.appendChild(el('span', 'err', s.err));
-    row.appendChild(c);
-    group.appendChild(row);
-  }
-  sec.appendChild(group);
-  return sec;
-}
-
-/* ---------- screen 6: manual — the phase that waits for you ---------- */
-
-/** The batch stopped after committing everything else, and is waiting for you.
- *
- *  The ordering is the whole design. Hand-editing breaks the propose-only
- *  invariant that the tree stays clean until the final action, and merging your
- *  edits into the batch was rejected — the commit would sweep up whatever you
- *  happened to have touched, so "exactly what you approved" stops being true. So
- *  the accepted patches are written and committed *first*, and you then edit a tree
- *  that already reflects every other decision, which is often why this thread
- *  needed hands in the first place.
- *
- *  Two things fall out for free: you cannot describe work you have not done, so the
- *  comment is written here rather than guessed at on the card; and `git diff` makes
- *  the file list complete, because nobody had to declare it. */
-function rvManual(/** @type {HTMLElement} */ root) {
-  const m = reviewState.report?.manual;
-  const refused = reviewState.report?.refused;
-  if (!m) return;
-  root.appendChild(rvHead(refused ? 'stopped' : 'your turn', `${m.threads.length} by hand`));
-
-  if (refused) {
-    // Amber rather than the clean banner: this is not "nothing happened". Half
-    // one's commit is on the branch and your edits are still on disk — what did
-    // *not* happen is the push and the posting.
-    const warn = el('div', 'banner');
-    warn.appendChild(el('span', 'ico', '▲'));
-    const tx = el('span', 'tx');
-    tx.appendChild(el('b', null, 'Nothing was pushed or posted.'));
-    tx.appendChild(el('p', null, refused));
-    warn.appendChild(tx);
-    root.appendChild(warn);
-  }
-  root.appendChild(rvStrip(null));
-
-  const body = el('div', 'body');
-
-  // What is already committed. First, because it changes what you are editing.
-  const done = el('div', 'sec');
-  const group = el('div', 'group');
-  const row = el('div', 'res ok');
-  row.appendChild(el('span', 'st', '✓'));
-  const c = el('span', 'c');
-  const t = el('span', 't');
-  if (m.files.length) {
-    t.appendChild(document.createTextNode(
-      `${m.files.length} accepted change${m.files.length === 1 ? '' : 's'} written and ` +
-      'committed locally — '));
-    t.appendChild(el('span', 'm', m.committed.slice(0, 7)));
-    t.appendChild(document.createTextNode(
-      `${m.amend ? ', ' + m.amend : ''}. Not pushed.`));
-  } else {
-    // Every other thread was reply-only, so there was nothing to write.
-    t.appendChild(document.createTextNode('Nothing was written — every other thread was words only. '));
-    t.appendChild(el('span', 'm', m.committed.slice(0, 7)));
-    t.appendChild(document.createTextNode(' is unchanged, and nothing is pushed.'));
-  }
-  c.appendChild(t);
-  row.appendChild(c);
-  group.appendChild(row);
-  done.appendChild(group);
-  body.appendChild(done);
-
-  // What you have edited, once, above the threads. Derived from `git diff`, not
-  // from anything anyone declared — which is what keeps the batch only what you
-  // approved even though nobody listed these files.
-  // `?.` throughout: this renders whatever the diff fetch last returned, and a
-  // screen that throws mid-render leaves the overlay blank with no way back — the
-  // phase is the one screen where the batch is already half-done.
-  const ch = manualState.changed;
-  const mine = el('div', 'sec');
-  const head = el('div', 'eyebrow', ch?.files?.length ? 'what you changed ' : 'nothing changed yet ');
-  const again = el('button', 'revert', 're-read the tree');
-  again.onclick = () => loadManualDiff();
-  head.appendChild(again);
-  mine.appendChild(head);
-  if (ch?.files?.length) {
-    mine.appendChild(fileListLabel(ch.files, 'you changed'));
-    if (ch.diff) mine.appendChild(hunkEl(ch.diff, false));
-  } else {
-    const none = el('p', null,
-      'Edit the files in a session or your editor, then re-read. A manual thread ' +
-      'does not have to change code — the comment is what is required.');
-    none.style.cssText = 'color:var(--dim);font-size:12px;max-width:70ch';
-    mine.appendChild(none);
-  }
-  body.appendChild(mine);
-
-  // The threads themselves, each with the reviewer's words and your comment.
-  const sec = el('div', 'sec');
-  sec.appendChild(el('div', 'eyebrow', 'needs your hands'));
-  for (const th of m.threads) {
-    sec.appendChild(rvManualRow(th));
-  }
-  body.appendChild(sec);
-  root.appendChild(body);
-
-  const ready = m.threads.every((th) => (manualState.comments[th.thread_id] || '').trim());
-  /* Same rule as the run screen: the batch this phase interrupted has already
-     applied and pushed, so `final` behind it is a screen whose only button the
-     daemon refuses ("a manual batch retried through `/post` is refused every
-     time" — see the report's retry). The phase is kept when you `Esc` out, so
-     leaving and coming back is the way round, not a button that lies. */
-  root.appendChild(rvActs([
-    actBtn('continue · push and post', 'warm', () => finishManual(), !ready),
-  ], ready
-    ? 'writes nothing further · your edits are already on disk'
-    : `a comment is required on ${m.threads.length === 1 ? 'this thread' : 'each thread'}`));
-}
-
-/** One thread waiting on you: what they said, what you changed, what you will say. */
-function rvManualRow(/** @type {import('../snapshot').ManualThread} */ th) {
-  const wrap = el('div', 'manrow');
-
-  const top = el('div', 'top');
-  const [where, who] = splitLabel(th.label);
-  top.appendChild(el('span', 'p', where));
-  top.appendChild(el('span', 'who', who));
-  const said = (manualState.comments[th.thread_id] || '').trim();
-  top.appendChild(said
-    ? el('span', 'state got', 'answered')
-    : el('span', 'state wait', 'needs a comment'));
-  wrap.appendChild(top);
-
-  wrap.appendChild(el('blockquote', null, th.comment));
-
-  const label = el('div', 'eyebrow', 'your comment ');
-  label.appendChild(el('span', 'req', '· required'));
-  wrap.appendChild(label);
-
-  const box = el('textarea', 'box');
-  box.setAttribute('aria-label', 'Comment');
-  // The card's box was a draft; this is the comment. Seeded from it, because a
-  // half-written intention is still a starting point.
-  box.value = manualState.comments[th.thread_id] ?? th.draft ?? '';
-  box.oninput = () => {
-    manualState.comments[th.thread_id] = box.value;
-    // Only the button's enabled state depends on this, so nothing is re-rendered:
-    // repainting here would drop focus out of the box mid-sentence.
-    const send = $('rvoverlay').querySelector('.acts .act.warm');
-    if (send) {
-      const m = reviewState.report?.manual;
-      if (!m) return;
-      /** @type {HTMLButtonElement} */ (send).disabled = !m.threads.every((x) => (manualState.comments[x.thread_id] || '').trim());
-    }
-    // The row's own chip tracks the same thing, so it is flipped by hand rather
-    // than by a repaint that would take the focus with it.
-    const chip = wrap.querySelector('.state');
-    if (chip) {
-      const answered = !!box.value.trim();
-      chip.className = 'state ' + (answered ? 'got' : 'wait');
-      chip.textContent = answered ? 'answered' : 'needs a comment';
-    }
-  };
-  wrap.appendChild(box);
-
-  const foot = el('div', 'foot');
-  foot.appendChild(el('span', null, '(via orchestrator) is appended when it posts'));
-  wrap.appendChild(foot);
-  return wrap;
-}
-
-/** `a.ts:12 · alice` back into its two halves, for the row's own layout. */
-function splitLabel(/** @type {string} */ label) {
-  const at = label.lastIndexOf(' · ');
-  return at < 0 ? [label, ''] : [label.slice(0, at), label.slice(at + 3)];
-}
-
-/** What you have edited since the phase opened.
- *
- *  One `git diff` for the whole tree, shown against every waiting thread rather
- *  than split between them: two manual threads editing one file cannot be told
- *  apart, and the commit is the tree's anyway. Pretending to attribute it would be
- *  a guess dressed as a fact. */
-async function loadManualDiff() {
-  try {
-    manualState.changed = await get(`/api/pr/${reviewState.pr}/manual`);
-  } catch (e) {
-    toast(reason(e), true);
-  }
-  renderReview();
-}
-
-/** Send the comments and let the batch finish.
- *
- *  Carries the decisions again, and the sha the phase reported. There is no pending
- *  state on the daemon to go stale: what the first half produced is a commit, so
- *  git is the record, and `HEAD` moving is what a refusal is made of. */
-async function finishManual(/** @type {any} */ replay) {
-  if (reviewState.busy) return;
-  // Only reachable from the phase's own button and the report's retry, but it reads a
-  // phase out of the report and a throw here would blank the screen mid-batch.
-  const m = replay ? null : reviewState.report?.manual;
-  if (!replay && !m) return;
-  const missing = (m?.threads || []).filter((th) => !(manualState.comments[th.thread_id] || '').trim());
-  if (missing.length) {
-    return toast('a comment is required on a manual thread — the reviewer would get ' +
-                 'a commit and silence otherwise', true);
-  }
-
-  /* Replayed verbatim on a retry. Rebuilding it would re-derive `batchPayload()`
-     from live state and re-read the tree, and the tree has moved on — the fold has
-     already happened — so the retry has to be the same request, not a new one. */
-  const payload = replay || {
-    batch: batchPayload(),
-    committed: m?.committed,
-    comments: manualState.comments,
-    // What the screen showed you, which is what you pressed the button under. The
-    // daemon refuses anything dirty that is not in here rather than sweeping it into
-    // the commit.
-    files: (manualState.changed?.files || []).map((f) => f.path),
-  };
-
-  reviewState.busy = true;
-  renderReview();
-  try {
-    const got = await call(`/api/pr/${reviewState.pr}/manual/done`, payload);
-    manualState.finished = payload;
-    /* A refusal carries no phase, and taking it at face value would drop the only
-       record of one — landing on a report that says "nothing was pushed, the
-       worktree is as it was" when half one's commit is on the branch and your edits
-       are still on disk, with no way back to the phase. So the phase is kept and the
-       refusal is shown on top of it. */
-    /* Only when pressing again could work. A stray file or a failing hook is
-       something you act on and retry; the branch having moved under the phase is
-       not — that sha can never match again, so restoring the phase would pin you to
-       a screen whose only button is guaranteed to fail. */
-    if (got.refused && got.retryable && !got.manual) got.manual = m;
-    reviewState.report = got;
-    reviewState.screen = got.manual ? 'manual' : 'report';
-    /* Cleared only when there is nothing left to come back to. The comments
-       described work that is now pushed, and keeping them would arm the next phase
-       on this PR with an answer to a different question — but the report's own
-       `retry` button is live while anything failed, and that retry re-enters the
-       phase, so throwing them away first would lose the words that were already
-       posted against. */
-    if (!got.manual && !got.refused && !(got.failed || []).length) {
-      manualState.comments = {};
-      manualState.changed = null;
-    }
-    // A stray-file refusal is about a tree that has moved on, so re-read it: the
-    // screen then shows what is actually there and pressing continue is a real
-    // second look rather than the same refusal again.
-    if (got.refused && got.retryable) void loadManualDiff();
-  } catch (e) {
-    toast(reason(e), true);
-  }
-  reviewState.busy = false;
-  renderReview();
-}
-
-/* ---------- the controller ---------- */
-
 function renderReview() {
   const root = $('rvoverlay');
   root.replaceChildren();
@@ -1636,32 +1186,15 @@ function renderReview() {
   // phase), so it does not fall through the `!data` guard the batch path needs.
   if (reviewState.session) return renderSessionReview(root);
 
+  /* **No session means no review**, and that is the whole of the ladder now. The
+     batch used to land here: triage posted proposals and this routed between the
+     gate, the cards, the send and two result screens with no session behind any of
+     them. With the batch gone, proposals belong to a session that is still running
+     — so the only thing to draw for a PR nobody is reviewing is the way to start
+     one. */
   if (!reviewState.data) return;
-
-  if (reviewState.report?.manual) reviewState.screen = 'manual';
-  else if (reviewState.report) reviewState.screen = 'report';
-  else if (reviewState.data?.gate) reviewState.screen = 'gate';
-  else if (!reviewState.data?.proposals) reviewState.screen = 'intake';
-  // Proposals are in and the tree is writable, but the screen is still sitting on
-  // a pre-decision default: `intake` because triage had not run when the overlay
-  // opened (and reopening the same PR does not reset it), or `gate` from before it
-  // cleared. Nothing else advances off those, so triage produced cards the overlay
-  // never showed. A screen the user navigated into — card, final, run — is left.
-  else if (reviewState.screen === 'intake' || reviewState.screen === 'gate') {
-    reviewState.screen = 'overview';
-  }
-
-  /** @type {Record<string, (root: HTMLElement) => void>} */
-  ({
-    intake: rvIntake,
-    gate: rvGate,
-    overview: rvOverview,
-    card: rvCard,
-    final: rvFinal,
-    run: rvRun,
-    manual: rvManual,
-    report: rvReport,
-  })[reviewState.screen](root);
+  reviewState.screen = reviewState.data?.gate ? 'gate' : 'intake';
+  (reviewState.screen === 'gate' ? rvGate : rvIntake)(root);
 }
 
 /* ---------- the single-session flow ---------- */
@@ -2027,17 +1560,18 @@ async function submitDecisions() {
     return toast(
       `write instructions for ${noInstr.map((x) => threadLabel(x.t)).join(', ')}`, true);
   }
-  /* **Who applies these depends on who read them.**
-     The overlay session stays alive and waits on a decision ask, so its picks are
-     the answer to that ask and it goes on into the change phase itself. The triage
-     pass is over by now — it has `asks: false` and ends at the proposals POST — so
-     there is nothing to answer, and the picks start a resolve run instead. That is
-     the same plan, handed to the pass built to carry it out.
+  /* **The session that read them is the one that applies them**, and there is no
+     longer a second pass to hand them to. This used to branch: a live session
+     answered its ask, and a finished headless triage started a resolve run over the
+     same picks instead. The triage pass and the run are both gone, so a set of
+     decisions with nothing waiting for them is a review whose session ended — which
+     is a sentence, not a fallback.
 
-     The ask is the test rather than the command, because it is the thing that is
-     actually true or not at this moment: reported as "the session is not waiting
-     on anything just now", on a screen whose only button was the one that said it. */
-  if (!sessionAsk()) return startRun();
+     The ask is the test rather than the session record, because it is the thing that
+     is actually true at this moment. */
+  if (!sessionAsk()) {
+    return toast('the session that read these threads is gone — start the review again', true);
+  }
 
   reviewState.busy = true;
   const ok = await answerSession('decisions', { decisions: decisionSet() });
@@ -2077,32 +1611,10 @@ async function loadReview(/** @type {number | null} */ pr) {
       reviewState.drafts = {};
       reviewState.notes = {};
       reviewState.i = 0;
-      // A comment describes work against a tree that has moved, so it is no longer
-      // an answer to anything.
-      manualState.comments = {};
-      manualState.changed = null;
       toast('the branch moved — decisions cleared, re-read the cards');
     }
     reviewState.head = base;
 
-    /* A batch that stopped for the manual phase now lives on the daemon, so a reload,
-       a restart, or coming back to this PR resumes it instead of stranding a branch
-       whose patches are already committed. Only adopted when the screen is not
-       already showing one, so a live phase's own state is never clobbered by a tick.
-
-       `open` matters: the same store also holds the daemon's record that it pushed,
-       for a batch that never stopped at all. That entry has no threads, and adopting
-       it landed you on an empty phase screen whose `continue · push and post` was
-       enabled, because every() over no rows is true. */
-    if (data.manual && data.manual.open && !reviewState.report) {
-      reviewState.report = {
-        refused: null, retryable: false, files: [], amend: null, pushed: null,
-        landed: [], failed: [], skipped: [], rerequested: [], held_back: [],
-        manual: data.manual,
-      };
-      reviewState.screen = 'manual';
-      void loadManualDiff();
-    }
     renderReview();
   } catch (e) {
     toast(reason(e), true);
@@ -2163,8 +1675,6 @@ async function openReview(/** @type {number | null} */ pr) {
   // Two overlays at the same z-index would stack; the diff viewer goes first.
   if (Diff.state.open) void Diff.close();
   if (reviewState.pr !== pr) {
-    manualState.comments = {};
-    manualState.changed = null;
     reviewState.picks = {};
     reviewState.skipped = {};
     reviewState.drafts = {};
@@ -2264,31 +1774,6 @@ function acceptCard() {
   advance();
 }
 
-/** Same decision, different hands: you write the code, the session waits.
- *
- *  Deliberately not a fourth stance. The words and the position are unchanged —
- *  only who implements them — and the reply is written later, in the phase, once
- *  the work exists. So an empty box is not a refusal here the way it is under
- *  `accept`.
- *
- *  **Nothing calls this, and so no thread is ever in `'manual'` mode.** No card
- *  button and no key choose it, which makes `modeOf` answer `'agent'` always and
- *  the `manual` label at the bottom of this file unreachable. Kept rather than
- *  deleted because the gap is a missing `actBtn`, not a wrong decision — the
- *  daemon's own `manual` screen is a different thing and still works. */
-// eslint-disable-next-line @typescript-eslint/no-unused-vars -- unwired, see above.
-function manualCard() {
-  const item = queue()[reviewState.i];
-  if (!item) return;
-  reviewState.picks[item.t.id] = pickOf(item);
-  reviewState.modes[item.t.id] = 'manual';
-  delete reviewState.skipped[item.t.id];
-  advance();
-}
-
-/** One skip state, not two. "Deliberately leaving this" and "ran out of time"
- *  have identical consequences — thread stays open, nothing posted, reviewer
- *  held back — so the distinction would be bookkeeping the tool cannot act on. */
 function skipCard() {
   const item = queue()[reviewState.i];
   if (!item) return;
@@ -2319,205 +1804,6 @@ function moveCard(/** @type {number} */ delta) {
   renderReview();
 }
 
-/* ---------- the batch ---------- */
-
-/** Send it. The payload carries thread ids and position *indices*, never
- *  content: the daemon already holds the proposals, and echoing them back would
- *  let a client substitute a different patch than the one that was reviewed. A
- *  `reply` overrides the drafted wording, and that is all it can override. */
-/** Thread ids and position indices, never content. Built in one place because the
- *  manual phase has to send exactly the same thing again to finish. */
-function batchPayload() {
-  const decisions = queue().filter(isHandled).map((item) => {
-    const i = pickOf(item);
-    const typed = reviewState.drafts[draftKey(item.t.id, i)];
-    return {
-      thread_id: item.t.id,
-      position: i,
-      reply: typed === undefined ? null : typed,
-      mode: modeOf(item),
-    };
-  });
-  return { base_sha: reviewState.data?.proposals?.base_sha, decisions };
-}
-
-async function sendBatch() {
-  if (reviewState.busy) return;
-  const { decisions } = batchPayload();
-  if (!decisions.length) return toast('nothing to send — every thread was skipped', true);
-
-  reviewState.busy = true;
-  renderReview();
-  try {
-    reviewState.report = await call(`/api/pr/${reviewState.pr}/post`, batchPayload());
-    // A batch that stopped for the manual phase is not a report yet.
-    reviewState.screen = reviewState.report?.manual ? 'manual' : 'report';
-    if (reviewState.report?.manual) void loadManualDiff();
-  } catch (e) {
-    // A rejected request is the daemon refusing before it wrote anything —
-    // a bad index, a thread that has gone, a gate that closed under you.
-    toast(reason(e), true);
-  }
-  reviewState.busy = false;
-  renderReview();
-}
-
-/** Hand the decisions to a session and watch it work.
- *
- *  The other half of `sendBatch`, and the one the flow is being moved to: instead
- *  of the daemon applying every patch in one go and refusing whatever will not
- *  apply, a session works down the same plan, adapts each fix to the branch as it
- *  is now, and stops to ask you when only you can answer. */
-async function startRun() {
-  if (reviewState.busy) return;
-  const { decisions } = batchPayload();
-  if (!decisions.length) return toast('nothing to hand over — every thread was skipped', true);
-
-  reviewState.busy = true;
-  /* **The screen moves before the round trip, not after.** Handing over takes a
-     moment, and a `loadReview` already in flight from the tick lands inside it and
-     repaints — which is the overview flashing up between pressing the button and
-     the run appearing. Put back on a refusal, which is the only way this returns
-     without a run. */
-  const was = reviewState.screen;
-  reviewState.screen = 'run';
-  // The picks are gone the moment this is sent, and that is what the flag means.
-  // The bar reads it for `writing the code`, and the tick reads it to know a
-  // session that ends has a result rather than nothing to come back to.
-  reviewState.decisionsSent = true;
-  renderReview();
-  try {
-    const r = await call(`/api/pr/${reviewState.pr}/resolve-run`, batchPayload());
-    /* **The work is somebody else's now, so the screen goes back to them.** The
-       same reason `read threads` hands you the pane: a full window saying a session
-       is applying your picks is one sentence the bar already carries, and the pane
-       it covers is where that session asks its own questions — which it does, per
-       thread, before each commit goes out. The run screen is still there on the
-       bar's `open` when you want the per-thread list. */
-    if (r.session) setPendingSelect(r.session);
-    closeReview();
-  } catch (e) {
-    reviewState.screen = was;
-    reviewState.decisionsSent = false;
-    toast(reason(e), true);
-  }
-  reviewState.busy = false;
-  renderReview();
-}
-
-/** What a thread's row says while the session works. Present tense until it is
- *  settled, because a run is watched, not read afterwards. */
-const RUN_STATE = {
-  pending: ['wait', 'waiting its turn'],
-  // Committed and on its way out: the daemon posts as each commit lands, so this
-  // is a moment the run passes through rather than a state that waits for you.
-  committed: ['work', 'committed · posting'],
-  replied: ['done', 'answered'],
-  held: ['held', 'committed, reply kept back'],
-  manual: ['manual', 'yours to write'],
-  words_only: ['reply', 'words only'],
-  needs_you: ['stop', 'needs you'],
-};
-
-/** Phase 3: an account of what happened, while it is happening.
- *
- *  Reads the daemon's own record rather than a report handed back at the end, so
- *  a run you are half-way through is as legible as a finished one — and a run
- *  whose session died still shows exactly how far it got. */
-function rvRun(/** @type {HTMLElement} */ root) {
-  const run = (snap.resolve_runs || {})[String(reviewState.pr)];
-  root.appendChild(rvHead('the session is working'));
-
-  const body = el('div', 'body');
-  if (!run) {
-    body.appendChild(el('div', 'note',
-      'No run on this PR. If you just started one, the daemon has not reported it yet.'));
-    root.appendChild(body);
-    return;
-  }
-
-  const sec = el('div', 'sec');
-  for (const t of run.threads) {
-    const [kind, word] = RUN_STATE[t.status] || ['wait', t.status];
-    const row = el('div', 'stage-row');
-    row.appendChild(el('span', 'k ' + kind, word));
-    const c = el('span', 'c');
-    c.appendChild(el('span', 'p', t.location));
-    if (t.commit) c.appendChild(el('span', 't', t.commit.slice(0, 7)));
-    if (t.note) c.appendChild(el('span', 't', t.note));
-    row.appendChild(c);
-    sec.appendChild(row);
-  }
-  body.appendChild(sec);
-
-  // The count that matters is not "how many done" but which kinds, so the tail
-  // buttons can be read against it.
-  const by = (/** @type {string} */ st) => run.threads.filter((t) => t.status === st).length;
-  const left = by('pending') + by('committed');
-  const foot = el('div', 'sec');
-  // A run that ended says so first: without it, threads left `pending` read as
-  // waiting their turn behind a session that is not there any more.
-  if (run.ended) {
-    foot.appendChild(el('div', 'note',
-      `${run.ended}. ${left ? `${left} thread(s) never got an answer — the rows above are where it stopped.`
-        : 'Every thread was accounted for.'}`));
-  } else {
-    foot.appendChild(el('div', 'note', left
-      ? `${left} still moving. The buttons below are yours whenever you want them; `
-        + 'nothing here fires on its own.'
-      : 'Nothing is moving. What is on the branch is what the session finished.'));
-  }
-  // The commits are the run's whole output and nothing pushes them for you, so
-  // this is said plainly rather than left to the push button to imply.
-  if (run.unpushed) {
-    foot.appendChild(el('div', 'note warn',
-      `${run.unpushed} commit${run.unpushed === 1 ? '' : 's'} on this branch that the remote does not have. `
-      + 'Replies are already out; the change they describe is not.'));
-  }
-  body.appendChild(foot);
-  root.appendChild(body);
-
-  /* **No way back to the cards from here.** The decisions are out: replies are
-     posted, commits are made, and the cards' own button would offer to apply and
-     push a batch that has already gone. It did not fail loudly either, which is
-     the worst shape for a dead end. `Esc` leaves the overlay and the bar keeps
-     reporting, which is the honest exit from a phase you cannot undo. */
-  root.appendChild(rvActs([
-    actBtn('push the branch', 'warm', () => runTail('push')),
-    actBtn('re-request review', null, () => runTail('rerequest')),
-  ], 'resolving a thread stays the reviewer\'s own button, by design'));
-}
-
-/** The two claims about the whole branch. Explicit, and never a side effect of
- *  the last reply going out. */
-async function runTail(/** @type {string} */ what) {
-  if (reviewState.busy) return;
-  reviewState.busy = true;
-  renderReview();
-  try {
-    const r = await call(`/api/pr/${reviewState.pr}/run/${what}`);
-    if (what === 'push') toast(`pushed ${r.pushed}`);
-    else {
-      const n = (r.rerequested || []).length;
-      if (n) toast(`re-requested ${r.rerequested.join(', ')}`);
-      // Why nobody, not just that there was nobody: before, a reviewer held back by
-      // a thread of their own read the same as a PR with no reviewers at all.
-      for (const h of r.held_back || []) toast(h);
-      if (!n && !(r.held_back || []).length) toast('nobody to re-request yet');
-      for (const f of r.failed || []) toast(f, true);
-    }
-  } catch (e) {
-    toast(reason(e), true);
-  }
-  reviewState.busy = false;
-  renderReview();
-}
-
-/** Keys claimed while the overlay is open. Returns whether it handled one.
- *
- *  Only bare keys, and only when nothing is focused for typing: the capture
- *  handler runs before any element listener wherever focus is, so a reply
- *  containing "check the job" would otherwise jump cards mid-sentence. */
 function reviewKey(/** @type {KeyboardEvent} */ e) {
   if (e.key === 'Enter') {
     // A focused control owns Enter. Without this the global handler hijacks it to
