@@ -1,21 +1,24 @@
 #!/usr/bin/env node
 // The daemon's module graph, held where it is and no worse.
 //
-//   node tools/rust-modules.mjs           check against the baseline
-//   node tools/rust-modules.mjs --write   re-record it, after breaking a pair
+//   node tools/rust-modules.mjs           refuse a cycle
 //   node tools/rust-modules.mjs --dot     graphviz, to look at
 //
-// **A ratchet, not a gate.** The SPA's graph is a DAG and `dependency-cruiser`
-// keeps it one; the daemon's is the inverse — it started at 39 modules, 154
-// edges, 17 mutual pairs and a 16-module strongly connected component, and
-// nothing reported it. That is a fair part of why `api.rs` is 5,681 lines and `spawn.rs`
-// 3,371: inside an SCC no module can be read, tested or moved on its own.
+// **A gate now, and it was a ratchet.** It started at 39 modules, 154 edges, 17
+// mutual pairs and a 16-module strongly connected component, and nothing reported
+// it. That is a fair part of why `api.rs` is 5,681 lines and `spawn.rs` 3,371:
+// inside an SCC no module can be read, tested or moved on its own. Making the
+// graph a DAG in one change was not reviewable, so this held the line instead — a
+// new mutual pair failed, and a pair that went away failed too until it was taken
+// out of a baseline, so the number could only fall.
 //
-// Making it a DAG today is not a change anybody can review, so this holds the
-// line instead: a **new** mutual pair fails, and a pair that disappears fails
-// too until it is taken out of `rust-modules.json`. The second half is what
-// makes it a ratchet rather than a permanent list of exceptions — the number can
-// only go down, and going down is a commit that says so.
+// It fell to zero, and the graph is acyclic, so the baseline is gone and the rule
+// is the SPA's: **no cycle at all**. Two reasons to make the swap rather than
+// leave a ratchet sitting on an empty list. A pair list cannot see a three-module
+// cycle, so the thing it was counting was never the thing that hurt. And an empty
+// list of exceptions is a rule with nothing left to negotiate — the same shape
+// `dependency-cruiser` holds over `web/js`, which nobody has needed an exception
+// to since it went in.
 //
 // **Seven pairs are gone, in two passes, and each pass had one shape.**
 //
@@ -62,12 +65,11 @@
 // question — and `git <-> review_commit`, when `fold_in` stopped taking the
 // decision type and took `git::Fold` instead.
 
-import { readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const BASELINE = `${root}/tools/rust-modules.json`;
 
 /** Every crate's `src/`.
  *
@@ -174,11 +176,66 @@ for (const f of files) {
 // `crate::model` is a module; `crate::MAIN` is not.
 for (const to of edges.values()) for (const t of [...to]) if (!mods.has(t)) to.delete(t);
 
-const pairs = [];
-for (const [a, to] of edges) {
-  for (const b of to) if (a < b && edges.get(b)?.has(a)) pairs.push(`${a} <-> ${b}`);
+/** Every cycle, as its strongly connected component — Tarjan, iterative.
+ *
+ *  **A pair check could not see a three-module cycle**, which is what the old
+ *  ratchet counted and why the number it reported was never the whole answer. A
+ *  component of one is a module, a component of more is modules that cannot be
+ *  read, tested or moved apart. Iterative rather than recursive because the
+ *  recursion depth is the module count and a stack overflow in a gate reads as a
+ *  broken tool. */
+function cycles() {
+  const idx = new Map();
+  const low = new Map();
+  const on = new Set();
+  const stack = [];
+  const found = [];
+  let next = 0;
+  for (const root of edges.keys()) {
+    if (idx.has(root)) continue;
+    const work = [[root, [...(edges.get(root) ?? [])][Symbol.iterator]()]];
+    idx.set(root, next);
+    low.set(root, next);
+    next += 1;
+    stack.push(root);
+    on.add(root);
+    while (work.length) {
+      const [v, it] = work[work.length - 1];
+      let descended = false;
+      for (const w of it) {
+        if (!idx.has(w)) {
+          idx.set(w, next);
+          low.set(w, next);
+          next += 1;
+          stack.push(w);
+          on.add(w);
+          work.push([w, [...(edges.get(w) ?? [])][Symbol.iterator]()]);
+          descended = true;
+          break;
+        }
+        if (on.has(w)) low.set(v, Math.min(low.get(v) ?? 0, idx.get(w) ?? 0));
+      }
+      if (descended) continue;
+      work.pop();
+      if (work.length) {
+        const p = work[work.length - 1][0];
+        low.set(p, Math.min(low.get(p) ?? 0, low.get(v) ?? 0));
+      }
+      if (low.get(v) === idx.get(v)) {
+        const comp = [];
+        for (;;) {
+          const w = stack.pop();
+          if (w === undefined) break;
+          on.delete(w);
+          comp.push(w);
+          if (w === v) break;
+        }
+        if (comp.length > 1) found.push(comp.sort());
+      }
+    }
+  }
+  return found;
 }
-pairs.sort();
 
 if (process.argv.includes('--dot')) {
   console.log('digraph orchd {');
@@ -188,34 +245,16 @@ if (process.argv.includes('--dot')) {
 }
 
 const edgeCount = [...edges.values()].reduce((n, s) => n + s.size, 0);
-if (process.argv.includes('--write')) {
-  // **Only what is checked.** This file used to record the module and edge counts
-  // beside the pairs, and nothing read them back — so they sat at 155 edges while
-  // the tree had 122. A number a file states and nothing verifies is a number that
-  // rots. The live counts are printed on every run instead.
-  writeFileSync(BASELINE, `${JSON.stringify({
-    '//': 'Mutual imports between modules, and nothing else. A ratchet: a new pair '
-        + 'fails, and a pair that goes away has to be deleted here. Counts are not '
-        + 'recorded — see tools/rust-modules.mjs for why.',
-    mutual: pairs,
-  }, null, 2)}\n`);
-  console.log(`rust-modules: recorded ${pairs.length} mutual pair(s)`);
-  process.exit(0);
-}
 
-const want = JSON.parse(readFileSync(BASELINE, 'utf8')).mutual;
-const added = pairs.filter((p) => !want.includes(p));
-const gone = want.filter((p) => !pairs.includes(p));
-
-if (added.length) {
-  console.error('rust-modules: a new mutual import — these two modules are now one:');
-  for (const p of added) console.error(`  ${p}`);
-  console.error('Break it, or record it with `node tools/rust-modules.mjs --write` and say why.');
+// **Only what is checked.** A baseline file used to record the module and edge
+// counts beside the pairs, and nothing read them back — so they sat at 155 edges
+// while the tree had 122. A number a file states and nothing verifies is a number
+// that rots. The live counts are printed on every run instead.
+const found = cycles();
+if (found.length) {
+  console.error('rust-modules: a cycle — these modules cannot be read or moved apart:');
+  for (const comp of found) console.error(`  ${comp.join(' -> ')} -> ${comp[0]}`);
+  console.error('The graph is a DAG and has to stay one. `--dot` shows where the edge came in.');
+  process.exit(1);
 }
-if (gone.length) {
-  console.error('rust-modules: these pairs are gone — good. Take them out of the baseline:');
-  for (const p of gone) console.error(`  ${p}`);
-  console.error('  node tools/rust-modules.mjs --write');
-}
-if (added.length || gone.length) process.exit(1);
-console.log(`rust-modules: ${mods.size} modules, ${edgeCount} edges, ${pairs.length} mutual pairs (no worse)`);
+console.log(`rust-modules: ${mods.size} modules, ${edgeCount} edges, no cycles`);

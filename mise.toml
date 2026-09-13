@@ -97,17 +97,17 @@ run = "cargo about generate --fail --workspace about.hbs > THIRD-PARTY-RUST.md"
 #
 # Not in the pre-commit hook: clippy already costs ~7s of a Rust commit, and a
 # dead link is not a build people can trip over. CI is the gate.
-# The daemon's module graph, held where it is. `src/` is the inverse of the SPA's
-# DAG — 40 modules, 159 edges, 17 mutual pairs, a 23-module strongly connected
-# component — and nothing reported it until now. A ratchet rather than a gate: a
-# new mutual pair fails, and one that goes away has to be taken out of the
-# baseline, so the number can only fall.
+# The daemon's module graph, which is the SPA's rule pointed at the crates. It was
+# the inverse of that DAG — 17 mutual pairs and a 16-module strongly connected
+# component, reported by nothing — and it was a ratchet on a shrinking baseline
+# until the count reached zero. Now it refuses a cycle outright, the way
+# `dependency-cruiser` does over `web/js`; `tools/rust-modules.mjs` has the
+# argument for the swap.
 #
 #   mise run check-modules
-#   node tools/rust-modules.mjs --write   # after breaking a pair
 #   node tools/rust-modules.mjs --dot     # to look at it
 [tasks.check-modules]
-description = "Hold the daemon's module graph no worse than it is"
+description = "Refuse a cycle in the daemon's module graph"
 dir = "{{config_root}}"
 run = "node tools/rust-modules.mjs"
 

@@ -553,38 +553,50 @@ where they were written. Every one of them cost something.
   what is left over: boot order, the websocket, the keyboard map, the window
   chrome — under a thousand lines, from 4798 before the split.
   `mise run check-web` prints the current module and dependency count.
-- **The daemon's module graph is the inverse of the SPA's, and it is held where
-  it is.** `mise run check-modules` is a **ratchet**, not the DAG rule the SPA
-  gets: a new mutual pair fails, and a pair that goes away fails too until it is
-  deleted from `tools/rust-modules.json`, so the number can only fall. That
-  script's own header carries where it started, the three passes that broke
-  fifteen pairs and the shape each had; `docs/crate-split.md` has the measured
-  plan for what is left.
-  **Two pairs are left, and both are one fact**: `spawn` owns the only
-  `pty.wait()`, so it is where a run's end is learned — and it then calls
-  `fix_pr::settle`, `fix_pr::start` and `triage`'s guards by name, while both
-  modules call `spawn_run` to start the run in the first place. Breaking that is
-  a design change rather than a move: the exit has to be published and the
-  feature has to subscribe, and the subscription has to survive a restart, since
-  `auto_resume` rebuilds a run's session from its `Pass` alone. A hook on
-  `RunSpec` does **not** do it — `RunSpec` is not persisted, so a fix run
-  resumed after a restart would never settle.
-  Three things about the reader are worth carrying beyond it. **The baseline holds
-  the pairs and nothing else** — it used to record module and edge counts that
-  nothing read back, so they sat at 155 while the tree had 122, and a number a
-  file states and no tool verifies is a number that rots; the live counts are
-  printed on every run instead. **A number a tool reports is a claim the tool has
-  to earn**: the SCC was reported as 23 modules, which was this script's own
-  pattern failing to cut `pty.rs`'s `pub(crate) mod tests`, and the figure reached
-  a commit message and a review before anybody checked it. And **it cuts every
-  `#[cfg(test)]` module rather than slicing the file at the first one**, which is
-  the same lesson a third time: the old cut kept the head of the file on the
-  written assumption that the test module is the last item, and `api.rs` carried
-  858 lines of handlers below its tests — two edges read nowhere, measured by
-  running both versions over the same file. Their tests are at the end now as
-  well, because clippy's `items_after_test_module` reads the crate root alone and
-  every file here is a submodule.
-
+- **The daemon's module graph is a DAG now, and `mise run check-modules` refuses a
+  cycle.** It was a ratchet for a long time and its own header carries the three
+  passes that got it here: 17 mutual pairs and a 16-module strongly connected
+  component at the start, seven broken by moving a *shape* into the module that
+  owns shapes, six more when `state::Inner`'s four feature types followed them
+  into `model`, and the last two by the inversion below.
+  **The swap from ratchet to rule is the point, not the count.** A pair list
+  cannot see a three-module cycle, so what it counted was never quite what hurt —
+  measured by deliberate breakage, one added edge in `model.rs` now reports
+  `git -> model -> state -> store -> git`, which the old check would have called
+  no worse. And a ratchet sitting on an empty baseline is a rule with nothing left
+  to negotiate, so the baseline file is gone.
+  Two things about the reader are worth carrying. **A number a tool reports is a
+  claim the tool has to earn**: the SCC was once reported as 23 modules, which was
+  this script's own pattern failing to cut `pty.rs`'s `pub(crate) mod tests`, and
+  the figure reached a commit message and a review before anybody checked it. And
+  **it cuts every `#[cfg(test)]` module rather than slicing the file at the first
+  one** — the old cut kept the head of the file on the written assumption that the
+  test module is last, and `api.rs` carried 858 lines of handlers below its tests,
+  two of whose edges were read nowhere.
+- **A run's end is published, not dispatched by name.** `spawn` owns the only
+  `pty.wait()`, so it is where a run ending is learned — and it used to settle the
+  run itself, calling `fix_pr::settle`, `fix_pr::start` and `triage`'s predicates,
+  which is exactly why it imported the two modules that call `spawn_run` to start
+  a run. `watch_session_exit` now fills a `state::RunExit` and calls
+  `app.run_ended`; `orchd_serve::settle_run` is the one subscriber, installed by
+  `start` beside the pollers.
+  **A hook on `RunSpec` is the obvious shape and is wrong.** `RunSpec` is neither
+  persisted nor in `spawn::Carried`, and `auto_resume` rebuilds a run's session
+  from its `Pass` alone — so a fix run resumed after a restart would have no hook
+  left and would never settle, silently. The observer is installed once per
+  process, so a resume finds it exactly as the first spawn did.
+  Two details that are load-bearing. It is a plain `fn` returning a boxed future
+  rather than a channel, so the call keeps its place in the exit sequence; and it
+  is called **after** `release_main`, because `fix_pr::start` refuses while a live
+  session holds the branch. An unobserved `AppState` — every unit test — drops the
+  news, which is why the pair of tests is split: `spawn` asserts the exit is
+  published with the right pass and flag, and `orchd-serve` asserts a refused
+  hand-off takes `fix_pr_on_exit` back.
+  The vocabulary moved with it: the six `Pass` commands are associated constants
+  on `model::Pass` (`FIX_PR`, `REVIEW`, `TRIAGE`, `RESOLVE_RUN`, `HANDLE_REVIEW`,
+  `STORY`) with `posts_proposals` and `is_triage_of` beside them, because "which
+  command is this" is asked by the spawn that records it, the route that finds it,
+  the rail that colours it and the watcher that settles it.
 - **The module graph is a DAG, and it was made one on purpose.** `app.js` → the
   six; `rail` → `term`, `review`; `review` → `diff`; everything → `core`. Three
   cycles had to be broken first, and each inversion is the reason a boundary is

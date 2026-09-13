@@ -185,8 +185,9 @@ jobs:
         if: runner.os == 'Linux'
         run: sh tools/check-web.sh
 
-      # The daemon's own module graph, which is the SPA's rule pointed at `src/`.
-      # A ratchet, not a gate: `tools/rust-modules.mjs` has the argument.
+      # The daemon's own module graph, which is now literally the SPA's rule
+      # pointed at the crates: no cycle, and no baseline to negotiate with.
+      # `tools/rust-modules.mjs` carries the three passes that got it there.
       - name: Check the module graph
         if: runner.os == 'Linux'
         run: node tools/rust-modules.mjs

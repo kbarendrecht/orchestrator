@@ -14,19 +14,22 @@ first: every step cost something the sketch did not predict.
 
 `tools/rust-modules.mjs` exists because nothing reported the daemon's module
 graph, and what it found was 17 mutual imports and a strongly connected component
-of 16 modules. All but two of those pairs are gone. What is left is a ratchet — a
-script that holds a number — and a script holding a number is a rule with a
-runtime. **`cargo` enforces this for free between crates**, and the day the split
-happens that script can be deleted.
+of 16 modules. **They are all gone, and the graph is a DAG**, so that script is no
+longer a ratchet holding a number: it refuses a cycle, the way
+`dependency-cruiser` does over `web/js`. It stays after the split for the reason
+*What it does not buy* gives — `cargo` enforces the boundaries a split draws, and
+a cycle inside one crate is not one of them.
 
 That is the whole argument. It is not about build times; see *What it does not
 buy* below.
 
 ## The graph today
 
-44 modules, 136 edges, 2 mutual pairs. Condense the strongly connected component
-to one node and what is left is a **clean nine-layer DAG** — the split needs no
-code change to be *possible*, only the mechanical work of moving files.
+44 modules, 135 edges, no cycles — a **clean nine-layer DAG**, so the split needs
+no code change to be *possible*, only the mechanical work of moving files. The
+layering below still names the runtime core as one layer; it is eleven modules
+that call each other in one direction now rather than a strongly connected
+component.
 
 ```
 layer 0  edit guard headroom migrate names proposal pty secret timing window
@@ -154,8 +157,9 @@ dominate any build that touches `base` — which is most of them, since `git` an
 `model` live there. Expect a wash, and measure rather than assume.
 
 **Not fewer cycles.** `cargo` enforces the boundaries a split *draws*; it draws
-none through a crate. Both remaining pairs are inside the runtime core, which is
-why `tools/rust-modules.mjs` still has work to do after every step.
+none through a crate — so a cycle reintroduced inside the runtime core would pass
+every cargo check there is. That is why `tools/rust-modules.mjs` stays after the
+last step rather than being deleted at it.
 
 ## How to do it without one unreviewable commit
 
@@ -294,9 +298,8 @@ which is the good case. The exclude is spelled in full rather than as
 `tools/rust-modules.mjs` at this step, on the reasoning that `cargo` would then
 enforce what it ratchets. That reasoning is wrong, and its own *What it does not
 buy* section says so two paragraphs earlier: `cargo` enforces the boundaries a
-split **draws**, and it draws none through a crate. Every remaining mutual pair
-is inside a single crate — `fix_pr <-> spawn` and `spawn <-> triage`, both in the
-runtime core — so `cargo` can see none of them. The script is the only thing
-that can, and it now needs no special case for a root `src/`: every crate is under
-`crates/`. It goes when the runtime core is split, which is a design change and
-not on this page.
+split **draws**, and it draws none through a crate. Every pair it ever held was
+inside a single crate, so `cargo` could see none of them. The script is the only
+thing that can, and it now needs no special case for a root `src/`: every crate is
+under `crates/`. It does not go when the runtime core is split either — a cycle
+drawn inside any one crate is still invisible to cargo.
