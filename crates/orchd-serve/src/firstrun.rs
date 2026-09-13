@@ -1,10 +1,12 @@
 //! First-run logic: the recent-projects list and validating a chosen folder.
 //!
 //! The pure half of the first-boot flow — no window, no daemon, no Tauri — so it
-//! runs and is tested like everything else. The desktop crate's bootstrap server
-//! serves these over HTTP and adds the two things that need the app: the native
-//! folder dialog and starting the daemon. Detection of a repo's settings (base
-//! branch, GitHub repo, processes) is the review step and lands beside this later.
+//! runs and is tested like everything else. The bootstrap server that serves it is
+//! [`serve`], below; the app adds the two things that need a window, through
+//! [`BootstrapHost`]: the native folder dialog and starting the daemon.
+//! Detection of a repo's settings (base branch, GitHub repo, processes) is here
+//! too, in [`detect`] — this docblock said it would "land beside this later", and
+//! it landed.
 //!
 //! Recents live in the config dir, so `ORCHD_CONFIG_DIR` relocates them with
 //! everything else — which is what lets a test point the whole list at a temp dir.

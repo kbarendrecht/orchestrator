@@ -40,9 +40,12 @@
 //
 // **The split is done and this script stayed.** Four crates now, and `cargo`
 // refuses a cycle that crosses any of their lines — but it cannot see one *inside*
-// a crate, and all ten remaining pairs are inside one: nine in the runtime core,
-// and `git <-> review_commit` in `orchd-base`. Splitting the runtime core is a
-// design change rather than a move, so this is what watches those ten until then.
+// a crate, and every remaining pair is inside one. Splitting the runtime core is a
+// design change rather than a move, so this is what watches them until then.
+// Two more have gone since: `api <-> post`, when `workspace_for` and `push_branch`
+// moved onto `AppState` — a question about the workspace map is not an HTTP
+// question — and `git <-> review_commit`, when `fold_in` stopped taking the
+// decision type and took `git::Fold` instead.
 
 import { readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';

@@ -97,7 +97,7 @@ what it costs.
 
 ```
 cargo check --workspace             # the daemon and orchd-base
-cargo test --workspace              # 579 tests, all in-tree
+cargo test --workspace              # the whole suite, all in-tree
 cargo fmt --all                     # the formatter, gated in CI and the hook
 cargo clippy --workspace --all-targets   # what CI lints with, and it denies warnings
 mise run check-web                  # type-check and lint the SPA + enforce its module graph
@@ -106,7 +106,7 @@ mise run check-deps                 # advisories, licences, unused crates, spell
 mise run check-modules              # the daemon's module graph, held no worse
 mise run page-check                 # what the rendered page must never show
 mise run notices                    # regenerate THIRD-PARTY-RUST.md
-mise run e2e                        # 24 flows against a real daemon, ~60s
+mise run e2e                        # 24 flows against a real daemon
 cargo run -p orchestrator-desktop   # the app, daemon embedded in-process
 mise run shot                       # screenshot the running SPA (drives Chrome)
 mise run release                    # bump, wait for CI, tag and push
@@ -214,6 +214,11 @@ mean *this* repo; if you do, name it.
 
 ## Things that will bite you
 
+Grouped, and the grouping is the only order there is: inside one, entries sit
+where they were written. Every one of them cost something.
+
+### The host, its children, and their state
+
 - **A checkout's daemon is a child process, and `crates/orchd-base/src/child.rs` is the protocol.**
   `child::launch` runs `orchd --main <checkout> --host-origin <origin> --announce`,
   reads one line — `ready <port> <token>` — and arms **one** observer thread that
@@ -257,7 +262,12 @@ mean *this* repo; if you do, name it.
   every durable thing at once — config, `sessions.json`, `automation.json`,
   `hooks.json`, the skills plugin dir, transcripts, the log and the instance lock.
   One variable rather than a flag per store, because a flag per store is one
-  somebody forgets and two checkouts then share a file.
+  somebody forgets and two checkouts then share a file. It is also what makes a
+  fixture daemon safe. **Overriding `HOME` would relocate the same things for free
+  and is wrong** — `claude` reads its credentials from there, so every spawned
+  session would come up unauthenticated. The one exception is `mise run e2e`,
+  where the agent is a fake with no credentials to lose, so relocating `HOME` is
+  what keeps transcripts out of your `~/.claude/projects`.
   **The move from the old single `config.json` is a one-shot in `host.rs`, not a
   `migrate.rs` rule**, for two reasons that are easy to get wrong. That table's
   `apply` is `fn(&mut Map<String, Value>) -> bool` and `config_file` ends in one
@@ -318,6 +328,8 @@ mean *this* repo; if you do, name it.
   **cannot** move: `hooks.rs` writes that daemon's own port into its own settings
   file, so an agent's hook URL is the port of the daemon that spawned it.
 
+### The gates, and what each one caught
+
 - **The SPA is compiled in.** Everything under `web/` is `include_str!`d, so a
   CSS or JS change is invisible until the daemon is rebuilt *and* restarted. No
   amount of reloading the page helps — and a stale process holding the port makes
@@ -330,27 +342,20 @@ mean *this* repo; if you do, name it.
   daemon. Kill by pid, or `pgrep -x orchestrator-de` for the app.
 - **There is a pre-commit hook, and it needs enabling once per clone.**
   `git config core.hooksPath .githooks` — git will not let a repo point at its own
-  hooks, so a fresh clone has none until you say this. It runs the SPA checks only
-  when something they could fail on is staged: ~2s on a `web/` change, nothing at
-  all on a docs commit. A Rust change also re-checks `web/snapshot.d.ts` and
-  refuses if the committed copy no longer matches the structs.
-  `--no-verify` is a fine thing to reach for mid-refactor; the real gate is
-  `mise run check-web`.
-  **Every fifth Rust-or-`tools/e2e/` commit it also runs the e2e flows**, ~45s
-  instead of ~2s — a middle ground, since running them always teaches everybody
-  `--no-verify`.
-  **And the hook is the only thing that runs them.** This used to say that never
-  running them here "leaves those faults to CI", which was a fallback nobody had
-  built: `check.yml` runs the tests, the lints, the SPA gates and `page.mjs`, and
-  no workflow runs `tools/e2e/run.mjs` at all. So a commit that skips the hook
-  skips those 24 flows entirely, and the class of fault they exist for — the
-  `claim_main` race, what git hands a hook — reaches nobody. Worth closing, and
-  cheap to (`node tools/e2e/run.mjs` builds its own binaries); the reason it has
-  not been is that a flaky gate is worse than no gate, and these flows have
-  flaked twice. Measure the flake rate before adding the job, not after. The counter is
-  in `.git/`, only qualifying commits spend it, and a *failure does not reset it*
-  so the next commit tries again rather than burying a break for four more.
-  `E2E_EVERY=1` forces a run, `E2E_EVERY=0` turns it off.
+  hooks, so a fresh clone has none until you say this. It runs only what the staged
+  files could break, and its own header says why that matters; `--no-verify` is a
+  fine thing to reach for mid-refactor, and the real gate is `mise run check-web`.
+  **Every fifth Rust-or-`tools/e2e/` commit it also runs the e2e flows**, ~35s
+  instead of ~2s, and **the hook is the only thing that runs them** — no workflow
+  runs `tools/e2e/run.mjs` at all, so a commit that skips the hook skips those 24
+  flows entirely, and the class of fault they exist for reaches nobody. Worth
+  closing and cheap to; the reason it is not closed is that these flows have flaked
+  twice and a flaky gate is worse than no gate. Measure the flake rate before
+  adding the job, not after. The counter is in `.git/`, only qualifying commits
+  spend it, and a *failure does not reset it* so the next commit tries again rather
+  than burying a break for four more. `E2E_EVERY=1` forces a run, `E2E_EVERY=0`
+  turns it off.
+
 - **Splitting one working tree into several commits has two traps, and neither
   fails loudly.** `git diff -U0` splits finely, but `git apply --cached
   --unidiff-zero` has no context to check against and *trusts the line numbers*:
@@ -380,67 +385,48 @@ mean *this* repo; if you do, name it.
   field, an added cycle, an un-awaited `confirmBox`, and a new module file each
   fail it. There is still **no build step**: `tsc` only checks, and the files ship
   exactly as written.
+  **`web/snapshot.d.ts` is generated, never hand-written**: it comes from the Rust
+  structs via `ts-rs`, derived under `cfg(test)`, so nothing of it reaches the
+  binary and it is never `include_str!`d or served. Rename a snapshot field and
+  the diff shows up there — which is the point, since the old failure mode was a
+  renamed field reading as `undefined` and rendering as nothing. Commit the
+  regenerated file with the Rust change; the entry on the crates says why four of
+  them are written in a fixed order.
 - **ESLint answers what `tsc` structurally cannot: the promise nobody awaited.**
   `tsc` knows a name and its type; it has nothing to say about a `Promise` used as
-  a boolean. `if (Diff.edit.on && !Diff.closeEditor())` shipped that way after the
-  native-dialog migration made `closeEditor` async — `!promise` is always false,
-  so the split-mode toggle went ahead while "Discard unsaved edits?" was still on
-  screen, whatever you answered. `no-misused-promises` reported that line and one
-  other, and nothing else in the SPA.
-  Three settings are load-bearing, and `tools/eslint.config.mjs` says why beside
-  each. `no-floating-promises` runs with `ignoreVoid`, so **`void f()` is how you
-  say "fire and forget" out loud** — 37 handlers say it now, and the next dropped
-  promise that did not mean to is the one the rule catches. `checksVoidReturn` is
-  off for properties, because `el.onclick = async () => …` is how every handler
-  here is written. And `no-restricted-globals` refuses `confirm`, `prompt` and
-  `alert`: that rule was a paragraph in this file, and a paragraph cannot fail a
-  build.
+  a boolean, and one shipped. Three settings are load-bearing and
+  `tools/eslint.config.mjs` says why beside each. The one to know before writing a
+  handler: `no-floating-promises` runs with `ignoreVoid`, so **`void f()` is how
+  you say "fire and forget" out loud** — 37 handlers do, and the next dropped
+  promise that did not mean to is the one the rule catches.
 - **The SPA type-checks under `strict`, and getting there found two bugs.**
-  `strictNullChecks` was the expensive-looking one at 400 errors
-  and **`$` was 268 of them**: it returned `HTMLElement | null`, so every one of
-  161 call sites owed a guard that could never run. It throws now — every id it
-  is asked for is in `index.html`, which is compiled into the same binary, so a
-  miss is the page and the code out of step rather than a state to handle, and
-  the throw says which id at the call instead of surfacing three lines later as
-  "cannot read properties of null".
-  The remaining 132 were real, and two were bugs. The review overlay reads
-  `data.title`, `data.url` and `data.head_ref`, each behind a fallback, and
-  `api::pr_review` never sent any of them — so the header read "review", the
-  branch read "this branch", and the GitHub button hid itself, for months.
-  `diffState.anchors` was annotated `number[]` by hand and holds `HTMLElement`s;
-  the checker said so immediately.
-  **The types came from Rust wherever there was a struct to take them from.**
-  `DiffSummary`, `FileDiff`, `Hunk`, `Row`, `Thread`, `Proposal`, `PostReport`,
-  `Gate` and the rest are `ts-rs` exports now, like the snapshot — so the diff
-  pane and the review overlay are checked against the daemon rather than against
-  a hand-written guess. `/api/pr/:n/review` builds a `json!` literal with no
-  struct behind it, and that is the one shape `review.js` still describes by
-  hand; it says so where it does.
-  `noImplicitAny` was the long tail: **589 errors, 478 of them a parameter with
-  no annotation**. The types are spelled against the `ts-rs` exports wherever a
-  struct exists, so an annotation is the daemon's own shape rather than a guess —
-  and the guesses that were not caught themselves immediately: `TermEntry.sent`
-  was annotated `number` and holds `{rows, cols}`, `anchors` `number[]` and holds
-  elements, `rvRead` took a `Position` and is given a `Proposal`.
-  Two things learned the hard way while doing it. **A parameter annotation goes in
-  by line and column, so never insert a line into the same file in the same
-  pass** — everything after it lands in the middle of a word, and the repair is
-  manual. And `el()` is generic on its tag (`@template {keyof HTMLElementTagNameMap}`)
-  rather than returning `HTMLElement`: that is what keeps `el('input').value`
+  `tools/tsconfig.json` says what each pass cost and what it caught — the review
+  overlay reading three fields the daemon never sent, `diffState.anchors`
+  annotated `number[]` while holding elements. Three things it does not say.
+  **`$` throws rather than returning `null`**: every id it is asked for is in
+  `index.html`, which is compiled into the same binary, so a miss is the page and
+  the code out of step rather than a state to handle, and the throw names the id
+  at the call instead of surfacing three lines later.
+  **A parameter annotation goes in by line and column**, so never insert a line
+  into the same file in the same pass — everything after it lands in the middle of
+  a word, and the repair is manual.
+  And `el()` is generic on its tag (`@template {keyof HTMLElementTagNameMap}`)
+  rather than returning `HTMLElement`, which is what keeps `el('input').value`
   checked instead of sending every form control through `ctl`.
+  The types come from Rust wherever there is a struct to take them from, so the
+  diff pane and the review overlay are checked against the daemon rather than a
+  hand-written guess. `/api/pr/:n/review` builds a `json!` literal with no struct
+  behind it, and that is the one shape `review.js` still describes by hand; it
+  says so where it does.
+
 - **`catch (e)` gives you `unknown`, and `core.reason(e)` is the one answer.**
   46 catch blocks all said `e.message`, which is `undefined` for a thrown string,
   a `DOMException`, or anything else that is not an `Error` — and that word then
   goes in a toast. `useUnknownInCatchVariables` is on, so the next one cannot.
-- **`mise run page-check` asserts what the page must never *show*.** Four things,
-  each of which has happened: an unresolved `MOD` placeholder (the legend's
-  descriptions kept theirs once), the word `undefined` or `NaN` where a person
-  reads, two sets of window buttons (#11), and anything thrown during boot.
-  **Deliberately not screenshots**, and the reason is this repo's own commit log:
-  layout and copy are what most commits change, so a pixel baseline would arrive
-  red on the intentional ones and be answered with a blind update — the same
-  habit as `--no-verify`. It would also police Chrome, while the app ships
-  WebKitGTK and WKWebView. Text assertions are stable across both.
+- **`mise run page-check` asserts what the page must never *show*.** Four faults
+  that are text rather than pixels, every one of which has happened here.
+  `tools/e2e/page.mjs` names them and argues why this is deliberately not a
+  screenshot test.
 - **Type-checking found bugs clicking around did not.** Turning `checkJs` on after
   the module split surfaced five modules referencing names that had stayed behind
   in `app.js` (`pendingSelect`, `TOKEN`, `WS_BASE`, `selected`, `prOf`) — every one
@@ -448,16 +434,13 @@ mean *this* repo; if you do, name it.
   green page as weaker evidence than a green `check-web`.
 - **A panic is denied where it can take the daemon down, and `clippy.toml` is why
   that became affordable.** `unwrap_used`, `expect_used`, `panic`, `print_stdout`,
-  `print_stderr` and `await_holding_lock` are all `deny` at the workspace now. The
-  old note said the trade was not worth it — 755 silenced sites in tests to police
-  a few in the daemon — and `allow-*-in-tests` is what removes the 755. What the
-  lints then saw was 64 `unwrap`/`expect` outside tests, and the shape of it was
-  the argument: **`host.rs` had 20 `lock().unwrap()`**, where one panic under any
-  of them poisons the mutex and every later caller panics too — in the host, which
-  owns every checkout's child process. `host::locked` and the desktop's
+  `print_stderr` and `await_holding_lock` are all `deny` at the workspace; that
+  file says what made the trade payable. The shape that argued for it:
+  **`host.rs` had 20 `lock().unwrap()`**, where one panic under any of them
+  poisons the mutex and every later caller panics too — in the host, which owns
+  every checkout's child process. `host::locked` and the desktop's
   `poisoned_is_still_usable` recover instead, which is safe because every one of
-  those locks holds a map or a vector updated whole. Three modules had written
-  `path.parent().unwrap()` by hand.
+  those locks holds a map or a vector updated whole.
   Three things to know before adding a site. An integration test in `tests/` is
   **not** covered by `allow-*-in-tests` — that setting reaches `#[test]` functions
   and `#[cfg(test)]` modules, and a helper in an integration crate is neither, so
@@ -468,31 +451,14 @@ mean *this* repo; if you do, name it.
   `#[expect(…, reason = "…")]` rather than `#[allow]`, so the exemption fails the
   build when the code stops needing it.
 - **`health.yml` runs `cargo deny`, `cargo about`, `cargo machete`, `typos` and
-  `zizmor` — on every push and weekly, in its own workflow.** The desktop bundle redistributes ~490 crates, and an advisory
-  against one of them is published without anybody pushing a commit — so a
-  per-push gate would never see it. They are in their own workflow because "go and
-  read an advisory" and "your commit is broken" are different messages, and a
-  repository that mixes them teaches people to ignore the one that matters.
-  `deny.toml` records the one advisory that is accepted rather than fixed
-  (`serial`, unmaintained since 2017, reached through `portable-pty`, no upgrade
-  and no vulnerability) and bans `openssl` outright, so a transitive dependency
-  cannot put a system TLS into a desktop app.
-  **It had a `paths:` filter and that was wrong**: two of its five checks —
-  `typos` over the whole tree and `zizmor` over the workflows — have nothing to do
-  with a manifest, so a misspelling in a `.rs` commit waited for the next Monday.
-  The whole job is ~20s with prebuilt binaries.
-  **All five tool versions are pinned**, for the reason the Rust toolchain is:
-  these linters parse the config they are handed, and the first run of this
-  workflow went red because the `cargo-deny` CI installed wants `AGPL-3.0` where
-  the one it was written against wants `AGPL-3.0-only`. No spelling satisfies
-  both.
-  **`zizmor` lints the workflows themselves**, and it earned its place on the
-  first run: three checkouts left the repository token in `.git/config` for every
-  later step (`persist-credentials: false` now), and the release build could
-  write the shared cache it installs from (`lookup-only: true`). It is also what
-  would have caught the four unpinned actions in `check.yml`. Every action is
-  pinned by hash now, in all three workflows — and there is no bot moving them,
-  so a bump is a deliberate commit, which is the trade.
+  `zizmor` — on every push and weekly, in its own workflow.** An advisory against
+  one of the ~490 crates the bundle redistributes arrives without anybody pushing
+  a commit, and "go and read an advisory" is a different message from "your commit
+  is broken". The workflow and `deny.toml` carry the rest, each beside the setting
+  it explains: why the five tool versions are pinned, which advisory is accepted
+  rather than fixed, why `openssl` is banned outright, and why there is no
+  `paths:` filter. Every action in all three workflows is pinned by hash, and
+  there is no bot moving them — a bump is a deliberate commit, which is the trade.
   **`THIRD-PARTY-RUST.md` is generated, never edited.** `THIRD-PARTY.md` already
   argues the obligation for the vendored JavaScript — it is `include_str!`d, so it
   is redistributed in binary form and its notice has to travel — and every crate in
@@ -515,15 +481,9 @@ mean *this* repo; if you do, name it.
   the id certainly names an `<input>`. `ctl` is the named escape hatch for form
   controls; `$` stays typed so everything else fetched through it keeps being
   checked. Do not widen `$`.
-- **The SPA's view of the snapshot is generated, not hand-written.**
-  `web/snapshot.d.ts` comes from the Rust structs via `ts-rs` (a dev-dependency,
-  derived under `cfg(test)`, so nothing of it reaches the binary). `cargo test`
-  rewrites it; `mise run check-web` regenerates it and **fails if the
-  checked-in copy has drifted**. Rename a snapshot field in Rust and the diff
-  shows up there — which is the point, since the old failure mode was a renamed
-  field reading as `undefined` and rendering as nothing. Commit the regenerated
-  file with the Rust change. It is a type file: never `include_str!`d, never
-  served.
+
+### The SPA, the webview, and the two module graphs
+
 - **ES modules work in the real webview — measured, not assumed.** WebKitGTK
   **2.50.4** ships here, and a spike drove the actual desktop window (not Chrome,
   not playwright's WebKit): a `type="module"` script imported a second module over
@@ -580,59 +540,23 @@ mean *this* repo; if you do, name it.
   what is left over: boot order, the websocket, the keyboard map, the window
   chrome — under a thousand lines, from 4798 before the split.
   `mise run check-web` prints the current module and dependency count.
-- **The daemon's module graph is the inverse of the SPA's, and it is now held
-  where it is.** It began at 39 modules, 154 edges, **17 mutual pairs** and a
-  16-module strongly connected component — a fair part of why `api.rs` is 5,681
-  lines and `spawn.rs` 3,371, since nothing inside an SCC can be read, tested or
-  moved on its own. `mise run check-modules` is a **ratchet**, not the DAG rule
-  the SPA gets: a new mutual pair fails, and a pair that goes away fails too
-  until it is deleted from `tools/rust-modules.json`, so the number can only
-  fall. Making it a DAG today is not a change anybody could review.
-  **Seven pairs are gone, in two passes, and each pass had one shape.**
-  - `model` was mutual with `state`, `git` and `diff`, and all three were a
-    *shape* living in the module that produces it. `state::random_token` moved to
-    the leaf `secret.rs` — a leaf is what a cycle can be broken with, and that
-    file says at the top that it must never grow an import. `git::Bank` and
-    `diff::DiffFile` moved into `model`, beside `ChangedFile` and `FileSet`,
-    which were already right. **A shape lives in `model`; the module that fills
-    it depends on `model`.**
-  - `config` was mutual with `story`, `skills`, `reviews` and `env_source`, and
-    all four were *behaviour* living in the module that holds the settings.
-    `session_env` and `session_flags` built a session's process from inside
-    `config`, reaching into the three features `config` configures; they are
-    `crates/orchd-repo/src/launch.rs` now, a layer that sits above both and that nothing below may
-    import. `story::token_env_pair` and `resolve_token` went the other way, into
-    `config` beside the `Tracker` field they read. (`reviews`'s ejected-script path
-    was the third example and is gone with the script itself — the queue is built
-    into the daemon now.)
-  **The first pass did not shrink the SCC and the second took it from 16 to 11.**
-  The 23-module figure first reported for it was wrong, and the error was in the
-  measuring script: `pty.rs` writes `pub(crate) mod tests`, which the pattern
-  cutting test code did not match, so that whole module read as shipped code and
-  put `pty -> testutil -> state -> model` into the graph. `testutil` is
-  `#[cfg(test)]` in `lib.rs` and is excluded now as well. Worth carrying beyond
-  this script: **a number a tool reports is a claim the tool has to earn**, and
-  this one was repeated into a commit message and a review before anybody checked
-  it.
-  What is left is the runtime core — api, fix_pr, health, post, spawn, state,
-  store, story, triage, update, worktree — eleven modules that genuinely call
-  each other, plus `git <-> review_commit` inside `orchd-base`. **Nine of the ten
-  are in `orchd` and the tenth is in `orchd-base`, so every one is now a cycle
-  inside a single crate** — which is exactly what `cargo` cannot see and this
-  script can. The script reads **every crate's `src/`**, learned the hard way:
-  reading `src/` alone, it called that pair *fixed* the moment both modules moved
-  out.
-  **The baseline holds the pairs and nothing else.** It used to record the module
-  and edge counts beside them, and nothing read those back — so they sat at 155
-  edges while the tree had 122. A number a file states and no tool verifies is a
-  number that rots; the live counts are printed on every run instead. The next move on those is a crate split, not a rename, and
-  **`docs/crate-split.md` has it measured**: condense that core to one node and
-  the remaining graph is a clean nine-layer DAG, so four crates are legal today
-  with zero upward edges. `cargo` would then enforce what this script ratchets,
-  which is the day it gets deleted.
-  One more thing to know about the reader: it cuts each file at its test module,
-  so anything below that line is invisible to it — which is why a probe appended
-  to the end of a file shows nothing.
+- **The daemon's module graph is the inverse of the SPA's, and it is held where
+  it is.** `mise run check-modules` is a **ratchet**, not the DAG rule the SPA
+  gets: a new mutual pair fails, and a pair that goes away fails too until it is
+  deleted from `tools/rust-modules.json`, so the number can only fall. That
+  script's own header carries where it started, the two passes that broke seven
+  pairs and the shape each had; `docs/crate-split.md` has the measured plan for
+  what is left, which is a crate split rather than a rename.
+  Three things about the reader are worth carrying beyond it. **The baseline holds
+  the pairs and nothing else** — it used to record module and edge counts that
+  nothing read back, so they sat at 155 while the tree had 122, and a number a
+  file states and no tool verifies is a number that rots; the live counts are
+  printed on every run instead. **A number a tool reports is a claim the tool has
+  to earn**: the SCC was reported as 23 modules, which was this script's own
+  pattern failing to cut `pty.rs`'s `pub(crate) mod tests`, and the figure reached
+  a commit message and a review before anybody checked it. And **it cuts each file
+  at its test module**, so a probe appended to the end of a file shows nothing.
+
 - **The module graph is a DAG, and it was made one on purpose.** `app.js` → the
   six; `rail` → `term`, `review`; `review` → `diff`; everything → `core`. Three
   cycles had to be broken first, and each inversion is the reason a boundary is
@@ -647,13 +571,10 @@ mean *this* repo; if you do, name it.
     drawn through it.
   Adding a cycle back would work (ESM allows it) and would quietly undo this.
 - **Each module needs a line in `module()` in `host.rs` and a rebuild.**
-  `include_str!` again: adding a JS file is a Rust change.
-  `tools/check-module-routes.mjs` is what says so now, from both sides of the
-  hook, because `dependency-cruiser` answers "is this module imported" and cannot
-  answer "is this module reachable" — and the two look nothing alike: an
-  unimported module is dead, an unserved one is a page that stops booting. That cost is why the
-  modules track features rather than being cut finer. It was `lib.rs` until the
-  page moved to the host — see below.
+  `include_str!` again: adding a JS file is a Rust change, and
+  `tools/check-module-routes.mjs` is what says so, from both sides of the hook —
+  its header has why `dependency-cruiser` cannot. That cost is why the modules
+  track features rather than being cut finer.
 - **`snap` is a live binding, and only `receive()` may replace it.** It is
   `export let` in `core.js`, so a hundred readers keep saying `snap.x` and see the
   new snapshot without re-importing. `receive` sets the snapshot and the clock it
@@ -743,6 +664,9 @@ mean *this* repo; if you do, name it.
   from `render` and a refusing guard would otherwise re-ask every frame; and it is
   first in the `Esc` chain, since a confirm over an overlay must not close the
   overlay underneath it.
+
+### Claude Code, and what it guarantees
+
 - **A skill reaches a session through `--plugin-dir`, and that flag is per
   *invocation*.** Measured against Claude Code 2.1.260: a session spawned with it
   runs the skill both ways, typed as `/orchd:orch` and picked up by the model from
@@ -902,6 +826,9 @@ mean *this* repo; if you do, name it.
   refuses an untrusted `mise.toml`, a fresh worktree is a fresh path, and the only
   sign is one warning in the log. Put `mise trust` in `worktree_setup` if that
   bites.
+
+### Portability, and the processes the daemon spawns
+
 - **No `std::process::Command` and no `std::fs` on a tokio worker.**
   `proc::run_blocking` is the helper, and it takes a label so a panic says what
   died. The rule was applied unevenly for a long time and the sweep that fixed
@@ -1039,6 +966,9 @@ mean *this* repo; if you do, name it.
   can be cut again at it. `worktree_holding` deliberately ignores whether the
   directory exists — a live session whose tree was deleted still holds its branch,
   and `branch_busy` must keep saying so.
+
+### The daemon's machinery: hooks, worktrees, main, the stores
+
 - **Hooks are observers, not gatekeepers.** They answer immediately and finish
   their work detached, because Claude gives a hook one second and a dropped
   future silently loses the state change. Do not make a hook wait on anything.
@@ -1245,7 +1175,6 @@ mean *this* repo; if you do, name it.
   refuse the whole flow — `stash create` answers "Cannot save the current index
   state" — and untracked files never travel, so a base that adds a path you have
   untracked is refused by name rather than by git's own header.
-
 - **One pty exit, one observer.** `spawn::watch_session_exit` is the only thing
   that waits on a session's handle; it dispatches onward (a fix run's verdict goes
   to `fix_pr::settle`). A second `pty.wait()` on the same handle would work and
@@ -1288,14 +1217,24 @@ mean *this* repo; if you do, name it.
   does on purpose. Its safety cannot be borrowed from `worktree::reap_old`, which
   is safe because it routes through `teardown`'s seven checks; a directory of JSON
   has no such gate.
-- **`ORCHD_CONFIG_DIR` relocates every piece of durable state**, which is what
-  makes a fixture daemon safe: config, `sessions.json`, `automation.json`,
-  `hooks.json`, `window.json` and the instance lock all follow it. Overriding
-  `HOME` would do the same for free and is wrong — `claude` reads its credentials
-  from there, so every spawned session would come up unauthenticated. The one
-  exception is `mise run e2e`, where the agent is a fake with no credentials to
-  lose, so relocating `HOME` is what keeps transcripts out of your
-  `~/.claude/projects`.
+- **A resume rebuilds a session's environment, so anything the daemon put there
+  has to be re-handed.** The ask token always was, because `Session::new` mints a
+  fresh one on every spawn and the route compares it against the record. The
+  *post* token was not: only `triage.rs` set `ORCH_POST_TOKEN`, and a resume goes
+  through `spawn::spawn_session`, which knows nothing about it. So a resumed
+  review run came back able to ask you questions and unable to post its
+  proposals — reported by the agent as `ORCH_POST_TOKEN is absent from this
+  environment`, after it had read every thread. Two ways in, neither exotic: the
+  app restarting (`auto_resume` resumes every session that was live, runs
+  included) and the rail's own resume button (`api::revive` carries the recorded
+  `Pass`). The rule now lives
+  in `triage::mint_post_token` / `posts_proposals`, called by all three spawns.
+  `proposal_tokens` says it is deliberately not persisted, and that is still right
+  — the token is only ever compared against the record, so re-minting is the fix
+  and persisting would be the wrong one.
+
+### The e2e flows
+
 - **An e2e flow must make idleness a condition, not an assumption.** Every
   mutating route refuses a workspace whose session is mid-turn, and the rebase
   flow settled its session once at the top and then made ten calls against that
@@ -1316,6 +1255,9 @@ mean *this* repo; if you do, name it.
   GitHub, nothing about what a fix run *does*). What they buy is the class of fault
   unit tests structurally cannot see: the first full run turned up a `claim_main`
   race, and driving them from the hook turned up what git hands a hook.
+
+### The UI's contracts
+
 - **The keyboard map has a contract, and it is the reason the next binding is
   obvious.** Above the keydown handler in `web/app.js`: **bare keys belong to the
   open overlay, `Ctrl` is the whole app, `Esc` dismisses the topmost thing.** The
@@ -1326,21 +1268,6 @@ mean *this* repo; if you do, name it.
   default and a plain letter is taken only where the idiom earns it. The legend
   (`Ctrl+Shift+?`) is hand-written HTML and is the one thing here that can silently
   drift from the code.
-- **A resume rebuilds a session's environment, so anything the daemon put there
-  has to be re-handed.** The ask token always was, because `Session::new` mints a
-  fresh one on every spawn and the route compares it against the record. The
-  *post* token was not: only `triage.rs` set `ORCH_POST_TOKEN`, and a resume goes
-  through `spawn::spawn_session`, which knows nothing about it. So a resumed
-  review run came back able to ask you questions and unable to post its
-  proposals — reported by the agent as `ORCH_POST_TOKEN is absent from this
-  environment`, after it had read every thread. Two ways in, neither exotic: the
-  app restarting (`auto_resume` resumes every session that was live, runs
-  included) and the rail's own resume button (`api::revive` carries the recorded
-  `Pass`). The rule now lives
-  in `triage::mint_post_token` / `posts_proposals`, called by all three spawns.
-  `proposal_tokens` says it is deliberately not persisted, and that is still right
-  — the token is only ever compared against the record, so re-minting is the fix
-  and persisting would be the wrong one.
 - **The rail's `handle` button starts a pane, not the overlay.** `/orchd:handle-review`
   (`skills/handle-review/SKILL.md`, vendored from the monorepo's own `/resolve` and
   generalised) is one agent in the PR's worktree with a person watching: it asks with
@@ -1371,6 +1298,9 @@ mean *this* repo; if you do, name it.
   one-line strip (`.oq.min`, the `×`, or `Esc`). Hiding it outright would be this
   box disagreeing with the rail and the waitbar, which read `wants_attention` off
   the daemon and are right — the agent really is still blocked.
+
+### Performance, measured
+
 - **A start is a pile of child processes, and that is why it is slow somewhere
   else.** Almost nothing in `orchd_serve::start` is CPU work, so "better hardware, worse
   start" is not a contradiction: the cost is per exec, and a Mac pays dyld on every
@@ -1385,11 +1315,18 @@ mean *this* repo; if you do, name it.
   ~1.4 s: `reconcile_all` holds `AppState::sweeping` so boot and the PR poller's
   first tick cannot overlap, walks [`sweep_order`] (sessions, then main, then the
   rest) so the pane you land on fills first, and notifies per workspace so they
-  fill in as it goes. What is left on the critical path is the **upstream fetch,
+  fill in as it goes. **The page was never the problem** — 570 ms to a painted
+  terminal in that same reading, which is why the SPA posts its own boot marks to
+  `/api/client/timing`. What is left on the critical path is the **upstream fetch,
   which is a network round trip**. Two things still true and worth knowing:
   `configure_repo` sets fsmonitor on main *only*, so every worktree's `git status`
   is a full scan; and the poller's first tick deliberately skips the fetch and the
   sweep, because boot has just done both.
+  One follow-on lives in the desktop crate: the login shell's PATH is remembered
+  in `<config_dir>/login-path` and refreshed in the background *for the next
+  launch*, because `set_var` is process-global and unsound beside threads — which
+  is why `adopt_login_path` runs before the runtime exists and why the refresh
+  must never apply itself.
   **The sweep runs four wide, not one** (`SWEEP_WIDTH`), because its cost is execs:
   seven git processes per tree at 8 to 9 ms each on a Mac, so 58 trees took 20 to
   46 s in a row (#10) and the per-tree half is nothing a user can change. And it
@@ -1403,18 +1340,6 @@ mean *this* repo; if you do, name it.
   for an ACK that waits for the peer's delayed-ACK timer, the classic ~40ms per
   round trip. The pty websocket is nothing but small frames in both directions.
   Loopback made it look like it could not matter, and on Linux it mostly does not.
-- **A slow start is measured, not argued about, and the log is the one place both
-  halves meet.** `crates/orchd-base/src/timing.rs` prints a phase line per start with its own exec
-  count and time (`shell start`, `daemon start`, `window open`, `session … start`),
-  `slow git` names a single call over 300ms, and the SPA posts its own boot marks
-  to `/api/client/timing` as `page start`. On the real monorepo that read: 447
-  child processes, `reconcile_all` 6294ms of a 7836ms start, the page itself 570ms
-  to a painted terminal. **The page was never the problem.** Two follow-ons live
-  in the desktop crate: the login shell's PATH is remembered in
-  `<config_dir>/login-path` and refreshed in the background *for the next launch*,
-  because `set_var` is process-global and unsound beside threads — which is why
-  `adopt_login_path` runs before the runtime exists and why the refresh must never
-  apply itself.
 - **`mise env` per spawn is a decision, not an oversight.** `env_source`'s own
   docblock says why: caching it needs invalidation against files the daemon does
   not watch, and a session with a stale environment is a worse bug than a slow one.
@@ -1498,6 +1423,9 @@ mean *this* repo; if you do, name it.
   daemon's ring buffer only replays ~3600 lines anyway, so a deeper buffer was
   never durable. JS-heap metrics are useless here: CDP reported 0.9 MB for 9000
   lines that cost ~23 MB, because typed-array stores are external memory.
+
+### macOS, and the tooling around the build
+
 - **The app's modifier is ⌘ on macOS and Ctrl elsewhere** (`core.appMod`, from the
   `__ORCH_PLATFORM__` the daemon substitutes into the page — told, not sniffed).
   Worth knowing why rather than just that: on a Mac ⌘ never reaches the pty, so the
@@ -1532,54 +1460,36 @@ mean *this* repo; if you do, name it.
   a busy branch and the concurrency cap, and *nothing else*. "The PR looks fine" is not a refusal,
   because a run is also how a PR that has fallen behind gets rebased. Easy to fire
   by accident while poking at the API.
-- **Pushes are guarded, by two halves that must agree.** `crates/orchd-base/src/guard.rs` holds the
-  rules; `orch guard push` runs them as a `PreToolUse` hook on the agent's Bash,
-  and `git::push_with_lease` re-states the base-branch rule because a *daemon*
-  push never passes through a hook. Three rules: no lease-less `--force`, no push
-  to the base branch (which comes from `upstream_ref` rather than a list of likely
-  names), and no git aimed out of the worktree the session works in. Never `git
-  merge` into a branch here, rebase.
-  The third rule replaced Claude Code's isolation pin and is deliberately narrower
-  than it was — git only, never writes; the entry above has the reason. It needs
-  two facts the hook cannot name per session, because one settings file serves them
-  all: `--main` is baked in, and the tree is read from the payload's own cwd. Its
-  one exemption is the session's own git dir, since a worktree's real one lives
-  under the *main* checkout, so `--git-dir=$(git rev-parse --git-dir)` is both
-  ordinary and outside the tree.
+- **Pushes are guarded, by two halves that must agree.**
+  `crates/orchd-base/src/guard.rs` holds the rules and its module doc says what it
+  is and is not — a **mistake-catcher, not a control**, Bash only, so `gh` or a
+  script the agent writes goes around it. Do not write docs that claim otherwise;
+  the README did, and that is the kind of sentence that earns misplaced trust.
+  Three rules: no lease-less `--force`, no push to the base branch (from
+  `upstream_ref`, never a list of likely names), and no git aimed out of the
+  worktree the session works in. Never `git merge` into a branch here, rebase.
+  **The two halves.** `orch guard push` runs them as a `PreToolUse` hook on the
+  agent's Bash, and `git::push_with_lease` re-states the base-branch rule because
+  a *daemon* push never passes through a hook. The hook cannot name two facts per
+  session, since one settings file serves them all: `--main` is baked in, and the
+  tree is read from the payload's own cwd. Its one exemption is the session's own
+  git dir, since a worktree's real one lives under the *main* checkout.
   **And it is a question, not a wall.** The refusal names `orch outside <path>`,
-  which raises an *ordinary* `Interaction` — the same field, the same box, the same
-  `/ask/:id/wait` the agent already polls — and a yes appends that folder to
-  `Session::outside_grants`.
-  **A yes is one folder, not the session.** It was a `bool`, so the first grant —
-  a `git -C` at one checkout you had a reason for — let the session reach *every*
-  checkout for the rest of the conversation, and the question that named a folder
-  had answered about all of them. A grant now covers the path it names and what is
-  under it (`Session::outside_granted`, prefix, textual like `guard::resolve`), and
-  the next checkout is asked about on its own.
-  Three things about it are deliberate: the grant keys on the **ask id**
-  (`Session::outside_ask` carries the id *and* the path, since the answer route
-  sees neither otherwise), because an agent writes its own option values through
-  `orch ask` and would otherwise be asking itself; it is **not** on
-  `SessionRecord`, so a restart asks again rather than assuming; and the folders
-  are handed to the rule as `Call::granted` rather than switching it off, which
-  keeps `guard::check` a pure function of the command. That last one is what the
-  old shape could not do: `orch guard push` dropped the worktree from the `Call` on
-  a blanket yes, and no list of folders can be expressed that way.
-  The guard reads the grants over HTTP with the session's ask token, and **empty is
-  what it answers when it cannot ask** — a missing environment or an absent daemon
-  must never widen what an agent may reach. `tools/e2e/flows/14-outside-grant.mjs`
-  drives the whole path, and the ask token it needs comes from the agent's own
-  environment (`fake-claude.mjs` writes it under the sandbox), because the daemon
-  deliberately never persists it.
-  **`mise run e2e` builds `orch` as well as `orchd`**, and did not: flow 14 runs
-  `orch guard push` directly, so a change to the guard's own half was measured
-  against whatever binary was on disk. It read as the grant refusing every command
-  it had just allowed.
-  It is a **mistake-catcher, not a control** — Bash only, so `gh` or a script the
-  agent writes goes around it. Do not write docs that claim otherwise; the README
-  did, and that is the kind of sentence that earns misplaced trust.
-  It replaced a Python script that failed open and matched refspecs by spelling;
-  `crates/orchd-base/src/guard.rs`'s module doc has the three defects.
+  which raises an *ordinary* `Interaction` — the same field, the same box, the
+  same `/ask/:id/wait` the agent already polls — and a yes appends that folder to
+  `Session::outside_grants`. **A yes is one folder, not the session**: it was a
+  `bool`, so the first grant let the session reach every checkout for the rest of
+  the conversation, and the question that named a folder had answered about all of
+  them. Two more things are deliberate: the grant keys on the **ask id**, because
+  an agent writes its own option values through `orch ask` and would otherwise be
+  asking itself; and it is **not** on `SessionRecord`, so a restart asks again
+  rather than assuming.
+  `tools/e2e/flows/14-outside-grant.mjs` drives the whole path. **`mise run e2e`
+  builds `orch` as well as `orchd`**, and did not: that flow runs `orch guard push`
+  directly, so a change to the guard's own half was measured against whatever
+  binary was on disk, and it read as the grant refusing every command it had just
+  allowed.
+
 - **A `rust-toolchain.toml` is a no-op here, and silently.** `mise env` exports
   `RUSTUP_TOOLCHAIN=stable`, and that variable **outranks** the file in rustup's
   precedence — so a pin written there is ignored on any machine with mise active
@@ -1594,6 +1504,9 @@ mean *this* repo; if you do, name it.
   developer on a newer rustc meets a new clippy lint *before* CI does, rather than
   CI failing on a commit that touched no Rust. Collapsing it to one source of truth
   means provisioning Rust through mise in CI too.
+
+### The crates, and what a move breaks
+
 - **Four crates, all under `crates/`, and the root is the workspace and nothing
   else.** `orchd-base` the primitives, `orchd-repo` one checkout described,
   `orchd` the runtime core, `orchd-serve` the daemon; `desktop/` sits on top.
@@ -1675,17 +1588,14 @@ mean *this* repo; if you do, name it.
   Set there rather than in the gates, so a bare `cargo test` does not leave a
   stray `bindings/`. A type that moves between the crates moves between the files,
   and the SPA's `import('../snapshot').X` has to follow — `tsc` names every one.
-- **`cargo fmt` is the formatter now, and the tree was formatted in one commit.**
-  It used not to be, and the rule in its place — "revert everything outside your
-  own change" — was a rule nothing ran. `rustfmt.toml` keeps the defaults, and
-  every other width was measured and is worse: 100 is 764 hunks, 110 is 998, 120
-  is 1203, because rustfmt then *joins* lines the author split.
-  **`wrap_comments` stays off**, which is the setting that made this affordable:
-  of 6,208 lines the reformat changed, 29 touched a comment, and all 29 were the
-  indentation of a continuation line. The prose is untouched.
-  `.git-blame-ignore-revs` names the formatting commit. Turn it on once per
-  clone, beside the hooks line:
+- **`cargo fmt` is the formatter now, gated in CI and the hook.** The tree was
+  formatted in one commit, and `rustfmt.toml` says what was measured to keep the
+  defaults — including why `wrap_comments` stays off, which is the setting that
+  made it affordable. One thing to turn on per clone, beside the hooks line:
   `git config blame.ignoreRevsFile .git-blame-ignore-revs`.
+
+### git, and driving the API by hand
+
 - **Git exports its own state into hooks and `--exec`, and one of the variables is
   a *relative* path.** Measured, not assumed: a pre-commit hook here runs with
   `GIT_INDEX_FILE=.git/index`, `GIT_PREFIX`, `GIT_AUTHOR_*` and `GIT_EXEC_PATH`

@@ -165,6 +165,17 @@ jobs:
         if: runner.os == 'Linux'
         run: npm ci --prefix tools
 
+      # The prose's own pointers, which nothing checked. A crate move breaks a path
+      # in a doc exactly as it breaks one in code — and CLAUDE.md's entry on the
+      # layout says the fourth thing such a move broke failed silently. Also here
+      # rather than only in the hook, for the reason the SPA gate is: a clone that
+      # never ran `git config core.hooksPath .githooks` runs none of it.
+      - name: Check the docs
+        if: runner.os == 'Linux'
+        run: |
+          node tools/check-assumptions.mjs
+          node tools/check-doc-paths.mjs
+
       - name: Check the SPA
         if: runner.os == 'Linux'
         run: |

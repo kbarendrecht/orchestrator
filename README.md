@@ -409,9 +409,12 @@ is logged and the pty is killed anyway.
 
 ## How it works
 
-- **One process.** `desktop/` is a [Tauri](https://v2.tauri.app/) v2 shell around
-  the daemon as a library: `orchd_serve::start` binds a loopback port and the webview is
-  pointed at it. No sidecar, no fixed port, nothing left running. The window is
+- **A host, and a daemon per checkout.** `desktop/` is a
+  [Tauri](https://v2.tauri.app/) v2 shell that runs `host::serve` on a loopback
+  port, spawns one `orchd` child per open checkout, and points the webview at the
+  host. The page comes from the host; every `/api/*` call goes to the checkout's
+  own child, which mints its own token. No sidecar, no fixed port, nothing left
+  running. The window is
   frameless and the web UI draws its own titlebar (real traffic lights on macOS);
   window controls go over the same authenticated HTTP as everything else, never
   Tauri IPC.
@@ -501,7 +504,8 @@ worth catching — not because an agent could be prevented from pushing.
 
 ```
 mise install
-npm install --prefix tools               # once per clone: check-web and shot need it
+mise run deps                            # tools/node_modules; every task that
+                                         # needs it depends on this already
 git config core.hooksPath .githooks      # once per clone
 git config blame.ignoreRevsFile .git-blame-ignore-revs   # once per clone
 cargo test --workspace                   # the four crates
@@ -522,9 +526,13 @@ app runs in **WebKitGTK**, so it is good for layout and not the last word.
 when each is false, and [`docs/spec.md`](docs/spec.md) the requirements the `(§N)`
 comments point at.
 
-Releases are CalVer (`year.month.n`): bump `Cargo.toml`, `desktop/Cargo.toml`,
-`desktop/tauri.conf.json` and `Cargo.lock`, then tag `v<version>`. The workflow
-refuses a tag that disagrees with the crate version.
+Releases are CalVer (`year.month.n`), and `mise run release` cuts one: it bumps
+the version, **waits for `check` to go green on the commit you are on**, then
+commits, tags and pushes. The waiting is the point — `check` is the only thing
+that runs the suite on macOS, and a tag pushed before it answers may publish
+nothing. The version lives in `[workspace.package]`, `desktop/tauri.conf.json` and
+`Cargo.lock`; the crate manifests say `version.workspace = true`, so cargo refuses
+a disagreement. The workflow refuses a tag that disagrees with the version.
 
 ### Layout
 
@@ -538,7 +546,7 @@ crates/orchd-base/    the primitives. Nothing here may import anything below.
   pty.rs          portable-pty host, and the scrollback ring every pty keeps
   proc.rs         run a child with a deadline, portably (no coreutils `timeout`)
   child.rs        the protocol for a checkout's daemon: launch, ready line, observer
-  model.rs        Workspace / Session / Process, State, ArchiveState, DiffFile, Bank
+  model.rs        the shared value types: ChangedFile, FileSet, DiffFile, Bank
   proposal.rs     what triage proposes: Stance × Mode, positions, patches, stories
   guard.rs        the git rules (push blast radius, reach), run by `orch guard push`
   edit.rs         file read/write with containment and conflict detection
@@ -566,6 +574,9 @@ crates/orchd-repo/    one checkout, described. No session state lives here.
 
 crates/orchd/         the runtime core: the `orchd` library, what the daemon knows.
   api.rs          HTTP surface and the origin/token guards
+  model.rs        Workspace / Session / Process, State, ArchiveState
+  relocate.rs     the swap, the move out of main, and the conversation that travels
+  review_api.rs   the review overlay's routes: triage, the batch, a run, the hand-off
   state.rs        the daemon's owned state, snapshots, reconcile, durable writes
   store.rs        session record persistence, orphan reaping
   spawn.rs        session / worktree / process spawning, and worktree_setup
