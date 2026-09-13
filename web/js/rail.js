@@ -479,11 +479,12 @@ let picked = null;
  *
  *  **And the verb is the pane pass, not the overlay.** `/orchd:handle-review` in a
  *  session you watch: one agent, `AskUserQuestion` for the calls it cannot make,
- *  replies drafted and posted only on a go. The triage-into-cards flow is still
- *  here and still where a decided review is carried out — it is the menu's second
- *  review item — but the cards are not good enough to be the only way through a
- *  review yet, and a button whose result you have to learn a new screen for is a
- *  worse default than one that hands you a terminal. */
+ *  replies drafted and posted only on a go. The overlay flow is the menu's second
+ *  review item — one session that reads everything, hands the set over once and
+ *  carries out what you pick — but the cards are not good enough to be the only way
+ *  through a review yet, and a button whose result you have to learn a new screen
+ *  for is a worse default than one that hands you a terminal. It keeps the button
+ *  until the other has been used in anger and earned it. */
 function reviewButtons(/** @type {import('../snapshot').PrView} */ p) {
   const wrap = el('span', 'prpair');
   /* `handle`, not `resolve`. GitHub has a literal "Resolve conversation" button,
@@ -521,12 +522,13 @@ function prMenu(/** @type {import('../snapshot').PrView} */ p, /** @type {HTMLBu
   return /** @type {[string, string | null, (() => void) | null][]} */ ([
     ['open in main checkout', null, () => openPr(p.number, 'main')],
     ['open in worktree', null, () => openPr(p.number, 'worktree')],
-    /* Two review verbs, and the first is the button's. The pane pass is one agent
-       you watch; the other proposes into the cards and a later run carries them
-       out. Both read the threads, which is the thing that made having two of them
-       questionable — the answer for now is that the cards are not finished, so the
-       flow that needs no new screen is the default and this menu is where the other
-       one lives.
+    /* Two review verbs, and the first is the button's. Both are one agent you
+       watch and both read the threads; the difference is where you answer. The pane
+       asks as it goes, in the terminal. The other reads everything first, hands the
+       whole set over at once, and takes your answers on the cards — then the same
+       session applies and posts. Having two is deliberate for now: the cards are a
+       contender rather than the default, so the flow that needs no new screen keeps
+       the button and this menu is where the other one lives.
        **Named after the job, not after the machinery.** They read `handle in a
        pane` and `read into the cards`, which named where the work happened and how
        it was carried — two things a person picking a menu item does not yet know
@@ -534,7 +536,7 @@ function prMenu(/** @type {import('../snapshot').PrView} */ p, /** @type {HTMLBu
        and the only difference the label has to carry is that the second one puts a
        screen in front of you. */
     ['handle review', null, () => startHandleReview(p.number, btn)],
-    ['handle review in UI', null, () => startTriage(p.number, btn)],
+    ['handle review in UI', null, () => void Review.startSession(p.number, btn)],
   ]);
 }
 
@@ -557,27 +559,6 @@ async function startHandleReview(/** @type {number} */ number, /** @type {HTMLBu
     const r = await call(`/api/pr/${number}/handle-review`);
     setPendingSelect(r.session);
     toast(`handling #${number}`);
-  } catch (e) {
-    toast(reason(e), true);
-  } finally {
-    if (btn) btn.disabled = false;
-  }
-}
-
-/** Start the read pass on a PR, and land on the session doing it.
- *
- *  The overlay is deliberately not opened. The pass takes minutes of somebody
- *  else's work, and a full screen saying so is a window spent on one sentence:
- *  the bar carries it beside the pane where the agent's own questions appear, and
- *  `MOD⇧R` is how you go to the cards once it says they are there. */
-async function startTriage(/** @type {number} */ number, /** @type {HTMLButtonElement | null} */ btn) {
-  // No button when this came from a right-click on the row.
-  if (btn) btn.disabled = true;
-  try {
-    const r = await call(`/api/pr/${number}/triage`);
-    Review.adopt(number, r.session);
-    setPendingSelect(r.session);
-    toast(`reading #${number}`);
   } catch (e) {
     toast(reason(e), true);
   } finally {

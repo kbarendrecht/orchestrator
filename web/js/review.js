@@ -1689,27 +1689,54 @@ const askHasValue = (/** @type {import('../snapshot').Interaction | null | undef
  *  `N of M threads waiting on you` when the cards are ready. Nothing opens the
  *  overlay over the top of whatever you moved on to. */
 async function startReviewSession() {
-  if (reviewState.busy) return;
+  await startSession(reviewState.pr, null);
+  // The overlay was the way in, so put it away: the bar takes it from here, and
+  // `closeReview` keeps the pr, the session and the screen.
+  if (reviewState.session) closeReview();
+}
+
+/** Start the overlay session on a PR, from wherever you are.
+ *
+ *  **The rail's second review item comes here now.** It used to start the headless
+ *  triage pass, whose proposals a *later* run carried out — and this flow was
+ *  reachable only from the overlay's own intake screen, which is a screen the
+ *  triage flow owns. Two flows, one of them reachable only through the other's
+ *  furniture. This is the same spawn either way; the rail passes the PR because it
+ *  has one and the overlay does not need to.
+ *
+ *  The overlay is deliberately not opened. The read takes minutes of somebody
+ *  else's work, and a full screen saying so is a window spent on one sentence: the
+ *  bar carries it, and `MOD⇧R` is how you go to the cards once it says they are
+ *  there.
+ *
+ *  @param {number | null} number
+ *  @param {HTMLButtonElement | null} [btn]
+ */
+export async function startSession(number, btn) {
+  if (reviewState.busy || number === null) return;
   reviewState.busy = true;
+  if (btn) btn.disabled = true;
+  // Restored on a refusal rather than forced to `intake`: this is reached from the
+  // rail as well now, where there is no intake screen behind it and leaving the
+  // overlay on `reading` with no session would greet the next `MOD⇧R` with a
+  // progress screen for a read that never started.
+  const was = reviewState.screen;
   reviewState.screen = 'reading';
   try {
-    const r = await call(`/api/pr/${reviewState.pr}/review-session`);
-    reviewState.session = r.session;
-    // Put the rail and the pane behind the overlay on the session that is about
-    // to ask for permissions, so closing the overlay lands on it instead of on
+    const r = await call(`/api/pr/${number}/review-session`);
+    adoptTriage(number, r.session);
+    // Put the rail and the pane behind the overlay on the session that is about to
+    // ask for permissions, so closing the overlay lands on it rather than on
     // whatever you happened to be looking at when you started the review.
     setPendingSelect(r.session);
-    reviewState.proposalsLoaded = false;
-    reviewState.decisionsSent = false;
-    toast('reading the threads…');
-    // The bar takes it from here; `closeReview` keeps the pr, the session and the
-    // screen, so this is putting the window away rather than ending anything.
-    closeReview();
+    toast(`reading #${number}`);
   } catch (e) {
     toast(reason(e), true);
-    reviewState.screen = 'intake';
+    reviewState.screen = was;
+  } finally {
+    if (btn) btn.disabled = false;
+    reviewState.busy = false;
   }
-  reviewState.busy = false;
   renderReview();
 }
 
