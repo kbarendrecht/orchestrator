@@ -1759,6 +1759,32 @@ fn strip_escapes(s: &str) -> String {
     out
 }
 
+/// The ring buffer, once the reader has had its chance at it.
+///
+/// **`wait()` resolves on the child being reaped, not on its output arriving.** The
+/// pty reader is its own blocking thread, so a program that prints a line and exits
+/// at once is a race: about one run in six, the snapshot is still empty when the
+/// exit watcher reads it, and the bar then says the agent "exited at once (1) and
+/// said nothing" about an agent that said exactly what was wrong. Reproduced by
+/// running `an_agent_that_dies_at_once_reports_what_it_said` six times; `pty.rs`'s
+/// own test already polls for this and the daemon did not.
+///
+/// Bounded and early-exiting, so the ordinary case — output already there — waits
+/// for nothing at all, and the case that waits the full budget is an agent that
+/// really did print nothing, where a fifth of a second before a message nobody is
+/// blocking on is invisible.
+async fn drained(handle: &Arc<PtyHandle>) -> Vec<u8> {
+    const PATIENCE: std::time::Duration = std::time::Duration::from_millis(200);
+    let deadline = std::time::Instant::now() + PATIENCE;
+    loop {
+        let seen = handle.snapshot();
+        if !seen.is_empty() || std::time::Instant::now() >= deadline {
+            return seen;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+}
+
 /// The one line of a dead agent's output worth putting in front of a person.
 ///
 /// **The first line with anything in it, not the last.** A program that cannot
@@ -1901,7 +1927,7 @@ pub(crate) fn watch_session_exit(app: Arc<AppState>, id: SessionId, handle: Arc<
             agent printed is the useful half — it is the binary's own sentence about
             itself — so the tail of the ring buffer travels with the report. */
             if code != 0 && !handle.stopped_deliberately() {
-                let said = agent_complaint(&handle.snapshot());
+                let said = agent_complaint(&drained(&handle).await);
                 let mut inner = app.inner.write().await;
                 inner.agent_error = Some(match said {
                     Some(line) => format!("the agent exited at once ({code}): {line}"),
@@ -2949,7 +2975,15 @@ mod tests {
             inner.sessions.insert(id, s);
         }
         watch_session_exit(app.clone(), id, spawned.handle.clone());
-        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+        // A condition rather than a sleep: what is being waited for is the watcher
+        // having settled, and a fixed sleep trades flakiness for slowness and gets
+        // both. The race underneath it is `drained`'s.
+        for _ in 0..200 {
+            if app.inner.read().await.agent_error.is_some() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
 
         let inner = app.inner.read().await;
         assert!(
