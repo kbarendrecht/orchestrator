@@ -1327,6 +1327,43 @@ mod tests {
     use super::*;
     use std::ffi::OsString;
 
+    /// The window chrome is decided by the platform, once, here.
+    ///
+    /// Cheap, and it pins a rule a reader can flip without noticing what it costs:
+    /// macOS keeps AppKit's real traffic lights over a transparent titlebar, and
+    /// everywhere else the window is frameless and the SPA draws its own controls.
+    /// Getting it backwards ships either two sets of window buttons or none — the
+    /// first of which `page-check` exists partly to catch, on the *page* side.
+    #[test]
+    fn the_chrome_matches_the_platform() {
+        if cfg!(target_os = "macos") {
+            assert_eq!(CHROME, Chrome::Overlay);
+        } else {
+            assert_eq!(CHROME, Chrome::Custom);
+        }
+    }
+
+    /// The drag guard refuses when it cannot know, which is the whole of its safety.
+    ///
+    /// **This is the one call in the app that can abort the process.** tao's
+    /// `drag_window` hands `[NSApp currentEvent]` to `performWindowDragWithEvent:`,
+    /// which accepts nothing but a mouse event — anything else raises an
+    /// Objective-C exception, and an uncaught one takes the process, the daemon and
+    /// every session with it. `on_a_mouse_event` is what stands in front of that.
+    ///
+    /// Off the main thread `MainThreadMarker::new` answers `None`, where the
+    /// question has no meaningful answer — so the honest result is `false`, and a
+    /// change that made it fail *open* (an `unwrap_or(true)`, a dropped early
+    /// return) would be invisible until a real user dragged a window at the wrong
+    /// moment. A spawned thread rather than the test's own, so the answer does not
+    /// depend on what libtest does with its harness threads.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_drag_is_refused_when_appkit_cannot_be_asked() {
+        let off_main = std::thread::spawn(on_a_mouse_event).join();
+        assert_eq!(off_main.ok(), Some(false), "the guard must fail closed");
+    }
+
     fn os(v: &[&str]) -> Vec<OsString> {
         v.iter().map(OsString::from).collect()
     }

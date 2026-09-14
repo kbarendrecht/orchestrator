@@ -250,10 +250,19 @@ jobs:
       #
       # Offline and deterministic — the agent and the GitHub calls are PATH shims,
       # and `run.mjs` builds both binaries itself. `docs/e2e.md` has the limits.
-      # Linux only: the flows are about git and the daemon, and the macOS runner is
-      # here for what only it can answer.
+      #
+      # **Both platforms**, which they were not: the argument for Linux-only was that
+      # the flows are about git and the daemon, and the macOS runner is there for what
+      # only it can answer. That reads well and is wrong in two specific ways this
+      # repo has already been bitten by — `$TMPDIR` on macOS is under `/var`, a
+      # symlink into `/private`, which `common::scratch_root` canonicalises for
+      # precisely because an uncanonicalised path matched nothing there; and the
+      # filesystem is case-insensitive, so a branch or worktree name that collides
+      # only case-insensitively passes every other gate here.
+      #
+      # `run.mjs` imports node builtins alone, so this needs no `npm ci` and runs
+      # where `Set up node` did not.
       - name: The end-to-end flows
-        if: runner.os == 'Linux'
         run: node tools/e2e/run.mjs
 
       # The part no Linux box can answer, so it runs even when the tests above

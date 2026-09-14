@@ -1,0 +1,100 @@
+# What the installers actually contain, built whenever the packaging changes.
+#
+# **`check-ship` reads the config; this opens the artifact.** That gate derives the
+# binary list from `cargo metadata` and asserts `release.yml` and the three bundle
+# maps agree with it — which is what #16 needed and did not have. What it cannot
+# see is the bundler: a `tauri.conf.json` the bundler rejects, or a `files` entry it
+# silently ignores, is green there and red at tag time. And a tag is the one build
+# nobody re-runs — `mise run release` has already pushed it by then, so the cost is
+# a spent version number and a tag deleted by hand.
+#
+# Path-filtered, so it costs nothing on an ordinary commit: the packaging lives in
+# `desktop/`, and that directory changes rarely. Not in `check.yml` for the same
+# reason — a release-profile build plus a bundler on every push is minutes nobody
+# is waiting for.
+name: bundle
+
+on:
+  push:
+    paths:
+      - desktop/**
+      - .github/workflows/bundle.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  bundle:
+    strategy:
+      # Both, always: the two halves fail differently and one red does not tell you
+      # anything about the other.
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            bundles: deb,appimage
+          - os: macos-14
+            bundles: app
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # Nothing here pushes, and a checkout that leaves the token in
+          # `.git/config` hands it to every later step — including `npx` and the
+          # bundler.
+          persist-credentials: false
+
+      - name: System libraries (Tauri/WebKitGTK)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            xvfb \
+            libwebkit2gtk-4.1-dev \
+            libjavascriptcoregtk-4.1-dev \
+            libsoup-3.0-dev \
+            libgtk-3-dev \
+            libdbus-1-dev \
+            librsvg2-dev \
+            libxdo-dev \
+            libssl-dev \
+            pkg-config
+
+      - uses: dtolnay/rust-toolchain@4716b85f2fac3e324e64fa2810f6b5c3905760a5 # stable
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+
+      # The same two commands `release.yml` runs, and deliberately so: a bundle that
+      # is built a different way here proves something about a build nobody ships.
+      - name: Build
+        run: |
+          cargo build --release -p orchd-serve --bins
+          npx -y @tauri-apps/cli@2.11.4 build --bundles ${{ matrix.bundles }}
+
+      # The Linux half, where there is a package to open rather than a directory.
+      # `dpkg-deb -c` lists what a user would actually install.
+      - name: What the packages hold
+        if: runner.os == 'Linux'
+        run: |
+          set -e
+          deb=$(find target/release/bundle -name '*.deb' | head -1)
+          echo "--- $deb ---"
+          dpkg-deb -c "$deb" | grep usr/bin
+          for want in orchestrator-desktop orchd orch; do
+            dpkg-deb -c "$deb" | grep -q "usr/bin/$want$" \
+              || { echo "the .deb does not carry $want"; exit 1; }
+          done
+          echo "the .deb carries all three"
+
+      # The macOS half goes further, because it can: the bundle holds a runnable app,
+      # so this starts it, opens a checkout, makes a session and restarts it. The
+      # same check `release.yml` runs against the same artifact, moved earlier.
+      - name: Drive the bundled app
+        if: runner.os == 'macOS'
+        run: |
+          node tools/app-check.mjs \
+            target/release/bundle/macos/Orchestrator.app/Contents/MacOS/orchestrator-desktop
