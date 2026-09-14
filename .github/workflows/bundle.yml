@@ -62,9 +62,10 @@ jobs:
             libssl-dev \
             pkg-config
 
-      - uses: dtolnay/rust-toolchain@4716b85f2fac3e324e64fa2810f6b5c3905760a5 # stable
-        with:
-          toolchain: stable
+      # The ref *is* the version — there is no `toolchain` input to set, and passing
+      # one is ignored with a warning. Same pin as `check.yml` and `release.yml`, so
+      # a bundle is built by the compiler everything else was tested with.
+      - uses: dtolnay/rust-toolchain@4716b85f2fac3e324e64fa2810f6b5c3905760a5 # 1.97.1
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
 

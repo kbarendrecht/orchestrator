@@ -174,7 +174,15 @@ export async function sandbox({
   // not the cause. A flow that depends on a level now says so here.
   log = 'warn',
 } = {}) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'orchd-e2e-'))
+  /* **Resolved, not just made.** `$TMPDIR` on macOS is under `/var`, which is a
+     symlink into `/private`, so a sandbox path handed to the daemon comes back
+     canonicalised and every flow that compares one against its own copy fails on a
+     prefix nobody wrote. `Config::parse` resolves `main_checkout` at the boundary,
+     which is correct — the comparison is what has to agree with it. On Linux `/tmp`
+     is a real directory and this is a no-op, which is exactly why it went unnoticed
+     until the flows ran on macOS: `fix a PR` wanted `/var/...` and was handed
+     `/private/var/...`. `common::scratch_root` already does this, for this reason. */
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'orchd-e2e-')))
   const dirs = {
     root,
     home: path.join(root, 'home'),

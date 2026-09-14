@@ -60,7 +60,22 @@ export async function run(t) {
 
   // --- and then the branch moves out, work and all ----------------------------
 
-  const { session: run } = await t.api('POST', `/api/pr/${PR}/fix-pr`)
+  /* **The park has to let go of main first.** Killing the session above parks
+     main, and a park takes the same `swapping` lock a PR flow needs — so this call
+     is refused while it runs, with "a swap is already moving it". Waiting on
+     `occupant == null` is not enough: the occupant goes before the park finishes.
+     Retried rather than slept on, which is this suite's standing rule — idleness is
+     a condition, never an assumption. It never fired on Linux and failed on the
+     first macOS run, where the runner is slower. */
+  const started = await until('the park to let go of main', async () => {
+    try {
+      return await t.api('POST', `/api/pr/${PR}/fix-pr`)
+    } catch (e) {
+      if (/swap is already (running|moving)/.test(String(e.message))) return null
+      throw e
+    }
+  })
+  const run = started.session
   const dir = t.worktreePath(`pr-${PR}`)
   assert.equal(branchOf(dir), HEAD)
   assert.equal(
