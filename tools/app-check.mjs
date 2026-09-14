@@ -57,6 +57,22 @@ const root = fs.mkdtempSync(path.join(os.tmpdir(), 'orchd-app-check-'))
    its own config for a checkout it has just been handed, so there is no such file
    to pre-empt. Cleaning up afterwards is the smaller compromise, and the slug is
    knowable because Claude Code derives it from the cwd. */
+/** Delete a tree, and never fail the run over it.
+ *
+ *  **Retried, because a teardown races the thing it is tearing down.** The daemon
+ *  and its agent are still flushing into the sandbox as this removes it, so a plain
+ *  `rmSync` walked a directory that grew a file back underneath it and threw
+ *  `ENOTEMPTY` — on macOS, after every assertion had already passed. A check that
+ *  reports `ok` and then exits 1 on its own cleanup is worse than one that leaves a
+ *  temp directory behind, so this says so and moves on. */
+function discard(target) {
+  try {
+    fs.rmSync(target, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
+  } catch (e) {
+    console.log(`  note  could not remove ${target}: ${e.code ?? e.message}`)
+  }
+}
+
 const PROJECTS = path.join(os.homedir(), '.claude', 'projects')
 const SANDBOXES = /orchd-app-check-\w+/
 
@@ -73,7 +89,7 @@ function sweepTranscripts() {
   for (const name of fs.readdirSync(PROJECTS)) {
     const tag = name.match(SANDBOXES)?.[0]
     if (!tag || fs.existsSync(path.join(os.tmpdir(), tag))) continue
-    fs.rmSync(path.join(PROJECTS, name), { recursive: true, force: true })
+    discard(path.join(PROJECTS, name))
   }
 }
 const cfg = path.join(root, 'cfg')
@@ -310,7 +326,7 @@ try {
   await stop()
   console.log(`\napp-check: ${failed ? 'FAILED' : 'ok'}`)
   if (failed) console.log(`  sandbox kept: ${root}`)
-  else fs.rmSync(root, { recursive: true, force: true })
+  else discard(root)
   // After the sandbox is gone, so this run's own transcripts qualify too.
   sweepTranscripts()
 }
