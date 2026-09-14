@@ -120,6 +120,7 @@ mise run app-check                  # drive the real app: a session survives a r
 mise run page-check                 # what the rendered page must never show
 mise run notices                    # regenerate THIRD-PARTY-RUST.md
 mise run e2e                        # 25 flows against a real daemon
+mise run deflake                    # each flow 8x, to name the flaky ones
 cargo run -p orchestrator-desktop   # the app, daemon embedded in-process
 mise run shot                       # screenshot the running SPA (drives Chrome)
 mise run release                    # bump, wait for CI, tag and push

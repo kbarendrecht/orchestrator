@@ -92,6 +92,14 @@ brings live sessions back across `t.restart()`. `processes` declares
 `main_processes`, which is empty everywhere else so that a flow with no interest in
 the drawer has no process to reason about.
 
+**`node tools/e2e/deflake.mjs` runs every flow N times in a row**, one flow at a
+time, and names the ones that did not pass every time. A measurement rather than a
+gate — it takes tens of minutes — so it is a `mise` task and a dispatch-only
+workflow (`deflake.yml`) rather than anything `check.yml` runs. Use it after
+touching the harness, after adding a flow, or when a run has failed once and nobody
+can say whether that meant anything. `docs/traps/gates.md` has the bar it exists to
+check: seven consecutive clean runs before the flows were allowed to gate at all.
+
 `t.restart()` stops the daemon and brings it back on the same state. It is the only
 way to reach the durable half — `restore`, `prune_ghosts`, `auto_resume`,
 `first_per_workspace` — and the only honest test of `Session::resumable()`, which is

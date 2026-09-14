@@ -126,6 +126,15 @@ description = "Drive the real app: a session has to survive a restart"
 dir = "{{config_root}}"
 run = "node tools/app-check.mjs target/debug/orchestrator-desktop"
 
+[tasks.deflake]
+# Every flow N times in a row, one at a time. A measurement, not a gate — run it
+# after touching the harness or when a run failed once and nobody can say whether
+# that meant anything.
+description = "Run every e2e flow repeatedly and name the flaky ones"
+depends = ["deps"]
+dir = "{{config_root}}"
+run = "node tools/e2e/deflake.mjs"
+
 [tasks.check-docs]
 # Two kinds of prose, one task, because both fail the same way: silently.
 # `cargo doc` answers whether an intra-doc link resolves; `check-assumptions.mjs`

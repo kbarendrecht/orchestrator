@@ -1,0 +1,60 @@
+# Every flow, N times in a row, on both platforms.
+#
+# **Dispatch only.** This is a measurement, not a gate: it takes tens of minutes and
+# the answer changes slowly. Run it after touching the harness, after adding a flow,
+# or when a run has failed once and nobody can say whether that means anything.
+#
+# The bar it exists to check is already written down in `docs/traps/gates.md` — seven
+# consecutive clean runs, 168 flow executions — set before `check.yml` was allowed to
+# run the flows at all. A flaky gate is worse than no gate, because it is what
+# teaches everybody `--no-verify`.
+#
+# macOS matters here more than Linux: the runner is slower and its filesystem is
+# not the one this suite grew up on, and the first macOS run of the flows failed two
+# of them for exactly those reasons.
+name: deflake
+
+on:
+  workflow_dispatch:
+    inputs:
+      runs:
+        description: how many times to run each flow
+        default: "8"
+
+permissions:
+  contents: read
+
+jobs:
+  deflake:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, macos-14]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: System libraries (Tauri/WebKitGTK)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libssl-dev pkg-config
+
+      - uses: dtolnay/rust-toolchain@4716b85f2fac3e324e64fa2810f6b5c3905760a5 # 1.97.1
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+
+      - name: Every flow, ${{ inputs.runs }} times
+        run: node tools/e2e/deflake.mjs --runs ${{ inputs.runs }}
+
+      # Only the failures are kept, so this is small or absent.
+      - name: The runs that failed
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: deflake-${{ matrix.os }}
+          path: target/deflake/*.log
+          if-no-files-found: ignore
