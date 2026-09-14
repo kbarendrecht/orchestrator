@@ -698,8 +698,6 @@ fn daemon_router(app: Arc<AppState>) -> Router {
         )
         // The one route a subprocess calls. Hostile input; see `pr_proposals`.
         .route("/api/pr/:number/proposals", post(review_api::pr_proposals))
-        .route("/api/pr/:number/commit", post(review_api::pr_commit))
-        .route("/api/pr/:number/stash", post(review_api::pr_stash))
         // The rail's default: spawn a session running `/resolve <pr>` in a pane.
         .route("/api/pr/:number/open", post(review_api::open_pr))
         .route("/api/pr/:number/fix-pr", post(api::fix_pr))

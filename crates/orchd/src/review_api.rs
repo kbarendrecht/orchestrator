@@ -181,8 +181,13 @@ pub async fn pr_proposals(
     Ok(Json(json!({ "accepted": count })))
 }
 
-/// Everything the overlay needs in one call: the threads, what triage proposed,
-/// and whether the worktree can be written to.
+/// Everything the overlay needs in one call: the threads and what the session
+/// proposed.
+///
+/// **It used to carry the gate too**, for a screen in front of the intake with
+/// `commit…` and `stash` buttons on it. The gate is a spawn-time refusal now and
+/// nothing reads it here, so fetching it cost a `git status` per open for a field
+/// no screen drew.
 pub async fn pr_review(
     State(app): State<Arc<AppState>>,
     Path(number): Path<u64>,
@@ -193,11 +198,6 @@ pub async fn pr_review(
     };
     let fetched = fetch_threads(&app, number).await?;
 
-    let gate = match app.workspace_for(&pr.head_ref).await {
-        Some(ws) => crate::triage::gate(&app, number, &ws).await?,
-        // No worktree yet means nothing to be dirty; triage creates one.
-        None => None,
-    };
     let proposals = app.inner.read().await.proposals.get(&number).cloned();
 
     Ok(Json(json!({
@@ -213,7 +213,6 @@ pub async fn pr_review(
         "answerable": fetched.answerable_count(),
         "threads": fetched.items,
         "proposals": proposals,
-        "gate": gate,
         // Shown in the header, never gating: a red or conflicting PR is still
         // answerable, and `fix-pr` is offered rather than required.
         "checks": pr.checks,
@@ -223,38 +222,6 @@ pub async fn pr_review(
         // option rather than offering something that would be refused.
         "tracker": app.cfg.tracker.is_some(),
     })))
-}
-
-#[derive(Deserialize)]
-pub struct CommitBody {
-    pub message: String,
-}
-
-/// The gate's `commit…` button: commit the worktree as it stands.
-pub async fn pr_commit(
-    State(app): State<Arc<AppState>>,
-    Path(number): Path<u64>,
-    Json(body): Json<CommitBody>,
-) -> ApiResult<serde_json::Value> {
-    let path = gate_worktree(&app, number).await?;
-    let message = body.message.clone();
-    crate::proc::run_blocking("the gate's commit", move || {
-        crate::git::commit_all(&path, &message)
-    })
-    .await??;
-    app.notify().await;
-    Ok(Json(json!({ "committed": true })))
-}
-
-/// The gate's `stash` button. Never popped automatically — see `git::stash`.
-pub async fn pr_stash(
-    State(app): State<Arc<AppState>>,
-    Path(number): Path<u64>,
-) -> ApiResult<serde_json::Value> {
-    let path = gate_worktree(&app, number).await?;
-    crate::proc::run_blocking("the gate's stash", move || crate::git::stash(&path)).await??;
-    app.notify().await;
-    Ok(Json(json!({ "stashed": true })))
 }
 
 /// Where an `open` request wants the session.
@@ -303,21 +270,6 @@ pub async fn open_pr(
     refuse_if_occupied(&app, &workspace).await?;
     let id = spawn::spawn_session(&app, &workspace, None, None).await?;
     Ok(Json(json!({ "session": id, "workspace": workspace })))
-}
-
-/// The worktree the gate buttons act on, refusing when there is not one.
-async fn gate_worktree(app: &Arc<AppState>, number: u64) -> Result<std::path::PathBuf, ApiError> {
-    let head_ref = {
-        let inner = app.inner.read().await;
-        pr_from_poll(&inner.prs, number)?.head_ref
-    };
-    let ws = app
-        .workspace_for(&head_ref)
-        .await
-        .ok_or_else(|| anyhow::anyhow!("no worktree for PR #{number} yet"))?;
-    app.workspace_path(&ws)
-        .await
-        .ok_or_else(|| ApiError(anyhow::anyhow!("the worktree for PR #{number} vanished")))
 }
 
 // ---------------------------------------------------------------------------

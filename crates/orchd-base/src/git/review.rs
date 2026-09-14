@@ -73,30 +73,3 @@ pub(super) fn lease_refused(stderr: &str) -> bool {
 pub fn short(sha: &str) -> String {
     sha.chars().take(7).collect()
 }
-
-/// Commit the worktree as it stands — the gate's `commit…` button.
-pub fn commit_all(cwd: &Path, message: &str) -> Result<()> {
-    anyhow::ensure!(!message.trim().is_empty(), "a commit needs a message");
-    git(cwd, &["add", "-A"])?;
-    git(cwd, &["commit", "-m", message])?;
-    Ok(())
-}
-
-/// Stash the worktree — the gate's `stash` button.
-///
-/// Never popped automatically: popping onto a branch the review just changed can
-/// conflict, and silently juggling your uncommitted work is worse than leaving it
-/// where you put it. Untracked files go too, or the tree is not actually clean.
-pub fn stash(cwd: &Path) -> Result<()> {
-    git(
-        cwd,
-        &[
-            "stash",
-            "push",
-            "--include-untracked",
-            "-m",
-            "orchd: before a review",
-        ],
-    )?;
-    Ok(())
-}

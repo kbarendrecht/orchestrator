@@ -1903,23 +1903,3 @@ fn only_a_moved_remote_reads_as_a_lease_refusal() {
         "fatal: could not read from remote repository"
     ));
 }
-
-#[test]
-fn commit_all_needs_a_message_and_then_cleans_the_tree() {
-    let d = amend_repo();
-    std::fs::write(d.join("h.txt"), "x\n").unwrap();
-    assert!(commit_all(&d, "   ").is_err());
-    commit_all(&d, "wip").unwrap();
-    assert!(is_clean(&d).unwrap());
-}
-
-#[test]
-fn stash_clears_untracked_files_too() {
-    // Otherwise the tree is not actually clean and the gate would still fire.
-    let d = amend_repo();
-    std::fs::write(d.join("tracked-edit.txt"), "x\n").unwrap();
-    std::fs::write(d.join("f.txt"), "base1\nbase2\nedited\n").unwrap();
-    stash(&d).unwrap();
-    assert!(is_clean(&d).unwrap());
-    assert!(!d.join("tracked-edit.txt").exists());
-}

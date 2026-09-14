@@ -39,6 +39,17 @@ this file, which churned it from every build; that feature is gone.
   Stage 4 posts a reply; it applies no patch. git remembers it if the question
   reopens.
 
+  **The overlay is three screens now**: card → approval → report, with `reading`
+  and `changing` as the two the session owns and you only watch. `intake`, the
+  worktree `gate` and the before-tally overview are gone — all three were the
+  batch's, and the rail's review verb starts the session itself. The gate went
+  whole rather than as a screen: `POST /api/pr/:n/commit` and `/stash`, the `gate`
+  field in the `/review` payload, `git::commit_all`, `git::stash` and
+  `triage::gate_allowing_your_edits`. A dirty tree is still refused, at the one
+  place that can act on it — `spawn_posting_run` bails with `Gate::say()` and the
+  toast carries the sentence — instead of being fetched with a `git status` on
+  every open for a screen in front of a flow that no longer starts there.
+
   Two things it was right about, kept: a card that waits for you rather than a
   timeout that posts on your behalf, and `Skip` as the absence of a decision rather
   than a stance of its own.

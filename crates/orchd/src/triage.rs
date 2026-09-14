@@ -41,7 +41,7 @@ use crate::state::AppState;
 )]
 #[serde(tag = "gate", rename_all = "snake_case")]
 pub enum Gate {
-    /// Uncommitted work of your own would be swept into the batch's commit.
+    /// Uncommitted work of your own would be swept into the session's commit.
     Dirty { files: Vec<String> },
     /// A stopped rebase: the tree cannot take a patch at all.
     Rebasing,
@@ -50,7 +50,7 @@ pub enum Gate {
 }
 
 impl Gate {
-    /// One line, for the gate screen's heading.
+    /// One line, for the refusal the spawn toasts.
     pub fn say(&self) -> String {
         match self {
             Gate::Dirty { files } => format!(
@@ -65,32 +65,13 @@ impl Gate {
 
 /// Whether the worktree is ready to be written into.
 ///
-/// Checked before a triage starts *and* again immediately before the batch
-/// writes: a review can sit open for hours, and the tree can go dirty, a rebase
-/// can stop, or `fix-pr` can start in between.
+/// Checked once, where the session is spawned. **It used to be checked twice and
+/// shown as a screen**: the overlay fetched it with `/review` and drew a gate with
+/// `commit…` and `stash` buttons in front of the intake, and the batch re-checked
+/// it immediately before writing because a review could sit open for hours. Both
+/// are gone with the batch's screens — the only thing a gate stops now is a spawn,
+/// and the spawn refuses with [`Gate::say`] in the toast.
 pub async fn gate(app: &Arc<AppState>, pr: u64, workspace: &str) -> Result<Option<Gate>> {
-    gate_inner(app, pr, workspace, true).await
-}
-
-/// The same gates minus the clean-tree one.
-///
-/// For the manual phase's second half only, where the tree is dirty **because you
-/// were asked to edit it**. `Rebasing` and `FixPrRunning` still hold: one cannot
-/// take a commit at all, and the other is rewriting the same history.
-pub async fn gate_allowing_your_edits(
-    app: &Arc<AppState>,
-    pr: u64,
-    workspace: &str,
-) -> Result<Option<Gate>> {
-    gate_inner(app, pr, workspace, false).await
-}
-
-async fn gate_inner(
-    app: &Arc<AppState>,
-    pr: u64,
-    workspace: &str,
-    require_clean: bool,
-) -> Result<Option<Gate>> {
     // Only a *running* fix-pr holds the worktree. An exhausted or finished one
     // has a record but has let go, so it must not gate.
     let fix_pr_running = matches!(
@@ -112,14 +93,9 @@ async fn gate_inner(
         if crate::git::rebase_in_progress(&at) {
             return Ok(Some(Gate::Rebasing));
         }
-        if require_clean {
-            // One `git status` answers both questions, and it is the same list the
-            // manual phase's writer refuses on, so the gate never names a different
-            // set than the write does.
-            let files = crate::patch::dirty_paths(&at)?;
-            if !files.is_empty() {
-                return Ok(Some(Gate::Dirty { files }));
-            }
+        let files = crate::patch::dirty_paths(&at)?;
+        if !files.is_empty() {
+            return Ok(Some(Gate::Dirty { files }));
         }
         Ok(None)
     })

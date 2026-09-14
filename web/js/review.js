@@ -1,7 +1,7 @@
 // The review overlay: read a PR's threads, decide each one, then one batch of
 // outward writes. The largest single feature in the SPA.
 
-import { $, call, compactAge, confirmBox, el, get, MOD_LABEL, newShell, promptBox, reason, selected, setPendingSelect, setSelected, snap, toast, unchanged } from './core.js';
+import { $, call, compactAge, el, get, MOD_LABEL, reason, selected, setPendingSelect, setSelected, snap, toast, unchanged } from './core.js';
 import * as Diff from './diff.js';
 import { langFor, hlTokens, paintRanges } from './diff.js';
 import { patchStats, hunkEl } from './review-diff.js';
@@ -19,9 +19,9 @@ import { patchStats, hunkEl } from './review-diff.js';
    would reset the scroll position and drop focus out of a half-typed reply. */
 /** The review payload from `GET /api/pr/:n/review`.
  *
- *  Composed from the generated types rather than described by hand: `threads`,
- *  `proposals`, `manual` and `gate` are `ts-rs` exports of the structs the route
- *  serialises, so a renamed field on the Rust side fails here. The route itself
+ *  Composed from the generated types rather than described by hand: `threads` and
+ *  `proposals` are `ts-rs` exports of the structs the route serialises, so a
+ *  renamed field on the Rust side fails here. The route itself
  *  builds a `json!` object, which is the one part with no struct to generate
  *  from — the four fields below the composed ones are what that literal adds.
  *
@@ -34,7 +34,6 @@ import { patchStats, hunkEl } from './review-diff.js';
  *    answerable: number,
  *    threads: import('../repo').Thread[],
  *    proposals: import('../base').ProposalSet | null,
- *    gate: import('../snapshot').Gate | null,
  *    checks: import('../repo').Checks,
  *    mergeable: string,
  *    tracker: boolean,
@@ -54,7 +53,7 @@ const reviewState = {
   pr: null,
   head: null,          // the head sha the proposals were generated against
   data: null,          // the /review payload
-  screen: 'intake',    // intake | gate | overview | card | final | manual | report
+  screen: 'card',      // reading | card | changing | final | report
   i: 0,                // index into queue()
   picks: {},           // thread_id -> position index
   /* thread_id -> 'manual'. Who writes the code the decision implies. Absent means
@@ -170,19 +169,20 @@ function rvHead(/** @type {string} */ sub, /** @type {string | number | undefine
   return head;
 }
 
-/** Where you are in the run — three stages the seven screens fold into, so the
+/** Where you are in the run — three stages the five screens fold into, so the
  *  header answers "how far in, and what is left" without another screen. The
  *  per-thread strip tracks the threads; this tracks the flow. */
 function rvSteps() {
   const stageOf = {
-    // `reading` and `changing` are the session flow's two waiting screens. Without
-    // them the lookup missed, `indexOf` answered -1 and the trail went blank on the
-    // two screens where "how far in am I" is the only question you have.
-    intake: 'triage', gate: 'triage', overview: 'triage', reading: 'triage',
-    card: 'answer', manual: 'answer',
+    // `reading` and `changing` are the two screens the session owns and you only
+    // watch. Without them the lookup missed, `indexOf` answered -1 and the trail
+    // went blank on the two screens where "how far in am I" is the only question
+    // you have.
+    reading: 'read',
+    card: 'answer',
     final: 'send', changing: 'send', report: 'send',
   };
-  const order = ['triage', 'answer', 'send'];
+  const order = ['read', 'answer', 'send'];
   const cur = order.indexOf(stageOf[/** @type {keyof typeof stageOf} */ (reviewState.screen)] || 'found');
   const wrap = el('div', 'rvsteps');
   order.forEach((name, i) => {
@@ -194,9 +194,10 @@ function rvSteps() {
 /** Branch health — CI colour and a develop conflict.
  *
  *  Information, never a gate: neither touches the apply/push machinery, which
- *  works inside the branch's own history. `fix-pr` is offered only on the
- *  pre-decision screens, because the two flows are mutually exclusive and
- *  offering it from an active card would just be refused. */
+ *  works inside the branch's own history. It used to carry a `fix` button as well,
+ *  on the two pre-decision screens only — the two flows are mutually exclusive, so
+ *  offering it from an active card would just be refused. Both screens are gone and
+ *  the rail's PR row has the same verb, so this reports and nothing more. */
 function rvHealth() {
   const d = reviewState.data;
   const wrap = el('div', 'health');
@@ -214,19 +215,6 @@ function rvHealth() {
     if (i) n.style.color = 'var(--dim)';
     wrap.appendChild(n);
   });
-  const preDecision = reviewState.screen === 'intake' || reviewState.screen === 'overview';
-  if (preDecision && (d?.checks === 'failing' || d?.mergeable === 'CONFLICTING')) {
-    const b = el('button', 'head-btn', 'fix');
-    b.title = 'Rebase on develop and fix what CI says. It cannot run while a review is open.';
-    // Confirm first: this is the one control in the flow that rewrites the published
-    // branch, and it does not wait for the final screen the way everything else does.
-    b.onclick = async () => {
-      if (!await confirmBox('Start a fix run?\n\nIt rebases on develop, force-pushes this branch, and closes the review.',
-        { ok: 'Start' })) return;
-      void rvAct(() => call(`/api/pr/${reviewState.pr}/fix-pr`), 'started the fix run', true);
-    };
-    wrap.appendChild(b);
-  }
   return wrap;
 }
 
@@ -298,181 +286,6 @@ function headBtn(/** @type {string} */ label, /** @type {string | null} */ cls, 
   return b;
 }
 
-/* ---------- screen 1: the intake ---------- */
-
-/** Nothing triaged yet. The line under the heading is what the old design could
- *  not say: reading is all that happens. */
-function rvIntake(/** @type {HTMLElement} */ root) {
-  const d = reviewState.data;
-  // The screen is only reached with a payload loaded; drawing nothing beats
-  // throwing if that ever stops being true.
-  if (!d) return;
-  root.appendChild(rvHead(d.title || 'review'));
-
-  const mid = el('div', 'mid');
-  const n = d.answerable || 0;
-  mid.appendChild(el('div', 'eyebrow', `${n} thread${n === 1 ? '' : 's'} awaiting an answer`));
-
-  const big = el('div', 'big', 'Not read for ');
-  const sha = el('span', 'm', (d.head_sha || '').slice(0, 7));
-  sha.style.fontSize = '13px';
-  big.appendChild(sha);
-  big.appendChild(document.createTextNode(' yet.'));
-  mid.appendChild(big);
-
-  mid.appendChild(el('p', null,
-    'Reads the code behind each comment and works out how it could be answered. '
-    + 'Nothing is written until you decide.'));
-
-  const row = el('div');
-  row.style.cssText = 'display:flex;gap:8px;margin-top:4px';
-  // A session this window cannot drive is still a session doing the work: it is
-  // past the decisions and this SPA does not hold them, so the only honest offer
-  // is its pane. Starting a second one here would abandon it mid-ask, and a fresh
-  // spawn drops the proposals the first is acting on.
-  const busy = liveReviewSession(reviewState.pr);
-  if (busy) {
-    mid.appendChild(el('p', null,
-      'A session is already answering this PR, further along than this window can pick up. '
-      + 'Watch it in its pane.'));
-    row.appendChild(headBtn('go to its pane', 'go', () => { closeReview(); setSelected(busy.id); }));
-  } else {
-    // The single-session flow: one session reads, then makes the changes you pick and
-    // posts, staying open the whole time. The overlay does not close and hand you a
-    // pane — it stays put and advances itself when the session has read the threads.
-      // Not offered with nothing to read: an enabled primary action that spends an
-    // agent session on an empty queue is the button doing the opposite of its label.
-    if (n) row.appendChild(headBtn('read the threads', 'go', () => startReviewSession()));
-  }
-  if (d.url) {
-    const gh = headBtn('open on github', null, () => window.open(d.url, '_blank', 'noreferrer'));
-    row.appendChild(gh);
-  }
-  mid.appendChild(row);
-
-  if (n === 0) {
-    mid.appendChild(el('p', null,
-      'Every thread on this PR has been answered. Nothing to read.'));
-  }
-  root.appendChild(mid);
-}
-
-/* ---------- screen 1b: the worktree gate ---------- */
-
-/** The tree is not mine to write to yet. Three reasons, one screen: the design
- *  rests on the tree being clean until the final action, so it must start
- *  clean. CI colour and a develop conflict are deliberately not here. */
-function rvGate(/** @type {HTMLElement} */ root) {
-  const d = reviewState.data;
-  const g = d?.gate;
-  if (!d || !g) return;
-  root.appendChild(rvHead(d.title || 'review'));
-
-  const mid = el('div', 'mid');
-  if (g.gate === 'dirty') {
-    mid.appendChild(el('div', 'eyebrow', 'uncommitted changes in this worktree'));
-    mid.appendChild(el('div', 'big', 'Commit or stash first.'));
-
-    const list = el('div', 'hunk');
-    list.style.cssText = 'text-align:left;max-width:420px;width:100%';
-    for (const f of g.files) {
-      const ln = el('div', 'ln');
-      ln.appendChild(el('i'));
-      ln.appendChild(el('s', null, f));
-      list.appendChild(ln);
-    }
-    mid.appendChild(list);
-    mid.appendChild(el('p', null,
-      'Resolve commits the changes you accept; work already sitting in the tree would be ' +
-      'swept into that commit, so "only what you approved" would stop being true. Clear the ' +
-      'tree and this opens to the threads.'));
-
-    const row = el('div');
-    row.style.cssText = 'display:flex;gap:8px;margin-top:4px';
-    row.appendChild(headBtn('commit…', 'go', async () => {
-      const message = await promptBox('Commit message for the work already in this worktree',
-        { ok: 'Commit' });
-      if (!message || !message.trim()) return;
-      void rvAct(() => call(`/api/pr/${reviewState.pr}/commit`, { message: message.trim() }), 'committed');
-    }));
-    // Never popped automatically: popping onto a branch the review just amended
-    // can conflict, and silently juggling your work is worse than leaving it.
-    row.appendChild(headBtn('stash', 'go', () =>
-      rvAct(() => call(`/api/pr/${reviewState.pr}/stash`), 'stashed — pop it yourself')));
-    row.appendChild(headBtn('open a shell', null, () => { closeReview(); void newShell(); }));
-    mid.appendChild(row);
-  } else if (g.gate === 'rebasing') {
-    mid.appendChild(el('div', 'eyebrow', 'a rebase is stopped part-way'));
-    mid.appendChild(el('div', 'big', 'Finish or abort the rebase first.'));
-    mid.appendChild(el('p', null,
-      'The tree is mid-conflict-resolution and cannot take a patch at all. ' +
-      'Resolve opens once the rebase is out of the way.'));
-    const row = el('div');
-    row.style.cssText = 'display:flex;gap:8px;margin-top:4px';
-    row.appendChild(headBtn('open a shell', null, () => { closeReview(); void newShell(); }));
-    mid.appendChild(row);
-  } else {
-    mid.appendChild(el('div', 'eyebrow', 'a fix run is going on this branch'));
-    mid.appendChild(el('div', 'big', 'Resolve opens when it finishes.'));
-    mid.appendChild(el('p', null,
-      'Both rewrite this same worktree, so the two are mutually exclusive — two concurrent ' +
-      'rebases in one working directory is index corruption, not a UI glitch. Starting ' +
-      'a fix run during a review is refused from the other side too.'));
-  }
-  root.appendChild(mid);
-  root.appendChild(rvActs([actBtn('re-check', 'pri', () => loadReview(reviewState.pr))]));
-}
-
-/* ---------- screen 2: what it found ---------- */
-
-/** The shape of the work, not a summary of things already done: how long this
- *  will take and where the hard part is. */
-function rvOverview(/** @type {HTMLElement} */ root) {
-  const q = queue();
-  root.appendChild(rvHead('review', `${q.length} thread${q.length === 1 ? '' : 's'}`));
-  root.appendChild(rvFreshBar());
-  root.appendChild(rvStrip(null));
-
-  const body = el('div', 'body');
-  const sec = el('div', 'sec');
-  const tally = el('div', 'tally');
-  /* Grouped by what the agent's recommendation costs you, because that is what
-     decides how long the queue takes — not by a category it would have to
-     invent and keep consistent. */
-  /** @type {[string, string, (x: any) => boolean][]} */
-  const buckets = [
-    ['Straightforward', 'they are right — one keystroke each',
-      (x) => positionOf(x).stance === 'agree'],
-    ['Wants a decision', 'the recommendation comes with words you should read first',
-      (x) => positionOf(x).stance === 'reply'],
-    ['Out of scope', 'fair, but it belongs in a story rather than this PR',
-      (x) => positionOf(x).stance === 'story'],
-  ];
-  for (const [label, why, match] of buckets) {
-    const hits = q.filter(match);
-    if (!hits.length) continue;
-    const line = el('div', 'tline');
-    line.appendChild(el('span', 'n', String(hits.length)));
-    const l = el('span', 'l', label);
-    l.appendChild(el('em', null, hits.length === 1 ? threadLabel(hits[0].t) + ' — ' + why : why));
-    line.appendChild(l);
-    tally.appendChild(line);
-  }
-  sec.appendChild(tally);
-  body.appendChild(sec);
-
-  root.appendChild(body);
-
-  const handled = q.filter(isDecided).length;
-  root.appendChild(rvActs([
-    actBtn(handled ? `back to thread ${reviewState.i + 1} of ${q.length}` : `start · thread 1 of ${q.length}`,
-      'pri', () => { reviewState.screen = 'card'; renderReview(); }),
-    handled === q.length && q.length
-      ? actBtn('review & send', null, () => { reviewState.screen = 'final'; renderReview(); })
-      : null,
-  ], 'enter opens the threads'));
-}
-
 /** Comments that landed after the queue was built.
  *
  *  Deliberately not appended to it: a new thread has had no triage behind it, so
@@ -508,7 +321,7 @@ function rvFreshBar() {
 function rvCard(/** @type {HTMLElement} */ root) {
   const q = queue();
   const item = q[reviewState.i];
-  if (!item) { reviewState.screen = 'overview'; return rvOverview(root); }
+  if (!item) { reviewState.screen = 'final'; return rvFinal(root); }
   const { t, p } = item;
 
   root.appendChild(rvHead(`thread ${reviewState.i + 1} of ${q.length}`, decidedCount()));
@@ -1165,20 +978,16 @@ function renderReview() {
   root.replaceChildren();
   if (!reviewState.open) return;
 
-  // The single-session flow drives its own screens off the session's ask, not the
-  // batch ladder — and it renders before /review has ever been fetched (the read
-  // phase), so it does not fall through the `!data` guard the batch path needs.
-  if (reviewState.session) return renderSessionReview(root);
-
-  /* **No session means no review**, and that is the whole of the ladder now. The
-     batch used to land here: triage posted proposals and this routed between the
-     gate, the cards, the send and two result screens with no session behind any of
-     them. With the batch gone, proposals belong to a session that is still running
-     — so the only thing to draw for a PR nobody is reviewing is the way to start
-     one. */
-  if (!reviewState.data) return;
-  reviewState.screen = reviewState.data?.gate ? 'gate' : 'intake';
-  (reviewState.screen === 'gate' ? rvGate : rvIntake)(root);
+  /* **No session means no overlay at all**, and that is the whole of the routing
+     now. There used to be a ladder here: an intake screen offering to start the
+     read, and a worktree gate in front of it. Both were the batch's furniture —
+     the rail's review verb starts the session itself, and the daemon refuses a
+     dirty start with `Gate::say()` in the toast — so the two ways in
+     (`app.js`'s checkpoint answer and `MOD⇧R`) both already hold a session. An
+     overlay with none is a state nothing can reach, and drawing nothing is what it
+     deserves rather than a screen kept alive for it. */
+  if (!reviewState.session) return;
+  renderSessionReview(root);
 }
 
 /* ---------- the single-session flow ---------- */
@@ -1191,26 +1000,6 @@ function sessionAsk() {
   return i && i.options ? i : null;
 }
 const askHasValue = (/** @type {import('../snapshot').Interaction | null | undefined} */ ask, /** @type {string} */ v) => !!ask && ask.options.some((/** @type {import('../snapshot').InteractionOption} */ o) => o.value === v);
-
-/** Start one session that reads, then makes the changes you pick and posts.
- *
- *  **It hands you back to the pane and lets the bar do the talking.** The overlay
- *  used to stay open on a full screen that said the session was reading, which is
- *  a whole window spent on one sentence — and the sentence was already on the bar,
- *  beside the pane where the permission prompts it warns about actually appear.
- *  The read phase is minutes of somebody else's work.
- *
- *  The screen stays `reading`, so `MOD⇧R` while it is still going lands on that
- *  copy rather than on nothing. Coming back is deliberately yours: `reviewTick`
- *  advances the phase whether or not you are looking, and the bar flips to
- *  `N of M threads waiting on you` when the cards are ready. Nothing opens the
- *  overlay over the top of whatever you moved on to. */
-async function startReviewSession() {
-  await startSession(reviewState.pr, null);
-  // The overlay was the way in, so put it away: the bar takes it from here, and
-  // `closeReview` keeps the pr, the session and the screen.
-  if (reviewState.session) closeReview();
-}
 
 /** Start the overlay session on a PR, from wherever you are.
  *
@@ -1305,9 +1094,13 @@ function reviewTick() {
 
   // The decision ask appears only after the session has posted its proposals, so it
   // is the proof they are ready. Fetch them once, then show the cards.
+  //
+  // **Card 1, not a tally of what it found.** That tally was a screen you read once
+  // and pressed through, and it described the same queue the strip above every card
+  // already draws. The first thing to decide is the first thread.
   if (askHasValue(ask, 'decisions') && !reviewState.proposalsLoaded) {
     reviewState.proposalsLoaded = true;
-    reviewState.screen = 'overview';
+    reviewState.screen = 'card';
     void loadReview(reviewState.pr);
     return;
   }
@@ -1351,11 +1144,12 @@ function reviewTick() {
      bar goes on announcing a session that no longer exists over every pane in the
      app, which is exactly how it looked: a review "reading the threads" forever,
      everywhere, for a conversation that had been closed. The overlay, if it is open,
-     falls back to this PR's intake so it can be started again. */
+     goes with it: every screen it has left belongs to a session, so there is nothing
+     to fall back to and an empty frame is not an answer. */
   reviewState.session = null;
   reviewState.proposalsLoaded = false;
-  reviewState.screen = 'intake';
-  renderReview();
+  reviewState.screen = 'card';
+  closeReview();
 }
 
 /** Route the session flow's own screens. */
@@ -1365,8 +1159,8 @@ function renderSessionReview(/** @type {HTMLElement} */ root) {
   if (reviewState.decisionsSent) return rvChanging(root);
   if (!reviewState.data || !reviewState.data?.proposals) return rvReading(root);
   (/** @type {Record<string, (root: HTMLElement) => void>} */
-    ({ overview: rvOverview, card: rvCard, final: rvFinal }))[
-    ['overview', 'card', 'final'].includes(reviewState.screen) ? reviewState.screen : 'overview'
+    ({ card: rvCard, final: rvFinal }))[
+    reviewState.screen === 'final' ? 'final' : 'card'
   ](root);
 }
 
@@ -1526,8 +1320,8 @@ async function submitDecisions() {
 /** Open the overlay on a PR, or refresh what it is showing.
  *
  *  The proposals ride the snapshot too, but this fetch is what the overlay reads:
- *  it also carries the gate state and the thread bodies, and it is deliberately
- *  explicit rather than a side effect of a tick. */
+ *  it also carries the thread bodies, and it is deliberately explicit rather than a
+ *  side effect of a tick. */
 async function loadReview(/** @type {number | null} */ pr) {
   const p = (snap.prs || []).find((x) => x.number === pr);
   reviewState.pr = pr;
@@ -1591,7 +1385,7 @@ async function openReview(/** @type {number | null} */ pr) {
     reviewState.editing = {};
     reviewState.head = null;
     reviewState.i = 0;
-    reviewState.screen = 'intake';
+    reviewState.screen = 'card';
     reviewState.data = null;
     reviewState.session = null;
     reviewState.proposalsLoaded = false;
@@ -1620,10 +1414,15 @@ function closeReview() {
   $('rvoverlay').replaceChildren();
 }
 
-/** DEV-ONLY. Render the flat overview/card/final against canned data, with no
- *  session and no daemon fetch — so the flattened UI can be clicked while the
- *  GitHub fixture is blocked on CI. Reached only from `/review-preview`; nothing
- *  in the app calls it, and `send` is inert because there is no session to answer. */
+/** DEV-ONLY. Render the card and the approval page against canned data, with no
+ *  daemon fetch — so the UI can be clicked while the GitHub fixture is blocked on
+ *  CI. Reached only from `/review-preview`; nothing in the app calls it.
+ *
+ *  **The session id is a lie, and it has to be.** Every screen left belongs to a
+ *  session, so `renderReview` draws nothing without one — this used to set `null`
+ *  and the preview page went blank the moment the intake screen was deleted. The
+ *  id matches no session in the snapshot, which is exactly what keeps `send` inert:
+ *  `submitDecisions` tests the live ask, finds none and refuses. */
 export function preview(/** @type {any} */ data) {
   reviewState.picks = {};
   reviewState.skipped = {};
@@ -1632,38 +1431,15 @@ export function preview(/** @type {any} */ data) {
   reviewState.editing = {};
   reviewState.head = data.proposals?.base_sha || null;
   reviewState.i = 0;
-  reviewState.session = null;
+  reviewState.session = 'preview';
   reviewState.proposalsLoaded = false;
   reviewState.decisionsSent = false;
   reviewState.pr = data.pr_number ?? 0;
   reviewState.data = data;
   reviewState.open = true;
-  reviewState.screen = 'overview';
+  reviewState.screen = 'card';
   $('rvoverlay').classList.add('on');
   renderReview();
-}
-
-/** Run something that changes the daemon's side, then refetch.
- *
- *  `andClose` is for the two calls that hand you to a session — a triage run and
- *  `fix-pr`, because the useful next screen is the pty, not this one. */
-async function rvAct(/** @type {() => Promise<any>} */ fn, /** @type {string} */ said, /** @type {boolean | undefined} */ andClose) {
-  if (reviewState.busy) return;
-  reviewState.busy = true;
-  renderReview();
-  try {
-    const r = await fn();
-    if (said) toast(said);
-    if (andClose) {
-      if (r?.session) setPendingSelect(r.session);
-      reviewState.busy = false;
-      return closeReview();
-    }
-  } catch (e) {
-    toast(reason(e), true);
-  }
-  reviewState.busy = false;
-  await loadReview(reviewState.pr);
 }
 
 /* ---------- moving through the cards ---------- */
@@ -1721,13 +1497,6 @@ function reviewKey(/** @type {KeyboardEvent} */ e) {
     const on = document.activeElement;
     if (on && (on.tagName === 'BUTTON' || on.tagName === 'A')) return false;
     if (reviewState.screen === 'card') { acceptCard(); return true; }
-    // The overview's primary is "start / back to the threads", so Enter is it —
-    // the first screen after triage gets the keyboard the cards already had.
-    if (reviewState.screen === 'overview' && queue().length) {
-      reviewState.screen = 'card';
-      renderReview();
-      return true;
-    }
     // Deliberately dead on the final screen: across the cards Enter means
     // "accept this one thing", and on a batch it has no natural meaning.
     return reviewState.screen === 'final';

@@ -2023,16 +2023,10 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
 .rv .act.warm:disabled{color:#1A1206;background:var(--ghost);border-color:var(--ghost)}
 .rv .hint{margin-left:auto;font-family:var(--mono);font-size:calc(10.5px * var(--fs));color:var(--faint-solid);text-align:right}
 
-/* intake + empty */
+/* the two wait screens: reading, and applying */
 .rv .mid{padding:56px 16px;display:flex;flex-direction:column;align-items:center;gap:12px;text-align:center;overflow:auto}
 .rv .mid p{color:var(--dim);max-width:52ch;font-size:calc(13px * var(--fs))}
 .rv .mid .big{font-size:calc(15px * var(--fs));color:var(--text)}
-.rv .tally{display:flex;flex-direction:column;gap:0;width:100%}
-.rv .tline{display:flex;align-items:baseline;gap:12px;padding:8px 0;border-bottom:1px solid var(--line-soft)}
-.rv .tline:last-child{border-bottom:0}
-.rv .tline .n{font-family:var(--mono);font-size:calc(15px * var(--fs));color:var(--text);flex:0 0 26px;text-align:right;font-variant-numeric:tabular-nums}
-.rv .tline .l{font-size:calc(13px * var(--fs));color:var(--text)}
-.rv .tline .l em{display:block;font-style:normal;font-size:calc(11.5px * var(--fs));color:var(--faint-solid);margin-top:1px}
 
 /* the post list */
 .rv .stage-row{display:flex;align-items:baseline;gap:12px;padding:12px 0;border-bottom:1px solid var(--line-soft)}
