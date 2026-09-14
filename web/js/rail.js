@@ -1,7 +1,7 @@
 // The rail: what is running, what is waiting on you, and the PRs beside it.
 // Twenty-four names, three out; the rest is how a row decides what it says.
 
-import { $, activeCheckout, bandOf, byNewest, call, callFor, callHost, callOn, caret, checkoutOf, CHECKOUTS, chooseBox, clock, confirmBox, copyText, creating, creatingIn, dotClass, el, enterCheckout, everySession, getHost, isArchived, isConversation, isWaiting, mainWorkspace, MOD_LABEL, newSession, newWorktree, openMenu, pending, QUEUE_MAX, reason, refreshButton, repoSummary, safeHref, selected, sessionsOf, setPendingSelect, setSelected, snap, snapshotFor, snapshotOf, startingShown, stateClass, stateLabel, terms, toast, unchanged, watchStarting } from './core.js';
+import { $, activeCheckout, bandOf, byNewest, call, callFor, callHost, callOn, caret, checkoutOf, CHECKOUTS, chooseBox, clock, confirmBox, copyText, creating, creatingIn, dotClass, el, enterCheckout, everySession, getHost, isArchived, isConversation, isWaiting, mainWorkspace, MOD_LABEL, newSession, newWorktree, openMenu, pending, QUEUE_MAX, reason, refreshButton, repoSummary, safeHref, selected, sessionsOf, sessionOrder, setPendingSelect, setSelected, setSessionOrder, snap, snapshotFor, snapshotOf, startingShown, stateClass, stateLabel, terms, toast, unchanged, watchStarting } from './core.js';
 import * as Open from './open.js';
 import * as Review from './review.js';
 import * as Term from './term.js';
@@ -43,7 +43,7 @@ const drawn = { sig: null };
 function renderRail() {
   // A drag is a gesture on a node this function replaces: rebuilding mid-drag
   // drops the header out from under the pointer and the drop never lands.
-  if (editingName !== null || dragging !== null) return;
+  if (editingName !== null || dragging !== null || rowDrag !== null) return;
   // Before the guard: the bar has its own inputs and its own guard, and being
   // skipped by the rail's would leave it saying "2 need you" after they stopped.
   renderWaitbar();
@@ -69,7 +69,7 @@ function renderRail() {
      appeared until the next snapshot happened along. Which is exactly the window
      both of them exist to cover. */
   if (unchanged(drawn, [states, CHECKOUTS, activeCheckout().path, [...folded], showArchived,
-    showPrs, picked, selected, swapInFlight, creating(), creatingIn()], NOT_DRAWN)) {
+    showPrs, picked, selected, swapInFlight, creating(), creatingIn(), sessionOrder], NOT_DRAWN)) {
     return;
   }
 
@@ -272,6 +272,57 @@ function setFolded(/** @type {string} */ path, /** @type {boolean} */ on) {
  *  the gesture — so `renderRail` stands still while this is set. */
 /** @type {string | null} */
 let dragging = null;
+
+/** Which session row is being dragged, while one is, and out of which list.
+ *
+ *  Same reason as `dragging` above — the rail rebuilds every second and the
+ *  gesture is on a node that rebuild replaces. `list` is here because main's
+ *  sessions and the worktrees' are drawn as two runs with main always first, so a
+ *  drop from one onto the other could only move a row somewhere it would not be
+ *  drawn; those drops are refused rather than silently ignored. */
+/** @type {{ id: string, path: string, list: string } | null} */
+let rowDrag = null;
+
+/** The rail's own order for one checkout, with anything new falling where
+ *  `byNewest` would have put it: after the rows you placed.
+ *
+ *  @param {string} path
+ *  @param {import('../snapshot').SessionView[]} list
+ */
+function inRailOrder(path, list) {
+  const order = sessionOrder[path] ?? [];
+  if (!order.length) return list.slice().sort(byNewest);
+  return list.slice().sort((a, b) => {
+    const ia = order.indexOf(a.id);
+    const ib = order.indexOf(b.id);
+    if (ia < 0 && ib < 0) return byNewest(a, b);
+    if (ia < 0) return 1;
+    if (ib < 0) return -1;
+    return ia - ib;
+  });
+}
+
+/** Move one row to where another sits, and remember the whole list.
+ *
+ *  The whole list rather than the pair, for the reason `reorderCheckouts` gives:
+ *  an order stored as a list is one write that cannot half-apply, and it is what
+ *  the next render reads. Both runs go in, so main's order and the worktrees' are
+ *  one key and a session moving in or out of main keeps its place.
+ *
+ *  @param {string} path
+ *  @param {string} moved
+ *  @param {string} onto
+ *  @param {import('../snapshot').SessionView[]} shown
+ */
+function dropSessionRow(path, moved, onto, shown) {
+  const ids = shown.map((s) => s.id).filter((id) => id !== moved);
+  const at = ids.indexOf(onto);
+  // Before the row it was dropped on, in both directions — the same rule
+  // `startTabDrag` uses, so there is no up/down special case.
+  ids.splice(at < 0 ? ids.length : at, 0, moved);
+  setSessionOrder(path, ids);
+  renderRail();
+}
 
 /** ` in alpha`, for a message read away from the rail — or nothing at all when
  *  there is only one checkout.
@@ -825,10 +876,53 @@ function checkoutSessions(/** @type {import('./core.js').Target} */ c, /** @type
      At the top, because it is the newest thing there is. */
   if (creatingIn() === c.path) group.appendChild(startingRow());
 
-  // Main first, still: it is the checkout itself, and the rest are cut from it.
-  for (const s of mainActive.sort(byNewest)) group.appendChild(sessionRow(s, main, true));
+  /* Newest first until you say otherwise, and then your order — see
+     `inRailOrder`. Main stays first whatever the order says: it is the checkout
+     itself, and the rest are cut from it. */
+  const mainRows = inRailOrder(c.path, mainActive);
+  const treeRows = inRailOrder(c.path, treeActive);
+  const shown = [...mainRows, ...treeRows];
+
+  /* Drag a row to put the list in an order only you know.
+   *
+   *  HTML5 drag-and-drop rather than the drawer's pointer maths, because the rail
+   *  is one column and `dragover` already answers the only question there is —
+   *  above or below this one. It is what `checkoutHead` a few functions up does
+   *  for the same gesture on the same rail; the drawer's tab strip is horizontal
+   *  and scrolls, which is where the pointer maths earns its keep. */
+  const draggable = (/** @type {HTMLElement} */ row, /** @type {import('../snapshot').SessionView} */ s, /** @type {string} */ list) => {
+    row.draggable = true;
+    row.ondragstart = (ev) => {
+      rowDrag = { id: s.id, path: c.path, list };
+      // Absent only for a synthetic event nothing here dispatches.
+      if (!ev.dataTransfer) return;
+      ev.dataTransfer.effectAllowed = 'move';
+      // Firefox starts no drag at all without a payload, even one nothing reads.
+      ev.dataTransfer.setData('text/plain', s.id);
+    };
+    row.ondragend = () => { rowDrag = null; renderRail(); };
+    // No `preventDefault` is the refusal: the pointer keeps the no-drop cursor
+    // over a row in another checkout or the other run, so the gesture says so
+    // before it is let go.
+    row.ondragover = (ev) => {
+      if (rowDrag && rowDrag.path === c.path && rowDrag.list === list) ev.preventDefault();
+    };
+    row.ondrop = (ev) => {
+      ev.preventDefault();
+      const moved = rowDrag;
+      rowDrag = null;
+      if (moved && moved.id !== s.id && moved.path === c.path && moved.list === list) {
+        dropSessionRow(c.path, moved.id, s.id, shown);
+      } else {
+        renderRail();
+      }
+    };
+    return row;
+  };
+
+  for (const s of mainRows) group.appendChild(draggable(sessionRow(s, main, true), s, 'main'));
   // The workspace is only needed for the name it lends the row.
-  for (const s of treeActive.sort(byNewest)) group.appendChild(sessionRow(s, { id: s.workspace }));
+  for (const s of treeRows) group.appendChild(draggable(sessionRow(s, { id: s.workspace }), s, 'tree'));
 
   group.appendChild(addRow(c, state, main, mainActive));
   /* One archive per checkout rather than one per group, which follows from there
@@ -1179,6 +1273,15 @@ function sessionRow(/** @type {import('../snapshot').SessionView} */ s, /** @typ
     : pending(s) ? null : () => swapWithMain(s.workspace, s);
   // The header's ✕ only ever closes the selected session, so closing any other
   // one meant switching to it first.
+  /* Undo the drag, for the checkout this row is in. In the row's menu because the
+     rail has no other per-checkout menu on a single-checkout install, and because
+     this is where you are when you notice the order is no longer the one you
+     want. Absent, not greyed, while the list is still sorting itself. */
+  const co = checkoutOf(s.id);
+  /** @type {[string, string | null, (() => void) | null][]} */
+  const unsort = co && sessionOrder[co.path]
+    ? [['sort by newest', null, () => { setSessionOrder(co.path, []); renderRail(); }]]
+    : [];
   btn.oncontextmenu = (ev) => openMenu(ev, [
     ['rename', null, () => renameSession(s)],
     // Nothing to branch off until the conversation has had a turn.
@@ -1191,6 +1294,7 @@ function sessionRow(/** @type {import('../snapshot').SessionView} */ s, /** @typ
     // The worktree, not the session: the row is the only place a worktree is
     // visible, so its workspace-level action lives here too.
     [moveLabel, null, moveDo],
+    ...unsort,
     ['close', 'bad', s.alive ? () => closeSession(s.id) : null],
     ['delete', 'bad', () => deleteSession(s)],
   ]);

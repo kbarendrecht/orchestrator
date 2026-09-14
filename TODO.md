@@ -5,32 +5,6 @@ this file, which churned it from every build; that feature is gone.
 
 ## Next
 
-- **`edit::read` closes the symlink race on the final component only.** The parents
-  are canonicalised earlier and can still be swapped between the check and the open;
-  closing it properly needs `openat2` with `RESOLVE_BENEATH`, which is Linux-only
-  and so wants a second path for macOS. The threat is narrower than the leaf's was:
-  a symlink *committed* on a PR branch is caught by the parent check, so what is
-  left needs a live process racing the open rather than content somebody pushed.
-  The last of the four gaps the v2 review pass found.
-
-- **The `swapping` lock has no test, and it is the one refusal left uncovered.**
-  `26-move-refusals` now holds the other four — swapping main with itself, a session
-  that is not in main, a session that does not exist, a tree mid-rebase — and both
-  copies of the mid-turn guard, each proven by removing it and watching the flow
-  fail. The lock is different: it needs two genuinely concurrent requests and the
-  window is milliseconds, so any test written for it either passes by luck or is a
-  flake. Its comment records a real incident — a double click that "left a session in
-  main with its branch back in the worktree" — so this is a gap worth knowing about
-  rather than one worth filling with a test that lies. A deterministic version would
-  need the daemon to offer a way to hold the lock, which is product surface added for
-  a test and has not earned that.
-
-- **`rerequest()` has never run.** The fixture drives everything else in the review
-  flow (`mise run fixture`, `docs/fixture-pr.md`), but its threads are posted by
-  `github-actions[bot]` and a bot cannot be a requested reviewer. That one button
-  wants a second human identity: a throwaway account, or a fine-grained token for
-  one.
-
 - **The review session is the contender, and the pane is what works.**
   The batch flow — a headless triage pass, cards, then a resolve run carrying out
   what the cards decided — is deleted. It was the third of three flows over one
@@ -83,46 +57,9 @@ this file, which churned it from every build; that feature is gone.
   prose in a skill.
 
   *Still unproven in the session flow.* The story arm has never run (the fixture
-  daemon has `tracker: none`), and `session_rerequest` has not either — for the
-  reason the entry above gives, which is the fixture's bot identity and not the
-  code.
-
-- **Sibling worktrees, for the agent that is not Claude Code.** Not wanted for
-  Claude, which is the whole reason it is not built: `.claude/worktrees` is Claude
-  Code's own `--worktree` location, so nesting is free and delegation works. Another
-  tool will not put them there, and `docs/workspace-isolation.md` already names this
-  as the condition for reopening the decision ("Reconsider if a non-Claude agent is
-  ever hosted"). Sibling trees (`../feat`) are the wider convention, per the research
-  in `docs/research/worktree-docker.md`.
-
-  Today a tree outside `worktrees_dir` is not managed at all: `spawn::worktree_name_of`
-  returns `None` and the daemon logs "ignoring worktree outside the managed dir". So a
-  repo whose own `WorktreeCreate` hook puts trees beside the checkout gets a daemon
-  that manages nothing, and says so once, in a log.
-
-  **What it costs.** The config shape, since `worktrees_subdir` is sanitised to a
-  relative in-main path and would have to admit an absolute one outside. The in-main
-  guard several flows lean on. And a re-check of path attribution, though
-  `workspace_for_path` is longest-match over absolute paths and should hold as it is.
-  One thing gets *simpler*: main's `git status` would no longer contain the worktrees,
-  so the porcelain exclude prefix and the managed block in `.git/info/exclude` stop
-  being needed for that layout.
-
-  **What it loses.** The gitdir moves outside the checkout, which is what a future
-  in-container mode would need inside the mount — devcontainers had to add
-  `--mount-git-worktree-common-dir` for exactly this. So this decision and the
-  container entry below pull in opposite directions, and whichever is built first
-  should say so.
-
-- **Containers and ports, if orchd ever hosts a heavier repo.**
-  `docs/workspace-isolation.md` has the decision record and the shape to build,
-  from a sourced research pass (`docs/research/worktree-docker.md`): per-worktree
-  compose projects (`COMPOSE_PROJECT_NAME`, ports from a pool), **not** the
-  shared-stack `docker exec` model that was cut with the capability subsystem. The
-  sibling problem is a per-worktree process publishing a fixed port; the peer answer
-  is a host port range plus a `$PORT` placeholder, and `ORCHD_PORT_BASE` — already
-  used per fix-pr run — is the hook. Neither is wanted yet: orchd carries no
-  container config at all, and that is the portable default.
+  daemon has `tracker: none`), and `session_rerequest` has not either, because the
+  fixture's threads are posted by `github-actions[bot]` and a bot cannot be a
+  requested reviewer. That is the fixture's identity, not the code.
 
 - **Stacked-PR support.** Two halves. First, a context-menu `stack` action on a
   PR row that opens a session starting from that PR's code — a new branch based
@@ -153,19 +90,7 @@ this file, which churned it from every build; that feature is gone.
   `{{LANGUAGE}}`. Paths, `/proc` reads and GNU coreutils were the other half, and
   those rules are in CLAUDE.md.
 
-  What is left is deliberate rather than unfinished:
-  - ~~**The review queue needs a script.**~~ **Done, and it is the third shape this
-    has had.** A built-in GraphQL queue with config-driven ranking was built and
-    reverted for being more machinery than anyone wanted to own; the ejected
-    `reviews.js` that replaced it then turned out unable to be a default at all,
-    because `#!/usr/bin/env node` resolves against the *daemon's* PATH — the
-    launcher's, not a shell's — and found a system node too old to load
-    `node:child_process`. What is there now is a built-in queue with **four** rules
-    rather than a ranking engine: `review-requested:@me`, oldest first, amber when
-    you were named rather than a team, and draft/conflicting/failing sunk. No node,
-    no `gh`, one `curl` on the token the PR pane already resolves.
-    `reviews_command` still wins where a team has its own ranking, and
-    `docs/reviews-json.md` is unchanged.
+  What is left is three seams — the agent, the tracker and the forge:
   - **Worktree *creation* is decoupled; the session model is not.** The daemon cuts
     every tree itself now — `spawn_worktree_session` runs the repo's own
     `WorktreeCreate` through `create_worktree` and adopts it, with no `--worktree`
@@ -183,35 +108,31 @@ this file, which churned it from every build; that feature is gone.
     grammar, and a tracker-agnostic `Story` beside it. Two things to settle while
     doing it — the token ladder is Shortcut-named, and `Stub` should become the
     trait's test double rather than the `--strict-mcp-config` special case it is.
-    Not worth building until a second tracker is actually wanted, the same bar the
-    forge seam was held to.
   - **Two GitHub-shaped leaks** for a real second forge: `ThreadRoot`'s `comment_id`
     is a REST id, and both `GitHubForge::detect`'s URL parsing and the read-token
     ladder are github.com-specific — `for_kind`'s single `token` argument does not
     yet model per-forge credentials.
-- **macOS: launched now, and mostly working.** A second person ran it on a Mac on
-  2026-09-01, which closed the "never executed" half of this. What that afternoon
-  found, all fixed: an app started from Finder inherits none of your shell's `PATH`,
-  so `gh`, `node` and `claude` were all missing at once; sessions stuck at
-  `starting` (a hook arriving before the record was inserted); a `⌃` drawn where the
-  modifier is `⌘`; and no Finder entry at all from a mise install.
 
-  What is still unanswered there:
-  - **Chrome::Overlay's traffic lights and `open` for URLs** are written-not-run.
-  - The desktop crate still cannot be cross-checked from Linux
-    (`objc2-exception-helper` wants a real SDK); `check.yml` on macos-14 is the
-    only answer, and it now runs that crate's tests as well as building it.
+- **Drag and drop in the rail: the reorder is in, the pair swap is not.**
+  *Done:* dragging a session row reorders the list, the order is kept per checkout
+  in `localStorage` (`core.sessionOrder`), a session the order has never seen falls
+  where `byNewest` would have put it, and `sort by newest` in the row's menu puts
+  it back. Driven in a real browser — three worktrees, a drag, a reload, the menu —
+  and **not covered by any gate**: `tools/e2e/page.mjs` boots a browser and a
+  sandbox daemon already, so a check is cheap, but its contract is what the page
+  must never *show* and a drag is not that.
 
-- **Drag and drop in the rail: sort sessions, and swap two by dropping one on the
-  other.** The drawer's tabs got this (`startTabDrag` in `web/app.js`, order in
-  `localStorage` per workspace), and the rail is the place it would earn more —
-  the rail sorts itself by what needs you, which is right for triage and wrong
-  when you are working through a list in an order only you know. Two gestures, not
-  one: dropping *between* rows reorders, dropping *onto* a row swaps their
-  branches, which is `swap-main` generalised to any pair of worktrees and needs a
-  daemon route that does not exist yet. The tab drag is the pattern to copy —
-  pointer events rather than HTML5 drag-and-drop, a 4px threshold, and the render
-  suppressed mid-drag so a snapshot cannot rebuild the list under the pointer.
+  *Left:* dropping a row **onto** another swaps their branches, which is
+  `swap-main` generalised to any pair of worktrees and needs a daemon route that
+  does not exist yet. The gesture is free — `ondrop` already distinguishes the two
+  runs — but the refusals are not: the `swapping` lock, a tree mid-rebase and a
+  session mid-turn all have to answer for a pair neither of which is main.
+
+  One thing settled while doing the reorder: the rail uses **HTML5 drag-and-drop**,
+  not the drawer's pointer maths. The rail is one column, so `dragover` answers the
+  only question there is, and `checkoutHead` was already doing exactly that on the
+  same rail. The pointer maths in `startTabDrag` earns its keep on a strip that is
+  horizontal and scrolls.
 
 - **Own the tracker's transport instead of borrowing the target repo's MCP.**
   `Tracker::mcp_server()` names a server orchd expects to find in *the repo's*
@@ -259,18 +180,6 @@ this file, which churned it from every build; that feature is gone.
   one flat list. The one worth remembering: shortening a thing at its source beats
   hiding it at the end.
 
-- **`Ctrl+Shift+Tab` for the previous session — implemented, wants one real-window
-  check.** The diagnosis held: the SPA's `Tab && ctrlKey` arm handles both
-  directions, and the one consumer left was WebKitGTK, whose focus chain claims the
-  backward chord before the page sees it. `desktop::wire_session_switch_keys`
-  intercepts it at the gtk window's `key-press-event` (before focus traversal),
-  where Shift+Tab arrives as the `ISO_Left_Tab` keyval, and re-injects the DOM
-  keydown the keymap already understands, returning `Propagation::Stop` so GTK does
-  not also move focus. The forward chord is left alone because it already works. The
-  re-inject payload is verified against the real handler (a synthetic
-  `Ctrl+Shift+Tab` moves the selection), but the GTK grab-bypass itself has only
-  been reasoned about — it needs the real window and a keyboard to confirm.
-
 - **One credential, and it stops being `gh`'s.** Reads already go out over curl with
   a resolved token (`forge/github.rs`); only three places shell `gh` at all:
   `gh auth token` for the credential (`forge/github.rs:60`), every write
@@ -286,65 +195,6 @@ this file, which churned it from every build; that feature is gone.
   "the daemon never pushes and needs read only" stops being true, and the boot
   warning that treats `TokenSource::GhCli` as too wide loses its subject. The README
   describes today's split rather than this plan.
-
-- **Give the declared watch its `stop_command`.** Both halves that existed are done:
-  `stop_command` on `ManagedSpec` (a command that stops what the pty is a *client*
-  of, run before the kill, on close, restart and shutdown), and the watch is now
-  declared in `main_processes` and autostarts. Its `stop_command` is still empty,
-  which is the whole point of the item: confirm on the box that starting and
-  stopping it twice leaves no watcher behind.
-
-  *The compose-service alternative was rejected, and the reasoning is worth keeping.*
-  Moving the watch to its own compose service and following `docker compose logs -f`
-  costs two things the pty gives for free: `logs -f` replays history, so the health
-  parser would open on yesterday's failures, and "the child exited" would become
-  "the log follower exited", which says nothing about the service. It does not even
-  avoid the problem — stopping a service is still not killing a pty — so it needed a
-  stop mechanism too.
-
-- **`canonicalize(p).unwrap_or_else(|_| p.into())` still has five inline copies**,
-  in `state.rs` (twice), `git.rs`, `config.rs` and `main.rs`. `hooks.rs` had three of
-  the eight and now has one `resolved()` that all of it goes through, which is what
-  turned a macOS-only fault into a test that runs everywhere: `session_start`
-  recorded the reported cwd raw while `session_end` resolved the one it compared, so
-  on a Mac a session's own ending read as a hook from a tree it had left. The
-  remaining five are in modules that would have to import each other to share one
-  helper, so the real home is a `util` the tree does not have yet. Worth doing the
-  day a sixth appears, not before.
-
-- **Archived rows still pile up, and that half is deliberately not automated.**
-  The trees are handled, in two places rather than one. `worktree_retention_days`
-  (default 60, `0` off, editable in settings) removes the worktree of a conversation
-  nobody came back to, hourly, and also one that **no conversation points at at
-  all**. Age is the transcript's last write (`store::last_used`), not the session's
-  start, so a conversation kept open for weeks is not old the day after you stop; an
-  orphaned tree has no transcript to read and is dated by its own directory. And `spawn::watch_session_exit` now removes the tree of a
-  turnless session as it forgets its row, which is where that population came from:
-  32 of 61 trees on this machine were rows the daemon had deleted and trees it had
-  left. Everything goes through the same six-check preflight the button uses.
-
-  Two measurements worth keeping. The per-worktree index mtime looks like the better
-  "last used" signal and is worthless: the daemon's own reconcile runs `git status`
-  in every tree and refreshes it, 0.0 days for all 32, while the directories read 8
-  to 19 days. And the churn here is about **three trees a day at ~230 MB each**, so
-  retention is a disk budget: 60 days is roughly 190 trees and 44 GB, 14 days is
-  roughly 45 and 10 GB. Nothing on this machine is older than 19 days, so the
-  60-day default reaps nothing for the first two months and then holds a steady
-  state. Lower it if the budget is the point.
-
-  The **records** were left out on purpose, and the reasoning is the thing to keep:
-  a tree is rebuildable (`revive`, at the same absolute path, from the recovery
-  record the preflight insists on) so a wrong retention costs one rebuild, while
-  `forget_session` deletes the daemon's archived transcript and cannot be undone. A
-  timer may take the reversible half only. An orphaned tree is the exception that
-  proves it: nothing can resume it and `git worktree remove` leaves its branch, so
-  there is nothing to lose in the first place.
-
-  So the pile of rows is still there, and the honest answer to it is presentation
-  rather than deletion: group the archive by week and put the PR number on the row,
-  which is the entry below. Revisit automatic record deletion only if that is not
-  enough, and if it ever happens, `TranscriptOnly` rows are the only ones with an
-  argument.
 
 - **The archive is a list you cannot find anything in.** 91 rows behind one caret,
   each carrying a name and an age, with no search, no grouping by date and no PR

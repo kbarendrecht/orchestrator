@@ -1679,6 +1679,37 @@ export function setProcOrder(/** @type {string | null} */ wsId, /** @type {strin
   } catch (e) { /* private mode: the order still holds for this session */ }
 }
 
+/* The order you dragged the rail's session rows into, per checkout, as a list of
+   session ids. A view preference like [`procOrder`] beside it, and kept the same
+   way: the rail sorts itself by what needs you, which is right for triage and
+   wrong when you are working through a list in an order only you know.
+
+   **Keyed by the checkout path, not by workspace.** A session id is unique across
+   every checkout, so the key is not there to stop a collision — it is there so
+   "put this list back to newest first" is one checkout's answer rather than every
+   checkout's, and so closing a checkout takes its order with it.
+
+   An id the list has never seen is a session created since you last dragged one,
+   and `rail.js` puts those where `byNewest` would have: after the ones you
+   placed. */
+export let sessionOrder = (() => {
+  try {
+    return JSON.parse(localStorage.getItem('orch.sessionOrder') || '{}') || {};
+  } catch (e) {
+    return {};
+  }
+})();
+
+/** @param {string} path @param {string[]} ids — empty clears the manual order. */
+export function setSessionOrder(path, ids) {
+  sessionOrder = { ...sessionOrder };
+  if (ids.length) sessionOrder[path] = ids;
+  else delete sessionOrder[path];
+  try {
+    localStorage.setItem('orch.sessionOrder', JSON.stringify(sessionOrder));
+  } catch (e) { /* private mode: the order still holds for this session */ }
+}
+
 /** Is the keyboard in a text box that is not a terminal?
  *
  *  The pty takes focus on its own in two places — a socket that has just opened,
