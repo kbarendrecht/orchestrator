@@ -111,7 +111,7 @@ mise run check-deps                 # advisories, licences, unused crates, spell
 mise run check-modules              # the daemon's module graph, held no worse
 mise run page-check                 # what the rendered page must never show
 mise run notices                    # regenerate THIRD-PARTY-RUST.md
-mise run e2e                        # 24 flows against a real daemon
+mise run e2e                        # 25 flows against a real daemon
 cargo run -p orchestrator-desktop   # the app, daemon embedded in-process
 mise run shot                       # screenshot the running SPA (drives Chrome)
 mise run release                    # bump, wait for CI, tag and push
@@ -341,6 +341,7 @@ together: same entries, same order, same groups.
 
 - An e2e flow must make idleness a condition, not an assumption.
 - `mise run e2e` needs no product change, because the agent is a PATH lookup.
+- GitHub is two programs, and the write half is `gh`.
 
 ### The UI's contracts
 

@@ -25,7 +25,7 @@ Real: the daemon binary, its HTTP API, the hook wiring, `sessions.json`, git —
 actual worktrees, actual branch moves, actual `stash create` carries, actual
 locks.
 
-Substituted, both by PATH shim:
+Substituted, all three by PATH shim:
 
 - **`claude`** → `tools/e2e/fake-claude.mjs`. The daemon spawns its agent as
   `CommandBuilder::new("claude")`, a PATH lookup, so this needs no product change.
@@ -34,10 +34,18 @@ Substituted, both by PATH shim:
   settings file the daemon produced**, a transcript at Claude Code's own path, and
   staying alive on the pty until killed.
 - **`curl`** → `tools/e2e/fake-curl.mjs`, and *only* for a flow that asks for a
-  repo. `forge::github::graphql` is the daemon's one route out, and it goes through
+  repo. `forge::github::graphql` is the daemon's read route out, and it goes through
   `curl`. The shim answers `api.github.com` from a JSON file in the sandbox and
   execs the real `curl` for everything else — which it must, because the
-  `SessionStart` hook is also a `curl`.
+  `SessionStart` hook is also a `curl`. Three documents reach it: the poll
+  (`search(query:)`), the review overlay's thread fetch (the only one selecting
+  `headRefOid`), and the poll's own paging, which selects neither.
+- **`gh`** → `tools/e2e/fake-gh.mjs`, installed under the same condition. GitHub's
+  *write* side never touches `curl`: `forge::github_write` shells `gh` from the main
+  checkout, so a sandbox with canned PRs and the machine's real `gh` would reach the
+  network on its first reply. It asserts nothing — it appends each call's argv and
+  stdin body to `gh.jsonl`, which `t.ghCalls()` reads, so a flow checks the REST path
+  and the bytes that left rather than a seam above them.
 
 Reading the hooks out of the settings file rather than hardcoding them is the part
 worth keeping: change `hooks::write_settings` and these flows change with it,
@@ -79,7 +87,7 @@ export async function run(t) {
 `.claude/worktrees`, Claude Code's own layout, which the daemon cuts like any
 other now — so what it changes is the path; `turns` is how many turns the agent
 takes unprompted, and `0` is the session that was never typed into — the one fork
-and resume refuse. `repo` turns GitHub on and installs the curl shim. `autoResume`
+and resume refuse. `repo` turns GitHub on and installs both GitHub shims. `autoResume`
 brings live sessions back across `t.restart()`. `processes` declares
 `main_processes`, which is empty everywhere else so that a flow with no interest in
 the drawer has no process to reason about.
@@ -116,7 +124,13 @@ settles at `ready`.
   agent takes turns and never touches git or the forge. Only the *start* of fix-pr
   is covered: the guards, the worktree, the automation record.
 - **A real round trip to GitHub.** `mise run fixture` is that, and it needs
-  credentials. These flows are the offline half.
+  credentials. These flows are the offline half — what they pin is the request the
+  daemon *built*, not what GitHub does with it.
+- **A real agent running the review skill.** Flow 25 drives the overlay session's
+  whole path, but the fake agent does not read `skills/review/SKILL.md`: the flow
+  stands in for it at the three points the skill would speak — the proposals, the
+  ask it raises, and the calls that post. So the routes and their rules are covered
+  and the prompt that drives them is not.
 - **`claude --resume` semantics.** The fake agent replays a transcript; it does not
   prove Claude Code resolves a conversation by id wherever the file sits. That was
   measured separately against 2.1.240.

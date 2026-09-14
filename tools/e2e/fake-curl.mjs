@@ -92,9 +92,12 @@ function graphql(query) {
     : {}
   const viewer = canned.viewer ?? 'e2e-viewer'
 
-  // Only the poll is answered with PRs. The on-demand thread fetch has a
-  // different shape and nothing in these flows drives it, so it gets a valid but
-  // empty envelope rather than a lie in the shape of the poll's.
+  /* Three documents reach this shim and each needs its own answer. The poll asks
+     `search(query:)`; the review overlay's on-demand fetch is the only one that
+     selects `headRefOid`; and the poll's own paging (`summary_threads_query`)
+     selects neither, which is why it falls through to the bare envelope. Keyed on
+     a field rather than on a phrase, because the field is what the parser reads. */
+  if (query.includes('headRefOid')) return threads(query, canned, viewer)
   if (!query.includes('search(query:')) return { data: { viewer: { login: viewer } } }
 
   const slug = query.match(/repo:(\S+)/)?.[1] ?? 'acme/monorepo'
@@ -102,6 +105,62 @@ function graphql(query) {
     data: {
       viewer: { login: viewer },
       search: { nodes: (canned.prs ?? []).map((p) => node(p, slug, viewer)) },
+    },
+  }
+}
+
+/** The review overlay's thread fetch, as `parse_thread_page` reads it.
+ *
+ *  Canned per PR under `threads` in `prs.json`. The shape is `ThreadNode` and
+ *  `Comment` field for field — `databaseId` is the REST id every write is keyed on,
+ *  and a name that does not match comes back as a thread the daemon silently drops.
+ *
+ *  **`answerable` is not canned, and must not be.** `Threads::mark_answerable`
+ *  derives it from the last comment's author and your own 👍, which is the rule the
+ *  re-request rests on; canning it here would test the shim instead. So a flow says
+ *  who spoke last, and the daemon decides whose turn it is. */
+function threads(query, canned, viewer) {
+  const pr = Number(query.match(/pullRequest\(number: (\d+)\)/)?.[1] ?? 0)
+  const found = (canned.prs ?? []).find((p) => p.number === pr)
+  return {
+    data: {
+      viewer: { login: viewer },
+      repository: {
+        pullRequest: {
+          headRefOid: found?.head_sha ?? 'e2e0000',
+          reviewThreads: {
+            pageInfo: { hasNextPage: false, endCursor: null },
+            nodes: (found?.threads ?? []).map(threadNode),
+          },
+        },
+      },
+    },
+  }
+}
+
+/** One `reviewThreads` node. `comments` is spelled out so a flow writes people
+ *  and words, not GraphQL. */
+function threadNode(t) {
+  return {
+    id: t.id,
+    isResolved: t.is_resolved ?? false,
+    isOutdated: t.is_outdated ?? false,
+    path: t.path ?? null,
+    line: t.line ?? null,
+    startLine: t.start_line ?? null,
+    originalLine: t.original_line ?? null,
+    comments: {
+      nodes: (t.comments ?? [{ author: t.author, body: t.body }]).map((c, i) => ({
+        databaseId: c.id ?? (t.comment_id ?? 1000) + i,
+        author: { login: c.author },
+        body: c.body ?? 'you call this twice',
+        createdAt: c.created_at ?? '2026-01-01T00:00:00Z',
+        url: c.url ?? `https://github.com/x/y/pull/1#discussion_r${c.id ?? 1000}`,
+        diffHunk: c.hunk ?? null,
+        reactionGroups: [
+          { content: 'THUMBS_UP', viewerHasReacted: c.viewer_thumbed ?? false },
+        ],
+      })),
     },
   }
 }
