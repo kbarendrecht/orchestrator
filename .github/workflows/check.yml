@@ -240,3 +240,28 @@ jobs:
       - name: Build the app
         if: always()
         run: cargo build -p orchestrator-desktop
+
+      # And then *run* it, which nothing here did until two faults shipped in one
+      # week that only running it could have caught: #16 packed no `orchd`, so the
+      # app could not start, and #17 seeded a checkout's state with one file, so the
+      # rail opened empty. Every other step in this workflow was green for both.
+      #
+      # macOS only, and not because the fault was: the Linux runner has no display,
+      # so the window cannot open there. `orchd` as well as the app, because the
+      # host spawns it per checkout and resolves it beside the running executable.
+      - name: Drive the app
+        if: runner.os == 'macOS'
+        run: |
+          cargo build -p orchd-serve --bin orchd
+          node tools/app-check.mjs target/debug/orchestrator-desktop \
+            --shots "${{ runner.temp }}/app-shots"
+
+      # Only on a failure: a screenshot is evidence for somebody reading a red run,
+      # never something to compare against a baseline — `page-check` says why.
+      - name: What it looked like
+        if: failure() && runner.os == 'macOS'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: app-check-shots
+          path: ${{ runner.temp }}/app-shots/*.png
+          if-no-files-found: ignore

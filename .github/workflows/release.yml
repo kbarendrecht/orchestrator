@@ -162,6 +162,18 @@ jobs:
           # toolchain.
           npx -y @tauri-apps/cli@2.11.4 build --bundles ${{ matrix.bundles }}
 
+      # The packed app, driven before anything is uploaded. `check-ship` reads the
+      # config and says the bundle *should* carry `orchd`; this opens the bundle
+      # that was actually built and makes a session in it. A tag is the one build
+      # nobody re-runs, and v2026.9.14 shipped an app that could not start.
+      #
+      # macOS only: the Linux runner has no display for the window.
+      - name: Drive what this will ship
+        if: runner.os == 'macOS'
+        run: |
+          node tools/app-check.mjs \
+            target/release/bundle/macos/Orchestrator.app/Contents/MacOS/orchestrator-desktop
+
       - name: Package
         run: |
           mkdir -p dist

@@ -119,6 +119,13 @@ description = "Refuse a binary the release would not ship"
 dir = "{{config_root}}"
 run = "node tools/check-ship.mjs"
 
+[tasks.app-check]
+# Drives the built app: opens a checkout, makes a session, restarts, and looks for
+# it again. Needs a display, so it is macOS in CI and a desktop session locally.
+description = "Drive the real app: a session has to survive a restart"
+dir = "{{config_root}}"
+run = "node tools/app-check.mjs target/debug/orchestrator-desktop"
+
 [tasks.check-docs]
 # Two kinds of prose, one task, because both fail the same way: silently.
 # `cargo doc` answers whether an intra-doc link resolves; `check-assumptions.mjs`

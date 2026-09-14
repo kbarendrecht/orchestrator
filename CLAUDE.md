@@ -110,6 +110,7 @@ mise run check-docs                 # the doc comments' links, denied as warning
 mise run check-deps                 # advisories, licences, unused crates, spelling
 mise run check-modules              # the daemon's module graph, held no worse
 mise run check-ship                 # every binary the release must pack
+mise run app-check                  # drive the real app: a session survives a restart
 mise run page-check                 # what the rendered page must never show
 mise run notices                    # regenerate THIRD-PARTY-RUST.md
 mise run e2e                        # 25 flows against a real daemon
