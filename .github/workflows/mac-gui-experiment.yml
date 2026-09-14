@@ -1,0 +1,162 @@
+# Can the built app be launched on a GitHub macOS runner at all?
+#
+# **A throwaway experiment, not a gate.** Delete it once it has answered.
+# `workflow_dispatch` only, so it never runs on a push and cannot fail a commit.
+#
+# The question is the one CLAUDE.md admits it has no tool for: "Anything only a Mac
+# can check — the renderer, the window chrome, the native dialogs … this is the one
+# place a written rule is still the mechanism." #16 shipped a release that could not
+# start, and every other gate was green for it, so it is worth knowing whether CI
+# could have launched the thing and seen.
+#
+# Two knowns going in, both from research rather than from here:
+#
+#   * GitHub's macOS images have an active Aqua session, with Screen Recording
+#     pre-granted to `bash` — so a window *should* be able to open, and
+#     `screencapture` should be able to prove it.
+#   * actions/runner-images#10329 reports an ad-hoc-signed app hanging on launch on
+#     macos-14 arm64 — apparently a Gatekeeper dialog nothing can dismiss — while
+#     x86_64 is fine, with no confirmed fix in the thread. This app is unsigned by
+#     choice (`release.yml`: "signing wants a paid Developer ID"), so it is squarely
+#     in that shape.
+#
+# Three launch paths are tried because they fail differently, and the report is what
+# each one did rather than a pass or a fail:
+#
+#   A. the bare `target/release` binary — what the tarball installs, no bundle at all
+#   B. `Orchestrator.app/Contents/MacOS/orchestrator-desktop` — inside the bundle,
+#      ad-hoc signed by the bundler, run directly so LaunchServices is bypassed
+#   C. `open -a Orchestrator.app` — through LaunchServices, the path #10329 names
+#
+# Nothing here asserts. Every step is `continue-on-error` and every launch is
+# bounded by hand — macOS has no coreutils `timeout`, which is a portability trap
+# this repo has already paid for once.
+
+name: mac gui experiment
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  launch:
+    runs-on: macos-14
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # Nothing here pushes, and a checkout that leaves the token in
+          # `.git/config` hands it to every later step — including `npx`, the
+          # bundler and every third-party action in the job.
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@4716b85f2fac3e324e64fa2810f6b5c3905760a5 # stable
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+
+      # Both binaries first: the bundle's `files` map copies them out of
+      # `target/release` and the bundler does not build them.
+      - name: Build
+        run: |
+          cargo build --release -p orchd-serve --bins
+          # `app` rather than `dmg`: the .app is what we want to launch, and
+          # building the disk image on top of it is minutes we do not need.
+          npx -y @tauri-apps/cli@2.11.4 build --bundles app
+
+      - name: What was built
+        continue-on-error: true
+        run: |
+          echo "--- target/release ---"
+          ls -l target/release/orchestrator-desktop target/release/orchd target/release/orch
+          echo "--- the bundle ---"
+          find target/release/bundle -maxdepth 4 -name 'Contents' -o -name '*.app' | head
+          APP=$(find target/release/bundle -maxdepth 3 -name '*.app' | head -1)
+          echo "app: $APP"
+          ls -l "$APP/Contents/MacOS/"
+          echo "--- signature ---"
+          codesign -dv "$APP" 2>&1 || echo "(not signed)"
+          spctl --assess -vv "$APP" 2>&1 || echo "(spctl refuses)"
+
+      # One launcher for all three attempts. Bounded by hand: no `timeout` on a Mac,
+      # and a hang is the very thing being measured, so nothing may wait for ever.
+      - name: Launch
+        continue-on-error: true
+        env:
+          WAIT: 30
+        run: |
+          set +e
+          export ORCHD_CONFIG_DIR="$RUNNER_TEMP/orchd-cfg"
+          APP=$(find target/release/bundle -maxdepth 3 -name '*.app' | head -1)
+
+          try() {
+            local name="$1"; shift
+            echo ""
+            echo "==================== $name ===================="
+            rm -rf "$ORCHD_CONFIG_DIR"; mkdir -p "$ORCHD_CONFIG_DIR"
+            local out="$RUNNER_TEMP/$name.out"
+            "$@" > "$out" 2>&1 &
+            local pid=$!
+            local alive=0
+            local i=0
+            while [ "$i" -lt "$WAIT" ]; do
+              if kill -0 "$pid" 2>/dev/null; then alive=1; else alive=0; break; fi
+              i=$((i + 1))
+              sleep 1
+            done
+            if [ "$alive" = 1 ]; then
+              echo "STILL RUNNING after ${WAIT}s — which for a window is success"
+              # A window, proved rather than assumed. Screen Recording is
+              # pre-granted to the runner's shell, so this should not prompt.
+              screencapture -x "$RUNNER_TEMP/$name.png" 2>&1 || echo "(screencapture failed)"
+              kill "$pid" 2>/dev/null
+              sleep 2
+              kill -9 "$pid" 2>/dev/null
+            else
+              wait "$pid"
+              echo "EXITED with status $?"
+            fi
+            echo "--- its stdout/stderr ---"
+            cat "$out" 2>/dev/null | head -40
+            echo "--- orchd.log ---"
+            cat "$ORCHD_CONFIG_DIR/orchd.log" 2>/dev/null | head -40 || echo "(no log)"
+          }
+
+          # A: the tarball's own binary, outside any bundle.
+          try bare ./target/release/orchestrator-desktop
+
+          # B: inside the bundle, straight at the executable.
+          try bundled "$APP/Contents/MacOS/orchestrator-desktop"
+
+          # C: through LaunchServices — #10329's path. `open` returns at once, so
+          # the wait is on the process it started rather than on `open` itself.
+          echo ""
+          echo "==================== open -a ===================="
+          rm -rf "$ORCHD_CONFIG_DIR"; mkdir -p "$ORCHD_CONFIG_DIR"
+          open -a "$APP" 2>&1
+          echo "open returned $?"
+          sleep 20
+          if pgrep -f 'Orchestrator' >/dev/null 2>&1; then
+            echo "RUNNING — LaunchServices started it"
+            screencapture -x "$RUNNER_TEMP/open.png" 2>&1 || echo "(screencapture failed)"
+          else
+            echo "NOT RUNNING — nothing survived the open"
+          fi
+          pkill -f 'Orchestrator' 2>/dev/null
+          echo "--- orchd.log ---"
+          cat "$ORCHD_CONFIG_DIR/orchd.log" 2>/dev/null | head -40 || echo "(no log)"
+          exit 0
+
+      # The screenshots are the whole point of the GUI half: a window that opened is
+      # a window somebody can see, and a black frame says the Aqua session is not
+      # what the research claimed.
+      - name: Screenshots
+        continue-on-error: true
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: mac-gui-experiment
+          path: ${{ runner.temp }}/*.png
+          if-no-files-found: warn
