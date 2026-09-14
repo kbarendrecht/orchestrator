@@ -70,10 +70,27 @@ export async function run(t) {
         + `(wanted ${inTree.slice(0, 8)} in main, ${inMain.slice(0, 8)} in invoice)`
     },
   })
-  for (const [id, where] of [[inTree, 'main'], [inMain, 'invoice']]) {
+  /* **Both sides, and the same questions of each.** This loop used to ask only
+     where each conversation ended up, and a stray line below asked one of them —
+     the arrival in main — whether it was idle. Which is the wrong way round if
+     either: the ordering constraint is on main (it holds one session at a time, so
+     the outgoing one must vacate before the arrival is let in), so the *other*
+     direction is the one with no constraint watching it. A resume that came back
+     wedged, dead, or in the directory it left would have passed.
+
+     `has_transcript` and `cwd` are the two that say "intact" rather than "recorded
+     as moved". A relocation is a kill and a `--resume` at the far end, so the
+     record naming a new workspace is the cheapest half of the claim: the
+     conversation has to still be resumable, and the pty has to have come back in
+     the tree the record now names. `degraded` above is the daemon's own report
+     that the resume stayed up; these are the independent check. */
+  for (const [id, where, at] of [[inTree, 'main', t.repo], [inMain, 'invoice', dir]]) {
     const s = await t.session(id)
     assert.equal(s.workspace, where)
     assert.equal(s.forked_from, null, 'a relocation keeps its id, so it is not a fork')
+    assert.equal(s.state.state, 'your_turn', `${id.slice(0, 8)} did not come back idle`)
+    assert.equal(s.has_transcript, true, `${id.slice(0, 8)} lost its conversation`)
+    assert.equal(fs.realpathSync(s.cwd), fs.realpathSync(at), `${id.slice(0, 8)} cwd did not follow`)
   }
 
   // Exactly one occupant in main throughout, and it is the arrival.
@@ -81,8 +98,8 @@ export async function run(t) {
   const live = (await t.state()).sessions.filter((s) => s.workspace === 'main' && s.alive)
   assert.equal(live.length, 1, `main ended up with ${live.length} live sessions`)
 
-  // A session mid-turn in either tree is the one refusal, because the swap
-  // replaces every file under it. Idle is fine — that is the normal place to
-  // press this from, and both of these are idle, which is why the swap above ran.
-  assert.equal((await t.session(inTree)).state.state, 'your_turn')
+  // A session mid-turn in either tree is the one refusal, because the swap replaces
+  // every file under it. Idle is fine — that is the normal place to press this from,
+  // and both of these are idle, which is why the swap above ran. Asserted for both
+  // in the loop above, rather than for whichever one was convenient here.
 }
