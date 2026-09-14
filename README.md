@@ -552,7 +552,6 @@ crates/orchd-base/    the primitives. Nothing here may import anything below.
   proposal.rs     what a review session proposes: Stance × Mode, positions, stories
   guard.rs        the git rules (push blast radius, reach), run by `orch guard push`
   edit.rs         file read/write with containment and conflict detection
-  review_commit.rs  which commit a review's work may be folded into
   headroom.rs     the pre-spawn resource check every session goes through
   window.rs       Chrome, and the handle the desktop shell registers
   timing.rs       per-start phase lines: exec counts, share of the time, slow git

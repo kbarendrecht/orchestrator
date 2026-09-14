@@ -27,6 +27,18 @@ this file, which churned it from every build; that feature is gone.
   `skills/resolve-run`, the manual phase, the plan and run records, both their
   stores, and `patch.rs`'s apply-and-fold ladder, which only the batch used.
 
+  **The fold machinery went too, and that was a decision rather than a sweep.**
+  `review_commit` — `amend_target`, which commit owns a reviewed line and may it be
+  rewritten — plus `git::fold_in`, `pre_commit`, `blame_line`, `restore_paths`,
+  `effective_email`, `authors_in`, `is_merge`, `rev_exists`, `is_ancestor` and
+  `user_email`, with their fourteen tests. It looked worth keeping for the session
+  flow, and it is not: both surviving flows hand the amending to the agent, in prose
+  — `skills/handle-review/SKILL.md:67` and `skills/review/SKILL.md:198` both say
+  amend into the commit that owns the change. That machinery was the batch's way of
+  doing it *without* an agent, and there is no longer a caller that has no agent.
+  Stage 4 posts a reply; it applies no patch. git remembers it if the question
+  reopens.
+
   Two things it was right about, kept: a card that waits for you rather than a
   timeout that posts on your behalf, and `Skip` as the absence of a decision rather
   than a stance of its own.

@@ -49,20 +49,6 @@ pub fn has_unpushed(cwd: &Path, branch: &str) -> bool {
     true
 }
 
-/// Who git will author a commit as here.
-///
-/// Wanted by [`crate::review_commit::amend_target`], which refuses to fold into a commit somebody else
-/// wrote. Empty rather than an error when git has no `user.email`: an unset
-/// identity means "match nobody", which degrades the fold to a plain HEAD amend
-/// instead of failing the batch.
-pub fn user_email(cwd: &Path) -> String {
-    run(cwd, &["config", "user.email"])
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .unwrap_or_default()
-}
-
 /// Two-dot against the merge-base *commit*, not the ref, or develop's own
 /// commits appear as your deletions (§5).
 pub fn merge_base(cwd: &Path, upstream: &str) -> Result<String> {

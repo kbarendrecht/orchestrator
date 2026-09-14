@@ -63,8 +63,8 @@ test became `tests/skills_are_named_after_commands.rs` because its two halves
 are now in different crates.
 
 ## This is a workspace, and `crates/orchd-base` is the first crate out.
-Thirteen modules — `child edit git guard headroom model proc proposal pty
-review_commit secret timing window` — and `cargo` now refuses an import from any
+Twelve modules — `child edit git guard headroom model proc proposal pty
+secret timing window` — and `cargo` now refuses an import from any
 of them back up into the daemon. `crates/orchd/src/lib.rs` re-exports every one at
 the path it always had, so **`crate::git::…` still reads the same everywhere** and the move
 cost no call site a rename. `docs/crate-split.md` has the plan, the measurements

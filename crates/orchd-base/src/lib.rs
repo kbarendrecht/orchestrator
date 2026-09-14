@@ -22,7 +22,6 @@ pub mod model;
 pub mod proc;
 pub mod proposal;
 pub mod pty;
-pub mod review_commit;
 pub mod secret;
 pub mod timing;
 pub mod window;

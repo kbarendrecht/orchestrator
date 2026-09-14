@@ -55,29 +55,6 @@ pub(super) fn run(cwd: &Path, args: &[&str]) -> std::io::Result<std::process::Ou
     out
 }
 
-/// The same, with environment variables set for this one call.
-///
-/// **Here so the one git call that needs an environment still counts.** The
-/// autosquash rebase in `fold_in` sets `GIT_SEQUENCE_EDITOR` and `GIT_EDITOR`, so
-/// it spawned its own `Command` and was the one exec in the daemon that no start
-/// figure and no `slow git` line ever saw. `timing`'s numbers are only worth
-/// quoting if every exec goes through one of these.
-pub(super) fn run_with(
-    cwd: &Path,
-    args: &[&str],
-    envs: &[(&str, &str)],
-) -> std::io::Result<std::process::Output> {
-    let began = std::time::Instant::now();
-    let mut cmd = Command::new("git");
-    cmd.args(args).current_dir(cwd);
-    for (k, v) in envs {
-        cmd.env(k, v);
-    }
-    let out = cmd.output();
-    recorded(began, cwd, args);
-    out
-}
-
 /// Shell out to `git` rather than a library binding — you need fsmonitor and
 /// the real worktree/remote semantics (§1).
 pub fn git(cwd: &Path, args: &[&str]) -> Result<String> {
