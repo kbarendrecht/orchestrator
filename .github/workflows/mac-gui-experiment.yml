@@ -240,6 +240,105 @@ jobs:
           kill "$PID" 2>/dev/null; sleep 2; kill -9 "$PID" 2>/dev/null
           exit 0
 
+      # Probe B: make the web content visible to the accessibility tree, then click
+      # by name rather than by a guessed pixel.
+      #
+      # The first probe established the two halves of the answer: Accessibility *is*
+      # granted on the runner (it read a window's frame out of the tree), and the
+      # WKWebView publishes nothing (WebKit builds that tree lazily). `AXManual-
+      # Accessibility` is the switch assistive technology throws, set from outside on
+      # another process — so nothing about the app under test changes, and what gets
+      # driven is the binary that ships.
+      #
+      # If the tree lights up, a click by element name is a real e2e surface. If it
+      # does not, the coordinate click at the end still answers the narrower question
+      # — can synthetic input reach this window at all — so the run is conclusive
+      # either way.
+      - name: Click by name
+        continue-on-error: true
+        run: |
+          set +e
+          swiftc -O tools/mac-ax-enable.swift -o "$RUNNER_TEMP/ax-enable" 2>&1 || {
+            echo "swiftc failed"; exit 0; }
+
+          export ORCHD_CONFIG_DIR="$RUNNER_TEMP/orchd-ax"
+          rm -rf "$ORCHD_CONFIG_DIR"; mkdir -p "$ORCHD_CONFIG_DIR"
+          APP=$(find target/release/bundle -maxdepth 3 -name '*.app' | head -1)
+          "$APP/Contents/MacOS/orchestrator-desktop" > "$RUNNER_TEMP/ax.out" 2>&1 &
+          PID=$!
+          i=0
+          while [ "$i" -lt 40 ]; do
+            grep -q "the host is serving the page" "$ORCHD_CONFIG_DIR/orchd.log" 2>/dev/null && break
+            i=$((i + 1)); sleep 1
+          done
+          echo "waited ${i}s for the page; pid $PID"
+
+          say() { echo ""; echo "---------- $* ----------"; }
+
+          say "ax-enable"
+          "$RUNNER_TEMP/ax-enable" "$PID" 2>&1
+          # WebKit builds the tree on its own thread once asked; this is the one
+          # place a short wait is honest, because there is no signal to watch.
+          sleep 3
+
+          say "what the window publishes now"
+          osascript \
+            -e 'tell application "System Events" to tell process "Orchestrator"' \
+            -e 'set out to ""' \
+            -e 'try' \
+            -e 'repeat with e in (entire contents of front window)' \
+            -e 'try' \
+            -e 'set out to out & (role of e) & " :: " & (description of e) & " :: " & (name of e) & linefeed' \
+            -e 'end try' \
+            -e 'end repeat' \
+            -e 'on error m' \
+            -e 'set out to "error: " & m' \
+            -e 'end try' \
+            -e 'return out' \
+            -e 'end tell' 2>&1 | head -80
+
+          say "click by name"
+          osascript \
+            -e 'tell application "System Events" to tell process "Orchestrator"' \
+            -e 'set frontmost to true' \
+            -e 'try' \
+            -e 'repeat with e in (entire contents of front window)' \
+            -e 'try' \
+            -e 'if ((description of e) contains "Choose a folder") or ((name of e) contains "Choose a folder") then' \
+            -e 'click e' \
+            -e 'return "CLICKED BY NAME"' \
+            -e 'end if' \
+            -e 'end try' \
+            -e 'end repeat' \
+            -e 'return "still no element named Choose a folder"' \
+            -e 'on error m' \
+            -e 'return "error: " & m' \
+            -e 'end try' \
+            -e 'end tell' 2>&1
+          sleep 2
+          screencapture -x "$RUNNER_TEMP/by-name.png" 2>&1 || echo "(screencapture failed)"
+
+          # The narrower question, answered whatever the tree did: can a synthetic
+          # click reach this window at all? The offset is measured off the first
+          # run's screenshot — the window was at (700,25) and the button's centre at
+          # (1322,283), and the capture is 1:1 with screen points. Read the position
+          # back at runtime rather than hardcoding it, so only the offset is a guess.
+          say "click by coordinate"
+          osascript \
+            -e 'tell application "System Events"' \
+            -e 'tell process "Orchestrator" to set p to position of front window' \
+            -e 'set x to (item 1 of p) + 622' \
+            -e 'set y to (item 2 of p) + 258' \
+            -e 'tell process "Orchestrator" to set frontmost to true' \
+            -e 'click at {x, y}' \
+            -e 'return "clicked at " & x & "," & y' \
+            -e 'end tell' 2>&1
+          sleep 3
+          screencapture -x "$RUNNER_TEMP/by-coord.png" 2>&1 || echo "(screencapture failed)"
+
+          kill "$PID" 2>/dev/null; sleep 2; kill -9 "$PID" 2>/dev/null
+          exit 0
+
       # The screenshots are the whole point of the GUI half: a window that opened is
       # a window somebody can see, and a black frame says the Aqua session is not
       # what the research claimed.
