@@ -118,9 +118,12 @@ this file, which churned it from every build; that feature is gone.
   in `localStorage` (`core.sessionOrder`), a session the order has never seen falls
   where `byNewest` would have put it, and `sort by newest` in the row's menu puts
   it back. Driven in a real browser — three worktrees, a drag, a reload, the menu —
-  and **not covered by any gate**: `tools/e2e/page.mjs` boots a browser and a
-  sandbox daemon already, so a check is cheap, but its contract is what the page
-  must never *show* and a drag is not that.
+  and now gated in `tools/e2e/page.mjs`, which was already booting a browser and a
+  sandbox daemon. The gate was checked by breaking it: dropping `sessionOrder` from
+  the rail's paint signature fails both drag lines, dropping the `localStorage`
+  write fails the reload line. The **mid-drag render guard** is the one part it
+  cannot hold — a synthetic drag is over before a snapshot can rebuild the rail
+  under the pointer — and `page.mjs` says so where the check is.
 
   *Left:* dropping a row **onto** another swaps their branches, which is
   `swap-main` generalised to any pair of worktrees and needs a daemon route that

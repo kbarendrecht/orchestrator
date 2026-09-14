@@ -26,6 +26,20 @@
 //     rule and every `href =` goes through it; asserted by calling it, because a
 //     rendered page has no such link in it to look at — which is the point.
 //   * anything thrown during boot, which `pageerror` catches for free.
+//
+// **And one gesture, which is a second contract in the same file.** The rail's
+// session drag is behaviour rather than text, so it does not belong under the
+// heading above — it is here because the alternative is a second script booting a
+// second daemon and a second Chrome for twenty lines of assertion, and a gate
+// nobody runs is the thing this repo spends its checks avoiding.
+//
+// **What it holds, measured by breaking it.** Dropping `sessionOrder` from the
+// rail's paint signature fails both drag lines; dropping the `localStorage` write
+// fails the reload line. What it does **not** hold is the mid-drag render guard
+// (`rowDrag` in `rail.js`): removing that still passes, because a synthetic drag
+// is over in a few milliseconds and the snapshot that would rebuild the rail
+// under the pointer never lands inside it. That failure is a hand on a mouse, and
+// nothing here can see it.
 
 import { chromium } from 'playwright-core'
 import { sandbox } from './harness.mjs'
@@ -127,6 +141,45 @@ try {
   const refused = ['script', 'spaced', 'cased', 'data', 'empty']
   const got = refused.filter((k) => hrefs[k] !== '#')
   check(got.length === 0, `nothing but http reaches an href${got.length ? `: ${got.join(', ')} did` : ''}`)
+
+
+  /* --- the rail's session drag ---------------------------------------------- */
+
+  /* Two more worktrees, made here rather than up front so the text assertions
+     above run on the page they were written for. Three rows is the fewest that
+     tells a reorder from a swap of the pair. */
+  for (const name of ['drag-b', 'drag-c']) {
+    const { session } = await t.api('POST', '/api/worktree', { name })
+    await t.settled(session)
+  }
+  const rows = page.locator('#rail .sess[data-id]')
+  await page.waitForFunction(() => document.querySelectorAll('#rail .sess[data-id]').length >= 3,
+    null, { timeout: 15_000 })
+
+  const railNames = () => page.$$eval('#rail .sess[data-id] .sess-name', (ns) => ns.map((n) => n.textContent))
+  const before = await railNames()
+  const last = before[before.length - 1]
+  await rows.nth(await rows.count() - 1).dragTo(rows.nth(0))
+  /* The drop writes the order and renders from it; nothing here waits on the
+     daemon, so this is the render rather than a round trip. Polled rather than
+     slept, because a snapshot arrives every second and the failure this guards is
+     one of them rebuilding the list back. */
+  const moved = await page.waitForFunction(
+    (want) => document.querySelector('#rail .sess[data-id] .sess-name')?.textContent === want,
+    last, { timeout: 5000 },
+  ).then(() => true).catch(() => false)
+  check(moved, 'a dragged session row lands where it was dropped')
+  const after = await railNames()
+  check(after.length === before.length, 'the drag loses no row')
+  check([...after].sort().join('|') === [...before].sort().join('|'), 'and invents none')
+
+  /* The order is yours, so it has to outlive the page. A reload plus the snapshots
+     that land after it is the whole failure mode: the list was right until the
+     daemon spoke. */
+  await page.reload({ waitUntil: 'domcontentloaded' })
+  await page.waitForFunction(() => document.body.classList.contains('ready'), null, { timeout: 15_000 })
+  await page.waitForTimeout(2000)
+  check((await railNames()).join('|') === after.join('|'), 'the order survives a reload and the snapshots after it')
 
   console.log(`\npage-check: ${failed ? 'FAILED' : 'ok'}`)
 } finally {
