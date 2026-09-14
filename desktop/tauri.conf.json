@@ -36,18 +36,21 @@
           "libgtk-3-0"
         ],
         "files": {
-          "/usr/bin/orch": "../target/release/orch"
+          "/usr/bin/orch": "../target/release/orch",
+        "/usr/bin/orchd": "../target/release/orchd"
         }
       },
       "appimage": {
         "files": {
-          "usr/bin/orch": "../target/release/orch"
+          "usr/bin/orch": "../target/release/orch",
+        "usr/bin/orchd": "../target/release/orchd"
         }
       }
     },
     "macOS": {
       "files": {
-        "MacOS/orch": "../target/release/orch"
+        "MacOS/orch": "../target/release/orch",
+        "MacOS/orchd": "../target/release/orchd"
       }
     }
   }

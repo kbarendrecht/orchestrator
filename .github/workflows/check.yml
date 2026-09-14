@@ -193,6 +193,15 @@ jobs:
         if: runner.os == 'Linux'
         run: node tools/rust-modules.mjs
 
+      # What a release would actually pack. Here rather than only in `release.yml`
+      # on purpose: a tag is the one build nobody re-runs, and #16 shipped a
+      # version whose app could not start because the release job built `--bin
+      # orch` while `child.rs` spawned `orchd`. Everything else in this workflow
+      # was green for it — the fault was in the packing, which no test can see.
+      - name: Check what a release would ship
+        if: runner.os == 'Linux'
+        run: node tools/check-ship.mjs
+
       # What the rendered page must never show: an unresolved `MOD` placeholder,
       # the word `undefined` where a person reads, two sets of window buttons, or
       # anything thrown at boot — each of which has happened here. Chrome is on

@@ -109,6 +109,7 @@ mise run check-web                  # type-check and lint the SPA + enforce its 
 mise run check-docs                 # the doc comments' links, denied as warnings
 mise run check-deps                 # advisories, licences, unused crates, spelling
 mise run check-modules              # the daemon's module graph, held no worse
+mise run check-ship                 # every binary the release must pack
 mise run page-check                 # what the rendered page must never show
 mise run notices                    # regenerate THIRD-PARTY-RUST.md
 mise run e2e                        # 25 flows against a real daemon
@@ -257,6 +258,7 @@ together: same entries, same order, same groups.
 - The SPA type-checks under `strict`, and getting there found two bugs.
 - `catch (e)` gives you `unknown`, and `core.reason(e)` is the one answer.
 - `mise run page-check` asserts what the page must never *show*.
+- `mise run check-ship` asserts what a release would *pack*, which no test can see.
 - Type-checking found bugs clicking around did not.
 - A panic is denied where it can take the daemon down, and `clippy.toml` is why that became affordable.
 - `health.yml` runs `cargo deny`, `cargo about`, `cargo machete`, `typos` and `zizmor` — on every push and weekly, in its own workflow.

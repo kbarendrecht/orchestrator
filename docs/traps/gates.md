@@ -125,6 +125,40 @@ that are text rather than pixels, every one of which has happened here.
 `tools/e2e/page.mjs` names them and argues why this is deliberately not a
 screenshot test.
 
+## `mise run check-ship` asserts what a release would *pack*, which no test can see.
+v2026.9.14 shipped without `orchd` and could not start (#16). The app had just been
+split into a host and a child daemon — `child.rs::daemon_binary` resolves `orchd`
+beside the running executable — while `release.yml` still built `--bin orch` and the
+three bundle maps in `desktop/tauri.conf.json` still copied `orch` alone. The macOS
+tarball held two files. Every install method was affected, not the tarball alone,
+and the first sign was a user on a fresh install reading "Orchestrator could not
+start".
+
+**Everything in this file was green for it.** `cargo test --workspace`, clippy with
+warnings denied, `check-web`, `check-docs`, `check-modules`, `page-check` and 25 e2e
+flows all passed on the commit that shipped it, because not one of them looks at
+what gets packed. That is the gap the gate fills, and it is the argument for it: the
+failure was expensive and silent, which is the standing reason to build a tool
+rather than write a rule.
+
+The rule is **derived, never listed**. `cargo metadata` says what binaries the
+workspace produces; everything but the app itself must be built by the release job,
+carried in the tarball, and copied by each bundle's `files` map. Add a fourth binary
+and this fails until it is placed — the list nobody remembered to update is not
+written down anywhere any more. Two subtler things it also pins: every entry in one
+bundle map must land in **one directory**, because `daemon_binary` looks in
+`current_exe().parent()` and nowhere else, so a bundle that installed `orchd`
+somewhere of its own would fail exactly the way #16 did; and each source must be the
+release build's own output. **Checked against deliberate breakage**: run against the
+v2026.9.14 tree it fails on all five counts.
+
+It runs in three places for one reason each. The hook, on a commit touching a
+manifest, `release.yml` or `tauri.conf.json` — #16 was three files and not one of
+them is `.rs`, so the Rust condition would have missed it. `check.yml`, so `main` is
+never in that state. And `release.yml` itself, before the build, because a tag is
+the one build nobody re-runs and the cost of finding out afterwards is a spent
+version number.
+
 ## Type-checking found bugs clicking around did not.
 Turning `checkJs` on after
 the module split surfaced five modules referencing names that had stayed behind

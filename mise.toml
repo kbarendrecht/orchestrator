@@ -111,6 +111,14 @@ description = "Refuse a cycle in the daemon's module graph"
 dir = "{{config_root}}"
 run = "node tools/rust-modules.mjs"
 
+[tasks.check-ship]
+# Every binary the workspace builds reaches every way of installing it. Derived
+# from `cargo metadata`, so a new one fails this until it is placed — see #16,
+# which shipped a release the app could not start from.
+description = "Refuse a binary the release would not ship"
+dir = "{{config_root}}"
+run = "node tools/check-ship.mjs"
+
 [tasks.check-docs]
 # Two kinds of prose, one task, because both fail the same way: silently.
 # `cargo doc` answers whether an intra-doc link resolves; `check-assumptions.mjs`

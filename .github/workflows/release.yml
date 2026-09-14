@@ -131,13 +131,27 @@ jobs:
       - name: Test
         run: cargo test --workspace
 
+      # The last gate in front of a spent version number. `check.yml` runs this on
+      # every push to `main`, but a tag can name any commit — and the failure it
+      # guards is the one nobody re-runs a release to find: v2026.9.14 packed no
+      # `orchd`, so every install of it failed at startup (#16). Node is already
+      # here for the bundler's `npx`.
+      - name: Check what this will ship
+        run: node tools/check-ship.mjs
+
       - name: Build
         run: |
-          # `orch` first, and not only for the tarball: every bundle copies it in
-          # beside the app (the per-bundle `files` maps in tauri.conf.json), so it
-          # has to exist before the bundler runs. A binary that has to be installed
-          # separately is one that is not there when an agent reaches for it.
-          cargo build --release -p orchd-serve --bin orch
+          # The CLI *and* the daemon, before the bundler: every bundle copies both
+          # in beside the app (the per-bundle `files` maps in tauri.conf.json), so
+          # they have to exist by the time it runs. A binary that has to be
+          # installed separately is one that is not there when the app reaches for
+          # it — which is exactly what v2026.9.14 shipped (#16): the app spawns a
+          # separate `orchd` per checkout and no asset carried one, so a fresh
+          # install could not start at all.
+          #
+          # `--bins`, not a list: a fourth binary would otherwise be missing here
+          # and nowhere else, and `mise run check-ship` holds the other end.
+          cargo build --release -p orchd-serve --bins
           # The npm CLI ships a prebuilt binary; `cargo install tauri-cli` would
           # spend minutes compiling one on every release. This also builds
           # `orchestrator-desktop --release`, which is why that step is gone.
@@ -154,10 +168,11 @@ jobs:
           tag="${GITHUB_REF_NAME}"
           # The tarball stays, and is what `mise`/`ubi` install: they read a release
           # asset and extract by exe name, and neither can open a .deb. The app
-          # embeds the SPA (include_str!), so it is two executables and nothing
-          # else — the app, and the `orch` CLI its sessions use to talk back to it.
+          # embeds the SPA (include_str!), so what ships is three executables and
+          # nothing else — the app, the `orchd` daemon it spawns per checkout, and
+          # the `orch` CLI its sessions use to talk back to it.
           tar -C target/release -czf "dist/orchestrator-${tag}-${{ matrix.slug }}.tar.gz" \
-            orchestrator-desktop orch
+            orchestrator-desktop orchd orch
           # Whatever the bundler produced, under its own conventional name: a .deb
           # is named the way apt expects, not the way the tarball is.
           find target/release/bundle -maxdepth 2 -type f \
