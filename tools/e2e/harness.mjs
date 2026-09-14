@@ -56,12 +56,36 @@ const cleanEnv = Object.fromEntries(
   Object.entries(process.env).filter(([k]) => !k.startsWith('GIT_')),
 )
 
-export function git(cwd, args) {
-  const r = spawnSync('git', args, { cwd, encoding: 'utf8', env: cleanEnv })
-  if (r.status !== 0) {
-    throw new Error(`git ${args.join(' ')} in ${cwd}\n${r.stdout}${r.stderr}`)
+/** Run git in a checkout the daemon is also using, and retry the one collision.
+ *
+ *  **`index.lock` is not a failure, it is a queue.** A flow sets up state by doing
+ *  real git in the real checkout, while the daemon is reconciling that same
+ *  checkout on its own clock — so the two meet in `.git/index.lock` and git, which
+ *  has no wait-and-retry of its own, exits non-zero. `park main` failed **3 runs in
+ *  8** on `git commit -qam work`, always with that line, and the whole suite never
+ *  showed it: run in sequence the flow lands in a gap between reconciles, and run
+ *  alone it lands on one.
+ *
+ *  Retried rather than prevented, because prevention would mean a flow coordinating
+ *  with the daemon's internal schedule — which is both unavailable and a fiction no
+ *  real user gets either. Bounded, and only for this message: anything else is a
+ *  real failure and is raised at once, since a retry loop that swallows the actual
+ *  fault is worse than the flake.
+ *
+ *  Found by `tools/e2e/deflake.mjs`. It is the reason that tool exists. */
+export function git(cwd, args, { tries = 20 } = {}) {
+  for (let attempt = 1; ; attempt++) {
+    const r = spawnSync('git', args, { cwd, encoding: 'utf8', env: cleanEnv })
+    if (r.status === 0) return r.stdout.trim()
+    const said = `${r.stdout}${r.stderr}`
+    const contended = said.includes('index.lock') && said.includes('File exists')
+    if (!contended || attempt >= tries) {
+      throw new Error(`git ${args.join(' ')} in ${cwd}\n${said}`)
+    }
+    // Busy-wait rather than async: every caller of this is synchronous, and a
+    // lock the daemon holds for one `git status` is gone in milliseconds.
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25)
   }
-  return r.stdout.trim()
 }
 
 export const branchOf = (cwd) => git(cwd, ['rev-parse', '--abbrev-ref', 'HEAD'])
