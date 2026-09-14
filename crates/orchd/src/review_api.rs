@@ -1,5 +1,5 @@
-//! The review overlay's routes: triage, the batch, a resolve run, and the
-//! hand-off to `fix-pr`.
+//! The review overlay's routes: the threads, the proposals, one thread's reply,
+//! the re-request, and the hand-off to `fix-pr`.
 //!
 //! **Split out of `api` because it is one flow, not one layer.** Twenty-odd
 //! handlers carry a PR from "read the threads" through "post the replies", with a
@@ -460,6 +460,110 @@ pub async fn thread_reply(
     })))
 }
 
+/// Ask each reviewer to look again, once every thread of theirs is answered.
+///
+/// **The approval page promises this, and prose was performing it.** The overlay
+/// draws a `re-request` row per reviewer — *"every thread of theirs is addressed,
+/// so they are asked to look again"* — and the only thing carrying it out was a
+/// bullet in `skills/review/SKILL.md` telling the agent to run `gh pr edit
+/// --add-reviewer`. A promise the UI makes and a skill remembers is the shape this
+/// codebase keeps deleting, so the rule moved to the daemon and the skill now makes
+/// one call.
+///
+/// **Derived from a fresh fetch, never from what the session thinks it did.** A
+/// reviewer is asked again when no thread they opened is still awaiting an answer —
+/// `answerable`, which `Threads::mark_answerable` decides from the thread's last
+/// comment and the viewer's 👍. So a reply that failed to post holds its author
+/// back on its own, a thread somebody opened while the session was working holds
+/// them back too, and a retry asks for nobody twice because GitHub treats a
+/// repeated request as the state it already is.
+///
+/// One reviewer's refusal is not the call's. `github-actions[bot]` cannot be a
+/// requested reviewer at all, and a review whose threads a bot opened would
+/// otherwise end on an error for the one reviewer that was never going to work.
+/// Each login is reported on its own line.
+pub async fn session_rerequest(
+    State(app): State<Arc<AppState>>,
+    Path(id): Path<Uuid>,
+    headers: axum::http::HeaderMap,
+) -> ApiResult<serde_json::Value> {
+    ask_token_ok(&app, id, &headers).await?;
+
+    let number = {
+        let inner = app.inner.read().await;
+        match inner.sessions.get(&id).and_then(|s| s.pass.as_ref()) {
+            Some(Pass { pr, command }) if command == Pass::REVIEW => *pr,
+            _ => refuse!("only a review session re-requests, and {id} is not one"),
+        }
+    };
+
+    let fresh = fetch_threads(&app, number).await?;
+    let reviewers = reviewers_of(&fresh);
+
+    let forge = write_forge(&app)?;
+    let main = app.cfg.main_checkout.clone();
+    let mut asked: Vec<String> = Vec::new();
+    let mut held = serde_json::Map::new();
+    let mut failed = serde_json::Map::new();
+    for (login, waiting) in reviewers {
+        if waiting > 0 {
+            held.insert(login, json!(waiting));
+            continue;
+        }
+        // `gh` is a subprocess, so the write goes to the blocking pool — the same
+        // rule every other forge write in this flow follows.
+        let (f, at, who) = (forge.clone(), main.clone(), login.clone());
+        let sent = tokio::task::spawn_blocking(move || {
+            use crate::forge::Forge;
+            f.rerequest(&at, number, &who)
+        })
+        .await
+        .context("the re-request panicked")?;
+        match sent {
+            Ok(()) => asked.push(login),
+            Err(e) => {
+                failed.insert(login, json!(format!("{e:#}")));
+            }
+        }
+    }
+
+    tracing::info!(session = %id, pr = number, asked = asked.len(), "re-requested");
+    Ok(Json(
+        json!({ "asked": asked, "held": held, "failed": failed }),
+    ))
+}
+
+/// Each reviewer on the PR and how many of their threads still await an answer.
+///
+/// The rule `session_rerequest` rests on, pulled out because it is the half worth
+/// testing: the write needs a forge and a PR, this needs neither.
+///
+/// Ordered by where each reviewer's first thread appears, not by a hash's order, so
+/// the answer reads in the same order the approval page listed them. Your own
+/// threads are skipped — a review of your own is not something to ask yourself for
+/// again.
+fn reviewers_of(fresh: &crate::forge::Threads) -> Vec<(String, usize)> {
+    let mut out: Vec<(String, usize)> = Vec::new();
+    for thread in &fresh.items {
+        let Some(who) = thread.comments.first().map(|c| c.author.as_str()) else {
+            continue;
+        };
+        if who == fresh.viewer {
+            continue;
+        }
+        // No `expect` on the freshly-pushed slot: a panic here would take the
+        // daemon down for a bookkeeping detail, and `clippy.toml` refuses it.
+        if let Some(slot) = out.iter_mut().find(|(l, _)| l == who) {
+            if thread.answerable {
+                slot.1 += 1;
+            }
+        } else {
+            out.push((who.to_string(), usize::from(thread.answerable)));
+        }
+    }
+    out
+}
+
 /// A review session reporting that its own work is finished.
 ///
 /// The last thing `skills/review/SKILL.md` does. Its phase 3 ends with the code
@@ -536,6 +640,67 @@ pub async fn session_handoff(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Who gets asked to look again, and who holds themselves back.
+    ///
+    /// The rule is stated once, in `answerable`, and this is what says the route
+    /// reads it rather than counting threads or trusting the session's own report.
+    /// Every case here is one a real review produces: a reviewer fully answered, a
+    /// reviewer with one reply that did not go out, your own threads, and a thread
+    /// somebody opened while the session was working.
+    #[test]
+    fn a_reviewer_is_asked_again_only_when_nothing_of_theirs_still_waits() {
+        use crate::testutil::thread;
+
+        let answered = |id: &str, who: &str| {
+            let mut x = thread(id, Some("a.rs"), Some(1), who);
+            x.answerable = false;
+            x
+        };
+        let fresh = crate::forge::Threads {
+            pr: 10001,
+            viewer: "me".into(),
+            head_sha: Some("abc".into()),
+            items: vec![
+                answered("PRRT_1", "alice"),
+                answered("PRRT_2", "alice"),
+                // Bob's reply never went out, so bob is not asked.
+                answered("PRRT_3", "bob"),
+                thread("PRRT_4", Some("b.rs"), Some(2), "bob"),
+                // Your own thread is not a review to ask yourself for again.
+                thread("PRRT_5", Some("c.rs"), Some(3), "me"),
+                // Opened while the session worked: nobody read it, so carol waits.
+                thread("PRRT_6", Some("d.rs"), Some(4), "carol"),
+            ],
+        };
+
+        // Ordered by first appearance, which is the order the approval page listed.
+        assert_eq!(
+            reviewers_of(&fresh),
+            vec![
+                ("alice".to_string(), 0),
+                ("bob".to_string(), 1),
+                ("carol".to_string(), 1),
+            ]
+        );
+    }
+
+    /// A thread with no comments names nobody, and must not become a reviewer.
+    ///
+    /// `Thread::comments` is a plain `Vec` off a GraphQL page, so "empty" is a
+    /// shape the parser can produce rather than one this flow gets to assume away.
+    #[test]
+    fn a_thread_with_no_comments_belongs_to_nobody() {
+        let mut empty = crate::testutil::thread("PRRT_1", None, None, "alice");
+        empty.comments.clear();
+        let fresh = crate::forge::Threads {
+            pr: 10001,
+            viewer: "me".into(),
+            head_sha: None,
+            items: vec![empty],
+        };
+        assert!(reviewers_of(&fresh).is_empty());
+    }
 
     /// The hand-off is the review's, and only about a PR that still has something
     /// to watch.

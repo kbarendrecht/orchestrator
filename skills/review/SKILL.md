@@ -247,17 +247,44 @@ replies to post are the ones in `$DECISIONS`, verbatim.
 
 Say nothing about a thread whose decision was `skip`.
 
-- **Reactions**: a thread answered by agreeing gets a 👍 and no reply — the change it
-  agreed to was already made and pushed in phase 2, so the reaction is the whole of what is
-  said. `gh api -X POST repos/$OWNER/$REPO/pulls/comments/<id>/reactions -f content=+1`
-- **Replies**: last line of every posted comment is `(via orchestrator)` — that exact
-  string is how the daemon knows its own replies (`post::mine_by_footer`), so a thread
-  answered here is not answered again by a run. Post threaded, with the comment id from the
-  thread URL's `#discussion_r<id>`:
-  `gh api repos/$OWNER/$REPO/pulls/$PR/comments/<id>/replies -f body="$reply"`
-- **Re-request** each reviewer whose every thread is now addressed, per reviewer not per
-  PR: `gh pr edit $PR --add-reviewer <login>`. Addressed means applied or replied to
-  with a posted reply. Report who was skipped and which thread holds each one back.
+## One call per thread
+
+```bash
+curl -sS -X POST -H "x-orch-ask: $ORCH_ASK_TOKEN" -H 'content-type: application/json' \
+  -d '{"reply":"…"}' \
+  "$ORCH_URL/api/session/$ORCH_SESSION_ID/thread/<thread_id>/reply"
+```
+
+- **agree** — send `{}`, with no `reply` at all. The change it agreed to was made and
+  pushed in phase 2, so a 👍 is the whole of what is said.
+- **reply** and **story** — send the reply from `$DECISIONS`, verbatim. A story reply
+  already carries its link: you filed the story and substituted `{story}` in phase 2.
+
+**Not `gh`, and the reason is not tidiness.** The daemon appends `(via orchestrator)` to
+every reply, and that exact string is how it recognises its own — `post::mine_by_footer`
+— so a reply posted without it leaves the thread reading unanswered for ever. It also
+refuses words already on the thread, so a retry says nothing twice. Neither is yours to
+remember.
+
+The answer says what happened: `posted`, `reacted`, `already` (those words were already
+there, which is a success and not a retry to make), and `held` with the reason when
+nothing went out.
+
+## Then one call for the re-request
+
+```bash
+curl -sS -X POST -H "x-orch-ask: $ORCH_ASK_TOKEN" \
+  "$ORCH_URL/api/session/$ORCH_SESSION_ID/rerequest"
+```
+
+Once, after the last reply. Which reviewers are asked is the daemon's: it refetches the
+threads and asks the ones with nothing of theirs still awaiting an answer. So a reply
+that did not go out holds its author back on its own, and a thread somebody opened while
+you were working holds them back too.
+
+The answer is three lists — `asked`, `held` (how many threads still hold each one back)
+and `failed` (one login's refusal, not the call's: a bot cannot be a requested reviewer
+at all). Report them. Do not re-run it per reviewer and do not fall back to `gh`.
 
 Resolving the threads stays the reviewer's button — never resolve one yourself.
 

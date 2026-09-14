@@ -636,6 +636,12 @@ fn daemon_router(app: Arc<AppState>) -> Router {
             "/api/session/:id/thread/:thread/reply",
             post(review_api::thread_reply),
         )
+        // Who is asked to look again is derived from a fresh fetch, not from what
+        // the session believes it posted. See `session_rerequest`.
+        .route(
+            "/api/session/:id/rerequest",
+            post(review_api::session_rerequest),
+        )
         .route("/api/session/:id/tell", post(api::tell_session))
         .route("/api/session/:id/ask", post(api::ask))
         .route("/api/session/:id/ask/:ask/wait", get(api::ask_wait))

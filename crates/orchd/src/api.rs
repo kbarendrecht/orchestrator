@@ -142,7 +142,7 @@ pub fn origin_ok(
 /// A list rather than a growing chain of `ends_with`, because it has been
 /// outgrown once already — see the note in [`guard`].
 fn is_ask_route(path: &str) -> bool {
-    const ASK_ROUTES: [&str; 9] = [
+    const ASK_ROUTES: [&str; 10] = [
         "/ask",
         "/wait",
         // The worktree grant, asked by the agent and read by the push guard —
@@ -161,6 +161,9 @@ fn is_ask_route(path: &str) -> bool {
         // `orch teardown`. Safe as a suffix only because the SPA's own teardown is
         // `/api/workspace/:id/teardown`, outside the `/api/session/` prefix.
         "/teardown",
+        // The end of phase 3: who still owes the PR a look. Which reviewers are
+        // asked is the daemon's, off a fresh fetch — see `session_rerequest`.
+        "/rerequest",
         // Phase 4 of `skills/review/SKILL.md`: the review saying it is done.
         "/handoff",
     ];
@@ -3443,6 +3446,9 @@ mod tests {
             "/api/session/<id>/spawned/<child>/discard",
             // `orch teardown`. Any worktree, through the ordinary preflight.
             "/api/session/<id>/teardown",
+            // The end of phase 3. Which reviewers are asked is derived from a
+            // fresh fetch, so the agent supplies nothing but the call.
+            "/api/session/<id>/rerequest",
             // Phase 4 of `skills/review/SKILL.md`: the review saying it is done.
             "/api/session/<id>/handoff",
             // `orch outside`, and the push guard's read of what it granted. The

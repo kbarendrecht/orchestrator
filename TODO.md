@@ -59,10 +59,21 @@ this file, which churned it from every build; that feature is gone.
   in front of it, and the open question is whether card-then-approve beats reading
   the pane. It has to be driven on real work before the pane's button changes.
 
+  **Phase 3 goes through the daemon now.** The skill posted with `gh api` and was
+  asked to remember four rules while doing it; it makes one call per thread to
+  `POST /api/session/:id/thread/:thread/reply` instead, and one call to
+  `POST /api/session/:id/rerequest` after the last of them. The footer and the
+  refuse-a-duplicate rule live in `post_one` where eleven tests hold them, and
+  *which* reviewers are asked is derived from a fresh fetch rather than from what the
+  session believes it posted — so a reply that did not go out holds its author back
+  on its own. That gave `forge::rerequest` back the caller the batch took with it,
+  and made the approval page's `re-request` rows the daemon's promise rather than
+  prose in a skill.
+
   *Still unproven in the session flow.* The story arm has never run (the fixture
-  daemon has `tracker: none`), and `rerequest()` has no caller at all now — the batch
-  was the only one, and the approval page stopped promising a re-request it could not
-  perform.
+  daemon has `tracker: none`), and `session_rerequest` has not either — for the
+  reason the entry above gives, which is the fixture's bot identity and not the
+  code.
 
 - **Sibling worktrees, for the agent that is not Claude Code.** Not wanted for
   Claude, which is the whole reason it is not built: `.claude/worktrees` is Claude
