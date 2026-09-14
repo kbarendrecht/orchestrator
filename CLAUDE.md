@@ -241,6 +241,7 @@ together: same entries, same order, same groups.
 
 - A checkout's daemon is a child process, and `crates/orchd-base/src/child.rs` is the protocol.
 - A checkout's durable state lives in its own directory, and `ORCHD_CONFIG_DIR` is how it gets there.
+- A migration that copies a list of files is a migration that loses the file nobody listed.
 - The app is the host, and every checkout is a child `orchd`.
 - First run is a screen, not a second application.
 - The page is served by `host.rs`, not by the daemon.

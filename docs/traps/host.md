@@ -70,6 +70,50 @@ checkout from it would point that daemon at the wrong tree.
 is the host process, so the geometry already lives in the host's own config dir
 and one window still has one geometry.
 
+## A migration that copies a list of files is a migration that loses the file nobody listed.
+The per-checkout state directory seeded itself with one `fs::copy` of
+`config.json`. Everything else the daemon keeps beside that file — `sessions.json`,
+`automation.json`, `stories.json`, `transcripts/` — stayed at the top level, so
+v2026.9.14 opened the board with an **empty rail** while 28 session records sat on
+disk in a file the new daemon no longer read (#17). Nothing was deleted and nothing
+said so, which is the worst way for a migration to fail: a user who rebuilds the
+rail by hand pays for a copy that never happened, and the only sign is a board that
+looks like a fresh install.
+
+**The fix is the inversion, not the longer list.** An allow list is wrong by
+omission, and it is wrong again the day somebody adds a state file — a day nobody
+will be looking at the seed. `NOT_INHERITED` is a deny list of three structural
+names (`checkouts` is the parent of the destination, `host.json` is the host's, and
+`instance.pid` is the file the `flock` is taken on) plus `DERIVED` by reference and
+`orchd.log*` by prefix. Everything else is carried without anyone remembering.
+`DERIVED` is taken rather than restated because two hand-kept copies of one list is
+the same fault one level up, and `crates/orchd-serve/tests/host_seed.rs` reads it
+too.
+
+The assertion that holds it is not "the session store arrives" — an allow list
+passes that. It is a fixture file named for the fact that nothing knows it: state
+the seed has never heard of has to reach the checkout, or the test fails. **Checked against
+deliberate breakage**: restoring the single `fs::copy` fails it.
+
+**Keying the one-shot on "the directory exists" was the second half of the bug.**
+That test cannot tell a directory this build created from one v2026.9.14 created
+and half-filled, so every machine that had already updated was permanently past its
+only chance to be seeded — a fix for fresh installs and nobody else. A `.seeded`
+marker separates *seeded* from *present*, and the repair may overwrite only what
+cannot lose anything: a destination that is absent, or that holds `[]`/`{}`. `[]` is
+exactly what the new daemon wrote over the empty rail. A file with content in it is
+left alone and **named in a warning**, because choosing between two versions of
+somebody's work is not a migration's to make.
+
+One thing found while reading that file and worth its own line: `HostFile` derived
+`Default` while `checkout_retention_days` carried a serde default of 60, and
+`remember_checkouts` writes `read_host_file().unwrap_or_default()` — so the first
+`host.json` a machine ever wrote pinned retention to `0` and the documented 60 never
+applied to anybody. `0` turns the sweep off rather than on, so it erred toward
+keeping data and nobody noticed. `Default` is hand-written from the same function
+now, and `the_two_defaults_agree` compares the whole struct rather than that one
+field, so the next one is caught without anyone extending the test.
+
 ## The app is the host, and every checkout is a child `orchd`.
 `boot_daemon` in
 `desktop/src/main.rs` runs `host::serve` on an ephemeral port, calls

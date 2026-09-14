@@ -801,7 +801,7 @@ fn resumable_sessions(checkout: &Path) -> usize {
 ///
 /// Deliberately not built in Stage 2, because nothing read it then and a seam with
 /// no subscriber is what this refactor exists to remove.
-#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct HostFile {
     /// Every checkout that was open, in the order they were opened. The app opens
     /// these again at launch.
@@ -835,6 +835,26 @@ pub struct HostFile {
     pub see_through_window: bool,
 }
 
+/// **Hand-written, because `derive(Default)` disagreed with serde and won.**
+/// `checkout_retention_days` carries `#[serde(default = ...)]` of 60, and the
+/// derive filled it with `u32::default()` — zero. `remember_checkouts` writes
+/// `read_host_file().unwrap_or_default()`, so the very first `host.json` a machine
+/// wrote pinned retention to 0 and the documented 60 never applied to anybody. It
+/// erred toward keeping data, which is why nobody noticed; the next field to do
+/// this may not.
+///
+/// One source for the number, so the two cannot disagree again — and
+/// `the_two_defaults_agree` fails if a new field reintroduces the gap.
+impl Default for HostFile {
+    fn default() -> Self {
+        Self {
+            checkouts: Vec::new(),
+            checkout_retention_days: default_checkout_retention_days(),
+            see_through_window: false,
+        }
+    }
+}
+
 fn default_checkout_retention_days() -> u32 {
     60
 }
@@ -853,7 +873,7 @@ fn default_checkout_retention_days() -> u32 {
 /// work or an attached process. A directory of JSON has no such gate, so the rule
 /// here is the narrow one — delete what is regenerated on the next start, and
 /// nothing else.
-const DERIVED: [&str; 3] = ["plugin", "hooks.json", "window.json"];
+pub const DERIVED: [&str; 3] = ["plugin", "hooks.json", "window.json"];
 
 fn host_file() -> anyhow::Result<PathBuf> {
     Ok(orchd::config::Config::config_dir()?.join("host.json"))
@@ -1117,6 +1137,87 @@ pub fn checkout_dir(checkout: &Path) -> anyhow::Result<PathBuf> {
         .join(format!("{safe}-{hash:x}")))
 }
 
+/// Files in the config dir that a checkout must **not** inherit.
+///
+/// **A deny list, and that is the whole design.** This was an allow list of one
+/// name — `config.json` — and everything else the daemon keeps beside it was
+/// silently left behind: 28 sessions, the automation records and the story cache
+/// (#17). Nothing was deleted and nothing said so either; the board simply opened
+/// empty, which is the worst way for a migration to fail. An allow list gets that
+/// wrong by *omission*, and it is wrong again the day somebody adds a file, which
+/// is a day nobody will be looking at this function.
+///
+/// Inverted, the failure mode inverts with it: a new state file is carried without
+/// anyone remembering, and the cost of a mistake here is a copied file somebody can
+/// see and delete. Each name below is denied for its own reason, and none of them
+/// is "we forgot":
+///
+/// - `checkouts` is the parent of the destination. Copying it is recursion.
+/// - `host.json` belongs to the host, not to any checkout — a hosted child must not
+///   write the host's files, and it must not carry one either.
+/// - `hooks.json` names a **port**, and the whole point of a per-checkout daemon is
+///   that the port is not shared. A copied one points a checkout's hooks at another
+///   checkout's daemon.
+/// - `instance.pid` is the file the single-instance `flock` is taken on. A copy of
+///   it is a second file to lock, which is the one thing the lock exists to refuse.
+/// - `orchd.log*` is this process's own log, rotated per start.
+///
+/// Everything in [`DERIVED`] is denied too, and by reference rather than by being
+/// written out again: that list is what the sweep may delete because the next start
+/// rebuilds it, which is the same reason not to carry it — and two hand-kept copies
+/// of one list is the shape this whole entry is about. `plugin` and `hooks.json`
+/// come from there.
+const NOT_INHERITED: [&str; 3] = ["checkouts", "host.json", "instance.pid"];
+
+/// Whether one entry of the old config dir belongs to the checkout being seeded.
+fn inherited(name: &str) -> bool {
+    !NOT_INHERITED.contains(&name) && !DERIVED.contains(&name) && !name.starts_with("orchd.log")
+}
+
+/// Copy a file or a whole directory. `std::fs::copy` is files only, and
+/// `transcripts/` is a directory the resume path reads.
+fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
+    if from.is_dir() {
+        std::fs::create_dir_all(to)?;
+        for entry in std::fs::read_dir(from)? {
+            let entry = entry?;
+            copy_tree(&entry.path(), &to.join(entry.file_name()))?;
+        }
+        return Ok(());
+    }
+    std::fs::copy(from, to).map(|_| ())
+}
+
+/// Whether a destination file is safe to overwrite from the old config dir.
+///
+/// **Absent, or carrying nothing.** The plain seed only ever writes into a
+/// directory that does not exist, so this question would not arise — but every
+/// machine that already updated to v2026.9.14 has a directory that *does* exist,
+/// holding the one file the old seed copied plus whatever the daemon has written
+/// since. A fix that only helps fresh installs leaves those users to copy 28
+/// sessions across by hand, which is what #17's workaround section is.
+///
+/// So the repair is allowed exactly where it can lose nothing: the file is not
+/// there, or it is an empty JSON array or object. `[]` is what the new daemon wrote
+/// over the empty rail, and an empty container has no content to destroy. Anything
+/// with data in it is left alone and reported instead — a merge is not something a
+/// migration gets to attempt.
+fn safe_to_seed_over(dest: &Path) -> bool {
+    match std::fs::read_to_string(dest) {
+        Err(_) => !dest.exists(),
+        Ok(body) => matches!(body.trim(), "" | "[]" | "{}"),
+    }
+}
+
+/// Written once the seed has run, so it runs once per checkout and no more.
+///
+/// **Not "the directory exists", which is what the old one-shot keyed on.** That
+/// test cannot tell a directory this build created from one v2026.9.14 created and
+/// half-filled, so every machine that already updated was permanently past the only
+/// chance to be seeded. A marker separates "seeded" from "present", which is the
+/// distinction the bug turned out to need.
+const SEED_MARKER: &str = ".seeded";
+
 /// Make a checkout's state directory, seeding it from the old single config once.
 ///
 /// **The layout move is a one-shot here rather than a `migrate.rs` rule**, and the
@@ -1127,36 +1228,94 @@ pub fn checkout_dir(checkout: &Path) -> anyhow::Result<PathBuf> {
 /// at the root of every per-checkout file, so a rule keyed on that key would
 /// re-fire on every start of every daemon, forever.
 ///
-/// The shape recognised here is a **location**: this checkout has no directory yet.
-/// It then **copies** the old `<config dir>/config.json` rather than moving it, and
-/// only when that file names *this* checkout — a copy carries `main_checkout`, so
-/// seeding a second checkout from it would hand that daemon the wrong tree. The
-/// root file is left where it is, so an older build still finds its config and a
-/// downgrade keeps working; that is the same trade `store::OnDiskKind` and the
-/// tracker names already make.
-fn ensure_checkout_dir(checkout: &Path) -> anyhow::Result<PathBuf> {
+/// What it copies is everything the old config dir holds that is not in
+/// [`NOT_INHERITED`] or [`DERIVED`], and only when the old `config.json` names
+/// *this* checkout — a copy carries `main_checkout`, so seeding a second checkout
+/// from it would hand that daemon the wrong tree, and the same argument covers its
+/// sessions. The old files are left where they are, so an older build still finds
+/// them and a downgrade keeps working; that is the same trade `store::OnDiskKind`
+/// and the tracker names already make.
+pub fn ensure_checkout_dir(checkout: &Path) -> anyhow::Result<PathBuf> {
     let dir = checkout_dir(checkout)?;
-    if dir.exists() {
+    std::fs::create_dir_all(&dir)?;
+    if dir.join(SEED_MARKER).exists() {
         return Ok(dir);
     }
-    std::fs::create_dir_all(&dir)?;
-    let root = orchd::config::Config::config_dir()?.join("config.json");
-    let names_this_checkout =
-        orchd::config::Config::existing_at(&root).is_some_and(|cfg| cfg.main_checkout == checkout);
+
+    let old = orchd::config::Config::config_dir()?;
+    // Nothing to seed from is still a seeded checkout: marking it is what keeps
+    // this from walking the old directory on every start for ever.
+    let names_this_checkout = orchd::config::Config::existing_at(&old.join("config.json"))
+        .is_some_and(|cfg| cfg.main_checkout == checkout);
     if names_this_checkout {
-        match std::fs::copy(&root, dir.join("config.json")) {
-            Ok(_) => tracing::info!(
-                checkout = %checkout.display(),
-                "copied the existing config into {}",
-                dir.display()
-            ),
-            // Not fatal: the daemon writes a default and the user has lost their
-            // settings, which is bad — but refusing to start a checkout at all is
-            // worse, and the root file is still there to copy by hand.
-            Err(e) => tracing::error!("could not seed {}: {e}", dir.display()),
-        }
+        seed_from(&old, &dir, checkout);
+    }
+    // A marker that will not write is not fatal: the cost is one repeated walk of a
+    // small directory, and refusing to start a checkout over it is worse.
+    if let Err(e) = std::fs::write(dir.join(SEED_MARKER), "") {
+        tracing::warn!("could not mark {} as seeded: {e}", dir.display());
     }
     Ok(dir)
+}
+
+/// Copy the old config dir's state across, skipping what would lose something.
+///
+/// Failures are reported and never fatal: the daemon writes defaults and the user
+/// has lost their settings, which is bad — but refusing to start a checkout at all
+/// is worse, and the old files are still there to copy by hand.
+fn seed_from(old: &Path, dir: &Path, checkout: &Path) {
+    let entries = match std::fs::read_dir(old) {
+        Ok(e) => e,
+        Err(e) => {
+            tracing::error!(
+                "could not read {} to seed {}: {e}",
+                old.display(),
+                dir.display()
+            );
+            return;
+        }
+    };
+    let (mut carried, mut kept) = (Vec::new(), Vec::new());
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        if !inherited(name) {
+            continue;
+        }
+        let dest = dir.join(name);
+        if !safe_to_seed_over(&dest) {
+            kept.push(name.to_string());
+            continue;
+        }
+        match copy_tree(&entry.path(), &dest) {
+            Ok(()) => carried.push(name.to_string()),
+            Err(e) => tracing::error!("could not seed {name} into {}: {e}", dir.display()),
+        }
+    }
+    carried.sort();
+    kept.sort();
+    if !carried.is_empty() {
+        tracing::info!(
+            checkout = %checkout.display(),
+            "copied the existing state into {}: {}",
+            dir.display(),
+            carried.join(", ")
+        );
+    }
+    /* Said out loud, because this is the case a person has to act on: the old file
+    holds work and the new one does too, so the daemon will not choose between
+    them. Silence here is what #17 was — state on disk, a board that shows none
+    of it, and nothing anywhere saying the two are different. */
+    if !kept.is_empty() {
+        tracing::warn!(
+            checkout = %checkout.display(),
+            "{} already had {} — the copies in {} were left alone; merge them by hand \
+             if this checkout's state looks short",
+            dir.display(),
+            kept.join(", "),
+            old.display()
+        );
+    }
 }
 
 /// A host serving on its own port.
