@@ -216,6 +216,10 @@ export async function sandbox({
   // seconds saying "no `page: … renderer=` lines yet", which names the symptom and
   // not the cause. A flow that depends on a level now says so here.
   log = 'warn',
+  /* What `reviews_command` points at. `true` is the suite's answer — nothing to
+     poll, nothing to shell out to — and `page.mjs` points it at a path that is not
+     there, because a *failed* preflight is the thing it needs to see drawn. */
+  reviewsCommand = ['true'],
 } = {}) {
   /* **Resolved, not just made.** `$TMPDIR` on macOS is under `/var`, which is a
      symlink into `/private`, so a sandbox path handed to the daemon comes back
@@ -288,7 +292,7 @@ export async function sandbox({
     // shelling out to `gh` and logging failures that have nothing to do with the
     // flow under test.
     poll_seconds: pollSeconds,
-    reviews_command: ['true'],
+    reviews_command: reviewsCommand,
     main_processes: processes,
     worktree_processes: [],
     // Off unless a flow asks, because it relaunches an agent per restored session

@@ -1351,6 +1351,15 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
    offer you something, this one reports that a thing did not happen. Not a link,
    so it carries no underline and no pointer — there is nowhere to go. */
 .updatebar-bad{color:var(--bad)}
+/* The preflight bar holds a *list*, and the pill is built for one line. A column
+   with a width cap is the smallest change that keeps it the same object: three
+   findings arrive together on a machine started from Finder with no PATH, and one
+   of them elided would be the one you needed. */
+.machinelist{display:flex;flex-direction:column;gap:4px;max-width:min(70vw,720px)}
+.machinelist > div{color:var(--bad)}
+/* What it costs, in the row's own quieter voice: the finding is what you act on,
+   the cost is why you would bother. */
+.machinelist .machinecost{color:var(--faint-solid)}
 /* Every bar is fixed to the same spot, so they have to be told where to sit.
    `stackBars` in `app.js` sets `top` from how many are actually showing, which is
    the only thing that can know: this used to be one class meaning "second", set by

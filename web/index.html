@@ -275,6 +275,18 @@
   <span class="updatebar-x" id="agenterrx" role="button" title="Dismiss">&#10005;</span>
 </div>
 
+<!-- What the boot preflight found: a missing `gh`, `node` or `claude`, a checkout
+     that is not a work tree, a tracker the repo declares no server for. Every one
+     of these used to be a `tracing::warn!` and nothing else, so the window showed
+     the *symptom* — a PR pane reading `unavailable`, a review queue reading `off` —
+     with the cause in a log a launcher-started app does not even have a terminal
+     for. A list rather than one line, because these arrive together: a machine
+     with no PATH from Finder was missing `gh`, `node` and `claude` at once. -->
+<div class="updatebar machinebar" id="machinebar" hidden>
+  <div class="machinelist" id="machinelist"></div>
+  <span class="updatebar-x" id="machinex" role="button" title="Dismiss">&#10005;</span>
+</div>
+
 <!-- Right-click on a session row. Positioned at the cursor from script. -->
 <!-- Column splitters. Drag to resize, double-click to reset. Fixed strips over
      the grid's own boundaries, so the grid itself stays two variables wide. -->

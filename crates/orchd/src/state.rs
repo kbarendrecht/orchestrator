@@ -241,6 +241,14 @@ pub struct Inner {
     /// the next press either, until somebody fixes the machine. Cleared by the
     /// first session that reaches a turn.
     pub agent_error: Option<String>,
+    /// What the boot preflight found — see [`crate::machine::check`].
+    ///
+    /// Set once, by the caller that ran the check, and never changed: every one of
+    /// these is a fact about the machine that a running daemon cannot fix. Here
+    /// rather than in `AppState::new`'s signature because it is not what a daemon
+    /// is *built* from — the check runs before the state exists, and a fourth
+    /// constructor argument would be threaded through every test that makes one.
+    pub machine: Vec<crate::machine::Warning>,
     pub pr_fetched: Option<SystemTime>,
     /// Bumped once per completed PR poll, so the refresh button can spin until
     /// the fetch it triggered has landed. Mirrors `reviews_poll`.
@@ -436,6 +444,16 @@ impl<T> std::ops::Deref for Durable<T> {
 }
 
 impl AppState {
+    /// Hand the boot preflight's findings to the state, once.
+    ///
+    /// Separate from the constructor because the check runs *before* the state
+    /// exists — it reads the config and the machine, not the daemon — and because
+    /// nothing else ever writes this: a missing `gh` is missing until somebody
+    /// installs one, and this daemon will not see that happen.
+    pub async fn set_machine_warnings(&self, warnings: Vec<crate::machine::Warning>) {
+        self.inner.write().await.machine = warnings;
+    }
+
     /// Change one thing on one session under the write lock; a session that is
     /// gone is not an error. The shape every hook handler has, written once.
     pub async fn with_session<R>(
@@ -504,6 +522,7 @@ impl AppState {
                 viewer: None,
                 pr_error: None,
                 agent_error: None,
+                machine: Vec::new(),
                 pr_fetched: None,
                 pr_poll: 0,
                 pr_polling: false,
@@ -933,6 +952,7 @@ impl AppState {
             prs,
             pr_error: inner.pr_error.clone(),
             agent_error: inner.agent_error.clone(),
+            machine: inner.machine.clone(),
             pr_age_ms: inner
                 .pr_fetched
                 .and_then(|t| now.duration_since(t).ok().map(|d| d.as_millis() as u64)),
@@ -1569,6 +1589,10 @@ pub struct Snapshot {
     /// `Inner::agent_error`. The board shows it in a bar, since the session it
     /// happened to no longer exists.
     pub agent_error: Option<String>,
+    /// What the boot preflight found; see `Inner::machine`. The board shows it in
+    /// a bar, because these are the causes behind panes that read `unavailable`
+    /// and `off` and there is nowhere else in the window they appear.
+    pub machine: Vec<crate::machine::Warning>,
     #[cfg_attr(any(test, feature = "test-util"), ts(type = "number"))]
     pub pr_age_ms: Option<u64>,
     /// Monotonic counter of completed PR polls; see `Inner::pr_poll`.

@@ -166,7 +166,8 @@ function render() {
   renderUpdate();
   renderAgentUpdate();
   renderAgentError();
-  // Last, because it reads which of the three above ended up showing. Each of them
+  renderMachine();
+  // Last, because it reads which of the four above ended up showing. Each of them
   // sets its own `hidden` and nothing else; where they sit is decided once, here.
   stackBars();
   renderLegalNotice();
@@ -587,6 +588,47 @@ function renderAgentError() {
   bar.hidden = false;
 }
 
+// The findings the user dismissed, joined. A *different* set shows again — a
+// machine that loses its `node` after you dismissed a missing `gh` is a new thing
+// to say — while the same set stays hidden. Local rather than daemon-side because
+// the daemon never changes this list: it is read once at boot and is true until
+// somebody installs the missing thing and restarts.
+/** @type {string | null} */
+let machineDismissed = null;
+
+/** What the boot preflight found.
+ *
+ *  **The one bar that explains other panes rather than reporting an event.** A
+ *  missing `gh` reads as a PR pane saying `unavailable`; a `reviews_command` whose
+ *  interpreter is absent reads as a queue saying `off`; a tracker the repo declares
+ *  no server for reads as a story pass that hangs. Each of those has a cause the
+ *  daemon knew at boot and put in a log — which, launched from Finder or a desktop
+ *  entry, has no terminal behind it at all.
+ */
+function renderMachine() {
+  const bar = $('machinebar');
+  const found = snap.machine ?? [];
+  const key = found.map((w) => w.what).join('\n');
+  if (!found.length || machineDismissed === key) { bar.hidden = true; return; }
+  const list = $('machinelist');
+  list.replaceChildren();
+  for (const w of found) {
+    const line = el('div', '', w.what);
+    line.appendChild(el('span', 'machinecost', ` \u2014 ${w.cost}`));
+    list.appendChild(line);
+  }
+  // Out loud as well, for the same reason the agent-error bar does it: these
+  // explain panes that a screen reader hears as "unavailable" with no cause.
+  $('live').textContent = found.map((w) => `${w.what} — ${w.cost}`).join('. ');
+  $('machinex').onclick = () => {
+    machineDismissed = key;
+    bar.hidden = true;
+    stackBars();
+  };
+  keyActivate($('machinex'));
+  bar.hidden = false;
+}
+
 /** Put the bars in a column, in order, however many are showing.
  *
  *  **Computed rather than a class meaning "second".** All three are `position:
@@ -595,7 +637,7 @@ function renderAgentError() {
  *  third, which would have sat on top of whichever was already there. Counting the
  *  visible ones is the only thing that can be right for any combination.
  */
-const BAR_IDS = ['updatebar', 'agentbar', 'agenterrbar'];
+const BAR_IDS = ['updatebar', 'agentbar', 'agenterrbar', 'machinebar'];
 function stackBars() {
   let shown = 0;
   for (const id of BAR_IDS) {

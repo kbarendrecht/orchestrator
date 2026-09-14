@@ -18,9 +18,29 @@
 //! working, and nothing else — a boot log nobody reads is one that cried wolf.
 
 use crate::config::Config;
+use serde::Serialize;
 use std::path::Path;
 
 /// Something missing, and what it costs.
+///
+/// **In the snapshot as well as the log, which was the whole gap.** Every one of
+/// these used to be a `tracing::warn!` in `lib.rs` and nothing else, so a person
+/// whose `gh` is missing read `unavailable` in the PR pane with the cause in a
+/// file they do not have open — and the module's own docs above say that is the
+/// case it exists for. A launcher-started app makes it worse: there is no terminal
+/// the log could have appeared in.
+///
+/// **Exported to `repo.d.ts`, not `snapshot.d.ts`**, the way `TokenSource` beside
+/// it is. ts-rs writes a file per crate run, so a type in *this* crate declaring
+/// `snapshot.d.ts` truncates that file to whatever this crate alone exports — the
+/// whole daemon's types gone, and `check-web` catching it only because it
+/// regenerates and diffs.
+#[derive(Debug, Clone, Serialize)]
+#[cfg_attr(
+    any(test, feature = "test-util"),
+    derive(ts_rs::TS),
+    ts(export, export_to = "repo.d.ts")
+)]
 pub struct Warning {
     /// The thing that is not there.
     pub what: String,

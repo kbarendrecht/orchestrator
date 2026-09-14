@@ -199,24 +199,6 @@ this file, which churned it from every build; that feature is gone.
   and scanning is the one thing it does not support. Group by week, and put the PR
   number on the row where there is one.
 
-- **The main checkout is one repo's constraint, drawn as a universal concept.** The
-  reason it is privileged is real and outlives this repo: one checkout hosts one
-  docker stack, one dev URL, one database, so the tree that cannot be duplicated
-  cannot be handed to two agents. But that is a *per-repo* fact, and the UI states
-  it five times whether or not the repo in front of it has a stack: a rail group
-  with its own header and `+`, a chord (`MOD Shift N`), a PR menu item, a drawer
-  badge, and three menu labels for one action (`move to main`, `swap branch with
-  main`, `move out of main`) chosen by git state the reader cannot see. On a repo
-  with no `main_processes` the whole group is chrome around a checkout whose only
-  distinction is having no worktree.
-
-  The shape worth considering: keep the lock and the exclusivity, drop the category.
-  One list of workspaces with main pinned and a lock glyph, its reason read from
-  `workspace_notes.main`, and one verb for the move whose confirm says what happens
-  to main's current branch. Fix the vocabulary in the same pass:
-  `docs/workspace-isolation.md` says never bare "main", and the menu items and every
-  toast say exactly that.
-
 - **Six places the app still assumes this monorepo, all in what you see rather than
   in what it does.** The config is agnostic and "make it run somewhere other than
   this machine" above closed the mechanical half. What is left is presentation, and
@@ -232,12 +214,20 @@ this file, which churned it from every build; that feature is gone.
     "where it exists", which is a file guessing at a repo. A `checks_command`
     setting is the fix — and a skill cannot interpolate one, so it arrives the way
     every other run value now does: the environment, or the context route.
-  - **Boot warnings never reach the window.** `machine::check` finds a missing
-    `gh`, `node` or `claude`, and a tracker whose MCP server the repo does not
-    declare, and every one becomes a single `tracing::warn!` in `lib.rs`. `Warning`
-    is not in the snapshot at all, so a new user reads `unavailable` and `off` with
-    the cause only in a log they do not have open. That is the case the module's own
-    docs say it exists for.
+  - ~~**Boot warnings never reach the window.**~~ **Done.** `Warning` is in the
+    snapshot (`Inner::machine`, set once by the caller that ran the check), and a
+    fourth bar draws the list — a missing `gh`, a `reviews_command` that is not
+    there, a tracker the repo declares no server for. `page-check` holds it, and
+    the gate was checked by breaking it twice: dropping the `renderMachine` call
+    and emptying the snapshot field each fail the same two lines.
+
+    Two things settled while doing it, both worth knowing before the next one.
+    **ts-rs writes one file per crate run**, so a type in `orchd-repo` declaring
+    `export_to = "snapshot.d.ts"` truncates that file to what this crate alone
+    exports — `TokenSource` was already the pattern, and `repo.d.ts` is the answer.
+    And **`cargo test -p <one crate>` truncates the generated types the same way**;
+    `mise run check-web` regenerates all of them, so run it after a single-crate
+    test before reading a `.d.ts` diff.
   - **Half the settings have no field.** `env_source`, `workspace_notes`,
     `worktree_init` and `shared_worktree_paths` are config-file only. Fine for the
     operational ones, wrong for `workspace_notes` and `worktree_init`, which are two

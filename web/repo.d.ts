@@ -195,3 +195,29 @@ answerable: boolean, };
  * unnecessary blast radius.
  */
 export type TokenSource = "env" | "file" | "gh_cli";
+
+/**
+ * Something missing, and what it costs.
+ *
+ * **In the snapshot as well as the log, which was the whole gap.** Every one of
+ * these used to be a `tracing::warn!` in `lib.rs` and nothing else, so a person
+ * whose `gh` is missing read `unavailable` in the PR pane with the cause in a
+ * file they do not have open — and the module's own docs above say that is the
+ * case it exists for. A launcher-started app makes it worse: there is no terminal
+ * the log could have appeared in.
+ *
+ * **Exported to `repo.d.ts`, not `snapshot.d.ts`**, the way `TokenSource` beside
+ * it is. ts-rs writes a file per crate run, so a type in *this* crate declaring
+ * `snapshot.d.ts` truncates that file to whatever this crate alone exports — the
+ * whole daemon's types gone, and `check-web` catching it only because it
+ * regenerates and diffs.
+ */
+export type Warning = { 
+/**
+ * The thing that is not there.
+ */
+what: string, 
+/**
+ * What stops working because of it.
+ */
+cost: string, };

@@ -26,6 +26,10 @@
 //     rule and every `href =` goes through it; asserted by calling it, because a
 //     rendered page has no such link in it to look at — which is the point.
 //   * anything thrown during boot, which `pageerror` catches for free.
+//   * a boot preflight finding that never leaves the log. `machine::check` knows
+//     at startup that `gh` is missing or that `reviews_command` is not there, and
+//     the window used to show only the symptom — `unavailable`, `off` — with the
+//     cause in a file a launcher-started app has no terminal for.
 //
 // **And one gesture, which is a second contract in the same file.** The rail's
 // session drag is behaviour rather than text, so it does not belong under the
@@ -53,7 +57,10 @@ const check = (ok, what) => {
   if (!ok) failed = true
 }
 
-const t = await sandbox({ turns: 1 })
+/* A `reviews_command` that is not there, so the boot preflight has something to
+   find. Everything else here runs on a healthy sandbox; this one condition is
+   deliberately broken, because the bar it raises is the assertion below. */
+const t = await sandbox({ turns: 1, reviewsCommand: ['/nonexistent-orchd-probe'] })
 let browser
 try {
   const { session } = await t.api('POST', '/api/worktree', { name: 'page' })
@@ -142,6 +149,25 @@ try {
   const got = refused.filter((k) => hrefs[k] !== '#')
   check(got.length === 0, `nothing but http reaches an href${got.length ? `: ${got.join(', ')} did` : ''}`)
 
+
+  /* --- what the boot preflight found ----------------------------------------- */
+
+  /* Every one of these used to be a `tracing::warn!` and nothing else, so the
+     window showed the symptom — a PR pane reading `unavailable`, a queue reading
+     `off` — and the cause lived in a log that a launcher-started app has no
+     terminal for. Asserted here rather than in Rust because the failure is the
+     *journey*: a field dropped from the snapshot, or a bar nothing calls, both
+     compile. */
+  const mbar = await page.$eval('#machinebar', (b) => ({ hidden: b.hidden, text: b.textContent }))
+  check(!mbar.hidden, 'the boot preflight reaches the window')
+  check(mbar.text.includes('/nonexistent-orchd-probe'), 'and the bar names what is missing')
+  /* Dismissed before the drag below, because it is `position: fixed` over the
+     board and a bar left open is one more thing between a synthetic pointer and
+     the row it is aiming at. That it *stays* dismissed under the snapshots that
+     keep arriving is the other half worth holding. */
+  await page.click('#machinex')
+  await page.waitForTimeout(1200)
+  check(await page.$eval('#machinebar', (b) => b.hidden), 'and a dismissed bar stays dismissed')
 
   /* --- the rail's session drag ---------------------------------------------- */
 

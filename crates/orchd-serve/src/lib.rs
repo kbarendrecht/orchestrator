@@ -295,10 +295,15 @@ pub async fn start(opts: StartOptions) -> Result<Server> {
         cfg.port = port;
     }
 
+    /* Said before the first session can be spawned, because every one of these
+    otherwise surfaces as a failure that blames something else — and **kept**,
+    rather than only logged, because a launcher-started app has no terminal and
+    the person reading `unavailable` in the PR pane has no way to reach the log.
+    Handed to the state below, as soon as there is one. */
+    let warnings = machine::check(&cfg, cfg.tracker.as_ref().map(|t| t.mcp_server.as_str()));
+
     let settings = {
-        // Said before the first session can be spawned, because every one of these
-        // otherwise surfaces as a failure that blames something else.
-        for w in machine::check(&cfg, cfg.tracker.as_ref().map(|t| t.mcp_server.as_str())) {
+        for w in &warnings {
             tracing::warn!("{} — {}", w.what, w.cost);
         }
         // The push guard protects the branch this repo is measured against, so it
@@ -335,6 +340,9 @@ pub async fn start(opts: StartOptions) -> Result<Server> {
 
     let token = secret::random_token();
     let app = AppState::new(cfg, token.clone(), opts.chrome);
+    // Before the first snapshot anyone can read, so a board that opens on a broken
+    // machine says so on its first paint rather than after the next poll.
+    app.set_machine_warnings(warnings).await;
     // Before anything can spawn a session, `auto_resume` included: a run whose
     // exit nobody is listening for is a verdict that never lands.
     app.observe_runs(settle_run);
