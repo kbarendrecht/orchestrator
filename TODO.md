@@ -98,16 +98,38 @@ this file, which churned it from every build; that feature is gone.
     untouched: `--session-id` correlation, the transcript slug, the `ai-title`
     field, `--resume`, and the whole hook-observer plumbing. Hosting another agent
     means abstracting *that*.
-  - **Give the tracker the same seam the forge has.** A tracker is now three
-    config fields (`config::Tracker`) rather than four constants in an enum arm, so
-    the naming half is done; what is left is that reaching it is still spread
-    through `story.rs` — the allowlist, the MCP entry's variable, and the URL rule
-    in `StoryRef::consistent`. Mirror
-    `ForgeImpl`: a `Tracker` trait plus enum-dispatch keyed on `config.tracker`,
-    holding the MCP id and tool allowlist, the token env/file, the story-URL
-    grammar, and a tracker-agnostic `Story` beside it. Two things to settle while
-    doing it — the token ladder is Shortcut-named, and `Stub` should become the
-    trait's test double rather than the `--strict-mcp-config` special case it is.
+  - **Give the tracker the same seam the forge has, and let it own its transport.**
+    A tracker is now three config fields (`config::Tracker`) rather than four
+    constants in an enum arm, so the naming half is done; what is left is that
+    reaching it is still spread through `story.rs` — the allowlist, the MCP entry's
+    variable, and the URL rule in `StoryRef::consistent`. Mirror `ForgeImpl`: a
+    `Tracker` trait plus enum-dispatch keyed on `config.tracker`, holding the MCP
+    id and tool allowlist, the token env/file, the story-URL grammar, and a
+    tracker-agnostic `Story` beside it. Two things to settle while doing it — the
+    token ladder is Shortcut-named, and `Stub` should become the trait's test
+    double rather than the `--strict-mcp-config` special case it is.
+
+    **The transport is the same item, which is why it is one entry and not two.**
+    `Tracker::mcp_server()` names a server orchd expects to find in *the repo's*
+    `.mcp.json` — `hooks::write_settings` approves it through
+    `enabledMcpjsonServers`, `--allowedTools mcp__<name>` scopes the run to it, and
+    the daemon pushes the credential in under the variable `token_env()` names. So
+    a feature of orchd works only where somebody else happened to configure a
+    server with the right name, over a transport we do not control (one repo's is
+    `http` to `mcp.shortcut.com`), and the failure lands mid-run on a thread rather
+    than at startup: the daemon warns about a missing *token* and says nothing
+    about a missing or renamed *server*. The interactive `/resolve` story step has
+    the same dependency, spelled `mcp__shortcut__*` in prose.
+
+    **The small version is the one to build, and the mechanism is already here.**
+    A tracker with `stub: true` passes `--mcp-config` plus `--strict-mcp-config`,
+    which ignores every configured server; doing that for the live tracker too
+    keeps the agent and the MCP shape and drops the repo dependency. The larger
+    version is to call the tracker's API from Rust and drop the agent from filing
+    — search and create are two calls, and the agent is in that path only for the
+    routing rules the repo's tracker skill holds, which would then need another
+    home. Either way `Tracker` starts owning *how it is reached* rather than only
+    naming a server somebody else configured.
   - **Two GitHub-shaped leaks** for a real second forge: `ThreadRoot`'s `comment_id`
     is a REST id, and both `GitHubForge::detect`'s URL parsing and the read-token
     ladder are github.com-specific — `for_kind`'s single `token` argument does not
@@ -136,34 +158,6 @@ this file, which churned it from every build; that feature is gone.
   only question there is, and `checkoutHead` was already doing exactly that on the
   same rail. The pointer maths in `startTabDrag` earns its keep on a strip that is
   horizontal and scrolls.
-
-- **Own the tracker's transport instead of borrowing the target repo's MCP.**
-  `Tracker::mcp_server()` names a server orchd expects to find in *the repo's*
-  `.mcp.json` — `hooks::write_settings` approves it through
-  `enabledMcpjsonServers`, `--allowedTools mcp__<name>` scopes the run to it, and
-  the daemon pushes the credential in under the variable `token_env()` names. So a
-  feature of orchd only works where somebody else happened to configure a server
-  with the right name, over a transport we do not control (one repo's is `http` to
-  `mcp.shortcut.com`), and the failure lands mid-run on a thread rather than at
-  startup: the daemon warns about a missing *token* and says nothing about a
-  missing or renamed *server*. The interactive `/resolve` story step has the same
-  dependency, spelled `mcp__shortcut__*` in prose.
-
-  The mechanism to fix it is already here and used for one case only: a tracker
-  with `stub: true` passes `--mcp-config` plus `--strict-mcp-config`, which ignores
-  every configured server. Doing that for the live tracker too is the small version
-  — the agent and MCP shape stay, the repo dependency goes. The larger version is
-  to call the tracker's API from Rust and drop the agent from filing altogether;
-  search and create are two calls, and the agent is only in that path for the
-  routing rules the repo's tracker skill holds, which would then need another home.
-  Either way `Tracker` starts owning *how it is reached* rather than only naming a
-  server somebody else configured.
-
-  What has landed since this was written: `Tracker` is three config fields rather
-  than an enum arm of four constants, so another tracker is a config edit; and no
-  skill names a tracker tool any more, which was the other half this entry did not
-  mention. The dependency on the repo's `.mcp.json` is untouched, and so is the
-  failure landing mid-run rather than at startup.
 
 - **The review pane is still `[beta]`, and the label is the honest part.**
   *Two of the three steps are done:* the old non-beta `/resolve` is gone, and the
