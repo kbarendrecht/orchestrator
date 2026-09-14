@@ -94,6 +94,13 @@ delegated worktree is adopted. That is what lets `workspace_for_path` match the
 resolved paths `PostToolUse` hands it — an unresolved workspace root matches
 nothing, and the symptom is not an error but an edit that never appears in the
 changed-files pane. Do not introduce a workspace path that skipped that step.
+
+**A test that compares against its own copy is on the wrong side of that
+boundary.** `$TMPDIR` on macOS is under `/var`, a symlink into `/private`, so the
+first macOS run of the e2e flows failed `fix a PR` with `/private/var/…` against
+`/var/…` — the daemon resolved, the flow did not. `common::scratch_root` already
+canonicalised for this; `harness.mjs` did not, because on Linux `/tmp` is real and
+the fix is a no-op there.
 Barely visible on Linux; on macOS `/tmp`, `/var` and `$TMPDIR` are symlinks into
 `/private`, so it is the normal case.
 **Which is why `testutil::scratch` canonicalises.** A fixture that skips that

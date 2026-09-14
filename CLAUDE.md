@@ -353,6 +353,7 @@ together: same entries, same order, same groups.
 - An e2e flow must make idleness a condition, not an assumption.
 - `mise run e2e` needs no product change, because the agent is a PATH lookup.
 - GitHub is two programs, and the write half is `gh`.
+- A flow's own git races the daemon's, and the full suite hides it.
 
 ### The UI's contracts
 

@@ -58,3 +58,27 @@ rather than by a phrase. One thing the shim deliberately does **not** answer is
 and your own 👍, and it is the rule the re-request rests on, so a flow says who
 spoke last and the daemon decides whose turn it is. Canning it would have tested
 the shim.
+
+## A flow's own git races the daemon's, and the full suite hides it.
+`park main` failed **3 runs in 8** on `git commit -qam work`, `rebase` **1 in 8** on
+a CI runner, and `park main` again **5 in 8** on macOS — always
+`Unable to create .git/index.lock`. A flow sets up state by doing real git in the
+real checkout while the daemon reconciles that same checkout on its own clock, and
+git has no wait-and-retry of its own.
+
+**The suite hid all three.** Run in sequence a flow lands in a gap between
+reconciles; run alone it lands on one. So `mise run e2e` was green 26/26 on both
+platforms while three flows sat at a 12–37% failure rate in isolation. That is what
+`mise run deflake` is for — each flow N times, one at a time — and it is the only
+reason these were found.
+
+`harness.git` retries, bounded, and **only** on that message: a loop that swallows
+the real fault is worse than the flake. Prevention was the wrong shape, since it
+would mean a flow coordinating with the daemon's reconcile schedule — unavailable,
+and a fiction no real user gets either.
+
+**Use `gitMayFail` rather than a raw `spawnSync` for the one command whose failure
+is the fixture.** `26-move-refusals` passed twelve times alone and failed in the
+suite because it shelled `git rebase` directly: a rebase that loses the race fails
+*before it starts*, so the caller sees a non-zero exit and no rebase in progress —
+which reads exactly like git having finished cleanly.
