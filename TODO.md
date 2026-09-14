@@ -13,6 +13,18 @@ this file, which churned it from every build; that feature is gone.
   left needs a live process racing the open rather than content somebody pushed.
   The last of the four gaps the v2 review pass found.
 
+- **The `swapping` lock has no test, and it is the one refusal left uncovered.**
+  `26-move-refusals` now holds the other four — swapping main with itself, a session
+  that is not in main, a session that does not exist, a tree mid-rebase — and both
+  copies of the mid-turn guard, each proven by removing it and watching the flow
+  fail. The lock is different: it needs two genuinely concurrent requests and the
+  window is milliseconds, so any test written for it either passes by luck or is a
+  flake. Its comment records a real incident — a double click that "left a session in
+  main with its branch back in the worktree" — so this is a gap worth knowing about
+  rather than one worth filling with a test that lies. A deterministic version would
+  need the daemon to offer a way to hold the lock, which is product surface added for
+  a test and has not earned that.
+
 - **`rerequest()` has never run.** The fixture drives everything else in the review
   flow (`mise run fixture`, `docs/fixture-pr.md`), but its threads are posted by
   `github-actions[bot]` and a bot cannot be a requested reviewer. That one button

@@ -88,6 +88,25 @@ export function git(cwd, args, { tries = 20 } = {}) {
   }
 }
 
+/** Run git where a non-zero exit is the *point*, and still wait out the lock.
+ *
+ *  [`git`] throws, which is right for setup and wrong for the one command whose
+ *  failure is the fixture — a rebase that has to conflict, say. But the lock rule
+ *  still applies, and forgetting it here is subtle: a `git rebase` that loses the
+ *  race to the daemon fails **before it starts**, so the caller sees a non-zero exit
+ *  and no rebase in progress, which looks exactly like git having finished cleanly.
+ *  That is how `26-move-refusals` passed twelve times alone and failed in the suite.
+ */
+export function gitMayFail(cwd, args, { tries = 20 } = {}) {
+  for (let attempt = 1; ; attempt++) {
+    const r = spawnSync('git', args, { cwd, encoding: 'utf8', env: cleanEnv })
+    const said = `${r.stdout}${r.stderr}`
+    const contended = said.includes('index.lock') && said.includes('File exists')
+    if (!contended || attempt >= tries) return r
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25)
+  }
+}
+
 export const branchOf = (cwd) => git(cwd, ['rev-parse', '--abbrev-ref', 'HEAD'])
 export const isDirty = (cwd) => git(cwd, ['status', '--porcelain']) !== ''
 
@@ -394,6 +413,20 @@ export async function sandbox({
 
     /** How many turns the next spawned agent takes on its own. */
     setTurns: (n) => fs.writeFileSync(path.join(root, 'turns'), String(n)),
+
+    /** Hold every agent turn open, or let go.
+     *
+     *  For the refusals that only exist while an agent is mid-turn — a swap, a move
+     *  out of main, a rebase all replace every file under a session, so all three
+     *  refuse one that is working. A real turn in this harness is 60ms, so there is
+     *  no window to catch by polling; this makes the window as long as the flow
+     *  needs. Let go in a `finally`, or the agent releases itself after 30s and the
+     *  flow fails on its own assertion instead of hanging the suite. */
+    hold: (on) => {
+      const at = path.join(root, 'hold')
+      if (on) fs.writeFileSync(at, '')
+      else fs.rmSync(at, { force: true })
+    },
 
     /** A session's ask token, for a flow driving a route the *agent* is meant to
      *  call. The daemon never persists it, so this comes from the agent's own

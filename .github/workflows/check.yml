@@ -237,7 +237,7 @@ jobs:
           node tools/e2e/renderer.mjs
           node tools/e2e/renderer.mjs --mac
 
-      # The 24 flows, which until now ran **only** in a per-clone pre-commit hook,
+      # The flows, which until now ran **only** in a per-clone pre-commit hook,
       # and there only every fifth qualifying commit. So a fresh clone, a
       # `--no-verify` habit or a contributor who never ran
       # `git config core.hooksPath .githooks` skipped the one suite that drives the

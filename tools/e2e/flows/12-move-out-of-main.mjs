@@ -41,6 +41,10 @@ export async function run(t) {
     (await t.session(session))?.workspace === r.workspace)
   const s = await t.session(session)
   assert.equal(fs.realpathSync(s.cwd), fs.realpathSync(dir), 'cwd did not follow')
+  // The move is a kill and a `--resume`, so the conversation has to have come back
+  // and be resumable — a record naming the new workspace is the cheapest half.
+  assert.equal(s.state.state, 'your_turn', 'the conversation did not come back idle')
+  assert.equal(s.has_transcript, true, 'the conversation did not survive the move')
   await until('main to come free', async () => (await t.workspace('main')).occupant == null)
   console.log('    conversation', session.slice(0, 8), 'is in', s.workspace, '· main released')
 
@@ -59,4 +63,12 @@ export async function run(t) {
   assert.equal(
     fs.readFileSync(path.join(t.worktreePath('real-work'), 'README.md'), 'utf8'),
     '# on a branch\n')
+  // And the same of the second conversation: the two arms are different code paths,
+  // so asserting one of them says nothing about the other.
+  await until('the second conversation to arrive', async () =>
+    (await t.session(second))?.workspace === r2.workspace)
+  const s2 = await t.session(second)
+  assert.equal(fs.realpathSync(s2.cwd), fs.realpathSync(t.worktreePath('real-work')))
+  assert.equal(s2.state.state, 'your_turn')
+  assert.equal(s2.has_transcript, true)
 }

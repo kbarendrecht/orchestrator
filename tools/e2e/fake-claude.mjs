@@ -191,6 +191,13 @@ async function turn(text) {
   note(`turn: ${text}`)
   await fire('UserPromptSubmit')
   append({ type: 'user', sessionId, message: { role: 'user', content: text } })
+  /* **A turn a flow can hold open.** An ordinary turn here is 60ms, which is far
+     too short to catch a session in `Working` by polling — so the refusals that
+     only fire mid-turn (a swap, a move out of main, a rebase) had no way to be
+     tested at all. While `$ORCH_E2E_DIR/hold` exists the turn simply does not end,
+     which is what a real agent thinking for a minute looks like to the daemon.
+     Absent, as it is for every other flow, this is one `existsSync` per turn. */
+  await held()
   await new Promise((r) => setTimeout(r, 60))
   append({ type: 'assistant', sessionId, message: { role: 'assistant', content: 'ok' } })
   await fire('Stop')
@@ -250,6 +257,19 @@ async function recorded() {
     await new Promise((r) => setTimeout(r, 25))
   }
   note(`NEVER recorded after ${Date.now() - started}ms`)
+}
+
+/** Block while a flow is holding this turn open. See `turn`. */
+async function held() {
+  const file = process.env.ORCH_E2E_DIR && path.join(process.env.ORCH_E2E_DIR, 'hold')
+  if (!file || !fs.existsSync(file)) return
+  note('holding this turn open')
+  // A bounded wait, so a flow that forgets to let go fails on its own assertion
+  // rather than hanging the whole suite with no clue which flow did it.
+  for (let i = 0; i < 600 && fs.existsSync(file); i++) {
+    await new Promise((r) => setTimeout(r, 50))
+  }
+  note('turn released')
 }
 
 /** A line in the sandbox's own log, so a flow that fails has the agent's side of

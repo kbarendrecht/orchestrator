@@ -62,6 +62,16 @@ export async function run(t) {
   const s = await t.session(session)
   assert.equal(s.forked_from, null, 'a relocation is not a fork')
   assert.equal((await t.workspace('main')).occupant, session)
+  /* **Intact, not merely recorded as moved.** A relocation is a kill and a
+     `--resume` at the far end, so a record naming main is the cheapest half of the
+     claim: the conversation has to still be resumable, and the pty has to have come
+     back in the tree the record now names. `r.into_main.degraded` is the daemon's
+     own report that the resume stayed up rather than falling back to a fork; the
+     two below are the independent check. */
+  assert.equal(r.into_main?.degraded, false, 'a fork is not the move that was promised')
+  assert.equal(s.state.state, 'your_turn', 'the conversation did not come back idle')
+  assert.equal(s.has_transcript, true, 'the conversation did not survive the move')
+  assert.equal(fs.realpathSync(s.cwd), fs.realpathSync(t.repo), 'cwd did not follow')
 
   // Each tree gave a branch away, so neither may go on claiming it: `reconcile`
   // only adds, and a stale claim points a PR flow at the wrong tree.
