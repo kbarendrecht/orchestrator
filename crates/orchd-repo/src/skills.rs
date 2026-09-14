@@ -117,6 +117,15 @@ pub const VAR_TRACKER_HOST: &str = "ORCH_TRACKER_HOST";
 /// The pane review pass: what language to write a reply in when the thread it
 /// answers does not settle it.
 pub const VAR_LANGUAGE: &str = "ORCH_LANGUAGE";
+/// The repo's own checks, from `config.checks_command`.
+///
+/// **On every session, not only on a run**, which is why it is set in
+/// [`crate::launch::session_env`] rather than at a spawn site: `green`, `review`
+/// and `handle-review` are all things you type in a pane, and each of them has to
+/// put a change through the repo's checks before pushing. Unset when the checkout
+/// configures none, and each skill says what to do then — the daemon has no task
+/// runner to guess with.
+pub const VAR_CHECKS: &str = "ORCH_CHECKS";
 
 /// Every vendored skill, as `(directory name, body)`.
 ///
@@ -264,6 +273,55 @@ mod tests {
             !HANDLE_REVIEW.contains(&format!("${VAR_LOGIN}")),
             "handle-review reads ${VAR_LOGIN}, which its run does not set"
         );
+    }
+
+    /// No vendored skill may name a task runner.
+    ///
+    /// **A file shipped with the daemon guessing at the repo it lands in.** Four of
+    /// them said `mise run pre-commit:run`, hedged as "where it exists" — which is
+    /// the hedge admitting the guess. `mise` is this repo's task runner and nothing
+    /// the daemon needs; the checks are `$ORCH_CHECKS` now, from
+    /// `config.checks_command`, and unset means the skill falls back to the repo's
+    /// own docs rather than to a command somebody hoped was there.
+    ///
+    /// **Matched on whole words, and the list holds only unambiguous ones.** Two
+    /// drafts of this failed on the skills' own prose before the rule was right:
+    /// `just`, `rake` and `invoke` are task runners *and* ordinary English, and
+    /// `promise` contains `mise`. A check that fires on a sentence is one people
+    /// learn to work around, which is the argument `clippy::indexing_slicing`
+    /// already lost here.
+    #[test]
+    fn no_vendored_skill_names_a_task_runner() {
+        for (name, body) in VENDORED {
+            // Whole words, so `promise` is not `mise`. Split the same way the
+            // language check below does.
+            for word in body.split(|c: char| !c.is_alphanumeric()) {
+                assert!(
+                    word != "mise",
+                    "skills/{name} names `mise`, which is one repo's task runner"
+                );
+            }
+            // Phrases are unambiguous on their own and need no boundary.
+            for runner in ["npm run", "yarn run", "pnpm run", "bundle exec", "nx run"] {
+                assert!(
+                    !body.contains(runner),
+                    "skills/{name} names `{runner}`, which is one repo's task runner"
+                );
+            }
+        }
+        // And the replacement is actually reached: every skill that pushes has to
+        // put the change through something first.
+        for (name, body) in [
+            ("fix-pr", FIX_PR),
+            ("green", GREEN),
+            ("handle-review", HANDLE_REVIEW),
+            ("review", REVIEW),
+        ] {
+            assert!(
+                body.contains(&format!("${VAR_CHECKS}")),
+                "skills/{name} pushes without reading ${VAR_CHECKS}"
+            );
+        }
     }
 
     /// The language a run writes replies in is a setting, and a skill cannot have

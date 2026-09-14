@@ -65,7 +65,8 @@ only when it is right.
 ## Apply
 
 Apply the `apply` set, amend into the commit that owns each change, run the repo's
-pre-commit (`mise run pre-commit:run` where it exists), push `--force-with-lease`.
+checks (`$ORCH_CHECKS` when the checkout sets one, otherwise what the repo's own
+docs name), push `--force-with-lease`.
 The daemon's push guard denies plain `--force` and any push to the base branch;
 those denials are correct.
 

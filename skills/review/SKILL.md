@@ -196,7 +196,8 @@ Now do **only** what each decision says:
   answered by the code — is there no change to make, and then say so in your report.
 - **reply / their own note** — if the solution needs a code change, make it: edit the
   worktree, **amend into the commit that owns each line** (`git log -S`/blame the line to
-  find it), run the repo's checks (`mise run pre-commit:run` where it exists), then push
+  find it), run the repo's checks (`$ORCH_CHECKS` when the checkout sets one, otherwise
+  what the repo's own docs name), then push
   `--force-with-lease`. The push guard denies plain `--force` and any push to the base
   branch — those denials are correct. A `note` is the human's own instruction; follow it. Some
   reply solutions change no code (a pushback, an explanation) — then there is nothing to

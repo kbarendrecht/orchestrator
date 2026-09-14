@@ -215,11 +215,26 @@ this file, which churned it from every build; that feature is gone.
     `orchestrator/` carries no compose file, so its own drawer had a permanent red
     `stack down` the whole time. A badge that is wrong on the machine it was
     written on is not a portability problem, and nobody had noticed.
-  - **The vendored skills name this repo's task runner.** `mise run
-    pre-commit:run` is in `skills/fix-pr/SKILL.md` and its neighbours, hedged as
-    "where it exists", which is a file guessing at a repo. A `checks_command`
-    setting is the fix — and a skill cannot interpolate one, so it arrives the way
-    every other run value now does: the environment, or the context route.
+  - ~~**The vendored skills name this repo's task runner.**~~ **Done, and the
+    command it named does not exist in any repo on this machine.** Four skills said
+    `mise run pre-commit:run`, hedged as "where it exists" — and `scienta`'s task is
+    `pre-commit`, `pokestream` has `lint` and `test`, and this repo has no such task
+    at all, only a git hook. The hedge was carrying the whole sentence, so every run
+    that followed it either found nothing or was told nothing.
+
+    `checks_command` is a config field with a settings panel field, empty by
+    default, reaching a session as `$ORCH_CHECKS` through
+    `launch::session_env` — **the seam, not a spawn site**, because `green` and
+    `review` are typed into a pane and have no spawn site to hang it off. Held by
+    three tests: the variable is *absent* rather than empty when unconfigured (an
+    empty string passes every shell test anybody would write, so the fallback would
+    never be taken), a configured one arrives whole, and no vendored skill may name
+    a task runner. The last one was checked by putting `mise` back.
+
+    **The remaining work is on this machine, not in the tree**: `checks_command` is
+    unset for both live checkouts, so their sessions now fall back to the repo's own
+    docs. Set it per checkout in the settings panel — `mise run pre-commit` for
+    scienta.
   - ~~**Boot warnings never reach the window.**~~ **Done.** `Warning` is in the
     snapshot (`Inner::machine`, set once by the caller that ran the check), and a
     fourth bar draws the list — a missing `gh`, a `reviews_command` that is not

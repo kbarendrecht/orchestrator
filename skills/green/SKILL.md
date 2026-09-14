@@ -32,8 +32,8 @@ branch is fetched from. Read the repo's own `CLAUDE.md` before assuming either.
      its own says how; otherwise `gh run view <id> --log-failed`.
    - A failure naming a test absent from the working tree came from the base
      branch. Still yours to fix; say so in the report.
-   - Run the repo's pre-commit checks before pushing. *This repo's convention:*
-     `mise run pre-commit:run`.
+   - Run the repo's checks before pushing: `$ORCH_CHECKS` is the command when the
+     checkout configures one, and otherwise whatever the repo's own docs name.
 5. Amend into the commit that owns the change; never a "fix review" or "fix CI"
    commit. The subject still describes the change after amending; if it no longer
    does, rewrite it. Splitting or reordering commits: only when asked.

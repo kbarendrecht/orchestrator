@@ -577,6 +577,19 @@
         the same JSON. For a repo that already ranks its own reviews.</p>
 
       <label class="settings-field">
+        <span class="settings-k">Checks command</span>
+        <input class="settings-in" id="setchecks" type="text" spellcheck="false"
+               placeholder="empty = whatever this repo's own docs name">
+      </label>
+      <!-- One of the few things a *new* repo has to say, which is why it is a
+           field rather than a config key. The skills used to name this repo's
+           task runner in prose and hedge it as "where it exists"; they read
+           `$ORCH_CHECKS` now, and take the repo's own docs when it is unset. -->
+      <p class="settings-help">What a run puts a change through before it pushes —
+        your pre-commit, your test task, whatever the repo calls it. Reaches an
+        agent as <code>$ORCH_CHECKS</code>.</p>
+
+      <label class="settings-field">
         <span class="settings-k">Worktree setup</span>
         <input class="settings-in" id="setwtsetup" type="text" spellcheck="false"
                placeholder="empty = nothing">
