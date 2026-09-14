@@ -136,7 +136,11 @@ jobs:
           echo ""
           echo "==================== open -a ===================="
           rm -rf "$ORCHD_CONFIG_DIR"; mkdir -p "$ORCHD_CONFIG_DIR"
-          open -a "$APP" 2>&1
+          # An absolute path, and no `-a`: `open -a` takes an application *name* to
+          # look up and hands a relative path to that same lookup — which is how the
+          # first run reported "Unable to find application named
+          # target/release/bundle/macos/Orchestrator.app" and proved nothing.
+          open "$PWD/$APP" 2>&1
           echo "open returned $?"
           sleep 20
           if pgrep -f 'Orchestrator' >/dev/null 2>&1; then
@@ -148,6 +152,92 @@ jobs:
           pkill -f 'Orchestrator' 2>/dev/null
           echo "--- orchd.log ---"
           cat "$ORCHD_CONFIG_DIR/orchd.log" 2>/dev/null | head -40 || echo "(no log)"
+          exit 0
+
+      # Can anything *drive* it? A window that only opens is a smoke test; a window
+      # that can be clicked is an e2e surface.
+      #
+      # The permission is the whole question. The runner pre-grants **Screen
+      # Recording** to its shell, which is why the screenshots work — but synthetic
+      # clicks need **Accessibility**, a different TCC entry, and nothing found in
+      # research says that one is granted. So this probes in order of how much each
+      # step needs and reports where it stops:
+      #
+      #   1. System Events at all — Automation
+      #   2. the app's window in the accessibility tree — Accessibility
+      #   3. the *web content's* tree — WebKit publishes the DOM as AX elements, so a
+      #      button inside WKWebView should be reachable by name rather than by a
+      #      guessed pixel coordinate
+      #   4. a click on `Choose a folder…`, which opens a native folder dialog — a
+      #      change too large for a screenshot to be ambiguous about
+      - name: Can it be clicked
+        continue-on-error: true
+        run: |
+          set +e
+          export ORCHD_CONFIG_DIR="$RUNNER_TEMP/orchd-click"
+          rm -rf "$ORCHD_CONFIG_DIR"; mkdir -p "$ORCHD_CONFIG_DIR"
+          APP=$(find target/release/bundle -maxdepth 3 -name '*.app' | head -1)
+
+          "$APP/Contents/MacOS/orchestrator-desktop" > "$RUNNER_TEMP/click.out" 2>&1 &
+          PID=$!
+          # A condition, not a sleep: the page being served is what says the window
+          # is up, and this repo has paid for fixed sleeps before.
+          i=0
+          while [ "$i" -lt 40 ]; do
+            grep -q "the host is serving the page" "$ORCHD_CONFIG_DIR/orchd.log" 2>/dev/null && break
+            i=$((i + 1)); sleep 1
+          done
+          echo "waited ${i}s for the page"
+
+          say() { echo ""; echo "---------- $* ----------"; }
+
+          say "1. System Events (Automation)"
+          osascript -e 'tell application "System Events" to return name of first process whose frontmost is true' 2>&1
+
+          say "2. the app window (Accessibility)"
+          osascript -e 'tell application "System Events" to tell process "Orchestrator" to return {name, position, size} of front window' 2>&1
+
+          say "3. what the window publishes"
+          osascript \
+            -e 'tell application "System Events" to tell process "Orchestrator"' \
+            -e 'set out to ""' \
+            -e 'try' \
+            -e 'repeat with e in (entire contents of front window)' \
+            -e 'try' \
+            -e 'set out to out & (role of e) & " :: " & (description of e) & linefeed' \
+            -e 'end try' \
+            -e 'end repeat' \
+            -e 'on error m' \
+            -e 'set out to "error: " & m' \
+            -e 'end try' \
+            -e 'return out' \
+            -e 'end tell' 2>&1 | head -60
+
+          say "4. click Choose a folder…"
+          osascript \
+            -e 'tell application "System Events" to tell process "Orchestrator"' \
+            -e 'set frontmost to true' \
+            -e 'try' \
+            -e 'repeat with e in (entire contents of front window)' \
+            -e 'try' \
+            -e 'if (description of e) contains "Choose a folder" then' \
+            -e 'click e' \
+            -e 'return "CLICKED " & (description of e)' \
+            -e 'end if' \
+            -e 'end try' \
+            -e 'end repeat' \
+            -e 'return "no element described Choose a folder"' \
+            -e 'on error m' \
+            -e 'return "error: " & m' \
+            -e 'end try' \
+            -e 'end tell' 2>&1
+
+          sleep 3
+          screencapture -x "$RUNNER_TEMP/clicked.png" 2>&1 || echo "(screencapture failed)"
+
+          say "the log"
+          tail -15 "$ORCHD_CONFIG_DIR/orchd.log" 2>/dev/null
+          kill "$PID" 2>/dev/null; sleep 2; kill -9 "$PID" 2>/dev/null
           exit 0
 
       # The screenshots are the whole point of the GUI half: a window that opened is
