@@ -52,6 +52,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
+            xvfb \
             libwebkit2gtk-4.1-dev \
             libjavascriptcoregtk-4.1-dev \
             libsoup-3.0-dev \
@@ -214,6 +215,28 @@ jobs:
           cargo build -p orchd-serve --bin orchd
           node tools/e2e/page.mjs
 
+      # Which renderer each terminal opens with — the fix for #8, where WKWebView
+      # miscomposited xterm's WebGL atlas. It was a `mise` task and nothing else, so
+      # the *decision* it pins (agent pane WebGL, drawer terminals DOM, one live
+      # context per window) was ungated: the fix could have been silently undone and
+      # only a person on a Mac looking at corrupt glyphs would have found out.
+      #
+      # `renderer.mjs` is honest about what it cannot prove — the corruption needs a
+      # real Apple GPU — but "was the fix even active" is the half that is testable,
+      # and it is indistinguishable from "the fix did not work" without this. Chrome
+      # and `orchd` are both already here, so it costs seconds.
+      #
+      # **Both variants**, because the browser one is not the rule that matters: the
+      # `--mac` run is what asserts the agent pane keeps WebGL while a drawer
+      # terminal falls back to the DOM, which *is* #8's fix. `platform` and `chrome`
+      # are values the daemon substitutes into the page rather than things the page
+      # sniffs, so setting them exercises the real branch.
+      - name: Check the renderers
+        if: runner.os == 'Linux'
+        run: |
+          node tools/e2e/renderer.mjs
+          node tools/e2e/renderer.mjs --mac
+
       # The 24 flows, which until now ran **only** in a per-clone pre-commit hook,
       # and there only every fifth qualifying commit. So a fresh clone, a
       # `--no-verify` habit or a contributor who never ran
@@ -246,15 +269,26 @@ jobs:
       # app could not start, and #17 seeded a checkout's state with one file, so the
       # rail opened empty. Every other step in this workflow was green for both.
       #
-      # macOS only, and not because the fault was: the Linux runner has no display,
-      # so the window cannot open there. `orchd` as well as the app, because the
-      # host spawns it per checkout and resolves it beside the running executable.
+      # **Both platforms, and the Linux half needs Xvfb.** This ran on macOS alone
+      # to begin with, on the assumption that a runner with no display cannot open a
+      # window — which left the app that ships as a `.deb` and an AppImage built and
+      # never executed, so a Linux #16 would have been caught by nothing but
+      # `check-ship` reading a config file. Xvfb is enough: measured locally, and
+      # measured again with `WEBKIT_DISABLE_COMPOSITING_MODE=0` forced, because the
+      # app's own workaround for that only fires under WSL and would not fire here.
+      #
+      # `orchd` as well as the app, because the host spawns it per checkout and
+      # resolves it beside the running executable. `--shots` is a no-op off macOS —
+      # `screencapture` is Apple's — so the command stays one line for both.
       - name: Drive the app
-        if: runner.os == 'macOS'
         run: |
           cargo build -p orchd-serve --bin orchd
-          node tools/app-check.mjs target/debug/orchestrator-desktop \
-            --shots "${{ runner.temp }}/app-shots"
+          if [ "${{ runner.os }}" = "Linux" ]; then
+            xvfb-run -a node tools/app-check.mjs target/debug/orchestrator-desktop
+          else
+            node tools/app-check.mjs target/debug/orchestrator-desktop \
+              --shots "${{ runner.temp }}/app-shots"
+          fi
 
       # Only on a failure: a screenshot is evidence for somebody reading a red run,
       # never something to compare against a baseline — `page-check` says why.
