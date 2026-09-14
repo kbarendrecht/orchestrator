@@ -273,7 +273,15 @@ pub struct Inner {
     pub human_edits: HashMap<PathBuf, HumanEdit>,
     pub automation: Durable<crate::model::AutomationStore>,
     /// Whether the main checkout's `docker compose` stack has running containers.
-    /// `None` before the first probe; the drawer header reads it as up/down.
+    ///
+    /// **`None` is "there is no stack here", not "down".** It is also the value
+    /// before the first probe, and the two are deliberately the same answer: both
+    /// mean the daemon has nothing to say about a stack, and the drawer draws
+    /// nothing rather than a red dot. Told apart it would be a tri-state whose
+    /// third case shows for the twenty seconds before the first poll, which is a
+    /// flicker rather than information. A repo with no compose file used to get a
+    /// permanent red `stack down`, which reads as a broken machine and is the
+    /// portable default — see `docs/workspace-isolation.md`.
     pub stack_up: Option<bool>,
     /// The worktree cut in flight, and what its scripts are saying. Cleared to
     /// `running: false` when they finish, and left there — the last create's output
@@ -1628,7 +1636,9 @@ pub struct Snapshot {
     /// default as a literal, so on any repo that had edited it the UI named a ref
     /// the numbers did not come from.
     pub upstream_ref: String,
-    /// `docker compose` stack has running containers; `None` before first probe.
+    /// `docker compose` stack has running containers; `None` when this checkout
+    /// has no stack at all, which includes before the first probe. See
+    /// `Inner::stack_up` for why those are one answer.
     pub stack_up: Option<bool>,
     /// The worktree cut in flight: which step, and what it has printed. See
     /// [`crate::model::CreateRun`].

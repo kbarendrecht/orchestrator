@@ -26,6 +26,10 @@
 //     rule and every `href =` goes through it; asserted by calling it, because a
 //     rendered page has no such link in it to look at — which is the point.
 //   * anything thrown during boot, which `pageerror` catches for free.
+//   * a `stack down` badge on a repo that has no stack. `docs/workspace-isolation.md`
+//     records that orchd carries no container config at all and calls that the
+//     portable default; the drawer contradicted it on every checkout with no
+//     compose file.
 //   * a boot preflight finding that never leaves the log. `machine::check` knows
 //     at startup that `gh` is missing or that `reviews_command` is not there, and
 //     the window used to show only the symptom — `unavailable`, `off` — with the
@@ -168,6 +172,17 @@ try {
   await page.click('#machinex')
   await page.waitForTimeout(1200)
   check(await page.$eval('#machinebar', (b) => b.hidden), 'and a dismissed bar stays dismissed')
+
+  /* --- a repo with no stack says nothing about one ---------------------------- */
+
+  /* The sandbox carries no compose file, which is the shape of nearly every repo
+     that is not the one orchd was written against. The drawer used to draw a red
+     dot and the words `stack down` on it, permanently — a feature of one repo
+     drawn as a fault on every other. Asserted on the *rendered* header, because
+     the daemon's `null` was always available and it was the SPA that read it as
+     "down". */
+  const stack = await page.$eval('#dcwd', (d) => d.textContent.trim())
+  check(stack === '', `a checkout with no compose file says nothing about a stack${stack ? `, got "${stack}"` : ''}`)
 
   /* --- the rail's session drag ---------------------------------------------- */
 

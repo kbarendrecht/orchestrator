@@ -205,12 +205,19 @@ export function renderDrawer() {
   const tabs = $('dtabs');
   tabs.replaceChildren();
 
-  // Docker stack status, in place of the path: blue = up, red = down.
+  /* Docker stack status, in place of the path: blue = up, red = down, and
+     **nothing at all when this checkout has no stack**. `null` is the daemon
+     saying there is no compose file here (and, for its first twenty seconds, that
+     it has not looked yet) — drawn as `stack down` it was a red dot that never
+     went out on every repo that carries no containers, which is most of them. A
+     label is only honest about a thing that exists. */
   const dcwd = $('dcwd');
   dcwd.replaceChildren();
-  const up = snap.stack_up === true;
-  dcwd.appendChild(el('span', 'stackdot ' + (up ? 'up' : 'down')));
-  dcwd.appendChild(el('span', null, up ? 'stack up' : 'stack down'));
+  if (snap.stack_up !== null && snap.stack_up !== undefined) {
+    const up = snap.stack_up === true;
+    dcwd.appendChild(el('span', 'stackdot ' + (up ? 'up' : 'down')));
+    dcwd.appendChild(el('span', null, up ? 'stack up' : 'stack down'));
+  }
 
   const procs = w ? w.processes : [];
   /* The rows below spell the workspace into their URLs. `procs` is empty unless

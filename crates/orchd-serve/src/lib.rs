@@ -1531,7 +1531,7 @@ fn start_stack_poller(app: Arc<AppState>) {
             let main = app.cfg.main_checkout.clone();
             let up = tokio::task::spawn_blocking(move || stack_running(&main))
                 .await
-                .unwrap_or(false);
+                .unwrap_or(None);
             // Scoped, because the guard used to outlive the `if` and stay held
             // across the sleep below whenever the answer had not changed — which
             // is every poll, normally. That is the state write lock, so the
@@ -1540,9 +1540,9 @@ fn start_stack_poller(app: Arc<AppState>) {
             // rail's own snapshot.
             let changed = {
                 let mut inner = app.inner.write().await;
-                let changed = inner.stack_up != Some(up);
+                let changed = inner.stack_up != up;
                 if changed {
-                    inner.stack_up = Some(up);
+                    inner.stack_up = up;
                 }
                 changed
             };
@@ -1554,13 +1554,18 @@ fn start_stack_poller(app: Arc<AppState>) {
     });
 }
 
-/// True when `docker compose ps` reports at least one running container. A missing
-/// `docker` or a stopped daemon fails the command and reads as down, which is the
-/// honest answer for "is the stack up".
+/// `Some(true)` when `docker compose ps` reports at least one running container.
+/// A missing `docker` or a stopped daemon fails the command and reads as
+/// `Some(false)`, which is the honest answer for "is the stack up".
 ///
-/// A checkout with no compose file has no stack at all, so it answers with a cheap
-/// filesystem check rather than spawning `docker` every poll for a fixed "down".
-fn stack_running(main: &std::path::Path) -> bool {
+/// **`None` is a checkout with no compose file**, and that is the third answer
+/// this used to fold into "down". A repo that carries no containers at all got a
+/// permanent red dot and the words `stack down` in its drawer — a feature of one
+/// repo drawn as a fault on every other, and the opposite of what
+/// `docs/workspace-isolation.md` records as the portable default. The filesystem
+/// check was already here; it was the *return type* that had nowhere to put the
+/// answer.
+fn stack_running(main: &std::path::Path) -> Option<bool> {
     let has_compose = [
         "docker-compose.yml",
         "docker-compose.yaml",
@@ -1570,19 +1575,46 @@ fn stack_running(main: &std::path::Path) -> bool {
     .iter()
     .any(|f| main.join(f).exists());
     if !has_compose {
-        return false;
+        return None;
     }
-    std::process::Command::new("docker")
-        .args(["compose", "ps", "--status", "running", "-q"])
-        .current_dir(main)
-        .output()
-        .map(|o| o.status.success() && !String::from_utf8_lossy(&o.stdout).trim().is_empty())
-        .unwrap_or(false)
+    Some(
+        std::process::Command::new("docker")
+            .args(["compose", "ps", "--status", "running", "-q"])
+            .current_dir(main)
+            .output()
+            .map(|o| o.status.success() && !String::from_utf8_lossy(&o.stdout).trim().is_empty())
+            .unwrap_or(false),
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A checkout with no compose file has no stack, and that is not "down".
+    ///
+    /// The distinction is invisible in Rust and loud in the window: folded into
+    /// `false` it drew a red dot and the words `stack down` in the drawer of every
+    /// repo that carries no containers. Asserted here because the filesystem check
+    /// has always been right and the *return type* was what threw the answer away.
+    #[test]
+    fn a_checkout_with_no_compose_file_has_no_stack_rather_than_a_stopped_one() {
+        let root = orchd::testutil::scratch("stack-state");
+        assert_eq!(
+            stack_running(&root),
+            None,
+            "no compose file is no stack at all"
+        );
+
+        // With one present the answer is a real probe, so it is `Some(_)` whether
+        // or not docker is installed on the machine running this.
+        std::fs::write(root.join("compose.yml"), "services: {}\n").unwrap();
+        assert!(
+            stack_running(&root).is_some(),
+            "a compose file means the question is worth asking"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     /// The order the boot sweep walks, which is now the perceived start time.
     ///

@@ -203,12 +203,18 @@ this file, which churned it from every build; that feature is gone.
   in what it does.** The config is agnostic and "make it run somewhere other than
   this machine" above closed the mechanical half. What is left is presentation, and
   each of these reads as a fault on a repo that simply is not shaped like this one.
-  - **The drawer's stack badge is docker, hardcoded.** `stack_running` polls `docker
-    compose ps` and `renderDrawer` draws `stack up` / `stack down` on every
-    workspace, so a repo with no compose file gets a permanent red dot. It also
-    contradicts `docs/workspace-isolation.md`, which records that orchd carries no
-    container config at all and calls that the portable default. Managed-process
-    health already comes from `ok_patterns`; read it from there, or draw nothing.
+  - ~~**The drawer's stack badge is docker, hardcoded.**~~ **Done, and it drew
+    nothing rather than reading `ok_patterns`.** `stack_running` already did the
+    filesystem check for a compose file; it was the *return type* that had nowhere
+    to put "there is no stack here" and folded it into `false`. It answers
+    `Option<bool>` now, `None` is no stack, and the drawer draws no dot and no
+    words for it. Held by a unit test on the three answers and by `page-check` on
+    the rendered header, the latter checked by breaking it.
+
+    **This repo was one of the affected ones**, which is the part worth knowing:
+    `orchestrator/` carries no compose file, so its own drawer had a permanent red
+    `stack down` the whole time. A badge that is wrong on the machine it was
+    written on is not a portability problem, and nobody had noticed.
   - **The vendored skills name this repo's task runner.** `mise run
     pre-commit:run` is in `skills/fix-pr/SKILL.md` and its neighbours, hedged as
     "where it exists", which is a file guessing at a repo. A `checks_command`

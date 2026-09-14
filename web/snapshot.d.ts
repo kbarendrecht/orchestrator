@@ -398,7 +398,9 @@ several_in_main: boolean,
  */
 upstream_ref: string, 
 /**
- * `docker compose` stack has running containers; `None` before first probe.
+ * `docker compose` stack has running containers; `None` when this checkout
+ * has no stack at all, which includes before the first probe. See
+ * `Inner::stack_up` for why those are one answer.
  */
 stack_up: boolean | null, 
 /**
