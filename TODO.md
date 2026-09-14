@@ -61,6 +61,12 @@ this file, which churned it from every build; that feature is gone.
   fixture's threads are posted by `github-actions[bot]` and a bot cannot be a
   requested reviewer. That is the fixture's identity, not the code.
 
+  **And nothing in the UI can mean "handled".** `is_resolved` is never set by the
+  daemon, because `github_write` will not resolve a thread by design — so a thread
+  you have answered looks exactly like one you have not. Settle that in the same
+  drive: either the overlay stops implying it, or resolving becomes a write the
+  daemon is allowed to make.
+
 - **Stacked-PR support.** Two halves. First, a context-menu `stack` action on a
   PR row that opens a session starting from that PR's code — a new branch based
   on the selected PR's head, its own worktree (cwd = main, via the existing
@@ -159,25 +165,12 @@ this file, which churned it from every build; that feature is gone.
   same rail. The pointer maths in `startTabDrag` earns its keep on a strip that is
   horizontal and scrolls.
 
-- **The review pane is still `[beta]`, and the label is the honest part.**
-  *Two of the three steps are done:* the old non-beta `/resolve` is gone, and the
-  triage pass is a skill the rail starts and the bar reports on. What is left is
-  running it against a real PR once, and then promoting the overlay. Nothing in
-  the new path has made a round trip to GitHub yet. What is left is the
-  list of what is actually wrong before anything is touched — collect that from a
-  real session rather than guessing. Two gaps already known from the code:
-  `is_resolved` is never set by the daemon (`github_write` will not resolve a
-  thread, by design), so nothing in the UI can mean "handled"; and the resolve run
-  itself has never made a real round trip to GitHub — the suite is unit tests and
-  a fixture, which `docs/fixture-pr.md` says out loud.
+- **One credential, and it stops being `gh`'s.** *`gh` must not be a requirement* —
+  that is the reason, and it outranks what the change costs below. A person who
+  installs orchd should need a token, not somebody else's CLI, and the review queue
+  already proved the shape by dropping `gh` for a `curl` on the resolved token.
 
-  *The first real drive found four things and all four are fixed* — the reading
-  screen, one click instead of two, a terse read asked for in
-  `skills/review/SKILL.md` rather than folded away in the UI, and the card as
-  one flat list. The one worth remembering: shortening a thing at its source beats
-  hiding it at the end.
-
-- **One credential, and it stops being `gh`'s.** Reads already go out over curl with
+  Reads already go out over curl with
   a resolved token (`forge/github.rs`); only three places shell `gh` at all:
   `gh auth token` for the credential (`forge/github.rs:60`), every write
   (`forge/github_write.rs:156`). The review queue used to be a third and is not:
@@ -192,6 +185,13 @@ this file, which churned it from every build; that feature is gone.
   "the daemon never pushes and needs read only" stops being true, and the boot
   warning that treats `TokenSource::GhCli` as too wide loses its subject. The README
   describes today's split rather than this plan.
+
+  **Which is a cost to pay, not a reason to stop.** The read-only PAT is a real
+  property and it is one orchd can keep offering: two tokens, a read one and a
+  write one, is the shape that survives the change — the writes need their own
+  credential whether it comes from `gh` or from a field in settings. What goes is
+  the *accident* that the wide one is gh's, and with it the requirement that gh be
+  installed at all.
 
 - **The archive is a list you cannot find anything in.** 91 rows behind one caret,
   each carrying a name and an age, with no search, no grouping by date and no PR
