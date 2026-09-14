@@ -77,6 +77,53 @@ directly, so a change to the guard's own half was measured against whatever
 binary was on disk, and it read as the grant refusing every command it had just
 allowed.
 
+## A macOS runner can open the window, and it still cannot be clicked by name.
+Measured rather than reasoned about, in a throwaway `workflow_dispatch` workflow
+that has since been deleted — its findings are the whole of what it was for.
+
+**The window opens and WKWebView renders.** GitHub's macOS images carry an active
+Aqua session with Screen Recording pre-granted to the runner's shell, so the app
+launches and `screencapture` proves it: a real frame, the menu bar reading
+`Orchestrator`, the overlay traffic lights and the first-run screen fully painted.
+The bundled binary opened its window in **128ms**; the bare tarball binary did the
+same but with the menu bar reading `orchestrator-desktop`, because outside a bundle
+there is no product name.
+
+**`open` works, and #10329 does not reproduce.** The app is unsigned by choice, and
+[actions/runner-images#10329](https://github.com/actions/runner-images/issues/10329)
+reports an ad-hoc-signed app hanging on launch on macos-14 arm64 with no confirmed
+fix. It does not happen here: `open "$PWD/$APP"` returned 0 and the app ran. The
+first attempt *did* fail, and that was the experiment's own bug — `open -a` takes an
+application **name** and hands a relative path to that same lookup, so it reported
+"Unable to find application named target/release/…" and proved nothing. A probe that
+fails for its own reasons reads exactly like the thing it was looking for.
+
+**Accessibility is granted; the web content is still invisible.** `AXIsProcessTrusted`
+is true on a runner, and System Events reads the window's frame straight out of the
+tree (`Orchestrator, 700, 25, 1728, 970`) — which is the permission synthetic input
+needs. But `entire contents of front window` is **empty**: WebKit builds the DOM's
+accessibility tree lazily, exactly as Chrome, Firefox and Electron do. The switch
+assistive technology throws is `AXManualAccessibility`, set from outside on another
+process, and **wry does not implement it**: `AXManualAccessibility` answers `-25205`
+(`attributeUnsupported`) and `AXEnhancedUserInterface` answers `-25208`
+(`notImplemented`). Electron implements both, which is why the trick is documented
+for it and does not carry over. So a click *by element name* is not available without
+changing the app.
+
+**A coordinate click drives the whole stack.** With Accessibility granted, `click at
+{x, y}` reaches the webview: clicking `Choose a folder…` opened a real
+`NSOpenPanel` titled "Choose the main checkout" — synthetic input → WKWebView → the
+page's JS → Rust → `tauri-plugin-dialog`. It works, and it is a *coordinate*: a
+layout change moves the target and the failure reads as "the click did nothing",
+which is the same argument `page-check` already makes against pixel baselines.
+
+**Which is why `tools/app-check.mjs` drives the API instead.** What clicking would
+add is the window chrome and the native dialogs, and neither is what #16 or #17
+broke. The remaining route to clicking by name is `tauri-plugin-wdio-webdriver`,
+which embeds a W3C WebDriver server in the app — debug-build only, and it needs the
+capabilities entry `main.rs` deliberately refuses ("this crate exposes no IPC
+surface at all"), so it would drive a binary that is not the one that ships.
+
 ## A `rust-toolchain.toml` is a no-op here, and silently.
 `mise env` exports
 `RUSTUP_TOOLCHAIN=stable`, and that variable **outranks** the file in rustup's

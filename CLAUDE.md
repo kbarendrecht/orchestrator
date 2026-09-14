@@ -84,9 +84,15 @@ re-litigates them from the doctrine alone:
   and costs a layer of indirection on every setting. The hazard CLAUDE.md
   actually names — a key that does not carry its checkout — is not something a
   lint can see.
-- **Anything only a Mac can check** — the renderer, the window chrome, the native
-  dialogs. `mise run renderer-check`, the e2e flows and a real machine before a tag
-  are the gate, and this is the one place a written rule is still the mechanism.
+- **Anything only a Mac can check** — and this is smaller than it was. *Running* the
+  app is a tool now: `mise run app-check` opens a checkout in the built binary, makes
+  a session and restarts it, on macos-14 in `check` and against the bundle in
+  `release`. That was written after #16 and #17 shipped a week apart, both invisible
+  to every gate here, because none of them ran the thing. What is left to a written
+  rule is what the *pixels* look like: the renderer, the window chrome and the
+  native dialogs. `mise run renderer-check` and a real machine before a tag are that
+  gate. Clicking the window is possible on a runner and deliberately not used — the
+  entry in `docs/traps/macos.md` has the measurements.
 
 What is left is cost, and cost is negotiable rather than disqualifying. The hook
 runs only what the staged files could break, because a hook that is slow on a docs
@@ -379,6 +385,7 @@ together: same entries, same order, same groups.
 - `claude --worktree` leaves a lock the daemon must clear at teardown.
 - `POST /api/pr/:n/fix-pr` starts a run immediately.
 - Pushes are guarded, by two halves that must agree.
+- A macOS runner can open the window, and it still cannot be clicked by name.
 - A `rust-toolchain.toml` is a no-op here, and silently.
 
 ### The crates, and what a move breaks
