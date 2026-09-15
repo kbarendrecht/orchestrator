@@ -216,7 +216,17 @@ fn child_translated() -> bool {
 /// `arch` is [`std::env::consts::ARCH`] — what this binary was *built* for, which
 /// is the half a spawned `sysctl` cannot report. An `aarch64` build cannot be
 /// translated, so a translated child under one means the x86_64 preference was
-/// inherited from whatever launched this app rather than chosen for it.
+/// set for this app rather than chosen by the kernel for it.
+///
+/// **Where that preference comes from is settled, and it is this repo's own
+/// fault.** The first version of this guessed "inherited from whatever launched
+/// it" and told people to use `arch -arm64`; #18's launch record disproved both.
+/// The `.app` bundle `--install-desktop-entry` writes has a `/bin/sh` script as
+/// its `CFBundleExecutable`, so LaunchServices had no Mach-O to read an
+/// architecture from and defaulted to x86_64 first — while the application that
+/// launched it was itself arm64. `launcher.rs` declares
+/// `LSArchitecturePriority` now, which is why the remedy below is to rewrite the
+/// bundle rather than to change how it is started.
 fn translation_from(arch: &str, child_translated: bool) -> Translation {
     if !child_translated {
         return Translation::None;
@@ -246,9 +256,11 @@ pub(crate) fn translation_warning(t: Translation) -> Option<Warning> {
         }),
         Translation::Children => Some(Warning {
             what: "this app is native, but every process it starts runs under Rosetta".into(),
-            cost: "the x86_64 preference was inherited from whatever launched it, so `git` \
-                   fails to load `libxcrun` and nothing that reads the repository works; \
-                   start the app from a native arm64 shell, or with `arch -arm64`"
+            cost: "`git` fails to load `libxcrun`, so nothing that reads the repository \
+                   works; the cause is usually an app bundle written before the \
+                   architecture was declared in it — run \
+                   `orchestrator-desktop --install-desktop-entry` to rewrite it, then \
+                   launch again"
                 .into(),
         }),
     }
@@ -607,9 +619,20 @@ mod tests {
             "a native app must not be told it is translated: {}",
             kids.what
         );
+        /* **The remedy has to be the one that works, and the first one was not.**
+        This asserted `arch -arm64` on the theory that the preference came from
+        the launching shell. #18's launch record showed it comes from our own
+        bundle's missing `LSArchitecturePriority`, with an arm64 app doing the
+        launching — so the shell advice would have sent somebody to change
+        something that was already correct. */
         assert!(
-            kids.cost.contains("arch -arm64"),
-            "the inherited case has no bundle to fix, so it needs the shell remedy: {}",
+            kids.cost.contains("--install-desktop-entry"),
+            "the remedy must rewrite the bundle, which is where the preference lives: {}",
+            kids.cost
+        );
+        assert!(
+            !kids.cost.contains("arch -arm64"),
+            "the shell remedy was disproved by #18's launch record: {}",
             kids.cost
         );
         // Both still name the symptom the person actually sees, which is the only

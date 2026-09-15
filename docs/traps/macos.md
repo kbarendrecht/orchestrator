@@ -154,10 +154,41 @@ reporter was sent to an app bundle that does not exist — it was a mise install
 three binaries under `~/.local/share/mise`.
 The spawn stays, because the child is the process class that actually fails; what
 was missing is `std::env::consts::ARCH`, which is the half a spawned `sysctl`
-cannot report. `aarch64` with a translated child is `Translation::Children`, and
-its remedy is a native shell or `arch -arm64`; `x86_64` with one is
-`Translation::App`, and only that arm mentions a bundle.
+cannot report. `aarch64` with a translated child is `Translation::Children`;
+`x86_64` with one is `Translation::App`.
+**The remedy on the `Children` arm was wrong, and a test held it in place.** It
+said the x86_64 preference was inherited from whatever launched the app and told
+people to use `arch -arm64` — a guess, written as though it were the finding. The
+reporter's launch record disproved it: the launching application was itself arm64,
+and the preference came from our own bundle. See the entry below. The remedy is to
+rewrite the bundle, and the test now refuses the old string by name.
 **The wording is the deliverable, so the wording is what is asserted.** The defect
 was never in the detection. `translation_warning` is its own function for no
 reason other than that a sentence no test reads is a sentence that can say
 anything.
+
+## A shell-script `CFBundleExecutable` has no architecture, so the plist must declare one.
+`--install-desktop-entry` writes `/bin/sh` as the bundle's executable — on purpose,
+and the reasons are good: a copy goes stale at the next `mise up`, a symlink out of
+a bundle is what code-signing rejects, and the binary should stay where its
+installer put it. The cost was invisible and total.
+**LaunchServices reads the architecture off the `CFBundleExecutable` Mach-O, and a
+script is not one.** With no `LSArchitecturePriority` in `Info.plist` it built
+`BinaryOrderPreference = {x86_64, arm64}`; `/bin/sh` is universal, so the app ran
+**translated**, and every process it started inherited that. The symptom was
+nowhere near the cause: `git` could not load `libxcrun`, and the daemon reported
+that the checkout was not a git work tree.
+This is #18, and it took a reporter reading `log show` on the machine to find —
+the launch job, the two `CPUType` values in order, and `rosettaAnalyze` running
+against `/bin/zsh` with our install as the responsible path. **Nothing in the app
+can see it**: `sysctl.proc_translated` answers for the process that asks, the
+binaries are all arm64, and `file` on every one of them says so.
+`info_plist` declares `LSArchitecturePriority` now, and it names
+`std::env::consts::ARCH` rather than a literal `arm64` — the bug reversed is just
+as bad, and `--install-desktop-entry` runs on whatever machine installed the
+binary rather than only on the one that released it.
+**The gate is a unit test on the generated plist**, because that is the whole of
+what can be checked without a Mac: `the_bundle_declares_the_architecture_its_binary_was_built_for`
+asserts the key is present and names this build's own architecture. What it cannot
+assert is the effect — that wants a launch record, and the only way to get one is
+to ship and ask.

@@ -400,6 +400,7 @@ together: same entries, same order, same groups.
 - A macOS runner can open the window, and it still cannot be clicked by name.
 - A `rust-toolchain.toml` is a no-op here, and silently.
 - A spawned `sysctl` answers for the child, not for this process.
+- A shell-script `CFBundleExecutable` has no architecture, so the plist must declare one.
 
 ### The crates, and what a move breaks
 

@@ -236,9 +236,31 @@ fn write_app_bundle(
 /// `CFBundleIdentifier` matches the `.dmg`'s, which is deliberate: install the
 /// package later and LaunchServices treats it as the same application rather than
 /// showing two Orchestrators.
+///
+/// **`LSArchitecturePriority` is the one key here that is load-bearing rather than
+/// cosmetic, and it was missing.** `CFBundleExecutable` is a `/bin/sh` script —
+/// deliberately, see the writer above — so there is no Mach-O for LaunchServices
+/// to read an architecture from. With no priority declared it built
+/// `BinaryOrderPreference = {x86_64, arm64}`, `/bin/sh` is universal so it ran
+/// **translated**, and every process the app started inherited that: `git` then
+/// failed to load `libxcrun` and the daemon concluded the checkout was not a work
+/// tree. Reported in #18 and diagnosed from the launch record — the app that
+/// launched it was itself arm64, so the preference was never inherited from
+/// outside. It belongs to this file.
+///
+/// The value is **this build's own architecture**, not a literal `arm64`: the
+/// release is Apple Silicon only, but `--install-desktop-entry` runs on whatever
+/// machine built or installed the binary, and naming an architecture the
+/// executable is not would recreate the bug pointing the other way.
 #[cfg(any(target_os = "macos", test))]
 fn info_plist() -> String {
     let version = env!("CARGO_PKG_VERSION");
+    // Rust and LaunchServices spell it differently, and only these two matter: the
+    // macOS targets this ever builds for are `aarch64` and `x86_64`.
+    let arch = match std::env::consts::ARCH {
+        "aarch64" => "arm64",
+        other => other,
+    };
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -255,6 +277,7 @@ fn info_plist() -> String {
   <key>CFBundleVersion</key><string>{version}</string>
   <key>LSApplicationCategoryType</key><string>public.app-category.developer-tools</string>
   <key>LSMinimumSystemVersion</key><string>10.15</string>
+  <key>LSArchitecturePriority</key><array><string>{arch}</string></array>
   <key>NSHighResolutionCapable</key><true/>
 </dict>
 </plist>
@@ -297,6 +320,37 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    /// **A shell-script `CFBundleExecutable` has no architecture, so the plist has
+    /// to carry one.**
+    ///
+    /// Without `LSArchitecturePriority`, LaunchServices built
+    /// `BinaryOrderPreference = {x86_64, arm64}` for this bundle, `/bin/sh` is
+    /// universal so it ran translated, and every process the app spawned inherited
+    /// it — which surfaced as `git` failing to load `libxcrun` and the daemon
+    /// reporting that the checkout was not a work tree (#18). Nothing in the app
+    /// can observe the key's absence; only the launch record can, which is why it
+    /// took a reporter reading `log show` to find.
+    ///
+    /// Asserted against `std::env::consts::ARCH` rather than a literal, because the
+    /// bug reversed is just as bad: an `arm64` priority on an x86_64 build would
+    /// translate that one instead.
+    #[test]
+    fn the_bundle_declares_the_architecture_its_binary_was_built_for() {
+        let plist = info_plist();
+        let want = match std::env::consts::ARCH {
+            "aarch64" => "arm64",
+            other => other,
+        };
+        assert!(
+            plist.contains("<key>LSArchitecturePriority</key>"),
+            "a shell-script bundle with no architecture priority launches translated: {plist}"
+        );
+        assert!(
+            plist.contains(&format!("<array><string>{want}</string></array>")),
+            "the priority must name this build's own architecture ({want}): {plist}"
+        );
     }
 
     /// The fault this prevents costs an upgrade, not a launch: mise installs each
