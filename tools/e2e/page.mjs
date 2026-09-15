@@ -26,6 +26,8 @@
 //     rule and every `href =` goes through it; asserted by calling it, because a
 //     rendered page has no such link in it to look at — which is the point.
 //   * anything thrown during boot, which `pageerror` catches for free.
+//   * a confirm box in front of a reversible action, or none in front of a lossy
+//     one. The rule lives at `confirmBox` in `core.js`; this is what holds it.
 //   * a `stack down` badge on a repo that has no stack. `docs/workspace-isolation.md`
 //     records that orchd carries no container config at all and calls that the
 //     portable default; the drawer contradicted it on every checkout with no
@@ -221,6 +223,46 @@ try {
   await page.waitForFunction(() => document.body.classList.contains('ready'), null, { timeout: 15_000 })
   await page.waitForTimeout(2000)
   check((await railNames()).join('|') === after.join('|'), 'the order survives a reload and the snapshots after it')
+
+  /* **Last, and deliberately so.** The move below puts a session into main,
+     and the rail draws main's sessions and the worktrees' as two runs. The drag
+     above reorders *within* a run and refuses a drop across them, so running
+     this first left that drag aiming at the other side of the boundary. */
+  /* --- a box is for destructive, and for nothing else ------------------------- */
+
+  /* The rule is in `core.js` at `confirmBox`: a question is for work that cannot be
+     got back, and loudness is answered with a toast instead. It was seven boxes and
+     is four, so the drift this holds runs both ways — a reversible action growing a
+     box, and one of the four losing one. Asserted through the menu rather than by
+     counting call sites, because what matters is what a press actually does. */
+  const rowMenu = async (label) => {
+    await page.click('#rail .sess[data-id]', { button: 'right' })
+    await page.waitForTimeout(250)
+    for (const item of await page.$$('.menu button, .ctxmenu button, [role=menu] button')) {
+      if ((await item.textContent())?.trim() === label) return item
+    }
+    return null
+  }
+  const asking = () => page.$eval('#dialog, .dialog, #dlg', (d) => !d.hidden).catch(() => null)
+
+  const move = await rowMenu('move to main')
+  check(!!move, 'the row offers a move')
+  await move?.click()
+  await page.waitForTimeout(900)
+  check((await asking()) !== true, 'moving a branch to main asks nothing — it is reversible')
+  // The move respawns the session, so let the rail settle before the next press.
+  await page.waitForTimeout(3000)
+
+  const del = await rowMenu('delete')
+  check(!!del, 'the row offers a delete')
+  await del?.click()
+  await page.waitForTimeout(600)
+  check((await asking()) === true, 'deleting a session still asks — the transcript does not come back')
+  const said = await page.$eval('#dialog, .dialog, #dlg', (d) => d.textContent || '').catch(() => '')
+  check(/for good/.test(said), 'and the box says what goes for good')
+  // Dismissed, or the drag below is aiming at a row behind a modal.
+  await page.keyboard.press('Escape')
+  await page.waitForTimeout(400)
 
   console.log(`\npage-check: ${failed ? 'FAILED' : 'ok'}`)
 } finally {

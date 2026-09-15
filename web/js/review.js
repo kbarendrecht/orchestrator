@@ -29,6 +29,7 @@ import { patchStats, hunkEl } from './review-diff.js';
  *    title: string,
  *    url: string,
  *    head_ref: string,
+ *    base_ref: string,
  *    viewer: string,
  *    head_sha: string,
  *    answerable: number,
@@ -205,7 +206,10 @@ function rvHealth() {
   if (d?.checks === 'failing') { wrap.classList.add('bad'); said.push('checks failing'); }
   else if (d?.checks === 'passing') { wrap.classList.add('ok'); said.push('checks passing'); }
   else if (d?.checks === 'pending') { wrap.classList.add('pending'); said.push('checks running'); }
-  if (d?.mergeable === 'CONFLICTING') said.push('conflicts with develop');
+  // `conflicts with develop` named one repo's base branch on every repo. The PR
+  // carries its own, which is also the right answer for a stacked PR whose base is
+  // another PR's head.
+  if (d?.mergeable === 'CONFLICTING') said.push(`conflicts with ${d.base_ref || 'its base'}`);
   if (!said.length) return wrap;
 
   wrap.appendChild(el('span', 'hdot'));

@@ -3,7 +3,7 @@
 // The SPA is a module now, so what it reaches for is written down. `core.js` holds
 // the primitives every part needs; `queue.js` is the first seam extracted whole.
 import {
-$, el, toast, reason, safeHref, call, callHost, get, activeCheckout, CHECKOUTS, setCheckouts, HOST, snapshotOf, repoSummary, everySession, enterCheckout, snap, receive, keyActivate, setZoom, setUiPx, uiPx, saveZoom, onScaleChange, ZOOM, selected, setSelected, onSelection, prForWorkspace, terms, CHROME, stateLabel, dotClass, isWaiting, isArchived, byNewest, currentSession, activeWorkspaceId, currentWorkspaceId, closeMenu, menuOpen, newSession, newWorktree, newShell, mainWorkspace, workspaceById, prState, handedToPr, drawerCollapsed, setDrawerCollapsed, pendingSelect, setPendingSelect, onDrawerChange, onCreatingChange, creating, creatingIn, startingShown, appMod, IS_MAC, MOD_LABEL, closeLegend, typingElsewhere, mark, reportBoot, confirmBox, dialogOpen, dismissDialog, unchanged, tick,
+$, el, toast, reason, safeHref, call, callHost, get, activeCheckout, CHECKOUTS, setCheckouts, HOST, snapshotOf, repoSummary, everySession, enterCheckout, snap, receive, keyActivate, setZoom, setUiPx, uiPx, saveZoom, onScaleChange, ZOOM, selected, setSelected, onSelection, prForWorkspace, terms, CHROME, stateLabel, dotClass, isWaiting, isArchived, byNewest, currentSession, activeWorkspaceId, currentWorkspaceId, closeMenu, menuOpen, newSession, newWorktree, newShell, mainWorkspace, workspaceById, prState, handedToPr, drawerCollapsed, setDrawerCollapsed, pendingSelect, setPendingSelect, onDrawerChange, onCreatingChange, creating, creatingIn, startingShown, appMod, IS_MAC, MOD_LABEL, closeLegend, typingElsewhere, mark, reportBoot, dialogOpen, dismissDialog, unchanged, tick,
 } from './js/core.js';
 import { onThemeChange } from './js/theme.js';
 
@@ -762,8 +762,14 @@ onSelection((id, auto) => {
 
 
 
-/** Teardown is offered, never automatic, and the preflight is shown in full
- *  before anything is removed (§2). */
+/** Teardown is offered, never automatic, and the preflight is what makes it safe.
+ *
+ *  **No confirm, and the preflight is why.** The six checks refuse a tree that is
+ *  dirty, unpushed or has a session in it, and they write the recovery record
+ *  `revive` rebuilds from — at the same absolute path. So a wrong press costs one
+ *  rebuild, not any work, which is the line this UI draws: a box is for what
+ *  cannot be got back. The checks are still shown, in the toast rather than in a
+ *  question, because "clean, pushed, nobody in it" is worth reading either way. */
 async function teardown(/** @type {string} */ wsId) {
   let pf;
   try {
@@ -775,10 +781,9 @@ async function teardown(/** @type {string} */ wsId) {
   if (!pf.can_remove) {
     return toast(`cannot remove ${wsId}:\n${lines.join('\n')}`, true);
   }
-  if (!await confirmBox(`Remove worktree ${wsId}?\n\n${lines.join('\n')}`, { ok: 'Remove' })) return;
   try {
     await call(`/api/workspace/${encodeURIComponent(wsId)}/teardown`);
-    toast(`removed ${wsId}`);
+    toast(`removed ${wsId}:\n${lines.join('\n')}`);
   } catch (e) {
     toast(reason(e), true);
   }

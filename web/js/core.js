@@ -764,7 +764,30 @@ function dlgOpen(message, {
   return dlgPending;
 }
 
-/** `window.confirm`, drawn by the app. Resolves true or false, never throws. */
+/** `window.confirm`, drawn by the app. Resolves true or false, never throws.
+ *
+ *  **Only for a destructive action, and that is the whole rule.** Destructive means
+ *  work that cannot be got back: orchd's copy of a transcript, banked work git
+ *  keeps no copy of, a file's uncommitted content, unsaved typing in the editor.
+ *  Those four ask. Nothing else does.
+ *
+ *  It used to be seven, and the extra three are the reason the rule is written
+ *  here. Closing a checkout, swapping a branch with main, moving a session out of
+ *  main and removing a worktree all asked — and every one of them is reversible:
+ *  the conversations are kept and offered on reopen, a swap is undone by swapping
+ *  back, and the teardown preflight refuses a tree that is dirty, unpushed or
+ *  occupied and writes the record `revive` rebuilds from. Meanwhile `fix` starts a
+ *  force-pushing run and `open in main checkout` moves main's branch, and neither
+ *  asked. A gate that fires on the loud rather than on the lossy teaches people to
+ *  click through it, and then it is not there for the four that matter.
+ *
+ *  Loudness is answered with a toast that says what happened, not with a question
+ *  before it happens. Refusals are the daemon's: the swap lock, the push guard and
+ *  the teardown preflight are what actually stop a wrong move, and they work
+ *  whether or not anybody read a box.
+ *
+ *  This cannot be a lint — nothing static can tell destructive from loud — so it is
+ *  a rule, written at the one function it governs. */
 export function confirmBox(/** @type {string} */ message, { ok = 'Yes', danger = true } = {}) {
   return dlgOpen(message, { ok, danger, answer: () => true })
     .then((/** @type {any} */ a) => a === true);

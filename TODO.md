@@ -280,14 +280,36 @@ this file, which churned it from every build; that feature is gone.
   of them is a window that looks broken on a fresh install. Collapse a pane whose
   feature is unconfigured rather than labelling it.
 
-- **The guard rule is not one rule.** The boxes themselves are done: nothing in the
-  SPA calls `window.confirm` or `window.prompt` any more, `core.js` draws
-  `confirmBox`/`promptBox`, and naming a worktree edits the row in place
-  (`renameSession`). What is left is which actions get a guard at all. A swap asks,
-  `open in main checkout` moves main's branch without asking, and `fix` starts a run
-  that force-pushes without asking, which CLAUDE.md already notes is easy to fire by
-  accident. Either the gate is "it changes a checkout or it pushes", or there is no
-  gate.
+- ~~**The guard rule is not one rule.**~~ **Done, and the rule is: only destructive
+  asks.** Destructive means work that cannot be got back. Four boxes are left and
+  each is one — orchd's copy of a transcript, banked work git keeps no copy of, a
+  file's uncommitted content, unsaved typing in the editor.
+
+  **Three were removed, each verified reversible first.** Closing a checkout keeps
+  every conversation and offers them on reopen; a swap or a move out of main is
+  undone by moving back, and both carry their uncommitted work; the teardown
+  preflight refuses a tree that is dirty, unpushed or occupied, and writes the
+  record `revive` rebuilds from at the same path. None of them loses anything.
+
+  **The two that never asked still do not**, and that is the same rule rather than
+  an exception: `fix` force-pushes with `--force-with-lease` behind a guard that
+  denies the base branch, and `open in main checkout` moves a branch. Loud, not
+  lossy. What actually stops a wrong move is the daemon — the swap lock, the push
+  guard, the preflight — and those work whether or not anybody read a box.
+
+  Loudness is answered with a toast now instead of a question: closing a checkout
+  says how many sessions stopped, the teardown says which checks passed, and the
+  swap's in-flight toast finally matches the menu item you pressed.
+
+  The rule is written at `confirmBox` in `core.js`, because **nothing static can
+  tell destructive from loud**, and `page-check` holds it from both sides — checked
+  by growing a box back on the swap and by taking one off the delete.
+
+  Two hardcoded branch names fell out of reading this: the fix button's tooltip
+  said *"Rebase on develop"* on every repo, and the review header said *"conflicts
+  with develop"*. The tooltip reads `upstream_ref`; the header reads the **PR's
+  own** `base_ref`, now sent by the daemon, which is also the right answer for a
+  stacked PR whose base is another PR's head.
 
 - **Two review verbs on every PR row until the beta gate closes.** `resolve` and
   `resolve in UI [beta]` sit next to each other in `prMenu`, which asks the reader

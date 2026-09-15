@@ -219,23 +219,22 @@ async function addCheckout(/** @type {string} */ path, /** @type {boolean | unde
  *  @param {import('./core.js').Target} c
  */
 async function closeCheckout(c) {
-  // What it costs, counted rather than described: "its sessions go with it" is
-  // one agent or six, and only the number makes that a decision.
+  /* **No confirm: nothing here is lost.** The worktrees and branches stay on disk
+     and the conversations are kept, so reopening the checkout offers to resume
+     them — which is the rule this UI now holds to, that a box is for work that
+     cannot be got back. What it *costs* is still worth saying, so the count moved
+     from a question into the toast: one agent or six is the difference between a
+     misclick you shrug at and one you want to know about. */
   const live = (snapshotOf(c.path)?.sessions ?? []).filter((s) => !isArchived(s)).length;
-  if (!await confirmBox(
-    `Close ${c.name}?\n\n`
-    + (live
-      ? `Its daemon stops and ${live} live session${live === 1 ? '' : 's'} go with it. `
-      : 'Its daemon stops. ')
-    + 'The worktrees and branches stay on disk, and the conversations are kept — '
-    + 'opening this checkout again offers to resume them.',
-    { ok: 'Close', danger: true })) return;
   try {
     await callHost('/api/host/checkout/close', { path: c.path });
     // Every terminal in that checkout is pointed at a daemon that has stopped.
     for (const [key, entry] of [...terms]) {
       if (entry.checkout.path === c.path) Term.close(c, key.slice(key.indexOf('\u0000') + 1));
     }
+    toast(live
+      ? `closed ${c.name} — ${live} session${live === 1 ? '' : 's'} stopped, and kept`
+      : `closed ${c.name}`);
   } catch (e) {
     toast(reason(e), true);
   }
@@ -623,7 +622,11 @@ async function startHandleReview(/** @type {number} */ number, /** @type {HTMLBu
  *  triggering by hand. */
 function actionButton(/** @type {import('../snapshot').PrView} */ p, /** @type {string} */ action, /** @type {string} */ label) {
   const b = el('button', 'pract', label);
-  b.title = 'Rebase on develop, fix what CI says, push — in a pane you can take over';
+  // `snap.upstream_ref` rather than a literal: this said "Rebase on develop" on
+  // every repo, which is one checkout's base branch written into a tooltip. The
+  // divergence strip learned the same lesson — see `upstream_ref` in the snapshot.
+  b.title = `Rebase on ${snap.upstream_ref || 'its base'}, fix what CI says, push`
+    + ' — in a pane you can take over';
   b.onclick = async (ev) => {
     ev.preventDefault();
     ev.stopPropagation();
@@ -1393,17 +1396,13 @@ function mainHoldsWork(/** @type {import('../snapshot').WorkspaceView | undefine
  *  changes travel with it, main goes back to base, and the conversation follows
  *  keeping its id and its place in the rail.
  *
- *  Confirmed for the same reason the swap is: every file under main changes, and
- *  the daemon's refusals are about what it can see, not about whether you meant
- *  it. */
+ *  **It used to ask, and no longer does.** Every file under main changes, which is
+ *  loud rather than destructive: the branch is still the branch, the uncommitted
+ *  changes travel with it, the conversation keeps its id, and moving it back is the
+ *  menu item above. A box is for work that cannot be got back, and nothing here
+ *  cannot. The untracked files that stay in main stay *there* — they are not
+ *  deleted, and the toast says where they are. */
 async function moveOutOfMain(/** @type {import('../snapshot').SessionView} */ s) {
-  if (!await confirmBox(
-    `Move this session out of main${inCheckout(s)}?\n\n`
-    + 'Its branch gets a worktree of its own and main goes back to its base branch \u2014 '
-    + 'or, if main is already on base, the work gets a branch cut for it and main stays put. '
-    + 'Uncommitted changes travel; untracked files stay in main. '
-    + 'The conversation moves too, keeping its history.'
-  )) return;
   try {
     const r = await callFor(s.id, `/api/session/${s.id}/out-of-main`);
     // A relocated session keeps its id, so the dead terminal is still in `terms`
@@ -1452,20 +1451,20 @@ async function swapWithMain(wsId, s) {
   if (swapInFlight) return toast('a swap is already running — watch the rail', true);
   const state = snapshotFor(s.id);
   const holds = mainHoldsWork(mainWorkspace(state), state);
-  if (!await confirmBox(holds
-    ? `Swap branches between main and ${wsId}${inCheckout(s)}?\n\n`
-      + `main takes this worktree's branch, and this worktree takes main's. `
-      + `Uncommitted changes travel with their branch. Each conversation follows `
-      + `its branch — this one moves into main, and main's moves here — keeping its `
-      + `history and its place in the rail.`
-    : `Move this worktree's branch to main${inCheckout(s)}?\n\n`
-      + `main has nothing of its own checked out, so its base branch comes back `
-      + `here in exchange. Uncommitted changes travel with the branch, and this `
-      + `conversation follows it into main, keeping its history and its place in `
-      + `the rail.`
-  )) return;
+  /* **No confirm, for the reason `moveOutOfMain` gives.** A swap is reversible by
+     swapping back: both branches keep their uncommitted work, both conversations
+     keep their ids, and the toast below says where everything ended up. The thing
+     that actually protects this is the daemon's `swapping` lock and its refusals —
+     a second press while one is running is turned away here, and a mid-rebase tree
+     or a mid-turn session is turned away there. */
   swapInFlight = true;
-  toast(`swapping ${wsId} with main${inCheckout(s)}…`);
+  /* Which of the two this is, said while it runs rather than asked before it. The
+     menu item already reads `swap with main` or `move to main`; the toast has to
+     agree with the one you pressed, or the only feedback a reversible move gives
+     you is about a different verb. */
+  toast(holds
+    ? `swapping ${wsId} with main${inCheckout(s)}\u2026`
+    : `moving ${wsId}'s branch to main${inCheckout(s)}\u2026`);
   try {
     const r = await callFor(s.id, `/api/workspace/${encodeURIComponent(wsId)}/swap-main`);
     // A relocated session keeps its id, so the dead terminal is still in `terms`

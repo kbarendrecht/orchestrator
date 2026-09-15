@@ -208,6 +208,11 @@ pub async fn pr_review(
         "title": pr.title,
         "url": pr.url,
         "head_ref": pr.head_ref,
+        // The PR's own base, for the header's conflict line. It used to say
+        // "conflicts with develop" on every repo — one checkout's base branch
+        // written into the SPA — and `upstream_ref` would only have moved the
+        // guess, since a stacked PR's base is another PR's head.
+        "base_ref": pr.base_ref,
         "viewer": fetched.viewer,
         "head_sha": fetched.head_sha,
         "answerable": fetched.answerable_count(),
