@@ -504,9 +504,17 @@ impl AppState {
             },
         );
         let repos = Repos {
-            upstream: crate::forge::remote_url(&cfg.main_checkout, &cfg.upstream_remote)
-                .and_then(|u| crate::forge::repo_from_remote(&u))
-                .map(|(o, n)| format!("{o}/{n}")),
+            /* **`cfg.repo` first, the same order [`crate::resolve_repo`] uses.** It
+            did not, and the two then disagreed: a checkout that pins its repo in
+            config polled that repo while the snapshot reported no upstream at all,
+            so the pane naming it had nothing to name. Found by hiding the forge
+            panes on this field and watching them vanish from a checkout whose PRs
+            were being fetched. */
+            upstream: cfg.repo.clone().or_else(|| {
+                crate::forge::remote_url(&cfg.main_checkout, &cfg.upstream_remote)
+                    .and_then(|u| crate::forge::repo_from_remote(&u))
+                    .map(|(o, n)| format!("{o}/{n}"))
+            }),
             fork: crate::forge::remote_url(&cfg.main_checkout, "origin")
                 .and_then(|u| crate::forge::repo_from_remote(&u))
                 .map(|(o, n)| format!("{o}/{n}")),

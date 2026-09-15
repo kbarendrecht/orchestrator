@@ -274,11 +274,29 @@ this file, which churned it from every build; that feature is gone.
     `WorkspaceNotes::for_main` hands to an arriving agent as a note. Only a browser
     catches it — the e2e flow posts JSON and never touches the box.
 
-- **A repo with nothing configured still pays for every pane.** No reviews, no
-  processes, no compose file, and the frame still draws `REVIEW QUEUE off`, `stack
-  down` and a `Processes + Shell` bar. Each label is honest on its own and the sum
-  of them is a window that looks broken on a fresh install. Collapse a pane whose
-  feature is unconfigured rather than labelling it.
+- ~~**A repo with nothing configured still pays for every pane.**~~ **Done, and it
+  found a snapshot that disagreed with the daemon.** A checkout with no forge drew
+  a PR pane reading `unavailable` and a review queue reading `off` beside it — two
+  headers, two counts, two refresh buttons, two carets, every label honest and the
+  sum reading as a broken install. It is one quiet line now, `noForge` in
+  `rail.js`, and the review block is not drawn at all. `stack down` went earlier,
+  with the compose entry above.
+
+  **`repos.upstream` is the signal, and fixing it was the real work.** `Repos` was
+  built from the git remote alone while `resolve_repo` takes `cfg.repo` first, so a
+  checkout that pins its repo in config polled that repo and reported no upstream —
+  harmless while nothing read the field, and the moment the panes hid themselves on
+  it they vanished from a checkout whose PRs were being fetched. Found exactly that
+  way. `08-fix-pr` now asserts the snapshot names the repo the daemon polls.
+
+  **The `Processes + Shell` bar stays**, and that is a decision rather than an
+  oversight: `+ Shell` is a real action available on every checkout, configured or
+  not. A bar offering something you can press is not chrome. What was chrome were
+  the panes describing a feature that does not apply.
+
+  `page-check` holds both halves, each checked by breaking it: drawing the PR pane
+  anyway fails, drawing the queue anyway fails, and reverting the `repos` fix fails
+  the e2e flow.
 
 - ~~**The guard rule is not one rule.**~~ **Done, and the rule is: only destructive
   asks.** Destructive means work that cannot be got back. Four boxes are left and

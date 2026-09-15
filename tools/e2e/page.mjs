@@ -26,6 +26,8 @@
 //     rule and every `href =` goes through it; asserted by calling it, because a
 //     rendered page has no such link in it to look at — which is the point.
 //   * anything thrown during boot, which `pageerror` catches for free.
+//   * two panes of chrome on a checkout with no forge. `unavailable` beside `off`,
+//     each honest on its own, summing to a window that reads as a broken install.
 //   * a confirm box in front of a reversible action, or none in front of a lossy
 //     one. The rule lives at `confirmBox` in `core.js`; this is what holds it.
 //   * a `stack down` badge on a repo that has no stack. `docs/workspace-isolation.md`
@@ -185,6 +187,20 @@ try {
      "down". */
   const stack = await page.$eval('#dcwd', (d) => d.textContent.trim())
   check(stack === '', `a checkout with no compose file says nothing about a stack${stack ? `, got "${stack}"` : ''}`)
+
+  /* --- a checkout with no forge draws one line, not two panes ------------------ */
+
+  /* The sandbox's `origin` is a local clone, so GitHub has never heard of it —
+     which is the shape of a fresh install. The PR pane used to read `unavailable`
+     and the review queue `off` beside it: two headers, two counts, two refresh
+     buttons and two carets, every label honest and the sum looking broken. */
+  const forgeless = await page.evaluate(() => ({
+    pr: (document.querySelector('#prpane')?.textContent || '').trim(),
+    rvHidden: document.querySelector('#rvblock')?.hidden,
+  }))
+  check(/No GitHub remote here/.test(forgeless.pr),
+    `a forgeless checkout says it once${forgeless.pr ? `, got "${forgeless.pr.slice(0, 60)}"` : ''}`)
+  check(forgeless.rvHidden === true, 'and the review queue is not drawn at all')
 
   /* --- the rail's session drag ---------------------------------------------- */
 

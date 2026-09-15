@@ -1156,6 +1156,12 @@ body.row-resizing{cursor:row-resize;user-select:none}
   font-family:var(--mono);font-size:calc(11.5px * var(--fs));
 }
 .settings-in:focus{outline:none;border-color:var(--focus)}
+/* The one line a checkout with no forge gets, in place of two panes. Quiet: it is
+   a fact about the checkout, not a fault, and it sits where a pane used to shout. */
+.noforge{
+  padding:10px 12px;color:var(--faint-solid);font-size:calc(10.5px * var(--fs));
+  line-height:1.45;border-top:1px solid var(--line);
+}
 /* A note is prose, not a value, so its row aligns to the top of the box rather
    than centring a two-line textarea against a one-line label. */
 .settings-field-tall{align-items:flex-start}

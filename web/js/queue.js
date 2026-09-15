@@ -46,6 +46,13 @@ function renderReviews() {
   const list = $('rvlist');
   const rv = snap.reviews;
 
+  /* **Nothing at all when the checkout has no forge.** A review queue over a
+     repository GitHub has never heard of is not "off", it is not a question — and
+     drawn beside a PR pane saying the same thing it made a fresh install look
+     broken. The rail draws one line for both; see `noForge` in `rail.js`. */
+  block.hidden = !snap.repos?.upstream;
+  if (block.hidden) return;
+
   block.classList.toggle('closed', !showReviews);
   /* The same band the PR pane wears, for the same reason it wears it: this pane
      answers for one checkout — the one you are in — and it sits below a scroller,

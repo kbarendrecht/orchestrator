@@ -35,6 +35,15 @@ export const options = {
 }
 
 export async function run(t) {
+  /* **The snapshot must name the repo this run polls**, and it did not: `repos`
+     was built from the git remote alone while `resolve_repo` takes `cfg.repo`
+     first, so a checkout that pins its repo in config polled it and reported no
+     upstream at all. Harmless until the SPA started deciding on that field —
+     the PR and review panes hide themselves when a checkout has no forge, and on
+     this config they would both have vanished while the rows were being fetched. */
+  assert.equal((await t.state()).repos.upstream, 'acme/monorepo',
+    'the snapshot must name the repo the daemon actually polls')
+
   // A real branch, because the worktree the run needs is cut with `git worktree
   // add <path> <branch>`. A PR naming a branch that exists only in the canned
   // answer would fail at git, several steps after the interesting part.

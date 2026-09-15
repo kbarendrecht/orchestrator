@@ -119,7 +119,14 @@ function renderRail() {
 
   // Its own pane below the scroller, so it stays put while sessions scroll. It
   // describes one repository, so it follows the checkout you are in.
-  $('prpane').replaceChildren(prGroup());
+  /* **A checkout with no forge draws one line, not two panes.** With no GitHub
+     remote the PR pane read `unavailable` and the review queue read `off` or
+     `unavailable` beside it — two headers, two counts, two refresh buttons and two
+     carets, all of them chrome around "this does not apply here". Each label was
+     honest and the sum looked like a broken install. `repos.upstream` is the fact
+     itself rather than `pr_error`, which is a sentence and would have to be matched
+     as one. The review queue hides itself on the same signal — see `queue.js`. */
+  $('prpane').replaceChildren(snap.repos?.upstream ? prGroup() : noForge());
 }
 
 /** `+ open project`, and the menu of ways to name one.
@@ -642,6 +649,20 @@ function actionButton(/** @type {import('../snapshot').PrView} */ p, /** @type {
     }
   };
   return b;
+}
+
+/** What sits where the two forge panes would be, when the checkout has no forge.
+ *
+ *  One line, and it says what to do about it rather than only what is missing —
+ *  the panes are off because there is no remote to ask, which is a fact about the
+ *  checkout and not a fault. Drawn rather than hidden entirely, because a checkout
+ *  that *should* have a remote and does not is worth one sentence; silence there
+ *  would read as the panes having been removed. */
+function noForge() {
+  const line = el('div', 'noforge',
+    'No GitHub remote here, so the PR and review panes are off.');
+  line.title = 'Set the upstream remote in settings, or add one to this checkout';
+  return line;
 }
 
 function prGroup() {
