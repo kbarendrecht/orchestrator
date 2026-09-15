@@ -29,7 +29,7 @@ resolver = "2"
 # says `version.workspace = true` and cargo refuses to build a disagreement,
 # which no bumper script can promise.
 [workspace.package]
-version = "2026.9.15"
+version = "2026.9.16"
 
 # The four dependencies both this daemon and the desktop shell share. One version
 # each, in one place: they were declared twice and could drift, and a version skew
