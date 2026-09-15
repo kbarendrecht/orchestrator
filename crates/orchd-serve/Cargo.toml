@@ -42,7 +42,7 @@ axum = { version = "0.7", features = ["ws", "macros"] }
 libc = "0.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "net", "sync", "signal", "process", "io-util", "fs"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "net", "sync", "signal", "process", "io-util"] }
 tracing = { workspace = true }
 uuid = { version = "1", features = ["v4", "serde"] }
 

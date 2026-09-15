@@ -10,6 +10,17 @@ died. The rule was applied unevenly for a long time and the sweep that fixed
 that is finished, so what is worth carrying is the rule plus the three places
 it deliberately does *not* apply — each measured, so nobody re-opens them on a
 hunch.
+**`tokio::fs` is the third way to break this, and it is the one that looks
+right**: it is async, it is tokio, and it reads as the correct answer to "do not
+block the worker". It is not — without `io_uring` every call is its own
+`spawn_blocking`, so a loop over twenty files is twenty hops through a global
+pool, which is the tiny-task shape that pool is worst at. The `fs` feature was
+enabled in `orchd` and `orchd-serve` — the two crates that do all the file work —
+and used **zero** times, so it is simply gone from both. `tokio::fs` is now
+`error[E0433]: cannot find 'fs' in 'tokio'`, which is a better gate than any lint:
+there is nothing to `#[allow]`. Prompted by reading *Principles for Fast Tokio
+Applications*, which names `tokio::fs` as harmful; measured before removing, and
+the workspace builds without it.
 - **Single syscalls stay where they are.** `hooks.rs` has four `canonicalize`
   calls and one `exists`; `api.rs` has `revive`'s `cwd.exists()`,
   `forget_session`'s one `remove_file` and `free_worktree_name`'s stat loop. A
