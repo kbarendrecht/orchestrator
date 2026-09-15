@@ -45,7 +45,15 @@ jobs:
             slug: aarch64-macos
             # Unsigned, so Gatekeeper asks the first time. Still better than a
             # tarball, and signing wants a paid Developer ID.
-            bundles: dmg
+            #
+            # **`app` as well as `dmg`, and that is not a second artifact.** The
+            # bundler treats `Orchestrator.app` as scratch when only `dmg` is
+            # asked for: it packs the dmg and then *deletes* it — "Cleaning
+            # …/bundle/macos/Orchestrator.app", right before "Drive what this
+            # will ship" reaches into that path. Naming `app` keeps the tree the
+            # dmg was built from. Nothing extra is uploaded, because `Package`
+            # matches `-type f` and an `.app` is a directory.
+            bundles: app,dmg
     steps:
       # **Actions pinned by SHA, not by tag.** A tag is a mutable pointer: whoever
       # owns the action can move `v7` to any commit, and this workflow hands what it
@@ -168,11 +176,22 @@ jobs:
       # nobody re-runs, and v2026.9.14 shipped an app that could not start.
       #
       # macOS only: the Linux runner has no display for the window.
+      #
+      # **This step had never run when it was written**, and it failed on its
+      # first release: `check` drives the plain binary, so nothing exercised the
+      # bundle path until v2026.9.16 spent a version number on it. The bundler
+      # deletes the `.app` when only `dmg` is asked for — see `bundles` above.
+      # Fail loudly here rather than let a missing path read as a usage error.
       - name: Drive what this will ship
         if: runner.os == 'macOS'
         run: |
-          node tools/app-check.mjs \
-            target/release/bundle/macos/Orchestrator.app/Contents/MacOS/orchestrator-desktop
+          app=target/release/bundle/macos/Orchestrator.app/Contents/MacOS/orchestrator-desktop
+          test -x "$app" || {
+            echo "::error::the bundler left no $app — did the bundle list drop 'app'?"
+            ls -R target/release/bundle || true
+            exit 1
+          }
+          node tools/app-check.mjs "$app"
 
       - name: Package
         run: |
