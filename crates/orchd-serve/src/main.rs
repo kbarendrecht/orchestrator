@@ -3,16 +3,47 @@
 //! Everything of substance is in the library, which the desktop shell embeds.
 //! This is the entry point for running it in a terminal and pointing a browser
 //! at it — still the fastest way to debug the daemon itself.
-// A command-line binary: printing *is* its output, and `print_stdout` is denied
-// across the workspace so the daemon library cannot quietly grow a `println!`
-// that no log ever sees.
-#![allow(clippy::print_stdout, clippy::print_stderr)]
+/* A command-line binary: printing *is* its output, and `print_stdout` is denied
+across the workspace so the daemon library cannot quietly grow a `println!`
+that no log ever sees.
+
+**This file no longer opts out of that deny, and the reason is a panic.**
+`println!` unwraps its write, so a closed stdout takes the process out with
+`failed printing to stdout: Broken pipe (os error 32)` — seen in #18 from
+`orchd::main`. A daemon whose parent has already gone is exactly when that
+happens, and it is also exactly when a panic is least useful. `say` writes and
+drops the error instead, and leaving the workspace deny in force is what stops
+a `println!` coming back: the lint *is* the guard, so there is no rule here for
+anyone to forget. */
+
+use std::io::Write;
+
+/// Print a line, and survive a reader that has gone.
+fn say(line: &str) {
+    let _ = writeln!(std::io::stdout(), "{line}");
+}
 
 use anyhow::Result;
 use std::path::PathBuf;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    /* **Before the logger, the config and the lock — because everything below has
+    side effects and this must have none.** `orchd --version` used to fall
+    through to an ordinary start: it took the instance lock on the *default*
+    checkout, rotated that checkout's log, fetched upstream and began polling
+    GitHub. Somebody asking a binary what it is got a daemon.
+
+    It is also the cheapest thing a host can run to find out whether this
+    binary executes at all. On macOS a freshly installed, ad-hoc-signed
+    executable pays a Gatekeeper scan on its first exec — 440 ms of it in #18,
+    including a network call to the notarization service — and that scan is
+    what the host's readiness wait was unknowingly sitting behind. */
+    if std::env::args().any(|a| a == "--version" || a == "-V") {
+        say(&format!("orchd {}", env!("CARGO_PKG_VERSION")));
+        return Ok(());
+    }
+
     // The same subscriber the app installs, so a daemon in a terminal and a daemon
     // the app spawned leave the same lines in the same place. It used to be a
     // stdout-only `fmt()` here, which is fine at a prompt and invisible to a child
@@ -77,11 +108,11 @@ async fn main() -> Result<()> {
         // this checkout's own `upstream_remote` and `repo`, which only the daemon
         // that just read that config knows.
         let repo = orchd::resolve_repo(&server.app).map(|(o, n)| format!("{o}/{n}"));
-        println!(
-            "{}",
-            orchd::child::ready_line(server.port, &server.token, repo.as_deref())
-        );
-        use std::io::Write;
+        say(&orchd::child::ready_line(
+            server.port,
+            &server.token,
+            repo.as_deref(),
+        ));
         let _ = std::io::stdout().flush();
         // The second kill switch: a host that was SIGKILLed leaves no signal to
         // catch, only this pipe going away.
@@ -96,8 +127,11 @@ async fn main() -> Result<()> {
         let n = std::sync::Arc::clone(&eof);
         orchd::child::exit_on_stdin_eof(move || n.notify_one());
     } else {
-        println!("orchd  {}", server.url());
-        println!("main   {}", server.app.cfg.main_checkout.display());
+        say(&format!("orchd  {}", server.url()));
+        say(&format!(
+            "main   {}",
+            server.app.cfg.main_checkout.display()
+        ));
     }
 
     // Ctrl-C takes the children with it, same as closing the desktop window — and
@@ -139,7 +173,7 @@ async fn main() -> Result<()> {
     // the process out one line above `shutdown` and reinstated the very defect the
     // wakeup above exists to fix.
     if !announce {
-        println!();
+        say("");
     }
     server.shutdown().await;
     Ok(())
@@ -184,20 +218,20 @@ async fn run_host(checkouts: Vec<String>) -> Result<()> {
     let opened = paths.clone();
     tokio::task::spawn_blocking(move || host.open_remembered(&opened)).await?;
 
-    println!("orchd  {}", serving.url());
+    say(&format!("orchd  {}", serving.url()));
     if serving.host.checkouts().is_empty() {
-        println!("       no checkout open — the page offers the open screen");
+        say("       no checkout open — the page offers the open screen");
     }
     for c in serving.host.checkouts() {
-        println!(
+        say(&format!(
             "       {} on {} ({})",
             c.name,
             c.port,
             if c.live { "up" } else { "down" }
-        );
+        ));
     }
     tokio::signal::ctrl_c().await?;
-    println!();
+    say("");
     serving.host.stop_all();
     Ok(())
 }

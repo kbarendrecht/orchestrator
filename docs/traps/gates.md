@@ -184,6 +184,20 @@ is a CLI — the daemon library cannot print, because a launcher-started app has
 terminal and the line would reach nobody. And what is left uses
 `#[expect(…, reason = "…")]` rather than `#[allow]`, so the exemption fails the
 build when the code stops needing it.
+**`crates/orchd-serve/src/main.rs` gave that allow back, and the reason is a
+panic.** `println!` unwraps its write, so a closed stdout takes the process out
+with `failed printing to stdout: Broken pipe (os error 32)` — reported out of
+`orchd::main` in #18. A daemon whose parent has already gone is exactly when that
+happens and exactly when a panic helps least. A four-line `say` writes through
+`writeln!` and drops the error, and dropping the file-level allow is what makes
+the workspace deny the guard: a `println!` cannot come back, so there is no rule
+left for anyone to forget. Two tests in `tests/cli_version.rs` hold the other end
+— one runs the binary with its stdout closed before the first write and fails on
+a panic or a signal; the other is about `--version`, which used to fall through
+to an ordinary start and take the instance lock, rotate the log, fetch upstream
+and poll GitHub on whatever checkout the config named. It asserts the version
+*and* that no config dir came into being, because a test reading only stdout
+would have passed against the old behaviour.
 
 ## `health.yml` runs `cargo deny`, `cargo about`, `cargo machete`, `typos` and `zizmor` — on every push and weekly, in its own workflow.
 An advisory against
