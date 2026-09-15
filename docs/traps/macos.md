@@ -187,8 +187,23 @@ binaries are all arm64, and `file` on every one of them says so.
 `std::env::consts::ARCH` rather than a literal `arm64` — the bug reversed is just
 as bad, and `--install-desktop-entry` runs on whatever machine installed the
 binary rather than only on the one that released it.
-**The gate is a unit test on the generated plist**, because that is the whole of
-what can be checked without a Mac: `the_bundle_declares_the_architecture_its_binary_was_built_for`
-asserts the key is present and names this build's own architecture. What it cannot
-assert is the effect — that wants a launch record, and the only way to get one is
-to ship and ask.
+**The effect is reproducible on a macos-14 runner, and was measured.** A throwaway
+`workflow_dispatch` probe — the same method as the entry above, deleted once it had
+answered — built two bundles differing *only* in that key, each with a `/bin/sh`
+script as its executable, and launched them through `open`:
+
+| bundle | `sysctl.proc_translated` | `uname -m` |
+|---|---|---|
+| no `LSArchitecturePriority` | **1** | **x86_64** |
+| `LSArchitecturePriority = arm64` | 0 | arm64 |
+
+So the runner reproduces the bug exactly, which it can only do because **Rosetta is
+installed there**: `oahd` is running and `arch -x86_64 /usr/bin/true` succeeds on
+macos-14 (14.8.9). That was the open question — with no Rosetta an x86_64
+preference cannot take effect, the bug would never appear on a runner, and a check
+asserting its absence would guard nothing.
+
+The unit test `the_bundle_declares_the_architecture_its_binary_was_built_for`
+asserts the key is present and names this build's own architecture, which is what
+can be checked without a Mac. What the measurement adds is that the *effect* is
+checkable too, on a runner, for the cost of one `open`.
