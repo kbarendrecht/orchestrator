@@ -402,7 +402,19 @@ pub struct Settings {
     pub upstream_remote: String,
     pub reviews_command: Vec<String>,
     pub main_processes: Vec<ManagedSpec>,
+    /// The two halves of making a cut worktree usable, in the order they run.
+    ///
+    /// Both here because a *new* repo has to say them and neither could be said
+    /// without hand-editing `config.json` — which is a file most people never learn
+    /// they have. They stay two fields rather than one: `worktree_init` is about
+    /// the tree as a checkout and `worktree_setup` about what it needs beside the
+    /// code, and the second runs even when the first failed.
+    pub worktree_init: Vec<String>,
     pub worktree_setup: Vec<String>,
+    /// What an arriving agent is told about where it landed, per workspace kind.
+    ///
+    /// The other thing only the project knows, and the other one that had no field.
+    pub workspace_notes: WorkspaceNotes,
     pub worktree_retention_days: u32,
     pub allow_several_in_main: bool,
 }
@@ -415,7 +427,9 @@ impl Settings {
             upstream_remote: cfg.upstream_remote.clone(),
             reviews_command: cfg.reviews_command.clone(),
             main_processes: cfg.main_processes.clone(),
+            worktree_init: cfg.worktree_init.clone(),
             worktree_setup: cfg.worktree_setup.clone(),
+            workspace_notes: cfg.workspace_notes.clone(),
             worktree_retention_days: cfg.worktree_retention_days,
             allow_several_in_main: cfg.allow_several_in_main,
         }
@@ -1466,7 +1480,12 @@ mod tests {
             upstream_remote: "origin".into(),
             reviews_command: vec!["gh".into(), "pr".into()],
             main_processes: vec![],
+            worktree_init: vec!["git".into(), "fetch".into()],
             worktree_setup: vec![".claude/hooks/worktree-setup".into()],
+            workspace_notes: WorkspaceNotes {
+                main: Some("the dev stack runs here".into()),
+                worktree: None,
+            },
             worktree_retention_days: 60,
             allow_several_in_main: false,
         };
@@ -1486,6 +1505,15 @@ mod tests {
         assert_eq!(cfg.reviews_command, vec!["gh", "pr"]);
         assert!(cfg.main_processes.is_empty());
         assert_eq!(cfg.worktree_setup, vec![".claude/hooks/worktree-setup"]);
+        assert_eq!(cfg.worktree_init, vec!["git", "fetch"]);
+        // A note is a whole sentence the project wrote, so it round-trips as one —
+        // and the half nobody set stays unset rather than becoming an empty string
+        // the arriving agent would be handed.
+        assert_eq!(
+            cfg.workspace_notes.for_main(true),
+            Some("the dev stack runs here")
+        );
+        assert_eq!(cfg.workspace_notes.for_main(false), None);
     }
 
     /// **A moved checkout is recorded by rewriting one key, not the file.**

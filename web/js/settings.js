@@ -100,7 +100,15 @@ async function loadConfigInto(force = false) {
   ctl('setupref').value = cfg.upstream_ref || '';
   ctl('setupremote').value = cfg.upstream_remote || '';
   ctl('setreviews').value = (cfg.reviews_command || []).join(' ');
+  ctl('setwtinit').value = (cfg.worktree_init || []).join(' ');
   ctl('setwtsetup').value = (cfg.worktree_setup || []).join(' ');
+  /* A note is prose, so it is read and written whole — `null` is the project
+     saying nothing, and the box has to show that as empty rather than as the word
+     "null". The write below turns an empty box back into `null` for the same
+     reason: an empty string is a note, and an arriving agent would be handed it. */
+  const notes = cfg.workspace_notes || {};
+  ctl('setnotemain').value = notes.main || '';
+  ctl('setnotetree').value = notes.worktree || '';
   // Numbers go in as numbers: `value = 0` on a number input renders "0", which is
   // the setting being off said out loud, where '' would read as unset.
   ctl('setretain').value = String(cfg.worktree_retention_days ?? 0);
@@ -212,7 +220,12 @@ async function saveSettings() {
     upstream_ref: ctl('setupref').value.trim(),
     upstream_remote: ctl('setupremote').value.trim(),
     reviews_command: argv(ctl('setreviews').value),
+    worktree_init: argv(ctl('setwtinit').value),
     worktree_setup: argv(ctl('setwtsetup').value),
+    workspace_notes: {
+      main: ctl('setnotemain').value.trim() || null,
+      worktree: ctl('setnotetree').value.trim() || null,
+    },
     // A blank box means "keep forever" rather than NaN, and a negative number is
     // not a shorter retention.
     worktree_retention_days: Math.max(0, Math.trunc(Number(ctl('setretain').value) || 0)),

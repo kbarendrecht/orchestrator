@@ -28,7 +28,12 @@ export async function run(t) {
     upstream_remote: before.upstream_remote,
     reviews_command: ['true'],
     main_processes: [],
+    worktree_init: ['git', 'fetch', '--prune'],
     worktree_setup: [],
+    /* A note is prose the project wrote, so it is one string rather than an argv —
+       and the half nobody set has to stay `null`. An empty string is a note, and
+       `workspace_notes.for_main` would hand it to an arriving agent as one. */
+    workspace_notes: { main: 'The dev stack runs here.', worktree: null },
     worktree_retention_days: 21,
     allow_several_in_main: true,
   })
@@ -38,6 +43,8 @@ export async function run(t) {
   assert.equal(after.worktree_retention_days, 21)
   assert.equal(after.allow_several_in_main, true)
   assert.equal(after.default_language, 'English')
+  assert.deepEqual(after.worktree_init, ['git', 'fetch', '--prune'])
+  assert.deepEqual(after.workspace_notes, { main: 'The dev stack runs here.', worktree: null })
 
   // The keys the pane has no control for. Each one is a way to lose a working
   // install to a save nobody thought was destructive.

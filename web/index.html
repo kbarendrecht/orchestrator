@@ -577,14 +577,46 @@
         the same JSON. For a repo that already ranks its own reviews.</p>
 
       <label class="settings-field">
+        <span class="settings-k">Worktree init</span>
+        <input class="settings-in" id="setwtinit" type="text" spellcheck="false"
+               placeholder="empty = nothing">
+      </label>
+      <p class="settings-help">Run first in every worktree the daemon cuts, with cwd
+        set to the new tree. The half about the tree <em>as a checkout</em>: basing
+        it on a fresh upstream, configuring the push remote, whatever this repo does
+        to a branch before anyone works on it.</p>
+
+      <label class="settings-field">
         <span class="settings-k">Worktree setup</span>
         <input class="settings-in" id="setwtsetup" type="text" spellcheck="false"
                placeholder="empty = nothing">
       </label>
-      <p class="settings-help">Run in every worktree the daemon cuts itself (PR,
-        resumed, relocated), just after creation. The seam for setup that Claude's
-        own WorktreeCreate hook would do — it only fires for interactive worktrees,
-        so PR ones would otherwise miss it. cwd is the new worktree.</p>
+      <!-- The help used to explain itself through Claude Code's `WorktreeCreate`
+           hook, which is a sentence about one repo's arrangement rather than about
+           this setting: another repo need not have such a hook, and another agent
+           has no such event at all. What the setting does is the same either way. -->
+      <p class="settings-help">Run second, same cwd, and run even when the init above
+        failed — the two answer different questions. The half about what the tree
+        needs <em>beside</em> the code: links back to the main checkout, generated
+        config, anything not in git.</p>
+
+      <label class="settings-field settings-field-tall">
+        <span class="settings-k">Note for main</span>
+        <textarea class="settings-in settings-area" id="setnotemain" rows="2"
+                  spellcheck="false" placeholder="empty = nothing is added"></textarea>
+      </label>
+      <p class="settings-help">Told to an agent whose conversation has just moved
+        into the main checkout. The daemon already says which branch moved and where
+        the session is now; this is the half only you know — that the dev stack runs
+        here, say.</p>
+
+      <label class="settings-field settings-field-tall">
+        <span class="settings-k">Note for a worktree</span>
+        <textarea class="settings-in settings-area" id="setnotetree" rows="2"
+                  spellcheck="false" placeholder="empty = nothing is added"></textarea>
+      </label>
+      <p class="settings-help">The same, for a conversation that has landed in a
+        worktree.</p>
 
       <label class="settings-field">
         <span class="settings-k">Keep worktrees for</span>

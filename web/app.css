@@ -1156,6 +1156,10 @@ body.row-resizing{cursor:row-resize;user-select:none}
   font-family:var(--mono);font-size:calc(11.5px * var(--fs));
 }
 .settings-in:focus{outline:none;border-color:var(--focus)}
+/* A note is prose, not a value, so its row aligns to the top of the box rather
+   than centring a two-line textarea against a one-line label. */
+.settings-field-tall{align-items:flex-start}
+.settings-area{resize:vertical;line-height:1.45;font-family:var(--sans)}
 /* A checkbox in a settings row: pushed right like `.settings-in`, but never
    stretched to its 62% width. */
 .settings-check{margin-left:auto}

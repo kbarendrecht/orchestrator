@@ -249,13 +249,30 @@ this file, which churned it from every build; that feature is gone.
     And **`cargo test -p <one crate>` truncates the generated types the same way**;
     `mise run check-web` regenerates all of them, so run it after a single-crate
     test before reading a `.d.ts` diff.
-  - **Half the settings have no field.** `env_source`, `workspace_notes`,
-    `worktree_init` and `shared_worktree_paths` are config-file only. Fine for the
-    operational ones, wrong for `workspace_notes` and `worktree_init`, which are two
-    of the few things a *new* repo has to say. `allow_several_in_main` was in this
-    list and now has a checkbox under Sessions. The Worktree setup help text also
-    explains itself in terms of Claude Code's `WorktreeCreate` hook, which is a
-    sentence about this repo.
+  - ~~**Half the settings have no field.**~~ **Done for the two that needed one.**
+    `worktree_init` and `workspace_notes` are the things a *new* repo has to say and
+    had no way to say them but hand-editing `config.json` — a file most people never
+    learn they have. Four fields now: worktree init beside worktree setup, and a
+    note each for main and for a worktree. `env_source` and `shared_worktree_paths`
+    stay config-file only, which the entry always said was right: they are decisions
+    about how the machine works, not about this project.
+
+    The Worktree setup help text is fixed too. It used to explain itself through
+    Claude Code's `WorktreeCreate` hook — a sentence about one repo's arrangement
+    rather than about the setting, and meaningless for a repo with no such hook or
+    an agent with no such event. It says what the two halves *do* now, and why the
+    second runs even when the first failed.
+
+    **One thing worth keeping, because it was wrong the first time.** A saved
+    setting does not reach the running daemon — `get_config` answers from the
+    running config on purpose, so the panel keeps saying what is true until a
+    restart. The first version of the browser check reloaded the page and asserted
+    the new value was back; it is not, and that is correct. Restart, then read.
+
+    The guard to keep: an empty note saves as `null`, not `""`. Dropping the `||
+    null` in `settings.js` was tried and writes `{"main":""}`, which
+    `WorkspaceNotes::for_main` hands to an arriving agent as a note. Only a browser
+    catches it — the e2e flow posts JSON and never touches the box.
 
 - **A repo with nothing configured still pays for every pane.** No reviews, no
   processes, no compose file, and the frame still draws `REVIEW QUEUE off`, `stack
