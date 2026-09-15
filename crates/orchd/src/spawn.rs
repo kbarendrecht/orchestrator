@@ -2468,42 +2468,6 @@ mod tests {
         assert_eq!(get("ORCH_ASK_TOKEN"), "ask-tok");
         // The port the daemon is actually on, or the agent's curl reaches nothing.
         assert_eq!(get("ORCH_URL"), "http://127.0.0.1:7794");
-        /* **Absent, not empty, when the checkout configures no checks.** Every
-        skill that pushes tests for `$ORCH_CHECKS` and falls back to the repo's own
-        docs; an empty string passes a shell's `-n` and every other test anybody
-        would write, so the fallback would never be taken and the run would push
-        having checked nothing. */
-        assert!(
-            !env.iter().any(|(k, _)| k == crate::skills::VAR_CHECKS),
-            "an unconfigured checks_command must leave the variable unset"
-        );
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// The repo's checks reach every session, not only a run.
-    ///
-    /// Through `session_env`, which is the one seam every spawner goes through —
-    /// `green` and `review` have no spawn site at all, they are typed into a pane,
-    /// and a variable set at a spawn site would have reached neither.
-    #[tokio::test]
-    async fn a_configured_checks_command_reaches_the_session() {
-        let (app, dir) = crate::testutil::app_with(
-            "agent-checks",
-            r#""port":7795,"env_source":"none","checks_command":"make check -j4""#,
-        );
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "asserting on what the seam wraps"
-        )]
-        let (env, _) = crate::launch::session_env(&app.cfg, &dir, Uuid::new_v4(), None);
-        // Whole, with its arguments: it is one command line the agent runs in its
-        // own shell, which is why the config field is a string and not an argv.
-        assert_eq!(
-            env.iter()
-                .find(|(k, _)| k == crate::skills::VAR_CHECKS)
-                .map(|(_, v)| v.as_str()),
-            Some("make check -j4")
-        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

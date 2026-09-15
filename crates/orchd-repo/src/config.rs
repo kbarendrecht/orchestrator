@@ -128,26 +128,6 @@ pub struct Config {
     /// so rather than reading as a broken command.
     #[serde(default = "default_reviews_command")]
     pub reviews_command: Vec<String>,
-    /// The repo's own checks, as one command line, for a run to put a change
-    /// through before it pushes. Reaches a session as `$ORCH_CHECKS`; see
-    /// [`crate::skills`].
-    ///
-    /// **A string rather than an argv, unlike `reviews_command` above**, because
-    /// the two are run by different things. The daemon spawns the review command
-    /// itself, so it needs the words already separated; this one is run by the
-    /// *agent*, in its own shell, and an argv joined back together with spaces is a
-    /// quoting bug waiting for the first command with an argument in it.
-    ///
-    /// **Empty by default, and that is the honest default rather than a missing
-    /// one.** The vendored skills used to name `mise run pre-commit:run` in prose,
-    /// hedged as "where it exists" — a file shipped with the daemon guessing at the
-    /// task runner of whatever repo it lands in. A default here would only move the
-    /// guess into the daemon, and the rule this repo holds is that a default may
-    /// depend only on what the daemon itself needs. It needs no task runner. So
-    /// unset means the skills fall back to whatever the repo documents, and a
-    /// checkout that has a command says so once, here.
-    #[serde(default)]
-    pub checks_command: String,
     /// Bring back sessions that were live when the daemon last went down.
     ///
     /// The daemon owns every pty, so a crash — or a reboot — takes every Claude
@@ -421,7 +401,6 @@ pub struct Settings {
     pub upstream_ref: String,
     pub upstream_remote: String,
     pub reviews_command: Vec<String>,
-    pub checks_command: String,
     pub main_processes: Vec<ManagedSpec>,
     pub worktree_setup: Vec<String>,
     pub worktree_retention_days: u32,
@@ -435,7 +414,6 @@ impl Settings {
             upstream_ref: cfg.upstream_ref.clone(),
             upstream_remote: cfg.upstream_remote.clone(),
             reviews_command: cfg.reviews_command.clone(),
-            checks_command: cfg.checks_command.clone(),
             main_processes: cfg.main_processes.clone(),
             worktree_setup: cfg.worktree_setup.clone(),
             worktree_retention_days: cfg.worktree_retention_days,
@@ -1487,7 +1465,6 @@ mod tests {
             upstream_ref: "origin/main".into(),
             upstream_remote: "origin".into(),
             reviews_command: vec!["gh".into(), "pr".into()],
-            checks_command: "make check".into(),
             main_processes: vec![],
             worktree_setup: vec![".claude/hooks/worktree-setup".into()],
             worktree_retention_days: 60,
@@ -1507,7 +1484,6 @@ mod tests {
         assert!(cfg.tracker.is_none());
         assert_eq!(cfg.upstream_ref, "origin/main");
         assert_eq!(cfg.reviews_command, vec!["gh", "pr"]);
-        assert_eq!(cfg.checks_command, "make check");
         assert!(cfg.main_processes.is_empty());
         assert_eq!(cfg.worktree_setup, vec![".claude/hooks/worktree-setup"]);
     }

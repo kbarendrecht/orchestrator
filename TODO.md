@@ -216,25 +216,25 @@ this file, which churned it from every build; that feature is gone.
     `stack down` the whole time. A badge that is wrong on the machine it was
     written on is not a portability problem, and nobody had noticed.
   - ~~**The vendored skills name this repo's task runner.**~~ **Done, and the
-    command it named does not exist in any repo on this machine.** Four skills said
-    `mise run pre-commit:run`, hedged as "where it exists" — and `scienta`'s task is
-    `pre-commit`, `pokestream` has `lint` and `test`, and this repo has no such task
-    at all, only a git hook. The hedge was carrying the whole sentence, so every run
-    that followed it either found nothing or was told nothing.
+    command they named exists in no repo on this machine.** Four skills said `mise
+    run pre-commit:run`, hedged as "where it exists" — and the hedge was carrying
+    the whole sentence: one checkout's task is `pre-commit`, one has `lint` and
+    `test`, and this repo has no such task at all, only a git hook. A run following
+    that line either found nothing or checked nothing, and neither said so.
 
-    `checks_command` is a config field with a settings panel field, empty by
-    default, reaching a session as `$ORCH_CHECKS` through
-    `launch::session_env` — **the seam, not a spawn site**, because `green` and
-    `review` are typed into a pane and have no spawn site to hang it off. Held by
-    three tests: the variable is *absent* rather than empty when unconfigured (an
-    empty string passes every shell test anybody would write, so the fallback would
-    never be taken), a configured one arrives whole, and no vendored skill may name
-    a task runner. The last one was checked by putting `mise` back.
+    They say **`run this repo's checks`** now, and a test refuses `mise` and four
+    other runners by name while insisting the line is still there — checked by
+    putting the command back, and by deleting the line.
 
-    **The remaining work is on this machine, not in the tree**: `checks_command` is
-    unset for both live checkouts, so their sessions now fall back to the repo's own
-    docs. Set it per checkout in the settings panel — `mise run pre-commit` for
-    scienta.
+    **A `checks_command` setting was built and reverted, and that is the part worth
+    keeping.** It was a config field, a settings-panel field and `$ORCH_CHECKS`
+    through `launch::session_env`, all of it working and tested. It is the wrong
+    answer because a repo with many kinds of check has no single command to put in
+    one field, so the setting only moves the guess out of the skill and into the
+    daemon — and the agent is standing in the repo and can read what it says. The
+    same reasoning the tracker rules already run on: *"this file deliberately does
+    not name them"*. Reach for a setting when the daemon itself has to run the
+    thing; an instruction to the agent is not that.
   - ~~**Boot warnings never reach the window.**~~ **Done.** `Warning` is in the
     snapshot (`Inner::machine`, set once by the caller that ran the check), and a
     fourth bar draws the list — a missing `gh`, a `reviews_command` that is not

@@ -27,10 +27,6 @@ export async function run(t) {
     upstream_ref: before.upstream_ref,
     upstream_remote: before.upstream_remote,
     reviews_command: ['true'],
-    // One line the agent runs in its own shell, so it is stored whole. The skills
-    // read it as `$ORCH_CHECKS` and fall back to the repo's own docs when it is
-    // unset — which is why "" has to stay "" and not become a command.
-    checks_command: 'make check -j4',
     main_processes: [],
     worktree_setup: [],
     worktree_retention_days: 21,
@@ -42,7 +38,6 @@ export async function run(t) {
   assert.equal(after.worktree_retention_days, 21)
   assert.equal(after.allow_several_in_main, true)
   assert.equal(after.default_language, 'English')
-  assert.equal(after.checks_command, 'make check -j4', 'the checks command round-trips whole')
 
   // The keys the pane has no control for. Each one is a way to lose a working
   // install to a save nobody thought was destructive.

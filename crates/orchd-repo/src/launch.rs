@@ -88,18 +88,6 @@ pub fn session_env(
             .unwrap_or_else(|| std::env::var("PATH").unwrap_or_default());
         set.push(("PATH".to_string(), format!("{dir}:{rest}")));
     }
-    /* The repo's own checks, for any skill that pushes. Set here rather than at a
-    spawn site because the skills that read it are typed into a pane as often as
-    they are started by the daemon — `green` and `review` have no spawn site at
-    all. Omitted rather than empty when the checkout configures none, so a skill
-    can test for it: an empty string would read as "there is a command" to every
-    shell test anybody writes. */
-    if !cfg.checks_command.is_empty() {
-        set.push((
-            crate::skills::VAR_CHECKS.to_string(),
-            cfg.checks_command.clone(),
-        ));
-    }
     // What the repo's `.mcp.json` `${…}` expands from, named by the tracker.
     //
     // Claude Code expands those from the **real process environment** and nowhere

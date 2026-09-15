@@ -71,8 +71,7 @@ from step 1. A mismatch is a stop, not something to correct by switching.
      with the base rather than as-is.
    - A failure naming a test absent from the working tree came from the base.
      Still yours to fix; say so in the report.
-   - Run the repo's checks before pushing: `$ORCH_CHECKS` is the command when the
-     checkout configures one, and otherwise whatever the repo's own docs name.
+   - Run this repo's checks before pushing.
 6. Amend into the commit that owns the change; never a "fix review" or "fix CI"
    commit. The subject still describes the change after amending; if it no longer
    does, rewrite it. Splitting or reordering commits: only when asked.

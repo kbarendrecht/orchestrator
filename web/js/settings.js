@@ -100,9 +100,6 @@ async function loadConfigInto(force = false) {
   ctl('setupref').value = cfg.upstream_ref || '';
   ctl('setupremote').value = cfg.upstream_remote || '';
   ctl('setreviews').value = (cfg.reviews_command || []).join(' ');
-  // One line the agent runs in its own shell, so it is kept whole — not
-  // split into an argv the way the review command is.
-  ctl('setchecks').value = cfg.checks_command || '';
   ctl('setwtsetup').value = (cfg.worktree_setup || []).join(' ');
   // Numbers go in as numbers: `value = 0` on a number input renders "0", which is
   // the setting being off said out loud, where '' would read as unset.
@@ -215,7 +212,6 @@ async function saveSettings() {
     upstream_ref: ctl('setupref').value.trim(),
     upstream_remote: ctl('setupremote').value.trim(),
     reviews_command: argv(ctl('setreviews').value),
-    checks_command: ctl('setchecks').value.trim(),
     worktree_setup: argv(ctl('setwtsetup').value),
     // A blank box means "keep forever" rather than NaN, and a negative number is
     // not a shorter retention.
