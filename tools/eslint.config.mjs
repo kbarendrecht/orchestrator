@@ -108,6 +108,26 @@ export default tseslint.config(
           selector: "CallExpression[callee.name='call'] > TemplateLiteral > TemplateElement[value.raw=/^\\/api\\/(window|host)\\//]",
           message: 'a host route must go through callHost — `call` reaches the checkout daemon, which answers {} and looks like nothing happened.',
         },
+        {
+          /* **Zero sites, and it stays zero.** A checkout's identity is its path;
+             its address is not. A daemon that dies and starts again keeps the path
+             and gets a fresh port and token, so anything that reads an address off
+             a *captured* checkout dials a dead one for the life of the page. Both
+             sockets have now been bitten by this — `app.js`'s events socket, then
+             `term.js`'s pty socket, which stuck on `reconnecting…` for ever while
+             the rail drew the checkout as live. Read the row out of `CHECKOUTS` at
+             the moment of the dial instead; `term.js`'s `address()` is the shape. */
+          selector: "MemberExpression[object.property.name='checkout'][property.name=/^(token|port|wsBase|base)$/]",
+          message: 'read the address out of CHECKOUTS at dial time, not off a captured checkout — a restarted daemon keeps its path and changes its port and token (see term.js `address`).',
+        },
+        {
+          /* The shape the real defect had, and the one the member-expression
+             selector above does not see: `const { wsBase, token } = entry.checkout`
+             is an ObjectPattern, not a `.token` access. Checked by reverting the
+             fix — without this arm the revert lints clean. */
+          selector: "VariableDeclarator[init.property.name='checkout'] > ObjectPattern > Property[key.name=/^(token|port|wsBase|base)$/]",
+          message: 'read the address out of CHECKOUTS at dial time, not off a captured checkout — a restarted daemon keeps its path and changes its port and token (see term.js `address`).',
+        },
       ],
 
       eqeqeq: ['error', 'always', { null: 'ignore' }],

@@ -274,3 +274,40 @@ returns the promise already outstanding, because one of these guards is reached
 from `render` and a refusing guard would otherwise re-ask every frame; and it is
 first in the `Esc` chain, since a confirm over an overlay must not close the
 overlay underneath it.
+
+## A socket may freeze which checkout it serves, never where that checkout is.
+`app.js`'s `connect` learned this once: a checkout's daemon can die and start again
+at the same path, and the new process **binds a fresh port and mints a fresh
+token** — so a retry built from the row captured when the socket opened dials a
+port nothing is listening on, every backoff, for the life of the page. It re-reads
+`CHECKOUTS` by path now.
+**`term.js` was missed, and the pty socket had the same defect** with the same
+symptom: the pane said `reconnecting…` for ever while the rail drew that checkout
+as live, and only clicking a different session healed it — because that opens a
+fresh entry with the current row. Its comment even defended the freeze, and the
+first half of that defence is right: freezing *which* checkout is what stops a
+reconnect re-aiming at whichever checkout you were looking at when the socket
+blipped. Freezing the **address** is the part that is wrong, and the two were one
+object. `address(entry)` splits them — identity from `entry.checkout.path`, port
+and token from `CHECKOUTS` at the moment of the dial.
+**Found by recording a GIF**, which is the part worth keeping: `mise run demo --
+--revive` kills a checkout's daemon and waits for the board to come back, and no
+test had ever done that. `tests/host_and_child.rs` drives the protocol between two
+processes and never the page; `mise run app-check` restarts a session, not a
+daemon. The proof is a probe rather than a screenshot — after the kill the socket
+URL carried the new token while `entry.checkout` still held the old one, and
+`readyState` was 1.
+One trap inside the trap: `#connbar` is in `index.html` permanently, `hidden`, with
+`reconnecting…` as its text. `document.body.textContent` reads hidden nodes, so
+"has the page stopped reconnecting?" asked that way is false before anything has
+been killed. Ask the element for its `hidden` attribute.
+**It is two gates now, and the second one nearly missed.** `mise run term-e2e`
+step 4 moves the address under a live pane — `setCheckouts` with a decoy token,
+which is the one writer the host's own push calls — and asserts the reconnect
+dials the *decoy*, then that it heals when the real address comes back. Reverting
+`address()` fails it by name. The ESLint rule beside it denies reading `token`,
+`port`, `wsBase` or `base` off a captured `.checkout`, at **zero sites today**;
+its first form only matched `x.checkout.token` and the real defect was
+`const { wsBase, token } = entry.checkout` — an ObjectPattern, which that selector
+does not see, so the revert linted clean. Both forms are denied now, and the check
+that says so is reverting the fix and watching each gate fail.

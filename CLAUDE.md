@@ -304,6 +304,7 @@ together: same entries, same order, same groups.
 - Slow trackpad scroll in an agent pane is xterm's wheel maths, not the renderer.
 - A window drag is the one call in this app that can abort the process, and it is guarded in two places.
 - `window.confirm`, `window.prompt` and `window.alert` do nothing in this app on macOS.
+- A socket may freeze which checkout it serves, never where that checkout is.
 
 ### Claude Code, and what it guarantees
 

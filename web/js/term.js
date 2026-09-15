@@ -2,7 +2,7 @@
 // over a websocket. The DOM renderer is deliberate under WebKitGTK, and only
 // there — see the renderer comment below, and CLAUDE.md.
 
-import { $, CHROME, IS_MAC, copyText, el, mark, note, reason, reportBoot, selected, terms, termKey, typingElsewhere, uiScale, wheelScale } from './core.js';
+import { $, CHECKOUTS, CHROME, IS_MAC, copyText, el, mark, note, reason, reportBoot, selected, terms, termKey, typingElsewhere, uiScale, wheelScale } from './core.js';
 import { fontStack, theme } from './theme.js';
 import { termColours } from './palette.js';
 
@@ -326,10 +326,34 @@ function openTerm(checkout, target, parent) {
      `connect` is also the reconnect path, so a socket that read "the checkout you
      are in now" would re-aim itself at whichever checkout you happened to be
      looking at when the network blipped — and never heal, because nothing
-     re-opens a terminal that is working. */
+     re-opens a terminal that is working.
+     That freezes *which* checkout, which is right. It must not freeze **where**
+     that checkout is — see `address` below. */
   terms.set(key, entry);
   connect(entry, target);
   return entry;
+}
+
+/** Where this entry's checkout is *now*, rather than where it was when it opened.
+ *
+ *  **A checkout's identity is its path; its address is not.** A daemon that dies
+ *  and starts again keeps the path and gets a **new port and a new token** — so a
+ *  reconnect built from the row captured at open dials a port nothing is listening
+ *  on, every backoff, for the life of the page. The pane then says `reconnecting…`
+ *  for ever while the rail draws that checkout as live, and only clicking a
+ *  different session heals it, because that opens a fresh entry.
+ *
+ *  `app.js`'s `connect` already carries this fix for the events socket, with the
+ *  same reasoning and the same symptom; the pty socket was missed. Found by
+ *  recording `tools/demo.mjs --revive`, which kills a checkout's daemon and waits
+ *  for the board to come back.
+ *
+ *  Falls back to the captured row when the path is gone from `CHECKOUTS` — a
+ *  checkout that was closed has nothing to re-aim at, and the socket is about to
+ *  be disposed anyway.
+ */
+function address(/** @type {import('./core.js').TermEntry} */ entry) {
+  return CHECKOUTS.find((c) => c.path === entry.checkout.path) ?? entry.checkout;
 }
 
 /** Open (or reopen) the pty socket for an entry, replaying the daemon buffer.
@@ -340,7 +364,7 @@ function openTerm(checkout, target, parent) {
  *  a reconnect a closed socket stayed closed, and every keystroke took the false
  *  branch and vanished while the cursor kept blinking on xterm's own buffer (#7). */
 function connect(/** @type {import('./core.js').TermEntry} */ entry, /** @type {string} */ target) {
-  const { wsBase, token } = entry.checkout;
+  const { wsBase, token } = address(entry);
   const sock = new WebSocket(
     `${wsBase}/ws/pty?token=${encodeURIComponent(token)}&target=${encodeURIComponent(target)}`
   );

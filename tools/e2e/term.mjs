@@ -147,7 +147,60 @@ async function main() {
     ).catch(() => { throw new Error('the pane never reconnected the second time') })
     await waitForEcho(page, 'echo-banked', 'banked while down')
 
-    console.log('  terminal e2e: ok — attach, round-trip, reconnect, banked input')
+    // --- 4. a reconnect dials where the checkout is *now* -------------------
+    /* **A checkout's identity is its path; its address is not.** A daemon that
+       dies and is started again keeps the path and gets a fresh port and a fresh
+       token, and the host pushes that to the page — so a socket that reconnects
+       from the row it captured when the pane opened dials an address nothing is
+       listening on, every backoff, for the life of the page. The symptom is a pane
+       stuck on `reconnecting…` while the rail draws that checkout as live, and it
+       only heals if you click a different session, because that opens a new entry.
+
+       `app.js`'s events socket was fixed for this; the pty socket was not, and
+       nothing here noticed because every drop in steps 2 and 3 reconnects to an
+       address that never moved. This moves it.
+
+       Driven through `setCheckouts` rather than by restarting a daemon: that is
+       the one writer of the list, it is exactly what the host's push calls, and it
+       keeps this flow on the sandbox's single daemon. A decoy token is enough —
+       what is under test is the address the socket *dials*, and the daemon
+       refusing it is the proof the dial changed. */
+    const realToken = await page.evaluate(() => {
+      const u = new URL(window.__pty__.socks.at(-1).url)
+      return u.searchParams.get('token')
+    })
+    const decoy = `${realToken}-decoy`
+    const setToken = (token) => page.evaluate(async (t) => {
+      const core = await import('./js/core.js')
+      core.setCheckouts(core.CHECKOUTS.map((c) => ({ ...c, token: t })))
+    }, token)
+
+    await setToken(decoy)
+    const before3 = await socketCount(page)
+    await page.evaluate(() => window.__pty__.socks.at(-1).close())
+    await page.waitForFunction(
+      (n) => window.__pty__.socks.length > n
+        && window.__pty__.socks.at(-1).url.includes('-decoy'),
+      before3, { timeout: 15_000 },
+    ).catch(() => {
+      throw new Error('the pane reconnected to the address it opened with, not the current one')
+    })
+
+    // And back: the same re-read has to heal it once the address is right again,
+    // or the assertion above would pass for a socket that simply never recovers.
+    await setToken(realToken)
+    const before4 = await socketCount(page)
+    await page.evaluate(() => window.__pty__.socks.at(-1).close())
+    await page.waitForFunction(
+      (n) => window.__pty__.socks.length > n
+        && window.__pty__.socks.at(-1).readyState === WebSocket.OPEN,
+      before4, { timeout: 20_000 },
+    ).catch(() => { throw new Error('the pane never healed once the address was right again') })
+    await focusTerm()
+    await page.keyboard.type('echo-readdressed\r')
+    await waitForEcho(page, 'echo-readdressed', 'after the address moved')
+
+    console.log('  terminal e2e: ok — attach, round-trip, reconnect, banked input, re-address')
     assert.ok(true)
   } catch (e) {
     failed = true
