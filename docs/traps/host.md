@@ -184,3 +184,51 @@ token now comes from the substituted checkout list (`core.CHECKOUTS[0].token`),
 falling back to `__ORCH__.token` for the review-preview page. And `/hooks/*`
 **cannot** move: `hooks.rs` writes that daemon's own port into its own settings
 file, so an agent's hook URL is the port of the daemon that spawned it.
+
+## A child that will not start leaves one sentence, and it used to name nothing.
+Issue #18: an app that showed `the daemon never said it was ready` and nothing
+else. The daemon had died 644 ms in, the per-checkout log was empty because it
+never got as far as writing one, and the reporter spent a day reconstructing a
+timeline from two log files to arrive at "the cause is not in either of them".
+Three separate places threw the diagnosis away. **The exit status was in hand and
+dropped** — `launch_at` called `child.wait()` and discarded the result, so a
+binary the kernel refused (no exit code at all, only `SIGKILL`) and a daemon that
+exited 1 were the same sentence. **stderr was `inherit()`**, which for a
+launcher-started host is `/dev/null`; an `anyhow` chain out of `orchd`'s `main`
+exists *only* there, because `--announce` sends the log to the file and stdout is
+the protocol pipe. And **the log path was never printed**, so the one file that
+might have held something was under `checkouts/<leaf>-<hash>` with no way to find
+the hash from a checkout that never opened.
+It carries all three now — `(it exited with code 9); it said: … ; its log is at
+…` — with the status read **before** the kill, or the only thing it could report
+would be the signal it was about to send. stderr is piped and drained on its own
+thread, logged line by line and kept to the last `STDERR_KEPT`, because a pipe
+nobody reads fills and then blocks the daemon writing into it.
+`tests/host_and_child.rs` asserts all three against a **real** `orchd` refused by
+the instance lock, which is what proves the trip works end to end; the unit tests
+beside it drive shell stubs and cannot.
+The same report's other half was a day earlier and read `starting orchd for
+<checkout>: No such file or directory`. The binary in that message has no
+directory in front of it, which is the only sign that `daemon_binary`'s sibling
+lookup had missed and it had fallen back to a PATH lookup. The fallback says so
+now, one line before the failure.
+**Not a lint.** `clippy::let_underscore_must_use` would have caught the dropped
+`wait()` and fires at **273 sites** across the workspace, nearly all of them a
+deliberate `let _ = tx.send(…)` — a lint that size is a lint people learn to
+`#[allow]`, and the habit then covers the real ones.
+
+## A deadline checked after a blocking read is not a deadline.
+`READY_TIMEOUT` is 60 seconds and could never fire. `read_ready` iterated the
+child's stdout lines and tested the deadline **inside the loop body**, so the test
+was only reached once a line had arrived — and a child that is alive and silent
+sends none. The host's thread parked for ever, and the constant read as a
+guarantee in a doc comment that nothing enforced. It is nobody's fault in review:
+the timeout looks right on the line it is written on.
+The pipe is read by its own thread now, one line per channel message, and
+`recv_timeout` is what the deadline is on. Three outcomes rather than one, because
+the next step differs for each: stdout closed (`Unready::Gone`, and there is a
+status to report), nothing said in time (`Unready::Silent`, the daemon is wedged
+rather than broken), and a malformed ready line.
+**The test for it answers over a channel rather than asserting in place**, because
+the regression does not return a wrong value — it never returns, and a test that
+called `read_ready` directly would hang the binary and surface as a CI timeout.

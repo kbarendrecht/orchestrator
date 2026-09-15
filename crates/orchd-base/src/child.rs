@@ -29,9 +29,11 @@
 //! observer; every stop path signals **by pid**.
 
 use anyhow::{bail, Context, Result};
+use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -42,6 +44,23 @@ use std::time::{Duration, Instant};
 /// because the cost of waiting is a slower boot and the cost of giving up early is
 /// a checkout that reads as dead while its daemon is fine.
 const READY_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// How many of the child's stderr lines to keep back for a failure message.
+///
+/// **Its stderr is the only place some failures exist.** A daemon that dies before
+/// `logging::init` finishes — a refused code signature, a missing dynamic library,
+/// an `exec` the kernel killed — writes no log line at all, so the file the host
+/// points at is empty and the pipe held the whole diagnosis. Bounded rather than
+/// whole, because this is kept for a process that may run for days.
+const STDERR_KEPT: usize = 20;
+
+/// How long to keep asking for an exited child's status.
+///
+/// `try_wait` right after stdout EOF can still answer `None`: the last write and
+/// the exit are two events, and on a loaded machine they are not the same
+/// microsecond. Answering "still running" there would put the wrong sentence in
+/// front of the one person who needs the right one.
+const FATE_GRACE: Duration = Duration::from_millis(500);
 
 /// How long a stop waits before it stops asking.
 ///
@@ -143,11 +162,41 @@ impl Child {
 /// them WebKit and GTK — to serve a page it never serves, and per-exec cost is
 /// exactly what a Mac pays dearly for.
 pub fn daemon_binary() -> PathBuf {
-    let beside = std::env::current_exe()
-        .ok()
-        .and_then(|exe| exe.parent().map(|dir| dir.join("orchd")))
+    let beside = std::env::current_exe().ok();
+    let (exe, found) = daemon_binary_beside(beside.as_deref());
+    /* **The fallback is said out loud, because it is the one that fails later.**
+    `orchd` alone is a PATH lookup, and a PATH that has no `orchd` turns into
+    `starting orchd for <checkout>: No such file or directory` at spawn — the
+    2026-09-14 half of #18, where the only clue that the lookup had missed was
+    that the binary in the message had no directory in front of it. An install
+    whose layout moved says so here instead, one line before the failure. */
+    if !found {
+        tracing::warn!(
+            beside = ?beside,
+            "no `orchd` beside this executable; falling back to PATH, and a PATH \
+             without it will fail every checkout at spawn"
+        );
+    }
+    exe
+}
+
+/// The choice on its own, with the running executable handed in.
+///
+/// Split so a test can drive both arms: `current_exe` is the process's own and
+/// there is no setting it, so the interesting case — an install where the two
+/// binaries are no longer siblings — is otherwise unreachable from a test.
+///
+/// Answers where to exec and whether that was the sibling, because the caller
+/// wants to say which it got.
+fn daemon_binary_beside(running: Option<&Path>) -> (PathBuf, bool) {
+    let beside = running
+        .and_then(Path::parent)
+        .map(|dir| dir.join("orchd"))
         .filter(|p| p.is_file());
-    beside.unwrap_or_else(|| PathBuf::from("orchd"))
+    match beside {
+        Some(p) => (p, true),
+        None => (PathBuf::from("orchd"), false),
+    }
 }
 
 /// Start a daemon for one checkout and wait for it to say it is serving.
@@ -205,7 +254,13 @@ pub fn launch_at(
         .arg("--announce")
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::inherit());
+        /* **Piped, and it used to be inherited.** A host started from a launcher
+        has no stderr of its own, so a child's went to `/dev/null` — and that is
+        where the whole diagnosis went for a daemon that died before its log
+        file existed (#18: 644 ms, no log line, and a message that named
+        nothing). Drained on its own thread below, because a pipe nobody reads
+        fills and then blocks the daemon writing into it. */
+        .stderr(std::process::Stdio::piped());
     // Its own process group, so a signal aimed at the child cannot reach the host,
     // and so the group is there to sweep when the leader has been reaped.
     // The person's answer to "resume what was live here?", travelling to the one
@@ -228,18 +283,40 @@ pub fn launch_at(
         .stdout
         .take()
         .context("the child has no stdout to read")?;
+    let stderr = child
+        .stderr
+        .take()
+        .context("the child has no stderr to read")?;
+    let said = drain_stderr(stderr, pid);
 
-    // Read the ready line here rather than on the observer thread: a launch that
-    // cannot report a port has failed, and the caller is the one that can say so.
-    let mut lines = BufReader::new(stdout).lines();
-    let ready = match read_ready(&mut lines, pid) {
+    /* **Read on a thread, received with a deadline.** This used to iterate the
+    child's lines here, and the deadline was checked *after* each line arrived —
+    so a child that was alive and silent parked this thread for ever and
+    [`READY_TIMEOUT`] could not fire at all. The pump turns "no line yet" into
+    something a timeout can observe, and the observer below drains the same
+    channel afterwards, so there is still exactly one reader of that pipe. */
+    let lines = pump_stdout(stdout);
+    let ready = match read_ready(&lines, pid, READY_TIMEOUT) {
         Ok(r) => r,
-        Err(e) => {
+        Err(unready) => {
+            // Asked before the kill below, or the only status this can report is
+            // the signal it is about to send.
+            let fate = fate_of(&mut child, unready.child_may_have_exited());
             // Nothing has been recorded yet, so the failed child has to go here or
             // it is a process nobody is watching.
             crate::pty::signal_group_of(pid, libc::SIGKILL);
             let _ = child.wait();
-            return Err(e);
+            /* **Everything the caller needs to act, in one sentence.** The host
+            shows this string and nothing else, and a person reading "the daemon
+            never said it was ready" has no next step — not the exit status, not
+            the stderr that named the real cause, and not even the path of the
+            log to go and read. */
+            bail!(
+                "{unready}{}{}; its log is at {}",
+                fate,
+                kept_stderr(&said),
+                state.join("orchd.log").display()
+            );
         }
     };
 
@@ -257,12 +334,8 @@ pub fn launch_at(
                 // prints after `ready` is not lost to a full pipe — a blocked write
                 // in a daemon is worse than a noisy log.
                 for line in lines {
-                    match line {
-                        Ok(text) if !text.is_empty() => {
-                            tracing::info!(pid, "checkout daemon: {text}")
-                        }
-                        Ok(_) => {}
-                        Err(_) => break,
+                    if !line.is_empty() {
+                        tracing::info!(pid, "checkout daemon: {line}");
                     }
                 }
                 let code = child.wait().ok().and_then(|s| s.code());
@@ -291,28 +364,178 @@ pub fn launch_at(
     })
 }
 
+/// Why a launch had no `ready` line, which is the thing the old message left out.
+///
+/// Three outcomes, not one, because the next step differs for each: a child that
+/// closed its stdout has a status and probably some stderr, a child still running
+/// after [`READY_TIMEOUT`] is wedged rather than broken, and a pipe that failed to
+/// read is the host's own problem.
+#[derive(Debug)]
+enum Unready {
+    /// The child's stdout closed without a `ready` line.
+    Gone,
+    /// The child is alive and has said nothing for this long.
+    Silent(Duration),
+    /// Reading the pipe itself failed.
+    Unreadable(String),
+}
+
+impl Unready {
+    /// Whether it is worth waiting a moment for an exit status.
+    ///
+    /// Only [`Self::Gone`] means the child was on its way out; polling a `Silent`
+    /// one is [`FATE_GRACE`] spent to learn what is already known.
+    fn child_may_have_exited(&self) -> bool {
+        matches!(self, Self::Gone)
+    }
+}
+
+impl std::fmt::Display for Unready {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            // The wording the host has shown since this existed, kept because it
+            // is the sentence in every report and every test.
+            Self::Gone => write!(f, "the daemon never said it was ready"),
+            Self::Silent(d) => write!(
+                f,
+                "the daemon never said it was ready within {}s and is still running",
+                d.as_secs()
+            ),
+            Self::Unreadable(e) => write!(f, "could not read the daemon's first line: {e}"),
+        }
+    }
+}
+
+/// Read the child's stdout on its own thread, one line per message.
+///
+/// **A blocking read cannot be given a deadline, and a channel can.** That is the
+/// whole reason this thread exists — see the call site. The sender is dropped when
+/// the pipe ends, which is the EOF the receiver sees as a disconnect.
+fn pump_stdout(stdout: std::process::ChildStdout) -> Receiver<String> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    // Detached on purpose: it ends with the pipe, and nothing waits for it.
+    std::thread::spawn(move || {
+        for line in BufReader::new(stdout).lines() {
+            let Ok(line) = line else { break };
+            if tx.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    rx
+}
+
+/// Keep the child's stderr, and log it as it arrives.
+///
+/// Both halves matter. The log line is for a failure that happens later, when
+/// there is a checkout to attach it to; the kept ring is for a failure that
+/// happens *now*, before the child has a log file of its own.
+fn drain_stderr(stderr: std::process::ChildStderr, pid: u32) -> Arc<Mutex<VecDeque<String>>> {
+    let kept = Arc::new(Mutex::new(VecDeque::new()));
+    let mine = kept.clone();
+    std::thread::spawn(move || {
+        for line in BufReader::new(stderr).lines() {
+            let Ok(line) = line else { break };
+            if line.is_empty() {
+                continue;
+            }
+            tracing::warn!(pid, "checkout daemon said: {line}");
+            let mut kept = mine.lock().unwrap_or_else(|p| p.into_inner());
+            if kept.len() == STDERR_KEPT {
+                kept.pop_front();
+            }
+            kept.push_back(line);
+        }
+    });
+    kept
+}
+
+/// The kept stderr, as a clause to append to a failure, or nothing.
+fn kept_stderr(kept: &Mutex<VecDeque<String>>) -> String {
+    let kept = kept.lock().unwrap_or_else(|p| p.into_inner());
+    if kept.is_empty() {
+        return String::new();
+    }
+    format!(
+        "; it said: {}",
+        kept.iter().cloned().collect::<Vec<_>>().join(" | ")
+    )
+}
+
+/// What became of the child, as a clause to append to a failure, or nothing.
+///
+/// **A signal is not a code**, and conflating them is what hides the case this was
+/// written for: a binary the kernel refuses leaves no exit code at all, only
+/// `SIGKILL`, and `ExitStatus::code` answers `None` for it — which read as "no
+/// status" and printed nothing.
+fn fate_of(child: &mut std::process::Child, wait_a_moment: bool) -> String {
+    let deadline = Instant::now()
+        + if wait_a_moment {
+            FATE_GRACE
+        } else {
+            Duration::ZERO
+        };
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                if let Some(code) = status.code() {
+                    return format!(" (it exited with code {code})");
+                }
+                #[cfg(unix)]
+                {
+                    use std::os::unix::process::ExitStatusExt;
+                    if let Some(sig) = status.signal() {
+                        return format!(" (it was killed by signal {sig})");
+                    }
+                }
+                return " (it exited without a status)".to_string();
+            }
+            Ok(None) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            Ok(None) => return " (it was still running)".to_string(),
+            Err(e) => return format!(" (its status could not be read: {e})"),
+        }
+    }
+}
+
 /// The one line a child prints for its parent: `ready <port> <token>`.
 ///
 /// Anything else on the way is logged and skipped, because the child's own
 /// subscriber writes to stdout too and a strict reader would fail on the first
 /// warning it happened to print first.
-fn read_ready(
-    lines: &mut std::io::Lines<BufReader<std::process::ChildStdout>>,
-    pid: u32,
-) -> Result<Ready> {
-    let deadline = Instant::now() + READY_TIMEOUT;
-    for line in lines.by_ref() {
-        let line = line.context("reading the daemon's first line")?;
+///
+/// **The deadline is on the wait, not on the lines.** It used to be tested inside
+/// the loop body, so it could only fire *after* a line arrived — a child that
+/// printed nothing and stayed alive was waited on for ever, and the timeout was
+/// unreachable code that read as a guarantee.
+fn read_ready(lines: &Receiver<String>, pid: u32, patience: Duration) -> Result<Ready, Unready> {
+    let deadline = Instant::now() + patience;
+    loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        let line = match lines.recv_timeout(left) {
+            Ok(line) => line,
+            Err(RecvTimeoutError::Timeout) => return Err(Unready::Silent(patience)),
+            Err(RecvTimeoutError::Disconnected) => return Err(Unready::Gone),
+        };
         if let Some(rest) = line.strip_prefix("ready ") {
             let mut parts = rest.split_whitespace();
-            let port = parts
-                .next()
-                .and_then(|p| p.parse::<u16>().ok())
-                .with_context(|| format!("a ready line with no port: {line}"))?;
-            let token = parts
-                .next()
-                .with_context(|| format!("a ready line with no token: {line}"))?
-                .to_string();
+            let port = match parts.next().and_then(|p| p.parse::<u16>().ok()) {
+                Some(port) => port,
+                None => {
+                    return Err(Unready::Unreadable(format!(
+                        "a ready line with no port: {line}"
+                    )))
+                }
+            };
+            let token = match parts.next() {
+                Some(token) => token.to_string(),
+                None => {
+                    return Err(Unready::Unreadable(format!(
+                        "a ready line with no token: {line}"
+                    )))
+                }
+            };
             // Optional, and the one field that may be absent: a checkout with no
             // matching remote has no repository identity, and that is an ordinary
             // local-only checkout rather than a malformed line.
@@ -322,11 +545,7 @@ fn read_ready(
         if !line.is_empty() {
             tracing::info!(pid, "checkout daemon: {line}");
         }
-        if Instant::now() > deadline {
-            break;
-        }
     }
-    bail!("the daemon never said it was ready")
 }
 
 /// What the fourth field says when the checkout has no repository identity.
@@ -519,5 +738,113 @@ mod tests {
             format!("{err:#}").contains("never said it was ready"),
             "the failure did not say what was missing: {err:#}"
         );
+    }
+
+    /// **The failure has to carry the diagnosis, because nothing else will.**
+    ///
+    /// #18 is this test: a daemon that died in 644 ms, a host that said only "the
+    /// daemon never said it was ready", and a log file that was empty because the
+    /// child never got as far as writing one. The exit status was in hand and
+    /// dropped, the stderr went to an inherited descriptor that a launcher-started
+    /// app does not have, and the log path was never printed — so the one person
+    /// who could act had nothing to act on.
+    #[test]
+    fn a_failed_launch_names_the_status_the_stderr_and_the_log() {
+        let exe = stub("echo 'libxcrun is missing' >&2\nexit 9");
+        let repo = crate::testutil::scratch("child-diagnosis");
+        let err = launch_stub(&exe, &repo, |_, _, _| {}).expect_err("a dying child launched");
+        let said = format!("{err:#}");
+        assert!(said.contains("code 9"), "no exit status: {said}");
+        assert!(said.contains("libxcrun is missing"), "no stderr: {said}");
+        assert!(said.contains("orchd.log"), "no log path: {said}");
+    }
+
+    /// A child killed by a signal has no exit code, and that is the case to name.
+    ///
+    /// The shape #18 most likely was — a binary the kernel refused — leaves
+    /// `ExitStatus::code() == None`, which the first version of this reported as no
+    /// status at all.
+    #[cfg(unix)]
+    #[test]
+    fn a_child_the_kernel_killed_reports_its_signal_rather_than_nothing() {
+        let exe = stub("kill -9 $$");
+        let repo = crate::testutil::scratch("child-signal");
+        let err = launch_stub(&exe, &repo, |_, _, _| {}).expect_err("a killed child launched");
+        let said = format!("{err:#}");
+        assert!(
+            said.contains("signal 9"),
+            "the signal was not named: {said}"
+        );
+    }
+
+    /// **A silent, living child must fail the launch, not park the thread.**
+    ///
+    /// The deadline used to be checked inside the read loop, so it could only fire
+    /// after a line arrived — which meant a child that printed nothing and stayed
+    /// alive was waited on for ever, and `READY_TIMEOUT` was unreachable code that
+    /// read as a guarantee. Driven through `read_ready` with a short patience
+    /// rather than through `launch_at`, because the real one is 60 seconds.
+    ///
+    /// **Answered over a channel, not asserted in place**, because the regression
+    /// this guards against does not return a wrong value — it never returns. A
+    /// test that called `read_ready` directly would hang the whole binary and read
+    /// as a CI timeout, which is the report nobody can act on. This one fails.
+    #[test]
+    fn a_child_that_stays_silent_and_alive_times_out_rather_than_hanging() {
+        let (answer, answered) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            // The sender is held for the whole call: dropping it would be EOF,
+            // which is the *other* failure and the one that already worked.
+            let (_tx, rx) = std::sync::mpsc::channel::<String>();
+            let _ = answer.send(format!(
+                "{}",
+                read_ready(&rx, 0, Duration::from_millis(200))
+                    .map(|r| r.port)
+                    .expect_err("a silent child reported ready")
+            ));
+        });
+        let said = answered
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the read never honoured its deadline");
+        assert!(
+            said.contains("still running"),
+            "the message does not tell a wedged daemon from a dead one: {said}"
+        );
+    }
+
+    /// Prose before the ready line is still skipped, now that a deadline is running.
+    #[test]
+    fn the_deadline_does_not_eat_a_ready_line_that_arrives_after_chatter() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        tx.send("logging to somewhere".to_string()).unwrap();
+        tx.send("ready 4242 tok -".to_string()).unwrap();
+        let ready = read_ready(&rx, 0, Duration::from_secs(5)).expect("ready");
+        assert_eq!(ready.port, 4242);
+        assert_eq!(ready.repo, None);
+    }
+
+    /// **The sibling binary wins, and the PATH fallback is visible.**
+    ///
+    /// The 2026-09-14 half of #18 was `starting orchd for <checkout>: No such file
+    /// or directory` — a bare `orchd`, which is this function's fallback, and the
+    /// only sign that the sibling lookup had missed.
+    #[test]
+    fn the_daemon_binary_prefers_its_sibling_and_says_when_it_has_none() {
+        let dir = crate::testutil::scratch("daemon-binary");
+        let running = dir.join("orchestrator-desktop");
+        std::fs::write(&running, "").unwrap();
+
+        // No sibling yet: a PATH lookup, and the caller is told.
+        let (exe, found) = daemon_binary_beside(Some(&running));
+        assert!(!found);
+        assert_eq!(exe, PathBuf::from("orchd"));
+
+        std::fs::write(dir.join("orchd"), "").unwrap();
+        let (exe, found) = daemon_binary_beside(Some(&running));
+        assert!(found, "the sibling was there and was not used");
+        assert_eq!(exe, dir.join("orchd"));
+
+        // An executable path nobody could resolve is the fallback too, not a panic.
+        assert_eq!(daemon_binary_beside(None), (PathBuf::from("orchd"), false));
     }
 }

@@ -161,14 +161,25 @@ fn is_work_tree(dir: &Path) -> WorkTree {
     }
 }
 
-/// Whether this process is being translated — Rosetta, on Apple Silicon.
+/// What is running under Rosetta: nothing, this app, or only what it starts.
 ///
-/// **The cause of a whole class of failures that name something else.** Every
-/// child inherits the preference, so a translated app runs a translated `git`,
-/// which calls `xcrun`, which cannot load an arm64-only `libxcrun.dylib`. The
-/// report that brought this in read `unable to load libxcrun … missing compatible
-/// architecture (have 'arm64,arm64e', need 'x86_64')`, and the app's own
-/// conclusion was that the checkout was not a git work tree.
+/// **Three answers, because the remedy differs and the old one had a single
+/// answer with the wrong remedy attached.** #18 came from a Mac where all three
+/// binaries were arm64 and `git` still failed with `need 'x86_64'`: the app was
+/// native and the processes it started were not. The warning said "this app is
+/// running under Rosetta" and sent the reporter to Finder ▸ Get Info on an
+/// install that has no `.app` bundle at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Translation {
+    /// Nothing is translated, or this is not an Apple Silicon Mac.
+    None,
+    /// This process is translated, and so is everything it starts.
+    App,
+    /// This process is native and the processes it starts are not.
+    Children,
+}
+
+/// Whether a process this app *starts* is being translated.
 ///
 /// **`sysctl` the command, not `sysctlbyname` the call**, which is the one
 /// decision here worth writing down. The FFI version is one call and needs
@@ -178,13 +189,17 @@ fn is_work_tree(dir: &Path) -> WorkTree {
 /// One exec on a start that already makes eleven, on macOS only, is the cheaper
 /// trade.
 ///
+/// **And the spawn is what makes the answer useful rather than a bug.**
+/// `sysctl.proc_translated` is *per process*, so asking it through a child
+/// answers for the child — which is the process class that actually matters here,
+/// because the failure is always a child (`git`) and never this process. What the
+/// spawn cannot tell you is whether *this* process is translated too, and
+/// [`translation_from`] gets that from the architecture this binary was built for.
+///
 /// `sysctl.proc_translated` does not exist on an Intel Mac, where `sysctl` exits
 /// non-zero — read as "not translated", which is correct there.
-///
-/// **A warning, not a refusal**, like everything else here: the app itself runs,
-/// and somebody whose git works anyway should not be stopped.
 #[cfg(target_os = "macos")]
-fn translated() -> bool {
+fn child_translated() -> bool {
     std::process::Command::new("sysctl")
         .args(["-n", "sysctl.proc_translated"])
         .output()
@@ -192,8 +207,51 @@ fn translated() -> bool {
 }
 
 #[cfg(not(target_os = "macos"))]
-fn translated() -> bool {
+fn child_translated() -> bool {
     false
+}
+
+/// Fold the two observations into the one that has a remedy.
+///
+/// `arch` is [`std::env::consts::ARCH`] — what this binary was *built* for, which
+/// is the half a spawned `sysctl` cannot report. An `aarch64` build cannot be
+/// translated, so a translated child under one means the x86_64 preference was
+/// inherited from whatever launched this app rather than chosen for it.
+fn translation_from(arch: &str, child_translated: bool) -> Translation {
+    if !child_translated {
+        return Translation::None;
+    }
+    if arch == "x86_64" {
+        Translation::App
+    } else {
+        Translation::Children
+    }
+}
+
+/// The warning for a translation state, or `None` when there is nothing to say.
+///
+/// Its own function so the wording is testable: the defect this replaces was
+/// never in the detection, it was in the sentence, and a sentence no test reads
+/// is a sentence that can say anything.
+pub(crate) fn translation_warning(t: Translation) -> Option<Warning> {
+    match t {
+        Translation::None => None,
+        Translation::App => Some(Warning {
+            what: "this app is running under Rosetta on an Apple Silicon Mac".into(),
+            cost: "every process it starts inherits x86_64, so `git` fails to load \
+                   `libxcrun` and nothing that reads the repository works; run the arm64 \
+                   build — for an app bundle, Finder ▸ Get Info ▸ uncheck \"Open using \
+                   Rosetta\""
+                .into(),
+        }),
+        Translation::Children => Some(Warning {
+            what: "this app is native, but every process it starts runs under Rosetta".into(),
+            cost: "the x86_64 preference was inherited from whatever launched it, so `git` \
+                   fails to load `libxcrun` and nothing that reads the repository works; \
+                   start the app from a native arm64 shell, or with `arch -arm64`"
+                .into(),
+        }),
+    }
 }
 
 /// Whether Claude Code has been trusted in this directory.
@@ -288,14 +346,10 @@ pub fn check(cfg: &Config, tracker_server: Option<&str>) -> Vec<Warning> {
     /* Named before the git warning above would be read, because it *explains* it.
     A translated process runs a translated `git`, and on Apple Silicon that git
     cannot load `libxcrun`. */
-    if translated() {
-        out.push(Warning {
-            what: "this app is running under Rosetta on an Apple Silicon Mac".into(),
-            cost: "every process it starts inherits x86_64, so `git` fails to load \
-                   `libxcrun` and nothing that reads the repository works; open it \
-                   natively (Finder ▸ Get Info ▸ uncheck \"Open using Rosetta\")"
-                .into(),
-        });
+    if let Some(w) =
+        translation_warning(translation_from(std::env::consts::ARCH, child_translated()))
+    {
+        out.push(w);
     }
 
     // Not fatal on its own: the daemon reaches GitHub with `curl`, and only the
@@ -503,5 +557,65 @@ mod tests {
         // direction of the default, which is "say nothing" rather than "warn".
         assert!(on_path("sh"));
         assert!(!on_path("orchd-definitely-not-a-real-binary"));
+    }
+
+    /// An arm64 build with a translated child is not an app running under Rosetta.
+    ///
+    /// The whole of #18's second problem, as a table. The detection was right and
+    /// the conclusion was wrong: a spawned `sysctl` answers for the *child*, so
+    /// "the child is translated" was read as "this app is translated" — and on an
+    /// `aarch64` binary that is impossible.
+    #[test]
+    fn a_native_build_with_a_translated_child_is_not_an_app_under_rosetta() {
+        use Translation::{App, Children, None as Native};
+        for (arch, child, want) in [
+            ("aarch64", false, Native),
+            ("x86_64", false, Native),
+            ("aarch64", true, Children),
+            ("x86_64", true, App),
+        ] {
+            assert_eq!(
+                translation_from(arch, child),
+                want,
+                "{arch} with child_translated={child}"
+            );
+        }
+    }
+
+    /// Advice that names a thing the reader may not have is advice that costs a day.
+    ///
+    /// **The sentence is the deliverable here, so the sentence is what is asserted.**
+    /// The reporter was sent to Finder ▸ Get Info for an install that is three
+    /// binaries under `~/.local/share/mise`, with no bundle to get info on. So the
+    /// bundle-only remedy may only appear where the app itself is translated, and
+    /// the inherited case has to name what it actually is.
+    #[test]
+    fn each_translation_warning_names_a_remedy_that_fits_its_case() {
+        assert!(translation_warning(Translation::None).is_none());
+
+        let app = translation_warning(Translation::App).expect("a translated app is a warning");
+        assert!(
+            app.cost.contains("app bundle"),
+            "the bundle remedy must say it is for a bundle: {}",
+            app.cost
+        );
+
+        let kids =
+            translation_warning(Translation::Children).expect("translated children are a warning");
+        assert!(
+            !kids.what.contains("this app is running under Rosetta"),
+            "a native app must not be told it is translated: {}",
+            kids.what
+        );
+        assert!(
+            kids.cost.contains("arch -arm64"),
+            "the inherited case has no bundle to fix, so it needs the shell remedy: {}",
+            kids.cost
+        );
+        // Both still name the symptom the person actually sees, which is the only
+        // reason either warning is read at all.
+        for w in [&app, &kids] {
+            assert!(w.cost.contains("libxcrun"), "{}", w.cost);
+        }
     }
 }

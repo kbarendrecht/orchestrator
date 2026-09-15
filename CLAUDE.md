@@ -253,6 +253,8 @@ together: same entries, same order, same groups.
 - The app is the host, and every checkout is a child `orchd`.
 - First run is a screen, not a second application.
 - The page is served by `host.rs`, not by the daemon.
+- A child that will not start leaves one sentence, and it used to name nothing.
+- A deadline checked after a blocking read is not a deadline.
 
 ### The gates, and what each one caught
 
@@ -389,6 +391,7 @@ together: same entries, same order, same groups.
 - Pushes are guarded, by two halves that must agree.
 - A macOS runner can open the window, and it still cannot be clicked by name.
 - A `rust-toolchain.toml` is a no-op here, and silently.
+- A spawned `sysctl` answers for the child, not for this process.
 
 ### The crates, and what a move breaks
 

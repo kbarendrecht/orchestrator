@@ -26,6 +26,8 @@
 //!  6. The instance lock now guards the **checkout**: a second daemon for one
 //!     checkout is refused, which is the invariant `instance.rs` always claimed
 //!     and could not keep while the lock lived one level up.
+//!  7. That refusal names the daemon's exit status, its own stderr and its log
+//!     path — the three things #18 had to be diagnosed without.
 // A test binary, so a panic is how a failure is reported. `clippy.toml`'s
 // `allow-*-in-tests` covers `#[test]` functions and `#[cfg(test)]` modules, and
 // the helpers in an integration crate are neither.
@@ -171,6 +173,26 @@ async fn a_host_serves_the_page_for_a_checkout_its_child_manages() {
     assert!(
         refusal.contains("never said it was ready"),
         "the second daemon failed for some other reason: {refusal}"
+    );
+    /* **7 — and the refusal has to be actionable**, which for a long time it was
+    not: this string is the whole of what the host shows, and "the daemon never
+    said it was ready" on its own leaves nobody a next step. That is #18. Asserted
+    here rather than only in `child.rs` because the unit tests drive a shell stub,
+    and what had to be proved is that a *real* daemon's reason survives the trip —
+    its stderr is the only place an `anyhow` chain out of `main` exists, and it
+    used to be written to an inherited descriptor that a launcher-started app does
+    not have. */
+    assert!(
+        refusal.contains("exited with code 1"),
+        "the refusal does not say what became of the daemon: {refusal}"
+    );
+    assert!(
+        refusal.contains("already running"),
+        "the daemon's own reason did not survive its stderr: {refusal}"
+    );
+    assert!(
+        refusal.contains("orchd.log"),
+        "the refusal does not say where to read more: {refusal}"
     );
     // And the first one is untouched by the attempt.
     assert!(

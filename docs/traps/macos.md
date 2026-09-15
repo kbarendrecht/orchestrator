@@ -139,3 +139,25 @@ on mise's `rust = "latest"`. The drift that leaves runs the harmless way round: 
 developer on a newer rustc meets a new clippy lint *before* CI does, rather than
 CI failing on a commit that touched no Rust. Collapsing it to one source of truth
 means provisioning Rust through mise in CI too.
+
+## A spawned `sysctl` answers for the child, not for this process.
+`sysctl.proc_translated` is a **per-process** sysctl, and the translation check
+reads it by spawning `sysctl` — so the answer is the *child's*. That is the right
+measurement and it had the wrong conclusion bolted to it: "a translated child" was
+reported as "this app is running under Rosetta", and the remedy offered was Finder
+▸ Get Info ▸ uncheck "Open using Rosetta".
+Issue #18 is the case that separates them. All three binaries were arm64, `file`
+said so, and `git` still failed with `unable to load libxcrun … need 'x86_64'`. An
+arm64-only binary cannot be translated, so the app was native and the processes it
+started were not: the x86_64 preference came from whatever launched it. The
+reporter was sent to an app bundle that does not exist — it was a mise install,
+three binaries under `~/.local/share/mise`.
+The spawn stays, because the child is the process class that actually fails; what
+was missing is `std::env::consts::ARCH`, which is the half a spawned `sysctl`
+cannot report. `aarch64` with a translated child is `Translation::Children`, and
+its remedy is a native shell or `arch -arm64`; `x86_64` with one is
+`Translation::App`, and only that arm mentions a bundle.
+**The wording is the deliverable, so the wording is what is asserted.** The defect
+was never in the detection. `translation_warning` is its own function for no
+reason other than that a sentence no test reads is a sentence that can say
+anything.
