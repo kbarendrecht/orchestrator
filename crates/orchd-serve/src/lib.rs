@@ -300,7 +300,19 @@ pub async fn start(opts: StartOptions) -> Result<Server> {
     rather than only logged, because a launcher-started app has no terminal and
     the person reading `unavailable` in the PR pane has no way to reach the log.
     Handed to the state below, as soon as there is one. */
-    let warnings = machine::check(&cfg, cfg.tracker.as_ref().map(|t| t.mcp_server.as_str()));
+    let warnings = {
+        /* Off the runtime, because every check here is a blocking `which`, a file
+        read or a `git`, and CLAUDE.md's rule about that is not a style note: a
+        `which` against a stalled mount parks the worker with no yield point, and
+        the host's own health probe of this child is on it. */
+        let (cfg2, server) = (
+            cfg.clone(),
+            cfg.tracker.as_ref().map(|t| t.mcp_server.clone()),
+        );
+        tokio::task::spawn_blocking(move || machine::check(&cfg2, server.as_deref()))
+            .await
+            .unwrap_or_default()
+    };
 
     let settings = {
         for w in &warnings {
@@ -1529,9 +1541,15 @@ fn start_stack_poller(app: Arc<AppState>) {
         let interval = std::time::Duration::from_secs(20);
         loop {
             let main = app.cfg.main_checkout.clone();
+            /* **`Some(false)` when the probe itself fails, not `None`.** `None` now
+            means "this checkout has no stack", and a panicked or cancelled
+            probe folded onto it would erase the badge from a checkout that
+            plainly has a compose file — silently, and for good, since an
+            unchanged value never notifies. A probe that did not answer is a
+            stack we cannot see, which is what down has always meant here. */
             let up = tokio::task::spawn_blocking(move || stack_running(&main))
                 .await
-                .unwrap_or(None);
+                .unwrap_or(Some(false));
             // Scoped, because the guard used to outlive the `if` and stay held
             // across the sleep below whenever the answer had not changed — which
             // is every poll, normally. That is the state write lock, so the
@@ -1565,16 +1583,23 @@ fn start_stack_poller(app: Arc<AppState>) {
 /// `docs/workspace-isolation.md` records as the portable default. The filesystem
 /// check was already here; it was the *return type* that had nowhere to put the
 /// answer.
-fn stack_running(main: &std::path::Path) -> Option<bool> {
-    let has_compose = [
+/// The four spellings docker accepts for a compose file.
+///
+/// Its own function so the list is in one place and a test can drive it without
+/// spawning `docker`.
+fn has_compose_file(main: &std::path::Path) -> bool {
+    [
         "docker-compose.yml",
         "docker-compose.yaml",
         "compose.yml",
         "compose.yaml",
     ]
     .iter()
-    .any(|f| main.join(f).exists());
-    if !has_compose {
+    .any(|f| main.join(f).exists())
+}
+
+fn stack_running(main: &std::path::Path) -> Option<bool> {
+    if !has_compose_file(main) {
         return None;
     }
     Some(
@@ -1606,13 +1631,27 @@ mod tests {
             "no compose file is no stack at all"
         );
 
-        // With one present the answer is a real probe, so it is `Some(_)` whether
-        // or not docker is installed on the machine running this.
-        std::fs::write(root.join("compose.yml"), "services: {}\n").unwrap();
-        assert!(
-            stack_running(&root).is_some(),
-            "a compose file means the question is worth asking"
-        );
+        /* **The compose-file half is deliberately not driven here.** With one
+        present `stack_running` shells out to `docker compose ps` with no deadline,
+        so a machine with the client installed and no reachable daemon can make
+        `cargo test` sit for as long as docker takes to give up — for an assertion
+        the `if !has_compose` branch above already settles. The filenames it looks
+        for are the thing worth holding, and they are held by name. */
+        for f in [
+            "docker-compose.yml",
+            "docker-compose.yaml",
+            "compose.yml",
+            "compose.yaml",
+        ] {
+            let one = root.join("only");
+            let _ = std::fs::remove_dir_all(&one);
+            std::fs::create_dir_all(&one).unwrap();
+            std::fs::write(one.join(f), "services: {}\n").unwrap();
+            assert!(
+                has_compose_file(&one),
+                "{f} must count as a compose file, or this checkout reads as having no stack"
+            );
+        }
         let _ = std::fs::remove_dir_all(&root);
     }
 

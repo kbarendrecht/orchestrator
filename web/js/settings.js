@@ -11,9 +11,19 @@ import * as Palette from './palette.js';
 
 const settingsOpen = () => !$('settings').hidden;
 
-/** The config fields this pane edits — every one of them a draft until Save. */
-const CONFIG_FIELDS = ['setlang', 'setupref', 'setupremote', 'setreviews', 'setwtsetup',
-  'setretain', 'setseveral'];
+/** The three text boxes that stand for an argv, and the config key each carries. */
+const ARGV_FIELDS = /** @type {const} */ ([
+  ['setreviews', 'reviews_command'],
+  ['setwtinit', 'worktree_init'],
+  ['setwtsetup', 'worktree_setup'],
+]);
+
+/** What each of those was when the pane last read the config, before joining.
+ *
+ *  `"a b".split(/\s+/)` cannot recover `["a b"]`, so a field the user never touched
+ *  has to go back exactly as it came. See `loadConfigInto`. */
+/** @type {Map<string, string[]>} */
+const loadedArgv = new Map();
 
 /** Whether the config half holds edits that have not been saved.
  *
@@ -99,9 +109,18 @@ async function loadConfigInto(force = false) {
     : 'none';
   ctl('setupref').value = cfg.upstream_ref || '';
   ctl('setupremote').value = cfg.upstream_remote || '';
-  ctl('setreviews').value = (cfg.reviews_command || []).join(' ');
-  ctl('setwtinit').value = (cfg.worktree_init || []).join(' ');
-  ctl('setwtsetup').value = (cfg.worktree_setup || []).join(' ');
+  /* **Remembered as they were read, because joining an argv is lossy.** A config
+     holding `["sh", "-c", "git fetch && git rebase upstream/develop"]` shows here
+     as one line, and `argv()` below would split it back into nine words — so
+     opening the pane to change the retention days and pressing Save silently
+     rewrote a working hook into `sh -c git` with the rest as positional arguments,
+     and `run_worktree_hook` is non-fatal, so nothing said so. `argvOf` sends the
+     original back whenever the text has not been touched. */
+  for (const [id, key] of ARGV_FIELDS) {
+    const was = cfg[key] || [];
+    loadedArgv.set(id, was);
+    ctl(id).value = was.join(' ');
+  }
   /* A note is prose, so it is read and written whole — `null` is the project
      saying nothing, and the box has to show that as empty rather than as the word
      "null". The write below turns an empty box back into `null` for the same
@@ -214,14 +233,21 @@ function renderProcs() {
 
 async function saveSettings() {
   const argv = (/** @type {string} */ s) => (s.trim() ? s.trim().split(/\s+/) : []);
+  /* The value to send for an argv field: what was read, unless you edited the box.
+     See `loadConfigInto` for the quoting this protects. */
+  const argvOf = (/** @type {string} */ id) => {
+    const was = loadedArgv.get(id);
+    const now = ctl(id).value;
+    return was && was.join(' ') === now ? was : argv(now);
+  };
   const list = (/** @type {string} */ s) => s.split(',').map((/** @type {string} */ x) => x.trim()).filter(Boolean);
   const body = {
     default_language: ctl('setlang').value.trim(),
     upstream_ref: ctl('setupref').value.trim(),
     upstream_remote: ctl('setupremote').value.trim(),
-    reviews_command: argv(ctl('setreviews').value),
-    worktree_init: argv(ctl('setwtinit').value),
-    worktree_setup: argv(ctl('setwtsetup').value),
+    reviews_command: argvOf('setreviews'),
+    worktree_init: argvOf('setwtinit'),
+    worktree_setup: argvOf('setwtsetup'),
     workspace_notes: {
       main: ctl('setnotemain').value.trim() || null,
       worktree: ctl('setnotetree').value.trim() || null,
@@ -566,12 +592,18 @@ function setupSettings() {
   };
   showTheme();
 
-  for (const id of CONFIG_FIELDS) ctl(id).addEventListener('input', markDirty);
-  /* Delegated, because the process rows are rebuilt on every render and binding
-     `markDirty` to each of their seven controls is seven places to forget it.
-     Folding a row open is a click on a button and raises neither event, which is
-     right: looking at a process is not editing it. */
-  for (const ev of ['input', 'change']) $('setprocs').addEventListener(ev, markDirty);
+  /* **Delegated, so a field added to the pane cannot be forgotten here.** It was a
+     list of ids, and three fields were added to the markup without being added to
+     it — so typing into any of them left `dirty` false, the foot said nothing, and
+     `loadConfigInto` overwrote the draft on the next open. Exactly the silent loss
+     the flag above exists to stop, reintroduced by an edit in another file.
+
+     One listener on the pane instead. `change` as well as `input` because a
+     checkbox raises only the first of those in some engines, and the process rows
+     are rebuilt on every render — which is the other reason this cannot be
+     per-node. Folding a row open is a click and raises neither, which is right:
+     looking at a process is not editing it. */
+  for (const ev of ['input', 'change']) $('settings').addEventListener(ev, markDirty);
   $('setdiscard').onclick = () => { dirty = false; void loadConfigInto(true); };
   $('setdiscard').title = 'Throw the unsaved edits away and read the config again';
 

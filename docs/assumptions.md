@@ -45,7 +45,7 @@ never deletes the branch, so the commits stay reachable from main.
 *Kind:* orchd's own rule, new. *Breaks:* a tree cut outside the daemon's knowledge
 and left deliberately gets removed after the retention period.
 
-**5. The teardown preflight is sufficient authorisation to remove a tree.** Six
+**5. The teardown preflight is sufficient authorisation to remove a tree.** Seven
 checks, and all three automatic paths lean on them rather than adding rules of
 their own: `api::discard_spawned`, the turnless exit, and the retention timer.
 *Kind:* orchd's own rule. *Breaks:* everything above it. This is the load-bearing

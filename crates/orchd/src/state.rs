@@ -510,11 +510,25 @@ impl AppState {
             so the pane naming it had nothing to name. Found by hiding the forge
             panes on this field and watching them vanish from a checkout whose PRs
             were being fetched. */
-            upstream: cfg.repo.clone().or_else(|| {
-                crate::forge::remote_url(&cfg.main_checkout, &cfg.upstream_remote)
-                    .and_then(|u| crate::forge::repo_from_remote(&u))
-                    .map(|(o, n)| format!("{o}/{n}"))
-            }),
+            upstream: cfg
+                .repo
+                .as_deref()
+                /* **The same `owner/name` shape `resolve_repo` insists on**, and
+                not only the same order. Taking `cfg.repo` verbatim left the two
+                disagreeing again, the other way round: a hand-edited
+                `"repo": "monorepo"` makes `resolve_repo` answer `None`, so nothing
+                is ever polled, while a truthy `Some("monorepo")` here would draw
+                the PR pane over a repository that will never be fetched. */
+                .filter(|r| {
+                    r.split_once('/')
+                        .is_some_and(|(o, n)| !o.is_empty() && !n.is_empty())
+                })
+                .map(str::to_string)
+                .or_else(|| {
+                    crate::forge::remote_url(&cfg.main_checkout, &cfg.upstream_remote)
+                        .and_then(|u| crate::forge::repo_from_remote(&u))
+                        .map(|(o, n)| format!("{o}/{n}"))
+                }),
             fork: crate::forge::remote_url(&cfg.main_checkout, "origin")
                 .and_then(|u| crate::forge::repo_from_remote(&u))
                 .map(|(o, n)| format!("{o}/{n}")),

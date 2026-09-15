@@ -126,7 +126,27 @@ function renderRail() {
      honest and the sum looked like a broken install. `repos.upstream` is the fact
      itself rather than `pr_error`, which is a sentence and would have to be matched
      as one. The review queue hides itself on the same signal — see `queue.js`. */
-  $('prpane').replaceChildren(snap.repos?.upstream ? prGroup() : noForge());
+  /* **A checkout with no forge draws one line, not a pane.** With no GitHub remote
+     the PR pane read `unavailable` — a header, a count, a refresh button and a
+     caret, all of them chrome around "this does not apply here", and beside a
+     review queue saying the same thing it made a fresh install look broken.
+     `repos.upstream` is the fact itself rather than `pr_error`, which is a sentence
+     and would have to be matched as one. The review queue answers a *different*
+     question and hides itself on its own signal — a repo with its own
+     `reviews_command` has a queue and no forge — so see `queue.js` rather than
+     assuming this decides both. */
+  const prpane = $('prpane');
+  if (snap.repos?.upstream) {
+    prpane.replaceChildren(prGroup());
+  } else {
+    /* The band is set on the pane itself by `prGroup`, so the arm that does not
+       call it has to take it off: with two checkouts open, the one-line notice
+       otherwise wears the previous checkout's colour — which is the one thing the
+       band exists to say. */
+    prpane.classList.remove('pr-of-checkout');
+    prpane.style.removeProperty('--band');
+    prpane.replaceChildren(noForge());
+  }
 }
 
 /** `+ open project`, and the menu of ways to name one.
@@ -220,8 +240,8 @@ async function addCheckout(/** @type {string} */ path, /** @type {boolean | unde
 /** Close a checkout, or start its daemon again when it is down.
  *
  *  Symmetric down to the last one, which is the host's rule and not the page's to
- *  soften: an empty host is the first-run page. Confirmed, because the terminals
- *  of every session in it go.
+ *  soften: an empty host is the first-run page. It does not ask — the body says
+ *  why, and `confirmBox` in `core.js` carries the rule.
  *
  *  @param {import('./core.js').Target} c
  */
@@ -296,16 +316,19 @@ let rowDrag = null;
  *  @param {import('../snapshot').SessionView[]} list
  */
 function inRailOrder(path, list) {
+  /** @type {string[]} */
   const order = sessionOrder[path] ?? [];
   if (!order.length) return list.slice().sort(byNewest);
-  return list.slice().sort((a, b) => {
-    const ia = order.indexOf(a.id);
-    const ib = order.indexOf(b.id);
-    if (ia < 0 && ib < 0) return byNewest(a, b);
-    if (ia < 0) return 1;
-    if (ib < 0) return -1;
-    return ia - ib;
-  });
+  // Built once rather than `indexOf` per comparison, which walks the list again
+  // for every pair the sort looks at.
+  const at = new Map(order.map((id, i) => [id, i]));
+  /* A session the order has never seen ranks **above** every placed row, not
+     below. `created_ms` is an age, so `byNewest` ascending is newest first — and a
+     worktree you have just cut is the newest thing there is. Sent to the bottom it
+     dropped off the end of an eight-row rail the moment it appeared, and a single
+     drag made that permanent for the checkout. */
+  const rank = (/** @type {import('../snapshot').SessionView} */ s) => at.get(s.id) ?? -1;
+  return list.slice().sort((a, b) => rank(a) - rank(b) || byNewest(a, b));
 }
 
 /** Move one row to where another sits, and remember the whole list.
@@ -318,14 +341,18 @@ function inRailOrder(path, list) {
  *  @param {string} path
  *  @param {string} moved
  *  @param {string} onto
+ *  @param {boolean} after whether the pointer was past the target row's middle
  *  @param {import('../snapshot').SessionView[]} shown
  */
-function dropSessionRow(path, moved, onto, shown) {
+function dropSessionRow(path, moved, onto, after, shown) {
   const ids = shown.map((s) => s.id).filter((id) => id !== moved);
   const at = ids.indexOf(onto);
-  // Before the row it was dropped on, in both directions — the same rule
-  // `startTabDrag` uses, so there is no up/down special case.
-  ids.splice(at < 0 ? ids.length : at, 0, moved);
+  /* **Which side of the row you let go on**, which is what makes the bottom of the
+     list reachable at all. It landed before the target in both directions, so a
+     drop on the last row put the moved one second-from-last and no gesture could
+     put it last — while the comment claimed parity with `startTabDrag`, whose
+     `placeAt` compares against each tab's *middle* and appends past the final one. */
+  ids.splice(at < 0 ? ids.length : at + (after ? 1 : 0), 0, moved);
   setSessionOrder(path, ids);
   renderRail();
 }
@@ -629,11 +656,15 @@ async function startHandleReview(/** @type {number} */ number, /** @type {HTMLBu
  *  triggering by hand. */
 function actionButton(/** @type {import('../snapshot').PrView} */ p, /** @type {string} */ action, /** @type {string} */ label) {
   const b = el('button', 'pract', label);
-  // `snap.upstream_ref` rather than a literal: this said "Rebase on develop" on
-  // every repo, which is one checkout's base branch written into a tooltip. The
-  // divergence strip learned the same lesson — see `upstream_ref` in the snapshot.
-  b.title = `Rebase on ${snap.upstream_ref || 'its base'}, fix what CI says, push`
-    + ' — in a pane you can take over';
+  /* **The PR's own base, not the checkout's default.** This said "Rebase on
+     develop" on every repo, and `snap.upstream_ref` was only half a fix: the run
+     this describes resolves `rebase_target`, which takes the PR's `base_ref` and
+     falls back to `upstream_ref` only when the poller does not know one. A PR
+     against a release branch, or stacked on another PR's head, would be promised
+     one ancestor and force-pushed onto another — and this is the one button here
+     that rewrites published history. */
+  b.title = `Rebase on ${p.base_ref || snap.upstream_ref || 'its base'},`
+    + ' fix what CI says, push — in a pane you can take over';
   b.onclick = async (ev) => {
     ev.preventDefault();
     ev.stopPropagation();
@@ -659,9 +690,13 @@ function actionButton(/** @type {import('../snapshot').PrView} */ p, /** @type {
  *  that *should* have a remote and does not is worth one sentence; silence there
  *  would read as the panes having been removed. */
 function noForge() {
-  const line = el('div', 'noforge',
-    'No GitHub remote here, so the PR and review panes are off.');
-  line.title = 'Set the upstream remote in settings, or add one to this checkout';
+  /* **The PR pane only.** The review queue has its own answer — a checkout with a
+     `reviews_command` has a queue and no forge — and this line used to claim both. */
+  const line = el('div', 'noforge', 'No GitHub remote here, so the PR pane is off.');
+  /* **"then restart" is not padding.** `repos` is built once in `AppState::new`,
+     so adding the remote does not bring the pane back on its own, and advice that
+     does not work is worse than none. */
+  line.title = 'Add an upstream remote, or set one in settings, then restart the app';
   return line;
 }
 
@@ -928,15 +963,20 @@ function checkoutSessions(/** @type {import('./core.js').Target} */ c, /** @type
     // No `preventDefault` is the refusal: the pointer keeps the no-drop cursor
     // over a row in another checkout or the other run, so the gesture says so
     // before it is let go.
-    row.ondragover = (ev) => {
-      if (rowDrag && rowDrag.path === c.path && rowDrag.list === list) ev.preventDefault();
-    };
+    /* One predicate for both handlers. It was written twice — once here and once
+       with `moved.id !== s.id` bolted on in `ondrop` — which is two places to edit
+       when a third run or a third refusal arrives, and a drop the two disagree
+       about would write another checkout's ids into this one's order. */
+    const accepts = (/** @type {typeof rowDrag} */ d) => !!d && d.path === c.path && d.list === list;
+    row.ondragover = (ev) => { if (accepts(rowDrag)) ev.preventDefault(); };
     row.ondrop = (ev) => {
       ev.preventDefault();
       const moved = rowDrag;
       rowDrag = null;
-      if (moved && moved.id !== s.id && moved.path === c.path && moved.list === list) {
-        dropSessionRow(c.path, moved.id, s.id, shown);
+      if (moved && accepts(moved) && moved.id !== s.id) {
+        // Past the middle means after, which is the only way to reach the bottom.
+        const box = row.getBoundingClientRect();
+        dropSessionRow(c.path, moved.id, s.id, ev.clientY > box.top + box.height / 2, shown);
       } else {
         renderRail();
       }
@@ -1421,8 +1461,9 @@ function mainHoldsWork(/** @type {import('../snapshot').WorkspaceView | undefine
  *  loud rather than destructive: the branch is still the branch, the uncommitted
  *  changes travel with it, the conversation keeps its id, and moving it back is the
  *  menu item above. A box is for work that cannot be got back, and nothing here
- *  cannot. The untracked files that stay in main stay *there* — they are not
- *  deleted, and the toast says where they are. */
+ *  cannot. The untracked files that stay in main are named in a toast — they were
+ *  computed and only logged until the box went, and the box was the only place the
+ *  product ever said it. */
 async function moveOutOfMain(/** @type {import('../snapshot').SessionView} */ s) {
   try {
     const r = await callFor(s.id, `/api/session/${s.id}/out-of-main`);
@@ -1435,6 +1476,17 @@ async function moveOutOfMain(/** @type {import('../snapshot').SessionView} */ s)
     toast(r.created
       ? `cut ${r.branch} in ${r.workspace}; main is still on ${r.main}`
       : `${r.branch} is in ${r.workspace}; main is on ${r.main}`);
+    /* **What did not travel, named.** `stash create` cannot carry untracked files,
+       so they stay in main — on base, where they are indistinguishable from base's
+       own. The confirm box used to be the only place that was said; the same line
+       the swap already draws says it now. */
+    if (r.untracked_left && r.untracked_left.length) {
+      toast(
+        `left in main (untracked, so not carried): ${r.untracked_left.slice(0, 4).join(', ')}`
+        + (r.untracked_left.length > 4 ? ` and ${r.untracked_left.length - 4} more` : ''),
+        true,
+      );
+    }
     // The branch moved even if the conversation could not follow, so these are
     // second lines rather than errors over the top of a success.
     if (r.wip_error) toast(`the branch moved, but ${r.wip_error}`, true);
@@ -1454,9 +1506,9 @@ async function moveOutOfMain(/** @type {import('../snapshot').SessionView} */ s)
  *  checked out is exchanged — and the conversations follow their branches in both
  *  directions, keeping their ids.
  *
- *  Confirmed rather than immediate: every file under two trees changes, and the
- *  daemon's refusals (mid-turn agent, dirty tree, stopped rebase) are about what
- *  it can see, not about whether you meant it. */
+ *  It does not ask — a swap is undone by swapping back. What protects it is the
+ *  daemon: the swap lock here, and the refusals (mid-turn agent, dirty tree,
+ *  stopped rebase) there. The body says why, and `confirmBox` carries the rule. */
 /* A swap takes seconds — two checkouts change every file, and the conversations
    that follow the branches are killed and resumed — and until it lands the rail
    still shows the world as it was. That silence is what gets it pressed twice, and
@@ -1567,6 +1619,12 @@ function renameSession(/** @type {import('../snapshot').SessionView} */ s) {
   editingName = s.id;
   const input = document.createElement('input');
   input.className = 'sess-rename';
+  /* **The row is `draggable` now, and a draggable ancestor eats a text selection.**
+     Dragging across the word you are fixing starts the row drag instead of
+     selecting: the input blurs, and blur commits — so a half-corrected name was
+     saved and the rail reordered underneath it. `draggable=false` on the input
+     hands the gesture back to the text. */
+  input.draggable = false;
   input.value = s.name || '';
   input.placeholder = s.title || '';
   span.replaceWith(input);

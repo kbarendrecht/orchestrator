@@ -593,8 +593,17 @@ function renderAgentError() {
 // to say — while the same set stays hidden. Local rather than daemon-side because
 // the daemon never changes this list: it is read once at boot and is true until
 // somebody installs the missing thing and restarts.
+/* **A set, not one key, because the bar is per checkout.** `snap.machine` is the
+   *active* checkout's findings and several of them name its path, so two checkouts
+   produce two keys — and with a single slot, dismissing one spent the other's
+   dismissal and the bar came back on every switch, forever, since these findings
+   never change. */
+const machineDismissed = new Set();
+
+/** The set of findings the bar is currently drawn from, so it is rebuilt only when
+ *  they change. See `renderMachine`. */
 /** @type {string | null} */
-let machineDismissed = null;
+let machineDrawn = null;
 
 /** What the boot preflight found.
  *
@@ -609,19 +618,34 @@ function renderMachine() {
   const bar = $('machinebar');
   const found = snap.machine ?? [];
   const key = found.map((w) => w.what).join('\n');
-  if (!found.length || machineDismissed === key) { bar.hidden = true; return; }
-  const list = $('machinelist');
-  list.replaceChildren();
-  for (const w of found) {
-    const line = el('div', '', w.what);
-    line.appendChild(el('span', 'machinecost', ` \u2014 ${w.cost}`));
-    list.appendChild(line);
+  if (!found.length || machineDismissed.has(key)) { bar.hidden = true; return; }
+  /* **Drawn once per set of findings, not once per render.** This list is read at
+     boot and never changes, and `render()` runs on every snapshot — several times
+     a second while an agent works. Rebuilding the rows that often re-targets
+     `:hover`, wipes the selection somebody is making over a missing binary's name,
+     and can swallow the ✕ when a press lands across two rebuilds; `core.js` prices
+     all three where `unchanged` is defined. */
+  if (machineDrawn !== key) {
+    machineDrawn = key;
+    const list = $('machinelist');
+    list.replaceChildren();
+    for (const w of found) {
+      const line = el('div', '', w.what);
+      line.appendChild(el('span', 'machinecost', ` \u2014 ${w.cost}`));
+      list.appendChild(line);
+    }
+    /* Out loud as well, for the same reason the agent-error bar does it: these
+       explain panes a screen reader hears as "unavailable" with no cause.
+
+       **On the change only, which is what the guard is really protecting.**
+       `#live` is one `aria-live` region with five writers, and this one was
+       rewriting it every render — so the "needs you" announcement, written
+       synchronously just before the frame this runs in, was overwritten before it
+       could be read, for the whole life of a daemon with one boot warning. */
+    $('live').textContent = found.map((w) => `${w.what} — ${w.cost}`).join('. ');
   }
-  // Out loud as well, for the same reason the agent-error bar does it: these
-  // explain panes that a screen reader hears as "unavailable" with no cause.
-  $('live').textContent = found.map((w) => `${w.what} — ${w.cost}`).join('. ');
   $('machinex').onclick = () => {
-    machineDismissed = key;
+    machineDismissed.add(key);
     bar.hidden = true;
     stackBars();
   };
@@ -631,7 +655,7 @@ function renderMachine() {
 
 /** Put the bars in a column, in order, however many are showing.
  *
- *  **Computed rather than a class meaning "second".** All three are `position:
+ *  **Computed rather than a class meaning "second".** All four are `position:
  *  fixed` at the same spot, and the old rule was one `.stacked` class that the
  *  release bar's renderer set on the agent bar — a scheme with no spelling for a
  *  third, which would have sat on top of whichever was already there. Counting the
@@ -764,7 +788,7 @@ onSelection((id, auto) => {
 
 /** Teardown is offered, never automatic, and the preflight is what makes it safe.
  *
- *  **No confirm, and the preflight is why.** The six checks refuse a tree that is
+ *  **No confirm, and the preflight is why.** The seven checks refuse a tree that is
  *  dirty, unpushed or has a session in it, and they write the recovery record
  *  `revive` rebuilds from — at the same absolute path. So a wrong press costs one
  *  rebuild, not any work, which is the line this UI draws: a box is for what

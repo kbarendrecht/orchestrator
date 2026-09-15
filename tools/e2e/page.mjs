@@ -194,13 +194,47 @@ try {
      which is the shape of a fresh install. The PR pane used to read `unavailable`
      and the review queue `off` beside it: two headers, two counts, two refresh
      buttons and two carets, every label honest and the sum looking broken. */
-  const forgeless = await page.evaluate(() => ({
-    pr: (document.querySelector('#prpane')?.textContent || '').trim(),
-    rvHidden: document.querySelector('#rvblock')?.hidden,
-  }))
+  /* **Computed style, not the `hidden` property.** `.rvblock` carries an author
+     `display:flex`, which beats the UA's `[hidden]{display:none}` — so a pane given
+     `el.hidden = true` was laid out and on screen while the property read `true`,
+     and the first version of this check passed over it. Whether a thing is *drawn*
+     is the only question worth asking of a page. */
+  const forgeless = await page.evaluate(() => {
+    const rv = document.querySelector('#rvblock')
+    return {
+      pr: (document.querySelector('#prpane')?.textContent || '').trim(),
+      rvShown: !!rv && getComputedStyle(rv).display !== 'none',
+      rvText: (rv?.textContent || '').trim().replace(/\s+/g, ' '),
+    }
+  })
   check(/No GitHub remote here/.test(forgeless.pr),
     `a forgeless checkout says it once${forgeless.pr ? `, got "${forgeless.pr.slice(0, 60)}"` : ''}`)
-  check(forgeless.rvHidden === true, 'and the review queue is not drawn at all')
+  /* **And the review queue is still there, which is the point.** This sandbox has
+     no forge *and* a `reviews_command`, which is a real arrangement — a repo that
+     ranks its own reviews on a remote GitHub has never heard of. The queue was
+     hidden on `repos.upstream` for one commit, so those rows were deleted from the
+     window while the daemon went on fetching them. The pane answers to
+     `reviews.state`: `off` is the daemon's own "no command and no repo", and a
+     command that will not run is `degraded` and must read as broken. */
+  /* **And `hidden` must actually hide it**, which this sandbox cannot reach on its
+     own: `off` needs no command *and* no repo, and the preflight assertion above
+     wants a command that is broken rather than absent. So the rule is asserted
+     directly — an author `display` with no `[hidden]` companion is the trap
+     `app.css` names in four other places, and it had this pane on screen behind a
+     `hidden` that did nothing. */
+  const hides = await page.evaluate(() => {
+    const rv = document.querySelector('#rvblock')
+    if (!rv) return null
+    const was = rv.hidden
+    rv.hidden = true
+    const gone = getComputedStyle(rv).display === 'none'
+    rv.hidden = was
+    return gone
+  })
+  check(hides === true, 'a hidden review block is actually not displayed')
+
+  check(forgeless.rvShown && /unavailable/.test(forgeless.rvText),
+    `a configured review command is drawn whatever the forge says, got "${forgeless.rvText.slice(0, 60)}"`)
 
   /* --- the rail's session drag ---------------------------------------------- */
 
@@ -251,34 +285,42 @@ try {
      is four, so the drift this holds runs both ways — a reversible action growing a
      box, and one of the four losing one. Asserted through the menu rather than by
      counting call sites, because what matters is what a press actually does. */
+  /* The real ids, and no `.catch`. Three selectors were guessed at here — `#dialog`
+     and `.dialog` exist nowhere in the page — and a miss became `null`, which
+     passes `!== true`: the half of this gate that guards against a box coming back
+     could not fail. `#dlg` and `#ctxmenu` are what `index.html` actually has. */
   const rowMenu = async (label) => {
     await page.click('#rail .sess[data-id]', { button: 'right' })
-    await page.waitForTimeout(250)
-    for (const item of await page.$$('.menu button, .ctxmenu button, [role=menu] button')) {
+    await page.waitForSelector('#ctxmenu:not([hidden]) button', { timeout: 5000 })
+    for (const item of await page.$$('#ctxmenu button')) {
       if ((await item.textContent())?.trim() === label) return item
     }
     return null
   }
-  const asking = () => page.$eval('#dialog, .dialog, #dlg', (d) => !d.hidden).catch(() => null)
+  // The app's own answer, not a guess at its markup.
+  const asking = () => page.evaluate(async () => (await import('/js/core.js')).dialogOpen())
 
   const move = await rowMenu('move to main')
   check(!!move, 'the row offers a move')
   await move?.click()
-  await page.waitForTimeout(900)
+  /* A condition, not a clock: the move is done when the rail says the session is in
+     main. A fixed sleep here is the trap `docs/traps/e2e.md` names — it guesses at a
+     branch swap plus a pty respawn on a loaded runner, and a gate that fails for
+     timing teaches everybody `--no-verify`. */
+  await page.waitForFunction(
+    () => !!document.querySelector('#rail .sess[data-id] .sess-main'),
+    null, { timeout: 30_000 },
+  )
   check((await asking()) !== true, 'moving a branch to main asks nothing — it is reversible')
-  // The move respawns the session, so let the rail settle before the next press.
-  await page.waitForTimeout(3000)
 
   const del = await rowMenu('delete')
   check(!!del, 'the row offers a delete')
   await del?.click()
-  await page.waitForTimeout(600)
+  await page.waitForSelector('#dlg:not([hidden])', { timeout: 5000 })
   check((await asking()) === true, 'deleting a session still asks — the transcript does not come back')
-  const said = await page.$eval('#dialog, .dialog, #dlg', (d) => d.textContent || '').catch(() => '')
+  const said = await page.$eval('#dlg', (d) => d.textContent || '')
   check(/for good/.test(said), 'and the box says what goes for good')
-  // Dismissed, or the drag below is aiming at a row behind a modal.
   await page.keyboard.press('Escape')
-  await page.waitForTimeout(400)
 
   console.log(`\npage-check: ${failed ? 'FAILED' : 'ok'}`)
 } finally {

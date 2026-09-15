@@ -36,6 +36,13 @@ export async function run(t) {
   assert.equal(git(t.repo, ['status', '--porcelain', '--untracked-files=no']), '',
     'main kept tracked work it should have handed over')
   assert.ok(fs.existsSync(path.join(t.repo, 'scratch.txt')), 'the untracked file stays')
+  /* **And the answer says so.** `stash create` cannot carry untracked files, so
+     they stay in main on base, where they are indistinguishable from base's own —
+     and the route computed that list and only logged it. The confirm box was the
+     one place the product ever said it, so when the box went the fact went with it.
+     The swap beside this already answers with `untracked_left`; so does this now. */
+  assert.deepEqual(r.untracked_left, ['scratch.txt'],
+    `the move must name what it left behind: ${JSON.stringify(r.untracked_left)}`)
 
   await until('the conversation to arrive in the worktree', async () =>
     (await t.session(session))?.workspace === r.workspace)

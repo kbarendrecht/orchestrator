@@ -384,10 +384,10 @@ pub async fn move_out_of_main(
     // every other worktree branch in the repo rather than like a special case.
     let new_branch = format!("worktree-{name}");
 
-    let moved = tokio::task::spawn_blocking({
+    let (moved, untracked) = tokio::task::spawn_blocking({
         let (main, path, new_branch) = (main.clone(), path.clone(), new_branch.clone());
         let exclude = app.cfg.worktrees_subdir_str();
-        move || -> anyhow::Result<crate::git::MovedOut> {
+        move || -> anyhow::Result<(crate::git::MovedOut, Vec<String>)> {
             let base = crate::git::base_checkout_branch(&main, &base_ref).ok_or_else(|| {
                 anyhow::anyhow!(
                     "no base branch to put main back on — {base_ref} has not been fetched"
@@ -400,7 +400,12 @@ pub async fn move_out_of_main(
             if !left.is_empty() {
                 tracing::info!(files = ?left, "untracked files stayed in main");
             }
-            Ok(moved)
+            /* **Carried out, not only logged**, the way the swap beside it already
+            does. This was computed and dropped, so the only notice that untracked
+            files do not travel was the sentence in a confirm box — and when that
+            box went, the product stopped saying it at all. The files are still in
+            main, on base, where they are indistinguishable from base's own. */
+            Ok((moved, left))
         }
     })
     .await
@@ -460,6 +465,9 @@ pub async fn move_out_of_main(
         "main": moved.base,
         "session": carried_json(&carried),
         "wip_error": moved.wip_error,
+        // Named, not counted, for the reason the swap gives: which files stayed is
+        // the difference between fetching them and wondering what you lost.
+        "untracked_left": untracked,
     })))
 }
 

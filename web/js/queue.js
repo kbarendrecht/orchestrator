@@ -46,12 +46,28 @@ function renderReviews() {
   const list = $('rvlist');
   const rv = snap.reviews;
 
-  /* **Nothing at all when the checkout has no forge.** A review queue over a
-     repository GitHub has never heard of is not "off", it is not a question — and
-     drawn beside a PR pane saying the same thing it made a fresh install look
-     broken. The rail draws one line for both; see `noForge` in `rail.js`. */
-  block.hidden = !snap.repos?.upstream;
-  if (block.hidden) return;
+  /* **Nothing at all when there is no queue to show, and the daemon decides that.**
+     `ReviewState::Off` means no `reviews_command` *and* no GitHub repository — the
+     one case where the pane would be chrome around a question nobody asked. It was
+     `!snap.repos?.upstream` for one commit, which was wrong in a way the daemon
+     could have said: `reviews::fetch` runs a configured command *before* it looks
+     at the repo, so a checkout with its own queue and a non-GitHub remote had its
+     rows deleted from the window while the daemon went on fetching them.
+
+     The block is emptied before it is hidden, and its band cleared with it: two
+     checkouts open and the pane would otherwise keep the other one's rows and the
+     other one's colour behind a `hidden` that only stops it being read. */
+  if (rv && rv.state === 'off') {
+    head.replaceChildren();
+    list.replaceChildren();
+    block.classList.remove('rv-of-checkout');
+    block.style.removeProperty('--band');
+    headDrawn.sig = null;
+    listDrawn.sig = null;
+    block.hidden = true;
+    return;
+  }
+  block.hidden = false;
 
   block.classList.toggle('closed', !showReviews);
   /* The same band the PR pane wears, for the same reason it wears it: this pane
@@ -89,31 +105,30 @@ function renderReviews() {
     snap.reviews_polling);
 
   if (!rv || rv.state !== 'ok') {
-    // Never an empty queue: a broken command reads as broken (§6b). Startup and
-    // "no such command here" are not broken, so they each say so differently.
+    /* Never an empty queue: a broken command reads as broken (§6b). Startup is not
+       broken and says so differently.
+
+       **`off` is not among these any more.** It used to draw a head and a line
+       reading "no GitHub repository for this checkout"; the whole pane is now
+       simply absent in that case — the block above returns before this — because a
+       pane explaining that it does not apply is the chrome a fresh install reads as
+       a fault. The compiler agrees: `rv.state` cannot be `'off'` here. */
     const pending = !rv || rv.state === 'pending';
-    const off = rv && rv.state === 'off';
-    // Only a real fault gets the red `f`; pending and off are neutral.
-    const label = pending ? 'polling…' : off ? 'off' : 'unavailable';
+    // Only a real fault gets the red `f`; pending is neutral.
+    const label = pending ? 'polling…' : 'unavailable';
     // `reason` belongs to the degraded variant alone; the others simply have none.
     const why = rv && 'reason' in rv ? rv.reason : '';
     if (drawHead) {
-      count.appendChild(el('span', pending || off ? null : 'f', label));
+      count.appendChild(el('span', pending ? null : 'f', label));
       head.appendChild(count);
       head.appendChild(refresh);
       head.title = why;
       head.onclick = () => { showReviews = !showReviews; renderReviews(); };
     }
     if (drawList) {
-      /* `off` stopped meaning "you configured nothing" when the daemon grew its
-         own queue: nothing to configure is now the ordinary case and answers with
-         one. It means there is no repository to ask about, which is a fact about
-         the checkout rather than something to go and set. */
       list.appendChild(el('div', 'fempty', pending
         ? 'waiting for the first poll'
-        : off
-          ? 'no GitHub repository for this checkout\nso there is nothing to review'
-          : `reviews unavailable\n${why.slice(0, 160)}`));
+        : `reviews unavailable\n${why.slice(0, 160)}`));
     }
     return;
   }

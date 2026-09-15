@@ -757,10 +757,17 @@ fn parse_pr(n: &Value, viewer: &str) -> Option<Pr> {
             .pointer("/headRepository/viewerPermission")
             .and_then(|s| s.as_str())
             .map(may_push),
+        /* **Empty, not `"develop"`.** It defaulted to one repo's base branch, so a
+        response that omits `baseRefName` made every PR claim a branch that may not
+        exist anywhere — and the review header then printed "conflicts with develop"
+        on a repo whose base is `main`, which is the sentence that default was
+        supposed to have stopped. Empty is the honest answer and every reader
+        already has a fallback for it: the SPA says "its base", and
+        `spawn::rebase_target` falls through to the configured `upstream_ref`. */
         base_ref: n
             .get("baseRefName")
             .and_then(|s| s.as_str())
-            .unwrap_or("develop")
+            .unwrap_or_default()
             .to_string(),
         is_draft: n.get("isDraft").and_then(|b| b.as_bool()).unwrap_or(false),
         mergeable: n

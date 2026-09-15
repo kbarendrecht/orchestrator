@@ -213,7 +213,7 @@ export function renderDrawer() {
      label is only honest about a thing that exists. */
   const dcwd = $('dcwd');
   dcwd.replaceChildren();
-  if (snap.stack_up !== null && snap.stack_up !== undefined) {
+  if (snap.stack_up != null) {
     const up = snap.stack_up === true;
     dcwd.appendChild(el('span', 'stackdot ' + (up ? 'up' : 'down')));
     dcwd.appendChild(el('span', null, up ? 'stack up' : 'stack down'));

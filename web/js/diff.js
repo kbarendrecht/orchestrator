@@ -90,17 +90,13 @@ function renderDivergence(/** @type {import('../snapshot').WorkspaceView} */ w) 
         `Forget the banked work?\n\n${files(bank)} from before the rebase. Git keeps it `
         + 'for a couple of weeks as an unreferenced commit and then collects it.',
         { ok: 'Discard' })) return;
-      d.disabled = true;
-      try {
-        const r = await call(`/api/workspace/${ws}/wip/discard`);
+      // Through `press` like the two buttons above it, so the success-with-a-warning
+      // line in `act` is not one this button alone lacks. The verb is a function
+      // because the sha only exists in the answer.
+      await press(d, `/api/workspace/${ws}/wip/discard`,
         // The sha, because nothing will ever name it again and it is the whole of
         // what "recoverable by hand" means.
-        toast(r?.was ? `discarded — it was ${String(r.was).slice(0, 12)}, until git collects it` : 'discarded');
-      } catch (e) {
-        toast(reason(e), true);
-      } finally {
-        d.disabled = false;
-      }
+        (r) => (r?.was ? `discarded — it was ${String(r.was).slice(0, 12)}, until git collects it` : 'discarded'));
     };
     box.appendChild(d);
     return;
@@ -137,7 +133,9 @@ function files(/** @type {import('../snapshot').BankedView} */ bank) {
  *  type the conflict at the agent again, run a second apply — and the snapshot that
  *  redraws the strip arrives after the response, not with the click.
  */
-async function press(/** @type {HTMLButtonElement} */ btn, /** @type {string} */ path, /** @type {string} */ verb) {
+/** @param {HTMLButtonElement} btn @param {string} path
+ *  @param {string | ((r: any) => string)} verb */
+async function press(btn, path, verb) {
   btn.disabled = true;
   try {
     await act(path, verb);
@@ -146,10 +144,13 @@ async function press(/** @type {HTMLButtonElement} */ btn, /** @type {string} */
   }
 }
 
-async function act(/** @type {string} */ path, /** @type {string} */ verb) {
+/** @param {string} path
+ *  @param {string | ((r: any) => string)} verb what to say — a function when the
+ *         sentence depends on the answer, as the bank's discard does. */
+async function act(path, verb) {
   try {
     const r = await call(path);
-    toast(verb);
+    toast(typeof verb === 'function' ? verb(r) : verb);
     // An endpoint can succeed and still have something to say — a rebase onto a
     // base whose fetch failed, say. Surface it as its own warning toast, the way
     // openArchived and forkSession already do.

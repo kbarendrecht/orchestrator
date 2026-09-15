@@ -305,14 +305,16 @@ mod tests {
                 );
             }
         }
-        // And every skill that pushes still asks for the checks in some form, so
-        // the line was not simply deleted along with the command it named.
-        for (name, body) in [
-            ("fix-pr", FIX_PR),
-            ("green", GREEN),
-            ("handle-review", HANDLE_REVIEW),
-            ("review", REVIEW),
-        ] {
+        /* And every skill that pushes still asks for the checks, so the line was not
+        deleted along with the command it named.
+
+        **Over `VENDORED` rather than a second list**, which is the whole reason
+        that table exists: a fifth pushing skill added there would have been written
+        to disk and checked for `mise` while silently escaping this half. */
+        for (name, body) in VENDORED {
+            if !matches!(*name, "fix-pr" | "green" | "handle-review" | "review") {
+                continue;
+            }
             assert!(
                 body.contains("this repo's checks"),
                 "skills/{name} pushes without running this repo's checks"
