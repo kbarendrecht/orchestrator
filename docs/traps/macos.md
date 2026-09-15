@@ -205,5 +205,9 @@ asserting its absence would guard nothing.
 
 The unit test `the_bundle_declares_the_architecture_its_binary_was_built_for`
 asserts the key is present and names this build's own architecture, which is what
-can be checked without a Mac. What the measurement adds is that the *effect* is
-checkable too, on a runner, for the cost of one `open`.
+can be checked without a Mac. **The effect has its own gate now**, in `check.yml`
+on macos-14: `--install-desktop-entry` writes the real bundle, its plist is paired
+with a probe executable — LaunchServices reads the plist, and the executable is
+`/bin/sh` either way, so the substitution changes nothing it looks at — and the
+step fails unless `sysctl.proc_translated` comes back `0`. One `open`, no window,
+and it is the assertion a unit test on generated text cannot make.

@@ -273,6 +273,55 @@ jobs:
         if: always()
         run: cargo build -p orchestrator-desktop
 
+      # **The bundle's architecture, through real LaunchServices.** #18 shipped an
+      # `.app` whose `CFBundleExecutable` is a `/bin/sh` script with no
+      # `LSArchitecturePriority` beside it, so LaunchServices had no Mach-O to read
+      # an architecture from, chose x86_64 first, and every process the app started
+      # inherited it — which surfaced as `git` failing to load `libxcrun`. Nothing
+      # in the app can see that: `sysctl.proc_translated` answers for the process
+      # that asks, and every binary really is arm64.
+      #
+      # A unit test asserts the key is in the generated plist. This asserts the
+      # *effect*, which is only checkable on a Mac — and it is checkable here,
+      # because a `workflow_dispatch` probe measured that macos-14 has Rosetta
+      # installed and reproduces the bug exactly: the same bundle without the key
+      # reports `translated=1` and `uname=x86_64`. `docs/traps/macos.md` carries
+      # both numbers.
+      #
+      # The app's own plist, paired with a probe executable rather than the app
+      # itself: LaunchServices reads the plist and the script is `/bin/sh` either
+      # way, so the substitution changes nothing it looks at — and it costs one
+      # `open` rather than a window.
+      - name: The bundle runs native
+        if: runner.os == 'macOS'
+        run: |
+          set -eu
+          ./target/debug/orchestrator-desktop --install-desktop-entry
+          app="$HOME/Applications/Orchestrator.app"
+          plutil -p "$app/Contents/Info.plist" | grep -i architecture \
+            || { echo "::error::no LSArchitecturePriority in the generated plist"; exit 1; }
+
+          probe="$HOME/Applications/ArchProbe.app"
+          rm -rf "$probe"; mkdir -p "$probe/Contents/MacOS"
+          # The real plist, with only the identity changed so LaunchServices does
+          # not confuse this with the app it was generated for.
+          sed -e 's/<string>Orchestrator<\/string>/<string>ArchProbe<\/string>/g' \
+              -e 's/dev\.orchd\.orchestrator/dev.orchd.archprobe/' \
+              "$app/Contents/Info.plist" > "$probe/Contents/Info.plist"
+          printf '#!/bin/sh\nsysctl -n sysctl.proc_translated > /tmp/archprobe.txt\n' \
+            > "$probe/Contents/MacOS/ArchProbe"
+          chmod +x "$probe/Contents/MacOS/ArchProbe"
+
+          rm -f /tmp/archprobe.txt
+          open "$probe"
+          for _ in $(seq 1 20); do [ -f /tmp/archprobe.txt ] && break; sleep 1; done
+          got=$(cat /tmp/archprobe.txt 2>/dev/null || echo "never ran")
+          echo "sysctl.proc_translated = $got"
+          [ "$got" = "0" ] || {
+            echo "::error::the bundle launched translated ($got) — #18 all over again"
+            exit 1
+          }
+
       # And then *run* it, which nothing here did until two faults shipped in one
       # week that only running it could have caught: #16 packed no `orchd`, so the
       # app could not start, and #17 seeded a checkout's state with one file, so the
