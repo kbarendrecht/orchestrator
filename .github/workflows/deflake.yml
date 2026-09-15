@@ -47,8 +47,16 @@ jobs:
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
 
+      # **Through the environment, not into the shell line.** `${{ }}` in a `run:`
+      # is textual substitution *before* bash sees it, so a dispatch input becomes
+      # source on the runner — `zizmor` calls it template-injection and `health.yml`
+      # denies it. The value is a number typed by whoever can dispatch this, which
+      # is a narrow blast radius and not a reason to leave a shell open. `$RUNS` is
+      # read by bash as data, whatever is in it.
       - name: Every flow, ${{ inputs.runs }} times
-        run: node tools/e2e/deflake.mjs --runs ${{ inputs.runs }}
+        env:
+          RUNS: ${{ inputs.runs }}
+        run: node tools/e2e/deflake.mjs --runs "$RUNS"
 
       # Only the failures are kept, so this is small or absent.
       - name: The runs that failed
