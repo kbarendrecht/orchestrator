@@ -242,6 +242,22 @@ chrome is a fix everywhere it is drawn.
 The resize strips fire on mousedown and are *not* guarded — they are
 `display:none` on macOS, so the AppKit call is unreachable there. That is safety
 by platform rather than by design: showing them on a Mac would reopen this.
+**Both guards shipped and #14 is still open**, which is the part to read before
+concluding this is done. The reporter came back on 2026-09-15 saying it still
+aborts on the open-project screen, on v2026.9.15 — a build carrying `9048384` and
+`8fb2d0c` both. Everything readable from Linux says the two guards hold: one
+`start-drag` request in the whole SPA, no `data-tauri-drag-region` and no
+`-webkit-app-region`, and `tauri-runtime-wry`'s `send_user_message` running the
+message *synchronously* when it is already on the main thread — so the check and
+the AppKit call really are the same turn. Which leaves a path nobody has read, or
+a different abort on that screen being reported as this one.
+That is why `desktop/src/appkit_abort.rs` is installed at boot. An uncaught
+Objective-C exception aborts without unwinding, so the Rust panic hook never runs
+and `orchd.log` simply stops — a crash that says nothing is what made this take
+two rounds of reading vendored source. The handler cannot prevent the abort and
+does not try; it writes the exception's name, reason and `callStackSymbols` into
+the log first, so the next report carries the selector instead of a description of
+what the person clicked.
 
 ## `window.confirm`, `window.prompt` and `window.alert` do nothing in this app on macOS.
 WKWebView shows a script dialog only if the host implements the

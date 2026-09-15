@@ -21,6 +21,10 @@ use anyhow::{Context, Result};
 use orchd::window::{Chrome, ResizeEdge, WindowCmd, WindowControl};
 use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
 
+/// macOS only: the crate has no AppKit anywhere else, and nothing else can abort
+/// this way.
+#[cfg(target_os = "macos")]
+mod appkit_abort;
 mod launcher;
 mod login_path;
 
@@ -149,6 +153,11 @@ fn main() {
     orchd::logging::init("orchd=info,orchestrator_desktop=info", true);
     // Right after the logger exists, since the hook writes through it.
     orchd::logging::install_panic_hook();
+    /* The panic hook's other half, and it covers what a panic hook structurally
+    cannot: an uncaught Objective-C exception aborts without unwinding, so nothing
+    Rust installs ever runs and the log simply stops. See the module. */
+    #[cfg(target_os = "macos")]
+    appkit_abort::log_uncaught_exceptions();
 
     // Held from the first thing `main` does that can be slow, because the phases
     // before the daemon are the ones a person launching from Finder pays for and
