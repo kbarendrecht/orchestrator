@@ -58,13 +58,18 @@ function renderReviews() {
      checkouts open and the pane would otherwise keep the other one's rows and the
      other one's colour behind a `hidden` that only stops it being read. */
   if (rv && rv.state === 'off') {
-    head.replaceChildren();
-    list.replaceChildren();
-    block.classList.remove('rv-of-checkout');
-    block.style.removeProperty('--band');
-    headDrawn.sig = null;
-    listDrawn.sig = null;
-    block.hidden = true;
+    // Once, not on every render. `render()` reaches this several times a second
+    // while an agent works, and the six writes below change nothing after the
+    // first — including two that null the paint guards this module exists for.
+    if (!block.hidden) {
+      head.replaceChildren();
+      list.replaceChildren();
+      block.classList.remove('rv-of-checkout');
+      block.style.removeProperty('--band');
+      headDrawn.sig = null;
+      listDrawn.sig = null;
+      block.hidden = true;
+    }
     return;
   }
   block.hidden = false;

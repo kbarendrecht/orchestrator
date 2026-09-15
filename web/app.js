@@ -594,10 +594,10 @@ function renderAgentError() {
 // the daemon never changes this list: it is read once at boot and is true until
 // somebody installs the missing thing and restarts.
 /* **A set, not one key, because the bar is per checkout.** `snap.machine` is the
-   *active* checkout's findings and several of them name its path, so two checkouts
-   produce two keys — and with a single slot, dismissing one spent the other's
-   dismissal and the bar came back on every switch, forever, since these findings
-   never change. */
+   *active* checkout's findings, and with a single slot dismissing one checkout's
+   bar spent the other's dismissal — so it came back on every switch, forever, since
+   these findings never change. The key carries the checkout path; see `renderMachine`
+   for why it has to. */
 const machineDismissed = new Set();
 
 /** The set of findings the bar is currently drawn from, so it is rebuilt only when
@@ -617,7 +617,11 @@ let machineDrawn = null;
 function renderMachine() {
   const bar = $('machinebar');
   const found = snap.machine ?? [];
-  const key = found.map((w) => w.what).join('\n');
+  /* The checkout is in the key, because most findings do not name it. The comment
+     below assumed they did — only the trust and work-tree warnings interpolate a
+     path, while a missing `gh`, `git` or `claude` reads identically everywhere — so
+     one dismissal in one checkout hid the bar in every other. */
+  const key = `${activeCheckout().path}\n${found.map((w) => w.what).join('\n')}`;
   if (!found.length || machineDismissed.has(key)) { bar.hidden = true; return; }
   /* **Drawn once per set of findings, not once per render.** This list is read at
      boot and never changes, and `render()` runs on every snapshot — several times
@@ -643,13 +647,16 @@ function renderMachine() {
        synchronously just before the frame this runs in, was overwritten before it
        could be read, for the whole life of a daemon with one boot warning. */
     $('live').textContent = found.map((w) => `${w.what} — ${w.cost}`).join('. ');
+    // Inside the guard with the rows: the closure only has to close over the key
+    // the guard already tracks, and `keyActivate` is re-wiring a node nothing has
+    // replaced. Left outside, the two did per frame what the guard exists to stop.
+    $('machinex').onclick = () => {
+      machineDismissed.add(key);
+      bar.hidden = true;
+      stackBars();
+    };
+    keyActivate($('machinex'));
   }
-  $('machinex').onclick = () => {
-    machineDismissed.add(key);
-    bar.hidden = true;
-    stackBars();
-  };
-  keyActivate($('machinex'));
   bar.hidden = false;
 }
 

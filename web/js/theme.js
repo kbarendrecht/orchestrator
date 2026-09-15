@@ -193,6 +193,20 @@ export function detectedFonts() {
 }
 
 /** The theme as it stands. Replaced whole by [`setTheme`], never mutated. */
+/** 8 to 24 px, and not `NaN`. The floor is where a terminal stops being one.
+ *
+ *  **Above `loadTheme()`'s call, and that is load-bearing.** `loadTheme` runs at
+ *  module load and calls `clampSize`, which reads these — so declared below that
+ *  line they are in the temporal dead zone and the read throws
+ *  `Cannot access 'SIZE_MAX' before initialization`, which takes the whole SPA
+ *  down before it paints. It hid for as long as it did because the unset path
+ *  never reaches them: `Number(undefined)` is `NaN`, so `clampSize` returns the
+ *  default without evaluating either. Store a font size once — the settings pane
+ *  writes one — and the next load is a blank page. Found by a gate that picked a
+ *  theme and reloaded. */
+export const SIZE_MIN = 8;
+export const SIZE_MAX = 24;
+
 export let theme = loadTheme();
 
 /** @type {((theme: Theme) => void)[]} */
@@ -261,9 +275,6 @@ function loadTheme() {
   return Palette.legible(next) ? next : { ...next, ...Palette.DEFAULT };
 }
 
-/** 8 to 24 px, and not `NaN`. The floor is where a terminal stops being one. */
-export const SIZE_MIN = 8;
-export const SIZE_MAX = 24;
 function clampSize(/** @type {unknown} */ v, /** @type {number} */ def) {
   const n = Number(v);
   return Number.isFinite(n) ? Math.min(SIZE_MAX, Math.max(SIZE_MIN, Math.round(n))) : def;

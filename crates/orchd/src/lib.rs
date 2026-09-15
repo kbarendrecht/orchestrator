@@ -54,12 +54,13 @@ use state::AppState;
 /// child reports it on its ready line — the daemon is the only thing that knows it,
 /// since it needs this checkout's own `upstream_remote` and `repo`.
 pub fn resolve_repo(app: &Arc<AppState>) -> Option<(String, String)> {
-    if let Some(r) = &app.cfg.repo {
-        let (o, n) = r.split_once('/')?;
-        return Some((o.to_string(), n.to_string()));
-    }
-    let url = forge::remote_url(&app.cfg.main_checkout, &app.cfg.upstream_remote)?;
-    forge::repo_from_remote(&url)
+    // The ladder itself is `forge::upstream_repo`, and the reason it is there rather
+    // than here is written on it: three readers of this rule used to disagree.
+    forge::upstream_repo(
+        &app.cfg.main_checkout,
+        &app.cfg.upstream_remote,
+        app.cfg.repo.as_deref(),
+    )
 }
 
 // ---------------------------------------------------------------------------

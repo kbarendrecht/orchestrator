@@ -771,7 +771,7 @@ function dlgOpen(message, {
  *  keeps no copy of, a file's uncommitted content, unsaved typing in the editor.
  *  Those four ask. Nothing else does.
  *
- *  It used to be seven, and the extra three are the reason the rule is written
+ *  It used to be eight, and the four that went are the reason the rule is written
  *  here. Closing a checkout, swapping a branch with main, moving a session out of
  *  main and removing a worktree all asked — and every one of them is reversible:
  *  the conversations are kept and offered on reopen, a swap is undone by swapping
@@ -1710,11 +1710,14 @@ export function setProcOrder(/** @type {string | null} */ wsId, /** @type {strin
    **Keyed by the checkout path, not by workspace.** A session id is unique across
    every checkout, so the key is not there to stop a collision — it is there so
    "put this list back to newest first" is one checkout's answer rather than every
-   checkout's, and so closing a checkout takes its order with it.
+   checkout's. Closing a checkout does **not** take its order with it: the key
+   stays, and reopening applies it again. That is deliberate for a checkout you come
+   back to, and it does mean the map only ever grows.
 
    An id the list has never seen is a session created since you last dragged one,
-   and `rail.js` puts those where `byNewest` would have: after the ones you
-   placed. */
+   and `rail.js` puts those *above* the rows you placed — a worktree you have just
+   cut is the newest thing there is, and sent to the bottom it fell off the end of
+   the rail the moment it appeared. See `inRailOrder`. */
 export let sessionOrder = (() => {
   try {
     return JSON.parse(localStorage.getItem('orch.sessionOrder') || '{}') || {};

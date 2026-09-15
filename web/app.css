@@ -87,6 +87,19 @@
 }
 
 *{box-sizing:border-box;margin:0;padding:0}
+/* **`[hidden]` wins over an author `display`, everywhere, once.**
+   The UA rule is `[hidden]{display:none}` with no specificity, so any class that
+   sets `display` beats it and `el.hidden = true` silently does nothing. This file
+   had thirteen per-element patches for that — its own comments kept score ("the
+   trap four rules in", "bitten by that four times") — and the fourteenth shipped
+   anyway: a review pane given `hidden` stayed on screen carrying another
+   checkout's rows, and the gate written for it read the `hidden` property and
+   passed over it. One rule with `!important` is the whole fix; the per-element
+   copies below are now redundant and harmless.
+   Safe because nothing in the SPA shows an element by writing `style.display` on a
+   node it leaves `hidden` — `app.js`'s one `style.display` is on a button that is
+   never hidden. */
+[hidden]{display:none!important}
 html,body{height:100%}
 /* **The anti-flash rule in `index.html` paints `html` too, and this is where the
    sheet takes it back.** That rule is an opaque `#101010` literal — it has to be,
@@ -1505,13 +1518,6 @@ select.settings-in option{color:var(--text);background-color:var(--bg)}
    `flex:1 1 auto` with `min-height:0` lets the list give way when the column is
    short, so ten rows is a ceiling rather than a demand. */
 .prblock,.rvblock{display:flex;flex-direction:column;min-height:0}
-/* **The companion `[hidden]` rule, without which `el.hidden` does nothing here.**
-   An author `display` beats the UA's `[hidden]{display:none}`, which this file
-   already says in four other places — and the review block was given a `hidden`
-   that could not hide it: the pane stayed on screen, still carrying its border and
-   whatever it last drew. Worse, the gate written for it read the `hidden` property
-   and passed. */
-.prblock[hidden],.rvblock[hidden]{display:none}
 .prblock .ws{display:flex;flex-direction:column;min-height:0}
 .prlist,.rvlist{
   flex:1 1 auto;min-height:0;overflow-y:auto;

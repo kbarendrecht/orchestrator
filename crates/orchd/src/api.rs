@@ -2402,13 +2402,13 @@ pub(crate) fn write_forge(app: &Arc<AppState>) -> Result<crate::forge::ForgeImpl
 /// constructors called it on every review action, on the runtime. `AppState::new`
 /// already read the same remote into `repos.upstream` at boot, so that is the
 /// answer here; the shell-out stays only as the fallback for a boot that could
-/// not read the remote (an explicit `repo` in the config is `resolve_repo`'s
-/// first arm either way, and `repos.upstream` is derived from the same remote).
+/// not read the remote. Both are `forge::upstream_repo`, so a configured `repo`
+/// and a derived one reach this the same way.
 pub(crate) fn repo_of(app: &Arc<AppState>) -> Option<(String, String)> {
-    if let Some(r) = &app.cfg.repo {
-        let (o, n) = r.split_once('/')?;
-        return Some((o.to_string(), n.to_string()));
-    }
+    /* `repos.upstream` is `forge::upstream_repo`'s own answer, cached at boot — so
+    reading it here is the cheap path *and* the same rule, which it was not when this
+    carried its own first arm. The shell-out stays as the fallback for a boot that
+    could not read the remote. */
     app.repos
         .upstream
         .as_deref()

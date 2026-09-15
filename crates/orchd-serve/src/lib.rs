@@ -305,13 +305,22 @@ pub async fn start(opts: StartOptions) -> Result<Server> {
         read or a `git`, and CLAUDE.md's rule about that is not a style note: a
         `which` against a stalled mount parks the worker with no yield point, and
         the host's own health probe of this child is on it. */
-        let (cfg2, server) = (
-            cfg.clone(),
-            cfg.tracker.as_ref().map(|t| t.mcp_server.clone()),
-        );
-        tokio::task::spawn_blocking(move || machine::check(&cfg2, server.as_deref()))
-            .await
-            .unwrap_or_default()
+        let cfg2 = cfg.clone();
+        tokio::task::spawn_blocking(move || {
+            let server = cfg2.tracker.as_ref().map(|t| t.mcp_server.as_str());
+            machine::check(&cfg2, server)
+        })
+        .await
+        /* **A preflight that did not finish is itself a finding.** Folded to an empty
+        list it reads as a healthy machine, so the panes go on saying `unavailable`
+        with the cause nowhere — the exact silence this bar was added to end,
+        reachable through the one path nobody looks at. */
+        .unwrap_or_else(|e| {
+            vec![orchd::machine::Warning {
+                what: "the boot preflight did not finish".into(),
+                cost: format!("nothing below was checked: {e}"),
+            }]
+        })
     };
 
     let settings = {
@@ -1585,17 +1594,22 @@ fn start_stack_poller(app: Arc<AppState>) {
 /// answer.
 /// The four spellings docker accepts for a compose file.
 ///
-/// Its own function so the list is in one place and a test can drive it without
-/// spawning `docker`.
+/// One list, because two readers had their own: `firstrun::detect_processes` offers
+/// a `docker` process off it and [`has_compose_file`] decides whether a checkout has
+/// a stack at all, and they were written in different orders. A fifth spelling added
+/// to one of them would offer the process and draw no badge.
+pub(crate) const COMPOSE_FILES: [&str; 4] = [
+    "docker-compose.yml",
+    "docker-compose.yaml",
+    "compose.yml",
+    "compose.yaml",
+];
+
+/// Does this checkout carry a compose file at all?
+///
+/// Its own function so a test can drive it without spawning `docker`.
 fn has_compose_file(main: &std::path::Path) -> bool {
-    [
-        "docker-compose.yml",
-        "docker-compose.yaml",
-        "compose.yml",
-        "compose.yaml",
-    ]
-    .iter()
-    .any(|f| main.join(f).exists())
+    COMPOSE_FILES.iter().any(|f| main.join(f).exists())
 }
 
 fn stack_running(main: &std::path::Path) -> Option<bool> {

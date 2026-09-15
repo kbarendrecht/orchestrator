@@ -1058,6 +1058,43 @@ fn link_stacks(prs: &mut [Pr]) {
     }
 }
 
+/// The repository a checkout's forge answers for, as `owner/name`.
+///
+/// **One owner for the ladder, because three readers of it disagreed.** The rule is
+/// two lines — a configured `repo` wins, otherwise the upstream remote — and it was
+/// written out at three call sites (`resolve_repo`, `api::repo_of`, and `Repos` in
+/// the snapshot) which each got it slightly differently: one bailed to `None` on a
+/// malformed `repo`, one fell through to the remote, one did not validate at all.
+/// The SPA then began hiding two panes on the snapshot's answer while the pollers
+/// used another, so a `"repo": "monorepo"` drew a PR pane over a repository nothing
+/// would ever fetch.
+///
+/// **A configured `repo` is final**, valid or not: it is a thing somebody typed, and
+/// quietly using a different repository than the one they named is worse than
+/// answering `None` and saying the pane is off.
+pub fn upstream_repo(
+    main_checkout: &std::path::Path,
+    upstream_remote: &str,
+    repo: Option<&str>,
+) -> Option<(String, String)> {
+    if let Some(r) = repo {
+        let (o, n) = r.split_once('/')?;
+        /* **Exactly two non-empty segments, and nothing that belongs to a URL.** A
+        pasted `https://github.com/acme/mono` splits into two non-empty halves and
+        would otherwise pass as the owner `https:` — the test below is what found
+        that. `owner/name` is the whole grammar; anything else is a typo, and a typo
+        answers `None` rather than quietly becoming the remote's repository. */
+        let ok = !o.is_empty()
+            && !n.is_empty()
+            && !n.contains('/')
+            && !r.contains(':')
+            && !r.contains(char::is_whitespace);
+        return ok.then(|| (o.to_string(), n.to_string()));
+    }
+    let url = remote_url(main_checkout, upstream_remote)?;
+    repo_from_remote(&url)
+}
+
 /// Read `owner/name` out of a git remote URL, ssh or https.
 pub fn repo_from_remote(url: &str) -> Option<(String, String)> {
     let rest = url
@@ -1087,6 +1124,42 @@ pub fn remote_url(cwd: &Path, remote: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A configured `repo` is final, and a malformed one is `None` rather than the
+    /// remote.
+    ///
+    /// **Three functions used to answer this and they disagreed.** The arm that
+    /// mattered was a `repo` with no slash: one reader bailed to `None`, another
+    /// fell through to the git remote — so the pollers fetched nothing while the
+    /// snapshot named a repository, and the SPA, which hides two panes on that
+    /// field, drew them over a repo nothing would ever fetch.
+    #[test]
+    fn a_configured_repo_is_final_whether_or_not_it_parses() {
+        let nowhere = std::path::Path::new("/nonexistent-orchd-checkout");
+        let of = |r: Option<&str>| upstream_repo(nowhere, "upstream", r);
+
+        assert_eq!(
+            of(Some("acme/mono")),
+            Some(("acme".into(), "mono".into())),
+            "a well-formed pin is the answer"
+        );
+        // Every shape somebody actually types wrong. None of them may fall through:
+        // the remote would be a *different* repository than the one they named.
+        for bad in [
+            "monorepo",
+            "",
+            "/name",
+            "owner/",
+            "https://github.com/acme/mono",
+            "git@github.com:acme/mono.git",
+            "acme/mono/extra",
+            "acme / mono",
+        ] {
+            assert_eq!(of(Some(bad)), None, "`{bad}` must not resolve to anything");
+        }
+        // With nothing pinned it is the remote's answer, and this path has none.
+        assert_eq!(of(None), None);
+    }
 
     /// One unreadable node must not hide the rest of the poll. GitHub answers
     /// with `errors` beside `data` for exactly that, and it used to fail whole.

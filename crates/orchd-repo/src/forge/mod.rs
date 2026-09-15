@@ -38,8 +38,8 @@ pub mod github_write;
 pub mod model;
 
 pub use github::{
-    graphql, latest_release, remote_url, repo_from_remote, resolve_token, warn_if_world_readable,
-    GitHubForge, Token, TokenSource,
+    graphql, latest_release, remote_url, repo_from_remote, resolve_token, upstream_repo,
+    warn_if_world_readable, GitHubForge, Token, TokenSource,
 };
 pub use github_write::{ready_to_rerequest, with_footer};
 pub use model::{Checks, Comment, Pr, Thread, ThreadRoot, Threads};

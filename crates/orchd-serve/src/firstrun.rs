@@ -215,12 +215,11 @@ pub struct DetectedProcess {
 fn detect_processes(path: &Path) -> Vec<DetectedProcess> {
     let mut out = Vec::new();
 
-    for f in [
-        "compose.yaml",
-        "compose.yml",
-        "docker-compose.yml",
-        "docker-compose.yaml",
-    ] {
+    // The one list; see [`crate::COMPOSE_FILES`]. It was written out here and in
+    // `stack_running`, in different orders — so a fifth spelling added to one would
+    // have first-run offering a docker process for a checkout whose drawer draws no
+    // stack badge at all, which is the confusion the badge was just fixed to end.
+    for f in crate::COMPOSE_FILES {
         if path.join(f).exists() {
             out.push(DetectedProcess {
                 name: "docker".into(),

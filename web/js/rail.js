@@ -41,12 +41,14 @@ const NOT_DRAWN = [
 const drawn = { sig: null };
 
 function renderRail() {
-  // A drag is a gesture on a node this function replaces: rebuilding mid-drag
-  // drops the header out from under the pointer and the drop never lands.
-  if (editingName !== null || dragging !== null || rowDrag !== null) return;
-  // Before the guard: the bar has its own inputs and its own guard, and being
-  // skipped by the rail's would leave it saying "2 need you" after they stopped.
+  /* Before the guards, not between them: the bar has its own inputs and its own
+     guard, and being skipped by any of the rail's would leave it saying "2 need
+     you" after they stopped. It sat after the first of the three, so a rename or a
+     row drag froze it for the length of the gesture. */
   renderWaitbar();
+  // A gesture is on a node this function replaces: rebuilding mid-drag drops the
+  // header out from under the pointer and the drop never lands.
+  if (editingName !== null || dragging !== null || rowDrag !== null) return;
 
   /* The whole snapshot rather than the fields this reads, on purpose: a
      signature that lists its inputs is one refactor away from freezing the rail,
@@ -119,13 +121,6 @@ function renderRail() {
 
   // Its own pane below the scroller, so it stays put while sessions scroll. It
   // describes one repository, so it follows the checkout you are in.
-  /* **A checkout with no forge draws one line, not two panes.** With no GitHub
-     remote the PR pane read `unavailable` and the review queue read `off` or
-     `unavailable` beside it — two headers, two counts, two refresh buttons and two
-     carets, all of them chrome around "this does not apply here". Each label was
-     honest and the sum looked like a broken install. `repos.upstream` is the fact
-     itself rather than `pr_error`, which is a sentence and would have to be matched
-     as one. The review queue hides itself on the same signal — see `queue.js`. */
   /* **A checkout with no forge draws one line, not a pane.** With no GitHub remote
      the PR pane read `unavailable` — a header, a count, a refresh button and a
      caret, all of them chrome around "this does not apply here", and beside a
@@ -309,8 +304,10 @@ let dragging = null;
 /** @type {{ id: string, path: string, list: string } | null} */
 let rowDrag = null;
 
-/** The rail's own order for one checkout, with anything new falling where
- *  `byNewest` would have put it: after the rows you placed.
+/** The rail's own order for one checkout, with anything the order has never seen
+ *  **above** every placed row — `byNewest` is ascending over an age, so the newest
+ *  session is first, and a worktree you just cut is the newest thing there is. The
+ *  body says what sending them to the bottom cost.
  *
  *  @param {string} path
  *  @param {import('../snapshot').SessionView[]} list
@@ -1449,6 +1446,25 @@ function mainHoldsWork(/** @type {import('../snapshot').WorkspaceView | undefine
   return !on || on !== leaf;
 }
 
+/** Say which files stayed behind, because `stash create` cannot carry untracked ones.
+ *
+ *  Both moves leave them, and both used to say so in their own copy of this — the
+ *  cap of four, the wording and the decision to draw it as an error toast written
+ *  twice, eighty lines apart. The swap's copy was the only one for a while: the move
+ *  said it in a confirm box, and when the box went the fact went with it.
+ *
+ *  @param {string} where the workspace they stayed in
+ *  @param {string[] | undefined} left
+ */
+function untrackedToast(where, left) {
+  if (!left || !left.length) return;
+  toast(
+    `left in ${where} (untracked, so not carried): ${left.slice(0, 4).join(', ')}`
+    + (left.length > 4 ? ` and ${left.length - 4} more` : ''),
+    true,
+  );
+}
+
 /** Move a session out of main, into a worktree of its own.
  *
  *  The swap's missing direction: a swap needs a second branch to exchange, and
@@ -1476,17 +1492,8 @@ async function moveOutOfMain(/** @type {import('../snapshot').SessionView} */ s)
     toast(r.created
       ? `cut ${r.branch} in ${r.workspace}; main is still on ${r.main}`
       : `${r.branch} is in ${r.workspace}; main is on ${r.main}`);
-    /* **What did not travel, named.** `stash create` cannot carry untracked files,
-       so they stay in main — on base, where they are indistinguishable from base's
-       own. The confirm box used to be the only place that was said; the same line
-       the swap already draws says it now. */
-    if (r.untracked_left && r.untracked_left.length) {
-      toast(
-        `left in main (untracked, so not carried): ${r.untracked_left.slice(0, 4).join(', ')}`
-        + (r.untracked_left.length > 4 ? ` and ${r.untracked_left.length - 4} more` : ''),
-        true,
-      );
-    }
+    // What did not travel, named — see `untrackedToast`.
+    untrackedToast('main', r.untracked_left);
     // The branch moved even if the conversation could not follow, so these are
     // second lines rather than errors over the top of a success.
     if (r.wip_error) toast(`the branch moved, but ${r.wip_error}`, true);
@@ -1562,15 +1569,8 @@ async function swapWithMain(wsId, s) {
     // not re-apply. A second line for the same reason the relocation errors are —
     // the swap happened, and the message says where the work still is.
     if (r.wip_error) toast(`the branches swapped, but ${r.wip_error}`, true);
-    // Untracked files cannot be carried, so say which stayed rather than leaving
-    // you to notice that half the work did not travel.
-    if (r.untracked_left && r.untracked_left.length) {
-      toast(
-        `left in ${wsId} (untracked, so not carried): ${r.untracked_left.slice(0, 4).join(', ')}`
-        + (r.untracked_left.length > 4 ? ` and ${r.untracked_left.length - 4} more` : ''),
-        true,
-      );
-    }
+    // What did not travel, named — see `untrackedToast`.
+    untrackedToast(wsId, r.untracked_left)
   } catch (e) {
     toast(reason(e), true);
   } finally {

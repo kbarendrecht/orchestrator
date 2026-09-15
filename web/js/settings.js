@@ -592,18 +592,29 @@ function setupSettings() {
   };
   showTheme();
 
-  /* **Delegated, so a field added to the pane cannot be forgotten here.** It was a
-     list of ids, and three fields were added to the markup without being added to
-     it — so typing into any of them left `dirty` false, the foot said nothing, and
-     `loadConfigInto` overwrote the draft on the next open. Exactly the silent loss
-     the flag above exists to stop, reintroduced by an edit in another file.
+  /* **Delegated, so a field added to the config half cannot be forgotten here.** It
+     was a list of ids, and three fields were added to the markup without being
+     added to it — so typing into any of them left `dirty` false, the foot said
+     nothing, and `loadConfigInto` overwrote the draft on the next open. Exactly the
+     silent loss the flag above exists to stop, reintroduced by an edit in another
+     file.
 
-     One listener on the pane instead. `change` as well as `input` because a
-     checkbox raises only the first of those in some engines, and the process rows
-     are rebuilt on every render — which is the other reason this cannot be
-     per-node. Folding a row open is a click and raises neither, which is right:
-     looking at a process is not editing it. */
-  for (const ev of ['input', 'change']) $('settings').addEventListener(ev, markDirty);
+     **Scoped to `[data-config]`, not to the pane.** Delegating to `#settings`
+     itself was the first attempt and was worse than the list: the appearance half
+     lives in the same element, so picking a theme or dragging the opacity slider
+     marked the *config* unsaved — and `loadConfigInto` then refuses to re-read for
+     the rest of the page's life, so the next open shows another checkout's values
+     and Save writes them to this one.
+
+     `change` as well as `input` because a checkbox raises only the first of those
+     in some engines, and the process rows are rebuilt on every render — which is
+     the other reason this cannot be per-node. Folding a row open is a click and
+     raises neither, which is right: looking at a process is not editing it. */
+  for (const ev of ['input', 'change']) {
+    $('settings').addEventListener(ev, (e) => {
+      if (/** @type {HTMLElement} */ (e.target).closest('[data-config]')) markDirty();
+    });
+  }
   $('setdiscard').onclick = () => { dirty = false; void loadConfigInto(true); };
   $('setdiscard').title = 'Throw the unsaved edits away and read the config again';
 

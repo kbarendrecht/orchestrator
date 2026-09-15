@@ -522,7 +522,12 @@
       </div>
     </section>
 
-    <section class="settings-sec">
+    <!-- `data-config` marks the half that is a *draft* until Save, which is what
+         the help above promises. `markDirty` is delegated to these sections rather
+         than to the pane: the appearance half above applies the moment you touch it
+         and is this browser's, so a theme change marking the config unsaved would
+         both cry wolf and stop the pane ever re-reading the config. -->
+    <section class="settings-sec" data-config>
       <div class="settings-group">Tracker</div>
 
       <!-- Shown, not offered. A tracker is three fields including a host that is
@@ -548,7 +553,12 @@
         leaves it to the repo's own convention.</p>
     </section>
 
-    <section class="settings-sec">
+    <!-- `data-config` marks the half that is a *draft* until Save, which is what
+         the help above promises. `markDirty` is delegated to these sections rather
+         than to the pane: the appearance half above applies the moment you touch it
+         and is this browser's, so a theme change marking the config unsaved would
+         both cry wolf and stop the pane ever re-reading the config. -->
+    <section class="settings-sec" data-config>
       <div class="settings-group">Git</div>
 
       <label class="settings-field">
@@ -630,7 +640,12 @@
         anything.</p>
     </section>
 
-    <section class="settings-sec">
+    <!-- `data-config` marks the half that is a *draft* until Save, which is what
+         the help above promises. `markDirty` is delegated to these sections rather
+         than to the pane: the appearance half above applies the moment you touch it
+         and is this browser's, so a theme change marking the config unsaved would
+         both cry wolf and stop the pane ever re-reading the config. -->
+    <section class="settings-sec" data-config>
       <div class="settings-group">Sessions</div>
 
       <label class="settings-field">
@@ -645,7 +660,12 @@
         always one at a time, whatever this says.</p>
     </section>
 
-    <section class="settings-sec">
+    <!-- `data-config` marks the half that is a *draft* until Save, which is what
+         the help above promises. `markDirty` is delegated to these sections rather
+         than to the pane: the appearance half above applies the moment you touch it
+         and is this browser's, so a theme change marking the config unsaved would
+         both cry wolf and stop the pane ever re-reading the config. -->
+    <section class="settings-sec" data-config>
       <div class="settings-group">Processes</div>
 
       <div class="settings-field settings-procs-head">

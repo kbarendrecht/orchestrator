@@ -157,7 +157,6 @@ try {
   const got = refused.filter((k) => hrefs[k] !== '#')
   check(got.length === 0, `nothing but http reaches an href${got.length ? `: ${got.join(', ')} did` : ''}`)
 
-
   /* --- what the boot preflight found ----------------------------------------- */
 
   /* Every one of these used to be a `tracing::warn!` and nothing else, so the
@@ -187,6 +186,34 @@ try {
      "down". */
   const stack = await page.$eval('#dcwd', (d) => d.textContent.trim())
   check(stack === '', `a checkout with no compose file says nothing about a stack${stack ? `, got "${stack}"` : ''}`)
+
+  /* --- the settings pane's two halves stay apart ------------------------------- */
+
+  /* **Both directions, because this has broken both ways.** A config field added to
+     the markup and not to the dirty list lost your typing in silence; delegating to
+     the whole pane instead then made a *theme* change mark the config unsaved,
+     which stops `loadConfigInto` re-reading for the rest of the page's life — so
+     the next open shows another checkout's values and Save writes them here.
+     `[data-config]` is the line between them, and this is what holds it. */
+  await page.click('#gearbtn')
+  await page.waitForSelector('#settings:not([hidden])', { timeout: 5000 })
+  const dirtyAfter = async (/** @type {string} */ sel, /** @type {string} */ value) => {
+    await page.fill(sel, value)
+    await page.waitForTimeout(150)
+    return page.$eval('#setdiscard', (b) => !b.hidden)
+  }
+  check(await dirtyAfter('#setnotemain', 'the dev stack runs here') === true,
+    'a config field marks the pane unsaved')
+  await page.click('#setdiscard')
+  await page.waitForTimeout(300)
+  check(await page.$eval('#setdiscard', (b) => b.hidden), 'and Discard clears it')
+  // A theme control is this browser's and applies at once, so it is not a draft.
+  await page.selectOption('#thpreset', { index: 1 }).catch(() => {})
+  await page.waitForTimeout(300)
+  check(await page.$eval('#setdiscard', (b) => b.hidden),
+    'changing the theme does not mark the config unsaved')
+  await page.click('#setclose')
+  await page.waitForTimeout(300)
 
   /* --- a checkout with no forge draws one line, not two panes ------------------ */
 
@@ -263,8 +290,9 @@ try {
   ).then(() => true).catch(() => false)
   check(moved, 'a dragged session row lands where it was dropped')
   const after = await railNames()
-  check(after.length === before.length, 'the drag loses no row')
-  check([...after].sort().join('|') === [...before].sort().join('|'), 'and invents none')
+  // Sorted joins settle both halves: unequal lengths cannot produce equal joins.
+  check([...after].sort().join('|') === [...before].sort().join('|'),
+    'the drag neither loses a row nor invents one')
 
   /* The order is yours, so it has to outlive the page. A reload plus the snapshots
      that land after it is the whole failure mode: the list was right until the
@@ -281,7 +309,7 @@ try {
   /* --- a box is for destructive, and for nothing else ------------------------- */
 
   /* The rule is in `core.js` at `confirmBox`: a question is for work that cannot be
-     got back, and loudness is answered with a toast instead. It was seven boxes and
+     got back, and loudness is answered with a toast instead. It was eight boxes and
      is four, so the drift this holds runs both ways — a reversible action growing a
      box, and one of the four losing one. Asserted through the menu rather than by
      counting call sites, because what matters is what a press actually does. */

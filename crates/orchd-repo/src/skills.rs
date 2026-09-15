@@ -312,7 +312,13 @@ mod tests {
         that table exists: a fifth pushing skill added there would have been written
         to disk and checked for `mise` while silently escaping this half. */
         for (name, body) in VENDORED {
-            if !matches!(*name, "fix-pr" | "green" | "handle-review" | "review") {
+            /* **Derived from the body, not from a list of names.** Naming the four
+            was a second list by another spelling — the thing the paragraph above
+            says this avoids — so a fifth pushing skill would have been written to
+            disk, checked for `mise`, and skipped by the `continue`. A skill that
+            pushes says `--force-with-lease`, because the daemon's guard denies
+            every other form. */
+            if !body.contains("--force-with-lease") {
                 continue;
             }
             assert!(
