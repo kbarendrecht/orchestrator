@@ -224,8 +224,9 @@ if (await bar.waitFor({ state: 'visible', timeout: 8000 }).then(() => true, () =
    small diff; the agent will otherwise write a suite and the turn runs long. */
 /* **Three different subjects, not three phrasings of one.** The rail labels a row
    with the session's own title, which Claude Code derives from the conversation —
-   so seeds that rhyme produce three rows reading `available() return valu…`, and
-   the picture stops showing that these are separate pieces of work. */
+   so seeds that rhyme produce three rows that all read as the same truncated
+   sentence about `available()`, and the picture stops showing that these are
+   separate pieces of work. */
 const seeds = [
   'add a reserve(sku, count) to src/inventory.js that refuses to go below zero. no tests.',
   'add a LOW_STOCK constant of 5 and an isLow(sku) helper to src/inventory.js. no tests.',
