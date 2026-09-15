@@ -2821,7 +2821,13 @@ pub async fn wip_discard(
     // recoverable by hand and nothing else will ever name it again.
     tracing::info!(%workspace, "dropped the bank; it was {}", bank.sha);
     app.notify().await;
-    Ok(Json(json!({ "discarded": workspace })))
+    /* **And answered with it, not only logged.** `update-ref -d` drops the ref and
+    leaves the commit object dangling until gc collects it, so for about two
+    weeks `git show <sha>` still has the work — but only for somebody holding the
+    sha, and it was going to a log a launcher-started app has no terminal for.
+    The pane puts it in the toast, which is the one place the person who just
+    pressed Discard is looking. */
+    Ok(Json(json!({ "discarded": workspace, "was": bank.sha })))
 }
 
 /// Hand the conflict to the session that is already in this workspace.

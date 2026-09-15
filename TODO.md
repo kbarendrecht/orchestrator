@@ -305,6 +305,24 @@ this file, which churned it from every build; that feature is gone.
   tell destructive from loud**, and `page-check` holds it from both sides — checked
   by growing a box back on the swap and by taking one off the delete.
 
+  **The four were then re-read against what the code actually does, and one claim
+  was wrong.** Discarding banked work said "git keeps no copy"; `discard_wip` is
+  `git update-ref -d`, which drops the ref and leaves the commit **dangling** until
+  gc — so `git show` still has the work for about a fortnight, for anyone holding
+  the sha. The daemon already knew the sha and put it in a `tracing::info!`, which
+  is the same fault the boot warnings had: the recovery handle went somewhere a
+  launcher-started app cannot show you. It is in the response and the toast now,
+  asserted in `21-rebase` by checking the sha is a real commit object after the
+  ref is gone. The box stays — it is what stops the sha being needed — and its
+  wording says what git actually does.
+
+  The other three hold as written. Deleting a session removes the row and
+  `remove_file`s orchd's copy; Claude Code's own `.jsonl` survives, at a path
+  slugged from a directory that no longer exists, which is not a recovery anyone
+  will make. The two file discards are uncommitted content and unsaved typing.
+  The two `chooseBox` calls are not guards at all — "Resume or start empty" is a
+  real question only the person can answer.
+
   Two hardcoded branch names fell out of reading this: the fix button's tooltip
   said *"Rebase on develop"* on every repo, and the review header said *"conflicts
   with develop"*. The tooltip reads `upstream_ref`; the header reads the **PR's

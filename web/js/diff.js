@@ -81,10 +81,26 @@ function renderDivergence(/** @type {import('../snapshot').WorkspaceView} */ w) 
     const d = el('button', 'dvbtn', 'Discard');
     d.title = 'Forget the banked copy of your work';
     d.onclick = async () => {
+      /* One of the four things this UI still asks about — see the rule at
+         `confirmBox`. It is the weakest of the four and still earns it: dropping
+         the ref leaves the commit dangling, so `git show` has the work until gc
+         collects it, but only for somebody holding the sha. The toast below is
+         where that sha is handed over; the question is what stops it being needed. */
       if (!await confirmBox(
-        `Forget the banked work?\n\n${files(bank)} from before the rebase, and git keeps no `
-        + 'copy once it is collected.', { ok: 'Discard' })) return;
-      await press(d, `/api/workspace/${ws}/wip/discard`, 'discarded');
+        `Forget the banked work?\n\n${files(bank)} from before the rebase. Git keeps it `
+        + 'for a couple of weeks as an unreferenced commit and then collects it.',
+        { ok: 'Discard' })) return;
+      d.disabled = true;
+      try {
+        const r = await call(`/api/workspace/${ws}/wip/discard`);
+        // The sha, because nothing will ever name it again and it is the whole of
+        // what "recoverable by hand" means.
+        toast(r?.was ? `discarded — it was ${String(r.was).slice(0, 12)}, until git collects it` : 'discarded');
+      } catch (e) {
+        toast(reason(e), true);
+      } finally {
+        d.disabled = false;
+      }
     };
     box.appendChild(d);
     return;

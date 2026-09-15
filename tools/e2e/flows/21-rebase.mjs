@@ -148,9 +148,18 @@ export async function run(t) {
   // live turn is the one thing that guard exists for.
   await t.settled(session)
 
-  // Discard is the only verb here git cannot undo, and it is the one that clears
-  // the strip when you have taken what you wanted out of the conflict.
-  await act('wip/discard')
+  /* Discard is the only verb here git cannot undo, and it is the one that clears
+     the strip when you have taken what you wanted out of the conflict.
+
+     **It answers with the sha, which is the whole of "recoverable by hand".**
+     Dropping the ref leaves the commit dangling until gc, so `git show` still has
+     the work — but nothing else will ever name it again, and it used to be said
+     only in a log. The pane puts it in the toast. */
+  const dropped = await act('wip/discard')
+  assert.match(dropped.was, /^[0-9a-f]{7,40}$/, `the discard did not name what it dropped: ${JSON.stringify(dropped)}`)
+  // Still a real object: the ref is gone and the commit is not.
+  assert.equal(git(dir, ['cat-file', '-t', dropped.was]), 'commit',
+    'the dropped bank must survive as a dangling commit, or the sha is useless')
   assert.equal(banks(t), '', 'the ref outlived its discard')
   assert.equal((await t.workspace('invoice')).banked, null)
   // Settled the way a person would, so the section below starts from a clean tree.
