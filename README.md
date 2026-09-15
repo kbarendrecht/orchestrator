@@ -1,8 +1,20 @@
 # orchestrator
 
+[![release](https://img.shields.io/github/v/release/kbarendrecht/orchestrator?label=release&color=blue)](https://github.com/kbarendrecht/orchestrator/releases/latest)
+[![check](https://img.shields.io/github/actions/workflow/status/kbarendrecht/orchestrator/check.yml?branch=main&label=check)](https://github.com/kbarendrecht/orchestrator/actions/workflows/check.yml)
+[![licence](https://img.shields.io/badge/licence-AGPL--3.0--only-blue)](LICENSE)
+![platforms](https://img.shields.io/badge/platforms-macOS%20%C2%B7%20Linux-lightgrey)
+
 Run several Claude Code sessions over one repository, from a single window — and
 see at a glance which ones are working, which are waiting on you, and which of
 your PRs have review threads to answer.
+
+![orchestrator](docs/demo.gif)
+
+**[Download](https://github.com/kbarendrecht/orchestrator/releases/latest)** — a
+`.dmg` for Apple Silicon, a `.deb` and an AppImage for x86-64 Linux, or
+`mise use -g github:kbarendrecht/orchestrator`. [Install](#install) has the rest,
+including the quarantine step macOS needs for an unsigned build.
 
 Each session lives in its own git worktree with its own terminal. The daemon owns
 every process, so closing the window kills nothing you did not mean to and losing
@@ -10,7 +22,14 @@ the browser tab loses nothing at all. Beside the sessions it polls your open PRs
 lists the reviews waiting on you, and drives a review-resolve flow that drafts
 replies you approve before anything is posted.
 
-![orchestrator](docs/screenshot.png)
+Several repositories go in the same window, each with its own sessions, its own
+changed files and its own PRs:
+
+![two checkouts in one window](docs/demo-repos.gif)
+
+Both recordings are real, not mock-ups. The agents are Claude Code, the diffs are
+what they wrote, and the second one is this repository beside a throwaway.
+`mise run demo` records them again — [`docs/demo.md`](docs/demo.md) says how.
 
 ## What it is
 
@@ -37,6 +56,25 @@ The pieces:
 - **A CLI.** `orch` drives a running daemon from your shell, and from inside a
   session, so an agent can open a helper session for a subtask, or ask you a
   question and block until you answer. [Install](#install) lists what it does.
+
+The PR pane and the review queue, which sit under the rail and the changed files:
+
+![the PR pane and the review queue](docs/demo-panes.gif)
+
+Each PR row carries the threads still waiting on you and the button that hands
+them to an agent. The queue ranks other people's PRs: red where you are the
+stopper, amber where somebody asked for you by name, grey for a team request.
+**The rows in that recording are demo data** — see
+[`docs/demo.md`](docs/demo.md) for why they have to be.
+
+And the claim that the daemon owns the work, not the window — a changed file
+opened as a real diff, then the checkout's daemon killed outright:
+
+![the diff viewer, and sessions surviving a daemon restart](docs/demo-revive.gif)
+
+Nothing reloads. The host notices the daemon is gone, starts it again, and hands
+the page the new port and token; `auto_resume` brings every session back with its
+conversation where it was.
 
 ## What you need
 

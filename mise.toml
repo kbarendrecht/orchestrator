@@ -156,6 +156,20 @@ depends = ["deps"]
 dir = "{{config_root}}"
 run = "node tools/shot.mjs"
 
+# The README's demo GIF, recorded against a *running* daemon on a prepared
+# checkout — `docs/demo.md` says which, and why it cannot be the e2e sandbox.
+# Drives a real `claude`, so it costs tokens and is not part of any gate.
+#
+#   mise run demo                                        # one repository
+#   mise run demo -- --multi  --out docs/demo-repos.gif   # two, side by side
+#   mise run demo -- --panes  --out docs/demo-panes.gif   # the PR and review panes
+#   mise run demo -- --revive --out docs/demo-revive.gif  # diff, then a daemon kill
+[tasks.demo]
+description = "Record the README's demo GIF against a running daemon"
+depends = ["deps"]
+dir = "{{config_root}}"
+run = "node tools/demo.mjs"
+
 # Build a throwaway PR with review threads whose last word is not yours, which is
 # the one precondition the resolve flow cannot be verified without. Creates a
 # private GitHub repo and a daemon config dir under ~/.cache; see docs/fixture-pr.md.
