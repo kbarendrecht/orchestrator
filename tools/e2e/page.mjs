@@ -331,6 +331,80 @@ try {
   check(await swallows('#setlang') === false, 'Backspace still reaches a text field')
   check(await swallows('.xterm-helper-textarea') === false, 'Backspace still reaches the pty')
 
+  /* --- the two bottom-docked panels do not sit on each other ------------------ */
+
+  /* **#21 was a screenshot of the review bar drawn across the question's answer
+     field.** Both dock at `bottom: var(--oq-clear)` — on purpose, so each clears
+     the agent's input line — and the question grows upward from that edge, so
+     whenever both are up the bar landed on it. `--oq-h` is the question's measured
+     height now, written by a `ResizeObserver`, and the bar rises by it.
+
+     Driven by unhiding the two elements rather than by getting a real session to
+     ask something mid-review: the rule under test is layout, and a geometry
+     assertion does not care which state machine produced the two boxes. What it
+     does care about is that the observer really fires, which a hand-set variable
+     would have faked.
+
+     Asked as "the rectangles do not intersect", not "the bar is below": the bar
+     rises *above* the question, because the two have different containing blocks
+     and the offset carries it clear. Which side it ends up on is layout's business;
+     not covering the answer field is the contract. Touching is allowed — demanding
+     a gap would be a second, invented rule. */
+  const overlap = await page.evaluate(async () => {
+    const oq = document.getElementById('oq')
+    const bar = document.getElementById('rvbar')
+    if (!oq || !bar) return null
+    oq.innerHTML = '<div class="oqh">needs your call</div><div class="oqq">'
+      + 'a question long enough to be more than one line, so the bar has something to clear'
+      + '</div>'
+    oq.hidden = false
+    bar.textContent = 'review · applying'
+    bar.hidden = false
+    // Two frames: one for the boxes to lay out, one for the observer's write to
+    // land and the bar to be positioned from it.
+    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))
+    const a = oq.getBoundingClientRect()
+    const b = bar.getBoundingClientRect()
+    const clear = b.bottom <= a.top || b.top >= a.bottom
+
+    oq.hidden = true; oq.replaceChildren(); bar.hidden = true; bar.textContent = ''
+    return { clear, oq: `${Math.round(a.top)}-${Math.round(a.bottom)}`, bar: `${Math.round(b.top)}-${Math.round(b.bottom)}` }
+  })
+  check(overlap?.clear === true,
+    `the review bar clears the open question (question ${overlap?.oq}, bar ${overlap?.bar})`)
+
+  /* --- a binding is its exact modifiers ---------------------------------------- */
+
+  /* **#20: `Ctrl+Option+Cmd+←` is how macOS moves a window to the next display**,
+     and the diff overlay's `Ctrl+←` claimed it because the branch tested `ctrlKey`
+     alone — every chord that merely *contains* Ctrl matched. Asserted on the event
+     rather than through the overlay, because the defect is the guard and not what
+     the guard protects: an app that swallows a chord it does not implement is the
+     whole of it. */
+  /* **The overlay has to be open, or this gate asserts nothing.** The branch lives
+     under `if (Diff.state.open)`, so on a board with no diff up both chords pass
+     through untouched and a reverted fix still reads green — measured, that is
+     exactly what happened to the first version of these two lines. Opening it
+     through the module's own state rather than by clicking a file: the thing under
+     test is the guard, and `stepChange` on an empty changeset is a no-op by its
+     own first branch. */
+  const withDiffOpen = async (init) => page.evaluate(async (d) => {
+    const Diff = await import('/js/diff.js')
+    const was = Diff.state.open
+    Diff.state.open = true
+    const took = !document.body.dispatchEvent(
+      new KeyboardEvent('keydown', { ...d, bubbles: true, cancelable: true }))
+    Diff.state.open = was
+    return took
+  }, init)
+
+  /* The pair is the point. Without the first line the second proves only that
+     *some* key went unclaimed, which a closed overlay also satisfies. */
+  check(await withDiffOpen({ key: 'ArrowLeft', ctrlKey: true }) === true,
+    'Ctrl+Left still steps the changeset')
+  check(await withDiffOpen({ key: 'ArrowLeft', ctrlKey: true, altKey: true, metaKey: true }) === false,
+    'Ctrl+Option+Cmd+Left is left to the window manager')
+
   /* **Last, and deliberately so.** The move below puts a session into main,
      and the rail draws main's sessions and the worktrees' as two runs. The drag
      above reorders *within* a run and refuses a drop across them, so running

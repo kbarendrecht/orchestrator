@@ -84,6 +84,10 @@
      review bar so the two sit at the same height. Tune here if a taller composer
      still peeks out. */
   --oq-clear:88px;
+  /* How far the review bar has to rise to clear the open question, written by the
+     `ResizeObserver` in `app.js`. Zero is the honest default: no question, no
+     offset, and the bar sits where it did before #21. */
+  --oq-h:0px;
 }
 
 *{box-sizing:border-box;margin:0;padding:0}
@@ -646,12 +650,16 @@ button.ctx-btn:hover{color:var(--text)}
 /* ---------- what a review is doing, while its overlay is closed ---------- */
 /* Bottom of the *terminal*, not of the column: anchoring it to `.center` would put
    it over the drawer. Raised to `--oq-clear`, the same height the open question's
-   sheet floats at, so the two line up and this one also clears the agent's input
-   box rather than sitting on it. Coloured by phase on the rail's own three tones,
-   so a review reads like every other thing in the app that is working, waiting or
-   done. */
+   sheet floats at, so this one also clears the agent's input box rather than
+   sitting on it. Coloured by phase on the rail's own three tones, so a review
+   reads like every other thing in the app that is working, waiting or done.
+   **Plus `--oq-h`, because that same anchor put it on top of the question.** The
+   two used to line up exactly, which is fine until both are up: the question grows
+   upward from that edge and the bar landed over its answer field (#21). The
+   variable is the question's measured height, written by `app.js`, so the pair
+   stack instead. */
 .rvbar{
-  position:absolute;left:6px;right:6px;bottom:var(--oq-clear);z-index:5;
+  position:absolute;left:6px;right:6px;bottom:calc(var(--oq-clear) + var(--oq-h));z-index:5;
   display:flex;align-items:center;gap:12px;
   background:var(--raised);border:1px solid var(--line);border-radius:2px;
   padding:8px 12px;font-family:var(--mono);font-size:calc(11.5px * var(--fs));

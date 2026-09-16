@@ -375,6 +375,7 @@ together: same entries, same order, same groups.
 - The keyboard map has a contract, and it is the reason the next binding is obvious.
 - The rail's `handle` button starts a pane, not the overlay.
 - An ask the review overlay does not own must still be answerable in the box.
+- Two panels dock at the bottom of the terminal, and they must not sit on each other.
 
 ### Performance, measured
 

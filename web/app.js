@@ -222,6 +222,31 @@ function askShowing() {
   return !host.hidden && !host.classList.contains('min');
 }
 
+/* **Two panels dock at the same place, and one of them has to move.**
+ *
+ * `.oq` and `.rvbar` both sit at `bottom: var(--oq-clear)` — deliberately, so the
+ * review bar clears the agent's input line exactly as the question does. What that
+ * overlooked is both being up at once: the question grows *upward* from that edge,
+ * so the bar landed across its lower half, over the answer field and the buttons
+ * (#21). Same anchor, same `z-index`, and nothing saying which is on top.
+ *
+ * So the bar is offset by however tall the question currently is. Measured rather
+ * than guessed, because the box has no fixed height: it holds the agent's own
+ * words, it can carry a diff, and folding it (`.oq.min`) makes it one line. A
+ * `ResizeObserver` is what keeps the offset true across all three without
+ * `renderInteraction` having to remember to publish it.
+ *
+ * `offsetHeight` rather than the entry's `contentRect`: the box has padding and a
+ * border, and the bar has to clear the whole thing. It is also 0 while `[hidden]`
+ * is `display:none`, which is exactly the answer wanted then. */
+new ResizeObserver((entries) => {
+  const box = /** @type {HTMLElement} */ (entries[0]?.target);
+  const h = box ? box.offsetHeight : 0;
+  // The gap belongs to the offset rather than to a margin: at 0 the bar has to sit
+  // where it always did, and a margin would raise it by 6px with nothing above it.
+  document.documentElement.style.setProperty('--oq-h', h ? `${Math.round(h) + 6}px` : '0px');
+}).observe($('oq'));
+
 /** The question the selected session is blocked on.
  *
  *  Rendered from the snapshot rather than held locally, so it survives a reload
@@ -1118,7 +1143,14 @@ function keymap(/** @type {KeyboardEvent} */ e) {
       void Diff.step(e.key === 'j' ? 1 : -1);
       return;
     }
-    if (e.ctrlKey && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
+    /* `!altKey && !metaKey` for the reason the `j`/`k` branch above already has
+       them: `ctrlKey` alone matches every chord that merely *contains* Ctrl, and
+       one of those is the macOS "move the window to the next display" binding
+       (`Ctrl+Option+Cmd+←/→`) — claimed, defaulted and stopped by a diff overlay
+       that had no business with it (#20). A binding is the exact set of
+       modifiers, never a subset. */
+    if (e.ctrlKey && !e.altKey && !e.metaKey
+        && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
       e.preventDefault();
       void Diff.step(e.key === 'ArrowLeft' ? -1 : 1);
       return;

@@ -14,6 +14,16 @@ escape hatch. Plain `Ctrl+<letter>` shadows the pty, so `Ctrl+Shift+…` is the
 default and a plain letter is taken only where the idiom earns it. The legend
 (`Ctrl+Shift+?`) is hand-written HTML and is the one thing here that can silently
 drift from the code.
+**And a binding is its exact modifiers, never a subset.** The diff overlay's
+`Ctrl+←/→` tested `e.ctrlKey` alone, so it matched every chord that merely
+*contains* Ctrl — including `Ctrl+Option+Cmd+←`, which is how macOS moves a window
+to the next display. The app claimed it, defaulted it and stopped its propagation,
+while implementing nothing of the kind (#20). The `j`/`k` alias three lines above
+had `!altKey && !metaKey` from the start, so the file already carried its own
+answer. `mise run page-check` holds both sides now, and the pair is the gate: the
+branch lives under `if (Diff.state.open)`, so the first version of the assertion
+passed on a board with no diff up and proved nothing. `Ctrl+Left still steps the
+changeset` is what makes the refusal beside it mean something.
 
 ## The rail's `handle` button starts a pane, not the overlay.
 `/orchd:handle-review`
@@ -46,3 +56,28 @@ The escape hatch beside it is a **fold**, not a dismiss: the header stays as a
 one-line strip (`.oq.min`, the `×`, or `Esc`). Hiding it outright would be this
 box disagreeing with the rail and the waitbar, which read `wants_attention` off
 the daemon and are right — the agent really is still blocked.
+
+
+## Two panels dock at the bottom of the terminal, and they must not sit on each other.
+`.oq` (the open question) and `.rvbar` (what a review is doing) are both
+`position:absolute` at `bottom: var(--oq-clear)` with the same `z-index`. That is
+deliberate — the height is what clears the agent's own input line, which is the one
+row neither may cover. What it overlooked is both being up at once: the question
+grows *upward* from that edge, so the bar landed across its lower half, over the
+answer field and the buttons. Reported as a screenshot (#21), and the CSS comment
+beside it said the two were raised equally "so the two line up", which is exactly
+the failure spelled as the intent.
+`--oq-h` is the question's height, written by a `ResizeObserver` in `app.js`, and
+the bar rises by it. **Measured rather than published from `renderInteraction`**,
+because the box has no fixed height — it carries the agent's own words, it can hold
+a diff, and folding it (`.oq.min`) makes it one line — and a render path that has
+to remember to announce its size is a render path that will forget.
+`offsetHeight` rather than the observer entry's `contentRect`: the box has padding
+and a border and the bar must clear all of it, and it reads 0 under
+`[hidden]{display:none}`, which is the wanted answer then.
+The gate in `mise run page-check` asserts the two rectangles **do not intersect**,
+not that one is below the other: the bar ends up *above* the question, because the
+two have different containing blocks (`#oq` beside `#termwrap`, `#rvbar` inside
+it). Which side layout puts it on is not the contract. **Checked against deliberate
+breakage twice** — reverting the CSS to the bare anchor and disabling the observer
+each reproduce the screenshot, bar 731-769 against question 735-812.
